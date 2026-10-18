@@ -1,0 +1,365 @@
+/* Operators that edit the active vector layer's drawing: selection, delete, shapes, curvature,
+ * and the start of modal transforms (G, R, S, E). */
+
+#include "ops/edit_ops.hh"
+
+#include <algorithm>
+#include <map>
+
+#include "core/log.hh"
+#include "data/document.hh"
+#include "ops/operator.hh"
+#include "wm/context.hh"
+
+namespace sky {
+
+VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
+{
+  Layer *layer = C.document ? document_active_layer(*C.document) : nullptr;
+  if (!layer || layer->is_group() || layer->is_reference() || layer->locked) {
+    return nullptr;
+  }
+  if (r_layer) {
+    *r_layer = layer;
+  }
+  return &layer->drawing;
+}
+
+static bool editable_poll(Context &C)
+{
+  return editable_drawing(C) != nullptr;
+}
+
+static bool has_selection(const VectorDrawing &drawing)
+{
+  for (const MeshPoint &p : drawing.points) {
+    if (p.selected) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool editable_with_selection_poll(Context &C)
+{
+  const VectorDrawing *drawing = editable_drawing(C);
+  return drawing && has_selection(*drawing);
+}
+
+void drawing_expand_selection_by_mode(Context &C, VectorDrawing &drawing)
+{
+  const SelectMode mode = C.wm->tool_settings.select_mode;
+  if (mode != SelectMode::Stroke) {
+    return;
+  }
+  const std::vector<bool> was_selected = [&] {
+    std::vector<bool> s(drawing.points.size());
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      s[i] = drawing.points[i].selected;
+    }
+    return s;
+  }();
+  for (const Curve &curve : drawing.curves) {
+    bool any = false;
+    for (const CurvePoint &cp : curve.points) {
+      any |= was_selected[cp.point];
+    }
+    if (any) {
+      for (const CurvePoint &cp : curve.points) {
+        drawing.points[cp.point].selected = true;
+      }
+    }
+  }
+}
+
+static void vector_operator(const char *idname, const char *name, const char *description, unsigned flag,
+                            std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec)
+{
+  OperatorType ot;
+  ot.idname = idname;
+  ot.name = name;
+  ot.description = description;
+  ot.flag = flag;
+  ot.poll = std::move(poll);
+  ot.exec = std::move(exec);
+  operators().add(std::move(ot));
+}
+
+static constexpr unsigned UNDO = OPTYPE_REGISTER | OPTYPE_UNDO;
+
+void vector_operators_register()
+{
+  /* --- Selection ------------------------------------------------------------- */
+  vector_operator("mesh.select_all", "Select All", "Select every point in the active layer", UNDO, editable_poll,
+                  [](Context &C) {
+                    for (MeshPoint &p : editable_drawing(C)->points) {
+                      p.selected = true;
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.select_none", "Deselect All", "Deselect every point in the active layer", UNDO,
+                  editable_poll, [](Context &C) {
+                    for (MeshPoint &p : editable_drawing(C)->points) {
+                      p.selected = false;
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.select_invert", "Invert Selection", "Select the unselected points and deselect the rest",
+                  UNDO, editable_poll, [](Context &C) {
+                    for (MeshPoint &p : editable_drawing(C)->points) {
+                      p.selected = !p.selected;
+                    }
+                    return OpStatus::Finished;
+                  });
+
+  for (const bool deselect : {false, true}) {
+    vector_operator(
+        deselect ? "mesh.deselect_linked_pick" : "mesh.select_linked_pick",
+        deselect ? "Deselect Linked" : "Select Linked",
+        deselect ? "Deselect the shape or curve under the mouse" : "Select the whole shape or curve under the mouse",
+        UNDO,
+        [](Context &C) { return editable_poll(C) && C.wm->mouse_in_viewport; },
+        [deselect](Context &C) {
+          Layer *layer = nullptr;
+          VectorDrawing &drawing = *editable_drawing(C, &layer);
+          const Transform2D to_layer = layer_world_transform(*C.document, layer->id).inverted();
+          const float2 mouse = to_layer.apply(C.wm->mouse_document);
+          const float radius = 0.03f * to_layer.scale();
+          std::vector<int> points;
+          if (const int s = drawing_pick_shape(drawing, mouse, radius); s >= 0) {
+            for (const ShapeEdge &e : drawing.shapes[s].edges) {
+              int a, b;
+              curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+              points.push_back(a);
+              points.push_back(b);
+            }
+          }
+          else {
+            ShapeEdge edge;
+            float t;
+            if (!drawing_pick_segment(drawing, mouse, radius, &edge, &t)) {
+              return OpStatus::Cancelled;
+            }
+            for (const CurvePoint &cp : drawing.curves[edge.curve].points) {
+              points.push_back(cp.point);
+            }
+          }
+          for (int p : points) {
+            drawing.points[p].selected = !deselect;
+          }
+          return OpStatus::Finished;
+        });
+  }
+
+  const auto select_mode_op = [](const char *idname, const char *name, SelectMode mode) {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = "Change what clicking selects: points, whole strokes, or segments between junctions";
+    ot.exec = [mode](Context &C) {
+      C.wm->tool_settings.select_mode = mode;
+      if (VectorDrawing *drawing = editable_drawing(C)) {
+        drawing_expand_selection_by_mode(C, *drawing);
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  };
+  select_mode_op("mesh.select_mode_point", "Point Selection Mode", SelectMode::Point);
+  select_mode_op("mesh.select_mode_edge", "Edge Selection Mode", SelectMode::Edge);
+  select_mode_op("mesh.select_mode_stroke", "Stroke Selection Mode", SelectMode::Stroke);
+
+  /* --- Editing ----------------------------------------------------------------- */
+  vector_operator("mesh.delete", "Delete Points", "Delete the selected points and the curves left too short",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    VectorDrawing &drawing = *editable_drawing(C);
+                    std::vector<bool> remove(drawing.points.size());
+                    for (size_t i = 0; i < drawing.points.size(); i++) {
+                      remove[i] = drawing.points[i].selected;
+                    }
+                    drawing_remove_points(drawing, remove);
+                    return OpStatus::Finished;
+                  });
+
+  vector_operator("mesh.create_shape", "Create Shape",
+                  "Fill the closed loop through the selected points, or outline an open run", UNDO,
+                  editable_with_selection_poll, [](Context &C) {
+                    VectorDrawing &drawing = *editable_drawing(C);
+                    const int shape = drawing_shape_from_selection(drawing, true, C.wm->tool_settings.style);
+                    if (shape < 0) {
+                      report(ReportType::Warning, "Select points along a loop or a line to make a shape");
+                      return OpStatus::Cancelled;
+                    }
+                    return OpStatus::Finished;
+                  });
+
+  vector_operator("mesh.create_line", "Create Line", "Outline the selected points without a fill", UNDO,
+                  editable_with_selection_poll, [](Context &C) {
+                    VectorDrawing &drawing = *editable_drawing(C);
+                    const int shape = drawing_shape_from_selection(drawing, false, C.wm->tool_settings.style);
+                    if (shape < 0) {
+                      return OpStatus::Cancelled;
+                    }
+                    drawing.shapes[shape].has_fill = false;
+                    return OpStatus::Finished;
+                  });
+
+  for (const bool peak : {true, false}) {
+    vector_operator(peak ? "mesh.peak" : "mesh.smooth", peak ? "Peak" : "Smooth",
+                    peak ? "Make the selected points sharp corners" : "Make the selected points smooth curves", UNDO,
+                    editable_with_selection_poll, [peak](Context &C) {
+                      VectorDrawing &drawing = *editable_drawing(C);
+                      for (Curve &curve : drawing.curves) {
+                        for (CurvePoint &cp : curve.points) {
+                          if (drawing.points[cp.point].selected) {
+                            cp.curvature = peak ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
+                          }
+                        }
+                      }
+                      return OpStatus::Finished;
+                    });
+  }
+
+  vector_operator("mesh.delete_shape", "Delete Shape", "Delete the fills and outlines that use selected points",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    VectorDrawing &drawing = *editable_drawing(C);
+                    const size_t before = drawing.shapes.size();
+                    std::erase_if(drawing.shapes, [&](const Shape &shape) {
+                      for (const ShapeEdge &e : shape.edges) {
+                        int a, b;
+                        curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+                        if (drawing.points[a].selected && drawing.points[b].selected) {
+                          return true;
+                        }
+                      }
+                      return false;
+                    });
+                    return drawing.shapes.size() != before ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
+
+  /* --- Modal transforms -----------------------------------------------------------
+   * These only ask the viewport to start; it makes the undo step when the move ends. */
+  const auto transform_op = [](const char *idname, const char *name, const char *description, char kind) {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = description;
+    ot.poll = [](Context &C) { return C.wm->mouse_in_viewport && editable_with_selection_poll(C); };
+    ot.exec = [kind](Context &C) {
+      C.wm->transform_request = kind;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  };
+  /* --- Tools ------------------------------------------------------------------------ */
+  const auto tool_op = [](const char *idname, const char *name, Tool tool) {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = "Switch the viewport tool";
+    ot.exec = [tool](Context &C) {
+      C.wm->tool_settings.tool = tool;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  };
+  tool_op("wm.tool_select", "Select Box Tool", Tool::Select);
+  tool_op("wm.tool_cursor", "Cursor Tool", Tool::Cursor);
+  {
+    /* sky.ops.wm.tool_draw(mode="PEN"): the Draw tool, optionally picking freehand or the pen. */
+    OperatorType ot;
+    ot.idname = "wm.tool_draw";
+    ot.name = "Draw Tool";
+    ot.description = "Switch to the Draw tool: freehand strokes, or the pen (mode=\"PEN\")";
+    ot.exec = [](Context &C) {
+      const std::string mode = op_arg(C, "mode");
+      if (mode == "PEN") {
+        C.wm->tool_settings.draw_mode = DrawMode::Pen;
+      }
+      else if (mode == "FREEHAND") {
+        C.wm->tool_settings.draw_mode = DrawMode::Freehand;
+      }
+      else if (!mode.empty()) {
+        report(ReportType::Error, "Unknown draw mode '" + mode + "': use FREEHAND or PEN");
+        return OpStatus::Cancelled;
+      }
+      C.wm->tool_settings.tool = Tool::Draw;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  tool_op("wm.tool_split_curve", "Split Curve Tool", Tool::SplitCurve);
+  {
+    /* sky.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
+    OperatorType ot;
+    ot.idname = "wm.tool_shape";
+    ot.name = "Shape Tool";
+    ot.description = "Switch to the Shape tool: box or circle";
+    ot.exec = [](Context &C) {
+      const std::string shape = op_arg(C, "shape");
+      if (!shape.empty() && !primitive_from_identifier(shape, &C.wm->tool_settings.shape)) {
+        report(ReportType::Error, "Unknown shape '" + shape + "': use BOX or CIRCLE");
+        return OpStatus::Cancelled;
+      }
+      C.wm->tool_settings.tool = Tool::Shape;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* Kept for scripts: the pen is now a mode of the Draw tool. */
+    OperatorType ot;
+    ot.idname = "wm.tool_pen";
+    ot.name = "Pen Tool";
+    ot.description = "Switch to the Draw tool's pen: click to add points along a curve";
+    ot.exec = [](Context &C) {
+      C.wm->tool_settings.tool = Tool::Draw;
+      C.wm->tool_settings.draw_mode = DrawMode::Pen;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
+  transform_op("transform.translate", "Move", "Move the selected points with the mouse", 'G');
+  transform_op("transform.rotate", "Rotate", "Rotate the selected points with the mouse", 'R');
+  transform_op("transform.resize", "Scale", "Scale the selected points with the mouse", 'S');
+  transform_op("mesh.extrude", "Extrude", "Add a new point beyond each selected end point and move it", 'E');
+
+  /* Blender's Arrange (Page Up/Down) for shapes, Moho's Raise and Lower Shape. */
+  const auto arrange_op = [](const char *idname, const char *name, const char *description, ShapeArrange arrange) {
+    vector_operator(idname, name, description, UNDO, editable_with_selection_poll, [arrange](Context &C) {
+      VectorDrawing &drawing = *editable_drawing(C);
+      const std::vector<bool> selected = drawing_selected_shapes(drawing);
+      if (std::find(selected.begin(), selected.end(), true) == selected.end()) {
+        report(ReportType::Warning, "Select a point of a shape to arrange it");
+        return OpStatus::Cancelled;
+      }
+      /* Already at the top or bottom: nothing to undo. */
+      return drawing_arrange_shapes(drawing, arrange) ? OpStatus::Finished : OpStatus::Cancelled;
+    });
+  };
+  arrange_op("mesh.shape_raise", "Bring Forward", "Move the selected shapes one step up the stacking order",
+             ShapeArrange::Forward);
+  arrange_op("mesh.shape_lower", "Send Backward", "Move the selected shapes one step down the stacking order",
+             ShapeArrange::Backward);
+  arrange_op("mesh.shape_raise_to_front", "Bring to Front", "Move the selected shapes above all others",
+             ShapeArrange::ToFront);
+  arrange_op("mesh.shape_lower_to_back", "Send to Back", "Move the selected shapes below all others",
+             ShapeArrange::ToBack);
+
+  /* Blender's Duplicate (Shift D): copy, then move the copy. Cancelling the move leaves the
+   * copy where it was made, as in Blender. */
+  vector_operator("mesh.duplicate_move", "Duplicate", "Copy the selected points, curves and shapes, then move the copy",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    if (!drawing_duplicate_selected(*editable_drawing(C))) {
+                      report(ReportType::Warning, "Select at least two connected points to duplicate");
+                      return OpStatus::Cancelled;
+                    }
+                    if (C.wm->mouse_in_viewport) {
+                      C.wm->transform_request = 'G';
+                    }
+                    return OpStatus::Finished;
+                  });
+}
+
+}  // namespace sky

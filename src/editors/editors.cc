@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
 #include "core/log.hh"
+#include "editors/ui.hh"
 #include "data/document.hh"
 #include "ops/undo.hh"
 #include "rna/rna.hh"
@@ -21,6 +25,8 @@ const char *editor_type_label(EditorType type)
       return "Viewport";
     case EditorType::Properties:
       return "Properties";
+    case EditorType::Layers:
+      return "Layers";
     case EditorType::Timeline:
       return "Timeline";
     case EditorType::TextEditor:
@@ -58,23 +64,44 @@ std::string Area::window_name() const
  * any property. Edits made here push an undo step when the widget is released.
  */
 
-static void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier)
+bool ui_panel_begin(const char *title, bool default_open)
+{
+  if (!ImGui::CollapsingHeader(title, default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+    return false;
+  }
+  if (!ImGui::BeginTable(title, 2, ImGuiTableFlags_SizingStretchProp)) {
+    return false;
+  }
+  ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+  ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+  return true;
+}
+
+void ui_panel_end()
+{
+  ImGui::EndTable();
+}
+
+/* Label in the left column, right-aligned against its field as in Blender. */
+static void ui_label(const char *label)
+{
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::AlignTextToFramePadding();
+  const float label_width = ImGui::CalcTextSize(label).x;
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetColumnWidth() - label_width));
+  ImGui::TextUnformatted(label);
+  ImGui::TableSetColumnIndex(1);
+  ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path)
 {
   const rna::PropertyRNA *prop = ptr.type->find(identifier);
   if (!prop) {
     return;
   }
-
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(0);
-  ImGui::AlignTextToFramePadding();
-  /* Blender right-aligns labels against their field. */
-  const float label_width = ImGui::CalcTextSize(prop->name.c_str()).x;
-  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetColumnWidth() - label_width));
-  ImGui::TextUnformatted(prop->name.c_str());
-
-  ImGui::TableSetColumnIndex(1);
-  ImGui::SetNextItemWidth(-FLT_MIN);
+  ui_label(prop->name.c_str());
   ImGui::PushID(identifier);
   ImGui::BeginDisabled(!prop->set);
 
@@ -89,12 +116,34 @@ static void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifi
                                ImGuiSliderFlags_AlwaysClamp);
       break;
     case rna::PropType::Float:
-      changed = ImGui::DragFloat("##value", &std::get<float>(value), 0.05f, float(prop->min), float(prop->max),
+      changed = ImGui::DragFloat("##value", &std::get<float>(value), 0.01f, float(prop->min), float(prop->max),
                                  "%.3f", ImGuiSliderFlags_AlwaysClamp);
       break;
     case rna::PropType::String:
       changed = ImGui::InputText("##value", &std::get<std::string>(value));
       break;
+    case rna::PropType::Enum: {
+      int &index = std::get<int>(value);
+      const char *preview = (index >= 0 && index < int(prop->items.size())) ? prop->items[index].name.c_str() : "";
+      if (ImGui::BeginCombo("##value", preview)) {
+        for (int i = 0; i < int(prop->items.size()); i++) {
+          if (ImGui::Selectable(prop->items[i].name.c_str(), i == index)) {
+            index = i;
+            changed = true;
+          }
+        }
+        ImGui::EndCombo();
+      }
+      /* A combo edit is complete when picked, so it gets its undo step right away. */
+      if (changed && prop->set) {
+        prop->set(ptr.data, rna::clamp(*prop, value));
+        if (C.undo && C.document) {
+          C.undo->push("Change " + prop->name, *C.document);
+        }
+        changed = false;
+      }
+      break;
+    }
   }
   if (changed && prop->set) {
     prop->set(ptr.data, rna::clamp(*prop, value));
@@ -103,85 +152,28 @@ static void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifi
     C.undo->push("Change " + prop->name, *C.document);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip("%s\n\nPython: sky.data.%s.%s", prop->description.c_str(), "document",
-                      prop->identifier.c_str());
+    ImGui::SetTooltip("%s\n\nPython: %s.%s", prop->description.c_str(), python_path, prop->identifier.c_str());
   }
 
   ImGui::EndDisabled();
   ImGui::PopID();
 }
 
-/* A collapsible panel holding a two-column table of properties. */
-static void ui_panel(Context &C, const rna::PointerRNA &ptr, const char *title,
-                     std::initializer_list<const char *> identifiers)
+bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name)
 {
-  if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
-    return;
+  ui_label(label);
+  ImGui::PushID(label);
+  const bool changed = ImGui::ColorEdit4("##color", rgba, ImGuiColorEditFlags_AlphaBar);
+  if (ImGui::IsItemDeactivatedAfterEdit() && C.undo && C.document && undo_name) {
+    C.undo->push(undo_name, *C.document);
   }
-  if (ImGui::BeginTable(title, 2, ImGuiTableFlags_SizingStretchProp)) {
-    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
-    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
-    for (const char *identifier : identifiers) {
-      ui_prop(C, ptr, identifier);
-    }
-    ImGui::EndTable();
-  }
+  ImGui::PopID();
+  return changed;
 }
 
 /* ---------------------------------------------------------------------------------
  * Editors
  */
-
-static void viewport_draw(Context &C)
-{
-  const Document &doc = *C.document;
-  ImDrawList *draw = ImGui::GetWindowDrawList();
-  const ImVec2 origin = ImGui::GetCursorScreenPos();
-  const ImVec2 size = ImGui::GetContentRegionAvail();
-  if (size.x <= 1.0f || size.y <= 1.0f) {
-    return;
-  }
-
-  /* Background, then the camera frame at the document's aspect ratio, like Blender's
-   * camera view with its passepartout. */
-  draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(0x3d, 0x3d, 0x3d, 255));
-  const float aspect = float(doc.width) / float(std::max(doc.height, 1));
-  float frame_w = size.x * 0.8f;
-  float frame_h = frame_w / aspect;
-  if (frame_h > size.y * 0.8f) {
-    frame_h = size.y * 0.8f;
-    frame_w = frame_h * aspect;
-  }
-  const ImVec2 frame_min(origin.x + (size.x - frame_w) * 0.5f, origin.y + (size.y - frame_h) * 0.5f);
-  const ImVec2 frame_max(frame_min.x + frame_w, frame_min.y + frame_h);
-  draw->AddRectFilled(frame_min, frame_max, IM_COL32(0x47, 0x47, 0x47, 255));
-  draw->AddRect(frame_min, frame_max, IM_COL32(0x1d, 0x1d, 0x1d, 255), 0.0f, 0, 1.5f);
-
-  /* Overlay text below the floating header. */
-  const float text_y = origin.y + ImGui::GetFrameHeight() + 12;
-  ImGui::SetCursorScreenPos(ImVec2(origin.x + 10, text_y));
-  ImGui::Text("Camera  |  Frame %d  |  %d x %d", doc.frame_current, doc.width, doc.height);
-  ImGui::SetCursorScreenPos(ImVec2(origin.x + 10, text_y + ImGui::GetTextLineHeightWithSpacing()));
-  ImGui::Text("Test counter: %d", doc.counter);
-
-  const char *hint = "Drawing arrives in milestone 2.  T adds to the test counter, Ctrl Z undoes, Ctrl Shift Z redoes.";
-  const ImVec2 hint_size = ImGui::CalcTextSize(hint);
-  ImGui::SetCursorScreenPos(ImVec2(origin.x + (size.x - hint_size.x) * 0.5f, frame_max.y + 8));
-  ImGui::TextDisabled("%s", hint);
-
-  /* Claim the whole region so the window doesn't scroll. */
-  ImGui::SetCursorScreenPos(origin);
-  ImGui::Dummy(size);
-}
-
-static void properties_draw(Context &C)
-{
-  const rna::PointerRNA ptr{C.document, &Document::rna()};
-  ui_panel(C, ptr, "Document", {"name"});
-  ui_panel(C, ptr, "Format", {"width", "height", "fps"});
-  ui_panel(C, ptr, "Frame Range", {"frame_start", "frame_end", "frame_current"});
-  ui_panel(C, ptr, "Test", {"counter"});
-}
 
 static void info_draw()
 {
@@ -211,9 +203,91 @@ static void info_draw()
   ImGui::EndChild();
 }
 
+/* Dragging the grip moves the area, the way dragging a tab does in ImGui: the window is
+ * undocked and follows the mouse, and dropping it on a docking target docks it there. */
+static void area_grip_drag_start(const ImRect &grip_rect)
+{
+  ImGuiContext &g = *ImGui::GetCurrentContext();
+  ImGuiWindow *window = ImGui::GetCurrentWindow()->RootWindow;
+  if (window->DockNode) {
+    ImGui::DockContextQueueUndockWindow(&g, window);
+    g.MovingWindow = window;
+    ImGui::SetActiveID(window->MoveId, window);
+    g.ActiveIdClickOffset -= window->Pos - grip_rect.Min;
+    g.ActiveIdNoClearOnFocusLoss = true;
+    ImGui::SetActiveIdUsingAllKeyboardKeys();
+  }
+  else {
+    ImGui::StartMouseMovingWindow(window);
+  }
+  /* ImGui only offers docking targets when the window was grabbed within its top strip, where
+   * a title bar would be. Areas have no title bar, so keep the grab point inside that strip. */
+  g.ActiveIdClickOffset.y = std::min(g.ActiveIdClickOffset.y, ImGui::GetFrameHeight() - 1.0f);
+}
+
+/* Two horizontal lines to grab the area by, with Blender's area options on right-click.
+ * The grip starts at the area's left edge and holds equal margins on both sides of the lines,
+ * so they sit centred between the edge and the dropdown that follows, and centred vertically
+ * on the header row. Sizes are whole pixels so both lines stay crisp. */
+static void area_grip(Area &area)
+{
+  const float h = ImGui::GetFrameHeight();
+  const float margin = std::round(ImGui::GetStyle().ItemSpacing.x);
+  const float line_w = std::round(h * 0.45f);
+  const float thickness = std::max(1.0f, std::round(h * 0.07f));
+  const float line_gap = std::max(2.0f, std::round(h * 0.16f));
+  const ImVec2 size(margin * 2.0f + line_w, h);
+
+  const ImVec2 p(std::round(ImGui::GetWindowPos().x), std::round(ImGui::GetCursorScreenPos().y));
+  ImGui::SetCursorScreenPos(p);
+  ImGui::InvisibleButton("##area_grip", size);
+  const bool hovered = ImGui::IsItemHovered();
+  const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+
+  if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, ImGui::GetFontSize() * 0.3f)) {
+    area_grip_drag_start(rect);
+  }
+  if (hovered) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+      ImGui::OpenPopup("##area_menu");
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Drag to move this area\nRight-click for area options");
+  }
+
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImU32 col = hovered || ImGui::IsItemActive() ? IM_COL32(0xff, 0xff, 0xff, 255)
+                                                     : IM_COL32(0x8c, 0x8c, 0x8c, 255);
+  const float block_h = thickness * 2.0f + line_gap;
+  const float x0 = p.x + margin;
+  const float y0 = p.y + std::round((h - block_h) * 0.5f);
+  dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + line_w, y0 + thickness), col);
+  dl->AddRectFilled(ImVec2(x0, y0 + thickness + line_gap), ImVec2(x0 + line_w, y0 + block_h), col);
+
+  if (ImGui::BeginPopup("##area_menu")) {
+    ImGui::TextDisabled("Area");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Vertical Split")) {
+      area.split_request = AreaSplit::Vertical;
+    }
+    if (ImGui::MenuItem("Horizontal Split")) {
+      area.split_request = AreaSplit::Horizontal;
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Close Area")) {
+      area.open = false;
+    }
+    ImGui::EndPopup();
+  }
+}
+
 /* Blender puts an editor-type menu at the start of every area header. */
 void area_editor_type_menu(Area &area)
 {
+  area_grip(area);
+  ImGui::SameLine(0.0f, 0.0f);
   ImGui::SetNextItemWidth(ImGui::CalcTextSize("Python Console").x + ImGui::GetFrameHeight() * 1.5f);
   if (ImGui::BeginCombo("##editor_type", editor_type_label(area.type))) {
     for (EditorType type : EDITOR_TYPES) {
@@ -232,9 +306,20 @@ bool area_draw(Area &area, Context &C)
   if (full_bleed) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   }
-  const bool visible = ImGui::Begin(
-      area.window_name().c_str(), &area.open,
-      full_bleed ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
+  /* No tab above the area: the header's grip and editor dropdown do that job, as in Blender.
+   * Areas can split one another but never stack in the same spot, since without tabs a
+   * stacked area would be hidden. */
+  ImGuiWindowClass window_class;
+  window_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoWindowMenuButton |
+                                          ImGuiDockNodeFlags_NoCloseButton | ImGuiDockNodeFlags_NoDockingOverMe |
+                                          ImGuiDockNodeFlags_NoDockingOverOther;
+  ImGui::SetNextWindowClass(&window_class);
+  /* No title bar even while floating: the area is moved by its grip, like a Blender area. */
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
+  if (full_bleed) {
+    flags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  }
+  const bool visible = ImGui::Begin(area.window_name().c_str(), &area.open, flags);
   if (full_bleed) {
     ImGui::PopStyleVar();
   }
@@ -242,15 +327,9 @@ bool area_draw(Area &area, Context &C)
 
   if (visible) {
     switch (area.type) {
-      case EditorType::Viewport: {
-        /* The header floats on top of the viewport, as in Blender. Screen coordinates:
-         * for a docked window, SetCursorPos() is measured from above the tab bar. */
-        const ImVec2 content_start = ImGui::GetCursorScreenPos();
-        viewport_draw(C);
-        ImGui::SetCursorScreenPos(ImVec2(content_start.x + 6, content_start.y + 4));
-        area_editor_type_menu(area);
+      case EditorType::Viewport:
+        viewport_draw(area, C);
         break;
-      }
       case EditorType::Timeline:
         timeline_draw(area, C);
         break;
@@ -260,10 +339,11 @@ bool area_draw(Area &area, Context &C)
       case EditorType::Console:
         console_draw(area, C);
         break;
+      case EditorType::Layers:
+        layers_draw(area, C);
+        break;
       case EditorType::Properties:
-        area_editor_type_menu(area);
-        ImGui::Separator();
-        properties_draw(C);
+        properties_draw(area, C);
         break;
       case EditorType::Info:
         area_editor_type_menu(area);

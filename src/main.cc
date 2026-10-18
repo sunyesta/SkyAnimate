@@ -1,6 +1,7 @@
 /* SkyAnimate entry point.
  *
  *   SkyAnimate                                   open the window
+ *   SkyAnimate walk.sky                          open a file
  *   SkyAnimate --background --python script.py   run a script without a window, then exit
  */
 
@@ -34,7 +35,7 @@ static void console_attach_to_parent()
 static void print_help()
 {
   std::printf(
-      "Usage: SkyAnimate [options]\n"
+      "Usage: SkyAnimate [options] [file.sky]\n"
       "\n"
       "  -b, --background       Run without a window and exit when scripts finish.\n"
       "                         The exit code is 1 if any script raised an error.\n"
@@ -63,6 +64,9 @@ int main(int argc, char **argv)
     else if (std::strcmp(arg, "-h") == 0 || std::strcmp(arg, "--help") == 0) {
       print_help();
       return 0;
+    }
+    else if (arg[0] != '-' && options.open_file.empty()) {
+      options.open_file = arg;
     }
     else {
       std::fprintf(stderr, "Unknown or incomplete argument: %s\n\n", arg);

@@ -64,7 +64,42 @@ bool operator_poll(Context &C, const OperatorType &ot)
   return !ot.poll || ot.poll(C);
 }
 
-OpStatus operator_call(Context &C, std::string_view idname)
+std::string op_arg(const Context &C, const std::string &name, const std::string &fallback)
+{
+  if (C.op_args) {
+    if (auto it = C.op_args->find(name); it != C.op_args->end()) {
+      return it->second;
+    }
+  }
+  return fallback;
+}
+
+bool op_arg_bool(const Context &C, const std::string &name)
+{
+  const std::string value = op_arg(C, name);
+  return value == "1" || value == "True" || value == "true";
+}
+
+/* sky.ops.wm.open_mainfile(filepath="walk.sky"), for the Info log. */
+static std::string operator_call_repr(const std::string &idname, const OpArgs &args)
+{
+  std::string text = "sky.ops." + idname + "(";
+  bool first = true;
+  for (const auto &[name, value] : args) {
+    text += (first ? "" : ", ") + name + "=\"";
+    for (const char c : value) {
+      if (c == '\\' || c == '"') {
+        text += '\\';
+      }
+      text += c;
+    }
+    text += "\"";
+    first = false;
+  }
+  return text + ")";
+}
+
+OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
 {
   const OperatorType *found = operators().find(idname);
   if (!found) {
@@ -78,13 +113,17 @@ OpStatus operator_call(Context &C, std::string_view idname)
     return OpStatus::Cancelled;
   }
 
+  /* Arguments are visible to the operator while it runs; restore for nested calls. */
+  const OpArgs *outer_args = C.op_args;
+  C.op_args = &args;
   const OpStatus status = ot.exec(C);
+  C.op_args = outer_args;
   if (status != OpStatus::Finished) {
     return status;
   }
 
   if (ot.flag & OPTYPE_REGISTER) {
-    report(ReportType::Operator, "sky.ops." + ot.idname + "()");
+    report(ReportType::Operator, operator_call_repr(ot.idname, args));
   }
   if ((ot.flag & OPTYPE_UNDO) && C.undo && C.document) {
     C.undo->push(ot.name, *C.document);

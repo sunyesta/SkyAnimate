@@ -3,12 +3,61 @@
 /* Context: what an operator or panel is working on right now, like Blender's bContext. */
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
+
+#include "core/math.hh"
+#include "data/vector.hh"
 
 namespace sky {
 
 struct Document;
 class UndoStack;
+
+/* Arguments to an operator call by name, like the keyword arguments of a bpy.ops call:
+ * sky.ops.wm.open_mainfile(filepath="walk.sky"). */
+using OpArgs = std::map<std::string, std::string>;
+
+/* Viewport tools, as on the toolbar. */
+enum class Tool { Select, Cursor, Draw, Shape, SplitCurve };
+
+/* The Draw tool draws freehand strokes, or with the pen: click to add points along a curve. */
+enum class DrawMode { Freehand, Pen };
+
+/* Blender Grease Pencil's selection modes (1, 2, 3). */
+enum class SelectMode { Point, Edge, Stroke };
+
+/* Settings shared by the viewport tools, like Blender's ToolSettings. */
+struct ToolSettings {
+  Tool tool = Tool::Select;
+  SelectMode select_mode = SelectMode::Point;
+  /* Snap points to the grid while drawing and transforming. */
+  bool snap_grid = false;
+  /* Snap to existing points while drawing. */
+  bool snap_points = true;
+  /* Grid spacing for snapping and for the grid overlay. */
+  float grid_size = 0.1f;
+  /* Style for new shapes and strokes. */
+  Style style;
+  /* What the Draw and Shape tools draw, picked from their flyouts on the tool bar. */
+  DrawMode draw_mode = DrawMode::Freehand;
+  PrimitiveKind shape = PrimitiveKind::Box;
+  /* Fill closed freehand strokes and closed shapes, Moho's "auto fill". */
+  bool draw_fill = false;
+  /* Tablet pressure sets line width while drawing. */
+  bool use_pressure = true;
+  /* The 2D cursor in document space. */
+  float2 cursor;
+};
+
+/* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
+struct ModalKey {
+  std::string type;
+  bool ctrl = false;
+  bool shift = false;
+  bool alt = false;
+};
 
 /* Window-manager state that operators may change. */
 struct WindowManager {
@@ -33,6 +82,34 @@ struct WindowManager {
   /* Active workspace tab, and how many there are. */
   int workspace_index = 0;
   int workspace_count = 1;
+
+  ToolSettings tool_settings;
+  /* Set by transform.* operators; the viewport under the mouse runs the modal transform:
+   * 'G' move, 'R' rotate, 'S' scale, 'E' extrude then move. */
+  char transform_request = 0;
+  /* Mouse position in document space while over a viewport, for operators that act at the
+   * mouse (L select linked). */
+  float2 mouse_document;
+  bool mouse_in_viewport = false;
+  /* A viewport is running a modal transform; key presses go to it instead of the keymaps. */
+  bool modal_running = false;
+  /* Keys pressed while it runs, in the order they arrived. The transform reads these rather
+   * than ImGui's key state: ImGui spreads a click and a key that land in the same frame over
+   * two frames, so a quick click then E would end the transform before ImGui showed it the E,
+   * while the keymap had already passed the E over because the transform was running. */
+  std::vector<ModalKey> modal_keys;
+  /* Latest pen pressure, 0-1 (1 for a mouse). */
+  float pen_pressure = 1.0f;
+
+  /* The .sky file the document was opened from or saved to; empty for a new document. */
+  std::string filepath;
+  /* UndoStack::change_count() when the document was last saved or opened, and autosaved. */
+  uint64_t saved_change = 0;
+  uint64_t autosaved_change = 0;
+  /* An operator that would lose unsaved changes (New, Open, Quit) waits here while the
+   * window asks whether to save first; it then runs again with confirmed=1. */
+  std::string confirm_operator;
+  OpArgs confirm_args;
 };
 
 struct Context {
@@ -43,6 +120,13 @@ struct Context {
   std::string area_type = "Window";
   /* Text shown in the text editors; text.* operators act on it. */
   std::string text_name;
+  /* Arguments of the operator running now. */
+  const OpArgs *op_args = nullptr;
 };
+
+/* An argument of the running operator, or `fallback` when it wasn't given. */
+std::string op_arg(const Context &C, const std::string &name, const std::string &fallback = "");
+/* True for "1", "True" and "true". */
+bool op_arg_bool(const Context &C, const std::string &name);
 
 }  // namespace sky

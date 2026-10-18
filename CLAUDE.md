@@ -24,6 +24,10 @@ Tests are Python scripts in `tests/`, run headless:
 Add each new test file to `CMakeLists.txt` with `add_test`. Prefer testing through operators and
 `sky.wm.event_simulate()` so tests cover the same path as the UI.
 
+The desktop and Start menu shortcuts run `tools/run_skyanimate.ps1`, which starts a copy of the
+build from `build/run/<build time>/`, so rebuilding works while SkyAnimate is open (reopen it to
+get the new build). Run the build output directly only for tests.
+
 Python is embedded from `C:/Python314` (`SKY_PYTHON_ROOT`), isolated from PYTHONPATH and user
 site-packages. Scripts load from the source tree's `scripts/` while developing.
 
@@ -54,7 +58,13 @@ site-packages. Scripts load from the source tree's `scripts/` while developing.
 
 ## Status
 
-Milestone 1 (Foundation) in progress. Done: build, window, docking areas, Blender theme, operator
-registry, keymaps, snapshot undo, embedded Python with `sky.ops`/`sky.types`/`sky.utils`, headless
-mode, interface scale. `Document.counter` and `scripts/startup/sky_test_counter.py` are temporary
-test scaffolding to remove once layers exist (milestone 2).
+Milestone 1 (Foundation) done. Milestone 2 (Drawing) in progress. Done: vector layers (Moho curve
+model), GL renderer with masking groups, group and reference layers, Layers editor, Properties tabs,
+select/draw/pen/split/fill tools, G R S E, .sky save and open (`src/io/sky_file.cc`, zip + JSON
+with a format version), File menu, unsaved-changes prompt, autosave, File > Recover, Save
+Incremental, pen pressure. Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end, Moho
+brushes and the style library.
+
+Operators take string arguments (`OpArgs`, read with `op_arg()`), as in
+`sky.ops.wm.open_mainfile(filepath="walk.sky")`. Changes without an undo step call
+`UndoStack::mark_changed()` so the unsaved mark and autosave see them.

@@ -15,6 +15,7 @@
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "ops/operator.hh"
+#include "ops/undo.hh"
 #include "python/py_runtime.hh"
 #include "ui/theme.hh"
 #include "wm/context.hh"
@@ -245,7 +246,7 @@ static int text_callback(ImGuiInputTextCallbackData *data)
   return 0;
 }
 
-static void text_body(Area &area, Text &text)
+static void text_body(Area &area, Context &C, Text &text)
 {
   const ImGuiStyle &style = ImGui::GetStyle();
   ImGui::PushFont(theme_font_mono(), 0.0f);
@@ -266,9 +267,11 @@ static void text_body(Area &area, Text &text)
 
     ImGui::SetCursorScreenPos(origin + ImVec2(gutter_w, 0.0f));
     CaretState caret;
-    ImGui::InputTextMultiline("##body", &text.body, ImVec2(-FLT_MIN, body_h),
-                              ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackAlways,
-                              text_callback, &caret);
+    if (ImGui::InputTextMultiline("##body", &text.body, ImVec2(-FLT_MIN, body_h),
+                                  ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackAlways,
+                                  text_callback, &caret)) {
+      C.undo->mark_changed();
+    }
     const bool editing = ImGui::IsItemActive();
 
     /* Keep the caret in view while typing or moving with the arrow keys. */
@@ -323,7 +326,7 @@ void text_editor_draw(Area &area, Context &C)
     ImGui::TextDisabled("Create a text with + New, open a file with Open, or pick one from Templates.");
     return;
   }
-  text_body(area, *text);
+  text_body(area, C, *text);
 }
 
 }  // namespace sky

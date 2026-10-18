@@ -148,7 +148,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 
 **Selection keys, as in Blender Grease Pencil edit mode.**
 
-- **1, 2, 3** switch the selection mode: Point, Stroke (a whole curve) or Segment (the part of a curve between two welded junctions).
+- **1, 2, 3** switch the selection mode: Points, Edges (clicking a line selects the segment between two points) or Strokes (clicking a line selects the whole curve). In Points mode only points are picked: clicking a line between them selects nothing. With edges selected, the Drawing tab's Edge panel hides or shows their outline, as Moho's Hide Edge does.
 - **L** selects the whole shape under the mouse; **Shift+L** deselects it.
 
 **Two cursors.** Camera view has a 2D cursor on the canvas and World view has a 3D cursor in the scene. They are separate, and each keeps its own position. New layers, bones and imported meshes are placed at the active view's cursor, and the cursor can be the pivot point.
@@ -169,17 +169,17 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 
 | Feature | From | Tier |
 | --- | --- | --- |
-| Pen tool: click to add points, auto-weld to existing points | Moho | v1 |
+| Pen, in the Draw tool (right-click it to pick Draw or Pen): click to add points, auto-weld to existing points | Moho | v1 |
 | Freehand and brush with tablet pressure setting line width | Moho | v1 |
-| Shape primitives: rectangle, oval, polygon | Moho | v1 |
+| Shape tool: box and circle, picked from a toolbar flyout (right-click the tool); Shift keeps sides even, Alt draws from the centre | Both | v1 |
 | Select points with box and lasso; transform points | Both | v1 |
-| Selection modes on 1, 2, 3 (point, stroke, segment) and L to select a whole shape | Blender | v1 |
+| Selection modes on 1, 2, 3 (points, edges, strokes) and L to select a whole shape | Blender | v1 |
 | Split Curve tool: click a line to add a point without changing its shape | Community | v1 |
 | Knife tool (Ctrl+K): cut across shapes to add internal segments and split fills | Blender | v1 |
 | G, R, S modal move, rotate, scale with X/Y/Z axis lock and typed values (see Viewport toolbar) | Blender | v1 |
 | E to extrude a new point from an end point | Blender | v1 |
 | Curvature, smooth and peak points | Moho | v1 |
-| Create shape, paint bucket, fill and outline, shared styles | Moho | v1 |
+| Create shape, fill and outline, shared styles | Moho | v1 |
 | Line width per point, hide edge, delete edge | Moho | v1 |
 | Stroke sculpting brushes: grab, push, smooth, thickness, strength, with falloff and tablet pressure | Blender | v1 |
 | More sculpting brushes: twist, pinch, randomize, clone | Blender | Later |
@@ -361,7 +361,7 @@ The tabs shown depend on the layer type: a bone layer gets a Bone tab, an image 
 | Export video through FFmpeg | Both | Later |
 | Import SVG artwork | Moho | Later |
 | Export GIF and glTF | Both | Maybe |
-| Render settings: resolution, frame range, transparent background, anti-aliasing quality | Both | v1 |
+| Render settings: resolution, frame range, transparent background, anti-aliasing quality; viewport and render quality (stroke resolution: pieces drawn per curve segment, set per document) | Both | v1 |
 
 ## Architecture sketch
 
@@ -436,9 +436,9 @@ Version 1 arrives in five milestones, and each one ends with something you can a
 
 1. **Foundation:** CMake build, SDL3 window, OpenGL, ImGui docking, embedded Python; operator registry, keymaps, undo, split areas, reflection registry; command-line mode for scripts and tests; interface scale setting.
    *Gate: a Python operator runs from a key press and undoes cleanly.*
-2. **Drawing:** vector layers (points, curves, shapes, styles, brushes) and the curve renderer; pen, freehand, select, G R S E, curvature, fill; save and open; snapping, autosave, crash recovery, Save Incremental, pen tablet support.
+2. **Drawing:** vector layers (points, curves, shapes, styles, brushes) and the curve renderer; pen, freehand, select, G R S E, curvature, fill; save and open; Layers editor, group and reference layers, masking and masking groups; snapping, autosave, crash recovery, Save Incremental, pen tablet support.
    *Gate: draw, fill and save a character that matches the Moho look.*
-3. **Animation:** animated channels, interpolation modes, timeline and dope sheet; groups, switch, image and reference layers, masking, onion skins, PNG export; frame-by-frame drawing, auto-keying, playback controls, render settings.
+3. **Animation:** animated channels, interpolation modes, timeline and dope sheet; switch and image layers, onion skins, PNG export; frame-by-frame drawing, auto-keying, playback controls, render settings.
    *Gate: animate a walk cycle by hand and export it as PNG frames.*
 4. **Rigging:** bones, point and layer binding, IK, custom bone shapes, bone colours; actions, smart bones, local armature viewport, symmetrize with _L and _R; Setup toggle for frame 0; copy, paste and paste-flipped poses.
    *Gate: a smart-bone head turn works on a rig with IK arms.*
@@ -462,7 +462,7 @@ The biggest risks are vector rendering quality and smart bones' interaction with
 | UI work balloons | Blender's UI toolkit is huge | Start with Dear ImGui docking; keep panels in Python so the toolkit can change later |
 | Python binding grows hard to maintain | Hand-written bindings for every class add up | Generate bindings from the reflection registry, as Blender's RNA does |
 | Scope creep | 63 features is years of work | Ship each milestone; move features between tiers instead of adding them to v1 |
-| Reference layers lose their link or gain stray keys | Advanced masking depends on references staying in sync; Moho users report both bugs | Store a per-channel override flag; test sync, override and break on nested groups in milestone 3 |
+| Reference layers lose their link or gain stray keys | Advanced masking depends on references staying in sync; Moho users report both bugs | Store a per-channel override flag; test sync, override and break on nested groups in milestone 2 |
 
 **Open questions**
 

@@ -40,7 +40,7 @@ assert doc.frame_current == 20, "Esc returns to the frame playback started from"
 
 # --- Undo doesn't move the playhead -------------------------------------------
 doc.frame_current = 5
-sky.ops.doc.counter_add()
+sky.ops.layer.new()
 doc.frame_current = 42
 sky.ops.ed.undo()
 assert doc.frame_current == 42, doc.frame_current
@@ -48,7 +48,7 @@ assert doc.frame_current == 42, doc.frame_current
 # --- Current action: mainline by default, and undo leaves it alone -------------
 assert doc.action == "", "the timeline starts on the mainline"
 doc.action = "head_turn"
-sky.ops.doc.counter_add()
+sky.ops.layer.new()
 sky.ops.ed.undo()
 assert doc.action == "head_turn", doc.action
 doc.action = ""

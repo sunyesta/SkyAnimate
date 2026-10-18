@@ -69,19 +69,6 @@ static void ed_redo_register()
   operators().add(std::move(ot));
 }
 
-static void wm_quit_register()
-{
-  OperatorType ot;
-  ot.idname = "wm.quit";
-  ot.name = "Quit";
-  ot.description = "Quit SkyAnimate";
-  ot.exec = [](Context &C) {
-    C.wm->quit_requested = true;
-    return OpStatus::Finished;
-  };
-  operators().add(std::move(ot));
-}
-
 static void wm_ui_scale_register(const char *idname, const char *name, float step)
 {
   OperatorType ot;
@@ -202,6 +189,7 @@ static void text_operators_register()
   new_text.description = "Create a new text block";
   new_text.exec = [](Context &C) {
     C.text_name = document_text_add(*C.document, "Text").name;
+    C.undo->mark_changed();
     return OpStatus::Finished;
   };
   operators().add(std::move(new_text));
@@ -247,6 +235,7 @@ static void text_operators_register()
   remove.poll = [](Context &C) { return active_text(C) != nullptr; };
   remove.exec = [](Context &C) {
     std::erase_if(C.document->texts, [&](const Text &text) { return text.name == C.text_name; });
+    C.undo->mark_changed();
     C.text_name = C.document->texts.empty() ? "" : C.document->texts.back().name;
     return OpStatus::Finished;
   };
@@ -277,7 +266,6 @@ void builtin_operators_register()
   workspace_operators_register();
   ed_undo_register();
   ed_redo_register();
-  wm_quit_register();
   wm_ui_scale_register("wm.ui_scale_increase", "Increase Interface Scale", 0.25f);
   wm_ui_scale_register("wm.ui_scale_decrease", "Decrease Interface Scale", -0.25f);
   wm_ui_scale_register("wm.ui_scale_reset", "Reset Interface Scale", 0.0f);

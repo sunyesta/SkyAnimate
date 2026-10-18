@@ -11,25 +11,63 @@ namespace sky {
 
 struct Context;
 
-enum class EditorType { Viewport, Properties, Timeline, TextEditor, Console, Info };
+enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info };
 
-inline constexpr EditorType EDITOR_TYPES[] = {EditorType::Viewport, EditorType::Properties,
-                                              EditorType::Timeline, EditorType::TextEditor,
-                                              EditorType::Console,  EditorType::Info};
+inline constexpr EditorType EDITOR_TYPES[] = {EditorType::Viewport,   EditorType::Properties, EditorType::Layers,
+                                              EditorType::Timeline,   EditorType::TextEditor, EditorType::Console,
+                                              EditorType::Info};
 
 const char *editor_type_label(EditorType type);
 /* Name of the editor's keymap, tried before "Window" while the mouse is over it. */
 const char *editor_keymap_name(EditorType type);
 
+enum class AreaSplit { None, Vertical, Horizontal };
+
+/* What a viewport draws over the artwork, like Blender's viewport overlays. Each viewport has
+ * its own; `show` turns them all off at once. */
+struct ViewportOverlays {
+  bool show = true;
+  bool grid = false;
+  bool cursor = true;
+  bool camera_frame = true;
+  /* Camera, frame and layer in the top-left corner. */
+  bool info = true;
+  /* Curve wires and points of the active layer while editing it. */
+  bool wireframe = true;
+  bool points = true;
+  /* Bones arrive in milestone 4; the toggle is already here for them. */
+  bool bones = true;
+};
+
 struct Area {
   int id = 0;
   EditorType type = EditorType::Viewport;
   bool open = true;
+  /* Set from the area menu; the app splits the area at the start of the next frame. */
+  AreaSplit split_request = AreaSplit::None;
 
   /* Timeline view: the frame range visible across the area. */
   float view_start = 0.0f;
   float view_end = 250.0f;
   bool view_initialized = false;
+
+  ViewportOverlays overlays;
+
+  /* Viewport view: the document point at the centre and pixels per document unit. */
+  float view_center_x = 0.0f;
+  float view_center_y = 0.0f;
+  float view_zoom = 0.0f;
+  /* Until the user zooms or pans, the view keeps the camera framed as the area changes size
+   * (the docking layout only settles a frame or two after startup). */
+  bool view_navigated = false;
+  float view_fit_width = 0.0f;
+  float view_fit_height = 0.0f;
+
+  /* Properties editor tab. */
+  int properties_tab = 0;
+
+  /* Layers editor: the layer being renamed, or 0. */
+  uint64_t renaming_layer = 0;
 
   /* Text editor. */
   bool show_line_numbers = true;
@@ -47,9 +85,16 @@ struct Area {
 /* Draws the area as a dockable window. Returns true while the mouse is over it. */
 bool area_draw(Area &area, Context &C);
 
-/* The editor-type dropdown that starts every area header. */
+/* Starts every area header: a grip to drag the area elsewhere (right-click for the area
+ * menu), then the editor-type dropdown. */
 void area_editor_type_menu(Area &area);
 
+/* Viewport, in viewport.cc. */
+void viewport_draw(Area &area, Context &C);
+/* Properties editor, in properties.cc. */
+void properties_draw(Area &area, Context &C);
+/* Layers editor, in layers_editor.cc. */
+void layers_draw(Area &area, Context &C);
 /* Timeline editor, in timeline.cc. */
 void timeline_draw(Area &area, Context &C);
 /* Text editor, in text_editor.cc. */

@@ -7,6 +7,7 @@ void UndoStack::reset(const Document &doc)
   steps_.clear();
   steps_.push_back({"Original", doc});
   active_ = 0;
+  changes_++;
 }
 
 void UndoStack::push(const std::string &name, const Document &doc)
@@ -21,6 +22,7 @@ void UndoStack::push(const std::string &name, const Document &doc)
     steps_.erase(steps_.begin());
   }
   active_ = steps_.size() - 1;
+  changes_++;
 }
 
 bool UndoStack::undo(Document &doc)
@@ -30,6 +32,7 @@ bool UndoStack::undo(Document &doc)
   }
   active_--;
   doc = steps_[active_].state;
+  changes_++;
   return true;
 }
 
@@ -40,6 +43,7 @@ bool UndoStack::redo(Document &doc)
   }
   active_++;
   doc = steps_[active_].state;
+  changes_++;
   return true;
 }
 

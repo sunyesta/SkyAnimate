@@ -11,6 +11,7 @@
 
 #include "core/log.hh"
 #include "data/document.hh"
+#include "ops/file_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "rna/rna.hh"
@@ -93,6 +94,20 @@ static rna::Value value_from_py(const rna::PropertyRNA &prop, py::handle obj)
         throw type_error();
       }
       return obj.cast<std::string>();
+    case rna::PropType::Enum: {
+      if (!py::isinstance<py::str>(obj)) {
+        throw type_error();
+      }
+      const int index = prop.enum_index(obj.cast<std::string>());
+      if (index < 0) {
+        std::string options;
+        for (const rna::EnumItem &item : prop.items) {
+          options += (options.empty() ? "" : ", ") + item.identifier;
+        }
+        throw py::value_error("'" + prop.identifier + "' must be one of: " + options);
+      }
+      return index;
+    }
   }
   throw type_error();
 }
@@ -134,6 +149,10 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
              if (!prop) {
                throw py::attribute_error("'" + ptr.type->identifier + "' has no property '" + name + "'");
              }
+             if (prop->type == rna::PropType::Enum) {
+               const int index = std::get<int>(prop->get(ptr.data));
+               return py::str(prop->items.at(size_t(index)).identifier);
+             }
              return value_to_py(prop->get(ptr.data));
            })
       .def("__setattr__",
@@ -146,6 +165,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
                throw py::attribute_error("'" + ptr.type->identifier + "." + name + "' is read-only");
              }
              prop->set(ptr.data, rna::clamp(*prop, value_from_py(*prop, value)));
+             current_context().undo->mark_changed();
            })
       .def("__dir__",
            [](const rna::PointerRNA &ptr) {
@@ -179,16 +199,31 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
         info["min"] = prop.min;
         info["max"] = prop.max;
       }
+      if (prop.type == rna::PropType::Enum) {
+        py::list items;
+        for (const rna::EnumItem &item : prop.items) {
+          items.append(item.identifier);
+        }
+        info["items"] = items;
+      }
       result.append(info);
     }
     return result;
   });
 
-  m.def("ops_call", [](const std::string &idname) {
-    if (!operators().find(idname)) {
-      throw py::key_error("Operator not found: " + idname);
-    }
-    return std::string(op_status_name(operator_call(current_context(), idname)));
+  m.def(
+      "ops_call",
+      [](const std::string &idname, const OpArgs &args) {
+        if (!operators().find(idname)) {
+          throw py::key_error("Operator not found: " + idname);
+        }
+        return std::string(op_status_name(operator_call(current_context(), idname, args)));
+      },
+      py::arg("idname"), py::arg("args") = OpArgs{});
+
+  m.def("file_state", []() {
+    Context &C = current_context();
+    return py::make_tuple(C.wm->filepath, document_is_dirty(C));
   });
 
   m.def("ops_poll", [](const std::string &idname) {
@@ -326,6 +361,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
   m.def("text_new", [](const std::string &name) {
     Context &C = current_context();
     const std::string added = document_text_add(*C.document, name).name;
+    C.undo->mark_changed();
     if (C.text_name.empty()) {
       C.text_name = added;
     }
@@ -334,13 +370,17 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
   m.def("text_remove", [](const std::string &name) {
     Context &C = current_context();
     std::erase_if(C.document->texts, [&](const Text &text) { return text.name == name; });
+    C.undo->mark_changed();
     if (C.text_name == name) {
       C.text_name = C.document->texts.empty() ? "" : C.document->texts.front().name;
     }
   });
   m.def("text_body", [text_or_raise](const std::string &name) { return text_or_raise(name).body; });
   m.def("text_set_body",
-        [text_or_raise](const std::string &name, const std::string &body) { text_or_raise(name).body = body; });
+        [text_or_raise](const std::string &name, const std::string &body) {
+          text_or_raise(name).body = body;
+          current_context().undo->mark_changed();
+        });
   m.def("text_filepath", [text_or_raise](const std::string &name) { return text_or_raise(name).filepath; });
   m.def("text_active", []() { return current_context().text_name; });
   m.def("text_set_active", [text_or_raise](const std::string &name) {
@@ -348,6 +388,188 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       text_or_raise(name);
     }
     current_context().text_name = name;
+  });
+
+  /* Layers, wrapped by sky.data.layers. Looked up by id on every call, like texts. */
+  const auto layer_or_raise = [](uint64_t id) -> Layer & {
+    Layer *layer = layer_find(*current_context().document, id);
+    if (!layer) {
+      throw py::key_error("No layer with id " + std::to_string(id));
+    }
+    return *layer;
+  };
+  m.def("layer_ids", []() {
+    std::vector<uint64_t> ids;
+    for (const Layer &layer : current_context().document->layers) {
+      ids.push_back(layer.id);
+    }
+    return ids;
+  });
+  m.def("layer_children", [layer_or_raise](uint64_t id) {
+    std::vector<uint64_t> ids;
+    for (const Layer &child : layer_or_raise(id).children) {
+      ids.push_back(child.id);
+    }
+    return ids;
+  });
+  m.def("layer_pointer", [layer_or_raise](uint64_t id) { return rna::PointerRNA{&layer_or_raise(id), &Layer::rna()}; });
+  m.def("layer_active", []() { return current_context().document->active_layer; });
+  m.def("layer_set_active", [layer_or_raise](uint64_t id) {
+    layer_or_raise(id);
+    current_context().document->active_layer = id;
+  });
+  m.def("layer_parent", [](uint64_t id) {
+    const Layer *parent = layer_parent(*current_context().document, id);
+    return parent ? parent->id : uint64_t(0);
+  });
+  m.def("layer_reference_source", [layer_or_raise](uint64_t id) { return layer_or_raise(id).reference_source; });
+  m.def(
+      "layer_add_curve",
+      [layer_or_raise](uint64_t id, const std::vector<std::pair<float, float>> &points, bool closed, bool fill) {
+        Context &C = current_context();
+        Layer &layer = layer_or_raise(id);
+        if (layer.is_group() || layer.is_reference()) {
+          throw py::value_error("Curves can only be added to vector layers that are not references");
+        }
+        if (points.size() < 2) {
+          throw py::value_error("A curve needs at least two points");
+        }
+        VectorDrawing &drawing = layer.drawing;
+        C.undo->mark_changed();
+        Curve curve;
+        for (const auto &[x, y] : points) {
+          curve.points.push_back({drawing_add_point(drawing, {x, y})});
+        }
+        curve.closed = closed && points.size() >= 3;
+        drawing.curves.push_back(curve);
+        Shape shape;
+        shape.style = C.wm->tool_settings.style;
+        shape.has_fill = fill && curve.closed;
+        shape.name = "Shape " + std::to_string(drawing.shapes.size() + 1);
+        for (int s = 0; s < drawing.curves.back().segment_count(); s++) {
+          shape.edges.push_back({int(drawing.curves.size()) - 1, s});
+        }
+        drawing.shapes.push_back(std::move(shape));
+        return int(drawing.curves.size()) - 1;
+      },
+      py::arg("id"), py::arg("points"), py::arg("closed") = false, py::arg("fill") = false);
+  m.def("layer_points", [layer_or_raise](uint64_t id) {
+    const Document &doc = *current_context().document;
+    py::list result;
+    for (const MeshPoint &p : layer_drawing(doc, layer_or_raise(id)).points) {
+      result.append(py::make_tuple(p.pos.x, p.pos.y, p.selected));
+    }
+    return result;
+  });
+  m.def("layer_shapes", [layer_or_raise](uint64_t id) {
+    /* Bottom first: [(name, [curve indices of its edges]), ...]. */
+    py::list result;
+    for (const Shape &shape : layer_drawing(*current_context().document, layer_or_raise(id)).shapes) {
+      py::list curves;
+      for (const ShapeEdge &edge : shape.edges) {
+        if (!curves.contains(edge.curve)) {
+          curves.append(edge.curve);
+        }
+      }
+      result.append(py::make_tuple(shape.name, curves));
+    }
+    return result;
+  });
+  m.def(
+      "layer_add_primitive",
+      [layer_or_raise](uint64_t id, const std::string &kind_name, const std::vector<std::pair<float, float>> &points,
+                       bool fill) {
+        Context &C = current_context();
+        Layer &layer = layer_or_raise(id);
+        if (layer.is_group() || layer.is_reference()) {
+          throw py::value_error("Shapes can only be added to vector layers that are not references");
+        }
+        PrimitiveKind kind;
+        if (!primitive_from_identifier(kind_name, &kind)) {
+          throw py::value_error("add_primitive draws BOX or CIRCLE; use add_curve for curves");
+        }
+        std::vector<float2> pts;
+        for (const auto &[x, y] : points) {
+          pts.push_back({x, y});
+        }
+        const VectorDrawing shape = primitive_drawing(kind, pts, C.wm->tool_settings.style, fill);
+        if (shape.curves.empty()) {
+          return false;
+        }
+        drawing_append_selected(layer.drawing, shape);
+        C.undo->mark_changed();
+        return true;
+      },
+      py::arg("id"), py::arg("kind"), py::arg("points"), py::arg("fill") = false);
+  m.def("layer_shape_outline", [layer_or_raise](uint64_t id, int shape, int steps) {
+    /* A shape's outline as drawn: steps samples per curve segment. */
+    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    if (shape < 0 || shape >= int(drawing.shapes.size())) {
+      throw py::index_error("Shape index out of range");
+    }
+    std::vector<float2> outline;
+    bool closed = false;
+    shape_outline(drawing, drawing.shapes[shape], std::clamp(steps, 1, 256), outline, nullptr, &closed);
+    py::list result;
+    for (const float2 &p : outline) {
+      result.append(py::make_tuple(p.x, p.y));
+    }
+    return py::make_tuple(result, closed);
+  });
+  m.def("layer_hidden_edges", [layer_or_raise](uint64_t id) {
+    py::list result;
+    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    for (int c = 0; c < int(drawing.curves.size()); c++) {
+      for (int s = 0; s < drawing.curves[c].segment_count(); s++) {
+        if (drawing.curves[c].points[s].edge_hidden) {
+          result.append(py::make_tuple(c, s));
+        }
+      }
+    }
+    return result;
+  });
+  m.def("layer_set_selected_edges_visible", [layer_or_raise](uint64_t id, bool visible) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's edges are edited through its original");
+    }
+    const std::vector<ShapeEdge> edges = drawing_selected_edges(layer.drawing);
+    drawing_set_edges_hidden(layer.drawing, edges, !visible);
+    current_context().undo->mark_changed();
+    return int(edges.size());
+  });
+  m.def("layer_radii", [layer_or_raise](uint64_t id) {
+    py::list result;
+    for (const MeshPoint &p : layer_drawing(*current_context().document, layer_or_raise(id)).points) {
+      result.append(p.radius);
+    }
+    return result;
+  });
+  m.def("layer_mean_radius", [layer_or_raise](uint64_t id) {
+    const float mean = drawing_selected_mean_radius(layer_drawing(*current_context().document, layer_or_raise(id)));
+    return mean < 0.0f ? py::object(py::none()) : py::object(py::float_(mean));
+  });
+  m.def("layer_set_mean_radius", [layer_or_raise](uint64_t id, float mean) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's points are edited through its original");
+    }
+    drawing_set_selected_mean_radius(layer.drawing, mean);
+    current_context().undo->mark_changed();
+  });
+  m.def("layer_counts", [layer_or_raise](uint64_t id) {
+    /* Counts for the drawing the layer shows, which for a reference is its original's. */
+    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    return py::make_tuple(drawing.points.size(), drawing.curves.size(), drawing.shapes.size());
+  });
+  m.def("layer_select_points", [layer_or_raise](uint64_t id, const std::vector<int> &indices, bool select) {
+    VectorDrawing &drawing = layer_or_raise(id).drawing;
+    for (const int i : indices) {
+      if (i < 0 || i >= int(drawing.points.size())) {
+        throw py::index_error("Point index out of range");
+      }
+      drawing.points[i].selected = select;
+    }
   });
 
   m.def("report", [](const std::string &type, const std::string &message) {

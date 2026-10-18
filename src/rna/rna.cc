@@ -14,6 +14,16 @@ const PropertyRNA *StructRNA::find(std::string_view id) const
   return nullptr;
 }
 
+int PropertyRNA::enum_index(std::string_view id) const
+{
+  for (size_t i = 0; i < items.size(); i++) {
+    if (items[i].identifier == id) {
+      return int(i);
+    }
+  }
+  return -1;
+}
+
 const char *prop_type_name(PropType type)
 {
   switch (type) {
@@ -25,12 +35,17 @@ const char *prop_type_name(PropType type)
       return "float";
     case PropType::String:
       return "str";
+    case PropType::Enum:
+      return "enum";
   }
   return "unknown";
 }
 
 Value clamp(const PropertyRNA &prop, const Value &value)
 {
+  if (prop.type == PropType::Enum) {
+    return std::clamp(std::get<int>(value), 0, std::max(0, int(prop.items.size()) - 1));
+  }
   if (!prop.has_range()) {
     return value;
   }

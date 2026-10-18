@@ -15,13 +15,13 @@ first = texts.new()
 second = texts.new()
 assert (first.name, second.name) == ("Text", "Text.001"), (first.name, second.name)
 assert texts.active == first, "the first text becomes the one the editor shows"
-first.body = "import sky\nsky.data.document.counter = 7\nprint('ran', sky.data.document.counter)\n"
+first.body = "import sky\nsky.data.document.frame_end = 77\nprint('ran', sky.data.document.frame_end)\n"
 
 # --- Running a text, as Alt P does --------------------------------------------
 assert sky.ops.text.run_script() == {'FINISHED'}
-assert doc.counter == 7
+assert doc.frame_end == 77
 console = _console.get()
-assert ("OUTPUT", "ran 7") in console.lines, console.lines[-5:]
+assert ("OUTPUT", "ran 77") in console.lines, console.lines[-5:]
 
 second.body = "raise ValueError('broken script')"
 texts.active = second
@@ -29,7 +29,7 @@ assert sky.ops.text.run_script() == {'CANCELLED'}
 assert any(kind == "ERROR" and "broken script" in text for kind, text in console.lines)
 
 # Undo of other work leaves typed text alone.
-sky.ops.doc.counter_add()
+sky.ops.layer.new()
 first.body = "edited after"
 sky.ops.ed.undo()
 assert first.body == "edited after"
@@ -45,10 +45,10 @@ console.push("x * 3")
 assert console.lines[-1] == ("OUTPUT", "15")
 console.push("def f():")
 assert console.prompt() == "... ", "an open block asks for more"
-console.push("    return D.document.counter")
+console.push("    return D.document.frame_end")
 console.push("")
 console.push("f()")
-assert console.lines[-1] == ("OUTPUT", str(doc.counter))
+assert console.lines[-1] == ("OUTPUT", str(doc.frame_end))
 console.push("1 / 0")
 assert console.lines[-1][0] == "ERROR" and "ZeroDivisionError" in console.lines[-1][1]
 assert console.complete("sky.dat") == "sky.data"
@@ -64,10 +64,10 @@ sky.keymap.add("Window", "screen.frame_jump_end", "F9", ctrl=True)
 assert sky.wm.event_simulate("F9", ctrl=True, area="Text Editor", typing=True)
 assert doc.frame_current == doc.frame_end
 # Alt P belongs to the text editor and runs the active text.
-first.body = "import sky\nsky.data.document.counter = 99\n"
+first.body = "import sky\nsky.data.document.frame_end = 99\n"
 texts.active = first
 assert sky.wm.event_simulate("P", alt=True, area="Text Editor", typing=True)
-assert doc.counter == 99
+assert doc.frame_end == 99
 
 # --- Workspaces --------------------------------------------------------------
 # Background mode has one workspace slot, so cycling is unavailable there.

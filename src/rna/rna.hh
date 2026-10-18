@@ -14,9 +14,17 @@
 
 namespace sky::rna {
 
-enum class PropType { Bool, Int, Float, String };
+enum class PropType { Bool, Int, Float, String, Enum };
 
+/* Enum properties hold the item index as an int. */
 using Value = std::variant<bool, int, float, std::string>;
+
+struct EnumItem {
+  /* Python name, e.g. "ADD". */
+  std::string identifier;
+  /* UI label, e.g. "Add to Mask". */
+  std::string name;
+};
 
 struct PropertyRNA {
   std::string identifier;
@@ -29,8 +37,12 @@ struct PropertyRNA {
   std::function<Value(const void *data)> get;
   /* Null for read-only properties. */
   std::function<void(void *data, const Value &value)> set;
+  /* Items of an Enum property. */
+  std::vector<EnumItem> items;
 
   bool has_range() const { return min <= max; }
+  /* Index of an enum identifier, or -1. */
+  int enum_index(std::string_view identifier) const;
 };
 
 struct StructRNA {
@@ -77,6 +89,39 @@ PropertyRNA def_float(const char *id, const char *name, const char *desc, float 
   PropertyRNA prop{id, name, desc, PropType::Float, double(min), double(max)};
   prop.get = [member](const void *data) -> Value { return static_cast<const T *>(data)->*member; };
   prop.set = [member](void *data, const Value &v) { static_cast<T *>(data)->*member = std::get<float>(v); };
+  return prop;
+}
+
+/* An enum backed by an enum-class member; the item order matches the enum's values. */
+template<typename T, typename E>
+PropertyRNA def_enum(const char *id, const char *name, const char *desc, E T::*member, std::vector<EnumItem> items)
+{
+  PropertyRNA prop{id, name, desc, PropType::Enum};
+  prop.items = std::move(items);
+  prop.get = [member](const void *data) -> Value { return int(static_cast<const T *>(data)->*member); };
+  prop.set = [member](void *data, const Value &v) { static_cast<T *>(data)->*member = E(std::get<int>(v)); };
+  return prop;
+}
+
+/* A float computed or stored somewhere other than a plain member. */
+template<typename T>
+PropertyRNA def_float_fn(const char *id, const char *name, const char *desc, float min, float max,
+                         std::function<float(const T &)> get, std::function<void(T &, float)> set)
+{
+  PropertyRNA prop{id, name, desc, PropType::Float, double(min), double(max)};
+  prop.get = [get](const void *data) -> Value { return get(*static_cast<const T *>(data)); };
+  if (set) {
+    prop.set = [set](void *data, const Value &v) { set(*static_cast<T *>(data), std::get<float>(v)); };
+  }
+  return prop;
+}
+
+/* A read-only int computed from the data, such as a count. */
+template<typename T>
+PropertyRNA def_int_readonly(const char *id, const char *name, const char *desc, std::function<int(const T &)> get)
+{
+  PropertyRNA prop{id, name, desc, PropType::Int};
+  prop.get = [get](const void *data) -> Value { return get(*static_cast<const T *>(data)); };
   return prop;
 }
 

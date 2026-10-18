@@ -15,13 +15,26 @@ set(SKY_SOURCES
   src/main.cc
   src/core/log.cc
   src/data/document.cc
+  src/data/document_layers.cc
+  src/data/layer.cc
+  src/data/vector.cc
   src/editors/console.cc
   src/editors/editors.cc
+  src/editors/layers_editor.cc
+  src/editors/properties.cc
   src/editors/text_editor.cc
   src/editors/timeline.cc
+  src/editors/viewport.cc
+  src/gpu/gl.cc
+  src/gpu/scene_renderer.cc
+  src/gpu/tessellate.cc
+  src/io/sky_file.cc
   src/ops/builtin_ops.cc
+  src/ops/file_ops.cc
+  src/ops/layer_ops.cc
   src/ops/operator.cc
   src/ops/undo.cc
+  src/ops/vector_ops.cc
   src/python/py_runtime.cc
   src/rna/rna.cc
   src/ui/theme.cc
@@ -34,7 +47,9 @@ set(SKY_SOURCES
 add_executable(SkyAnimate ${SKY_SOURCES})
 
 target_include_directories(SkyAnimate PRIVATE src)
-target_link_libraries(SkyAnimate PRIVATE sky_imgui SDL3::SDL3 pybind11::embed opengl32)
+# Header-only libraries as system headers, so /W4 doesn't report their warnings.
+target_include_directories(SkyAnimate SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include ${json_SOURCE_DIR}/single_include)
+target_link_libraries(SkyAnimate PRIVATE sky_imgui SDL3::SDL3 pybind11::embed miniz opengl32)
 target_compile_definitions(SkyAnimate PRIVATE
   SKY_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts"
   SKY_PYTHON_HOME="${SKY_PYTHON_ROOT}"
@@ -66,5 +81,11 @@ add_test(NAME rna_and_undo
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_rna_and_undo.py)
 add_test(NAME text_and_console
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_text_and_console.py)
+add_test(NAME drawing_and_layers
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drawing_and_layers.py)
+add_test(NAME save_and_open
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_save_and_open.py)
+add_test(NAME shape_tool
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_shape_tool.py)
 add_test(NAME frames_and_playback
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frames_and_playback.py)

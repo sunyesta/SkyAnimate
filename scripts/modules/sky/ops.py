@@ -1,14 +1,24 @@
-"""Run operators by name, like bpy.ops: sky.ops.ed.undo() returns {'FINISHED'} or {'CANCELLED'}."""
+"""Run operators by name, like bpy.ops: sky.ops.ed.undo() returns {'FINISHED'} or {'CANCELLED'}.
+
+Keyword arguments become the operator's arguments: sky.ops.wm.open_mainfile(filepath="walk.sky").
+"""
 
 import _sky
+
+
+def _arg_string(value):
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
 
 
 class _Operator:
     def __init__(self, idname):
         self.idname = idname
 
-    def __call__(self):
-        return {_sky.ops_call(self.idname)}
+    def __call__(self, **kwargs):
+        args = {name: _arg_string(value) for name, value in kwargs.items()}
+        return {_sky.ops_call(self.idname, args)}
 
     def poll(self):
         return _sky.ops_poll(self.idname)

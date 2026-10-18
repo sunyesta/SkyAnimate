@@ -9,9 +9,9 @@
 #include <string_view>
 #include <vector>
 
-namespace sky {
+#include "wm/context.hh"
 
-struct Context;
+namespace sky {
 
 enum class OpStatus { Finished, Cancelled, PassThrough };
 
@@ -56,7 +56,7 @@ bool operator_idname_valid(std::string_view idname);
 bool operator_poll(Context &C, const OperatorType &ot);
 
 /* Runs an operator: poll, exec, then the Info log and an undo step when flagged. */
-OpStatus operator_call(Context &C, std::string_view idname);
+OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args = {});
 
 const char *op_status_name(OpStatus status);
 

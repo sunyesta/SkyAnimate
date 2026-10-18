@@ -32,6 +32,8 @@ struct LaunchOptions {
   bool background = false;
   std::vector<std::string> python_files;
   std::vector<std::string> python_exprs;
+  /* A .sky file to open before running scripts. */
+  std::string open_file;
 };
 
 class App {
@@ -48,7 +50,13 @@ class App {
   void draw_ui();
   void draw_top_bar();
   void build_default_layout(Workspace &workspace, unsigned int dockspace_id);
+  Workspace workspace_new(const std::string &name, WorkspaceKind kind);
+  std::string workspace_unique_name(const std::string &base) const;
+  void draw_workspace_tabs();
+  void areas_split_requested(Workspace &workspace, unsigned int dockspace_id);
   void update_window_title();
+  void draw_file_menu();
+  void draw_unsaved_changes_prompt();
 
   Document doc_;
   UndoStack undo_;
@@ -58,6 +66,7 @@ class App {
   std::vector<Workspace> workspaces_;
   int next_area_id_ = 1;
   bool show_about_ = false;
+  std::string window_title_;
 
   SDL_Window *window_ = nullptr;
   SDL_GLContextState *gl_context_ = nullptr;
