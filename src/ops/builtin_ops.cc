@@ -11,6 +11,23 @@
 
 namespace sky {
 
+/* What undo leaves alone, as in Blender and Moho: the playhead and the action being edited. */
+struct ViewState {
+  int frame_current;
+  std::string action;
+};
+
+static ViewState view_state_get(const Document &doc)
+{
+  return {doc.frame_current, doc.action};
+}
+
+static void view_state_restore(Document &doc, const ViewState &view)
+{
+  doc.frame_current = view.frame_current;
+  doc.action = view.action;
+}
+
 static void ed_undo_register()
 {
   OperatorType ot;
@@ -20,10 +37,9 @@ static void ed_undo_register()
   ot.poll = [](Context &C) { return C.undo && C.undo->can_undo(); };
   ot.exec = [](Context &C) {
     const std::string name = C.undo->step_name(C.undo->active());
-    /* As in Blender, undo doesn't move the playhead. */
-    const int frame = C.document->frame_current;
+    const ViewState view = view_state_get(*C.document);
     C.undo->undo(*C.document);
-    C.document->frame_current = frame;
+    view_state_restore(*C.document, view);
     report(ReportType::Info, "Undo: " + name);
     return OpStatus::Finished;
   };
@@ -38,9 +54,9 @@ static void ed_redo_register()
   ot.description = "Redo the last undone action";
   ot.poll = [](Context &C) { return C.undo && C.undo->can_redo(); };
   ot.exec = [](Context &C) {
-    const int frame = C.document->frame_current;
+    const ViewState view = view_state_get(*C.document);
     C.undo->redo(*C.document);
-    C.document->frame_current = frame;
+    view_state_restore(*C.document, view);
     report(ReportType::Info, "Redo: " + C.undo->step_name(C.undo->active()));
     return OpStatus::Finished;
   };

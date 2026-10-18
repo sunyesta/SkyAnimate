@@ -114,7 +114,7 @@ Sources on Moho's behaviour: the scripting API (`DuplicateLayer` by reference, `
 
 ## Feature spec
 
-Version 1 covers 66 of the 97 features below: enough to draw, rig with smart bones, animate on a timeline and export frames. The rest are tiered Later or Maybe. Change any tier from its dropdown. "Community" means a feature that Moho users built as add-on scripts, so it becomes native here. Speed is a requirement throughout, not a feature: the viewport should play back at the document frame rate.
+Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bones, animate on a timeline and export frames. The rest are tiered Later or Maybe. Change any tier from its dropdown. "Community" means a feature that Moho users built as add-on scripts, so it becomes native here. Speed is a requirement throughout, not a feature: the viewport should play back at the document frame rate.
 
 **Viewport and navigation**
 
@@ -262,6 +262,7 @@ Version 1 covers 66 of the 97 features below: enough to draw, rig with smart bon
 | Animated channels with every Moho interpolation mode, holds and on-twos | Moho | v1 |
 | Timeline and dope sheet: select, move, scale, copy and paste keys | Blender | v1 |
 | Actions and the mainline; insert an action as a copy or reference | Moho | v1 |
+| Action dropdown in the timeline header: Mainline by default, or any smart action of the selected armature; the timeline turns orange while editing an action | Moho | v1 |
 | Blender-style graph editor: drag key handles; editing a Smooth key's handle turns it into Bezier | Blender | Later |
 | Tween machine: breakdowns between keys with overshoot | Community | Later |
 | Pose tool with on-canvas FK and IK handles | Community | Later |

@@ -45,4 +45,12 @@ doc.frame_current = 42
 sky.ops.ed.undo()
 assert doc.frame_current == 42, doc.frame_current
 
+# --- Current action: mainline by default, and undo leaves it alone -------------
+assert doc.action == "", "the timeline starts on the mainline"
+doc.action = "head_turn"
+sky.ops.doc.counter_add()
+sky.ops.ed.undo()
+assert doc.action == "head_turn", doc.action
+doc.action = ""
+
 print("Frame and playback tests passed")

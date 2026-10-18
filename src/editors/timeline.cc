@@ -27,6 +27,9 @@ static constexpr ImU32 COL_GRID_MINOR = IM_COL32(0x31, 0x31, 0x31, 255);
 static constexpr ImU32 COL_RULER_TEXT = IM_COL32(0x9a, 0x9a, 0x9a, 255);
 static constexpr ImU32 COL_PLAYHEAD = IM_COL32(0x47, 0x72, 0xb3, 255);
 static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
+/* Editing an action instead of the mainline: Blender's orange for "not the main data". */
+static constexpr ImU32 COL_ACTION_ACTIVE = IM_COL32(0x8a, 0x5a, 0x1e, 255);
+static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
 enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd };
 
@@ -146,6 +149,53 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
   }
 }
 
+/* Which action the timeline edits: the mainline, or one of the selected armature's smart
+ * actions, like Moho's switch between the mainline and a smart bone's action. */
+static void action_menu(Context &C, float width)
+{
+  Document &doc = *C.document;
+  const bool in_action = !doc.action.empty();
+  const std::string preview = in_action ? doc.action : "Mainline";
+
+  if (in_action) {
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, COL_ACTION_ACTIVE);
+  }
+  ImGui::SetNextItemWidth(width);
+  const bool open = ImGui::BeginCombo("##action", preview.c_str());
+  if (in_action) {
+    ImGui::PopStyleColor();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Action being edited: the mainline, or a smart action of the selected armature\n\n"
+                      "Python: sky.data.document.action");
+  }
+  if (!open) {
+    return;
+  }
+
+  if (ImGui::Selectable("Mainline", !in_action)) {
+    doc.action.clear();
+  }
+  const std::vector<std::string> actions = document_selectable_actions(doc);
+  if (!actions.empty()) {
+    ImGui::SeparatorText("Smart Actions");
+  }
+  for (const std::string &name : actions) {
+    if (ImGui::Selectable(name.c_str(), doc.action == name)) {
+      doc.action = name;
+    }
+  }
+  if (actions.empty()) {
+    ImGui::Separator();
+    ImGui::TextDisabled("Select an armature with smart bones\nto edit its smart actions here.");
+  }
+  /* An action set from Python that the menu doesn't list still shows, so it can be left. */
+  if (in_action && std::find(actions.begin(), actions.end(), doc.action) == actions.end()) {
+    ImGui::Selectable(doc.action.c_str(), true, ImGuiSelectableFlags_Disabled);
+  }
+  ImGui::EndCombo();
+}
+
 static void timeline_header(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -168,6 +218,8 @@ static void timeline_header(Area &area, Context &C)
     }
   }
   ImGui::PopStyleColor();
+  ImGui::SameLine(0.0f, pad * 2.0f);
+  action_menu(C, h * 6.0f);
   const float menus_end = ImGui::GetItemRectMax().x;
 
   if (ImGui::BeginPopup("View")) {
@@ -315,6 +367,10 @@ static void timeline_body(Area &area, Context &C)
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const float ruler_h = ImGui::GetFrameHeight() + 2.0f;
   dl->AddRectFilled(p0, p1, COL_REGION);
+  if (!doc.action.empty()) {
+    /* A warm tint is a constant reminder that keys go into the action, not the mainline. */
+    dl->AddRectFilled(p0, p1, COL_ACTION_TINT);
+  }
 
   /* Darken everything outside the frame range. */
   const float x_start = frame_x(float(doc.frame_start));

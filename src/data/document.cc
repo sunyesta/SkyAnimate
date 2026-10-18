@@ -18,12 +18,19 @@ const rna::StructRNA &Document::rna()
         def_float<Document>("fps", "Frame Rate", "Frames per second", &Document::fps, 1.0f, 240.0f),
         def_int<Document>("width", "Width", "Output width in pixels", &Document::width, 4, 16384),
         def_int<Document>("height", "Height", "Output height in pixels", &Document::height, 4, 16384),
+        def_string<Document>("action", "Action",
+                             "Action being edited in the timeline; empty means the mainline", &Document::action),
         def_int<Document>("counter", "Counter", "Test value used by the milestone 1 operators", &Document::counter,
                           -1000000, 1000000),
     };
     return s;
   }();
   return srna;
+}
+
+std::vector<std::string> document_selectable_actions(const Document & /*doc*/)
+{
+  return {};
 }
 
 }  // namespace sky
