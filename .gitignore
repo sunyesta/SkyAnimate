@@ -1,0 +1,15 @@
+# Build output
+/build/
+/out/
+
+# IDE state
+/.vs/
+/.vscode/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+
+# ImGui layout file written at runtime
+imgui.ini

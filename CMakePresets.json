@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows",
+      "displayName": "Windows (Visual Studio 2026, x64)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "windows",
+      "configuration": "RelWithDebInfo"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "windows",
+      "configuration": "RelWithDebInfo",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

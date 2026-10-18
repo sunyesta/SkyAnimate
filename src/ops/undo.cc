@@ -1,0 +1,46 @@
+#include "ops/undo.hh"
+
+namespace sky {
+
+void UndoStack::reset(const Document &doc)
+{
+  steps_.clear();
+  steps_.push_back({"Original", doc});
+  active_ = 0;
+}
+
+void UndoStack::push(const std::string &name, const Document &doc)
+{
+  if (steps_.empty()) {
+    reset(doc);
+  }
+  /* A new action discards everything that was undone. */
+  steps_.resize(active_ + 1);
+  steps_.push_back({name, doc});
+  if (steps_.size() > STEPS_MAX) {
+    steps_.erase(steps_.begin());
+  }
+  active_ = steps_.size() - 1;
+}
+
+bool UndoStack::undo(Document &doc)
+{
+  if (!can_undo()) {
+    return false;
+  }
+  active_--;
+  doc = steps_[active_].state;
+  return true;
+}
+
+bool UndoStack::redo(Document &doc)
+{
+  if (!can_redo()) {
+    return false;
+  }
+  active_++;
+  doc = steps_[active_].state;
+  return true;
+}
+
+}  // namespace sky
