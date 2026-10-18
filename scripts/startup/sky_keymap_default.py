@@ -10,6 +10,16 @@ KEYMAP = (
     ("Window", "ed.undo", "Z", {"ctrl": True}),
     ("Window", "ed.redo", "Z", {"ctrl": True, "shift": True}),
     ("Window", "wm.quit", "Q", {"ctrl": True}),
+    # Frames and playback, as in Blender's "Frames" keymap.
+    ("Window", "screen.animation_play", "SPACE", {}),
+    ("Window", "screen.animation_play_reverse", "SPACE", {"ctrl": True, "shift": True}),
+    ("Window", "screen.animation_cancel", "ESC", {}),
+    ("Window", "screen.frame_offset_backward", "LEFT_ARROW", {}),
+    ("Window", "screen.frame_offset_forward", "RIGHT_ARROW", {}),
+    ("Window", "screen.frame_jump_start", "LEFT_ARROW", {"shift": True}),
+    ("Window", "screen.frame_jump_end", "RIGHT_ARROW", {"shift": True}),
+    ("Window", "screen.keyframe_jump_prev", "DOWN_ARROW", {}),
+    ("Window", "screen.keyframe_jump_next", "UP_ARROW", {}),
 )
 
 

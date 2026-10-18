@@ -159,7 +159,8 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       .def_property_readonly("document",
                              [](Context &C) { return rna::PointerRNA{C.document, &Document::rna()}; })
       .def_property_readonly("area_type", [](const Context &C) { return C.area_type; })
-      .def_property_readonly("is_background", [](const Context &C) { return C.wm && C.wm->background; });
+      .def_property_readonly("is_background", [](const Context &C) { return C.wm && C.wm->background; })
+      .def_property_readonly("is_playing", [](const Context &C) { return C.wm && C.wm->playing; });
 
   m.def("context", []() -> Context & { return current_context(); }, py::return_value_policy::reference);
 

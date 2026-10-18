@@ -177,6 +177,8 @@ void App::main_loop()
       continue;
     }
 
+    playback_update();
+
     if (wm_.ui_scale_changed) {
       theme_apply_blender(wm_.ui_scale);
       wm_.ui_scale_changed = false;
@@ -196,6 +198,44 @@ void App::main_loop()
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     SDL_GL_SwapWindow(window_);
   }
+}
+
+/* Advances the current frame in real time at the document's frame rate. When drawing falls
+ * behind, frames are skipped so playback keeps the true speed. */
+void App::playback_update()
+{
+  if (!wm_.playing) {
+    wm_.play_last_ns = 0;
+    return;
+  }
+  const uint64_t now = SDL_GetTicksNS();
+  if (wm_.play_last_ns == 0) {
+    wm_.play_last_ns = now;
+    return;
+  }
+  wm_.play_frames_due += double(now - wm_.play_last_ns) * 1e-9 * double(doc_.fps);
+  wm_.play_last_ns = now;
+
+  const int frames = int(wm_.play_frames_due);
+  if (frames == 0) {
+    return;
+  }
+  wm_.play_frames_due -= frames;
+
+  const int start = doc_.frame_start;
+  const int end = std::max(doc_.frame_start, doc_.frame_end);
+  const int length = end - start + 1;
+  int frame = doc_.frame_current + (wm_.play_reverse ? -frames : frames);
+  if (frame > end || frame < start) {
+    if (wm_.play_loop) {
+      frame = start + (((frame - start) % length) + length) % length;
+    }
+    else {
+      frame = std::clamp(frame, start, end);
+      wm_.playing = false;
+    }
+  }
+  doc_.frame_current = frame;
 }
 
 void App::handle_event(const SDL_Event &event)

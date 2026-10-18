@@ -169,15 +169,6 @@ static void properties_draw(Context &C)
   ui_panel(C, ptr, "Test", {"counter"});
 }
 
-static void timeline_draw(Context &C)
-{
-  Document &doc = *C.document;
-  ImGui::SetNextItemWidth(-FLT_MIN);
-  ImGui::SliderInt("##frame", &doc.frame_current, doc.frame_start, std::max(doc.frame_start, doc.frame_end),
-                   "Frame %d", ImGuiSliderFlags_AlwaysClamp);
-  ImGui::TextDisabled("Keyframes, playback and the dope sheet arrive in milestone 3.");
-}
-
 static void info_draw()
 {
   ImGui::BeginChild("reports", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
@@ -207,7 +198,7 @@ static void info_draw()
 }
 
 /* Blender puts an editor-type menu at the start of every area header. */
-static void area_header_draw(Area &area, bool separator)
+void area_editor_type_menu(Area &area)
 {
   ImGui::SetNextItemWidth(ImGui::CalcTextSize("Properties").x + ImGui::GetFrameHeight() * 2.0f);
   if (ImGui::BeginCombo("##editor_type", editor_type_label(area.type))) {
@@ -218,43 +209,45 @@ static void area_header_draw(Area &area, bool separator)
     }
     ImGui::EndCombo();
   }
-  if (separator) {
-    ImGui::Separator();
-  }
 }
 
 bool area_draw(Area &area, Context &C)
 {
-  const bool viewport = area.type == EditorType::Viewport;
-  if (viewport) {
+  /* The viewport and timeline draw edge to edge with their own header layout. */
+  const bool full_bleed = area.type == EditorType::Viewport || area.type == EditorType::Timeline;
+  if (full_bleed) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   }
-  const bool visible = ImGui::Begin(area.window_name().c_str(), &area.open,
-                                    viewport ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
-  if (viewport) {
+  const bool visible = ImGui::Begin(
+      area.window_name().c_str(), &area.open,
+      full_bleed ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
+  if (full_bleed) {
     ImGui::PopStyleVar();
   }
   const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
 
   if (visible) {
-    if (viewport) {
-      /* The viewport fills the area edge to edge; its header floats on top, as in Blender.
-       * Screen coordinates: for a docked window, SetCursorPos() is measured from above the tab bar. */
-      const ImVec2 content_start = ImGui::GetCursorScreenPos();
-      viewport_draw(C);
-      ImGui::SetCursorScreenPos(ImVec2(content_start.x + 6, content_start.y + 4));
-    }
-    area_header_draw(area, !viewport);
     switch (area.type) {
-      case EditorType::Viewport:
+      case EditorType::Viewport: {
+        /* The header floats on top of the viewport, as in Blender. Screen coordinates:
+         * for a docked window, SetCursorPos() is measured from above the tab bar. */
+        const ImVec2 content_start = ImGui::GetCursorScreenPos();
+        viewport_draw(C);
+        ImGui::SetCursorScreenPos(ImVec2(content_start.x + 6, content_start.y + 4));
+        area_editor_type_menu(area);
+        break;
+      }
+      case EditorType::Timeline:
+        timeline_draw(area, C);
         break;
       case EditorType::Properties:
+        area_editor_type_menu(area);
+        ImGui::Separator();
         properties_draw(C);
         break;
-      case EditorType::Timeline:
-        timeline_draw(C);
-        break;
       case EditorType::Info:
+        area_editor_type_menu(area);
+        ImGui::Separator();
         info_draw();
         break;
     }

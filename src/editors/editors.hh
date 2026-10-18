@@ -24,6 +24,11 @@ struct Area {
   EditorType type = EditorType::Viewport;
   bool open = true;
 
+  /* Timeline view: the frame range visible across the area. */
+  float view_start = 0.0f;
+  float view_end = 250.0f;
+  bool view_initialized = false;
+
   /* ImGui window name: the label shows on the tab; "###area<id>" keeps the window's
    * identity when the editor type changes. */
   std::string window_name() const;
@@ -31,5 +36,11 @@ struct Area {
 
 /* Draws the area as a dockable window. Returns true while the mouse is over it. */
 bool area_draw(Area &area, Context &C);
+
+/* The editor-type dropdown that starts every area header. */
+void area_editor_type_menu(Area &area);
+
+/* Timeline editor, in timeline.cc. */
+void timeline_draw(Area &area, Context &C);
 
 }  // namespace sky

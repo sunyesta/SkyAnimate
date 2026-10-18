@@ -33,6 +33,7 @@ class App {
   void window_exit();
   void main_loop();
   void handle_event(const SDL_Event &event);
+  void playback_update();
   void draw_ui();
   void draw_top_bar();
   void build_default_layout(unsigned int dockspace_id);
