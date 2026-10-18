@@ -42,6 +42,11 @@ if(MSVC)
   target_compile_options(SkyAnimate PRIVATE /W4 /utf-8 /permissive-)
 endif()
 
+# A windowed app (no console window when opened from a shortcut) that still uses main().
+# main.cc reattaches to the terminal's console when run from one.
+set_target_properties(SkyAnimate PROPERTIES WIN32_EXECUTABLE TRUE)
+target_link_options(SkyAnimate PRIVATE /ENTRY:mainCRTStartup)
+
 # The embedded interpreter loads python3XX.dll at startup; copy it next to the executable.
 add_custom_command(TARGET SkyAnimate POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

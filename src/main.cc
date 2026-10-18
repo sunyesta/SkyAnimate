@@ -7,7 +7,29 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef _WIN32
+#  include <windows.h>
+#endif
+
 #include "wm/app.hh"
+
+/* SkyAnimate is a windowed app, so Windows gives it no console. When output is already
+ * redirected (ctest, pipes) the standard handles work as-is; when started from a terminal,
+ * attach to that terminal so printing and --background output still appear. */
+static void console_attach_to_parent()
+{
+#ifdef _WIN32
+  const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (out != nullptr && out != INVALID_HANDLE_VALUE) {
+    return;
+  }
+  if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+    FILE *stream = nullptr;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+  }
+#endif
+}
 
 static void print_help()
 {
@@ -23,6 +45,8 @@ static void print_help()
 
 int main(int argc, char **argv)
 {
+  console_attach_to_parent();
+
   sky::LaunchOptions options;
   for (int i = 1; i < argc; i++) {
     const char *arg = argv[i];
