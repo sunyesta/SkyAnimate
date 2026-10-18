@@ -20,6 +20,12 @@ KEYMAP = (
     ("Window", "screen.frame_jump_end", "RIGHT_ARROW", {"shift": True}),
     ("Window", "screen.keyframe_jump_prev", "DOWN_ARROW", {}),
     ("Window", "screen.keyframe_jump_next", "UP_ARROW", {}),
+    ("Window", "screen.workspace_cycle_next", "PAGE_DOWN", {"ctrl": True}),
+    ("Window", "screen.workspace_cycle_prev", "PAGE_UP", {"ctrl": True}),
+    # Text editor, as in Blender. These work while typing in the text.
+    ("Text Editor", "text.run_script", "P", {"alt": True}),
+    ("Text Editor", "text.save", "S", {"alt": True}),
+    ("Text Editor", "text.new", "N", {"alt": True}),
 )
 
 

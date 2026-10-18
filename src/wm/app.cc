@@ -19,6 +19,7 @@
 #include "python/py_runtime.hh"
 #include "ui/theme.hh"
 #include "wm/event_system.hh"
+#include "wm/file_dialog.hh"
 #include "wm/keymap.hh"
 
 namespace sky {
@@ -136,10 +137,18 @@ bool App::window_init()
   ImGui_ImplSDL3_InitForOpenGL(window_, gl_context_);
   ImGui_ImplOpenGL3_Init("#version 330");
 
-  areas_ = {{next_area_id_++, EditorType::Viewport},
-            {next_area_id_++, EditorType::Properties},
-            {next_area_id_++, EditorType::Timeline},
-            {next_area_id_++, EditorType::Info}};
+  const auto area = [this](EditorType type) { return Area{next_area_id_++, type}; };
+  workspaces_ = {
+      {"Layout",
+       WorkspaceKind::Layout,
+       {area(EditorType::Viewport), area(EditorType::Properties), area(EditorType::Timeline),
+        area(EditorType::Info)}},
+      {"Scripting",
+       WorkspaceKind::Scripting,
+       {area(EditorType::Viewport), area(EditorType::Console), area(EditorType::Info),
+        area(EditorType::TextEditor), area(EditorType::Properties)}},
+  };
+  wm_.workspace_count = int(workspaces_.size());
 
   update_window_title();
   SDL_MaximizeWindow(window_);
@@ -178,6 +187,7 @@ void App::main_loop()
     }
 
     playback_update();
+    file_dialog_process();
 
     if (wm_.ui_scale_changed) {
       theme_apply_blender(wm_.ui_scale);
@@ -250,15 +260,16 @@ void App::handle_event(const SDL_Event &event)
       }
       break;
     case SDL_EVENT_KEY_DOWN: {
-      /* Shortcuts work everywhere except while typing in a text field, as in Blender. */
-      if (ImGui::GetIO().WantTextInput) {
-        break;
-      }
+      /* While typing in a text field, or with the mouse over the text editor or console, only
+       * that editor's keymap applies (Alt P in the text editor), so arrows, Ctrl Z and the like
+       * stay with the text, as in Blender. */
+      const bool typing = ImGui::GetIO().WantTextInput || ctx_.area_type == "Text Editor" ||
+                          ctx_.area_type == "Console";
       const SDL_Keymod mod = event.key.mod;
       const KeyEvent key{key_type_from_sdl(event.key.key), (mod & SDL_KMOD_CTRL) != 0,
                          (mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_ALT) != 0};
       if (!key.type.empty()) {
-        wm_handle_key_event(ctx_, key);
+        wm_handle_key_event(ctx_, key, typing);
         update_window_title();
       }
       break;
@@ -275,38 +286,51 @@ void App::update_window_title()
   }
 }
 
-void App::build_default_layout(ImGuiID dockspace_id)
+void App::build_default_layout(Workspace &workspace, ImGuiID dockspace_id)
 {
-  /* Blender's Layout workspace: viewport in the middle, properties on the right,
-   * timeline along the bottom (with the Info log beside it for now). */
   ImGui::DockBuilderRemoveNode(dockspace_id);
   ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
   ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->WorkSize);
 
+  /* Docking node for each editor type; types without one go to the main node. */
   ImGuiID main_id = dockspace_id;
-  ImGuiID bottom_id = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Down, 0.22f, nullptr, &main_id);
-  ImGuiID right_id = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.26f, nullptr, &main_id);
-  ImGuiID info_id = ImGui::DockBuilderSplitNode(bottom_id, ImGuiDir_Right, 0.35f, nullptr, &bottom_id);
+  ImGuiID node_for[std::size(EDITOR_TYPES)] = {};
+  const auto node_of = [&](EditorType type) -> ImGuiID & { return node_for[int(type)]; };
 
-  for (const Area &area : areas_) {
-    ImGuiID target = main_id;
-    switch (area.type) {
-      case EditorType::Viewport:
-        target = main_id;
-        break;
-      case EditorType::Properties:
-        target = right_id;
-        break;
-      case EditorType::Timeline:
-        target = bottom_id;
-        break;
-      case EditorType::Info:
-        target = info_id;
-        break;
-    }
-    ImGui::DockBuilderDockWindow(area.window_name().c_str(), target);
+  if (workspace.kind == WorkspaceKind::Layout) {
+    /* Blender's Layout: viewport in the middle, properties on the right, timeline along the
+     * bottom with the Info log beside it. */
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Down, 0.22f, nullptr, &main_id);
+    node_of(EditorType::Properties) = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.26f, nullptr,
+                                                                  &main_id);
+    node_of(EditorType::Info) = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.35f, nullptr, &bottom);
+    node_of(EditorType::Timeline) = bottom;
+    node_of(EditorType::Viewport) = main_id;
+  }
+  else {
+    /* Blender's Scripting: viewport, console and info down the left, the text editor in the
+     * middle, properties on the right. */
+    node_of(EditorType::Properties) = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.2f, nullptr,
+                                                                  &main_id);
+    ImGuiID left = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Left, 0.42f, nullptr, &main_id);
+    node_of(EditorType::Info) = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.2f, nullptr, &left);
+    node_of(EditorType::Console) = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, nullptr, &left);
+    node_of(EditorType::Viewport) = left;
+    node_of(EditorType::TextEditor) = main_id;
+  }
+
+  for (const Area &area : workspace.areas) {
+    const ImGuiID node = node_of(area.type);
+    ImGui::DockBuilderDockWindow(area.window_name().c_str(), node ? node : main_id);
   }
   ImGui::DockBuilderFinish(dockspace_id);
+}
+
+/* Docking IDs that don't depend on ImGui's window ID stack, so a workspace's dockspace can be
+ * kept alive from inside another window while it isn't shown. */
+static ImGuiID workspace_dockspace_id(const Workspace &workspace)
+{
+  return ImHashStr(("SkyAnimate.Dockspace." + workspace.name).c_str());
 }
 
 /* Menu item that runs an operator, showing its shortcut and greyed out when its poll fails. */
@@ -370,17 +394,21 @@ void App::draw_top_bar()
   }
 
   if (ImGui::BeginMenu("Window")) {
+    Workspace &workspace = workspaces_[wm_.workspace_index];
     if (ImGui::BeginMenu("New Area")) {
       for (EditorType type : EDITOR_TYPES) {
         if (ImGui::MenuItem(editor_type_label(type))) {
-          areas_.push_back({next_area_id_++, type});
+          workspace.areas.push_back({next_area_id_++, type});
         }
       }
       ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Reset Layout")) {
-      layout_built_ = false;
+      workspace.layout_built = false;
     }
+    ImGui::Separator();
+    menu_operator(ctx_, "Next Workspace", "screen.workspace_cycle_next");
+    menu_operator(ctx_, "Previous Workspace", "screen.workspace_cycle_prev");
     ImGui::Separator();
     ImGui::TextDisabled("Interface Scale: %d%%", int(wm_.ui_scale * 100.0f + 0.5f));
     menu_operator(ctx_, "Increase Interface Scale", "wm.ui_scale_increase");
@@ -404,11 +432,25 @@ void App::draw_top_bar()
     ImGui::EndMenu();
   }
 
-  /* Workspace tabs. Only Layout exists until milestone 5. */
+  /* Workspace tabs. */
   ImGui::Dummy(ImVec2(ImGui::GetFontSize(), 0));
   ImGui::PushStyleColor(ImGuiCol_Header, ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
-  ImGui::Selectable("Layout", true, ImGuiSelectableFlags_None, ImVec2(ImGui::CalcTextSize("Layout").x, 0));
+  for (int i = 0; i < int(workspaces_.size()); i++) {
+    const std::string &name = workspaces_[i].name;
+    if (ImGui::Selectable(name.c_str(), i == wm_.workspace_index, ImGuiSelectableFlags_None,
+                          ImVec2(ImGui::CalcTextSize(name.c_str()).x, 0)))
+    {
+      wm_.workspace_index = i;
+    }
+  }
   ImGui::PopStyleColor();
+
+  /* Hidden workspaces keep their docking layout alive while another one is shown. */
+  for (int i = 0; i < int(workspaces_.size()); i++) {
+    if (i != wm_.workspace_index && workspaces_[i].layout_built) {
+      ImGui::DockSpace(workspace_dockspace_id(workspaces_[i]), ImVec2(0, 0), ImGuiDockNodeFlags_KeepAliveOnly);
+    }
+  }
 
   ImGui::EndMainMenuBar();
 }
@@ -417,20 +459,22 @@ void App::draw_ui()
 {
   draw_top_bar();
 
-  const ImGuiID dockspace_id = ImGui::GetID("SkyAnimateDockspace");
+  wm_.workspace_index = std::clamp(wm_.workspace_index, 0, int(workspaces_.size()) - 1);
+  Workspace &workspace = workspaces_[wm_.workspace_index];
+  const ImGuiID dockspace_id = workspace_dockspace_id(workspace);
   ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport());
-  if (!layout_built_) {
-    build_default_layout(dockspace_id);
-    layout_built_ = true;
+  if (!workspace.layout_built) {
+    build_default_layout(workspace, dockspace_id);
+    workspace.layout_built = true;
   }
 
   std::string hovered_area = "Window";
-  for (Area &area : areas_) {
+  for (Area &area : workspace.areas) {
     if (area_draw(area, ctx_)) {
       hovered_area = editor_keymap_name(area.type);
     }
   }
-  std::erase_if(areas_, [](const Area &area) { return !area.open; });
+  std::erase_if(workspace.areas, [](const Area &area) { return !area.open; });
   ctx_.area_type = hovered_area;
 
   if (show_about_) {

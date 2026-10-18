@@ -13,18 +13,24 @@ static ImVec4 rgb(uint32_t hex, float alpha = 1.0f)
                 alpha);
 }
 
+static ImFont *g_font_mono = nullptr;
+
 void theme_load_fonts()
 {
   ImGuiIO &io = ImGui::GetIO();
   /* Blender uses Inter, but ships it as .woff2, which ImGui can't read. Segoe UI is the
-   * closest font every Windows machine has. */
+   * closest font every Windows machine has. The first font added is the default. */
   const char *font_path = "C:/Windows/Fonts/segoeui.ttf";
-  if (std::filesystem::exists(font_path)) {
-    io.Fonts->AddFontFromFileTTF(font_path, UI_FONT_SIZE);
-  }
-  else {
-    io.Fonts->AddFontDefault();
-  }
+  ImFont *ui_font = std::filesystem::exists(font_path) ? io.Fonts->AddFontFromFileTTF(font_path, UI_FONT_SIZE)
+                                                       : io.Fonts->AddFontDefault();
+  const char *mono_path = "C:/Windows/Fonts/consola.ttf";
+  g_font_mono = std::filesystem::exists(mono_path) ? io.Fonts->AddFontFromFileTTF(mono_path, UI_FONT_SIZE)
+                                                   : ui_font;
+}
+
+ImFont *theme_font_mono()
+{
+  return g_font_mono;
 }
 
 void theme_apply_blender(float ui_scale)

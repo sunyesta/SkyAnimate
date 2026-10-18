@@ -23,6 +23,10 @@ const char *editor_type_label(EditorType type)
       return "Properties";
     case EditorType::Timeline:
       return "Timeline";
+    case EditorType::TextEditor:
+      return "Text Editor";
+    case EditorType::Console:
+      return "Python Console";
     case EditorType::Info:
       return "Info";
   }
@@ -31,7 +35,17 @@ const char *editor_type_label(EditorType type)
 
 const char *editor_keymap_name(EditorType type)
 {
-  return editor_type_label(type);
+  return type == EditorType::Console ? "Console" : editor_type_label(type);
+}
+
+bool header_menu(const char *label)
+{
+  ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+  if (ImGui::Button(label)) {
+    ImGui::OpenPopup(label);
+  }
+  ImGui::PopStyleColor();
+  return ImGui::BeginPopup(label);
 }
 
 std::string Area::window_name() const
@@ -200,7 +214,7 @@ static void info_draw()
 /* Blender puts an editor-type menu at the start of every area header. */
 void area_editor_type_menu(Area &area)
 {
-  ImGui::SetNextItemWidth(ImGui::CalcTextSize("Properties").x + ImGui::GetFrameHeight() * 2.0f);
+  ImGui::SetNextItemWidth(ImGui::CalcTextSize("Python Console").x + ImGui::GetFrameHeight() * 1.5f);
   if (ImGui::BeginCombo("##editor_type", editor_type_label(area.type))) {
     for (EditorType type : EDITOR_TYPES) {
       if (ImGui::Selectable(editor_type_label(type), type == area.type)) {
@@ -239,6 +253,12 @@ bool area_draw(Area &area, Context &C)
       }
       case EditorType::Timeline:
         timeline_draw(area, C);
+        break;
+      case EditorType::TextEditor:
+        text_editor_draw(area, C);
+        break;
+      case EditorType::Console:
+        console_draw(area, C);
         break;
       case EditorType::Properties:
         area_editor_type_menu(area);

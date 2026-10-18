@@ -1,5 +1,7 @@
 #include "data/document.hh"
 
+#include <cstdio>
+
 namespace sky {
 
 const rna::StructRNA &Document::rna()
@@ -31,6 +33,45 @@ const rna::StructRNA &Document::rna()
 std::vector<std::string> document_selectable_actions(const Document & /*doc*/)
 {
   return {};
+}
+
+Text *document_text_find(Document &doc, const std::string &name)
+{
+  for (Text &text : doc.texts) {
+    if (text.name == name) {
+      return &text;
+    }
+  }
+  return nullptr;
+}
+
+std::string document_text_unique_name(const Document &doc, const std::string &base)
+{
+  const auto taken = [&](const std::string &name) {
+    for (const Text &text : doc.texts) {
+      if (text.name == name) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!base.empty() && !taken(base)) {
+    return base;
+  }
+  const std::string stem = base.empty() ? "Text" : base;
+  for (int i = 1;; i++) {
+    char suffix[8];
+    std::snprintf(suffix, sizeof(suffix), ".%03d", i);
+    if (!taken(stem + suffix)) {
+      return stem + suffix;
+    }
+  }
+}
+
+Text &document_text_add(Document &doc, const std::string &name, const std::string &body)
+{
+  doc.texts.push_back({document_text_unique_name(doc, name), body, ""});
+  return doc.texts.back();
 }
 
 }  // namespace sky

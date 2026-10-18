@@ -1,31 +1,37 @@
 #include "ops/builtin_ops.hh"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
+#include "python/py_runtime.hh"
 #include "wm/context.hh"
 
 namespace sky {
 
-/* What undo leaves alone, as in Blender and Moho: the playhead and the action being edited. */
+/* What undo leaves alone: the playhead and the action being edited (as in Blender and Moho),
+ * and text blocks, so undoing a drawing change never loses typed code. */
 struct ViewState {
   int frame_current;
   std::string action;
+  std::vector<Text> texts;
 };
 
 static ViewState view_state_get(const Document &doc)
 {
-  return {doc.frame_current, doc.action};
+  return {doc.frame_current, doc.action, doc.texts};
 }
 
-static void view_state_restore(Document &doc, const ViewState &view)
+static void view_state_restore(Document &doc, ViewState &view)
 {
   doc.frame_current = view.frame_current;
-  doc.action = view.action;
+  doc.action = std::move(view.action);
+  doc.texts = std::move(view.texts);
 }
 
 static void ed_undo_register()
@@ -37,7 +43,7 @@ static void ed_undo_register()
   ot.poll = [](Context &C) { return C.undo && C.undo->can_undo(); };
   ot.exec = [](Context &C) {
     const std::string name = C.undo->step_name(C.undo->active());
-    const ViewState view = view_state_get(*C.document);
+    ViewState view = view_state_get(*C.document);
     C.undo->undo(*C.document);
     view_state_restore(*C.document, view);
     report(ReportType::Info, "Undo: " + name);
@@ -54,7 +60,7 @@ static void ed_redo_register()
   ot.description = "Redo the last undone action";
   ot.poll = [](Context &C) { return C.undo && C.undo->can_redo(); };
   ot.exec = [](Context &C) {
-    const ViewState view = view_state_get(*C.document);
+    ViewState view = view_state_get(*C.document);
     C.undo->redo(*C.document);
     view_state_restore(*C.document, view);
     report(ReportType::Info, "Redo: " + C.undo->step_name(C.undo->active()));
@@ -179,9 +185,96 @@ static void playback_operators_register()
                           "Jump to the previous keyframe", no_keyframes);
 }
 
+/* ---------------------------------------------------------------------------------
+ * Text editor, named after Blender's text.* operators.
+ */
+
+static Text *active_text(Context &C)
+{
+  return C.document ? document_text_find(*C.document, C.text_name) : nullptr;
+}
+
+static void text_operators_register()
+{
+  OperatorType new_text;
+  new_text.idname = "text.new";
+  new_text.name = "New Text";
+  new_text.description = "Create a new text block";
+  new_text.exec = [](Context &C) {
+    C.text_name = document_text_add(*C.document, "Text").name;
+    return OpStatus::Finished;
+  };
+  operators().add(std::move(new_text));
+
+  OperatorType run;
+  run.idname = "text.run_script";
+  run.name = "Run Script";
+  run.description = "Run the text in the text editor as a Python script";
+  run.poll = [](Context &C) { return active_text(C) != nullptr; };
+  run.exec = [](Context &C) {
+    /* Copy: the script may add or remove texts while it runs. */
+    const Text text = *active_text(C);
+    return python::text_run(text.name, text.body) ? OpStatus::Finished : OpStatus::Cancelled;
+  };
+  operators().add(std::move(run));
+
+  OperatorType save;
+  save.idname = "text.save";
+  save.name = "Save Text";
+  save.description = "Save the text to the file it was opened from or last saved to";
+  save.poll = [](Context &C) {
+    const Text *text = active_text(C);
+    return text && !text->filepath.empty();
+  };
+  save.exec = [](Context &C) {
+    const Text &text = *active_text(C);
+    std::ofstream file(std::filesystem::path(reinterpret_cast<const char8_t *>(text.filepath.c_str())),
+                       std::ios::binary);
+    file << text.body;
+    if (!file) {
+      report(ReportType::Error, "Could not save " + text.filepath);
+      return OpStatus::Cancelled;
+    }
+    report(ReportType::Info, "Saved text \"" + text.filepath + "\"");
+    return OpStatus::Finished;
+  };
+  operators().add(std::move(save));
+
+  OperatorType remove;
+  remove.idname = "text.unlink";
+  remove.name = "Delete Text";
+  remove.description = "Delete the text block from the document";
+  remove.poll = [](Context &C) { return active_text(C) != nullptr; };
+  remove.exec = [](Context &C) {
+    std::erase_if(C.document->texts, [&](const Text &text) { return text.name == C.text_name; });
+    C.text_name = C.document->texts.empty() ? "" : C.document->texts.back().name;
+    return OpStatus::Finished;
+  };
+  operators().add(std::move(remove));
+}
+
+static void workspace_operators_register()
+{
+  for (const int step : {1, -1}) {
+    OperatorType ot;
+    ot.idname = step > 0 ? "screen.workspace_cycle_next" : "screen.workspace_cycle_prev";
+    ot.name = step > 0 ? "Next Workspace" : "Previous Workspace";
+    ot.description = "Switch to the next or previous workspace tab";
+    ot.poll = [](Context &C) { return C.wm && C.wm->workspace_count > 1; };
+    ot.exec = [step](Context &C) {
+      WindowManager &wm = *C.wm;
+      wm.workspace_index = (wm.workspace_index + step + wm.workspace_count) % wm.workspace_count;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+}
+
 void builtin_operators_register()
 {
   playback_operators_register();
+  text_operators_register();
+  workspace_operators_register();
   ed_undo_register();
   ed_redo_register();
   wm_quit_register();

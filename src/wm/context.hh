@@ -29,6 +29,10 @@ struct WindowManager {
 
   /* Auto-keying record button; takes effect once keyframes exist (milestone 3). */
   bool auto_key = true;
+
+  /* Active workspace tab, and how many there are. */
+  int workspace_index = 0;
+  int workspace_count = 1;
 };
 
 struct Context {
@@ -37,6 +41,8 @@ struct Context {
   WindowManager *wm = nullptr;
   /* Keymap name of the editor under the mouse, e.g. "Viewport". */
   std::string area_type = "Window";
+  /* Text shown in the text editors; text.* operators act on it. */
+  std::string text_name;
 };
 
 }  // namespace sky

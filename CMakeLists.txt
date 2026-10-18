@@ -15,7 +15,9 @@ set(SKY_SOURCES
   src/main.cc
   src/core/log.cc
   src/data/document.cc
+  src/editors/console.cc
   src/editors/editors.cc
+  src/editors/text_editor.cc
   src/editors/timeline.cc
   src/ops/builtin_ops.cc
   src/ops/operator.cc
@@ -25,6 +27,7 @@ set(SKY_SOURCES
   src/ui/theme.cc
   src/wm/app.cc
   src/wm/event_system.cc
+  src/wm/file_dialog.cc
   src/wm/keymap.cc
 )
 
@@ -61,5 +64,7 @@ add_test(NAME milestone_1_gate
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_milestone_1_gate.py)
 add_test(NAME rna_and_undo
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_rna_and_undo.py)
+add_test(NAME text_and_console
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_text_and_console.py)
 add_test(NAME frames_and_playback
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frames_and_playback.py)

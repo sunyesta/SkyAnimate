@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <stdexcept>
 
 #include "core/log.hh"
@@ -23,6 +24,7 @@ namespace sky::python {
 
 static Context *g_context = nullptr;
 static bool g_initialized = false;
+static std::filesystem::path g_scripts_dir;
 
 static Context &current_context()
 {
@@ -283,18 +285,18 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
 
   m.def(
       "event_simulate",
-      [](const std::string &type, bool ctrl, bool shift, bool alt, const std::string &area) {
+      [](const std::string &type, bool ctrl, bool shift, bool alt, const std::string &area, bool typing) {
         Context &C = current_context();
         const std::string saved_area = C.area_type;
         if (!area.empty()) {
           C.area_type = area;
         }
-        const bool handled = wm_handle_key_event(C, {to_upper(type), ctrl, shift, alt});
+        const bool handled = wm_handle_key_event(C, {to_upper(type), ctrl, shift, alt}, typing);
         C.area_type = saved_area;
         return handled;
       },
       py::arg("type"), py::arg("ctrl") = false, py::arg("shift") = false, py::arg("alt") = false,
-      py::arg("area") = "");
+      py::arg("area") = "", py::arg("typing") = false);
 
   m.def("undo_history", []() {
     UndoStack &undo = *current_context().undo;
@@ -303,6 +305,49 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       names.push_back(undo.step_name(i));
     }
     return py::make_tuple(names, undo.active());
+  });
+
+  /* Text blocks, wrapped by sky.data.texts. Looked up by name on every call, so Python never
+   * holds a pointer into the document. */
+  const auto text_or_raise = [](const std::string &name) -> Text & {
+    Text *text = document_text_find(*current_context().document, name);
+    if (!text) {
+      throw py::key_error("No text named '" + name + "'");
+    }
+    return *text;
+  };
+  m.def("text_names", []() {
+    std::vector<std::string> names;
+    for (const Text &text : current_context().document->texts) {
+      names.push_back(text.name);
+    }
+    return names;
+  });
+  m.def("text_new", [](const std::string &name) {
+    Context &C = current_context();
+    const std::string added = document_text_add(*C.document, name).name;
+    if (C.text_name.empty()) {
+      C.text_name = added;
+    }
+    return added;
+  });
+  m.def("text_remove", [](const std::string &name) {
+    Context &C = current_context();
+    std::erase_if(C.document->texts, [&](const Text &text) { return text.name == name; });
+    if (C.text_name == name) {
+      C.text_name = C.document->texts.empty() ? "" : C.document->texts.front().name;
+    }
+  });
+  m.def("text_body", [text_or_raise](const std::string &name) { return text_or_raise(name).body; });
+  m.def("text_set_body",
+        [text_or_raise](const std::string &name, const std::string &body) { text_or_raise(name).body = body; });
+  m.def("text_filepath", [text_or_raise](const std::string &name) { return text_or_raise(name).filepath; });
+  m.def("text_active", []() { return current_context().text_name; });
+  m.def("text_set_active", [text_or_raise](const std::string &name) {
+    if (!name.empty()) {
+      text_or_raise(name);
+    }
+    current_context().text_name = name;
   });
 
   m.def("report", [](const std::string &type, const std::string &message) {
@@ -322,6 +367,7 @@ namespace sky::python {
 bool init(const std::filesystem::path &scripts_dir, Context *C)
 {
   g_context = C;
+  g_scripts_dir = scripts_dir;
 
   /* Isolated: ignore PYTHONPATH and user site-packages so the app behaves the same
    * on every machine. Home points at the Python installation the build used. */
@@ -394,6 +440,103 @@ bool run_file(const std::filesystem::path &path)
   catch (py::error_already_set &error) {
     return handle_script_error(error, path_utf8);
   }
+}
+
+const std::filesystem::path &scripts_dir()
+{
+  return g_scripts_dir;
+}
+
+/* Calls a method of the console object. Python errors are reported, and give nullopt. */
+template<typename... Args> static std::optional<py::object> console_call(const char *method, Args &&...args)
+{
+  if (!g_initialized) {
+    return std::nullopt;
+  }
+  try {
+    py::object console = py::module_::import("sky._console").attr("get")();
+    return console.attr(method)(std::forward<Args>(args)...);
+  }
+  catch (py::error_already_set &error) {
+    report(ReportType::Error, std::string("Console error in ") + method + ":\n" + format_exception(error));
+  }
+  return std::nullopt;
+}
+
+uint64_t console_version()
+{
+  if (!g_initialized) {
+    return 0;
+  }
+  try {
+    return py::module_::import("sky._console").attr("get")().attr("version").cast<uint64_t>();
+  }
+  catch (py::error_already_set &error) {
+    report(ReportType::Error, "Console error:\n" + format_exception(error));
+    return 0;
+  }
+}
+
+std::vector<ConsoleLine> console_lines()
+{
+  std::vector<ConsoleLine> lines;
+  if (!g_initialized) {
+    return lines;
+  }
+  try {
+    py::list items = py::module_::import("sky._console").attr("get")().attr("lines");
+    lines.reserve(items.size());
+    for (py::handle item : items) {
+      py::tuple pair = item.cast<py::tuple>();
+      lines.push_back({pair[0].cast<std::string>(), pair[1].cast<std::string>()});
+    }
+  }
+  catch (py::error_already_set &error) {
+    report(ReportType::Error, "Console error:\n" + format_exception(error));
+  }
+  return lines;
+}
+
+std::string console_prompt()
+{
+  const std::optional<py::object> result = console_call("prompt");
+  return result ? result->cast<std::string>() : ">>> ";
+}
+
+std::vector<std::string> console_history()
+{
+  if (!g_initialized) {
+    return {};
+  }
+  try {
+    return py::module_::import("sky._console").attr("get")().attr("history").cast<std::vector<std::string>>();
+  }
+  catch (py::error_already_set &error) {
+    report(ReportType::Error, "Console error:\n" + format_exception(error));
+    return {};
+  }
+}
+
+void console_push(const std::string &line)
+{
+  console_call("push", line);
+}
+
+std::string console_complete(const std::string &line)
+{
+  const std::optional<py::object> result = console_call("complete", line);
+  return result ? result->cast<std::string>() : line;
+}
+
+void console_clear()
+{
+  console_call("clear");
+}
+
+bool text_run(const std::string &name, const std::string &source)
+{
+  const std::optional<py::object> result = console_call("run_text", name, source);
+  return result && result->cast<bool>();
 }
 
 bool run_string(const std::string &code)
