@@ -180,7 +180,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 | E to extrude a new point from an end point | Blender | v1 |
 | Curvature, smooth and peak points | Moho | v1 |
 | Create shape, fill and outline, shared styles | Moho | v1 |
-| Line width per point, hide edge, delete edge | Moho | v1 |
+| Line width per point, corner type per point (round or sharp joins and caps), hide edge, delete edge | Moho | v1 |
 | Stroke sculpting brushes: grab, push, smooth, thickness, strength, with falloff and tablet pressure | Blender | v1 |
 | More sculpting brushes: twist, pinch, randomize, clone | Blender | Later |
 | Slide point along curve, point reduction | Community | Later |

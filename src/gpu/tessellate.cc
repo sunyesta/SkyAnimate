@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 
 #include <mapbox/earcut.hpp>
 
@@ -19,18 +20,27 @@ static void quad(std::vector<Vertex> &out, const Vertex &a, const Vertex &b, con
   out.insert(out.end(), {a, b, c, a, c, d});
 }
 
-/* Drops points closer than `epsilon` to the previous one, keeping the paired widths in step. */
-static void dedupe(std::vector<float2> &points, std::vector<float> *widths, bool closed, float epsilon)
+/* Drops points closer than `epsilon` to the previous one, keeping the paired widths and joins in
+ * step. A dropped point's corner join passes to the point it duplicates. */
+static void dedupe(std::vector<float2> &points, std::vector<float> *widths, bool closed, float epsilon,
+                   std::vector<StrokeJoin> *joins = nullptr)
 {
   std::vector<float2> p;
   std::vector<float> w;
+  std::vector<StrokeJoin> j;
   for (size_t i = 0; i < points.size(); i++) {
     if (!p.empty() && distance(p.back(), points[i]) <= epsilon) {
+      if (joins) {
+        j.back() = std::max(j.back(), (*joins)[i]);
+      }
       continue;
     }
     p.push_back(points[i]);
     if (widths) {
       w.push_back((*widths)[i]);
+    }
+    if (joins) {
+      j.push_back((*joins)[i]);
     }
   }
   if (closed && p.size() > 1 && distance(p.front(), p.back()) <= epsilon) {
@@ -38,10 +48,17 @@ static void dedupe(std::vector<float2> &points, std::vector<float> *widths, bool
     if (widths) {
       w.pop_back();
     }
+    if (joins) {
+      j.front() = std::max(j.front(), j.back());
+      j.pop_back();
+    }
   }
   points = std::move(p);
   if (widths) {
     *widths = std::move(w);
+  }
+  if (joins) {
+    *joins = std::move(j);
   }
 }
 
@@ -103,12 +120,25 @@ static void disc(float2 center, float radius, Color color, float aa, std::vector
   tessellate_fill(circle, color, aa, r_out);
 }
 
+/* A round join or cap for a stroke of half width `hw`. Its solid part ends where the stroke's core
+ * does (half a soft edge inside the line edge) so its soft edge lines up with the stroke's and
+ * no bump shows where they meet. */
+static void stroke_disc(float2 center, float hw, Color color, float aa, std::vector<Vertex> &r_out)
+{
+  disc(center, std::max(hw - aa * 0.5f, aa * 0.25f), color, aa, r_out);
+}
+
+/* SVG's default: a sharp corner tighter than this (miter length over half width) is bevelled. */
+static constexpr float MITER_LIMIT = 4.0f;
+
 void tessellate_stroke(const std::vector<float2> &input_points, const std::vector<float> &input_half_widths,
-                       bool closed, Color color, float aa, std::vector<Vertex> &r_out)
+                       bool closed, Color color, float aa, std::vector<Vertex> &r_out,
+                       const std::vector<StrokeJoin> *input_joins)
 {
   std::vector<float2> points = input_points;
   std::vector<float> half_widths = input_half_widths;
-  dedupe(points, &half_widths, closed, aa * 0.01f);
+  std::vector<StrokeJoin> joins = input_joins ? *input_joins : std::vector<StrokeJoin>(points.size(), StrokeJoin::Smooth);
+  dedupe(points, &half_widths, closed, aa * 0.01f, &joins);
   const size_t n = points.size();
   if (n == 0) {
     return;
@@ -117,49 +147,168 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
     disc(points[0], std::max(half_widths[0], aa * 0.5f), color, aa, r_out);
     return;
   }
-
-  const size_t segments = closed ? n : n - 1;
-  std::vector<float2> dirs(segments);
-  for (size_t i = 0; i < segments; i++) {
-    dirs[i] = normalize(points[(i + 1) % n] - points[i]);
+  for (float &hw : half_widths) {
+    hw = std::max(hw, 0.0f);
   }
 
+  /* The stroke is a disc of each point's half width swept along the line. Each segment's two
+   * edges are the lines touching the discs at both of its ends, so where the width changes the
+   * edges lean in or out: m.d = (r_start - r_end) / length for each edge's unit normal m. Round
+   * joins and caps are then exactly those discs, and sharp corners mitre to where the leaning
+   * edges actually meet. */
+  const size_t segments = closed ? n : n - 1;
+  std::vector<float2> dirs(segments), normal_left(segments), normal_right(segments);
+  for (size_t i = 0; i < segments; i++) {
+    const size_t j = (i + 1) % n;
+    const float len = distance(points[i], points[j]);
+    const float2 d = (points[j] - points[i]) / len;
+    const float lean = std::clamp((half_widths[i] - half_widths[j]) / len, -0.999f, 0.999f);
+    const float2 side = perpendicular(d) * std::sqrt(1.0f - lean * lean);
+    dirs[i] = d;
+    normal_left[i] = side + d * lean;
+    normal_right[i] = -side + d * lean;
+  }
+
+  /* A stroke cross-section at a point: its edges at `left` and `right` per unit of half width.
+   * The solid core stops half a soft edge inside the line edge and fades over one soft edge. */
   struct Side {
     float2 outer_left, core_left, core_right, outer_right;
     float core_alpha;
   };
-  std::vector<Side> sides(n);
-  for (size_t i = 0; i < n; i++) {
-    float2 normal;
-    float miter = 1.0f;
-    const bool has_prev = closed || i > 0;
-    const bool has_next = closed || i + 1 < n;
-    if (has_prev && has_next) {
-      const float2 d0 = dirs[(i + segments - 1) % segments], d1 = dirs[i % segments];
-      const float2 n0 = perpendicular(d0), n1 = perpendicular(d1);
-      normal = normalize(n0 + n1);
-      miter = 1.0f / std::max(dot(normal, n1), 0.35f);
-      /* Sharp corners get a disc so the join stays round instead of spiking. */
-      if (dot(d0, d1) < 0.3f) {
-        disc(points[i], half_widths[i], color, aa, r_out);
-      }
-    }
-    else {
-      normal = perpendicular(has_next ? dirs[i] : dirs[i - 1]);
-    }
-    const float hw = std::max(half_widths[i], 0.0f);
-    const float core = std::max(hw - aa * 0.5f, 0.0f);
-    const float outer = core + aa;
+  const auto core_radius = [&](size_t i) { return std::max(half_widths[i] - aa * 0.5f, 0.0f); };
+  const auto make_side = [&](size_t i, float2 left, float2 right) {
+    const float hw = half_widths[i];
+    const float core = core_radius(i), outer = core + aa;
     /* Lines thinner than the soft edge fade instead of vanishing. */
     const float core_alpha = hw < aa * 0.5f ? std::max(hw * 2.0f / aa, 0.05f) : 1.0f;
     const float2 p = points[i];
-    sides[i] = {p + normal * (outer * miter), p + normal * (core * miter), p - normal * (core * miter),
-                p - normal * (outer * miter), core_alpha};
+    return Side{p + left * outer, p + left * core, p + right * core, p + right * outer, core_alpha};
+  };
+  /* Where two edges at unit distance from a point meet (their normals m0 and m1), per unit of
+   * half width. Long mitres are cut short; `too_sharp` reports it so a disc can cover the gap. */
+  const auto mitre = [](float2 m0, float2 m1, bool *too_sharp) {
+    const float denom = 1.0f + dot(m0, m1);
+    constexpr float MIN_DENOM = 2.0f * 0.35f * 0.35f; /* Mitres at most 1 / 0.35 long. */
+    if (denom >= MIN_DENOM) {
+      return (m0 + m1) / denom;
+    }
+    *too_sharp = true;
+    const float2 sum = m0 + m1;
+    const float len = length(sum);
+    return len > 1e-6f ? sum / len * (1.0f / 0.35f) : m1;
+  };
+
+  std::vector<Side> seg_start(segments), seg_end(segments);
+  for (size_t i = 0; i < n; i++) {
+    const bool has_prev = closed || i > 0;
+    const bool has_next = closed || i + 1 < n;
+    const size_t next_seg = i % segments, prev_seg = (i + segments - 1) % segments;
+    if (!(has_prev && has_next)) {
+      const size_t seg = has_next ? next_seg : prev_seg;
+      const Side side = make_side(i, normal_left[seg], normal_right[seg]);
+      if (has_next) {
+        seg_start[next_seg] = side;
+      }
+      if (has_prev) {
+        seg_end[prev_seg] = side;
+      }
+      continue;
+    }
+    const float2 d0 = dirs[prev_seg], d1 = dirs[next_seg];
+    const bool corner = joins[i] != StrokeJoin::Smooth && dot(d0, d1) < 0.9995f;
+    if (!corner) {
+      /* Along a curve the two segments share one cross-section where their edges meet. */
+      bool too_sharp = false;
+      const float2 left = mitre(normal_left[prev_seg], normal_left[next_seg], &too_sharp);
+      const float2 right = mitre(normal_right[prev_seg], normal_right[next_seg], &too_sharp);
+      if (too_sharp) {
+        stroke_disc(points[i], half_widths[i], color, aa, r_out);
+      }
+      seg_start[next_seg] = seg_end[prev_seg] = make_side(i, left, right);
+      continue;
+    }
+    seg_end[prev_seg] = make_side(i, normal_left[prev_seg], normal_right[prev_seg]);
+    seg_start[next_seg] = make_side(i, normal_left[next_seg], normal_right[next_seg]);
+    if (joins[i] == StrokeJoin::Round) {
+      stroke_disc(points[i], half_widths[i], color, aa, r_out);
+      continue;
+    }
+    /* Sharp: fill the outside of the turn out to where the two outside edges meet, or bevel it
+     * past the miter limit. Built from the strips' own core and soft-edge offsets, so the
+     * edges carry straight on. */
+    const bool left = cross(d0, d1) < 0.0f; /* Turning right: the outside is the left side. */
+    const float2 m0 = left ? normal_left[prev_seg] : normal_right[prev_seg];
+    const float2 m1 = left ? normal_left[next_seg] : normal_right[next_seg];
+    const float denom = 1.0f + dot(m0, m1);
+    if (denom < 1e-4f) {
+      continue; /* A full reversal: nothing sticks out to fill. */
+    }
+    const Side &in = seg_end[prev_seg];
+    const Side &out = seg_start[next_seg];
+    const float2 p = points[i];
+    const float2 c0 = left ? in.core_left : in.core_right, c1 = left ? out.core_left : out.core_right;
+    const float2 q0 = left ? in.outer_left : in.outer_right, q1 = left ? out.outer_left : out.outer_right;
+    const float alpha = in.core_alpha;
+    /* Where the width changes the segments' end cross-sections lean away from the point; fill
+     * between them and the point (a round join's disc covers this by itself). */
+    const float2 i0 = left ? in.core_right : in.core_left, i1 = left ? out.core_right : out.core_left;
+    for (const auto &[a, b] : {std::pair{c0, i0}, std::pair{c1, i1}, std::pair{i0, i1}}) {
+      r_out.insert(r_out.end(), {make_vertex(p, color, alpha), make_vertex(a, color, alpha), make_vertex(b, color, alpha)});
+    }
+    const float2 tip = (m0 + m1) / denom;
+    /* How far the corner reaches is set by the turn alone, as for a stroke of even width: a
+     * tapering stroke's leaning edges can meet much further out, so the point is cut flat
+     * there instead of growing a long spike. */
+    const float2 n0 = perpendicular(d0), n1 = perpendicular(d1);
+    const float2 out_dir = normalize(n0 + n1) * (left ? 1.0f : -1.0f);
+    const float reach = 1.0f / std::max(dot(normalize(n0 + n1), n1), 1e-4f);
+    if (reach <= MITER_LIMIT) {
+      const float core = core_radius(i), outer = core + aa;
+      /* Where an edge from `from` heading for `to` crosses the cut line, or `to` if it doesn't
+       * reach it. */
+      const auto clip = [&](float2 from, float2 to, float limit) {
+        const float2 dir = to - from;
+        const float from_d = dot(from - p, out_dir), to_d = dot(to - p, out_dir);
+        if (to_d <= limit || to_d - from_d < 1e-6f) {
+          return to;
+        }
+        return from + dir * ((limit - from_d) / (to_d - from_d));
+      };
+      const float2 c_tip = p + tip * core, q_tip = p + tip * outer;
+      const float2 ck0 = clip(c0, c_tip, reach * core), ck1 = clip(c1, c_tip, reach * core);
+      const float2 qk0 = clip(q0, q_tip, reach * outer), qk1 = clip(q1, q_tip, reach * outer);
+      r_out.insert(r_out.end(), {make_vertex(p, color, alpha), make_vertex(c0, color, alpha),
+                                 make_vertex(ck0, color, alpha), make_vertex(p, color, alpha),
+                                 make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha),
+                                 make_vertex(p, color, alpha), make_vertex(ck1, color, alpha),
+                                 make_vertex(c1, color, alpha)});
+      quad(r_out, make_vertex(c0, color, alpha), make_vertex(ck0, color, alpha), make_vertex(qk0, color, 0.0f),
+           make_vertex(q0, color, 0.0f));
+      quad(r_out, make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha), make_vertex(qk1, color, 0.0f),
+           make_vertex(qk0, color, 0.0f));
+      quad(r_out, make_vertex(ck1, color, alpha), make_vertex(c1, color, alpha), make_vertex(q1, color, 0.0f),
+           make_vertex(qk1, color, 0.0f));
+    }
+    else {
+      /* Bevel: a flat edge across the corner, its soft edge joined to the strips' by two slivers. */
+      float2 bevel_normal = perpendicular(normalize(c1 - c0));
+      if (dot(bevel_normal, m0 + m1) < 0.0f) {
+        bevel_normal = -bevel_normal;
+      }
+      const float2 b0 = c0 + bevel_normal * aa, b1 = c1 + bevel_normal * aa;
+      r_out.insert(r_out.end(),
+                   {make_vertex(p, color, alpha), make_vertex(c0, color, alpha), make_vertex(c1, color, alpha)});
+      quad(r_out, make_vertex(c0, color, alpha), make_vertex(c1, color, alpha), make_vertex(b1, color, 0.0f),
+           make_vertex(b0, color, 0.0f));
+      r_out.insert(r_out.end(), {make_vertex(c0, color, alpha), make_vertex(q0, color, 0.0f),
+                                 make_vertex(b0, color, 0.0f), make_vertex(c1, color, alpha),
+                                 make_vertex(b1, color, 0.0f), make_vertex(q1, color, 0.0f)});
+    }
   }
 
   for (size_t i = 0; i < segments; i++) {
-    const Side &a = sides[i];
-    const Side &b = sides[(i + 1) % n];
+    const Side &a = seg_start[i];
+    const Side &b = seg_end[i];
     quad(r_out, make_vertex(a.outer_left, color, 0.0f), make_vertex(a.core_left, color, a.core_alpha),
          make_vertex(b.core_left, color, b.core_alpha), make_vertex(b.outer_left, color, 0.0f));
     quad(r_out, make_vertex(a.core_left, color, a.core_alpha), make_vertex(a.core_right, color, a.core_alpha),
@@ -168,11 +317,22 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
          make_vertex(b.outer_right, color, 0.0f), make_vertex(b.core_right, color, b.core_alpha));
   }
 
-  /* Round caps, as Moho draws line ends by default. */
-  if (!closed) {
-    disc(points.front(), half_widths.front(), color, aa, r_out);
-    disc(points.back(), half_widths.back(), color, aa, r_out);
+  if (closed) {
+    return;
   }
+  /* Ends: round caps (the end point's disc, as Moho draws line ends by default), or flat for a
+   * Sharp point, with a soft edge across the end. */
+  const auto cap = [&](size_t i, const Side &side, float2 outward) {
+    if (joins[i] != StrokeJoin::Sharp) {
+      stroke_disc(points[i], half_widths[i], color, aa, r_out);
+      return;
+    }
+    const float2 step = outward * aa;
+    quad(r_out, make_vertex(side.core_left, color, side.core_alpha), make_vertex(side.core_right, color, side.core_alpha),
+         make_vertex(side.core_right + step, color, 0.0f), make_vertex(side.core_left + step, color, 0.0f));
+  };
+  cap(0, seg_start[0], -dirs[0]);
+  cap(n - 1, seg_end[segments - 1], dirs[segments - 1]);
 }
 
 }  // namespace sky

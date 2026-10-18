@@ -83,6 +83,20 @@ assert [round(r, 4) for r in layer.radii[:3]] == [0.0, 0.0, 0.3333], "each point
 layer.mean_radius = 1.0
 sky.ops.mesh.select_none()
 
+# Corner type: Round by default; Sharp for the selected points only.
+sky.ops.mesh.select_none()
+assert all(c == "ROUND" for c in layer.corners)
+layer.select_points([1, 2])
+layer.set_selected_corner("SHARP")
+assert layer.corners[1:3] == ["SHARP", "SHARP"] and layer.corners[0] == "ROUND"
+try:
+    layer.set_selected_corner("BEVEL")
+    raise AssertionError("only ROUND and SHARP")
+except ValueError:
+    pass
+layer.set_selected_corner("ROUND")
+sky.ops.mesh.select_none()
+
 # Hide Edge: the outline skips a hidden segment, the fill keeps its boundary.
 sky.ops.layer.new()
 box = layers.active

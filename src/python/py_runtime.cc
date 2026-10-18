@@ -538,6 +538,24 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     current_context().undo->mark_changed();
     return int(edges.size());
   });
+  m.def("layer_corners", [layer_or_raise](uint64_t id) {
+    py::list result;
+    for (const MeshPoint &p : layer_drawing(*current_context().document, layer_or_raise(id)).points) {
+      result.append(p.corner == CornerType::Sharp ? "SHARP" : "ROUND");
+    }
+    return result;
+  });
+  m.def("layer_set_selected_corner", [layer_or_raise](uint64_t id, const std::string &corner) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's points are edited through its original");
+    }
+    if (corner != "ROUND" && corner != "SHARP") {
+      throw py::value_error("corner must be 'ROUND' or 'SHARP'");
+    }
+    drawing_set_selected_corner(layer.drawing, corner == "SHARP" ? CornerType::Sharp : CornerType::Round);
+    current_context().undo->mark_changed();
+  });
   m.def("layer_radii", [layer_or_raise](uint64_t id) {
     py::list result;
     for (const MeshPoint &p : layer_drawing(*current_context().document, layer_or_raise(id)).points) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 /* Small 2D math types used by the data model and the renderer. */
 
 #include <cmath>
@@ -95,5 +97,9 @@ struct Transform2D {
 };
 
 inline constexpr float PI = 3.14159265358979323846f;
+
+/* How a stroke turns at an outline sample: Smooth along a curve, Round or Sharp at the curve's own
+ * points (their corner type). At a stroke's end, Round draws a round cap and Sharp a flat one. */
+enum class StrokeJoin : uint8_t { Smooth, Round, Sharp };
 
 }  // namespace sky

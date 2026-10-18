@@ -347,11 +347,13 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   std::vector<float2> outline;
   std::vector<float> radii;
   std::vector<bool> visible;
+  std::vector<StrokeJoin> joins;
   std::vector<float2> run;
   std::vector<float> run_radii;
+  std::vector<StrokeJoin> run_joins;
   for (const Shape &shape : drawing.shapes) {
     bool closed = false;
-    shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible);
+    shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins);
     if (outline.size() < 2) {
       continue;
     }
@@ -370,7 +372,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
         hidden_at = visible[i] ? -1 : i;
       }
       if (hidden_at < 0) {
-        tessellate_stroke(outline, radii, closed, shape.style.line, aa, vertices);
+        tessellate_stroke(outline, radii, closed, shape.style.line, aa, vertices, &joins);
       }
       else {
         /* Hidden edges break the outline into open runs. A closed outline starts just after a
@@ -378,12 +380,14 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
         const int start = closed ? hidden_at + 1 : 0;
         run.clear();
         run_radii.clear();
+        run_joins.clear();
         const auto flush = [&] {
           if (run.size() >= 2) {
-            tessellate_stroke(run, run_radii, false, shape.style.line, aa, vertices);
+            tessellate_stroke(run, run_radii, false, shape.style.line, aa, vertices, &run_joins);
           }
           run.clear();
           run_radii.clear();
+          run_joins.clear();
         };
         for (int k = 0; k < pieces; k++) {
           const int i = (start + k) % n, j = (i + 1) % n;
@@ -394,9 +398,11 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
           if (run.empty()) {
             run.push_back(outline[i]);
             run_radii.push_back(radii[i]);
+            run_joins.push_back(joins[i]);
           }
           run.push_back(outline[j]);
           run_radii.push_back(radii[j]);
+          run_joins.push_back(joins[j]);
         }
         flush();
       }

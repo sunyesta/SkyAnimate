@@ -307,6 +307,47 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   if (ImGui::IsItemDeactivatedAfterEdit()) {
     C.undo->push("Point Radius", *C.document);
   }
+
+  /* Corner: how strokes turn here and end here. Neither button lights up for a mix. */
+  bool all_round = true, all_sharp = true;
+  for (const MeshPoint &p : drawing.points) {
+    if (p.selected) {
+      all_round = all_round && p.corner == CornerType::Round;
+      all_sharp = all_sharp && p.corner == CornerType::Sharp;
+    }
+  }
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Corner");
+  ImGui::TableSetColumnIndex(1);
+  const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+  const struct {
+    const char *label;
+    CornerType type;
+    bool on;
+    const char *tooltip;
+  } choices[] = {{"Round", CornerType::Round, all_round, "Round joins at corners and round caps at stroke ends"},
+                 {"Sharp", CornerType::Sharp, all_sharp, "Mitred corners (bevelled when very tight) and flat stroke ends"}};
+  for (int i = 0; i < 2; i++) {
+    if (i > 0) {
+      ImGui::SameLine();
+    }
+    if (choices[i].on) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    const bool pressed = ImGui::Button(choices[i].label, ImVec2(half, 0));
+    if (choices[i].on) {
+      ImGui::PopStyleColor();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", choices[i].tooltip);
+    }
+    if (pressed && !choices[i].on) {
+      drawing_set_selected_corner(drawing, choices[i].type);
+      C.undo->push(i == 0 ? "Round Corner" : "Sharp Corner", *C.document);
+    }
+  }
   ui_panel_end();
 }
 

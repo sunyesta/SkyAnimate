@@ -87,8 +87,14 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
 
 bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_per_segment,
                    std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
-                   std::vector<bool> *r_visible)
+                   std::vector<bool> *r_visible, std::vector<StrokeJoin> *r_joins)
 {
+  if (r_joins) {
+    r_joins->clear();
+  }
+  const auto join_at = [&](int point) {
+    return drawing.points[point].corner == CornerType::Sharp ? StrokeJoin::Sharp : StrokeJoin::Round;
+  };
   r_points.clear();
   if (r_radii) {
     r_radii->clear();
@@ -156,14 +162,28 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_p
     }
     const float r0 = drawing.points[from].radius, r1 = drawing.points[to].radius;
     const bool visible = !curve.points[o.edge.segment].edge_hidden;
+    /* The radius blends by distance along the segment, not by the curve parameter: samples
+     * bunch up near points (a peaked segment eases in and out), and blending by parameter
+     * would bend a tapered stroke's straight edges there. */
+    std::vector<float2> samples(steps_per_segment + 1);
+    std::vector<float> along(steps_per_segment + 1, 0.0f);
+    for (int i = 0; i <= steps_per_segment; i++) {
+      samples[i] = bezier_eval(ctrl, float(i) / float(steps_per_segment));
+      if (i > 0) {
+        along[i] = along[i - 1] + distance(samples[i - 1], samples[i]);
+      }
+    }
+    const float total = along.back();
     for (int i = 0; i < steps_per_segment; i++) {
-      const float t = float(i) / float(steps_per_segment);
-      r_points.push_back(bezier_eval(ctrl, t));
+      r_points.push_back(samples[i]);
       if (r_radii) {
-        r_radii->push_back(r0 + (r1 - r0) * t);
+        r_radii->push_back(r0 + (r1 - r0) * (total > 1e-9f ? along[i] / total : float(i) / float(steps_per_segment)));
       }
       if (r_visible) {
         r_visible->push_back(visible);
+      }
+      if (r_joins) {
+        r_joins->push_back(i == 0 ? join_at(from) : StrokeJoin::Smooth);
       }
     }
   }
@@ -176,6 +196,9 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_p
     }
     if (r_visible) {
       r_visible->push_back(false);
+    }
+    if (r_joins) {
+      r_joins->push_back(join_at(last_to));
     }
   }
   return connected;
@@ -982,6 +1005,15 @@ void drawing_set_edges_hidden(VectorDrawing &drawing, const std::vector<ShapeEdg
 {
   for (const ShapeEdge &e : edges) {
     drawing.curves[e.curve].points[e.segment].edge_hidden = hidden;
+  }
+}
+
+void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner)
+{
+  for (MeshPoint &p : drawing.points) {
+    if (p.selected) {
+      p.corner = corner;
+    }
   }
 }
 

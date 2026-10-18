@@ -23,12 +23,17 @@ namespace sky {
 inline constexpr float CURVATURE_SMOOTH = 0.3f;
 inline constexpr float CURVATURE_PEAKED = 0.0f;
 
+/* How strokes turn at a point and end there: Round (a round join or cap) or Sharp (a mitred
+ * corner, bevelled when very tight, and a flat end). */
+enum class CornerType : uint8_t { Round, Sharp };
+
 struct MeshPoint {
   float2 pos;
   /* Stroke radius here as a fraction (0-1) of the line width of the shape drawing the stroke,
    * like a Grease Pencil point's radius. The draw tool sets it from pen pressure. */
   float radius = 1.0f;
   bool selected = false;
+  CornerType corner = CornerType::Round;
 };
 
 struct CurvePoint {
@@ -103,11 +108,12 @@ void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_t
 /* The outline of a shape as a polyline in drawing space, edges joined end to end.
  * `r_radii` (optional) gets the point radius (0-1) at each sample, blended between points.
  * `r_visible` (optional) says for each sample whether the outline runs on from it to the next
- * sample: false along hidden edges. Returns false if the edges don't
+ * sample: false along hidden edges. `r_joins` (optional) gives each sample's join: the point's
+ * corner type at the curve's points, Smooth between them. Returns false if the edges don't
  * form a connected run. `r_closed` reports whether the run returns to its start. */
 bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_per_segment,
                    std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
-                   std::vector<bool> *r_visible = nullptr);
+                   std::vector<bool> *r_visible = nullptr, std::vector<StrokeJoin> *r_joins = nullptr);
 
 /* ---------------------------------------------------------------------------------
  * Editing helpers
@@ -174,6 +180,9 @@ void drawing_append_selected(VectorDrawing &dst, const VectorDrawing &src);
 std::vector<ShapeEdge> drawing_selected_edges(const VectorDrawing &drawing);
 /* Moho's Hide Edge: hides or shows the outline along these segments. */
 void drawing_set_edges_hidden(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges, bool hidden);
+
+/* Sets the corner type of the selected points. */
+void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner);
 
 /* Mean radius of the selected points, or -1 if none are selected. */
 float drawing_selected_mean_radius(const VectorDrawing &drawing);

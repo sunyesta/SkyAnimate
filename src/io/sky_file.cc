@@ -67,6 +67,9 @@ static json drawing_to_json(const VectorDrawing &drawing)
     if (p.radius != 1.0f) {
       point["radius"] = num(p.radius);
     }
+    if (p.corner == CornerType::Sharp) {
+      point["corner"] = "SHARP";
+    }
     points.push_back(std::move(point));
   }
   json curves = json::array();
@@ -311,8 +314,8 @@ static VectorDrawing drawing_from_json(const json &j)
   }
   for (const json &p : get_array(j, "points")) {
     if (p.is_object()) {
-      drawing.points.push_back(
-          {get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f), false});
+      drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
+                                false, get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
     }
   }
   const int point_count = int(drawing.points.size());

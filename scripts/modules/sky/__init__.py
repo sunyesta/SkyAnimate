@@ -169,6 +169,15 @@ class _Layer:
         Drawing tab's Edge > Visible. Returns how many edges changed."""
         return _sky.layer_set_selected_edges_visible(self._id, visible)
 
+    @property
+    def corners(self):
+        """Each point's corner type, "ROUND" or "SHARP": how strokes turn and end there."""
+        return _sky.layer_corners(self._id)
+
+    def set_selected_corner(self, corner):
+        """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
+        _sky.layer_set_selected_corner(self._id, corner)
+
     def select_points(self, indices, select=True):
         _sky.layer_select_points(self._id, list(indices), select)
 
