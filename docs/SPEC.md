@@ -60,7 +60,7 @@ The data model follows Moho: a document holds a tree of layers, almost every pro
 | Particle | Child layers emitted as particles | Maybe |
 | Note | A sticky note in the viewport | Maybe |
 
-**Vector drawings.** A drawing is a pool of points, curves through those points, and shapes. A point can sit on several curves, which is how Moho welds lines together. Each point has an animated position, an animated width and an optional bone binding. Curves are smooth splines driven by per-point curvature, weight and offset values rather than stored Bezier handles; we copy that scheme so curves animate the way Moho users expect. A shape is a list of curve segments with a fill and outline style. Styles cascade: a shape has its own style plus up to two shared styles from the library.
+**Vector drawings.** A drawing is a pool of points, curves through those points, and shapes. A point can sit on several curves, which is how Moho welds lines together. Each point has an animated position, an animated width and an optional bone binding. Every curve point has Bezier handles with Blender's handle types: Automatic handles follow Moho's smooth spline (per-point curvature, weight and offset), so curves animate the way Moho users expect; Vector handles point a third of the way to the neighbours (corners and straight lines); Aligned and Free handles are stored and moved by hand. Dragging an Automatic handle makes it Aligned and dragging a Vector handle makes it Free, as in Blender; V sets the type, and Viewport Overlays > Handles shows None, Selected or All. A shape is a list of curve segments with a fill and outline style. Styles cascade: a shape has its own style plus up to two shared styles from the library.
 
 **Bones.** A skeleton is a tree of bones. Each bone has a rest position, angle, length and scale plus animated position, angle and scale channels. Bones support IK with locks and angle limits, independent angle, squash and stretch, controlling bones (one bone's angle drives another's), bone dynamics (spring and damping), colour tags and a display shape. Points bind to one bone, to all bones by distance (flexi-binding), or to a chosen subset; whole layers can bind to one bone.
 
@@ -97,7 +97,7 @@ All modes also take the hold length (frames to wait before moving) and the inter
 
 **Smart bones.** A smart bone is an action with the same name as a bone. Inside the action, the bone's own angle is keyed over time, for example 0° at frame 0 and 90° at frame 24. On the mainline, the bone's current angle is looked up in that keyed range to find a matching action frame. Every other channel in the action is sampled at that frame, and its change from frame 0 is added on top. Influences from several smart bones always add together. A second action named after the bone plus " 2" handles rotation in the other direction.
 
-**Masking.** Inside a masking group, layers are processed top to bottom. Each layer either adds to the running mask, subtracts from it, clears it and adds, or is clipped by it, with invisible variants of the add and subtract modes. The group decides whether everything starts shown or hidden.
+**Masking.** As in Moho: a group's mask is No masking, Reveal all or Hide all, and inside a masking group each layer is one of Moho's seven modes: Mask this layer, Don't mask this layer, + Add to mask, + Add to mask but keep invisible, - Subtract from mask (the layer is invisible), + Clear the mask then add this layer, or the same invisibly. Right-clicking a group offers Moho's shortcuts, Mask - Inside Bottom Layer (Hide all, bottom layer adds to the mask) and Mask - Outside Bottom Layer (Reveal all, bottom layer subtracts). The full settings are in the Layer tab's Masking panel, with Moho's two options for a layer's part of the mask: Expand mask by a pixel (hides thin seams along mask edges) and Exclude strokes (only fills mask). A layer's right-click menu has Group Mask or Masking, Group With Selection (Ctrl or Shift click picks more layers), Duplicate Layer, Reference Layer and Delete Layer.
 
 **Reference layers.** A reference layer is a live copy of another layer or group, in the same file or in another .sky file. It shows the original's drawing, bones, smart bones and animation, and updates as the original changes. SkyAnimate copies Moho's rules:
 
@@ -194,7 +194,8 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 
 - **Brush picker dialog**, laid out like Moho's: a grid of brush thumbnails (with None first), multi-stamp brushes marked with three dots, the settings below, a live preview stroke, Save Brush, OK and Cancel. Alt-click a brush to carry the current settings over to it.
 - **Brush files:** Moho's `.mohobrush` file is a zip holding a `brush.json` with the settings below plus one PNG stamp, or a folder of PNG stamps for a multi-stamp brush. SkyAnimate reads these files directly and saves its own brushes in the same format.
-- **Library folders:** Preferences lists the folders to load brushes from. Point it at your Moho install's `Resources/Support/Common`, `Debut` and `Pro` brush folders to use Moho's brushes without copying them. They are Smith Micro's artwork, which is fine for private use, so they are never bundled with SkyAnimate.
+- **Older brushes:** a lone PNG (or folder of PNGs) with no `.mohobrush` is a brush too. Settings can follow its name as `Name_<align 0|1>_<jitter degrees>_<spacing percent>.png`, as in Moho's `Brush522_1_0_200.png`. Stamps are dark ink on white (darkness is coverage), or colour with alpha for colour brushes.
+- **Asset library:** all of the app's brushes live in one asset library folder, set in Preferences (`<library>/library.json` marks it, `<library>/Brushes/` holds the brushes). If none is set, or its folder is gone, SkyAnimate asks for a folder at startup and initializes the library there. It then offers to import Moho's brushes: it copies them from the Moho install (`Resources/Support/Common`, `Debut` and `Pro` brush folders) and from your Moho custom content into the library. Preferences can also import from any folder later. Moho's brushes are Smith Micro's artwork, which is fine for private use, so they are never bundled with SkyAnimate; they only reach the library from your own Moho install.
 
 | Setting | Stored as | What it does |
 | --- | --- | --- |
@@ -202,7 +203,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 | Random stamp order | `randomOrder` | Multi-stamp brushes pick stamps at random instead of in sequence |
 | Merge alpha | `mergedAlpha` | Overlapping stamps merge into one transparency instead of building up darker |
 | Tint brush using stroke color | the style's tint flag | Stamps take the line colour |
-| Line boil | `randomize` (inferred) | Stamps re-randomise over time so the line shimmers like hand-drawn animation |
+| Line boil | `randomize` | Stamps re-randomise over time so the line shimmers like hand-drawn animation |
 | Jitter angle | `jitter`, in radians | Random rotation range per stamp; 360° means any angle |
 | Spacing | `spacing` | Gap between stamps as a percentage of brush size |
 | Size variation amplitude | `sizeVariationAmp` | How much stamp size varies |
@@ -318,7 +319,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 | --- | --- |
 | File | New, Open, Open Recent, Save (Ctrl+S), Save As, Save Copy; Import (SVG, images, OBJ and glTF meshes, layers from another .sky file by reference); Export (PNG sequence, video, GIF); Save Startup File; Quit |
 | Edit | Undo, Redo, Undo History, Repeat Last, Adjust Last Operation, Operator Search (F3), Preferences |
-| Render | Render Frame (F12), Render Animation (Ctrl+F12), View Render (F11), Output Settings |
+| Render | Render Frame (Ctrl+R or F12, shown in a Render Result window with Save As PNG), Render Animation (Ctrl+F12), View Render (F11), Output Settings |
 | Window | New Window, Toggle Fullscreen, Next and Previous Workspace, Toggle Python Console |
 | Help | Manual, Python API Reference, Keyboard Shortcuts, Open Log Folder, About SkyAnimate |
 
@@ -361,7 +362,7 @@ The tabs shown depend on the layer type: a bone layer gets a Bone tab, an image 
 | Export video through FFmpeg | Both | Later |
 | Import SVG artwork | Moho | Later |
 | Export GIF and glTF | Both | Maybe |
-| Render settings: resolution, frame range, transparent background, anti-aliasing quality; viewport and render quality (stroke resolution: pieces drawn per curve segment, set per document) | Both | v1 |
+| Render settings: resolution, frame range, transparent background; viewport and render quality (stroke resolution: pieces drawn per curve segment) and viewport and render samples (multisampled anti-aliasing, 1 to 16 per pixel; default 4 and 16), set per document. Masks are per-sample stencil masks, so masked edges leave no seams | Both | v1 |
 
 ## Architecture sketch
 

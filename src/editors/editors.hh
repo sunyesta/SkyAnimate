@@ -25,6 +25,9 @@ enum class AreaSplit { None, Vertical, Horizontal };
 
 /* What a viewport draws over the artwork, like Blender's viewport overlays. Each viewport has
  * its own; `show` turns them all off at once. */
+/* Which curve handles the viewport shows, as Blender's Overlays > Handles. */
+enum class HandleDisplay { None, Selected, All };
+
 struct ViewportOverlays {
   bool show = true;
   bool grid = false;
@@ -35,6 +38,7 @@ struct ViewportOverlays {
   /* Curve wires and points of the active layer while editing it. */
   bool wireframe = true;
   bool points = true;
+  HandleDisplay handles = HandleDisplay::Selected;
   /* Bones arrive in milestone 4; the toggle is already here for them. */
   bool bones = true;
 };

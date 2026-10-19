@@ -24,13 +24,13 @@ def snapshot():
     """Everything that should survive a save and open, as plain values."""
     def layer_info(l):
         source = l.reference_source
-        return (l.name, l.type, l.visible, l.locked, l.label_color, round(l.location_x, 5), round(l.rotation, 5),
-                round(l.opacity, 5), l.mask_mode, l.group_mask, source.name if source else None,
+        return (l.name, l.type, l.visible, l.render_visible, l.locked, l.label_color, round(l.location_x, 5), round(l.rotation, 5),
+                round(l.opacity, 5), l.mask_mode, l.group_mask, l.mask_expand, l.mask_exclude_strokes, source.name if source else None,
                 [(round(x, 5), round(y, 5)) for x, y, _ in l.points], [round(r, 5) for r in l.radii], l.hidden_edges, l.corners,
                 l.curve_count, l.shape_count,
                 [layer_info(c) for c in l.children])
     return (doc.name, doc.frame_start, doc.frame_end, doc.fps, doc.width, doc.height,
-            doc.viewport_quality, doc.render_quality,
+            doc.viewport_quality, doc.render_quality, doc.viewport_samples, doc.render_samples,
             [layer_info(l) for l in layers], [(t.name, t.body) for t in sky.data.texts],
             layers.active.name)
 
@@ -60,12 +60,17 @@ sky.ops.layer.make_reference()
 ref = layers.active
 ref.name = "Mask"
 ref.mask_mode = "ADD_INVISIBLE"
+ref.mask_expand = True
+ref.mask_exclude_strokes = True
 ref.opacity = 0.5
+ref.render_visible = False
 doc.name = "Walk"
 doc.frame_end = 48
 doc.fps = 12.0
 doc.viewport_quality = 6
 doc.render_quality = 48
+doc.viewport_samples = 8
+doc.render_samples = 2
 sky.data.texts.new().body = "print('hello from the file')\n"
 layers.active = art
 before = snapshot()

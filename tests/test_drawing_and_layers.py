@@ -158,6 +158,28 @@ assert sky.ops.layer.group() == {'FINISHED'}
 assert layer.parent is not None and layer.parent.type == "GROUP"
 holder = layer.parent
 
+# Group With Selection: the active layer and the Ctrl-clicked ones go into one new group, top first.
+sky.ops.layer.new()
+a = layers.active
+sky.ops.layer.new()
+b = layers.active
+a.select = True
+assert sky.ops.layer.group() == {'FINISHED'}
+picked = layers.active
+assert picked.type == "GROUP" and [c.name for c in picked.children] == [b.name, a.name]
+assert not a.select, "the extra selection clears"
+
+# Moho's group mask shortcuts mask with the bottom layer.
+assert sky.ops.layer.group_mask_set(mode="INSIDE") == {'FINISHED'}
+assert picked.group_mask == "HIDE_ALL" and a.mask_mode == "ADD"
+assert sky.ops.layer.group_mask_set(mode="OUTSIDE") == {'FINISHED'}
+assert picked.group_mask == "SHOW_ALL" and a.mask_mode == "SUBTRACT_INVISIBLE"
+assert sky.ops.layer.group_mask_set(mode="NONE") == {'FINISHED'} and picked.group_mask == "NONE"
+layers.active = a
+assert not sky.ops.layer.group_mask_set.poll(), "only on groups"
+layers.active = picked
+sky.ops.layer.delete()
+
 # --- References and masking ----------------------------------------------------------
 layers.active = layer
 assert sky.ops.layer.make_reference() == {'FINISHED'}

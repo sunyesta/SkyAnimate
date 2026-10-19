@@ -27,6 +27,10 @@ assert (doc.viewport_quality, doc.render_quality) == (12, 32)
 doc.render_quality = 500
 assert doc.render_quality == 64, "quality is clamped to 1-64"
 doc.render_quality = 32
+assert (doc.viewport_samples, doc.render_samples) == (4, 16)
+doc.render_samples = 64
+assert doc.render_samples == 16, "samples are clamped to 1-16"
+assert not sky.ops.render.render.poll(), "rendering needs the window"
 assert doc.name == "Walk cycle"
 expect_error(TypeError, lambda: setattr(doc, "fps", "fast"))
 expect_error(TypeError, lambda: setattr(doc, "frame_end", 2.5))

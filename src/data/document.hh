@@ -34,6 +34,10 @@ struct Document {
    * renders, like Blender's curve resolution. Lower is faster, higher is smoother. */
   int viewport_quality = 12;
   int render_quality = 32;
+  /* Anti-aliasing samples per pixel (1, 2, 4, 8 or 16) in the viewport and in renders. More
+   * samples smooth edges better and use more GPU memory. */
+  int viewport_samples = 4;
+  int render_samples = 16;
   /* The action being edited, like Moho's CurrentDocAction(). Empty means the mainline. */
   std::string action;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */

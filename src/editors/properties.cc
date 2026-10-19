@@ -10,6 +10,8 @@
 
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "assets/brushes.hh"
+#include "editors/brush_settings.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -41,6 +43,8 @@ static void document_tab(Context &C)
   if (ui_panel_begin("Quality")) {
     ui_prop(C, ptr, "viewport_quality", path);
     ui_prop(C, ptr, "render_quality", path);
+    ui_prop(C, ptr, "viewport_samples", path);
+    ui_prop(C, ptr, "render_samples", path);
     ui_panel_end();
   }
   if (ui_panel_begin("Frame Range")) {
@@ -64,6 +68,7 @@ static void layer_tab(Context &C)
   if (ui_panel_begin("Layer")) {
     ui_prop(C, ptr, "name", path);
     ui_prop(C, ptr, "visible", path);
+    ui_prop(C, ptr, "render_visible", path);
     ui_prop(C, ptr, "locked", path);
     ui_prop(C, ptr, "label_color", path);
     ui_panel_end();
@@ -78,12 +83,31 @@ static void layer_tab(Context &C)
   }
   if (ui_panel_begin("Compositing")) {
     ui_prop(C, ptr, "opacity", path);
+    ui_panel_end();
+  }
+  /* Masking, as Moho sets it: a group turns masking on for its layers (and whether they start
+   * shown or hidden); each layer inside then masks, adds to or cuts from the mask. */
+  if (ui_panel_begin("Masking")) {
     const Layer *parent = layer_parent(doc, layer->id);
-    if (parent && parent->group_mask != GroupMask::None) {
-      ui_prop(C, ptr, "mask_mode", path);
-    }
     if (layer->is_group()) {
       ui_prop(C, ptr, "group_mask", path);
+    }
+    if (parent) {
+      ui_prop(C, ptr, "mask_mode", path);
+      ui_prop(C, ptr, "mask_expand", path);
+      /* Only vector layers have strokes to leave out, as in Moho. */
+      if (!layer->is_group()) {
+        ui_prop(C, ptr, "mask_exclude_strokes", path);
+      }
+    }
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    if (parent && parent->group_mask == GroupMask::None) {
+      ImGui::TextWrapped("Takes effect once the group \"%s\" has masking on.", parent->name.c_str());
+    }
+    else if (!parent && !layer->is_group()) {
+      ImGui::TextWrapped("Masking works inside a group: turn it on for the group, then set how each layer "
+                         "inside takes part.");
     }
     ui_panel_end();
   }
@@ -252,6 +276,30 @@ static void shape_panel(Context &C, Shape &shape)
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       C.undo->push("Line Width", doc);
     }
+
+    /* Moho's brush: the button opens Brush Settings; OK gives every selected shape the result. */
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Brush");
+    ImGui::TableSetColumnIndex(1);
+    const std::string &brush = shape.style.brush.name;
+    const bool missing = !brush.empty() && !brush_find(brush);
+    if (ImGui::Button(((brush.empty() ? std::string("None") : brush) + "##brush").c_str(), ImVec2(-1, 0))) {
+      Context *ctx = &C;
+      brush_settings_open(shape.style.brush, shape.style, [ctx](const BrushSettings &settings) {
+        if (shapes_set_brush(*ctx, settings) > 0) {
+          ctx->undo->push("Brush Settings", *ctx->document);
+        }
+      });
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(missing ? "This brush isn't in the asset library: the line is drawn plain"
+                                : "Paint the line with a brush from the asset library");
+    }
+    if (missing) {
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Not in the asset library");
+    }
     ui_panel_end();
   }
 }
@@ -347,6 +395,28 @@ static void point_panel(Context &C, VectorDrawing &drawing)
       drawing_set_selected_corner(drawing, choices[i].type);
       C.undo->push(i == 0 ? "Round Corner" : "Sharp Corner", *C.document);
     }
+  }
+
+  /* Blender's handle types; a mix shows a dash. */
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Handle Type");
+  ImGui::TableSetColumnIndex(1);
+  ImGui::SetNextItemWidth(-1);
+  const int current = drawing_selected_handle_type(drawing);
+  const char *preview = current >= 0 ? handle_type_name(HandleType(current)) : "\xE2\x80\x94";
+  if (ImGui::BeginCombo("##handle_type", preview)) {
+    for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
+      if (ImGui::Selectable(handle_type_name(type), current == int(type))) {
+        operator_call(C, "mesh.handle_type_set", {{"type", handle_type_identifier(type)}});
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Automatic: smooth, follows the neighbours. Vector: points at the neighbours.\n"
+                      "Aligned: handles stay in line. Free: handles move on their own. (V)");
   }
   ui_panel_end();
 }

@@ -15,6 +15,9 @@ void file_dialog_open(const char *filter_name, const char *pattern, FileDialogDo
 void file_dialog_save(const char *filter_name, const char *pattern, const std::string &default_path,
                       FileDialogDone done);
 
+/* Picks a folder. */
+void file_dialog_folder(FileDialogDone done);
+
 /* Runs the callbacks of dialogs that have closed. Call once per frame. */
 void file_dialog_process();
 

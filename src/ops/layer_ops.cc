@@ -27,6 +27,18 @@ static void layer_operator(const char *idname, const char *name, const char *des
   operators().add(std::move(ot));
 }
 
+/* Clears the Layers editor's extra selection (Ctrl or Shift click). */
+static void layers_deselect(Document &doc)
+{
+  const auto clear = [](auto &self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      layer.selected = false;
+      self(self, layer.children);
+    }
+  };
+  clear(clear, doc.layers);
+}
+
 void layer_operators_register()
 {
   layer_operator("layer.new", "New Layer", "Add a vector layer above the active layer", nullptr, [](Context &C) {
@@ -95,16 +107,63 @@ void layer_operators_register()
                                                                                         : OpStatus::Cancelled;
                  });
 
-  layer_operator("layer.group", "Group Layer", "Put the active layer into a new group in its place",
-                 active_layer_poll, [](Context &C) {
-                   Document &doc = *C.document;
-                   const uint64_t layer_id = doc.active_layer;
-                   Layer &group = document_add_layer(doc, LayerType::Group, "");
-                   const uint64_t group_id = group.id;
-                   document_reparent_layer(doc, layer_id, group_id, 0);
-                   doc.active_layer = layer_id;
-                   return OpStatus::Finished;
-                 });
+  layer_operator(
+      "layer.group", "Group With Selection",
+      "Put the active and selected layers into a new group where the active one was, as Moho does",
+      active_layer_poll, [](Context &C) {
+        Document &doc = *C.document;
+        /* The layers to move, top first; a layer inside another picked group goes with it. */
+        std::vector<uint64_t> ids;
+        for (const Layer *layer : document_layers_flat(doc)) {
+          if (layer->id != doc.active_layer && !layer->selected) {
+            continue;
+          }
+          bool inside_picked = false;
+          for (const Layer *p = layer_parent(doc, layer->id); p; p = layer_parent(doc, p->id)) {
+            inside_picked = inside_picked || p->id == doc.active_layer || p->selected;
+          }
+          if (!inside_picked) {
+            ids.push_back(layer->id);
+          }
+        }
+        Layer &group = document_add_layer(doc, LayerType::Group, "");
+        const uint64_t group_id = group.id;
+        for (const uint64_t id : ids) {
+          document_reparent_layer(doc, id, group_id, int(layer_find(doc, group_id)->children.size()));
+        }
+        layers_deselect(doc);
+        doc.active_layer = group_id;
+        return OpStatus::Finished;
+      });
+
+  /* Moho's group right-click shortcuts for the commonest masks, set from the bottom layer:
+   * INSIDE shows the layers above only inside it (Hide all, bottom layer + Add to mask),
+   * OUTSIDE only outside it (Reveal all, bottom layer - Subtract from mask); NONE turns off
+   * masking. */
+  layer_operator(
+      "layer.group_mask_set", "Group Mask",
+      "Mask the group's layers inside or outside its bottom layer (mode=\"INSIDE\", \"OUTSIDE\" or \"NONE\")",
+      [](Context &C) {
+        const Layer *layer = document_active_layer(*C.document);
+        return layer && layer->is_group();
+      },
+      [](Context &C) {
+        Layer &group = *document_active_layer(*C.document);
+        const std::string mode = op_arg(C, "mode", "INSIDE");
+        if (mode == "NONE") {
+          group.group_mask = GroupMask::None;
+          return OpStatus::Finished;
+        }
+        if ((mode != "INSIDE" && mode != "OUTSIDE") || group.children.empty()) {
+          report(ReportType::Error, group.children.empty() ? "The group has no bottom layer to mask with"
+                                                           : "mode must be INSIDE, OUTSIDE or NONE");
+          return OpStatus::Cancelled;
+        }
+        Layer &bottom = group.children.back();
+        group.group_mask = mode == "INSIDE" ? GroupMask::HideAll : GroupMask::ShowAll;
+        bottom.mask_mode = mode == "INSIDE" ? MaskMode::Add : MaskMode::SubtractInvisible;
+        return OpStatus::Finished;
+      });
 }
 
 }  // namespace sky

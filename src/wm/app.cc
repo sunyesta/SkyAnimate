@@ -14,7 +14,11 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_internal.h"
 
+#include "assets/asset_library.hh"
+#include "assets/brushes.hh"
 #include "core/log.hh"
+#include "editors/brush_settings.hh"
+#include "editors/ui.hh"
 #include "ops/builtin_ops.hh"
 #include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
@@ -65,6 +69,9 @@ static std::string key_type_from_sdl(SDL_Keycode key)
 int App::run(const LaunchOptions &options)
 {
   wm_.background = options.background;
+  /* Tests run without the user's preferences (and never change them). */
+  preferences_set_persistent(!options.background);
+  preferences_load();
   ctx_.document = &doc_;
   ctx_.undo = &undo_;
   ctx_.wm = &wm_;
@@ -76,6 +83,7 @@ int App::run(const LaunchOptions &options)
   builtin_operators_register();
   layer_operators_register();
   vector_operators_register();
+  asset_operators_register();
   file_operators_register();
 
   /* The file opens first, so scripts given with it work on it, as in Blender. */
@@ -214,6 +222,7 @@ void App::main_loop()
     glClearColor(0.086f, 0.086f, 0.086f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    ui_eyedropper_sample(height);
     SDL_GL_SwapWindow(window_);
   }
 }
@@ -600,12 +609,18 @@ void App::draw_top_bar()
     }
     ImGui::Separator();
     menu_not_yet("Operator Search...", "F3", "milestone 5");
-    menu_not_yet("Preferences...", nullptr, "milestone 5");
+    if (ImGui::MenuItem("Preferences...")) {
+      show_preferences_ = true;
+    }
     ImGui::EndMenu();
   }
 
   if (ImGui::BeginMenu("Render")) {
-    menu_not_yet("Render Frame", "F12", "milestone 3");
+    menu_operator(ctx_, "Render Frame", "render.render");
+    if (ImGui::MenuItem("View Render", nullptr, show_render_, render_texture_ != 0)) {
+      show_render_ = !show_render_;
+    }
+    ImGui::Separator();
     menu_not_yet("Render Animation", "Ctrl F12", "milestone 3");
     ImGui::EndMenu();
   }
@@ -783,8 +798,197 @@ void App::draw_unsaved_changes_prompt()
   }
 }
 
+/* Without an asset library the app asks for a folder to set one up in; once there is one with no
+ * brushes, it offers to import Moho's. */
+void App::draw_asset_library_prompts()
+{
+  const bool ready = asset_library_ready();
+  if (ready && !library_was_ready_ && brushes().empty() && !moho_brush_dirs().empty()) {
+    offer_moho_import_ = true;
+  }
+  library_was_ready_ = ready;
+
+  const char *setup = "Set Up Asset Library";
+  if (!ready && !ImGui::IsPopupOpen(setup)) {
+    ImGui::OpenPopup(setup);
+  }
+  if (ImGui::BeginPopupModal(setup, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::TextUnformatted("SkyAnimate keeps its brushes in an asset library folder, shared by all your documents.");
+    if (preferences().asset_library.empty()) {
+      ImGui::TextUnformatted("Pick a folder where SkyAnimate can set one up.");
+    }
+    else {
+      ImGui::Text("The asset library at %s can't be found.", preferences().asset_library.c_str());
+      ImGui::TextUnformatted("Pick a folder for a new one, or find the old one.");
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Choose Folder...")) {
+      operator_call(ctx_, "preferences.asset_library_set");
+    }
+    if (ready) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  const char *import = "Import Moho Brushes";
+  if (offer_moho_import_ && !ImGui::IsPopupOpen(import) && !ImGui::IsPopupOpen(setup)) {
+    ImGui::OpenPopup(import);
+    offer_moho_import_ = false;
+  }
+  if (ImGui::BeginPopupModal(import, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::TextUnformatted("Moho is installed on this computer. Copy its brushes into the asset library?");
+    for (const std::string &dir : moho_brush_dirs()) {
+      ImGui::BulletText("%s", dir.c_str());
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Import")) {
+      operator_call(ctx_, "preferences.import_moho_brushes");
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Not Now")) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+/* Edit > Preferences: where the asset library is, and bringing in Moho's brushes. */
+void App::draw_preferences()
+{
+  if (!show_preferences_) {
+    return;
+  }
+  const ImGuiViewport *main = ImGui::GetMainViewport();
+  ImGui::SetNextWindowSize(ImVec2(560, 260), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+  if (!ImGui::Begin("Preferences", &show_preferences_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
+    ImGui::End();
+    return;
+  }
+  ImGui::SeparatorText("File Paths");
+  ImGui::TextUnformatted("Asset Library");
+  ImGui::SameLine(130);
+  const std::string &library = preferences().asset_library;
+  ImGui::TextDisabled("%s", library.empty() ? "(not set)" : library.c_str());
+  ImGui::SetCursorPosX(130);
+  if (ImGui::Button("Change...")) {
+    operator_call(ctx_, "preferences.asset_library_set");
+  }
+
+  ImGui::SeparatorText("Brushes");
+  ImGui::Text("%d brushes in the asset library", int(brushes().size()));
+  ImGui::BeginDisabled(!asset_library_ready());
+  if (ImGui::Button("Import Moho Brushes")) {
+    operator_call(ctx_, "preferences.import_moho_brushes");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Copy the brushes of Moho's install and your Moho custom content into the asset library");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Import From Folder...")) {
+    Context *ctx = &ctx_;
+    file_dialog_folder([ctx](const std::string &path) {
+      operator_call(*ctx, "preferences.import_moho_brushes", {{"directory", path}});
+    });
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Reload")) {
+    operator_call(ctx_, "preferences.brushes_reload");
+  }
+  ImGui::EndDisabled();
+  ImGui::End();
+}
+
+/* Renders the current frame through the camera: the document's size, background, render
+ * quality and render samples. */
+void App::render_frame()
+{
+  wm_.render_requested = false;
+  if (!render_renderer_) {
+    render_renderer_ = std::make_unique<SceneRenderer>();
+  }
+  const int width = std::max(doc_.width, 1), height = std::max(doc_.height, 1);
+  /* The camera frame is 2 document units tall, centred on the origin. */
+  const float scale = float(height) * 0.5f;
+  const Transform2D document_to_pixels{scale, 0, 0, scale, float(width) * 0.5f, float(height) * 0.5f};
+  const uint64_t start = SDL_GetTicksNS();
+  render_texture_ = render_renderer_->render(doc_, width, height, document_to_pixels, doc_.render_quality,
+                                             doc_.render_samples, &doc_.background);
+  glFinish();
+  render_seconds_ = double(SDL_GetTicksNS() - start) * 1e-9;
+  render_frame_ = doc_.frame_current;
+  render_width_ = width;
+  render_height_ = height;
+  show_render_ = render_texture_ != 0;
+  char text[128];
+  std::snprintf(text, sizeof(text), "Rendered frame %d (%d x %d, %d samples) in %.2f s", render_frame_, width, height,
+                render_renderer_->samples(), render_seconds_);
+  report(ReportType::Info, text);
+}
+
+/* Saves the last render as a PNG. */
+static void render_save_png(SceneRenderer &renderer, const std::string &path)
+{
+  std::vector<uint8_t> pixels;
+  int width = 0, height = 0;
+  if (!renderer.read_pixels(pixels, &width, &height)) {
+    return;
+  }
+  SDL_Surface *surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, pixels.data(), width * 4);
+  const bool saved = surface && SDL_SavePNG(surface, path.c_str());
+  SDL_DestroySurface(surface);
+  report(saved ? ReportType::Info : ReportType::Error,
+         saved ? "Saved render to " + path : "Could not save " + path + ": " + SDL_GetError());
+}
+
+/* Blender's render window: the last render, fitted to the window, with Save As. */
+void App::draw_render_result()
+{
+  if (!show_render_ || !render_texture_) {
+    return;
+  }
+  const ImGuiViewport *main = ImGui::GetMainViewport();
+  ImGui::SetNextWindowSize(ImVec2(main->Size.x * 0.6f, main->Size.y * 0.6f), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+  if (!ImGui::Begin("Render Result", &show_render_, ImGuiWindowFlags_NoCollapse)) {
+    ImGui::End();
+    return;
+  }
+  if (ImGui::Button("Save As...")) {
+    char name[64];
+    std::snprintf(name, sizeof(name), "_%04d.png", render_frame_);
+    SceneRenderer *renderer = render_renderer_.get();
+    file_dialog_save("PNG images", "png", doc_.name + name, [renderer](const std::string &path) {
+      std::string file = path;
+      if (file.size() < 4 || file.compare(file.size() - 4, 4, ".png") != 0) {
+        file += ".png";
+      }
+      render_save_png(*renderer, file);
+    });
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("Frame %d  |  %d x %d  |  %d samples  |  %.2f s", render_frame_, render_width_, render_height_,
+                      render_renderer_->samples(), render_seconds_);
+  /* Fit the image to the window, keeping its shape. */
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float scale = std::min(avail.x / float(render_width_), avail.y / float(render_height_));
+  const ImVec2 size(float(render_width_) * scale, float(render_height_) * scale);
+  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  const ImVec2 at(cursor.x + (avail.x - size.x) * 0.5f, cursor.y + (avail.y - size.y) * 0.5f);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddImage(ImTextureRef(ImTextureID(intptr_t(render_texture_))), at, ImVec2(at.x + size.x, at.y + size.y),
+               ImVec2(0, 1), ImVec2(1, 0));
+  ImGui::Dummy(avail);
+  ImGui::End();
+}
+
 void App::draw_ui()
 {
+  if (wm_.render_requested) {
+    render_frame();
+  }
   draw_top_bar();
 
   wm_.workspace_index = std::clamp(wm_.workspace_index, 0, int(workspaces_.size()) - 1);
@@ -810,6 +1014,11 @@ void App::draw_ui()
   wm_.transform_request = 0;
 
   draw_unsaved_changes_prompt();
+  draw_render_result();
+  brush_settings_draw(ctx_);
+  draw_preferences();
+  draw_asset_library_prompts();
+  ui_eyedropper_overlay();
 
   if (show_about_) {
     ImGui::OpenPopup("About SkyAnimate");

@@ -31,6 +31,10 @@ enum class SelectMode { Point, Edge, Stroke };
 /* Settings shared by the viewport tools, like Blender's ToolSettings. */
 struct ToolSettings {
   Tool tool = Tool::Select;
+  /* K switches to Split Curve for a single split; afterwards (or on Esc or right-click) the
+   * tool it came from returns. */
+  bool tool_temporary = false;
+  Tool tool_return = Tool::Select;
   SelectMode select_mode = SelectMode::Point;
   /* Snap points to the grid while drawing and transforming. */
   bool snap_grid = false;
@@ -66,6 +70,10 @@ struct WindowManager {
   /* Interface scale, 1.0 = 100%. */
   float ui_scale = 1.0f;
   bool ui_scale_changed = true;
+  /* Set by render.render; the window renders the frame (it owns the OpenGL context). */
+  bool render_requested = false;
+  /* V over the viewport: the viewport opens Blender's Set Handle Type menu. */
+  bool handle_menu_requested = false;
 
   /* Animation playback, advanced by the main loop in real time. */
   bool playing = false;

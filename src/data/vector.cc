@@ -24,9 +24,27 @@ int Curve::segment_count() const
 
 float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre)
 {
+  const int n = int(curve.points.size());
+  const CurvePoint &point = curve.points[i];
+  const float2 here = drawing.points[point.point].pos;
+  switch (point.handle_type) {
+    case HandleType::Aligned:
+    case HandleType::Free:
+      return here + (pre ? point.handle_in : point.handle_out);
+    case HandleType::Vector: {
+      /* A third of the way to the neighbour on that side; none past an open curve's end. */
+      const int other = pre ? i - 1 : i + 1;
+      if (n < 2 || (!curve.closed && (other < 0 || other >= n))) {
+        return here;
+      }
+      const float2 there = drawing.points[curve.points[(other + n) % n].point].pos;
+      return here + (there - here) / 3.0f;
+    }
+    case HandleType::Auto:
+      break;
+  }
   /* Moho's GetBezierHandle(): the handle points along the line from the previous to the next
    * point, its length a share of the distance to the neighbour on that side. */
-  const int n = int(curve.points.size());
   const auto pos = [&](int index) { return drawing.points[curve.points[index].point].pos; };
   if (n < 2) {
     return pos(i);
@@ -52,6 +70,48 @@ float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, boo
   return pos(i) + rotate(dir * len, pre ? cp.offset_in : cp.offset_out);
 }
 
+void curve_point_set_handle_type(VectorDrawing &drawing, Curve &curve, int i, HandleType type)
+{
+  CurvePoint &cp = curve.points[i];
+  if (cp.handle_type == type) {
+    return;
+  }
+  const float2 here = drawing.points[cp.point].pos;
+  const float2 in = curve_handle(drawing, curve, i, true) - here;
+  const float2 out = curve_handle(drawing, curve, i, false) - here;
+  if (type == HandleType::Aligned || type == HandleType::Free) {
+    cp.handle_in = in;
+    cp.handle_out = out;
+    if (type == HandleType::Aligned && length(out) > 1e-9f) {
+      cp.handle_in = -normalize(out) * length(in);
+    }
+    else if (type == HandleType::Aligned && length(in) > 1e-9f) {
+      cp.handle_out = -normalize(in) * length(out);
+    }
+  }
+  if (type == HandleType::Auto && cp.curvature <= 0.0f) {
+    cp.curvature = CURVATURE_SMOOTH;
+  }
+  cp.handle_type = type;
+}
+
+void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool pre, float2 pos, bool keep_other)
+{
+  CurvePoint &cp = curve.points[i];
+  if (cp.handle_type == HandleType::Auto) {
+    curve_point_set_handle_type(drawing, curve, i, HandleType::Aligned);
+  }
+  else if (cp.handle_type == HandleType::Vector) {
+    curve_point_set_handle_type(drawing, curve, i, HandleType::Free);
+  }
+  const float2 offset = pos - drawing.points[cp.point].pos;
+  (pre ? cp.handle_in : cp.handle_out) = offset;
+  if (cp.handle_type == HandleType::Aligned && !keep_other && length(offset) > 1e-9f) {
+    float2 &other = pre ? cp.handle_out : cp.handle_in;
+    other = -normalize(offset) * length(other);
+  }
+}
+
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to)
 {
   const int n = int(curve.points.size());
@@ -75,19 +135,32 @@ float2 bezier_eval(const float2 c[4], float t)
   return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
 }
 
+int bezier_steps(const float2 ctrl[4], int min_steps, float tolerance)
+{
+  if (tolerance <= 0.0f) {
+    return min_steps;
+  }
+  /* Wang's formula: n pieces keep a cubic within `tolerance` of its chords when
+   * n >= sqrt(3/4 * L / tolerance), L the larger second difference of the control points. */
+  const float L = std::max(length(ctrl[0] - ctrl[1] * 2.0f + ctrl[2]), length(ctrl[1] - ctrl[2] * 2.0f + ctrl[3]));
+  const int n = int(std::ceil(std::sqrt(0.75f * L / tolerance)));
+  return std::clamp(n, min_steps, 1024);
+}
+
 void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int segment, int steps,
-                          std::vector<float2> &r_points)
+                          std::vector<float2> &r_points, float tolerance)
 {
   float2 ctrl[4];
   curve_segment_bezier(drawing, curve, segment, ctrl);
+  steps = bezier_steps(ctrl, steps, tolerance);
   for (int i = 0; i < steps; i++) {
     r_points.push_back(bezier_eval(ctrl, float(i) / float(steps)));
   }
 }
 
-bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_per_segment,
+bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_steps,
                    std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
-                   std::vector<bool> *r_visible, std::vector<StrokeJoin> *r_joins)
+                   std::vector<bool> *r_visible, std::vector<StrokeJoin> *r_joins, float tolerance)
 {
   if (r_joins) {
     r_joins->clear();
@@ -160,6 +233,7 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_p
       std::swap(ctrl[1], ctrl[2]);
       std::swap(from, to);
     }
+    const int steps_per_segment = bezier_steps(ctrl, min_steps, tolerance);
     const float r0 = drawing.points[from].radius, r1 = drawing.points[to].radius;
     const bool visible = !curve.points[o.edge.segment].edge_hidden;
     /* The radius blends by distance along the segment, not by the curve parameter: samples
@@ -419,6 +493,33 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t)
   CurvePoint cp;
   cp.point = point;
   const int n = int(curve.points.size());
+  CurvePoint &from = curve.points[edge.segment];
+  CurvePoint &to = curve.points[(edge.segment + 1) % n];
+  const bool stored = from.handle_type == HandleType::Aligned || from.handle_type == HandleType::Free ||
+                      to.handle_type == HandleType::Aligned || to.handle_type == HandleType::Free;
+  if (stored) {
+    /* Hand-set handles: split the Bezier exactly (de Casteljau), so the line doesn't move. The
+     * new point is Aligned; the ends' facing handles shorten to match. */
+    const auto lerp2 = [](float2 a, float2 b, float u) { return a + (b - a) * u; };
+    const float2 p01 = lerp2(ctrl[0], ctrl[1], t), p12 = lerp2(ctrl[1], ctrl[2], t), p23 = lerp2(ctrl[2], ctrl[3], t);
+    const float2 p012 = lerp2(p01, p12, t), p123 = lerp2(p12, p23, t);
+    const float2 mid = drawing.points[point].pos;
+    for (CurvePoint *end : {&from, &to}) {
+      if (end->handle_type == HandleType::Auto || end->handle_type == HandleType::Vector) {
+        curve_point_set_handle_type(drawing, curve, end == &from ? edge.segment : (edge.segment + 1) % n,
+                                    HandleType::Free);
+      }
+    }
+    from.handle_out = p01 - ctrl[0];
+    to.handle_in = p23 - ctrl[3];
+    cp.handle_type = HandleType::Aligned;
+    cp.handle_in = p012 - mid;
+    cp.handle_out = p123 - mid;
+  }
+  else if (from.handle_type == HandleType::Vector && to.handle_type == HandleType::Vector) {
+    /* Splitting a straight side keeps it straight. */
+    cp.handle_type = HandleType::Vector;
+  }
   cp.curvature = 0.5f * (curve.points[edge.segment].curvature + curve.points[(edge.segment + 1) % n].curvature);
   cp.edge_hidden = curve.points[edge.segment].edge_hidden;
   if (cp.curvature > 0.0f) {
@@ -553,6 +654,8 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
   for (CurvePoint &cp : curve.points) {
     std::swap(cp.weight_in, cp.weight_out);
     std::swap(cp.offset_in, cp.offset_out);
+    std::swap(cp.handle_in, cp.handle_out);
+    std::swap(cp.select_in, cp.select_out);
   }
   if (curve.closed) {
     /* Keep the same first point: [p0, p(n-1), ..., p1]. */
@@ -944,6 +1047,8 @@ VectorDrawing primitive_drawing(PrimitiveKind kind, const std::vector<float2> &p
     CurvePoint cp;
     cp.point = int(k);
     cp.curvature = curvature[k];
+    /* A box's corners are Vector handles: straight sides, handles still there to pull. */
+    cp.handle_type = kind == PrimitiveKind::Box ? HandleType::Vector : HandleType::Auto;
     curve.points.push_back(cp);
   }
   drawing.curves.push_back(std::move(curve));
@@ -1015,6 +1120,88 @@ void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner)
       p.corner = corner;
     }
   }
+}
+
+void drawing_deselect_handles(VectorDrawing &drawing)
+{
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.select_in = cp.select_out = false;
+    }
+  }
+}
+
+bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp)
+{
+  return drawing.points[cp.point].selected || cp.select_in || cp.select_out;
+}
+
+int drawing_set_selected_handle_type(VectorDrawing &drawing, HandleType type)
+{
+  int changed = 0;
+  for (Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      CurvePoint &cp = curve.points[i];
+      if (curve_point_selected(drawing, cp) && cp.handle_type != type) {
+        curve_point_set_handle_type(drawing, curve, i, type);
+        changed++;
+      }
+    }
+  }
+  return changed;
+}
+
+int drawing_selected_handle_type(const VectorDrawing &drawing)
+{
+  int found = -1;
+  for (const Curve &curve : drawing.curves) {
+    for (const CurvePoint &cp : curve.points) {
+      if (!curve_point_selected(drawing, cp)) {
+        continue;
+      }
+      const int type = int(cp.handle_type);
+      if (found == -1) {
+        found = type;
+      }
+      else if (found != type) {
+        return -2;
+      }
+    }
+  }
+  return found;
+}
+
+const char *handle_type_identifier(HandleType type)
+{
+  switch (type) {
+    case HandleType::Vector: return "VECTOR";
+    case HandleType::Aligned: return "ALIGNED";
+    case HandleType::Free: return "FREE";
+    case HandleType::Auto: break;
+  }
+  return "AUTO";
+}
+
+const char *handle_type_name(HandleType type)
+{
+  switch (type) {
+    case HandleType::Vector: return "Vector";
+    case HandleType::Aligned: return "Aligned";
+    case HandleType::Free: return "Free";
+    case HandleType::Auto: break;
+  }
+  return "Automatic";
+}
+
+bool handle_type_from_identifier(const std::string &identifier, HandleType *r_type)
+{
+  for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
+    if (identifier == handle_type_identifier(type)) {
+      *r_type = type;
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace sky

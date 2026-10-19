@@ -6,6 +6,7 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include <SDL3/SDL_opengl.h>
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
@@ -163,12 +164,162 @@ bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_nam
 {
   ui_label(label);
   ImGui::PushID(label);
-  const bool changed = ImGui::ColorEdit4("##color", rgba, ImGuiColorEditFlags_AlphaBar);
-  if (ImGui::IsItemDeactivatedAfterEdit() && C.undo && C.document && undo_name) {
+  bool finished = false;
+  const bool changed = ui_color_edit("##color", rgba, true, &finished);
+  if (finished && C.undo && C.document && undo_name) {
     C.undo->push(undo_name, *C.document);
   }
   ImGui::PopID();
   return changed;
+}
+
+/* --- Colour picker and eyedropper ------------------------------------------------------------- */
+
+namespace {
+
+struct Eyedropper {
+  bool active = false;
+  /* The colour edit that started it; its result waits for that widget to draw again. */
+  ImGuiID owner = 0;
+  bool sample_pending = false;
+  ImVec2 sample_pos;
+  bool has_result = false;
+  float rgb[3] = {0, 0, 0};
+};
+Eyedropper g_eyedropper;
+
+/* A pipette, as on Blender's eyedropper button. */
+void eyedropper_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
+{
+  const ImVec2 tip(c.x - s * 0.7f, c.y + s * 0.7f), bulb(c.x + s * 0.45f, c.y - s * 0.45f);
+  dl->AddLine(tip, bulb, col, std::max(1.5f, s * 0.22f));
+  dl->AddCircleFilled(ImVec2(bulb.x + s * 0.2f, bulb.y - s * 0.2f), s * 0.32f, col);
+  dl->AddLine(ImVec2(bulb.x - s * 0.35f, bulb.y - s * 0.35f), ImVec2(bulb.x + s * 0.35f, bulb.y + s * 0.35f), col,
+              std::max(1.5f, s * 0.2f));
+}
+
+}  // namespace
+
+bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished)
+{
+  ImGui::PushID(id);
+  const ImGuiID owner = ImGui::GetID("##eyedropper");
+  bool changed = false, finished = false;
+  /* A colour the eyedropper picked for this widget: its RGB, keeping the alpha, as in Blender. */
+  if (g_eyedropper.has_result && g_eyedropper.owner == owner) {
+    rgba[0] = g_eyedropper.rgb[0];
+    rgba[1] = g_eyedropper.rgb[1];
+    rgba[2] = g_eyedropper.rgb[2];
+    g_eyedropper.has_result = false;
+    changed = finished = true;
+  }
+
+  const float h = ImGui::GetFrameHeight();
+  const ImGuiColorEditFlags show = ImGuiColorEditFlags_AlphaPreviewHalf;
+  if (ImGui::ColorButton("##swatch", ImVec4(rgba[0], rgba[1], rgba[2], rgba[3]), show, ImVec2(h * 1.6f, h))) {
+    ImGui::OpenPopup("##picker");
+  }
+  if (hex) {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::ColorEdit4("##hex", rgba,
+                                 ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_NoSmallPreview |
+                                     ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoOptions |
+                                     ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaBar);
+    finished |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+
+  /* The picker remembers whether it changed the colour, to report the edit's end on close. */
+  bool &picker_dirty = *ImGui::GetStateStorage()->GetBoolRef(ImGui::GetID("##picker_dirty"), false);
+  if (ImGui::BeginPopup("##picker")) {
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    if (ImGui::Button("##eyedropper", ImVec2(h, h))) {
+      g_eyedropper = {};
+      g_eyedropper.active = true;
+      g_eyedropper.owner = owner;
+      ImGui::CloseCurrentPopup();
+    }
+    eyedropper_icon(ImGui::GetWindowDrawList(), ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.32f,
+                    IM_COL32(0xe6, 0xe6, 0xe6, 255));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Eyedropper: click anywhere to pick its colour (Esc or right-click cancels)");
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Eyedropper");
+    ImGui::SetNextItemWidth(h * 9.0f);
+    if (ImGui::ColorPicker4("##pick", rgba,
+                            ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_PickerHueBar))
+    {
+      changed = true;
+      picker_dirty = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+  else if (picker_dirty) {
+    picker_dirty = false;
+    finished = true;
+  }
+  ImGui::PopID();
+  if (r_finished) {
+    *r_finished = finished;
+  }
+  return changed;
+}
+
+void ui_eyedropper_overlay()
+{
+  if (!g_eyedropper.active) {
+    return;
+  }
+  /* A clear window over everything catches the click, so nothing underneath reacts to it. */
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->Pos);
+  ImGui::SetNextWindowSize(viewport->Size);
+  ImGui::SetNextWindowFocus();
+  ImGui::Begin("##eyedropper_overlay", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
+  ImGui::InvisibleButton("##catch", viewport->Size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+  const ImGuiIO &io = ImGui::GetIO();
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    g_eyedropper.sample_pending = true;
+    g_eyedropper.sample_pos = io.MousePos;
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    g_eyedropper.active = false;
+  }
+  /* A ring around the pixel that will be picked, leaving the pixel itself clear. */
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+  const ImVec2 m = io.MousePos;
+  dl->AddCircle(m, 9.0f, IM_COL32(0, 0, 0, 220), 24, 3.0f);
+  dl->AddCircle(m, 9.0f, IM_COL32(255, 255, 255, 230), 24, 1.5f);
+  eyedropper_icon(dl, ImVec2(m.x + 18.0f, m.y - 18.0f), 7.0f, IM_COL32(255, 255, 255, 230));
+  dl->AddText(ImVec2(m.x + 30.0f, m.y - 26.0f), IM_COL32(255, 255, 255, 230), "Click to pick  |  Esc cancels");
+  ImGui::End();
+}
+
+void ui_eyedropper_sample(int framebuffer_height)
+{
+  if (!g_eyedropper.sample_pending) {
+    return;
+  }
+  g_eyedropper.sample_pending = false;
+  g_eyedropper.active = false;
+  const ImGuiIO &io = ImGui::GetIO();
+  const int x = int(g_eyedropper.sample_pos.x * io.DisplayFramebufferScale.x);
+  const int y = framebuffer_height - 1 - int(g_eyedropper.sample_pos.y * io.DisplayFramebufferScale.y);
+  unsigned char pixel[4] = {0, 0, 0, 0};
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+  for (int i = 0; i < 3; i++) {
+    g_eyedropper.rgb[i] = float(pixel[i]) / 255.0f;
+  }
+  g_eyedropper.has_result = true;
 }
 
 /* ---------------------------------------------------------------------------------

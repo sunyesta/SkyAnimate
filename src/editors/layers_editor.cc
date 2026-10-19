@@ -22,6 +22,7 @@ static constexpr const char *LAYER_PAYLOAD = "SKY_LAYER";
 static constexpr ImU32 COL_ICON = IM_COL32(0xc8, 0xc8, 0xc8, 255);
 static constexpr ImU32 COL_ICON_OFF = IM_COL32(0x70, 0x70, 0x70, 255);
 static constexpr ImU32 COL_ACTIVE_ROW = IM_COL32(0x33, 0x4d, 0x80, 255);
+static constexpr ImU32 COL_SELECTED_ROW = IM_COL32(0x33, 0x4d, 0x80, 130);
 static constexpr ImU32 COL_REFERENCE = IM_COL32(0x6f, 0xb8, 0xff, 255);
 
 /* --- Icons, drawn with lines. --- */
@@ -37,6 +38,19 @@ static void icon_eye(ImDrawList *dl, ImVec2 c, float s, bool open)
   }
   else {
     dl->AddLine(c + ImVec2(-s * 0.9f, s * 0.6f), c + ImVec2(s * 0.9f, -s * 0.6f), col, 1.3f);
+  }
+}
+
+/* Blender's render toggle: a small camera, struck through when the layer is left out. */
+static void icon_camera(ImDrawList *dl, ImVec2 c, float s, bool on)
+{
+  const ImU32 col = on ? COL_ICON : COL_ICON_OFF;
+  dl->AddRect(c + ImVec2(-s * 0.95f, -s * 0.5f), c + ImVec2(s * 0.35f, s * 0.6f), col, 1.5f, 0, 1.3f);
+  dl->AddTriangleFilled(c + ImVec2(s * 0.35f, s * 0.05f), c + ImVec2(s * 0.95f, -s * 0.4f),
+                        c + ImVec2(s * 0.95f, s * 0.5f), col);
+  dl->AddRectFilled(c + ImVec2(-s * 0.75f, -s * 0.85f), c + ImVec2(-s * 0.2f, -s * 0.5f), col, 1.0f);
+  if (!on) {
+    dl->AddLine(c + ImVec2(-s * 0.95f, s * 0.75f), c + ImVec2(s * 0.95f, -s * 0.85f), col, 1.3f);
   }
 }
 
@@ -80,8 +94,6 @@ static const char *mask_badge(MaskMode mode)
       return "not masked";
     case MaskMode::Add:
       return "+ mask";
-    case MaskMode::Subtract:
-      return "- mask";
     case MaskMode::AddInvisible:
       return "+ mask (hidden)";
     case MaskMode::SubtractInvisible:
@@ -121,30 +133,35 @@ struct DropRequest {
   int where = 0;
 };
 
-static void layer_context_menu(Context &C, Area &area, Layer &layer, bool parent_masks)
+/* Moho's layer right-click menu: Group Mask on groups, Masking on layers inside a group, then
+ * Group With Selection, Duplicate, Reference and Delete. Rename is a double-click or F2; label
+ * colours and Break Reference are in the Properties editor's Layer tab. */
+static void layer_context_menu(Context &C, Layer &layer, bool in_group)
 {
   Document &doc = *C.document;
   doc.active_layer = layer.id;
-  if (ImGui::MenuItem("Rename", "F2")) {
-    area.renaming_layer = layer.id;
-  }
-  ImGui::Separator();
-  menu_op(C, "Duplicate", "layer.duplicate");
-  menu_op(C, "Duplicate as Reference", "layer.make_reference");
-  menu_op(C, "Break Reference", "layer.break_reference");
-  menu_op(C, "Group", "layer.group");
-  ImGui::Separator();
-  if (ImGui::BeginMenu("Label Color")) {
-    const rna::PropertyRNA *prop = Layer::rna().find("label_color");
-    for (int i = 0; i < int(prop->items.size()); i++) {
-      if (ImGui::MenuItem(prop->items[i].name.c_str(), nullptr, int(layer.label_color) == i)) {
-        layer.label_color = LabelColor(i);
-        push_undo(C, "Label Color");
+  bool any = false;
+  if (layer.is_group() && ImGui::BeginMenu("Group Mask")) {
+    /* Moho's shortcuts; Layer Properties > Masking has the full settings. */
+    const Layer *bottom = layer.children.empty() ? nullptr : &layer.children.back();
+    const bool inside = layer.group_mask == GroupMask::HideAll && bottom && bottom->mask_mode == MaskMode::Add;
+    const bool outside = layer.group_mask == GroupMask::ShowAll && bottom &&
+                         bottom->mask_mode == MaskMode::SubtractInvisible;
+    const struct {
+      const char *label, *mode;
+      bool checked;
+    } items[] = {{"None", "NONE", layer.group_mask == GroupMask::None},
+                 {"Mask - Inside Bottom Layer", "INSIDE", inside},
+                 {"Mask - Outside Bottom Layer", "OUTSIDE", outside}};
+    for (const auto &item : items) {
+      if (ImGui::MenuItem(item.label, nullptr, item.checked, bottom || std::string(item.mode) == "NONE")) {
+        operator_call(C, "layer.group_mask_set", {{"mode", item.mode}});
       }
     }
     ImGui::EndMenu();
+    any = true;
   }
-  if (ImGui::BeginMenu("Masking", parent_masks)) {
+  if (in_group && ImGui::BeginMenu("Masking")) {
     const rna::PropertyRNA *prop = Layer::rna().find("mask_mode");
     for (int i = 0; i < int(prop->items.size()); i++) {
       if (ImGui::MenuItem(prop->items[i].name.c_str(), nullptr, int(layer.mask_mode) == i)) {
@@ -153,19 +170,24 @@ static void layer_context_menu(Context &C, Area &area, Layer &layer, bool parent
       }
     }
     ImGui::EndMenu();
+    any = true;
   }
-  if (layer.is_group() && ImGui::BeginMenu("Group Mask")) {
-    const rna::PropertyRNA *prop = Layer::rna().find("group_mask");
-    for (int i = 0; i < int(prop->items.size()); i++) {
-      if (ImGui::MenuItem(prop->items[i].name.c_str(), nullptr, int(layer.group_mask) == i)) {
-        layer.group_mask = GroupMask(i);
-        push_undo(C, "Group Mask");
-      }
-    }
-    ImGui::EndMenu();
+  if (any) {
+    ImGui::Separator();
   }
-  ImGui::Separator();
-  menu_op(C, "Delete", "layer.delete");
+  menu_op(C, "Group With Selection", "layer.group");
+  menu_op(C, "Duplicate Layer", "layer.duplicate");
+  menu_op(C, "Reference Layer", "layer.make_reference");
+  menu_op(C, "Delete Layer", "layer.delete");
+}
+
+/* Clears the extra selection, so only the active layer is picked. */
+static void layers_deselect(std::vector<Layer> &layers)
+{
+  for (Layer &layer : layers) {
+    layer.selected = false;
+    layers_deselect(layer.children);
+  }
 }
 
 static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool parent_masks, DropRequest &drop,
@@ -185,6 +207,17 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   ImGui::InvisibleButton("##row", ImVec2(row_w, h));
   const bool row_hovered = ImGui::IsItemHovered();
   if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    /* Ctrl or Shift click picks more layers, as in Moho; a plain click picks just this one. */
+    const ImGuiIO &io = ImGui::GetIO();
+    if (io.KeyCtrl || io.KeyShift) {
+      layer.selected = !(layer.selected || doc.active_layer == layer.id);
+      if (Layer *previous = layer_find(doc, doc.active_layer); previous && previous != &layer) {
+        previous->selected = true;
+      }
+    }
+    else {
+      layers_deselect(doc.layers);
+    }
     doc.active_layer = layer.id;
   }
   if (row_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -223,12 +256,15 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   }
   if (ImGui::BeginPopup("##layer_menu")) {
     r_context_open = true;
-    layer_context_menu(C, area, layer, parent_masks);
+    layer_context_menu(C, layer, depth > 0);
     ImGui::EndPopup();
   }
 
   if (doc.active_layer == layer.id) {
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f);
+  }
+  else if (layer.selected) {
+    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_SELECTED_ROW, 3.0f);
   }
   else if (row_hovered) {
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0xff, 0xff, 14), 3.0f);
@@ -261,7 +297,7 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   icon_layer_type(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, layer);
   x += h * 0.9f;
 
-  const float toggles_w = h * 2.0f;
+  const float toggles_w = h * 3.0f;
   if (area.renaming_layer == layer.id) {
     ImGui::SetCursorScreenPos(ImVec2(x, row_min.y));
     ImGui::SetNextItemWidth(row_min.x + row_w - toggles_w - x - style.ItemSpacing.x);
@@ -292,9 +328,9 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
     }
   }
 
-  /* Visibility and lock toggles on the right, as in Blender's outliner. */
+  /* Visibility, render and lock toggles on the right, as in Blender's outliner. */
   const float right = row_min.x + row_w - style.ItemSpacing.x;
-  ImGui::SetCursorScreenPos(ImVec2(right - h * 2.0f, row_min.y));
+  ImGui::SetCursorScreenPos(ImVec2(right - h * 3.0f, row_min.y));
   if (ImGui::InvisibleButton("##visible", ImVec2(h, h))) {
     layer.visible = !layer.visible;
     push_undo(C, layer.visible ? "Show Layer" : "Hide Layer");
@@ -302,7 +338,16 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Show or hide the layer");
   }
-  icon_eye(dl, ImVec2(right - h * 1.5f, cy), icon, layer.visible);
+  icon_eye(dl, ImVec2(right - h * 2.5f, cy), icon, layer.visible);
+  ImGui::SetCursorScreenPos(ImVec2(right - h * 2.0f, row_min.y));
+  if (ImGui::InvisibleButton("##render", ImVec2(h, h))) {
+    layer.render_visible = !layer.render_visible;
+    push_undo(C, layer.render_visible ? "Show in Renders" : "Hide in Renders");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Show or hide the layer in renders");
+  }
+  icon_camera(dl, ImVec2(right - h * 1.5f, cy), icon, layer.render_visible);
   ImGui::SetCursorScreenPos(ImVec2(right - h, row_min.y));
   if (ImGui::InvisibleButton("##lock", ImVec2(h, h))) {
     layer.locked = !layer.locked;
@@ -324,46 +369,80 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   }
 }
 
+/* The layers a drag moves: the dragged one, or, when it is picked (active or Ctrl/Shift
+ * selected), every picked layer, top first; a layer inside a picked group goes with the group. */
+static std::vector<uint64_t> dragged_layers(Document &doc, uint64_t dragged)
+{
+  const Layer *dragged_layer = layer_find(doc, dragged);
+  if (!dragged_layer || !(dragged_layer->selected || dragged == doc.active_layer)) {
+    return {dragged};
+  }
+  const auto picked = [&](const Layer &l) { return l.selected || l.id == doc.active_layer; };
+  std::vector<uint64_t> ids;
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (!picked(*layer)) {
+      continue;
+    }
+    bool inside_picked = false;
+    for (const Layer *p = layer_parent(doc, layer->id); p; p = layer_parent(doc, p->id)) {
+      inside_picked = inside_picked || picked(*p);
+    }
+    if (!inside_picked) {
+      ids.push_back(layer->id);
+    }
+  }
+  return ids;
+}
+
+/* Moves layers (top first) above (-1) or below (+1) `target`, into it (0, a group), or to the
+ * bottom of the top level (target 0), keeping their order. */
+static bool move_layers(Document &doc, const std::vector<uint64_t> &ids, uint64_t target, int where)
+{
+  for (const uint64_t id : ids) {
+    if (id == target) {
+      return false;
+    }
+    for (const Layer *p = target ? layer_parent(doc, target) : nullptr; p; p = layer_parent(doc, p->id)) {
+      if (p->id == id) {
+        return false; /* A group can't go inside itself. */
+      }
+    }
+  }
+  if (where == 0 && (!layer_find(doc, target) || !layer_find(doc, target)->is_group())) {
+    return false;
+  }
+  std::vector<Layer> taken;
+  for (const uint64_t id : ids) {
+    int index = 0;
+    if (std::vector<Layer> *container = layer_container(doc, id, &index)) {
+      taken.push_back(std::move((*container)[index]));
+      container->erase(container->begin() + index);
+    }
+  }
+  std::vector<Layer> *destination = &doc.layers;
+  int index = int(doc.layers.size());
+  if (where == 0) {
+    destination = &layer_find(doc, target)->children;
+    index = 0;
+  }
+  else if (target) {
+    int target_index = 0;
+    destination = layer_container(doc, target, &target_index);
+    index = where < 0 ? target_index : target_index + 1;
+  }
+  for (Layer &layer : taken) {
+    destination->insert(destination->begin() + index++, std::move(layer));
+  }
+  return !taken.empty();
+}
+
 static void apply_drop(Context &C, const DropRequest &drop)
 {
   Document &doc = *C.document;
   if (!drop.moving || drop.moving == drop.target) {
     return;
   }
-  bool moved = false;
-  if (drop.where == 0) {
-    moved = document_reparent_layer(doc, drop.moving, drop.target, 0);
-  }
-  else {
-    Layer *parent = layer_parent(doc, drop.target);
-    const uint64_t parent_id = parent ? parent->id : 0;
-    /* Take the layer out first so the target's index is measured without it. */
-    int moving_index = 0;
-    std::vector<Layer> *moving_container = layer_container(doc, drop.moving, &moving_index);
-    if (!moving_container) {
-      return;
-    }
-    Layer moving = (*moving_container)[moving_index];
-    if (parent_id == drop.moving) {
-      return;
-    }
-    for (Layer *p = parent; p; p = layer_parent(doc, p->id)) {
-      if (p->id == drop.moving) {
-        return; /* A group can't go inside itself. */
-      }
-    }
-    moving_container->erase(moving_container->begin() + moving_index);
-    int target_index = 0;
-    std::vector<Layer> *target_container = layer_container(doc, drop.target, &target_index);
-    if (!target_container) {
-      moving_container->insert(moving_container->begin() + moving_index, std::move(moving));
-      return;
-    }
-    const int index = drop.where < 0 ? target_index : target_index + 1;
-    target_container->insert(target_container->begin() + index, std::move(moving));
-    moved = true;
-  }
-  if (moved) {
+  if (move_layers(doc, dragged_layers(doc, drop.moving), drop.target, drop.where)) {
     doc.active_layer = drop.moving;
     C.undo->push("Move Layer", doc);
   }
@@ -423,7 +502,7 @@ void layers_draw(Area &area, Context &C)
       if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(LAYER_PAYLOAD)) {
         uint64_t moving;
         std::memcpy(&moving, payload->Data, sizeof(moving));
-        if (document_reparent_layer(doc, moving, 0, int(doc.layers.size()))) {
+        if (move_layers(doc, dragged_layers(doc, moving), 0, 1)) {
           C.undo->push("Move Layer", doc);
         }
       }

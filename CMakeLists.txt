@@ -13,11 +13,14 @@ include(cmake/Dependencies.cmake)
 
 set(SKY_SOURCES
   src/main.cc
+  src/assets/asset_library.cc
+  src/assets/brushes.cc
   src/core/log.cc
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
   src/data/vector.cc
+  src/editors/brush_settings.cc
   src/editors/console.cc
   src/editors/editors.cc
   src/editors/layers_editor.cc
@@ -25,10 +28,12 @@ set(SKY_SOURCES
   src/editors/text_editor.cc
   src/editors/timeline.cc
   src/editors/viewport.cc
+  src/gpu/brush_stroke.cc
   src/gpu/gl.cc
   src/gpu/scene_renderer.cc
   src/gpu/tessellate.cc
   src/io/sky_file.cc
+  src/ops/asset_ops.cc
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
   src/ops/layer_ops.cc
@@ -89,3 +94,9 @@ add_test(NAME shape_tool
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_shape_tool.py)
 add_test(NAME frames_and_playback
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frames_and_playback.py)
+add_test(NAME brushes
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brushes.py)
+add_test(NAME handles
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
+add_test(NAME multi_layer
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_multi_layer.py)

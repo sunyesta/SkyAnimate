@@ -2,6 +2,7 @@
 
 sky.context   the current context: the document and the editor under the mouse
 sky.data      the open document: sky.data.document, sky.data.layers, sky.data.texts, sky.data.filepath
+sky.assets    the asset library: sky.assets.library, sky.assets.brushes()
 sky.ops       run operators by name: sky.ops.ed.undo()
 sky.types     base classes to subclass: sky.types.Operator
 sky.utils     register_class() and unregister_class()
@@ -13,7 +14,7 @@ import _sky
 
 from . import keymap, ops, types, utils, wm
 
-__all__ = ("context", "data", "keymap", "ops", "types", "utils", "wm")
+__all__ = ("assets", "context", "data", "keymap", "ops", "types", "utils", "wm")
 
 
 class _Text:
@@ -178,6 +179,24 @@ class _Layer:
         """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
         _sky.layer_set_selected_corner(self._id, corner)
 
+    def curve_handles(self, curve):
+        """[(type, (in_x, in_y), (out_x, out_y)), ...] for each point of curve `curve`: its handle
+        type ("AUTO", "VECTOR", "ALIGNED" or "FREE") and handle positions in layer space."""
+        return [(t, tuple(i), tuple(o)) for t, i, o in _sky.layer_curve_handles(self._id, curve)]
+
+    def move_handle(self, curve, index, side, pos):
+        """Drag one handle ("IN" or "OUT") of a curve point to `pos`, as in the viewport: an
+        Automatic point becomes Aligned, a Vector one Free, and Aligned handles stay in line."""
+        _sky.layer_move_handle(self._id, curve, index, side, tuple(pos))
+
+    def select_handle(self, curve, index, side):
+        _sky.layer_select_handle(self._id, curve, index, side)
+
+    def shape_brush(self, index):
+        """Shape `index`'s brush settings as a dict with Moho's .mohobrush keys; "name" is ""
+        for a plain line."""
+        return _sky.layer_shape_brush(self._id, index)
+
     def select_points(self, indices, select=True):
         _sky.layer_select_points(self._id, list(indices), select)
 
@@ -268,6 +287,28 @@ class _Data:
 
 
 data = _Data()
+
+
+class _Assets:
+    """The asset library: the folder (set in Preferences) holding the app's brushes."""
+
+    @property
+    def library(self):
+        """The asset library folder; "" until one is chosen."""
+        return _sky.asset_library()
+
+    def brushes(self):
+        """The library's brushes, by name: dicts of their default settings plus "images", the
+        number of images (more than one for a multi-brush)."""
+        return _sky.brushes()
+
+    def brush_dab_count(self, name, length, width):
+        """How many dabs brush `name` lays along a straight line `length` long and `width` wide
+        (document units), with its default settings."""
+        return _sky.brush_dab_count(name, length, width)
+
+
+assets = _Assets()
 
 
 def __getattr__(name):

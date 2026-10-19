@@ -4,8 +4,9 @@
  *
  * - A drawing owns a pool of points. Curves run through points by index, so two curves can
  *   share a point; that is how lines are welded together.
- * - Curves are smooth splines driven by per-point curvature, weight and offset, exactly as in
- *   Moho, rather than stored Bezier handles. Each segment still evaluates as a cubic Bezier.
+ * - Curves are cubic Beziers. Each curve point has Blender's handle types: Automatic handles
+ *   follow Moho's smooth spline (per-point curvature, weight and offset), Vector handles point at
+ *   the neighbours, and Aligned and Free handles are stored, moved by hand.
  * - A shape is a closed or open run of curve segments with a fill and an outline. Curves
  *   without a shape only show in the editor, as in Moho.
  *
@@ -22,6 +23,11 @@ namespace sky {
 /* Moho's curvature presets (MOHO.SMOOTH, MOHO.PEAKED). */
 inline constexpr float CURVATURE_SMOOTH = 0.3f;
 inline constexpr float CURVATURE_PEAKED = 0.0f;
+
+/* Blender's handle types. Automatic: smooth, computed from the neighbours (Moho's curvature).
+ * Vector: each handle points a third of the way to its neighbour, for straight lines and corners.
+ * Aligned: stored handles kept in a line. Free: stored handles that move independently. */
+enum class HandleType : uint8_t { Auto, Vector, Aligned, Free };
 
 /* How strokes turn at a point and end there: Round (a round join or cap) or Sharp (a mitred
  * corner, bevelled when very tight, and a flat end). */
@@ -48,6 +54,13 @@ struct CurvePoint {
   /* Moho's Hide Edge: the segment from this point to the next draws no outline. Fills still
    * use it as a boundary. */
   bool edge_hidden = false;
+  HandleType handle_type = HandleType::Auto;
+  /* Aligned and Free: the handles as offsets from the point. */
+  float2 handle_in;
+  float2 handle_out;
+  /* Handles picked on their own (clicking one). A selected point's handles move with it. */
+  bool select_in = false;
+  bool select_out = false;
 };
 
 struct Curve {
@@ -57,11 +70,47 @@ struct Curve {
   int segment_count() const;
 };
 
+/* How a line is painted with a brush: Moho's style brush settings (fBrush*). Picking a brush
+ * copies its defaults here; each shape can then change its own. */
+struct BrushSettings {
+  /* The brush's name in the asset library. Empty: a plain, solid line. */
+  std::string name;
+  /* Turn each dab to follow the line (Moho's "Tangent"); off, dabs stay upright. */
+  bool align = false;
+  /* Random turn of each dab, radians (2 pi: any angle). */
+  float jitter = 0.0f;
+  /* Distance between dabs, as a fraction of the line width. */
+  float spacing = 0.25f;
+  /* A slow, smooth turn of the dabs along the line, radians. */
+  float angle_drift = 0.0f;
+  /* Line boil: a new random pattern every random_interval frames. */
+  bool randomize = false;
+  /* Multi-brushes: pick the next image at random rather than in turn. */
+  bool random_order = true;
+  /* Dabs don't build up where they overlap: the line's alpha is the strongest dab's. */
+  bool merged_alpha = false;
+  /* The line's width wavers by up to this fraction, in waves about size_variation_scale of
+   * the frame height long. */
+  float size_variation_amp = 0.0f;
+  float size_variation_scale = 0.3f;
+  /* Line boil: frames each random pattern holds. */
+  int random_interval = 1;
+  /* Colour brushes take the line colour instead of their own. */
+  bool tint = false;
+  /* Random change of each dab's hue, saturation and value (fractions). */
+  float hue_drift = 0.0f;
+  float sat_drift = 0.0f;
+  float val_drift = 0.0f;
+
+  bool operator==(const BrushSettings &) const = default;
+};
+
 struct Style {
   Color fill = {0.95f, 0.85f, 0.7f, 1.0f};
   Color line = {0.0f, 0.0f, 0.0f, 1.0f};
   /* Line width in document units (the frame is 2 units tall). */
   float line_width = 0.008f;
+  BrushSettings brush;
 };
 
 /* One curve segment: from curve point `segment` to the next one. */
@@ -94,14 +143,26 @@ struct VectorDrawing {
  * Curve geometry
  */
 
-/* Moho's handle position for curve point i: `pre` gives the incoming handle. */
+/* Curve point i's handle (`pre`: the incoming one), by its handle type. */
 float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre);
+/* Gives curve point i a handle type. Becoming Aligned or Free keeps the handles where they are
+ * (Aligned straightens them into a line); becoming Automatic makes a corner smooth. */
+void curve_point_set_handle_type(VectorDrawing &drawing, Curve &curve, int i, HandleType type);
+/* Moves one handle to `pos`, as dragging it does in Blender: an Automatic point becomes
+ * Aligned and a Vector point Free, keeping the other handle where it was; an Aligned point
+ * turns its other handle to stay in line (unless `keep_other`). */
+void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool pre, float2 pos,
+                             bool keep_other = false);
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);
-/* Appends points along a segment (excluding its last point), `steps` subdivisions. */
+/* How many pieces a Bezier segment needs: at least `min_steps`, and with `tolerance` > 0 enough
+ * that the pieces stray no further than that from the curve, however long its handles are. */
+int bezier_steps(const float2 ctrl[4], int min_steps, float tolerance);
+/* Appends points along a segment (excluding its last point): at least `steps` pieces, more
+ * where its handles bend it more than `tolerance` (0: exactly `steps`). */
 void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int segment, int steps,
-                          std::vector<float2> &r_points);
+                          std::vector<float2> &r_points, float tolerance = 0.0f);
 /* The point indices at either end of a segment. */
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to);
 
@@ -110,10 +171,12 @@ void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_t
  * `r_visible` (optional) says for each sample whether the outline runs on from it to the next
  * sample: false along hidden edges. `r_joins` (optional) gives each sample's join: the point's
  * corner type at the curve's points, Smooth between them. Returns false if the edges don't
- * form a connected run. `r_closed` reports whether the run returns to its start. */
+ * form a connected run. `r_closed` reports whether the run returns to its start. `tolerance`
+ * (drawing units, 0 = off) adds samples where long handles bend a segment hard. */
 bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_per_segment,
                    std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
-                   std::vector<bool> *r_visible = nullptr, std::vector<StrokeJoin> *r_joins = nullptr);
+                   std::vector<bool> *r_visible = nullptr, std::vector<StrokeJoin> *r_joins = nullptr,
+                   float tolerance = 0.0f);
 
 /* ---------------------------------------------------------------------------------
  * Editing helpers
@@ -192,6 +255,18 @@ void drawing_set_selected_mean_radius(VectorDrawing &drawing, float mean);
 
 /* Shapes with any selected point: the ones arranging and the Properties shape list act on. */
 std::vector<bool> drawing_selected_shapes(const VectorDrawing &drawing);
+
+/* Deselects every handle. */
+void drawing_deselect_handles(VectorDrawing &drawing);
+/* Whether curve point `cp` counts as selected for handle editing: its point or a handle is. */
+bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp);
+/* Sets the handle type of the selected curve points (Blender's V). Returns how many changed. */
+int drawing_set_selected_handle_type(VectorDrawing &drawing, HandleType type);
+/* The selected curve points' handle type: -1 if none are selected, -2 if they differ. */
+int drawing_selected_handle_type(const VectorDrawing &drawing);
+const char *handle_type_identifier(HandleType type);
+const char *handle_type_name(HandleType type);
+bool handle_type_from_identifier(const std::string &identifier, HandleType *r_type);
 
 /* Where shapes go in the stacking order. Shapes later in the list draw on top. */
 enum class ShapeArrange { Forward, Backward, ToFront, ToBack };

@@ -15,7 +15,7 @@ bool Layer::mask_adds() const
 
 bool Layer::mask_subtracts() const
 {
-  return mask_mode == MaskMode::Subtract || mask_mode == MaskMode::SubtractInvisible;
+  return mask_mode == MaskMode::SubtractInvisible;
 }
 
 bool Layer::mask_clears() const
@@ -71,6 +71,8 @@ const rna::StructRNA &Layer::rna()
         def_string<Layer>("name", "Name", "Name shown in the Layers editor", &Layer::name),
         type_prop,
         def_bool<Layer>("visible", "Visible", "Show the layer in the viewport and renders", &Layer::visible),
+        def_bool<Layer>("render_visible", "Show in Renders",
+                        "Draw the layer in renders; off, it still shows in the viewport", &Layer::render_visible),
         def_bool<Layer>("locked", "Locked", "Protect the layer's drawing from editing", &Layer::locked),
         def_enum<Layer, LabelColor>("label_color", "Label Color", "Colour tag in the Layers editor",
                                     &Layer::label_color,
@@ -99,19 +101,25 @@ const rna::StructRNA &Layer::rna()
         def_float<Layer>("opacity", "Opacity", "How opaque the layer is", &Layer::opacity, 0.0f, 1.0f),
         def_enum<Layer, MaskMode>("mask_mode", "Masking", "How this layer takes part in its group's mask",
                                   &Layer::mask_mode,
-                                  {{"MASKED", "Masked"},
-                                   {"NOT_MASKED", "Not Masked"},
-                                   {"ADD", "Add to Mask"},
-                                   {"SUBTRACT", "Subtract from Mask"},
-                                   {"ADD_INVISIBLE", "Add to Mask, Invisible"},
-                                   {"SUBTRACT_INVISIBLE", "Subtract from Mask, Invisible"},
-                                   {"CLEAR_ADD", "Clear and Add to Mask"},
-                                   {"CLEAR_ADD_INVISIBLE", "Clear and Add to Mask, Invisible"}}),
+                                  {{"MASKED", "Mask this layer"},
+                                   {"NOT_MASKED", "Don't mask this layer"},
+                                   {"ADD", "+ Add to mask"},
+                                   {"ADD_INVISIBLE", "+ Add to mask, but keep invisible"},
+                                   {"SUBTRACT_INVISIBLE", "- Subtract from mask (this layer will be invisible)"},
+                                   {"CLEAR_ADD", "+ Clear the mask, then add this layer to it"},
+                                   {"CLEAR_ADD_INVISIBLE", "+ Clear the mask, then add this layer invisibly to it"}}),
         def_enum<Layer, GroupMask>("group_mask", "Group Mask", "Masking for this group's children",
                                    &Layer::group_mask,
-                                   {{"NONE", "No Masking"},
-                                    {"SHOW_ALL", "Reveal All"},
-                                    {"HIDE_ALL", "Hide All"}}),
+                                   {{"NONE", "No masking"},
+                                    {"SHOW_ALL", "Reveal all"},
+                                    {"HIDE_ALL", "Hide all"}}),
+        def_bool<Layer>("mask_expand", "Expand mask by a pixel",
+                        "Grow this layer's part of the mask by one pixel, hiding thin seams along its edges",
+                        &Layer::mask_expand),
+        def_bool<Layer>("mask_exclude_strokes", "Exclude strokes",
+                        "Only this layer's fills go into the mask, not its strokes", &Layer::mask_exclude_strokes),
+        def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
+                        &Layer::selected),
     };
     return s;
   }();

@@ -91,7 +91,11 @@ void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, 
     r_out.push_back(make_vertex(poly[i], color, 1.0f));
   }
 
-  /* Soft edge: a strip from the outline outwards, fading to transparent. */
+  /* Soft edge: a strip from the outline outwards, fading to transparent. None when the caller
+   * smooths edges by multisampling instead. */
+  if (aa <= 0.0f) {
+    return;
+  }
   const float outward = signed_area(poly) > 0.0f ? 1.0f : -1.0f;
   std::vector<float2> outer(n);
   for (size_t i = 0; i < n; i++) {

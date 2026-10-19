@@ -62,8 +62,13 @@ Milestone 1 (Foundation) done. Milestone 2 (Drawing) in progress. Done: vector l
 model), GL renderer with masking groups, group and reference layers, Layers editor, Properties tabs,
 select/draw/pen/split/fill tools, G R S E, .sky save and open (`src/io/sky_file.cc`, zip + JSON
 with a format version), File menu, unsaved-changes prompt, autosave, File > Recover, Save
-Incremental, pen pressure. Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end, Moho
-brushes and the style library.
+Incremental, pen pressure, Moho stamp brushes (`src/assets`: the asset library set in Preferences,
+.mohobrush reading and Moho import; dabs in `src/gpu/brush_stroke.cc`; Brush Settings popup in
+`src/editors/brush_settings.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
+the style library.
+
+Preferences live in `%LOCALAPPDATA%\SkyAnimate\preferences.json`; background runs (tests) never read
+or write them.
 
 Operators take string arguments (`OpArgs`, read with `op_arg()`), as in
 `sky.ops.wm.open_mainfile(filepath="walk.sky")`. Changes without an undo step call

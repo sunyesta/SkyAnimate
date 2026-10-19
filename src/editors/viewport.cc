@@ -12,6 +12,7 @@
 #include <SDL3/SDL_opengl.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -20,6 +21,7 @@
 #include "core/log.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "editors/ui.hh"
 #include "gpu/scene_renderer.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -37,6 +39,13 @@ static constexpr ImU32 COL_WIRE_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 220);
 static constexpr ImU32 COL_POINT = IM_COL32(0x10, 0x10, 0x10, 230);
 static constexpr ImU32 COL_POINT_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 255);
 static constexpr ImU32 COL_HIGHLIGHT = IM_COL32(0x47, 0x72, 0xb3, 255);
+/* Handle colours by type, unselected and selected, from Blender's default theme. */
+static constexpr ImU32 COL_HANDLE[4][2] = {
+    {IM_COL32(0x90, 0x90, 0x00, 255), IM_COL32(0xf0, 0xff, 0x40, 255)}, /* Automatic */
+    {IM_COL32(0x40, 0x90, 0x30, 255), IM_COL32(0x40, 0xc0, 0x30, 255)}, /* Vector */
+    {IM_COL32(0x80, 0x30, 0x60, 255), IM_COL32(0xf0, 0x90, 0xa0, 255)}, /* Aligned */
+    {IM_COL32(0x10, 0x10, 0x10, 255), IM_COL32(0xd0, 0x30, 0x30, 255)}, /* Free */
+};
 static constexpr ImU32 COL_HEADER = IM_COL32(0x30, 0x30, 0x30, 235);
 static constexpr ImU32 COL_TOOLBAR = IM_COL32(0x28, 0x28, 0x28, 235);
 
@@ -77,20 +86,38 @@ static void view_fit(Area &area, const Document &doc, ImVec2 size)
  * Interaction state. One tool or modal transform runs at a time, so these are shared.
  */
 
+/* A running G R S or E. It works in document space, so points on several layers (each with its
+ * own transform) move together. */
 struct ModalTransform {
   bool active = false;
   int area = 0;
   char kind = 'G';
   bool extrude = false;
-  uint64_t layer = 0;
   Document snapshot;
-  std::vector<int> points;
-  std::vector<float2> start_positions;
+  /* A point, or one handle of a curve point (curve >= 0). A handle picked on its own is
+   * `direct` (dragging it may turn its partner, as in Blender); the stored handles of a moved
+   * point just come along. */
+  struct Item {
+    uint64_t layer;
+    int point;
+    float2 start;
+    int curve = -1;
+    int index = -1;
+    bool pre = false;
+    bool direct = false;
+    /* A handle's point, in document space: what S and R work about when only handles move. */
+    float2 origin;
+  };
+  std::vector<Item> items;
   float2 pivot;
   float2 start_mouse;
   /* 0 free, 1 X only, 2 Y only. */
   int axis = 0;
   std::string typed;
+  /* Started by dragging a handle: ends when the mouse button is let go. */
+  bool tweak = false;
+  /* Only handles move: S lengthens and R turns each handle about its own point. */
+  bool about_points = false;
 };
 
 struct ToolDrag {
@@ -143,6 +170,65 @@ static void deselect_all(VectorDrawing &drawing)
   for (MeshPoint &p : drawing.points) {
     p.selected = false;
   }
+  drawing_deselect_handles(drawing);
+}
+
+/* The handles a viewport shows (and lets you pick): by its Handles overlay, and only while
+ * points show. */
+static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSettings &ts)
+{
+  if (!ov.show || !ov.points || (ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand)) {
+    return HandleDisplay::None;
+  }
+  return ov.handles;
+}
+
+static bool handle_visible(const VectorDrawing &drawing, const CurvePoint &cp, HandleDisplay display)
+{
+  return display == HandleDisplay::All || (display == HandleDisplay::Selected && curve_point_selected(drawing, cp));
+}
+
+struct HandleHit {
+  Layer *layer = nullptr;
+  int curve = -1;
+  int index = -1;
+  bool pre = false;
+  /* Screen pixels from the mouse. */
+  float distance = FLT_MAX;
+};
+
+/* The shown handle nearest the mouse, within picking distance, on any edited layer. */
+static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, HandleDisplay display)
+{
+  HandleHit hit;
+  if (display == HandleDisplay::None) {
+    return hit;
+  }
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const VectorDrawing &drawing = layer->drawing;
+    for (int c = 0; c < int(drawing.curves.size()); c++) {
+      const Curve &curve = drawing.curves[c];
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        if (!handle_visible(drawing, curve.points[i], display)) {
+          continue;
+        }
+        const float2 here = drawing.points[curve.points[i].point].pos;
+        for (const bool pre : {true, false}) {
+          const float2 h = curve_handle(drawing, curve, i, pre);
+          if (distance(h, here) < 1e-9f) {
+            continue;
+          }
+          const ImVec2 s = view.to_screen(to_document.apply(h));
+          const float d = std::sqrt((s.x - mouse.x) * (s.x - mouse.x) + (s.y - mouse.y) * (s.y - mouse.y));
+          if (d <= PICK_PIXELS && d < hit.distance) {
+            hit = {layer, c, i, pre, d};
+          }
+        }
+      }
+    }
+  }
+  return hit;
 }
 
 static void push_undo(Context &C, const char *name)
@@ -502,6 +588,18 @@ static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_
   }
   if (overlay_section("Drawing")) {
     overlay_checkbox_pair("Wireframe", &ov.wireframe, "Points", &ov.points, column);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Handles");
+    ImGui::SameLine(column);
+    ImGui::SetNextItemWidth(column - ImGui::GetStyle().ItemSpacing.x);
+    static const char *const handle_modes[] = {"None", "Selected", "All"};
+    int mode = int(ov.handles);
+    if (ImGui::Combo("##handles", &mode, handle_modes, 3)) {
+      ov.handles = HandleDisplay(mode);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Which curve handles to show: none, the selected points' handles, or all of them");
+    }
   }
   if (overlay_section("Armature")) {
     overlay_checkbox_pair("Bones", &ov.bones, nullptr, nullptr, column);
@@ -531,7 +629,7 @@ static bool header_toggle(const char *label, bool on, const char *tooltip)
 static bool color_swatch(const char *id, Color &color, const char *tooltip)
 {
   float rgba[4] = {color.r, color.g, color.b, color.a};
-  const bool changed = ImGui::ColorEdit4(id, rgba, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+  const bool changed = ui_color_edit(id, rgba, false);
   if (changed) {
     color = {rgba[0], rgba[1], rgba[2], rgba[3]};
   }
@@ -600,6 +698,14 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       ImGui::EndMenu();
     }
     ImGui::Separator();
+    if (ImGui::BeginMenu("Set Handle Type")) {
+      for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
+        if (ImGui::MenuItem(handle_type_name(type))) {
+          operator_call(C, "mesh.handle_type_set", {{"type", handle_type_identifier(type)}});
+        }
+      }
+      ImGui::EndMenu();
+    }
     menu_operator(C, "Peak", "mesh.peak");
     menu_operator(C, "Smooth", "mesh.smooth");
     ImGui::Separator();
@@ -663,7 +769,9 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       }
       break;
     case Tool::SplitCurve:
-      ImGui::TextDisabled("Click a line to add a point  |  Shift: middle  |  Ctrl-click a point: delete it");
+      ImGui::TextDisabled(ts.tool_temporary
+                              ? "Split once (K): click a line, then back to your tool  |  Shift: middle  |  Esc: cancel"
+                              : "Click a line to add a point  |  Shift: middle  |  Ctrl-click a point: delete it");
       break;
     case Tool::Cursor:
       ImGui::TextDisabled("Click to place the cursor  |  Shift right-click places it from any tool");
@@ -702,73 +810,128 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
 
 static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
-  Layer *layer = nullptr;
-  VectorDrawing *drawing = editable_drawing(C, &layer);
-  if (!drawing) {
+  const std::vector<Layer *> layers = editable_layers(C);
+  if (layers.empty()) {
     return false;
   }
   ModalTransform modal;
   modal.snapshot = *C.document;
-  modal.layer = layer->id;
   modal.area = area.id;
   modal.kind = kind == 'E' ? 'G' : kind;
   modal.extrude = kind == 'E';
 
   if (modal.extrude) {
     /* A new point beyond each selected curve end; they become the selection. */
-    std::vector<int> new_points;
-    for (int i = 0; i < int(drawing->points.size()); i++) {
-      if (!drawing->points[i].selected) {
-        continue;
-      }
-      CurveEnd end = drawing_curve_end_at(*drawing, i);
-      if (end.curve < 0) {
-        continue;
-      }
-      if (!end.at_end) {
-        drawing_reverse_curve(*drawing, end.curve);
-      }
-      const int added = drawing_add_point(*drawing, drawing->points[i].pos);
-      Curve &curve = drawing->curves[end.curve];
-      curve.points.push_back({added});
-      /* Shapes that cover the whole curve grow with it. */
-      const int new_segment = curve.segment_count() - 1;
-      for (Shape &shape : drawing->shapes) {
-        int on_curve = 0;
-        for (const ShapeEdge &e : shape.edges) {
-          on_curve += e.curve == end.curve;
+    bool any = false;
+    for (Layer *layer : layers) {
+      VectorDrawing &drawing = layer->drawing;
+      std::vector<int> new_points;
+      for (int i = 0; i < int(drawing.points.size()); i++) {
+        if (!drawing.points[i].selected) {
+          continue;
         }
-        if (on_curve == new_segment && !shape.has_fill) {
-          shape.edges.push_back({end.curve, new_segment});
+        CurveEnd end = drawing_curve_end_at(drawing, i);
+        if (end.curve < 0) {
+          continue;
         }
+        if (!end.at_end) {
+          drawing_reverse_curve(drawing, end.curve);
+        }
+        const int added = drawing_add_point(drawing, drawing.points[i].pos);
+        Curve &curve = drawing.curves[end.curve];
+        curve.points.push_back({added});
+        /* Shapes that cover the whole curve grow with it. */
+        const int new_segment = curve.segment_count() - 1;
+        for (Shape &shape : drawing.shapes) {
+          int on_curve = 0;
+          for (const ShapeEdge &e : shape.edges) {
+            on_curve += e.curve == end.curve;
+          }
+          if (on_curve == new_segment && !shape.has_fill) {
+            shape.edges.push_back({end.curve, new_segment});
+          }
+        }
+        new_points.push_back(added);
       }
-      new_points.push_back(added);
+      deselect_all(drawing);
+      for (int p : new_points) {
+        drawing.points[p].selected = true;
+      }
+      any |= !new_points.empty();
     }
-    if (new_points.empty()) {
+    if (!any) {
       *C.document = modal.snapshot;
       report(ReportType::Warning, "Extrude works from the ends of open curves");
       return false;
     }
-    deselect_all(*drawing);
-    for (int p : new_points) {
-      drawing->points[p].selected = true;
-    }
   }
 
-  const Transform2D to_layer = layer_world_transform(*C.document, layer->id).inverted();
   float2 sum;
-  for (int i = 0; i < int(drawing->points.size()); i++) {
-    if (drawing->points[i].selected) {
-      modal.points.push_back(i);
-      modal.start_positions.push_back(drawing->points[i].pos);
-      sum += drawing->points[i].pos;
+  int counted = 0;
+  for (Layer *layer : layers) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    VectorDrawing &drawing = layer->drawing;
+    for (int i = 0; i < int(drawing.points.size()); i++) {
+      if (drawing.points[i].selected) {
+        const float2 p = to_document.apply(drawing.points[i].pos);
+        modal.items.push_back({layer->id, i, p});
+        sum += p;
+        counted++;
+      }
+    }
+    /* Handles after the points, so they're placed once their points have moved. */
+    for (int c = 0; c < int(drawing.curves.size()); c++) {
+      Curve &curve = drawing.curves[c];
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        CurvePoint &cp = curve.points[i];
+        const bool point_moves = drawing.points[cp.point].selected;
+        if (!point_moves && (cp.select_in || cp.select_out)) {
+          /* Grabbing an Automatic or Vector handle makes it Aligned or Free, as in Blender. */
+          if (cp.handle_type == HandleType::Auto) {
+            curve_point_set_handle_type(drawing, curve, i, HandleType::Aligned);
+          }
+          else if (cp.handle_type == HandleType::Vector) {
+            curve_point_set_handle_type(drawing, curve, i, HandleType::Free);
+          }
+        }
+        const bool stored = cp.handle_type == HandleType::Aligned || cp.handle_type == HandleType::Free;
+        for (const bool pre : {true, false}) {
+          const bool direct = !point_moves && (pre ? cp.select_in : cp.select_out);
+          if (!direct && !(point_moves && stored)) {
+            continue;
+          }
+          const float2 h = to_document.apply(curve_handle(drawing, curve, i, pre));
+          ModalTransform::Item item{layer->id, cp.point, h};
+          item.curve = c;
+          item.index = i;
+          item.pre = pre;
+          item.direct = direct;
+          item.origin = to_document.apply(drawing.points[cp.point].pos);
+          modal.items.push_back(item);
+          if (direct) {
+            sum += h;
+            counted++;
+          }
+        }
+      }
     }
   }
-  if (modal.points.empty()) {
+  if (counted == 0) {
+    *C.document = modal.snapshot;
     return false;
   }
-  modal.pivot = sum / float(modal.points.size());
-  modal.start_mouse = to_layer.apply(mouse_document);
+  modal.pivot = sum / float(counted);
+  /* Handles alone: the mouse measures turns and lengths about their points. */
+  modal.about_points = std::none_of(modal.items.begin(), modal.items.end(),
+                                    [](const ModalTransform::Item &item) { return item.curve < 0; });
+  if (modal.about_points) {
+    float2 origins;
+    for (const ModalTransform::Item &item : modal.items) {
+      origins += item.origin;
+    }
+    modal.pivot = origins / float(modal.items.size());
+  }
+  modal.start_mouse = mouse_document;
   modal.active = true;
   g_modal = std::move(modal);
   C.wm->modal_running = true;
@@ -779,7 +942,7 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
 static void modal_end(Context &C, bool confirm)
 {
   if (confirm) {
-    const char *name = g_modal.extrude ? "Extrude" : (g_modal.kind == 'R' ? "Rotate" : g_modal.kind == 'S' ? "Scale" : "Move");
+    const char *name = g_modal.extrude ? "Extrude" : g_modal.tweak ? "Move Handle" : (g_modal.kind == 'R' ? "Rotate" : g_modal.kind == 'S' ? "Scale" : "Move");
     push_undo(C, name);
   }
   else {
@@ -808,11 +971,41 @@ static bool modal_key_take(Context &C, const char *type, bool any_modifiers = fa
 static std::string modal_update(Context &C, const ViewMapping &view)
 {
   ImGuiIO &io = ImGui::GetIO();
-  Layer *layer = layer_find(*C.document, g_modal.layer);
-  if (!layer) {
-    modal_end(C, false);
-    return {};
+  /* Each moved point's layer, and its way from document space into that layer. */
+  std::map<uint64_t, std::pair<Layer *, Transform2D>> layers;
+  for (const ModalTransform::Item &item : g_modal.items) {
+    if (!layers.count(item.layer)) {
+      Layer *layer = layer_find(*C.document, item.layer);
+      if (!layer || item.point >= int(layer->drawing.points.size())) {
+        modal_end(C, false);
+        return {};
+      }
+      layers[item.layer] = {layer, layer_world_transform(*C.document, item.layer).inverted()};
+    }
   }
+  /* Places one moved point or handle at a document-space position. Points come first in the
+   * list, so a handle is placed relative to where its point now is. */
+  const auto place = [&](const ModalTransform::Item &item, float2 p) {
+    const auto &[layer, to_layer] = layers[item.layer];
+    VectorDrawing &drawing = layer->drawing;
+    if (item.curve < 0) {
+      drawing.points[item.point].pos = to_layer.apply(p);
+      return;
+    }
+    if (item.curve >= int(drawing.curves.size()) || item.index >= int(drawing.curves[item.curve].points.size())) {
+      return;
+    }
+    Curve &curve = drawing.curves[item.curve];
+    CurvePoint &cp = curve.points[item.index];
+    if (item.direct) {
+      /* An Aligned point's partner handle turns to stay in line, unless it is moving too. */
+      const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
+      curve_point_move_handle(drawing, curve, item.index, item.pre, to_layer.apply(p), partner_moves);
+    }
+    else {
+      (item.pre ? cp.handle_in : cp.handle_out) = to_layer.apply(p) - drawing.points[cp.point].pos;
+    }
+  };
 
   /* Keys while transforming, as in Blender. */
   if (modal_key_take(C, "X")) {
@@ -836,9 +1029,9 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     return {};
   }
   const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
-                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                       (g_modal.tweak && !ImGui::IsMouseDown(ImGuiMouseButton_Left));
 
-  const Transform2D to_layer = layer_world_transform(*C.document, layer->id).inverted();
   /* Hold still while the mouse position is unknown rather than jump to nowhere. */
   if (!ImGui::IsMousePosValid()) {
     if (confirm) {
@@ -846,7 +1039,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     }
     return "";
   }
-  const float2 mouse = to_layer.apply(view.to_document(io.MousePos));
+  const float2 mouse = view.to_document(io.MousePos);
   const bool snap = io.KeyCtrl || C.wm->tool_settings.snap_grid;
   char typed_buf[32];
   std::snprintf(typed_buf, sizeof(typed_buf), "%s", g_modal.typed.c_str());
@@ -856,7 +1049,6 @@ static std::string modal_update(Context &C, const ViewMapping &view)
 
   std::string info;
   char text[128];
-  VectorDrawing &drawing = layer->drawing;
   if (g_modal.kind == 'G') {
     float2 delta = mouse - g_modal.start_mouse;
     if (snap) {
@@ -871,8 +1063,8 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     else if (g_modal.axis == 2) {
       delta.x = 0.0f;
     }
-    for (size_t i = 0; i < g_modal.points.size(); i++) {
-      drawing.points[g_modal.points[i]].pos = g_modal.start_positions[i] + delta;
+    for (const ModalTransform::Item &item : g_modal.items) {
+      place(item, item.start + delta);
     }
     std::snprintf(text, sizeof(text), "%s  X: %.3f  Y: %.3f%s", g_modal.extrude ? "Extrude" : "Move", delta.x,
                   delta.y, axis_label);
@@ -888,8 +1080,9 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       degrees = typed;
     }
     angle = degrees * PI / 180.0f;
-    for (size_t i = 0; i < g_modal.points.size(); i++) {
-      drawing.points[g_modal.points[i]].pos = g_modal.pivot + rotate(g_modal.start_positions[i] - g_modal.pivot, angle);
+    for (const ModalTransform::Item &item : g_modal.items) {
+      const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
+      place(item, c + rotate(item.start - c, angle));
     }
     std::snprintf(text, sizeof(text), "Rotate  %.1f\xC2\xB0", degrees);
   }
@@ -903,9 +1096,10 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       factor = typed;
     }
     const float2 f(g_modal.axis == 2 ? 1.0f : factor, g_modal.axis == 1 ? 1.0f : factor);
-    for (size_t i = 0; i < g_modal.points.size(); i++) {
-      const float2 d = g_modal.start_positions[i] - g_modal.pivot;
-      drawing.points[g_modal.points[i]].pos = g_modal.pivot + float2(d.x * f.x, d.y * f.y);
+    for (const ModalTransform::Item &item : g_modal.items) {
+      const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
+      const float2 d = item.start - c;
+      place(item, c + float2(d.x * f.x, d.y * f.y));
     }
     std::snprintf(text, sizeof(text), "Scale  %.3f%s", factor, axis_label);
   }
@@ -999,49 +1193,166 @@ static void shape_commit(Context &C, VectorDrawing &drawing, PrimitiveKind kind,
   push_undo(C, primitive_name(kind));
 }
 
-static void select_click(Context &C, VectorDrawing &drawing, float2 mouse, float radius)
+/* What the Split Curve tool would cut: the nearest curve (or, with `point`, the nearest point)
+ * under the mouse on any layer being edited. */
+struct SplitHit {
+  Layer *layer = nullptr;
+  Transform2D to_document;
+  ShapeEdge edge;
+  float t = 0.0f;
+  int point = -1;
+};
+
+static SplitHit split_pick(Context &C, const ViewMapping &view, float2 mouse_document, bool point)
+{
+  SplitHit hit;
+  float best = FLT_MAX;
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    const float2 mouse = to_document.inverted().apply(mouse_document);
+    VectorDrawing &drawing = layer->drawing;
+    float d = FLT_MAX;
+    SplitHit candidate;
+    if (point) {
+      candidate.point = drawing_pick_point(drawing, mouse, PICK_PIXELS * pixel);
+      if (candidate.point >= 0) {
+        d = distance(drawing.points[candidate.point].pos, mouse) / pixel;
+      }
+    }
+    else if (drawing_pick_segment(drawing, mouse, PICK_PIXELS * pixel, &candidate.edge, &candidate.t)) {
+      float2 ctrl[4];
+      curve_segment_bezier(drawing, drawing.curves[candidate.edge.curve], candidate.edge.segment, ctrl);
+      d = distance(bezier_eval(ctrl, candidate.t), mouse) / pixel;
+    }
+    if (d < best) {
+      best = d;
+      candidate.layer = layer;
+      candidate.to_document = to_document;
+      hit = candidate;
+    }
+  }
+  return hit;
+}
+
+/* After a split made with K, the tool K came from returns. */
+static void split_curve_done(ToolSettings &ts)
+{
+  if (ts.tool_temporary) {
+    ts.tool = ts.tool_return;
+    ts.tool_temporary = false;
+  }
+}
+
+/* Picks the nearest point (or, in Edges and Strokes mode, the line) under the mouse across every
+ * editable layer, and selects it as Blender does: a plain click replaces the selection, Shift
+ * toggles, Ctrl removes. */
+static void select_click(Context &C, const ViewMapping &view, float2 mouse_document, HandleDisplay handles)
 {
   const ImGuiIO &io = ImGui::GetIO();
+  const std::vector<Layer *> layers = editable_layers(C);
+  Layer *hit_layer = nullptr;
   std::vector<int> picked;
-  if (const int p = drawing_pick_point(drawing, mouse, radius); p >= 0) {
-    picked.push_back(p);
+  float best = FLT_MAX;
+  const HandleHit handle = pick_handle(C, view, view.to_screen(mouse_document), handles);
+  for (Layer *layer : layers) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    const float2 mouse = to_document.inverted().apply(mouse_document);
+    if (const int p = drawing_pick_point(layer->drawing, mouse, PICK_PIXELS * pixel); p >= 0) {
+      const float d = distance(layer->drawing.points[p].pos, mouse) / pixel;
+      if (d < best) {
+        best = d;
+        hit_layer = layer;
+        picked = {p};
+      }
+    }
   }
-  else if (C.wm->tool_settings.select_mode != SelectMode::Point) {
+  /* A handle nearer than any point takes the click: just that handle is selected. */
+  if (handle.layer && handle.distance <= best) {
+    if (!io.KeyShift && !io.KeyCtrl) {
+      for (Layer *layer : layers) {
+        deselect_all(layer->drawing);
+      }
+    }
+    CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
+    bool &flag = handle.pre ? cp.select_in : cp.select_out;
+    flag = io.KeyCtrl ? false : (io.KeyShift ? !flag : true);
+    return;
+  }
+  if (!hit_layer && C.wm->tool_settings.select_mode != SelectMode::Point) {
     /* A click on a line takes that edge (its two points) in Edges mode, and the whole line in
      * Strokes mode. In Points mode only points are picked: a click on a line selects nothing. */
-    ShapeEdge edge;
-    float t;
-    if (drawing_pick_segment(drawing, mouse, radius, &edge, &t)) {
-      int a, b;
-      curve_segment_points(drawing.curves[edge.curve], edge.segment, &a, &b);
-      picked = C.wm->tool_settings.select_mode == SelectMode::Edge ? std::vector<int>{a, b} : std::vector<int>{a};
+    for (Layer *layer : layers) {
+      const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+      const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+      ShapeEdge edge;
+      float t;
+      if (drawing_pick_segment(layer->drawing, to_document.inverted().apply(mouse_document), PICK_PIXELS * pixel,
+                               &edge, &t))
+      {
+        int a, b;
+        curve_segment_points(layer->drawing.curves[edge.curve], edge.segment, &a, &b);
+        hit_layer = layer;
+        picked = C.wm->tool_settings.select_mode == SelectMode::Edge ? std::vector<int>{a, b} : std::vector<int>{a};
+        break;
+      }
     }
   }
   if (!io.KeyShift && !io.KeyCtrl) {
-    deselect_all(drawing);
+    for (Layer *layer : layers) {
+      deselect_all(layer->drawing);
+    }
   }
-  for (int p : picked) {
-    MeshPoint &point = drawing.points[p];
-    point.selected = io.KeyCtrl ? false : (io.KeyShift && picked.size() == 1 ? !point.selected : true);
+  if (hit_layer) {
+    for (int p : picked) {
+      MeshPoint &point = hit_layer->drawing.points[p];
+      point.selected = io.KeyCtrl ? false : (io.KeyShift && picked.size() == 1 ? !point.selected : true);
+    }
+    drawing_expand_selection_by_mode(C, hit_layer->drawing);
   }
-  drawing_expand_selection_by_mode(C, drawing);
 }
 
-static void select_box(Context &C, VectorDrawing &drawing, const Transform2D &to_document, const ViewMapping &view,
-                       ImVec2 a, ImVec2 b)
+static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, HandleDisplay handles)
 {
   const ImGuiIO &io = ImGui::GetIO();
   const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y)), hi(std::max(a.x, b.x), std::max(a.y, b.y));
-  if (!io.KeyShift && !io.KeyCtrl) {
-    deselect_all(drawing);
-  }
-  for (MeshPoint &p : drawing.points) {
-    const ImVec2 s = view.to_screen(to_document.apply(p.pos));
-    if (s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y) {
-      p.selected = !io.KeyCtrl;
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    if (!io.KeyShift && !io.KeyCtrl) {
+      deselect_all(layer->drawing);
     }
+    const auto inside = [&](float2 p) {
+      const ImVec2 s = view.to_screen(to_document.apply(p));
+      return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
+    };
+    VectorDrawing &drawing = layer->drawing;
+    /* Handles shown before the box (whose points were selected then) can be boxed too. */
+    std::vector<std::pair<CurvePoint *, int>> boxed;
+    for (Curve &curve : drawing.curves) {
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        CurvePoint &cp = curve.points[i];
+        if (handles == HandleDisplay::All || (handles == HandleDisplay::Selected && curve_point_selected(drawing, cp))) {
+          const float2 here = drawing.points[cp.point].pos;
+          for (const bool pre : {true, false}) {
+            const float2 h = curve_handle(drawing, curve, i, pre);
+            if (distance(h, here) > 1e-9f && inside(h)) {
+              boxed.push_back({&cp, pre ? 0 : 1});
+            }
+          }
+        }
+      }
+    }
+    for (MeshPoint &p : drawing.points) {
+      if (inside(p.pos)) {
+        p.selected = !io.KeyCtrl;
+      }
+    }
+    for (const auto &[cp, side] : boxed) {
+      (side == 0 ? cp->select_in : cp->select_out) = !io.KeyCtrl;
+    }
+    drawing_expand_selection_by_mode(C, drawing);
   }
-  drawing_expand_selection_by_mode(C, drawing);
 }
 
 /* Douglas-Peucker: keeps the points that matter for the stroke's shape. */
@@ -1224,7 +1535,8 @@ static void draw_grid(ImDrawList *dl, const ViewMapping &view, float grid)
 }
 
 static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
-                                 const ViewMapping &view, bool show_wires, bool show_points, int quality)
+                                 const ViewMapping &view, bool show_wires, bool show_points, int quality,
+                                 HandleDisplay handles)
 {
   std::vector<float2> samples;
   for (const Curve &curve : drawing.curves) {
@@ -1233,7 +1545,8 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
     }
     for (int s = 0; s < curve.segment_count(); s++) {
       samples.clear();
-      curve_segment_sample(drawing, curve, s, quality, samples);
+      curve_segment_sample(drawing, curve, s, quality, samples,
+                           0.5f / std::max(view.zoom * to_document.scale(), 1e-6f));
       int a, b;
       curve_segment_points(curve, s, &a, &b);
       samples.push_back(drawing.points[b].pos);
@@ -1257,6 +1570,30 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
   }
   if (!show_points) {
     return;
+  }
+  /* Handles under the points: a line out to a dot, coloured by type, bright when selected. */
+  for (const Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      const CurvePoint &cp = curve.points[i];
+      if (!handle_visible(drawing, cp, handles)) {
+        continue;
+      }
+      const float2 here = drawing.points[cp.point].pos;
+      const ImVec2 at = view.to_screen(to_document.apply(here));
+      const bool point_selected = drawing.points[cp.point].selected;
+      for (const bool pre : {true, false}) {
+        const float2 h = curve_handle(drawing, curve, i, pre);
+        if (distance(h, here) < 1e-9f) {
+          continue;
+        }
+        const bool selected = point_selected || (pre ? cp.select_in : cp.select_out);
+        const ImU32 col = COL_HANDLE[int(cp.handle_type)][selected ? 1 : 0];
+        const ImVec2 end = view.to_screen(to_document.apply(h));
+        dl->AddLine(at, end, col, 1.5f);
+        dl->AddCircleFilled(end, 3.2f, (pre ? cp.select_in : cp.select_out) ? IM_COL32(0xff, 0xff, 0xff, 255) : col);
+        dl->AddCircle(end, 3.2f, IM_COL32(0, 0, 0, 160));
+      }
+    }
   }
   const float r = 3.0f;
   for (int pass = 0; pass < 2; pass++) {
@@ -1370,7 +1707,8 @@ void viewport_draw(Area &area, Context &C)
   if (!renderer) {
     renderer = std::make_unique<SceneRenderer>();
   }
-  if (const unsigned int texture = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality)) {
+  if (const unsigned int texture = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
+                                                             doc.viewport_samples)) {
     dl->AddCallback(premultiplied_blend, nullptr);
     dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), origin, origin + size, ImVec2(0, 1), ImVec2(1, 0));
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
@@ -1391,6 +1729,17 @@ void viewport_draw(Area &area, Context &C)
   const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
   const float radius = PICK_PIXELS * pixel;
   const float2 mouse_layer = to_layer.apply(view.to_document(io.MousePos));
+
+  /* A K split that's cancelled (Esc or right-click), or a different tool picked meanwhile. */
+  if (ts.tool_temporary && (ts.tool != Tool::SplitCurve ||
+                            (hovered && (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                                         (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.KeyShift)))))
+  {
+    if (ts.tool == Tool::SplitCurve) {
+      ts.tool = ts.tool_return;
+    }
+    ts.tool_temporary = false;
+  }
 
   std::string modal_info;
   if (wm.transform_request && hovered && !g_modal.active) {
@@ -1443,26 +1792,49 @@ void viewport_draw(Area &area, Context &C)
         case Tool::Shape:
           g_drag.shape_start = shape_snap(C, mouse_layer);
           break;
-        case Tool::SplitCurve:
+        case Tool::SplitCurve: {
+          /* Cuts whichever edited layer's curve is under the mouse. */
+          const SplitHit hit = split_pick(C, view, view.to_document(io.MousePos), io.KeyCtrl);
+          if (!hit.layer) {
+            break;
+          }
+          VectorDrawing &cut = hit.layer->drawing;
           if (io.KeyCtrl) {
-            if (const int p = drawing_pick_point(*drawing, mouse_layer, radius); p >= 0) {
-              drawing_dissolve_point(*drawing, p);
-              push_undo(C, "Delete Point");
-            }
+            drawing_dissolve_point(cut, hit.point);
+            push_undo(C, "Delete Point");
           }
           else {
-            ShapeEdge edge;
-            float t;
-            if (drawing_pick_segment(*drawing, mouse_layer, radius, &edge, &t)) {
-              const int p = drawing_split_segment(*drawing, edge, io.KeyShift ? 0.5f : t);
-              deselect_all(*drawing);
-              drawing->points[p].selected = true;
-              push_undo(C, "Split Curve");
+            const int p = drawing_split_segment(cut, hit.edge, io.KeyShift ? 0.5f : hit.t);
+            for (Layer *editing : editable_layers(C)) {
+              deselect_all(editing->drawing);
             }
+            cut.points[p].selected = true;
+            push_undo(C, "Split Curve");
+          }
+          split_curve_done(ts);
+          break;
+        }
+        case Tool::Select: {
+          /* Pressing on a shown handle drags it at once, as Blender's tweak does. */
+          const HandleHit handle = pick_handle(C, view, io.MousePos, handles_shown(area.overlays, ts));
+          if (!handle.layer || io.KeyShift || io.KeyCtrl) {
+            break;
+          }
+          const CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
+          if (!(handle.pre ? cp.select_in : cp.select_out)) {
+            for (Layer *editing : editable_layers(C)) {
+              deselect_all(editing->drawing);
+            }
+            CurvePoint &picked = handle.layer->drawing.curves[handle.curve].points[handle.index];
+            (handle.pre ? picked.select_in : picked.select_out) = true;
+          }
+          g_drag = {};
+          if (modal_start(C, area, 'G', view.to_document(io.MousePos))) {
+            g_modal.tweak = true;
           }
           break;
+        }
         case Tool::Cursor:
-        case Tool::Select:
           break;
       }
     }
@@ -1529,10 +1901,10 @@ void viewport_draw(Area &area, Context &C)
       switch (ts.tool) {
         case Tool::Select:
           if (g_drag.box) {
-            select_box(C, *drawing, to_document, view, g_drag.start, io.MousePos);
+            select_box(C, view, g_drag.start, io.MousePos, handles_shown(area.overlays, ts));
           }
           else {
-            select_click(C, *drawing, mouse_layer, radius);
+            select_click(C, view, view.to_document(io.MousePos), handles_shown(area.overlays, ts));
           }
           push_undo(C, "Select");
           break;
@@ -1570,16 +1942,24 @@ void viewport_draw(Area &area, Context &C)
   /* Overlays for the layer being edited. */
   if (drawing) {
     if (ov.show && (ov.wireframe || ov.points)) {
+      /* Every layer being edited shows its wires and points. */
+      for (Layer *editing : editable_layers(C)) {
+        if (editing->id == layer->id) {
+          continue;
+        }
+        draw_drawing_overlay(dl, editing->drawing, layer_world_transform(doc, editing->id), view, ov.wireframe,
+                             ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
+                             std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts));
+      }
       draw_drawing_overlay(dl, *drawing, to_document, view, ov.wireframe, ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
-                           std::clamp(doc.viewport_quality, 1, 64));
+                           std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts));
     }
     if (hovered && ts.tool == Tool::SplitCurve && !io.KeyCtrl) {
-      ShapeEdge edge;
-      float t;
-      if (drawing_pick_segment(*drawing, mouse_layer, radius, &edge, &t)) {
+      if (const SplitHit hit = split_pick(C, view, view.to_document(io.MousePos), false); hit.layer) {
+        const VectorDrawing &cut = hit.layer->drawing;
         float2 ctrl[4];
-        curve_segment_bezier(*drawing, drawing->curves[edge.curve], edge.segment, ctrl);
-        const ImVec2 s = view.to_screen(to_document.apply(bezier_eval(ctrl, io.KeyShift ? 0.5f : t)));
+        curve_segment_bezier(cut, cut.curves[hit.edge.curve], hit.edge.segment, ctrl);
+        const ImVec2 s = view.to_screen(hit.to_document.apply(bezier_eval(ctrl, io.KeyShift ? 0.5f : hit.t)));
         dl->AddCircleFilled(s, 4.0f, COL_POINT_SELECTED);
       }
     }
@@ -1591,6 +1971,22 @@ void viewport_draw(Area &area, Context &C)
   }
   if (ov.show && ov.cursor) {
     draw_cursor(dl, view.to_screen(ts.cursor));
+  }
+
+  /* Blender's V menu: Set Handle Type. */
+  if (wm.handle_menu_requested && hovered) {
+    wm.handle_menu_requested = false;
+    ImGui::OpenPopup("##handle_type_menu");
+  }
+  if (ImGui::BeginPopup("##handle_type_menu")) {
+    ImGui::TextDisabled("Set Handle Type");
+    ImGui::Separator();
+    for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
+      if (ImGui::MenuItem(handle_type_name(type))) {
+        operator_call(C, "mesh.handle_type_set", {{"type", handle_type_identifier(type)}});
+      }
+    }
+    ImGui::EndPopup();
   }
 
   /* Header, tool bar, and the info line in the corner. */

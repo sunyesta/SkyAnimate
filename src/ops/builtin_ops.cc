@@ -269,6 +269,21 @@ void builtin_operators_register()
   wm_ui_scale_register("wm.ui_scale_increase", "Increase Interface Scale", 0.25f);
   wm_ui_scale_register("wm.ui_scale_decrease", "Decrease Interface Scale", -0.25f);
   wm_ui_scale_register("wm.ui_scale_reset", "Reset Interface Scale", 0.0f);
+  {
+    /* Blender's Render Image: the current frame through the camera, at the document's size,
+     * render quality and render samples, shown in the Render Result window. */
+    OperatorType ot;
+    ot.idname = "render.render";
+    ot.name = "Render Frame";
+    ot.description = "Render the current frame at the document's size and show it";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.wm && !C.wm->background; };
+    ot.exec = [](Context &C) {
+      C.wm->render_requested = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
 }
 
 }  // namespace sky

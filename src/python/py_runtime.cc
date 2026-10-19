@@ -9,7 +9,10 @@
 #include <optional>
 #include <stdexcept>
 
+#include "assets/asset_library.hh"
+#include "assets/brushes.hh"
 #include "core/log.hh"
+#include "gpu/brush_stroke.hh"
 #include "data/document.hh"
 #include "ops/file_ops.hh"
 #include "ops/operator.hh"
@@ -460,6 +463,97 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       result.append(py::make_tuple(p.pos.x, p.pos.y, p.selected));
     }
     return result;
+  });
+  /* Brushes: settings travel as dicts with Moho's .mohobrush key names. */
+  const auto brush_to_dict = [](const BrushSettings &b) {
+    py::dict d;
+    d["name"] = b.name;
+    d["align"] = b.align;
+    d["jitter"] = b.jitter;
+    d["spacing"] = b.spacing;
+    d["angleDrift"] = b.angle_drift;
+    d["randomize"] = b.randomize;
+    d["randomOrder"] = b.random_order;
+    d["mergedAlpha"] = b.merged_alpha;
+    d["sizeVariationAmp"] = b.size_variation_amp;
+    d["sizeVariationScale"] = b.size_variation_scale;
+    d["randomInterval"] = b.random_interval;
+    d["tint"] = b.tint;
+    d["hueDrift"] = b.hue_drift;
+    d["satDrift"] = b.sat_drift;
+    d["valDrift"] = b.val_drift;
+    return d;
+  };
+  m.def("brushes", [brush_to_dict]() {
+    py::list result;
+    for (const Brush &brush : brushes()) {
+      py::dict d = brush_to_dict(brush.defaults);
+      d["name"] = brush.name;
+      d["images"] = int(brush.files.size());
+      result.append(d);
+    }
+    return result;
+  });
+  m.def("asset_library", []() { return preferences().asset_library; });
+  m.def("layer_shape_brush", [layer_or_raise, brush_to_dict](uint64_t id, int index) {
+    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    if (index < 0 || index >= int(drawing.shapes.size())) {
+      throw py::index_error("no shape " + std::to_string(index));
+    }
+    return brush_to_dict(drawing.shapes[index].style.brush);
+  });
+  /* How many dabs a brush lays along a straight line (for checking spacing). */
+  m.def("brush_dab_count", [](const std::string &name, float length, float width) {
+    const Brush *brush = brush_find(name);
+    if (!brush) {
+      throw py::value_error("no brush named '" + name + "'");
+    }
+    BrushDabs dabs;
+    brush_stroke({{0.0f, 0.0f}, {length, 0.0f}}, {width * 0.5f, width * 0.5f}, false, brush->defaults,
+                 Color{0, 0, 0, 1}, std::vector<float>(std::max<size_t>(brush->files.size(), 1), 1.0f), 0.0f, 1, dabs);
+    return dabs.count;
+  });
+  /* Handles: [(type, (in x, y), (out x, y)), ...] for one curve, in layer space. */
+  m.def("layer_curve_handles", [layer_or_raise](uint64_t id, int curve_index) {
+    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    if (curve_index < 0 || curve_index >= int(drawing.curves.size())) {
+      throw py::index_error("no curve " + std::to_string(curve_index));
+    }
+    const Curve &curve = drawing.curves[curve_index];
+    py::list result;
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      const float2 in = curve_handle(drawing, curve, i, true), out = curve_handle(drawing, curve, i, false);
+      result.append(py::make_tuple(handle_type_identifier(curve.points[i].handle_type), py::make_tuple(in.x, in.y),
+                                   py::make_tuple(out.x, out.y)));
+    }
+    return result;
+  });
+  /* Drags one handle to a layer-space position, as in the viewport. */
+  m.def("layer_move_handle", [layer_or_raise](uint64_t id, int curve_index, int index, const std::string &side,
+                                              std::pair<float, float> pos) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's handles are edited through its original");
+    }
+    VectorDrawing &drawing = layer.drawing;
+    if (curve_index < 0 || curve_index >= int(drawing.curves.size()) || index < 0 ||
+        index >= int(drawing.curves[curve_index].points.size())) {
+      throw py::index_error("no such curve point");
+    }
+    if (side != "IN" && side != "OUT") {
+      throw py::value_error("side must be 'IN' or 'OUT'");
+    }
+    curve_point_move_handle(drawing, drawing.curves[curve_index], index, side == "IN", {pos.first, pos.second});
+    current_context().undo->mark_changed();
+  });
+  m.def("layer_select_handle", [layer_or_raise](uint64_t id, int curve_index, int index, const std::string &side) {
+    VectorDrawing &drawing = layer_or_raise(id).drawing;
+    if (curve_index < 0 || curve_index >= int(drawing.curves.size()) || index < 0 ||
+        index >= int(drawing.curves[curve_index].points.size())) {
+      throw py::index_error("no such curve point");
+    }
+    CurvePoint &cp = drawing.curves[curve_index].points[index];
+    (side == "IN" ? cp.select_in : cp.select_out) = true;
   });
   m.def("layer_shapes", [layer_or_raise](uint64_t id) {
     /* Bottom first: [(name, [curve indices of its edges]), ...]. */

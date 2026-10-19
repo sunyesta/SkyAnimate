@@ -54,9 +54,34 @@ static std::string enum_identifier(const char *prop_id, int value)
   return (value >= 0 && value < int(prop->items.size())) ? prop->items[value].identifier : prop->items[0].identifier;
 }
 
+/* Brush settings use Moho's .mohobrush names, so the two read alike. Only a line with a brush
+ * saves them. */
+static json brush_to_json(const BrushSettings &b)
+{
+  return {{"name", b.name},
+          {"align", b.align},
+          {"jitter", num(b.jitter)},
+          {"spacing", num(b.spacing)},
+          {"angleDrift", num(b.angle_drift)},
+          {"randomize", b.randomize},
+          {"randomOrder", b.random_order},
+          {"mergedAlpha", b.merged_alpha},
+          {"sizeVariationAmp", num(b.size_variation_amp)},
+          {"sizeVariationScale", num(b.size_variation_scale)},
+          {"randomInterval", b.random_interval},
+          {"tint", b.tint},
+          {"hueDrift", num(b.hue_drift)},
+          {"satDrift", num(b.sat_drift)},
+          {"valDrift", num(b.val_drift)}};
+}
+
 static json style_to_json(const Style &style)
 {
-  return {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
+  json j = {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
+  if (!style.brush.name.empty()) {
+    j["brush"] = brush_to_json(style.brush);
+  }
+  return j;
 }
 
 static json drawing_to_json(const VectorDrawing &drawing)
@@ -85,6 +110,13 @@ static json drawing_to_json(const VectorDrawing &drawing)
       if (cp.edge_hidden) {
         point["edge_hidden"] = true;
       }
+      if (cp.handle_type != HandleType::Auto) {
+        point["handle_type"] = handle_type_identifier(cp.handle_type);
+      }
+      if (cp.handle_type == HandleType::Aligned || cp.handle_type == HandleType::Free) {
+        point["handle_in"] = float2_to_json(cp.handle_in);
+        point["handle_out"] = float2_to_json(cp.handle_out);
+      }
       curve_points.push_back(std::move(point));
     }
     curves.push_back({{"closed", curve.closed}, {"points", std::move(curve_points)}});
@@ -111,6 +143,7 @@ static json layer_to_json(const Layer &layer)
       {"name", layer.name},
       {"type", enum_identifier("type", int(layer.type))},
       {"visible", layer.visible},
+      {"render_visible", layer.render_visible},
       {"locked", layer.locked},
       {"expanded", layer.expanded},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
@@ -120,6 +153,8 @@ static json layer_to_json(const Layer &layer)
       {"opacity", num(layer.opacity)},
       {"mask_mode", enum_identifier("mask_mode", int(layer.mask_mode))},
       {"group_mask", enum_identifier("group_mask", int(layer.group_mask))},
+      {"mask_expand", layer.mask_expand},
+      {"mask_exclude_strokes", layer.mask_exclude_strokes},
   };
   if (layer.is_reference()) {
     /* A reference's drawing lives in its source; storing a copy would only go stale. */
@@ -162,6 +197,8 @@ std::string sky_document_to_json(const Document &doc)
            {"height", doc.height},
            {"background", color_to_json(doc.background)},
            {"viewport_quality", doc.viewport_quality},
+           {"viewport_samples", doc.viewport_samples},
+           {"render_samples", doc.render_samples},
            {"render_quality", doc.render_quality},
            {"action", doc.action},
            {"active_layer", doc.active_layer},
@@ -294,6 +331,27 @@ static const json &get_array(const json &j, const char *key)
   return (it != j.end() && it->is_array()) ? *it : empty;
 }
 
+static BrushSettings brush_from_json(const json &j)
+{
+  BrushSettings b;
+  b.name = get_string(j, "name");
+  b.align = get_bool(j, "align", b.align);
+  b.jitter = get_float(j, "jitter", b.jitter);
+  b.spacing = std::max(0.01f, get_float(j, "spacing", b.spacing));
+  b.angle_drift = get_float(j, "angleDrift", b.angle_drift);
+  b.randomize = get_bool(j, "randomize", b.randomize);
+  b.random_order = get_bool(j, "randomOrder", b.random_order);
+  b.merged_alpha = get_bool(j, "mergedAlpha", b.merged_alpha);
+  b.size_variation_amp = std::max(0.0f, get_float(j, "sizeVariationAmp", b.size_variation_amp));
+  b.size_variation_scale = std::max(0.001f, get_float(j, "sizeVariationScale", b.size_variation_scale));
+  b.random_interval = std::max(1, get_int(j, "randomInterval", b.random_interval));
+  b.tint = get_bool(j, "tint", b.tint);
+  b.hue_drift = get_float(j, "hueDrift", b.hue_drift);
+  b.sat_drift = get_float(j, "satDrift", b.sat_drift);
+  b.val_drift = get_float(j, "valDrift", b.val_drift);
+  return b;
+}
+
 static Style style_from_json(const json &j)
 {
   Style style;
@@ -303,6 +361,9 @@ static Style style_from_json(const json &j)
   style.fill = get_color(j, "fill", style.fill);
   style.line = get_color(j, "line", style.line);
   style.line_width = std::max(0.0f, get_float(j, "line_width", style.line_width));
+  if (auto it = j.find("brush"); it != j.end() && it->is_object()) {
+    style.brush = brush_from_json(*it);
+  }
   return style;
 }
 
@@ -340,6 +401,11 @@ static VectorDrawing drawing_from_json(const json &j)
       point.offset_in = get_float(cp, "offset_in", 0.0f);
       point.offset_out = get_float(cp, "offset_out", 0.0f);
       point.edge_hidden = get_bool(cp, "edge_hidden", false);
+      if (!handle_type_from_identifier(get_string(cp, "handle_type", "AUTO"), &point.handle_type)) {
+        point.handle_type = HandleType::Auto;
+      }
+      point.handle_in = get_float2(cp, "handle_in", {});
+      point.handle_out = get_float2(cp, "handle_out", {});
       curve.points.push_back(point);
     }
     /* Keep curve indices stable for the shapes even if a curve came out too short; it then
@@ -381,6 +447,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.name = get_string(j, "name", "Layer");
   layer.type = get_enum(j, "type", LayerType::Vector);
   layer.visible = get_bool(j, "visible", true);
+  layer.render_visible = get_bool(j, "render_visible", true);
   layer.locked = get_bool(j, "locked", false);
   layer.expanded = get_bool(j, "expanded", true);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
@@ -390,6 +457,8 @@ static Layer layer_from_json(const json &j, int depth)
   layer.opacity = std::clamp(get_float(j, "opacity", 1.0f), 0.0f, 1.0f);
   layer.mask_mode = get_enum(j, "mask_mode", MaskMode::Masked);
   layer.group_mask = get_enum(j, "group_mask", GroupMask::None);
+  layer.mask_expand = get_bool(j, "mask_expand", false);
+  layer.mask_exclude_strokes = get_bool(j, "mask_exclude_strokes", false);
   layer.reference_source = get_id(j, "reference_source");
   if (auto it = j.find("drawing"); it != j.end() && !layer.is_group()) {
     layer.drawing = drawing_from_json(*it);
@@ -477,6 +546,8 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   doc.background = get_color(j, "background", doc.background);
   doc.viewport_quality = std::clamp(get_int(j, "viewport_quality", doc.viewport_quality), 1, 64);
   doc.render_quality = std::clamp(get_int(j, "render_quality", doc.render_quality), 1, 64);
+  doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
+  doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
   doc.action = get_string(j, "action");
   doc.active_layer = get_id(j, "active_layer");
   doc.next_layer_id = std::max<uint64_t>(1, get_id(j, "next_layer_id"));

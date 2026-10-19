@@ -56,6 +56,12 @@ void file_dialog_save(const char *filter_name, const char *pattern, const std::s
                          default_path.empty() ? nullptr : default_path.c_str());
 }
 
+void file_dialog_folder(FileDialogDone done)
+{
+  Request *request = request_new("", "", std::move(done));
+  SDL_ShowOpenFolderDialog(dialog_callback, request, SDL_GL_GetCurrentWindow(), nullptr, false);
+}
+
 void file_dialog_process()
 {
   std::vector<std::pair<Request *, std::string>> finished;

@@ -25,11 +25,33 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
   return &layer->drawing;
 }
 
-static bool editable_poll(Context &C)
+std::vector<Layer *> editable_layers(Context &C)
 {
-  return editable_drawing(C) != nullptr;
+  std::vector<Layer *> layers;
+  if (!C.document) {
+    return layers;
+  }
+  Document &doc = *C.document;
+  Layer *active = nullptr;
+  if (editable_drawing(C, &active)) {
+    layers.push_back(active);
+  }
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (layer->selected && layer != active && layer->visible && !layer->is_group() && !layer->is_reference() &&
+        !layer->locked)
+    {
+      layers.push_back(layer_find(doc, layer->id));
+    }
+  }
+  return layers;
 }
 
+static bool editable_poll(Context &C)
+{
+  return !editable_layers(C).empty();
+}
+
+/* Selected points, or handles picked on their own (G, R and S move those too). */
 static bool has_selection(const VectorDrawing &drawing)
 {
   for (const MeshPoint &p : drawing.points) {
@@ -37,13 +59,24 @@ static bool has_selection(const VectorDrawing &drawing)
       return true;
     }
   }
+  for (const Curve &curve : drawing.curves) {
+    for (const CurvePoint &cp : curve.points) {
+      if (cp.select_in || cp.select_out) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
 static bool editable_with_selection_poll(Context &C)
 {
-  const VectorDrawing *drawing = editable_drawing(C);
-  return drawing && has_selection(*drawing);
+  for (const Layer *layer : editable_layers(C)) {
+    if (has_selection(layer->drawing)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void drawing_expand_selection_by_mode(Context &C, VectorDrawing &drawing)
@@ -89,25 +122,65 @@ static constexpr unsigned UNDO = OPTYPE_REGISTER | OPTYPE_UNDO;
 
 void vector_operators_register()
 {
+  /* --- Handles --------------------------------------------------------------- */
+  vector_operator("mesh.handle_type_set", "Set Handle Type",
+                  "Set the handle type of the selected points (AUTO, VECTOR, ALIGNED or FREE); without a type, "
+                  "opens the menu (V)",
+                  UNDO, editable_poll, [](Context &C) {
+                    const std::string name = op_arg(C, "type");
+                    if (name.empty()) {
+                      if (C.wm->background) {
+                        report(ReportType::Error, "mesh.handle_type_set needs a type");
+                        return OpStatus::Cancelled;
+                      }
+                      /* The viewport under the mouse opens Blender's Set Handle Type menu. */
+                      C.wm->handle_menu_requested = true;
+                      return OpStatus::Cancelled;
+                    }
+                    HandleType type;
+                    if (!handle_type_from_identifier(name, &type)) {
+                      report(ReportType::Error, "Handle type must be AUTO, VECTOR, ALIGNED or FREE");
+                      return OpStatus::Cancelled;
+                    }
+                    int changed = 0;
+                    bool any = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      any = any || drawing_selected_handle_type(layer->drawing) != -1;
+                      changed += drawing_set_selected_handle_type(layer->drawing, type);
+                    }
+                    if (!any) {
+                      report(ReportType::Warning, "Select points or handles to set their handle type");
+                      return OpStatus::Cancelled;
+                    }
+                    return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
+
   /* --- Selection ------------------------------------------------------------- */
   vector_operator("mesh.select_all", "Select All", "Select every point in the active layer", UNDO, editable_poll,
                   [](Context &C) {
-                    for (MeshPoint &p : editable_drawing(C)->points) {
-                      p.selected = true;
+                    for (Layer *layer : editable_layers(C)) {
+                      for (MeshPoint &p : layer->drawing.points) {
+                        p.selected = true;
+                      }
                     }
                     return OpStatus::Finished;
                   });
   vector_operator("mesh.select_none", "Deselect All", "Deselect every point in the active layer", UNDO,
                   editable_poll, [](Context &C) {
-                    for (MeshPoint &p : editable_drawing(C)->points) {
-                      p.selected = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      for (MeshPoint &p : layer->drawing.points) {
+                        p.selected = false;
+                      }
+                      drawing_deselect_handles(layer->drawing);
                     }
                     return OpStatus::Finished;
                   });
   vector_operator("mesh.select_invert", "Invert Selection", "Select the unselected points and deselect the rest",
                   UNDO, editable_poll, [](Context &C) {
-                    for (MeshPoint &p : editable_drawing(C)->points) {
-                      p.selected = !p.selected;
+                    for (Layer *layer : editable_layers(C)) {
+                      for (MeshPoint &p : layer->drawing.points) {
+                        p.selected = !p.selected;
+                      }
                     }
                     return OpStatus::Finished;
                   });
@@ -120,34 +193,37 @@ void vector_operators_register()
         UNDO,
         [](Context &C) { return editable_poll(C) && C.wm->mouse_in_viewport; },
         [deselect](Context &C) {
-          Layer *layer = nullptr;
-          VectorDrawing &drawing = *editable_drawing(C, &layer);
-          const Transform2D to_layer = layer_world_transform(*C.document, layer->id).inverted();
-          const float2 mouse = to_layer.apply(C.wm->mouse_document);
-          const float radius = 0.03f * to_layer.scale();
-          std::vector<int> points;
-          if (const int s = drawing_pick_shape(drawing, mouse, radius); s >= 0) {
-            for (const ShapeEdge &e : drawing.shapes[s].edges) {
-              int a, b;
-              curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
-              points.push_back(a);
-              points.push_back(b);
+          /* The first editable layer with a shape or curve under the mouse, active one first. */
+          for (Layer *layer : editable_layers(C)) {
+            VectorDrawing &drawing = layer->drawing;
+            const Transform2D to_layer = layer_world_transform(*C.document, layer->id).inverted();
+            const float2 mouse = to_layer.apply(C.wm->mouse_document);
+            const float radius = 0.03f * to_layer.scale();
+            std::vector<int> points;
+            if (const int s = drawing_pick_shape(drawing, mouse, radius); s >= 0) {
+              for (const ShapeEdge &e : drawing.shapes[s].edges) {
+                int a, b;
+                curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+                points.push_back(a);
+                points.push_back(b);
+              }
             }
-          }
-          else {
-            ShapeEdge edge;
-            float t;
-            if (!drawing_pick_segment(drawing, mouse, radius, &edge, &t)) {
-              return OpStatus::Cancelled;
+            else {
+              ShapeEdge edge;
+              float t;
+              if (!drawing_pick_segment(drawing, mouse, radius, &edge, &t)) {
+                continue;
+              }
+              for (const CurvePoint &cp : drawing.curves[edge.curve].points) {
+                points.push_back(cp.point);
+              }
             }
-            for (const CurvePoint &cp : drawing.curves[edge.curve].points) {
-              points.push_back(cp.point);
+            for (int p : points) {
+              drawing.points[p].selected = !deselect;
             }
+            return OpStatus::Finished;
           }
-          for (int p : points) {
-            drawing.points[p].selected = !deselect;
-          }
-          return OpStatus::Finished;
+          return OpStatus::Cancelled;
         });
   }
 
@@ -158,8 +234,8 @@ void vector_operators_register()
     ot.description = "Change what clicking selects: points, whole strokes, or segments between junctions";
     ot.exec = [mode](Context &C) {
       C.wm->tool_settings.select_mode = mode;
-      if (VectorDrawing *drawing = editable_drawing(C)) {
-        drawing_expand_selection_by_mode(C, *drawing);
+      for (Layer *layer : editable_layers(C)) {
+        drawing_expand_selection_by_mode(C, layer->drawing);
       }
       return OpStatus::Finished;
     };
@@ -172,21 +248,27 @@ void vector_operators_register()
   /* --- Editing ----------------------------------------------------------------- */
   vector_operator("mesh.delete", "Delete Points", "Delete the selected points and the curves left too short",
                   UNDO, editable_with_selection_poll, [](Context &C) {
-                    VectorDrawing &drawing = *editable_drawing(C);
-                    std::vector<bool> remove(drawing.points.size());
-                    for (size_t i = 0; i < drawing.points.size(); i++) {
-                      remove[i] = drawing.points[i].selected;
+                    for (Layer *layer : editable_layers(C)) {
+                      VectorDrawing &drawing = layer->drawing;
+                      std::vector<bool> remove(drawing.points.size());
+                      for (size_t i = 0; i < drawing.points.size(); i++) {
+                        remove[i] = drawing.points[i].selected;
+                      }
+                      drawing_remove_points(drawing, remove);
                     }
-                    drawing_remove_points(drawing, remove);
                     return OpStatus::Finished;
                   });
 
   vector_operator("mesh.create_shape", "Create Shape",
                   "Fill the closed loop through the selected points, or outline an open run", UNDO,
                   editable_with_selection_poll, [](Context &C) {
-                    VectorDrawing &drawing = *editable_drawing(C);
-                    const int shape = drawing_shape_from_selection(drawing, true, C.wm->tool_settings.style);
-                    if (shape < 0) {
+                    bool made = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (has_selection(layer->drawing)) {
+                        made |= drawing_shape_from_selection(layer->drawing, true, C.wm->tool_settings.style) >= 0;
+                      }
+                    }
+                    if (!made) {
                       report(ReportType::Warning, "Select points along a loop or a line to make a shape");
                       return OpStatus::Cancelled;
                     }
@@ -195,24 +277,35 @@ void vector_operators_register()
 
   vector_operator("mesh.create_line", "Create Line", "Outline the selected points without a fill", UNDO,
                   editable_with_selection_poll, [](Context &C) {
-                    VectorDrawing &drawing = *editable_drawing(C);
-                    const int shape = drawing_shape_from_selection(drawing, false, C.wm->tool_settings.style);
-                    if (shape < 0) {
-                      return OpStatus::Cancelled;
+                    bool made = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      VectorDrawing &drawing = layer->drawing;
+                      if (!has_selection(drawing)) {
+                        continue;
+                      }
+                      if (const int shape = drawing_shape_from_selection(drawing, false, C.wm->tool_settings.style);
+                          shape >= 0)
+                      {
+                        drawing.shapes[shape].has_fill = false;
+                        made = true;
+                      }
                     }
-                    drawing.shapes[shape].has_fill = false;
-                    return OpStatus::Finished;
+                    return made ? OpStatus::Finished : OpStatus::Cancelled;
                   });
 
   for (const bool peak : {true, false}) {
     vector_operator(peak ? "mesh.peak" : "mesh.smooth", peak ? "Peak" : "Smooth",
                     peak ? "Make the selected points sharp corners" : "Make the selected points smooth curves", UNDO,
                     editable_with_selection_poll, [peak](Context &C) {
-                      VectorDrawing &drawing = *editable_drawing(C);
-                      for (Curve &curve : drawing.curves) {
-                        for (CurvePoint &cp : curve.points) {
-                          if (drawing.points[cp.point].selected) {
-                            cp.curvature = peak ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
+                      for (Layer *layer : editable_layers(C)) {
+                        VectorDrawing &drawing = layer->drawing;
+                        for (Curve &curve : drawing.curves) {
+                          for (CurvePoint &cp : curve.points) {
+                            if (drawing.points[cp.point].selected) {
+                              /* Peak = Vector handles (a corner), Smooth = Automatic. */
+                              cp.curvature = peak ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
+                              cp.handle_type = peak ? HandleType::Vector : HandleType::Auto;
+                            }
                           }
                         }
                       }
@@ -222,19 +315,23 @@ void vector_operators_register()
 
   vector_operator("mesh.delete_shape", "Delete Shape", "Delete the fills and outlines that use selected points",
                   UNDO, editable_with_selection_poll, [](Context &C) {
-                    VectorDrawing &drawing = *editable_drawing(C);
-                    const size_t before = drawing.shapes.size();
-                    std::erase_if(drawing.shapes, [&](const Shape &shape) {
-                      for (const ShapeEdge &e : shape.edges) {
-                        int a, b;
-                        curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
-                        if (drawing.points[a].selected && drawing.points[b].selected) {
-                          return true;
+                    bool deleted = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      VectorDrawing &drawing = layer->drawing;
+                      const size_t before = drawing.shapes.size();
+                      std::erase_if(drawing.shapes, [&](const Shape &shape) {
+                        for (const ShapeEdge &e : shape.edges) {
+                          int a, b;
+                          curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+                          if (drawing.points[a].selected && drawing.points[b].selected) {
+                            return true;
+                          }
                         }
-                      }
-                      return false;
-                    });
-                    return drawing.shapes.size() != before ? OpStatus::Finished : OpStatus::Cancelled;
+                        return false;
+                      });
+                      deleted |= drawing.shapes.size() != before;
+                    }
+                    return deleted ? OpStatus::Finished : OpStatus::Cancelled;
                   });
 
   /* --- Modal transforms -----------------------------------------------------------
@@ -263,6 +360,23 @@ void vector_operators_register()
     };
     operators().add(std::move(ot));
   };
+  {
+    /* K: Split Curve for one split, then back to the tool before. */
+    OperatorType ot;
+    ot.idname = "wm.tool_split_curve_temporary";
+    ot.name = "Split Curve (Once)";
+    ot.description = "Split a line once with the Split Curve tool, then go back to the current tool";
+    ot.exec = [](Context &C) {
+      ToolSettings &ts = C.wm->tool_settings;
+      if (!ts.tool_temporary) {
+        ts.tool_return = ts.tool;
+      }
+      ts.tool = Tool::SplitCurve;
+      ts.tool_temporary = ts.tool_return != Tool::SplitCurve;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   tool_op("wm.tool_select", "Select Box Tool", Tool::Select);
   tool_op("wm.tool_cursor", "Cursor Tool", Tool::Cursor);
   {
@@ -328,14 +442,21 @@ void vector_operators_register()
   /* Blender's Arrange (Page Up/Down) for shapes, Moho's Raise and Lower Shape. */
   const auto arrange_op = [](const char *idname, const char *name, const char *description, ShapeArrange arrange) {
     vector_operator(idname, name, description, UNDO, editable_with_selection_poll, [arrange](Context &C) {
-      VectorDrawing &drawing = *editable_drawing(C);
-      const std::vector<bool> selected = drawing_selected_shapes(drawing);
-      if (std::find(selected.begin(), selected.end(), true) == selected.end()) {
+      /* Shapes move within their own layer's stacking order. */
+      bool any_selected = false, moved = false;
+      for (Layer *layer : editable_layers(C)) {
+        const std::vector<bool> selected = drawing_selected_shapes(layer->drawing);
+        if (std::find(selected.begin(), selected.end(), true) != selected.end()) {
+          any_selected = true;
+          moved |= drawing_arrange_shapes(layer->drawing, arrange);
+        }
+      }
+      if (!any_selected) {
         report(ReportType::Warning, "Select a point of a shape to arrange it");
         return OpStatus::Cancelled;
       }
       /* Already at the top or bottom: nothing to undo. */
-      return drawing_arrange_shapes(drawing, arrange) ? OpStatus::Finished : OpStatus::Cancelled;
+      return moved ? OpStatus::Finished : OpStatus::Cancelled;
     });
   };
   arrange_op("mesh.shape_raise", "Bring Forward", "Move the selected shapes one step up the stacking order",
@@ -351,7 +472,13 @@ void vector_operators_register()
    * copy where it was made, as in Blender. */
   vector_operator("mesh.duplicate_move", "Duplicate", "Copy the selected points, curves and shapes, then move the copy",
                   UNDO, editable_with_selection_poll, [](Context &C) {
-                    if (!drawing_duplicate_selected(*editable_drawing(C))) {
+                    bool copied = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (has_selection(layer->drawing)) {
+                        copied |= drawing_duplicate_selected(layer->drawing);
+                      }
+                    }
+                    if (!copied) {
                       report(ReportType::Warning, "Select at least two connected points to duplicate");
                       return OpStatus::Cancelled;
                     }

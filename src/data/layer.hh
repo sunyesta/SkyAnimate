@@ -23,11 +23,12 @@ namespace sky {
 enum class LayerType { Vector, Group };
 
 /* Moho's MM_* masking modes for a layer inside a masking group. */
+/* Moho's masking modes, in the order its Masking menu lists them. Subtracting always hides the
+ * layer, as in Moho's menu. */
 enum class MaskMode {
   Masked,
   NotMasked,
   Add,
-  Subtract,
   AddInvisible,
   SubtractInvisible,
   ClearAdd,
@@ -45,9 +46,14 @@ struct Layer {
   std::string name;
   LayerType type = LayerType::Vector;
   bool visible = true;
+  /* Drawn in renders (Blender's camera toggle). Off, the layer still shows in the viewport. */
+  bool render_visible = true;
   bool locked = false;
   /* Shown open in the Layers editor (groups). */
   bool expanded = true;
+  /* Picked in the Layers editor along with the active layer (Ctrl or Shift click), for
+   * Group With Selection. Not saved. */
+  bool selected = false;
   LabelColor label_color = LabelColor::None;
 
   float2 position;
@@ -57,6 +63,10 @@ struct Layer {
   float opacity = 1.0f;
 
   MaskMode mask_mode = MaskMode::Masked;
+  /* Moho's masking options for the layer's part of its group's mask: grow it by a pixel (hides
+   * thin seams along mask edges), and leave out strokes so only fills mask. */
+  bool mask_expand = false;
+  bool mask_exclude_strokes = false;
   GroupMask group_mask = GroupMask::None;
 
   /* Id of the layer this one shows, or 0. */
