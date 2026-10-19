@@ -208,6 +208,24 @@ sky.ops.ed.undo()
 sky.ops.ed.undo()
 assert 40 not in frames("position")
 
+# --- Channel rows: keys of one selected layer at a time ----------------------------------------
+doc.frame_current = 0
+sky.ops.layer.new()
+other = sky.data.layers.active
+doc.frame_current = 10
+other.location_x = 2.0
+doc.frame_current = 0
+layer.select = True  # both layers are animated: the timeline shows a row for each
+assert 10 in other.key_frames and 10 in layer.key_frames
+assert sky.ops.anim.keys_select(frame_start="10", layers=str(other.id)) == {'FINISHED'}
+assert sky.ops.anim.keys_offset(frames="3") == {'FINISHED'}
+assert 13 in other.key_frames and 10 not in other.key_frames
+assert 10 in layer.key_frames and 13 not in layer.key_frames, "the other row's keys stay"
+assert sky.ops.anim.keys_offset(frames="-3") == {'FINISHED'}
+assert 10 in other.key_frames
+sky.data.layers.active = layer
+layer.select = False
+
 # --- Saved with the document ------------------------------------------------------------------
 layer.keyframe_set("position", 0, interp="EASE_OUT", hold=2, interval=3)
 saved = {p: layer.keyframes(p) for p in ("position", "points[1].pos")}

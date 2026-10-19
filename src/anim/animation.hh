@@ -25,6 +25,7 @@
 
 namespace sky {
 
+struct Bone;
 struct Document;
 struct Layer;
 
@@ -35,6 +36,21 @@ void animation_evaluate(Document &doc, int frame);
 /* After the current frame changed: records edits at the old frame, then evaluates the new one.
  * Does nothing when the frame is already evaluated. */
 void animation_sync(Document &doc);
+
+/* --- Actions (Moho's): named alternative timelines of a bone layer and everything inside it.
+ * Editing one swaps its keys into the channels, so keying, the timeline and evaluation all work
+ * on it unchanged; layers outside keep playing the mainline. Frame 0 stays the shared setup pose:
+ * editing it in an action changes the setup. ------------------------------------------------- */
+
+/* The bone layer whose actions a layer can use: itself, or the one it sits in; null if neither. */
+Layer *action_owner(Document &doc, uint64_t layer_id);
+/* Edits action `name` of bone layer `owner` ("" for the mainline). Returns false when there is
+ * no such action. */
+bool document_set_action(Document &doc, uint64_t owner, const std::string &name);
+/* By name alone: the bone layer is found from the active layer, else any bone layer that has it. */
+bool document_set_action_by_name(Document &doc, const std::string &name);
+/* Adds an action to `owner` (named uniquely from `name`) and starts editing it. Returns its name. */
+std::string document_action_new(Document &doc, uint64_t owner, const std::string &name);
 
 /* One named channel of a layer and the plain value it drives: "position", "rotation", "scale",
  * "opacity", "points[3].pos", "points[3].radius", "curves[0].points[2].curvature",
@@ -81,5 +97,15 @@ void layers_duplicate_selected_keys(const std::vector<Layer *> &layers, int offs
 /* Neighbouring keyed frames (a, b) across which nothing changes: every channel keyed at either
  * has a key at both with the same value. Blender draws a hold bar between such keys. */
 std::vector<std::pair<int, int>> layers_hold_spans(const std::vector<Layer *> &layers);
+
+/* Blender's Copy and Paste Keyframes. Copying keeps the selected keys, by layer and channel, in a
+ * clipboard that outlives switching actions (and documents). Pasting puts them at `frame` (the
+ * first copied key lands there, the rest keep their spacing) onto the same layers' channels; a
+ * layer that isn't there is matched by name, and keys copied from one layer go onto the first of
+ * `layers` that has the channel. The pasted keys become the selection; keys before frame 1 (the
+ * setup pose) are left out. Each returns how many keys it copied or pasted. */
+int layers_copy_selected_keys(const std::vector<Layer *> &layers);
+int layers_paste_keys(const std::vector<Layer *> &layers, int frame);
+bool key_clipboard_empty();
 
 }  // namespace sky

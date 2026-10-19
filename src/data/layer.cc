@@ -120,9 +120,6 @@ const rna::StructRNA &Layer::rna()
                         "Only this layer's fills go into the mask, not its strokes", &Layer::mask_exclude_strokes),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
-        def_bool<Layer>("flexi_binding", "Flexi-Binding",
-                        "Points not bound to one bone follow every bone of the bone layer, by distance",
-                        &Layer::flexi_binding),
     };
     return s;
   }();

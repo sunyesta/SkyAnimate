@@ -9,6 +9,7 @@
 #include <tuple>
 
 #include "anim/animation.hh"
+#include "anim/deform.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -110,6 +111,31 @@ static void layers_below(Layer &layer, std::vector<Layer *> &r)
     r.push_back(&child);
     layers_below(child, r);
   }
+}
+
+/* The layers being edited that weights apply to: drawings inside a bone layer with bones. (Giving
+ * one weights takes it off its parent bone.) */
+static std::vector<Layer *> weight_layers(Context &C)
+{
+  std::vector<Layer *> r;
+  for (Layer *layer : editable_layers(C)) {
+    const Layer *armature = layer_armature(*C.document, layer->id);
+    if (armature && !armature->bones.empty()) {
+      r.push_back(layer);
+    }
+  }
+  return r;
+}
+
+static bool weight_poll(Context &C)
+{
+  return C.document && !weight_layers(C).empty();
+}
+
+static bool any_point_selected(const Layer &layer)
+{
+  return std::any_of(layer.drawing.points.begin(), layer.drawing.points.end(),
+                     [](const MeshPoint &p) { return p.selected; });
 }
 
 void rig_operators_register()
@@ -240,15 +266,16 @@ void rig_operators_register()
                    b.connected = false;
                  }
                  std::erase_if(armature.bones, [&](const Bone &b) { return gone(b.id); });
-                 /* Points that followed a deleted bone go back to flexi-binding. */
+                 /* Points lose the deleted bones' weights; one that followed only them stays put. */
                  std::vector<Layer *> below;
                  layers_below(armature, below);
                  for (Layer *layer : below) {
                    for (MeshPoint &p : layer->drawing.points) {
-                     if (gone(p.bone)) {
-                       p.bone = 0;
-                     }
+                     const bool had = !p.weights.empty();
                      std::erase_if(p.weights, [&](const BoneWeight &w) { return gone(w.bone); });
+                     if (had && p.weights.empty()) {
+                       p.weights.push_back({0, 0.0f});
+                     }
                    }
                    if (gone(layer->parent_bone)) {
                      layer->parent_bone = 0;
@@ -302,90 +329,168 @@ void rig_operators_register()
                  return OpStatus::Finished;
                });
 
-  rig_operator("armature.bind_points", "Bind Points",
-               "Make the selected points follow the active bone alone (Moho's Bind Points)", armature_poll,
-               [](Context &C) {
-                 if (!on_setup_frame(C)) {
-                   return OpStatus::Cancelled;
-                 }
-                 Layer &armature = *active_armature(C);
-                 if (!bone_find(armature, armature.active_bone)) {
-                   report(ReportType::Warning, "Select a bone to bind to");
-                   return OpStatus::Cancelled;
-                 }
-                 int bound = 0;
-                 for (Layer *layer : editable_layers(C)) {
-                   if (layer_armature(*C.document, layer->id) != &armature) {
-                     continue;
-                   }
-                   for (MeshPoint &p : layer->drawing.points) {
-                     if (p.selected) {
-                       p.bone = armature.active_bone;
-                       p.weights.clear();
-                       bound++;
+  /* --- Weights (Blender's vertex groups) and Parent to Bone -------------------------------- */
+  rig_operator("weight.automatic", "Automatic Weights",
+               "Give the selected points (all points when none are selected) of the layers being edited "
+               "weights from every bone: nearer bones pull harder, as Blender's Automatic Weights. "
+               "bones=SELECTED uses only the selected bones",
+               weight_poll, [](Context &C) {
+                 /* Every bone by default: the weight tools keep the bone being painted selected, so going
+                  * by the selection would hand that one bone everything. */
+                 const bool selected_bones = op_arg(C, "bones", "ALL") == "SELECTED";
+                 int changed = 0;
+                 for (Layer *layer : weight_layers(C)) {
+                   const Layer &armature = *layer_armature(*C.document, layer->id);
+                   std::vector<uint64_t> bones;
+                   for (const Bone &b : armature.bones) {
+                     if (selected_bones && (b.selected || b.select_head || b.select_tail)) {
+                       bones.push_back(b.id);
                      }
                    }
+                   if (C.wm->tool_settings.mirror_x) {
+                     for (size_t i = 0, n = bones.size(); i < n; i++) {
+                       const uint64_t other = bone_mirror_id(armature, bones[i]);
+                       if (std::find(bones.begin(), bones.end(), other) == bones.end()) {
+                         bones.push_back(other);
+                       }
+                     }
+                   }
+                   changed += layer_automatic_weights(*C.document, *layer, bones, any_point_selected(*layer));
                  }
-                 if (bound == 0) {
-                   report(ReportType::Warning, "Select points of a layer inside this bone layer");
+                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+               });
+
+  rig_operator("weight.assign", "Assign",
+               "Set the active bone's weight on the selected points to `weight` (default: the tool's Weight), as "
+               "Blender's Assign; with Normalize the other bones share what is left",
+               weight_poll, [](Context &C) {
+                 const ToolSettings &ts = C.wm->tool_settings;
+                 const float value = std::clamp(op_arg_float(C, "weight", ts.weight_value), 0.0f, 1.0f);
+                 int changed = 0;
+                 for (Layer *layer : weight_layers(C)) {
+                   const uint64_t bone = layer_armature(*C.document, layer->id)->active_bone;
+                   if (bone == 0 || !any_point_selected(*layer)) {
+                     continue;
+                   }
+                   if (layer->parent_bone != 0) {
+                     /* Weighted points follow their weights, not a parent bone. */
+                     layer->parent_bone = 0;
+                     report(ReportType::Info,
+                            "\"" + layer->name + "\" now follows its weights instead of its parent bone");
+                   }
+                   for (MeshPoint &p : layer->drawing.points) {
+                     if (!p.selected) {
+                       continue;
+                     }
+                     std::erase_if(p.weights, [](const BoneWeight &w) { return w.bone == 0; });
+                     auto it = std::find_if(p.weights.begin(), p.weights.end(),
+                                            [&](const BoneWeight &w) { return w.bone == bone; });
+                     if (it == p.weights.end()) {
+                       p.weights.push_back({bone, 0.0f});
+                       it = std::prev(p.weights.end());
+                     }
+                     it->weight = value;
+                     if (ts.weight_normalize) {
+                       float others = 0.0f;
+                       for (const BoneWeight &w : p.weights) {
+                         others += w.bone == bone ? 0.0f : w.weight;
+                       }
+                       for (BoneWeight &w : p.weights) {
+                         if (w.bone != bone) {
+                           w.weight = others > 1e-6f ? w.weight / others * (1.0f - value) : 0.0f;
+                         }
+                       }
+                       std::erase_if(p.weights, [&](const BoneWeight &w) { return w.bone != bone && w.weight <= 1e-5f; });
+                     }
+                     changed++;
+                   }
+                 }
+                 if (changed == 0) {
+                   report(ReportType::Warning, "Select points and a bone to assign");
                    return OpStatus::Cancelled;
                  }
                  return OpStatus::Finished;
                });
 
-  rig_operator("armature.unbind_points", "Release Points",
-               "Let the selected points follow the bones by distance again (flexi-binding)", armature_poll,
+  rig_operator("weight.remove", "Remove",
+               "Take the selected points out of the active bone (as Blender's Remove); a point left with no bones "
+               "stays where it is",
+               weight_poll, [](Context &C) {
+                 int changed = 0;
+                 for (Layer *layer : weight_layers(C)) {
+                   const uint64_t bone = layer_armature(*C.document, layer->id)->active_bone;
+                   for (MeshPoint &p : layer->drawing.points) {
+                     if (!p.selected) {
+                       continue;
+                     }
+                     const size_t before = p.weights.size();
+                     std::erase_if(p.weights, [&](const BoneWeight &w) { return w.bone == bone; });
+                     if (p.weights.size() != before) {
+                       changed++;
+                     }
+                     if (p.weights.empty()) {
+                       p.weights.push_back({0, 0.0f});
+                     }
+                   }
+                 }
+                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+               });
+
+  rig_operator("weight.normalize", "Normalize",
+               "Make each selected point's weights (all points' when none are selected) add up to 1",
+               weight_poll, [](Context &C) {
+                 int changed = 0;
+                 for (Layer *layer : weight_layers(C)) {
+                   const bool selected_only = any_point_selected(*layer);
+                   for (MeshPoint &p : layer->drawing.points) {
+                     if (selected_only && !p.selected) {
+                       continue;
+                     }
+                     float total = 0.0f;
+                     for (const BoneWeight &w : p.weights) {
+                       total += w.weight;
+                     }
+                     if (total > 1e-6f && std::abs(total - 1.0f) > 1e-6f) {
+                       for (BoneWeight &w : p.weights) {
+                         w.weight /= total;
+                       }
+                       changed++;
+                     }
+                   }
+                 }
+                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+               });
+
+  rig_operator("layer.parent_bone_set", "Parent to Bone",
+               "Make the active and selected layers inside a bone layer follow bone `bone` as a whole, as "
+               "parenting to a bone in Blender (\"\" frees them). Setup frame only",
+               [](Context &C) {
+                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+                 return l && !l->is_bone_layer() && layer_armature(*C.document, l->id);
+               },
                [](Context &C) {
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 int released = 0;
-                 for (Layer *layer : editable_layers(C)) {
-                   for (MeshPoint &p : layer->drawing.points) {
-                     if (p.selected && (p.bone != 0 || !p.weights.empty())) {
-                       p.bone = 0;
-                       p.weights.clear();
-                       released++;
-                     }
-                   }
-                 }
-                 return released > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
-
-  rig_operator("armature.bind_layer", "Bind Layer",
-               "Make the active and selected layers inside the bone layer follow the active bone as a whole",
-               armature_poll, [](Context &C) {
-                 if (!on_setup_frame(C)) {
-                   return OpStatus::Cancelled;
-                 }
-                 Layer &armature = *active_armature(C);
-                 if (!bone_find(armature, armature.active_bone)) {
-                   report(ReportType::Warning, "Select a bone to bind to");
-                   return OpStatus::Cancelled;
-                 }
-                 int bound = 0;
+                 const std::string name = op_arg(C, "bone");
+                 int changed = 0;
                  for (Layer *layer : keyed_layers(C)) {
-                   if (layer != &armature && layer_armature(*C.document, layer->id) == &armature) {
-                     layer->parent_bone = armature.active_bone;
-                     bound++;
+                   const Layer *armature = layer_armature(*C.document, layer->id);
+                   if (!armature || layer->is_bone_layer()) {
+                     continue;
+                   }
+                   const Bone *bone = name.empty() ? nullptr : bone_find_by_name(*armature, name);
+                   if (!name.empty() && !bone) {
+                     report(ReportType::Warning, "No bone named " + name);
+                     return OpStatus::Cancelled;
+                   }
+                   const uint64_t id = bone ? bone->id : 0;
+                   if (layer->parent_bone != id) {
+                     layer->parent_bone = id;
+                     changed++;
                    }
                  }
-                 return bound > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
-
-  rig_operator("armature.unbind_layer", "Release Layer", "Stop the active and selected layers following a bone",
-               armature_poll, [](Context &C) {
-                 if (!on_setup_frame(C)) {
-                   return OpStatus::Cancelled;
-                 }
-                 int released = 0;
-                 for (Layer *layer : keyed_layers(C)) {
-                   if (layer->parent_bone != 0) {
-                     layer->parent_bone = 0;
-                     released++;
-                   }
-                 }
-                 return released > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                });
 
   rig_operator("armature.bone_primitive_add", "Add Bone",

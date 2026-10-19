@@ -181,6 +181,7 @@ static bool pen_active(const ToolSettings &ts)
 static std::map<int, std::unique_ptr<SceneRenderer>> g_renderers;
 
 static void weight_paint_header(Context &C);
+static void weight_select_header(Context &C);
 static void transform_bones_header(Context &C);
 
 /* A layer's own drawing where its points show: moved by the bones (Blender's "on cage"). Points
@@ -249,9 +250,51 @@ static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSetting
   return ov.handles;
 }
 
+/* For the Shape handle display: the points of every shape any of whose points is selected. */
+static const std::vector<bool> &shape_handle_points(const VectorDrawing &drawing)
+{
+  /* Worked out once per drawing per frame, not for every handle. */
+  static const VectorDrawing *cached = nullptr;
+  static int cached_frame = -1;
+  static std::vector<bool> mask;
+  if (cached == &drawing && cached_frame == ImGui::GetFrameCount() && mask.size() == drawing.points.size()) {
+    return mask;
+  }
+  cached = &drawing;
+  cached_frame = ImGui::GetFrameCount();
+  mask.assign(drawing.points.size(), false);
+  for (const Shape &shape : drawing.shapes) {
+    bool touched = false;
+    for (const ShapeEdge &e : shape.edges) {
+      int a, b;
+      curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+      touched |= drawing.points[a].selected || drawing.points[b].selected;
+    }
+    if (!touched) {
+      continue;
+    }
+    for (const ShapeEdge &e : shape.edges) {
+      int a, b;
+      curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+      mask[a] = mask[b] = true;
+    }
+  }
+  return mask;
+}
+
 static bool handle_visible(const VectorDrawing &drawing, const CurvePoint &cp, HandleDisplay display)
 {
-  return display == HandleDisplay::All || (display == HandleDisplay::Selected && curve_point_selected(drawing, cp));
+  switch (display) {
+    case HandleDisplay::None:
+      return false;
+    case HandleDisplay::All:
+      return true;
+    case HandleDisplay::Selected:
+      return curve_point_selected(drawing, cp);
+    case HandleDisplay::Shape:
+      return curve_point_selected(drawing, cp) || shape_handle_points(drawing)[cp.point];
+  }
+  return false;
 }
 
 struct HandleHit {
@@ -392,6 +435,22 @@ static void tool_icon(ImDrawList *dl, Tool tool, ImVec2 c, float s, ImU32 col)
       dl->AddConvexPolyFilled(quad, 4, col);
       break;
     }
+    case Tool::WeightSelect: {
+      /* A dashed selection box around blue, green and red points. */
+      const ImVec2 a = c - ImVec2(s * 0.85f, s * 0.85f), b = c + ImVec2(s * 0.85f, s * 0.85f);
+      for (int i = 0; i < 4; i++) {
+        const float f0 = i / 4.0f, f1 = f0 + 0.14f;
+        dl->AddLine(ImLerp(a, ImVec2(b.x, a.y), f0), ImLerp(a, ImVec2(b.x, a.y), f1), col, t);
+        dl->AddLine(ImLerp(a, ImVec2(a.x, b.y), f0), ImLerp(a, ImVec2(a.x, b.y), f1), col, t);
+        dl->AddLine(ImLerp(b, ImVec2(a.x, b.y), f0), ImLerp(b, ImVec2(a.x, b.y), f1), col, t);
+        dl->AddLine(ImLerp(b, ImVec2(b.x, a.y), f0), ImLerp(b, ImVec2(b.x, a.y), f1), col, t);
+      }
+      const ImU32 dots[3] = {IM_COL32(0x30, 0x50, 0xe0, 255), IM_COL32(0x40, 0xd0, 0x40, 255), IM_COL32(0xe0, 0x30, 0x30, 255)};
+      for (int i = 0; i < 3; i++) {
+        dl->AddCircleFilled(c + ImVec2(-s * 0.45f + s * 0.45f * i, s * (i == 1 ? -0.2f : 0.2f)), s * 0.2f, dots[i]);
+      }
+      break;
+    }
     case Tool::WeightPaint: {
       /* A brush over a blue-to-red gradient. */
       const ImU32 cols[3] = {IM_COL32(0x30, 0x50, 0xe0, 255), IM_COL32(0x40, 0xd0, 0x40, 255), IM_COL32(0xe0, 0x30, 0x30, 255)};
@@ -449,17 +508,53 @@ static const ToolInfo TOOLS[] = {
      "it (Ctrl snaps to bone ends). Outside: click or drag a box to select (Shift adds, Alt removes). "
      "Unselected children stay where they are",
      "wm.tool_transform_bones"},
+    {Tool::WeightSelect, "Weight Select",
+     "Select points to give weights to: click or drag a box (Shift adds, Ctrl removes). Ctrl-click a bone to "
+     "make it active. The header has Automatic Weights (as Blender's), Assign, Remove and Normalize",
+     "wm.tool_weight_select"},
     {Tool::WeightPaint, "Weight Paint",
      "Paint how strongly the active bone moves the points, as in Blender: red follows it fully, blue not "
      "at all.\nCtrl paints the weight away. Ctrl-click a bone to paint for it",
      "wm.tool_weight_paint"},
 };
 
+/* Tools that change the drawing or the rig, which only happens on the setup frame (0). */
+bool tool_setup_only(Tool tool)
+{
+  switch (tool) {
+    case Tool::Draw:
+    case Tool::Shape:
+    case Tool::SplitCurve:
+    case Tool::WeightSelect:
+    case Tool::WeightPaint:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* Away from frame 0 a setup-only tool hands over to Select, and comes back on frame 0. */
+static void tool_follow_frame(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  const bool setup = C.document->frame_current == 0;
+  if (!setup && tool_setup_only(ts.tool)) {
+    ts.tool_before_posing = ts.tool_temporary ? ts.tool_return : ts.tool;
+    ts.tool_switched_for_posing = true;
+    ts.tool = Tool::Select;
+    ts.tool_temporary = false;
+  }
+  else if (setup && ts.tool_switched_for_posing) {
+    ts.tool = ts.tool_before_posing;
+    ts.tool_switched_for_posing = false;
+  }
+}
+
 /* The tools a layer offers: a bone layer has bone tools, a drawing the drawing tools. */
 static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
 {
   const bool bones = active && active->is_bone_layer();
-  if (tool == Tool::WeightPaint) {
+  if (tool == Tool::WeightPaint || tool == Tool::WeightSelect) {
     /* Weights are for drawings that bones move. */
     return !bones && active && !active->is_group() && in_bone_layer;
   }
@@ -473,6 +568,7 @@ static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
       return !bones;
     case Tool::TransformBones:
       return bones;
+    case Tool::WeightSelect:
     case Tool::WeightPaint:
       break;
   }
@@ -571,38 +667,56 @@ static float toolbar_draw(Context &C, ImVec2 origin, float top)
   const float h = ImGui::GetFrameHeight();
   const float button = std::round(h * 1.35f);
   const float pad = 4.0f;
+  const float gap = 10.0f;
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const Layer *active_layer = document_active_layer(*C.document);
   const bool in_bone_layer = active_layer && layer_armature(*C.document, active_layer->id) != nullptr;
+  const bool setup = C.document->frame_current == 0;
+  /* Two sections: tools for every frame, then those for the setup frame (0) only. */
   std::vector<const ToolInfo *> shown;
-  for (const ToolInfo &info : TOOLS) {
-    if (tool_available(info.tool, active_layer, in_bone_layer)) {
-      shown.push_back(&info);
+  int first_setup = -1;
+  for (const bool setup_section : {false, true}) {
+    for (const ToolInfo &info : TOOLS) {
+      if (tool_setup_only(info.tool) == setup_section && tool_available(info.tool, active_layer, in_bone_layer)) {
+        if (setup_section && first_setup < 0) {
+          first_setup = int(shown.size());
+        }
+        shown.push_back(&info);
+      }
     }
   }
   if (!tool_available(ts.tool, active_layer, in_bone_layer)) {
     /* Switching between a drawing and a bone layer: fall back to Select. */
     ts.tool = Tool::Select;
   }
+  const float split = first_setup > 0 ? gap : 0.0f;
   const ImVec2 panel_min = origin + ImVec2(pad, top);
-  const ImVec2 panel_max = panel_min + ImVec2(button + pad * 2, (button + 2) * float(shown.size()) + pad * 2);
+  const ImVec2 panel_max =
+      panel_min + ImVec2(button + pad * 2, (button + 2) * float(shown.size()) + pad * 2 + split);
   dl->AddRectFilled(panel_min, panel_max, COL_TOOLBAR, 6.0f);
 
   for (size_t i = 0; i < shown.size(); i++) {
     const ToolInfo &info = *shown[i];
-    const ImVec2 p = panel_min + ImVec2(pad, pad + float(i) * (button + 2));
+    const bool in_setup_section = first_setup >= 0 && int(i) >= first_setup;
+    const ImVec2 p = panel_min + ImVec2(pad, pad + float(i) * (button + 2) + (in_setup_section ? split : 0.0f));
+    if (first_setup > 0 && int(i) == first_setup) {
+      const float y = p.y - gap * 0.5f - 1.0f;
+      dl->AddLine(ImVec2(p.x + 3.0f, y), ImVec2(p.x + button - 3.0f, y), IM_COL32(0x60, 0x60, 0x60, 255), 1.0f);
+    }
+    const bool usable = !tool_setup_only(info.tool) || setup;
     ImGui::SetCursorScreenPos(p);
     ImGui::PushID(int(i));
-    if (ImGui::InvisibleButton("##tool", ImVec2(button, button))) {
+    if (ImGui::InvisibleButton("##tool", ImVec2(button, button)) && usable) {
       ts.tool = info.tool;
+      ts.tool_switched_for_posing = false;
     }
-    const bool hovered = ImGui::IsItemHovered();
+    const bool hovered = ImGui::IsItemHovered() && usable;
     const bool active = ts.tool == info.tool;
     if (active || hovered) {
       dl->AddRectFilled(p, p + ImVec2(button, button), active ? COL_HIGHLIGHT : IM_COL32(0x45, 0x45, 0x45, 255),
                         4.0f);
     }
-    const ImU32 icon_col = IM_COL32(0xe6, 0xe6, 0xe6, 255);
+    const ImU32 icon_col = usable ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 70);
     const ImVec2 center = p + ImVec2(button, button) * 0.5f;
     const bool has_flyout = info.tool == Tool::Draw || info.tool == Tool::Shape;
     if (info.tool == Tool::Draw) {
@@ -623,9 +737,14 @@ static float toolbar_draw(Context &C, ImVec2 origin, float top)
       dl->AddTriangleFilled(corner, corner - ImVec2(m, 0), corner - ImVec2(0, m), IM_COL32(0xb0, 0xb0, 0xb0, 255));
     }
     if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      const std::string shortcut = keymaps().shortcut_for(info.op_idname);
-      ImGui::SetTooltip("%s\n%s%s%s", info.name, info.description, shortcut.empty() ? "" : "\nShortcut: ",
-                        shortcut.c_str());
+      if (!usable) {
+        ImGui::SetTooltip("%s\nOnly available on frame 0", info.name);
+      }
+      else {
+        const std::string shortcut = keymaps().shortcut_for(info.op_idname);
+        ImGui::SetTooltip("%s\n%s%s%s", info.name, info.description, shortcut.empty() ? "" : "\nShortcut: ",
+                          shortcut.c_str());
+      }
     }
     ImGui::PopID();
   }
@@ -728,13 +847,14 @@ static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_
     ImGui::TextUnformatted("Handles");
     ImGui::SameLine(column);
     ImGui::SetNextItemWidth(column - ImGui::GetStyle().ItemSpacing.x);
-    static const char *const handle_modes[] = {"None", "Selected", "All"};
+    static const char *const handle_modes[] = {"None", "Selected", "Shape", "All"};
     int mode = int(ov.handles);
-    if (ImGui::Combo("##handles", &mode, handle_modes, 3)) {
+    if (ImGui::Combo("##handles", &mode, handle_modes, 4)) {
       ov.handles = HandleDisplay(mode);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Which curve handles to show: none, the selected points' handles, or all of them");
+      ImGui::SetTooltip("Which curve handles to show: none, the selected points', every handle of the shapes you're "
+                        "working on (any of whose points is selected), or all of them");
     }
   }
   if (overlay_section("Armature")) {
@@ -855,9 +975,6 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   else {
     ImGui::SameLine();
     if (header_menu("Drawing")) {
-      menu_operator(C, "Create Shape", "mesh.create_shape");
-      menu_operator(C, "Create Line", "mesh.create_line");
-      menu_operator(C, "Delete Shape", "mesh.delete_shape");
       if (ImGui::BeginMenu("Arrange")) {
         menu_operator(C, "Bring to Front", "mesh.shape_raise_to_front");
         menu_operator(C, "Bring Forward", "mesh.shape_raise");
@@ -870,10 +987,6 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       menu_operator(C, "Unalign Handles", "mesh.handles_unalign");
       menu_operator(C, "Peak", "mesh.peak");
       menu_operator(C, "Smooth", "mesh.smooth");
-      ImGui::Separator();
-      menu_operator(C, "Extrude", "mesh.extrude");
-      menu_operator(C, "Duplicate", "mesh.duplicate_move");
-      menu_operator(C, "Delete Points", "mesh.delete");
       ImGui::EndPopup();
     }
   }
@@ -938,6 +1051,9 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       break;
     case Tool::Cursor:
       ImGui::TextDisabled("Click to place the cursor  |  Shift right-click places it from any tool");
+      break;
+    case Tool::WeightSelect:
+      weight_select_header(C);
       break;
     case Tool::WeightPaint:
       weight_paint_header(C);
@@ -1610,7 +1726,7 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
       Curve &curve = drawing.curves[c];
       for (int i = 0; i < int(curve.points.size()); i++) {
         CurvePoint &cp = curve.points[i];
-        if (handles == HandleDisplay::All || (handles == HandleDisplay::Selected && curve_point_selected(drawing, cp))) {
+        if (handle_visible(drawing, cp, handles)) {
           const float2 here = shown.drawing->points[cp.point].pos;
           for (const bool pre : {true, false}) {
             const float2 h = curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre);
@@ -1946,13 +2062,9 @@ static Layer *weight_armature(Context &C)
   return armature ? layer_find(*C.document, armature->id) : nullptr;
 }
 
-static void weight_paint_header(Context &C)
+/* The active bone, which the weight tools work on. */
+static void weight_bone_combo(Layer *armature)
 {
-  ToolSettings &ts = C.wm->tool_settings;
-  Layer *armature = weight_armature(C);
-  if (!armature) {
-    return;
-  }
   const Bone *active = bone_find(*armature, armature->active_bone);
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 5.0f);
   if (ImGui::BeginCombo("##weight_bone", active ? active->name.c_str() : "Pick a bone")) {
@@ -1967,8 +2079,59 @@ static void weight_paint_header(Context &C)
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("The bone whose weights you paint (Ctrl-click a bone in the viewport)");
+    ImGui::SetTooltip("The bone whose weights you paint or assign (Ctrl-click a bone in the viewport)");
   }
+}
+
+static void weight_select_header(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  Layer *armature = weight_armature(C);
+  if (!armature) {
+    return;
+  }
+  weight_bone_combo(armature);
+  ImGui::SameLine();
+  if (ImGui::Button("Automatic Weights")) {
+    operator_call(C, "weight.automatic");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Bind the selected points (all when none are selected) to every bone: nearer bones pull "
+                      "harder, as Blender's Automatic Weights");
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 4.0f);
+  ImGui::SliderFloat("##assign_weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
+  ImGui::SameLine();
+  if (ImGui::Button("Assign")) {
+    operator_call(C, "weight.assign");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Give the selected points this weight for the active bone (1.0: they follow it alone)");
+  }
+  ImGui::SameLine(0, 1);
+  if (ImGui::Button("Remove")) {
+    operator_call(C, "weight.remove");
+  }
+  ImGui::SameLine(0, 1);
+  if (ImGui::Button("Normalize")) {
+    operator_call(C, "weight.normalize");
+  }
+  ImGui::SameLine();
+  ImGui::Checkbox("Auto Normalize", &ts.weight_normalize);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Keep each point's weights adding up to 1 when assigning or painting");
+  }
+}
+
+static void weight_paint_header(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  Layer *armature = weight_armature(C);
+  if (!armature) {
+    return;
+  }
+  weight_bone_combo(armature);
   const float w = ImGui::GetFrameHeight() * 4.0f;
   ImGui::SameLine();
   ImGui::SetNextItemWidth(w);
@@ -1988,6 +2151,12 @@ static void weight_paint_header(Context &C)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Keep each point's weights adding up to 1, as Blender's Auto Normalize");
   }
+  ImGui::SameLine();
+  ImGui::Checkbox("Selection Mask", &ts.weight_mask);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Paint only the selected points (select them with Weight Select), as Blender's selection "
+                      "masking");
+  }
 }
 
 /* The active drawing coloured by how strongly the active bone moves it. */
@@ -2000,12 +2169,10 @@ static void draw_weight_overlay(ImDrawList *dl, Context &C, const Layer &layer, 
   }
   const VectorDrawing &drawing = layer_drawing(doc, layer);
   const std::vector<float> weights = layer_point_bone_weights(doc, layer, armature->active_bone);
-  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
   const Transform2D to_document = layer_world_transform(doc, layer.id);
-  VectorDrawing shown = drawing;
-  for (size_t i = 0; i < shown.points.size(); i++) {
-    shown.points[i].pos = skins[i].apply(shown.points[i].pos);
-  }
+  /* Where the stroke shows: points and their handles moved by the bones. */
+  const Posed posed_drawing = posed(doc, layer);
+  const VectorDrawing &shown = *posed_drawing.drawing;
   std::vector<float2> samples;
   for (const Curve &curve : shown.curves) {
     for (int s = 0; s < curve.segment_count(); s++) {
@@ -2024,8 +2191,10 @@ static void draw_weight_overlay(ImDrawList *dl, Context &C, const Layer &layer, 
   }
   for (size_t i = 0; i < shown.points.size(); i++) {
     const ImVec2 s = view.to_screen(to_document.apply(shown.points[i].pos));
-    dl->AddCircleFilled(s, 4.5f, weight_color(weights[i]));
-    dl->AddCircle(s, 4.5f, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+    const bool selected = drawing.points[i].selected;
+    dl->AddCircleFilled(s, selected ? 5.5f : 4.5f, weight_color(weights[i]));
+    dl->AddCircle(s, selected ? 5.5f : 4.5f, selected ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0, 0, 0, 200), 0,
+                  selected ? 2.0f : 1.0f);
   }
 }
 
@@ -2082,6 +2251,7 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
   brush.strength = ts.weight_strength * std::min(1.0f, io.DeltaTime * 10.0f);
   brush.mode = io.KeyCtrl ? WeightPaintMode::Subtract : WeightPaintMode(std::clamp(ts.weight_mode, 0, 2));
   brush.normalize = ts.weight_normalize;
+  brush.selected_only = ts.weight_mask;
   /* Brush at the mouse, in each point's stored space: inverse of its skin. */
   brush.center = mouse;
   std::vector<float2> shown(layer.drawing.points.size());
@@ -2092,6 +2262,57 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
   layer_weight_paint(doc, layer, brush);
 }
 
+/* Weight Select: a click picks points, a drag box-selects them (Shift adds, Ctrl removes), and
+ * Ctrl-click on a bone makes it the active one. */
+struct WeightSelectDrag {
+  bool active = false;
+  int area = 0;
+  ImVec2 start;
+};
+static WeightSelectDrag g_weight_select;
+
+static void weight_select_input(Context &C, Area &area, const ViewMapping &view, bool hovered, ImDrawList *dl)
+{
+  Document &doc = *C.document;
+  const ImGuiIO &io = ImGui::GetIO();
+  Layer *armature = weight_armature(C);
+  if (!armature) {
+    return;
+  }
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (io.KeyCtrl) {
+      if (const uint64_t bone = pick_bone(doc, *armature, view, io.MousePos)) {
+        armature->active_bone = bone;
+        for (Bone &b : armature->bones) {
+          bone_select(b, b.id == bone);
+        }
+        push_undo(C, "Select Bone");
+        return;
+      }
+    }
+    g_weight_select = {true, area.id, io.MousePos};
+  }
+  if (!g_weight_select.active || g_weight_select.area != area.id) {
+    return;
+  }
+  const ImVec2 d = io.MousePos - g_weight_select.start;
+  const bool dragged = d.x * d.x + d.y * d.y > 9.0f;
+  if (dragged) {
+    dl->AddRectFilled(g_weight_select.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+    dl->AddRect(g_weight_select.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (dragged) {
+      select_box(C, view, g_weight_select.start, io.MousePos, HandleDisplay::None);
+    }
+    else {
+      select_click(C, view, view.to_document(g_weight_select.start), HandleDisplay::None);
+    }
+    push_undo(C, "Select");
+    g_weight_select = {};
+  }
+}
+
 /* ---------------------------------------------------------------------------------
  * Bones
  */
@@ -2100,8 +2321,8 @@ static constexpr ImU32 COL_BONE = IM_COL32(0x9a, 0x9a, 0x9a, 150);
 static constexpr ImU32 COL_BONE_EDGE = IM_COL32(0x10, 0x10, 0x10, 220);
 static constexpr ImU32 COL_BONE_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 190);
 static constexpr ImU32 COL_BONE_ACTIVE = IM_COL32(0xff, 0xc0, 0x50, 220);
-/* Frame 0 is the setup pose: an orange border says so, as in Moho. */
-static constexpr ImU32 COL_SETUP = IM_COL32(0xe0, 0x8a, 0x2a, 255);
+/* Frame 0 is the setup pose: a red border says so (the timeline is edged red too). */
+static constexpr ImU32 COL_SETUP = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 
 struct BoneModal {
   bool active = false;
@@ -2147,10 +2368,11 @@ static float bone_joint_radius(const ScreenBone &sb)
 
 /* Bones as Blender draws them in 2D: a long diamond from base to tip with a round, separately
  * selectable joint at each end. The active bone is drawn lighter. `ghost`: a bone layer you're not
- * working in, drawn as faint outlines only so it doesn't cover the artwork. */
+ * working in, drawn as faint outlines only so it doesn't cover the artwork; `highlight_selected`
+ * still draws its selected bones solid (the weight tools' bone). */
 static constexpr ImU32 COL_BONE_GHOST = IM_COL32(0x80, 0x80, 0x80, 120);
 static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armature, const ViewMapping &view,
-                       bool ghost = false)
+                       bool ghost = false, bool highlight_selected = false)
 {
   const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
   for (size_t i = 0; i < armature.bones.size(); i++) {
@@ -2186,7 +2408,7 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
       const ImVec2 n = len > 0.0f ? ImVec2(-d.y / len, d.x / len) * w : ImVec2(0, 0);
       const ImVec2 mid = head + d * 0.18f;
       const ImVec2 quad[4] = {head, mid + n, tail, mid - n};
-      if (ghost) {
+      if (ghost && !(highlight_selected && picked)) {
         dl->AddPolyline(quad, 4, COL_BONE_GHOST, ImDrawFlags_Closed, 1.0f);
         dl->AddCircle(head, r, COL_BONE_GHOST, 0, 1.0f);
         dl->AddCircle(tail, r, COL_BONE_GHOST, 0, 1.0f);
@@ -2944,6 +3166,7 @@ static void bone_parent_menus(Context &C, bool hovered)
 
 void viewport_draw(Area &area, Context &C)
 {
+  tool_follow_frame(C);
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
@@ -3080,6 +3303,9 @@ void viewport_draw(Area &area, Context &C)
   }
   else if (ts.tool == Tool::WeightPaint && drawing && !g_modal.active) {
     weight_paint_input(C, *layer, view, hovered, dl);
+  }
+  else if (ts.tool == Tool::WeightSelect && drawing && !g_modal.active) {
+    weight_select_input(C, area, view, hovered, dl);
   }
   else if (g_modal.active && g_modal.area == area.id) {
     modal_info = modal_update(C, view);
@@ -3270,7 +3496,7 @@ void viewport_draw(Area &area, Context &C)
   }
 
   /* Overlays for the layer being edited. */
-  if (drawing && ts.tool == Tool::WeightPaint) {
+  if (drawing && (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect)) {
     draw_weight_overlay(dl, C, *layer, view, std::clamp(doc.viewport_quality, 1, 64));
   }
   else if (drawing) {
@@ -3305,10 +3531,13 @@ void viewport_draw(Area &area, Context &C)
       }
     }
   }
-  /* Bones, as the Armature overlay says: every visible bone layer's, or only selected ones'. The
-   * Weight Paint tool always shows the bones it paints for. */
+  /* Bones, as the Armature overlay says: every visible bone layer's, or only selected ones'. Unless
+   * it's Off, the weight tools show the bones they work with, the selected (active) bone solid. */
   if (ov.show) {
-    const Layer *painting = ts.tool == Tool::WeightPaint ? active_armature(C) : nullptr;
+    const Layer *painting = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect) &&
+                                    ov.armature != ArmatureDisplay::Off
+                                ? active_armature(C)
+                                : nullptr;
     const auto visit = [&](auto &&self, const std::vector<Layer> &list, bool shown) -> void {
       for (const Layer &l : list) {
         const bool visible = shown && l.visible;
@@ -3317,7 +3546,7 @@ void viewport_draw(Area &area, Context &C)
              (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer)) || &l == painting))
         {
           /* Only the bone layer being worked in is drawn solid. */
-          draw_bones(dl, doc, l, view, l.id != doc.active_layer);
+          draw_bones(dl, doc, l, view, l.id != doc.active_layer, &l == painting);
         }
         self(self, l.children, visible);
       }

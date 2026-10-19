@@ -43,11 +43,9 @@ struct MeshPoint {
   float radius = 1.0f;
   bool selected = false;
   CornerType corner = CornerType::Round;
-  /* Moho's point binding: the id of the one bone this point follows, or 0 to follow the bones
-   * by distance (flexi-binding) when the layer allows it. */
-  uint64_t bone = 0;
-  /* Painted weights (the Weight Paint tool). When there are any they decide how the bones move
-   * the point, blended by weight, instead of `bone` or flexi-binding. */
+  /* How the bones of the bone layer it sits in move the point, blended by weight (Blender's vertex
+   * groups). Empty: not weighted yet; it gets automatic weights once it is inside a bone layer
+   * with bones. Weights that are all 0 (or only for bones that are gone) leave it where it is. */
   std::vector<BoneWeight> weights;
   /* Keys for the position and radius (see anim/channel.hh). */
   Channel<float2> pos_keys;

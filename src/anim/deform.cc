@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "data/bones.hh"
+#include "core/log.hh"
 #include "data/document.hh"
 
 namespace sky {
@@ -31,9 +32,6 @@ static VectorDrawing mirror_once(const VectorDrawing &src, int axis, const Modif
     MeshPoint q = src.points[i];
     q.pos = reflect(q.pos);
     q.selected = false;
-    if (m.mirror_bones && q.bone != 0) {
-      q.bone = flip_bone(q.bone);
-    }
     if (m.mirror_bones) {
       for (BoneWeight &w : q.weights) {
         w.bone = flip_bone(w.bone);
@@ -205,7 +203,6 @@ struct Deformer {
   std::vector<BonePose> poses;
   /* Layer space <-> bone layer space. */
   Transform2D to_armature, from_armature;
-  bool flexi = true;
 };
 
 }  // namespace
@@ -220,7 +217,6 @@ static bool deformer_init(const Document &doc, const Layer &layer, Deformer &r)
   r.poses = armature_pose(*r.armature, doc.frame_current == 0);
   r.to_armature = layer_world_transform(doc, r.armature->id).inverted() * layer_world_transform(doc, layer.id);
   r.from_armature = r.to_armature.inverted();
-  r.flexi = layer.flexi_binding;
   return true;
 }
 
@@ -228,41 +224,66 @@ static bool deformer_init(const Document &doc, const Layer &layer, Deformer &r)
 static std::vector<BoneWeight> point_weights(const Deformer &d, const MeshPoint &p)
 {
   std::vector<BoneWeight> weights;
-  if (!p.weights.empty()) {
-    /* Painted: the weights themselves, shared out to add up to 1. */
-    float total = 0.0f;
-    for (const BoneWeight &w : p.weights) {
-      if (w.weight > 0.0f && bone_pose_find(d.poses, w.bone)) {
-        weights.push_back(w);
-        total += w.weight;
-      }
+  float total = 0.0f;
+  for (const BoneWeight &w : p.weights) {
+    if (w.weight > 0.0f && bone_pose_find(d.poses, w.bone)) {
+      weights.push_back(w);
+      total += w.weight;
     }
-    for (BoneWeight &w : weights) {
-      w.weight /= total;
-    }
-    return weights;
   }
-  if (p.bone != 0 && bone_pose_find(d.poses, p.bone)) {
-    return {{p.bone, 1.0f}};
+  for (BoneWeight &w : weights) {
+    w.weight /= total;
   }
-  if (!d.flexi) {
-    return weights;
-  }
-  /* Flexi-binding: every bone pulls, the nearer (in the setup pose) the harder; a bone's
-   * strength widens its reach. */
-  const float2 q = d.to_armature.apply(p.pos);
+  return weights;
+}
+
+/* Where a point is in the setup pose (layer space). */
+static float2 setup_position(const MeshPoint &p)
+{
+  return p.pos_keys.animated() ? p.pos_keys.evaluate(0) : p.pos;
+}
+
+/* Blender's Automatic Weights, for 2D: every bone pulls, the nearer (in the setup pose) the harder,
+ * and a bone's strength widens its reach (Moho's flexi-binding, worked out once and kept).
+ * `bones` limits it to some bones (empty: all). Pruned, a point keeps its 4 strongest bones and
+ * drops weights under 0.01, as Blender does. */
+static std::vector<BoneWeight> automatic_weights(const Deformer &d, const MeshPoint &p,
+                                                 const std::vector<uint64_t> &bones, bool prune)
+{
+  const float2 q = d.to_armature.apply(setup_position(p));
+  std::vector<BoneWeight> weights;
   float total = 0.0f;
   for (size_t i = 0; i < d.poses.size(); i++) {
     const BonePose &bp = d.poses[i];
     const Bone &bone = d.armature->bones[i];
+    if (!bones.empty() && std::find(bones.begin(), bones.end(), bone.id) == bones.end()) {
+      continue;
+    }
     const float reach = std::max(bone.strength * std::max(distance(bp.setup_head, bp.setup_tail), 1e-3f), 1e-4f);
     const float dist = distance_to_segment(q, bp.setup_head, bp.setup_tail) / reach;
     const float w = 1.0f / std::pow(dist * dist + 1e-4f, 2.0f);
     weights.push_back({bone.id, w});
     total += w;
   }
+  if (total <= 0.0f) {
+    return {};
+  }
   for (BoneWeight &w : weights) {
     w.weight /= total;
+  }
+  if (prune) {
+    std::sort(weights.begin(), weights.end(), [](const BoneWeight &a, const BoneWeight &b) { return a.weight > b.weight; });
+    if (weights.size() > 4) {
+      weights.resize(4);
+    }
+    std::erase_if(weights, [](const BoneWeight &w) { return w.weight < 0.01f; });
+    float kept = 0.0f;
+    for (const BoneWeight &w : weights) {
+      kept += w.weight;
+    }
+    for (BoneWeight &w : weights) {
+      w.weight /= kept;
+    }
   }
   return weights;
 }
@@ -385,8 +406,20 @@ std::vector<float> layer_point_bone_weights(const Document &doc, const Layer &la
   return result;
 }
 
+/* A layer whose points get weights follows them, not a parent bone. */
+static void weights_take_over(Layer &layer)
+{
+  if (layer.parent_bone != 0) {
+    layer.parent_bone = 0;
+    report(ReportType::Info, "\"" + layer.name + "\" now follows its weights instead of its parent bone");
+  }
+}
+
 int layer_weight_paint(const Document &doc, Layer &layer, const WeightPaintBrush &brush)
 {
+  if (brush.radius > 0.0f && brush.bone != 0) {
+    weights_take_over(layer);
+  }
   Deformer d;
   if (brush.radius <= 0.0f || !deformer_init(doc, layer, d) || !bone_pose_find(d.poses, brush.bone)) {
     return 0;
@@ -403,8 +436,11 @@ int layer_weight_paint(const Document &doc, Layer &layer, const WeightPaintBrush
     const float x = 1.0f - dist / brush.radius;
     const float falloff = x * x * (3.0f - 2.0f * x);
     const float amount = std::clamp(brush.strength, 0.0f, 1.0f) * falloff;
+    if (brush.selected_only && !p.selected) {
+      continue;
+    }
     if (p.weights.empty()) {
-      p.weights = point_weights(d, p);
+      p.weights = automatic_weights(d, p, {}, true);
     }
     auto it = std::find_if(p.weights.begin(), p.weights.end(), [&](const BoneWeight &w) { return w.bone == brush.bone; });
     if (it == p.weights.end()) {
@@ -441,11 +477,140 @@ int layer_weight_paint(const Document &doc, Layer &layer, const WeightPaintBrush
     }
     std::erase_if(p.weights, [](const BoneWeight &w) { return w.weight <= 1e-5f; });
     if (p.weights.empty()) {
-      /* Painted down to nothing: the point stays put rather than going back to flexi. */
+      /* Painted down to nothing: the point stays put rather than getting automatic weights. */
       p.weights.push_back({brush.bone, 0.0f});
     }
     changed += after != before ? 1 : 0;
   }
+  return changed;
+}
+
+static bool weightable(const Document &doc, const Layer &layer, Deformer &d)
+{
+  return layer.type == LayerType::Vector && deformer_init(doc, layer, d);
+}
+
+int layer_automatic_weights(const Document &doc, Layer &layer, const std::vector<uint64_t> &bones,
+                            bool selected_only)
+{
+  if (layer.type == LayerType::Vector) {
+    weights_take_over(layer);
+  }
+  Deformer d;
+  if (!weightable(doc, layer, d)) {
+    return 0;
+  }
+  int changed = 0;
+  for (MeshPoint &p : layer.drawing.points) {
+    if (selected_only && !p.selected) {
+      continue;
+    }
+    p.weights = automatic_weights(d, p, bones, true);
+    if (p.weights.empty()) {
+      p.weights.push_back({bones.empty() ? 0 : bones.front(), 0.0f});
+    }
+    changed++;
+  }
+  return changed;
+}
+
+/* The weights of the nearest weighted points along the curves through point `index`, blended by
+ * how many steps away they are; empty when its curves have none. */
+static std::vector<BoneWeight> neighbour_weights(const VectorDrawing &drawing, int index,
+                                                 const std::vector<bool> &weighted)
+{
+  std::vector<std::pair<int, int>> found;  // (point, steps)
+  for (const Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    for (int at = 0; at < n; at++) {
+      if (curve.points[at].point != index) {
+        continue;
+      }
+      for (const int dir : {-1, 1}) {
+        for (int step = 1; step < n; step++) {
+          int k = at + dir * step;
+          if (curve.closed) {
+            k = ((k % n) + n) % n;
+          }
+          else if (k < 0 || k >= n) {
+            break;
+          }
+          const int point = curve.points[k].point;
+          if (weighted[point]) {
+            found.push_back({point, step});
+            break;
+          }
+        }
+      }
+    }
+  }
+  std::vector<BoneWeight> blended;
+  float total = 0.0f;
+  for (const auto &[point, steps] : found) {
+    const float share = 1.0f / float(steps);
+    total += share;
+    for (const BoneWeight &w : drawing.points[point].weights) {
+      auto it = std::find_if(blended.begin(), blended.end(), [&](const BoneWeight &b) { return b.bone == w.bone; });
+      if (it == blended.end()) {
+        blended.push_back({w.bone, 0.0f});
+        it = std::prev(blended.end());
+      }
+      it->weight += w.weight * share;
+    }
+  }
+  for (BoneWeight &w : blended) {
+    w.weight /= total;
+  }
+  return blended;
+}
+
+static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
+{
+  Deformer d;
+  if (!weightable(doc, layer, d)) {
+    return false;
+  }
+  VectorDrawing &drawing = layer.drawing;
+  std::vector<bool> weighted(drawing.points.size());
+  bool any_new = false;
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    weighted[i] = !drawing.points[i].weights.empty();
+    any_new |= !weighted[i];
+  }
+  if (!any_new) {
+    return false;
+  }
+  std::vector<std::vector<BoneWeight>> found(drawing.points.size());
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    if (weighted[i]) {
+      continue;
+    }
+    found[i] = exact ? std::vector<BoneWeight>() : neighbour_weights(drawing, int(i), weighted);
+    if (found[i].empty()) {
+      found[i] = automatic_weights(d, drawing.points[i], {}, !exact);
+    }
+    if (found[i].empty()) {
+      found[i].push_back({0, 0.0f});
+    }
+  }
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    if (!weighted[i]) {
+      drawing.points[i].weights = std::move(found[i]);
+    }
+  }
+  return true;
+}
+
+bool document_weight_new_points(Document &doc, bool exact)
+{
+  bool changed = false;
+  const auto visit = [&](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      changed |= weigh_new_points(doc, layer, exact);
+      self(self, layer.children);
+    }
+  };
+  visit(visit, doc.layers);
   return changed;
 }
 

@@ -80,6 +80,8 @@ KEYMAP = (
     ("Timeline", "anim.keys_delete", "X", {}),
     ("Timeline", "anim.keys_delete", "DEL", {}),
     ("Timeline", "anim.keys_select_all", "A", {}),
+    ("Timeline", "anim.keys_copy", "C", {"ctrl": True}),
+    ("Timeline", "anim.keys_paste", "V", {"ctrl": True}),
     ("Timeline", "anim.keys_deselect_all", "A", {"alt": True}),
     # Layers editor.
     ("Layers", "layer.delete", "X", {}),

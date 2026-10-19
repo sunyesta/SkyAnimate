@@ -9,6 +9,7 @@
  * and editing code never looks at keys; see anim/animation.hh for how edits become keys. */
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,10 @@ template<typename T> struct Channel {
   /* The value as last evaluated or recorded: an edit is a plain value that differs from it. */
   T last{};
   bool has_last = false;
+  /* Keys of the timelines not being edited, by action name, as Moho keeps actions inside each
+   * channel. The timeline being edited is always `keys`; while an action is edited the mainline's
+   * keys wait here under "". Action keys start after frame 0, which is the shared setup pose. */
+  std::map<std::string, std::vector<Key<T>>> actions;
 
   bool animated() const { return !keys.empty(); }
   T evaluate(int frame) const;

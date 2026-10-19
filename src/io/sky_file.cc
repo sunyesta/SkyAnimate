@@ -11,6 +11,8 @@
 #include <miniz.h>
 #include <nlohmann/json.hpp>
 
+#include "anim/deform.hh"
+
 namespace sky {
 
 using json = nlohmann::ordered_json;
@@ -137,6 +139,16 @@ template<typename T> static void put_keys(json &j, const char *name, const Chann
   if (ch.animated()) {
     j[name] = keys_to_json(ch);
   }
+  /* Other timelines' keys: actions by name, and "" for the mainline while an action is edited. */
+  if (!ch.actions.empty()) {
+    json actions = json::object();
+    for (const auto &[action, keys] : ch.actions) {
+      Channel<T> other;
+      other.keys = keys;
+      actions[action] = keys_to_json(other);
+    }
+    j[std::string(name) + "_actions"] = std::move(actions);
+  }
 }
 
 static json drawing_to_json(const VectorDrawing &drawing)
@@ -149,9 +161,6 @@ static json drawing_to_json(const VectorDrawing &drawing)
     }
     if (p.corner == CornerType::Sharp) {
       point["corner"] = "SHARP";
-    }
-    if (p.bone != 0) {
-      point["bone"] = p.bone;
     }
     if (!p.weights.empty()) {
       json weights = json::array();
@@ -229,9 +238,6 @@ static json layer_to_json(const Layer &layer)
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
   }
-  if (!layer.flexi_binding) {
-    j["flexi_binding"] = false;
-  }
   if (!layer.modifiers.empty()) {
     json modifiers = json::array();
     for (const Modifier &m : layer.modifiers) {
@@ -273,6 +279,9 @@ static json layer_to_json(const Layer &layer)
       bones.push_back(std::move(bj));
     }
     j["bones"] = std::move(bones);
+    if (!layer.actions.empty()) {
+      j["actions"] = layer.actions;
+    }
     j["next_bone_id"] = layer.next_bone_id;
     j["active_bone"] = layer.active_bone;
   }
@@ -326,6 +335,7 @@ std::string sky_document_to_json(const Document &doc)
            {"render_samples", doc.render_samples},
            {"render_quality", doc.render_quality},
            {"action", doc.action},
+           {"action_layer", doc.action_layer},
            {"active_layer", doc.active_layer},
            {"next_layer_id", doc.next_layer_id},
            {"layers", std::move(layers)},
@@ -510,7 +520,7 @@ static bool value_from_json(const json &j, float2 *r)
   return true;
 }
 
-template<typename T> static void get_keys(const json &j, const char *name, Channel<T> &r_ch)
+template<typename T> static void get_key_list(const json &j, const char *name, Channel<T> &r_ch)
 {
   for (const json &k : get_array(j, name)) {
     if (!k.is_object()) {
@@ -541,6 +551,23 @@ template<typename T> static void get_keys(const json &j, const char *name, Chann
   std::sort(r_ch.keys.begin(), r_ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
 }
 
+template<typename T> static void get_keys(const json &j, const char *name, Channel<T> &r_ch)
+{
+  get_key_list(j, name, r_ch);
+  auto it = j.find(std::string(name) + "_actions");
+  if (it == j.end() || !it->is_object()) {
+    return;
+  }
+  for (const auto &[action, list] : it->items()) {
+    Channel<T> other;
+    const json wrapper = {{"keys", list}};
+    get_key_list(wrapper, "keys", other);
+    if (!other.keys.empty()) {
+      r_ch.actions[action] = std::move(other.keys);
+    }
+  }
+}
+
 static VectorDrawing drawing_from_json(const json &j)
 {
   VectorDrawing drawing;
@@ -551,11 +578,14 @@ static VectorDrawing drawing_from_json(const json &j)
     if (p.is_object()) {
       drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
                                 false, get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
-      drawing.points.back().bone = get_id(p, "bone");
       for (const json &w : get_array(p, "weights")) {
         if (w.is_array() && w.size() == 2 && w[0].is_number_unsigned() && w[1].is_number()) {
           drawing.points.back().weights.push_back({w[0].get<uint64_t>(), std::clamp(w[1].get<float>(), 0.0f, 1.0f)});
         }
+      }
+      /* Older files: a point bound to one bone (and not painted) follows it alone. */
+      if (const uint64_t bone = get_id(p, "bone"); bone != 0 && drawing.points.back().weights.empty()) {
+        drawing.points.back().weights.push_back({bone, 1.0f});
       }
       get_keys(p, "pos_keys", drawing.points.back().pos_keys);
       get_keys(p, "radius_keys", drawing.points.back().radius_keys);
@@ -649,7 +679,11 @@ static Layer layer_from_json(const json &j, int depth)
   layer.scale = get_float2(j, "scale", {1.0f, 1.0f});
   layer.opacity = std::clamp(get_float(j, "opacity", 1.0f), 0.0f, 1.0f);
   layer.parent_bone = get_id(j, "parent_bone");
-  layer.flexi_binding = get_bool(j, "flexi_binding", true);
+  for (const json &a : get_array(j, "actions")) {
+    if (a.is_string() && !a.get<std::string>().empty()) {
+      layer.actions.push_back(a.get<std::string>());
+    }
+  }
   for (const json &mj : get_array(j, "modifiers")) {
     if (!mj.is_object()) {
       continue;
@@ -705,6 +739,14 @@ static Layer layer_from_json(const json &j, int depth)
   layer.reference_source = get_id(j, "reference_source");
   if (auto it = j.find("drawing"); it != j.end() && !layer.is_group()) {
     layer.drawing = drawing_from_json(*it);
+  }
+  /* Older files without flexi-binding: points that weren't bound stayed put, and still do. */
+  if (!get_bool(j, "flexi_binding", true)) {
+    for (MeshPoint &p : layer.drawing.points) {
+      if (p.weights.empty()) {
+        p.weights.push_back({0, 0.0f});
+      }
+    }
   }
   /* Deeper than any real file: stops a crafted file from overflowing the stack. */
   if (layer.is_group() && depth < 256) {
@@ -793,6 +835,7 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
   doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
   doc.action = get_string(j, "action");
+  doc.action_layer = get_id(j, "action_layer");
   doc.active_layer = get_id(j, "active_layer");
   doc.next_layer_id = std::max<uint64_t>(1, get_id(j, "next_layer_id"));
   for (const json &layer : get_array(j, "layers")) {
@@ -806,6 +849,8 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
     }
   }
   layers_validate(doc);
+  /* Older files' flexi-binding becomes the same weights, kept. */
+  document_weight_new_points(doc, true);
 
   r_doc = std::move(doc);
   return true;

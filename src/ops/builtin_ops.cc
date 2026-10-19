@@ -14,23 +14,22 @@
 
 namespace sky {
 
-/* What undo leaves alone: the playhead and the action being edited (as in Blender and Moho),
- * and text blocks, so undoing a drawing change never loses typed code. */
+/* What undo leaves alone: the playhead (as in Blender and Moho) and text blocks, so undoing a
+ * drawing change never loses typed code. The action being edited is undone with the rest: its
+ * keys are swapped into the channels, so the two always go together. */
 struct ViewState {
   int frame_current;
-  std::string action;
   std::vector<Text> texts;
 };
 
 static ViewState view_state_get(const Document &doc)
 {
-  return {doc.frame_current, doc.action, doc.texts};
+  return {doc.frame_current, doc.texts};
 }
 
 static void view_state_restore(Document &doc, ViewState &view)
 {
   doc.frame_current = view.frame_current;
-  doc.action = std::move(view.action);
   doc.texts = std::move(view.texts);
 }
 

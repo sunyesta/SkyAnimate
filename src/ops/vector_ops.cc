@@ -352,8 +352,12 @@ void vector_operators_register()
     ot.idname = idname;
     ot.name = name;
     ot.description = "Switch the viewport tool";
+    if (tool_setup_only(tool)) {
+      ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
+    }
     ot.exec = [tool](Context &C) {
       C.wm->tool_settings.tool = tool;
+      C.wm->tool_settings.tool_switched_for_posing = false;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -364,6 +368,7 @@ void vector_operators_register()
     ot.idname = "wm.tool_split_curve_temporary";
     ot.name = "Split Curve (Once)";
     ot.description = "Split a line once with the Split Curve tool, then go back to the current tool";
+    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
     ot.exec = [](Context &C) {
       ToolSettings &ts = C.wm->tool_settings;
       if (!ts.tool_temporary) {
@@ -383,6 +388,7 @@ void vector_operators_register()
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
     ot.description = "Switch to the Draw tool: freehand strokes, or the pen (mode=\"PEN\")";
+    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
     ot.exec = [](Context &C) {
       const std::string mode = op_arg(C, "mode");
       if (mode == "PEN") {
@@ -401,6 +407,7 @@ void vector_operators_register()
     operators().add(std::move(ot));
   }
   tool_op("wm.tool_split_curve", "Split Curve Tool", Tool::SplitCurve);
+  tool_op("wm.tool_weight_select", "Weight Select Tool", Tool::WeightSelect);
   tool_op("wm.tool_weight_paint", "Weight Paint Tool", Tool::WeightPaint);
   tool_op("wm.tool_transform_bones", "Transform Bones Tool", Tool::TransformBones);
   {
@@ -409,6 +416,7 @@ void vector_operators_register()
     ot.idname = "wm.tool_shape";
     ot.name = "Shape Tool";
     ot.description = "Switch to the Shape tool: box or circle";
+    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
     ot.exec = [](Context &C) {
       const std::string shape = op_arg(C, "shape");
       if (!shape.empty() && !primitive_from_identifier(shape, &C.wm->tool_settings.shape)) {

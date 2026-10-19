@@ -76,8 +76,8 @@ Properties, dope sheet, frame-by-frame layers and onion skins, switch and image 
 sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,
-`src/data/bones.*` for the skeleton and _L/_R names), point binding, flexi-binding, painted weights
-and layer binding; the modifier stack (`src/anim/deform.*`: Mirror, and the Armature modifier every
+`src/data/bones.*` for the skeleton and _L/_R names), weights (automatic for new points,
+Weight Select / Weight Paint tools) and Parent to Bone; the modifier stack (`src/anim/deform.*`: Mirror, and the Armature modifier every
 layer inside a bone layer gets, kept by `document_sync_armature_modifiers`); rig operators in
 `src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,
 Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Not yet: IK,

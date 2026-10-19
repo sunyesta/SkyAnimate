@@ -30,6 +30,9 @@ Bone *armature_add_bone(Layer &armature, const std::string &name, float2 head, f
 
 /* The layers keying works on: the active layer and those picked in the Layers editor. */
 std::vector<Layer *> keyed_layers(Context &C);
+/* What the timeline shows and edits keys of: keyed_layers, plus the animated layers inside a
+ * selected bone layer. */
+std::vector<Layer *> timeline_layers(Context &C);
 
 /* Gives the selected shapes on every edited layer these brush settings. Returns how many shapes
  * changed (no undo step: the caller pushes one). */

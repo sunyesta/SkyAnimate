@@ -26,7 +26,9 @@ enum class AreaSplit { None, Vertical, Horizontal };
 /* What a viewport draws over the artwork, like Blender's viewport overlays. Each viewport has
  * its own; `show` turns them all off at once. */
 /* Which curve handles the viewport shows, as Blender's Overlays > Handles. */
-enum class HandleDisplay { None, Selected, All };
+/* Shape: every handle of the shapes being worked on (any of whose points is selected), plus the
+ * selected points'. */
+enum class HandleDisplay { None, Selected, Shape, All };
 /* Which bones the viewport shows: none, those of selected bone layers, or every bone layer's. */
 enum class ArmatureDisplay { Off, Selected, On };
 
@@ -40,8 +42,8 @@ struct ViewportOverlays {
   /* Curve wires and points of the active layer while editing it. */
   bool wireframe = true;
   bool points = true;
-  HandleDisplay handles = HandleDisplay::Selected;
-  ArmatureDisplay armature = ArmatureDisplay::Selected;
+  HandleDisplay handles = HandleDisplay::Shape;
+  ArmatureDisplay armature = ArmatureDisplay::On;
 };
 
 struct Area {
@@ -55,6 +57,8 @@ struct Area {
   float view_start = 0.0f;
   float view_end = 250.0f;
   bool view_initialized = false;
+  /* Timeline: how far the channel rows (one per selected layer) are scrolled, in pixels. */
+  float channel_scroll = 0.0f;
 
   ViewportOverlays overlays;
 

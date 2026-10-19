@@ -252,27 +252,32 @@ class _Layer:
 
     @property
     def point_bones(self):
-        """The bone each point is bound to, "" for flexi-binding."""
+        """The bone that moves each point most, "" when none does."""
         return list(_sky.layer_point_bones(self._id))
 
     @property
     def parent_bone(self):
-        """The bone this whole layer follows (Bind Layer), or ""."""
+        """The bone this whole layer follows (Parent to Bone), or ""."""
         return _sky.layer_parent_bone(self._id)
 
     def bone_weights(self, bone):
-        """How strongly bone `bone` moves each point, 0-1 (painted, bound or flexi)."""
+        """How strongly bone `bone` moves each point, 0-1, from its weights."""
         return list(_sky.layer_bone_weights(self._id, bone))
 
     @property
-    def painted_weights(self):
-        """Each point's painted weights, {bone name: weight} ({} when not painted)."""
+    def weights(self):
+        """Each point's weights, {bone name: weight} ({} when not weighted yet)."""
         return list(_sky.layer_painted_weights(self._id))
 
-    def weight_paint(self, center, radius, bone, weight=1.0, strength=1.0, mode="DRAW", normalize=True):
+    painted_weights = weights
+
+    def weight_paint(self, center, radius, bone, weight=1.0, strength=1.0, mode="DRAW", normalize=True,
+                     selected_only=False):
         """One dab of the Weight Paint brush at `center` (layer space): mode "DRAW", "ADD" or
-        "SUBTRACT". Returns how many points changed."""
-        return _sky.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize)
+        "SUBTRACT"; selected_only paints only selected points (Selection Mask). Returns how many
+        points changed."""
+        return _sky.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize,
+                                       selected_only)
 
     @property
     def modifiers(self):

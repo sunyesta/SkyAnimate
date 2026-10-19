@@ -11,6 +11,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "ops/edit_ops.hh"
@@ -156,51 +157,75 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
   }
 }
 
-/* Which action the timeline edits: the mainline, or one of the selected armature's smart
- * actions, like Moho's switch between the mainline and a smart bone's action. */
+/* Which timeline is edited: the mainline, or an action of the bone layer the active layer is in,
+ * like Moho's switch between the mainline and an action. The + next to it adds an action. */
 static void action_menu(Context &C, float width)
 {
   Document &doc = *C.document;
   const bool in_action = !doc.action.empty();
   const std::string preview = in_action ? doc.action : "Mainline";
+  Layer *owner = in_action ? layer_find(doc, doc.action_layer) : action_owner(doc, doc.active_layer);
+  if (in_action && !owner) {
+    owner = action_owner(doc, doc.active_layer);
+  }
 
   if (in_action) {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, COL_ACTION_ACTIVE);
   }
-  ImGui::SetNextItemWidth(width);
+  const float plus_w = owner ? ImGui::GetFrameHeight() : 0.0f;
+  ImGui::SetNextItemWidth(width - plus_w - (owner ? 2.0f : 0.0f));
   const bool open = ImGui::BeginCombo("##action", preview.c_str());
   if (in_action) {
     ImGui::PopStyleColor();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Action being edited: the mainline, or a smart action of the selected armature\n\n"
-                      "Python: sky.data.document.action");
+    ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in (a separate "
+                      "animation for it and everything inside)\n\nPython: sky.data.document.action");
   }
-  if (!open) {
+  if (open) {
+    if (ImGui::Selectable("Mainline", !in_action)) {
+      operator_call(C, "anim.action_set", {{"name", ""}});
+    }
+    if (owner && !owner->actions.empty()) {
+      ImGui::SeparatorText(owner->name.c_str());
+      for (const std::string &name : owner->actions) {
+        if (ImGui::Selectable(name.c_str(), in_action && doc.action == name && doc.action_layer == owner->id)) {
+          operator_call(C, "anim.action_set", {{"name", name}});
+        }
+      }
+    }
+    else if (!owner) {
+      ImGui::Separator();
+      ImGui::TextDisabled("Select a bone layer, or a layer in one,\nto add and edit its actions.");
+    }
+    ImGui::EndCombo();
+  }
+  if (!owner) {
     return;
   }
-
-  if (ImGui::Selectable("Mainline", !in_action)) {
-    doc.action.clear();
+  ImGui::SameLine(0, 2.0f);
+  static char new_name[64] = "Action";
+  if (ImGui::Button("+##new_action", ImVec2(plus_w, 0))) {
+    std::snprintf(new_name, sizeof(new_name), "%s", "Action");
+    ImGui::OpenPopup("##new_action_popup");
   }
-  const std::vector<std::string> actions = document_selectable_actions(doc);
-  if (!actions.empty()) {
-    ImGui::SeparatorText("Smart Actions");
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("New action for \"%s\"", owner->name.c_str());
   }
-  for (const std::string &name : actions) {
-    if (ImGui::Selectable(name.c_str(), doc.action == name)) {
-      doc.action = name;
+  if (ImGui::BeginPopup("##new_action_popup")) {
+    ImGui::TextUnformatted("New Action");
+    if (ImGui::IsWindowAppearing()) {
+      ImGui::SetKeyboardFocusHere();
     }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+    const bool entered = ImGui::InputText("##action_name", new_name, sizeof(new_name),
+                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if ((entered || ImGui::Button("Create")) && new_name[0] != '\0') {
+      operator_call(C, "anim.action_new", {{"name", new_name}});
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
   }
-  if (actions.empty()) {
-    ImGui::Separator();
-    ImGui::TextDisabled("Select an armature with smart bones\nto edit its smart actions here.");
-  }
-  /* An action set from Python that the menu doesn't list still shows, so it can be left. */
-  if (in_action && std::find(actions.begin(), actions.end(), doc.action) == actions.end()) {
-    ImGui::Selectable(doc.action.c_str(), true, ImGuiSelectableFlags_Disabled);
-  }
-  ImGui::EndCombo();
 }
 
 static void timeline_header(Area &area, Context &C)
@@ -344,6 +369,38 @@ static bool modal_key_take(Context &C, const char *type)
   return false;
 }
 
+/* A row of the timeline: Summary (every animated layer together), then one per layer. */
+struct ChannelRow {
+  std::string name;
+  std::vector<Layer *> layers;
+  bool summary = false;
+  /* An animated layer inside a selected bone layer (indented under it). */
+  bool inside = false;
+};
+
+/* Summary, then a row for each layer the timeline shows: the selected ones, and the animated
+ * layers inside a selected bone layer. */
+static std::vector<ChannelRow> channel_rows(Context &C, const std::vector<Layer *> &layers)
+{
+  const std::vector<Layer *> picked = keyed_layers(C);
+  std::vector<ChannelRow> rows;
+  rows.push_back({"Summary", layers, true, false});
+  for (Layer *l : layers) {
+    const bool inside = std::find(picked.begin(), picked.end(), l) == picked.end();
+    rows.push_back({l->name, {l}, false, inside});
+  }
+  return rows;
+}
+
+static std::string layer_ids(const std::vector<Layer *> &layers)
+{
+  std::string ids;
+  for (const Layer *l : layers) {
+    ids += (ids.empty() ? "" : ",") + std::to_string(l->id);
+  }
+  return ids;
+}
+
 static void timeline_body(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -365,22 +422,52 @@ static void timeline_body(Area &area, Context &C)
   const bool hovered = ImGui::IsItemHovered();
   const bool active = ImGui::IsItemActive();
 
-  /* Navigation: wheel zooms around the mouse, Ctrl+wheel or middle-drag pans, Home frames all. */
+  const std::vector<Layer *> layers = timeline_layers(C);
+  /* Channel rows: Summary, then each animated (active or selected) layer, as Blender's Dope Sheet
+   * lists the selected objects. The names sit in a column on the left. */
+  std::vector<ChannelRow> rows = channel_rows(C, layers);
+  const float font_size = ImGui::GetFontSize();
+  const float names_w = std::min(font_size * 9.0f, size.x * 0.4f);
+  /* The keys region: right of the names. */
+  const ImVec2 k0(p0.x + names_w, p0.y);
+  const float keys_w = std::max(size.x - names_w, 8.0f);
+  const float ruler_h = ImGui::GetFrameHeight() + 2.0f;
+  const float row_h = ImGui::GetFrameHeight();
+  const float rows_top = p0.y + ruler_h + 2.0f;
+  const float rows_h = std::max(p1.y - rows_top, 1.0f);
+  area.channel_scroll = std::clamp(area.channel_scroll, 0.0f, std::max(0.0f, float(rows.size()) * row_h - rows_h));
+  const auto row_top = [&](size_t r) { return rows_top + float(r) * row_h - area.channel_scroll; };
+  const auto row_at = [&](float y) -> int {
+    if (y < rows_top) {
+      return -1;
+    }
+    const int r = int(std::floor((y - rows_top + area.channel_scroll) / row_h));
+    return r >= 0 && r < int(rows.size()) ? r : -1;
+  };
+  const bool over_names = io.MousePos.x < k0.x;
+
+  /* Navigation: wheel zooms around the mouse (over the names it scrolls the rows), Ctrl+wheel or
+   * middle-drag pans, Home frames all. */
   float span = area.view_end - area.view_start;
   if (hovered) {
-    const float mouse_frame = area.view_start + (io.MousePos.x - p0.x) / size.x * span;
-    if (io.MouseWheel != 0.0f && !io.KeyCtrl) {
-      const float factor = std::pow(0.85f, io.MouseWheel);
-      const float new_span = std::clamp(span * factor, 10.0f, 200000.0f);
-      const float t = (mouse_frame - area.view_start) / span;
-      area.view_start = mouse_frame - t * new_span;
-      area.view_end = area.view_start + new_span;
+    if (over_names) {
+      area.channel_scroll -= io.MouseWheel * row_h * 2.0f;
     }
-    const float pan_wheel = io.KeyCtrl ? io.MouseWheel : io.MouseWheelH;
-    if (pan_wheel != 0.0f) {
-      const float delta = -pan_wheel * span * 0.1f;
-      area.view_start += delta;
-      area.view_end += delta;
+    else {
+      const float mouse_frame = area.view_start + (io.MousePos.x - k0.x) / keys_w * span;
+      if (io.MouseWheel != 0.0f && !io.KeyCtrl) {
+        const float factor = std::pow(0.85f, io.MouseWheel);
+        const float new_span = std::clamp(span * factor, 10.0f, 200000.0f);
+        const float t = (mouse_frame - area.view_start) / span;
+        area.view_start = mouse_frame - t * new_span;
+        area.view_end = area.view_start + new_span;
+      }
+      const float pan_wheel = io.KeyCtrl ? io.MouseWheel : io.MouseWheelH;
+      if (pan_wheel != 0.0f) {
+        const float delta = -pan_wheel * span * 0.1f;
+        area.view_start += delta;
+        area.view_end += delta;
+      }
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
       view_frame_all(area, doc);
@@ -388,20 +475,22 @@ static void timeline_body(Area &area, Context &C)
   }
   span = area.view_end - area.view_start;
   if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
-    const float delta = -io.MouseDelta.x / size.x * span;
+    const float delta = -io.MouseDelta.x / keys_w * span;
     area.view_start += delta;
     area.view_end += delta;
   }
 
-  const auto frame_x = [&](float frame) { return p0.x + (frame - area.view_start) / span * size.x; };
-  const auto x_frame = [&](float x) { return area.view_start + (x - p0.x) / size.x * span; };
+  const auto frame_x = [&](float frame) { return k0.x + (frame - area.view_start) / span * keys_w; };
+  const auto x_frame = [&](float x) { return area.view_start + (x - k0.x) / keys_w * span; };
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  const float ruler_h = ImGui::GetFrameHeight() + 2.0f;
-  const float font_size = ImGui::GetFontSize();
-  const float key_y = p0.y + ruler_h + (size.y - ruler_h) * 0.5f;
-  const float key_r = std::max(4.0f, font_size * 0.36f);
-  const std::vector<Layer *> layers = keyed_layers(C);
-  std::map<int, KeyFrameSummary> summary = layers_key_summary(layers);
+  const float key_r = std::max(4.0f, std::min(font_size * 0.36f, row_h * 0.4f));
+  std::vector<std::map<int, KeyFrameSummary>> summaries(rows.size());
+  const auto summarize = [&]() {
+    for (size_t r = 0; r < rows.size(); r++) {
+      summaries[r] = layers_key_summary(rows[r].layers);
+    }
+  };
+  summarize();
 
   /* G and S on the selected keys follow the mouse, as in Blender. */
   if (C.wm->timeline_transform_request && hovered && !g_key_transform.active) {
@@ -422,16 +511,16 @@ static void timeline_body(Area &area, Context &C)
     else {
       doc = g_key_transform.snapshot;
       doc.frame_current = frame;
-      const float frames_per_px = span / size.x;
+      const float frames_per_px = span / keys_w;
       if (g_key_transform.kind == 'D') {
         /* Shift D: copies of the selected keys follow the mouse; the originals stay. */
         const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
-        layers_duplicate_selected_keys(keyed_layers(C), offset);
+        layers_duplicate_selected_keys(timeline_layers(C), offset);
         transform_info = "Duplicate Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
       }
       else if (g_key_transform.kind == 'G') {
         const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
-        layers_move_selected_keys(keyed_layers(C), [offset](int f) { return f + offset; });
+        layers_move_selected_keys(timeline_layers(C), [offset](int f) { return f + offset; });
         transform_info = "Move Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
       }
       else {
@@ -439,7 +528,7 @@ static void timeline_body(Area &area, Context &C)
         const float cx = frame_x(float(frame));
         const float start = std::max(std::fabs(g_key_transform.start_x - cx), 1.0f);
         const float factor = std::fabs(io.MousePos.x - cx) / start;
-        layers_move_selected_keys(keyed_layers(C), [&](int f) {
+        layers_move_selected_keys(timeline_layers(C), [&](int f) {
           return int(std::lround(float(frame) + float(f - frame) * factor));
         });
         char text[48];
@@ -460,25 +549,44 @@ static void timeline_body(Area &area, Context &C)
       }
       C.wm->modal_keys.clear();
     }
-    summary = layers_key_summary(keyed_layers(C));
+    /* The document was replaced: look the layers up again. */
+    rows = channel_rows(C, timeline_layers(C));
+    summaries.resize(rows.size());
+    summarize();
   }
   else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-    /* The ruler scrubs; below it a click picks keys and a drag boxes them. */
-    g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
-    if (!g_press.scrub) {
-      int hit = -1;
-      for (const auto &[f, s] : summary) {
-        if (std::fabs(io.MousePos.x - frame_x(float(f))) <= key_r + 2.0f && std::fabs(io.MousePos.y - key_y) <= key_r + 3.0f) {
-          hit = f;
-        }
+    if (over_names) {
+      /* A layer's name makes it the active layer (the selection stays). */
+      const int r = row_at(io.MousePos.y);
+      if (r > 0) {
+        doc.active_layer = rows[r].layers.front()->id;
+        C.undo->push("Active Layer", doc);
       }
-      if (hit >= 0) {
-        const bool selected = summary[hit].selected == summary[hit].keys;
-        operator_call(C, "anim.keys_select",
-                      {{"frame_start", std::to_string(hit)},
-                       {"extend", io.KeyShift ? "1" : "0"},
-                       {"deselect", io.KeyShift && selected ? "1" : "0"}});
-        g_press = {};
+      g_press = {};
+    }
+    else {
+      /* The ruler scrubs; below it a click picks keys of a row and a drag boxes them. */
+      g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
+      if (!g_press.scrub) {
+        const int r = row_at(io.MousePos.y);
+        int hit = -1;
+        if (r >= 0) {
+          const float ky = row_top(r) + row_h * 0.5f;
+          for (const auto &[f, sum] : summaries[r]) {
+            if (std::fabs(io.MousePos.x - frame_x(float(f))) <= key_r + 2.0f && std::fabs(io.MousePos.y - ky) <= key_r + 3.0f) {
+              hit = f;
+            }
+          }
+        }
+        if (hit >= 0) {
+          const KeyFrameSummary &sum = summaries[r][hit];
+          operator_call(C, "anim.keys_select",
+                        {{"frame_start", std::to_string(hit)},
+                         {"layers", rows[r].summary ? std::string() : layer_ids(rows[r].layers)},
+                         {"extend", io.KeyShift ? "1" : "0"},
+                         {"deselect", io.KeyShift && sum.selected == sum.keys ? "1" : "0"}});
+          g_press = {};
+        }
       }
     }
   }
@@ -491,14 +599,29 @@ static void timeline_body(Area &area, Context &C)
   if (g_press.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (!g_press.scrub) {
       if (boxing) {
-        /* Keys inside the box: Shift adds, Ctrl takes away, as Blender's box select. */
+        /* Keys of the rows the box covers: Shift adds, Ctrl takes away, as Blender's box select.
+         * Covering the Summary row covers every layer. */
         const float lo_y = std::min(g_press.start.y, io.MousePos.y), hi_y = std::max(g_press.start.y, io.MousePos.y);
-        if (key_y >= lo_y - key_r && key_y <= hi_y + key_r) {
+        std::vector<Layer *> boxed;
+        bool everything = false;
+        for (size_t r = 0; r < rows.size(); r++) {
+          const float ky = row_top(r) + row_h * 0.5f;
+          if (ky >= lo_y - key_r && ky <= hi_y + key_r) {
+            everything |= rows[r].summary;
+            for (Layer *l : rows[r].layers) {
+              if (std::find(boxed.begin(), boxed.end(), l) == boxed.end()) {
+                boxed.push_back(l);
+              }
+            }
+          }
+        }
+        if (!boxed.empty()) {
           const int first = int(std::ceil(x_frame(std::min(g_press.start.x, io.MousePos.x))));
           const int last = int(std::floor(x_frame(std::max(g_press.start.x, io.MousePos.x))));
           operator_call(C, "anim.keys_select",
                         {{"frame_start", std::to_string(first)},
                          {"frame_end", std::to_string(last)},
+                         {"layers", everything ? std::string() : layer_ids(boxed)},
                          {"extend", io.KeyShift ? "1" : "0"},
                          {"deselect", io.KeyCtrl ? "1" : "0"}});
         }
@@ -509,7 +632,7 @@ static void timeline_body(Area &area, Context &C)
       else if (!io.KeyShift) {
         operator_call(C, "anim.keys_deselect_all");
       }
-      summary = layers_key_summary(keyed_layers(C));
+      summarize();
     }
     g_press = {};
   }
@@ -522,22 +645,23 @@ static void timeline_body(Area &area, Context &C)
   /* Darken everything outside the frame range. */
   const float x_start = frame_x(float(doc.frame_start));
   const float x_end = frame_x(float(doc.frame_end));
-  if (x_start > p0.x) {
-    dl->AddRectFilled(p0, ImVec2(std::min(x_start, p1.x), p1.y), COL_OUTSIDE_RANGE);
+  if (x_start > k0.x) {
+    dl->AddRectFilled(k0, ImVec2(std::min(x_start, p1.x), p1.y), COL_OUTSIDE_RANGE);
   }
   if (x_end < p1.x) {
-    dl->AddRectFilled(ImVec2(std::max(x_end, p0.x), p0.y), p1, COL_OUTSIDE_RANGE);
+    dl->AddRectFilled(ImVec2(std::max(x_end, k0.x), p0.y), p1, COL_OUTSIDE_RANGE);
   }
 
   /* Grid lines and ruler numbers. */
-  const float step = ruler_step(span, size.x, ImGui::GetFontSize() * 4.0f, doc.fps);
+  dl->PushClipRect(k0, p1, true);
+  const float step = ruler_step(span, keys_w, ImGui::GetFontSize() * 4.0f, doc.fps);
   for (float f = std::floor(area.view_start / step) * step; f <= area.view_end; f += step) {
     const float x = frame_x(f);
     if (step >= 2.0f) {
       const float xm = frame_x(f + step * 0.5f);
       dl->AddLine(ImVec2(xm, p0.y + ruler_h), ImVec2(xm, p1.y), COL_GRID_MINOR);
     }
-    if (x < p0.x) {
+    if (x < k0.x) {
       continue;
     }
     dl->AddLine(ImVec2(x, p0.y + ruler_h), ImVec2(x, p1.y), COL_GRID);
@@ -545,48 +669,99 @@ static void timeline_body(Area &area, Context &C)
     const float tw = ImGui::CalcTextSize(label.c_str()).x;
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), COL_RULER_TEXT, label.c_str());
   }
+  dl->PopClipRect();
 
-  /* Hold bars: between neighbouring keys where nothing changes, as Blender draws them. */
-  for (const auto &[a, b] : layers_hold_spans(layers)) {
-    const float xa = frame_x(float(a)), xb = frame_x(float(b));
-    if (xb < p0.x || xa > p1.x) {
+  /* The rows: hold bars between neighbouring keys where nothing changes, and a diamond per keyed
+   * frame, orange when selected. */
+  dl->PushClipRect(ImVec2(p0.x, rows_top), p1, true);
+  for (size_t r = 0; r < rows.size(); r++) {
+    const float top = row_top(r);
+    if (top + row_h < rows_top || top > p1.y) {
       continue;
     }
-    const bool selected = summary[a].selected > 0 && summary[b].selected > 0;
-    dl->AddRectFilled(ImVec2(xa, key_y - key_r * 0.45f), ImVec2(xb, key_y + key_r * 0.45f),
-                      selected ? IM_COL32(0xc0, 0x90, 0x30, 200) : IM_COL32(0x80, 0x80, 0x80, 170));
+    const float ky = top + row_h * 0.5f;
+    if (r % 2 == 1) {
+      dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(p1.x, top + row_h), IM_COL32(0xff, 0xff, 0xff, 6));
+    }
+    dl->AddLine(ImVec2(p0.x, top + row_h), ImVec2(p1.x, top + row_h), IM_COL32(0x22, 0x22, 0x22, 255));
+    std::map<int, KeyFrameSummary> &sum_row = summaries[r];
+    dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
+    for (const auto &[a, b] : layers_hold_spans(rows[r].layers)) {
+      const float xa = frame_x(float(a)), xb = frame_x(float(b));
+      if (xb < k0.x || xa > p1.x) {
+        continue;
+      }
+      const bool selected = sum_row[a].selected > 0 && sum_row[b].selected > 0;
+      dl->AddRectFilled(ImVec2(xa, ky - key_r * 0.45f), ImVec2(xb, ky + key_r * 0.45f),
+                        selected ? IM_COL32(0xc0, 0x90, 0x30, 200) : IM_COL32(0x80, 0x80, 0x80, 170));
+    }
+    const float kr = rows[r].summary ? key_r : key_r * 0.85f;
+    for (const auto &[f, sum] : sum_row) {
+      const float kx = frame_x(float(f));
+      if (kx < k0.x - kr || kx > p1.x + kr) {
+        continue;
+      }
+      const ImVec2 d[4] = {ImVec2(kx, ky - kr), ImVec2(kx + kr, ky), ImVec2(kx, ky + kr), ImVec2(kx - kr, ky)};
+      dl->AddConvexPolyFilled(d, 4, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
+      dl->AddPolyline(d, 4, IM_COL32(0, 0, 0, 200), ImDrawFlags_Closed, 1.0f);
+    }
+    dl->PopClipRect();
   }
-  /* Keys of the active and selected layers, as Blender's timeline shows the selected objects'
-   * keys: one diamond per keyed frame, along the middle; orange when selected. */
-  for (const auto &[f, sum] : summary) {
-    const float kx = frame_x(float(f));
-    if (kx < p0.x - key_r || kx > p1.x + key_r) {
+  dl->PopClipRect();
+
+  /* The names column. */
+  dl->AddRectFilled(p0, ImVec2(k0.x, p1.y), IM_COL32(0x26, 0x26, 0x26, 255));
+  dl->AddLine(ImVec2(k0.x, p0.y), ImVec2(k0.x, p1.y), IM_COL32(0x18, 0x18, 0x18, 255));
+  dl->PushClipRect(ImVec2(p0.x, rows_top), ImVec2(k0.x - 4.0f, p1.y), true);
+  for (size_t r = 0; r < rows.size(); r++) {
+    const float top = row_top(r);
+    if (top + row_h < rows_top || top > p1.y) {
       continue;
     }
-    const ImVec2 d[4] = {ImVec2(kx, key_y - key_r), ImVec2(kx + key_r, key_y), ImVec2(kx, key_y + key_r),
-                         ImVec2(kx - key_r, key_y)};
-    dl->AddConvexPolyFilled(d, 4, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
-    dl->AddPolyline(d, 4, IM_COL32(0, 0, 0, 200), ImDrawFlags_Closed, 1.0f);
+    const bool is_active = !rows[r].summary && rows[r].layers.front()->id == doc.active_layer;
+    if (is_active) {
+      dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0x33, 0x4d, 0x80, 255));
+    }
+    const ImU32 col = rows[r].summary ? IM_COL32(0xe6, 0xe6, 0xe6, 255)
+                                      : (is_active ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255));
+    const float indent = rows[r].summary ? 6.0f : rows[r].inside ? 28.0f : 16.0f;
+    dl->AddText(ImVec2(p0.x + indent, top + (row_h - font_size) * 0.5f), col, rows[r].name.c_str());
   }
+  dl->PopClipRect();
+  if (hovered && over_names && io.MousePos.y >= rows_top) {
+    const int r = row_at(io.MousePos.y);
+    if (r > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s\nClick to make it the active layer", rows[r].name.c_str());
+    }
+  }
+
   if (boxing) {
     dl->AddRectFilled(g_press.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
     dl->AddRect(g_press.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
   }
   if (!transform_info.empty()) {
-    dl->AddText(ImVec2(p0.x + 8.0f, p0.y + ruler_h + 4.0f), IM_COL32_WHITE, transform_info.c_str());
+    dl->AddText(ImVec2(k0.x + 8.0f, p0.y + ruler_h + 4.0f), IM_COL32_WHITE, transform_info.c_str());
   }
 
-  /* Playhead: a blue line with the frame number in a box on the ruler. */
+  /* Playhead: a blue line with the frame number in a box on the ruler; red on the setup frame (0),
+   * where the timeline is edged red as the viewport is. */
+  const bool setup = doc.frame_current == 0;
+  const ImU32 playhead = setup ? COL_RECORD : COL_PLAYHEAD;
+  if (setup) {
+    dl->AddRect(p0 + ImVec2(1, 1), p1 - ImVec2(1, 1), COL_RECORD, 0.0f, 0, 2.0f);
+  }
   const float x = frame_x(float(doc.frame_current));
-  if (x >= p0.x - 40.0f && x <= p1.x + 40.0f) {
-    dl->AddLine(ImVec2(x, p0.y + ruler_h * 0.5f), ImVec2(x, p1.y), COL_PLAYHEAD, 2.0f);
+  if (x >= k0.x - 40.0f && x <= p1.x + 40.0f) {
+    dl->PushClipRect(k0, p1, true);
+    dl->AddLine(ImVec2(x, p0.y + ruler_h * 0.5f), ImVec2(x, p1.y), playhead, 2.0f);
     const std::string label = std::to_string(doc.frame_current);
     const float box_w = std::max(ImGui::CalcTextSize(label.c_str()).x + font_size * 0.8f, ruler_h);
     const ImVec2 box_min(x - box_w * 0.5f, p0.y + 2.0f);
     const ImVec2 box_max(x + box_w * 0.5f, p0.y + ruler_h - 2.0f);
-    dl->AddRectFilled(box_min, box_max, COL_PLAYHEAD, ImGui::GetStyle().FrameRounding);
+    dl->AddRectFilled(box_min, box_max, playhead, ImGui::GetStyle().FrameRounding);
     const float tw = ImGui::CalcTextSize(label.c_str()).x;
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), IM_COL32_WHITE, label.c_str());
+    dl->PopClipRect();
   }
 }
 

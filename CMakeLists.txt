@@ -114,3 +114,5 @@ add_test(NAME multi_layer
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_multi_layer.py)
 add_test(NAME bone_editing
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_editing.py)
+add_test(NAME actions
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_actions.py)

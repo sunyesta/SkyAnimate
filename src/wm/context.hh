@@ -20,7 +20,9 @@ class UndoStack;
 using OpArgs = std::map<std::string, std::string>;
 
 /* Viewport tools, as on the toolbar. */
-enum class Tool { Select, Cursor, Draw, Shape, SplitCurve, WeightPaint, TransformBones };
+enum class Tool { Select, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones };
+/* Tools that only work on the setup frame (0): drawing and rigging. */
+bool tool_setup_only(Tool tool);
 
 /* The Draw tool draws freehand strokes, or with the pen: click to add points along a curve. */
 enum class DrawMode { Freehand, Pen };
@@ -34,6 +36,10 @@ struct ToolSettings {
   /* K switches to Split Curve for a single split; afterwards (or on Esc or right-click) the
    * tool it came from returns. */
   bool tool_temporary = false;
+  /* A setup-only tool (Draw, Weight Paint...) gives way to Select away from frame 0; this is the
+   * tool to go back to on frame 0. */
+  Tool tool_before_posing = Tool::Select;
+  bool tool_switched_for_posing = false;
   Tool tool_return = Tool::Select;
   SelectMode select_mode = SelectMode::Point;
   /* Snap points to the grid while drawing and transforming. */
@@ -64,6 +70,8 @@ struct ToolSettings {
   float weight_strength = 0.5f;
   int weight_mode = 0;
   bool weight_normalize = true;
+  /* Selection Mask: paint only the selected points. */
+  bool weight_mask = false;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */

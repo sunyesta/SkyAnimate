@@ -1,8 +1,13 @@
 #include "anim/animation.hh"
 
 #include <algorithm>
+#include <cmath>
+#include <climits>
+#include <cstdio>
 #include <set>
 
+#include "anim/deform.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 
 namespace sky {
@@ -84,6 +89,8 @@ void animation_record(Document &doc)
   }
   const int frame = doc.evaluated_frame;
   const bool auto_key = doc.auto_key;
+  /* New points get their weights, so they follow the bones like their neighbours. */
+  document_weight_new_points(doc);
   /* New points get their handles now, from the setup pose, before anything counts as an edit. */
   const auto init = [](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
@@ -110,6 +117,138 @@ void animation_sync(Document &doc)
     animation_record(doc);
   }
   animation_evaluate(doc, doc.frame_current);
+}
+
+/* --- Actions ----------------------------------------------------------------------------------- */
+
+Layer *action_owner(Document &doc, uint64_t layer_id)
+{
+  Layer *layer = layer_find(doc, layer_id);
+  if (!layer) {
+    return nullptr;
+  }
+  if (layer->is_bone_layer()) {
+    return layer;
+  }
+  const Layer *armature = layer_armature(doc, layer_id);
+  return armature ? layer_find(doc, armature->id) : nullptr;
+}
+
+/* Calls f(channel, value) for every channel of a bone layer and everything inside it. */
+template<typename F> static void owner_for_each_channel(Layer &owner, F &&f)
+{
+  layer_for_each_channel(owner, f);
+  layers_for_each_channel(owner.children, f);
+}
+
+/* Puts the timeline being edited away under `from` and brings out `to` ("" = mainline). */
+template<typename T> static void swap_timeline(Channel<T> &ch, T &value, const std::string &from, const std::string &to)
+{
+  if (from == to) {
+    return;
+  }
+  /* The setup pose as it is now (frame 0 of what's being edited). */
+  const T setup = ch.animated() ? ch.evaluate(0) : value;
+  std::vector<Key<T>> away = std::move(ch.keys);
+  ch.keys.clear();
+  const bool mainline_animated = from.empty() && !away.empty();
+  if (!from.empty()) {
+    /* An action keeps its keys after frame 0; frame 0 belongs to the setup pose. */
+    std::erase_if(away, [](const Key<T> &k) { return k.frame == 0; });
+  }
+  if (!away.empty()) {
+    ch.actions[from] = std::move(away);
+  }
+  else {
+    ch.actions.erase(from);
+  }
+  if (auto it = ch.actions.find(to); it != ch.actions.end()) {
+    ch.keys = std::move(it->second);
+    ch.actions.erase(it);
+  }
+  if (to.empty()) {
+    /* Back on the mainline: setup edits made in the action land on its frame 0. */
+    if (ch.animated()) {
+      if (Key<T> *k = ch.key_at(0)) {
+        k->value = setup;
+      }
+      else {
+        ch.set_key(0, setup);
+      }
+    }
+  }
+  else if ((ch.animated() || mainline_animated) && !ch.key_at(0)) {
+    /* An action starts from the setup pose: frame 0 shows the setup keys of everything animated,
+     * as on the mainline. */
+    ch.set_key(0, setup);
+  }
+  value = setup;
+}
+
+bool document_set_action(Document &doc, uint64_t owner_id, const std::string &name)
+{
+  Layer *owner = name.empty() ? nullptr : layer_find(doc, owner_id);
+  if (!name.empty() && (!owner || std::find(owner->actions.begin(), owner->actions.end(), name) == owner->actions.end()))
+  {
+    return false;
+  }
+  if (doc.action == name && (name.empty() || doc.action_layer == owner_id)) {
+    return true;
+  }
+  const int frame = doc.frame_current;
+  animation_record(doc);
+  /* Leave the action being edited (back to the mainline), then go into the new one. */
+  if (!doc.action.empty()) {
+    if (Layer *from = layer_find(doc, doc.action_layer)) {
+      const std::string from_name = doc.action;
+      owner_for_each_channel(*from, [&](auto &ch, auto &value) { swap_timeline(ch, value, from_name, ""); });
+    }
+  }
+  doc.action.clear();
+  doc.action_layer = 0;
+  if (owner) {
+    owner_for_each_channel(*owner, [&](auto &ch, auto &value) { swap_timeline(ch, value, "", name); });
+    doc.action = name;
+    doc.action_layer = owner->id;
+  }
+  animation_evaluate(doc, frame);
+  return true;
+}
+
+bool document_set_action_by_name(Document &doc, const std::string &name)
+{
+  if (name.empty()) {
+    return document_set_action(doc, 0, "");
+  }
+  if (Layer *owner = action_owner(doc, doc.active_layer)) {
+    if (std::find(owner->actions.begin(), owner->actions.end(), name) != owner->actions.end()) {
+      return document_set_action(doc, owner->id, name);
+    }
+  }
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (layer->is_bone_layer() && std::find(layer->actions.begin(), layer->actions.end(), name) != layer->actions.end()) {
+      return document_set_action(doc, layer->id, name);
+    }
+  }
+  return false;
+}
+
+std::string document_action_new(Document &doc, uint64_t owner_id, const std::string &name)
+{
+  Layer *owner = layer_find(doc, owner_id);
+  if (!owner || !owner->is_bone_layer()) {
+    return {};
+  }
+  const std::string base = name.empty() ? "Action" : name;
+  std::string unique = base;
+  for (int i = 1; std::find(owner->actions.begin(), owner->actions.end(), unique) != owner->actions.end(); i++) {
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), ".%03d", i);
+    unique = base + suffix;
+  }
+  owner->actions.push_back(unique);
+  document_set_action(doc, owner_id, unique);
+  return unique;
 }
 
 std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
@@ -357,6 +496,135 @@ std::vector<std::pair<int, int>> layers_hold_spans(const std::vector<Layer *> &l
     }
   }
   return spans;
+}
+
+/* --- Copy and paste keys ----------------------------------------------------------------------- */
+
+namespace {
+
+struct ClipboardChannel {
+  uint64_t layer = 0;
+  std::string layer_name;
+  std::string path;
+  std::vector<Key<float>> scalar;
+  std::vector<Key<float2>> vector;
+};
+
+struct KeyClipboard {
+  std::vector<ClipboardChannel> channels;
+  int first_frame = 0;
+};
+
+}  // namespace
+
+static KeyClipboard &key_clipboard()
+{
+  static KeyClipboard clipboard;
+  return clipboard;
+}
+
+bool key_clipboard_empty()
+{
+  return key_clipboard().channels.empty();
+}
+
+int layers_copy_selected_keys(const std::vector<Layer *> &layers)
+{
+  KeyClipboard copied;
+  int count = 0;
+  int first = INT32_MAX;
+  for (Layer *layer : layers) {
+    for (const ChannelRef &ref : layer_channels(*layer)) {
+      ClipboardChannel c{layer->id, layer->name, ref.path, {}, {}};
+      const auto take = [&](const auto &channel, auto &into) {
+        for (const auto &key : channel.keys) {
+          if (key.selected) {
+            into.push_back(key);
+            first = std::min(first, key.frame);
+            count++;
+          }
+        }
+      };
+      if (ref.scalar) {
+        take(*ref.scalar, c.scalar);
+      }
+      else {
+        take(*ref.vector, c.vector);
+      }
+      if (!c.scalar.empty() || !c.vector.empty()) {
+        copied.channels.push_back(std::move(c));
+      }
+    }
+  }
+  if (count == 0) {
+    return 0;
+  }
+  copied.first_frame = first;
+  key_clipboard() = std::move(copied);
+  return count;
+}
+
+int layers_paste_keys(const std::vector<Layer *> &layers, int frame)
+{
+  const KeyClipboard &clipboard = key_clipboard();
+  if (clipboard.channels.empty() || layers.empty()) {
+    return 0;
+  }
+  std::set<uint64_t> sources;
+  for (const ClipboardChannel &c : clipboard.channels) {
+    sources.insert(c.layer);
+  }
+  /* Where a copied channel goes: the same layer, else one with the same name, else (keys copied
+   * from a single layer) the first layer that has the channel. */
+  const auto target = [&](const ClipboardChannel &c, ChannelRef *r_ref) -> bool {
+    for (Layer *layer : layers) {
+      if (layer->id == c.layer && layer_channel(*layer, c.path, r_ref)) {
+        return true;
+      }
+    }
+    for (Layer *layer : layers) {
+      if (layer->name == c.layer_name && layer_channel(*layer, c.path, r_ref)) {
+        return true;
+      }
+    }
+    if (sources.size() == 1) {
+      for (Layer *layer : layers) {
+        if (layer_channel(*layer, c.path, r_ref)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  layers_deselect_keys(layers);
+  const int offset = frame - clipboard.first_frame;
+  int count = 0;
+  for (const ClipboardChannel &c : clipboard.channels) {
+    ChannelRef ref;
+    if (!target(c, &ref)) {
+      continue;
+    }
+    const auto put = [&](auto &channel, const auto &keys) {
+      for (const auto &key : keys) {
+        const int at = key.frame + offset;
+        if (at < 1) {
+          continue;
+        }
+        auto &placed = channel.set_key(at, key.value);
+        placed = key;
+        placed.frame = at;
+        placed.selected = true;
+        count++;
+      }
+    };
+    if (ref.scalar && !c.scalar.empty()) {
+      put(*ref.scalar, c.scalar);
+    }
+    else if (ref.vector && !c.vector.empty()) {
+      put(*ref.vector, c.vector);
+    }
+  }
+  return count;
 }
 
 }  // namespace sky

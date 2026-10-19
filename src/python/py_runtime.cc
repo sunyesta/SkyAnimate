@@ -610,6 +610,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
         }
         d["interp"] = interp_identifier(k.interp);
         d["hold"] = k.hold;
+        d["selected"] = k.selected;
         d["interval"] = k.interval;
         d["overshoot"] = k.overshoot;
         d["noise_amplitude"] = k.noise_amplitude;
@@ -902,14 +903,20 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     current_context().undo->mark_changed();
     return true;
   });
-  /* The bone each point of a layer follows ("" = flexi-binding), and the layer's own bone. */
+  /* The bone that moves each point of a layer most ("" when none does), and the layer's own bone. */
   m.def("layer_point_bones", [layer_or_raise](uint64_t id) {
     const Document &doc = *current_context().document;
     const Layer &layer = layer_or_raise(id);
     const Layer *armature = layer_armature(doc, layer.id);
     py::list result;
     for (const MeshPoint &p : layer.drawing.points) {
-      const Bone *b = armature ? bone_find(*armature, p.bone) : nullptr;
+      const BoneWeight *best = nullptr;
+      for (const BoneWeight &w : p.weights) {
+        if (w.weight > 0.0f && (!best || w.weight > best->weight)) {
+          best = &w;
+        }
+      }
+      const Bone *b = armature && best ? bone_find(*armature, best->bone) : nullptr;
       result.append(b ? b->name : std::string());
     }
     return result;
@@ -1027,7 +1034,9 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       py::dict d;
       for (const BoneWeight &w : p.weights) {
         const Bone *b = armature ? bone_find(*armature, w.bone) : nullptr;
-        d[py::str(b ? b->name : std::to_string(w.bone))] = w.weight;
+        if (b) {
+          d[py::str(b->name)] = w.weight;
+        }
       }
       result.append(d);
     }
@@ -1035,7 +1044,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
   });
   m.def("layer_weight_paint", [layer_or_raise](uint64_t id, std::pair<float, float> center, float radius,
                                                const std::string &bone_name, float weight, float strength,
-                                               const std::string &mode, bool normalize) {
+                                               const std::string &mode, bool normalize, bool selected_only) {
     Document &doc = *current_context().document;
     animation_sync(doc);
     Layer &layer = layer_or_raise(id);
@@ -1052,6 +1061,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     brush.strength = strength;
     brush.mode = mode == "ADD" ? WeightPaintMode::Add : mode == "SUBTRACT" ? WeightPaintMode::Subtract : WeightPaintMode::Draw;
     brush.normalize = normalize;
+    brush.selected_only = selected_only;
     const int changed = layer_weight_paint(doc, layer, brush);
     current_context().undo->mark_changed();
     return changed;

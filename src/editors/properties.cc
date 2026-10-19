@@ -161,7 +161,7 @@ static void bones_panel(Context &C, Layer &armature)
     label("Strength");
     ImGui::DragFloat("##bone_strength", &active->strength, 0.01f, 0.0f, 100.0f, "%.2f");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("How far the bone reaches for flexi-bound points (Setup frame only)");
+      ImGui::SetTooltip("How far the bone reaches when points get automatic weights (Setup frame only)");
     }
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       C.undo->push("Bone Strength", doc);
@@ -171,63 +171,55 @@ static void bones_panel(Context &C, Layer &armature)
   ui_panel_end();
 }
 
-/* For a layer inside a bone layer: which bone, and binding points or the whole layer to it. */
+/* For a layer inside a bone layer: a bone it follows as a whole (Parent to Bone), or, for a
+ * drawing, how its points are weighted to the bones. */
 static void binding_panel(Context &C, Layer &layer, Layer &armature)
 {
   Document &doc = *C.document;
-  if (!ui_panel_begin("Bone Binding")) {
+  if (!ui_panel_begin("Bones")) {
     return;
   }
-  const rna::PointerRNA ptr{&layer, &Layer::rna()};
   ImGui::TableNextRow();
   ImGui::TableSetColumnIndex(0);
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Bone");
+  ImGui::TextUnformatted("Parent Bone");
   ImGui::TableSetColumnIndex(1);
   ImGui::SetNextItemWidth(-1);
-  const Bone *active = bone_find(armature, armature.active_bone);
-  if (ImGui::BeginCombo("##bind_bone", active ? active->name.c_str() : "None")) {
+  const Bone *parent = bone_find(armature, layer.parent_bone);
+  ImGui::BeginDisabled(doc.frame_current != 0);
+  if (ImGui::BeginCombo("##parent_bone", parent ? parent->name.c_str() : "None")) {
+    if (ImGui::Selectable("None", !parent)) {
+      operator_call(C, "layer.parent_bone_set", {{"bone", ""}});
+    }
     for (const Bone &b : armature.bones) {
-      if (ImGui::Selectable(b.name.c_str(), b.id == armature.active_bone)) {
-        armature.active_bone = b.id;
-        for (Bone &other : armature.bones) {
-          bone_select(other, other.id == b.id);
-        }
+      if (ImGui::Selectable(b.name.c_str(), parent && b.id == parent->id)) {
+        operator_call(C, "layer.parent_bone_set", {{"bone", b.name}});
       }
     }
     ImGui::EndCombo();
   }
-  ui_prop(C, ptr, "flexi_binding", "sky.data.layers.active");
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(1);
-  ImGui::BeginDisabled(doc.frame_current != 0);
-  const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-  if (ImGui::Button("Bind Points", ImVec2(half, 0))) {
-    operator_call(C, "armature.bind_points");
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Release Points", ImVec2(half, 0))) {
-    operator_call(C, "armature.unbind_points");
-  }
-  if (ImGui::Button("Bind Layer", ImVec2(half, 0))) {
-    operator_call(C, "armature.bind_layer");
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Release Layer", ImVec2(half, 0))) {
-    operator_call(C, "armature.unbind_layer");
-  }
   ImGui::EndDisabled();
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(1);
-  if (const Bone *bound = bone_find(armature, layer.parent_bone)) {
-    ImGui::TextWrapped("The whole layer follows \"%s\".", bound->name.c_str());
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0)"
+                                             : "The whole layer follows this bone, as parenting to a bone in Blender");
   }
-  else if (doc.frame_current != 0) {
-    ImGui::TextDisabled("Binding is set on the Setup frame (0).");
-  }
-  else {
-    ImGui::TextWrapped("Select points and Bind Points to make them follow the bone alone, or paint weights with "
-                       "the Weight Paint tool.");
+  if (layer.type == LayerType::Vector) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (ImGui::Button("Automatic Weights", ImVec2(half, 0))) {
+      operator_call(C, "weight.automatic");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Normalize", ImVec2(half, 0))) {
+      operator_call(C, "weight.normalize");
+    }
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextWrapped(parent ? "The layer follows its parent bone. Giving its points weights sets Parent Bone to "
+                                "None."
+                              : "Points follow the bones by their weights. Select points with the Weight Select tool "
+                                "to assign weights, or paint them with Weight Paint.");
   }
   ui_panel_end();
 }

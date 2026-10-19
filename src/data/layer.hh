@@ -56,7 +56,7 @@ struct Bone {
   float angle = 0.0f;
   float length = 0.5f;
   float scale = 1.0f;
-  /* How far flexi-binding reaches, as a multiple of the length (Moho's bone strength). */
+  /* How far automatic weights reach, as a multiple of the length (Moho's bone strength). */
   float strength = 1.0f;
   LabelColor color = LabelColor::None;
   /* Connected, as in Blender: the head sits on the parent's tail and moves with it. */
@@ -144,10 +144,11 @@ struct Layer {
   uint64_t active_bone = 0;
   /* Moho's layer binding: a layer inside a bone layer can follow one bone as a whole. */
   uint64_t parent_bone = 0;
-  /* Points not bound to one bone follow every bone, by distance (Moho's flexi-binding). */
-  bool flexi_binding = true;
   /* Run on the drawing in order (see ModifierType). */
   std::vector<Modifier> modifiers;
+  /* Bone layers: the names of their actions, alternative timelines for the layer and everything
+   * inside it (see anim/animation.hh). */
+  std::vector<std::string> actions;
 
   bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
   bool is_bone_layer() const { return type == LayerType::Bone; }

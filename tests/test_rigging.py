@@ -1,4 +1,4 @@
-"""Rigging and modifiers: bone layers, bones, flexi and point binding, layer binding, posing on
+"""Rigging and modifiers: bone layers, bones, weights (automatic and assigned), Parent to Bone, posing on
 frames, the Armature modifier every layer in a bone layer gets, the Mirror modifier, and
 mirrored halves following their own side's bones (_L / _R), with Symmetrize.
 
@@ -69,14 +69,14 @@ points, curves, shapes = art.evaluated()
 assert len(points) == 8 and curves == 2 and len(shapes) == 2, "without merging: a separate mirrored copy"
 art.modifier_set(0, merge=True)
 
-# --- Binding and posing --------------------------------------------------------------------------
-# Bind the arm's points to arm_L; the mirrored ones then follow arm_R.
+# --- Weights and posing --------------------------------------------------------------------------
+# New points got automatic weights. Assign the arm's points wholly to arm_L; the mirrored ones then
+# follow arm_R.
+assert all(art.weights), "every point has weights"
 art.select_points([1, 2])
-layers.active = rig
 rig.select_bone("arm_L")
-layers.active = art
-assert sky.ops.armature.bind_points() == {'FINISHED'}
-assert art.point_bones == ["", "arm_L", "arm_L", ""]
+assert sky.ops.weight.assign(weight="1") == {'FINISHED'}
+assert art.point_bones[1:3] == ["arm_L", "arm_L"] and art.weights[1] == {"arm_L": 1.0}
 
 doc.frame_current = 10
 # Angles are in the parent's frame, and the spine points up: 0 turns both arms straight up.
@@ -92,7 +92,7 @@ assert close(points[1], (0.05, 0.9)), points[1]
 # The reflection of that point (bound to arm_R, which turned the other way) mirrors it.
 mirrored = [p for p in points[4:]]
 assert any(close(p, (-0.05, 0.9)) for p in mirrored), mirrored
-# Points on the axis follow the bones by distance (flexi): spine is still, so they barely move.
+# Points on the axis have automatic weights, mostly spine's: spine is still, so they barely move.
 assert close(points[0], (0.0, 0.2), 0.05)
 
 art.modifier_set(0, mirror_bones=False)
@@ -121,15 +121,18 @@ assert [m["type"] for m in art.modifiers] == ["ARMATURE", "MIRROR"]
 assert sky.ops.object.modifier_move_to(index="0", to="1") == {'FINISHED'}
 assert [m["type"] for m in art.modifiers] == ["MIRROR", "ARMATURE"]
 
-# --- Layer binding --------------------------------------------------------------------------------
+# --- Parent to Bone ---------------------------------------------------------------------------------
 doc.frame_current = 0
 assert sky.ops.layer.new() == {'FINISHED'}
 hat = layers.active
 assert sky.ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
-layers.active = rig
-rig.select_bone("spine")
-layers.active = hat
-assert sky.ops.armature.bind_layer() == {'FINISHED'} and hat.parent_bone == "spine"
+assert sky.ops.layer.parent_bone_set(bone="spine") == {'FINISHED'} and hat.parent_bone == "spine"
+# Giving its points weights takes it off the parent bone.
+hat.add_curve([(0.0, 1.0), (0.1, 1.1)])
+assert sky.ops.weight.automatic() == {'FINISHED'}
+assert hat.parent_bone == "" and all(hat.weights)
+sky.ops.ed.undo()
+assert hat.parent_bone == "spine"
 doc.frame_current = 20
 rig.bone_set("spine", position=(0.25, 0.0))
 doc.frame_current = 20
@@ -146,7 +149,7 @@ doc = sky.data.document
 rig = next(l for l in sky.data.layers if l.type == "BONE")
 art = next(l for l in rig.children if l.point_count > 0)
 assert [b["name"] for b in rig.bones] == [b["name"] for b in before_bones]
-assert art.point_bones == ["", "arm_L", "arm_L", ""]
+assert art.point_bones[1:3] == ["arm_L", "arm_L"]
 assert [m["type"] for m in art.modifiers] == ["MIRROR", "ARMATURE"]
 after_eval = art.evaluated()
 assert len(after_eval[0]) == len(before_eval[0])
@@ -179,12 +182,14 @@ sky.ops.ed.undo()
 assert "arm_R" in [b["name"] for b in rig.bones]
 doc.frame_current = 0
 
-# Deleting a bone frees the points that followed it.
+# Deleting a bone: points that followed only it stay where they are (no new weights).
 doc.frame_current = 0
 sky.data.layers.active = rig
 rig.select_bone("arm_L")
 assert sky.ops.armature.bone_delete() == {'FINISHED'}
-assert art.point_bones == ["", "", "", ""]
+assert art.point_bones[1:3] == ["", ""] and art.weights[1] == {}
+sky.ops.armature.select_none()  # an undo step: new points would get weights here
+assert art.weights[1] == {}, "and they don't get automatic weights again"
 
 # Converting between groups and bone groups.
 sky.data.layers.active = rig

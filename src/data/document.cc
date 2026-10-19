@@ -46,19 +46,22 @@ const rna::StructRNA &Document::rna()
         def_int<Document>("render_samples", "Render Samples",
                           "Anti-aliasing samples per pixel in renders (1, 2, 4, 8 or 16)", &Document::render_samples,
                           1, 16),
-        def_string<Document>("action", "Action",
-                             "Action being edited in the timeline; empty means the mainline", &Document::action),
+        [] {
+          rna::PropertyRNA p = def_string<Document>(
+              "action", "Action", "Action being edited in the timeline; empty means the mainline",
+              &Document::action);
+          /* Switching swaps the action's keys in. */
+          p.set = [](void *data, const rna::Value &v) {
+            document_set_action_by_name(*static_cast<Document *>(data), std::get<std::string>(v));
+          };
+          return p;
+        }(),
         def_int_readonly<Document>("layer_count", "Layers", "Number of layers, including those inside groups",
                                    [](const Document &doc) { return int(document_layers_flat(doc).size()); }),
     };
     return s;
   }();
   return srna;
-}
-
-std::vector<std::string> document_selectable_actions(const Document & /*doc*/)
-{
-  return {};
 }
 
 Text *document_text_find(Document &doc, const std::string &name)

@@ -44,8 +44,11 @@ struct Document {
    * samples smooth edges better and use more GPU memory. */
   int viewport_samples = 4;
   int render_samples = 16;
-  /* The action being edited, like Moho's CurrentDocAction(). Empty means the mainline. */
+  /* The action being edited, like Moho's CurrentDocAction(). Empty means the mainline. Set it
+   * with document_set_action: switching swaps the action's keys in. */
   std::string action;
+  /* The bone layer the action being edited belongs to. */
+  uint64_t action_layer = 0;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 
@@ -57,9 +60,6 @@ struct Document {
   static const rna::StructRNA &rna();
 };
 
-/* Smart actions the timeline's action menu offers: those of the selected armature.
- * Empty until armatures exist (milestone 4). */
-std::vector<std::string> document_selectable_actions(const Document &doc);
 
 Text *document_text_find(Document &doc, const std::string &name);
 /* "Text", then "Text.001", "Text.002", ... as Blender names data-blocks. */
