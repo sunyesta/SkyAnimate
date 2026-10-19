@@ -25,7 +25,13 @@ struct Document {
   std::string name = "Untitled";
   int frame_start = 1;
   int frame_end = 250;
-  int frame_current = 1;
+  /* New documents open on the setup frame. */
+  int frame_current = 0;
+  /* The frame the plain values (layer transforms, point positions) were last evaluated at;
+   * -1 before the first evaluation. Not saved. */
+  int evaluated_frame = -1;
+  /* Edits at frames other than 0 add keys (Blender's record button, on by default). */
+  bool auto_key = true;
   float fps = 24.0f;
   int width = 1920;
   int height = 1080;

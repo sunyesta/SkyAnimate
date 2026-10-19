@@ -9,11 +9,15 @@
 #include <optional>
 #include <stdexcept>
 
+#include "anim/animation.hh"
+#include "anim/deform.hh"
+#include "data/bones.hh"
 #include "assets/asset_library.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "gpu/brush_stroke.hh"
 #include "data/document.hh"
+#include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
@@ -329,12 +333,27 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
         if (!area.empty()) {
           C.area_type = area;
         }
+        /* A key "over the viewport" has the mouse there, as viewport-only operators expect. */
+        const bool saved_mouse = C.wm->mouse_in_viewport;
+        C.wm->mouse_in_viewport = saved_mouse || area == "Viewport";
         const bool handled = wm_handle_key_event(C, {to_upper(type), ctrl, shift, alt}, typing);
+        C.wm->mouse_in_viewport = saved_mouse;
         C.area_type = saved_area;
         return handled;
       },
       py::arg("type"), py::arg("ctrl") = false, py::arg("shift") = false, py::arg("alt") = false,
       py::arg("area") = "", py::arg("typing") = false);
+
+  /* Mirror editing (the viewport header's butterfly X / Y). */
+  m.def("mirror_editing", []() {
+    const ToolSettings &ts = current_context().wm->tool_settings;
+    return py::make_tuple(ts.mirror_x, ts.mirror_y);
+  });
+  m.def("set_mirror_editing", [](bool x, bool y) {
+    ToolSettings &ts = current_context().wm->tool_settings;
+    ts.mirror_x = x;
+    ts.mirror_y = y;
+  });
 
   m.def("undo_history", []() {
     UndoStack &undo = *current_context().undo;
@@ -456,6 +475,18 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
         return int(drawing.curves.size()) - 1;
       },
       py::arg("id"), py::arg("points"), py::arg("closed") = false, py::arg("fill") = false);
+  /* Moves one point, as dragging it does (an edit: keyed at the current frame when recorded). */
+  m.def("layer_set_point", [layer_or_raise](uint64_t id, int index, std::pair<float, float> pos) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's points are edited through its original");
+    }
+    if (index < 0 || index >= int(layer.drawing.points.size())) {
+      throw py::index_error("no point " + std::to_string(index));
+    }
+    layer.drawing.points[index].pos = {pos.first, pos.second};
+    current_context().undo->mark_changed();
+  });
   m.def("layer_points", [layer_or_raise](uint64_t id) {
     const Document &doc = *current_context().document;
     py::list result;
@@ -523,7 +554,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     py::list result;
     for (int i = 0; i < int(curve.points.size()); i++) {
       const float2 in = curve_handle(drawing, curve, i, true), out = curve_handle(drawing, curve, i, false);
-      result.append(py::make_tuple(handle_type_identifier(curve.points[i].handle_type), py::make_tuple(in.x, in.y),
+      result.append(py::make_tuple(curve.points[i].aligned ? "ALIGNED" : "FREE", py::make_tuple(in.x, in.y),
                                    py::make_tuple(out.x, out.y)));
     }
     return result;
@@ -554,6 +585,503 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     }
     CurvePoint &cp = drawing.curves[curve_index].points[index];
     (side == "IN" ? cp.select_in : cp.select_out) = true;
+  });
+  /* Keys. A channel is named by its path ("position", "points[3].pos", ...). */
+  const auto channel_or_raise = [layer_or_raise](uint64_t id, const std::string &path) {
+    ChannelRef ref;
+    if (!layer_channel(layer_or_raise(id), path, &ref)) {
+      throw py::key_error("no animated channel '" + path + "' on this layer");
+    }
+    return ref;
+  };
+  m.def("layer_keyframes", [channel_or_raise](uint64_t id, const std::string &path) {
+    animation_sync(*current_context().document);
+    const ChannelRef ref = channel_or_raise(id, path);
+    py::list result;
+    const auto add = [&](const auto &ch) {
+      for (const auto &k : ch.keys) {
+        py::dict d;
+        d["frame"] = k.frame;
+        if constexpr (std::is_same_v<std::decay_t<decltype(k.value)>, float>) {
+          d["value"] = k.value;
+        }
+        else {
+          d["value"] = py::make_tuple(k.value.x, k.value.y);
+        }
+        d["interp"] = interp_identifier(k.interp);
+        d["hold"] = k.hold;
+        d["interval"] = k.interval;
+        d["overshoot"] = k.overshoot;
+        d["noise_amplitude"] = k.noise_amplitude;
+        d["noise_frequency"] = k.noise_frequency;
+        d["cycle_back"] = k.cycle_back;
+        result.append(d);
+      }
+    };
+    if (ref.scalar) {
+      add(*ref.scalar);
+    }
+    else {
+      add(*ref.vector);
+    }
+    return result;
+  });
+  m.def(
+      "layer_keyframe_insert",
+      [layer_or_raise, channel_or_raise](uint64_t id, const std::string &path, int frame) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        animation_record(doc);
+        if (frame < 0) {
+          frame = doc.frame_current;
+        }
+        if (path.empty()) {
+          layer_insert_keys(layer_or_raise(id), frame);
+        }
+        else {
+          const ChannelRef ref = channel_or_raise(id, path);
+          const auto insert = [&](auto &ch, const auto &value) {
+            if (!ch.animated() && frame != 0) {
+              ch.set_key(0, value);
+            }
+            ch.set_key(frame, value);
+          };
+          if (ref.scalar) {
+            insert(*ref.scalar, *ref.scalar_value);
+          }
+          else {
+            insert(*ref.vector, *ref.vector_value);
+          }
+        }
+        animation_evaluate(doc, doc.frame_current);
+        current_context().undo->mark_changed();
+      },
+      py::arg("id"), py::arg("path") = "", py::arg("frame") = -1);
+  m.def("layer_keyframe_delete", [channel_or_raise](uint64_t id, const std::string &path, int frame) {
+    Document &doc = *current_context().document;
+    animation_sync(doc);
+    animation_record(doc);
+    const ChannelRef ref = channel_or_raise(id, path);
+    const bool removed = ref.scalar ? ref.scalar->remove_key(frame) : ref.vector->remove_key(frame);
+    animation_evaluate(doc, doc.frame_current);
+    current_context().undo->mark_changed();
+    return removed;
+  });
+  /* Changes one key's interpolation and settings (keyword arguments as in layer_keyframes). */
+  m.def("layer_keyframe_set", [channel_or_raise](uint64_t id, const std::string &path, int frame, py::dict settings) {
+    Document &doc = *current_context().document;
+    animation_sync(doc);
+    animation_record(doc);
+    const ChannelRef ref = channel_or_raise(id, path);
+    const auto apply = [&](auto &ch) {
+      auto *key = ch.key_at(frame);
+      if (!key) {
+        throw py::key_error("no key at frame " + std::to_string(frame));
+      }
+      for (const auto &[name_obj, value] : settings) {
+        const std::string name = py::str(name_obj);
+        if (name == "interp") {
+          if (!interp_from_identifier(value.cast<std::string>(), &key->interp)) {
+            throw py::value_error("unknown interpolation '" + value.cast<std::string>() + "'");
+          }
+        }
+        else if (name == "hold") {
+          key->hold = std::max(0, value.cast<int>());
+        }
+        else if (name == "interval") {
+          key->interval = std::max(1, value.cast<int>());
+        }
+        else if (name == "overshoot") {
+          key->overshoot = value.cast<float>();
+        }
+        else if (name == "noise_amplitude") {
+          key->noise_amplitude = value.cast<float>();
+        }
+        else if (name == "noise_frequency") {
+          key->noise_frequency = value.cast<float>();
+        }
+        else if (name == "cycle_back") {
+          key->cycle_back = std::max(0, value.cast<int>());
+        }
+        else {
+          throw py::key_error("unknown key setting '" + name + "'");
+        }
+      }
+    };
+    if (ref.scalar) {
+      apply(*ref.scalar);
+    }
+    else {
+      apply(*ref.vector);
+    }
+    animation_evaluate(doc, doc.frame_current);
+    current_context().undo->mark_changed();
+  });
+  /* Hold bars the timeline draws for the active and selected layers: [(frame, next frame)]. */
+  m.def("timeline_hold_spans", []() {
+    Context &C = current_context();
+    animation_sync(*C.document);
+    return layers_hold_spans(keyed_layers(C));
+  });
+  m.def("layer_key_frames", [layer_or_raise](uint64_t id) {
+    animation_sync(*current_context().document);
+    return layer_key_frames(layer_or_raise(id));
+  });
+  /* --- Bones ------------------------------------------------------------------------- */
+  const auto bone_or_raise = [layer_or_raise](uint64_t id, const std::string &name) -> Bone & {
+    Layer &layer = layer_or_raise(id);
+    Bone *bone = const_cast<Bone *>(bone_find_by_name(layer, name));
+    if (!bone) {
+      throw py::key_error("no bone named '" + name + "'");
+    }
+    return *bone;
+  };
+  m.def("layer_bones", [layer_or_raise](uint64_t id) {
+    animation_sync(*current_context().document);
+    const Layer &layer = layer_or_raise(id);
+    const std::vector<BonePose> poses = armature_pose(layer, current_context().document->frame_current == 0);
+    py::list result;
+    for (size_t i = 0; i < layer.bones.size(); i++) {
+      const Bone &b = layer.bones[i];
+      const Bone *parent = bone_find(layer, b.parent);
+      py::dict d;
+      d["name"] = b.name;
+      d["parent"] = parent ? parent->name : std::string();
+      d["position"] = py::make_tuple(b.position.x, b.position.y);
+      d["angle"] = b.angle;
+      d["length"] = b.length;
+      d["scale"] = b.scale;
+      d["strength"] = b.strength;
+      d["selected"] = b.selected;
+      d["select_head"] = bone_head_selected(layer, b);
+      d["select_tail"] = bone_tail_selected(layer, b);
+      d["connected"] = b.connected;
+      d["active"] = b.id == layer.active_bone;
+      d["head"] = py::make_tuple(poses[i].head.x, poses[i].head.y);
+      d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
+      result.append(d);
+    }
+    return result;
+  });
+  /* Poses or edits a bone: name, position, angle, scale, length, strength (as edits are, so at
+   * frames other than 0 they key with auto-keying). */
+  m.def("layer_bone_set", [bone_or_raise](uint64_t id, const std::string &name, py::dict values) {
+    Bone &bone = bone_or_raise(id, name);
+    for (const auto &[key_obj, value] : values) {
+      const std::string key = py::str(key_obj);
+      if (key == "position") {
+        const auto p = value.cast<std::pair<float, float>>();
+        bone.position = {p.first, p.second};
+      }
+      else if (key == "angle") {
+        bone.angle = value.cast<float>();
+      }
+      else if (key == "scale") {
+        bone.scale = value.cast<float>();
+      }
+      else if (key == "length") {
+        bone.length = std::max(0.0f, value.cast<float>());
+      }
+      else if (key == "strength") {
+        bone.strength = std::max(0.0f, value.cast<float>());
+      }
+      else if (key == "name") {
+        bone.name = value.cast<std::string>();
+      }
+      else {
+        throw py::key_error("unknown bone setting '" + key + "'");
+      }
+    }
+    current_context().undo->mark_changed();
+  });
+  m.def("layer_select_bone", [layer_or_raise](uint64_t id, const std::string &name, bool extend,
+                                               const std::string &part) {
+    Layer &layer = layer_or_raise(id);
+    const Bone *picked = bone_find_by_name(layer, name);
+    if (!picked && !name.empty()) {
+      throw py::key_error("no bone named '" + name + "'");
+    }
+    if (!extend) {
+      armature_deselect_all(layer);
+    }
+    if (picked) {
+      Bone &b = *bone_find(layer, picked->id);
+      if (part == "HEAD") {
+        b.select_head = true;
+      }
+      else if (part == "TAIL") {
+        b.select_tail = true;
+      }
+      else {
+        bone_select(b, true);
+      }
+      armature_flush_selection(layer);
+    }
+    layer.active_bone = picked ? picked->id : 0;
+  });
+  /* The Transform Bones gizmo: scale (sx, sy) and turn (radians) about (px, py), then move by
+   * (dx, dy), all in the bone layer's space. */
+  m.def("layer_map_bones", [layer_or_raise](uint64_t id, float dx, float dy, float sx, float sy, float angle,
+                                            float px, float py) {
+    Layer &layer = layer_or_raise(id);
+    if (!armature_any_picked(layer)) {
+      return false;
+    }
+    const bool setup = current_context().document->frame_current == 0;
+    const std::vector<Bone> original = layer.bones;
+    const Transform2D map = Transform2D::translate(float2(px + dx, py + dy)) * Transform2D::rotate(angle) *
+                            Transform2D::scaling({sx, sy}) * Transform2D::translate(float2(-px, -py));
+    armature_map_selected(layer, original, map, setup);
+    if (current_context().wm->tool_settings.mirror_x) {
+      armature_mirror_edits(layer, original, setup);
+    }
+    current_context().undo->mark_changed();
+    return true;
+  });
+  m.def("layer_box_select_bones", [layer_or_raise](uint64_t id, float x0, float y0, float x1, float y1, bool whole,
+                                                   bool extend, bool deselect) {
+    Layer &layer = layer_or_raise(id);
+    const float2 lo(std::min(x0, x1), std::min(y0, y1)), hi(std::max(x0, x1), std::max(y0, y1));
+    const auto inside = [&](float2 p) { return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y; };
+    const bool setup = current_context().document->frame_current == 0;
+    if (whole) {
+      armature_select_bones_in(layer, setup, inside, extend, deselect);
+    }
+    else {
+      armature_select_joints_in(layer, setup, inside, extend, deselect);
+    }
+  });
+  m.def("layer_picked_bounds", [layer_or_raise](uint64_t id) -> py::object {
+    float2 lo, hi;
+    if (!armature_picked_bounds(layer_or_raise(id), current_context().document->frame_current == 0, lo, hi)) {
+      return py::none();
+    }
+    return py::make_tuple(py::make_tuple(lo.x, lo.y), py::make_tuple(hi.x, hi.y));
+  });
+  /* R on the selected bones by `angle` radians. */
+  m.def("layer_rotate_bones", [layer_or_raise](uint64_t id, float angle) {
+    Layer &layer = layer_or_raise(id);
+    if (!armature_any_picked(layer)) {
+      return false;
+    }
+    const bool setup = current_context().document->frame_current == 0;
+    const std::vector<Bone> original = layer.bones;
+    armature_rotate_selected(layer, original, angle);
+    if (current_context().wm->tool_settings.mirror_x) {
+      armature_mirror_edits(layer, original, setup);
+    }
+    current_context().undo->mark_changed();
+    return true;
+  });
+  /* S on the selected bones by `factor`. */
+  m.def("layer_scale_bones", [layer_or_raise](uint64_t id, float factor) {
+    Layer &layer = layer_or_raise(id);
+    if (!armature_any_picked(layer)) {
+      return false;
+    }
+    const std::vector<Bone> original = layer.bones;
+    armature_scale_selected(layer, original, factor);
+    if (current_context().wm->tool_settings.mirror_x) {
+      armature_mirror_edits(layer, original, current_context().document->frame_current == 0);
+    }
+    current_context().undo->mark_changed();
+    return true;
+  });
+  /* G on the selected bones by (dx, dy), in the bone layer's space. */
+  m.def("layer_move_bone_ends", [layer_or_raise](uint64_t id, float dx, float dy) {
+    Layer &layer = layer_or_raise(id);
+    if (!armature_any_picked(layer)) {
+      return false;
+    }
+    const std::vector<Bone> original = layer.bones;
+    const bool setup = current_context().document->frame_current == 0;
+    armature_grab_selected(layer, original, {dx, dy}, setup);
+    if (current_context().wm->tool_settings.mirror_x) {
+      armature_mirror_edits(layer, original, setup);
+    }
+    current_context().undo->mark_changed();
+    return true;
+  });
+  /* The bone each point of a layer follows ("" = flexi-binding), and the layer's own bone. */
+  m.def("layer_point_bones", [layer_or_raise](uint64_t id) {
+    const Document &doc = *current_context().document;
+    const Layer &layer = layer_or_raise(id);
+    const Layer *armature = layer_armature(doc, layer.id);
+    py::list result;
+    for (const MeshPoint &p : layer.drawing.points) {
+      const Bone *b = armature ? bone_find(*armature, p.bone) : nullptr;
+      result.append(b ? b->name : std::string());
+    }
+    return result;
+  });
+  m.def("layer_parent_bone", [layer_or_raise](uint64_t id) {
+    const Document &doc = *current_context().document;
+    const Layer &layer = layer_or_raise(id);
+    const Layer *armature = layer_armature(doc, layer.id);
+    const Bone *b = armature ? bone_find(*armature, layer.parent_bone) : nullptr;
+    return b ? b->name : std::string();
+  });
+
+  /* --- Modifiers and the evaluated drawing ------------------------------------------------ */
+  m.def("layer_modifiers", [layer_or_raise](uint64_t id) {
+    py::list result;
+    for (const Modifier &mod : layer_or_raise(id).modifiers) {
+      py::dict d;
+      d["type"] = mod.type == ModifierType::Armature ? "ARMATURE" : "MIRROR";
+      d["name"] = mod.name;
+      d["show_viewport"] = mod.show_viewport;
+      d["show_render"] = mod.show_render;
+      if (mod.type == ModifierType::Mirror) {
+        d["axis_x"] = mod.axis_x;
+        d["axis_y"] = mod.axis_y;
+        d["center"] = py::make_tuple(mod.center.x, mod.center.y);
+        d["merge"] = mod.merge;
+        d["merge_distance"] = mod.merge_distance;
+        d["mirror_bones"] = mod.mirror_bones;
+      }
+      result.append(d);
+    }
+    return result;
+  });
+  m.def("layer_modifier_set", [layer_or_raise](uint64_t id, int index, py::dict values) {
+    Layer &layer = layer_or_raise(id);
+    if (index < 0 || index >= int(layer.modifiers.size())) {
+      throw py::index_error("no modifier " + std::to_string(index));
+    }
+    Modifier &mod = layer.modifiers[index];
+    for (const auto &[key_obj, value] : values) {
+      const std::string key = py::str(key_obj);
+      if (key == "show_viewport") {
+        mod.show_viewport = value.cast<bool>();
+      }
+      else if (key == "show_render") {
+        mod.show_render = value.cast<bool>();
+      }
+      else if (key == "name") {
+        mod.name = value.cast<std::string>();
+      }
+      else if (mod.type == ModifierType::Mirror && key == "axis_x") {
+        mod.axis_x = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::Mirror && key == "axis_y") {
+        mod.axis_y = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::Mirror && key == "center") {
+        const auto p = value.cast<std::pair<float, float>>();
+        mod.center = {p.first, p.second};
+      }
+      else if (mod.type == ModifierType::Mirror && key == "merge") {
+        mod.merge = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::Mirror && key == "merge_distance") {
+        mod.merge_distance = std::max(0.0f, value.cast<float>());
+      }
+      else if (mod.type == ModifierType::Mirror && key == "mirror_bones") {
+        mod.mirror_bones = value.cast<bool>();
+      }
+      else {
+        throw py::key_error("unknown modifier setting '" + key + "'");
+      }
+    }
+    current_context().undo->mark_changed();
+  });
+  /* The drawing as it shows: (points [(x, y)], curve count, shapes [(name, closed)]). */
+  m.def(
+      "layer_evaluated",
+      [layer_or_raise](uint64_t id, bool render) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        const VectorDrawing d = layer_evaluated_drawing(doc, layer_or_raise(id), render);
+        py::list points;
+        for (const MeshPoint &p : d.points) {
+          points.append(py::make_tuple(p.pos.x, p.pos.y));
+        }
+        py::list shapes;
+        std::vector<float2> outline;
+        for (const Shape &shape : d.shapes) {
+          bool closed = false;
+          const bool connected = shape_outline(d, shape, 4, outline, nullptr, &closed);
+          shapes.append(py::make_tuple(shape.name, closed, connected));
+        }
+        return py::make_tuple(points, int(d.curves.size()), shapes);
+      },
+      py::arg("id"), py::arg("render") = false);
+  /* Weights: how the active bone (or a named one) moves each point, and painting them. */
+  m.def("layer_bone_weights", [layer_or_raise](uint64_t id, const std::string &bone_name) {
+    Document &doc = *current_context().document;
+    animation_sync(doc);
+    const Layer &layer = layer_or_raise(id);
+    const Layer *armature = layer_armature(doc, layer.id);
+    const Bone *bone = armature ? bone_find_by_name(*armature, bone_name) : nullptr;
+    if (!bone) {
+      throw py::key_error("no bone named '" + bone_name + "' in this layer's bone layer");
+    }
+    return layer_point_bone_weights(doc, layer, bone->id);
+  });
+  m.def("layer_painted_weights", [layer_or_raise](uint64_t id) {
+    const Document &doc = *current_context().document;
+    const Layer &layer = layer_or_raise(id);
+    const Layer *armature = layer_armature(doc, layer.id);
+    py::list result;
+    for (const MeshPoint &p : layer.drawing.points) {
+      py::dict d;
+      for (const BoneWeight &w : p.weights) {
+        const Bone *b = armature ? bone_find(*armature, w.bone) : nullptr;
+        d[py::str(b ? b->name : std::to_string(w.bone))] = w.weight;
+      }
+      result.append(d);
+    }
+    return result;
+  });
+  m.def("layer_weight_paint", [layer_or_raise](uint64_t id, std::pair<float, float> center, float radius,
+                                               const std::string &bone_name, float weight, float strength,
+                                               const std::string &mode, bool normalize) {
+    Document &doc = *current_context().document;
+    animation_sync(doc);
+    Layer &layer = layer_or_raise(id);
+    const Layer *armature = layer_armature(doc, layer.id);
+    const Bone *bone = armature ? bone_find_by_name(*armature, bone_name) : nullptr;
+    if (!bone) {
+      throw py::key_error("no bone named '" + bone_name + "' in this layer's bone layer");
+    }
+    WeightPaintBrush brush;
+    brush.center = {center.first, center.second};
+    brush.radius = radius;
+    brush.bone = bone->id;
+    brush.weight = weight;
+    brush.strength = strength;
+    brush.mode = mode == "ADD" ? WeightPaintMode::Add : mode == "SUBTRACT" ? WeightPaintMode::Subtract : WeightPaintMode::Draw;
+    brush.normalize = normalize;
+    const int changed = layer_weight_paint(doc, layer, brush);
+    current_context().undo->mark_changed();
+    return changed;
+  });
+  /* Mean positions: of the selected points, or of a shape's points. Setting one moves them all. */
+  const auto points_of = [layer_or_raise](uint64_t id, int shape) {
+    const VectorDrawing &d = layer_or_raise(id).drawing;
+    if (shape < 0) {
+      return drawing_selected_points(d);
+    }
+    if (shape >= int(d.shapes.size())) {
+      throw py::index_error("no shape " + std::to_string(shape));
+    }
+    return shape_points(d, d.shapes[shape]);
+  };
+  m.def("layer_mean_position", [layer_or_raise, points_of](uint64_t id, int shape) -> py::object {
+    float2 mean;
+    if (!drawing_points_mean(layer_or_raise(id).drawing, points_of(id, shape), &mean)) {
+      return py::none();
+    }
+    return py::make_tuple(mean.x, mean.y);
+  });
+  m.def("layer_set_mean_position", [layer_or_raise, points_of](uint64_t id, int shape, std::pair<float, float> pos) {
+    VectorDrawing &d = layer_or_raise(id).drawing;
+    const std::vector<int> points = points_of(id, shape);
+    float2 mean;
+    if (drawing_points_mean(d, points, &mean)) {
+      drawing_points_move(d, points, float2(pos.first, pos.second) - mean);
+      current_context().undo->mark_changed();
+    }
   });
   m.def("layer_shapes", [layer_or_raise](uint64_t id) {
     /* Bottom first: [(name, [curve indices of its edges]), ...]. */

@@ -84,6 +84,61 @@ static json style_to_json(const Style &style)
   return j;
 }
 
+/* A channel's keys: [{"frame", "value", "interp"} plus any setting that isn't its default]. */
+static json value_to_json(float v)
+{
+  return num(v);
+}
+
+static json value_to_json(const float2 &v)
+{
+  return float2_to_json(v);
+}
+
+template<typename T> static json keys_to_json(const Channel<T> &ch)
+{
+  const Key<T> defaults;
+  json keys = json::array();
+  for (const Key<T> &k : ch.keys) {
+    json key = {{"frame", k.frame}, {"value", value_to_json(k.value)}, {"interp", interp_identifier(k.interp)}};
+    if (k.hold != defaults.hold) {
+      key["hold"] = k.hold;
+    }
+    if (k.interval != defaults.interval) {
+      key["interval"] = k.interval;
+    }
+    if (k.overshoot != defaults.overshoot) {
+      key["overshoot"] = num(k.overshoot);
+    }
+    if (k.noise_amplitude != defaults.noise_amplitude) {
+      key["noise_amplitude"] = num(k.noise_amplitude);
+    }
+    if (k.noise_frequency != defaults.noise_frequency) {
+      key["noise_frequency"] = num(k.noise_frequency);
+    }
+    if (k.cycle_back != defaults.cycle_back) {
+      key["cycle_back"] = k.cycle_back;
+    }
+    if (k.cycle_absolute) {
+      key["cycle_absolute"] = true;
+      key["cycle_frame"] = k.cycle_frame;
+    }
+    if (k.color != 0) {
+      key["color"] = k.color;
+    }
+    keys.push_back(std::move(key));
+  }
+  return keys;
+}
+
+/* Adds `name` to `j` when the channel is animated. */
+template<typename T> static void put_keys(json &j, const char *name, const Channel<T> &ch)
+{
+  if (ch.animated()) {
+    j[name] = keys_to_json(ch);
+  }
+}
+
 static json drawing_to_json(const VectorDrawing &drawing)
 {
   json points = json::array();
@@ -95,6 +150,18 @@ static json drawing_to_json(const VectorDrawing &drawing)
     if (p.corner == CornerType::Sharp) {
       point["corner"] = "SHARP";
     }
+    if (p.bone != 0) {
+      point["bone"] = p.bone;
+    }
+    if (!p.weights.empty()) {
+      json weights = json::array();
+      for (const BoneWeight &w : p.weights) {
+        weights.push_back(json::array({w.bone, num(w.weight)}));
+      }
+      point["weights"] = std::move(weights);
+    }
+    put_keys(point, "pos_keys", p.pos_keys);
+    put_keys(point, "radius_keys", p.radius_keys);
     points.push_back(std::move(point));
   }
   json curves = json::array();
@@ -110,13 +177,16 @@ static json drawing_to_json(const VectorDrawing &drawing)
       if (cp.edge_hidden) {
         point["edge_hidden"] = true;
       }
-      if (cp.handle_type != HandleType::Auto) {
-        point["handle_type"] = handle_type_identifier(cp.handle_type);
+      if (cp.aligned) {
+        point["aligned"] = true;
       }
-      if (cp.handle_type == HandleType::Aligned || cp.handle_type == HandleType::Free) {
+      if (cp.handles_set) {
         point["handle_in"] = float2_to_json(cp.handle_in);
         point["handle_out"] = float2_to_json(cp.handle_out);
       }
+      put_keys(point, "curvature_keys", cp.curvature_keys);
+      put_keys(point, "handle_in_keys", cp.handle_in_keys);
+      put_keys(point, "handle_out_keys", cp.handle_out_keys);
       curve_points.push_back(std::move(point));
     }
     curves.push_back({{"closed", curve.closed}, {"points", std::move(curve_points)}});
@@ -156,6 +226,60 @@ static json layer_to_json(const Layer &layer)
       {"mask_expand", layer.mask_expand},
       {"mask_exclude_strokes", layer.mask_exclude_strokes},
   };
+  if (layer.parent_bone != 0) {
+    j["parent_bone"] = layer.parent_bone;
+  }
+  if (!layer.flexi_binding) {
+    j["flexi_binding"] = false;
+  }
+  if (!layer.modifiers.empty()) {
+    json modifiers = json::array();
+    for (const Modifier &m : layer.modifiers) {
+      json mj = {{"type", m.type == ModifierType::Armature ? "ARMATURE" : "MIRROR"},
+                 {"name", m.name},
+                 {"show_viewport", m.show_viewport},
+                 {"show_render", m.show_render},
+                 {"show_expanded", m.show_expanded}};
+      if (m.type == ModifierType::Mirror) {
+        mj["axis_x"] = m.axis_x;
+        mj["axis_y"] = m.axis_y;
+        mj["center"] = float2_to_json(m.center);
+        mj["merge"] = m.merge;
+        mj["merge_distance"] = num(m.merge_distance);
+        mj["mirror_bones"] = m.mirror_bones;
+      }
+      modifiers.push_back(std::move(mj));
+    }
+    j["modifiers"] = std::move(modifiers);
+  }
+  if (layer.is_bone_layer()) {
+    json bones = json::array();
+    for (const Bone &b : layer.bones) {
+      json bj = {{"id", b.id},
+                 {"name", b.name},
+                 {"parent", b.parent},
+                 {"position", float2_to_json(b.position)},
+                 {"angle", num(b.angle)},
+                 {"length", num(b.length)},
+                 {"scale", num(b.scale)},
+                 {"strength", num(b.strength)},
+                 {"label_color", enum_identifier("label_color", int(b.color))}};
+      if (b.connected) {
+        bj["connected"] = true;
+      }
+      put_keys(bj, "position_keys", b.position_keys);
+      put_keys(bj, "angle_keys", b.angle_keys);
+      put_keys(bj, "scale_keys", b.scale_keys);
+      bones.push_back(std::move(bj));
+    }
+    j["bones"] = std::move(bones);
+    j["next_bone_id"] = layer.next_bone_id;
+    j["active_bone"] = layer.active_bone;
+  }
+  put_keys(j, "position_keys", layer.position_keys);
+  put_keys(j, "rotation_keys", layer.rotation_keys);
+  put_keys(j, "scale_keys", layer.scale_keys);
+  put_keys(j, "opacity_keys", layer.opacity_keys);
   if (layer.is_reference()) {
     /* A reference's drawing lives in its source; storing a copy would only go stale. */
     j["reference_source"] = layer.reference_source;
@@ -192,6 +316,7 @@ std::string sky_document_to_json(const Document &doc)
            {"frame_start", doc.frame_start},
            {"frame_end", doc.frame_end},
            {"frame_current", doc.frame_current},
+           {"auto_key", doc.auto_key},
            {"fps", num(doc.fps)},
            {"width", doc.width},
            {"height", doc.height},
@@ -367,6 +492,55 @@ static Style style_from_json(const json &j)
   return style;
 }
 
+static bool value_from_json(const json &j, float *r)
+{
+  if (!j.is_number()) {
+    return false;
+  }
+  *r = j.get<float>();
+  return true;
+}
+
+static bool value_from_json(const json &j, float2 *r)
+{
+  if (!j.is_array() || j.size() != 2 || !j[0].is_number() || !j[1].is_number()) {
+    return false;
+  }
+  *r = {j[0].get<float>(), j[1].get<float>()};
+  return true;
+}
+
+template<typename T> static void get_keys(const json &j, const char *name, Channel<T> &r_ch)
+{
+  for (const json &k : get_array(j, name)) {
+    if (!k.is_object()) {
+      continue;
+    }
+    Key<T> key;
+    auto value = k.find("value");
+    if (value == k.end() || !value_from_json(*value, &key.value)) {
+      continue;
+    }
+    key.frame = std::max(0, get_int(k, "frame", 0));
+    if (!interp_from_identifier(get_string(k, "interp", "SMOOTH"), &key.interp)) {
+      key.interp = Interp::Smooth;
+    }
+    key.hold = std::max(0, get_int(k, "hold", key.hold));
+    key.interval = std::max(1, get_int(k, "interval", key.interval));
+    key.overshoot = get_float(k, "overshoot", key.overshoot);
+    key.noise_amplitude = get_float(k, "noise_amplitude", key.noise_amplitude);
+    key.noise_frequency = get_float(k, "noise_frequency", key.noise_frequency);
+    key.cycle_back = std::max(0, get_int(k, "cycle_back", key.cycle_back));
+    key.cycle_absolute = get_bool(k, "cycle_absolute", false);
+    key.cycle_frame = std::max(0, get_int(k, "cycle_frame", 0));
+    key.color = get_int(k, "color", 0);
+    if (!r_ch.key_at(key.frame)) {
+      r_ch.keys.push_back(key);
+    }
+  }
+  std::sort(r_ch.keys.begin(), r_ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
+}
+
 static VectorDrawing drawing_from_json(const json &j)
 {
   VectorDrawing drawing;
@@ -377,6 +551,14 @@ static VectorDrawing drawing_from_json(const json &j)
     if (p.is_object()) {
       drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
                                 false, get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
+      drawing.points.back().bone = get_id(p, "bone");
+      for (const json &w : get_array(p, "weights")) {
+        if (w.is_array() && w.size() == 2 && w[0].is_number_unsigned() && w[1].is_number()) {
+          drawing.points.back().weights.push_back({w[0].get<uint64_t>(), std::clamp(w[1].get<float>(), 0.0f, 1.0f)});
+        }
+      }
+      get_keys(p, "pos_keys", drawing.points.back().pos_keys);
+      get_keys(p, "radius_keys", drawing.points.back().radius_keys);
     }
   }
   const int point_count = int(drawing.points.size());
@@ -401,11 +583,19 @@ static VectorDrawing drawing_from_json(const json &j)
       point.offset_in = get_float(cp, "offset_in", 0.0f);
       point.offset_out = get_float(cp, "offset_out", 0.0f);
       point.edge_hidden = get_bool(cp, "edge_hidden", false);
-      if (!handle_type_from_identifier(get_string(cp, "handle_type", "AUTO"), &point.handle_type)) {
-        point.handle_type = HandleType::Auto;
+      /* Handles are stored when the file has them; older files' Automatic and Vector handles are
+       * worked out once from their neighbours (drawing_init_handles), Vector ones straight. */
+      const std::string legacy = get_string(cp, "handle_type", "AUTO");
+      point.handles_set = cp.contains("handle_in");
+      point.aligned = get_bool(cp, "aligned", legacy == "ALIGNED");
+      if (legacy == "VECTOR" && !point.handles_set) {
+        point.curvature = CURVATURE_PEAKED;
       }
       point.handle_in = get_float2(cp, "handle_in", {});
       point.handle_out = get_float2(cp, "handle_out", {});
+      get_keys(cp, "curvature_keys", point.curvature_keys);
+      get_keys(cp, "handle_in_keys", point.handle_in_keys);
+      get_keys(cp, "handle_out_keys", point.handle_out_keys);
       curve.points.push_back(point);
     }
     /* Keep curve indices stable for the shapes even if a curve came out too short; it then
@@ -437,6 +627,9 @@ static VectorDrawing drawing_from_json(const json &j)
       drawing.shapes.push_back(std::move(shape));
     }
   }
+  /* Older files' Automatic and Vector handles become stored ones now, from the setup pose. */
+  drawing_init_handles(drawing);
+  drawing_repair_stale_handle_keys(drawing);
   return drawing;
 }
 
@@ -455,6 +648,56 @@ static Layer layer_from_json(const json &j, int depth)
   layer.rotation = get_float(j, "rotation", 0.0f);
   layer.scale = get_float2(j, "scale", {1.0f, 1.0f});
   layer.opacity = std::clamp(get_float(j, "opacity", 1.0f), 0.0f, 1.0f);
+  layer.parent_bone = get_id(j, "parent_bone");
+  layer.flexi_binding = get_bool(j, "flexi_binding", true);
+  for (const json &mj : get_array(j, "modifiers")) {
+    if (!mj.is_object()) {
+      continue;
+    }
+    Modifier m;
+    m.type = get_string(mj, "type", "MIRROR") == "ARMATURE" ? ModifierType::Armature : ModifierType::Mirror;
+    m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature" : "Mirror");
+    m.show_viewport = get_bool(mj, "show_viewport", true);
+    m.show_render = get_bool(mj, "show_render", true);
+    m.show_expanded = get_bool(mj, "show_expanded", true);
+    m.axis_x = get_bool(mj, "axis_x", true);
+    m.axis_y = get_bool(mj, "axis_y", false);
+    m.center = get_float2(mj, "center", {});
+    m.merge = get_bool(mj, "merge", true);
+    m.merge_distance = std::max(0.0f, get_float(mj, "merge_distance", m.merge_distance));
+    m.mirror_bones = get_bool(mj, "mirror_bones", true);
+    layer.modifiers.push_back(std::move(m));
+  }
+  for (const json &bj : get_array(j, "bones")) {
+    if (!bj.is_object()) {
+      continue;
+    }
+    Bone b;
+    b.id = get_id(bj, "id");
+    if (b.id == 0) {
+      continue;
+    }
+    b.name = get_string(bj, "name", "Bone");
+    b.parent = get_id(bj, "parent");
+    b.position = get_float2(bj, "position", {});
+    b.angle = get_float(bj, "angle", 0.0f);
+    b.length = std::max(0.0f, get_float(bj, "length", 0.5f));
+    b.scale = get_float(bj, "scale", 1.0f);
+    b.strength = std::max(0.0f, get_float(bj, "strength", 1.0f));
+    b.color = get_enum(bj, "label_color", LabelColor::None);
+    b.connected = bj.contains("connected") && bj["connected"].is_boolean() && bj["connected"].get<bool>();
+    get_keys(bj, "position_keys", b.position_keys);
+    get_keys(bj, "angle_keys", b.angle_keys);
+    get_keys(bj, "scale_keys", b.scale_keys);
+    layer.next_bone_id = std::max(layer.next_bone_id, b.id + 1);
+    layer.bones.push_back(std::move(b));
+  }
+  layer.next_bone_id = std::max<uint64_t>(layer.next_bone_id, get_id(j, "next_bone_id"));
+  layer.active_bone = get_id(j, "active_bone");
+  get_keys(j, "position_keys", layer.position_keys);
+  get_keys(j, "rotation_keys", layer.rotation_keys);
+  get_keys(j, "scale_keys", layer.scale_keys);
+  get_keys(j, "opacity_keys", layer.opacity_keys);
   layer.mask_mode = get_enum(j, "mask_mode", MaskMode::Masked);
   layer.group_mask = get_enum(j, "group_mask", GroupMask::None);
   layer.mask_expand = get_bool(j, "mask_expand", false);
@@ -540,6 +783,7 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   doc.frame_start = std::max(0, get_int(j, "frame_start", doc.frame_start));
   doc.frame_end = std::max(doc.frame_start, get_int(j, "frame_end", doc.frame_end));
   doc.frame_current = std::max(0, get_int(j, "frame_current", doc.frame_current));
+  doc.auto_key = get_bool(j, "auto_key", true);
   doc.fps = std::clamp(get_float(j, "fps", doc.fps), 1.0f, 1000.0f);
   doc.width = std::clamp(get_int(j, "width", doc.width), 1, 65536);
   doc.height = std::clamp(get_int(j, "height", doc.height), 1, 65536);

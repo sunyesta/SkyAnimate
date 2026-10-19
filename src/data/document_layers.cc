@@ -5,6 +5,8 @@
 
 #include "data/document.hh"
 
+#include "data/bones.hh"
+
 namespace sky {
 
 template<typename LayerT, typename ListT> static LayerT *find_in(ListT &list, uint64_t id)
@@ -72,16 +74,28 @@ Layer *document_active_layer(Document &doc)
   return layer_find(doc, doc.active_layer);
 }
 
-static bool world_transform_in(const std::vector<Layer> &list, const Transform2D &parent, uint64_t id,
+/* `armature` is the nearest bone layer above `list` (with its world transform), for layers
+ * bound to one of its bones: such a layer moves with the bone's change from the setup pose. */
+static bool world_transform_in(const std::vector<Layer> &list, const Transform2D &parent, const Layer *armature,
+                               const Transform2D &armature_world, bool setup_frame, uint64_t id,
                                Transform2D *r_transform)
 {
   for (const Layer &layer : list) {
-    const Transform2D transform = parent * layer.local_transform();
+    Transform2D transform = parent * layer.local_transform();
+    if (armature && layer.parent_bone != 0) {
+      const std::vector<BonePose> poses = armature_pose(*armature, setup_frame);
+      if (const BonePose *bone = bone_pose_find(poses, layer.parent_bone)) {
+        transform = armature_world * bone->skin * armature_world.inverted() * transform;
+      }
+    }
     if (layer.id == id) {
       *r_transform = transform;
       return true;
     }
-    if (world_transform_in(layer.children, transform, id, r_transform)) {
+    const bool bones = layer.is_bone_layer();
+    if (world_transform_in(layer.children, transform, bones ? &layer : armature, bones ? transform : armature_world,
+                           setup_frame, id, r_transform))
+    {
       return true;
     }
   }
@@ -91,7 +105,7 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
 Transform2D layer_world_transform(const Document &doc, uint64_t id)
 {
   Transform2D transform;
-  world_transform_in(doc.layers, Transform2D(), id, &transform);
+  world_transform_in(doc.layers, Transform2D(), nullptr, Transform2D(), doc.frame_current == 0, id, &transform);
   return transform;
 }
 
@@ -143,7 +157,7 @@ Layer &document_add_layer(Document &doc, LayerType type, const std::string &name
   Layer layer;
   layer.id = doc.next_layer_id++;
   layer.type = type;
-  layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Group ? "Group" : "Layer")
+  layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Bone ? "Bones" : type == LayerType::Group ? "Group" : "Layer")
                             : name;
 
   /* Above the active layer, in the same group, as Moho and Blender add new items. */

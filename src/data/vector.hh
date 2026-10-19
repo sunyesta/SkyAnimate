@@ -4,9 +4,9 @@
  *
  * - A drawing owns a pool of points. Curves run through points by index, so two curves can
  *   share a point; that is how lines are welded together.
- * - Curves are cubic Beziers. Each curve point has Blender's handle types: Automatic handles
- *   follow Moho's smooth spline (per-point curvature, weight and offset), Vector handles point at
- *   the neighbours, and Aligned and Free handles are stored, moved by hand.
+ * - Curves are cubic Beziers. Every handle is free, as Blender's Free handles: stored, moved only
+ *   by hand. A new point gets handles once, smooth from Moho's spline (curvature, weight and
+ *   offset) or straight toward its neighbours; Align keeps a point's two handles in line.
  * - A shape is a closed or open run of curve segments with a fill and an outline. Curves
  *   without a shape only show in the editor, as in Moho.
  *
@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "anim/channel.hh"
 #include "core/math.hh"
 
 namespace sky {
@@ -24,14 +25,16 @@ namespace sky {
 inline constexpr float CURVATURE_SMOOTH = 0.3f;
 inline constexpr float CURVATURE_PEAKED = 0.0f;
 
-/* Blender's handle types. Automatic: smooth, computed from the neighbours (Moho's curvature).
- * Vector: each handle points a third of the way to its neighbour, for straight lines and corners.
- * Aligned: stored handles kept in a line. Free: stored handles that move independently. */
-enum class HandleType : uint8_t { Auto, Vector, Aligned, Free };
-
 /* How strokes turn at a point and end there: Round (a round join or cap) or Sharp (a mitred
  * corner, bevelled when very tight, and a flat end). */
 enum class CornerType : uint8_t { Round, Sharp };
+
+/* How strongly one bone moves a point (Blender's vertex group weight), 0-1. */
+struct BoneWeight {
+  uint64_t bone = 0;
+  float weight = 0.0f;
+  bool operator==(const BoneWeight &) const = default;
+};
 
 struct MeshPoint {
   float2 pos;
@@ -40,6 +43,15 @@ struct MeshPoint {
   float radius = 1.0f;
   bool selected = false;
   CornerType corner = CornerType::Round;
+  /* Moho's point binding: the id of the one bone this point follows, or 0 to follow the bones
+   * by distance (flexi-binding) when the layer allows it. */
+  uint64_t bone = 0;
+  /* Painted weights (the Weight Paint tool). When there are any they decide how the bones move
+   * the point, blended by weight, instead of `bone` or flexi-binding. */
+  std::vector<BoneWeight> weights;
+  /* Keys for the position and radius (see anim/channel.hh). */
+  Channel<float2> pos_keys;
+  Channel<float> radius_keys;
 };
 
 struct CurvePoint {
@@ -54,13 +66,21 @@ struct CurvePoint {
   /* Moho's Hide Edge: the segment from this point to the next draws no outline. Fills still
    * use it as a boundary. */
   bool edge_hidden = false;
-  HandleType handle_type = HandleType::Auto;
-  /* Aligned and Free: the handles as offsets from the point. */
+  /* The handles, as offsets from the point. They only move when moved (or with their point). */
   float2 handle_in;
   float2 handle_out;
+  /* Align (the right-click menu): the two handles stay in a line, so moving one turns the other. */
+  bool aligned = false;
+  /* False until the point first gets its handles (drawing_init_handles). Until then they are
+   * worked out from the neighbours: smooth, or straight toward them where curvature is 0. */
+  bool handles_set = false;
   /* Handles picked on their own (clicking one). A selected point's handles move with it. */
   bool select_in = false;
   bool select_out = false;
+  /* Keys for the curvature and the handles. */
+  Channel<float> curvature_keys;
+  Channel<float2> handle_in_keys;
+  Channel<float2> handle_out_keys;
 };
 
 struct Curve {
@@ -143,16 +163,18 @@ struct VectorDrawing {
  * Curve geometry
  */
 
-/* Curve point i's handle (`pre`: the incoming one), by its handle type. */
+/* Curve point i's handle (`pre`: the incoming one), in drawing space. */
 float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre);
-/* Gives curve point i a handle type. Becoming Aligned or Free keeps the handles where they are
- * (Aligned straightens them into a line); becoming Automatic makes a corner smooth. */
-void curve_point_set_handle_type(VectorDrawing &drawing, Curve &curve, int i, HandleType type);
-/* Moves one handle to `pos`, as dragging it does in Blender: an Automatic point becomes
- * Aligned and a Vector point Free, keeping the other handle where it was; an Aligned point
- * turns its other handle to stay in line (unless `keep_other`). */
+/* Gives every point that has none yet its handles, as worked out from its neighbours, so from
+ * now on they stay where they are. Runs before edits are recorded (anim/animation.hh). */
+void drawing_init_handles(VectorDrawing &drawing);
+/* Moves one handle to `pos` (drawing space). An aligned point turns its other handle to stay in
+ * line, keeping that one's length (unless `keep_other`). */
 void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool pre, float2 pos,
                              bool keep_other = false);
+/* Align: turns one handle (keeping its length) to face away from the other and keeps them in
+ * line from now on. `turn_out`: the out handle turns; else the in handle. */
+void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_out);
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);
@@ -212,6 +234,10 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point);
 void drawing_reverse_curve(VectorDrawing &drawing, int curve);
 /* Removes points no curve uses. */
 void drawing_remove_unused_points(VectorDrawing &drawing);
+/* Deletes curve segments (Edges mode delete): curves split where a segment goes, every point
+ * stays, and shapes keep the outline of what is left, losing their fill when it no longer
+ * closes. Returns how many went. */
+int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges);
 /* Finds a closed loop of segments whose points are all selected and makes a shape from it.
  * Returns the new shape index or -1. */
 int drawing_shape_from_selection(VectorDrawing &drawing, bool fill, const Style &style);
@@ -256,17 +282,40 @@ void drawing_set_selected_mean_radius(VectorDrawing &drawing, float mean);
 /* Shapes with any selected point: the ones arranging and the Properties shape list act on. */
 std::vector<bool> drawing_selected_shapes(const VectorDrawing &drawing);
 
+/* The selected points, and the points a shape runs through (each once). */
+std::vector<int> drawing_selected_points(const VectorDrawing &drawing);
+std::vector<int> shape_points(const VectorDrawing &drawing, const Shape &shape);
+/* The average position of some points (false when there are none), and moving them all by the
+ * same amount; their stored handles come along. */
+bool drawing_points_mean(const VectorDrawing &drawing, const std::vector<int> &points, float2 *r_mean);
+void drawing_points_move(VectorDrawing &drawing, const std::vector<int> &points, float2 delta);
+
+/* Mirror editing (Blender's mesh symmetry), across the layer's vertical (`x`) and/or horizontal
+ * (`y`) axis. The point at `point`'s mirror image, or -1 (a point on the axis has none). */
+int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, bool y);
+/* Gives `dst`'s curve points the alignment, curvature and (reflected) handles of the matching
+ * curve points of `src`, its mirror image. */
+void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bool y);
+/* After changing the selected points' (or handles') handles: the same on their mirror images,
+ * for each mirror axis that is on. */
+void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool mirror_y);
+
 /* Deselects every handle. */
 void drawing_deselect_handles(VectorDrawing &drawing);
 /* Whether curve point `cp` counts as selected for handle editing: its point or a handle is. */
 bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp);
-/* Sets the handle type of the selected curve points (Blender's V). Returns how many changed. */
-int drawing_set_selected_handle_type(VectorDrawing &drawing, HandleType type);
-/* The selected curve points' handle type: -1 if none are selected, -2 if they differ. */
-int drawing_selected_handle_type(const VectorDrawing &drawing);
-const char *handle_type_identifier(HandleType type);
-const char *handle_type_name(HandleType type);
-bool handle_type_from_identifier(const std::string &identifier, HandleType *r_type);
+/* Align (or, `align` false, Unalign) the selected points' handles. With only one handle of a
+ * point picked, that handle is the one that turns into line. Returns how many points changed. */
+int drawing_align_selected_handles(VectorDrawing &drawing, bool align);
+/* The selected points' alignment: -1 none selected, 0 free, 1 aligned, -2 some of each. */
+int drawing_selected_alignment(const VectorDrawing &drawing);
+/* Peak (`peak`) or Smooth the selected points' handles, once: Peak points them a third of the
+ * way to the neighbours (straight lines, a corner) and unaligns them; Smooth gives them Moho's
+ * smooth handles and aligns them. Returns how many points changed. */
+int drawing_set_selected_handles_shape(VectorDrawing &drawing, bool peak);
+/* Older files could key zero-length handles on frame 0 for points whose handles were first
+ * stored on a later frame; gives those keys the handles the points had in the setup pose. */
+void drawing_repair_stale_handle_keys(VectorDrawing &drawing);
 
 /* Where shapes go in the stacking order. Shapes later in the list draw on top. */
 enum class ShapeArrange { Forward, Backward, ToFront, ToBack };

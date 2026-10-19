@@ -1,5 +1,7 @@
 #include "ops/undo.hh"
 
+#include "anim/animation.hh"
+
 namespace sky {
 
 void UndoStack::reset(const Document &doc)
@@ -10,8 +12,9 @@ void UndoStack::reset(const Document &doc)
   changes_++;
 }
 
-void UndoStack::push(const std::string &name, const Document &doc)
+void UndoStack::push(const std::string &name, Document &doc)
 {
+  animation_record(doc);
   if (steps_.empty()) {
     reset(doc);
   }

@@ -130,6 +130,25 @@ class _Layer:
         _sky.layer_set_mean_radius(self._id, value)
 
     @property
+    def mean_position(self):
+        """Average position of the selected points (None if none); setting it moves them all."""
+        p = _sky.layer_mean_position(self._id, -1)
+        return tuple(p) if p is not None else None
+
+    @mean_position.setter
+    def mean_position(self, value):
+        _sky.layer_set_mean_position(self._id, -1, tuple(value))
+
+    def shape_position(self, index):
+        """The middle of shape `index`'s points (the Shape panel's Position)."""
+        p = _sky.layer_mean_position(self._id, index)
+        return tuple(p) if p is not None else None
+
+    def set_shape_position(self, index, value):
+        """Move shape `index` so the middle of its points is at `value`."""
+        _sky.layer_set_mean_position(self._id, index, tuple(value))
+
+    @property
     def shapes(self):
         """[(name, [curve indices]), ...] in stacking order, bottom first."""
         return [(name, list(curves)) for name, curves in _sky.layer_shapes(self._id)]
@@ -179,14 +198,129 @@ class _Layer:
         """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
         _sky.layer_set_selected_corner(self._id, corner)
 
+    @property
+    def bones(self):
+        """A bone layer's bones: dicts with name, parent, position, angle (radians), length,
+        scale, strength, selected, select_head, select_tail, connected, active, and head and tail (where it runs now, in the bone
+        layer's space)."""
+        return _sky.layer_bones(self._id)
+
+    def bone_set(self, name, **values):
+        """Pose or edit a bone: position=(x, y), angle, scale, length, strength, name."""
+        _sky.layer_bone_set(self._id, name, values)
+
+    def select_bone(self, name, extend=False, part="BONE"):
+        """Select bone `name` and make it active ("" deselects all). part: "BONE" (the body and
+        both ends), "HEAD" or "TAIL" (one end, as clicking its circle does)."""
+        _sky.layer_select_bone(self._id, name, extend, part)
+
+    def transform_bones(self, offset=(0.0, 0.0), scale=(1.0, 1.0), angle=0.0, pivot=None):
+        """The Transform Bones gizmo: scale and turn the selected bones about pivot (default: the
+        middle of their bounds), then move them by offset. Unselected children stay put."""
+        if pivot is None:
+            bounds = self.selected_bone_bounds
+            if bounds is None:
+                return False
+            pivot = ((bounds[0][0] + bounds[1][0]) / 2, (bounds[0][1] + bounds[1][1]) / 2)
+        return _sky.layer_map_bones(self._id, offset[0], offset[1], scale[0], scale[1], angle, pivot[0], pivot[1])
+
+    @property
+    def selected_bone_bounds(self):
+        """((min x, min y), (max x, max y)) around the selected bones' ends, or None."""
+        return _sky.layer_picked_bounds(self._id)
+
+    def box_select_bones(self, corner_a, corner_b, whole=False, extend=False, deselect=False):
+        """Box-select bones (bone layer space). whole=False picks the ends inside, as the Select
+        tool does; whole=True picks any bone touching the box, as the Transform Bones tool does."""
+        _sky.layer_box_select_bones(self._id, corner_a[0], corner_a[1], corner_b[0], corner_b[1], whole, extend,
+                                    deselect)
+
+    def rotate_bones(self, angle):
+        """R on the selected bones by angle (radians), each about its base; children come along.
+        A picked child of a picked parent doesn't turn twice."""
+        return _sky.layer_rotate_bones(self._id, angle)
+
+    def scale_bones(self, factor):
+        """S on the selected bones: each grows by factor, children along with it (once)."""
+        return _sky.layer_scale_bones(self._id, factor)
+
+    def move_bone_ends(self, offset):
+        """G on the selected bones by offset=(dx, dy): a bone picked by its body or base moves,
+        one picked by its tip turns to follow it (and on frame 0 stretches). Children come along.
+        Returns False when nothing is selected."""
+        return _sky.layer_move_bone_ends(self._id, offset[0], offset[1])
+
+    @property
+    def point_bones(self):
+        """The bone each point is bound to, "" for flexi-binding."""
+        return list(_sky.layer_point_bones(self._id))
+
+    @property
+    def parent_bone(self):
+        """The bone this whole layer follows (Bind Layer), or ""."""
+        return _sky.layer_parent_bone(self._id)
+
+    def bone_weights(self, bone):
+        """How strongly bone `bone` moves each point, 0-1 (painted, bound or flexi)."""
+        return list(_sky.layer_bone_weights(self._id, bone))
+
+    @property
+    def painted_weights(self):
+        """Each point's painted weights, {bone name: weight} ({} when not painted)."""
+        return list(_sky.layer_painted_weights(self._id))
+
+    def weight_paint(self, center, radius, bone, weight=1.0, strength=1.0, mode="DRAW", normalize=True):
+        """One dab of the Weight Paint brush at `center` (layer space): mode "DRAW", "ADD" or
+        "SUBTRACT". Returns how many points changed."""
+        return _sky.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize)
+
+    @property
+    def modifiers(self):
+        """The modifier stack, top first: dicts with type ("MIRROR" or "ARMATURE") and settings."""
+        return _sky.layer_modifiers(self._id)
+
+    def modifier_set(self, index, **values):
+        _sky.layer_modifier_set(self._id, index, values)
+
+    def evaluated(self, render=False):
+        """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
+        shapes [(name, closed, connected)])."""
+        points, curves, shapes = _sky.layer_evaluated(self._id, render)
+        return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
+
+    def keyframes(self, path):
+        """The keys of channel `path` ("position", "rotation", "scale", "opacity",
+        "points[3].pos", "points[3].radius", "curves[0].points[2].curvature", ...): dicts with
+        "frame", "value", "interp" and the key's settings."""
+        return _sky.layer_keyframes(self._id, path)
+
+    def keyframe_insert(self, path="", frame=None):
+        """Key channel `path` (or, with no path, every channel of the layer) at `frame` (default:
+        the current frame) with its current value, like Blender's I."""
+        _sky.layer_keyframe_insert(self._id, path, -1 if frame is None else frame)
+
+    def keyframe_delete(self, path, frame):
+        return _sky.layer_keyframe_delete(self._id, path, frame)
+
+    def keyframe_set(self, path, frame, **settings):
+        """Change one key: interp="LINEAR"|"SMOOTH"|"EASE_IN_OUT"|"EASE_IN"|"EASE_OUT"|"STEP"|
+        "BEZIER"|"BACK"|"BOUNCE"|"ELASTIC"|"NOISY"|"CYCLE"|"POSE", hold, interval, overshoot,
+        noise_amplitude, noise_frequency, cycle_back."""
+        _sky.layer_keyframe_set(self._id, path, frame, settings)
+
+    @property
+    def key_frames(self):
+        """Frames where the layer or its drawing has keys."""
+        return list(_sky.layer_key_frames(self._id))
+
     def curve_handles(self, curve):
-        """[(type, (in_x, in_y), (out_x, out_y)), ...] for each point of curve `curve`: its handle
-        type ("AUTO", "VECTOR", "ALIGNED" or "FREE") and handle positions in layer space."""
+        """[(alignment, (in_x, in_y), (out_x, out_y)), ...] for each point of curve `curve`:
+        "ALIGNED" (its handles stay in line) or "FREE", and its handle positions in layer space."""
         return [(t, tuple(i), tuple(o)) for t, i, o in _sky.layer_curve_handles(self._id, curve)]
 
     def move_handle(self, curve, index, side, pos):
         """Drag one handle ("IN" or "OUT") of a curve point to `pos`, as in the viewport: an
-        Automatic point becomes Aligned, a Vector one Free, and Aligned handles stay in line."""
+        aligned point's other handle turns to stay in line."""
         _sky.layer_move_handle(self._id, curve, index, side, tuple(pos))
 
     def select_handle(self, curve, index, side):
@@ -196,6 +330,10 @@ class _Layer:
         """Shape `index`'s brush settings as a dict with Moho's .mohobrush keys; "name" is ""
         for a plain line."""
         return _sky.layer_shape_brush(self._id, index)
+
+    def set_point(self, index, pos):
+        """Move point `index` to `pos` (layer space), as dragging it in the viewport does."""
+        _sky.layer_set_point(self._id, index, tuple(pos))
 
     def select_points(self, indices, select=True):
         _sky.layer_select_points(self._id, list(indices), select)

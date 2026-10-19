@@ -1,5 +1,7 @@
 #include "wm/app.hh"
 
+#include "anim/animation.hh"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
@@ -77,6 +79,7 @@ int App::run(const LaunchOptions &options)
   ctx_.wm = &wm_;
   /* A new document starts with one vector layer to draw on, as in Moho. */
   document_add_layer(doc_, LayerType::Vector, "Layer 1");
+  animation_evaluate(doc_, doc_.frame_current);
   undo_.reset(doc_);
   wm_.saved_change = wm_.autosaved_change = undo_.change_count();
 
@@ -84,6 +87,8 @@ int App::run(const LaunchOptions &options)
   layer_operators_register();
   vector_operators_register();
   asset_operators_register();
+  anim_operators_register();
+  rig_operators_register();
   file_operators_register();
 
   /* The file opens first, so scripts given with it work on it, as in Blender. */
@@ -201,6 +206,8 @@ void App::main_loop()
     }
 
     playback_update();
+    /* The frame may have moved (playback, scrubbing): show its animation. */
+    animation_sync(doc_);
     file_dialog_process();
     autosave_update(ctx_, SDL_GetTicksNS());
     update_window_title();

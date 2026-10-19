@@ -31,7 +31,7 @@ Transform2D Layer::local_transform() const
 
 const char *layer_type_name(LayerType type)
 {
-  return type == LayerType::Group ? "Group" : "Vector";
+  return type == LayerType::Bone ? "Bone" : type == LayerType::Group ? "Group" : "Vector";
 }
 
 Color label_color_value(LabelColor label)
@@ -65,7 +65,7 @@ const rna::StructRNA &Layer::rna()
     s.identifier = "Layer";
     s.name = "Layer";
     PropertyRNA type_prop = def_enum<Layer, LayerType>("type", "Type", "Kind of layer", &Layer::type,
-                                                       {{"VECTOR", "Vector"}, {"GROUP", "Group"}});
+                                                       {{"VECTOR", "Vector"}, {"GROUP", "Group"}, {"BONE", "Bone"}});
     type_prop.set = nullptr;
     s.properties = {
         def_string<Layer>("name", "Name", "Name shown in the Layers editor", &Layer::name),
@@ -120,6 +120,9 @@ const rna::StructRNA &Layer::rna()
                         "Only this layer's fills go into the mask, not its strokes", &Layer::mask_exclude_strokes),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
+        def_bool<Layer>("flexi_binding", "Flexi-Binding",
+                        "Points not bound to one bone follow every bone of the bone layer, by distance",
+                        &Layer::flexi_binding),
     };
     return s;
   }();

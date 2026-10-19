@@ -13,9 +13,13 @@ include(cmake/Dependencies.cmake)
 
 set(SKY_SOURCES
   src/main.cc
+  src/anim/animation.cc
+  src/anim/channel.cc
+  src/anim/deform.cc
   src/assets/asset_library.cc
   src/assets/brushes.cc
   src/core/log.cc
+  src/data/bones.cc
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
@@ -33,11 +37,13 @@ set(SKY_SOURCES
   src/gpu/scene_renderer.cc
   src/gpu/tessellate.cc
   src/io/sky_file.cc
+  src/ops/anim_ops.cc
   src/ops/asset_ops.cc
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
   src/ops/layer_ops.cc
   src/ops/operator.cc
+  src/ops/rig_ops.cc
   src/ops/undo.cc
   src/ops/vector_ops.cc
   src/python/py_runtime.cc
@@ -98,5 +104,13 @@ add_test(NAME brushes
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brushes.py)
 add_test(NAME handles
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
+add_test(NAME animation
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_animation.py)
+add_test(NAME rigging
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_rigging.py)
+add_test(NAME weight_paint
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_weight_paint.py)
 add_test(NAME multi_layer
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_multi_layer.py)
+add_test(NAME bone_editing
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_editing.py)

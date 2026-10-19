@@ -22,32 +22,26 @@ int Curve::segment_count() const
  * Curve geometry
  */
 
-float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre)
+/* A handle worked out from the neighbours, for a point without its own yet. `mode` 0: smooth
+ * (Moho's GetBezierHandle(), from curvature, weights and offsets), or straight when the curvature
+ * is 0; 1: straight (a third of the way to the neighbour); 2: smooth even where curvature is 0. */
+static float2 computed_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre, int mode)
 {
   const int n = int(curve.points.size());
-  const CurvePoint &point = curve.points[i];
-  const float2 here = drawing.points[point.point].pos;
-  switch (point.handle_type) {
-    case HandleType::Aligned:
-    case HandleType::Free:
-      return here + (pre ? point.handle_in : point.handle_out);
-    case HandleType::Vector: {
-      /* A third of the way to the neighbour on that side; none past an open curve's end. */
-      const int other = pre ? i - 1 : i + 1;
-      if (n < 2 || (!curve.closed && (other < 0 || other >= n))) {
-        return here;
-      }
-      const float2 there = drawing.points[curve.points[(other + n) % n].point].pos;
-      return here + (there - here) / 3.0f;
+  const CurvePoint &cp = curve.points[i];
+  const float2 here = drawing.points[cp.point].pos;
+  if (mode == 1 || (mode == 0 && cp.curvature <= 0.0f)) {
+    /* A third of the way to the neighbour on that side; none past an open curve's end. */
+    const int other = pre ? i - 1 : i + 1;
+    if (n < 2 || (!curve.closed && (other < 0 || other >= n))) {
+      return here;
     }
-    case HandleType::Auto:
-      break;
+    const float2 there = drawing.points[curve.points[(other + n) % n].point].pos;
+    return here + (there - here) / 3.0f;
   }
-  /* Moho's GetBezierHandle(): the handle points along the line from the previous to the next
-   * point, its length a share of the distance to the neighbour on that side. */
   const auto pos = [&](int index) { return drawing.points[curve.points[index].point].pos; };
   if (n < 2) {
-    return pos(i);
+    return here;
   }
   const auto in_range = [&](int p) {
     if (curve.closed) {
@@ -59,57 +53,161 @@ float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, boo
   const int pre_id = in_range(i - 1);
   const int second_id = pre ? pre_id : post_id;
   if (second_id == i) {
-    return pos(i);
+    return here;
   }
   float2 dir = normalize(pos(post_id) - pos(pre_id));
   if (pre) {
     dir = -dir;
   }
-  const CurvePoint &cp = curve.points[i];
-  const float len = distance(pos(second_id), pos(i)) * cp.curvature * (pre ? cp.weight_in : cp.weight_out);
-  return pos(i) + rotate(dir * len, pre ? cp.offset_in : cp.offset_out);
+  const float curvature = mode == 2 ? std::max(cp.curvature, CURVATURE_SMOOTH) : cp.curvature;
+  const float len = distance(pos(second_id), here) * curvature * (pre ? cp.weight_in : cp.weight_out);
+  return here + rotate(dir * len, pre ? cp.offset_in : cp.offset_out);
 }
 
-void curve_point_set_handle_type(VectorDrawing &drawing, Curve &curve, int i, HandleType type)
+float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, bool pre)
+{
+  const CurvePoint &cp = curve.points[i];
+  if (!cp.handles_set) {
+    return computed_handle(drawing, curve, i, pre, 0);
+  }
+  return drawing.points[cp.point].pos + (pre ? cp.handle_in : cp.handle_out);
+}
+
+/* Stores handle offsets, keeping a channel without keys from treating it as an edit. */
+static void set_handles(const VectorDrawing &drawing, CurvePoint &cp, float2 in, float2 out, bool quiet)
+{
+  (void)drawing;
+  cp.handle_in = in;
+  cp.handle_out = out;
+  cp.handles_set = true;
+  if (quiet) {
+    for (Channel<float2> *ch : {&cp.handle_in_keys, &cp.handle_out_keys}) {
+      if (!ch->animated()) {
+        ch->last = ch == &cp.handle_in_keys ? in : out;
+        ch->has_last = true;
+      }
+    }
+  }
+}
+
+
+/* The frame-0 key, or for a value without keys the one from before any edit not yet recorded
+ * (an edit away from frame 0 is about to become a key, not the setup). */
+template<typename T> static T setup_of(const Channel<T> &ch, const T &value)
+{
+  return ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value);
+}
+
+/* Just the points' setup-pose (frame 0) positions, light enough to build once per change. */
+static VectorDrawing setup_points(const VectorDrawing &drawing)
+{
+  VectorDrawing setup;
+  setup.points.resize(drawing.points.size());
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    setup.points[i].pos = setup_of(drawing.points[i].pos_keys, drawing.points[i].pos);
+  }
+  return setup;
+}
+
+static Curve setup_curve(const Curve &curve)
+{
+  Curve c;
+  c.closed = curve.closed;
+  c.points = curve.points;
+  for (CurvePoint &cp : c.points) {
+    cp.curvature = setup_of(cp.curvature_keys, cp.curvature);
+    cp.handles_set = false;
+  }
+  return c;
+}
+
+/* Curve point i's handles (offsets from it) as worked out from its neighbours in the setup
+ * pose: what a point that never had its own handles looks like on frame 0. */
+static void setup_handles(const VectorDrawing &setup, const Curve &curve, int i, float2 *r_in, float2 *r_out)
+{
+  const Curve c = setup_curve(curve);
+  const float2 here = setup.points[c.points[i].point].pos;
+  *r_in = computed_handle(setup, c, i, true, 0) - here;
+  *r_out = computed_handle(setup, c, i, false, 0) - here;
+}
+
+/* Makes sure a point's handles are stored (so they can be moved by hand): what it shows now.
+ * A channel without keys remembers the setup-pose handles as its value before this edit, so a
+ * first key away from frame 0 keys frame 0 with the setup shape (anim/animation.hh). */
+static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
 {
   CurvePoint &cp = curve.points[i];
-  if (cp.handle_type == type) {
+  if (cp.handles_set) {
     return;
   }
   const float2 here = drawing.points[cp.point].pos;
-  const float2 in = curve_handle(drawing, curve, i, true) - here;
-  const float2 out = curve_handle(drawing, curve, i, false) - here;
-  if (type == HandleType::Aligned || type == HandleType::Free) {
-    cp.handle_in = in;
-    cp.handle_out = out;
-    if (type == HandleType::Aligned && length(out) > 1e-9f) {
-      cp.handle_in = -normalize(out) * length(in);
-    }
-    else if (type == HandleType::Aligned && length(in) > 1e-9f) {
-      cp.handle_out = -normalize(in) * length(out);
+  const float2 in = computed_handle(drawing, curve, i, true, 0) - here;
+  const float2 out = computed_handle(drawing, curve, i, false, 0) - here;
+  float2 setup_in, setup_out;
+  setup_handles(setup_points(drawing), curve, i, &setup_in, &setup_out);
+  cp.handle_in = in;
+  cp.handle_out = out;
+  cp.handles_set = true;
+  if (!cp.handle_in_keys.animated()) {
+    cp.handle_in_keys.last = setup_in;
+    cp.handle_in_keys.has_last = true;
+  }
+  if (!cp.handle_out_keys.animated()) {
+    cp.handle_out_keys.last = setup_out;
+    cp.handle_out_keys.has_last = true;
+  }
+}
+
+void drawing_init_handles(VectorDrawing &drawing)
+{
+  /* Handles are setup data: worked out from the setup pose, they hold on every frame. */
+  VectorDrawing setup;
+  bool built = false;
+  for (Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      CurvePoint &cp = curve.points[i];
+      if (cp.handles_set) {
+        continue;
+      }
+      if (!built) {
+        setup = setup_points(drawing);
+        built = true;
+      }
+      float2 in, out;
+      setup_handles(setup, curve, i, &in, &out);
+      /* Smooth handles come out in line; keep them so. */
+      cp.aligned = cp.curvature > 0.0f;
+      set_handles(drawing, cp, in, out, true);
     }
   }
-  if (type == HandleType::Auto && cp.curvature <= 0.0f) {
-    cp.curvature = CURVATURE_SMOOTH;
-  }
-  cp.handle_type = type;
 }
 
 void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool pre, float2 pos, bool keep_other)
 {
+  own_handles(drawing, curve, i);
   CurvePoint &cp = curve.points[i];
-  if (cp.handle_type == HandleType::Auto) {
-    curve_point_set_handle_type(drawing, curve, i, HandleType::Aligned);
-  }
-  else if (cp.handle_type == HandleType::Vector) {
-    curve_point_set_handle_type(drawing, curve, i, HandleType::Free);
-  }
   const float2 offset = pos - drawing.points[cp.point].pos;
   (pre ? cp.handle_in : cp.handle_out) = offset;
-  if (cp.handle_type == HandleType::Aligned && !keep_other && length(offset) > 1e-9f) {
+  if (cp.aligned && !keep_other && length(offset) > 1e-9f) {
     float2 &other = pre ? cp.handle_out : cp.handle_in;
     other = -normalize(offset) * length(other);
   }
+}
+
+void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_out)
+{
+  own_handles(drawing, curve, i);
+  CurvePoint &cp = curve.points[i];
+  const float2 in = cp.handle_in, out = cp.handle_out;
+  if (turn_out ? length(in) > 1e-9f : length(out) <= 1e-9f) {
+    if (length(in) > 1e-9f) {
+      cp.handle_out = -normalize(in) * length(out);
+    }
+  }
+  else if (length(out) > 1e-9f) {
+    cp.handle_in = -normalize(out) * length(in);
+  }
+  cp.aligned = true;
 }
 
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to)
@@ -489,37 +587,25 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t)
   curve_segment_bezier(drawing, curve, edge.segment, ctrl);
   const int point = drawing_add_point(drawing, bezier_eval(ctrl, t));
 
-  /* A new point on a smooth curve keeps it closest to its old path when it is smooth too. */
+  /* Split the Bezier exactly (de Casteljau), so the line doesn't move: the ends' facing handles
+   * shorten, and the new point gets aligned handles along the curve. */
   CurvePoint cp;
   cp.point = point;
   const int n = int(curve.points.size());
+  own_handles(drawing, curve, edge.segment);
+  own_handles(drawing, curve, (edge.segment + 1) % n);
   CurvePoint &from = curve.points[edge.segment];
   CurvePoint &to = curve.points[(edge.segment + 1) % n];
-  const bool stored = from.handle_type == HandleType::Aligned || from.handle_type == HandleType::Free ||
-                      to.handle_type == HandleType::Aligned || to.handle_type == HandleType::Free;
-  if (stored) {
-    /* Hand-set handles: split the Bezier exactly (de Casteljau), so the line doesn't move. The
-     * new point is Aligned; the ends' facing handles shorten to match. */
-    const auto lerp2 = [](float2 a, float2 b, float u) { return a + (b - a) * u; };
-    const float2 p01 = lerp2(ctrl[0], ctrl[1], t), p12 = lerp2(ctrl[1], ctrl[2], t), p23 = lerp2(ctrl[2], ctrl[3], t);
-    const float2 p012 = lerp2(p01, p12, t), p123 = lerp2(p12, p23, t);
-    const float2 mid = drawing.points[point].pos;
-    for (CurvePoint *end : {&from, &to}) {
-      if (end->handle_type == HandleType::Auto || end->handle_type == HandleType::Vector) {
-        curve_point_set_handle_type(drawing, curve, end == &from ? edge.segment : (edge.segment + 1) % n,
-                                    HandleType::Free);
-      }
-    }
-    from.handle_out = p01 - ctrl[0];
-    to.handle_in = p23 - ctrl[3];
-    cp.handle_type = HandleType::Aligned;
-    cp.handle_in = p012 - mid;
-    cp.handle_out = p123 - mid;
-  }
-  else if (from.handle_type == HandleType::Vector && to.handle_type == HandleType::Vector) {
-    /* Splitting a straight side keeps it straight. */
-    cp.handle_type = HandleType::Vector;
-  }
+  const auto lerp2 = [](float2 a, float2 b, float u) { return a + (b - a) * u; };
+  const float2 p01 = lerp2(ctrl[0], ctrl[1], t), p12 = lerp2(ctrl[1], ctrl[2], t), p23 = lerp2(ctrl[2], ctrl[3], t);
+  const float2 p012 = lerp2(p01, p12, t), p123 = lerp2(p12, p23, t);
+  const float2 mid = drawing.points[point].pos;
+  from.handle_out = p01 - ctrl[0];
+  to.handle_in = p23 - ctrl[3];
+  cp.aligned = true;
+  cp.handles_set = true;
+  cp.handle_in = p012 - mid;
+  cp.handle_out = p123 - mid;
   cp.curvature = 0.5f * (curve.points[edge.segment].curvature + curve.points[(edge.segment + 1) % n].curvature);
   cp.edge_hidden = curve.points[edge.segment].edge_hidden;
   if (cp.curvature > 0.0f) {
@@ -1046,9 +1132,8 @@ VectorDrawing primitive_drawing(PrimitiveKind kind, const std::vector<float2> &p
     drawing.points.push_back({pos[k]});
     CurvePoint cp;
     cp.point = int(k);
+    /* Box corners have curvature 0: their handles point straight along the sides. */
     cp.curvature = curvature[k];
-    /* A box's corners are Vector handles: straight sides, handles still there to pull. */
-    cp.handle_type = kind == PrimitiveKind::Box ? HandleType::Vector : HandleType::Auto;
     curve.points.push_back(cp);
   }
   drawing.curves.push_back(std::move(curve));
@@ -1122,6 +1207,55 @@ void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner)
   }
 }
 
+std::vector<int> drawing_selected_points(const VectorDrawing &drawing)
+{
+  std::vector<int> points;
+  for (int i = 0; i < int(drawing.points.size()); i++) {
+    if (drawing.points[i].selected) {
+      points.push_back(i);
+    }
+  }
+  return points;
+}
+
+std::vector<int> shape_points(const VectorDrawing &drawing, const Shape &shape)
+{
+  std::vector<int> points;
+  for (const ShapeEdge &e : shape.edges) {
+    if (e.curve < 0 || e.curve >= int(drawing.curves.size())) {
+      continue;
+    }
+    int a, b;
+    curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
+    for (const int p : {a, b}) {
+      if (std::find(points.begin(), points.end(), p) == points.end()) {
+        points.push_back(p);
+      }
+    }
+  }
+  return points;
+}
+
+bool drawing_points_mean(const VectorDrawing &drawing, const std::vector<int> &points, float2 *r_mean)
+{
+  if (points.empty()) {
+    return false;
+  }
+  float2 sum;
+  for (const int p : points) {
+    sum += drawing.points[p].pos;
+  }
+  *r_mean = sum / float(points.size());
+  return true;
+}
+
+void drawing_points_move(VectorDrawing &drawing, const std::vector<int> &points, float2 delta)
+{
+  for (const int p : points) {
+    drawing.points[p].pos += delta;
+  }
+}
+
 void drawing_deselect_handles(VectorDrawing &drawing)
 {
   for (Curve &curve : drawing.curves) {
@@ -1136,14 +1270,25 @@ bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp)
   return drawing.points[cp.point].selected || cp.select_in || cp.select_out;
 }
 
-int drawing_set_selected_handle_type(VectorDrawing &drawing, HandleType type)
+int drawing_align_selected_handles(VectorDrawing &drawing, bool align)
 {
   int changed = 0;
   for (Curve &curve : drawing.curves) {
     for (int i = 0; i < int(curve.points.size()); i++) {
       CurvePoint &cp = curve.points[i];
-      if (curve_point_selected(drawing, cp) && cp.handle_type != type) {
-        curve_point_set_handle_type(drawing, curve, i, type);
+      if (!curve_point_selected(drawing, cp)) {
+        continue;
+      }
+      if (align) {
+        /* With just the out handle picked, it is the one that turns into line (the handle you
+         * pick is the one you are aligning); otherwise the in handle does. */
+        const bool only_out = cp.select_out && !cp.select_in && !drawing.points[cp.point].selected;
+        curve_point_align(drawing, curve, i, only_out);
+        changed++;
+      }
+      else if (cp.aligned) {
+        own_handles(drawing, curve, i);
+        curve.points[i].aligned = false;
         changed++;
       }
     }
@@ -1151,7 +1296,7 @@ int drawing_set_selected_handle_type(VectorDrawing &drawing, HandleType type)
   return changed;
 }
 
-int drawing_selected_handle_type(const VectorDrawing &drawing)
+int drawing_selected_alignment(const VectorDrawing &drawing)
 {
   int found = -1;
   for (const Curve &curve : drawing.curves) {
@@ -1159,11 +1304,11 @@ int drawing_selected_handle_type(const VectorDrawing &drawing)
       if (!curve_point_selected(drawing, cp)) {
         continue;
       }
-      const int type = int(cp.handle_type);
+      const int a = cp.aligned ? 1 : 0;
       if (found == -1) {
-        found = type;
+        found = a;
       }
-      else if (found != type) {
+      else if (found != a) {
         return -2;
       }
     }
@@ -1171,37 +1316,252 @@ int drawing_selected_handle_type(const VectorDrawing &drawing)
   return found;
 }
 
-const char *handle_type_identifier(HandleType type)
+int drawing_set_selected_handles_shape(VectorDrawing &drawing, bool peak)
 {
-  switch (type) {
-    case HandleType::Vector: return "VECTOR";
-    case HandleType::Aligned: return "ALIGNED";
-    case HandleType::Free: return "FREE";
-    case HandleType::Auto: break;
-  }
-  return "AUTO";
-}
-
-const char *handle_type_name(HandleType type)
-{
-  switch (type) {
-    case HandleType::Vector: return "Vector";
-    case HandleType::Aligned: return "Aligned";
-    case HandleType::Free: return "Free";
-    case HandleType::Auto: break;
-  }
-  return "Automatic";
-}
-
-bool handle_type_from_identifier(const std::string &identifier, HandleType *r_type)
-{
-  for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
-    if (identifier == handle_type_identifier(type)) {
-      *r_type = type;
-      return true;
+  int changed = 0;
+  for (Curve &curve : drawing.curves) {
+    std::vector<std::pair<float2, float2>> handles(curve.points.size());
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      const float2 here = drawing.points[curve.points[i].point].pos;
+      handles[i] = {computed_handle(drawing, curve, i, true, peak ? 1 : 2) - here,
+                    computed_handle(drawing, curve, i, false, peak ? 1 : 2) - here};
+    }
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      CurvePoint &cp = curve.points[i];
+      if (!drawing.points[cp.point].selected) {
+        continue;
+      }
+      own_handles(drawing, curve, i);
+      cp.handle_in = handles[i].first;
+      cp.handle_out = handles[i].second;
+      cp.aligned = !peak;
+      cp.curvature = peak ? CURVATURE_PEAKED : std::max(cp.curvature, CURVATURE_SMOOTH);
+      changed++;
     }
   }
-  return false;
+  return changed;
+}
+
+void drawing_repair_stale_handle_keys(VectorDrawing &drawing)
+{
+  for (Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      CurvePoint &cp = curve.points[i];
+      if (!cp.handles_set) {
+        continue;
+      }
+      Key<float2> *in = cp.handle_in_keys.key_at(0);
+      Key<float2> *out = cp.handle_out_keys.key_at(0);
+      if (!in || !out || !(in->value == float2()) || !(out->value == float2())) {
+        continue;
+      }
+      /* Both handles zero on frame 0: the stale values the bug keyed. Use the handles the point
+       * had in the setup pose, worked out from its neighbours. */
+      CurvePoint saved = cp;
+      cp.handles_set = false;
+      cp.handle_in_keys = {};
+      cp.handle_out_keys = {};
+      float2 setup_in, setup_out;
+      setup_handles(setup_points(drawing), curve, i, &setup_in, &setup_out);
+      cp = saved;
+      cp.handle_in_keys.key_at(0)->value = setup_in;
+      cp.handle_out_keys.key_at(0)->value = setup_out;
+    }
+  }
+}
+
+int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
+{
+  const auto doomed = [&](int c, int seg) {
+    return std::find(edges.begin(), edges.end(), ShapeEdge{c, seg}) != edges.end();
+  };
+  /* Where each old segment is now: (new curve, new segment), or curve -1 when deleted. */
+  std::vector<std::vector<ShapeEdge>> moved(drawing.curves.size());
+  std::vector<Curve> curves;
+  int deleted = 0;
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    const Curve &curve = drawing.curves[c];
+    const int segs = curve.segment_count();
+    moved[c].assign(std::max(segs, 0), ShapeEdge{-1, -1});
+    int first_doomed = -1;
+    for (int s = 0; s < segs && first_doomed < 0; s++) {
+      first_doomed = doomed(c, s) ? s : -1;
+    }
+    if (first_doomed < 0) {
+      for (int s = 0; s < segs; s++) {
+        moved[c][s] = {int(curves.size()), s};
+      }
+      curves.push_back(curve);
+      continue;
+    }
+    /* Walk the segments, starting just after a deleted one on a closed curve, and cut a new open
+     * curve at every deleted segment. */
+    const int n = int(curve.points.size());
+    const int start = curve.closed ? first_doomed + 1 : 0;
+    Curve run;
+    const auto flush = [&] {
+      if (run.points.size() >= 2) {
+        run.closed = false;
+        run.points.back().edge_hidden = false;
+        curves.push_back(run);
+      }
+      run = Curve();
+    };
+    for (int k = 0; k < segs; k++) {
+      const int s = (start + k) % std::max(segs, 1);
+      if (doomed(c, s)) {
+        deleted++;
+        flush();
+        continue;
+      }
+      if (run.points.empty()) {
+        run.points.push_back(curve.points[s]);
+      }
+      moved[c][s] = {int(curves.size()), int(run.points.size()) - 1};
+      run.points.push_back(curve.points[(s + 1) % n]);
+    }
+    flush();
+  }
+  /* Shapes: their surviving segments, renumbered; a shape is kept if anything is left. */
+  std::vector<Shape> shapes;
+  for (Shape shape : drawing.shapes) {
+    std::vector<ShapeEdge> kept;
+    bool lost = false;
+    for (const ShapeEdge &e : shape.edges) {
+      const bool known = e.curve >= 0 && e.curve < int(moved.size()) && e.segment >= 0 &&
+                         e.segment < int(moved[e.curve].size());
+      if (known && moved[e.curve][e.segment].curve >= 0) {
+        kept.push_back(moved[e.curve][e.segment]);
+      }
+      else {
+        lost = true;
+      }
+    }
+    if (kept.empty()) {
+      continue;
+    }
+    shape.edges = kept;
+    shapes.push_back(std::move(shape));
+    if (lost) {
+      /* A gap in its outline: it can't fill unless what is left still closes. */
+      VectorDrawing probe;
+      probe.points = drawing.points;
+      probe.curves = curves;
+      std::vector<float2> outline;
+      bool closed = false;
+      shape_outline(probe, shapes.back(), 1, outline, nullptr, &closed);
+      if (!closed) {
+        shapes.back().has_fill = false;
+      }
+    }
+  }
+  drawing.curves = std::move(curves);
+  drawing.shapes = std::move(shapes);
+  /* Points always stay, even one left on no curve (Moho keeps such points too). */
+  return deleted;
+}
+
+static float2 reflect2(float2 v, bool x, bool y)
+{
+  return {x ? -v.x : v.x, y ? -v.y : v.y};
+}
+
+int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, bool y)
+{
+  const float2 here = drawing.points[point].pos;
+  const float2 target = reflect2(here, x, y);
+  const float eps = 1e-4f + 1e-4f * (std::fabs(here.x) + std::fabs(here.y));
+  if (distance(target, here) <= eps) {
+    return -1;
+  }
+  for (int j = 0; j < int(drawing.points.size()); j++) {
+    if (j != point && distance(drawing.points[j].pos, target) <= eps) {
+      return j;
+    }
+  }
+  return -1;
+}
+
+void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bool y)
+{
+  const auto neighbour = [&](const Curve &curve, int i, int dir) {
+    const int n = int(curve.points.size());
+    const int k = i + dir;
+    if (!curve.closed && (k < 0 || k >= n)) {
+      return -1;
+    }
+    return curve.points[(k % n + n) % n].point;
+  };
+  const auto near = [&](int a, float2 b) {
+    return a >= 0 && distance(drawing.points[a].pos, b) <= 1e-4f + 1e-4f * (std::fabs(b.x) + std::fabs(b.y));
+  };
+  for (const Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      if (curve.points[i].point != src) {
+        continue;
+      }
+      const CurvePoint &from = curve.points[i];
+      const int prev = neighbour(curve, i, -1), next = neighbour(curve, i, 1);
+      for (Curve &other : drawing.curves) {
+        for (int j = 0; j < int(other.points.size()); j++) {
+          if (other.points[j].point != dst) {
+            continue;
+          }
+          /* Same direction when the neighbours mirror onto the same sides, else swapped. */
+          const int oprev = neighbour(other, j, -1), onext = neighbour(other, j, 1);
+          bool swap;
+          if (prev >= 0 && near(oprev, reflect2(drawing.points[prev].pos, x, y))) {
+            swap = false;
+          }
+          else if (prev >= 0 && near(onext, reflect2(drawing.points[prev].pos, x, y))) {
+            swap = true;
+          }
+          else if (next >= 0 && near(onext, reflect2(drawing.points[next].pos, x, y))) {
+            swap = false;
+          }
+          else if (next >= 0 && near(oprev, reflect2(drawing.points[next].pos, x, y))) {
+            swap = true;
+          }
+          else {
+            continue;
+          }
+          CurvePoint &to = other.points[j];
+          to.aligned = from.aligned;
+          to.handles_set = from.handles_set;
+          to.curvature = from.curvature;
+          to.handle_in = reflect2(swap ? from.handle_out : from.handle_in, x, y);
+          to.handle_out = reflect2(swap ? from.handle_in : from.handle_out, x, y);
+        }
+      }
+    }
+  }
+}
+
+void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool mirror_y)
+{
+  if (!mirror_x && !mirror_y) {
+    return;
+  }
+  std::vector<int> sources;
+  for (const Curve &curve : drawing.curves) {
+    for (const CurvePoint &cp : curve.points) {
+      if (curve_point_selected(drawing, cp) &&
+          std::find(sources.begin(), sources.end(), cp.point) == sources.end()) {
+        sources.push_back(cp.point);
+      }
+    }
+  }
+  for (const int src : sources) {
+    for (const auto &[x, y] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+      if ((x && !mirror_x) || (y && !mirror_y)) {
+        continue;
+      }
+      const int dst = drawing_find_mirror_point(drawing, src, x, y);
+      if (dst >= 0 && std::find(sources.begin(), sources.end(), dst) == sources.end()) {
+        drawing_mirror_handles(drawing, src, dst, x, y);
+      }
+    }
+  }
 }
 
 }  // namespace sky

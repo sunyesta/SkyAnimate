@@ -2,6 +2,8 @@
 
 #include "ops/edit_ops.hh"
 
+#include <algorithm>
+
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/operator.hh"
@@ -50,6 +52,20 @@ void layer_operators_register()
                  [](Context &C) {
                    document_add_layer(*C.document, LayerType::Group, "");
                    return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.move_to_group", "Move to Group",
+                 "Move the active layer into a group (group=<layer id>), at the top; group=0 moves it to the top level",
+                 active_layer_poll, [](Context &C) {
+                   Document &doc = *C.document;
+                   const uint64_t group = uint64_t(std::max(0, op_arg_int(C, "group", 0)));
+                   const Layer *target = group ? layer_find(doc, group) : nullptr;
+                   if (group && (!target || !target->is_group())) {
+                     report(ReportType::Error, "Not a group");
+                     return OpStatus::Cancelled;
+                   }
+                   return document_reparent_layer(doc, doc.active_layer, group, 0) ? OpStatus::Finished
+                                                                                   : OpStatus::Cancelled;
                  });
 
   layer_operator("layer.delete", "Delete Layer", "Delete the active layer and everything in it", active_layer_poll,

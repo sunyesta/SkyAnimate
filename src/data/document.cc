@@ -1,5 +1,7 @@
 #include "data/document.hh"
 
+#include "anim/animation.hh"
+
 #include <cstdio>
 
 namespace sky {
@@ -15,8 +17,20 @@ const rna::StructRNA &Document::rna()
         def_string<Document>("name", "Name", "Name of the document", &Document::name),
         def_int<Document>("frame_start", "Start", "First frame of the animation", &Document::frame_start, 0, 1048574),
         def_int<Document>("frame_end", "End", "Last frame of the animation", &Document::frame_end, 0, 1048574),
-        def_int<Document>("frame_current", "Current Frame", "Frame shown in the viewport", &Document::frame_current,
-                          0, 1048574),
+        [] {
+          /* Setting the frame shows its animation at once (for scripts as much as the UI). */
+          rna::PropertyRNA prop = def_int<Document>("frame_current", "Current Frame", "Frame shown in the viewport",
+                                                    &Document::frame_current, 0, 1048574);
+          prop.set = [](void *data, const rna::Value &v) {
+            Document &doc = *static_cast<Document *>(data);
+            doc.frame_current = std::get<int>(v);
+            animation_sync(doc);
+          };
+          return prop;
+        }(),
+        def_bool<Document>("auto_key", "Auto Keying",
+                           "Editing at a frame other than 0 keys what changes there (the record button)",
+                           &Document::auto_key),
         def_float<Document>("fps", "Frame Rate", "Frames per second", &Document::fps, 1.0f, 240.0f),
         def_int<Document>("width", "Width", "Output width in pixels", &Document::width, 4, 16384),
         def_int<Document>("height", "Height", "Output height in pixels", &Document::height, 4, 16384),

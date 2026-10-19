@@ -12,6 +12,7 @@
 #include <SDL3/SDL_opengl.h>
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <functional>
@@ -19,6 +20,8 @@
 #include <memory>
 
 #include "core/log.hh"
+#include "anim/deform.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
@@ -39,18 +42,18 @@ static constexpr ImU32 COL_WIRE_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 220);
 static constexpr ImU32 COL_POINT = IM_COL32(0x10, 0x10, 0x10, 230);
 static constexpr ImU32 COL_POINT_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 255);
 static constexpr ImU32 COL_HIGHLIGHT = IM_COL32(0x47, 0x72, 0xb3, 255);
-/* Handle colours by type, unselected and selected, from Blender's default theme. */
-static constexpr ImU32 COL_HANDLE[4][2] = {
-    {IM_COL32(0x90, 0x90, 0x00, 255), IM_COL32(0xf0, 0xff, 0x40, 255)}, /* Automatic */
-    {IM_COL32(0x40, 0x90, 0x30, 255), IM_COL32(0x40, 0xc0, 0x30, 255)}, /* Vector */
-    {IM_COL32(0x80, 0x30, 0x60, 255), IM_COL32(0xf0, 0x90, 0xa0, 255)}, /* Aligned */
-    {IM_COL32(0x10, 0x10, 0x10, 255), IM_COL32(0xd0, 0x30, 0x30, 255)}, /* Free */
-};
+/* Handle colours, unselected and selected, from Blender's theme: free handles, and aligned ones
+ * (in Blender's aligned pink) so it shows which points keep theirs in line. */
+static constexpr ImU32 COL_HANDLE_FREE[2] = {IM_COL32(0x10, 0x10, 0x10, 255), IM_COL32(0xd0, 0x30, 0x30, 255)};
+static constexpr ImU32 COL_HANDLE_ALIGNED[2] = {IM_COL32(0x80, 0x30, 0x60, 255), IM_COL32(0xf0, 0x90, 0xa0, 255)};
 static constexpr ImU32 COL_HEADER = IM_COL32(0x30, 0x30, 0x30, 235);
 static constexpr ImU32 COL_TOOLBAR = IM_COL32(0x28, 0x28, 0x28, 235);
 
 /* Pick radius in screen pixels. */
 static constexpr float PICK_PIXELS = 9.0f;
+/* A right-click that cancelled something (a move, a turn, a one-off tool) is spent: its release
+ * doesn't open a context menu. Cleared once the button is up. */
+static bool g_right_click_spent = false;
 
 /* ---------------------------------------------------------------------------------
  * View mapping
@@ -88,6 +91,16 @@ static void view_fit(Area &area, const Document &doc, ImVec2 size)
 
 /* A running G R S or E. It works in document space, so points on several layers (each with its
  * own transform) move together. */
+/* The signed angle (radians) from `from` to `to` around `pivot`; zero when either is on it. */
+static float turn_between(float2 from, float2 to, float2 pivot)
+{
+  const float2 a = from - pivot, b = to - pivot;
+  if (dot(a, a) < 1e-12f || dot(b, b) < 1e-12f) {
+    return 0.0f;
+  }
+  return std::atan2(cross(a, b), dot(a, b));
+}
+
 struct ModalTransform {
   bool active = false;
   int area = 0;
@@ -107,10 +120,21 @@ struct ModalTransform {
     bool direct = false;
     /* A handle's point, in document space: what S and R work about when only handles move. */
     float2 origin;
+    /* Shown -> stored (layer space): undoes the bones' move, so a posed point lands where it is
+     * dragged. */
+    Transform2D unskin;
+    /* Symmetry: this point copies item `mirror_source` reflected (across x, y or both). */
+    int mirror_source = -1;
+    bool mirror_x = false;
+    bool mirror_y = false;
   };
   std::vector<Item> items;
   float2 pivot;
   float2 start_mouse;
+  /* Rotate counts whole turns, as Moho's angles do: the mouse's angle around the pivot is added up
+   * from frame to frame instead of measured from the start, so circling twice turns 720 degrees. */
+  float2 last_mouse;
+  float turned = 0.0f;
   /* 0 free, 1 X only, 2 Y only. */
   int axis = 0;
   std::string typed;
@@ -155,6 +179,48 @@ static bool pen_active(const ToolSettings &ts)
   return ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Pen;
 }
 static std::map<int, std::unique_ptr<SceneRenderer>> g_renderers;
+
+static void weight_paint_header(Context &C);
+static void transform_bones_header(Context &C);
+
+/* A layer's own drawing where its points show: moved by the bones (Blender's "on cage"). Points
+ * keep their indices, so what is picked here is the same point in the stored drawing. */
+struct Posed {
+  const VectorDrawing *drawing = nullptr;
+  /* Stored -> shown, per point. */
+  std::vector<Transform2D> skins;
+  bool moved = false;
+  VectorDrawing storage;
+};
+
+static Posed posed(const Document &doc, const Layer &layer)
+{
+  Posed r;
+  r.drawing = &layer.drawing;
+  r.skins = layer_point_skins(doc, layer);
+  r.skins.resize(layer.drawing.points.size());
+  for (const Transform2D &t : r.skins) {
+    r.moved |= t.a != 1.0f || t.b != 0.0f || t.c != 0.0f || t.d != 1.0f || t.tx != 0.0f || t.ty != 0.0f;
+  }
+  if (!r.moved) {
+    return r;
+  }
+  r.storage.points = layer.drawing.points;
+  r.storage.curves = layer.drawing.curves;
+  r.storage.shapes = layer.drawing.shapes;
+  for (size_t i = 0; i < r.storage.points.size(); i++) {
+    r.storage.points[i].pos = r.skins[i].apply(r.storage.points[i].pos);
+  }
+  for (Curve &curve : r.storage.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.handle_in = r.skins[cp.point].apply_vector(cp.handle_in);
+      cp.handle_out = r.skins[cp.point].apply_vector(cp.handle_out);
+    }
+  }
+  r.drawing = &r.storage;
+  return r;
+}
+static uint64_t pick_bone(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse);
 
 /* ---------------------------------------------------------------------------------
  * Helpers
@@ -206,7 +272,8 @@ static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, 
   }
   for (Layer *layer : editable_layers(C)) {
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
-    const VectorDrawing &drawing = layer->drawing;
+    const Posed shown = posed(*C.document, *layer);
+    const VectorDrawing &drawing = *shown.drawing;
     for (int c = 0; c < int(drawing.curves.size()); c++) {
       const Curve &curve = drawing.curves[c];
       for (int i = 0; i < int(curve.points.size()); i++) {
@@ -313,6 +380,29 @@ static void tool_icon(ImDrawList *dl, Tool tool, ImVec2 c, float s, ImU32 col)
       dl->AddLine(c + ImVec2(0, -s * 0.85f), c + ImVec2(0, -s * 0.45f), col, t);
       break;
     }
+    case Tool::TransformBones: {
+      /* A box with corner handles around a bone. */
+      dl->AddRect(c - ImVec2(s * 0.8f, s * 0.8f), c + ImVec2(s * 0.8f, s * 0.8f), col, 0.0f, 0, t * 0.8f);
+      for (const ImVec2 k : {ImVec2(-1, -1), ImVec2(1, -1), ImVec2(1, 1), ImVec2(-1, 1)}) {
+        dl->AddCircleFilled(c + k * (s * 0.8f), s * 0.2f, col);
+      }
+      const ImVec2 head = c + ImVec2(-s * 0.45f, s * 0.45f), tail = c + ImVec2(s * 0.45f, -s * 0.45f);
+      const ImVec2 side(s * 0.16f, s * 0.16f);
+      const ImVec2 quad[4] = {head, head + (tail - head) * 0.25f + side, tail, head + (tail - head) * 0.25f - side};
+      dl->AddConvexPolyFilled(quad, 4, col);
+      break;
+    }
+    case Tool::WeightPaint: {
+      /* A brush over a blue-to-red gradient. */
+      const ImU32 cols[3] = {IM_COL32(0x30, 0x50, 0xe0, 255), IM_COL32(0x40, 0xd0, 0x40, 255), IM_COL32(0xe0, 0x30, 0x30, 255)};
+      for (int i = 0; i < 3; i++) {
+        dl->AddRectFilled(c + ImVec2(-s * 0.9f + s * 0.6f * i, s * 0.35f), c + ImVec2(-s * 0.3f + s * 0.6f * i, s * 0.85f),
+                          cols[i]);
+      }
+      dl->AddLine(c + ImVec2(-s * 0.4f, s * 0.15f), c + ImVec2(s * 0.7f, -s * 0.9f), col, t * 1.6f);
+      dl->AddCircleFilled(c + ImVec2(-s * 0.45f, s * 0.2f), s * 0.22f, col);
+      break;
+    }
   }
 }
 
@@ -353,7 +443,41 @@ static const ToolInfo TOOLS[] = {
     {Tool::SplitCurve, "Split Curve",
      "Click a line to add a point there. Shift: at the middle. Ctrl-click a point: delete it, keeping the curve",
      "wm.tool_split_curve"},
+    {Tool::TransformBones, "Transform Bones",
+     "A box around the selected bones, as Moho's sz_transform_bones_gizmo: drag inside to move, around it to "
+     "turn about the pivot, a handle to scale (Alt: from the pivot, Shift: keep proportions), the pivot to move "
+     "it (Ctrl snaps to bone ends). Outside: click or drag a box to select (Shift adds, Alt removes). "
+     "Unselected children stay where they are",
+     "wm.tool_transform_bones"},
+    {Tool::WeightPaint, "Weight Paint",
+     "Paint how strongly the active bone moves the points, as in Blender: red follows it fully, blue not "
+     "at all.\nCtrl paints the weight away. Ctrl-click a bone to paint for it",
+     "wm.tool_weight_paint"},
 };
+
+/* The tools a layer offers: a bone layer has bone tools, a drawing the drawing tools. */
+static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
+{
+  const bool bones = active && active->is_bone_layer();
+  if (tool == Tool::WeightPaint) {
+    /* Weights are for drawings that bones move. */
+    return !bones && active && !active->is_group() && in_bone_layer;
+  }
+  switch (tool) {
+    case Tool::Select:
+    case Tool::Cursor:
+      return true;
+    case Tool::Draw:
+    case Tool::Shape:
+    case Tool::SplitCurve:
+      return !bones;
+    case Tool::TransformBones:
+      return bones;
+    case Tool::WeightPaint:
+      break;
+  }
+  return true;
+}
 
 /* A tool's flyout of variants, opened by right-clicking its tool bar button and closed by
  * right-clicking it again. Call right after the button. Returns the picked item, or -1.
@@ -448,12 +572,24 @@ static float toolbar_draw(Context &C, ImVec2 origin, float top)
   const float button = std::round(h * 1.35f);
   const float pad = 4.0f;
   ImDrawList *dl = ImGui::GetWindowDrawList();
+  const Layer *active_layer = document_active_layer(*C.document);
+  const bool in_bone_layer = active_layer && layer_armature(*C.document, active_layer->id) != nullptr;
+  std::vector<const ToolInfo *> shown;
+  for (const ToolInfo &info : TOOLS) {
+    if (tool_available(info.tool, active_layer, in_bone_layer)) {
+      shown.push_back(&info);
+    }
+  }
+  if (!tool_available(ts.tool, active_layer, in_bone_layer)) {
+    /* Switching between a drawing and a bone layer: fall back to Select. */
+    ts.tool = Tool::Select;
+  }
   const ImVec2 panel_min = origin + ImVec2(pad, top);
-  const ImVec2 panel_max = panel_min + ImVec2(button + pad * 2, (button + 2) * float(std::size(TOOLS)) + pad * 2);
+  const ImVec2 panel_max = panel_min + ImVec2(button + pad * 2, (button + 2) * float(shown.size()) + pad * 2);
   dl->AddRectFilled(panel_min, panel_max, COL_TOOLBAR, 6.0f);
 
-  for (size_t i = 0; i < std::size(TOOLS); i++) {
-    const ToolInfo &info = TOOLS[i];
+  for (size_t i = 0; i < shown.size(); i++) {
+    const ToolInfo &info = *shown[i];
     const ImVec2 p = panel_min + ImVec2(pad, pad + float(i) * (button + 2));
     ImGui::SetCursorScreenPos(p);
     ImGui::PushID(int(i));
@@ -602,9 +738,17 @@ static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_
     }
   }
   if (overlay_section("Armature")) {
-    overlay_checkbox_pair("Bones", &ov.bones, nullptr, nullptr, column);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Bones");
+    ImGui::SameLine(column);
+    ImGui::SetNextItemWidth(column - ImGui::GetStyle().ItemSpacing.x);
+    static const char *const armature_modes[] = {"Off", "Selected", "On"};
+    int mode = int(ov.armature);
+    if (ImGui::Combo("##armature", &mode, armature_modes, 3)) {
+      ov.armature = ArmatureDisplay(mode);
+    }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Bones arrive in milestone 4");
+      ImGui::SetTooltip("Which bones to show: none, those of selected bone layers, or every bone layer's");
     }
   }
   ImGui::EndPopup();
@@ -685,34 +829,53 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     menu_operator(C, "Strokes", "mesh.select_mode_stroke");
     ImGui::EndPopup();
   }
-  ImGui::SameLine();
-  if (header_menu("Drawing")) {
-    menu_operator(C, "Create Shape", "mesh.create_shape");
-    menu_operator(C, "Create Line", "mesh.create_line");
-    menu_operator(C, "Delete Shape", "mesh.delete_shape");
-    if (ImGui::BeginMenu("Arrange")) {
-      menu_operator(C, "Bring to Front", "mesh.shape_raise_to_front");
-      menu_operator(C, "Bring Forward", "mesh.shape_raise");
-      menu_operator(C, "Send Backward", "mesh.shape_lower");
-      menu_operator(C, "Send to Back", "mesh.shape_lower_to_back");
-      ImGui::EndMenu();
-    }
-    ImGui::Separator();
-    if (ImGui::BeginMenu("Set Handle Type")) {
-      for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
-        if (ImGui::MenuItem(handle_type_name(type))) {
-          operator_call(C, "mesh.handle_type_set", {{"type", handle_type_identifier(type)}});
-        }
+  /* A bone layer's header has Blender's Armature menu in place of the Drawing one. */
+  const Layer *header_layer = document_active_layer(doc);
+  if (header_layer && header_layer->is_bone_layer()) {
+    ImGui::SameLine();
+    if (header_menu("Armature")) {
+      menu_operator(C, "Add Bone", "armature.bone_primitive_add");
+      menu_operator(C, "Extrude", "armature.extrude");
+      menu_operator(C, "Duplicate", "armature.duplicate_move");
+      menu_operator(C, "Subdivide", "armature.subdivide");
+      ImGui::Separator();
+      menu_operator(C, "Make Parent...", "armature.parent_set_menu");
+      menu_operator(C, "Clear Parent...", "armature.parent_clear_menu");
+      ImGui::Separator();
+      menu_operator(C, "Symmetrize", "armature.symmetrize");
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Make the other side of the selected bones (all when none are selected) from their "
+                          "_L / _R names, mirrored across the bone layer's vertical axis. Setup frame only");
       }
-      ImGui::EndMenu();
+      ImGui::Separator();
+      menu_operator(C, "Delete Bones", "armature.bone_delete");
+      ImGui::EndPopup();
     }
-    menu_operator(C, "Peak", "mesh.peak");
-    menu_operator(C, "Smooth", "mesh.smooth");
-    ImGui::Separator();
-    menu_operator(C, "Extrude", "mesh.extrude");
-    menu_operator(C, "Duplicate", "mesh.duplicate_move");
-    menu_operator(C, "Delete Points", "mesh.delete");
-    ImGui::EndPopup();
+  }
+  else {
+    ImGui::SameLine();
+    if (header_menu("Drawing")) {
+      menu_operator(C, "Create Shape", "mesh.create_shape");
+      menu_operator(C, "Create Line", "mesh.create_line");
+      menu_operator(C, "Delete Shape", "mesh.delete_shape");
+      if (ImGui::BeginMenu("Arrange")) {
+        menu_operator(C, "Bring to Front", "mesh.shape_raise_to_front");
+        menu_operator(C, "Bring Forward", "mesh.shape_raise");
+        menu_operator(C, "Send Backward", "mesh.shape_lower");
+        menu_operator(C, "Send to Back", "mesh.shape_lower_to_back");
+        ImGui::EndMenu();
+      }
+      ImGui::Separator();
+      menu_operator(C, "Align Handles", "mesh.handles_align");
+      menu_operator(C, "Unalign Handles", "mesh.handles_unalign");
+      menu_operator(C, "Peak", "mesh.peak");
+      menu_operator(C, "Smooth", "mesh.smooth");
+      ImGui::Separator();
+      menu_operator(C, "Extrude", "mesh.extrude");
+      menu_operator(C, "Duplicate", "mesh.duplicate_move");
+      menu_operator(C, "Delete Points", "mesh.delete");
+      ImGui::EndPopup();
+    }
   }
 
   ImGui::SameLine(0.0f, h);
@@ -776,18 +939,53 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     case Tool::Cursor:
       ImGui::TextDisabled("Click to place the cursor  |  Shift right-click places it from any tool");
       break;
+    case Tool::WeightPaint:
+      weight_paint_header(C);
+      break;
+    case Tool::TransformBones:
+      transform_bones_header(C);
+      break;
   }
 
   /* On the right, as in Blender: snapping, then the overlays toggle and its dropdown. */
   const ImGuiStyle &style = ImGui::GetStyle();
   const float snap_w = ImGui::CalcTextSize("Snap").x + style.FramePadding.x * 2.0f;
   const float arrow_w = h * 0.75f;
-  const float right_w = snap_w + h * 0.6f + h + 1.0f + arrow_w;
+  const float axis_w = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
+  const float mirror_w = h + 2.0f + axis_w * 2.0f + 1.0f + h * 0.6f;
+  const float right_w = mirror_w + snap_w + h * 0.6f + h + 1.0f + arrow_w;
   ImGui::SameLine();
   const float right = origin.x + width - right_w - 6.0f;
   if (ImGui::GetCursorScreenPos().x < right) {
     ImGui::SetCursorScreenPos(ImVec2(right, ImGui::GetCursorScreenPos().y));
   }
+  /* Blender's mesh symmetry: a butterfly, then X and Y. */
+  {
+    const ImVec2 c = ImGui::GetCursorScreenPos() + ImVec2(h * 0.5f, h * 0.5f);
+    ImDrawList *hdl = ImGui::GetWindowDrawList();
+    const ImU32 col = IM_COL32(0xd0, 0xd0, 0xd0, 255);
+    const float s = h * 0.3f;
+    for (const float side : {-1.0f, 1.0f}) {
+      hdl->AddTriangleFilled(c + ImVec2(side * s * 0.12f, -s * 0.15f), c + ImVec2(side * s * 1.05f, -s * 0.95f),
+                             c + ImVec2(side * s * 0.95f, s * 0.1f), col);
+      hdl->AddTriangleFilled(c + ImVec2(side * s * 0.12f, s * 0.05f), c + ImVec2(side * s * 0.85f, s * 0.25f),
+                             c + ImVec2(side * s * 0.5f, s * 0.9f), col);
+    }
+    hdl->AddLine(c + ImVec2(0, -s * 0.6f), c + ImVec2(0, s * 0.7f), col, 1.5f);
+    ImGui::Dummy(ImVec2(h, h));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Mirror editing: moving a point also moves its mirror image across the layer's axes");
+    }
+  }
+  ImGui::SameLine(0.0f, 2.0f);
+  if (header_toggle("X", ts.mirror_x, "Mirror X\nEdits mirror across the layer's vertical axis")) {
+    ts.mirror_x = !ts.mirror_x;
+  }
+  ImGui::SameLine(0.0f, 1.0f);
+  if (header_toggle("Y", ts.mirror_y, "Mirror Y\nEdits mirror across the layer's horizontal axis")) {
+    ts.mirror_y = !ts.mirror_y;
+  }
+  ImGui::SameLine(0.0f, h * 0.6f);
   if (header_toggle("Snap", ts.snap_grid || ts.snap_points, "Snapping options")) {
     ImGui::OpenPopup("##snapping");
   }
@@ -871,12 +1069,50 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
   for (Layer *layer : layers) {
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     VectorDrawing &drawing = layer->drawing;
+    const Posed shown = posed(*C.document, *layer);
     for (int i = 0; i < int(drawing.points.size()); i++) {
       if (drawing.points[i].selected) {
-        const float2 p = to_document.apply(drawing.points[i].pos);
-        modal.items.push_back({layer->id, i, p});
+        const float2 p = to_document.apply(shown.drawing->points[i].pos);
+        ModalTransform::Item item{layer->id, i, p};
+        item.unskin = shown.skins[i].inverted();
+        modal.items.push_back(item);
         sum += p;
         counted++;
+      }
+    }
+    /* Symmetry: each moving point's mirror image (a point at the reflected spot, across the
+     * layer's axes) moves with it, reflected. */
+    const ToolSettings &ts = C.wm->tool_settings;
+    if ((ts.mirror_x || ts.mirror_y) && !modal.extrude) {
+      const int moving_end = int(modal.items.size());
+      for (int k = 0; k < moving_end; k++) {
+        const ModalTransform::Item source = modal.items[k];
+        if (source.layer != layer->id || source.curve >= 0) {
+          continue;
+        }
+        const float2 here = drawing.points[source.point].pos;
+        const float eps = 1e-4f + 1e-4f * (std::fabs(here.x) + std::fabs(here.y));
+        for (const auto &[fx, fy] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+          if ((fx && !ts.mirror_x) || (fy && !ts.mirror_y)) {
+            continue;
+          }
+          const float2 target(fx ? -here.x : here.x, fy ? -here.y : here.y);
+          if (distance(target, here) <= eps) {
+            continue; /* On the axis: its own mirror. */
+          }
+          for (int j = 0; j < int(drawing.points.size()); j++) {
+            if (drawing.points[j].selected || distance(drawing.points[j].pos, target) > eps) {
+              continue;
+            }
+            ModalTransform::Item item{layer->id, j, to_document.apply(shown.drawing->points[j].pos)};
+            item.unskin = shown.skins[j].inverted();
+            item.mirror_source = k;
+            item.mirror_x = fx;
+            item.mirror_y = fy;
+            modal.items.push_back(item);
+            break;
+          }
+        }
       }
     }
     /* Handles after the points, so they're placed once their points have moved. */
@@ -885,28 +1121,21 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
       for (int i = 0; i < int(curve.points.size()); i++) {
         CurvePoint &cp = curve.points[i];
         const bool point_moves = drawing.points[cp.point].selected;
-        if (!point_moves && (cp.select_in || cp.select_out)) {
-          /* Grabbing an Automatic or Vector handle makes it Aligned or Free, as in Blender. */
-          if (cp.handle_type == HandleType::Auto) {
-            curve_point_set_handle_type(drawing, curve, i, HandleType::Aligned);
-          }
-          else if (cp.handle_type == HandleType::Vector) {
-            curve_point_set_handle_type(drawing, curve, i, HandleType::Free);
-          }
-        }
-        const bool stored = cp.handle_type == HandleType::Aligned || cp.handle_type == HandleType::Free;
+        /* Every handle is stored: a moved point's handles turn and scale with it. */
+        const bool stored = true;
         for (const bool pre : {true, false}) {
           const bool direct = !point_moves && (pre ? cp.select_in : cp.select_out);
           if (!direct && !(point_moves && stored)) {
             continue;
           }
-          const float2 h = to_document.apply(curve_handle(drawing, curve, i, pre));
+          const float2 h = to_document.apply(curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre));
           ModalTransform::Item item{layer->id, cp.point, h};
+          item.unskin = shown.skins[cp.point].inverted();
           item.curve = c;
           item.index = i;
           item.pre = pre;
           item.direct = direct;
-          item.origin = to_document.apply(drawing.points[cp.point].pos);
+          item.origin = to_document.apply(shown.drawing->points[cp.point].pos);
           modal.items.push_back(item);
           if (direct) {
             sum += h;
@@ -932,6 +1161,7 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
     modal.pivot = origins / float(modal.items.size());
   }
   modal.start_mouse = mouse_document;
+  modal.last_mouse = mouse_document;
   modal.active = true;
   g_modal = std::move(modal);
   C.wm->modal_running = true;
@@ -986,10 +1216,14 @@ static std::string modal_update(Context &C, const ViewMapping &view)
   /* Places one moved point or handle at a document-space position. Points come first in the
    * list, so a handle is placed relative to where its point now is. */
   const auto place = [&](const ModalTransform::Item &item, float2 p) {
+    if (item.mirror_source >= 0) {
+      return; /* Placed from its source afterwards. */
+    }
     const auto &[layer, to_layer] = layers[item.layer];
     VectorDrawing &drawing = layer->drawing;
+    const float2 stored = item.unskin.apply(to_layer.apply(p));
     if (item.curve < 0) {
-      drawing.points[item.point].pos = to_layer.apply(p);
+      drawing.points[item.point].pos = stored;
       return;
     }
     if (item.curve >= int(drawing.curves.size()) || item.index >= int(drawing.curves[item.curve].points.size())) {
@@ -998,12 +1232,18 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     Curve &curve = drawing.curves[item.curve];
     CurvePoint &cp = curve.points[item.index];
     if (item.direct) {
-      /* An Aligned point's partner handle turns to stay in line, unless it is moving too. */
+      /* An aligned point's other handle turns to stay in line, unless it is moving too. Alt moves
+       * just this one, which breaks the line: the point is no longer aligned, so later moves
+       * don't snap the other handle back. */
       const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
-      curve_point_move_handle(drawing, curve, item.index, item.pre, to_layer.apply(p), partner_moves);
+      const bool alone = ImGui::GetIO().KeyAlt;
+      curve_point_move_handle(drawing, curve, item.index, item.pre, stored, partner_moves || alone);
+      if (alone && !partner_moves) {
+        cp.aligned = false;
+      }
     }
     else {
-      (item.pre ? cp.handle_in : cp.handle_out) = to_layer.apply(p) - drawing.points[cp.point].pos;
+      (item.pre ? cp.handle_in : cp.handle_out) = stored - drawing.points[cp.point].pos;
     }
   };
 
@@ -1025,6 +1265,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     }
   }
   if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     modal_end(C, false);
     return {};
   }
@@ -1070,16 +1311,16 @@ static std::string modal_update(Context &C, const ViewMapping &view)
                   delta.y, axis_label);
   }
   else if (g_modal.kind == 'R') {
-    const float2 a = g_modal.start_mouse - g_modal.pivot, b = mouse - g_modal.pivot;
-    float angle = std::atan2(cross(a, b), dot(a, b));
-    float degrees = angle * 180.0f / PI;
+    g_modal.turned += turn_between(g_modal.last_mouse, mouse, g_modal.pivot);
+    g_modal.last_mouse = mouse;
+    float degrees = g_modal.turned * 180.0f / PI;
     if (snap) {
       degrees = std::round(degrees / 5.0f) * 5.0f;
     }
     if (has_typed) {
       degrees = typed;
     }
-    angle = degrees * PI / 180.0f;
+    const float angle = degrees * PI / 180.0f;
     for (const ModalTransform::Item &item : g_modal.items) {
       const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
       place(item, c + rotate(item.start - c, angle));
@@ -1102,6 +1343,36 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       place(item, c + float2(d.x * f.x, d.y * f.y));
     }
     std::snprintf(text, sizeof(text), "Scale  %.3f%s", factor, axis_label);
+  }
+  /* Mirrored points copy their sources, reflected (in the layer's stored space). */
+  for (const ModalTransform::Item &item : g_modal.items) {
+    if (item.mirror_source < 0) {
+      continue;
+    }
+    const ModalTransform::Item &source = g_modal.items[item.mirror_source];
+    VectorDrawing &drawing = layers[item.layer].first->drawing;
+    const float2 p = drawing.points[source.point].pos;
+    drawing.points[item.point].pos = {item.mirror_x ? -p.x : p.x, item.mirror_y ? -p.y : p.y};
+    /* Handles too: types that turned (R and S make Automatic handles Aligned) and their shape. */
+    drawing_mirror_handles(drawing, source.point, item.point, item.mirror_x, item.mirror_y);
+  }
+  /* Handles dragged on their own: their mirror images follow, reflected. */
+  if (C.wm->tool_settings.mirror_x || C.wm->tool_settings.mirror_y) {
+    for (const ModalTransform::Item &item : g_modal.items) {
+      if (item.curve < 0 || !item.direct) {
+        continue;
+      }
+      VectorDrawing &drawing = layers[item.layer].first->drawing;
+      for (const auto &[x, y] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+        if ((x && !C.wm->tool_settings.mirror_x) || (y && !C.wm->tool_settings.mirror_y)) {
+          continue;
+        }
+        const int dst = drawing_find_mirror_point(drawing, item.point, x, y);
+        if (dst >= 0) {
+          drawing_mirror_handles(drawing, item.point, dst, x, y);
+        }
+      }
+    }
   }
   info = text;
   if (!g_modal.typed.empty()) {
@@ -1259,8 +1530,13 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
     const float2 mouse = to_document.inverted().apply(mouse_document);
-    if (const int p = drawing_pick_point(layer->drawing, mouse, PICK_PIXELS * pixel); p >= 0) {
-      const float d = distance(layer->drawing.points[p].pos, mouse) / pixel;
+    const Posed shown = posed(*C.document, *layer);
+    if (C.wm->tool_settings.select_mode == SelectMode::Edge) {
+      /* Points don't show in Edges mode, so clicks pick lines (below). */
+      continue;
+    }
+    if (const int p = drawing_pick_point(*shown.drawing, mouse, PICK_PIXELS * pixel); p >= 0) {
+      const float d = distance(shown.drawing->points[p].pos, mouse) / pixel;
       if (d < best) {
         best = d;
         hit_layer = layer;
@@ -1327,15 +1603,17 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
       return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
     };
     VectorDrawing &drawing = layer->drawing;
+    const Posed shown = posed(*C.document, *layer);
     /* Handles shown before the box (whose points were selected then) can be boxed too. */
     std::vector<std::pair<CurvePoint *, int>> boxed;
-    for (Curve &curve : drawing.curves) {
+    for (size_t c = 0; c < drawing.curves.size(); c++) {
+      Curve &curve = drawing.curves[c];
       for (int i = 0; i < int(curve.points.size()); i++) {
         CurvePoint &cp = curve.points[i];
         if (handles == HandleDisplay::All || (handles == HandleDisplay::Selected && curve_point_selected(drawing, cp))) {
-          const float2 here = drawing.points[cp.point].pos;
+          const float2 here = shown.drawing->points[cp.point].pos;
           for (const bool pre : {true, false}) {
-            const float2 h = curve_handle(drawing, curve, i, pre);
+            const float2 h = curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre);
             if (distance(h, here) > 1e-9f && inside(h)) {
               boxed.push_back({&cp, pre ? 0 : 1});
             }
@@ -1343,9 +1621,9 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
         }
       }
     }
-    for (MeshPoint &p : drawing.points) {
-      if (inside(p.pos)) {
-        p.selected = !io.KeyCtrl;
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      if (inside(shown.drawing->points[i].pos)) {
+        drawing.points[i].selected = !io.KeyCtrl;
       }
     }
     for (const auto &[cp, side] : boxed) {
@@ -1463,8 +1741,10 @@ static void pen_click(Context &C, Layer &layer, float2 mouse, float radius)
   if (g_pen.curve >= 0) {
     Curve &curve = drawing.curves[g_pen.curve];
     if (snap >= 0 && snap == curve.points.front().point && curve.points.size() >= 3) {
-      /* Clicking the first point closes the curve. */
+      /* Clicking the first point closes the curve; both ends re-smooth across the join. */
       curve.closed = true;
+      curve.points.front().handles_set = false;
+      curve.points.back().handles_set = false;
       if (g_pen.shape >= 0) {
         Shape &shape = drawing.shapes[g_pen.shape];
         shape.edges.push_back({g_pen.curve, curve.segment_count() - 1});
@@ -1477,6 +1757,8 @@ static void pen_click(Context &C, Layer &layer, float2 mouse, float radius)
     const bool weld = snap >= 0 && std::none_of(curve.points.begin(), curve.points.end(),
                                                 [&](const CurvePoint &cp) { return cp.point == snap; });
     const int point = weld ? snap : drawing_add_point(drawing, pos);
+    /* The previous end gets its handles again, now that it has a neighbour on both sides. */
+    curve.points.back().handles_set = false;
     curve.points.push_back({point});
     if (g_pen.shape < 0) {
       Shape shape;
@@ -1536,7 +1818,7 @@ static void draw_grid(ImDrawList *dl, const ViewMapping &view, float grid)
 
 static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
                                  const ViewMapping &view, bool show_wires, bool show_points, int quality,
-                                 HandleDisplay handles)
+                                 HandleDisplay handles, bool point_squares = true)
 {
   std::vector<float2> samples;
   for (const Curve &curve : drawing.curves) {
@@ -1587,13 +1869,17 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
           continue;
         }
         const bool selected = point_selected || (pre ? cp.select_in : cp.select_out);
-        const ImU32 col = COL_HANDLE[int(cp.handle_type)][selected ? 1 : 0];
+        const ImU32 col = (cp.aligned ? COL_HANDLE_ALIGNED : COL_HANDLE_FREE)[selected ? 1 : 0];
         const ImVec2 end = view.to_screen(to_document.apply(h));
         dl->AddLine(at, end, col, 1.5f);
         dl->AddCircleFilled(end, 3.2f, (pre ? cp.select_in : cp.select_out) ? IM_COL32(0xff, 0xff, 0xff, 255) : col);
         dl->AddCircle(end, 3.2f, IM_COL32(0, 0, 0, 160));
       }
     }
+  }
+  if (!point_squares) {
+    /* Edges mode shows lines only, as Blender's edge select mode. */
+    return;
   }
   const float r = 3.0f;
   for (int pass = 0; pass < 2; pass++) {
@@ -1635,6 +1921,1026 @@ static void premultiplied_blend(const ImDrawList *, const ImDrawCmd *)
 /* ---------------------------------------------------------------------------------
  * The viewport
  */
+
+/* ---------------------------------------------------------------------------------
+ * Weight Paint
+ */
+
+/* Blender's weight colours: blue (0), cyan, green, yellow, red (1). */
+static ImU32 weight_color(float w, int alpha = 255)
+{
+  w = std::clamp(w, 0.0f, 1.0f);
+  const float stops[5][3] = {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
+  const float f = w * 4.0f;
+  const int i = std::min(int(f), 3);
+  const float t = f - float(i);
+  const auto mix = [&](int c) { return stops[i][c] + (stops[i + 1][c] - stops[i][c]) * t; };
+  return IM_COL32(int(mix(0) * 255.0f), int(mix(1) * 255.0f), int(mix(2) * 255.0f), alpha);
+}
+
+/* The bone layer the active drawing is in, as a writable layer. */
+static Layer *weight_armature(Context &C)
+{
+  Layer *active = document_active_layer(*C.document);
+  const Layer *armature = active ? layer_armature(*C.document, active->id) : nullptr;
+  return armature ? layer_find(*C.document, armature->id) : nullptr;
+}
+
+static void weight_paint_header(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  Layer *armature = weight_armature(C);
+  if (!armature) {
+    return;
+  }
+  const Bone *active = bone_find(*armature, armature->active_bone);
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 5.0f);
+  if (ImGui::BeginCombo("##weight_bone", active ? active->name.c_str() : "Pick a bone")) {
+    for (const Bone &b : armature->bones) {
+      if (ImGui::Selectable(b.name.c_str(), b.id == armature->active_bone)) {
+        armature->active_bone = b.id;
+        for (Bone &other : armature->bones) {
+          bone_select(other, other.id == b.id);
+        }
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The bone whose weights you paint (Ctrl-click a bone in the viewport)");
+  }
+  const float w = ImGui::GetFrameHeight() * 4.0f;
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(w);
+  ImGui::SliderFloat("##weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(w);
+  ImGui::DragFloat("##radius", &ts.weight_radius, 0.5f, 2.0f, 500.0f, "Radius %.0f px", ImGuiSliderFlags_AlwaysClamp);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(w);
+  ImGui::SliderFloat("##strength", &ts.weight_strength, 0.0f, 1.0f, "Strength %.2f");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 3.5f);
+  static const char *const modes[] = {"Draw", "Add", "Subtract"};
+  ImGui::Combo("##weight_mode", &ts.weight_mode, modes, 3);
+  ImGui::SameLine();
+  ImGui::Checkbox("Normalize", &ts.weight_normalize);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Keep each point's weights adding up to 1, as Blender's Auto Normalize");
+  }
+}
+
+/* The active drawing coloured by how strongly the active bone moves it. */
+static void draw_weight_overlay(ImDrawList *dl, Context &C, const Layer &layer, const ViewMapping &view, int quality)
+{
+  const Document &doc = *C.document;
+  const Layer *armature = layer_armature(doc, layer.id);
+  if (!armature) {
+    return;
+  }
+  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  const std::vector<float> weights = layer_point_bone_weights(doc, layer, armature->active_bone);
+  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+  const Transform2D to_document = layer_world_transform(doc, layer.id);
+  VectorDrawing shown = drawing;
+  for (size_t i = 0; i < shown.points.size(); i++) {
+    shown.points[i].pos = skins[i].apply(shown.points[i].pos);
+  }
+  std::vector<float2> samples;
+  for (const Curve &curve : shown.curves) {
+    for (int s = 0; s < curve.segment_count(); s++) {
+      samples.clear();
+      curve_segment_sample(shown, curve, s, quality, samples);
+      int a, b;
+      curve_segment_points(curve, s, &a, &b);
+      samples.push_back(shown.points[b].pos);
+      for (size_t k = 0; k + 1 < samples.size(); k++) {
+        const float t = (float(k) + 0.5f) / float(samples.size() - 1);
+        const ImU32 col = weight_color(weights[a] + (weights[b] - weights[a]) * t, 230);
+        dl->AddLine(view.to_screen(to_document.apply(samples[k])), view.to_screen(to_document.apply(samples[k + 1])),
+                    col, 4.0f);
+      }
+    }
+  }
+  for (size_t i = 0; i < shown.points.size(); i++) {
+    const ImVec2 s = view.to_screen(to_document.apply(shown.points[i].pos));
+    dl->AddCircleFilled(s, 4.5f, weight_color(weights[i]));
+    dl->AddCircle(s, 4.5f, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+  }
+}
+
+static bool g_weight_painting = false;
+
+/* Paints while the left button is down; Ctrl-click picks the bone. */
+static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view, bool hovered, ImDrawList *dl)
+{
+  Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  const ImGuiIO &io = ImGui::GetIO();
+  Layer *armature = weight_armature(C);
+  if (!armature) {
+    return;
+  }
+  if (hovered) {
+    dl->AddCircle(io.MousePos, ts.weight_radius, IM_COL32(0xff, 0xff, 0xff, 200), 48, 1.5f);
+  }
+  if (hovered && io.KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (const uint64_t bone = pick_bone(doc, *armature, view, io.MousePos)) {
+      armature->active_bone = bone;
+      for (Bone &b : armature->bones) {
+        bone_select(b, b.id == bone);
+      }
+      return;
+    }
+  }
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    g_weight_painting = true;
+  }
+  if (!g_weight_painting) {
+    return;
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    g_weight_painting = false;
+    push_undo(C, "Weight Paint");
+    return;
+  }
+  if (!bone_find(*armature, armature->active_bone)) {
+    report(ReportType::Warning, "Pick a bone to paint its weights (Ctrl-click a bone)");
+    g_weight_painting = false;
+    return;
+  }
+  /* The brush works where points show (posed), in the layer's space. */
+  const Transform2D to_document = layer_world_transform(doc, layer.id);
+  const Transform2D to_layer = to_document.inverted();
+  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+  const float2 mouse = to_layer.apply(view.to_document(io.MousePos));
+  const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+  WeightPaintBrush brush;
+  brush.radius = ts.weight_radius * pixel;
+  brush.bone = armature->active_bone;
+  brush.weight = ts.weight_value;
+  brush.strength = ts.weight_strength * std::min(1.0f, io.DeltaTime * 10.0f);
+  brush.mode = io.KeyCtrl ? WeightPaintMode::Subtract : WeightPaintMode(std::clamp(ts.weight_mode, 0, 2));
+  brush.normalize = ts.weight_normalize;
+  /* Brush at the mouse, in each point's stored space: inverse of its skin. */
+  brush.center = mouse;
+  std::vector<float2> shown(layer.drawing.points.size());
+  for (size_t i = 0; i < shown.size(); i++) {
+    shown[i] = skins[i].apply(layer.drawing.points[i].pos);
+  }
+  brush.positions = &shown;
+  layer_weight_paint(doc, layer, brush);
+}
+
+/* ---------------------------------------------------------------------------------
+ * Bones
+ */
+
+static constexpr ImU32 COL_BONE = IM_COL32(0x9a, 0x9a, 0x9a, 150);
+static constexpr ImU32 COL_BONE_EDGE = IM_COL32(0x10, 0x10, 0x10, 220);
+static constexpr ImU32 COL_BONE_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 190);
+static constexpr ImU32 COL_BONE_ACTIVE = IM_COL32(0xff, 0xc0, 0x50, 220);
+/* Frame 0 is the setup pose: an orange border says so, as in Moho. */
+static constexpr ImU32 COL_SETUP = IM_COL32(0xe0, 0x8a, 0x2a, 255);
+
+struct BoneModal {
+  bool active = false;
+  int area = 0;
+  char kind = 'G';
+  uint64_t armature = 0;
+  Document snapshot;
+  /* The bones as they were; every update starts again from them. */
+  std::vector<Bone> bones;
+  bool setup_frame = true;
+  /* Document -> bone layer space. */
+  Transform2D to_armature;
+  float2 pivot;
+  float2 start_mouse;
+  /* Whole turns count, as in ModalTransform. */
+  float2 last_mouse;
+  float turned = 0.0f;
+};
+static BoneModal g_bone_modal;
+
+/* A bone layer's posed bones, in document space. */
+struct ScreenBone {
+  ImVec2 head, tail;
+};
+static std::vector<ScreenBone> screen_bones(const Document &doc, const Layer &armature, const ViewMapping &view)
+{
+  const Transform2D to_document = layer_world_transform(doc, armature.id);
+  const std::vector<BonePose> poses = armature_pose(armature, doc.frame_current == 0);
+  std::vector<ScreenBone> r(armature.bones.size());
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    r[i] = {view.to_screen(to_document.apply(poses[i].head)), view.to_screen(to_document.apply(poses[i].tail))};
+  }
+  return r;
+}
+
+static float bone_joint_radius(const ScreenBone &sb)
+{
+  const ImVec2 d = sb.tail - sb.head;
+  /* In proportion to the bone, as in Blender, so a small bone looks small; capped for long ones,
+   * with a pixel floor so a tiny bone still shows. */
+  return std::clamp(std::sqrt(d.x * d.x + d.y * d.y) * 0.08f, 1.0f, 6.5f);
+}
+
+/* Bones as Blender draws them in 2D: a long diamond from base to tip with a round, separately
+ * selectable joint at each end. The active bone is drawn lighter. `ghost`: a bone layer you're not
+ * working in, drawn as faint outlines only so it doesn't cover the artwork. */
+static constexpr ImU32 COL_BONE_GHOST = IM_COL32(0x80, 0x80, 0x80, 120);
+static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armature, const ViewMapping &view,
+                       bool ghost = false)
+{
+  const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    const Bone &bone = armature.bones[i];
+    const auto parent = std::find_if(armature.bones.begin(), armature.bones.end(),
+                                     [&](const Bone &b) { return b.id == bone.parent; });
+    if (bone.connected || parent == armature.bones.end()) {
+      continue;
+    }
+    const ImVec2 from = sbs[parent - armature.bones.begin()].tail, to = sbs[i].head;
+    const ImVec2 d = to - from;
+    const float len = std::sqrt(d.x * d.x + d.y * d.y);
+    for (float t = 0.0f; t < len; t += 8.0f) {
+      const float e = std::min(t + 4.0f, len);
+      dl->AddLine(from + d * (t / len), from + d * (e / len), ghost ? COL_BONE_GHOST : IM_COL32(0x10, 0x10, 0x10, 200),
+                  1.0f);
+    }
+  }
+  for (int pass = 0; pass < 2; pass++) {
+    for (size_t i = 0; i < armature.bones.size(); i++) {
+      const Bone &bone = armature.bones[i];
+      /* The active bone stands out only while it's selected, as in Blender. */
+      const bool picked = bone.selected || bone.select_head || bone.select_tail;
+      const bool active = bone.id == armature.active_bone && picked;
+      if ((picked || active) != (pass == 1)) {
+        continue;
+      }
+      const ImVec2 head = sbs[i].head, tail = sbs[i].tail;
+      const ImVec2 d = tail - head;
+      const float len = std::sqrt(d.x * d.x + d.y * d.y);
+      const float r = bone_joint_radius(sbs[i]);
+      const float w = std::clamp(len * 0.1f, r, 10.0f);
+      const ImVec2 n = len > 0.0f ? ImVec2(-d.y / len, d.x / len) * w : ImVec2(0, 0);
+      const ImVec2 mid = head + d * 0.18f;
+      const ImVec2 quad[4] = {head, mid + n, tail, mid - n};
+      if (ghost) {
+        dl->AddPolyline(quad, 4, COL_BONE_GHOST, ImDrawFlags_Closed, 1.0f);
+        dl->AddCircle(head, r, COL_BONE_GHOST, 0, 1.0f);
+        dl->AddCircle(tail, r, COL_BONE_GHOST, 0, 1.0f);
+        continue;
+      }
+      const ImU32 fill = active && bone.selected ? COL_BONE_ACTIVE : bone.selected ? COL_BONE_SELECTED : COL_BONE;
+      dl->AddConvexPolyFilled(quad, 4, fill);
+      dl->AddPolyline(quad, 4, active ? COL_BONE_ACTIVE : COL_BONE_EDGE, ImDrawFlags_Closed, active ? 1.6f : 1.2f);
+      const bool ends[2] = {bone_head_selected(armature, bone), bone_tail_selected(armature, bone)};
+      const ImVec2 at[2] = {head, tail};
+      for (int e = 0; e < 2; e++) {
+        const ImU32 col = ends[e] ? (active ? COL_BONE_ACTIVE : COL_BONE_SELECTED) : IM_COL32(0x2a, 0x2a, 0x2a, 230);
+        dl->AddCircleFilled(at[e], r, col);
+        dl->AddCircle(at[e], r, COL_BONE_EDGE, 0, 1.0f);
+      }
+    }
+  }
+}
+
+/* What a click hits: a bone's head or tail circle (tried first), or its body. */
+enum class BonePart { None, Body, Head, Tail };
+struct BoneHit {
+  uint64_t bone = 0;
+  BonePart part = BonePart::None;
+};
+
+static BoneHit pick_bone_part(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+{
+  const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
+  const float2 m(mouse.x, mouse.y);
+  BoneHit best;
+  float best_d = 1e30f;
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    const float reach = bone_joint_radius(sbs[i]) + 3.0f;
+    /* Tails before heads, so a shared joint picks the parent's tip. */
+    const std::pair<ImVec2, BonePart> ends[2] = {{sbs[i].tail, BonePart::Tail}, {sbs[i].head, BonePart::Head}};
+    for (const auto &[p, part] : ends) {
+      const float d = distance(m, float2(p.x, p.y));
+      if (d <= reach && d < best_d - 0.01f) {
+        best_d = d;
+        best = {armature.bones[i].id, part};
+      }
+    }
+  }
+  if (best.bone) {
+    return best;
+  }
+  best_d = PICK_PIXELS * 1.5f;
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    const float d = distance_to_segment(m, {sbs[i].head.x, sbs[i].head.y}, {sbs[i].tail.x, sbs[i].tail.y});
+    if (d < best_d) {
+      best_d = d;
+      best = {armature.bones[i].id, BonePart::Body};
+    }
+  }
+  return best;
+}
+
+/* The bone under the mouse (screen pixels), or 0. */
+static uint64_t pick_bone(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+{
+  return pick_bone_part(doc, armature, view, mouse).bone;
+}
+
+/* G, R or S on the selected bones, on any frame. G moves a bone picked by its body or base and
+ * aims (and on the setup frame stretches) one picked by its tip; R turns bones about their bases;
+ * S scales them. Children come along, as in Moho. */
+static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
+{
+  Document &doc = *C.document;
+  Layer *armature = document_active_layer(doc);
+  if (!armature || !armature->is_bone_layer() || kind == 'E' || !armature_any_picked(*armature)) {
+    return false;
+  }
+  BoneModal modal;
+  modal.area = area.id;
+  modal.kind = kind;
+  modal.armature = armature->id;
+  modal.setup_frame = doc.frame_current == 0;
+  const Transform2D to_document = layer_world_transform(doc, armature->id);
+  modal.to_armature = to_document.inverted();
+  float2 sum;
+  const std::vector<float2> heads = armature_picked_heads(*armature, modal.setup_frame);
+  for (const float2 &h : heads) {
+    sum += to_document.apply(h);
+  }
+  modal.pivot = sum / float(std::max<size_t>(heads.size(), 1));
+  modal.bones = armature->bones;
+  modal.snapshot = doc;
+  modal.start_mouse = mouse_document;
+  modal.last_mouse = mouse_document;
+  modal.active = true;
+  g_bone_modal = std::move(modal);
+  C.wm->modal_running = true;
+  C.wm->modal_keys.clear();
+  return true;
+}
+
+static void bone_modal_end(Context &C, bool confirm)
+{
+  if (confirm) {
+    push_undo(C, g_bone_modal.kind == 'R' ? "Rotate Bones" : g_bone_modal.kind == 'S' ? "Scale Bones" : "Move Bones");
+  }
+  else {
+    const int frame = C.document->frame_current;
+    *C.document = g_bone_modal.snapshot;
+    C.document->frame_current = frame;
+  }
+  g_bone_modal.active = false;
+  g_bone_modal.snapshot = Document();
+  g_bone_modal.bones.clear();
+  C.wm->modal_running = false;
+  C.wm->modal_keys.clear();
+}
+
+static std::string bone_modal_update(Context &C, const ViewMapping &view)
+{
+  Layer *armature = layer_find(*C.document, g_bone_modal.armature);
+  if (!armature) {
+    bone_modal_end(C, false);
+    return {};
+  }
+  if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    bone_modal_end(C, false);
+    return {};
+  }
+  const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
+                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+  if (!ImGui::IsMousePosValid()) {
+    if (confirm) {
+      bone_modal_end(C, true);
+    }
+    return "";
+  }
+  const ImGuiIO &io = ImGui::GetIO();
+  const float2 mouse = view.to_document(io.MousePos);
+  const bool snap = io.KeyCtrl;
+  char text[128];
+  if (g_bone_modal.kind == 'G') {
+    float2 delta = mouse - g_bone_modal.start_mouse;
+    if (snap) {
+      delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
+    }
+    armature_grab_selected(*armature, g_bone_modal.bones, g_bone_modal.to_armature.apply_vector(delta),
+                           g_bone_modal.setup_frame);
+    std::snprintf(text, sizeof(text), "Move Bones  X: %.3f  Y: %.3f", delta.x, delta.y);
+  }
+  else if (g_bone_modal.kind == 'R') {
+    g_bone_modal.turned += turn_between(g_bone_modal.last_mouse, mouse, g_bone_modal.pivot);
+    g_bone_modal.last_mouse = mouse;
+    float degrees = g_bone_modal.turned * 180.0f / PI;
+    if (snap) {
+      degrees = std::round(degrees / 5.0f) * 5.0f;
+    }
+    armature_rotate_selected(*armature, g_bone_modal.bones, degrees * PI / 180.0f);
+    std::snprintf(text, sizeof(text), "Rotate Bones  %.1f\xC2\xB0", degrees);
+  }
+  else {
+    const float start = std::max(distance(g_bone_modal.start_mouse, g_bone_modal.pivot), 1e-6f);
+    float factor = distance(mouse, g_bone_modal.pivot) / start;
+    if (snap) {
+      factor = std::round(factor * 10.0f) / 10.0f;
+    }
+    armature_scale_selected(*armature, g_bone_modal.bones, factor);
+    std::snprintf(text, sizeof(text), "Scale Bones  %.3f", factor);
+  }
+  if (C.wm->tool_settings.mirror_x) {
+    armature_mirror_edits(*armature, g_bone_modal.bones, g_bone_modal.setup_frame);
+  }
+  if (confirm) {
+    bone_modal_end(C, true);
+  }
+  else {
+    C.wm->modal_keys.clear();
+  }
+  return text;
+}
+
+/* Selects what a click hit, as Blender's edit-bone picking does. Shift adds to the selection and
+ * makes the bone active; Shift on the active bone's selected part deselects it. */
+static void bone_click_select(Layer &armature, BoneHit hit, bool extend)
+{
+  Bone *bone = bone_find(armature, hit.bone);
+  if (!bone) {
+    if (!extend) {
+      armature_deselect_all(armature);
+    }
+    return;
+  }
+  const auto part_selected = [&]() {
+    switch (hit.part) {
+      case BonePart::Head:
+        return bone_head_selected(armature, *bone);
+      case BonePart::Tail:
+        return bone_tail_selected(armature, *bone);
+      default:
+        return bone->selected;
+    }
+  };
+  const bool deselect = extend && bone->id == armature.active_bone && part_selected();
+  if (!extend) {
+    armature_deselect_all(armature);
+  }
+  /* A connected bone's head is its parent's tail: one joint. */
+  Bone *parent = bone->connected ? bone_find(armature, bone->parent) : nullptr;
+  /* Only the clicked bone is flagged, so X deletes that bone; deselecting clears the shared
+   * joint on both sides. */
+  const auto set_head = [&](bool v) {
+    bone->select_head = v;
+    if (parent && !v) {
+      parent->select_tail = false;
+    }
+  };
+  const auto set_tail = [&](bool v) {
+    bone->select_tail = v;
+    for (Bone &child : armature.bones) {
+      if (child.connected && child.parent == bone->id && !v) {
+        child.select_head = false;
+      }
+    }
+  };
+  switch (hit.part) {
+    case BonePart::Head:
+      set_head(!deselect);
+      break;
+    case BonePart::Tail:
+      set_tail(!deselect);
+      break;
+    default:
+      set_head(!deselect);
+      set_tail(!deselect);
+      break;
+  }
+  armature_flush_selection(armature);
+  armature.active_bone = bone->id;
+}
+
+/* ---------------------------------------------------------------------------------
+ * Transform Bones tool: a box gizmo around the selected bones, after Moho's
+ * sz_transform_bones_gizmo. Inside the box moves, the band around it turns about the pivot, the
+ * eight handles scale (from the opposite side; Alt from the pivot; Shift keeps a corner's
+ * proportions), and the pivot can be dragged (Ctrl snaps it to a bone end). Outside, a click picks a
+ * bone and a drag box-selects (Shift adds, Alt removes). Unselected children stay where they are.
+ */
+
+enum class GizmoMode { None, Move, Rotate, Scale, Pivot, Select };
+
+struct BoneGizmo {
+  GizmoMode mode = GizmoMode::None;
+  /* Scale handle: 0-3 corners (bottom-left, top-left, top-right, bottom-right), 4-7 sides (left,
+   * right, top, bottom). */
+  int handle = 0;
+  int area = 0;
+  uint64_t armature = 0;
+  /* Where the pivot sits relative to the middle of the box (bone layer space). */
+  float2 pivot_offset;
+  int last_count = -1;
+  /* At the press. */
+  std::vector<Bone> bones;
+  float2 lo, hi, pivot, start;
+  ImVec2 start_screen;
+  float2 last;
+  float turned = 0.0f;
+  bool changed = false;
+  /* The pivot while dragging (bone layer space). */
+  float2 live_pivot;
+};
+static BoneGizmo g_gizmo;
+
+static constexpr float GIZMO_MARKER = 8.0f;
+static constexpr ImU32 COL_GIZMO = IM_COL32(0xd8, 0x9a, 0x50, 230);
+
+static int picked_bone_count(const Layer &armature)
+{
+  int n = 0;
+  for (const Bone &b : armature.bones) {
+    n += b.selected || b.select_head || b.select_tail;
+  }
+  return n;
+}
+
+/* The box's handle positions: four corners, then the middles of the left, right, top and bottom. */
+static std::array<float2, 8> gizmo_handles(float2 lo, float2 hi)
+{
+  const float2 c = (lo + hi) * 0.5f;
+  return {float2(lo.x, lo.y), float2(lo.x, hi.y), float2(hi.x, hi.y), float2(hi.x, lo.y),
+          float2(lo.x, c.y),  float2(hi.x, c.y),  float2(c.x, hi.y),  float2(c.x, lo.y)};
+}
+
+/* The end of a bone (bone layer space) nearest `p`, skipping picked bones when asked. */
+static bool nearest_bone_end(const Layer &armature, bool setup, float2 p, bool skip_picked, float2 &out)
+{
+  const std::vector<BonePose> poses = armature_pose(armature, setup);
+  float best = 1e30f;
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    const Bone &b = armature.bones[i];
+    if (skip_picked && (b.selected || b.select_head || b.select_tail)) {
+      continue;
+    }
+    for (const float2 e : {poses[i].head, poses[i].tail}) {
+      if (distance(e, p) < best) {
+        best = distance(e, p);
+        out = e;
+      }
+    }
+  }
+  return best < 1e30f;
+}
+
+/* Applies a map of bone layer space to the selected bones as one undo step (the header fields). */
+static void bone_gizmo_apply(Context &C, Layer &armature, const Transform2D &map, const char *undo_name)
+{
+  const std::vector<Bone> original = armature.bones;
+  const bool setup = C.document->frame_current == 0;
+  armature_map_selected(armature, original, map, setup);
+  if (C.wm->tool_settings.mirror_x) {
+    armature_mirror_edits(armature, original, setup);
+  }
+  push_undo(C, undo_name);
+}
+
+static Transform2D map_about(float2 pivot, float2 offset, float2 scale, float angle)
+{
+  return Transform2D::translate(pivot + offset) * Transform2D::rotate(angle) * Transform2D::scaling(scale) *
+         Transform2D::translate(-pivot);
+}
+
+static void transform_bones_header(Context &C)
+{
+  Document &doc = *C.document;
+  Layer *armature = document_active_layer(doc);
+  if (!armature || !armature->is_bone_layer()) {
+    return;
+  }
+  float2 lo, hi;
+  const bool any = armature_picked_bounds(*armature, doc.frame_current == 0, lo, hi);
+  const float2 pivot = (lo + hi) * 0.5f + g_gizmo.pivot_offset;
+  const float w = ImGui::GetFrameHeight() * 3.2f;
+  ImGui::BeginDisabled(!any);
+  ImGui::TextUnformatted("Position");
+  ImGui::SameLine();
+  float pos[2] = {any ? pivot.x : 0.0f, any ? pivot.y : 0.0f};
+  ImGui::SetNextItemWidth(w * 2.0f);
+  if (ImGui::InputFloat2("##gizmo_pos", pos, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
+    bone_gizmo_apply(C, *armature, Transform2D::translate(float2(pos[0], pos[1]) - pivot), "Move Bones");
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Scale");
+  ImGui::SameLine();
+  float scale[2] = {1.0f, 1.0f};
+  ImGui::SetNextItemWidth(w * 2.0f);
+  if (ImGui::InputFloat2("##gizmo_scale", scale, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
+    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {scale[0], scale[1]}, 0.0f), "Scale Bones");
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Angle");
+  ImGui::SameLine();
+  float angle = 0.0f;
+  ImGui::SetNextItemWidth(w);
+  if (ImGui::InputFloat("##gizmo_angle", &angle, 0.0f, 0.0f, "%.1f\xC2\xB0", ImGuiInputTextFlags_EnterReturnsTrue) &&
+      any)
+  {
+    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {1, 1}, angle * PI / 180.0f), "Rotate Bones");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Flip H")) {
+    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {-1, 1}, 0.0f), "Flip Bones");
+  }
+  ImGui::SameLine(0, 1);
+  if (ImGui::Button("Flip V")) {
+    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {1, -1}, 0.0f), "Flip Bones");
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Symmetrize")) {
+    operator_call(C, "armature.symmetrize");
+  }
+}
+
+/* The gizmo's box on screen: at least GIZMO_MIN_BOX pixels each way (bones lying perfectly flat
+ * still get a box to grab), with a turning band around it at least GIZMO_MIN_BAND pixels wide so it
+ * can be reached past the handles. Returns the band's width (bone layer space). */
+static constexpr float GIZMO_MIN_BOX = 48.0f;
+static constexpr float GIZMO_MIN_BAND = 22.0f;
+static float gizmo_box(const Transform2D &to_document, const ViewMapping &view, float2 &lo, float2 &hi)
+{
+  const float2 c = (lo + hi) * 0.5f;
+  const ImVec2 a = view.to_screen(to_document.apply(c)), b = view.to_screen(to_document.apply(c + float2(1, 0)));
+  const float pixels = std::max(std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)), 1e-6f);
+  const float min_box = GIZMO_MIN_BOX / pixels;
+  if (hi.x - lo.x < min_box) {
+    lo.x = c.x - min_box * 0.5f;
+    hi.x = c.x + min_box * 0.5f;
+  }
+  if (hi.y - lo.y < min_box) {
+    lo.y = c.y - min_box * 0.5f;
+    hi.y = c.y + min_box * 0.5f;
+  }
+  return std::max(std::max(hi.x - lo.x, hi.y - lo.y) * 0.1f, GIZMO_MIN_BAND / pixels);
+}
+
+static GizmoMode gizmo_hit(const Layer &armature, const Transform2D &to_document, const ViewMapping &view,
+                           ImVec2 mouse, float2 mouse_armature, float2 lo, float2 hi, float2 pivot, int *handle)
+{
+  const float band = gizmo_box(to_document, view, lo, hi);
+  const auto over = [&](float2 p) {
+    const ImVec2 s = view.to_screen(to_document.apply(p));
+    return std::abs(s.x - mouse.x) < GIZMO_MARKER && std::abs(s.y - mouse.y) < GIZMO_MARKER;
+  };
+  (void)armature;
+  if (over(pivot)) {
+    return GizmoMode::Pivot;
+  }
+  const std::array<float2, 8> handles = gizmo_handles(lo, hi);
+  for (int i = 0; i < 8; i++) {
+    if (over(handles[i])) {
+      *handle = i;
+      return GizmoMode::Scale;
+    }
+  }
+  const float2 v = mouse_armature;
+  if (v.x < lo.x - band || v.x > hi.x + band || v.y < lo.y - band || v.y > hi.y + band) {
+    return GizmoMode::Select;
+  }
+  if (v.x < lo.x || v.x > hi.x || v.y < lo.y || v.y > hi.y) {
+    return GizmoMode::Rotate;
+  }
+  return GizmoMode::Move;
+}
+
+static void transform_bones_input(Context &C, Area &area, Layer &armature, const ViewMapping &view, bool hovered,
+                                  ImDrawList *dl)
+{
+  Document &doc = *C.document;
+  const ImGuiIO &io = ImGui::GetIO();
+  const bool setup = doc.frame_current == 0;
+  const Transform2D to_document = layer_world_transform(doc, armature.id);
+  const Transform2D to_armature = to_document.inverted();
+  const float2 mouse = to_armature.apply(view.to_document(io.MousePos));
+  const int count = picked_bone_count(armature);
+  if (g_gizmo.armature != armature.id || g_gizmo.last_count != count) {
+    if (g_gizmo.mode == GizmoMode::None) {
+      g_gizmo.pivot_offset = {};
+    }
+    g_gizmo.armature = armature.id;
+    g_gizmo.last_count = count;
+  }
+  float2 lo, hi;
+  const bool any = armature_picked_bounds(armature, setup, lo, hi);
+  const float2 pivot = (lo + hi) * 0.5f + g_gizmo.pivot_offset;
+  if (any) {
+    gizmo_box(to_document, view, lo, hi);
+  }
+
+  /* Press: what the mouse is on decides the drag. */
+  if (hovered && g_gizmo.mode == GizmoMode::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    int handle = 0;
+    const GizmoMode mode =
+        any ? gizmo_hit(armature, to_document, view, io.MousePos, mouse, lo, hi, pivot, &handle) : GizmoMode::Select;
+    g_gizmo.mode = mode;
+    g_gizmo.handle = handle;
+    g_gizmo.area = area.id;
+    g_gizmo.bones = armature.bones;
+    g_gizmo.lo = lo;
+    g_gizmo.hi = hi;
+    g_gizmo.pivot = pivot;
+    g_gizmo.live_pivot = pivot;
+    g_gizmo.start = mouse;
+    g_gizmo.last = mouse;
+    g_gizmo.start_screen = io.MousePos;
+    g_gizmo.turned = 0.0f;
+    g_gizmo.changed = false;
+  }
+  if (g_gizmo.mode != GizmoMode::None && g_gizmo.area == area.id) {
+    const bool released = !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right) && g_gizmo.mode != GizmoMode::Select;
+    const ImVec2 d = io.MousePos - g_gizmo.start_screen;
+    const bool dragged = d.x * d.x + d.y * d.y > 9.0f;
+    switch (g_gizmo.mode) {
+      case GizmoMode::Select: {
+        if (dragged) {
+          dl->AddRectFilled(g_gizmo.start_screen, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+          dl->AddRect(g_gizmo.start_screen, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+        }
+        if (released) {
+          if (dragged) {
+            const ImVec2 a = g_gizmo.start_screen, b = io.MousePos;
+            const ImVec2 lo_s(std::min(a.x, b.x), std::min(a.y, b.y)), hi_s(std::max(a.x, b.x), std::max(a.y, b.y));
+            armature_select_bones_in(
+                armature, setup,
+                [&](float2 p) {
+                  const ImVec2 s = view.to_screen(to_document.apply(p));
+                  return s.x >= lo_s.x && s.x <= hi_s.x && s.y >= lo_s.y && s.y <= hi_s.y;
+                },
+                io.KeyShift, io.KeyAlt);
+          }
+          else {
+            const uint64_t picked = pick_bone(doc, armature, view, io.MousePos);
+            if (!io.KeyShift) {
+              armature_deselect_all(armature);
+            }
+            if (Bone *b = bone_find(armature, picked)) {
+              bone_select(*b, true);
+              armature.active_bone = picked;
+            }
+          }
+          g_gizmo.pivot_offset = {};
+          push_undo(C, "Select Bones");
+          g_gizmo.mode = GizmoMode::None;
+        }
+        break;
+      }
+      case GizmoMode::Pivot: {
+        float2 target = mouse;
+        if (io.KeyCtrl) {
+          nearest_bone_end(armature, setup, mouse, false, target);
+        }
+        g_gizmo.pivot_offset = target - (g_gizmo.lo + g_gizmo.hi) * 0.5f;
+        g_gizmo.live_pivot = target;
+        if (released || cancel) {
+          g_gizmo.mode = GizmoMode::None;
+        }
+        break;
+      }
+      default: {
+        if (cancel) {
+          armature.bones = g_gizmo.bones;
+          g_gizmo.mode = GizmoMode::None;
+          break;
+        }
+        float2 offset, scale(1.0f, 1.0f), origin = g_gizmo.pivot;
+        float angle = 0.0f;
+        if (g_gizmo.mode == GizmoMode::Move) {
+          offset = mouse - g_gizmo.start;
+          if (io.KeyShift) {
+            (std::abs(offset.x) > std::abs(offset.y) ? offset.y : offset.x) = 0.0f;
+          }
+          float2 snap;
+          if (io.KeyCtrl && nearest_bone_end(armature, setup, mouse, true, snap)) {
+            offset = snap - g_gizmo.pivot;
+          }
+          g_gizmo.live_pivot = g_gizmo.pivot + offset;
+        }
+        else if (g_gizmo.mode == GizmoMode::Rotate) {
+          g_gizmo.turned += turn_between(g_gizmo.last, mouse, g_gizmo.pivot);
+          g_gizmo.last = mouse;
+          angle = g_gizmo.turned;
+          if (io.KeyShift) {
+            const float step = PI / 4.0f;
+            angle = std::round(angle / step) * step;
+          }
+        }
+        else {
+          const float2 lo0 = g_gizmo.lo, hi0 = g_gizmo.hi, c0 = (lo0 + hi0) * 0.5f;
+          static const float2 opposite[8] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}};
+          /* The anchor is the opposite corner or side (x/y: 0 = low, 1 = high, -1 = the middle). */
+          const float2 o = opposite[g_gizmo.handle];
+          float2 anchor(o.x < 0 ? c0.x : (o.x > 0 ? hi0.x : lo0.x), o.y < 0 ? c0.y : (o.y > 0 ? hi0.y : lo0.y));
+          if (io.KeyAlt) {
+            anchor = g_gizmo.pivot;
+          }
+          const float2 p0 = g_gizmo.start - anchor, p1 = mouse - anchor;
+          if (std::abs(p0.x) > 1e-3f) {
+            scale.x = p1.x / p0.x;
+          }
+          if (std::abs(p0.y) > 1e-3f) {
+            scale.y = p1.y / p0.y;
+          }
+          if (g_gizmo.handle == 4 || g_gizmo.handle == 5) {
+            scale.y = 1.0f;
+          }
+          if (g_gizmo.handle == 6 || g_gizmo.handle == 7) {
+            scale.x = 1.0f;
+          }
+          if (io.KeyShift && g_gizmo.handle < 4) {
+            scale.x = scale.y = (scale.x + scale.y) * 0.5f;
+          }
+          origin = anchor;
+          const float2 rel = g_gizmo.pivot - anchor;
+          g_gizmo.live_pivot = anchor + float2(rel.x * scale.x, rel.y * scale.y);
+        }
+        armature_map_selected(armature, g_gizmo.bones, map_about(origin, offset, scale, angle), setup);
+        if (C.wm->tool_settings.mirror_x) {
+          armature_mirror_edits(armature, g_gizmo.bones, setup);
+        }
+        g_gizmo.changed |= dragged;
+        if (released) {
+          if (g_gizmo.changed) {
+            push_undo(C, "Transform Bones");
+            /* The pivot stays where the drag left it. */
+            float2 nlo, nhi;
+            if (armature_picked_bounds(armature, setup, nlo, nhi)) {
+              g_gizmo.pivot_offset = g_gizmo.live_pivot - (nlo + nhi) * 0.5f;
+            }
+          }
+          else {
+            armature.bones = g_gizmo.bones;
+          }
+          g_gizmo.mode = GizmoMode::None;
+        }
+        break;
+      }
+    }
+  }
+
+  /* The cursor says what a press would do. */
+  if (hovered && g_gizmo.mode == GizmoMode::None && any) {
+    int handle = 0;
+    switch (gizmo_hit(armature, to_document, view, io.MousePos, mouse, lo, hi, pivot, &handle)) {
+      case GizmoMode::Move:
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        break;
+      case GizmoMode::Rotate:
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        break;
+      case GizmoMode::Scale:
+        ImGui::SetMouseCursor(handle == 0 || handle == 2   ? ImGuiMouseCursor_ResizeNESW
+                              : handle == 1 || handle == 3 ? ImGuiMouseCursor_ResizeNWSE
+                              : handle < 6                 ? ImGuiMouseCursor_ResizeEW
+                                                           : ImGuiMouseCursor_ResizeNS);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /* The gizmo. */
+  float2 dlo, dhi;
+  if (g_gizmo.mode == GizmoMode::Select || !armature_picked_bounds(armature, setup, dlo, dhi)) {
+    return;
+  }
+  const auto screen = [&](float2 p) { return view.to_screen(to_document.apply(p)); };
+  const auto box = [&](float2 a, float2 b) {
+    const ImVec2 pts[4] = {screen(a), screen({a.x, b.y}), screen(b), screen({b.x, a.y})};
+    dl->AddPolyline(pts, 4, COL_GIZMO, ImDrawFlags_Closed, 1.0f);
+  };
+  const float band = gizmo_box(to_document, view, dlo, dhi);
+  box(dlo, dhi);
+  box(dlo - float2(band, band), dhi + float2(band, band));
+  for (const float2 &h : gizmo_handles(dlo, dhi)) {
+    dl->AddCircle(screen(h), GIZMO_MARKER, COL_GIZMO, 0, 2.0f);
+  }
+  const float2 shown_pivot = g_gizmo.mode != GizmoMode::None ? g_gizmo.live_pivot
+                                                              : (dlo + dhi) * 0.5f + g_gizmo.pivot_offset;
+  const ImVec2 pc = screen(shown_pivot);
+  dl->AddCircle(pc, GIZMO_MARKER, COL_GIZMO, 0, 1.0f);
+  dl->AddLine(pc - ImVec2(GIZMO_MARKER * 1.4f, 0), pc + ImVec2(GIZMO_MARKER * 1.4f, 0), COL_GIZMO, 1.0f);
+  dl->AddLine(pc - ImVec2(0, GIZMO_MARKER * 1.4f), pc + ImVec2(0, GIZMO_MARKER * 1.4f), COL_GIZMO, 1.0f);
+}
+
+/* The Select tool on a bone layer: a click picks a bone or one of its ends; a drag box-selects
+ * the ends inside (Shift adds, Ctrl removes), as Blender's Select Box tool does. */
+struct BoneBox {
+  bool active = false;
+  int area = 0;
+  ImVec2 start;
+};
+static BoneBox g_bone_box;
+
+static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewMapping &view, bool hovered,
+                            ImDrawList *dl)
+{
+  Document &doc = *C.document;
+  const ImGuiIO &io = ImGui::GetIO();
+  if (C.wm->tool_settings.tool == Tool::TransformBones) {
+    transform_bones_input(C, area, armature, view, hovered, dl);
+    return;
+  }
+  if (hovered && C.wm->tool_settings.tool == Tool::Select && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    g_bone_box = {true, area.id, io.MousePos};
+  }
+  if (g_bone_box.active && g_bone_box.area == area.id) {
+    const ImVec2 d = io.MousePos - g_bone_box.start;
+    const bool dragged = d.x * d.x + d.y * d.y > 9.0f;
+    if (dragged) {
+      dl->AddRectFilled(g_bone_box.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+      dl->AddRect(g_bone_box.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (dragged) {
+        const Transform2D to_document = layer_world_transform(doc, armature.id);
+        const ImVec2 a = g_bone_box.start, b = io.MousePos;
+        const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y)), hi(std::max(a.x, b.x), std::max(a.y, b.y));
+        armature_select_joints_in(
+            armature, doc.frame_current == 0,
+            [&](float2 p) {
+              const ImVec2 s = view.to_screen(to_document.apply(p));
+              return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
+            },
+            io.KeyShift, io.KeyCtrl);
+        push_undo(C, "Box Select Bones");
+      }
+      else {
+        const BoneHit hit = pick_bone_part(doc, armature, view, g_bone_box.start);
+        bone_click_select(armature, hit, io.KeyShift);
+        push_undo(C, hit.bone ? "Select Bone" : "Deselect Bones");
+      }
+      g_bone_box = {};
+    }
+  }
+  /* Right-click with bones selected: their context menu, as in Blender. */
+  if (hovered && C.wm->tool_settings.tool == Tool::Select && !io.KeyShift &&
+      ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) &&
+      !g_right_click_spent && armature_any_picked(armature))
+  {
+    ImGui::OpenPopup("##bone_menu");
+  }
+}
+
+/* Ctrl P and Alt P on bones: Blender's parent menus. */
+static void bone_parent_menus(Context &C, bool hovered)
+{
+  WindowManager &wm = *C.wm;
+  if (hovered && (wm.menu_request == "bone_parent_set" || wm.menu_request == "bone_parent_clear")) {
+    ImGui::OpenPopup(wm.menu_request == "bone_parent_set" ? "##bone_parent_set" : "##bone_parent_clear");
+    wm.menu_request.clear();
+  }
+  if (ImGui::BeginPopup("##bone_menu")) {
+    menu_operator(C, "Subdivide", "armature.subdivide");
+    ImGui::Separator();
+    menu_operator(C, "Extrude", "armature.extrude");
+    menu_operator(C, "Duplicate", "armature.duplicate_move");
+    ImGui::Separator();
+    menu_operator(C, "Make Parent...", "armature.parent_set_menu");
+    menu_operator(C, "Clear Parent...", "armature.parent_clear_menu");
+    ImGui::Separator();
+    menu_operator(C, "Delete", "armature.bone_delete");
+    ImGui::EndPopup();
+  }
+  if (ImGui::BeginPopup("##bone_parent_set")) {
+    ImGui::TextDisabled("Make Parent");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Connected")) {
+      operator_call(C, "armature.parent_set", {{"type", "CONNECTED"}});
+    }
+    if (ImGui::MenuItem("Keep Offset")) {
+      operator_call(C, "armature.parent_set", {{"type", "OFFSET"}});
+    }
+    ImGui::EndPopup();
+  }
+  if (ImGui::BeginPopup("##bone_parent_clear")) {
+    ImGui::TextDisabled("Clear Parent");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Clear Parent")) {
+      operator_call(C, "armature.parent_clear", {{"type", "CLEAR"}});
+    }
+    if (ImGui::MenuItem("Disconnect Bone")) {
+      operator_call(C, "armature.parent_clear", {{"type", "DISCONNECT"}});
+    }
+    ImGui::EndPopup();
+  }
+}
 
 void viewport_draw(Area &area, Context &C)
 {
@@ -1737,12 +3043,13 @@ void viewport_draw(Area &area, Context &C)
   {
     if (ts.tool == Tool::SplitCurve) {
       ts.tool = ts.tool_return;
+      g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     }
     ts.tool_temporary = false;
   }
 
   std::string modal_info;
-  if (wm.transform_request && hovered && !g_modal.active) {
+  if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active) {
     g_pending_transform = wm.transform_request;
     g_pending_area = area.id;
     wm.transform_request = 0;
@@ -1754,10 +3061,27 @@ void viewport_draw(Area &area, Context &C)
   if (g_pending_transform && g_pending_area == area.id && !g_modal.active && !g_drag.active &&
       !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
       ImGui::IsMousePosValid()) {
-    modal_start(C, area, g_pending_transform, view.to_document(io.MousePos));
+    if (!bone_modal_start(C, area, g_pending_transform, view.to_document(io.MousePos))) {
+      modal_start(C, area, g_pending_transform, view.to_document(io.MousePos));
+    }
     g_pending_transform = 0;
   }
-  if (g_modal.active && g_modal.area == area.id) {
+  Layer *armature_active = document_active_layer(doc);
+  if (armature_active && !armature_active->is_bone_layer()) {
+    armature_active = nullptr;
+  }
+  if (g_bone_modal.active) {
+    if (g_bone_modal.area == area.id) {
+      modal_info = bone_modal_update(C, view);
+    }
+  }
+  else if (armature_active && !g_modal.active) {
+    bone_tool_input(C, area, *armature_active, view, hovered, dl);
+  }
+  else if (ts.tool == Tool::WeightPaint && drawing && !g_modal.active) {
+    weight_paint_input(C, *layer, view, hovered, dl);
+  }
+  else if (g_modal.active && g_modal.area == area.id) {
     modal_info = modal_update(C, view);
     /* A key replayed after the transform may ask for another (click, then E); it starts once
      * the click is over. */
@@ -1774,7 +3098,13 @@ void viewport_draw(Area &area, Context &C)
     if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       ts.cursor = view.to_document(io.MousePos);
     }
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    /* New artwork is drawn on the setup frame, so it exists on every frame (as bones are added
+     * there); other frames animate what is drawn. */
+    const bool draws = ts.tool == Tool::Draw || ts.tool == Tool::Shape;
+    if (draws && doc.frame_current != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      report(ReportType::Warning, "Switch to Setup (frame 0) to draw");
+    }
+    else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       g_drag = {};
       g_drag.active = true;
       g_drag.area = area.id;
@@ -1940,19 +3270,25 @@ void viewport_draw(Area &area, Context &C)
   }
 
   /* Overlays for the layer being edited. */
-  if (drawing) {
+  if (drawing && ts.tool == Tool::WeightPaint) {
+    draw_weight_overlay(dl, C, *layer, view, std::clamp(doc.viewport_quality, 1, 64));
+  }
+  else if (drawing) {
     if (ov.show && (ov.wireframe || ov.points)) {
       /* Every layer being edited shows its wires and points. */
       for (Layer *editing : editable_layers(C)) {
         if (editing->id == layer->id) {
           continue;
         }
-        draw_drawing_overlay(dl, editing->drawing, layer_world_transform(doc, editing->id), view, ov.wireframe,
+        draw_drawing_overlay(dl, *posed(doc, *editing).drawing, layer_world_transform(doc, editing->id), view, ov.wireframe,
                              ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
-                             std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts));
+                             std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
+                             ts.select_mode != SelectMode::Edge);
       }
-      draw_drawing_overlay(dl, *drawing, to_document, view, ov.wireframe, ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
-                           std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts));
+      const Posed shown = posed(doc, *layer);
+      draw_drawing_overlay(dl, *shown.drawing, to_document, view, ov.wireframe, ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
+                           std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
+                           ts.select_mode != SelectMode::Edge);
     }
     if (hovered && ts.tool == Tool::SplitCurve && !io.KeyCtrl) {
       if (const SplitHit hit = split_pick(C, view, view.to_document(io.MousePos), false); hit.layer) {
@@ -1969,23 +3305,57 @@ void viewport_draw(Area &area, Context &C)
       }
     }
   }
+  /* Bones, as the Armature overlay says: every visible bone layer's, or only selected ones'. The
+   * Weight Paint tool always shows the bones it paints for. */
+  if (ov.show) {
+    const Layer *painting = ts.tool == Tool::WeightPaint ? active_armature(C) : nullptr;
+    const auto visit = [&](auto &&self, const std::vector<Layer> &list, bool shown) -> void {
+      for (const Layer &l : list) {
+        const bool visible = shown && l.visible;
+        if (l.is_bone_layer() && visible &&
+            (ov.armature == ArmatureDisplay::On ||
+             (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer)) || &l == painting))
+        {
+          /* Only the bone layer being worked in is drawn solid. */
+          draw_bones(dl, doc, l, view, l.id != doc.active_layer);
+        }
+        self(self, l.children, visible);
+      }
+    };
+    visit(visit, doc.layers, true);
+  }
+  if (doc.frame_current == 0) {
+    dl->AddRect(origin + ImVec2(1, 1), origin + size - ImVec2(1, 1), COL_SETUP, 0.0f, 0, 2.0f);
+  }
   if (ov.show && ov.cursor) {
     draw_cursor(dl, view.to_screen(ts.cursor));
   }
 
-  /* Blender's V menu: Set Handle Type. */
-  if (wm.handle_menu_requested && hovered) {
-    wm.handle_menu_requested = false;
-    ImGui::OpenPopup("##handle_type_menu");
-  }
-  if (ImGui::BeginPopup("##handle_type_menu")) {
-    ImGui::TextDisabled("Set Handle Type");
-    ImGui::Separator();
-    for (const HandleType type : {HandleType::Auto, HandleType::Vector, HandleType::Aligned, HandleType::Free}) {
-      if (ImGui::MenuItem(handle_type_name(type))) {
-        operator_call(C, "mesh.handle_type_set", {{"type", handle_type_identifier(type)}});
-      }
+  /* Right-click with points or handles selected: their context menu, as in Blender. */
+  if (hovered && ts.tool == Tool::Select && !io.KeyShift && !g_modal.active && drawing &&
+      ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) &&
+      !g_right_click_spent)
+  {
+    bool any = false;
+    for (Layer *editing : editable_layers(C)) {
+      any |= drawing_selected_alignment(editing->drawing) != -1;
     }
+    if (any) {
+      ImGui::OpenPopup("##point_menu");
+    }
+  }
+  bone_parent_menus(C, hovered);
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+    g_right_click_spent = false;
+  }
+  if (ImGui::BeginPopup("##point_menu")) {
+    menu_operator(C, "Align", "mesh.handles_align");
+    menu_operator(C, "Unalign", "mesh.handles_unalign");
+    ImGui::Separator();
+    menu_operator(C, "Peak", "mesh.peak");
+    menu_operator(C, "Smooth", "mesh.smooth");
+    ImGui::Separator();
+    menu_operator(C, "Delete", "mesh.delete");
     ImGui::EndPopup();
   }
 

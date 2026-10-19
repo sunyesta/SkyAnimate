@@ -11,8 +11,11 @@ KeyMaps &keymaps()
 void KeyMaps::add(const std::string &keymap, KeyMapItem item)
 {
   std::vector<KeyMapItem> &items = maps_[keymap];
-  /* Re-adding the same event replaces its binding. */
-  std::erase_if(items, [&](const KeyMapItem &existing) { return existing.event == item.event; });
+  /* Re-adding an operator's key replaces it; other operators can share the key, as in Blender
+   * (the first that can run takes it: X deletes points in a drawing and bones in a bone layer). */
+  std::erase_if(items, [&](const KeyMapItem &existing) {
+    return existing.event == item.event && existing.idname == item.idname;
+  });
   items.push_back(std::move(item));
 }
 
@@ -28,6 +31,19 @@ const KeyMapItem *KeyMaps::match(const std::string &keymap, const KeyEvent &even
     }
   }
   return nullptr;
+}
+
+std::vector<const KeyMapItem *> KeyMaps::match_all(const std::string &keymap, const KeyEvent &event) const
+{
+  std::vector<const KeyMapItem *> found;
+  if (auto it = maps_.find(keymap); it != maps_.end()) {
+    for (const KeyMapItem &item : it->second) {
+      if (item.event == event) {
+        found.push_back(&item);
+      }
+    }
+  }
+  return found;
 }
 
 std::string KeyMaps::shortcut_for(const std::string &idname) const

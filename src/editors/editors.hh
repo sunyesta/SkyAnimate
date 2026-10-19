@@ -27,6 +27,8 @@ enum class AreaSplit { None, Vertical, Horizontal };
  * its own; `show` turns them all off at once. */
 /* Which curve handles the viewport shows, as Blender's Overlays > Handles. */
 enum class HandleDisplay { None, Selected, All };
+/* Which bones the viewport shows: none, those of selected bone layers, or every bone layer's. */
+enum class ArmatureDisplay { Off, Selected, On };
 
 struct ViewportOverlays {
   bool show = true;
@@ -39,8 +41,7 @@ struct ViewportOverlays {
   bool wireframe = true;
   bool points = true;
   HandleDisplay handles = HandleDisplay::Selected;
-  /* Bones arrive in milestone 4; the toggle is already here for them. */
-  bool bones = true;
+  ArmatureDisplay armature = ArmatureDisplay::Selected;
 };
 
 struct Area {

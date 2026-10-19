@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 
+#include "anim/deform.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "data/document.hh"
@@ -516,7 +517,13 @@ void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const
 
 void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
 {
-  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  /* Modifiers (Mirror, the bones) draw from an evaluated copy; otherwise the drawing itself. */
+  VectorDrawing evaluated;
+  const bool modified = layer_has_modifier_effect(doc, layer, final_render_);
+  if (modified) {
+    evaluated = layer_evaluated_drawing(doc, layer, final_render_);
+  }
+  const VectorDrawing &drawing = modified ? evaluated : layer_drawing(doc, layer);
   if (drawing.shapes.empty()) {
     return;
   }

@@ -20,7 +20,8 @@
 
 namespace sky {
 
-enum class LayerType { Vector, Group };
+/* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). */
+enum class LayerType { Vector, Group, Bone };
 
 /* Moho's MM_* masking modes for a layer inside a masking group. */
 /* Moho's masking modes, in the order its Masking menu lists them. Subtracting always hides the
@@ -40,6 +41,62 @@ enum class GroupMask { None, ShowAll, HideAll };
 
 /* Label colours for the Layers editor, as in Moho. */
 enum class LabelColor { None, Red, Orange, Yellow, Green, Blue, Purple, Gray };
+
+/* One bone of a bone layer's skeleton, as in Moho's M_Bone. Its frame is the parent bone's
+ * (or, for a root, the bone layer's) space moved by `position`, turned by `angle` and scaled by
+ * `scale`; the bone runs `length` along its own x axis. The values at frame 0 are the setup
+ * pose; the difference from it is what moves bound artwork. */
+struct Bone {
+  uint64_t id = 0;
+  std::string name;
+  /* The parent bone's id, or 0 for a root. */
+  uint64_t parent = 0;
+  float2 position;
+  /* Radians, counter-clockwise. */
+  float angle = 0.0f;
+  float length = 0.5f;
+  float scale = 1.0f;
+  /* How far flexi-binding reaches, as a multiple of the length (Moho's bone strength). */
+  float strength = 1.0f;
+  LabelColor color = LabelColor::None;
+  /* Connected, as in Blender: the head sits on the parent's tail and moves with it. */
+  bool connected = false;
+  /* Blender's edit-bone selection: the body, and the round joints at either end. A selected body
+   * has both ends selected; a connected bone's head is its parent's tail, one joint. */
+  bool selected = false;
+  bool select_head = false;
+  bool select_tail = false;
+  Channel<float2> position_keys;
+  Channel<float> angle_keys;
+  Channel<float> scale_keys;
+};
+
+/* Blender-style modifiers, run on a layer's drawing in stack order. Armature is the bones
+ * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
+ * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
+ * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
+enum class ModifierType { Mirror, Armature };
+
+struct Modifier {
+  ModifierType type = ModifierType::Mirror;
+  std::string name = "Mirror";
+  bool show_viewport = true;
+  bool show_render = true;
+  /* Shown open in the Modifiers tab. */
+  bool show_expanded = true;
+  /* Mirror: across the layer's vertical axis (x flips) and/or its horizontal one, through
+   * `center` in the layer's space. */
+  bool axis_x = true;
+  bool axis_y = false;
+  float2 center;
+  /* Points within `merge_distance` of the axis are shared by both halves, so a curve ending
+   * on the axis joins its mirror image into one line (and a half outline into a whole one). */
+  bool merge = true;
+  float merge_distance = 0.002f;
+  /* Mirrored points bound to a bone named ..._L follow ..._R (and the other way), as
+   * Blender's mirror modifier flips vertex groups. */
+  bool mirror_bones = true;
+};
 
 struct Layer {
   uint64_t id = 0;
@@ -61,6 +118,11 @@ struct Layer {
   float rotation = 0.0f;
   float2 scale = {1.0f, 1.0f};
   float opacity = 1.0f;
+  /* Keys for the transform and opacity (see anim/channel.hh). */
+  Channel<float2> position_keys;
+  Channel<float> rotation_keys;
+  Channel<float2> scale_keys;
+  Channel<float> opacity_keys;
 
   MaskMode mask_mode = MaskMode::Masked;
   /* Moho's masking options for the layer's part of its group's mask: grow it by a pixel (hides
@@ -76,7 +138,19 @@ struct Layer {
   /* Group children, top of the stack first, as the Layers editor lists them. */
   std::vector<Layer> children;
 
-  bool is_group() const { return type == LayerType::Group; }
+  /* Bone layers: the skeleton, roots before their children. */
+  std::vector<Bone> bones;
+  uint64_t next_bone_id = 1;
+  uint64_t active_bone = 0;
+  /* Moho's layer binding: a layer inside a bone layer can follow one bone as a whole. */
+  uint64_t parent_bone = 0;
+  /* Points not bound to one bone follow every bone, by distance (Moho's flexi-binding). */
+  bool flexi_binding = true;
+  /* Run on the drawing in order (see ModifierType). */
+  std::vector<Modifier> modifiers;
+
+  bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
+  bool is_bone_layer() const { return type == LayerType::Bone; }
   bool is_reference() const { return reference_source != 0; }
   bool mask_hides_layer() const;
   bool mask_adds() const;

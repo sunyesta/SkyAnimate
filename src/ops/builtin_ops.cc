@@ -161,15 +161,7 @@ static void playback_operators_register()
     return OpStatus::Finished;
   });
 
-  /* Keyframes arrive in milestone 3; until then there is nothing to jump to. */
-  const auto no_keyframes = [](Context &) {
-    report(ReportType::Info, "No more keyframes to jump to in this direction");
-    return OpStatus::Cancelled;
-  };
-  frame_operator_register("screen.keyframe_jump_next", "Jump to Next Keyframe", "Jump to the next keyframe",
-                          no_keyframes);
-  frame_operator_register("screen.keyframe_jump_prev", "Jump to Previous Keyframe",
-                          "Jump to the previous keyframe", no_keyframes);
+  /* Keyframe jumps live with the other keyframe operators (ops/anim_ops.cc). */
 }
 
 /* ---------------------------------------------------------------------------------

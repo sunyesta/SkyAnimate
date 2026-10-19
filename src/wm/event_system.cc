@@ -12,15 +12,15 @@ namespace sky {
 
 static bool try_keymap(Context &C, const std::string &keymap, const KeyEvent &event)
 {
-  const KeyMapItem *item = keymaps().match(keymap, event);
-  if (!item) {
-    return false;
+  /* As in Blender: of the operators on this key, the first that can run here takes it (X deletes
+   * points in a drawing and bones in a bone layer). */
+  for (const KeyMapItem *item : keymaps().match_all(keymap, event)) {
+    const OperatorType *ot = operators().find(item->idname);
+    if (ot && operator_poll(C, *ot)) {
+      return operator_call(C, item->idname) != OpStatus::PassThrough;
+    }
   }
-  const OperatorType *ot = operators().find(item->idname);
-  if (!ot || !operator_poll(C, *ot)) {
-    return false;
-  }
-  return operator_call(C, item->idname) != OpStatus::PassThrough;
+  return false;
 }
 
 /* Keys a text field handles itself: plain typing, editing shortcuts and caret movement. */

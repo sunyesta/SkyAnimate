@@ -176,12 +176,22 @@ static void layer_context_menu(Context &C, Layer &layer, bool in_group)
     ImGui::Separator();
   }
   menu_op(C, "Group With Selection", "layer.group");
+  if (layer.type == LayerType::Group) {
+    menu_op(C, "Convert to Bone Group", "layer.convert_to_bone");
+  }
+  else if (layer.is_bone_layer()) {
+    menu_op(C, "Convert to Group", "layer.convert_to_group");
+  }
   menu_op(C, "Duplicate Layer", "layer.duplicate");
   menu_op(C, "Reference Layer", "layer.make_reference");
   menu_op(C, "Delete Layer", "layer.delete");
 }
 
 /* Clears the extra selection, so only the active layer is picked. */
+/* A plain press on an already picked layer: the layer whose release (without a drag) narrows
+ * the selection to it. */
+static uint64_t g_narrow_on_release = 0;
+
 static void layers_deselect(std::vector<Layer> &layers)
 {
   for (Layer &layer : layers) {
@@ -215,10 +225,23 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
         previous->selected = true;
       }
     }
+    else if (layer.selected || doc.active_layer == layer.id) {
+      /* Pressing on a picked layer may start dragging the whole selection: keep it, and only
+       * narrow it to this layer if the button comes up without a drag. */
+      g_narrow_on_release = layer.id;
+    }
     else {
       layers_deselect(doc.layers);
     }
     doc.active_layer = layer.id;
+  }
+  if (g_narrow_on_release == layer.id && ImGui::IsItemDeactivated()) {
+    const ImGuiIO &io = ImGui::GetIO();
+    const bool dragged = io.MouseDragMaxDistanceSqr[0] > io.MouseDragThreshold * io.MouseDragThreshold;
+    if (!dragged && !ImGui::GetDragDropPayload()) {
+      layers_deselect(doc.layers);
+    }
+    g_narrow_on_release = 0;
   }
   if (row_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
     area.renaming_layer = layer.id;
@@ -464,6 +487,7 @@ void layers_draw(Area &area, Context &C)
   if (ImGui::BeginPopup("##add_layer")) {
     menu_op(C, "Vector Layer", "layer.new");
     menu_op(C, "Group", "layer.new_group");
+    menu_op(C, "Bone Layer", "layer.new_bone");
     ImGui::Separator();
     menu_op(C, "Reference of Active Layer", "layer.make_reference");
     ImGui::EndPopup();
@@ -499,7 +523,12 @@ void layers_draw(Area &area, Context &C)
     /* Dropping below the last row moves the layer to the bottom of the top level. */
     ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, std::max(ImGui::GetContentRegionAvail().y, 8.0f)));
     if (ImGui::BeginDragDropTarget()) {
-      if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(LAYER_PAYLOAD)) {
+      /* Empty space below the list: to the bottom, shown by a line under the last layer. */
+      const ImVec2 area_min = ImGui::GetItemRectMin(), area_max = ImGui::GetItemRectMax();
+      ImGui::GetWindowDrawList()->AddLine(ImVec2(area_min.x, area_min.y + 1.0f), ImVec2(area_max.x, area_min.y + 1.0f),
+                                          COL_REFERENCE, 2.0f);
+      if (const ImGuiPayload *payload =
+              ImGui::AcceptDragDropPayload(LAYER_PAYLOAD, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
         uint64_t moving;
         std::memcpy(&moving, payload->Data, sizeof(moving));
         if (move_layers(doc, dragged_layers(doc, moving), 0, 1)) {

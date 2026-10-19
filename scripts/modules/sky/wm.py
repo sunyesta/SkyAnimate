@@ -20,3 +20,13 @@ def undo_history():
 def report(message, type="INFO"):
     """Show a message in the Info editor. type is "INFO", "WARNING" or "ERROR"."""
     _sky.report(type, message)
+
+
+def mirror_editing():
+    """(x, y): whether mirror editing (the viewport header's butterfly) is on for each axis."""
+    return tuple(_sky.mirror_editing())
+
+
+def set_mirror_editing(x=False, y=False):
+    """Turn mirror editing on or off: edits to a point also apply to its mirror image."""
+    _sky.set_mirror_editing(x, y)

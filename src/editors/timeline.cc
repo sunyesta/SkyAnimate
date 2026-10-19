@@ -6,10 +6,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 #include <string>
 
+#include "anim/animation.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
@@ -26,6 +30,9 @@ static constexpr ImU32 COL_GRID = IM_COL32(0x3a, 0x3a, 0x3a, 255);
 static constexpr ImU32 COL_GRID_MINOR = IM_COL32(0x31, 0x31, 0x31, 255);
 static constexpr ImU32 COL_RULER_TEXT = IM_COL32(0x9a, 0x9a, 0x9a, 255);
 static constexpr ImU32 COL_PLAYHEAD = IM_COL32(0x47, 0x72, 0xb3, 255);
+/* Blender's keyframe diamonds: light grey, orange when selected. */
+static constexpr ImU32 COL_KEY = IM_COL32(0xdd, 0xdd, 0xdd, 255);
+static constexpr ImU32 COL_KEY_SELECTED = IM_COL32(0xff, 0xbe, 0x33, 255);
 static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 /* Editing an action instead of the mainline: Blender's orange for "not the main data". */
 static constexpr ImU32 COL_ACTION_ACTIVE = IM_COL32(0x8a, 0x5a, 0x1e, 255);
@@ -240,7 +247,7 @@ static void timeline_header(Area &area, Context &C)
   }
   if (ImGui::BeginPopup("Playback")) {
     ImGui::MenuItem("Loop Playback", nullptr, &wm.play_loop);
-    ImGui::MenuItem("Auto Keying", nullptr, &wm.auto_key);
+    ImGui::MenuItem("Auto Keying", nullptr, &doc.auto_key);
     ImGui::EndPopup();
   }
 
@@ -251,8 +258,9 @@ static void timeline_header(Area &area, Context &C)
   const float transport_x = std::max(menus_end + pad * 2.0f, origin.x + (width - transport_w) * 0.5f);
   ImGui::SetCursorScreenPos(ImVec2(transport_x, origin.y + top));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, style.ItemSpacing.y));
-  if (icon_button("##auto_key", Icon::Record, wm.auto_key, "Auto Keying (takes effect in milestone 3)", "")) {
-    wm.auto_key = !wm.auto_key;
+  if (icon_button("##auto_key", Icon::Record, doc.auto_key,
+                  "Auto Keying\nEditing at a frame other than 0 keys what you change there", "")) {
+    doc.auto_key = !doc.auto_key;
   }
   ImGui::SameLine(0.0f, record_gap);
   operator_icon_button(C, "##jump_start", Icon::JumpStart, "screen.frame_jump_start");
@@ -306,6 +314,36 @@ static float ruler_step(float span, float width, float min_px, float fps)
   return step;
 }
 
+/* A press in the timeline: scrubbing (in the ruler) or picking keys (below it). */
+struct TimelinePress {
+  bool active = false;
+  bool scrub = false;
+  ImVec2 start;
+};
+static TimelinePress g_press;
+
+/* G or S on keys: from a copy of the document, the keys move by the mouse until a click. */
+struct KeyTransform {
+  bool active = false;
+  int area = 0;
+  char kind = 'G';
+  float start_x = 0.0f;
+  Document snapshot;
+};
+static KeyTransform g_key_transform;
+
+static bool modal_key_take(Context &C, const char *type)
+{
+  std::vector<ModalKey> &keys = C.wm->modal_keys;
+  for (auto it = keys.begin(); it != keys.end(); ++it) {
+    if (it->type == type) {
+      keys.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+
 static void timeline_body(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -355,17 +393,126 @@ static void timeline_body(Area &area, Context &C)
     area.view_end += delta;
   }
 
-  /* Scrubbing: click or drag with the left button sets the frame and pauses playback. */
-  if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    const float frame = area.view_start + (io.MousePos.x - p0.x) / size.x * span;
-    doc.frame_current = std::max(0, int(std::lround(frame)));
-    C.wm->playing = false;
-  }
-
   const auto frame_x = [&](float frame) { return p0.x + (frame - area.view_start) / span * size.x; };
-
+  const auto x_frame = [&](float x) { return area.view_start + (x - p0.x) / size.x * span; };
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const float ruler_h = ImGui::GetFrameHeight() + 2.0f;
+  const float font_size = ImGui::GetFontSize();
+  const float key_y = p0.y + ruler_h + (size.y - ruler_h) * 0.5f;
+  const float key_r = std::max(4.0f, font_size * 0.36f);
+  const std::vector<Layer *> layers = keyed_layers(C);
+  std::map<int, KeyFrameSummary> summary = layers_key_summary(layers);
+
+  /* G and S on the selected keys follow the mouse, as in Blender. */
+  if (C.wm->timeline_transform_request && hovered && !g_key_transform.active) {
+    g_key_transform = {true, area.id, C.wm->timeline_transform_request, io.MousePos.x, doc};
+    C.wm->modal_running = true;
+    C.wm->modal_keys.clear();
+  }
+  C.wm->timeline_transform_request = 0;
+  std::string transform_info;
+  if (g_key_transform.active && g_key_transform.area == area.id) {
+    const int frame = doc.frame_current;
+    if (modal_key_take(C, "ESC") || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      doc = g_key_transform.snapshot;
+      doc.frame_current = frame;
+      g_key_transform.active = false;
+      C.wm->modal_running = false;
+    }
+    else {
+      doc = g_key_transform.snapshot;
+      doc.frame_current = frame;
+      const float frames_per_px = span / size.x;
+      if (g_key_transform.kind == 'D') {
+        /* Shift D: copies of the selected keys follow the mouse; the originals stay. */
+        const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        layers_duplicate_selected_keys(keyed_layers(C), offset);
+        transform_info = "Duplicate Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
+      }
+      else if (g_key_transform.kind == 'G') {
+        const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        layers_move_selected_keys(keyed_layers(C), [offset](int f) { return f + offset; });
+        transform_info = "Move Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
+      }
+      else {
+        /* Scale about the playhead by how far the mouse is from it. */
+        const float cx = frame_x(float(frame));
+        const float start = std::max(std::fabs(g_key_transform.start_x - cx), 1.0f);
+        const float factor = std::fabs(io.MousePos.x - cx) / start;
+        layers_move_selected_keys(keyed_layers(C), [&](int f) {
+          return int(std::lround(float(frame) + float(f - frame) * factor));
+        });
+        char text[48];
+        std::snprintf(text, sizeof(text), "Scale Keys  %.2f", factor);
+        transform_info = text;
+      }
+      animation_evaluate(doc, frame);
+      if (modal_key_take(C, "RET") || modal_key_take(C, "SPACE") || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        g_key_transform.active = false;
+        g_key_transform.snapshot = Document();
+        C.wm->modal_running = false;
+        C.undo->push(g_key_transform.kind == 'G'   ? "Move Keys"
+                     : g_key_transform.kind == 'S' ? "Scale Keys"
+                                                   : "Duplicate Keys",
+                     doc);
+        /* The confirming click shouldn't also pick keys. */
+        g_press = {};
+      }
+      C.wm->modal_keys.clear();
+    }
+    summary = layers_key_summary(keyed_layers(C));
+  }
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    /* The ruler scrubs; below it a click picks keys and a drag boxes them. */
+    g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
+    if (!g_press.scrub) {
+      int hit = -1;
+      for (const auto &[f, s] : summary) {
+        if (std::fabs(io.MousePos.x - frame_x(float(f))) <= key_r + 2.0f && std::fabs(io.MousePos.y - key_y) <= key_r + 3.0f) {
+          hit = f;
+        }
+      }
+      if (hit >= 0) {
+        const bool selected = summary[hit].selected == summary[hit].keys;
+        operator_call(C, "anim.keys_select",
+                      {{"frame_start", std::to_string(hit)},
+                       {"extend", io.KeyShift ? "1" : "0"},
+                       {"deselect", io.KeyShift && selected ? "1" : "0"}});
+        g_press = {};
+      }
+    }
+  }
+  if (g_press.active && g_press.scrub && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    doc.frame_current = std::max(0, int(std::lround(x_frame(io.MousePos.x))));
+    C.wm->playing = false;
+  }
+  const bool boxing = g_press.active && !g_press.scrub &&
+                      std::fabs(io.MousePos.x - g_press.start.x) + std::fabs(io.MousePos.y - g_press.start.y) > 4.0f;
+  if (g_press.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (!g_press.scrub) {
+      if (boxing) {
+        /* Keys inside the box: Shift adds, Ctrl takes away, as Blender's box select. */
+        const float lo_y = std::min(g_press.start.y, io.MousePos.y), hi_y = std::max(g_press.start.y, io.MousePos.y);
+        if (key_y >= lo_y - key_r && key_y <= hi_y + key_r) {
+          const int first = int(std::ceil(x_frame(std::min(g_press.start.x, io.MousePos.x))));
+          const int last = int(std::floor(x_frame(std::max(g_press.start.x, io.MousePos.x))));
+          operator_call(C, "anim.keys_select",
+                        {{"frame_start", std::to_string(first)},
+                         {"frame_end", std::to_string(last)},
+                         {"extend", io.KeyShift ? "1" : "0"},
+                         {"deselect", io.KeyCtrl ? "1" : "0"}});
+        }
+        else if (!io.KeyShift) {
+          operator_call(C, "anim.keys_deselect_all");
+        }
+      }
+      else if (!io.KeyShift) {
+        operator_call(C, "anim.keys_deselect_all");
+      }
+      summary = layers_key_summary(keyed_layers(C));
+    }
+    g_press = {};
+  }
   dl->AddRectFilled(p0, p1, COL_REGION);
   if (!doc.action.empty()) {
     /* A warm tint is a constant reminder that keys go into the action, not the mainline. */
@@ -384,7 +531,6 @@ static void timeline_body(Area &area, Context &C)
 
   /* Grid lines and ruler numbers. */
   const float step = ruler_step(span, size.x, ImGui::GetFontSize() * 4.0f, doc.fps);
-  const float font_size = ImGui::GetFontSize();
   for (float f = std::floor(area.view_start / step) * step; f <= area.view_end; f += step) {
     const float x = frame_x(f);
     if (step >= 2.0f) {
@@ -398,6 +544,36 @@ static void timeline_body(Area &area, Context &C)
     const std::string label = std::to_string(int(f));
     const float tw = ImGui::CalcTextSize(label.c_str()).x;
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), COL_RULER_TEXT, label.c_str());
+  }
+
+  /* Hold bars: between neighbouring keys where nothing changes, as Blender draws them. */
+  for (const auto &[a, b] : layers_hold_spans(layers)) {
+    const float xa = frame_x(float(a)), xb = frame_x(float(b));
+    if (xb < p0.x || xa > p1.x) {
+      continue;
+    }
+    const bool selected = summary[a].selected > 0 && summary[b].selected > 0;
+    dl->AddRectFilled(ImVec2(xa, key_y - key_r * 0.45f), ImVec2(xb, key_y + key_r * 0.45f),
+                      selected ? IM_COL32(0xc0, 0x90, 0x30, 200) : IM_COL32(0x80, 0x80, 0x80, 170));
+  }
+  /* Keys of the active and selected layers, as Blender's timeline shows the selected objects'
+   * keys: one diamond per keyed frame, along the middle; orange when selected. */
+  for (const auto &[f, sum] : summary) {
+    const float kx = frame_x(float(f));
+    if (kx < p0.x - key_r || kx > p1.x + key_r) {
+      continue;
+    }
+    const ImVec2 d[4] = {ImVec2(kx, key_y - key_r), ImVec2(kx + key_r, key_y), ImVec2(kx, key_y + key_r),
+                         ImVec2(kx - key_r, key_y)};
+    dl->AddConvexPolyFilled(d, 4, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
+    dl->AddPolyline(d, 4, IM_COL32(0, 0, 0, 200), ImDrawFlags_Closed, 1.0f);
+  }
+  if (boxing) {
+    dl->AddRectFilled(g_press.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+    dl->AddRect(g_press.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+  }
+  if (!transform_info.empty()) {
+    dl->AddText(ImVec2(p0.x + 8.0f, p0.y + ruler_h + 4.0f), IM_COL32_WHITE, transform_info.c_str());
   }
 
   /* Playhead: a blue line with the frame number in a box on the ruler. */

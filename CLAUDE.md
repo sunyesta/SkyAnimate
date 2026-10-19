@@ -67,6 +67,22 @@ Incremental, pen pressure, Moho stamp brushes (`src/assets`: the asset library s
 `src/editors/brush_settings.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
 the style library.
 
+Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels
+(`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,
+points, radius, curvature and stored handles; edits become keys through `src/anim/animation.*`
+(recorded before every undo push, frame change and save; frame 0 is the setup frame; auto-key on
+`Document`); I / Alt I, keyframe jumps, key diamonds in the timeline. Next: key buttons in
+Properties, dope sheet, frame-by-frame layers and onion skins, switch and image layers, PNG
+sequence export, playback range.
+
+Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,
+`src/data/bones.*` for the skeleton and _L/_R names), point binding, flexi-binding, painted weights
+and layer binding; the modifier stack (`src/anim/deform.*`: Mirror, and the Armature modifier every
+layer inside a bone layer gets, kept by `document_sync_armature_modifiers`); rig operators in
+`src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,
+Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Not yet: IK,
+smart bones, local armature viewport, copy/paste poses.
+
 Preferences live in `%LOCALAPPDATA%\SkyAnimate\preferences.json`; background runs (tests) never read
 or write them.
 

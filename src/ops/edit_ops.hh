@@ -1,6 +1,10 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
 #include <vector>
+
+#include "core/math.hh"
 
 /* Operators that edit layers and drawings. */
 
@@ -14,6 +18,18 @@ struct VectorDrawing;
 void layer_operators_register();
 void vector_operators_register();
 void asset_operators_register();
+void anim_operators_register();
+void rig_operators_register();
+
+/* The bone layer rigging works on: the active layer if it is one, else the bone layer it is in. */
+Layer *active_armature(Context &C);
+/* Adds a bone running from `head` to `tail` (bone layer space, setup pose) under `parent` (0 for
+ * a root), selects it and makes it active. */
+struct Bone;
+Bone *armature_add_bone(Layer &armature, const std::string &name, float2 head, float2 tail, uint64_t parent);
+
+/* The layers keying works on: the active layer and those picked in the Layers editor. */
+std::vector<Layer *> keyed_layers(Context &C);
 
 /* Gives the selected shapes on every edited layer these brush settings. Returns how many shapes
  * changed (no undo step: the caller pushes one). */

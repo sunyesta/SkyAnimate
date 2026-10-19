@@ -1,12 +1,15 @@
-"""Curve handles: Blender's handle types (Automatic, Vector, Aligned, Free), dragging handles,
-and saving them.
+"""Curve handles: every handle is free (stored, moved only by hand); Align keeps a point's two
+handles in line. New points get handles once, smooth or straight; Peak and Smooth set them again.
+Saving, older files, animation and mirror editing.
 
 Run with:  SkyAnimate --background --python tests/test_handles.py
 """
 
+import json
 import math
 import pathlib
 import tempfile
+import zipfile
 
 import sky
 
@@ -30,81 +33,81 @@ def collinear_opposite(a, b):
     return abs(cross) < 1e-4 and dot < 0
 
 
+doc = sky.data.document
 layer = sky.data.layers.active
 pts = [(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)]
 curve = layer.add_curve(pts)
-handles = layer.curve_handles(curve)
-assert [h[0] for h in handles] == ["AUTO", "AUTO", "AUTO"], "points start Automatic"
-# An Automatic middle point's handles are smooth: in a line through the point.
-t, h_in, h_out = handles[1]
+sky.ops.mesh.select_none()  # an undo step: the new points get their handles here
+
+# --- New points: smooth, aligned handles that then stay put --------------------------------
+kind, h_in, h_out = layer.curve_handles(curve)[1]
+assert kind == "ALIGNED", "a smooth new point's handles start in line"
 assert collinear_opposite(sub(h_in, pts[1]), sub(h_out, pts[1]))
-
-# --- Set Handle Type --------------------------------------------------------------------------
+layer.set_point(2, (2.0, 1.0))
 sky.ops.mesh.select_none()
-assert sky.ops.mesh.handle_type_set(type="VECTOR") == {'CANCELLED'}, "nothing selected"
+_, after_in, after_out = layer.curve_handles(curve)[1]
+assert close(after_in, h_in) and close(after_out, h_out), "moving a neighbour doesn't touch free handles"
+layer.set_point(2, (2.0, 0.0))
+
+# --- Align and Unalign ---------------------------------------------------------------------------
+sky.ops.mesh.select_none()
+assert sky.ops.mesh.handles_unalign() == {'CANCELLED'}, "nothing selected"
 layer.select_points([1])
-assert sky.ops.mesh.handle_type_set(type="SIDEWAYS") == {'CANCELLED'}
-assert sky.ops.mesh.handle_type_set(type="VECTOR") == {'FINISHED'}
-t, h_in, h_out = layer.curve_handles(curve)[1]
-assert t == "VECTOR"
-assert close(h_in, (1.0 - 1 / 3, 0.5 - 0.5 / 3)) and close(h_out, (1.0 + 1 / 3, 0.5 - 0.5 / 3)), \
-    "Vector handles point a third of the way to the neighbours"
-assert [h[0] for h in layer.curve_handles(curve)] == ["AUTO", "VECTOR", "AUTO"], "only selected points change"
+assert sky.ops.mesh.handles_unalign() == {'FINISHED'}
+assert layer.curve_handles(curve)[1][0] == "FREE"
+layer.move_handle(curve, 1, "IN", (0.6, 0.9))
+layer.move_handle(curve, 1, "OUT", (1.5, 0.9))
+_, free_in, free_out = layer.curve_handles(curve)[1]
+assert close(free_in, (0.6, 0.9)) and close(free_out, (1.5, 0.9)), "free handles move on their own"
 
-# Vector -> Aligned keeps the handles where they were but straightens them into a line.
-assert sky.ops.mesh.handle_type_set(type="ALIGNED") == {'FINISHED'}
-t, a_in, a_out = layer.curve_handles(curve)[1]
-assert t == "ALIGNED" and close(a_out, h_out), "the out handle stays"
-assert collinear_opposite(sub(a_in, pts[1]), sub(a_out, pts[1]))
-assert abs(length(sub(a_in, pts[1])) - length(sub(h_in, pts[1]))) < 1e-4, "the in handle keeps its length"
+# With one handle picked, that handle turns into line; the other stays put.
+for side, other in (("OUT", free_in), ("IN", free_out)):
+    layer.move_handle(curve, 1, "IN", free_in)
+    layer.move_handle(curve, 1, "OUT", free_out)
+    sky.ops.mesh.select_none()
+    layer.select_handle(curve, 1, side)
+    assert sky.ops.mesh.handles_align() == {'FINISHED'}
+    kind, a_in, a_out = layer.curve_handles(curve)[1]
+    assert kind == "ALIGNED"
+    assert close(a_in if side == "OUT" else a_out, other), (side, "the other handle stays put")
+    assert collinear_opposite(sub(a_in, pts[1]), sub(a_out, pts[1])), side
+    sky.ops.mesh.select_none()
+    layer.select_points([1])
+    sky.ops.mesh.handles_unalign()
 
-sky.ops.ed.undo()
-assert layer.curve_handles(curve)[1][0] == "VECTOR"
-sky.ops.ed.redo()
-assert layer.curve_handles(curve)[1][0] == "ALIGNED"
-
-# Peak and Smooth are Vector and Automatic.
-assert sky.ops.mesh.peak() == {'FINISHED'} and layer.curve_handles(curve)[1][0] == "VECTOR"
-assert sky.ops.mesh.smooth() == {'FINISHED'} and layer.curve_handles(curve)[1][0] == "AUTO"
-
-# --- Dragging handles -------------------------------------------------------------------------
-# An Automatic handle dragged becomes Aligned: the other handle turns to stay in line and keeps
-# its length.
-_, old_in, old_out = layer.curve_handles(curve)[1]
+# Aligned: moving one handle turns the other, keeping its length.
+assert sky.ops.mesh.handles_align() == {'FINISHED'}
+_, old_in, _ = layer.curve_handles(curve)[1]
 layer.move_handle(curve, 1, "OUT", (1.5, 1.0))
-t, n_in, n_out = layer.curve_handles(curve)[1]
-assert t == "ALIGNED" and close(n_out, (1.5, 1.0))
+kind, n_in, n_out = layer.curve_handles(curve)[1]
+assert kind == "ALIGNED" and close(n_out, (1.5, 1.0))
 assert collinear_opposite(sub(n_in, pts[1]), sub(n_out, pts[1]))
 assert abs(length(sub(n_in, pts[1])) - length(sub(old_in, pts[1]))) < 1e-4
 
-# Free handles move on their own.
-sky.ops.mesh.handle_type_set(type="FREE")
-layer.move_handle(curve, 1, "IN", (0.8, 1.2))
-t, f_in, f_out = layer.curve_handles(curve)[1]
-assert t == "FREE" and close(f_in, (0.8, 1.2)) and close(f_out, n_out), "the other Free handle stays put"
 
-# A Vector handle dragged becomes Free; its partner stays where the Vector put it.
-sky.ops.mesh.handle_type_set(type="VECTOR")
-_, v_in, _ = layer.curve_handles(curve)[1]
-layer.move_handle(curve, 1, "OUT", (1.2, 0.9))
-t, g_in, g_out = layer.curve_handles(curve)[1]
-assert t == "FREE" and close(g_in, v_in) and close(g_out, (1.2, 0.9))
+# --- Peak and Smooth -----------------------------------------------------------------------------
+sky.ops.mesh.select_none()
+layer.select_points([1])
+assert sky.ops.mesh.peak() == {'FINISHED'}
+kind, p_in, p_out = layer.curve_handles(curve)[1]
+assert kind == "FREE"
+assert close(p_in, (1.0 - 1 / 3, 0.5 - 0.5 / 3)) and close(p_out, (1.0 + 1 / 3, 0.5 - 0.5 / 3)), \
+    "Peak points the handles a third of the way to the neighbours"
+assert sky.ops.mesh.smooth() == {'FINISHED'}
+kind, s_in, s_out = layer.curve_handles(curve)[1]
+assert kind == "ALIGNED" and collinear_opposite(sub(s_in, pts[1]), sub(s_out, pts[1]))
 
-# The handles shape the curve: the outline passes near the dragged handle side.
-outline, _ = layer.shape_outline(0, 32)
-assert max(p[1] for p in outline) > 0.5, "pulling the out handle up bends the curve above the point"
-
-# --- Box corners --------------------------------------------------------------------------------
+# --- Box corners: straight sides -----------------------------------------------------------------
 assert layer.add_primitive("BOX", [(3.0, 0.0), (4.0, 1.0)])
+sky.ops.mesh.select_none()
 box_curve = layer.curve_count - 1
-assert [h[0] for h in layer.curve_handles(box_curve)] == ["VECTOR"] * 4, "box corners have Vector handles"
+assert [h[0] for h in layer.curve_handles(box_curve)] == ["FREE"] * 4
 outline, closed = layer.shape_outline(layer.shape_count - 1, 8)
 assert closed
 for x, y in outline:
-    on_side = min(abs(x - 3.0), abs(x - 4.0), abs(y - 0.0), abs(y - 1.0)) < 1e-4
-    assert on_side, f"box sides stay straight ({x}, {y})"
+    assert min(abs(x - 3.0), abs(x - 4.0), abs(y - 0.0), abs(y - 1.0)) < 1e-4, f"box sides stay straight ({x}, {y})"
 
-# --- Saved with the document ------------------------------------------------------------------
+# --- Saved with the document ---------------------------------------------------------------------
 path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_handles_")) / "handles.sky")
 saved = layer.curve_handles(curve)
 assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
@@ -114,6 +117,82 @@ loaded = layer.curve_handles(curve)
 assert [h[0] for h in loaded] == [h[0] for h in saved]
 for a, b in zip(loaded, saved):
     assert close(a[1], b[1]) and close(a[2], b[2]), (a, b)
-assert [h[0] for h in layer.curve_handles(box_curve)] == ["VECTOR"] * 4
+
+# --- Older files: Automatic and Vector handles are worked out once --------------------------------
+with zipfile.ZipFile(path) as z:
+    data = json.loads(z.read("document.json"))
+for curve_json in data["document"]["layers"][0]["drawing"]["curves"]:
+    for i, cp in enumerate(curve_json["points"]):
+        for name in ("handle_in", "handle_out", "aligned"):
+            cp.pop(name, None)
+        cp["handle_type"] = "VECTOR" if len(curve_json["points"]) == 4 else "AUTO"
+old_path = str(pathlib.Path(path).with_name("old.sky"))
+with zipfile.ZipFile(old_path, "w") as z:
+    z.writestr("document.json", json.dumps(data))
+assert sky.ops.wm.open_mainfile(filepath=old_path, confirmed="1") == {'FINISHED'}
+layer = sky.data.layers.active
+kind, o_in, o_out = layer.curve_handles(curve)[1]
+assert kind == "ALIGNED" and collinear_opposite(sub(o_in, pts[1]), sub(o_out, pts[1])), "Automatic -> smooth, aligned"
+outline, _ = layer.shape_outline(layer.shape_count - 1, 8)
+assert all(min(abs(x - 3.0), abs(x - 4.0), abs(y), abs(y - 1.0)) < 1e-4 for x, y in outline), "Vector -> straight"
+
+# --- Animated: handles first moved on a later frame keep their setup shape on frame 0 ------------
+doc = sky.data.document
+doc.frame_current = 0
+sky.ops.layer.new()
+anim = sky.data.layers.active
+anim.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=True, fill=True)
+sky.ops.mesh.select_none()
+setup_outline, _ = anim.shape_outline(0, 16)
+doc.frame_current = 20
+anim.set_point(1, (1.3, -0.2))
+anim.move_handle(0, 1, "OUT", (1.6, 0.3))
+doc.frame_current = 21
+
+
+def same_outline(a, b):
+    return all(abs(p[0] - q[0]) < 1e-4 and abs(p[1] - q[1]) < 1e-4 for p, q in zip(a, b))
+
+
+doc.frame_current = 0
+assert same_outline(anim.shape_outline(0, 16)[0], setup_outline), "frame 0 keeps its shape"
+
+# Files saved before the fix (zero-length handles keyed on frame 0) are repaired on opening.
+path2 = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_handles_")) / "stale.sky")
+assert sky.ops.wm.save_as_mainfile(filepath=path2) == {'FINISHED'}
+with zipfile.ZipFile(path2) as z:
+    data = json.loads(z.read("document.json"))
+for layer_json in data["document"]["layers"]:
+    for curve_json in (layer_json.get("drawing") or {}).get("curves", []):
+        for cp in curve_json["points"]:
+            for name in ("handle_in_keys", "handle_out_keys"):
+                for key in cp.get(name, []):
+                    if key["frame"] == 0:
+                        key["value"] = [0.0, 0.0]
+with zipfile.ZipFile(path2, "w") as z:
+    z.writestr("document.json", json.dumps(data))
+assert sky.ops.wm.open_mainfile(filepath=path2, confirmed="1") == {'FINISHED'}
+sky.data.document.frame_current = 0
+anim = next(l for l in sky.data.layers if l.name == anim.name)
+assert same_outline(anim.shape_outline(0, 16)[0], setup_outline), "repaired on opening"
+
+# --- Mirror editing: Align on one side aligns the mirror image too -----------------------------
+sky.data.document.frame_current = 0
+sky.ops.layer.new()
+sym = sky.data.layers.active
+sym.add_curve([(-1.0, 0.0), (-0.5, 0.5), (0.0, 0.6), (0.5, 0.5), (1.0, 0.0)])
+sky.ops.mesh.select_none()
+sym.select_points([1])
+sky.ops.mesh.peak()  # both sides free (Peak mirrors too once mirror editing is on, below)
+sky.wm.set_mirror_editing(x=True)
+sym.move_handle(0, 1, "OUT", (-0.3, 0.9))
+assert sky.ops.mesh.handles_align() == {'FINISHED'}
+_, l_in, l_out = sym.curve_handles(0)[1]
+kind, r_in, r_out = sym.curve_handles(0)[3]
+assert kind == "ALIGNED"
+assert close(r_out, (-l_in[0], l_in[1])) and close(r_in, (-l_out[0], l_out[1])), (l_in, l_out, r_in, r_out)
+sky.wm.set_mirror_editing()
+sky.ops.mesh.handles_unalign()
+assert sym.curve_handles(0)[3][0] == "ALIGNED", "with mirror editing off, only the selection changes"
 
 print("Handle tests passed")

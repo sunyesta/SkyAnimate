@@ -60,11 +60,11 @@ The data model follows Moho: a document holds a tree of layers, almost every pro
 | Particle | Child layers emitted as particles | Maybe |
 | Note | A sticky note in the viewport | Maybe |
 
-**Vector drawings.** A drawing is a pool of points, curves through those points, and shapes. A point can sit on several curves, which is how Moho welds lines together. Each point has an animated position, an animated width and an optional bone binding. Every curve point has Bezier handles with Blender's handle types: Automatic handles follow Moho's smooth spline (per-point curvature, weight and offset), so curves animate the way Moho users expect; Vector handles point a third of the way to the neighbours (corners and straight lines); Aligned and Free handles are stored and moved by hand. Dragging an Automatic handle makes it Aligned and dragging a Vector handle makes it Free, as in Blender; V sets the type, and Viewport Overlays > Handles shows None, Selected or All. A shape is a list of curve segments with a fill and outline style. Styles cascade: a shape has its own style plus up to two shared styles from the library.
+**Vector drawings.** A drawing is a pool of points, curves through those points, and shapes. A point can sit on several curves, which is how Moho welds lines together. Each point has an animated position, an animated width and an optional bone binding. Every curve point has two Bezier handles, and every handle is free, like Blender's Free handles: stored, and moved only by hand (or with its point). A new point gets its handles once, from Moho's smooth spline (curvature, weight and offset) or, at corners and straight sides, a third of the way toward its neighbours. Align (right-click a selected point or handle) lines a point's handles up and keeps them in line: moving one turns the other. Alt-dragging a handle moves it alone and unaligns the point; Unalign does the same without moving anything. Peak and Smooth set a point's handles once (straight, or smooth and aligned). Viewport Overlays > Handles shows None, Selected or All. A shape is a list of curve segments with a fill and outline style. Styles cascade: a shape has its own style plus up to two shared styles from the library.
 
 **Bones.** A skeleton is a tree of bones. Each bone has a rest position, angle, length and scale plus animated position, angle and scale channels. Bones support IK with locks and angle limits, independent angle, squash and stretch, controlling bones (one bone's angle drives another's), bone dynamics (spring and damping), colour tags and a display shape. Points bind to one bone, to all bones by distance (flexi-binding), or to a chosen subset; whole layers can bind to one bone.
 
-**Local armature viewport.** Every armature has two places its bones can live. **Viewport bones** sit in the scene: they move the character, deform artwork and show in the normal viewport. **Local bones** live in that armature's own local armature viewport, a separate canvas that belongs only to it, and never appear in the main viewport. This is where control bones go, such as smart-bone dials, sliders and switches, so they stop floating around the workspace. Both kinds belong to the same armature and key onto the same timeline. The Add Bone tool works in either place.
+**Local armature viewport.** Every armature has two places its bones can live. **Viewport bones** sit in the scene: they move the character, deform artwork and show in the normal viewport. **Local bones** live in that armature's own local armature viewport, a separate canvas that belongs only to it, and never appear in the main viewport. This is where control bones go, such as smart-bone dials, sliders and switches, so they stop floating around the workspace. Both kinds belong to the same armature and key onto the same timeline. Bones are added and edited the same way in either place.
 
 - **Control-only.** Local bones drive smart actions and can be controlling bones for viewport bones, but they cannot bind or deform artwork.
 - **Separate trees.** A local bone can only be parented to another local bone, never to a viewport bone, and vice versa.
@@ -78,7 +78,7 @@ The data model follows Moho: a document holds a tree of layers, almost every pro
 | Mode | What happens between this key and the next | Settings | Handles |
 | --- | --- | --- | --- |
 | Linear | Constant speed | — | None |
-| Smooth | Eases through the key using its neighbours | — | Automatic |
+| Smooth | Eases through the key using its neighbours, clamped as Blender's auto-clamped handles: equal neighbouring keys hold still and the motion never overshoots a key | — | Automatic |
 | Ease In/Out | Slows into and out of the key | — | Automatic |
 | Ease In | Slows only on arrival | — | Automatic |
 | Ease Out | Slows only on departure | — | Automatic |
@@ -153,7 +153,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 
 **Two cursors.** Camera view has a 2D cursor on the canvas and World view has a 3D cursor in the scene. They are separate, and each keeps its own position. New layers, bones and imported meshes are placed at the active view's cursor, and the cursor can be the pivot point.
 
-**Move, rotate, scale.** G moves, R rotates and S scales from any tool, as in Blender.
+**Move, rotate, scale.** G moves, R rotates and S scales from any tool, as in Blender. Angles are plain numbers, as in Moho: R counts whole turns while the mouse circles the pivot, and layer rotation and bone angles key any amount, so one key at 720° spins twice.
 
 - Then press **X, Y or Z** to lock to that axis; press it again to switch to the other orientation. **Shift+X, Y or Z** locks to the other two axes.
 - Type a number for an exact value, hold Ctrl to snap, Enter or click to confirm, Esc or right-click to cancel.
@@ -238,7 +238,8 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 
 | Feature | From | Tier |
 | --- | --- | --- |
-| Add, select, transform and reparent bones | Moho | v1 |
+| Add, select, transform and reparent bones as in Blender's armature edit mode: head and tail joints selectable on their own, an active bone, Shift A adds a bone at the origin, E extrudes from the selected tips (connected), Shift D duplicates, Ctrl P parents to the active bone (Connected or Keep Offset), Alt P clears or disconnects. G on a bone's top ball moves that tip (the bone turns, and on frame 0 stretches); G on the bottom ball or body moves the whole bone; R turns it about its bottom ball; children always come along. Away from frame 0, G on a connected bone turns it about its base instead of moving it. Away from frame 0, Alt G, Alt R and Alt S put the selected bones' position, angle or scale back to the setup pose. X deletes a bone picked by any part. A dotted line joins a child to its parent. Viewport Overlays > Armature shows bones Off, Selected (only selected bone layers', the default) or On (every bone layer's); bones of a layer you're not working in show as faint outlines. Right-click a selected bone for Subdivide (a chain of connected pieces) and the other bone commands. With X mirror editing on, the other side (_L / _R) follows moves, turns, extrudes, subdivides and deletes | Blender | v1 |
+| Box-select bones with the Select tool (the ends inside the box; Shift adds, Ctrl removes). A Transform Bones tool in the toolbar, after Moho's sz_transform_bones_gizmo: a box around the selected bones to move (inside), turn (the band around it) and scale (eight handles; Alt from the pivot, Shift keeps proportions), a draggable pivot (Ctrl snaps to bone ends), Position/Scale/Angle fields, Flip H/V and Symmetrize; unselected children stay where they are | Moho, community | v1 |
 | Bind points (single bone or flexi), bind layers, bone strength | Moho | v1 |
 | IK with bone locks and angle limits | Moho | v1 |
 | Custom bone shapes: draw a bone as any vector shape | Blender | v1 |
@@ -251,7 +252,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 | Smart warp: deform artwork with a warp mesh | Moho | Later |
 | Rigid-body physics | Moho | Maybe |
 | Copy, paste and paste-flipped poses using \_L and \_R bone names | Blender, community | v1 |
-| Weight painting: paint how strongly each bone moves the points | Blender | Later |
+| Weight painting: a Weight Paint tool in the toolbar for layers inside a bone layer, working like Blender's (active bone, weight, radius, strength, Draw/Add/Subtract, normalize; Ctrl subtracts, Ctrl-click picks the bone) | Blender | v1 |
 | Pose library: save poses and expressions as thumbnails, apply with one click | Blender | Later |
 | Setup toggle: jump to frame 0 and back, with clear on-screen signals and rigging tools limited to frame 0 (see Core concepts) | Moho, Blender | v1 |
 | Bone constraints: copy rotation, limit rotation, track to | Blender | Later |
@@ -281,9 +282,11 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with smart bon
 | Feature | From | Tier |
 | --- | --- | --- |
 | Modifier stack on vector layers, applied non-destructively | Blender | v1 |
-| Mirror modifier for drawings and armatures | Blender | v1 |
+| Mirror modifier for drawings; bone layers get Blender's Symmetrize instead (Armature menu and the Bones panel), not a mirror modifier | Blender | v1 |
 | Noise, smooth, offset, thickness and simplify modifiers | Blender | Later |
 | Array, build, dash, outline and envelope modifiers | Blender | Later |
+
+**Armature modifier.** The bones moving a drawing are a modifier too: every layer inside a bone layer has one Armature modifier, added and removed with the bone layer and never deleted by hand. Its place in the stack decides what the bones move: a Mirror modifier above it mirrors the setup drawing, so each half follows its own side's bones (a point bound or weighted to `arm_L` mirrors to `arm_R`); below it, the posed drawing is mirrored.
 
 **3D**
 

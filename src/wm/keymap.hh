@@ -30,6 +30,8 @@ class KeyMaps {
   void add(const std::string &keymap, KeyMapItem item);
   void clear() { maps_.clear(); }
   const KeyMapItem *match(const std::string &keymap, const KeyEvent &event) const;
+  /* Every item for the key, in keymap order: the first whose operator can run takes it. */
+  std::vector<const KeyMapItem *> match_all(const std::string &keymap, const KeyEvent &event) const;
   /* First shortcut bound to an operator, for showing in menus. Empty if none. */
   std::string shortcut_for(const std::string &idname) const;
   const std::map<std::string, std::vector<KeyMapItem>> &all() const { return maps_; }

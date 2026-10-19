@@ -18,7 +18,8 @@ class UndoStack {
  public:
   /* Clears the history and records the starting state. */
   void reset(const Document &doc);
-  void push(const std::string &name, const Document &doc);
+  /* Records the document's edits as keys first (anim/animation.hh), so each step holds them. */
+  void push(const std::string &name, Document &doc);
 
   bool can_undo() const { return active_ > 0; }
   bool can_redo() const { return active_ + 1 < steps_.size(); }

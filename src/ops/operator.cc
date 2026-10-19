@@ -1,5 +1,10 @@
 #include "ops/operator.hh"
 
+#include <cstdlib>
+
+#include "anim/animation.hh"
+#include "data/bones.hh"
+
 #include <algorithm>
 
 #include "core/log.hh"
@@ -80,6 +85,22 @@ bool op_arg_bool(const Context &C, const std::string &name)
   return value == "1" || value == "True" || value == "true";
 }
 
+int op_arg_int(const Context &C, const std::string &name, int fallback)
+{
+  const std::string value = op_arg(C, name);
+  char *end = nullptr;
+  const long v = std::strtol(value.c_str(), &end, 10);
+  return (!value.empty() && end && *end == 0) ? int(v) : fallback;
+}
+
+float op_arg_float(const Context &C, const std::string &name, float fallback)
+{
+  const std::string value = op_arg(C, name);
+  char *end = nullptr;
+  const float v = std::strtof(value.c_str(), &end);
+  return (!value.empty() && end && *end == 0) ? v : fallback;
+}
+
 /* sky.ops.wm.open_mainfile(filepath="walk.sky"), for the Info log. */
 static std::string operator_call_repr(const std::string &idname, const OpArgs &args)
 {
@@ -118,6 +139,12 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   C.op_args = &args;
   const OpStatus status = ot.exec(C);
   C.op_args = outer_args;
+  /* An operator that changed the frame (a frame jump, undo) shows the new frame's values. */
+  if (C.document) {
+    animation_sync(*C.document);
+    /* Layers moved into or out of a bone layer gain or lose their Armature modifier. */
+    document_sync_armature_modifiers(*C.document);
+  }
   if (status != OpStatus::Finished) {
     return status;
   }

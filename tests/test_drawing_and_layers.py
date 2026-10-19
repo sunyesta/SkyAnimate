@@ -215,4 +215,55 @@ layers.active = layer
 assert sky.ops.layer.delete() == {'FINISHED'}
 assert ref2.reference_source is None and ref2.point_count > 0
 
+# --- Mean Position (Point panel) and shape Position (Shape panel) ------------------------------
+sky.ops.layer.new()
+pos_layer = sky.data.layers.active
+pos_layer.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=True, fill=True)
+pos_layer.add_curve([(3.0, 0.0), (4.0, 0.0)])
+assert pos_layer.shape_position(0) == (0.5, 0.5)
+sky.ops.mesh.select_none()
+assert pos_layer.mean_position is None, "nothing selected"
+pos_layer.select_points([0, 1])
+assert pos_layer.mean_position == (0.5, 0.0)
+pos_layer.mean_position = (0.5, 0.25)
+assert [p[:2] for p in pos_layer.points[:2]] == [(0.0, 0.25), (1.0, 0.25)], "both selected points move"
+assert pos_layer.points[2][:2] == (1.0, 1.0), "others stay"
+pos_layer.set_shape_position(1, (0.0, 2.0))
+assert pos_layer.points[4][:2] == (-0.5, 2.0) and pos_layer.points[5][:2] == (0.5, 2.0)
+assert pos_layer.points[0][:2] == (0.0, 0.25), "only that shape's points move"
+# On a later frame, a shape move keys its points (auto-keying).
+sky.data.document.frame_current = 12
+pos_layer.set_shape_position(1, (0.0, 3.0))
+sky.data.document.frame_current = 0
+assert pos_layer.shape_position(1) == (0.0, 2.0), "frame 0 keeps the setup position"
+sky.data.document.frame_current = 12
+assert pos_layer.shape_position(1) == (0.0, 3.0)
+sky.data.document.frame_current = 0
+
+# --- Edges mode: X deletes the selected edges, not their points --------------------------------
+sky.data.document.frame_current = 0
+sky.ops.layer.new()
+edge_layer = sky.data.layers.active
+edge_layer.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=True, fill=True)
+assert sky.ops.mesh.select_mode_edge() == {'FINISHED'}
+sky.ops.mesh.select_none()
+edge_layer.select_points([0, 1])  # the bottom edge
+assert sky.wm.event_simulate("X", area="Viewport")
+assert edge_layer.point_count == 4, "both points of the deleted edge stay"
+assert edge_layer.curve_count == 1 and edge_layer.shape_count == 1
+outline, closed = edge_layer.shape_outline(0, 4)
+assert not closed, "the loop opened where the edge was"
+# A middle edge of a line splits it into two lines.
+edge_layer.add_curve([(3.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0)])
+sky.ops.mesh.select_none()
+edge_layer.select_points([5, 6])
+assert sky.ops.mesh.delete() == {'FINISHED'}
+assert edge_layer.point_count == 8 and edge_layer.curve_count == 3, (edge_layer.point_count, edge_layer.curve_count)
+# A line that was a single edge goes, but its points stay.
+sky.ops.mesh.select_none()
+edge_layer.select_points([6, 7])
+assert sky.ops.mesh.delete() == {'FINISHED'}
+assert edge_layer.point_count == 8 and edge_layer.curve_count == 2
+assert sky.ops.mesh.select_mode_point() == {'FINISHED'}
+
 print("Drawing and layer tests passed")

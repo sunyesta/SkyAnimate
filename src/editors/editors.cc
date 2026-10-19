@@ -96,14 +96,13 @@ static void ui_label(const char *label)
   ImGui::SetNextItemWidth(-FLT_MIN);
 }
 
-void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path)
+/* A property's value field, at the next item width. `prefix` goes inside number fields ("X"). */
+static void prop_field(Context &C, const rna::PointerRNA &ptr, const rna::PropertyRNA *prop, const char *python_path,
+                       const char *prefix)
 {
-  const rna::PropertyRNA *prop = ptr.type->find(identifier);
-  if (!prop) {
-    return;
-  }
-  ui_label(prop->name.c_str());
-  ImGui::PushID(identifier);
+  ImGui::PushID(prop->identifier.c_str());
+  const std::string int_format = prefix ? std::string(prefix) + "  %d" : std::string("%d");
+  const std::string float_format = prefix ? std::string(prefix) + "  %.3f" : std::string("%.3f");
   ImGui::BeginDisabled(!prop->set);
 
   rna::Value value = prop->get(ptr.data);
@@ -113,12 +112,12 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
       changed = ImGui::Checkbox("##value", &std::get<bool>(value));
       break;
     case rna::PropType::Int:
-      changed = ImGui::DragInt("##value", &std::get<int>(value), 0.25f, int(prop->min), int(prop->max), "%d",
-                               ImGuiSliderFlags_AlwaysClamp);
+      changed = ImGui::DragInt("##value", &std::get<int>(value), 0.25f, int(prop->min), int(prop->max),
+                               int_format.c_str(), ImGuiSliderFlags_AlwaysClamp);
       break;
     case rna::PropType::Float:
       changed = ImGui::DragFloat("##value", &std::get<float>(value), 0.01f, float(prop->min), float(prop->max),
-                                 "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                                 float_format.c_str(), ImGuiSliderFlags_AlwaysClamp);
       break;
     case rna::PropType::String:
       changed = ImGui::InputText("##value", &std::get<std::string>(value));
@@ -158,6 +157,34 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
 
   ImGui::EndDisabled();
   ImGui::PopID();
+}
+
+void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path)
+{
+  const rna::PropertyRNA *prop = ptr.type->find(identifier);
+  if (!prop) {
+    return;
+  }
+  ui_label(prop->name.c_str());
+  prop_field(C, ptr, prop, python_path, nullptr);
+}
+
+void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
+                  const char *first_prefix, const char *second, const char *second_prefix, const char *python_path)
+{
+  const rna::PropertyRNA *a = ptr.type->find(first);
+  const rna::PropertyRNA *b = ptr.type->find(second);
+  if (!a || !b) {
+    return;
+  }
+  ui_label(label);
+  const float spacing = 2.0f;
+  const float w = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
+  ImGui::SetNextItemWidth(w);
+  prop_field(C, ptr, a, python_path, first_prefix);
+  ImGui::SameLine(0.0f, spacing);
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  prop_field(C, ptr, b, python_path, second_prefix);
 }
 
 bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name)

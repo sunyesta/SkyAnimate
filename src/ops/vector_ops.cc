@@ -7,6 +7,7 @@
 #include <map>
 
 #include "core/log.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "ops/operator.hh"
 #include "wm/context.hh"
@@ -123,37 +124,21 @@ static constexpr unsigned UNDO = OPTYPE_REGISTER | OPTYPE_UNDO;
 void vector_operators_register()
 {
   /* --- Handles --------------------------------------------------------------- */
-  vector_operator("mesh.handle_type_set", "Set Handle Type",
-                  "Set the handle type of the selected points (AUTO, VECTOR, ALIGNED or FREE); without a type, "
-                  "opens the menu (V)",
-                  UNDO, editable_poll, [](Context &C) {
-                    const std::string name = op_arg(C, "type");
-                    if (name.empty()) {
-                      if (C.wm->background) {
-                        report(ReportType::Error, "mesh.handle_type_set needs a type");
-                        return OpStatus::Cancelled;
+  for (const bool align : {true, false}) {
+    vector_operator(align ? "mesh.handles_align" : "mesh.handles_unalign", align ? "Align Handles" : "Unalign Handles",
+                    align ? "Line up the selected points' handles and keep them in line (with one handle picked, "
+                            "that one turns); moving one then turns the other"
+                          : "Let the selected points' handles move separately again",
+                    UNDO, editable_with_selection_poll, [align](Context &C) {
+                      int changed = 0;
+                      for (Layer *layer : editable_layers(C)) {
+                        changed += drawing_align_selected_handles(layer->drawing, align);
+                        drawing_mirror_selected_handles(layer->drawing, C.wm->tool_settings.mirror_x,
+                                                        C.wm->tool_settings.mirror_y);
                       }
-                      /* The viewport under the mouse opens Blender's Set Handle Type menu. */
-                      C.wm->handle_menu_requested = true;
-                      return OpStatus::Cancelled;
-                    }
-                    HandleType type;
-                    if (!handle_type_from_identifier(name, &type)) {
-                      report(ReportType::Error, "Handle type must be AUTO, VECTOR, ALIGNED or FREE");
-                      return OpStatus::Cancelled;
-                    }
-                    int changed = 0;
-                    bool any = false;
-                    for (Layer *layer : editable_layers(C)) {
-                      any = any || drawing_selected_handle_type(layer->drawing) != -1;
-                      changed += drawing_set_selected_handle_type(layer->drawing, type);
-                    }
-                    if (!any) {
-                      report(ReportType::Warning, "Select points or handles to set their handle type");
-                      return OpStatus::Cancelled;
-                    }
-                    return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-                  });
+                      return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+                    });
+  }
 
   /* --- Selection ------------------------------------------------------------- */
   vector_operator("mesh.select_all", "Select All", "Select every point in the active layer", UNDO, editable_poll,
@@ -246,10 +231,17 @@ void vector_operators_register()
   select_mode_op("mesh.select_mode_stroke", "Stroke Selection Mode", SelectMode::Stroke);
 
   /* --- Editing ----------------------------------------------------------------- */
-  vector_operator("mesh.delete", "Delete Points", "Delete the selected points and the curves left too short",
+  vector_operator("mesh.delete", "Delete Points",
+                  "Delete the selected points and the curves left too short; in Edges mode, delete the selected "
+                  "edges and keep their points",
                   UNDO, editable_with_selection_poll, [](Context &C) {
+                    const bool edges = C.wm->tool_settings.select_mode == SelectMode::Edge;
                     for (Layer *layer : editable_layers(C)) {
                       VectorDrawing &drawing = layer->drawing;
+                      if (edges) {
+                        drawing_delete_edges(drawing, drawing_selected_edges(drawing));
+                        continue;
+                      }
                       std::vector<bool> remove(drawing.points.size());
                       for (size_t i = 0; i < drawing.points.size(); i++) {
                         remove[i] = drawing.points[i].selected;
@@ -299,15 +291,10 @@ void vector_operators_register()
                     editable_with_selection_poll, [peak](Context &C) {
                       for (Layer *layer : editable_layers(C)) {
                         VectorDrawing &drawing = layer->drawing;
-                        for (Curve &curve : drawing.curves) {
-                          for (CurvePoint &cp : curve.points) {
-                            if (drawing.points[cp.point].selected) {
-                              /* Peak = Vector handles (a corner), Smooth = Automatic. */
-                              cp.curvature = peak ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
-                              cp.handle_type = peak ? HandleType::Vector : HandleType::Auto;
-                            }
-                          }
-                        }
+                        /* Peak: handles straight toward the neighbours; Smooth: smooth, aligned handles. Once. */
+                        drawing_set_selected_handles_shape(drawing, peak);
+                        drawing_mirror_selected_handles(drawing, C.wm->tool_settings.mirror_x,
+                                                        C.wm->tool_settings.mirror_y);
                       }
                       return OpStatus::Finished;
                     });
@@ -341,7 +328,18 @@ void vector_operators_register()
     ot.idname = idname;
     ot.name = name;
     ot.description = description;
-    ot.poll = [](Context &C) { return C.wm->mouse_in_viewport && editable_with_selection_poll(C); };
+    /* Points (and handles) of the edited layers, or the bone layer's selected bones. */
+    ot.poll = [](Context &C) {
+      if (!C.wm->mouse_in_viewport) {
+        return false;
+      }
+      const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
+      if (active && active->is_bone_layer()) {
+        /* A bone picked by its body or by either ball. */
+        return armature_any_picked(*active);
+      }
+      return editable_with_selection_poll(C);
+    };
     ot.exec = [kind](Context &C) {
       C.wm->transform_request = kind;
       return OpStatus::Finished;
@@ -403,6 +401,8 @@ void vector_operators_register()
     operators().add(std::move(ot));
   }
   tool_op("wm.tool_split_curve", "Split Curve Tool", Tool::SplitCurve);
+  tool_op("wm.tool_weight_paint", "Weight Paint Tool", Tool::WeightPaint);
+  tool_op("wm.tool_transform_bones", "Transform Bones Tool", Tool::TransformBones);
   {
     /* sky.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
     OperatorType ot;

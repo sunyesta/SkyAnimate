@@ -1,5 +1,7 @@
 #include "ops/file_ops.hh"
 
+#include "anim/animation.hh"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -206,6 +208,7 @@ static bool document_write(Context &C, const std::string &given_path, bool remem
 {
   const std::string path = path_normalize(given_path);
   std::string error;
+  animation_record(*C.document);
   if (!sky_file_write(*C.document, path, &error)) {
     report(ReportType::Error, error);
     return false;
