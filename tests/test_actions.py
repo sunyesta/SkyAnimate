@@ -113,6 +113,20 @@ assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
 assert 0 in inner.key_frames and len(inner.key_frames) == 2, "I keys only the selected layers"
 doc.action = "wave"
 
+# --- Deleting an action (right-click it in the action menu) ---------------------------------------
+layers.active = rig
+assert sky.ops.anim.action_new(name="spare") == {'FINISHED'} and doc.action == "spare"
+doc.frame_current = 7
+rig.bone_set("arm", angle=0.9)
+assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+assert sky.ops.anim.action_delete(name="spare") == {'FINISHED'}
+assert doc.action == "", "deleting the action being edited goes back to the mainline"
+assert sky.ops.anim.action_set(name="spare") == {'CANCELLED'}, "it's gone"
+assert 7 not in frames()
+sky.ops.ed.undo()
+assert doc.action == "spare" and 7 in frames(), "undo brings it back"
+assert sky.ops.anim.action_set(name="wave") == {'FINISHED'}
+
 # --- Saved, in the middle of editing an action ------------------------------------------------
 path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_actions_")) / "actions.sky")
 assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}

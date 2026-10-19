@@ -49,6 +49,8 @@ struct Document {
   std::string action;
   /* The bone layer the action being edited belongs to. */
   uint64_t action_layer = 0;
+  /* Runtime: some plain value has a smart action's amount added (see Channel::smart). */
+  bool smart_applied = false;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 

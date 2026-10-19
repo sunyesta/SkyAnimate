@@ -10,8 +10,10 @@ namespace sky {
 
 using FileDialogDone = std::function<void(const std::string &path)>;
 
-/* filter_name/pattern, e.g. "Python scripts" / "py". `done` runs only if a file was chosen. */
-void file_dialog_open(const char *filter_name, const char *pattern, FileDialogDone done);
+/* filter_name/pattern, e.g. "Python scripts" / "py". `done` runs only if a file was chosen.
+ * `folder` is where the dialog starts (empty: wherever Windows remembers). */
+void file_dialog_open(const char *filter_name, const char *pattern, FileDialogDone done,
+                      const std::string &folder = {});
 void file_dialog_save(const char *filter_name, const char *pattern, const std::string &default_path,
                       FileDialogDone done);
 

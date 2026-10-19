@@ -1,6 +1,7 @@
 #include "anim/animation.hh"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <climits>
 #include <cstdio>
@@ -15,6 +16,14 @@ namespace sky {
 /* Calls f(channel, value) for every channel of a layer (not its children). */
 template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
 {
+  /* Visibility is a stepped number beside the plain `visible` flag. */
+  layer.visible_value = layer.visible ? 1.0f : 0.0f;
+  f(layer.visible_keys, layer.visible_value);
+  layer.visible = layer.visible_value > 0.5f;
+  /* Keys pasted or opened from a file hold too. */
+  for (Key<float> &k : layer.visible_keys.keys) {
+    k.interp = Interp::Step;
+  }
   f(layer.position_keys, layer.position);
   f(layer.rotation_keys, layer.rotation);
   f(layer.scale_keys, layer.scale);
@@ -56,17 +65,24 @@ template<typename T> static void record(Channel<T> &ch, const T &value, int fram
   if (value == ch.last) {
     return;
   }
+  if (ch.keyed_by_hand && !ch.animated()) {
+    /* Not keyed yet: the change is just there; `last` keeps the value from before it, for the
+     * setup key if it gets keyed by hand now. */
+    return;
+  }
+  /* Keys hold the value without what smart actions add. */
+  const T base = value - ch.smart;
   if (frame == 0) {
     /* The setup frame: the frame-0 key, or the value itself while it isn't animated. */
     if (ch.animated()) {
-      ch.set_key(0, value);
+      ch.set_key(0, base);
     }
   }
-  else if (auto_key) {
+  else if (auto_key && (ch.animated() || !ch.keyed_by_hand)) {
     if (!ch.animated()) {
-      ch.set_key(0, ch.last);
+      ch.set_key(0, ch.last - ch.smart);
     }
-    ch.set_key(frame, value);
+    ch.set_key(frame, base);
   }
   ch.last = value;
 }
@@ -76,9 +92,16 @@ template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
   if (ch.animated()) {
     value = ch.evaluate(frame);
   }
+  else {
+    /* Unkeyed, the plain value is the data: take off what smart actions added last time. */
+    value -= ch.smart;
+  }
+  ch.smart = T{};
   ch.last = value;
   ch.has_last = true;
 }
+
+static void apply_smart_actions(Document &doc);
 
 void animation_record(Document &doc)
 {
@@ -105,12 +128,26 @@ void animation_record(Document &doc)
 void animation_evaluate(Document &doc, int frame)
 {
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
+  doc.smart_applied = false;
+  apply_smart_actions(doc);
   doc.evaluated_frame = frame;
+}
+
+void animation_strip_smart(Document &doc)
+{
+  layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
+    value -= ch.smart;
+    ch.last -= ch.smart;
+    ch.smart = {};
+  });
+  doc.smart_applied = false;
 }
 
 void animation_sync(Document &doc)
 {
   if (doc.evaluated_frame == doc.frame_current) {
+    /* Same frame, but bones may have turned: smart actions follow at once. */
+    animation_refresh_smart(doc);
     return;
   }
   if (doc.evaluated_frame >= 0) {
@@ -197,6 +234,8 @@ bool document_set_action(Document &doc, uint64_t owner_id, const std::string &na
   }
   const int frame = doc.frame_current;
   animation_record(doc);
+  /* Swap on the setup pose, where smart actions add nothing. */
+  animation_evaluate(doc, 0);
   /* Leave the action being edited (back to the mainline), then go into the new one. */
   if (!doc.action.empty()) {
     if (Layer *from = layer_find(doc, doc.action_layer)) {
@@ -233,6 +272,21 @@ bool document_set_action_by_name(Document &doc, const std::string &name)
   return false;
 }
 
+bool document_action_delete(Document &doc, uint64_t owner_id, const std::string &name)
+{
+  Layer *owner = layer_find(doc, owner_id);
+  if (!owner || name.empty() || std::find(owner->actions.begin(), owner->actions.end(), name) == owner->actions.end()) {
+    return false;
+  }
+  if (doc.action == name && doc.action_layer == owner_id) {
+    document_set_action(doc, 0, "");
+  }
+  std::erase(owner->actions, name);
+  owner_for_each_channel(*owner, [&](auto &ch, auto & /*value*/) { ch.actions.erase(name); });
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
 std::string document_action_new(Document &doc, uint64_t owner_id, const std::string &name)
 {
   Layer *owner = layer_find(doc, owner_id);
@@ -249,6 +303,146 @@ std::string document_action_new(Document &doc, uint64_t owner_id, const std::str
   owner->actions.push_back(unique);
   document_set_action(doc, owner_id, unique);
   return unique;
+}
+
+/* --- Smart actions (Moho's smart bones) ------------------------------------------------------- */
+
+const Bone *smart_action_bone(const Layer &owner, const std::string &action)
+{
+  if (const Bone *bone = bone_find_by_name(owner, action)) {
+    return bone;
+  }
+  if (action.size() > 2 && action.compare(action.size() - 2, 2, " 2") == 0) {
+    return bone_find_by_name(owner, action.substr(0, action.size() - 2));
+  }
+  return nullptr;
+}
+
+/* A channel's timeline in action `name` with its setup value at frame 0, sampled at a fractional
+ * frame (between the whole frames either side). */
+template<typename T> static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t)
+{
+  Channel<T> c;
+  c.keys = keys;
+  c.set_key(0, setup);
+  const int f0 = int(std::floor(t));
+  const float frac = t - float(f0);
+  const T a = c.evaluate(f0);
+  if (frac <= 0.0f) {
+    return a;
+  }
+  const T b = c.evaluate(f0 + 1);
+  return a + (b - a) * frac;
+}
+
+/* The action frame where the driving bone's keyed angle reaches `angle`: from frame 0 (its setup
+ * angle) along its keys; the last frame past the end; 0 on the other side of the setup. */
+static float smart_frame(const std::vector<Key<float>> &keys, float setup, float angle)
+{
+  if (keys.empty()) {
+    return 0.0f;
+  }
+  const float last = float(keys.back().frame);
+  const float step = 0.25f;
+  float prev = smart_sample(keys, setup, 0.0f);
+  for (float s = step; s <= last + 1e-4f; s += step) {
+    const float now = smart_sample(keys, setup, s);
+    if ((prev - angle) * (now - angle) <= 0.0f && now != prev) {
+      return s - step + step * (angle - prev) / (now - prev);
+    }
+    prev = now;
+  }
+  const float end = smart_sample(keys, setup, last);
+  const bool same_side = (end - setup) * (angle - setup) > 0.0f;
+  return same_side && std::abs(angle - setup) > std::abs(end - setup) ? last : 0.0f;
+}
+
+static bool has_smart_actions(const Document &doc)
+{
+  for (const Layer *layer : document_layers_flat(doc)) {
+    for (const std::string &name : layer->actions) {
+      if (layer->is_bone_layer() && smart_action_bone(*layer, name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void animation_refresh_smart(Document &doc)
+{
+  if (!doc.smart_applied && !has_smart_actions(doc)) {
+    return;
+  }
+  /* Take off what was added (from the value and its recorded value alike), then work it out again
+   * from the bones as they are now. */
+  if (doc.smart_applied) {
+    layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
+      value -= ch.smart;
+      ch.last -= ch.smart;
+      ch.smart = {};
+    });
+    doc.smart_applied = false;
+  }
+  apply_smart_actions(doc);
+}
+
+static void apply_smart_actions(Document &doc)
+{
+  /* Editing a smart action shows its own keys, without any smart action on top. */
+  if (!doc.action.empty()) {
+    if (const Layer *owner = layer_find(doc, doc.action_layer); owner && smart_action_bone(*owner, doc.action)) {
+      return;
+    }
+  }
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (!flat->is_bone_layer() || flat->actions.empty()) {
+      continue;
+    }
+    Layer &owner = *layer_find(doc, flat->id);
+    /* Every driving bone's angle picks its frame first, before any action moves bones. */
+    std::vector<std::pair<std::string, float>> frames;
+    for (const std::string &name : owner.actions) {
+      if (name == doc.action && owner.id == doc.action_layer) {
+        continue;
+      }
+      const Bone *bone = smart_action_bone(owner, name);
+      if (!bone) {
+        continue;
+      }
+      const auto it = bone->angle_keys.actions.find(name);
+      if (it == bone->angle_keys.actions.end()) {
+        continue;
+      }
+      /* The driving bone's setup angle: frame 0's key, or, not keyed yet, the angle it had before
+       * the turn not yet recorded (`last`), so turning an unkeyed bone plays the action at once. */
+      const Channel<float> &ach = bone->angle_keys;
+      const float setup = ach.animated() ? ach.evaluate(0) : (ach.has_last ? ach.last : bone->angle) - ach.smart;
+      const float t = smart_frame(it->second, setup, bone->angle);
+      if (t > 0.0f) {
+        frames.push_back({name, t});
+      }
+    }
+    for (const auto &[name, t] : frames) {
+      const Channel<float> *driver = &smart_action_bone(owner, name)->angle_keys;
+      owner_for_each_channel(owner, [&](auto &ch, auto &value) {
+        if (static_cast<const void *>(&ch) == static_cast<const void *>(driver)) {
+          return;
+        }
+        const auto it = ch.actions.find(name);
+        if (it == ch.actions.end()) {
+          return;
+        }
+        const auto setup = ch.animated() ? ch.evaluate(0) : value - ch.smart;
+        const auto delta = smart_sample(it->second, setup, t) - setup;
+        /* The value and what it was last recorded as both move, so an edit stays an edit. */
+        value += delta;
+        ch.last += delta;
+        ch.smart += delta;
+        doc.smart_applied = true;
+      });
+    }
+  }
 }
 
 std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
@@ -271,6 +465,7 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   add("rotation", layer.rotation_keys, layer.rotation);
   add("scale", layer.scale_keys, layer.scale);
   add("opacity", layer.opacity_keys, layer.opacity);
+  add("visible", layer.visible_keys, layer.visible_value);
   for (Bone &bone : layer.bones) {
     const std::string base = "bones[\"" + bone.name + "\"].";
     add(base + "position", bone.position_keys, bone.position);
@@ -315,10 +510,15 @@ int layer_insert_keys(Layer &layer, int frame)
 {
   int count = 0;
   layer_for_each_channel(layer, [&](auto &ch, auto &value) {
-    if (!ch.animated() && frame != 0) {
-      ch.set_key(0, ch.has_last ? ch.last : value);
+    if (ch.keyed_by_hand && !ch.animated()) {
+      return;
     }
-    ch.set_key(frame, value);
+    /* Keys hold the value without what smart actions add. */
+    const auto base = value - ch.smart;
+    if (!ch.animated() && frame != 0) {
+      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+    }
+    ch.set_key(frame, base);
     ch.last = value;
     ch.has_last = true;
     count++;
@@ -326,10 +526,84 @@ int layer_insert_keys(Layer &layer, int frame)
   return count;
 }
 
+/* As in Blender, a property with no keys left isn't animated: once only the setup key (frame 0)
+ * is left, it goes too, and the value stays what frame 0 had. */
+template<typename T> static void drop_lone_setup_key(Channel<T> &ch, T &value)
+{
+  if (ch.keys.size() == 1 && ch.keys.front().frame == 0) {
+    value = ch.keys.front().value + ch.smart;
+    ch.last = value;
+    ch.keys.clear();
+  }
+}
+
+int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int frame)
+{
+  std::vector<ChannelRef> refs;
+  for (const std::string &path : paths) {
+    ChannelRef ref;
+    if (layer_channel(layer, path, &ref)) {
+      refs.push_back(ref);
+    }
+  }
+  bool keyed = false;
+  for (const ChannelRef &ref : refs) {
+    keyed |= ref.scalar ? ref.scalar->key_at(frame) != nullptr : ref.vector->key_at(frame) != nullptr;
+  }
+  int count = 0;
+  const auto toggle = [&](auto &ch, auto &value) {
+    if (keyed) {
+      /* Frame 0 is the setup key: it goes only with the last of the keys. */
+      if (frame == 0 && ch.keys.size() > 1) {
+        return;
+      }
+      count += ch.remove_key(frame) ? 1 : 0;
+      drop_lone_setup_key(ch, value);
+      return;
+    }
+    const auto base = value - ch.smart;
+    if (!ch.animated() && frame != 0) {
+      /* The setup key takes the value from before an edit not yet keyed. */
+      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+    }
+    ch.set_key(frame, base);
+    ch.last = value;
+    ch.has_last = true;
+    count++;
+  };
+  for (const ChannelRef &ref : refs) {
+    if (ref.scalar) {
+      toggle(*ref.scalar, *ref.scalar_value);
+    }
+    else {
+      toggle(*ref.vector, *ref.vector_value);
+    }
+  }
+  return keyed ? -count : count;
+}
+
+int layer_key_state(Layer &layer, const std::vector<std::string> &paths, int frame)
+{
+  int state = 0;
+  for (const std::string &path : paths) {
+    ChannelRef ref;
+    if (!layer_channel(layer, path, &ref)) {
+      continue;
+    }
+    const bool animated = ref.scalar ? ref.scalar->animated() : ref.vector->animated();
+    const bool here = ref.scalar ? ref.scalar->key_at(frame) != nullptr : ref.vector->key_at(frame) != nullptr;
+    state = std::max(state, here ? 2 : animated ? 1 : 0);
+  }
+  return state;
+}
+
 int layer_delete_keys(Layer &layer, int frame)
 {
   int count = 0;
-  layer_for_each_channel(layer, [&](auto &ch, auto & /*value*/) { count += ch.remove_key(frame) ? 1 : 0; });
+  layer_for_each_channel(layer, [&](auto &ch, auto &value) {
+    count += ch.remove_key(frame) ? 1 : 0;
+    drop_lone_setup_key(ch, value);
+  });
   return count;
 }
 
@@ -344,33 +618,112 @@ std::vector<int> layer_key_frames(const Layer &layer)
   return {frames.begin(), frames.end()};
 }
 
-std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &layers)
+KeyKind channel_kind(const std::string &path)
+{
+  if (path.rfind("points[", 0) == 0 || path.rfind("curves[", 0) == 0) {
+    return KEY_POINTS;
+  }
+  if (path.rfind("bones[", 0) == 0) {
+    return path.size() > 6 && path.compare(path.size() - 6, 6, ".angle") == 0 ? KEY_BONE_ANGLE : KEY_BONE_TRANSFORM;
+  }
+  if (path == "rotation") {
+    return KEY_LAYER_ANGLE;
+  }
+  if (path == "opacity") {
+    return KEY_OPACITY;
+  }
+  if (path == "visible") {
+    return KEY_VISIBILITY;
+  }
+  return KEY_LAYER_TRANSFORM;
+}
+
+/* Whether the thing a channel animates is selected: the point (or the curve point's point), or
+ * the bone. Layer channels have no thing of their own. */
+static bool channel_thing_selected(const Layer &layer, const std::string &path)
+{
+  const auto number_after = [&](size_t at) { return std::atoi(path.c_str() + at); };
+  if (path.rfind("points[", 0) == 0) {
+    const int i = number_after(7);
+    return i >= 0 && i < int(layer.drawing.points.size()) && layer.drawing.points[i].selected;
+  }
+  if (path.rfind("curves[", 0) == 0) {
+    const int c = number_after(7);
+    const size_t at = path.find("points[");
+    if (c < 0 || c >= int(layer.drawing.curves.size()) || at == std::string::npos) {
+      return false;
+    }
+    const int k = number_after(at + 7);
+    const Curve &curve = layer.drawing.curves[c];
+    return k >= 0 && k < int(curve.points.size()) && layer.drawing.points[curve.points[k].point].selected;
+  }
+  if (path.rfind("bones[\"", 0) == 0) {
+    const size_t end = path.find("\"]");
+    const Bone *bone = end == std::string::npos ? nullptr : bone_find_by_name(layer, path.substr(7, end - 7));
+    return bone && (bone->selected || bone->select_head || bone->select_tail);
+  }
+  return false;
+}
+
+std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &filter)
+{
+  std::vector<ChannelRef> refs;
+  for (ChannelRef &ref : layer_channels(layer)) {
+    const KeyKind kind = channel_kind(ref.path);
+    if (!(filter.kinds & kind)) {
+      continue;
+    }
+    if (filter.selected_only && !channel_thing_selected(layer, ref.path)) {
+      continue;
+    }
+    refs.push_back(std::move(ref));
+  }
+  return refs;
+}
+
+/* Calls f(channel) for every channel of `layers` that passes the filter. */
+template<typename F> static void filtered_for_each(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f)
+{
+  for (Layer *layer : layers) {
+    if (filter.everything()) {
+      layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) { f(ch); });
+      continue;
+    }
+    for (const ChannelRef &ref : layer_filtered_channels(*layer, filter)) {
+      if (ref.scalar) {
+        f(*ref.scalar);
+      }
+      else {
+        f(*ref.vector);
+      }
+    }
+  }
+}
+
+std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &layers, const KeyFilter &filter)
 {
   std::map<int, KeyFrameSummary> summary;
-  for (Layer *layer : layers) {
-    layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
-      for (const auto &key : ch.keys) {
-        KeyFrameSummary &s = summary[key.frame];
-        s.keys++;
-        s.selected += key.selected ? 1 : 0;
-      }
-    });
-  }
+  filtered_for_each(layers, filter, [&](auto &ch) {
+    for (const auto &key : ch.keys) {
+      KeyFrameSummary &s = summary[key.frame];
+      s.keys++;
+      s.selected += key.selected ? 1 : 0;
+    }
+  });
   return summary;
 }
 
-void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select)
+void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select, const KeyFilter &filter)
 {
-  for (Layer *layer : layers) {
-    layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
-      for (auto &key : ch.keys) {
-        if (key.frame >= first && key.frame <= last) {
-          key.selected = select;
-        }
+  filtered_for_each(layers, filter, [&](auto &ch) {
+    for (auto &key : ch.keys) {
+      if (key.frame >= first && key.frame <= last) {
+        key.selected = select;
       }
-    });
-  }
+    }
+  });
 }
+
 
 void layers_deselect_keys(const std::vector<Layer *> &layers)
 {
@@ -431,10 +784,13 @@ int layers_delete_selected_keys(const std::vector<Layer *> &layers)
 {
   int removed = 0;
   for (Layer *layer : layers) {
-    layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
+    layer_for_each_channel(*layer, [&](auto &ch, auto &value) {
       const size_t before = ch.keys.size();
       std::erase_if(ch.keys, [](const auto &key) { return key.selected && key.frame != 0; });
       removed += int(before - ch.keys.size());
+      if (ch.keys.size() != before) {
+        drop_lone_setup_key(ch, value);
+      }
     });
   }
   return removed;
@@ -467,30 +823,28 @@ void layers_duplicate_selected_keys(const std::vector<Layer *> &layers, int offs
   }
 }
 
-std::vector<std::pair<int, int>> layers_hold_spans(const std::vector<Layer *> &layers)
+std::vector<std::pair<int, int>> layers_hold_spans(const std::vector<Layer *> &layers, const KeyFilter &filter)
 {
   std::vector<int> frames;
-  for (const auto &[frame, s] : layers_key_summary(layers)) {
+  for (const auto &[frame, s] : layers_key_summary(layers, filter)) {
     frames.push_back(frame);
   }
   std::vector<std::pair<int, int>> spans;
   for (size_t i = 0; i + 1 < frames.size(); i++) {
     const int a = frames[i], b = frames[i + 1];
     bool holds = true, any = false;
-    for (Layer *layer : layers) {
-      layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
-        const auto *ka = ch.key_at(a);
-        const auto *kb = ch.key_at(b);
-        if (!holds || (!ka && !kb)) {
-          return;
-        }
-        if (!ka || !kb || !(ka->value == kb->value)) {
-          holds = false;
-          return;
-        }
-        any = true;
-      });
-    }
+    filtered_for_each(layers, filter, [&](auto &ch) {
+      const auto *ka = ch.key_at(a);
+      const auto *kb = ch.key_at(b);
+      if (!holds || (!ka && !kb)) {
+        return;
+      }
+      if (!ka || !kb || !(ka->value == kb->value)) {
+        holds = false;
+        return;
+      }
+      any = true;
+    });
     if (holds && any) {
       spans.push_back({a, b});
     }

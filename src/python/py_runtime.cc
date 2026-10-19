@@ -682,9 +682,14 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       for (const auto &[name_obj, value] : settings) {
         const std::string name = py::str(name_obj);
         if (name == "interp") {
-          if (!interp_from_identifier(value.cast<std::string>(), &key->interp)) {
+          Interp interp;
+          if (!interp_from_identifier(value.cast<std::string>(), &interp)) {
             throw py::value_error("unknown interpolation '" + value.cast<std::string>() + "'");
           }
+          if (ch.constant && interp != Interp::Step) {
+            throw py::value_error("'" + path + "' is a yes/no property: its keys can only be STEP (constant)");
+          }
+          key->interp = interp;
         }
         else if (name == "hold") {
           key->hold = std::max(0, value.cast<int>());

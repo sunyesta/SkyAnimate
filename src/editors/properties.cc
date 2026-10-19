@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 
+#include "anim/animation.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
@@ -140,18 +141,36 @@ static void bones_panel(Context &C, Layer &armature)
       return;
     }
     float degrees = active->angle * 180.0f / PI;
-    label("Angle");
-    if (ImGui::DragFloat("##bone_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "%.1f\xC2\xB0")) {
-      active->angle = degrees * PI / 180.0f;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-      C.undo->push("Bone Angle", doc);
-    }
-    label("Scale");
-    ImGui::DragFloat("##bone_scale", &active->scale, 0.01f, -100.0f, 100.0f, "%.3f");
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-      C.undo->push("Bone Scale", doc);
-    }
+    const std::string bone_path = "bones[\"" + active->name + "\"].";
+    /* A bone field with its keyframe button. */
+    const auto keyed_field = [&](const char *name, const std::string &channel, auto &&field) {
+      const int state = layer_key_state(armature, {bone_path + channel}, doc.frame_current);
+      label(name);
+      ImGui::SetNextItemWidth(-ui_key_button_width());
+      const int pushed = ui_key_tint_push(state);
+      field();
+      ImGui::PopStyleColor(pushed);
+      ImGui::PushID(name);
+      if (ui_key_button("##key", state)) {
+        operator_call(C, "anim.keyframe_toggle",
+                      {{"layer", std::to_string(armature.id)}, {"paths", bone_path + channel}});
+      }
+      ImGui::PopID();
+    };
+    keyed_field("Angle", "angle", [&] {
+      if (ImGui::DragFloat("##bone_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "%.1f\xC2\xB0")) {
+        active->angle = degrees * PI / 180.0f;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        C.undo->push("Bone Angle", doc);
+      }
+    });
+    keyed_field("Scale", "scale", [&] {
+      ImGui::DragFloat("##bone_scale", &active->scale, 0.01f, -100.0f, 100.0f, "%.3f");
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        C.undo->push("Bone Scale", doc);
+      }
+    });
     ImGui::BeginDisabled(doc.frame_current != 0);
     label("Length");
     ImGui::DragFloat("##bone_length", &active->length, 0.005f, 0.0f, 1000.0f, "%.3f");
@@ -169,6 +188,20 @@ static void bones_panel(Context &C, Layer &armature)
     ImGui::EndDisabled();
   }
   ui_panel_end();
+}
+
+/* Blender's keyframe button for some of a layer's channels, on the next row. */
+static void key_next(Context &C, Layer &layer, std::vector<std::string> paths)
+{
+  const int state = layer_key_state(layer, paths, C.document->frame_current);
+  std::string joined;
+  for (const std::string &p : paths) {
+    joined += (joined.empty() ? "" : "|") + p;
+  }
+  const uint64_t id = layer.id;
+  ui_key_next(state, [&C, id, joined]() {
+    operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(id)}, {"paths", joined}});
+  });
 }
 
 /* For a layer inside a bone layer: a bone it follows as a whole (Parent to Bone), or, for a
@@ -508,19 +541,27 @@ static void layer_tab(Context &C)
   const char *path = "sky.data.layers.active";
   if (ui_panel_begin("Layer")) {
     ui_prop(C, ptr, "name", path);
+    key_next(C, *layer, {"visible"});
     ui_prop(C, ptr, "visible", path);
     ui_prop(C, ptr, "render_visible", path);
     ui_prop(C, ptr, "locked", path);
+    if (layer->type == LayerType::Vector && layer_armature(doc, layer->id)) {
+      ui_prop(C, ptr, "edit_with_bones", path);
+    }
     ui_prop(C, ptr, "label_color", path);
     ui_panel_end();
   }
   if (ui_panel_begin("Transform")) {
+    key_next(C, *layer, {"position"});
     ui_prop_pair(C, ptr, "Location", "location_x", "X", "location_y", "Y", path);
+    key_next(C, *layer, {"rotation"});
     ui_prop(C, ptr, "rotation", path);
+    key_next(C, *layer, {"scale"});
     ui_prop_pair(C, ptr, "Scale", "scale_x", "X", "scale_y", "Y", path);
     ui_panel_end();
   }
   if (ui_panel_begin("Compositing")) {
+    key_next(C, *layer, {"opacity"});
     ui_prop(C, ptr, "opacity", path);
     ui_panel_end();
   }

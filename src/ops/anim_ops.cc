@@ -124,8 +124,51 @@ void anim_operators_register()
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
       Layer *owner = action_owner(*C.document, C.document->active_layer);
-      const std::string name = document_action_new(*C.document, owner->id, op_arg(C, "name", "Action"));
+      std::string name = op_arg(C, "name", "Action");
+      if (op_arg_bool(C, "smart")) {
+        /* A smart action is named after its bone; a second one (" 2") turns the other way. */
+        const auto has = [&](const std::string &n) {
+          return std::find(owner->actions.begin(), owner->actions.end(), n) != owner->actions.end();
+        };
+        if (!bone_find_by_name(*owner, name)) {
+          report(ReportType::Warning, "No bone named " + name);
+          return OpStatus::Cancelled;
+        }
+        if (has(name)) {
+          name += " 2";
+        }
+        if (has(name)) {
+          report(ReportType::Warning, "That bone has both smart actions already");
+          return OpStatus::Cancelled;
+        }
+        owner->actions.push_back(name);
+        document_set_action(*C.document, owner->id, name);
+        return OpStatus::Finished;
+      }
+      name = document_action_new(*C.document, owner->id, name);
       return name.empty() ? OpStatus::Cancelled : OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_delete";
+    ot.name = "Delete Action";
+    ot.description = "Delete action `name` of the bone layer the active layer is in (or is), with its keys "
+                     "(right-click an action in the timeline's action menu)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_arg(C, "name");
+      /* The action being edited may belong to another bone layer than the active one. */
+      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
+                                                                 : action_owner(doc, doc.active_layer);
+      if (!owner || !document_action_delete(doc, owner->id, name)) {
+        report(ReportType::Warning, "No action named " + name);
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
     };
     operators().add(std::move(ot));
   }
@@ -178,9 +221,49 @@ void anim_operators_register()
                     });
 
   /* --- Keys in the timeline ------------------------------------------------------------ */
+  {
+    OperatorType ot;
+    ot.idname = "anim.keyframe_toggle";
+    ot.name = "Toggle Keyframe";
+    ot.description = "Key properties of a layer at the current frame, or take their keys away when keyed there "
+                     "(Blender's keyframe button). layer: the layer's id; paths: channel paths separated by |";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      Layer *layer = layer_find(doc, std::strtoull(op_arg(C, "layer").c_str(), nullptr, 10));
+      if (!layer) {
+        layer = document_active_layer(doc);
+      }
+      if (!layer) {
+        return OpStatus::Cancelled;
+      }
+      std::vector<std::string> paths;
+      const std::string list = op_arg(C, "paths");
+      for (size_t at = 0; at <= list.size();) {
+        const size_t bar = std::min(list.find('|', at), list.size());
+        if (bar > at) {
+          paths.push_back(list.substr(at, bar - at));
+        }
+        at = bar + 1;
+      }
+      animation_record(doc);
+      const int changed = layer_toggle_keys(*layer, paths, doc.frame_current);
+      if (changed == 0) {
+        if (doc.frame_current == 0) {
+          report(ReportType::Warning, "Frame 0 is the setup key: delete the later keys first");
+        }
+        return OpStatus::Cancelled;
+      }
+      animation_evaluate(doc, doc.frame_current);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   anim_operator_add("anim.keys_select", "Select Keys",
                     "Select the keys on frames frame_start..frame_end (extend keeps the others; deselect takes "
-                    "them out). layers: only these layers' keys (comma-separated ids, a timeline channel row)",
+                    "them out). layers: only these layers' keys (comma-separated ids); kinds: only these kinds "
+                    "of channel (KeyKind bits); selected_only: only selected points' and bones' (a timeline row)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       const std::vector<Layer *> layers = op_layers(C);
                       const int first = op_arg_int(C, "frame_start", 0);
@@ -189,7 +272,10 @@ void anim_operators_register()
                       if (!op_arg_bool(C, "extend") && !deselect) {
                         layers_deselect_keys(timeline_layers(C));
                       }
-                      layers_select_keys(layers, std::min(first, last), std::max(first, last), !deselect);
+                      KeyFilter filter;
+                      filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
+                      filter.selected_only = op_arg_bool(C, "selected_only");
+                      layers_select_keys(layers, std::min(first, last), std::max(first, last), !deselect, filter);
                       return OpStatus::Finished;
                     });
   anim_operator_add("anim.keys_select_all", "Select All Keys", "Select every key (action=DESELECT: none)",

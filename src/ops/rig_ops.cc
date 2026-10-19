@@ -221,8 +221,10 @@ void rig_operators_register()
   rig_operator("armature.bone_delete", "Delete Bones",
                "Delete the selected bones; their children move up to the deleted bone's parent",
                [](Context &C) {
+                 /* With no bone picked, X goes on to delete points (of layers marked Editable in Bone
+                  * Group). */
                  const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
-                 return active && active->is_bone_layer();
+                 return active && active->is_bone_layer() && armature_any_picked(*active);
                },
                [](Context &C) {
                  Layer &armature = *active_armature(C);

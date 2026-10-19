@@ -80,8 +80,10 @@ Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerTy
 Weight Select / Weight Paint tools) and Parent to Bone; the modifier stack (`src/anim/deform.*`: Mirror, and the Armature modifier every
 layer inside a bone layer gets, kept by `document_sync_armature_modifiers`); rig operators in
 `src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,
-Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Not yet: IK,
-smart bones, local armature viewport, copy/paste poses.
+Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Actions (bone layer
+timelines swapped into the channels) and smart actions (`apply_smart_actions` in
+`src/anim/animation.cc`; offsets live in `Channel::smart`). Not yet: IK, local armature viewport,
+copy/paste poses.
 
 Preferences live in `%LOCALAPPDATA%\SkyAnimate\preferences.json`; background runs (tests) never read
 or write them.

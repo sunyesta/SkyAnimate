@@ -75,6 +75,14 @@ template<typename T> struct Channel {
    * channel. The timeline being edited is always `keys`; while an action is edited the mainline's
    * keys wait here under "". Action keys start after frame 0, which is the shared setup pose. */
   std::map<std::string, std::vector<Key<T>>> actions;
+  /* What smart actions add to the value right now (it is in the plain value too). Edits and saving
+   * take it off, so it never becomes part of the data. */
+  T smart{};
+  /* Auto-keying leaves it alone until it is animated (keyed by hand first): a layer's visibility,
+   * so hiding a layer while working doesn't key it. */
+  bool keyed_by_hand = false;
+  /* A yes/no property (visibility): its keys only hold, as Blender's Constant interpolation. */
+  bool constant = false;
 
   bool animated() const { return !keys.empty(); }
   T evaluate(int frame) const;

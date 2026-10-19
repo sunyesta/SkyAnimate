@@ -83,6 +83,84 @@ void ui_panel_end()
   ImGui::EndTable();
 }
 
+/* A key button waiting for the next row (ui_key_next). */
+static struct {
+  bool pending = false;
+  int state = 0;
+  std::function<void()> on_click;
+} g_key_next;
+
+float ui_key_button_width()
+{
+  return ImGui::GetFrameHeight() + 2.0f;
+}
+
+int ui_key_tint_push(int state)
+{
+  if (state <= 0) {
+    return 0;
+  }
+  /* Blender's colours: green for animated, yellow for keyed on this frame. */
+  const ImVec4 c = state == 2 ? ImVec4(0.56f, 0.50f, 0.13f, 1.0f) : ImVec4(0.28f, 0.45f, 0.20f, 1.0f);
+  const ImVec4 hover(c.x * 1.15f, c.y * 1.15f, c.z * 1.15f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, c);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, hover);
+  /* A ticked checkbox fills with this instead of the selection blue. */
+  ImGui::PushStyleColor(ImGuiCol_CheckboxSelectedBg, state == 2 ? ImVec4(0.80f, 0.70f, 0.16f, 1.0f)
+                                                                : ImVec4(0.36f, 0.62f, 0.26f, 1.0f));
+  return 4;
+}
+
+bool ui_key_button(const char *id, int state)
+{
+  const float h = ImGui::GetFrameHeight();
+  ImGui::SameLine(0.0f, 2.0f);
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const bool pressed = ImGui::InvisibleButton(id, ImVec2(h, h));
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 c(at.x + h * 0.5f, at.y + h * 0.5f);
+  const bool hovered = ImGui::IsItemHovered();
+  const ImU32 col = hovered ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255);
+  if (state == 0) {
+    dl->AddCircleFilled(c, h * 0.09f, col);
+  }
+  else {
+    const float r = h * 0.28f;
+    const ImVec2 d[4] = {ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y)};
+    if (state == 2) {
+      dl->AddConvexPolyFilled(d, 4, col);
+    }
+    else {
+      dl->AddPolyline(d, 4, col, ImDrawFlags_Closed, 1.4f);
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(state == 2 ? "Delete Keyframe" : "Insert Keyframe");
+  }
+  return pressed;
+}
+
+void ui_key_next(int state, std::function<void()> on_click)
+{
+  g_key_next = {true, state, std::move(on_click)};
+}
+
+/* After a row's fields: its key button, if one was asked for. */
+static void key_button_finish(int pushed)
+{
+  if (!g_key_next.pending) {
+    return;
+  }
+  ImGui::PopStyleColor(pushed);
+  auto on_click = std::move(g_key_next.on_click);
+  const int state = g_key_next.state;
+  g_key_next = {};
+  if (ui_key_button("##key", state) && on_click) {
+    on_click();
+  }
+}
+
 /* Label in the left column, right-aligned against its field as in Blender. */
 static void ui_label(const char *label)
 {
@@ -93,7 +171,7 @@ static void ui_label(const char *label)
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetColumnWidth() - label_width));
   ImGui::TextUnformatted(label);
   ImGui::TableSetColumnIndex(1);
-  ImGui::SetNextItemWidth(-FLT_MIN);
+  ImGui::SetNextItemWidth(g_key_next.pending ? -ui_key_button_width() : -FLT_MIN);
 }
 
 /* A property's value field, at the next item width. `prefix` goes inside number fields ("X"). */
@@ -166,7 +244,11 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
     return;
   }
   ui_label(prop->name.c_str());
+  ImGui::PushID(identifier);
+  const int pushed = g_key_next.pending ? ui_key_tint_push(g_key_next.state) : 0;
   prop_field(C, ptr, prop, python_path, nullptr);
+  key_button_finish(pushed);
+  ImGui::PopID();
 }
 
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
@@ -178,13 +260,19 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
     return;
   }
   ui_label(label);
+  ImGui::PushID(label);
+  const bool keyed = g_key_next.pending;
+  const int pushed = keyed ? ui_key_tint_push(g_key_next.state) : 0;
   const float spacing = 2.0f;
-  const float w = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
+  const float avail = ImGui::GetContentRegionAvail().x - (keyed ? ui_key_button_width() : 0.0f);
+  const float w = (avail - spacing) * 0.5f;
   ImGui::SetNextItemWidth(w);
   prop_field(C, ptr, a, python_path, first_prefix);
   ImGui::SameLine(0.0f, spacing);
-  ImGui::SetNextItemWidth(-FLT_MIN);
+  ImGui::SetNextItemWidth(keyed ? w : -FLT_MIN);
   prop_field(C, ptr, b, python_path, second_prefix);
+  key_button_finish(pushed);
+  ImGui::PopID();
 }
 
 bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name)

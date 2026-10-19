@@ -257,6 +257,9 @@ template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value, Inte
     /* A cycle key ends a loop; the keys after it start out ordinary. */
     key.interp = default_interp;
   }
+  if (constant) {
+    key.interp = Interp::Step;
+  }
   return *keys.insert(at, key);
 }
 

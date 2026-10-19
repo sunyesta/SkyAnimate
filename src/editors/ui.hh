@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 /* Shared widgets for editors, like Blender's UI layout: panels of properties drawn from their
  * RNA descriptions. */
 
@@ -21,6 +23,17 @@ void ui_panel_end();
 /* One property row inside a panel. Edits push an undo step when the widget is released.
  * `python_path` is shown in the tooltip, e.g. "sky.data.document". */
 void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path);
+/* Blender's keyframe button: state 0 not animated (a dot), 1 animated (a hollow diamond), 2 keyed
+ * on this frame (a filled one). Called before ui_prop / ui_prop_pair, the next row's fields get
+ * Blender's tint for the state (green animated, yellow keyed here) and the button at their right;
+ * `on_click` runs when it is pressed. */
+void ui_key_next(int state, std::function<void()> on_click);
+/* For rows drawn by hand: the tint (pop with ImGui::PopStyleColor(ui_key_tint_push(...))) and
+ * the button itself, after the field (returns true when pressed). */
+int ui_key_tint_push(int state);
+bool ui_key_button(const char *id, int state);
+/* The width a key button takes, with its spacing. */
+float ui_key_button_width();
 /* Two properties side by side under one label, as Blender shows Location X and Y:
  * "Location  [X 0.000] [Y 0.000]". */
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,

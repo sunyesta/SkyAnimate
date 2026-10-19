@@ -44,6 +44,18 @@ std::vector<Layer *> editable_layers(Context &C)
       layers.push_back(layer_find(doc, layer->id));
     }
   }
+  /* A bone layer being worked in brings its layers marked Editable in Bone Group. */
+  if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
+    for (const Layer *layer : document_layers_flat(doc)) {
+      const Layer *owner = layer_armature(doc, layer->id);
+      if (layer->edit_with_bones && owner && owner->id == bones->id && layer->visible && !layer->is_group() &&
+          !layer->is_reference() && !layer->locked &&
+          std::find(layers.begin(), layers.end(), layer) == layers.end())
+      {
+        layers.push_back(layer_find(doc, layer->id));
+      }
+    }
+  }
   return layers;
 }
 
@@ -335,8 +347,9 @@ void vector_operators_register()
       }
       const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
       if (active && active->is_bone_layer()) {
-        /* A bone picked by its body or by either ball. */
-        return armature_any_picked(*active);
+        /* A bone picked by its body or by either ball, or points of its layers marked Editable in
+         * Bone Group. */
+        return armature_any_picked(*active) || editable_with_selection_poll(C);
       }
       return editable_with_selection_poll(C);
     };

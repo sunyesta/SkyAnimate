@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 /* Editor types and areas. An area is one dockable panel of the window showing one
  * editor, like Blender's ScrArea + SpaceType. Splitting and joining areas uses ImGui
  * docking: drag an area's tab onto another area. */
@@ -57,8 +59,10 @@ struct Area {
   float view_start = 0.0f;
   float view_end = 250.0f;
   bool view_initialized = false;
-  /* Timeline: how far the channel rows (one per selected layer) are scrolled, in pixels. */
+  /* Timeline: how far the channel rows are scrolled, in pixels, and which folding rows are open
+   * (by key; a row missing here is at its default). */
   float channel_scroll = 0.0f;
+  std::map<std::string, bool> timeline_open;
 
   ViewportOverlays overlays;
 

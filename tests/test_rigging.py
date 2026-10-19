@@ -191,6 +191,17 @@ assert art.point_bones[1:3] == ["", ""] and art.weights[1] == {}
 sky.ops.armature.select_none()  # an undo step: new points would get weights here
 assert art.weights[1] == {}, "and they don't get automatic weights again"
 
+# Editable in Bone Group: with the bone layer active, that layer's points can be picked and moved.
+sky.data.layers.active = rig
+assert sky.ops.mesh.select_all() == {'CANCELLED'}, "points of the layers inside aren't editable by default"
+art.edit_with_bones = True
+assert sky.ops.mesh.select_all() == {'FINISHED'}
+assert all(p[2] for p in art.points), "the layer's points were selected from the bone layer"
+sky.ops.armature.select_none()
+assert sky.wm.event_simulate("G", area="Viewport"), "G moves them, with no bone picked"
+sky.ops.mesh.select_none()
+art.edit_with_bones = False
+
 # Converting between groups and bone groups.
 sky.data.layers.active = rig
 assert sky.ops.layer.convert_to_group() == {'FINISHED'}

@@ -11,6 +11,7 @@
 #include <miniz.h>
 #include <nlohmann/json.hpp>
 
+#include "anim/animation.hh"
 #include "anim/deform.hh"
 
 namespace sky {
@@ -224,6 +225,7 @@ static json layer_to_json(const Layer &layer)
       {"visible", layer.visible},
       {"render_visible", layer.render_visible},
       {"locked", layer.locked},
+      {"edit_with_bones", layer.edit_with_bones},
       {"expanded", layer.expanded},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
       {"position", float2_to_json(layer.position)},
@@ -289,6 +291,7 @@ static json layer_to_json(const Layer &layer)
   put_keys(j, "rotation_keys", layer.rotation_keys);
   put_keys(j, "scale_keys", layer.scale_keys);
   put_keys(j, "opacity_keys", layer.opacity_keys);
+  put_keys(j, "visible_keys", layer.visible_keys);
   if (layer.is_reference()) {
     /* A reference's drawing lives in its source; storing a copy would only go stale. */
     j["reference_source"] = layer.reference_source;
@@ -355,7 +358,10 @@ static bool file_write_bytes(const std::filesystem::path &path, const void *data
 
 bool sky_file_write(const Document &doc, const std::string &path, std::string *r_error)
 {
-  const std::string text = sky_document_to_json(doc);
+  /* What smart actions add isn't data: it is worked out again on opening. */
+  Document data = doc;
+  animation_strip_smart(data);
+  const std::string text = sky_document_to_json(data);
 
   /* Build the archive in memory: miniz's file functions can't open non-ASCII Windows paths. */
   mz_zip_archive zip{};
@@ -672,6 +678,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.visible = get_bool(j, "visible", true);
   layer.render_visible = get_bool(j, "render_visible", true);
   layer.locked = get_bool(j, "locked", false);
+  layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
   layer.expanded = get_bool(j, "expanded", true);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
   layer.position = get_float2(j, "position", {});
@@ -732,6 +739,7 @@ static Layer layer_from_json(const json &j, int depth)
   get_keys(j, "rotation_keys", layer.rotation_keys);
   get_keys(j, "scale_keys", layer.scale_keys);
   get_keys(j, "opacity_keys", layer.opacity_keys);
+  get_keys(j, "visible_keys", layer.visible_keys);
   layer.mask_mode = get_enum(j, "mask_mode", MaskMode::Masked);
   layer.group_mask = get_enum(j, "group_mask", GroupMask::None);
   layer.mask_expand = get_bool(j, "mask_expand", false);

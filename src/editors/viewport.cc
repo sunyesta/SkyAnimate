@@ -3061,6 +3061,22 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
   dl->AddLine(pc - ImVec2(0, GIZMO_MARKER * 1.4f), pc + ImVec2(0, GIZMO_MARKER * 1.4f), COL_GIZMO, 1.0f);
 }
 
+/* Whether a shown point of an edited layer is under the mouse (screen pixels). */
+static bool point_under(Context &C, const ViewMapping &view, ImVec2 mouse)
+{
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const Posed shown = posed(*C.document, *layer);
+    for (const MeshPoint &p : shown.drawing->points) {
+      const ImVec2 s = view.to_screen(to_document.apply(p.pos));
+      if ((s.x - mouse.x) * (s.x - mouse.x) + (s.y - mouse.y) * (s.y - mouse.y) <= PICK_PIXELS * PICK_PIXELS) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /* The Select tool on a bone layer: a click picks a bone or one of its ends; a drag box-selects
  * the ends inside (Shift adds, Ctrl removes), as Blender's Select Box tool does. */
 struct BoneBox {
@@ -3090,6 +3106,9 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       dl->AddRect(g_bone_box.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      /* Layers marked Editable in Bone Group: their points are picked along with the bones. */
+      const std::vector<Layer *> point_layers = editable_layers(C);
+      const HandleDisplay handles = handles_shown(area.overlays, C.wm->tool_settings);
       if (dragged) {
         const Transform2D to_document = layer_world_transform(doc, armature.id);
         const ImVec2 a = g_bone_box.start, b = io.MousePos;
@@ -3101,12 +3120,33 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
               return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
             },
             io.KeyShift, io.KeyCtrl);
-        push_undo(C, "Box Select Bones");
+        if (!point_layers.empty()) {
+          select_box(C, view, a, b, handles);
+        }
+        push_undo(C, "Box Select");
       }
       else {
+        /* A point under the mouse wins over a bone's body (points are the smaller targets); a
+         * bone's ball wins over a point. */
         const BoneHit hit = pick_bone_part(doc, armature, view, g_bone_box.start);
-        bone_click_select(armature, hit, io.KeyShift);
-        push_undo(C, hit.bone ? "Select Bone" : "Deselect Bones");
+        const bool on_point = !point_layers.empty() && (hit.part == BonePart::Body || !hit.bone) &&
+                              point_under(C, view, g_bone_box.start);
+        if (on_point) {
+          if (!io.KeyShift) {
+            armature_deselect_all(armature);
+          }
+          select_click(C, view, view.to_document(g_bone_box.start), handles);
+          push_undo(C, "Select");
+        }
+        else {
+          bone_click_select(armature, hit, io.KeyShift);
+          if (!io.KeyShift) {
+            for (Layer *l : point_layers) {
+              deselect_all(l->drawing);
+            }
+          }
+          push_undo(C, hit.bone ? "Select Bone" : "Deselect");
+        }
       }
       g_bone_box = {};
     }
@@ -3499,7 +3539,16 @@ void viewport_draw(Area &area, Context &C)
   if (drawing && (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect)) {
     draw_weight_overlay(dl, C, *layer, view, std::clamp(doc.viewport_quality, 1, 64));
   }
-  else if (drawing) {
+  else if (!drawing && ov.show && (ov.wireframe || ov.points)) {
+    /* A bone layer being worked in: the wires and points of its layers marked Editable in Bone
+     * Group. */
+    for (Layer *editing : editable_layers(C)) {
+      draw_drawing_overlay(dl, *posed(doc, *editing).drawing, layer_world_transform(doc, editing->id), view,
+                           ov.wireframe, ov.points, std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
+                           ts.select_mode != SelectMode::Edge);
+    }
+  }
+  if (drawing) {
     if (ov.show && (ov.wireframe || ov.points)) {
       /* Every layer being edited shows its wires and points. */
       for (Layer *editing : editable_layers(C)) {

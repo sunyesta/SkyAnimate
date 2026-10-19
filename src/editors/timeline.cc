@@ -183,20 +183,86 @@ static void action_menu(Context &C, float width)
                       "animation for it and everything inside)\n\nPython: sky.data.document.action");
   }
   if (open) {
+    std::string doomed;
+    const auto action_item = [&](const std::string &name) {
+      if (ImGui::Selectable(name.c_str(), in_action && doc.action == name && owner && doc.action_layer == owner->id)) {
+        operator_call(C, "anim.action_set", {{"name", name}});
+      }
+      /* Right-click: the action's own menu. */
+      if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem("Delete")) {
+          doomed = name;
+        }
+        ImGui::EndPopup();
+      }
+    };
+    /* At the top, with one bone selected: its smart actions, and a new one while it has fewer
+     * than two (the second turns the other way). */
+    const Bone *single = nullptr;
+    if (owner) {
+      int picked = 0;
+      for (const Bone &b : owner->bones) {
+        if (b.selected || b.select_head || b.select_tail) {
+          picked++;
+          single = &b;
+        }
+      }
+      if (picked != 1) {
+        single = nullptr;
+      }
+    }
+    if (single) {
+      ImGui::PushID("selected");
+      ImGui::SeparatorText(("Selected: " + single->name).c_str());
+      int count = 0;
+      for (const std::string &name : owner->actions) {
+        if (smart_action_bone(*owner, name) == single) {
+          action_item(name);
+          count++;
+        }
+      }
+      if (count < 2) {
+        if (ImGui::Selectable(count == 0 ? "+ New Smart Action" : "+ New Smart Action (other way)")) {
+          operator_call(C, "anim.action_new", {{"name", single->name}, {"smart", "1"}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("An action named after the bone: key the bone turning, and what it should move. Then "
+                            "turning the bone anywhere else plays the action that far (Moho's smart bones). A "
+                            "second one covers turning the other way");
+        }
+      }
+      ImGui::PopID();
+      ImGui::Separator();
+    }
     if (ImGui::Selectable("Mainline", !in_action)) {
       operator_call(C, "anim.action_set", {{"name", ""}});
     }
     if (owner && !owner->actions.empty()) {
-      ImGui::SeparatorText(owner->name.c_str());
-      for (const std::string &name : owner->actions) {
-        if (ImGui::Selectable(name.c_str(), in_action && doc.action == name && doc.action_layer == owner->id)) {
-          operator_call(C, "anim.action_set", {{"name", name}});
+      for (const bool smart : {false, true}) {
+        bool any = false;
+        for (const std::string &name : owner->actions) {
+          if ((smart_action_bone(*owner, name) != nullptr) != smart) {
+            continue;
+          }
+          if (!any) {
+            ImGui::SeparatorText(smart ? "Smart Actions" : "Actions");
+            any = true;
+          }
+          action_item(name);
         }
       }
+    }
+    if (owner && !single) {
+      ImGui::Separator();
+      ImGui::TextDisabled("Select one bone for its smart actions");
     }
     else if (!owner) {
       ImGui::Separator();
       ImGui::TextDisabled("Select a bone layer, or a layer in one,\nto add and edit its actions.");
+    }
+    /* After drawing the list, which the deletion changes. */
+    if (!doomed.empty()) {
+      operator_call(C, "anim.action_delete", {{"name", doomed}});
     }
     ImGui::EndCombo();
   }
@@ -369,25 +435,129 @@ static bool modal_key_take(Context &C, const char *type)
   return false;
 }
 
-/* A row of the timeline: Summary (every animated layer together), then one per layer. */
+/* A row of the timeline. Rows fold, as Blender's channels do:
+
+     All                     everything of the layers the timeline shows (white)
+       Layers
+         <layer>             that layer's own channels
+           Angle & Transform
+             Angle           rotation
+             Transform       position and scale
+           Opacity
+           Visibility
+       Bones                 every bone's angle and transform
+         Bone Angle
+         Bone Transform
+       Points                every point's position, width and shape
+     Selected                the same for the selected bones and points (red rows)
+
+   A row with no keys under it isn't shown; a folding row shows the keys of all it holds. */
 struct ChannelRow {
   std::string name;
   std::vector<Layer *> layers;
-  bool summary = false;
-  /* An animated layer inside a selected bone layer (indented under it). */
-  bool inside = false;
+  KeyFilter filter;
+  int depth = 0;
+  /* Key of a folding row's open state, "" when it doesn't fold. */
+  std::string fold;
+  bool open = false;
+  /* In the Selected section (drawn red). */
+  bool selected = false;
+  /* A layer's own row: clicking its name makes that layer active. */
+  uint64_t layer = 0;
+  /* Covers every layer the timeline shows. */
+  bool all_layers = false;
 };
 
-/* Summary, then a row for each layer the timeline shows: the selected ones, and the animated
- * layers inside a selected bone layer. */
-static std::vector<ChannelRow> channel_rows(Context &C, const std::vector<Layer *> &layers)
+static bool row_open(const Area &area, const std::string &key, bool fallback)
 {
-  const std::vector<Layer *> picked = keyed_layers(C);
+  const auto it = area.timeline_open.find(key);
+  return it == area.timeline_open.end() ? fallback : it->second;
+}
+
+/* Something selected for the Selected section: a point, or a bone (by body or ball). */
+static bool anything_selected(const std::vector<Layer *> &layers)
+{
+  for (const Layer *l : layers) {
+    for (const MeshPoint &p : l->drawing.points) {
+      if (p.selected) {
+        return true;
+      }
+    }
+    for (const Bone &b : l->bones) {
+      if (b.selected || b.select_head || b.select_tail) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers)
+{
   std::vector<ChannelRow> rows;
-  rows.push_back({"Summary", layers, true, false});
-  for (Layer *l : layers) {
-    const bool inside = std::find(picked.begin(), picked.end(), l) == picked.end();
-    rows.push_back({l->name, {l}, false, inside});
+  const auto keyed = [](const std::vector<Layer *> &ls, const KeyFilter &f) { return !layers_key_summary(ls, f).empty(); };
+  const auto add = [&](std::string name, std::vector<Layer *> ls, KeyFilter f, int depth, std::string fold,
+                       bool fold_default, bool selected, uint64_t layer, bool all) -> bool {
+    ChannelRow row{std::move(name), std::move(ls), f, depth, fold, false, selected, layer, all};
+    row.open = !fold.empty() && row_open(area, fold, fold_default);
+    rows.push_back(std::move(row));
+    return rows.back().open;
+  };
+  if (layers.empty()) {
+    return rows;
+  }
+  /* The bones and points part, for All and for Selected. */
+  const auto bones_and_points = [&](bool selected, int depth, const char *prefix) {
+    KeyFilter bones{KEY_BONES, selected}, angle{KEY_BONE_ANGLE, selected}, move{KEY_BONE_TRANSFORM, selected},
+        points{KEY_POINTS, selected};
+    if (keyed(layers, bones) &&
+        add("Bones", layers, bones, depth, std::string(prefix) + "bones", false, selected, 0, true))
+    {
+      if (keyed(layers, angle)) {
+        add("Bone Angle", layers, angle, depth + 1, "", false, selected, 0, true);
+      }
+      if (keyed(layers, move)) {
+        add("Bone Transform", layers, move, depth + 1, "", false, selected, 0, true);
+      }
+    }
+    if (keyed(layers, points)) {
+      add("Points", layers, points, depth, "", false, selected, 0, true);
+    }
+  };
+  if (add("All", layers, KeyFilter{}, 0, "all", true, false, 0, true)) {
+    const KeyFilter layer_kinds{KEY_LAYER, false};
+    if (keyed(layers, layer_kinds) && add("Layers", layers, layer_kinds, 1, "layers", true, false, 0, true)) {
+      for (Layer *l : layers) {
+        if (!keyed({l}, layer_kinds)) {
+          continue;
+        }
+        const std::string id = std::to_string(l->id);
+        if (!add(l->name, {l}, layer_kinds, 2, "layer:" + id, false, false, l->id, false)) {
+          continue;
+        }
+        const KeyFilter at{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, false};
+        if (keyed({l}, at) && add("Angle & Transform", {l}, at, 3, "lat:" + id, false, false, 0, false)) {
+          if (keyed({l}, {KEY_LAYER_ANGLE, false})) {
+            add("Angle", {l}, {KEY_LAYER_ANGLE, false}, 4, "", false, false, 0, false);
+          }
+          if (keyed({l}, {KEY_LAYER_TRANSFORM, false})) {
+            add("Transform", {l}, {KEY_LAYER_TRANSFORM, false}, 4, "", false, false, 0, false);
+          }
+        }
+        if (keyed({l}, {KEY_OPACITY, false})) {
+          add("Opacity", {l}, {KEY_OPACITY, false}, 3, "", false, false, 0, false);
+        }
+        if (keyed({l}, {KEY_VISIBILITY, false})) {
+          add("Visibility", {l}, {KEY_VISIBILITY, false}, 3, "", false, false, 0, false);
+        }
+      }
+    }
+    bones_and_points(false, 1, "");
+  }
+  if (anything_selected(layers) &&
+      add("Selected", layers, KeyFilter{KEY_BONES | KEY_POINTS, true}, 0, "sel", true, true, 0, true))
+  {
+    bones_and_points(true, 1, "sel_");
   }
   return rows;
 }
@@ -425,7 +595,7 @@ static void timeline_body(Area &area, Context &C)
   const std::vector<Layer *> layers = timeline_layers(C);
   /* Channel rows: Summary, then each animated (active or selected) layer, as Blender's Dope Sheet
    * lists the selected objects. The names sit in a column on the left. */
-  std::vector<ChannelRow> rows = channel_rows(C, layers);
+  std::vector<ChannelRow> rows = channel_rows(area, layers);
   const float font_size = ImGui::GetFontSize();
   const float names_w = std::min(font_size * 9.0f, size.x * 0.4f);
   /* The keys region: right of the names. */
@@ -487,7 +657,7 @@ static void timeline_body(Area &area, Context &C)
   std::vector<std::map<int, KeyFrameSummary>> summaries(rows.size());
   const auto summarize = [&]() {
     for (size_t r = 0; r < rows.size(); r++) {
-      summaries[r] = layers_key_summary(rows[r].layers);
+      summaries[r] = layers_key_summary(rows[r].layers, rows[r].filter);
     }
   };
   summarize();
@@ -550,17 +720,26 @@ static void timeline_body(Area &area, Context &C)
       C.wm->modal_keys.clear();
     }
     /* The document was replaced: look the layers up again. */
-    rows = channel_rows(C, timeline_layers(C));
+    rows = channel_rows(area, timeline_layers(C));
     summaries.resize(rows.size());
     summarize();
   }
   else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
     if (over_names) {
-      /* A layer's name makes it the active layer (the selection stays). */
+      /* The arrow folds or opens a row; a layer's name makes it the active layer (the selection
+       * stays); elsewhere a folding row's name folds it too. */
       const int r = row_at(io.MousePos.y);
-      if (r > 0) {
-        doc.active_layer = rows[r].layers.front()->id;
-        C.undo->push("Active Layer", doc);
+      if (r >= 0) {
+        const ChannelRow &row = rows[r];
+        const float arrow_x = p0.x + 6.0f + float(row.depth) * font_size;
+        const bool on_arrow = io.MousePos.x < arrow_x + font_size;
+        if (!row.fold.empty() && (on_arrow || !row.layer)) {
+          area.timeline_open[row.fold] = !row.open;
+        }
+        else if (row.layer) {
+          doc.active_layer = row.layer;
+          C.undo->push("Active Layer", doc);
+        }
       }
       g_press = {};
     }
@@ -582,7 +761,9 @@ static void timeline_body(Area &area, Context &C)
           const KeyFrameSummary &sum = summaries[r][hit];
           operator_call(C, "anim.keys_select",
                         {{"frame_start", std::to_string(hit)},
-                         {"layers", rows[r].summary ? std::string() : layer_ids(rows[r].layers)},
+                         {"layers", rows[r].all_layers ? std::string() : layer_ids(rows[r].layers)},
+                         {"kinds", std::to_string(rows[r].filter.kinds)},
+                         {"selected_only", rows[r].filter.selected_only ? "1" : "0"},
                          {"extend", io.KeyShift ? "1" : "0"},
                          {"deselect", io.KeyShift && sum.selected == sum.keys ? "1" : "0"}});
           g_press = {};
@@ -599,31 +780,31 @@ static void timeline_body(Area &area, Context &C)
   if (g_press.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (!g_press.scrub) {
       if (boxing) {
-        /* Keys of the rows the box covers: Shift adds, Ctrl takes away, as Blender's box select.
-         * Covering the Summary row covers every layer. */
+        /* Keys of the rows the box covers, each row's own kind: Shift adds, Ctrl takes away, as
+         * Blender's box select. */
         const float lo_y = std::min(g_press.start.y, io.MousePos.y), hi_y = std::max(g_press.start.y, io.MousePos.y);
-        std::vector<Layer *> boxed;
-        bool everything = false;
+        std::vector<size_t> boxed;
         for (size_t r = 0; r < rows.size(); r++) {
           const float ky = row_top(r) + row_h * 0.5f;
           if (ky >= lo_y - key_r && ky <= hi_y + key_r) {
-            everything |= rows[r].summary;
-            for (Layer *l : rows[r].layers) {
-              if (std::find(boxed.begin(), boxed.end(), l) == boxed.end()) {
-                boxed.push_back(l);
-              }
-            }
+            boxed.push_back(r);
           }
         }
         if (!boxed.empty()) {
           const int first = int(std::ceil(x_frame(std::min(g_press.start.x, io.MousePos.x))));
           const int last = int(std::floor(x_frame(std::max(g_press.start.x, io.MousePos.x))));
-          operator_call(C, "anim.keys_select",
-                        {{"frame_start", std::to_string(first)},
-                         {"frame_end", std::to_string(last)},
-                         {"layers", everything ? std::string() : layer_ids(boxed)},
-                         {"extend", io.KeyShift ? "1" : "0"},
-                         {"deselect", io.KeyCtrl ? "1" : "0"}});
+          for (size_t i = 0; i < boxed.size(); i++) {
+            const ChannelRow &row = rows[boxed[i]];
+            operator_call(C, "anim.keys_select",
+                          {{"frame_start", std::to_string(first)},
+                           {"frame_end", std::to_string(last)},
+                           {"layers", row.all_layers ? std::string() : layer_ids(row.layers)},
+                           {"kinds", std::to_string(row.filter.kinds)},
+                           {"selected_only", row.filter.selected_only ? "1" : "0"},
+                           /* Rows after the first add to what the first picked. */
+                           {"extend", io.KeyShift || i > 0 ? "1" : "0"},
+                           {"deselect", io.KeyCtrl ? "1" : "0"}});
+          }
         }
         else if (!io.KeyShift) {
           operator_call(C, "anim.keys_deselect_all");
@@ -680,13 +861,18 @@ static void timeline_body(Area &area, Context &C)
       continue;
     }
     const float ky = top + row_h * 0.5f;
-    if (r % 2 == 1) {
+    if (rows[r].selected) {
+      /* The Selected section: red rows, as Moho marks the selected bones' and points' keys. */
+      dl->AddRectFilled(ImVec2(k0.x, top), ImVec2(p1.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 38));
+      dl->AddLine(ImVec2(k0.x, ky), ImVec2(p1.x, ky), IM_COL32(0xd0, 0x40, 0x40, 110));
+    }
+    else if (r % 2 == 1) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(p1.x, top + row_h), IM_COL32(0xff, 0xff, 0xff, 6));
     }
     dl->AddLine(ImVec2(p0.x, top + row_h), ImVec2(p1.x, top + row_h), IM_COL32(0x22, 0x22, 0x22, 255));
     std::map<int, KeyFrameSummary> &sum_row = summaries[r];
     dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
-    for (const auto &[a, b] : layers_hold_spans(rows[r].layers)) {
+    for (const auto &[a, b] : layers_hold_spans(rows[r].layers, rows[r].filter)) {
       const float xa = frame_x(float(a)), xb = frame_x(float(b));
       if (xb < k0.x || xa > p1.x) {
         continue;
@@ -695,7 +881,7 @@ static void timeline_body(Area &area, Context &C)
       dl->AddRectFilled(ImVec2(xa, ky - key_r * 0.45f), ImVec2(xb, ky + key_r * 0.45f),
                         selected ? IM_COL32(0xc0, 0x90, 0x30, 200) : IM_COL32(0x80, 0x80, 0x80, 170));
     }
-    const float kr = rows[r].summary ? key_r : key_r * 0.85f;
+    const float kr = rows[r].depth == 0 ? key_r : key_r * 0.85f;
     for (const auto &[f, sum] : sum_row) {
       const float kx = frame_x(float(f));
       if (kx < k0.x - kr || kx > p1.x + kr) {
@@ -718,20 +904,38 @@ static void timeline_body(Area &area, Context &C)
     if (top + row_h < rows_top || top > p1.y) {
       continue;
     }
-    const bool is_active = !rows[r].summary && rows[r].layers.front()->id == doc.active_layer;
+    const ChannelRow &row = rows[r];
+    const float ky = top + row_h * 0.5f;
+    const bool is_active = row.layer != 0 && row.layer == doc.active_layer;
     if (is_active) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0x33, 0x4d, 0x80, 255));
     }
-    const ImU32 col = rows[r].summary ? IM_COL32(0xe6, 0xe6, 0xe6, 255)
-                                      : (is_active ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255));
-    const float indent = rows[r].summary ? 6.0f : rows[r].inside ? 28.0f : 16.0f;
-    dl->AddText(ImVec2(p0.x + indent, top + (row_h - font_size) * 0.5f), col, rows[r].name.c_str());
+    else if (row.selected) {
+      dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 45));
+    }
+    const ImU32 col = row.depth == 0 ? (row.selected ? IM_COL32(0xff, 0x90, 0x90, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 255))
+                      : is_active    ? IM_COL32(0xff, 0xff, 0xff, 255)
+                                     : IM_COL32(0xc8, 0xc8, 0xc8, 255);
+    float x = p0.x + 6.0f + float(row.depth) * font_size;
+    if (!row.fold.empty()) {
+      /* The fold arrow: pointing down when open, right when folded. */
+      const float s = font_size * 0.28f;
+      const ImVec2 c(x + font_size * 0.4f, ky);
+      if (row.open) {
+        dl->AddTriangleFilled(c + ImVec2(-s, -s * 0.6f), c + ImVec2(s, -s * 0.6f), c + ImVec2(0, s * 0.8f), col);
+      }
+      else {
+        dl->AddTriangleFilled(c + ImVec2(-s * 0.6f, -s), c + ImVec2(-s * 0.6f, s), c + ImVec2(s * 0.8f, 0), col);
+      }
+    }
+    x += font_size;
+    dl->AddText(ImVec2(x, top + (row_h - font_size) * 0.5f), col, row.name.c_str());
   }
   dl->PopClipRect();
   if (hovered && over_names && io.MousePos.y >= rows_top) {
     const int r = row_at(io.MousePos.y);
-    if (r > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("%s\nClick to make it the active layer", rows[r].name.c_str());
+    if (r >= 0 && rows[r].layer && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s\nClick to make it the active layer; the arrow folds it", rows[r].name.c_str());
     }
   }
 

@@ -42,10 +42,11 @@ Request *request_new(const char *filter_name, const char *pattern, FileDialogDon
 
 }  // namespace
 
-void file_dialog_open(const char *filter_name, const char *pattern, FileDialogDone done)
+void file_dialog_open(const char *filter_name, const char *pattern, FileDialogDone done, const std::string &folder)
 {
   Request *request = request_new(filter_name, pattern, std::move(done));
-  SDL_ShowOpenFileDialog(dialog_callback, request, SDL_GL_GetCurrentWindow(), &request->filter, 1, nullptr, false);
+  SDL_ShowOpenFileDialog(dialog_callback, request, SDL_GL_GetCurrentWindow(), &request->filter, 1,
+                         folder.empty() ? nullptr : folder.c_str(), false);
 }
 
 void file_dialog_save(const char *filter_name, const char *pattern, const std::string &default_path,

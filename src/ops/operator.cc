@@ -154,6 +154,8 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   }
   if ((ot.flag & OPTYPE_UNDO) && C.undo && C.document) {
     C.undo->push(ot.name, *C.document);
+    /* Recording may have keyed a bone that drives a smart action. */
+    animation_refresh_smart(*C.document);
   }
   return status;
 }

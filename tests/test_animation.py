@@ -177,7 +177,8 @@ assert sky.ops.anim.keys_select(frame_start="11", frame_end="13") == {'FINISHED'
 assert sky.wm.event_simulate("X", area="Timeline")
 assert 12 not in layer.key_frames and 10 in layer.key_frames
 assert sky.wm.event_simulate("A", area="Timeline")
-assert sky.ops.anim.keys_delete() == {'FINISHED'} and frames("position") == [0], "all were selected"
+# All were selected: with only frame 0 left the property isn't animated any more, as in Blender.
+assert sky.ops.anim.keys_delete() == {'FINISHED'} and frames("position") == []
 sky.ops.ed.undo()
 assert sky.wm.event_simulate("A", alt=True, area="Timeline")
 assert sky.ops.anim.keys_delete() == {'CANCELLED'}, "nothing selected"
@@ -225,6 +226,76 @@ assert sky.ops.anim.keys_offset(frames="-3") == {'FINISHED'}
 assert 10 in other.key_frames
 sky.data.layers.active = layer
 layer.select = False
+
+# --- Timeline rows pick keys of one kind (Angle, Transform...) or of selected things only ----------
+sky.ops.layer.new()
+rows = sky.data.layers.active
+rows.add_curve([(0.0, 0.0), (1.0, 0.0)])
+sky.ops.mesh.select_none()
+doc.frame_current = 12
+rows.rotation = 30.0
+rows.location_x = 1.0
+rows.set_point(0, (0.0, 0.5))
+rows.set_point(1, (1.0, 0.5))
+doc.frame_current = 13
+KEY_LAYER_ANGLE, KEY_POINTS = 1, 64
+assert sky.ops.anim.keys_select(frame_start="12", kinds=str(KEY_LAYER_ANGLE)) == {'FINISHED'}
+assert sky.ops.anim.keys_offset(frames="2") == {'FINISHED'}
+assert [k["frame"] for k in rows.keyframes("rotation")] == [0, 14], "the Angle row's keys moved"
+assert [k["frame"] for k in rows.keyframes("position")] == [0, 12], "the Transform keys stayed"
+# The Selected section: only the selected points' keys.
+rows.select_points([1])
+assert sky.ops.anim.keys_select(frame_start="12", kinds=str(KEY_POINTS), selected_only="1") == {'FINISHED'}
+assert sky.ops.anim.keys_offset(frames="3") == {'FINISHED'}
+assert [k["frame"] for k in rows.keyframes("points[1].pos")] == [0, 15]
+assert [k["frame"] for k in rows.keyframes("points[0].pos")] == [0, 12], "the unselected point's stayed"
+doc.frame_current = 0
+
+# --- The keyframe button beside a property (Blender's diamond) ---------------------------------
+sky.ops.layer.new()
+lamp = sky.data.layers.active
+doc.frame_current = 15
+assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert [k["frame"] for k in lamp.keyframes("rotation")] == [0, 15], "the first key also keys the setup"
+assert lamp.keyframes("position") == [], "only that property"
+assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert lamp.keyframes("rotation") == [], "pressed again: the key goes, and the setup key with it"
+doc.frame_current = 0
+assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert [k["frame"] for k in lamp.keyframes("rotation")] == [0], "keyed on frame 0 alone"
+assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert lamp.keyframes("rotation") == []
+
+# Visibility animates (stepped), but only once keyed by hand: hiding a layer doesn't key it.
+doc.frame_current = 10
+lamp.visible = False
+doc.frame_current = 11
+assert lamp.keyframes("visible") == [] and not lamp.visible, "auto-key leaves visibility alone"
+lamp.visible = True
+doc.frame_current = 10
+lamp.visible = False
+assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="visible") == {'FINISHED'}
+assert [k["frame"] for k in lamp.keyframes("visible")] == [0, 10]
+doc.frame_current = 9
+assert lamp.visible, "shown until frame 10"
+doc.frame_current = 10
+assert not lamp.visible
+doc.frame_current = 30
+assert not lamp.visible, "stepped: it stays hidden"
+lamp.visible = True  # now animated, so auto-key keys it
+doc.frame_current = 31
+assert 30 in [k["frame"] for k in lamp.keyframes("visible")]
+doc.frame_current = 20
+assert not lamp.visible
+# A yes/no property only holds: its keys are constant (STEP), and can't be made anything else.
+assert all(k["interp"] == "STEP" for k in lamp.keyframes("visible")), lamp.keyframes("visible")
+try:
+    lamp.keyframe_set("visible", 10, interp="SMOOTH")
+    raise AssertionError("visibility took a smooth key")
+except ValueError:
+    pass
+doc.frame_current = 0
+sky.data.layers.active = layer
 
 # --- Saved with the document ------------------------------------------------------------------
 layer.keyframe_set("position", 0, interp="EASE_OUT", hold=2, interval=3)

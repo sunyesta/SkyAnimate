@@ -93,6 +93,10 @@ int App::run(const LaunchOptions &options)
 
   /* The file opens first, so scripts given with it work on it, as in Blender. */
   bool ok = options.open_file.empty() || document_open(ctx_, options.open_file);
+  /* Started without a file: carry on where the last session left off. */
+  if (options.open_file.empty() && !options.background) {
+    session_reopen(ctx_);
+  }
 
   /* Background mode needs no video, but SDL_GetBasePath works either way. */
   ok = python::init(scripts_dir_find(), &ctx_) && ok;
@@ -726,18 +730,7 @@ void App::draw_file_menu()
   menu_operator(ctx_, "Revert", "wm.revert_mainfile");
   if (ImGui::BeginMenu("Recover")) {
     menu_operator(ctx_, "Last Session", "wm.recover_last_session");
-    if (ImGui::BeginMenu("Auto Save")) {
-      const std::vector<RecoverableFile> files = autosave_files();
-      if (files.empty()) {
-        ImGui::MenuItem("No autosaves", nullptr, false, false);
-      }
-      for (const RecoverableFile &file : files) {
-        if (menu_file_item(file.path, file.label)) {
-          operator_call(ctx_, "wm.recover_auto_save", {{"filepath", file.path}});
-        }
-      }
-      ImGui::EndMenu();
-    }
+    menu_operator(ctx_, "Auto Save...", "wm.recover_auto_save");
     ImGui::EndMenu();
   }
   ImGui::Separator();

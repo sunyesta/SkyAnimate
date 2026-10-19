@@ -98,6 +98,12 @@ std::string quit_file_path()
   return path_to_utf8(path_from_utf8(user_data_dir()) / "quit.sky");
 }
 
+/* The file open when SkyAnimate last quit, for reopening it next time. */
+static fs::path session_file_path()
+{
+  return path_from_utf8(user_data_dir()) / "last_session.txt";
+}
+
 static std::string time_label(const fs::path &path)
 {
   std::error_code ec;
@@ -256,7 +262,7 @@ static bool confirm_unsaved(Context &C, const char *idname)
 }
 
 /* Runs `idname` again with the path a dialog returns. Without a window there's no dialog. */
-static OpStatus ask_for_path(Context &C, const char *idname, bool save)
+static OpStatus ask_for_path(Context &C, const char *idname, bool save, const std::string &folder = {})
 {
   if (C.wm->background) {
     report(ReportType::Error, std::string(idname) + " needs a filepath without a window");
@@ -272,7 +278,7 @@ static OpStatus ask_for_path(Context &C, const char *idname, bool save)
     file_dialog_save(FILTER_NAME, FILTER_PATTERN, default_save_path(C), std::move(done));
   }
   else {
-    file_dialog_open(FILTER_NAME, FILTER_PATTERN, std::move(done));
+    file_dialog_open(FILTER_NAME, FILTER_PATTERN, std::move(done), folder);
   }
   /* Nothing happened yet; the dialog's answer runs the operator for real. */
   return OpStatus::Cancelled;
@@ -418,7 +424,9 @@ void file_operators_register()
                     [](Context &C) {
                       const std::string path = op_arg(C, "filepath");
                       if (path.empty()) {
-                        return ask_for_path(C, "wm.recover_auto_save", false);
+                        /* As Blender's File > Recover > Auto Save...: the file browser, in the
+                         * autosave folder. */
+                        return ask_for_path(C, "wm.recover_auto_save", false, autosave_dir() + "\\");
                       }
                       if (confirm_unsaved(C, "wm.recover_auto_save")) {
                         return OpStatus::Cancelled;
@@ -490,6 +498,12 @@ void autosave_update(Context &C, uint64_t now_ns)
 
 void autosave_quit(Context &C)
 {
+  {
+    /* The next start reopens this file, as last saved (unsaved changes at quitting were turned
+     * down; File > Recover > Last Session still has them). */
+    std::ofstream out(session_file_path(), std::ios::binary | std::ios::trunc);
+    out << C.wm->filepath;
+  }
   std::string error;
   if (!sky_file_write(*C.document, quit_file_path(), &error)) {
     report(ReportType::Warning, "Could not write quit.sky: " + error);
@@ -517,6 +531,24 @@ std::vector<RecoverableFile> autosave_files()
     files.push_back(std::move(file));
   }
   return files;
+}
+
+bool session_reopen(Context &C)
+{
+  std::ifstream in(session_file_path(), std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  std::string path;
+  std::getline(in, path);
+  while (!path.empty() && (path.back() == '\r' || path.back() == '\n')) {
+    path.pop_back();
+  }
+  std::error_code ec;
+  if (path.empty() || !fs::exists(path_from_utf8(path), ec)) {
+    return false;
+  }
+  return document_open(C, path);
 }
 
 }  // namespace sky

@@ -123,6 +123,14 @@ struct Layer {
   Channel<float> rotation_keys;
   Channel<float2> scale_keys;
   Channel<float> opacity_keys;
+  /* Visibility as an animated channel (stepped): 1 shown, 0 hidden, mirrored into `visible`. */
+  Channel<float> visible_keys = [] {
+    Channel<float> c;
+    c.keyed_by_hand = true;
+    c.constant = true;
+    return c;
+  }();
+  float visible_value = 1.0f;
 
   MaskMode mask_mode = MaskMode::Masked;
   /* Moho's masking options for the layer's part of its group's mask: grow it by a pixel (hides
@@ -144,6 +152,9 @@ struct Layer {
   uint64_t active_bone = 0;
   /* Moho's layer binding: a layer inside a bone layer can follow one bone as a whole. */
   uint64_t parent_bone = 0;
+  /* Inside a bone layer: its points can be picked and moved while the bone layer is the active
+   * one, together with the bones. */
+  bool edit_with_bones = false;
   /* Run on the drawing in order (see ModifierType). */
   std::vector<Modifier> modifiers;
   /* Bone layers: the names of their actions, alternative timelines for the layer and everything

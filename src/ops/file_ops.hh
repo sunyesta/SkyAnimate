@@ -38,6 +38,8 @@ std::string quit_file_path();
 void autosave_update(Context &C, uint64_t now_ns);
 /* A clean quit: writes quit.sky and removes this session's autosave. */
 void autosave_quit(Context &C);
+/* Opens the file that was open when SkyAnimate last quit, if it is still there. */
+bool session_reopen(Context &C);
 
 struct RecoverableFile {
   std::string path;

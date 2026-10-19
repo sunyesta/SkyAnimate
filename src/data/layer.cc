@@ -74,6 +74,10 @@ const rna::StructRNA &Layer::rna()
         def_bool<Layer>("render_visible", "Show in Renders",
                         "Draw the layer in renders; off, it still shows in the viewport", &Layer::render_visible),
         def_bool<Layer>("locked", "Locked", "Protect the layer's drawing from editing", &Layer::locked),
+        def_bool<Layer>("edit_with_bones", "Editable in Bone Group",
+                        "Inside a bone group: pick and move this layer's points while the bone group is the active "
+                        "layer, along with its bones",
+                        &Layer::edit_with_bones),
         def_enum<Layer, LabelColor>("label_color", "Label Color", "Colour tag in the Layers editor",
                                     &Layer::label_color,
                                     {{"NONE", "None"},

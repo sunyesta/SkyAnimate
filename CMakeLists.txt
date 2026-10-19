@@ -116,3 +116,5 @@ add_test(NAME bone_editing
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_editing.py)
 add_test(NAME actions
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_actions.py)
+add_test(NAME smart_actions
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_smart_actions.py)
