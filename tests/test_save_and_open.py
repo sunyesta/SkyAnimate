@@ -83,7 +83,7 @@ assert sky.ops.wm.save_as_mainfile() == {'CANCELLED'}, "without a window there's
 
 with zipfile.ZipFile(walk) as archive:
     stored = json.loads(archive.read("document.json"))
-assert stored["format"] == "SkyAnimate" and stored["version"] == 2
+assert stored["format"] == "SkyAnimate" and stored["version"] == 3
 group = stored["document"]["layers"][0]
 assert group["type"] == "GROUP"
 mask = group["children"][0]

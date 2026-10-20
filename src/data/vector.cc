@@ -82,10 +82,14 @@ static void set_handles(const VectorDrawing &drawing, CurvePoint &cp, float2 in,
   cp.handle_out = out;
   cp.handles_set = true;
   if (quiet) {
-    for (Channel<float2> *ch : {&cp.handle_in_keys, &cp.handle_out_keys}) {
-      if (!ch->animated()) {
-        ch->last = ch == &cp.handle_in_keys ? in : out;
-        ch->has_last = true;
+    /* Not an edit: without keys, this is the setup shape (no change from it). */
+    for (const bool pre : {true, false}) {
+      Channel<float2> &ch = pre ? cp.handle_in_keys : cp.handle_out_keys;
+      if (!ch.animated()) {
+        (pre ? cp.setup_in : cp.setup_out) = pre ? in : out;
+        (pre ? cp.change_in : cp.change_out) = {};
+        ch.last = {};
+        ch.has_last = true;
       }
     }
   }
@@ -105,7 +109,7 @@ static VectorDrawing setup_points(const VectorDrawing &drawing)
   VectorDrawing setup;
   setup.points.resize(drawing.points.size());
   for (size_t i = 0; i < drawing.points.size(); i++) {
-    setup.points[i].pos = setup_of(drawing.points[i].pos_keys, drawing.points[i].pos);
+    setup.points[i].pos = point_setup_pos(drawing.points[i]);
   }
   return setup;
 }
@@ -149,13 +153,17 @@ static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
   cp.handle_in = in;
   cp.handle_out = out;
   cp.handles_set = true;
-  if (!cp.handle_in_keys.animated()) {
-    cp.handle_in_keys.last = setup_in;
-    cp.handle_in_keys.has_last = true;
-  }
-  if (!cp.handle_out_keys.animated()) {
-    cp.handle_out_keys.last = setup_out;
-    cp.handle_out_keys.has_last = true;
+  /* Without keys, the setup shape is what the neighbours give in the setup pose, and what it
+   * shows now (posed) is a change from it, as if just edited. */
+  for (const bool pre : {true, false}) {
+    Channel<float2> &ch = pre ? cp.handle_in_keys : cp.handle_out_keys;
+    if (!ch.animated()) {
+      float2 &setup = pre ? cp.setup_in : cp.setup_out;
+      setup = pre ? setup_in : setup_out;
+      (pre ? cp.change_in : cp.change_out) = handle_change(setup, pre ? in : out, 0.0f);
+      ch.last = {};
+      ch.has_last = true;
+    }
   }
 }
 
@@ -309,14 +317,14 @@ VectorDrawing drawing_setup_pose(const VectorDrawing &drawing)
 {
   VectorDrawing setup = drawing;
   for (MeshPoint &p : setup.points) {
-    p.pos = setup_of(p.pos_keys, p.pos);
+    p.pos = point_setup_pos(p);
     p.radius = setup_of(p.radius_keys, p.radius);
   }
   for (Curve &curve : setup.curves) {
     for (CurvePoint &cp : curve.points) {
       cp.curvature = setup_of(cp.curvature_keys, cp.curvature);
-      cp.handle_in = setup_of(cp.handle_in_keys, cp.handle_in);
-      cp.handle_out = setup_of(cp.handle_out_keys, cp.handle_out);
+      cp.handle_in = handle_setup(cp, true);
+      cp.handle_out = handle_setup(cp, false);
     }
   }
   return setup;
@@ -1551,8 +1559,178 @@ static float2 reflect2(float2 v, bool x, bool y)
 
 float2 point_setup_pos(const MeshPoint &point)
 {
-  const Channel<float2> &ch = point.pos_keys;
-  return ch.animated() ? ch.evaluate(0) : ch.has_last ? ch.last : point.pos;
+  /* Not seen by the keys yet (just drawn): where it is, is its setup. */
+  return point.pos_keys.has_last || point.pos_keys.animated() ? point.setup_pos : point.pos;
+}
+
+float2 handle_setup(const CurvePoint &cp, bool in)
+{
+  const Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
+  return ch.has_last || ch.animated() ? (in ? cp.setup_in : cp.setup_out) : (in ? cp.handle_in : cp.handle_out);
+}
+
+static float wrap_turn(float a)
+{
+  return a - 2.0f * PI * std::floor((a + PI) / (2.0f * PI));
+}
+
+float2 handle_change(float2 setup, float2 handle, float near_turn)
+{
+  const float setup_length = length(setup), handle_length = length(handle);
+  const float setup_angle = setup_length > 1e-9f ? std::atan2(setup.y, setup.x) : 0.0f;
+  const float handle_angle = handle_length > 1e-9f ? std::atan2(handle.y, handle.x) : setup_angle + near_turn;
+  return {near_turn + wrap_turn(handle_angle - setup_angle - near_turn), handle_length - setup_length};
+}
+
+float2 handle_from_change(float2 setup, float2 change)
+{
+  if (change == float2()) {
+    return setup;
+  }
+  const float setup_length = length(setup);
+  const float angle = (setup_length > 1e-9f ? std::atan2(setup.y, setup.x) : 0.0f) + change.x;
+  const float l = std::max(0.0f, setup_length + change.y);
+  return {std::cos(angle) * l, std::sin(angle) * l};
+}
+
+void drawing_changes_from_values(VectorDrawing &drawing)
+{
+  for (MeshPoint &p : drawing.points) {
+    if (!p.pos_keys.has_last && !p.pos_keys.animated()) {
+      p.setup_pos = p.pos;
+      p.transform = {};
+    }
+    else if (p.pos != p.setup_pos + p.transform) {
+      p.transform = p.pos - p.setup_pos;
+    }
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      for (const bool in : {true, false}) {
+        const Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
+        const float2 handle = in ? cp.handle_in : cp.handle_out;
+        float2 &setup = in ? cp.setup_in : cp.setup_out;
+        float2 &change = in ? cp.change_in : cp.change_out;
+        if (!ch.has_last && !ch.animated()) {
+          setup = handle;
+          change = {};
+        }
+        else if (handle != handle_from_change(setup, change)) {
+          change = handle_change(setup, handle, change.x);
+        }
+      }
+    }
+  }
+}
+
+void drawing_values_from_changes(VectorDrawing &drawing)
+{
+  for (MeshPoint &p : drawing.points) {
+    p.pos = p.setup_pos + p.transform;
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.handle_in = handle_from_change(cp.setup_in, cp.change_in);
+      cp.handle_out = handle_from_change(cp.setup_out, cp.change_out);
+    }
+  }
+}
+
+void drawing_take_setup(VectorDrawing &drawing)
+{
+  for (MeshPoint &p : drawing.points) {
+    p.setup_pos = p.pos - p.pos_keys.smart;
+    p.transform = p.pos - p.setup_pos;
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.setup_in = cp.handle_in;
+      cp.setup_out = cp.handle_out;
+      cp.change_in = cp.change_out = {};
+    }
+  }
+}
+
+void drawing_new_points_follow(VectorDrawing &drawing, int frame)
+{
+  const auto is_new = [&](int pi) {
+    const MeshPoint &p = drawing.points[pi];
+    return !p.pos_keys.has_last && !p.pos_keys.animated();
+  };
+  std::vector<bool> done(drawing.points.size(), false);
+  for (const Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    for (int i = 0; i < n; i++) {
+      const int pi = curve.points[i].point;
+      if (done[pi] || !is_new(pi)) {
+        continue;
+      }
+      /* The nearest recorded point each way along the curve, and how far along the curve it is. */
+      const auto neighbour = [&](int step, float *r_distance) -> int {
+        float d = 0.0f;
+        int j = i;
+        for (int walked = 0; walked < n; walked++) {
+          const int k = j + step;
+          if (k < 0 || k >= n) {
+            if (!curve.closed) {
+              return -1;
+            }
+          }
+          const int next = (k + n) % n;
+          d += distance(drawing.points[curve.points[j].point].pos, drawing.points[curve.points[next].point].pos);
+          j = next;
+          if (j == i) {
+            return -1;
+          }
+          if (!is_new(curve.points[j].point)) {
+            *r_distance = d;
+            return curve.points[j].point;
+          }
+        }
+        return -1;
+      };
+      float d_prev = 0.0f, d_next = 0.0f;
+      const int prev = neighbour(-1, &d_prev), next = neighbour(1, &d_next);
+      const bool prev_moves = prev >= 0 && drawing.points[prev].pos_keys.animated();
+      const bool next_moves = next >= 0 && drawing.points[next].pos_keys.animated();
+      if (!prev_moves && !next_moves) {
+        continue;
+      }
+      /* Between two, blended by distance along the curve; past an end, the end's motion. */
+      const float t = prev >= 0 && next >= 0 && d_prev + d_next > 1e-9f ? d_prev / (d_prev + d_next) : (prev >= 0 ? 0.0f : 1.0f);
+      const auto change_of = [&](int q, int f) -> float2 {
+        if (q < 0) {
+          return {};
+        }
+        const MeshPoint &m = drawing.points[q];
+        return m.pos_keys.animated() ? m.pos_keys.evaluate(f) : m.pos - m.setup_pos;
+      };
+      const auto change_at = [&](int f) { return change_of(prev, f) * (1.0f - t) + change_of(next, f) * t; };
+      std::set<int> frames{0};
+      for (const int q : {prev, next}) {
+        if (q >= 0) {
+          for (const Key<float2> &k : drawing.points[q].pos_keys.keys) {
+            frames.insert(k.frame);
+          }
+        }
+      }
+      MeshPoint &p = drawing.points[pi];
+      const float2 now = change_at(std::max(frame, 0));
+      p.setup_pos = p.pos - now;
+      for (const int f : frames) {
+        Key<float2> &key = p.pos_keys.set_key(f, change_at(f));
+        /* Timed as the neighbour it follows most. */
+        const int lead = t <= 0.5f ? (prev_moves ? prev : next) : (next_moves ? next : prev);
+        if (const Key<float2> *src = drawing.points[lead].pos_keys.key_at(f)) {
+          key_settings_apply(key, key_settings(*src));
+        }
+      }
+      p.transform = now;
+      p.pos_keys.last = now;
+      p.pos_keys.has_last = true;
+      done[pi] = true;
+    }
+  }
 }
 
 int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, bool y)

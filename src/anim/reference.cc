@@ -663,41 +663,79 @@ int reference_revert(Document &doc, Layer &ref, ReferenceKind kind, uint64_t whi
   return gone;
 }
 
-/* Adds an offset to an original's value (a point's place, a handle): to it, and to its keys (a
- * keyed offset keys it at every frame either has a key). */
-static void add_offset(float2 &value, Channel<float2> &ch, const ReferencePoint &o)
+/* The frames an offset keys a channel at: every frame either has a key (none for a still offset). */
+static std::set<int> offset_frames(const Channel<float2> &ch, const ReferencePoint &o)
 {
+  std::set<int> frames;
   if (!o.offset_keys.animated()) {
-    value += o.offset;
-    for (Key<float2> &k : ch.keys) {
-      k.value += o.offset;
-    }
-    ch.last += o.offset;
-    return;
+    return frames;
   }
-  std::set<int> frames{0};
+  frames.insert(0);
   for (const Key<float2> &k : ch.keys) {
     frames.insert(k.frame);
   }
   for (const Key<float2> &k : o.offset_keys.keys) {
     frames.insert(k.frame);
   }
+  return frames;
+}
+
+/* Adds a reference's offset to a point of the original: to its setup position (frame 0's offset)
+ * and, for a keyed offset, to its Transform keys (the rest of it). */
+static void add_offset(MeshPoint &p, const ReferencePoint &o)
+{
+  Channel<float2> &ch = p.pos_keys;
+  const float2 at_setup = o.offset_keys.animated() ? o.offset_keys.evaluate(0) : o.offset;
+  const float2 now = p.pos - p.setup_pos;
   std::vector<std::pair<int, float2>> values;
-  for (const int f : frames) {
-    const float2 base = ch.animated() ? ch.evaluate(f) : value;
-    values.push_back({f, base + o.offset_keys.evaluate(f)});
+  for (const int f : offset_frames(ch, o)) {
+    values.push_back({f, (ch.animated() ? ch.evaluate(f) : now) + o.offset_keys.evaluate(f) - at_setup});
   }
   for (const auto &[f, v] : values) {
     ch.set_key(f, v);
   }
-  value += o.offset;
-  ch.last = value;
+  p.setup_pos += at_setup;
+  p.pos += o.offset;
+  p.transform = p.pos - p.setup_pos;
+  ch.last = p.transform;
   ch.has_last = true;
 }
 
-static void add_offset(MeshPoint &p, const ReferencePoint &o)
+/* The same for a handle: the offsets add to the handle itself, its Angle and Length worked out
+ * again from the setup handle they make. */
+static void add_handle_offset(CurvePoint &cp, bool in, const ReferencePoint &o)
 {
-  add_offset(p.pos, p.pos_keys, o);
+  Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
+  float2 &handle = in ? cp.handle_in : cp.handle_out;
+  float2 &setup = in ? cp.setup_in : cp.setup_out;
+  float2 &change = in ? cp.change_in : cp.change_out;
+  const float2 at_setup = o.offset_keys.animated() ? o.offset_keys.evaluate(0) : o.offset;
+  const float2 new_setup = handle_setup(cp, in) + at_setup;
+  const std::set<int> frames = ch.animated() ? [&] {
+    std::set<int> all = offset_frames(ch, o);
+    for (const Key<float2> &k : ch.keys) {
+      all.insert(k.frame);
+    }
+    return all;
+  }()
+                                             : offset_frames(ch, o);
+  std::vector<std::pair<int, float2>> values;
+  float turn = 0.0f;
+  for (const int f : frames) {
+    const float2 shown = handle_from_change(setup, ch.animated() ? ch.evaluate(f) : change) +
+                         (o.offset_keys.animated() ? o.offset_keys.evaluate(f) : o.offset);
+    const float2 c = handle_change(new_setup, shown, turn);
+    turn = c.x;
+    values.push_back({f, c});
+  }
+  for (const auto &[f, v] : values) {
+    ch.set_key(f, v);
+  }
+  setup = new_setup;
+  handle += o.offset;
+  change = handle_change(setup, handle, change.x);
+  ch.last = change;
+  ch.has_last = true;
 }
 
 /* Adds a reference's handle offsets to a drawing's handles (and their keys). `only`: just those of
@@ -714,7 +752,7 @@ static int add_handle_offsets(VectorDrawing &d, const ReferenceSettings &rs, uin
           continue;
         }
         if (const auto it = rs.handles.find(key); it != rs.handles.end()) {
-          add_offset(in ? cp.handle_in : cp.handle_out, in ? cp.handle_in_keys : cp.handle_out_keys, it->second);
+          add_handle_offset(cp, in, it->second);
           cp.handles_set = true;
           n++;
         }

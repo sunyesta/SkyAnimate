@@ -718,6 +718,21 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     layer.drawing.points[index].pos = {pos.first, pos.second};
     current_context().undo->mark_changed();
   });
+  /* The Split tool's click: a new point on segment `segment` of curve `curve`, `t` along it. */
+  m.def("layer_split_segment", [layer_or_raise](uint64_t id, int curve, int segment, float t) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference()) {
+      throw py::value_error("A reference's drawing is its original's");
+    }
+    if (curve < 0 || curve >= int(layer.drawing.curves.size()) || segment < 0 ||
+        segment >= int(layer.drawing.curves[curve].points.size()))
+    {
+      throw py::index_error("no segment " + std::to_string(segment) + " on curve " + std::to_string(curve));
+    }
+    const int point = drawing_split_segment(layer.drawing, {curve, segment}, std::clamp(t, 0.0f, 1.0f));
+    current_context().undo->mark_changed();
+    return point;
+  });
   /* G on the selected points by (dx, dy) in the layer's space, with mirror editing as in the
    * viewport (stored positions: where the points are before bones move them). */
   m.def("layer_move_points", [layer_or_raise](uint64_t id, float dx, float dy) {

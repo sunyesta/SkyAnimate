@@ -475,6 +475,11 @@ class _Layer:
         """Move point `index` to `pos` (layer space), as dragging it in the viewport does."""
         _sky.layer_set_point(self._id, index, tuple(pos))
 
+    def split_segment(self, curve, segment, t=0.5):
+        """Add a point on segment `segment` of curve `curve`, `t` along it, as the Split tool does
+        (on an animated curve it takes its neighbours' motion). Returns the new point's index."""
+        return _sky.layer_split_segment(self._id, curve, segment, t)
+
     def move_points(self, offset):
         """G on the selected points by offset=(dx, dy) (layer space), with mirror editing as in the
         viewport: each point's mirror image in the setup pose snaps to its reflection, on any frame.

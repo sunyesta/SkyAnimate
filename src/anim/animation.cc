@@ -73,17 +73,21 @@ template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
   if (layer.is_reference()) {
     return;
   }
+  /* A point's keys are its Transform and a handle's its Angle and Length: the change from the setup
+   * pose. */
+  drawing_changes_from_values(layer.drawing);
   for (MeshPoint &p : layer.drawing.points) {
-    f(p.pos_keys, p.pos);
+    f(p.pos_keys, p.transform);
     f(p.radius_keys, p.radius);
   }
   for (Curve &curve : layer.drawing.curves) {
     for (CurvePoint &cp : curve.points) {
       f(cp.curvature_keys, cp.curvature);
-      f(cp.handle_in_keys, cp.handle_in);
-      f(cp.handle_out_keys, cp.handle_out);
+      f(cp.handle_in_keys, cp.change_in);
+      f(cp.handle_out_keys, cp.change_out);
     }
   }
+  drawing_values_from_changes(layer.drawing);
 }
 
 template<typename F> static void layers_for_each_channel(std::vector<Layer> &layers, F &&f)
@@ -257,18 +261,25 @@ void animation_record(Document &doc)
   };
   ids(ids, doc.layers);
   references_capture(doc);
-  /* Frame 0 is the setup pose: bones moved there move their setup, and every pose with it. */
-  if (frame == 0) {
-    const auto setups = [](auto &&self, std::vector<Layer> &layers) -> void {
-      for (Layer &layer : layers) {
+  /* Points added to an animated curve take their neighbours' motion. Frame 0 is the setup pose:
+   * bones, points and handles moved there move their setup, and every pose with it. */
+  const auto setups = [frame](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      if (!layer.is_reference()) {
+        drawing_new_points_follow(layer.drawing, frame);
+      }
+      if (frame == 0) {
         for (Bone &bone : layer.bones) {
           bone_take_setup(bone);
         }
-        self(self, layer.children);
+        if (!layer.is_reference()) {
+          drawing_take_setup(layer.drawing);
+        }
       }
-    };
-    setups(setups, doc.layers);
-  }
+      self(self, layer.children);
+    }
+  };
+  setups(setups, doc.layers);
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
@@ -716,10 +727,13 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
     }
     return refs;
   }
+  /* Their keys hold the Transform and the handles' Angle and Length (see layer_for_each_channel); a
+   * change made through them goes back with drawing_values_from_changes. */
+  drawing_changes_from_values(layer.drawing);
   for (size_t i = 0; i < layer.drawing.points.size(); i++) {
     MeshPoint &p = layer.drawing.points[i];
     const std::string base = "points[" + std::to_string(i) + "].";
-    add(base + "pos", p.pos_keys, p.pos);
+    add(base + "pos", p.pos_keys, p.transform);
     add(base + "radius", p.radius_keys, p.radius);
   }
   for (size_t c = 0; c < layer.drawing.curves.size(); c++) {
@@ -728,8 +742,8 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
       CurvePoint &cp = curve.points[i];
       const std::string base = "curves[" + std::to_string(c) + "].points[" + std::to_string(i) + "].";
       add(base + "curvature", cp.curvature_keys, cp.curvature);
-      add(base + "handle_in", cp.handle_in_keys, cp.handle_in);
-      add(base + "handle_out", cp.handle_out_keys, cp.handle_out);
+      add(base + "handle_in", cp.handle_in_keys, cp.change_in);
+      add(base + "handle_out", cp.handle_out_keys, cp.change_out);
     }
   }
   return refs;
@@ -822,6 +836,9 @@ int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int f
   }
   for (Bone &bone : layer.bones) {
     bone_values_from_changes(bone);
+  }
+  if (!layer.is_reference()) {
+    drawing_values_from_changes(layer.drawing);
   }
   return keyed ? -count : count;
 }

@@ -2584,7 +2584,7 @@ static void point_panel(Context &C, VectorDrawing &drawing);
 static void edge_panel(Context &C, VectorDrawing &drawing);
 
 static void mean_position_row(Context &C, const char *label, VectorDrawing &drawing, const std::vector<int> &points,
-                              const char *tooltip, const char *undo_name);
+                              const char *tooltip, const char *undo_name, bool posed = false);
 
 static void drawing_tab(Context &C)
 {
@@ -2734,14 +2734,93 @@ static void drawing_tab(Context &C)
 }
 
 /* The topmost selected shape's name, fill, outline and line width. */
+/* Away from frame 0, one handle picked on its own: its Handle Angle and Length, how far it has turned
+ * and grown from the setup pose (what its keys hold), 0 at rest. An aligned partner turns with it. */
+static void handle_change_row(Context &C, VectorDrawing &drawing)
+{
+  if (C.document->frame_current == 0) {
+    return;
+  }
+  CurvePoint *picked = nullptr;
+  bool picked_in = false;
+  int count = 0;
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      for (const bool in : {true, false}) {
+        if (cp.handles_set && (in ? cp.select_in : cp.select_out)) {
+          picked = &cp;
+          picked_in = in;
+          count++;
+        }
+      }
+    }
+  }
+  if (count != 1) {
+    return;
+  }
+  CurvePoint &cp = *picked;
+  float2 &handle = picked_in ? cp.handle_in : cp.handle_out;
+  const float2 setup = handle_setup(cp, picked_in);
+  float2 change = handle_change(setup, handle, (picked_in ? cp.change_in : cp.change_out).x);
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Handle");
+  ImGui::TableSetColumnIndex(1);
+  const float w = (ImGui::GetContentRegionAvail().x - 2.0f) * 0.5f;
+  float degrees = change.x * 180.0f / PI;
+  bool edited = false, done = false;
+  ImGui::SetNextItemWidth(w);
+  if (ImGui::DragFloat("##handle_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "Angle  %.1f\xC2\xB0")) {
+    change.x = degrees * PI / 180.0f;
+    edited = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How far the handle has turned from the setup pose (frame 0)");
+  }
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SameLine(0.0f, 2.0f);
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  if (ImGui::DragFloat("##handle_length", &change.y, 0.002f, -10000.0f, 10000.0f, "Length  %+.3f")) {
+    edited = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How much longer the handle is than in the setup pose (frame 0)");
+  }
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+  if (edited) {
+    const float2 before = handle;
+    handle = handle_from_change(setup, change);
+    if (cp.aligned && length(before) > 1e-9f && length(handle) > 1e-9f) {
+      /* Its partner stays in line: it turns by as much. */
+      float2 &other = picked_in ? cp.handle_out : cp.handle_in;
+      other = rotate(other, std::atan2(handle.y, handle.x) - std::atan2(before.y, before.x));
+    }
+  }
+  if (done) {
+    C.undo->push("Move Handle", *C.document);
+  }
+}
+
 /* "Label  [X 0.000] [Y 0.000]": the average position of some points; dragging moves them all
- * (layer space). */
+ * (layer space). `posed`: away from frame 0 it is their Transform, the average change from the setup
+ * pose (what their keys hold), (0, 0) at rest. */
 static void mean_position_row(Context &C, const char *label, VectorDrawing &drawing, const std::vector<int> &points,
-                              const char *tooltip, const char *undo_name)
+                              const char *tooltip, const char *undo_name, bool posed)
 {
   float2 mean;
   if (!drawing_points_mean(drawing, points, &mean)) {
     return;
+  }
+  if (posed && C.document->frame_current != 0) {
+    float2 setup;
+    for (const int i : points) {
+      setup += point_setup_pos(drawing.points[i]);
+    }
+    mean -= setup / float(points.size());
+    label = "Transform";
+    tooltip = "How far they have moved from the setup pose (frame 0), on average: what their keys hold. Changing it "
+              "moves them all";
   }
   ImGui::TableNextRow();
   ImGui::TableSetColumnIndex(0);
@@ -2802,7 +2881,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
         "the Reference tab's Points) to move the shape";
     mean_position_row(C, "Position", drawing, shape_points(drawing, shape),
                       points_locked ? LOCKED_TIP : "The middle of the shape's points; changing it moves the whole shape",
-                      "Move Shape");
+                      "Move Shape", !reference);
     ImGui::EndDisabled();
     if (points_locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip("%s", LOCKED_TIP);
@@ -2990,7 +3069,7 @@ static void point_panel(Context &C, VectorDrawing &drawing)
     return;
   }
   mean_position_row(C, "Mean Position", drawing, drawing_selected_points(drawing),
-                    "The average position of the selected points; changing it moves them all", "Move Points");
+                    "The average position of the selected points; changing it moves them all", "Move Points", true);
   ImGui::TableNextRow();
   ImGui::TableSetColumnIndex(0);
   ImGui::AlignTextToFramePadding();
@@ -3069,6 +3148,7 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Keep each point's two handles in line: moving one turns the other (Alt moves one alone)");
   }
+  handle_change_row(C, drawing);
   ui_panel_end();
 }
 

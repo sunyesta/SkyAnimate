@@ -47,7 +47,13 @@ struct MeshPoint {
    * groups). Empty: not weighted yet; it gets automatic weights once it is inside a bone layer
    * with bones. Weights that are all 0 (or only for bones that are gone) leave it where it is. */
   std::vector<BoneWeight> weights;
-  /* Keys for the position and radius (see anim/channel.hh). */
+  /* The setup pose (frame 0): where the point rests. Its position keys hold its Transform, the
+   * change from this, applied before bones bend the drawing (so a keyed shape follows the bones,
+   * and reshaping frame 0 keeps every pose's motion). Set by editing on frame 0. */
+  float2 setup_pos;
+  /* Transform: pos less setup_pos, the value pos_keys animate (see drawing_changes_from_values). */
+  float2 transform;
+  /* Keys for the position (as its Transform) and radius (see anim/channel.hh). */
   Channel<float2> pos_keys;
   Channel<float> radius_keys;
   /* Its own number in the drawing, kept for good (0: not given one yet; see drawing_ensure_ids):
@@ -78,7 +84,15 @@ struct CurvePoint {
   /* Handles picked on their own (clicking one). A selected point's handles move with it. */
   bool select_in = false;
   bool select_out = false;
-  /* Keys for the curvature and the handles. */
+  /* The handles in the setup pose (frame 0), as offsets from the point. Their keys hold Handle
+   * Angle and Length, the change from these: (turn in radians, length added), so a handle swings
+   * along an arc between keys and reshaping frame 0 keeps every pose's turn. */
+  float2 setup_in;
+  float2 setup_out;
+  /* Handle Angle and Length now: what handle_in_keys and handle_out_keys animate. */
+  float2 change_in;
+  float2 change_out;
+  /* Keys for the curvature and the handles (as Handle Angle and Length). */
   Channel<float> curvature_keys;
   Channel<float2> handle_in_keys;
   Channel<float2> handle_out_keys;
@@ -338,6 +352,26 @@ float proportional_weight(ProportionalFalloff falloff, float distance, float siz
 /* Where a point is in the setup pose (frame 0): its frame-0 key, or, not keyed, its value as last
  * recorded. Mirror editing pairs points by it, so the pairs hold on every frame. */
 float2 point_setup_pos(const MeshPoint &point);
+/* A handle's offset from its point in the setup pose (frame 0). */
+float2 handle_setup(const CurvePoint &cp, bool in);
+/* Handle Angle and Length: how a handle (an offset from its point) has turned from its setup one
+ * (radians, the turn nearest `near_turn`, so whole turns carry on) and how much longer it is; and
+ * the handle they make. */
+float2 handle_change(float2 setup, float2 handle, float near_turn);
+float2 handle_from_change(float2 setup, float2 change);
+/* The points' Transforms and the handles' Angle and Length from the points and handles as they
+ * are (only what moved since: a round trip isn't exact to the last bit, and a value differing from
+ * its last recorded one is an edit), and the points and handles back from them. A point or handle
+ * new since the keys last saw it (nothing recorded, no keys) is in its setup pose. */
+void drawing_changes_from_values(VectorDrawing &drawing);
+void drawing_values_from_changes(VectorDrawing &drawing);
+/* Frame 0's edits become the setup pose. */
+void drawing_take_setup(VectorDrawing &drawing);
+/* Points new since the keys were last recorded, on a curve whose points are animated: each takes
+ * the motion of its nearest recorded neighbours along the curve (in between, blended by distance;
+ * past an end, the end's), keyed where they are, so adding a point doesn't break the animation.
+ * `frame` is the frame it was added on: it stays where it was put there. */
+void drawing_new_points_follow(VectorDrawing &drawing, int frame);
 /* Mirror editing (Blender's mesh symmetry), across the layer's vertical (`x`) and/or horizontal
  * (`y`) axis. The point at `point`'s mirror image in the setup pose, or -1 (a point on the axis has
  * none). */

@@ -184,6 +184,9 @@ static json drawing_to_json(const VectorDrawing &drawing)
       }
       point["weights"] = std::move(weights);
     }
+    if (p.pos_keys.animated() || !(point_setup_pos(p) == p.pos)) {
+      point["setup_pos"] = float2_to_json(point_setup_pos(p));
+    }
     put_keys(point, "pos_keys", p.pos_keys);
     put_keys(point, "radius_keys", p.radius_keys);
     points.push_back(std::move(point));
@@ -207,6 +210,12 @@ static json drawing_to_json(const VectorDrawing &drawing)
       if (cp.handles_set) {
         point["handle_in"] = float2_to_json(cp.handle_in);
         point["handle_out"] = float2_to_json(cp.handle_out);
+        for (const bool in : {true, false}) {
+          const float2 setup = handle_setup(cp, in);
+          if ((in ? cp.handle_in_keys : cp.handle_out_keys).animated() || !(setup == (in ? cp.handle_in : cp.handle_out))) {
+            point[in ? "setup_in" : "setup_out"] = float2_to_json(setup);
+          }
+        }
       }
       put_keys(point, "curvature_keys", cp.curvature_keys);
       put_keys(point, "handle_in_keys", cp.handle_in_keys);
@@ -804,6 +813,76 @@ template<typename T> static void get_keys(const json &j, const char *name, Chann
   }
 }
 
+/* The file being read: its format version and the action that was being edited. */
+static int g_loading_version = SKY_FILE_VERSION;
+static std::string g_loading_action;
+
+template<typename T> static const std::vector<Key<T>> *mainline_keys(const Channel<T> &ch)
+{
+  if (g_loading_action.empty()) {
+    return &ch.keys;
+  }
+  const auto it = ch.actions.find("");
+  return it != ch.actions.end() ? &it->second : nullptr;
+}
+
+/* Format 2 and before: a point's or handle's setup is its mainline's frame-0 key, else its value. */
+template<typename T> static T old_setup(const Channel<T> &ch, const T &value)
+{
+  const std::vector<Key<T>> *mainline = mainline_keys(ch);
+  if (!mainline || mainline->empty()) {
+    return value;
+  }
+  Channel<T> c;
+  c.keys = *mainline;
+  return c.evaluate(0);
+}
+
+static void migrate_drawing_setups(VectorDrawing &drawing)
+{
+  for (MeshPoint &p : drawing.points) {
+    p.setup_pos = old_setup(p.pos_keys, p.pos);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.setup_in = old_setup(cp.handle_in_keys, cp.handle_in);
+      cp.setup_out = old_setup(cp.handle_out_keys, cp.handle_out);
+    }
+  }
+}
+
+static void migrate_drawing_keys(VectorDrawing &drawing)
+{
+  const auto every = [](auto &ch, auto &&fn) {
+    fn(ch.keys);
+    for (auto &[name, keys] : ch.actions) {
+      fn(keys);
+    }
+  };
+  for (MeshPoint &p : drawing.points) {
+    every(p.pos_keys, [&](std::vector<Key<float2>> &keys) {
+      for (Key<float2> &k : keys) {
+        k.value -= p.setup_pos;
+      }
+    });
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      for (const bool in : {true, false}) {
+        const float2 setup = in ? cp.setup_in : cp.setup_out;
+        every(in ? cp.handle_in_keys : cp.handle_out_keys, [&](std::vector<Key<float2>> &keys) {
+          /* In frame order, so whole turns carry on from key to key. */
+          float turn = 0.0f;
+          for (Key<float2> &k : keys) {
+            k.value = handle_change(setup, k.value, turn);
+            turn = k.value.x;
+          }
+        });
+      }
+    }
+  }
+}
+
 static VectorDrawing drawing_from_json(const json &j)
 {
   VectorDrawing drawing;
@@ -825,6 +904,7 @@ static VectorDrawing drawing_from_json(const json &j)
         drawing.points.back().weights.push_back({bone, 1.0f});
       }
       get_keys(p, "pos_keys", drawing.points.back().pos_keys);
+      drawing.points.back().setup_pos = get_float2(p, "setup_pos", drawing.points.back().pos);
       get_keys(p, "radius_keys", drawing.points.back().radius_keys);
     }
   }
@@ -863,6 +943,8 @@ static VectorDrawing drawing_from_json(const json &j)
       get_keys(cp, "curvature_keys", point.curvature_keys);
       get_keys(cp, "handle_in_keys", point.handle_in_keys);
       get_keys(cp, "handle_out_keys", point.handle_out_keys);
+      point.setup_in = get_float2(cp, "setup_in", point.handle_in);
+      point.setup_out = get_float2(cp, "setup_out", point.handle_out);
       curve.points.push_back(point);
     }
     /* Keep curve indices stable for the shapes even if a curve came out too short; it then
@@ -898,9 +980,17 @@ static VectorDrawing drawing_from_json(const json &j)
   /* Older files' points and shapes get their ids now. */
   drawing.next_id = std::max<uint64_t>(1, get_id(j, "next_id"));
   drawing_ensure_ids(drawing);
+  if (g_loading_version < 3) {
+    /* Format 2 and before kept points' and handles' own values in their keys, as Moho does: the
+     * setup is frame 0's key (the mainline's while an action was being edited); the stale handle
+     * keys an old bug left are mended first, then every key becomes the change from the setup. */
+    migrate_drawing_setups(drawing);
+    drawing_repair_stale_handle_keys(drawing);
+    migrate_drawing_setups(drawing);
+    migrate_drawing_keys(drawing);
+  }
   /* Older files' Automatic and Vector handles become stored ones now, from the setup pose. */
   drawing_init_handles(drawing);
-  drawing_repair_stale_handle_keys(drawing);
   return drawing;
 }
 
@@ -1457,6 +1547,7 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
     return false;
   }
   const int version = get_int(root, "version", 0);
+  g_loading_version = version;
   if (version < 1 || version > SKY_FILE_VERSION) {
     *r_error = "The file was saved by a newer SkyAnimate (format " + std::to_string(version) +
                "); this version reads up to format " + std::to_string(SKY_FILE_VERSION);
@@ -1498,6 +1589,7 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   }
   doc.action_layer = get_id(j, "action_layer");
   doc.active_layer = get_id(j, "active_layer");
+  g_loading_action = doc.action;
   doc.next_layer_id = std::max<uint64_t>(1, get_id(j, "next_layer_id"));
   g_old_masks.clear();
   g_old_mask_options.clear();

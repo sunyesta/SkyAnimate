@@ -243,7 +243,7 @@ static std::vector<BoneWeight> point_weights(const Deformer &d, const MeshPoint 
 /* Where a point is in the setup pose (layer space). */
 static float2 setup_position(const MeshPoint &p)
 {
-  return p.pos_keys.animated() ? p.pos_keys.evaluate(0) : p.pos;
+  return point_setup_pos(p);
 }
 
 /* Blender's Automatic Weights, for 2D: every bone pulls, the nearer (in the setup pose) the harder,

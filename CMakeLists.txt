@@ -155,3 +155,5 @@ add_test(NAME bone_collections
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_collections.py)
 add_test(NAME bone_transform
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_transform.py)
+add_test(NAME point_transform
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_point_transform.py)
