@@ -84,7 +84,7 @@ class _Texts:
 
 
 class _Layer:
-    """A layer, like Moho's MohoLayer. Properties (name, visible, opacity, mask_mode, ...) come
+    """A layer, like Moho's MohoLayer. Properties (name, visible, opacity, locked, ...) come
     from the layer's RNA description; dir() lists them."""
 
     def __init__(self, id):
@@ -180,6 +180,25 @@ class _Layer:
         return list(points), closed
 
     @property
+    def masks(self):
+        """Its masks: [{"outside", "layers" (names), "enabled" (in the viewport), "render",
+        "expand", "fills_only", "filled", "extend"}]. It shows only inside (or outside) any of a mask's layers, where
+        every mask that's on holds. Change them with sky.ops.mask.add / set / remove / move /
+        with_layer_below."""
+        return [dict(m) for m in _sky.layer_masks(self._id)]
+
+    @property
+    def masking(self):
+        """The names of the layers whose masks name this one."""
+        return list(_sky.layer_masking(self._id))
+
+    @property
+    def draw_order(self):
+        """Its Draw Order now: ("NORMAL", ""), ("FRONT", name of the layer it's drawn in front of) or
+        ("BEHIND", name). Set it with sky.ops.layer.draw_order_set (keyed on frames other than 0)."""
+        return tuple(_sky.layer_draw_order(self._id))
+
+    @property
     def hidden_edges(self):
         """[(curve, segment), ...] whose outline is hidden, as with Moho's Hide Edge."""
         return [tuple(e) for e in _sky.layer_hidden_edges(self._id)]
@@ -200,13 +219,25 @@ class _Layer:
 
     @property
     def bones(self):
-        """A bone layer's bones: dicts with name, parent, position, angle (radians), length,
-        scale, strength, selected, select_head, select_tail, connected, active, and head and tail (where it runs now, in the bone
+        """A bone layer's bones: dicts with name, parent, position, angle (radians), setup_position
+        and setup_angle (the setup pose, frame 0: their keys hold the change from it), length,
+        scale, strength, selected, select_head, select_tail, connected, shape, pin_size, shape_layer,
+        color_set, colors (its regular, selected and active shades), active, and head and tail (where it runs now, in the bone
         layer's space)."""
-        return _sky.layer_bones(self._id)
+        return _sky.layer_bones(self._id, False)
+
+    @property
+    def bones_keyed(self):
+        """As bones, with head and tail where the keys put them, without bone dynamics (what
+        editing works from, and the viewport draws with Physics Ghosts on)."""
+        return _sky.layer_bones(self._id, True)
 
     def bone_set(self, name, **values):
-        """Pose or edit a bone: position=(x, y), angle, scale, length, strength, name."""
+        """Pose or edit a bone: position=(x, y), angle, scale=(x, y) (x across the bone, y along
+        it; one number sets both), length, strength, name; and how it is drawn: shape ("BONE",
+        "PIN" or "CUSTOM", while the viewport shows custom bone shapes), pin_size, shape_layer (a
+        vector layer's name, "" for none), color_set ("DEFAULT", "THEME01" to "THEME15" or
+        "CUSTOM") and custom_colors (three (r, g, b): regular, selected, active; makes it Custom)."""
         _sky.layer_bone_set(self._id, name, values)
 
     def select_bone(self, name, extend=False, part="BONE"):
@@ -235,20 +266,44 @@ class _Layer:
         _sky.layer_box_select_bones(self._id, corner_a[0], corner_a[1], corner_b[0], corner_b[1], whole, extend,
                                     deselect)
 
+    def bone_constraints(self, bone):
+        """The constraints of bone `bone`, top first: dicts with type (LIMIT_ANGLE, INDEPENDENT_ANGLE,
+        MAINTAIN_VOLUME, COPY_ANGLE, COPY_POSITION, COPY_SCALE, TRACK_TO, STRETCH_TO, IK, DYNAMICS)
+        and settings (angles in radians, target as a bone name)."""
+        return list(_sky.layer_bone_constraints(self._id, bone))
+
+    def bone_constraint_set(self, bone, index, **values):
+        """Change constraint `index` of bone `bone`: enabled, influence, min_angle, max_angle,
+        amount, target, factor, delay, chain, max_stretch, weight, wind_catch, own_gravity (with
+        gravity), own_wind (with wind, wind_direction (radians), wind_gusts, wind_gust_speed,
+        wind_turbulence), own_forces (both own_gravity and own_wind), angle_spring / position_spring /
+        scale_spring (dicts of enabled, settle_speed, bounce, inertia, stretch, use_limit
+        and limit: radians for angle_spring, bone layer units for position_spring, a fraction of
+        the size for scale_spring)."""
+        _sky.layer_bone_constraint_set(self._id, bone, index, values)
+
     def rotate_bones(self, angle):
         """R on the selected bones by angle (radians), each about its base; children come along.
         A picked child of a picked parent doesn't turn twice."""
         return _sky.layer_rotate_bones(self._id, angle)
 
-    def scale_bones(self, factor):
-        """S on the selected bones: each grows by factor, children along with it (once)."""
-        return _sky.layer_scale_bones(self._id, factor)
+    def scale_bones(self, factor, axis="", squash=False):
+        """S on the selected bones, children along with them (once). On frame 0 it changes their
+        size (lengths and places, about the middle of their bases). Posing, it scales each along
+        its own axes: axis "" both, "X" across (thickness), "Y" along (length); squash=True is
+        S S, longer and thinner (or shorter and fatter), keeping their area."""
+        return _sky.layer_scale_bones(self._id, factor, {"": 0, "X": 1, "Y": 2}[axis.upper()], squash)
 
     def move_bone_ends(self, offset):
         """G on the selected bones by offset=(dx, dy): a bone picked by its body or base moves,
         one picked by its tip turns to follow it (and on frame 0 stretches). Children come along.
         Returns False when nothing is selected."""
         return _sky.layer_move_bone_ends(self._id, offset[0], offset[1])
+
+    def drag_bone_ends(self, offsets):
+        """One G drag through each (dx, dy) in offsets in turn, every one measured from the
+        drag's start, as dragging in the viewport does. Returns False when nothing is selected."""
+        return _sky.layer_drag_bone_ends(self._id, [(float(x), float(y)) for x, y in offsets])
 
     @property
     def point_bones(self):
@@ -259,6 +314,41 @@ class _Layer:
     def parent_bone(self):
         """The bone this whole layer follows (Parent to Bone), or ""."""
         return _sky.layer_parent_bone(self._id)
+
+    @property
+    def bone_collections(self):
+        """A bone layer's bone collections, in list order, All first (fixed: every bone and every
+        drawing Editable in Bone Group; nothing is assigned to it): dicts with name, visible (the eye),
+        solo (the star), shown, active, fixed, bones and layers (the drawings in it). Change them with the
+        armature.collection_* operators (add, remove, move, assign, unassign, select, deselect,
+        set) and armature.move_to_collection / assign_to_collection (M and Shift M)."""
+        return [dict(c) for c in _sky.layer_bone_collections(self._id)]
+
+    @property
+    def collections(self):
+        """The bone collections this drawing is in (names, of its bone layer); layer.bone_collection_toggle
+        puts it in one or takes it out."""
+        return list(_sky.layer_collections(self._id)[0])
+
+    @property
+    def edited_with_bones(self):
+        """Whether this drawing's points are picked and moved along with its bone layer's bones now: it
+        is in a bone collection that shows."""
+        return _sky.layer_collections(self._id)[1]
+
+    def keyed_at(self, frame):
+        """The paths of this layer's channels keyed at `frame`, as the timeline's Keyed Here list
+        has them (Ctrl-click a key)."""
+        return list(_sky.layer_keyed_at(self._id, frame))
+
+    @property
+    def parent_bone_group(self):
+        """The group above whose Parent Bone overrides this layer's own (and its weights), or ""."""
+        return _sky.layer_parent_bone_group(self._id)
+
+    def to_document(self, point):
+        """Where `point` (layer space) shows in the document, bones and parents included."""
+        return _sky.layer_to_document(self._id, tuple(point))
 
     def bone_weights(self, bone):
         """How strongly bone `bone` moves each point, 0-1, from its weights."""
@@ -293,6 +383,15 @@ class _Layer:
         points, curves, shapes = _sky.layer_evaluated(self._id, render)
         return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
 
+    def channel_pinned(self, path):
+        """Whether channel `path` is pinned to the timeline (its pin button)."""
+        return _sky.layer_channel_pinned(self._id, path)
+
+    def pin_channel(self, path, pinned=True):
+        """Pin channel `path` to the timeline (or unpin it), as its pin button does."""
+        from . import ops
+        return ops.anim.channel_pin(layer=str(self._id), paths=path, pinned="1" if pinned else "0")
+
     def keyframes(self, path):
         """The keys of channel `path` ("position", "rotation", "scale", "opacity",
         "points[3].pos", "points[3].radius", "curves[0].points[2].curvature", ...): dicts with
@@ -309,8 +408,10 @@ class _Layer:
 
     def keyframe_set(self, path, frame, **settings):
         """Change one key: interp="LINEAR"|"SMOOTH"|"EASE_IN_OUT"|"EASE_IN"|"EASE_OUT"|"STEP"|
-        "BEZIER"|"BACK"|"BOUNCE"|"ELASTIC"|"NOISY"|"CYCLE"|"POSE", hold, interval, overshoot,
-        noise_amplitude, noise_frequency, cycle_back."""
+        "BEZIER"|"BACK"|"BOUNCE"|"ELASTIC"|"NOISY"|"CYCLE"|"POSE", ease="SINE"|"QUAD"|"CUBIC"|
+        "QUART"|"QUINT"|"EXPO"|"CIRC" (how strongly the Ease modes slow), hold, interval,
+        overshoot, elastic_amplitude, elastic_period, noise_amplitude, noise_frequency,
+        cycle_back."""
         _sky.layer_keyframe_set(self._id, path, frame, settings)
 
     @property
@@ -336,9 +437,49 @@ class _Layer:
         for a plain line."""
         return _sky.layer_shape_brush(self._id, index)
 
+    def shape_style(self, index):
+        """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden}."""
+        return dict(_sky.layer_shape_style(self._id, index))
+
+    def set_shape_style(self, index, **values):
+        """Change shape `index`'s look (fill, line, line_width, has_fill, has_outline), as the Shape
+        panel does. On a reference this becomes its own look for that setting."""
+        _sky.layer_set_shape_style(self._id, index, values)
+
+    @property
+    def point_ids(self):
+        """Each point's id, kept for good whatever happens to the points around it."""
+        return list(_sky.layer_point_ids(self._id))
+
+    @property
+    def shape_ids(self):
+        return list(_sky.layer_shape_ids(self._id))
+
+    @property
+    def reference(self):
+        """A reference's settings: {edit_points, follow_animation, match_original} (change them with
+        sky.ops.layer.reference_set)."""
+        return dict(_sky.layer_reference(self._id))
+
+    def reference_overrides(self):
+        """A reference's own changes: {"points": {point id: (dx, dy, keyed)}, "handles": {(point id,
+        toward point id, "IN" or "OUT"): (dx, dy, keyed)}, "looks": {shape id: {setting: value}},
+        "swaps": [(from, to, fill, line)], "weights": [point ids], "channels": [layer channels it took
+        over]}."""
+        d = _sky.layer_reference_overrides(self._id)
+        return {"points": dict(d["points"]), "looks": {k: dict(v) for k, v in d["looks"].items()},
+                "swaps": list(d["swaps"]), "weights": list(d["weights"]), "handles": dict(d["handles"]),
+                "channels": list(d["channels"])}
+
     def set_point(self, index, pos):
         """Move point `index` to `pos` (layer space), as dragging it in the viewport does."""
         _sky.layer_set_point(self._id, index, tuple(pos))
+
+    def move_points(self, offset):
+        """G on the selected points by offset=(dx, dy) (layer space), with mirror editing as in the
+        viewport: each point's mirror image in the setup pose snaps to its reflection, on any frame.
+        False with nothing selected."""
+        return _sky.layer_move_points(self._id, offset[0], offset[1])
 
     def select_points(self, indices, select=True):
         _sky.layer_select_points(self._id, list(indices), select)
@@ -414,6 +555,19 @@ class _Data:
     @property
     def document(self):
         return _sky.context().document
+
+    @property
+    def simulation(self):
+        """The document's gravity and wind as animatable channels ("gravity", "wind",
+        "wind_direction", "wind_gusts", "wind_gust_speed", "wind_turbulence"): a layer outside the
+        tree, for keyframes(path) and anim.keyframe_toggle(layer=str(simulation.id), paths=...)."""
+        return _Layer(2 ** 64 - 2)
+
+    @property
+    def draw_order(self):
+        """The names of the drawing layers as drawn now, bottom first: the Layers editor's order
+        with every layer's Draw Order rule applied (hidden layers left out)."""
+        return list(_sky.draw_order())
 
     @property
     def filepath(self):

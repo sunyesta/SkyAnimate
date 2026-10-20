@@ -195,11 +195,16 @@ assert art.weights[1] == {}, "and they don't get automatic weights again"
 sky.data.layers.active = rig
 assert sky.ops.mesh.select_all() == {'CANCELLED'}, "points of the layers inside aren't editable by default"
 art.edit_with_bones = True
+assert art.edited_with_bones
 assert sky.ops.mesh.select_all() == {'FINISHED'}
 assert all(p[2] for p in art.points), "the layer's points were selected from the bone layer"
 sky.ops.armature.select_none()
 assert sky.wm.event_simulate("G", area="Viewport"), "G moves them, with no bone picked"
 sky.ops.mesh.select_none()
+# Hiding the All collection hides them too: no longer edited with the bones.
+assert sky.ops.armature.collection_set(collection="All", visible="0") == {'FINISHED'}
+assert not art.edited_with_bones and sky.ops.mesh.select_all() == {'CANCELLED'}
+assert sky.ops.armature.collection_set(collection="All", visible="1") == {'FINISHED'}
 art.edit_with_bones = False
 
 # Converting between groups and bone groups.
@@ -213,5 +218,42 @@ assert rig.type == "BONE" and [m["type"] for m in art.modifiers] == ["MIRROR", "
 sky.data.layers.active = art
 assert sky.ops.layer.move_to_group(group="0") == {'FINISHED'}
 assert [m["type"] for m in art.modifiers] == ["MIRROR"]
+
+# --- A group's Parent Bone moves everything inside it, overriding their own --------------------------
+doc = sky.data.document
+doc.frame_current = 0
+sky.ops.layer.new_bone()
+grig = sky.data.layers.active
+sky.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+sky.ops.armature.bone_add(name="other", head_x="0", head_y="2", tail_x="1", tail_y="2", parent="")
+sky.ops.layer.new()
+inner = sky.data.layers.active
+inner.add_curve([(0.5, 0.5), (0.8, 0.5)])
+sky.ops.layer.group()
+grp = sky.data.layers.active
+sky.ops.layer.move_to_group(group=str(grig.id))
+assert grp.parent == grig and inner.parent == grp
+sky.data.layers.active = inner
+assert sky.ops.layer.parent_bone_set(bone="other") == {'FINISHED'}  # its own, to be overridden
+sky.data.layers.active = grp
+assert sky.ops.layer.parent_bone_set(bone="arm") == {'FINISHED'}
+assert inner.parent_bone_group == grp.name and grp.parent_bone_group == ""
+doc.frame_current = 10
+grig.bone_set("arm", angle=1.5707963)
+grig.bone_set("other", position=(5.0, 2.0))
+doc.frame_current = doc.frame_current
+# It moves once, as a whole, with the group's bone: not bent by its weights, not by "other".
+assert all(abs(a - b) < 1e-4 for a, b in zip(inner.evaluated()[0][0], (0.5, 0.5))), inner.evaluated()[0]
+shown = inner.to_document((0.5, 0.5))
+assert abs(shown[0] + 0.5) < 1e-3 and abs(shown[1] - 0.5) < 1e-3, ("turned a quarter about the bone", shown)
+# Out of the group, its own Parent Bone takes over again.
+doc.frame_current = 0
+sky.data.layers.active = grp
+assert sky.ops.layer.parent_bone_set(bone="") == {'FINISHED'}
+assert inner.parent_bone_group == ""
+doc.frame_current = 10
+shown = inner.to_document((0.5, 0.5))
+assert abs(shown[0] - 5.5) < 1e-3, ("follows its own bone again", shown)
+doc.frame_current = 0
 
 print("Rigging tests passed")

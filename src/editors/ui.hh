@@ -1,6 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
+#include <string>
+#include <utility>
+#include <vector>
 
 /* Shared widgets for editors, like Blender's UI layout: panels of properties drawn from their
  * RNA descriptions. */
@@ -10,6 +14,9 @@
 namespace sky {
 
 struct Context;
+struct Document;
+struct Layer;
+struct WindowManager;
 
 /* A collapsible panel with a two-column (label, value) table. Call ui_panel_end() only when
  * this returns true. */
@@ -26,30 +33,107 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
 /* Blender's keyframe button: state 0 not animated (a dot), 1 animated (a hollow diamond), 2 keyed
  * on this frame (a filled one). Called before ui_prop / ui_prop_pair, the next row's fields get
  * Blender's tint for the state (green animated, yellow keyed here) and the button at their right;
- * `on_click` runs when it is pressed. */
-void ui_key_next(int state, std::function<void()> on_click);
+ * `on_click` runs when it is pressed. `pin` adds the pin button after it (-1 none, 0 not pinned,
+ * 1 pinned, which also tints the row red); `on_pin` runs when that is pressed. */
+/* `flash_layer`, `flash_path`: the channel the row shows, so a flash asked for it finds it. */
+void ui_key_next(int state, std::function<void()> on_click, int pin = -1, std::function<void()> on_pin = {},
+                 uint64_t flash_layer = 0, const std::string &flash_path = std::string());
+
+/* Showing a property in the Properties editor (WindowManager::properties_flash, asked for from the
+ * timeline's Keyed Here list): a Properties editor binds it while it draws (null after), its
+ * panels open for it, and the row of a keyed field that matches flashes. */
+void ui_flash_bind(WindowManager *wm);
+/* Where a keyed field drew its key button (the last item): flashes the row when it is the property
+ * asked for, scrolling to it the first time. */
+void ui_flash_row(uint64_t layer, const std::string &path);
+/* Once a frame, after the editors drew: ends a flash after its second, or, with no Properties
+ * editor to show it in, says so at the mouse. */
+void ui_flash_update(WindowManager &wm);
 /* For rows drawn by hand: the tint (pop with ImGui::PopStyleColor(ui_key_tint_push(...))) and
  * the button itself, after the field (returns true when pressed). */
 int ui_key_tint_push(int state);
 bool ui_key_button(const char *id, int state);
-/* The width a key button takes, with its spacing. */
+/* The pin button after a key button: pin -1 leaves its place empty, 0 grey, 1 red (pinned to the
+ * timeline). Returns true when pressed. */
+bool ui_pin_button(const char *id, int pin);
+/* A pinned property's row, tinted red (call after drawing the row). */
+void ui_pinned_row();
+/* The pin, drawn into a square at `min` of size `size` (also used by the timeline). */
+void ui_pin_draw(ImDrawList *dl, ImVec2 min, float size, unsigned int color);
+/* The width a key button and the pin's place take, with their spacing. */
 float ui_key_button_width();
+/* A row drawn by hand: its label, then `body` (given the width it has, the key button's room left
+ * out), then the key button if ui_key_next asked for one. */
+void ui_row(const char *label, const std::function<void(float width)> &body);
 /* Two properties side by side under one label, as Blender shows Location X and Y:
  * "Location  [X 0.000] [Y 0.000]". */
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
                   const char *first_prefix, const char *second, const char *second_prefix, const char *python_path);
 
 /* A colour row inside a panel; returns true when the colour changed. */
-bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name);
+/* The latest report_at_mouse, beside the cursor where it happened: a yellow warning box (red for an
+ * error) that stays until a click (or Esc) puts it away. Drawn over everything, once a frame. */
+void ui_mouse_report_draw();
+/* A square revert button (a curved arrow turning back), `tooltip` on hover. True when clicked. */
+bool ui_revert_button(const char *id, const char *tooltip);
+/* How much room a revert button takes after a field (its width and the gap before it). */
+float ui_revert_button_space();
+/* `r_revert` (optional): also a revert button at the right end of the row, true when clicked. */
+bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert = nullptr);
 
 /* A colour swatch that opens SkyAnimate's colour picker, which shows #RRGGBBAA and has an
  * eyedropper; with `hex`, a #RRGGBBAA field beside it too. Returns true while the colour
  * changes; `r_finished` (optional) is set when an edit ends, for an undo step. */
-bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished = nullptr);
+/* `right_space`: room left free at the right of the hex field (for a button after it). */
+/* `swatch_width`: the swatch's width (0: the usual). */
+bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished = nullptr, float right_space = 0.0f,
+                   float swatch_width = 0.0f);
 
 /* The eyedropper picks a colour from anywhere in the window. Draw the overlay with the rest of
  * the UI; take the sample after the frame is drawn, before it is shown (it reads the pixel). */
 void ui_eyedropper_overlay();
 void ui_eyedropper_sample(int framebuffer_height);
+
+/* The layer eyedropper, for a bone's custom shape: while it is on, clicking a layer in the viewport
+ * or a row of the Layers editor gives that layer to the bone; Esc, right-click or a click anywhere
+ * else stops it. */
+void ui_layer_eyedropper_start(uint64_t armature, uint64_t bone);
+bool ui_layer_eyedropper_active();
+/* The same eyedropper for something else: `pick` gets the layer clicked and returns true when it's
+ * done (false keeps it on); `cue` is what the mouse says. */
+void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pick, std::function<std::string()> cue);
+/* In Front Of... / Behind... (layer.draw_order_pick): starts the eyedropper for it, and ends it once
+ * the eyedropper is done. Called by the editors that take its click, each frame. */
+void ui_draw_order_pick_update(Context &C);
+/* While pointing at `target` during it: the moving layers drawn as they would be, until _end. */
+bool ui_draw_order_preview_begin(Document &doc, std::vector<std::pair<Layer *, float>> &r_saved, uint64_t target,
+                                 int mode, const std::vector<uint64_t> &layers);
+void ui_draw_order_preview_end(std::vector<std::pair<Layer *, float>> &saved);
+/* Inside... / Outside... (mask.pick): starts the layer eyedropper for it, and ends it once done. */
+void ui_mask_pick_update(Context &C);
+/* The Mask menu's items, for `layer` (0: the active and picked layers). */
+void ui_mask_menu_items(Context &C, uint64_t layer);
+/* The Draw Order menu's items, for `layer` (0: the active and picked layers). */
+void ui_draw_order_menu_items(Context &C, uint64_t layer);
+/* A click on `layer` while it is on (0: on no layer, which keeps it on). */
+void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
+/* Its cue at the mouse, and stopping it; once a frame, after the editors drew. */
+void ui_layer_eyedropper_overlay();
+/* A pipette icon, as on Blender's eyedropper buttons. */
+void ui_eyedropper_icon(ImDrawList *dl, ImVec2 center, float size, ImU32 color);
+
+/* M and Shift M: Blender's Move to Collection and Assign to Collection menus, opened by the editor
+ * under the mouse (the viewport or the Layers editor) when one of them asked. */
+void ui_bone_collection_menus(Context &C, bool hovered);
+
+/* Menus that open at the mouse (right-click menus, X, Ctrl P...), as Blender's: each remembers the
+ * item last chosen and opens with it under the mouse (the first item, before any choice). In place
+ * of ImGui::BeginPopup / MenuItem / BeginMenu / EndMenu / EndPopup. A menu is remembered by its id,
+ * so the same menu opened from different rows shares one memory. */
+bool ui_menu_begin(const char *id);
+bool ui_menu_item(const char *label, const char *shortcut = nullptr, bool selected = false, bool enabled = true);
+bool ui_submenu_begin(const char *label, bool enabled = true);
+void ui_submenu_end();
+void ui_menu_end();
 
 }  // namespace sky

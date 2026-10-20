@@ -16,8 +16,12 @@ set(SKY_SOURCES
   src/anim/animation.cc
   src/anim/channel.cc
   src/anim/deform.cc
+  src/anim/draw_order.cc
+  src/anim/dynamics.cc
+  src/anim/reference.cc
   src/assets/asset_library.cc
   src/assets/brushes.cc
+  src/core/crash.cc
   src/core/log.cc
   src/data/bones.cc
   src/data/document.cc
@@ -38,6 +42,8 @@ set(SKY_SOURCES
   src/gpu/tessellate.cc
   src/io/sky_file.cc
   src/ops/anim_ops.cc
+  src/ops/draw_order_ops.cc
+  src/ops/mask_ops.cc
   src/ops/asset_ops.cc
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
@@ -53,6 +59,7 @@ set(SKY_SOURCES
   src/wm/event_system.cc
   src/wm/file_dialog.cc
   src/wm/keymap.cc
+  src/wm/remote.cc
 )
 
 add_executable(SkyAnimate ${SKY_SOURCES})
@@ -60,7 +67,7 @@ add_executable(SkyAnimate ${SKY_SOURCES})
 target_include_directories(SkyAnimate PRIVATE src)
 # Header-only libraries as system headers, so /W4 doesn't report their warnings.
 target_include_directories(SkyAnimate SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include ${json_SOURCE_DIR}/single_include)
-target_link_libraries(SkyAnimate PRIVATE sky_imgui SDL3::SDL3 pybind11::embed miniz opengl32)
+target_link_libraries(SkyAnimate PRIVATE sky_imgui SDL3::SDL3 pybind11::embed miniz opengl32 ws2_32 dbghelp)
 target_compile_definitions(SkyAnimate PRIVATE
   SKY_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts"
   SKY_PYTHON_HOME="${SKY_PYTHON_ROOT}"
@@ -118,3 +125,33 @@ add_test(NAME actions
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_actions.py)
 add_test(NAME smart_actions
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_smart_actions.py)
+add_test(NAME bone_constraints
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_constraints.py)
+add_test(NAME live_dynamics
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_live_dynamics.py)
+add_test(NAME timeline_pins
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_pins.py)
+add_test(NAME remote_control
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_remote_control.py)
+add_test(NAME proportional_editing
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_proportional_editing.py)
+add_test(NAME references
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_references.py)
+add_test(NAME bone_shapes
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_shapes.py)
+add_test(NAME mirror_points
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mirror_points.py)
+add_test(NAME keyed_here
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_keyed_here.py)
+add_test(NAME interpolation
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_interpolation.py)
+add_test(NAME reference_edges
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_reference_edges.py)
+add_test(NAME draw_order
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_order.py)
+add_test(NAME masks
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
+add_test(NAME bone_collections
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_collections.py)
+add_test(NAME bone_transform
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_transform.py)

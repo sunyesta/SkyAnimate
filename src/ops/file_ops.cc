@@ -85,6 +85,11 @@ std::string user_data_dir()
   return path_to_utf8(dir);
 }
 
+std::string crash_dir()
+{
+  return path_to_utf8(path_from_utf8(user_data_dir()) / "crashes");
+}
+
 std::string autosave_dir()
 {
   const fs::path dir = path_from_utf8(user_data_dir()) / "autosave";

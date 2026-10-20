@@ -69,8 +69,11 @@ class SceneRenderer {
                    Target *target, float opacity);
   void draw_layer(const Document &doc, const Layer &layer, const Transform2D &transform, Target *target,
                   float opacity);
-  void draw_masked_group(const Document &doc, const Layer &group, const Transform2D &transform, Target *target,
-                         float opacity);
+  /* Sets the stencil to the masks of `masked` (the layers whose masks apply to what is drawn next)
+   * and returns the stencil bits a sample needs. */
+  unsigned apply_masks(const Document &doc, const std::vector<const Layer *> &masked);
+  /* A mask layer's shape into one stencil bit (set or cleared), where its own masks hold. */
+  void draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool set);
   /* Writes a layer's coverage (and its children's) into one stencil bit, set or cleared. */
   void draw_coverage(const Document &doc, const Layer &layer, const Transform2D &parent, unsigned bit, bool set);
   /* Sets or clears one stencil bit everywhere. */
@@ -109,11 +112,31 @@ class SceneRenderer {
   struct MaskPass {
     bool expand = false;
     bool exclude_strokes = false;
+    /* Every shape fills, filled or not (a mask's Filled Shape). */
+    bool filled = false;
+    /* A mask's Extend (MaskExtend): the shapes swept to far off that way. */
+    int extend = 0;
   } mask_pass_;
-  /* Stencil bits a colour sample must have set (the masks it's inside), and the next free bit
-   * for a nested masking group. */
+  /* Stencil bits a colour sample must have set (the masks it's inside). */
   unsigned required_stencil_ = 0;
-  int stencil_level_ = 0;
+  /* Stencil bits a mask shape is only written where they are set (its own masks), or 0. */
+  unsigned coverage_test_ = 0;
+
+ public:
+  /* One mask as the stencil holds it: inside (or outside) any of these layers. */
+  struct MaskClause {
+    bool outside = false;
+    std::vector<uint64_t> layers;
+    bool expand = false;
+    bool fills_only = false;
+    bool filled = false;
+    int extend = 0;
+    bool operator==(const MaskClause &) const = default;
+  };
+
+ private:
+  /* The masks the stencil holds now (bit k: clause k), so neighbours with the same masks reuse it. */
+  std::vector<MaskClause> mask_clauses_;
   bool initialized_ = false;
   bool failed_ = false;
   unsigned int color_program_ = 0;

@@ -3,17 +3,22 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/draw_order.hh"
+#include "assets/asset_library.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
@@ -39,7 +44,7 @@ static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 static constexpr ImU32 COL_ACTION_ACTIVE = IM_COL32(0x8a, 0x5a, 0x1e, 255);
 static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
-enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd };
+enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped };
 
 /* Triangles are wound clockwise (screen y points down) so ImGui anti-aliases their edges. */
 static void tri_right(ImDrawList *dl, float x0, float x1, float cy, float half_h, ImU32 col)
@@ -95,6 +100,18 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
       tri_right(dl, c.x + s * 0.15f, c.x + s, c.y, s * 0.7f, col);
       diamond(dl, ImVec2(c.x - s * 0.45f, c.y), s * 0.6f, col);
       break;
+    case Icon::Stepped: {
+      /* Stairs: the motion held from key to key. */
+      if (on) {
+        dl->AddRectFilled(c - ImVec2(s * 1.5f, s * 1.5f), c + ImVec2(s * 1.5f, s * 1.5f), COL_PLAYHEAD,
+                          ImGui::GetStyle().FrameRounding);
+      }
+      const ImVec2 pts[7] = {c + ImVec2(-s, s),         c + ImVec2(-s * 0.33f, s),  c + ImVec2(-s * 0.33f, 0.0f),
+                             c + ImVec2(s * 0.33f, 0.0f), c + ImVec2(s * 0.33f, -s), c + ImVec2(s, -s),
+                             c + ImVec2(s, -s)};
+      dl->AddPolyline(pts, 7, col, 0, 1.6f);
+      break;
+    }
   }
 }
 
@@ -189,12 +206,17 @@ static void action_menu(Context &C, float width)
         operator_call(C, "anim.action_set", {{"name", name}});
       }
       /* Right-click: the action's own menu. */
-      if (ImGui::BeginPopupContextItem()) {
-        if (ImGui::MenuItem("Delete")) {
+      ImGui::PushID(name.c_str());
+      if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        ImGui::OpenPopup("##action_menu");
+      }
+      if (ui_menu_begin("##action_menu")) {
+        if (ui_menu_item("Delete")) {
           doomed = name;
         }
-        ImGui::EndPopup();
+        ui_menu_end();
       }
+      ImGui::PopID();
     };
     /* At the top, with one bone selected: its smart actions, and a new one while it has fewer
      * than two (the second turns the other way). */
@@ -294,6 +316,553 @@ static void action_menu(Context &C, float width)
   }
 }
 
+/* --- Interpolation: the header's mode menu (also T, and right-click > Interpolation), its
+ * settings, and the shape each key takes by its mode. ------------------------------------------ */
+
+/* The modes the menus offer, in groups (Bezier comes from dragging handles, Pose from actions). */
+struct InterpGroup {
+  const char *heading;
+  Interp modes[3];
+  int count;
+};
+static constexpr InterpGroup INTERP_GROUPS[] = {
+    {nullptr, {Interp::Smooth, Interp::Linear, Interp::Step}, 3},
+    {"Ease", {Interp::EaseIn, Interp::EaseOut, Interp::EaseInOut}, 3},
+    {"Bouncy", {Interp::Back, Interp::Bounce, Interp::Elastic}, 3},
+    {"Special", {Interp::Noisy, Interp::Cycle, Interp::Cycle}, 2},
+};
+
+static const char *interp_tooltip(Interp interp)
+{
+  switch (interp) {
+    case Interp::Smooth:
+      return "Eases through each key and never goes past it (the default)";
+    case Interp::Linear:
+      return "Steady speed, turning sharply at each key";
+    case Interp::Step:
+      return "Holds until the next key, then jumps to it";
+    case Interp::EaseIn:
+      return "Slows down into the next key";
+    case Interp::EaseOut:
+      return "Starts slowly from this key";
+    case Interp::EaseInOut:
+      return "Starts slowly and slows down into the next key";
+    case Interp::Back:
+      return "Goes past the next key, then settles back onto it";
+    case Interp::Bounce:
+      return "Bounces as it lands on the next key";
+    case Interp::Elastic:
+      return "Wobbles about the next key like a spring";
+    case Interp::Noisy:
+      return "Jitters about the straight path to the next key";
+    case Interp::Cycle:
+      return "After this key, plays again from an earlier frame, looping until the next key";
+    default:
+      return "";
+  }
+}
+
+/* A mode's curve in the box a..b: progress up, time across, with room for overshoot. */
+static void curve_draw(ImDrawList *dl, ImVec2 a, ImVec2 b, const KeySettings &s, ImU32 col, float thickness,
+                       float lo = -0.3f, float hi = 1.3f)
+{
+  constexpr int N = 48;
+  ImVec2 pts[N + 1];
+  for (int i = 0; i <= N; i++) {
+    const float t = float(i) / float(N);
+    const float v = std::clamp(interp_curve(s, t), lo, hi);
+    pts[i] = ImVec2(a.x + t * (b.x - a.x), b.y - (v - lo) / (hi - lo) * (b.y - a.y));
+  }
+  dl->AddPolyline(pts, N + 1, col, 0, thickness);
+}
+
+/* Spaces before a name in a menu or list, leaving room for its curve. */
+static std::string curve_room()
+{
+  const float h = ImGui::GetFrameHeight();
+  const float space = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+  return std::string(size_t(std::ceil((h * 1.5f + ImGui::GetFontSize() * 0.6f) / space)), ' ');
+}
+
+/* The settings popover was asked for from a menu (T, right-click) or a script: it opens at the
+ * mouse on the header's next turn. */
+static bool g_settings_request = false;
+
+/* A menu item (or, with `selectable`, a list entry) with a mode's curve before its name. */
+static bool interp_item(const char *name, const KeySettings &shape, bool selected, bool enabled, const char *tooltip,
+                        bool selectable = false)
+{
+  const std::string label = curve_room() + name;
+  const bool chosen = selectable ? ImGui::Selectable(label.c_str(), selected)
+                                 : ui_menu_item(label.c_str(), nullptr, selected, enabled);
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  const float h = b.y - a.y;
+  const float x = a.x + (selectable ? 2.0f : ImGui::GetStyle().ItemSpacing.x * 0.5f);
+  curve_draw(ImGui::GetWindowDrawList(), ImVec2(x, a.y + 2.0f), ImVec2(x + h * 1.5f, b.y - 2.0f), shape,
+             enabled ? IM_COL32(0x9c, 0xc6, 0xff, 255) : IM_COL32(0x80, 0x80, 0x80, 255), 1.5f);
+  if (tooltip && tooltip[0] && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("%s", tooltip);
+  }
+  return chosen;
+}
+
+/* What the menus and the header show: the selected keys' settings, or with none selected the
+ * new-key settings. */
+static KeySettings interp_shown(const SelectedKeys &sel)
+{
+  return sel.count > 0 ? sel.first : new_key_settings().settings;
+}
+
+/* The Interpolation menu's items. `prepare` (right-click on a key) selects the keys clicked
+ * before anything is set. */
+static void interp_menu_items(Context &C, const std::function<void()> &prepare)
+{
+  const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
+  const KeySettings current = interp_shown(sel);
+  const bool for_keys = prepare || sel.count > 0;
+  const auto run = [&](const char *idname, OpArgs args = {}) {
+    if (prepare) {
+      prepare();
+    }
+    operator_call(C, idname, args);
+  };
+  if (!prepare) {
+    if (sel.count > 0) {
+      ImGui::TextDisabled("%d selected key%s", sel.count, sel.count == 1 ? "" : "s");
+    }
+    else {
+      ImGui::TextDisabled("New keys (no keys selected)");
+    }
+  }
+  for (const InterpGroup &group : INTERP_GROUPS) {
+    if (group.heading) {
+      ImGui::SeparatorText(group.heading);
+    }
+    else if (!prepare) {
+      ImGui::Separator();
+    }
+    for (int i = 0; i < group.count; i++) {
+      const Interp mode = group.modes[i];
+      KeySettings shape = current;
+      shape.interp = mode;
+      if (interp_item(interp_name(mode), shape, !sel.mixed && current.interp == mode, true, interp_tooltip(mode))) {
+        run("anim.keys_interpolation_set", {{"interp", interp_identifier(mode)}});
+      }
+    }
+    if (group.modes[0] == Interp::EaseIn) {
+      const std::string label = curve_room() + "Strength";
+      if (ui_submenu_begin(label.c_str())) {
+        for (int e = 0; e < EASE_COUNT; e++) {
+          KeySettings shape = current;
+          if (shape.interp != Interp::EaseIn && shape.interp != Interp::EaseOut) {
+            shape.interp = Interp::EaseInOut;
+          }
+          shape.ease = Ease(e);
+          if (interp_item(ease_name(Ease(e)), shape, !sel.mixed_ease && current.ease == Ease(e), true,
+                          "How strongly the Ease modes slow down"))
+          {
+            run("anim.keys_interpolation_set", {{"ease", ease_identifier(Ease(e))}});
+          }
+        }
+        ui_submenu_end();
+      }
+    }
+  }
+  ImGui::Separator();
+  if (ui_menu_item("Copy Previous Key", nullptr, new_key_settings().copy_previous)) {
+    operator_call(C, "anim.interpolation_copy_previous");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("New keys copy the interpolation of the key before them, instead of the new-key mode");
+  }
+  ImGui::Separator();
+  if (ui_menu_item("Copy Interpolation", nullptr, false, for_keys)) {
+    run("anim.interpolation_copy");
+  }
+  if (ui_menu_item("Paste Interpolation", nullptr, false, for_keys)) {
+    run("anim.interpolation_paste");
+  }
+  if (ui_menu_item("Use for New Keys", nullptr, false, for_keys)) {
+    run("anim.interpolation_use_for_new_keys");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("New keys get this key's interpolation and settings");
+  }
+  ImGui::Separator();
+  if (ui_menu_item("Settings...")) {
+    if (prepare) {
+      prepare();
+    }
+    g_settings_request = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The curve and the mode's own settings: strength, overshoot, hold, animating on 2s");
+  }
+}
+
+/* A sliders icon: the settings button beside the mode. */
+static void settings_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
+{
+  for (int i = -1; i <= 1; i++) {
+    const float y = c.y + float(i) * s * 0.7f;
+    dl->AddLine(ImVec2(c.x - s, y), ImVec2(c.x + s, y), col, 1.2f);
+    const float kx = c.x + (i == 0 ? s * 0.4f : -s * 0.35f);
+    dl->AddCircleFilled(ImVec2(kx, y), s * 0.28f, col);
+  }
+}
+
+/* The settings popover: the curve, the mode's own settings, hold and interval. Drags change the
+ * keys (or the new-key settings) as they go; letting go makes one undo step. */
+static void interp_settings_popup(Context &C)
+{
+  if (!ImGui::BeginPopup("##interp_settings")) {
+    return;
+  }
+  Document &doc = *C.document;
+  const std::vector<Layer *> layers = timeline_layers(C);
+  const SelectedKeys sel = layers_selected_keys(layers);
+  const bool keys = sel.count > 0;
+  const KeySettings s = interp_shown(sel);
+  const float fs = ImGui::GetFontSize();
+  const float w = fs * 14.0f;
+
+  if (keys) {
+    ImGui::Text("Interpolation of %d key%s", sel.count, sel.count == 1 ? "" : "s");
+    if (sel.mixed) {
+      ImGui::TextDisabled("Mixed: showing the first key's; a change goes to all");
+    }
+  }
+  else {
+    ImGui::Text("Interpolation of New Keys");
+    ImGui::TextDisabled("No keys selected");
+  }
+
+  /* The curve: progress (0 at this key, 1 at the next) over the time between them. */
+  {
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const ImVec2 size(w, fs * 7.0f);
+    ImGui::Dummy(size);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImVec2 b = a + size;
+    dl->AddRectFilled(a, b, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
+    /* Tall enough for the whole curve (Elastic and Back swing past the next key). */
+    float lo = -0.15f, hi = 1.15f;
+    for (int i = 0; i <= 64; i++) {
+      const float v = interp_curve(s, float(i) / 64.0f);
+      lo = std::min(lo, v - 0.08f);
+      hi = std::max(hi, v + 0.08f);
+    }
+    /* The lines of this key's value (0) and the next key's (1), labelled above, at the right. */
+    for (const float v : {0.0f, 1.0f}) {
+      const float y = b.y - (v - lo) / (hi - lo) * size.y;
+      dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0x44, 0x44, 0x44, 255));
+      const char *label = v == 0.0f ? "this key" : "next key";
+      const float tw = ImGui::CalcTextSize(label).x;
+      dl->AddText(ImVec2(b.x - tw - 4.0f, y - fs - 1.0f), IM_COL32(0x80, 0x80, 0x80, 255),
+                  label);
+    }
+    curve_draw(dl, a + ImVec2(6.0f, 0.0f), b - ImVec2(6.0f, 0.0f), s, IM_COL32(0x9c, 0xc6, 0xff, 255), 2.0f, lo, hi);
+  }
+
+  const auto set = [&](const char *name, const std::string &value) {
+    operator_call(C, "anim.keys_interpolation_set", {{name, value}});
+  };
+  const auto live = [&](const std::function<void(KeySettings &)> &change) {
+    animation_record(doc);
+    if (keys) {
+      layers_change_selected_keys(layers, change);
+      animation_evaluate(doc, doc.frame_current);
+    }
+    else {
+      change(new_key_settings().settings);
+    }
+  };
+  const auto done = [&]() {
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      if (keys) {
+        C.undo->push("Interpolation Settings", doc);
+      }
+      else {
+        preferences_save();
+      }
+    }
+  };
+  const float label_w = fs * 5.5f;
+  const auto row = [&](const char *label) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(label_w);
+    ImGui::SetNextItemWidth(w - label_w + ImGui::GetStyle().WindowPadding.x * 0.0f);
+  };
+
+  row("Mode");
+  if (ImGui::BeginCombo("##mode", keys && sel.mixed ? "Mixed" : interp_name(s.interp), ImGuiComboFlags_HeightLarge)) {
+    for (const InterpGroup &group : INTERP_GROUPS) {
+      if (group.heading) {
+        ImGui::SeparatorText(group.heading);
+      }
+      for (int i = 0; i < group.count; i++) {
+        KeySettings shape = s;
+        shape.interp = group.modes[i];
+        if (interp_item(interp_name(group.modes[i]), shape, !sel.mixed && s.interp == group.modes[i], true,
+                        interp_tooltip(group.modes[i]), true))
+        {
+          set("interp", interp_identifier(group.modes[i]));
+        }
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (s.interp == Interp::EaseIn || s.interp == Interp::EaseOut || s.interp == Interp::EaseInOut) {
+    row("Strength");
+    if (ImGui::BeginCombo("##strength", keys && sel.mixed_ease ? "Mixed" : ease_name(s.ease))) {
+      for (int e = 0; e < EASE_COUNT; e++) {
+        KeySettings shape = s;
+        shape.ease = Ease(e);
+        if (interp_item(ease_name(Ease(e)), shape, s.ease == Ease(e), true, nullptr, true)) {
+          set("ease", ease_identifier(Ease(e)));
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+  else if (s.interp == Interp::Back) {
+    row("Overshoot");
+    float v = s.overshoot;
+    if (ImGui::DragFloat("##overshoot", &v, 0.02f, 0.0f, 10.0f, "%.2f")) {
+      live([v](KeySettings &k) { k.overshoot = v; });
+    }
+    done();
+  }
+  else if (s.interp == Interp::Elastic) {
+    row("Amplitude");
+    float amp = s.elastic_amplitude;
+    if (ImGui::DragFloat("##amplitude", &amp, 0.02f, 1.0f, 5.0f, "%.2f")) {
+      live([amp](KeySettings &k) { k.elastic_amplitude = amp; });
+    }
+    done();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How far the first swing goes past the next key (1: as far as the move)");
+    }
+    row("Period");
+    float period = s.elastic_period;
+    if (ImGui::DragFloat("##period", &period, 0.005f, 0.05f, 1.0f, "%.2f")) {
+      live([period](KeySettings &k) { k.elastic_period = period; });
+    }
+    done();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How long each wobble lasts, as a share of the time between the keys");
+    }
+  }
+  else if (s.interp == Interp::Noisy) {
+    row("Amount");
+    float amount = s.noise_amplitude;
+    if (ImGui::DragFloat("##noise_amount", &amount, 0.005f, 0.0f, 1000.0f, "%.3f")) {
+      live([amount](KeySettings &k) { k.noise_amplitude = amount; });
+    }
+    done();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How far it jitters, in the property's own units");
+    }
+    row("Wiggles");
+    float wiggles = s.noise_frequency;
+    if (ImGui::DragFloat("##noise_wiggles", &wiggles, 0.005f, 0.01f, 4.0f, "%.2f per frame")) {
+      live([wiggles](KeySettings &k) { k.noise_frequency = wiggles; });
+    }
+    done();
+  }
+  else if (s.interp == Interp::Cycle) {
+    row("Loop Back");
+    int back = s.cycle_back;
+    if (ImGui::DragInt("##cycle_back", &back, 0.2f, 0, 100000, back == 0 ? "to the first key" : "%d frames")) {
+      live([back](KeySettings &k) { k.cycle_back = std::max(0, back); });
+    }
+    done();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How many frames back each loop starts (0: from the first key)");
+    }
+  }
+
+  ImGui::Separator();
+  row("Hold");
+  int hold = s.hold;
+  if (ImGui::DragInt("##hold", &hold, 0.2f, 0, 100000, hold == 1 ? "%d frame" : "%d frames")) {
+    live([hold](KeySettings &k) { k.hold = std::max(0, hold); });
+  }
+  done();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Frames it waits at this key before moving on");
+  }
+  row("Animate On");
+  {
+    const float bw = (w - label_w - 2.0f * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+    for (int on = 1; on <= 3; on++) {
+      if (on > 1) {
+        ImGui::SameLine();
+      }
+      const bool active = s.interval == on;
+      if (active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      const std::string label = std::to_string(on) + "s";
+      if (ImGui::Button(label.c_str(), ImVec2(bw, 0.0f))) {
+        set("interval", std::to_string(on));
+      }
+      if (active) {
+        ImGui::PopStyleColor();
+      }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("On 2s or 3s the motion only moves every second or third frame");
+    }
+  }
+
+  ImGui::Separator();
+  ImGui::BeginDisabled(!keys);
+  const float half = (w - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+  if (ImGui::Button("Copy", ImVec2(half, 0.0f))) {
+    operator_call(C, "anim.interpolation_copy");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Paste", ImVec2(half, 0.0f))) {
+    operator_call(C, "anim.interpolation_paste");
+  }
+  if (ImGui::Button("Use for New Keys", ImVec2(w, 0.0f))) {
+    operator_call(C, "anim.interpolation_use_for_new_keys");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("New keys get this key's interpolation and settings");
+  }
+  ImGui::EndDisabled();
+  bool copy_previous = new_key_settings().copy_previous;
+  if (ImGui::Checkbox("Copy Previous Key", &copy_previous)) {
+    operator_call(C, "anim.interpolation_copy_previous", {{"enable", copy_previous ? "1" : "0"}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("New keys copy the interpolation of the key before them, instead of the new-key mode");
+  }
+  ImGui::EndPopup();
+}
+
+/* The header's mode dropdown and settings button. */
+static void interp_header(Context &C, float width)
+{
+  const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
+  const KeySettings s = interp_shown(sel);
+  const char *name = sel.count > 0 && sel.mixed ? "Mixed" : interp_name(s.interp);
+  const float h = ImGui::GetFrameHeight();
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const float drop_w = width - h - 2.0f;
+  ImGui::InvisibleButton("##interp_mode", ImVec2(drop_w, h));
+  const bool hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemClicked()) {
+    ImGui::OpenPopup("##key_interpolation");
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p, p + ImVec2(drop_w, h), ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    style.FrameRounding);
+  KeySettings shape = s;
+  if (sel.count > 0 && sel.mixed) {
+    shape.interp = Interp::Smooth;
+  }
+  curve_draw(dl, p + ImVec2(style.FramePadding.x, 3.0f), p + ImVec2(style.FramePadding.x + h * 1.3f, h - 3.0f), shape,
+             IM_COL32(0x9c, 0xc6, 0xff, 255), 1.5f);
+  dl->PushClipRect(p, p + ImVec2(drop_w - h * 0.7f, h), true);
+  dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 1.3f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
+              name);
+  dl->PopClipRect();
+  ImGui::RenderArrow(dl, p + ImVec2(drop_w - h * 0.75f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
+                     ImGuiDir_Down, 0.8f);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    if (sel.count > 0) {
+      ImGui::SetTooltip("Interpolation of the selected keys: how each moves on to the next key\nShortcut: T");
+    }
+    else {
+      ImGui::SetTooltip("Interpolation new keys get (no keys selected)\nShortcut: T");
+    }
+  }
+  ImGui::SameLine(0.0f, 2.0f);
+  const ImVec2 q = ImGui::GetCursorScreenPos();
+  if (ImGui::InvisibleButton("##interp_settings_button", ImVec2(h, h))) {
+    ImGui::OpenPopup("##interp_settings");
+  }
+  dl->AddRectFilled(q, q + ImVec2(h, h), ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    style.FrameRounding);
+  settings_icon(dl, q + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, COL_ICON);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Interpolation settings: the curve, strength, overshoot, hold, animating on 2s");
+  }
+  /* T over the timeline opens the same menu at the mouse (asked from a script with the mouse
+   * outside the window, the timeline drawn first opens it); likewise the settings. */
+  const bool here =
+      ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) ||
+      !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
+  if (C.wm->menu_request == "key_interpolation" && here) {
+    ImGui::OpenPopup("##key_interpolation");
+    C.wm->menu_request.clear();
+  }
+  if (C.wm->menu_request == "key_interpolation_settings" && here) {
+    g_settings_request = true;
+    C.wm->menu_request.clear();
+  }
+  if (g_settings_request) {
+    ImGui::OpenPopup("##interp_settings");
+    g_settings_request = false;
+  }
+  if (ui_menu_begin("##key_interpolation")) {
+    interp_menu_items(C, nullptr);
+    ui_menu_end();
+  }
+  interp_settings_popup(C);
+}
+
+/* A key in the rows, shaped by its mode's family: diamond Smooth, thin diamond Linear, square
+ * Step, circle Ease, star Back/Bounce/Elastic, hexagon Noisy/Cycle. */
+static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill)
+{
+  const ImU32 edge = IM_COL32(0, 0, 0, 200);
+  switch (shape) {
+    case KEY_SHAPE_EASE:
+      dl->AddCircleFilled(c, r * 0.85f, fill);
+      dl->AddCircle(c, r * 0.85f, edge, 0, 1.0f);
+      return;
+    case KEY_SHAPE_STEP: {
+      const float s = r * 0.72f;
+      dl->AddRectFilled(c - ImVec2(s, s), c + ImVec2(s, s), fill);
+      dl->AddRect(c - ImVec2(s, s), c + ImVec2(s, s), edge, 0.0f, 0, 1.0f);
+      return;
+    }
+    case KEY_SHAPE_BOUNCY: {
+      ImVec2 pts[8];
+      for (int i = 0; i < 8; i++) {
+        const float a = float(i) * PI * 0.25f - PI * 0.5f;
+        const float rr = i % 2 == 0 ? r * 1.05f : r * 0.42f;
+        pts[i] = c + ImVec2(std::cos(a) * rr, std::sin(a) * rr);
+      }
+      dl->AddConcavePolyFilled(pts, 8, fill);
+      dl->AddPolyline(pts, 8, edge, ImDrawFlags_Closed, 1.0f);
+      return;
+    }
+    case KEY_SHAPE_SPECIAL: {
+      ImVec2 pts[6];
+      for (int i = 0; i < 6; i++) {
+        const float a = float(i) * PI / 3.0f;
+        pts[i] = c + ImVec2(std::cos(a) * r * 0.9f, std::sin(a) * r * 0.9f);
+      }
+      dl->AddConvexPolyFilled(pts, 6, fill);
+      dl->AddPolyline(pts, 6, edge, ImDrawFlags_Closed, 1.0f);
+      return;
+    }
+    default:
+      break;
+  }
+  const float wx = shape == KEY_SHAPE_LINEAR ? r * 0.6f : r;
+  const ImVec2 d[4] = {ImVec2(c.x, c.y - r), ImVec2(c.x + wx, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - wx, c.y)};
+  dl->AddConvexPolyFilled(d, 4, fill);
+  dl->AddPolyline(d, 4, edge, ImDrawFlags_Closed, 1.0f);
+}
+
 static void timeline_header(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -318,6 +887,8 @@ static void timeline_header(Area &area, Context &C)
   ImGui::PopStyleColor();
   ImGui::SameLine(0.0f, pad * 2.0f);
   action_menu(C, h * 6.0f);
+  ImGui::SameLine(0.0f, pad * 2.0f);
+  interp_header(C, h * 6.5f);
   const float menus_end = ImGui::GetItemRectMax().x;
 
   if (ImGui::BeginPopup("View")) {
@@ -326,6 +897,23 @@ static void timeline_header(Area &area, Context &C)
     }
     if (ImGui::MenuItem("Go to Current Frame")) {
       view_center_current(area, doc);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Group by Owner", nullptr, !area.timeline_by_kind)) {
+      area.timeline_by_kind = false;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Rows by whose they are: each layer, its bones, each bone's properties");
+    }
+    if (ImGui::MenuItem("Group by Kind", nullptr, area.timeline_by_kind)) {
+      area.timeline_by_kind = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Rows by what they are: layer transforms, bone angles, bone transforms, constraints");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Clear Pins")) {
+      operator_call(C, "anim.pins_clear");
     }
     ImGui::EndPopup();
   }
@@ -339,13 +927,16 @@ static void timeline_header(Area &area, Context &C)
   if (ImGui::BeginPopup("Playback")) {
     ImGui::MenuItem("Loop Playback", nullptr, &wm.play_loop);
     ImGui::MenuItem("Auto Keying", nullptr, &doc.auto_key);
+    if (ImGui::MenuItem("Stepped Preview", nullptr, stepped_preview())) {
+      operator_call(C, "screen.stepped_preview");
+    }
     ImGui::EndPopup();
   }
 
   /* Centre: auto-keying, then the playback buttons. */
   const float spacing = std::max(1.0f, style.ItemSpacing.x * 0.35f);
   const float record_gap = h * 0.6f;
-  const float transport_w = 7.0f * h + 5.0f * spacing + record_gap;
+  const float transport_w = 8.0f * h + 5.0f * spacing + 2.0f * record_gap;
   const float transport_x = std::max(menus_end + pad * 2.0f, origin.x + (width - transport_w) * 0.5f);
   ImGui::SetCursorScreenPos(ImVec2(transport_x, origin.y + top));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, style.ItemSpacing.y));
@@ -367,6 +958,14 @@ static void timeline_header(Area &area, Context &C)
   operator_icon_button(C, "##key_next", Icon::KeyNext, "screen.keyframe_jump_next");
   ImGui::SameLine();
   operator_icon_button(C, "##jump_end", Icon::JumpEnd, "screen.frame_jump_end");
+  ImGui::SameLine(0.0f, record_gap);
+  if (icon_button("##stepped_preview", Icon::Stepped, stepped_preview(),
+                  "Stepped Preview\nPlay everything as Step, holding each key until the next, to judge the timing "
+                  "of the poses. No key changes",
+                  ""))
+  {
+    operator_call(C, "screen.stepped_preview");
+  }
   ImGui::PopStyleVar();
   const float transport_end = ImGui::GetItemRectMax().x;
 
@@ -412,6 +1011,167 @@ struct TimelinePress {
   ImVec2 start;
 };
 static TimelinePress g_press;
+/* The reference channel a right-click asked to sync (its menu's subject). */
+static uint64_t g_sync_layer = 0;
+static std::string g_sync_path;
+
+/* The Keyed Here list (Ctrl-click or right-click a key): what a row has keyed on a frame. */
+struct KeyedHere {
+  std::vector<uint64_t> layers;
+  KeyFilter filter;
+  int frame = 0;
+};
+static KeyedHere g_keyed_here;
+
+/* One line of the list: a property (or, for points, all the points keyed with that property, with
+ * each one in `singles`), what to show it with, and the channels it stands for. */
+struct KeyedEntry {
+  uint64_t layer = 0;
+  std::string label, value;
+  std::vector<std::string> paths;
+  std::vector<std::pair<std::string, std::string>> singles;
+};
+
+static Layer *keyed_layer(Document &doc, uint64_t id)
+{
+  Layer &simulation = document_simulation(doc);
+  return id == simulation.id ? &simulation : layer_find(doc, id);
+}
+
+/* A key's value and interpolation, as the list shows it: "1.250  Smooth", "(0.12, 0.40)  Linear". */
+/* The document the timeline shows (for naming Draw Order targets). */
+static const Document *g_timeline_doc = nullptr;
+
+static std::string keyed_value(Layer &layer, const std::string &path, int frame)
+{
+  ChannelRef ref;
+  if (!layer_channel(layer, path, &ref)) {
+    return "";
+  }
+  char text[96] = "";
+  Interp interp = Interp::Smooth;
+  if (ref.scalar) {
+    if (const Key<float> *k = ref.scalar->key_at(frame)) {
+      const bool turn = path.ends_with("angle") || path.ends_with("rotation") || path.ends_with("direction");
+      if (path == "visible") {
+        std::snprintf(text, sizeof(text), "%s", k->value > 0.5f ? "On" : "Off");
+      }
+      else if (path == "draw_order") {
+        return g_timeline_doc ? draw_order_label(*g_timeline_doc, k->value) : std::string();
+      }
+      else {
+        std::snprintf(text, sizeof(text), turn ? "%.1f\xC2\xB0" : "%.3f", turn ? k->value * 180.0f / PI : k->value);
+      }
+      interp = k->interp;
+    }
+  }
+  else if (const Key<float2> *k = ref.vector->key_at(frame)) {
+    std::snprintf(text, sizeof(text), "(%.3f, %.3f)", k->value.x, k->value.y);
+    interp = k->interp;
+  }
+  return std::string(text) + "  " + interp_name(interp);
+}
+
+/* The points' kinds of property a drawing keys, grouped in the list. */
+static const char *point_kind(const std::string &path, std::string *r_single)
+{
+  const bool curve = path.rfind("curves[", 0) == 0;
+  if (!curve && path.rfind("points[", 0) != 0) {
+    return nullptr;
+  }
+  const size_t dot = path.rfind('.');
+  const std::string what = dot == std::string::npos ? path : path.substr(dot + 1);
+  const std::string where = dot == std::string::npos ? path : path.substr(0, dot);
+  if (r_single) {
+    /* "Point 3", "Curve 0, point 2", and which handle. */
+    int a = -1, b = -1;
+    const size_t open = where.find('['), open2 = where.find('[', open + 1);
+    a = open != std::string::npos ? std::atoi(where.c_str() + open + 1) : -1;
+    b = open2 != std::string::npos ? std::atoi(where.c_str() + open2 + 1) : -1;
+    *r_single = curve ? "Curve " + std::to_string(a) + ", point " + std::to_string(b) : "Point " + std::to_string(a);
+    if (what.rfind("handle_in", 0) == 0) {
+      *r_single += ": in";
+    }
+    else if (what.rfind("handle_out", 0) == 0) {
+      *r_single += ": out";
+    }
+  }
+  if (what == "pos") {
+    return "Points: Position";
+  }
+  if (what == "radius") {
+    return "Points: Width";
+  }
+  if (what == "offset") {
+    return "Points: Offset";
+  }
+  if (what == "curvature") {
+    return "Points: Curvature";
+  }
+  return "Handles";
+}
+
+static std::vector<KeyedEntry> keyed_entries(Document &doc, const KeyedHere &k)
+{
+  std::vector<Layer *> layers;
+  for (const uint64_t id : k.layers) {
+    if (Layer *l = keyed_layer(doc, id)) {
+      layers.push_back(l);
+    }
+  }
+  std::vector<KeyedEntry> entries;
+  std::map<std::pair<uint64_t, std::string>, size_t> groups;
+  const auto keyed = layers_keyed_at(layers, k.filter, k.frame);
+  std::set<uint64_t> owners;
+  for (const auto &[layer, path] : keyed) {
+    owners.insert(layer->id);
+  }
+  for (const auto &[layer, path] : keyed) {
+    std::string single;
+    if (const char *kind = point_kind(path, &single)) {
+      const auto key = std::make_pair(layer->id, std::string(kind));
+      auto it = groups.find(key);
+      if (it == groups.end()) {
+        it = groups.emplace(key, entries.size()).first;
+        KeyedEntry e;
+        e.layer = layer->id;
+        e.label = layer->name + ": " + kind;
+        entries.push_back(std::move(e));
+      }
+      KeyedEntry &e = entries[it->second];
+      e.paths.push_back(path);
+      e.singles.push_back({single, path});
+      continue;
+    }
+    KeyedEntry e;
+    e.layer = layer->id;
+    e.label = channel_label(*layer, path, true);
+    /* A bone's or the document's own owner name; with several layers, say whose layer too. */
+    if (owners.size() > 1 && path.rfind("bones[", 0) == 0) {
+      e.label = layer->name + " > " + e.label;
+    }
+    e.value = keyed_value(*layer, path, k.frame);
+    e.paths = {path};
+    entries.push_back(std::move(e));
+  }
+  for (KeyedEntry &e : entries) {
+    if (e.singles.size() == 1) {
+      e.value = keyed_value(*keyed_layer(doc, e.layer), e.paths.front(), k.frame);
+      e.label += " (" + e.singles.front().first + ")";
+      e.singles.clear();
+    }
+  }
+  return entries;
+}
+
+static std::string joined_paths(const std::vector<std::string> &paths)
+{
+  std::string joined;
+  for (const std::string &p : paths) {
+    joined += (joined.empty() ? "" : "|") + p;
+  }
+  return joined;
+}
 
 /* G or S on keys: from a copy of the document, the keys move by the mouse until a click. */
 struct KeyTransform {
@@ -435,23 +1195,21 @@ static bool modal_key_take(Context &C, const char *type)
   return false;
 }
 
-/* A row of the timeline. Rows fold, as Blender's channels do:
+/* A row of the timeline. Rows fold, as Blender's channels do, down to one row per property, in
+   four groups:
 
-     All                     everything of the layers the timeline shows (white)
-       Layers
-         <layer>             that layer's own channels
-           Angle & Transform
-             Angle           rotation
-             Transform       position and scale
-           Opacity
-           Visibility
-       Bones                 every bone's angle and transform
-         Bone Angle
-         Bone Transform
-       Points                every point's position, width and shape
-     Selected                the same for the selected bones and points (red rows)
+     Pinned                  properties pinned to the timeline, whatever is picked (red; with no
+                             keys left too), each with its pin to unpin it
+     Props                   the settings: a layer's own transform, opacity and visibility, the
+                             bones' constraint settings, the document's Simulation settings
+     All                     the motion: the bones' angle, position and scale, and the points
+     Selected                the motion of the selected bones and points (red)
 
-   A row with no keys under it isn't shown; a folding row shows the keys of all it holds. */
+   Inside Props, All and Selected, View > Group by Kind (the default) lists by what they are (Layers, Constraints, Simulation; Bone Angle and Bone Transform, a row per
+   bone: "arm: Angle"); Group by Owner, as Blender's Dope Sheet, lists each layer, its bones and
+   each bone's rows ("Angle", "IK: Influence"). A row with no keys under it isn't shown (but a pinned one is, under
+   Pinned); a folding row shows the keys of all it holds. The four start open, but the Bones
+   inside Selected (and in All) start folded. */
 struct ChannelRow {
   std::string name;
   std::vector<Layer *> layers;
@@ -460,12 +1218,15 @@ struct ChannelRow {
   /* Key of a folding row's open state, "" when it doesn't fold. */
   std::string fold;
   bool open = false;
-  /* In the Selected section (drawn red). */
+  /* A copy's (reference layer's) channel changed from its original (drawn teal). */
+  bool changed = false;
+  /* In the Pinned or Selected sections (drawn red). */
   bool selected = false;
   /* A layer's own row: clicking its name makes that layer active. */
   uint64_t layer = 0;
-  /* Covers every layer the timeline shows. */
-  bool all_layers = false;
+  /* One pinned property's row: its pin (by its layer and path) unpins it. */
+  uint64_t pin_layer = 0;
+  std::string pin_path;
 };
 
 static bool row_open(const Area &area, const std::string &key, bool fallback)
@@ -492,74 +1253,250 @@ static bool anything_selected(const std::vector<Layer *> &layers)
   return false;
 }
 
-static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers)
+static bool bone_picked_any(const Bone &b)
+{
+  return b.selected || b.select_head || b.select_tail;
+}
+
+/* `layers`: what the timeline shows. `open_all`: every folding row open (for listing them). */
+static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers, Document &doc,
+                                            bool open_all = false)
 {
   std::vector<ChannelRow> rows;
   const auto keyed = [](const std::vector<Layer *> &ls, const KeyFilter &f) { return !layers_key_summary(ls, f).empty(); };
   const auto add = [&](std::string name, std::vector<Layer *> ls, KeyFilter f, int depth, std::string fold,
-                       bool fold_default, bool selected, uint64_t layer, bool all) -> bool {
-    ChannelRow row{std::move(name), std::move(ls), f, depth, fold, false, selected, layer, all};
-    row.open = !fold.empty() && row_open(area, fold, fold_default);
+                       bool fold_default, bool red, uint64_t layer) -> bool {
+    ChannelRow row;
+    row.name = std::move(name);
+    row.layers = std::move(ls);
+    row.filter = std::move(f);
+    row.depth = depth;
+    row.fold = fold;
+    row.open = !fold.empty() && (open_all || row_open(area, fold, fold_default));
+    row.selected = red;
+    row.layer = layer;
     rows.push_back(std::move(row));
     return rows.back().open;
   };
+  /* A row per animated property of `l` that passes `base`, named with its owner or not. */
+  const auto property_rows = [&](Layer *l, const KeyFilter &base, int depth, bool owner, bool red) {
+    for (const ChannelRef &ref : layer_filtered_channels(*l, base)) {
+      const bool animated = ref.scalar ? ref.scalar->animated() : ref.vector->animated();
+      if (!animated || channel_kind(ref.path) == KEY_POINTS) {
+        continue;
+      }
+      KeyFilter f = base;
+      f.path = ref.path;
+      add(channel_label(*l, ref.path, owner), {l}, f, depth, "", false, red, 0);
+      rows.back().changed = l->is_reference() && l->reference.own_channels.count(ref.path) > 0;
+      if (ref.scalar ? ref.scalar->pinned : ref.vector->pinned) {
+        rows.back().pin_layer = l->id;
+        rows.back().pin_path = ref.path;
+      }
+    }
+  };
+  const auto bone_filter = [](const Bone &b, uint32_t kinds, bool selected) {
+    return KeyFilter{kinds, selected, "bones[\"" + b.name + "\"].", false};
+  };
+
+  /* Pinned: every pinned property in the document, keys or not. */
+  std::vector<std::pair<Layer *, std::string>> pinned;
+  const KeyFilter pins{KEY_ALL, false, "", true};
+  for (const Layer *flat : document_layers_flat(doc)) {
+    Layer *l = layer_find(doc, flat->id);
+    for (const ChannelRef &ref : layer_filtered_channels(*l, pins)) {
+      pinned.push_back({l, ref.path});
+    }
+  }
+  for (const ChannelRef &ref : layer_filtered_channels(document_simulation(doc), pins)) {
+    pinned.push_back({&doc.simulation, ref.path});
+  }
+  if (!pinned.empty()) {
+    std::vector<Layer *> owners;
+    for (const auto &[l, path] : pinned) {
+      if (std::find(owners.begin(), owners.end(), l) == owners.end()) {
+        owners.push_back(l);
+      }
+    }
+    if (add("Pinned", owners, pins, 0, "pinned", true, true, 0)) {
+      for (const auto &[l, path] : pinned) {
+        add(channel_label(*l, path, true), {l}, KeyFilter{KEY_ALL, false, path, false}, 1, "", false, true, 0);
+        rows.back().pin_layer = l->id;
+        rows.back().pin_path = path;
+      }
+    }
+  }
   if (layers.empty()) {
     return rows;
   }
-  /* The bones and points part, for All and for Selected. */
-  const auto bones_and_points = [&](bool selected, int depth, const char *prefix) {
-    KeyFilter bones{KEY_BONES, selected}, angle{KEY_BONE_ANGLE, selected}, move{KEY_BONE_TRANSFORM, selected},
-        points{KEY_POINTS, selected};
-    if (keyed(layers, bones) &&
-        add("Bones", layers, bones, depth, std::string(prefix) + "bones", false, selected, 0, true))
-    {
-      if (keyed(layers, angle)) {
-        add("Bone Angle", layers, angle, depth + 1, "", false, selected, 0, true);
+  Layer *sim = nullptr;
+  std::vector<Layer *> owned;
+  for (Layer *l : layers) {
+    (l->id == SIMULATION_LAYER_ID ? sim : owned.emplace_back(l)) = l;
+  }
+  const KeyFilter sim_kind{KEY_SIMULATION, false};
+
+  /* Props: the settings (a layer's own transform, opacity and visibility, constraints' settings,
+   * the document's Simulation); All and Selected: the motion (bones' angle, position and scale,
+   * and points). */
+  const uint32_t props = KEY_LAYER | KEY_CONSTRAINTS | KEY_SIMULATION;
+  const uint32_t bone_motion = KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
+  const uint32_t motion = bone_motion | KEY_POINTS;
+
+  if (!area.timeline_by_kind) {
+    /* Props, by owner: each layer (Transform, Opacity, Visibility, its bones' constraint settings),
+     * then Simulation. */
+    if (keyed(layers, KeyFilter{props}) && add("Props", layers, KeyFilter{props}, 0, "props", true, false, 0)) {
+      for (Layer *l : owned) {
+        const KeyFilter own{props & ~KEY_SIMULATION};
+        if (!keyed({l}, own)) {
+          continue;
+        }
+        const std::string id = std::to_string(l->id);
+        if (!add(l->name, {l}, own, 1, "p:" + id, l->id == doc.active_layer, false, l->id)) {
+          continue;
+        }
+        const KeyFilter transform{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, false};
+        if (keyed({l}, transform) && add("Transform", {l}, transform, 2, "p:t:" + id, false, false, 0)) {
+          property_rows(l, transform, 3, false, false);
+        }
+        property_rows(l, KeyFilter{KEY_OPACITY | KEY_VISIBILITY | KEY_DRAW_ORDER, false}, 2, false, false);
+        const KeyFilter constraints{KEY_CONSTRAINTS, false};
+        if (keyed({l}, constraints) && add("Bones", {l}, constraints, 2, "p:b:" + id, false, false, 0)) {
+          for (const Bone &b : l->bones) {
+            const KeyFilter one = bone_filter(b, KEY_CONSTRAINTS, false);
+            if (keyed({l}, one) &&
+                add(b.name, {l}, one, 3, "p:bone:" + id + ":" + std::to_string(b.id), false, false, 0))
+            {
+              property_rows(l, one, 4, false, false);
+            }
+          }
+        }
       }
-      if (keyed(layers, move)) {
-        add("Bone Transform", layers, move, depth + 1, "", false, selected, 0, true);
+      if (sim && keyed({sim}, sim_kind) && add("Simulation", {sim}, sim_kind, 1, "p:sim", false, false, 0)) {
+        property_rows(sim, sim_kind, 2, false, false);
       }
     }
-    if (keyed(layers, points)) {
-      add("Points", layers, points, depth, "", false, selected, 0, true);
+    /* All, by owner: each layer's bones (their angle, position and scale) and points. */
+    if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
+      for (Layer *l : owned) {
+        if (!keyed({l}, KeyFilter{motion})) {
+          continue;
+        }
+        const std::string id = std::to_string(l->id);
+        if (!add(l->name, {l}, KeyFilter{motion}, 1, "o:" + id, l->id == doc.active_layer, false, l->id)) {
+          continue;
+        }
+        const KeyFilter bones{bone_motion, false};
+        if (keyed({l}, bones) && add("Bones", {l}, bones, 2, "o:b:" + id, false, false, 0)) {
+          for (const Bone &b : l->bones) {
+            const KeyFilter one = bone_filter(b, bone_motion, false);
+            if (keyed({l}, one) &&
+                add(b.name, {l}, one, 3, "o:bone:" + id + ":" + std::to_string(b.id), false, false, 0))
+            {
+              property_rows(l, one, 4, false, false);
+            }
+          }
+        }
+        const KeyFilter points{KEY_POINTS, false};
+        if (keyed({l}, points)) {
+          add("Points", {l}, points, 2, "", false, false, 0);
+        }
+      }
     }
-  };
-  if (add("All", layers, KeyFilter{}, 0, "all", true, false, 0, true)) {
-    const KeyFilter layer_kinds{KEY_LAYER, false};
-    if (keyed(layers, layer_kinds) && add("Layers", layers, layer_kinds, 1, "layers", true, false, 0, true)) {
-      for (Layer *l : layers) {
+    if (anything_selected(owned) && add("Selected", owned, KeyFilter{motion, true}, 0, "sel", true, true, 0)) {
+      for (Layer *l : owned) {
+        for (const Bone &b : l->bones) {
+          const KeyFilter one = bone_filter(b, bone_motion, true);
+          if (bone_picked_any(b) && keyed({l}, one) &&
+              add(b.name, {l}, one, 1, "sel:" + std::to_string(l->id) + ":" + std::to_string(b.id), false, true, 0))
+          {
+            property_rows(l, one, 2, false, true);
+          }
+        }
+        const KeyFilter points{KEY_POINTS, true};
+        if (keyed({l}, points)) {
+          add(owned.size() > 1 ? l->name + ": Points" : std::string("Points"), {l}, points, 1, "", false, true, 0);
+        }
+      }
+    }
+    return rows;
+  }
+
+  /* Group by Kind. Props: Layers (each layer's Angle & Transform, Opacity, Visibility),
+   * Constraints, Simulation. */
+  if (keyed(layers, KeyFilter{props}) && add("Props", layers, KeyFilter{props}, 0, "props", true, false, 0)) {
+    const KeyFilter layer_kinds{KEY_LAYER & ~KEY_DRAW_ORDER, false};
+    if (keyed(owned, layer_kinds) && add("Layers", owned, layer_kinds, 1, "layers", true, false, 0)) {
+      for (Layer *l : owned) {
         if (!keyed({l}, layer_kinds)) {
           continue;
         }
         const std::string id = std::to_string(l->id);
-        if (!add(l->name, {l}, layer_kinds, 2, "layer:" + id, false, false, l->id, false)) {
+        if (!add(l->name, {l}, layer_kinds, 2, "layer:" + id, false, false, l->id)) {
           continue;
         }
         const KeyFilter at{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, false};
-        if (keyed({l}, at) && add("Angle & Transform", {l}, at, 3, "lat:" + id, false, false, 0, false)) {
-          if (keyed({l}, {KEY_LAYER_ANGLE, false})) {
-            add("Angle", {l}, {KEY_LAYER_ANGLE, false}, 4, "", false, false, 0, false);
-          }
-          if (keyed({l}, {KEY_LAYER_TRANSFORM, false})) {
-            add("Transform", {l}, {KEY_LAYER_TRANSFORM, false}, 4, "", false, false, 0, false);
-          }
+        if (keyed({l}, at) && add("Angle & Transform", {l}, at, 3, "lat:" + id, false, false, 0)) {
+          property_rows(l, at, 4, false, false);
         }
-        if (keyed({l}, {KEY_OPACITY, false})) {
-          add("Opacity", {l}, {KEY_OPACITY, false}, 3, "", false, false, 0, false);
-        }
-        if (keyed({l}, {KEY_VISIBILITY, false})) {
-          add("Visibility", {l}, {KEY_VISIBILITY, false}, 3, "", false, false, 0, false);
+        property_rows(l, KeyFilter{KEY_OPACITY | KEY_VISIBILITY, false}, 3, false, false);
+      }
+    }
+    /* Every layer's Draw Order in one place, so a rule reaching across bone layers reads at a glance. */
+    const KeyFilter order{KEY_DRAW_ORDER, false};
+    if (keyed(owned, order) && add("Draw Order", owned, order, 1, "draw_order", true, false, 0)) {
+      for (Layer *l : owned) {
+        property_rows(l, order, 2, true, false);
+      }
+    }
+    const KeyFilter constraints{KEY_CONSTRAINTS, false};
+    if (keyed(owned, constraints) && add("Constraints", owned, constraints, 1, "constraints", false, false, 0)) {
+      for (Layer *l : owned) {
+        property_rows(l, constraints, 2, true, false);
+      }
+    }
+    if (sim && keyed({sim}, sim_kind) && add("Simulation", {sim}, sim_kind, 1, "sim", false, false, 0)) {
+      property_rows(sim, sim_kind, 2, false, false);
+    }
+  }
+  /* All and Selected: Bones (Bone Angle, Bone Transform, a row per bone) and Points. */
+  const auto bones_and_points = [&](bool selected, int depth, const std::string &prefix) {
+    const KeyFilter bones{bone_motion, selected};
+    /* Folded to start with, even in Selected (open by default), so a long rig doesn't fill it. */
+    if (keyed(owned, bones) && add("Bones", owned, bones, depth, prefix + "bones", false, selected, 0)) {
+      for (const auto &[name, kind] : {std::pair{"Bone Angle", KEY_BONE_ANGLE}, std::pair{"Bone Transform", KEY_BONE_TRANSFORM}}) {
+        const KeyFilter group{uint32_t(kind), selected};
+        if (keyed(owned, group) && add(name, owned, group, depth + 1, prefix + name, selected, selected, 0)) {
+          for (Layer *l : owned) {
+            property_rows(l, group, depth + 2, true, selected);
+          }
         }
       }
     }
+    const KeyFilter points{KEY_POINTS, selected};
+    if (keyed(owned, points)) {
+      add("Points", owned, points, depth, "", false, selected, 0);
+    }
+  };
+  if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
     bones_and_points(false, 1, "");
   }
-  if (anything_selected(layers) &&
-      add("Selected", layers, KeyFilter{KEY_BONES | KEY_POINTS, true}, 0, "sel", true, true, 0, true))
-  {
+  if (anything_selected(owned) && add("Selected", owned, KeyFilter{motion, true}, 0, "sel", true, true, 0)) {
     bones_and_points(true, 1, "sel_");
   }
   return rows;
+}
+
+std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool by_kind)
+{
+  Area area;
+  area.timeline_by_kind = by_kind;
+  std::vector<TimelineRowInfo> list;
+  for (const ChannelRow &row : channel_rows(area, timeline_shown_layers(C), *C.document, true)) {
+    list.push_back({row.depth, row.name, row.selected, !row.pin_path.empty(), row.changed});
+  }
+  return list;
 }
 
 static std::string layer_ids(const std::vector<Layer *> &layers)
@@ -587,17 +1524,22 @@ static void timeline_body(Area &area, Context &C)
     area.view_initialized = true;
   }
 
+  g_timeline_doc = &doc;
   ImGui::InvisibleButton("##timeline_region", size,
                          ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
   const bool hovered = ImGui::IsItemHovered();
+  /* Held still over a key: its Keyed Here list shows as a tooltip. */
+  const bool hovered_still = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
   const bool active = ImGui::IsItemActive();
+  C.wm->keyed_hover = {};
 
-  const std::vector<Layer *> layers = timeline_layers(C);
-  /* Channel rows: Summary, then each animated (active or selected) layer, as Blender's Dope Sheet
-   * lists the selected objects. The names sit in a column on the left. */
-  std::vector<ChannelRow> rows = channel_rows(area, layers);
+  /* Channel rows: Pinned, All, then each animated (active or selected) layer, as Blender's Dope
+   * Sheet lists the selected objects. The names sit in a column on the left. */
+  std::vector<ChannelRow> rows = channel_rows(area, timeline_shown_layers(C), doc);
   const float font_size = ImGui::GetFontSize();
-  const float names_w = std::min(font_size * 9.0f, size.x * 0.4f);
+  /* Wide enough for a property's name ("arm: Dynamics: Angle Bounce"); its edge drags. */
+  const float names_w = std::clamp(area.timeline_names_w > 0.0f ? area.timeline_names_w : font_size * 13.0f,
+                                   font_size * 5.0f, std::max(font_size * 5.0f, size.x * 0.6f));
   /* The keys region: right of the names. */
   const ImVec2 k0(p0.x + names_w, p0.y);
   const float keys_w = std::max(size.x - names_w, 8.0f);
@@ -615,6 +1557,23 @@ static void timeline_body(Area &area, Context &C)
     return r >= 0 && r < int(rows.size()) ? r : -1;
   };
   const bool over_names = io.MousePos.x < k0.x;
+  /* The names column's edge drags to make it wider or narrower. */
+  static bool names_resizing = false;
+  const bool on_edge = hovered && std::fabs(io.MousePos.x - k0.x) <= 4.0f && io.MousePos.y >= rows_top;
+  if (on_edge || names_resizing) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+  }
+  if (on_edge && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    names_resizing = true;
+  }
+  if (names_resizing) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      area.timeline_names_w = io.MousePos.x - p0.x;
+    }
+    else {
+      names_resizing = false;
+    }
+  }
 
   /* Navigation: wheel zooms around the mouse (over the names it scrolls the rows), Ctrl+wheel or
    * middle-drag pans, Home frames all. */
@@ -661,6 +1620,30 @@ static void timeline_body(Area &area, Context &C)
     }
   };
   summarize();
+  /* The key under `m` (its frame, -1 for none), and its row. */
+  const auto key_under = [&](ImVec2 m, int *r_row) -> int {
+    const int r = m.x >= k0.x ? row_at(m.y) : -1;
+    *r_row = r;
+    int hit = -1;
+    if (r >= 0) {
+      const float ky = row_top(size_t(r)) + row_h * 0.5f;
+      for (const auto &[f, sum] : summaries[size_t(r)]) {
+        if (std::fabs(m.x - frame_x(float(f))) <= key_r + 2.0f && std::fabs(m.y - ky) <= key_r + 3.0f) {
+          hit = f;
+        }
+      }
+    }
+    return hit;
+  };
+  const auto keyed_open = [&](int r, int frame) {
+    g_keyed_here = {};
+    for (const Layer *l : rows[size_t(r)].layers) {
+      g_keyed_here.layers.push_back(l->id);
+    }
+    g_keyed_here.filter = rows[size_t(r)].filter;
+    g_keyed_here.frame = frame;
+    ImGui::OpenPopup("##keyed_here");
+  };
 
   /* G and S on the selected keys follow the mouse, as in Blender. */
   if (C.wm->timeline_transform_request && hovered && !g_key_transform.active) {
@@ -720,11 +1703,29 @@ static void timeline_body(Area &area, Context &C)
       C.wm->modal_keys.clear();
     }
     /* The document was replaced: look the layers up again. */
-    rows = channel_rows(area, timeline_layers(C));
+    rows = channel_rows(area, timeline_shown_layers(C), doc);
     summaries.resize(rows.size());
     summarize();
   }
-  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+  else if (!names_resizing && over_names && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    /* A reference's own layer channel: sync it (or all of them) to its original again. */
+    const int r = row_at(io.MousePos.y);
+    if (r >= 0 && rows[r].layers.size() == 1 && rows[r].layers[0]->is_reference() &&
+        rows[r].layers[0]->reference.own_channels.count(rows[r].filter.path))
+    {
+      g_sync_layer = rows[r].layers[0]->id;
+      g_sync_path = rows[r].filter.path;
+      ImGui::OpenPopup("##reference_channel");
+    }
+  }
+  else if (!names_resizing && !over_names && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    /* Right-click a key: what it has keyed (as Ctrl-click). */
+    int r = -1;
+    if (const int hit = key_under(io.MousePos, &r); hit >= 0) {
+      keyed_open(r, hit);
+    }
+  }
+  else if (!names_resizing && ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
     if (over_names) {
       /* The arrow folds or opens a row; a layer's name makes it the active layer (the selection
        * stays); elsewhere a folding row's name folds it too. */
@@ -733,7 +1734,11 @@ static void timeline_body(Area &area, Context &C)
         const ChannelRow &row = rows[r];
         const float arrow_x = p0.x + 6.0f + float(row.depth) * font_size;
         const bool on_arrow = io.MousePos.x < arrow_x + font_size;
-        if (!row.fold.empty() && (on_arrow || !row.layer)) {
+        if (!row.pin_path.empty() && io.MousePos.x >= k0.x - 4.0f - row_h) {
+          operator_call(C, "anim.channel_pin",
+                        {{"layer", std::to_string(row.pin_layer)}, {"paths", row.pin_path}, {"pinned", "0"}});
+        }
+        else if (!row.fold.empty() && (on_arrow || !row.layer)) {
           area.timeline_open[row.fold] = !row.open;
         }
         else if (row.layer) {
@@ -757,19 +1762,158 @@ static void timeline_body(Area &area, Context &C)
             }
           }
         }
-        if (hit >= 0) {
+        if (hit >= 0 && io.KeyCtrl) {
+          /* Ctrl-click a key: the list of what it has keyed, each one a way to it. */
+          keyed_open(r, hit);
+          g_press = {};
+        }
+        else if (hit >= 0) {
           const KeyFrameSummary &sum = summaries[r][hit];
           operator_call(C, "anim.keys_select",
                         {{"frame_start", std::to_string(hit)},
-                         {"layers", rows[r].all_layers ? std::string() : layer_ids(rows[r].layers)},
+                         {"layers", layer_ids(rows[r].layers)},
                          {"kinds", std::to_string(rows[r].filter.kinds)},
                          {"selected_only", rows[r].filter.selected_only ? "1" : "0"},
+                         {"path", rows[r].filter.path},
+                         {"pinned", rows[r].filter.pinned_only ? "1" : "0"},
                          {"extend", io.KeyShift ? "1" : "0"},
                          {"deselect", io.KeyShift && sum.selected == sum.keys ? "1" : "0"}});
           g_press = {};
         }
       }
     }
+  }
+  /* The Keyed Here list: each property keyed on that frame under the row, by owner, with its value;
+   * choosing one jumps to the frame and selects its bone or points, or shows it in Properties
+   * (Shift adds to the selection, Alt keeps the frame). */
+  if (ui_menu_begin("##keyed_here")) {
+    const std::vector<KeyedEntry> entries = keyed_entries(doc, g_keyed_here);
+    ImGui::TextDisabled("Keyed on frame %d", g_keyed_here.frame);
+    ImGui::Separator();
+    const auto go = [&](uint64_t layer, const std::vector<std::string> &paths) {
+      operator_call(C, "anim.keyed_go",
+                    {{"layer", std::to_string(layer)},
+                     {"paths", joined_paths(paths)},
+                     {"frame", std::to_string(io.KeyAlt ? -1 : g_keyed_here.frame)},
+                     {"extend", io.KeyShift ? "1" : "0"}});
+    };
+    const auto hover = [&](uint64_t layer, const std::vector<std::string> &paths) {
+      if (ImGui::IsItemHovered()) {
+        C.wm->keyed_hover = {layer, paths};
+      }
+    };
+    if (entries.empty()) {
+      ImGui::TextDisabled("Nothing keyed here");
+    }
+    size_t shown = 0;
+    for (const KeyedEntry &e : entries) {
+      if (++shown > 40) {
+        ImGui::TextDisabled("...and %d more", int(entries.size() - 40));
+        break;
+      }
+      if (!e.singles.empty()) {
+        /* Many points: all of them at once, or one at a time. */
+        const std::string label = e.label + " (" + std::to_string(e.singles.size()) + ")";
+        if (ui_submenu_begin(label.c_str())) {
+          const std::string all = "All " + std::to_string(e.singles.size());
+          if (ui_menu_item(all.c_str())) {
+            go(e.layer, e.paths);
+          }
+          hover(e.layer, e.paths);
+          ImGui::Separator();
+          for (const auto &[name, path] : e.singles) {
+            const std::string value = keyed_value(*keyed_layer(doc, e.layer), path, g_keyed_here.frame);
+            if (ui_menu_item(name.c_str(), value.c_str())) {
+              go(e.layer, {path});
+            }
+            hover(e.layer, {path});
+          }
+          ui_submenu_end();
+        }
+        hover(e.layer, e.paths);
+        continue;
+      }
+      if (ui_menu_item(e.label.c_str(), e.value.c_str())) {
+        go(e.layer, e.paths);
+      }
+      hover(e.layer, e.paths);
+    }
+    ImGui::Separator();
+    std::vector<Layer *> these;
+    for (const uint64_t id : g_keyed_here.layers) {
+      if (Layer *l = keyed_layer(doc, id)) {
+        these.push_back(l);
+      }
+    }
+    /* Interpolation for the selection; these keys join it first unless they're all in it. */
+    if (ui_submenu_begin("Interpolation")) {
+      interp_menu_items(C, [&]() {
+        const KeyFrameSummary sum = layers_key_summary(these, g_keyed_here.filter)[g_keyed_here.frame];
+        if (sum.selected < sum.keys) {
+          operator_call(C, "anim.keys_select",
+                        {{"frame_start", std::to_string(g_keyed_here.frame)},
+                         {"layers", layer_ids(these)},
+                         {"kinds", std::to_string(g_keyed_here.filter.kinds)},
+                         {"selected_only", g_keyed_here.filter.selected_only ? "1" : "0"},
+                         {"path", g_keyed_here.filter.path},
+                         {"pinned", g_keyed_here.filter.pinned_only ? "1" : "0"}});
+        }
+      });
+      ui_submenu_end();
+    }
+    if (ui_menu_item("Select These Keys")) {
+      std::vector<Layer *> &layers = these;
+      operator_call(C, "anim.keys_select",
+                    {{"frame_start", std::to_string(g_keyed_here.frame)},
+                     {"layers", layer_ids(layers)},
+                     {"kinds", std::to_string(g_keyed_here.filter.kinds)},
+                     {"selected_only", g_keyed_here.filter.selected_only ? "1" : "0"},
+                     {"path", g_keyed_here.filter.path},
+                     {"pinned", g_keyed_here.filter.pinned_only ? "1" : "0"},
+                     {"extend", io.KeyShift ? "1" : "0"}});
+    }
+    ui_menu_end();
+  }
+  else if (hovered_still && !g_press.active && !ImGui::IsAnyMouseDown()) {
+    /* Held still over a key: the same list, to look at. */
+    int r = -1;
+    if (const int hit = key_under(io.MousePos, &r); hit >= 0) {
+      KeyedHere look;
+      for (const Layer *l : rows[size_t(r)].layers) {
+        look.layers.push_back(l->id);
+      }
+      look.filter = rows[size_t(r)].filter;
+      look.frame = hit;
+      const std::vector<KeyedEntry> entries = keyed_entries(doc, look);
+      ImGui::BeginTooltip();
+      ImGui::TextDisabled("Keyed on frame %d", hit);
+      size_t shown = 0;
+      for (const KeyedEntry &e : entries) {
+        if (++shown > 15) {
+          ImGui::TextDisabled("...and %d more", int(entries.size() - 15));
+          break;
+        }
+        if (!e.singles.empty()) {
+          ImGui::Text("%s (%d)", e.label.c_str(), int(e.singles.size()));
+        }
+        else {
+          ImGui::Text("%s", e.label.c_str());
+          ImGui::SameLine();
+          ImGui::TextDisabled("%s", e.value.c_str());
+        }
+      }
+      ImGui::TextDisabled("Ctrl-click (or right-click) to go to one");
+      ImGui::EndTooltip();
+    }
+  }
+  if (ui_menu_begin("##reference_channel")) {
+    if (ui_menu_item("Reset Channel to Original")) {
+      operator_call(C, "layer.reference_sync", {{"layer", std::to_string(g_sync_layer)}, {"path", g_sync_path}});
+    }
+    if (ui_menu_item("Reset Layer Animation to Original")) {
+      operator_call(C, "layer.reference_sync", {{"layer", std::to_string(g_sync_layer)}});
+    }
+    ui_menu_end();
   }
   if (g_press.active && g_press.scrub && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     doc.frame_current = std::max(0, int(std::lround(x_frame(io.MousePos.x))));
@@ -798,9 +1942,11 @@ static void timeline_body(Area &area, Context &C)
             operator_call(C, "anim.keys_select",
                           {{"frame_start", std::to_string(first)},
                            {"frame_end", std::to_string(last)},
-                           {"layers", row.all_layers ? std::string() : layer_ids(row.layers)},
+                           {"layers", layer_ids(row.layers)},
                            {"kinds", std::to_string(row.filter.kinds)},
                            {"selected_only", row.filter.selected_only ? "1" : "0"},
+                           {"path", row.filter.path},
+                           {"pinned", row.filter.pinned_only ? "1" : "0"},
                            /* Rows after the first add to what the first picked. */
                            {"extend", io.KeyShift || i > 0 ? "1" : "0"},
                            {"deselect", io.KeyCtrl ? "1" : "0"}});
@@ -872,7 +2018,55 @@ static void timeline_body(Area &area, Context &C)
     dl->AddLine(ImVec2(p0.x, top + row_h), ImVec2(p1.x, top + row_h), IM_COL32(0x22, 0x22, 0x22, 255));
     std::map<int, KeyFrameSummary> &sum_row = summaries[r];
     dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
-    for (const auto &[a, b] : layers_hold_spans(rows[r].layers, rows[r].filter)) {
+    const bool order_row = rows[r].filter.path == "draw_order" && rows[r].layers.size() == 1;
+    if (order_row) {
+      /* Draw Order: between keys, a bar naming the rule in effect (none while Normal). */
+      const Layer &owner = *rows[r].layers[0];
+      const std::vector<Key<float>> &keys = owner.draw_order_keys.keys;
+      for (size_t i = 0; i < keys.size(); i++) {
+        const DrawOrderRule rule = draw_order_rule(keys[i].value);
+        if (rule.mode == DrawOrderMode::Normal) {
+          continue;
+        }
+        const float xa = frame_x(float(keys[i].frame)) + key_r * 0.6f;
+        const float xb = i + 1 < keys.size() ? frame_x(float(keys[i + 1].frame)) - key_r * 0.6f : p1.x;
+        if (xb <= xa || xb < k0.x || xa > p1.x) {
+          continue;
+        }
+        const bool front = rule.mode == DrawOrderMode::Front;
+        const bool missing = layer_find(doc, rule.target) == nullptr;
+        const ImU32 fill = missing ? IM_COL32(0x80, 0x30, 0x30, 200)
+                           : front ? IM_COL32(0x1d, 0x6e, 0x5a, 220)
+                                   : IM_COL32(0x4a, 0x42, 0x8c, 220);
+        const ImVec2 bmin(xa, ky - row_h * 0.32f), bmax(xb, ky + row_h * 0.32f);
+        dl->AddRectFilled(bmin, bmax, fill, 3.0f);
+        const std::string label = draw_order_label(doc, keys[i].value);
+        dl->PushClipRect(bmin, bmax, true);
+        const float text_x = std::max(xa, k0.x) + 5.0f;
+        if (ImGui::CalcTextSize(label.c_str()).x <= bmax.x - text_x - 3.0f) {
+          dl->AddText(ImVec2(text_x, ky - font_size * 0.5f), IM_COL32(0xf0, 0xf0, 0xf0, 255), label.c_str());
+        }
+        else {
+          /* Too short for the words: an arrow (up in front, down behind) and the layer's name. */
+          const float s = font_size * 0.28f, d = front ? -1.0f : 1.0f, cx = text_x + s;
+          dl->AddTriangleFilled(ImVec2(cx, ky + d * s), ImVec2(cx + s, ky - d * s * 0.6f), ImVec2(cx - s, ky - d * s * 0.6f),
+                                IM_COL32(0xf0, 0xf0, 0xf0, 255));
+          const Layer *target = layer_find(doc, rule.target);
+          dl->AddText(ImVec2(cx + s + 4.0f, ky - font_size * 0.5f), IM_COL32(0xf0, 0xf0, 0xf0, 255),
+                      target ? target->name.c_str() : "?");
+        }
+        dl->PopClipRect();
+        if (hovered && io.MousePos.x >= bmin.x && io.MousePos.x < bmax.x && io.MousePos.y >= bmin.y &&
+            io.MousePos.y < bmax.y && !g_press.active)
+        {
+          const int last = i + 1 < keys.size() ? keys[i + 1].frame - 1 : -1;
+          ImGui::SetTooltip("%s %s, frame %d%s", owner.name.c_str(), label.c_str(), keys[i].frame,
+                            last >= 0 ? (" to " + std::to_string(last)).c_str() : " on");
+          C.wm->keyed_hover.boxes = {owner.id, rule.target};
+        }
+      }
+    }
+    for (const auto &[a, b] : order_row ? std::vector<std::pair<int, int>>() : layers_hold_spans(rows[r].layers, rows[r].filter)) {
       const float xa = frame_x(float(a)), xb = frame_x(float(b));
       if (xb < k0.x || xa > p1.x) {
         continue;
@@ -887,9 +2081,7 @@ static void timeline_body(Area &area, Context &C)
       if (kx < k0.x - kr || kx > p1.x + kr) {
         continue;
       }
-      const ImVec2 d[4] = {ImVec2(kx, ky - kr), ImVec2(kx + kr, ky), ImVec2(kx, ky + kr), ImVec2(kx - kr, ky)};
-      dl->AddConvexPolyFilled(d, 4, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
-      dl->AddPolyline(d, 4, IM_COL32(0, 0, 0, 200), ImDrawFlags_Closed, 1.0f);
+      key_draw(dl, ImVec2(kx, ky), kr, sum.shape, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
     }
     dl->PopClipRect();
   }
@@ -899,6 +2091,8 @@ static void timeline_body(Area &area, Context &C)
   dl->AddRectFilled(p0, ImVec2(k0.x, p1.y), IM_COL32(0x26, 0x26, 0x26, 255));
   dl->AddLine(ImVec2(k0.x, p0.y), ImVec2(k0.x, p1.y), IM_COL32(0x18, 0x18, 0x18, 255));
   dl->PushClipRect(ImVec2(p0.x, rows_top), ImVec2(k0.x - 4.0f, p1.y), true);
+  /* Rows whose name didn't fit (shown whole on hover). */
+  std::vector<bool> cut(rows.size(), false);
   for (size_t r = 0; r < rows.size(); r++) {
     const float top = row_top(r);
     if (top + row_h < rows_top || top > p1.y) {
@@ -913,9 +2107,10 @@ static void timeline_body(Area &area, Context &C)
     else if (row.selected) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 45));
     }
-    const ImU32 col = row.depth == 0 ? (row.selected ? IM_COL32(0xff, 0x90, 0x90, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 255))
-                      : is_active    ? IM_COL32(0xff, 0xff, 0xff, 255)
-                                     : IM_COL32(0xc8, 0xc8, 0xc8, 255);
+    const ImU32 col = row.changed       ? IM_COL32(0x6b, 0xdb, 0xd1, 255)
+                      : row.depth == 0 ? (row.selected ? IM_COL32(0xff, 0x90, 0x90, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 255))
+                      : is_active      ? IM_COL32(0xff, 0xff, 0xff, 255)
+                                       : IM_COL32(0xc8, 0xc8, 0xc8, 255);
     float x = p0.x + 6.0f + float(row.depth) * font_size;
     if (!row.fold.empty()) {
       /* The fold arrow: pointing down when open, right when folded. */
@@ -929,13 +2124,33 @@ static void timeline_body(Area &area, Context &C)
       }
     }
     x += font_size;
-    dl->AddText(ImVec2(x, top + (row_h - font_size) * 0.5f), col, row.name.c_str());
+    /* The name, cut short with "..." where it would run into the pin or the keys. */
+    const float text_right = k0.x - 6.0f - (row.pin_path.empty() ? 0.0f : row_h);
+    cut[r] = ImGui::CalcTextSize(row.name.c_str()).x > text_right - x;
+    ImGui::PushStyleColor(ImGuiCol_Text, col);
+    ImGui::RenderTextEllipsis(dl, ImVec2(x, top + (row_h - font_size) * 0.5f), ImVec2(text_right, top + row_h),
+                              text_right, row.name.c_str(), nullptr, nullptr);
+    ImGui::PopStyleColor();
+    if (!row.pin_path.empty()) {
+      /* Its pin, red: click to unpin. */
+      const ImVec2 at(k0.x - 4.0f - row_h, top);
+      const bool over = io.MousePos.x >= at.x && io.MousePos.x < k0.x && io.MousePos.y >= top && io.MousePos.y < top + row_h;
+      ui_pin_draw(dl, at, row_h, over ? IM_COL32(0xff, 0x70, 0x70, 255) : IM_COL32(0xe0, 0x40, 0x40, 255));
+    }
   }
   dl->PopClipRect();
   if (hovered && over_names && io.MousePos.y >= rows_top) {
     const int r = row_at(io.MousePos.y);
-    if (r >= 0 && rows[r].layer && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    if (r >= 0 && !rows[r].pin_path.empty() && io.MousePos.x >= k0.x - 4.0f - row_h &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    {
+      ImGui::SetTooltip("Unpin from the Timeline");
+    }
+    else if (r >= 0 && rows[r].layer && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("%s\nClick to make it the active layer; the arrow folds it", rows[r].name.c_str());
+    }
+    else if (r >= 0 && cut[r] && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", rows[r].name.c_str());
     }
   }
 

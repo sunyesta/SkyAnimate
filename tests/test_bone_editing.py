@@ -56,23 +56,31 @@ child = bones()[child["name"]]
 assert close(child["head"], (0, 0.5)) and close(child["tail"], (0.5, 0.5)), child
 assert abs(child["length"] - 0.5) < 1e-4
 
-# G on a top ball moves just that tip: the bone stretches, and the connected child rides along.
+# G on a top ball moves just that tip, as in Blender's edit mode: the bone stretches, and the
+# connected child's head (the same joint) comes along while its tail stays.
 rig.select_bone(name, part="TAIL")
 assert bones()[child["name"]]["select_head"], "a connected head is the parent's tail"
 for key in ("G", "R", "S"):
     assert wm.event_simulate(key, area="Viewport"), key + " starts with just a ball selected"
 assert rig.move_bone_ends((0.0, 0.25))
 b, c = bones()[name], bones()[child["name"]]
-assert close(b["tail"], (0, 0.75)) and close(c["head"], (0, 0.75)) and close(c["tail"], (0.5, 0.75)), (b, c)
+assert close(b["tail"], (0, 0.75)) and close(c["head"], (0, 0.75)) and close(c["tail"], (0.5, 0.5)), (b, c)
 assert abs(b["length"] - 0.75) < 1e-4
 
-# G on a bottom ball (or the body) moves the whole bone, children and all.
+# G on a bottom ball moves just that end: the bone stretches, and what hangs from it stays.
 rig.select_bone(name, part="HEAD")
 assert rig.move_bone_ends((-0.25, 0.0))
-assert close(bones()[child["name"]]["tail"], (0.25, 0.75)) and close(bones()[name]["head"], (-0.25, 0))
-assert close(bones()[name]["tail"], (-0.25, 0.75))
+assert close(bones()[name]["head"], (-0.25, 0)) and close(bones()[name]["tail"], (0, 0.75))
+assert close(bones()[child["name"]]["head"], (0, 0.75)) and close(bones()[child["name"]]["tail"], (0.5, 0.5))
 assert rig.move_bone_ends((0.25, 0.0))
 assert close(bones()[name]["head"], (0, 0))
+
+# The whole bone (its body) moves both ends: a connected child's head comes along, its tail stays.
+rig.select_bone(name)
+assert rig.move_bone_ends((0.25, 0.0))
+assert close(bones()[name]["head"], (0.25, 0)) and close(bones()[name]["tail"], (0.25, 0.75))
+assert close(bones()[child["name"]]["head"], (0.25, 0.75)) and close(bones()[child["name"]]["tail"], (0.5, 0.5))
+assert rig.move_bone_ends((-0.25, 0.0))
 
 # --- Shift D: duplicate ------------------------------------------------------------------------------
 rig.select_bone(child["name"])
@@ -80,7 +88,7 @@ assert wm.event_simulate("D", shift=True, area="Viewport")
 assert len(rig.bones) == 3
 copy = next(b for b in rig.bones if b["name"] not in (name, child["name"]))
 assert copy["selected"] and copy["active"] and not bones()[child["name"]]["selected"]
-assert copy["parent"] == name and close(copy["tail"], (0.5, 0.75))
+assert copy["parent"] == name and close(copy["tail"], (0.5, 0.5))
 
 # --- Ctrl P: parent the selected bones to the active one ------------------------------------------
 assert sky.ops.armature.bone_add(name="free", head_x="2", head_y="0", tail_x="2", tail_y="1", parent="") == {'FINISHED'}
@@ -143,7 +151,10 @@ for n in (name, child["name"]):
     l0 = ((before[n]["tail"][0] - before[n]["head"][0]) ** 2 + (before[n]["tail"][1] - before[n]["head"][1]) ** 2) ** 0.5
     l1 = ((after[n]["tail"][0] - after[n]["head"][0]) ** 2 + (after[n]["tail"][1] - after[n]["head"][1]) ** 2) ** 0.5
     assert abs(l1 - 2 * l0) < 1e-4, (n, l0, l1)
-assert rig.scale_bones(0.5)
+    assert close(after[n]["scale"], (1, 1)), "frame 0 changes sizes, not scale"
+assert rig.scale_bones(0.5, axis="X"), "frame 0 has no axes: it resizes the same every way"
+after = bones()
+assert close(after[name]["scale"], (1, 1)) and abs(after[name]["length"] - before[name]["length"]) < 1e-4
 
 # R on a parent and child together turns the pair as one, the child no extra, on any frame.
 def direction(b):
@@ -174,13 +185,32 @@ assert not close(posed["position"], setup["position"]) and abs(posed["angle"] - 
 assert wm.event_simulate("R", alt=True, area="Viewport")
 b = bones()[name]
 assert abs(b["angle"] - setup["angle"]) < 1e-5 and not close(b["position"], setup["position"])
-assert abs(b["scale"] - setup["scale"]) > 0.1, "only the rotation goes back"
+assert not close(b["scale"], setup["scale"]), "only the rotation goes back"
 assert wm.event_simulate("G", alt=True, area="Viewport")
 assert close(bones()[name]["position"], setup["position"])
 assert wm.event_simulate("S", alt=True, area="Viewport")
-assert abs(bones()[name]["scale"] - setup["scale"]) < 1e-5
+assert close(bones()[name]["scale"], setup["scale"])
 doc.frame_current = 0
 assert close(bones()[name]["head"], setup["head"]) and close(bones()[name]["tail"], setup["tail"])
+
+# --- Posing, S scales each bone along its own axes: X across (thickness), Y along (length) ------------
+doc.frame_current = 9
+rig.select_bone(name)
+b0 = bones()[name]
+reach = math.dist(b0["head"], b0["tail"])
+assert rig.scale_bones(2.0, axis="Y")
+b = bones()[name]
+assert close(b["scale"], (1, 2)) and abs(math.dist(b["head"], b["tail"]) - 2 * reach) < 1e-4, "S Y: twice as long"
+assert abs(direction(b) - direction(b0)) < 1e-4, "along its own direction"
+assert rig.scale_bones(3.0, axis="X")
+b = bones()[name]
+assert close(b["scale"], (3, 2)) and abs(math.dist(b["head"], b["tail"]) - 2 * reach) < 1e-4, "S X: only thicker"
+# S S: squash and stretch, longer and thinner, keeping its area.
+assert rig.scale_bones(2.0, squash=True)
+assert close(bones()[name]["scale"], (1.5, 4)), bones()[name]["scale"]
+assert wm.event_simulate("S", alt=True, area="Viewport")
+assert close(bones()[name]["scale"], (1, 1))
+doc.frame_current = 0
 
 # --- Posing, G on a connected bone turns it instead of moving it --------------------------------------
 assert bones()[child["name"]]["connected"]
@@ -284,7 +314,7 @@ assert close(bones2()["p"]["tail"], (1, 2)) and abs(bones2()["p"]["length"] - 2.
 doc.frame_current = 6
 assert rig2.transform_bones(scale=(1.0, 0.5), pivot=(1.0, 0.0))
 b = bones2()
-assert close(b["p"]["tail"], (1, 1)) and abs(b["p"]["length"] - 2.0) < 1e-4 and abs(b["p"]["scale"] - 0.5) < 1e-4
+assert close(b["p"]["tail"], (1, 1)) and abs(b["p"]["length"] - 2.0) < 1e-4 and abs(b["p"]["scale"][1] - 0.5) < 1e-4
 assert close(b["c"]["head"], (0, 1)) and close(b["c"]["tail"], (1, 1)), b["c"]
 doc.frame_current = 0
 assert close(bones2()["p"]["tail"], (1, 2)), "the setup pose is untouched"
@@ -298,5 +328,53 @@ assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in sky.data.layers if l.name == rig_name)
 assert bones()[child["name"]]["connected"] and not bones()["free"]["connected"]
+
+# --- Frame 0 edits the rig as Blender's edit mode: only what is picked moves ---------------------------
+# A parent, a child hanging from it (not connected), a connected child, and a pin under the parent.
+doc = sky.data.document
+doc.frame_current = 0
+sky.ops.layer.new_bone()
+rig = sky.data.layers.active
+sky.ops.armature.bone_add(name="up", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+sky.ops.armature.bone_add(name="loose", head_x="1", head_y="1", tail_x="2", tail_y="1", parent="up")
+sky.ops.armature.bone_add(name="pinned", head_x="-1", head_y="0.5", tail_x="-0.9", tail_y="0.5", parent="up")
+rig.bone_set("pinned", length=0.0)  # a pin: no length
+rig.select_bone("up", part="TAIL")
+assert wm.event_simulate("E", area="Viewport")
+tip = next(b["name"] for b in rig.bones if b["name"] not in ("up", "loose", "pinned"))
+assert rig.move_bone_ends((0.0, 1.0))  # the extruded, connected child: (0, 1) to (0, 2)
+pin_angle = bones()["pinned"]["angle"] + bones()["up"]["angle"]
+
+
+def ends(n):
+    return bones()[n]["head"], bones()[n]["tail"]
+
+
+start = {n: ends(n) for n in ("up", "loose", "pinned", tip)}
+# G on the parent: it moves; the loose child stays; the connected child's head comes along, not its tail.
+rig.select_bone("up")
+assert rig.move_bone_ends((0.5, 0.0))
+assert close(ends("up")[0], (0.5, 0)) and close(ends("up")[1], (0.5, 1))
+assert close(ends("loose")[0], start["loose"][0]) and close(ends("loose")[1], start["loose"][1]), "not connected: stays"
+assert close(ends("pinned")[0], start["pinned"][0]), "a pin under it stays too"
+assert close(ends(tip)[0], (0.5, 1)) and close(ends(tip)[1], start[tip][1]), "connected: only its head follows"
+assert rig.move_bone_ends((-0.5, 0.0))
+# R on the parent: the same, and the pin keeps pointing the way it did.
+assert rig.rotate_bones(0.5)
+assert close(ends("loose")[0], start["loose"][0]) and close(ends("loose")[1], start["loose"][1])
+assert close(ends("pinned")[0], start["pinned"][0])
+assert abs(bones()["pinned"]["angle"] + bones()["up"]["angle"] - pin_angle) < 1e-4, "the pin didn't turn"
+assert close(ends(tip)[1], start[tip][1]) and close(ends(tip)[0], ends("up")[1])
+assert rig.rotate_bones(-0.5)
+# The Transform Bones gizmo: the same.
+assert rig.transform_bones(offset=(0.0, 0.5))
+assert close(ends("loose")[0], start["loose"][0]) and close(ends(tip)[1], start[tip][1])
+assert close(ends(tip)[0], ends("up")[1])
+# Posing (any other frame) still carries children along, as Moho and Blender's pose mode do.
+doc.frame_current = 5
+before = ends("loose")
+assert rig.move_bone_ends((0.5, 0.0))
+assert close(ends("loose")[0], (before[0][0] + 0.5, before[0][1])), "posed: children come along"
+doc.frame_current = 0
 
 print("Bone editing tests passed")

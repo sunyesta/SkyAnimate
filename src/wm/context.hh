@@ -40,6 +40,8 @@ struct ToolSettings {
    * tool to go back to on frame 0. */
   Tool tool_before_posing = Tool::Select;
   bool tool_switched_for_posing = false;
+  /* Posing a bone by its tip turns its parents too (Moho's IK). */
+  bool auto_ik = true;
   Tool tool_return = Tool::Select;
   SelectMode select_mode = SelectMode::Point;
   /* Snap points to the grid while drawing and transforming. */
@@ -65,6 +67,13 @@ struct ToolSettings {
    * (X) and/or horizontal (Y) axis too. */
   bool mirror_x = false;
   bool mirror_y = false;
+  /* Blender's proportional editing (O), on points only: G R S drag the points around the
+   * selection too, by the falloff, out to the size (document units; the wheel or Page Up and
+   * Page Down change it while transforming). Connected Only: only along the curves. */
+  bool proportional = false;
+  ProportionalFalloff proportional_falloff = ProportionalFalloff::Smooth;
+  bool proportional_connected = false;
+  float proportional_size = 0.2f;
   float weight_radius = 50.0f;
   float weight_value = 1.0f;
   float weight_strength = 0.5f;
@@ -100,6 +109,8 @@ struct WindowManager {
   bool play_loop = true;
   /* Frame to return to when playback is cancelled with Esc. */
   int play_start_frame = 1;
+  /* The frame Tab left for the setup frame (0), to go back to with Tab again. */
+  int frame_before_setup = 0;
   uint64_t play_last_ns = 0;
   double play_frames_due = 0.0;
 
@@ -111,8 +122,60 @@ struct WindowManager {
   /* Set by transform.* operators; the viewport under the mouse runs the modal transform:
    * 'G' move, 'R' rotate, 'S' scale, 'E' extrude then move. */
   char transform_request = 0;
+  /* Set by view.overlays_toggle (Shift Z): the viewport under the mouse shows or hides its
+   * overlays. */
+  bool overlays_toggle_request = false;
+  /* A Properties tab to show (sky.wm.properties_tab), taken by the next Properties editor drawn
+   * (-1: none): 0 Document, 1 Layer, 2 Drawing or Armature, 3 Modifiers, 4 Bone Constraints, 5 Reference. */
+  int properties_tab_request = -1;
+  /* A property to show in the Properties editor (picked from a key in the timeline): the panel
+   * holding it opens, and its row is scrolled to and flashes blue for a second. `layer` 0: none. */
+  struct PropertiesFlash {
+    uint64_t layer = 0;
+    std::string path;
+    /* The panel to open ("" for none). */
+    std::string panel;
+    /* Since it was found (ImGui time; below 0 until a Properties editor drew it). */
+    double start = -1.0;
+    int frames = 0;
+    bool seen_properties = false;
+  } properties_flash;
+  /* The item of the timeline's Keyed Here list under the mouse: the viewport outlines its bone or
+   * points (`layer` 0: none). Set by the timeline each frame. */
+  struct KeyedHover {
+    uint64_t layer = 0;
+    std::vector<std::string> paths;
+    /* Layers to outline whole: a Draw Order bar's layer and the one it's drawn in front of or behind. */
+    std::vector<uint64_t> boxes;
+  } keyed_hover;
   /* A menu a key asked for, opened at the mouse by the editor under it ("bone_parent_set"). */
   std::string menu_request;
+  /* In Front Of... / Behind... (layer.draw_order_pick): waiting for a click on the layer to go in
+   * front of (mode 1) or behind (-1); `layers` move. `hover`: the layer under the mouse, shown
+   * as the result while pointing. */
+  struct DrawOrderPick {
+    int mode = 0;
+    std::vector<uint64_t> layers;
+    uint64_t hover = 0;
+    /* The eyedropper is on for it. */
+    bool started = false;
+  } draw_order_pick;
+  /* Inside... / Outside... (mask.pick): waiting for a click on the layer to mask `layers` with;
+   * `index` >= 0 adds it to that mask of theirs instead of a new one. */
+  struct MaskPick {
+    bool active = false;
+    bool outside = false;
+    int index = -1;
+    std::vector<uint64_t> layers;
+    bool started = false;
+  } mask_pick;
+  /* A mask chip under the mouse in the Layers editor: its layers are outlined in the viewport. */
+  std::vector<uint64_t> mask_hover;
+  /* Layers a mask's field in Properties names, under the mouse: highlighted in the Layers editor.
+   * Set with the ImGui frame it was set on, as editors draw in any order (shown for that frame and
+   * the next). */
+  std::vector<uint64_t> layers_hover;
+  int layers_hover_frame = -10;
   /* Mouse position in document space while over a viewport, for operators that act at the
    * mouse (L select linked). */
   float2 mouse_document;
@@ -148,10 +211,15 @@ struct Context {
   std::string text_name;
   /* Arguments of the operator running now. */
   const OpArgs *op_args = nullptr;
+  /* The undo step's name, set by an operator that says what it did ("Hand In Front Of Torso");
+   * empty: the operator's name. */
+  std::string undo_name;
 };
 
 /* An argument of the running operator, or `fallback` when it wasn't given. */
 std::string op_arg(const Context &C, const std::string &name, const std::string &fallback = "");
+/* Whether the running operator was given `name`. */
+bool op_has_arg(const Context &C, const std::string &name);
 /* True for "1", "True" and "true". */
 bool op_arg_bool(const Context &C, const std::string &name);
 /* Number arguments (given as text, "0.5"), or `fallback` when missing or not a number. */

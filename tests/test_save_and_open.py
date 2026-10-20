@@ -25,7 +25,7 @@ def snapshot():
     def layer_info(l):
         source = l.reference_source
         return (l.name, l.type, l.visible, l.render_visible, l.locked, l.label_color, round(l.location_x, 5), round(l.rotation, 5),
-                round(l.opacity, 5), l.mask_mode, l.group_mask, l.mask_expand, l.mask_exclude_strokes, source.name if source else None,
+                round(l.opacity, 5), l.masks, source.name if source else None,
                 [(round(x, 5), round(y, 5)) for x, y, _ in l.points], [round(r, 5) for r in l.radii], l.hidden_edges, l.corners,
                 l.curve_count, l.shape_count,
                 [layer_info(c) for c in l.children])
@@ -54,14 +54,13 @@ art.set_selected_corner("SHARP")
 sky.ops.mesh.select_none()
 sky.ops.layer.group()
 holder = art.parent
-holder.group_mask = "HIDE_ALL"
 layers.active = art
 sky.ops.layer.make_reference()
 ref = layers.active
 ref.name = "Mask"
-ref.mask_mode = "ADD_INVISIBLE"
-ref.mask_expand = True
-ref.mask_exclude_strokes = True
+sky.ops.mask.add(layer=str(art.id), sources=str(ref.id), outside="1", expand="1", fills_only="1")
+sky.ops.mask.set(layer=str(art.id), index="0", render="0")
+ref.visible = False
 ref.opacity = 0.5
 ref.render_visible = False
 doc.name = "Walk"
@@ -84,11 +83,14 @@ assert sky.ops.wm.save_as_mainfile() == {'CANCELLED'}, "without a window there's
 
 with zipfile.ZipFile(walk) as archive:
     stored = json.loads(archive.read("document.json"))
-assert stored["format"] == "SkyAnimate" and stored["version"] == 1
+assert stored["format"] == "SkyAnimate" and stored["version"] == 2
 group = stored["document"]["layers"][0]
-assert group["type"] == "GROUP" and group["group_mask"] == "HIDE_ALL"
+assert group["type"] == "GROUP"
 mask = group["children"][0]
-assert mask["mask_mode"] == "ADD_INVISIBLE" and "drawing" not in mask, "a reference stores no copy of the drawing"
+assert "drawing" not in mask, "a reference stores no copy of the drawing"
+masked = group["children"][1]
+m = masked["masks"][0]
+assert (m["outside"], m["layers"], m["enabled"], m["render"], m["expand"], m["fills_only"], m["filled"]) == (True, [mask["id"]], True, False, True, True, False), m
 
 # Saving without .sky adds it.
 assert sky.ops.wm.save_as_mainfile(filepath=path("walk_alt")) == {'FINISHED'}
@@ -155,7 +157,7 @@ assert snapshot() == current, "a file that can't be read leaves the document alo
 damaged = {
     "format": "SkyAnimate", "version": 1,
     "document": {"layers": [
-        {"id": 5, "name": "A", "type": "VECTOR", "mask_mode": "NOT_A_MODE",
+        {"id": 5, "name": "A", "type": "VECTOR", "label_color": "NOT_A_COLOR",
          "drawing": {"points": [{"pos": [0, 0]}, {"pos": [1, 0]}],
                      "curves": [{"points": [{"point": 0}, {"point": 1}, {"point": 7}]}],
                      "shapes": [{"edges": [[0, 0], [0, 5], [3, 0]]}]}},
@@ -165,7 +167,7 @@ damaged = {
 assert sky.ops.wm.open_mainfile(filepath=write_archive("damaged.sky", json.dumps(damaged))) == {'FINISHED'}
 a, b = layers["A"], layers["B"]
 assert (a.point_count, a.curve_count, a.shape_count) == (2, 1, 1)
-assert a.mask_mode == "MASKED", "unknown enum names fall back to the default"
+assert a.label_color == "NONE", "unknown enum names fall back to the default"
 assert a.id != b.id and b.reference_source is None
 assert doc.frame_end == 250, "missing values take their defaults"
 sky.ops.layer.new()

@@ -82,8 +82,9 @@ layer inside a bone layer gets, kept by `document_sync_armature_modifiers`); rig
 `src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,
 Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Actions (bone layer
 timelines swapped into the channels) and smart actions (`apply_smart_actions` in
-`src/anim/animation.cc`; offsets live in `Channel::smart`). Not yet: IK, local armature viewport,
-copy/paste poses.
+`src/anim/animation.cc`; offsets live in `Channel::smart`). Bone constraints (`BoneConstraint` stack solved in `armature_pose`, IK targets and
+`armature_reach` for Auto IK) and dynamics (`src/anim/dynamics.*`, simulated and cached). Not yet: local
+armature viewport, copy/paste poses.
 
 Preferences live in `%LOCALAPPDATA%\SkyAnimate\preferences.json`; background runs (tests) never read
 or write them.

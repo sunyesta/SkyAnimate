@@ -7,10 +7,16 @@
 #include "imgui_stdlib.h"
 
 #include <algorithm>
+#include <map>
 #include <cstring>
 
+#include "anim/draw_order.hh"
+#include "anim/reference.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "editors/ui.hh"
+#include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
@@ -19,6 +25,51 @@
 namespace sky {
 
 static constexpr const char *LAYER_PAYLOAD = "SKY_LAYER";
+/* A drawing layer dragged in the draw-order view. */
+static constexpr const char *ORDER_PAYLOAD = "SKY_DRAW_ORDER";
+/* Draw Order markers and the draw-order view's insertion line. */
+static constexpr ImU32 COL_ORDER = IM_COL32(0xf0, 0xb0, 0x40, 255);
+
+/* An arrow up (in front of a layer) or down (behind one). */
+static void icon_order(ImDrawList *dl, ImVec2 c, float s, bool front, ImU32 col)
+{
+  const float d = front ? -1.0f : 1.0f;
+  dl->AddTriangleFilled(ImVec2(c.x, c.y + d * s), ImVec2(c.x + s * 0.8f, c.y - d * s * 0.1f),
+                        ImVec2(c.x - s * 0.8f, c.y - d * s * 0.1f), col);
+  dl->AddRectFilled(ImVec2(c.x - s * 0.28f, c.y - d * s * 0.1f), ImVec2(c.x + s * 0.28f, c.y - d * s * 0.9f), col);
+}
+
+/* A layer drawn out of its Layers-editor place right now: its arrow, and on hover what it's in front
+ * of or behind; clicking selects that layer. `x`: where it goes. */
+static void order_marker(Context &C, const Layer &layer, float x, float y, float h)
+{
+  if (layer.draw_order == 0.0f) {
+    return;
+  }
+  Document &doc = *C.document;
+  const DrawOrderRule rule = draw_order_rule(layer.draw_order);
+  ImGui::SetCursorScreenPos(ImVec2(x, y));
+  ImGui::PushID("##order_marker");
+  const bool clicked = ImGui::InvisibleButton("##order", ImVec2(h * 0.8f, h));
+  const bool over = ImGui::IsItemHovered();
+  ImGui::PopID();
+  const Layer *target = layer_find(doc, rule.target);
+  icon_order(ImGui::GetWindowDrawList(), ImVec2(x + h * 0.4f, y + h * 0.5f), h * 0.22f,
+             rule.mode == DrawOrderMode::Front, target ? (over ? IM_COL32(0xff, 0xd0, 0x70, 255) : COL_ORDER)
+                                                       : IM_COL32(0xe0, 0x50, 0x50, 255));
+  if (over) {
+    std::string tip = "Drawn " + draw_order_label(doc, layer.draw_order) + " on this frame (Draw Order)";
+    if (const Layer *faded = draw_order_faded_group(doc, layer.id); faded && target && !layer_inside(doc, target->id, faded->id)) {
+      tip += "\nMoves \"" + faded->name + "\" as a whole: it's faded, so it's drawn as one image";
+    }
+    tip += target ? "\nClick to select " + target->name : "\nThat layer is gone, so it's drawn as Normal";
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+  if (clicked && target) {
+    doc.active_layer = target->id;
+    C.undo->push("Active Layer", doc);
+  }
+}
 static constexpr ImU32 COL_ICON = IM_COL32(0xc8, 0xc8, 0xc8, 255);
 static constexpr ImU32 COL_ICON_OFF = IM_COL32(0x70, 0x70, 0x70, 255);
 static constexpr ImU32 COL_ACTIVE_ROW = IM_COL32(0x33, 0x4d, 0x80, 255);
@@ -84,27 +135,6 @@ static void icon_layer_type(ImDrawList *dl, ImVec2 c, float s, const Layer &laye
   }
 }
 
-/* A short label for a layer's masking mode, shown when its group masks. */
-static const char *mask_badge(MaskMode mode)
-{
-  switch (mode) {
-    case MaskMode::Masked:
-      return "";
-    case MaskMode::NotMasked:
-      return "not masked";
-    case MaskMode::Add:
-      return "+ mask";
-    case MaskMode::AddInvisible:
-      return "+ mask (hidden)";
-    case MaskMode::SubtractInvisible:
-      return "- mask (hidden)";
-    case MaskMode::ClearAdd:
-      return "clear + mask";
-    case MaskMode::ClearAddInvisible:
-      return "clear + mask (hidden)";
-  }
-  return "";
-}
 
 static bool menu_op(Context &C, const char *label, const char *idname)
 {
@@ -113,7 +143,7 @@ static bool menu_op(Context &C, const char *label, const char *idname)
     return false;
   }
   const std::string shortcut = keymaps().shortcut_for(idname);
-  if (ImGui::MenuItem(label, shortcut.empty() ? nullptr : shortcut.c_str(), false, operator_poll(C, *ot))) {
+  if (ui_menu_item(label, shortcut.empty() ? nullptr : shortcut.c_str(), false, operator_poll(C, *ot))) {
     operator_call(C, idname);
     return true;
   }
@@ -131,50 +161,84 @@ struct DropRequest {
   uint64_t target = 0;
   /* -1 above the target, +1 below it, 0 into it (groups). */
   int where = 0;
+  /* Alt held: mask the target with the dragged layer instead of moving it (Shift: outside it). */
+  bool mask = false;
+  bool outside = false;
 };
+
+/* A small circle, its left half filled (inside a layer) or its right half (outside it). */
+static void icon_mask(ImDrawList *dl, ImVec2 c, float r, bool outside, ImU32 col)
+{
+  dl->AddCircle(c, r, col, 16, 1.2f);
+  const float a0 = outside ? -PI * 0.5f : PI * 0.5f;
+  dl->PathArcTo(c, r, a0, a0 + PI, 12);
+  dl->PathFillConvex(col);
+}
+
+/* A masked layer: one mask symbol after its name, no text (the Masking tab has the rest).
+ * Hovering lists its masks and outlines their layers in the viewport; clicking opens the Masking
+ * tab on it. Returns where it ends. */
+static float mask_symbol(Context &C, Layer &layer, float x, float y, float h, float right)
+{
+  if (layer.masks.empty()) {
+    return x;
+  }
+  Document &doc = *C.document;
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float fs = ImGui::GetFontSize();
+  const float w = fs * 1.1f;
+  if (x + w > right) {
+    return x;
+  }
+  bool any_on = false;
+  for (const LayerMask &m : layer.masks) {
+    any_on |= m.enabled;
+  }
+  const ImVec2 a(x, y), b(x + w, y + h);
+  ImGui::SetCursorScreenPos(a);
+  const bool clicked = ImGui::InvisibleButton("##mask_symbol", b - a);
+  const bool over = ImGui::IsItemHovered();
+  /* The mask orange (as the viewport's mask outlines); grey with every mask off. */
+  const ImU32 col = !any_on ? IM_COL32(0x80, 0x80, 0x80, 255)
+                    : over  ? IM_COL32(0xff, 0xc0, 0x80, 255)
+                            : IM_COL32(0xff, 0x9a, 0x3c, 255);
+  icon_mask(dl, ImVec2(x + w * 0.5f, y + h * 0.5f), fs * 0.3f, layer.masks.size() == 1 && layer.masks[0].outside,
+            col);
+  if (over) {
+    std::string tip;
+    for (const LayerMask &m : layer.masks) {
+      C.wm->mask_hover.insert(C.wm->mask_hover.end(), m.layers.begin(), m.layers.end());
+      tip += mask_label(doc, m) + (m.enabled ? "" : " (off)") + "\n";
+    }
+    tip += "Click: open the Masking tab";
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+  if (clicked) {
+    for (const Layer *l : document_layers_flat(doc)) {
+      layer_find(doc, l->id)->selected = l->id == layer.id;
+    }
+    doc.active_layer = layer.id;
+    C.wm->properties_tab_request = 6; /* The Masking tab. */
+  }
+  return x + w + 4.0f;
+}
 
 /* Moho's layer right-click menu: Group Mask on groups, Masking on layers inside a group, then
  * Group With Selection, Duplicate, Reference and Delete. Rename is a double-click or F2; label
  * colours and Break Reference are in the Properties editor's Layer tab. */
-static void layer_context_menu(Context &C, Layer &layer, bool in_group)
+static void layer_context_menu(Context &C, Layer &layer)
 {
   Document &doc = *C.document;
   doc.active_layer = layer.id;
-  bool any = false;
-  if (layer.is_group() && ImGui::BeginMenu("Group Mask")) {
-    /* Moho's shortcuts; Layer Properties > Masking has the full settings. */
-    const Layer *bottom = layer.children.empty() ? nullptr : &layer.children.back();
-    const bool inside = layer.group_mask == GroupMask::HideAll && bottom && bottom->mask_mode == MaskMode::Add;
-    const bool outside = layer.group_mask == GroupMask::ShowAll && bottom &&
-                         bottom->mask_mode == MaskMode::SubtractInvisible;
-    const struct {
-      const char *label, *mode;
-      bool checked;
-    } items[] = {{"None", "NONE", layer.group_mask == GroupMask::None},
-                 {"Mask - Inside Bottom Layer", "INSIDE", inside},
-                 {"Mask - Outside Bottom Layer", "OUTSIDE", outside}};
-    for (const auto &item : items) {
-      if (ImGui::MenuItem(item.label, nullptr, item.checked, bottom || std::string(item.mode) == "NONE")) {
-        operator_call(C, "layer.group_mask_set", {{"mode", item.mode}});
-      }
-    }
-    ImGui::EndMenu();
-    any = true;
+  if (ui_submenu_begin("Mask")) {
+    ui_mask_menu_items(C, 0);
+    ui_submenu_end();
   }
-  if (in_group && ImGui::BeginMenu("Masking")) {
-    const rna::PropertyRNA *prop = Layer::rna().find("mask_mode");
-    for (int i = 0; i < int(prop->items.size()); i++) {
-      if (ImGui::MenuItem(prop->items[i].name.c_str(), nullptr, int(layer.mask_mode) == i)) {
-        layer.mask_mode = MaskMode(i);
-        push_undo(C, "Masking");
-      }
-    }
-    ImGui::EndMenu();
-    any = true;
+  if (ui_submenu_begin("Draw Order")) {
+    ui_draw_order_menu_items(C, 0);
+    ui_submenu_end();
   }
-  if (any) {
-    ImGui::Separator();
-  }
+  ImGui::Separator();
   menu_op(C, "Group With Selection", "layer.group");
   if (layer.type == LayerType::Group) {
     menu_op(C, "Convert to Bone Group", "layer.convert_to_bone");
@@ -200,7 +264,7 @@ static void layers_deselect(std::vector<Layer> &layers)
   }
 }
 
-static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool parent_masks, DropRequest &drop,
+static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropRequest &drop,
                       bool &r_context_open)
 {
   Document &doc = *C.document;
@@ -216,7 +280,15 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("##row", ImVec2(row_w, h));
   const bool row_hovered = ImGui::IsItemHovered();
-  if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+  if (row_hovered && C.wm->draw_order_pick.mode != 0) {
+    /* In Front Of... / Behind...: pointing at a row shows the result in the viewport. */
+    C.wm->draw_order_pick.hover = layer.id;
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ui_layer_eyedropper_active()) {
+    /* The layer eyedropper takes the click: this layer becomes the bone's custom shape. */
+    ui_layer_eyedropper_pick(C, layer.id);
+  }
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
     /* Ctrl or Shift click picks more layers, as in Moho; a plain click picks just this one. */
     const ImGuiIO &io = ImGui::GetIO();
     if (io.KeyCtrl || io.KeyShift) {
@@ -251,7 +323,29 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
     ImGui::TextUnformatted(layer.name.c_str());
     ImGui::EndDragDropSource();
   }
-  if (ImGui::BeginDragDropTarget()) {
+  if (ImGui::BeginDragDropTarget() && ImGui::GetIO().KeyAlt) {
+    /* Alt: mask this layer with the dragged one (Shift: outside it). */
+    const ImGuiPayload *peek = ImGui::GetDragDropPayload();
+    uint64_t moving = 0;
+    if (peek && peek->IsDataType(LAYER_PAYLOAD)) {
+      std::memcpy(&moving, peek->Data, sizeof(moving));
+    }
+    const Layer *source = layer_find(doc, moving);
+    const bool outside = ImGui::GetIO().KeyShift;
+    dl->AddRect(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0x9a, 0x3c, 255), 3.0f, 0, 2.0f);
+    if (source && source->id != layer.id) {
+      ImGui::SetTooltip("Mask %s %s %s%s", layer.name.c_str(), outside ? "outside" : "inside", source->name.c_str(),
+                        outside ? "" : "\n(Shift: outside it)");
+    }
+    if (ImGui::AcceptDragDropPayload(LAYER_PAYLOAD, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+      drop.moving = moving;
+      drop.target = layer.id;
+      drop.mask = true;
+      drop.outside = outside;
+    }
+    ImGui::EndDragDropTarget();
+  }
+  else if (ImGui::BeginDragDropTarget()) {
     /* Upper quarter: above. Lower quarter: below. Middle of a group: into it. */
     const float y = ImGui::GetIO().MousePos.y - row_min.y;
     int where = y < h * 0.5f ? -1 : 1;
@@ -277,12 +371,48 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   if (row_hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
     ImGui::OpenPopup("##layer_menu");
   }
-  if (ImGui::BeginPopup("##layer_menu")) {
+  if (ui_menu_begin("##layer_menu")) {
     r_context_open = true;
-    layer_context_menu(C, layer, depth > 0);
-    ImGui::EndPopup();
+    layer_context_menu(C, layer);
+    ui_menu_end();
   }
 
+  /* The active layer is a copy (reference layer): its original stands out, outlined in the
+   * reference colour (or the folded group it is in). */
+  const Layer *active_layer = document_active_layer(doc);
+  const uint64_t original = active_layer && active_layer->is_reference() ? active_layer->reference_source : 0;
+  const auto holds = [&](auto &&self, const Layer &l) -> bool {
+    for (const Layer &child : l.children) {
+      if (child.id == original || self(self, child)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (original != 0 && (layer.id == original || (layer.is_group() && !layer.expanded && holds(holds, layer)))) {
+    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), IM_COL32(0x6f, 0xb8, 0xff, 40), 3.0f);
+    dl->AddRect(row_min, row_min + ImVec2(row_w, h), COL_REFERENCE, 3.0f, 0, 1.5f);
+    if (row_hovered) {
+      ImGui::SetTooltip(layer.id == original ? "The original of the selected copy" : "Holds the original of the selected copy");
+    }
+  }
+  /* A layer named by the mask field under the mouse in Properties (or the folded group it's in). */
+  const std::vector<uint64_t> &hover = C.wm->layers_hover;
+  if (C.wm->layers_hover_frame >= ImGui::GetFrameCount() - 1 && !hover.empty()) {
+    const auto hovered = [&](uint64_t id) { return std::find(hover.begin(), hover.end(), id) != hover.end(); };
+    const auto holds_hovered = [&](auto &&self, const Layer &l) -> bool {
+      for (const Layer &child : l.children) {
+        if (hovered(child.id) || self(self, child)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (hovered(layer.id) || (layer.is_group() && !layer.expanded && holds_hovered(holds_hovered, layer))) {
+      dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0x9a, 0x3c, 40), 3.0f);
+      dl->AddRect(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0x9a, 0x3c, 255), 3.0f, 0, 1.5f);
+    }
+  }
   if (doc.active_layer == layer.id) {
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f);
   }
@@ -318,6 +448,10 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   }
   x += h * 0.7f;
   icon_layer_type(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, layer);
+  if (layer.is_reference() && reference_change_count(layer) > 0) {
+    /* A copy with changes of its own (the Reference tab lists them). */
+    dl->AddCircleFilled(ImVec2(x + h * 0.4f + icon * 1.1f, cy - icon * 0.9f), icon * 0.32f, IM_COL32(0x6b, 0xdb, 0xd1, 255));
+  }
   x += h * 0.9f;
 
   const float toggles_w = h * 3.0f;
@@ -339,20 +473,14 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   else {
     const ImU32 text = layer.visible ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
     dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
-    if (parent_masks && layer.mask_mode != MaskMode::Masked) {
-      const float name_w = ImGui::CalcTextSize(layer.name.c_str()).x;
-      dl->AddText(ImVec2(x + name_w + 8.0f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0x95, 0xd6, 0x00, 255),
-                  mask_badge(layer.mask_mode));
-    }
-    if (layer.is_group() && layer.group_mask != GroupMask::None) {
-      const float name_w = ImGui::CalcTextSize(layer.name.c_str()).x;
-      dl->AddText(ImVec2(x + name_w + 8.0f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0x95, 0xd6, 0x00, 255),
-                  layer.group_mask == GroupMask::ShowAll ? "mask: reveal all" : "mask: hide all");
-    }
+    float after = x + ImGui::CalcTextSize(layer.name.c_str()).x + 8.0f;
+    const float limit = row_min.x + row_w - h * 4.0f;
+    mask_symbol(C, layer, after, row_min.y, h, limit);
   }
 
   /* Visibility, render and lock toggles on the right, as in Blender's outliner. */
   const float right = row_min.x + row_w - style.ItemSpacing.x;
+  order_marker(C, layer, right - h * 3.85f, row_min.y, h);
   ImGui::SetCursorScreenPos(ImVec2(right - h * 3.0f, row_min.y));
   if (ImGui::InvisibleButton("##visible", ImVec2(h, h))) {
     layer.visible = !layer.visible;
@@ -385,9 +513,8 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, bool pare
   ImGui::PopID();
 
   if (layer.is_group() && layer.expanded) {
-    const bool masks = layer.group_mask != GroupMask::None;
     for (Layer &child : layer.children) {
-      layer_row(C, area, child, depth + 1, masks, drop, r_context_open);
+      layer_row(C, area, child, depth + 1, drop, r_context_open);
     }
   }
 }
@@ -465,16 +592,115 @@ static void apply_drop(Context &C, const DropRequest &drop)
   if (!drop.moving || drop.moving == drop.target) {
     return;
   }
+  if (drop.mask) {
+    operator_call(C, "mask.add", {{"layer", std::to_string(drop.target)}, {"sources", std::to_string(drop.moving)},
+                                  {"outside", drop.outside ? "1" : "0"}});
+    return;
+  }
   if (move_layers(doc, dragged_layers(doc, drop.moving), drop.target, drop.where)) {
     doc.active_layer = drop.moving;
     C.undo->push("Move Layer", doc);
   }
 }
 
+/* The draw-order view: every drawing layer as drawn on this frame, top first, with its group. Drag
+ * one onto another to draw it in front of (upper half) or behind (lower half) it: keyed on frames
+ * other than 0, the setup order on frame 0. */
+static void draw_order_view(Context &C)
+{
+  Document &doc = *C.document;
+  const float h = ImGui::GetFrameHeight();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const std::vector<const Layer *> order = draw_order_layers(doc, [](const Layer &) { return true; });
+  uint64_t moving = 0, target = 0;
+  int where = 0;
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    const Layer &layer = **it;
+    const ImVec2 row_min = ImGui::GetCursorScreenPos();
+    const float row_w = ImGui::GetContentRegionAvail().x;
+    ImGui::PushID(int(layer.id));
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##order_row", ImVec2(row_w, h));
+    const bool row_hovered = ImGui::IsItemHovered();
+    if (row_hovered && C.wm->draw_order_pick.mode != 0) {
+      C.wm->draw_order_pick.hover = layer.id;
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+      if (ui_layer_eyedropper_active()) {
+        ui_layer_eyedropper_pick(C, layer.id);
+      }
+      else {
+        doc.active_layer = layer.id;
+        C.undo->push("Active Layer", doc);
+      }
+    }
+    if (ImGui::BeginDragDropSource()) {
+      ImGui::SetDragDropPayload(ORDER_PAYLOAD, &layer.id, sizeof(layer.id));
+      ImGui::Text("%s", layer.name.c_str());
+      ImGui::EndDragDropSource();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+      const bool upper = ImGui::GetIO().MousePos.y < row_min.y + h * 0.5f;
+      const float line_y = upper ? row_min.y : row_min.y + h;
+      dl->AddLine(ImVec2(row_min.x, line_y), ImVec2(row_min.x + row_w, line_y), COL_ORDER, 2.0f);
+      if (const ImGuiPayload *payload =
+              ImGui::AcceptDragDropPayload(ORDER_PAYLOAD, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+        std::memcpy(&moving, payload->Data, sizeof(moving));
+        target = layer.id;
+        where = upper ? 1 : -1;
+      }
+      ImGui::EndDragDropTarget();
+    }
+    if (row_hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+      doc.active_layer = layer.id;
+      ImGui::OpenPopup("##order_menu");
+    }
+    if (ui_menu_begin("##order_menu")) {
+      ImGui::TextDisabled("Draw Order: %s", layer.name.c_str());
+      ui_draw_order_menu_items(C, 0);
+      ui_menu_end();
+    }
+    if (doc.active_layer == layer.id) {
+      dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f);
+    }
+    else if (row_hovered) {
+      dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0xff, 0xff, 14), 3.0f);
+    }
+    const float cy = row_min.y + h * 0.5f;
+    float x = row_min.x + 8.0f;
+    icon_layer_type(dl, ImVec2(x + h * 0.4f, cy), h * 0.32f * 1.3f, layer);
+    x += h * 0.9f;
+    const ImU32 text = layer.visible ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
+    dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
+    if (const Layer *parent = layer_parent(doc, layer.id)) {
+      const float name_w = ImGui::CalcTextSize(layer.name.c_str()).x;
+      const std::string in = "in " + parent->name;
+      dl->AddText(ImVec2(x + name_w + 8.0f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0x80, 0x80, 0x80, 255), in.c_str());
+    }
+    order_marker(C, layer, row_min.x + row_w - h * 1.2f, row_min.y, h);
+    ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + h));
+    ImGui::PopID();
+  }
+  if (order.empty()) {
+    ImGui::TextDisabled("No drawing layers.");
+  }
+  ImGui::Dummy(ImVec2(1, 4));
+  ImGui::TextDisabled("Drag a layer onto another to draw it in front of\nor behind it (keyed on frames other than 0).");
+  if (moving != 0 && target != 0 && moving != target) {
+    operator_call(C, "layer.draw_order_set",
+                  {{"layer", std::to_string(moving)}, {"mode", where > 0 ? "FRONT" : "BEHIND"},
+                   {"target", std::to_string(target)}});
+  }
+}
+
 void layers_draw(Area &area, Context &C)
 {
   Document &doc = *C.document;
+  ui_draw_order_pick_update(C);
+  ui_mask_pick_update(C);
   area_editor_type_menu(area);
+  /* M and Shift M over the Layers editor: the picked drawings' bone collections. */
+  ui_bone_collection_menus(C, ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows));
 
   /* Header buttons: add, duplicate as reference, delete, and move up/down. */
   ImGui::SameLine();
@@ -509,13 +735,37 @@ void layers_draw(Area &area, Context &C)
   op_button("Del", "layer.delete", "Delete the active layer");
   op_button("Up", "layer.move_up", "Move the active layer up");
   op_button("Down", "layer.move_down", "Move the active layer down");
+  /* The draw-order view: this frame's draw order instead of the tree. */
+  ImGui::SameLine(0, 8);
+  if (area.layers_draw_order_view) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+  }
+  const bool order_clicked = ImGui::Button("Order");
+  if (area.layers_draw_order_view) {
+    ImGui::PopStyleColor();
+  }
+  if (order_clicked) {
+    area.layers_draw_order_view = !area.layers_draw_order_view;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Show the layers in this frame's draw order (Draw Order rules applied), top first: drag one "
+                      "onto another to draw it in front of or behind it");
+  }
   ImGui::Separator();
+
+  if (area.layers_draw_order_view) {
+    if (ImGui::BeginChild("##layers_order", ImVec2(0, 0))) {
+      draw_order_view(C);
+    }
+    ImGui::EndChild();
+    return;
+  }
 
   DropRequest drop;
   bool context_open = false;
   if (ImGui::BeginChild("##layers", ImVec2(0, 0))) {
     for (Layer &layer : doc.layers) {
-      layer_row(C, area, layer, 0, false, drop, context_open);
+      layer_row(C, area, layer, 0, drop, context_open);
     }
     if (doc.layers.empty()) {
       ImGui::TextDisabled("No layers. Click + to add one.");

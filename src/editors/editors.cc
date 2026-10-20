@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <map>
+#include <string>
+#include <vector>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -10,12 +13,18 @@
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
+#include "anim/draw_order.hh"
 #include "core/log.hh"
 #include "editors/ui.hh"
+#include "ui/theme.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
+#include "ops/edit_ops.hh"
+#include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "rna/rna.hh"
 #include "wm/context.hh"
+#include "wm/keymap.hh"
 
 namespace sky {
 
@@ -65,8 +74,17 @@ std::string Area::window_name() const
  * any property. Edits made here push an undo step when the widget is released.
  */
 
+/* The window manager whose properties_flash a Properties editor drawing now shows (ui_flash_bind). */
+static WindowManager *g_flash_wm = nullptr;
+
 bool ui_panel_begin(const char *title, bool default_open)
 {
+  /* A property being shown (ui_flash_bind) opens its panel. */
+  if (g_flash_wm && g_flash_wm->properties_flash.layer != 0 && g_flash_wm->properties_flash.start < 0.0 &&
+      g_flash_wm->properties_flash.panel == title)
+  {
+    ImGui::SetNextItemOpen(true);
+  }
   if (!ImGui::CollapsingHeader(title, default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
     return false;
   }
@@ -88,11 +106,126 @@ static struct {
   bool pending = false;
   int state = 0;
   std::function<void()> on_click;
+  int pin = -1;
+  std::function<void()> on_pin;
+  uint64_t flash_layer = 0;
+  std::string flash_path;
 } g_key_next;
+
+
+void ui_flash_bind(WindowManager *wm)
+{
+  g_flash_wm = wm;
+  if (wm && wm->properties_flash.layer != 0) {
+    wm->properties_flash.seen_properties = true;
+  }
+}
+
+void ui_flash_row(uint64_t layer, const std::string &path)
+{
+  if (!g_flash_wm) {
+    return;
+  }
+  WindowManager::PropertiesFlash &f = g_flash_wm->properties_flash;
+  if (f.layer == 0 || f.layer != layer || f.path != path) {
+    return;
+  }
+  const double now = ImGui::GetTime();
+  const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+  ImGuiWindow *window = ImGui::GetCurrentWindow();
+  if (f.start < 0.0) {
+    f.start = now;
+    ImGui::SetScrollFromPosY(lo.y - window->Pos.y, 0.5f);
+  }
+  const float fade = 1.0f - std::clamp(float(now - f.start), 0.0f, 1.0f);
+  if (fade <= 0.0f) {
+    return;
+  }
+  /* The whole row, across the window (not just the cell it is drawn in). */
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 a(window->InnerClipRect.Min.x + 2.0f, lo.y - 2.0f), b(window->InnerClipRect.Max.x - 2.0f, hi.y + 2.0f);
+  dl->PushClipRect(window->InnerClipRect.Min, window->InnerClipRect.Max, false);
+  dl->AddRectFilled(a, b, IM_COL32(0x47, 0x72, 0xb3, int(110.0f * fade)), 3.0f);
+  dl->AddRect(a, b, IM_COL32(0x6f, 0x9c, 0xe8, int(230.0f * fade)), 3.0f, 0, 1.5f);
+  dl->PopClipRect();
+}
+
+void ui_flash_update(WindowManager &wm)
+{
+  WindowManager::PropertiesFlash &f = wm.properties_flash;
+  if (f.layer == 0) {
+    return;
+  }
+  f.frames++;
+  if (f.start >= 0.0 && ImGui::GetTime() - f.start > 1.0) {
+    f = {};
+  }
+  else if (f.start < 0.0 && f.frames > 4) {
+    if (!f.seen_properties) {
+      report_at_mouse(ReportType::Info, "Open a Properties editor to see this property", "",
+                      "No Properties editor open");
+    }
+    f = {};
+  }
+}
 
 float ui_key_button_width()
 {
-  return ImGui::GetFrameHeight() + 2.0f;
+  /* The diamond, and the pin's place after it (kept even when empty, so fields line up). */
+  return (ImGui::GetFrameHeight() + 2.0f) * 2.0f;
+}
+
+void ui_pin_draw(ImDrawList *dl, ImVec2 min, float size, unsigned int color)
+{
+  /* A push pin, leaning a little: a round head, a collar, and the needle. */
+  const ImVec2 c(min.x + size * 0.5f, min.y + size * 0.5f);
+  const float r = size * 0.36f;
+  const auto at = [&](float x, float y) {
+    /* Turned 30 degrees clockwise about the middle. */
+    const float s = 0.5f, k = 0.866f;
+    return ImVec2(c.x + (x * k - y * s) * r, c.y + (x * s + y * k) * r);
+  };
+  const ImVec2 head[4] = {at(-0.42f, -1.0f), at(0.42f, -1.0f), at(0.42f, -0.72f), at(-0.42f, -0.72f)};
+  const ImVec2 body[4] = {at(-0.24f, -0.72f), at(0.24f, -0.72f), at(0.24f, -0.12f), at(-0.24f, -0.12f)};
+  const ImVec2 collar[4] = {at(-0.58f, -0.12f), at(0.58f, -0.12f), at(0.58f, 0.08f), at(-0.58f, 0.08f)};
+  dl->AddConvexPolyFilled(head, 4, color);
+  dl->AddConvexPolyFilled(body, 4, color);
+  dl->AddConvexPolyFilled(collar, 4, color);
+  dl->AddLine(at(0.0f, 0.08f), at(0.0f, 1.0f), color, std::max(1.0f, size * 0.07f));
+}
+
+bool ui_pin_button(const char *id, int pin)
+{
+  const float h = ImGui::GetFrameHeight();
+  ImGui::SameLine(0.0f, 2.0f);
+  if (pin < 0) {
+    ImGui::Dummy(ImVec2(h, h));
+    return false;
+  }
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const bool pressed = ImGui::InvisibleButton(id, ImVec2(h, h));
+  const bool hovered = ImGui::IsItemHovered();
+  const ImU32 col = pin == 1 ? (hovered ? IM_COL32(0xff, 0x70, 0x70, 255) : IM_COL32(0xe0, 0x40, 0x40, 255))
+                             : (hovered ? IM_COL32(0xe0, 0xe0, 0xe0, 255) : IM_COL32(0x80, 0x80, 0x80, 255));
+  ui_pin_draw(ImGui::GetWindowDrawList(), at, h, col);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(pin == 1 ? "Unpin from the Timeline" : "Pin to the Timeline: listed under Pinned, whatever is selected");
+  }
+  return pressed;
+}
+
+void ui_pinned_row()
+{
+  const ImU32 tint = IM_COL32(0xc0, 0x30, 0x30, 40);
+  if (ImGui::GetCurrentTable()) {
+    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, tint);
+    return;
+  }
+  /* Outside a table: across the row just drawn. */
+  const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+  const float left = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x;
+  const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+  ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(left, lo.y - 1.0f), ImVec2(right, hi.y + 1.0f), tint);
 }
 
 int ui_key_tint_push(int state)
@@ -141,9 +274,10 @@ bool ui_key_button(const char *id, int state)
   return pressed;
 }
 
-void ui_key_next(int state, std::function<void()> on_click)
+void ui_key_next(int state, std::function<void()> on_click, int pin, std::function<void()> on_pin,
+                 uint64_t flash_layer, const std::string &flash_path)
 {
-  g_key_next = {true, state, std::move(on_click)};
+  g_key_next = {true, state, std::move(on_click), pin, std::move(on_pin), flash_layer, flash_path};
 }
 
 /* After a row's fields: its key button, if one was asked for. */
@@ -154,10 +288,20 @@ static void key_button_finish(int pushed)
   }
   ImGui::PopStyleColor(pushed);
   auto on_click = std::move(g_key_next.on_click);
-  const int state = g_key_next.state;
+  auto on_pin = std::move(g_key_next.on_pin);
+  const int state = g_key_next.state, pin = g_key_next.pin;
+  const uint64_t flash_layer = g_key_next.flash_layer;
+  const std::string flash_path = g_key_next.flash_path;
   g_key_next = {};
   if (ui_key_button("##key", state) && on_click) {
     on_click();
+  }
+  ui_flash_row(flash_layer, flash_path);
+  if (ui_pin_button("##pin", pin) && on_pin) {
+    on_pin();
+  }
+  if (pin == 1) {
+    ui_pinned_row();
   }
 }
 
@@ -172,6 +316,16 @@ static void ui_label(const char *label)
   ImGui::TextUnformatted(label);
   ImGui::TableSetColumnIndex(1);
   ImGui::SetNextItemWidth(g_key_next.pending ? -ui_key_button_width() : -FLT_MIN);
+}
+
+void ui_row(const char *label, const std::function<void(float width)> &body)
+{
+  ui_label(label);
+  ImGui::PushID(label);
+  const int pushed = g_key_next.pending ? ui_key_tint_push(g_key_next.state) : 0;
+  body(ImGui::GetContentRegionAvail().x - (g_key_next.pending ? ui_key_button_width() : 0.0f));
+  key_button_finish(pushed);
+  ImGui::PopID();
 }
 
 /* A property's value field, at the next item width. `prefix` goes inside number fields ("X"). */
@@ -275,17 +429,111 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
   ImGui::PopID();
 }
 
-bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name)
+bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert)
 {
   ui_label(label);
   ImGui::PushID(label);
   bool finished = false;
-  const bool changed = ui_color_edit("##color", rgba, true, &finished);
+  const float revert_w = r_revert ? ui_revert_button_space() : 0.0f;
+  const bool changed = ui_color_edit("##color", rgba, true, &finished, revert_w);
   if (finished && C.undo && C.document && undo_name) {
     C.undo->push(undo_name, *C.document);
   }
+  if (r_revert) {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    *r_revert = ui_revert_button("##revert", "Revert to the original's colour");
+  }
   ImGui::PopID();
   return changed;
+}
+
+void ui_mouse_report_draw()
+{
+  static uint64_t seen = 0;
+  static ImVec2 at;
+  static int shown_frame = 0;
+  static bool dismissed = false;
+  const MouseReport &r = mouse_report();
+  const ImGuiIO &io = ImGui::GetIO();
+  if (r.serial != seen) {
+    seen = r.serial;
+    at = io.MousePos;
+    shown_frame = ImGui::GetFrameCount();
+    dismissed = false;
+  }
+  if (seen == 0 || r.message.empty() || dismissed) {
+    return;
+  }
+  /* It stays until a click (anywhere, after the one that caused it) or Esc puts it away. */
+  if (ImGui::GetFrameCount() > shown_frame &&
+      (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+       ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+  {
+    dismissed = true;
+    return;
+  }
+  const float alpha = 1.0f;
+  const auto with_alpha = [&](int r8, int g8, int b8) { return IM_COL32(r8, g8, b8, int(255.0f * alpha)); };
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+  /* A bold title line, if any, above the message. */
+  ImFont *bold = theme_font_bold();
+  const float font_size = ImGui::GetFontSize();
+  const ImVec2 title = r.title.empty() ? ImVec2(0, 0) : bold->CalcTextSizeA(font_size, FLT_MAX, 0.0f, r.title.c_str());
+  const ImVec2 body = ImGui::CalcTextSize(r.message.c_str());
+  const float gap = r.title.empty() ? 0.0f : 2.0f;
+  const ImVec2 text(std::max(title.x, body.x), title.y + gap + body.y);
+  const float pad = 6.0f, icon = font_size;
+  ImVec2 min(at.x + 14.0f, at.y + 18.0f);
+  const ImVec2 size(text.x + icon + pad * 3.0f, std::max(text.y, icon) + pad * 2.0f);
+  /* Kept inside the window. */
+  const ImVec2 display = io.DisplaySize;
+  min.x = std::max(4.0f, std::min(min.x, display.x - size.x - 4.0f));
+  min.y = std::max(4.0f, std::min(min.y, display.y - size.y - 4.0f));
+  const ImVec2 max(min.x + size.x, min.y + size.y);
+  const bool error = r.type == ReportType::Error;
+  dl->AddRectFilled(min, max, error ? with_alpha(0xc8, 0x3c, 0x3c) : with_alpha(0xe8, 0xb4, 0x2a), 4.0f);
+  dl->AddRect(min, max, with_alpha(0x20, 0x20, 0x20), 4.0f);
+  /* A warning sign: a triangle with an exclamation mark. */
+  const ImVec2 c(min.x + pad + icon * 0.5f, min.y + pad + std::min(text.y, icon) * 0.5f);
+  const ImU32 ink = with_alpha(0x1a, 0x1a, 0x1a);
+  dl->AddTriangle(ImVec2(c.x, c.y - icon * 0.45f), ImVec2(c.x + icon * 0.5f, c.y + icon * 0.42f),
+                  ImVec2(c.x - icon * 0.5f, c.y + icon * 0.42f), ink, 1.6f);
+  dl->AddLine(ImVec2(c.x, c.y - icon * 0.15f), ImVec2(c.x, c.y + icon * 0.13f), ink, 1.6f);
+  dl->AddCircleFilled(ImVec2(c.x, c.y + icon * 0.27f), 1.2f, ink);
+  const float x = min.x + pad * 2.0f + icon;
+  float y = min.y + (size.y - text.y) * 0.5f;
+  if (!r.title.empty()) {
+    dl->AddText(bold, font_size, ImVec2(x, y), ink, r.title.c_str());
+    y += title.y + gap;
+  }
+  dl->AddText(ImVec2(x, y), ink, r.message.c_str());
+}
+
+float ui_revert_button_space()
+{
+  return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
+}
+
+bool ui_revert_button(const char *id, const char *tooltip)
+{
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const bool clicked = ImGui::Button(id, ImVec2(h, h));
+  if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("%s", tooltip);
+  }
+  /* A curved arrow turning back. */
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 c(at.x + h * 0.5f, at.y + h * 0.5f);
+  const float r = h * 0.26f;
+  const ImU32 col = IM_COL32(0xe6, 0xe6, 0xe6, 255);
+  dl->PathArcTo(c, r, -0.4f * 3.14159265f, 1.2f * 3.14159265f, 14);
+  dl->PathStroke(col, 0, 1.5f);
+  /* The arrowhead at the arc's start, pointing back. */
+  const ImVec2 tip(c.x + r * 0.809f, c.y - r * 0.588f);
+  dl->AddTriangleFilled(ImVec2(tip.x - r * 0.55f, tip.y - r * 0.15f), ImVec2(tip.x + r * 0.35f, tip.y - r * 0.55f),
+                        ImVec2(tip.x + r * 0.2f, tip.y + r * 0.45f), col);
+  return clicked;
 }
 
 /* --- Colour picker and eyedropper ------------------------------------------------------------- */
@@ -315,7 +563,7 @@ void eyedropper_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
 
 }  // namespace
 
-bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished)
+bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished, float right_space, float swatch_width)
 {
   ImGui::PushID(id);
   const ImGuiID owner = ImGui::GetID("##eyedropper");
@@ -331,12 +579,13 @@ bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished)
 
   const float h = ImGui::GetFrameHeight();
   const ImGuiColorEditFlags show = ImGuiColorEditFlags_AlphaPreviewHalf;
-  if (ImGui::ColorButton("##swatch", ImVec4(rgba[0], rgba[1], rgba[2], rgba[3]), show, ImVec2(h * 1.6f, h))) {
+  if (ImGui::ColorButton("##swatch", ImVec4(rgba[0], rgba[1], rgba[2], rgba[3]), show,
+                         ImVec2(swatch_width > 0.0f ? swatch_width : h * 1.6f, h))) {
     ImGui::OpenPopup("##picker");
   }
   if (hex) {
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SetNextItemWidth(right_space > 0.0f ? -right_space : -FLT_MIN);
     changed |= ImGui::ColorEdit4("##hex", rgba,
                                  ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_NoSmallPreview |
                                      ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoOptions |
@@ -384,6 +633,355 @@ bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished)
     *r_finished = finished;
   }
   return changed;
+}
+
+void ui_eyedropper_icon(ImDrawList *dl, ImVec2 center, float size, ImU32 color)
+{
+  eyedropper_icon(dl, center, size, color);
+}
+
+namespace {
+
+struct LayerEyedropper {
+  bool active = false;
+  uint64_t armature = 0, bone = 0;
+  /* Picking for something other than a bone's shape: what to do with the layer clicked (true when
+   * done), and what to say at the mouse. */
+  std::function<bool(Context &, uint64_t)> pick;
+  std::function<std::string()> cue;
+  /* A click this frame went to it (a layer, or nothing under the mouse): not a click elsewhere. */
+  bool took_click = false;
+};
+LayerEyedropper g_layer_eyedropper;
+/* The document the eyedropper's cue names layers from. */
+const Document *g_doc_for_cue = nullptr;
+
+}  // namespace
+
+void ui_bone_collection_menus(Context &C, bool hovered)
+{
+  WindowManager &wm = *C.wm;
+  if (hovered && (wm.menu_request == "bone_collection_move" || wm.menu_request == "bone_collection_assign")) {
+    ImGui::OpenPopup(wm.menu_request == "bone_collection_move" ? "##bone_collection_move" : "##bone_collection_assign");
+    wm.menu_request.clear();
+  }
+  Document &doc = *C.document;
+  Layer *armature = collection_armature(doc);
+  for (const bool move : {true, false}) {
+    if (!ui_menu_begin(move ? "##bone_collection_move" : "##bone_collection_assign")) {
+      continue;
+    }
+    ImGui::TextDisabled(move ? "Move to Collection" : "Assign to Collection");
+    ImGui::Separator();
+    const char *op = move ? "armature.move_to_collection" : "armature.assign_to_collection";
+    if (armature) {
+      const bool bones = doc.active_layer == armature->id;
+      const std::vector<Layer *> drawings = collection_drawings(doc, *armature);
+      for (const BoneCollection &c : armature->bone_collections) {
+        /* Ticked: something it would move is in it already. */
+        const auto in = [&](const std::vector<uint64_t> &ids) {
+          return std::find(ids.begin(), ids.end(), c.id) != ids.end();
+        };
+        bool has = std::any_of(drawings.begin(), drawings.end(), [&](const Layer *d) { return in(d->collections); });
+        for (const Bone &b : armature->bones) {
+          has |= bones && (b.selected || b.select_head || b.select_tail) && in(b.collections);
+        }
+        if (ui_menu_item(c.name.c_str(), nullptr, has)) {
+          operator_call(C, op, {{"collection", c.name}});
+        }
+      }
+      if (!armature->bone_collections.empty()) {
+        ImGui::Separator();
+      }
+    }
+    if (ui_menu_item("New Collection...")) {
+      operator_call(C, op, {{"new", "1"}});
+    }
+    ui_menu_end();
+  }
+}
+
+void ui_layer_eyedropper_start(uint64_t armature, uint64_t bone)
+{
+  g_layer_eyedropper = {true, armature, bone, {}, {}, false};
+}
+
+void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pick, std::function<std::string()> cue)
+{
+  g_layer_eyedropper = {true, 0, 0, std::move(pick), std::move(cue), false};
+}
+
+void ui_draw_order_pick_update(Context &C)
+{
+  WindowManager::DrawOrderPick &pick = C.wm->draw_order_pick;
+  if (pick.mode == 0) {
+    return;
+  }
+  if (pick.started) {
+    if (!ui_layer_eyedropper_active()) {
+      /* Done, or cancelled (Esc, right-click, a click elsewhere). */
+      pick = {};
+    }
+    return;
+  }
+  pick.started = true;
+  WindowManager *wm = C.wm;
+  ui_layer_eyedropper_start_with(
+      [wm](Context &C, uint64_t target) {
+        WindowManager::DrawOrderPick &p = wm->draw_order_pick;
+        Document &doc = *C.document;
+        for (const uint64_t id : p.layers) {
+          if (layer_inside(doc, target, id) || layer_inside(doc, id, target)) {
+            report_at_mouse(ReportType::Warning, "Pick a layer outside the one you're moving",
+                            "A layer goes in front of or behind a layer outside it", "That's the layer being moved");
+            return false;
+          }
+        }
+        const std::string mode = p.mode > 0 ? "FRONT" : "BEHIND";
+        for (const uint64_t id : std::vector<uint64_t>(p.layers)) {
+          operator_call(C, "layer.draw_order_set",
+                        {{"layer", std::to_string(id)}, {"mode", mode}, {"target", std::to_string(target)}});
+        }
+        p.hover = 0;
+        return true;
+      },
+      [wm]() {
+        const WindowManager::DrawOrderPick &p = wm->draw_order_pick;
+        std::string text = p.mode > 0 ? "Click the layer to go in front of" : "Click the layer to go behind";
+        if (p.hover && g_doc_for_cue) {
+          if (const Layer *l = layer_find(*g_doc_for_cue, p.hover)) {
+            text = std::string(p.mode > 0 ? "In front of " : "Behind ") + l->name + " (click)";
+          }
+        }
+        return text + "  |  Esc cancels";
+      });
+}
+
+bool ui_draw_order_preview_begin(Document &doc, std::vector<std::pair<Layer *, float>> &r_saved, uint64_t target,
+                                 int mode, const std::vector<uint64_t> &layers)
+{
+  g_doc_for_cue = &doc;
+  if (target == 0 || mode == 0) {
+    return false;
+  }
+  for (const uint64_t id : layers) {
+    if (layer_inside(doc, target, id) || layer_inside(doc, id, target)) {
+      return false;
+    }
+  }
+  for (const uint64_t id : layers) {
+    if (Layer *l = layer_find(doc, id)) {
+      r_saved.push_back({l, l->draw_order});
+      l->draw_order = mode > 0 ? float(target) : -float(target);
+    }
+  }
+  return !r_saved.empty();
+}
+
+void ui_draw_order_preview_end(std::vector<std::pair<Layer *, float>> &saved)
+{
+  for (const auto &[l, v] : saved) {
+    l->draw_order = v;
+  }
+  saved.clear();
+}
+
+void ui_mask_pick_update(Context &C)
+{
+  WindowManager::MaskPick &pick = C.wm->mask_pick;
+  if (!pick.active) {
+    return;
+  }
+  if (pick.started) {
+    if (!ui_layer_eyedropper_active()) {
+      pick = {};
+    }
+    return;
+  }
+  pick.started = true;
+  WindowManager *wm = C.wm;
+  ui_layer_eyedropper_start_with(
+      [wm](Context &C, uint64_t source) {
+        WindowManager::MaskPick &p = wm->mask_pick;
+        Document &doc = *C.document;
+        if (std::find(p.layers.begin(), p.layers.end(), source) != p.layers.end()) {
+          report_at_mouse(ReportType::Warning, "Pick another layer: a layer can't be its own mask",
+                          "Click the layer whose shape it should show inside or outside", "That's the layer being masked");
+          return false;
+        }
+        for (const uint64_t id : std::vector<uint64_t>(p.layers)) {
+          const Layer *layer = layer_find(doc, id);
+          if (!layer) {
+            continue;
+          }
+          if (p.index >= 0 && p.index < int(layer->masks.size())) {
+            /* Joins that mask: inside or outside any of its layers. */
+            std::string sources;
+            for (const uint64_t l : layer->masks[size_t(p.index)].layers) {
+              sources += std::to_string(l) + "|";
+            }
+            sources += std::to_string(source);
+            operator_call(C, "mask.set",
+                          {{"layer", std::to_string(id)}, {"index", std::to_string(p.index)}, {"sources", sources}});
+          }
+          else {
+            operator_call(C, "mask.add",
+                          {{"layer", std::to_string(id)}, {"sources", std::to_string(source)}, {"outside", p.outside ? "1" : "0"}});
+          }
+        }
+        return true;
+      },
+      [wm]() {
+        const WindowManager::MaskPick &p = wm->mask_pick;
+        return std::string(p.outside ? "Click the layer to show it outside of" : "Click the layer to show it inside of") +
+               "  |  Esc cancels";
+      });
+}
+
+void ui_mask_menu_items(Context &C, uint64_t layer_id)
+{
+  Document &doc = *C.document;
+  OpArgs args;
+  if (layer_id != 0) {
+    args["layer"] = std::to_string(layer_id);
+  }
+  const Layer *layer = layer_id ? layer_find(doc, layer_id) : document_active_layer(doc);
+  if (layer && !layer->masks.empty()) {
+    for (const LayerMask &m : layer->masks) {
+      const std::string text = mask_label(doc, m) + (m.enabled ? "" : " (off)");
+      ImGui::TextDisabled("%s", text.c_str());
+    }
+    ImGui::Separator();
+  }
+  const auto item = [&](const char *label, const char *idname, OpArgs extra = {}) {
+    const std::string shortcut = keymaps().shortcut_for(idname);
+    if (ui_menu_item(label, shortcut.empty() ? nullptr : shortcut.c_str())) {
+      for (const auto &[k, v] : args) {
+        extra[k] = v;
+      }
+      operator_call(C, idname, extra);
+    }
+  };
+  item("Mask With Layer Below", "mask.with_layer_below");
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Show it only inside the layer just below it");
+  }
+  item("Inside Layer...", "mask.pick", {{"mode", "INSIDE"}});
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Then click the layer to show it inside of (viewport or Layers editor)");
+  }
+  item("Outside Layer...", "mask.pick", {{"mode", "OUTSIDE"}});
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Then click the layer to cut out of it (viewport or Layers editor)");
+  }
+  ImGui::Separator();
+  if (ui_menu_item("Remove Masks", nullptr, false, layer && !layer->masks.empty())) {
+    operator_call(C, "mask.remove", args);
+  }
+}
+
+void ui_draw_order_menu_items(Context &C, uint64_t layer_id)
+{
+  Document &doc = *C.document;
+  OpArgs args;
+  if (layer_id != 0) {
+    args["layer"] = std::to_string(layer_id);
+  }
+  const Layer *layer = layer_id ? layer_find(doc, layer_id) : document_active_layer(doc);
+  if (layer) {
+    const std::string now = "Now: " + draw_order_label(doc, layer->draw_order);
+    ImGui::TextDisabled("%s", now.c_str());
+    ImGui::Separator();
+  }
+  const auto item = [&](const char *label, const char *idname, OpArgs extra = {}) {
+    const std::string shortcut = keymaps().shortcut_for(idname);
+    if (ui_menu_item(label, shortcut.empty() ? nullptr : shortcut.c_str())) {
+      for (const auto &[k, v] : args) {
+        extra[k] = v;
+      }
+      operator_call(C, idname, extra);
+    }
+  };
+  item("Bring to Front", "layer.draw_order_front");
+  item("Bring Forward", "layer.draw_order_forward");
+  item("Send Backward", "layer.draw_order_backward");
+  item("Send to Back", "layer.draw_order_back");
+  ImGui::Separator();
+  item("In Front Of...", "layer.draw_order_pick", {{"mode", "FRONT"}});
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Then click the layer to go in front of, in the viewport or the Layers editor");
+  }
+  item("Behind...", "layer.draw_order_pick", {{"mode", "BEHIND"}});
+  ImGui::Separator();
+  const bool ruled = layer && layer->draw_order != 0.0f;
+  if (ui_menu_item("Normal", nullptr, false, ruled)) {
+    OpArgs extra = args;
+    extra["mode"] = "NORMAL";
+    operator_call(C, "layer.draw_order_set", extra);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Back where the Layers editor has it");
+  }
+}
+
+bool ui_layer_eyedropper_active()
+{
+  return g_layer_eyedropper.active;
+}
+
+void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
+{
+  if (!g_layer_eyedropper.active) {
+    return;
+  }
+  g_layer_eyedropper.took_click = true;
+  if (layer_id == 0) {
+    return;
+  }
+  if (g_layer_eyedropper.pick) {
+    if (g_layer_eyedropper.pick(C, layer_id)) {
+      g_layer_eyedropper.active = false;
+    }
+    return;
+  }
+  Document &doc = *C.document;
+  const Layer *layer = layer_find(doc, layer_id);
+  Layer *armature = layer_find(doc, g_layer_eyedropper.armature);
+  Bone *bone = armature ? bone_find(*armature, g_layer_eyedropper.bone) : nullptr;
+  if (!bone) {
+    g_layer_eyedropper.active = false;
+    return;
+  }
+  if (!layer || layer->type != LayerType::Vector) {
+    report_at_mouse(ReportType::Warning, "A custom bone shape is a vector layer's drawing", "Pick a vector layer",
+                    "Not a vector layer");
+    return;
+  }
+  bone->shape = BoneShape::Custom;
+  bone->shape_layer = layer->id;
+  g_layer_eyedropper.active = false;
+  C.undo->push("Bone Shape Layer", doc);
+}
+
+void ui_layer_eyedropper_overlay()
+{
+  LayerEyedropper &e = g_layer_eyedropper;
+  if (!e.active) {
+    return;
+  }
+  const ImGuiIO &io = ImGui::GetIO();
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+      (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !e.took_click))
+  {
+    e.active = false;
+    return;
+  }
+  e.took_click = false;
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+  const ImVec2 m = io.MousePos;
+  eyedropper_icon(dl, ImVec2(m.x + 14.0f, m.y - 14.0f), 7.0f, IM_COL32(255, 255, 255, 230));
+  const std::string cue = e.cue ? e.cue() : std::string("Click a layer (viewport or Layers editor)  |  Esc cancels");
+  dl->AddText(ImVec2(m.x + 26.0f, m.y - 22.0f), IM_COL32(255, 255, 255, 230), cue.c_str());
 }
 
 void ui_eyedropper_overlay()
@@ -532,20 +1130,20 @@ static void area_grip(Area &area)
   dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + line_w, y0 + thickness), col);
   dl->AddRectFilled(ImVec2(x0, y0 + thickness + line_gap), ImVec2(x0 + line_w, y0 + block_h), col);
 
-  if (ImGui::BeginPopup("##area_menu")) {
+  if (ui_menu_begin("##area_menu")) {
     ImGui::TextDisabled("Area");
     ImGui::Separator();
-    if (ImGui::MenuItem("Vertical Split")) {
+    if (ui_menu_item("Vertical Split")) {
       area.split_request = AreaSplit::Vertical;
     }
-    if (ImGui::MenuItem("Horizontal Split")) {
+    if (ui_menu_item("Horizontal Split")) {
       area.split_request = AreaSplit::Horizontal;
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Close Area")) {
+    if (ui_menu_item("Close Area")) {
       area.open = false;
     }
-    ImGui::EndPopup();
+    ui_menu_end();
   }
 }
 
@@ -620,6 +1218,134 @@ bool area_draw(Area &area, Context &C)
   }
   ImGui::End();
   return hovered;
+}
+
+}  // namespace sky
+
+namespace sky {
+
+/* --- Menus at the mouse, with memory (see ui_menu_begin) -------------------------------------- */
+
+namespace {
+
+struct MenuPlace {
+  ImVec2 mouse;
+  int frame = 0;
+  bool has_pos = false;
+  ImVec2 pos;
+};
+
+struct OpenMenu {
+  std::string key;
+  ImGuiID popup = 0;
+  ImGuiWindow *window = nullptr;
+  /* Where its first item and the remembered one sit, down from the menu's top (-1: not seen). */
+  float first_y = -1.0f, last_y = -1.0f;
+  /* The submenu open inside it, whose choices count as choosing it. */
+  std::string sub;
+};
+
+std::map<std::string, std::string> g_menu_last;
+std::map<ImGuiID, MenuPlace> g_menu_place;
+std::vector<OpenMenu> g_open_menus;
+
+void menu_note(const std::string &label, float center_y)
+{
+  if (g_open_menus.empty() || ImGui::GetCurrentWindow() != g_open_menus.back().window) {
+    return;
+  }
+  OpenMenu &m = g_open_menus.back();
+  const float y = center_y - m.window->Pos.y;
+  if (m.first_y < 0.0f) {
+    m.first_y = y;
+  }
+  if (g_menu_last[m.key] == label) {
+    m.last_y = y;
+  }
+}
+
+void menu_choose(const std::string &label)
+{
+  if (g_open_menus.empty()) {
+    return;
+  }
+  OpenMenu &m = g_open_menus.back();
+  g_menu_last[m.key] = ImGui::GetCurrentWindow() == m.window || m.sub.empty() ? label : m.sub;
+}
+
+}  // namespace
+
+bool ui_menu_begin(const char *id)
+{
+  const ImGuiID popup = ImGui::GetID(id);
+  /* Once placed, it stays put (ImGui would otherwise place it again as it first shows). */
+  if (const auto it = g_menu_place.find(popup); it != g_menu_place.end() && it->second.has_pos && ImGui::IsPopupOpen(id)) {
+    ImGui::SetNextWindowPos(it->second.pos);
+  }
+  if (!ImGui::BeginPopup(id)) {
+    return false;
+  }
+  if (ImGui::IsWindowAppearing()) {
+    g_menu_place[popup] = {ImGui::GetIO().MousePos, ImGui::GetFrameCount(), false, {}};
+  }
+  OpenMenu m;
+  m.key = id;
+  m.popup = popup;
+  m.window = ImGui::GetCurrentWindow();
+  g_open_menus.push_back(std::move(m));
+  return true;
+}
+
+bool ui_menu_item(const char *label, const char *shortcut, bool selected, bool enabled)
+{
+  const bool chosen = ImGui::MenuItem(label, shortcut, selected, enabled);
+  menu_note(label, (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+  if (chosen) {
+    menu_choose(label);
+  }
+  return chosen;
+}
+
+bool ui_submenu_begin(const char *label, bool enabled)
+{
+  /* Its row, measured before it opens (once open, the submenu's window is the current one). */
+  menu_note(label, ImGui::GetCursorScreenPos().y + ImGui::GetTextLineHeight() * 0.5f);
+  const bool open = ImGui::BeginMenu(label, enabled);
+  if (open && !g_open_menus.empty()) {
+    g_open_menus.back().sub = label;
+  }
+  return open;
+}
+
+void ui_submenu_end()
+{
+  ImGui::EndMenu();
+  if (!g_open_menus.empty()) {
+    g_open_menus.back().sub.clear();
+  }
+}
+
+void ui_menu_end()
+{
+  if (!g_open_menus.empty()) {
+    const OpenMenu m = g_open_menus.back();
+    g_open_menus.pop_back();
+    MenuPlace &place = g_menu_place[m.popup];
+    /* Placed over its first frames (the first is hidden while ImGui sizes it): the remembered item,
+     * else the first, under where the mouse was when it opened, a little in from the left. */
+    const float y = m.last_y >= 0.0f ? m.last_y : m.first_y;
+    if (y >= 0.0f && ImGui::GetFrameCount() <= place.frame + 1) {
+      const ImGuiViewport *vp = ImGui::GetMainViewport();
+      const ImVec2 size = m.window->Size;
+      ImVec2 pos(place.mouse.x - 24.0f, place.mouse.y - y);
+      pos.x = std::clamp(pos.x, vp->WorkPos.x, std::max(vp->WorkPos.x, vp->WorkPos.x + vp->WorkSize.x - size.x));
+      pos.y = std::clamp(pos.y, vp->WorkPos.y, std::max(vp->WorkPos.y, vp->WorkPos.y + vp->WorkSize.y - size.y));
+      place.pos = pos;
+      place.has_pos = true;
+      ImGui::SetWindowPos(pos);
+    }
+  }
+  ImGui::EndPopup();
 }
 
 }  // namespace sky

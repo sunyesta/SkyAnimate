@@ -1,7 +1,17 @@
 #pragma once
 
 /* Paints a line with a brush: stamps ("dabs") of the brush's images placed along it at the
- * brush's spacing, turned, sized and coloured by its settings, as Moho draws brushed lines. */
+ * brush's spacing, turned, sized and coloured by its settings, as Moho draws brushed lines.
+ *
+ * The dabs stick to the artwork. They are laid out once along the line as drawn on the setup
+ * frame (its "rest" shape), each at a fraction of one of its segments, and put at the same
+ * fraction of the same segment on every frame: when points move or bones bend the line, the dabs
+ * move with it, like a texture printed on it, instead of sliding along it (as dabs laid out from
+ * the start of the line do whenever its length changes). A segment stretched to twice its rest
+ * length or more fades in dabs between its own (more at four times, ...), and one squashed to
+ * half or less fades out every other one, so a stretched line doesn't break into dots nor a
+ * squashed one clot, without anything sliding (after Bénard et al.'s self-similar line textures).
+ * The layout doesn't depend on the zoom, so the viewport and a render agree. */
 
 #include <cstdint>
 #include <vector>
@@ -22,15 +32,34 @@ struct BrushDabs {
   /* Two triangles per dab, grouped by the brush image they use (one list per image). */
   std::vector<std::vector<BrushVertex>> per_image;
   int count = 0;
+  /* Each dab's middle and how much of it shows (faded in or out), in the order laid down. */
+  std::vector<float2> centers;
+  std::vector<float> alphas;
 };
 
-/* Dabs along a polyline. `half_widths` has one entry per point (the line's half width there);
- * `aspects` one entry per image (width / height). `min_step` keeps dabs at least that far apart
- * (half a pixel), so a very thin line doesn't turn into millions of them. `seed` picks the
- * random pattern: the same seed gives the same line. */
-void brush_stroke(const std::vector<float2> &points, const std::vector<float> &half_widths, bool closed,
-                  const BrushSettings &brush, Color color, const std::vector<float> &aspects, float min_step,
-                  uint32_t seed, BrushDabs &r_dabs);
+/* A brushed line's path: its segments end to end, each a Bezier (layer space) with the line's
+ * half width at either end and whether it shows (a hidden edge has no dabs). */
+struct BrushPath {
+  struct Edge {
+    float2 ctrl[4];
+    float half0 = 0.0f, half1 = 0.0f;
+    bool visible = true;
+  };
+  std::vector<Edge> edges;
+  bool closed = false;
+};
+
+/* A shape's outline as a brush path, its half widths from the shape's line width and its points'
+ * radii, plus `extra_half` (a mask's one-pixel rim). Empty if its edges don't join up. */
+BrushPath brush_path(const VectorDrawing &drawing, const Shape &shape, float extra_half);
+
+/* Dabs along `shown` (the line on the frame shown), laid out on `rest` (the same line on the
+ * setup frame: the same segments, in the same order; `shown` itself when there is none).
+ * `aspects`: one entry per image (width / height). `min_half` keeps a dab at least that big (half
+ * a pixel), so a hairline still shows. `seed` picks the random pattern: the same seed gives the
+ * same line. */
+void brush_stroke(const BrushPath &shown, const BrushPath &rest, const BrushSettings &brush, Color color,
+                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs);
 
 /* The seed for one shape's line: Line boil changes it every `random_interval` frames. */
 uint32_t brush_seed(const BrushSettings &brush, uint64_t layer_id, int shape_index, int frame);

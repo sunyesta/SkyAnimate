@@ -8,6 +8,8 @@
 #include <set>
 
 #include "anim/deform.hh"
+#include "anim/dynamics.hh"
+#include "anim/reference.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 
@@ -16,6 +18,9 @@ namespace sky {
 /* Calls f(channel, value) for every channel of a layer (not its children). */
 template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
 {
+  for (CustomChannel &c : layer.custom_channels) {
+    f(c.keys, c.value);
+  }
   /* Visibility is a stepped number beside the plain `visible` flag. */
   layer.visible_value = layer.visible ? 1.0f : 0.0f;
   f(layer.visible_keys, layer.visible_value);
@@ -24,14 +29,49 @@ template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
   for (Key<float> &k : layer.visible_keys.keys) {
     k.interp = Interp::Step;
   }
+  f(layer.draw_order_keys, layer.draw_order);
+  for (Key<float> &k : layer.draw_order_keys.keys) {
+    k.interp = Interp::Step;
+  }
   f(layer.position_keys, layer.position);
   f(layer.rotation_keys, layer.rotation);
   f(layer.scale_keys, layer.scale);
   f(layer.opacity_keys, layer.opacity);
   for (Bone &bone : layer.bones) {
-    f(bone.position_keys, bone.position);
-    f(bone.angle_keys, bone.angle);
+    /* A bone's keys are its Transform and Angle: the change from its setup pose. */
+    bone_changes_from_values(bone);
+    f(bone.position_keys, bone.transform);
+    f(bone.angle_keys, bone.turn);
+    bone_values_from_changes(bone);
     f(bone.scale_keys, bone.scale);
+    for (BoneConstraint &c : bone.constraints) {
+      f(c.influence_keys, c.influence);
+      f(c.weight_keys, c.weight);
+      f(c.wind_catch_keys, c.wind_catch);
+      f(c.gravity_keys, c.gravity);
+      f(c.wind_keys, c.wind);
+      f(c.wind_direction_keys, c.wind_direction);
+      f(c.wind_gusts_keys, c.wind_gusts);
+      f(c.wind_gust_speed_keys, c.wind_gust_speed);
+      f(c.wind_turbulence_keys, c.wind_turbulence);
+      for (BoneSpring *s : {&c.angle_spring, &c.position_spring, &c.scale_spring}) {
+        f(s->settle_speed_keys, s->settle_speed);
+        f(s->bounce_keys, s->bounce);
+        f(s->inertia_keys, s->inertia);
+        f(s->stretch_keys, s->stretch);
+        f(s->limit_keys, s->limit);
+      }
+    }
+  }
+  /* A reference's drawing is built from its original's: its own channels are its offsets. */
+  for (auto &[id, o] : layer.reference.points) {
+    f(o.offset_keys, o.offset);
+  }
+  for (auto &[key, o] : layer.reference.handles) {
+    f(o.offset_keys, o.offset);
+  }
+  if (layer.is_reference()) {
+    return;
   }
   for (MeshPoint &p : layer.drawing.points) {
     f(p.pos_keys, p.pos);
@@ -103,6 +143,87 @@ template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
 
 static void apply_smart_actions(Document &doc);
 
+/* --- The document's Simulation settings, animatable --------------------------------------------- */
+
+static const std::pair<const char *, float Document::*> SIMULATION_PROPS[] = {
+    {"gravity", &Document::gravity},
+    {"wind", &Document::wind},
+    {"wind_direction", &Document::wind_direction},
+    {"wind_gusts", &Document::wind_gusts},
+    {"wind_gust_speed", &Document::wind_gust_speed},
+    {"wind_turbulence", &Document::wind_turbulence},
+};
+
+Layer &document_simulation(Document &doc)
+{
+  Layer &sim = doc.simulation;
+  sim.id = SIMULATION_LAYER_ID;
+  sim.name = "Simulation";
+  sim.type = LayerType::Group;
+  for (const auto &[path, field] : SIMULATION_PROPS) {
+    const auto it = std::find_if(sim.custom_channels.begin(), sim.custom_channels.end(),
+                                 [&](const CustomChannel &c) { return c.path == path; });
+    if (it == sim.custom_channels.end()) {
+      sim.custom_channels.push_back({path, doc.*field, doc.*field, Channel<float>::by_hand()});
+    }
+  }
+  return sim;
+}
+
+bool simulation_path(const std::string &path)
+{
+  for (const auto &[name, field] : SIMULATION_PROPS) {
+    if (path == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* The settings and their channels made to agree: a setting edited since they last did goes into
+ * its channel (to be recorded); a channel changed since (its keys removed, say) goes into the
+ * setting. */
+static void simulation_in(Document &doc)
+{
+  for (CustomChannel &c : document_simulation(doc).custom_channels) {
+    for (const auto &[name, field] : SIMULATION_PROPS) {
+      if (c.path != name) {
+        continue;
+      }
+      if (doc.*field != c.synced) {
+        c.value = doc.*field;
+      }
+      else {
+        doc.*field = c.value;
+      }
+      c.synced = c.value;
+    }
+  }
+}
+
+/* The channels' values for the frame into the settings (after evaluating). */
+static void simulation_out(Document &doc)
+{
+  for (CustomChannel &c : doc.simulation.custom_channels) {
+    for (const auto &[name, field] : SIMULATION_PROPS) {
+      if (c.path == name) {
+        doc.*field = c.value;
+        c.synced = c.value;
+      }
+    }
+  }
+}
+
+float simulation_value_at(const Document &doc, const char *path, float plain, int frame)
+{
+  for (const CustomChannel &c : doc.simulation.custom_channels) {
+    if (c.path == path && c.keys.animated()) {
+      return c.keys.evaluate(std::max(frame, 0));
+    }
+  }
+  return plain;
+}
+
 void animation_record(Document &doc)
 {
   if (doc.evaluated_frame < 0) {
@@ -117,19 +238,58 @@ void animation_record(Document &doc)
   /* New points get their handles now, from the setup pose, before anything counts as an edit. */
   const auto init = [](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
-      drawing_init_handles(layer.drawing);
+      if (!layer.is_reference()) {
+        drawing_init_handles(layer.drawing);
+      }
       self(self, layer.children);
     }
   };
   init(init, doc.layers);
+  /* Every point and shape has its id; edits on references become their overrides (their offsets are
+   * then keyed below like any edit). */
+  const auto ids = [](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      if (!layer.is_reference()) {
+        drawing_ensure_ids(layer.drawing);
+      }
+      self(self, layer.children);
+    }
+  };
+  ids(ids, doc.layers);
+  references_capture(doc);
+  /* Frame 0 is the setup pose: bones moved there move their setup, and every pose with it. */
+  if (frame == 0) {
+    const auto setups = [](auto &&self, std::vector<Layer> &layers) -> void {
+      for (Layer &layer : layers) {
+        for (Bone &bone : layer.bones) {
+          bone_take_setup(bone);
+        }
+        self(self, layer.children);
+      }
+    };
+    setups(setups, doc.layers);
+  }
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
+  simulation_in(doc);
+  layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
 }
 
 void animation_evaluate(Document &doc, int frame)
 {
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
+  simulation_in(doc);
+  layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
+  simulation_out(doc);
   doc.smart_applied = false;
   apply_smart_actions(doc);
+  /* References show their originals as they now are. */
+  references_build(doc);
+  /* Bone dynamics swing from the pose the keys and smart actions give (and set each bone layer's
+   * shown frame, for constraints' delays). */
+  const int shown = doc.frame_current;
+  doc.frame_current = frame;
+  dynamics_update(doc);
+  doc.frame_current = shown;
   doc.evaluated_frame = frame;
 }
 
@@ -146,8 +306,13 @@ void animation_strip_smart(Document &doc)
 void animation_sync(Document &doc)
 {
   if (doc.evaluated_frame == doc.frame_current) {
-    /* Same frame, but bones may have turned: smart actions follow at once. */
+    /* Same frame, but bones may have turned: smart actions and dynamics follow at once (and a
+     * setting whose keys just went shows its value). */
+    simulation_in(doc);
     animation_refresh_smart(doc);
+    /* References follow edits to their originals at once, and edits to them become theirs. */
+    references_capture(doc);
+    dynamics_update(doc);
     return;
   }
   if (doc.evaluated_frame >= 0) {
@@ -389,6 +554,11 @@ void animation_refresh_smart(Document &doc)
 
 static void apply_smart_actions(Document &doc)
 {
+  /* The setup frame (0) is the rig at rest: turning a smart bone there sets its rest angle and plays
+   * nothing, as in Moho (and bones don't bend the drawing there either). */
+  if (doc.frame_current == 0) {
+    return;
+  }
   /* Editing a smart action shows its own keys, without any smart action on top. */
   if (!doc.action.empty()) {
     if (const Layer *owner = layer_find(doc, doc.action_layer); owner && smart_action_bone(*owner, doc.action)) {
@@ -414,11 +584,9 @@ static void apply_smart_actions(Document &doc)
       if (it == bone->angle_keys.actions.end()) {
         continue;
       }
-      /* The driving bone's setup angle: frame 0's key, or, not keyed yet, the angle it had before
-       * the turn not yet recorded (`last`), so turning an unkeyed bone plays the action at once. */
-      const Channel<float> &ach = bone->angle_keys;
-      const float setup = ach.animated() ? ach.evaluate(0) : (ach.has_last ? ach.last : bone->angle) - ach.smart;
-      const float t = smart_frame(it->second, setup, bone->angle);
+      /* The driving bone's keys are its Angle (the turn from its setup pose), so its action starts at
+       * 0 and the bone's turn now picks the frame; turning an unkeyed bone plays it at once. */
+      const float t = smart_frame(it->second, 0.0f, bone->angle - bone->setup_angle);
       if (t > 0.0f) {
         frames.push_back({name, t});
       }
@@ -433,7 +601,9 @@ static void apply_smart_actions(Document &doc)
         if (it == ch.actions.end()) {
           return;
         }
-        const auto setup = ch.animated() ? ch.evaluate(0) : value - ch.smart;
+        /* Unkeyed, the setup is the value as last recorded, not as it is now: an edit not yet
+         * recorded (a bone being dragged) stays on top instead of being taken into the offset. */
+        const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.smart;
         const auto delta = smart_sample(it->second, setup, t) - setup;
         /* The value and what it was last recorded as both move, so an edit stays an edit. */
         value += delta;
@@ -443,6 +613,20 @@ static void apply_smart_actions(Document &doc)
       });
     }
   }
+}
+
+std::vector<std::pair<Layer *, std::string>> layers_keyed_at(const std::vector<Layer *> &layers,
+                                                             const KeyFilter &filter, int frame)
+{
+  std::vector<std::pair<Layer *, std::string>> keyed;
+  for (Layer *layer : layers) {
+    for (const ChannelRef &ref : layer_filtered_channels(*layer, filter)) {
+      if (ref.scalar ? ref.scalar->key_at(frame) != nullptr : ref.vector->key_at(frame) != nullptr) {
+        keyed.push_back({layer, ref.path});
+      }
+    }
+  }
+  return keyed;
 }
 
 std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
@@ -466,13 +650,70 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   add("scale", layer.scale_keys, layer.scale);
   add("opacity", layer.opacity_keys, layer.opacity);
   add("visible", layer.visible_keys, layer.visible_value);
+  add("draw_order", layer.draw_order_keys, layer.draw_order);
   for (Bone &bone : layer.bones) {
     const std::string base = "bones[\"" + bone.name + "\"].";
-    add(base + "position", bone.position_keys, bone.position);
-    add(base + "angle", bone.angle_keys, bone.angle);
+    /* Its keys hold Transform and Angle (see layer_for_each_channel); a change made through them
+     * goes back with bone_values_from_changes. */
+    bone_changes_from_values(bone);
+    add(base + "position", bone.position_keys, bone.transform);
+    add(base + "angle", bone.angle_keys, bone.turn);
     add(base + "scale", bone.scale_keys, bone.scale);
+    for (size_t i = 0; i < bone.constraints.size(); i++) {
+      BoneConstraint &c = bone.constraints[i];
+      const std::string cb = base + "constraints[" + std::to_string(i) + "].";
+      add(cb + "influence", c.influence_keys, c.influence);
+      add(cb + "weight", c.weight_keys, c.weight);
+      add(cb + "wind_catch", c.wind_catch_keys, c.wind_catch);
+      add(cb + "gravity", c.gravity_keys, c.gravity);
+      add(cb + "wind", c.wind_keys, c.wind);
+      add(cb + "wind_direction", c.wind_direction_keys, c.wind_direction);
+      add(cb + "wind_gusts", c.wind_gusts_keys, c.wind_gusts);
+      add(cb + "wind_gust_speed", c.wind_gust_speed_keys, c.wind_gust_speed);
+      add(cb + "wind_turbulence", c.wind_turbulence_keys, c.wind_turbulence);
+      for (const auto &[name, s] : {std::pair<const char *, BoneSpring *>{"angle_spring.", &c.angle_spring},
+                                    {"position_spring.", &c.position_spring},
+                                    {"scale_spring.", &c.scale_spring}})
+      {
+        add(cb + name + "settle_speed", s->settle_speed_keys, s->settle_speed);
+        add(cb + name + "bounce", s->bounce_keys, s->bounce);
+        add(cb + name + "inertia", s->inertia_keys, s->inertia);
+        add(cb + name + "stretch", s->stretch_keys, s->stretch);
+        add(cb + name + "limit", s->limit_keys, s->limit);
+      }
+    }
+  }
+  for (CustomChannel &c : layer.custom_channels) {
+    add(c.path, c.keys, c.value);
   }
   if (!drawing) {
+    return refs;
+  }
+  if (layer.is_reference()) {
+    /* A reference's points move by its own offsets (by the point's place in its drawing). */
+    for (size_t i = 0; i < layer.drawing.points.size(); i++) {
+      if (auto it = layer.reference.points.find(layer.drawing.points[i].id); it != layer.reference.points.end()) {
+        add("points[" + std::to_string(i) + "].offset", it->second.offset_keys, it->second.offset);
+      }
+    }
+    /* And its handles' offsets, by the handle's place in its drawing. */
+    const VectorDrawing &d = layer.drawing;
+    for (size_t c = 0; c < d.curves.size(); c++) {
+      const Curve &curve = d.curves[c];
+      const int n = int(curve.points.size());
+      for (int i = 0; i < n; i++) {
+        for (const bool in : {true, false}) {
+          const int j = in ? (i > 0 ? i - 1 : (curve.closed ? n - 1 : -1)) : (i + 1 < n ? i + 1 : (curve.closed ? 0 : -1));
+          const ReferenceHandleKey key{d.points[curve.points[i].point].id,
+                                       j >= 0 && j != i ? d.points[curve.points[j].point].id : 0, in};
+          if (auto it = layer.reference.handles.find(key); it != layer.reference.handles.end()) {
+            add("curves[" + std::to_string(c) + "].points[" + std::to_string(i) + "]." +
+                    (in ? "handle_in_offset" : "handle_out_offset"),
+                it->second.offset_keys, it->second.offset);
+          }
+        }
+      }
+    }
     return refs;
   }
   for (size_t i = 0; i < layer.drawing.points.size(); i++) {
@@ -579,6 +820,9 @@ int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int f
       toggle(*ref.vector, *ref.vector_value);
     }
   }
+  for (Bone &bone : layer.bones) {
+    bone_values_from_changes(bone);
+  }
   return keyed ? -count : count;
 }
 
@@ -618,8 +862,120 @@ std::vector<int> layer_key_frames(const Layer &layer)
   return {frames.begin(), frames.end()};
 }
 
+bool layer_channel_pinned(Layer &layer, const std::string &path)
+{
+  ChannelRef ref;
+  return layer_channel(layer, path, &ref) && (ref.scalar ? ref.scalar->pinned : ref.vector->pinned);
+}
+
+int layer_pin_channels(Layer &layer, const std::vector<std::string> &paths, bool pinned)
+{
+  int changed = 0;
+  for (const std::string &path : paths) {
+    ChannelRef ref;
+    if (!layer_channel(layer, path, &ref)) {
+      continue;
+    }
+    bool &flag = ref.scalar ? ref.scalar->pinned : ref.vector->pinned;
+    changed += flag != pinned ? 1 : 0;
+    flag = pinned;
+  }
+  return changed;
+}
+
+int document_clear_pins(Document &doc)
+{
+  int cleared = 0;
+  const auto unpin = [&](Layer &layer) {
+    layer_for_each_channel(layer, [&](auto &ch, auto & /*value*/) {
+      cleared += ch.pinned ? 1 : 0;
+      ch.pinned = false;
+    });
+  };
+  for (const Layer *layer : document_layers_flat(doc)) {
+    unpin(*layer_find(doc, layer->id));
+  }
+  unpin(doc.simulation);
+  return cleared;
+}
+
+std::string channel_label(Layer &layer, const std::string &path, bool owner)
+{
+  static const std::pair<const char *, const char *> NAMES[] = {
+      {"position", "Position"},
+      {"rotation", "Rotation"},
+      {"scale", "Scale"},
+      {"opacity", "Opacity"},
+      {"visible", "Visibility"},
+      {"draw_order", "Draw Order"},
+      {"angle", "Angle"},
+      {"influence", "Influence"},
+      {"gravity", "Gravity"},
+      {"wind", "Wind"},
+      {"wind_catch", "Wind Catch"},
+      {"wind_direction", "Wind Direction"},
+      {"wind_gusts", "Gusts"},
+      {"wind_gust_speed", "Gust Speed"},
+      {"wind_turbulence", "Turbulence"},
+      {"settle_speed", "Settle Speed"},
+      {"bounce", "Bounce"},
+      {"weight", "Weight"},
+      {"inertia", "Inertia"},
+      {"stretch", "Stretch"},
+  };
+  const auto name_of = [](const std::string &id) -> std::string {
+    for (const auto &[key, name] : NAMES) {
+      if (id == key) {
+        return name;
+      }
+    }
+    return id;
+  };
+  if (path.rfind("bones[\"", 0) != 0) {
+    const std::string name = name_of(path);
+    return owner ? layer.name + ": " + name : name;
+  }
+  const size_t end = path.find("\"]");
+  if (end == std::string::npos) {
+    return path;
+  }
+  const std::string bone_name = path.substr(7, end - 7);
+  std::string rest = path.substr(std::min(end + 3, path.size()));
+  std::string label;
+  if (rest.rfind("constraints[", 0) == 0) {
+    /* "IK: Influence", "Dynamics: Angle Bounce", "Dynamics: Max Swing". */
+    const int i = std::atoi(rest.c_str() + 12);
+    const Bone *bone = bone_find_by_name(layer, bone_name);
+    const std::string constraint = bone && i >= 0 && i < int(bone->constraints.size()) ? bone->constraints[i].name
+                                                                                        : "Constraint";
+    rest = rest.substr(std::min(rest.find('.') + 1, rest.size()));
+    std::string setting;
+    for (const auto &[prefix, channel, limit] :
+         {std::tuple{"angle_spring.", "Angle", "Max Swing"}, std::tuple{"position_spring.", "Position", "Max Distance"},
+          std::tuple{"scale_spring.", "Squash & Stretch", "Max Stretch"}})
+    {
+      if (rest.rfind(prefix, 0) == 0) {
+        const std::string what = rest.substr(std::string(prefix).size());
+        setting = what == "limit" ? std::string(limit) : std::string(channel) + " " + name_of(what);
+      }
+    }
+    label = constraint + ": " + (setting.empty() ? name_of(rest) : setting);
+  }
+  else {
+    /* A bone's position is its Transform, as the Bone panel names it (the change from setup). */
+    label = rest == "position" ? std::string("Transform") : name_of(rest);
+  }
+  return owner ? bone_name + ": " + label : label;
+}
+
 KeyKind channel_kind(const std::string &path)
 {
+  if (simulation_path(path)) {
+    return KEY_SIMULATION;
+  }
+  if (path.rfind("bones[", 0) == 0 && path.find(".constraints[") != std::string::npos) {
+    return KEY_CONSTRAINTS;
+  }
   if (path.rfind("points[", 0) == 0 || path.rfind("curves[", 0) == 0) {
     return KEY_POINTS;
   }
@@ -634,6 +990,9 @@ KeyKind channel_kind(const std::string &path)
   }
   if (path == "visible") {
     return KEY_VISIBILITY;
+  }
+  if (path == "draw_order") {
+    return KEY_DRAW_ORDER;
   }
   return KEY_LAYER_TRANSFORM;
 }
@@ -665,12 +1024,30 @@ static bool channel_thing_selected(const Layer &layer, const std::string &path)
   return false;
 }
 
+bool key_filter_path_matches(const KeyFilter &filter, const std::string &path)
+{
+  if (filter.path.empty()) {
+    return true;
+  }
+  if (filter.path.back() == '.') {
+    return path.rfind(filter.path, 0) == 0;
+  }
+  return path == filter.path;
+}
+
 std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &filter)
 {
   std::vector<ChannelRef> refs;
-  for (ChannelRef &ref : layer_channels(layer)) {
+  /* A drawing's points and curves are only needed when their kind is asked for. */
+  const bool drawing = (filter.kinds & KEY_POINTS) &&
+                       (filter.path.empty() || filter.path.rfind("points[", 0) == 0 ||
+                        filter.path.rfind("curves[", 0) == 0);
+  for (ChannelRef &ref : layer_channels(layer, drawing)) {
     const KeyKind kind = channel_kind(ref.path);
-    if (!(filter.kinds & kind)) {
+    if (!(filter.kinds & kind) || !key_filter_path_matches(filter, ref.path)) {
+      continue;
+    }
+    if (filter.pinned_only && !(ref.scalar ? ref.scalar->pinned : ref.vector->pinned)) {
       continue;
     }
     if (filter.selected_only && !channel_thing_selected(layer, ref.path)) {
@@ -700,6 +1077,32 @@ template<typename F> static void filtered_for_each(const std::vector<Layer *> &l
   }
 }
 
+KeyShape interp_key_shape(Interp interp)
+{
+  switch (interp) {
+    case Interp::Smooth:
+      return KEY_SHAPE_SMOOTH;
+    case Interp::Linear:
+      return KEY_SHAPE_LINEAR;
+    case Interp::Step:
+      return KEY_SHAPE_STEP;
+    case Interp::EaseIn:
+    case Interp::EaseOut:
+    case Interp::EaseInOut:
+      return KEY_SHAPE_EASE;
+    case Interp::Back:
+    case Interp::Bounce:
+    case Interp::Elastic:
+      return KEY_SHAPE_BOUNCY;
+    case Interp::Noisy:
+    case Interp::Cycle:
+    case Interp::Bezier:
+    case Interp::Pose:
+      break;
+  }
+  return KEY_SHAPE_SPECIAL;
+}
+
 std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &layers, const KeyFilter &filter)
 {
   std::map<int, KeyFrameSummary> summary;
@@ -708,9 +1111,76 @@ std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &la
       KeyFrameSummary &s = summary[key.frame];
       s.keys++;
       s.selected += key.selected ? 1 : 0;
+      if (!ch.constant) {
+        const KeyShape shape = interp_key_shape(key.interp);
+        s.shape = s.shape_set && s.shape != shape ? KEY_SHAPE_MIXED : shape;
+        s.shape_set = true;
+      }
     }
   });
   return summary;
+}
+
+SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers)
+{
+  SelectedKeys r;
+  bool any_constant = false;
+  KeySettings constant;
+  for (Layer *layer : layers) {
+    layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
+      for (const auto &key : ch.keys) {
+        if (!key.selected) {
+          continue;
+        }
+        if (ch.constant) {
+          /* Visibility: always Step; it only speaks when nothing else is selected. */
+          any_constant = true;
+          constant = key_settings(key);
+          continue;
+        }
+        const KeySettings s = key_settings(key);
+        if (r.count == 0) {
+          r.first = s;
+        }
+        else {
+          r.mixed |= s.interp != r.first.interp;
+          r.mixed_ease |= s.ease != r.first.ease;
+        }
+        r.count++;
+      }
+    });
+  }
+  if (r.count == 0 && any_constant) {
+    r.first = constant;
+    r.count = 1;
+  }
+  return r;
+}
+
+int layers_change_selected_keys(const std::vector<Layer *> &layers, const std::function<void(KeySettings &)> &change)
+{
+  int count = 0;
+  for (Layer *layer : layers) {
+    layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
+      for (auto &key : ch.keys) {
+        if (!key.selected) {
+          continue;
+        }
+        KeySettings s = key_settings(key);
+        change(s);
+        s.hold = std::max(0, s.hold);
+        s.interval = std::max(1, s.interval);
+        s.cycle_back = std::max(0, s.cycle_back);
+        s.elastic_period = std::max(0.02f, s.elastic_period);
+        if (ch.constant) {
+          s.interp = Interp::Step;
+        }
+        key_settings_apply(key, s);
+        count++;
+      }
+    });
+  }
+  return count;
 }
 
 void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select, const KeyFilter &filter)
@@ -961,7 +1431,7 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame)
     const auto put = [&](auto &channel, const auto &keys) {
       for (const auto &key : keys) {
         const int at = key.frame + offset;
-        if (at < 1) {
+        if (at < 0) {
           continue;
         }
         auto &placed = channel.set_key(at, key.value);

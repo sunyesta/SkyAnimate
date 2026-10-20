@@ -74,28 +74,139 @@ uint32_t brush_seed(const BrushSettings &brush, uint64_t layer_id, int shape_ind
   return seed;
 }
 
-void brush_stroke(const std::vector<float2> &points, const std::vector<float> &half_widths, bool closed,
-                  const BrushSettings &brush, Color color, const std::vector<float> &aspects, float min_step,
-                  uint32_t seed, BrushDabs &r_dabs)
+/* --- Along the line ------------------------------------------------------------------------ */
+
+/* How finely a segment is measured, in document units: fixed, so the dabs don't creep as the view
+ * zooms (the outline drawn on screen is cut finer the closer you look). */
+static constexpr float PATH_TOLERANCE = 0.0002f;
+/* The closest dabs come (document units), whatever the spacing and width. */
+static constexpr float MIN_STEP = 0.0005f;
+/* How many times over a stretched segment fills its gaps (at 2, 4, 8 and 16 times its length). */
+static constexpr int MAX_FILL_LEVEL = 4;
+/* Thinning a squashed segment: every other dab fades out at half, every fourth at a quarter... */
+static constexpr int MAX_THIN_LEVEL = 6;
+
+/* A segment measured: points along it and the length up to each. */
+struct EdgeTable {
+  std::vector<float2> points;
+  std::vector<float> at;
+  float length = 0.0f;
+};
+
+static EdgeTable edge_table(const BrushPath::Edge &edge)
 {
-  const int n = int(points.size());
+  EdgeTable t;
+  const int steps = bezier_steps(edge.ctrl, 8, PATH_TOLERANCE);
+  t.points.resize(steps + 1);
+  t.at.assign(steps + 1, 0.0f);
+  for (int i = 0; i <= steps; i++) {
+    t.points[i] = bezier_eval(edge.ctrl, float(i) / float(steps));
+    if (i > 0) {
+      t.at[i] = t.at[i - 1] + distance(t.points[i - 1], t.points[i]);
+    }
+  }
+  t.length = t.at.back();
+  return t;
+}
+
+/* The point a fraction `u` of the way along a segment (by length), and the way it runs there. */
+static float2 edge_point(const EdgeTable &t, float u, float2 *r_dir)
+{
+  const int n = int(t.points.size());
+  *r_dir = float2(1.0f, 0.0f);
+  if (t.length <= 1e-12f || n < 2) {
+    const float2 d = t.points.back() - t.points.front();
+    if (length(d) > 1e-12f) {
+      *r_dir = normalize(d);
+    }
+    return t.points.front();
+  }
+  const float s = std::clamp(u, 0.0f, 1.0f) * t.length;
+  int i = int(std::upper_bound(t.at.begin(), t.at.end(), s) - t.at.begin()) - 1;
+  i = std::clamp(i, 0, n - 2);
+  const float seg = t.at[i + 1] - t.at[i];
+  const float2 d = t.points[i + 1] - t.points[i];
+  if (seg > 0.0f) {
+    *r_dir = d / seg;
+  }
+  return t.points[i] + d * (seg > 0.0f ? (s - t.at[i]) / seg : 0.0f);
+}
+
+BrushPath brush_path(const VectorDrawing &drawing, const Shape &shape, float extra_half)
+{
+  BrushPath path;
+  std::vector<OrientedEdge> chain;
+  shape_chain(drawing, shape, chain, &path.closed);
+  const float half = shape.style.line_width * 0.5f;
+  for (const OrientedEdge &o : chain) {
+    const Curve &curve = drawing.curves[o.edge.curve];
+    BrushPath::Edge e;
+    curve_segment_bezier(drawing, curve, o.edge.segment, e.ctrl);
+    int from, to;
+    curve_segment_points(curve, o.edge.segment, &from, &to);
+    if (o.reversed) {
+      std::swap(e.ctrl[0], e.ctrl[3]);
+      std::swap(e.ctrl[1], e.ctrl[2]);
+      std::swap(from, to);
+    }
+    e.half0 = drawing.points[from].radius * half + extra_half;
+    e.half1 = drawing.points[to].radius * half + extra_half;
+    e.visible = !curve.points[o.edge.segment].edge_hidden;
+    path.edges.push_back(e);
+  }
+  return path;
+}
+
+void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const BrushSettings &brush, Color color,
+                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs)
+{
+  const int edges = int(shown.edges.size());
   const int images = int(aspects.size());
-  if (n < 2 || images == 0) {
+  if (edges == 0 || images == 0) {
     return;
   }
   if (int(r_dabs.per_image.size()) < images) {
     r_dabs.per_image.resize(images);
   }
-  /* Arc length at each point (and back to the start when closed). */
-  const int pieces = closed ? n : n - 1;
-  std::vector<float> at(pieces + 1, 0.0f);
-  for (int i = 0; i < pieces; i++) {
-    at[i + 1] = at[i] + distance(points[i], points[(i + 1) % n]);
+  /* The rest shape lays the dabs out; without one (or a different one), the line itself. */
+  const BrushPath &rest = int(rest_path.edges.size()) == edges ? rest_path : shown;
+  std::vector<EdgeTable> rest_table, shown_table;
+  for (int e = 0; e < edges; e++) {
+    rest_table.push_back(edge_table(rest.edges[e]));
+    shown_table.push_back(&rest == &shown ? rest_table.back() : edge_table(shown.edges[e]));
   }
-  const float length = at[pieces];
-  if (length <= 0.0f) {
+  /* Where each segment starts along the rest line, and how stretched it is now. */
+  std::vector<float> start(edges + 1, 0.0f), stretch(edges, 1.0f);
+  for (int e = 0; e < edges; e++) {
+    start[e + 1] = start[e] + rest_table[e].length;
+    if (rest_table[e].length > 1e-9f) {
+      stretch[e] = shown_table[e].length / rest_table[e].length;
+    }
+  }
+  const float total = start[edges];
+  if (total <= 0.0f) {
     return;
   }
+  /* The segment at `s` along the rest line, and how far along it (0 to 1). */
+  const auto locate = [&](float s, int *r_edge) {
+    int e = int(std::upper_bound(start.begin(), start.end(), s) - start.begin()) - 1;
+    e = std::clamp(e, 0, edges - 1);
+    while (e > 0 && rest_table[e].length <= 1e-9f) {
+      e--;
+    }
+    *r_edge = e;
+    return rest_table[e].length > 1e-9f ? std::clamp((s - start[e]) / rest_table[e].length, 0.0f, 1.0f) : 0.0f;
+  };
+  const auto rest_half = [&](float s) {
+    int e;
+    const float u = locate(s, &e);
+    return rest.edges[e].half0 + (rest.edges[e].half1 - rest.edges[e].half0) * u;
+  };
+  const auto stretch_at = [&](float s) {
+    int e;
+    locate(s, &e);
+    return stretch[e];
+  };
 
   float h0, s0, v0;
   rgb_to_hsv(color.r, color.g, color.b, h0, s0, v0);
@@ -103,62 +214,110 @@ void brush_stroke(const std::vector<float2> &points, const std::vector<float> &h
   const float spacing = std::max(brush.spacing, 0.01f);
   const float wave = std::max(brush.size_variation_scale, 0.001f) * FRAME_HEIGHT;
 
-  int piece = 0;
-  int k = 0;
-  /* A closed line stops a dab short of where it began, so the seam doesn't double up. */
-  for (float s = 0.0f; s <= length && k < MAX_DABS; k++) {
-    while (piece < pieces - 1 && at[piece + 1] < s) {
-      piece++;
+  /* One dab, `s` along the rest line. `id` picks its random values (each dab its own, kept as
+   * the line moves), `order` its image in turn, `alpha` how much of it shows. Everything that
+   * varies along the line goes by the rest line, so it stays put on the artwork. */
+  const auto dab = [&](float s, uint32_t id, int order, float alpha) {
+    if (r_dabs.count >= MAX_DABS || alpha <= 0.0f) {
+      return;
     }
-    const int i = piece, j = (piece + 1) % n;
-    const float seg = at[piece + 1] - at[piece];
-    const float t = seg > 0.0f ? std::clamp((s - at[piece]) / seg, 0.0f, 1.0f) : 0.0f;
-    const float2 p = points[i] + (points[j] - points[i]) * t;
-    const float2 dir = seg > 0.0f ? (points[j] - points[i]) / seg : float2(1.0f, 0.0f);
-    const float half = half_widths[i] + (half_widths[j] - half_widths[i]) * t;
+    int e;
+    const float u = locate(s, &e);
+    const BrushPath::Edge &edge = shown.edges[e];
+    if (!edge.visible) {
+      return;
+    }
+    float2 dir;
+    const float2 p = edge_point(shown_table[e], u, &dir);
+    const float half = std::max(edge.half0 + (edge.half1 - edge.half0) * u, min_half);
+    const float here = rest_half(s);
 
     float size = 2.0f * half;
     if (brush.size_variation_amp > 0.0f) {
       size *= std::max(0.0f, 1.0f + brush.size_variation_amp * smooth_noise(seed ^ 0xa511e9b3U, s / wave));
     }
-    const float step = std::max(spacing * 2.0f * half, min_step);
-
     /* Upright, or the image's top along the line. */
     float angle = brush.align ? std::atan2(dir.y, dir.x) - PI * 0.5f : 0.0f;
-    angle += (random01(seed, uint32_t(k) * 3 + 0) - 0.5f) * brush.jitter;
+    angle += (random01(seed, id * 3 + 0) - 0.5f) * brush.jitter;
     if (brush.angle_drift != 0.0f) {
-      angle += brush.angle_drift * smooth_noise(seed ^ 0x63d83595U, s / std::max(40.0f * half, 1e-6f));
+      angle += brush.angle_drift * smooth_noise(seed ^ 0x63d83595U, s / std::max(40.0f * here, 1e-6f));
     }
-
-    const int image = brush.random_order ? int(random01(seed, uint32_t(k) * 3 + 1) * float(images)) % images
-                                         : k % images;
+    const int image = brush.random_order ? int(random01(seed, id * 3 + 1) * float(images)) % images
+                                         : order % images;
     Color c = color;
     if (drift) {
-      const float r1 = random01(seed, uint32_t(k) * 3 + 2), r2 = random01(seed ^ 0x1b873593U, uint32_t(k)),
-                  r3 = random01(seed ^ 0xcc9e2d51U, uint32_t(k));
+      const float r1 = random01(seed, id * 3 + 2), r2 = random01(seed ^ 0x1b873593U, id),
+                  r3 = random01(seed ^ 0xcc9e2d51U, id);
       hsv_to_rgb(h0 + (r1 - 0.5f) * 2.0f * brush.hue_drift,
                  std::clamp(s0 + (r2 - 0.5f) * 2.0f * brush.sat_drift, 0.0f, 1.0f),
                  std::clamp(v0 + (r3 - 0.5f) * 2.0f * brush.val_drift, 0.0f, 1.0f), c.r, c.g, c.b);
     }
-
-    if (size > 0.0f) {
-      /* The image's longer side spans the line's width. */
-      const float aspect = aspects[image] > 0.0f ? aspects[image] : 1.0f;
-      const float hx = aspect >= 1.0f ? size * 0.5f : size * 0.5f * aspect;
-      const float hy = aspect >= 1.0f ? size * 0.5f / aspect : size * 0.5f;
-      const float ca = std::cos(angle), sa = std::sin(angle);
-      const float2 ax(ca * hx, sa * hx), ay(-sa * hy, ca * hy);
-      const BrushVertex tl{p.x - ax.x + ay.x, p.y - ax.y + ay.y, 0, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-      const BrushVertex tr{p.x + ax.x + ay.x, p.y + ax.y + ay.y, 1, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-      const BrushVertex br{p.x + ax.x - ay.x, p.y + ax.y - ay.y, 1, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-      const BrushVertex bl{p.x - ax.x - ay.x, p.y - ax.y - ay.y, 0, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-      std::vector<BrushVertex> &out = r_dabs.per_image[image];
-      out.insert(out.end(), {tl, tr, br, tl, br, bl});
-      r_dabs.count++;
+    const float shows = std::clamp(alpha, 0.0f, 1.0f);
+    c.a *= shows;
+    if (size <= 0.0f || c.a <= 0.0f) {
+      return;
     }
+    /* The image's longer side spans the line's width. */
+    const float aspect = aspects[image] > 0.0f ? aspects[image] : 1.0f;
+    const float hx = aspect >= 1.0f ? size * 0.5f : size * 0.5f * aspect;
+    const float hy = aspect >= 1.0f ? size * 0.5f / aspect : size * 0.5f;
+    const float ca = std::cos(angle), sa = std::sin(angle);
+    const float2 ax(ca * hx, sa * hx), ay(-sa * hy, ca * hy);
+    const BrushVertex tl{p.x - ax.x + ay.x, p.y - ax.y + ay.y, 0, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex tr{p.x + ax.x + ay.x, p.y + ax.y + ay.y, 1, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex br{p.x + ax.x - ay.x, p.y + ax.y - ay.y, 1, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex bl{p.x - ax.x - ay.x, p.y - ax.y - ay.y, 0, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    std::vector<BrushVertex> &out = r_dabs.per_image[image];
+    out.insert(out.end(), {tl, tr, br, tl, br, bl});
+    r_dabs.centers.push_back(p);
+    r_dabs.alphas.push_back(shows);
+    r_dabs.count++;
+  };
+
+  /* The dabs' places along the rest line, at the brush's spacing (of the rest width). A closed
+   * line stops a dab short of where it began, so the seam doesn't double up. */
+  std::vector<float> marks;
+  for (float s = 0.0f; s <= total && int(marks.size()) < MAX_DABS;) {
+    marks.push_back(s);
+    const float step = std::max(spacing * 2.0f * rest_half(s), MIN_STEP);
     s += step;
-    if (closed && s > length - step * 0.5f) {
+    if (rest.closed && s > total - step * 0.5f) {
       break;
+    }
+  }
+  /* Between two dabs on a stretched segment: one halfway, fading in from 1.5 to 2 times its rest
+   * length, then halfway again from 3 to 4 times, and so on. `code` numbers it within the gap
+   * (1, then 2 and 3, ...) for its own random values. */
+  const auto fill = [&](auto &&self, float a, float b, int level, uint32_t code, int k) -> void {
+    const float mid = (a + b) * 0.5f;
+    const float hi = float(1 << level), lo = hi * 0.75f;
+    const float r = stretch_at(mid);
+    if (r <= lo) {
+      return;
+    }
+    dab(mid, uint32_t(k) * 32u + code, k, (r - lo) / (hi - lo));
+    if (level < MAX_FILL_LEVEL) {
+      self(self, a, mid, level + 1, code * 2, k);
+      self(self, mid, b, level + 1, code * 2 + 1, k);
+    }
+  };
+  const int count = int(marks.size());
+  for (int k = 0; k < count; k++) {
+    /* On a squashed segment, every other dab fades out from 3/4 to 1/2 its rest length, every
+     * fourth from 3/8 to 1/4, ... (the first always stays). */
+    float alpha = 1.0f;
+    if (k > 0) {
+      int m = 1;
+      for (int bits = k; (bits & 1) == 0 && m < MAX_THIN_LEVEL; bits >>= 1) {
+        m++;
+      }
+      const float lo = std::ldexp(1.0f, -m), hi = lo * 1.5f;
+      alpha = std::clamp((stretch_at(marks[k]) - lo) / (hi - lo), 0.0f, 1.0f);
+    }
+    dab(marks[k], uint32_t(k) * 32u, k, alpha);
+    const bool last = k + 1 >= count;
+    if (!last || rest.closed) {
+      fill(fill, marks[k], last ? total : marks[k + 1], 1, 1u, k);
     }
   }
 }

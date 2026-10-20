@@ -38,6 +38,13 @@ static bool key_used_by_text_editing(const KeyEvent &event)
 
 bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only)
 {
+  /* Typing in a text field: the keys it uses are the field's, not the shortcuts of the editor
+   * under the mouse (M while renaming a layer is a letter, not Move to Collection). The text
+   * editor and console are text themselves: their keymaps still apply (Alt P). */
+  const bool text_area = C.area_type == "Text Editor" || C.area_type == "Console";
+  if (area_only && !text_area && key_used_by_text_editing(event)) {
+    return false;
+  }
   if (C.area_type != "Window" && try_keymap(C, C.area_type, event)) {
     return true;
   }

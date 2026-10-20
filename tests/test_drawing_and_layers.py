@@ -50,7 +50,7 @@ sky.ops.mesh.select_mode_point()
 
 # Undo restores deleted geometry.
 before = counts(layer)
-assert sky.wm.event_simulate("X", area="Viewport")
+assert sky.wm.event_simulate("DEL", area="Viewport"), "Delete deletes the selected points at once (X opens a menu)"
 assert layer.point_count == before[0] - 4
 sky.ops.ed.undo()
 assert counts(layer) == before
@@ -169,14 +169,13 @@ picked = layers.active
 assert picked.type == "GROUP" and [c.name for c in picked.children] == [b.name, a.name]
 assert not a.select, "the extra selection clears"
 
-# Moho's group mask shortcuts mask with the bottom layer.
-assert sky.ops.layer.group_mask_set(mode="INSIDE") == {'FINISHED'}
-assert picked.group_mask == "HIDE_ALL" and a.mask_mode == "ADD"
-assert sky.ops.layer.group_mask_set(mode="OUTSIDE") == {'FINISHED'}
-assert picked.group_mask == "SHOW_ALL" and a.mask_mode == "SUBTRACT_INVISIBLE"
-assert sky.ops.layer.group_mask_set(mode="NONE") == {'FINISHED'} and picked.group_mask == "NONE"
+# Mask With Layer Below: b shows only inside a (Photoshop's clipping mask).
+layers.active = b
+assert sky.ops.mask.with_layer_below() == {'FINISHED'}
+assert b.masks == [{"outside": False, "layers": [a.name], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
+assert a.masking == [b.name]
 layers.active = a
-assert not sky.ops.layer.group_mask_set.poll(), "only on groups"
+assert sky.ops.mask.with_layer_below() == {'CANCELLED'}, "nothing below the bottom layer"
 layers.active = picked
 sky.ops.layer.delete()
 
@@ -185,17 +184,12 @@ layers.active = layer
 assert sky.ops.layer.make_reference() == {'FINISHED'}
 ref = layers.active
 assert ref.reference_source == layer and ref.points == layer.points
-assert not sky.ops.mesh.select_all.poll(), "a reference's drawing is edited through its original"
+assert sky.ops.mesh.select_all.poll(), "a reference's shapes can be picked (to change their looks)"
 
-# The reference keeps its own masking while showing the original's drawing.
-holder.group_mask = "HIDE_ALL"
-ref.mask_mode = "ADD_INVISIBLE"
-assert ref.mask_mode == "ADD_INVISIBLE" and layer.mask_mode == "MASKED"
-try:
-    ref.mask_mode = "SIDEWAYS"
-    raise AssertionError("unknown enum values are rejected")
-except ValueError:
-    pass
+# The reference keeps its own masks while showing the original's drawing.
+assert sky.ops.mask.add(layer=str(ref.id), sources=str(holder.id)) == {'FINISHED'}
+assert ref.masks[0]["layers"] == [holder.name] and layer.masks == []
+sky.ops.mask.remove(layer=str(ref.id))
 
 # The original's edits show through the reference.
 layer.add_curve([(0, 0), (0.1, 0.1)])
@@ -240,7 +234,7 @@ sky.data.document.frame_current = 12
 assert pos_layer.shape_position(1) == (0.0, 3.0)
 sky.data.document.frame_current = 0
 
-# --- Edges mode: X deletes the selected edges, not their points --------------------------------
+# --- Delete Edges (X > Edges) deletes the selected edges, not their points ----------------------
 sky.data.document.frame_current = 0
 sky.ops.layer.new()
 edge_layer = sky.data.layers.active
@@ -248,7 +242,9 @@ edge_layer.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=Tr
 assert sky.ops.mesh.select_mode_edge() == {'FINISHED'}
 sky.ops.mesh.select_none()
 edge_layer.select_points([0, 1])  # the bottom edge
-assert sky.wm.event_simulate("X", area="Viewport")
+assert sky.wm.event_simulate("X", area="Viewport"), "X opens the Delete menu"
+assert edge_layer.point_count == 4, "the menu only opens: nothing is deleted yet"
+assert sky.ops.mesh.delete_edges() == {'FINISHED'}  # its Edges
 assert edge_layer.point_count == 4, "both points of the deleted edge stay"
 assert edge_layer.curve_count == 1 and edge_layer.shape_count == 1
 outline, closed = edge_layer.shape_outline(0, 4)
@@ -265,5 +261,33 @@ edge_layer.select_points([6, 7])
 assert sky.ops.mesh.delete() == {'FINISHED'}
 assert edge_layer.point_count == 8 and edge_layer.curve_count == 2
 assert sky.ops.mesh.select_mode_point() == {'FINISHED'}
+
+# --- X's Delete menu: Points, Edges, Dissolve Points -----------------------------------------------
+sky.ops.layer.new()
+menu_layer = sky.data.layers.active
+sky.ops.mesh.select_none()
+assert not sky.wm.event_simulate("X", area="Viewport"), "no menu with nothing selected"
+# Dissolve: the line stays one line through the gap.
+menu_layer.add_curve([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0), (3.0, 0.5)])
+menu_layer.select_points([1, 2])
+assert sky.ops.mesh.dissolve_points() == {'FINISHED'}
+assert menu_layer.point_count == 2 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
+# Dissolving a corner of a filled square leaves a filled triangle.
+menu_layer.add_curve([(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)], closed=True, fill=True)
+sky.ops.mesh.select_none()
+menu_layer.select_points([4])
+assert sky.ops.mesh.dissolve_points() == {'FINISHED'}
+assert menu_layer.point_count == 5 and menu_layer.shape_count == 2, (menu_layer.point_count, menu_layer.shape_count)
+outline, closed = menu_layer.shape_outline(1, 4)
+assert closed, "the shape still closes"
+# Delete Points: the points go, and lines left too short with them.
+sky.ops.mesh.select_none()
+menu_layer.select_points([0])
+assert sky.ops.mesh.delete_points() == {'FINISHED'}
+assert menu_layer.point_count == 3 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
+# Delete Edges with no edge between the selected points does nothing.
+sky.ops.mesh.select_none()
+menu_layer.select_points([0])
+assert sky.ops.mesh.delete_edges() == {'CANCELLED'}
 
 print("Drawing and layer tests passed")

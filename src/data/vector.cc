@@ -5,6 +5,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <queue>
 #include <set>
 
 namespace sky {
@@ -256,32 +257,80 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
   }
 }
 
-bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_steps,
-                   std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
-                   std::vector<bool> *r_visible, std::vector<StrokeJoin> *r_joins, float tolerance)
+bool drawing_ensure_ids(VectorDrawing &drawing)
 {
-  if (r_joins) {
-    r_joins->clear();
+  for (const MeshPoint &p : drawing.points) {
+    drawing.next_id = std::max(drawing.next_id, p.id + 1);
   }
-  const auto join_at = [&](int point) {
-    return drawing.points[point].corner == CornerType::Sharp ? StrokeJoin::Sharp : StrokeJoin::Round;
-  };
-  r_points.clear();
-  if (r_radii) {
-    r_radii->clear();
+  for (const Shape &s : drawing.shapes) {
+    drawing.next_id = std::max(drawing.next_id, s.id + 1);
   }
-  if (r_visible) {
-    r_visible->clear();
+  bool changed = false;
+  std::set<uint64_t> seen;
+  for (MeshPoint &p : drawing.points) {
+    if (p.id == 0 || !seen.insert(p.id).second) {
+      p.id = drawing.next_id++;
+      seen.insert(p.id);
+      changed = true;
+    }
   }
+  seen.clear();
+  for (Shape &s : drawing.shapes) {
+    if (s.id == 0 || !seen.insert(s.id).second) {
+      s.id = drawing.next_id++;
+      seen.insert(s.id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+int drawing_point_index(const VectorDrawing &drawing, uint64_t id)
+{
+  for (int i = 0; i < int(drawing.points.size()); i++) {
+    if (drawing.points[i].id == id) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int drawing_shape_index(const VectorDrawing &drawing, uint64_t id)
+{
+  for (int i = 0; i < int(drawing.shapes.size()); i++) {
+    if (drawing.shapes[i].id == id) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+VectorDrawing drawing_setup_pose(const VectorDrawing &drawing)
+{
+  VectorDrawing setup = drawing;
+  for (MeshPoint &p : setup.points) {
+    p.pos = setup_of(p.pos_keys, p.pos);
+    p.radius = setup_of(p.radius_keys, p.radius);
+  }
+  for (Curve &curve : setup.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.curvature = setup_of(cp.curvature_keys, cp.curvature);
+      cp.handle_in = setup_of(cp.handle_in_keys, cp.handle_in);
+      cp.handle_out = setup_of(cp.handle_out_keys, cp.handle_out);
+    }
+  }
+  return setup;
+}
+
+bool shape_chain(const VectorDrawing &drawing, const Shape &shape, std::vector<OrientedEdge> &r_chain,
+                 bool *r_closed)
+{
+  r_chain.clear();
   *r_closed = false;
   if (shape.edges.empty()) {
     return false;
   }
-
-  struct Oriented {
-    ShapeEdge edge;
-    bool reversed;
-  };
+  using Oriented = OrientedEdge;
   /* Chain the edges by shared points, so the order they're stored in doesn't matter. */
   const auto ends = [&](const ShapeEdge &e, int *from, int *to) {
     curve_segment_points(drawing.curves[e.curve], e.segment, from, to);
@@ -319,8 +368,36 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
     }
   }
   const bool connected = std::all_of(used.begin(), used.end(), [](bool u) { return u; });
+  r_chain.assign(chain.begin(), chain.end());
+  *r_closed = (first_from == last_to) && chain.size() > 1;
+  return connected;
+}
 
-  for (const Oriented &o : chain) {
+bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_steps,
+                   std::vector<float2> &r_points, std::vector<float> *r_radii, bool *r_closed,
+                   std::vector<bool> *r_visible, std::vector<StrokeJoin> *r_joins, float tolerance)
+{
+  if (r_joins) {
+    r_joins->clear();
+  }
+  const auto join_at = [&](int point) {
+    return drawing.points[point].corner == CornerType::Sharp ? StrokeJoin::Sharp : StrokeJoin::Round;
+  };
+  r_points.clear();
+  if (r_radii) {
+    r_radii->clear();
+  }
+  if (r_visible) {
+    r_visible->clear();
+  }
+  *r_closed = false;
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  const bool connected = shape_chain(drawing, shape, chain, &closed);
+  if (chain.empty()) {
+    return false;
+  }
+  for (const OrientedEdge &o : chain) {
     const Curve &curve = drawing.curves[o.edge.curve];
     float2 ctrl[4];
     curve_segment_bezier(drawing, curve, o.edge.segment, ctrl);
@@ -359,9 +436,15 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
       }
     }
   }
-  *r_closed = (first_from == last_to) && chain.size() > 1;
+  *r_closed = closed;
   if (!*r_closed) {
     /* Open runs end on their last point. */
+    int last_to, unused;
+    const OrientedEdge &end = chain.back();
+    curve_segment_points(drawing.curves[end.edge.curve], end.edge.segment, &unused, &last_to);
+    if (end.reversed) {
+      last_to = unused;
+    }
     r_points.push_back(drawing.points[last_to].pos);
     if (r_radii) {
       r_radii->push_back(drawing.points[last_to].radius);
@@ -1466,16 +1549,22 @@ static float2 reflect2(float2 v, bool x, bool y)
   return {x ? -v.x : v.x, y ? -v.y : v.y};
 }
 
+float2 point_setup_pos(const MeshPoint &point)
+{
+  const Channel<float2> &ch = point.pos_keys;
+  return ch.animated() ? ch.evaluate(0) : ch.has_last ? ch.last : point.pos;
+}
+
 int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, bool y)
 {
-  const float2 here = drawing.points[point].pos;
+  const float2 here = point_setup_pos(drawing.points[point]);
   const float2 target = reflect2(here, x, y);
   const float eps = 1e-4f + 1e-4f * (std::fabs(here.x) + std::fabs(here.y));
   if (distance(target, here) <= eps) {
     return -1;
   }
   for (int j = 0; j < int(drawing.points.size()); j++) {
-    if (j != point && distance(drawing.points[j].pos, target) <= eps) {
+    if (j != point && distance(point_setup_pos(drawing.points[j]), target) <= eps) {
       return j;
     }
   }
@@ -1493,7 +1582,7 @@ void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bo
     return curve.points[(k % n + n) % n].point;
   };
   const auto near = [&](int a, float2 b) {
-    return a >= 0 && distance(drawing.points[a].pos, b) <= 1e-4f + 1e-4f * (std::fabs(b.x) + std::fabs(b.y));
+    return a >= 0 && distance(point_setup_pos(drawing.points[a]), b) <= 1e-4f + 1e-4f * (std::fabs(b.x) + std::fabs(b.y));
   };
   for (const Curve &curve : drawing.curves) {
     for (int i = 0; i < int(curve.points.size()); i++) {
@@ -1510,16 +1599,16 @@ void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bo
           /* Same direction when the neighbours mirror onto the same sides, else swapped. */
           const int oprev = neighbour(other, j, -1), onext = neighbour(other, j, 1);
           bool swap;
-          if (prev >= 0 && near(oprev, reflect2(drawing.points[prev].pos, x, y))) {
+          if (prev >= 0 && near(oprev, reflect2(point_setup_pos(drawing.points[prev]), x, y))) {
             swap = false;
           }
-          else if (prev >= 0 && near(onext, reflect2(drawing.points[prev].pos, x, y))) {
+          else if (prev >= 0 && near(onext, reflect2(point_setup_pos(drawing.points[prev]), x, y))) {
             swap = true;
           }
-          else if (next >= 0 && near(onext, reflect2(drawing.points[next].pos, x, y))) {
+          else if (next >= 0 && near(onext, reflect2(point_setup_pos(drawing.points[next]), x, y))) {
             swap = false;
           }
-          else if (next >= 0 && near(oprev, reflect2(drawing.points[next].pos, x, y))) {
+          else if (next >= 0 && near(oprev, reflect2(point_setup_pos(drawing.points[next]), x, y))) {
             swap = true;
           }
           else {
@@ -1534,6 +1623,40 @@ void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bo
         }
       }
     }
+  }
+}
+
+std::vector<MirrorPair> drawing_mirror_pairs(const VectorDrawing &drawing, const std::vector<int> &moving, bool mirror_x,
+                                             bool mirror_y)
+{
+  std::vector<MirrorPair> pairs;
+  for (const int src : moving) {
+    const float2 here = point_setup_pos(drawing.points[src]);
+    const float eps = 1e-4f + 1e-4f * (std::fabs(here.x) + std::fabs(here.y));
+    for (const auto &[x, y] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+      if ((x && !mirror_x) || (y && !mirror_y)) {
+        continue;
+      }
+      const float2 target = reflect2(here, x, y);
+      if (distance(target, here) <= eps) {
+        continue; /* On the axis: its own mirror. */
+      }
+      for (int j = 0; j < int(drawing.points.size()); j++) {
+        if (!drawing.points[j].selected && distance(point_setup_pos(drawing.points[j]), target) <= eps) {
+          pairs.push_back({src, j, x, y});
+          break;
+        }
+      }
+    }
+  }
+  return pairs;
+}
+
+void drawing_apply_mirror(VectorDrawing &drawing, const std::vector<MirrorPair> &pairs)
+{
+  for (const MirrorPair &m : pairs) {
+    drawing.points[m.dst].pos = reflect2(drawing.points[m.src].pos, m.x, m.y);
+    drawing_mirror_handles(drawing, m.src, m.dst, m.x, m.y);
   }
 }
 
@@ -1562,6 +1685,130 @@ void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool
       }
     }
   }
+}
+
+/* --- Proportional editing ----------------------------------------------------------------- */
+
+static const char *const FALLOFF_NAMES[PROPORTIONAL_FALLOFF_COUNT][2] = {
+    {"Smooth", "SMOOTH"}, {"Sphere", "SPHERE"}, {"Root", "ROOT"},         {"Inverse Square", "INVERSE_SQUARE"},
+    {"Sharp", "SHARP"},   {"Linear", "LINEAR"}, {"Constant", "CONSTANT"}, {"Random", "RANDOM"}};
+
+const char *proportional_falloff_name(ProportionalFalloff falloff)
+{
+  return FALLOFF_NAMES[int(falloff)][0];
+}
+
+const char *proportional_falloff_identifier(ProportionalFalloff falloff)
+{
+  return FALLOFF_NAMES[int(falloff)][1];
+}
+
+bool proportional_falloff_from_identifier(const std::string &id, ProportionalFalloff *r_falloff)
+{
+  for (int i = 0; i < PROPORTIONAL_FALLOFF_COUNT; i++) {
+    if (id == FALLOFF_NAMES[i][1]) {
+      *r_falloff = ProportionalFalloff(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<float> drawing_proportional_distances(const VectorDrawing &drawing, const std::vector<float2> &positions,
+                                                  bool connected)
+{
+  const int n = int(drawing.points.size());
+  std::vector<float> dist(n, std::numeric_limits<float>::infinity());
+  std::vector<int> selected;
+  for (int i = 0; i < n; i++) {
+    if (drawing.points[i].selected) {
+      dist[i] = 0.0f;
+      selected.push_back(i);
+    }
+  }
+  if (selected.empty() || int(positions.size()) < n) {
+    return dist;
+  }
+  if (!connected) {
+    for (int i = 0; i < n; i++) {
+      for (const int s : selected) {
+        dist[i] = std::min(dist[i], distance(positions[i], positions[s]));
+      }
+    }
+    return dist;
+  }
+  /* Along the curves: out from the selection to each point's neighbours, nearest first. */
+  std::vector<std::vector<int>> next(n);
+  for (const Curve &curve : drawing.curves) {
+    const int m = int(curve.points.size());
+    for (int k = 0; k < m; k++) {
+      const int a = curve.points[k].point;
+      const int b = k + 1 < m ? curve.points[k + 1].point : (curve.closed && m > 2 ? curve.points[0].point : -1);
+      if (b >= 0 && a != b && a < n && b < n) {
+        next[a].push_back(b);
+        next[b].push_back(a);
+      }
+    }
+  }
+  using Entry = std::pair<float, int>;
+  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> queue;
+  for (const int s : selected) {
+    queue.push({0.0f, s});
+  }
+  while (!queue.empty()) {
+    const auto [d, i] = queue.top();
+    queue.pop();
+    if (d > dist[i]) {
+      continue;
+    }
+    for (const int j : next[i]) {
+      const float through = d + distance(positions[i], positions[j]);
+      if (through < dist[j]) {
+        dist[j] = through;
+        queue.push({through, j});
+      }
+    }
+  }
+  return dist;
+}
+
+float proportional_weight(ProportionalFalloff falloff, float distance, float size, int point)
+{
+  if (distance <= 0.0f) {
+    return 1.0f;
+  }
+  if (!(distance < size)) {
+    return 0.0f;
+  }
+  /* As Blender's: 1 at the selection, 0 at the edge of the size. */
+  const float d = 1.0f - distance / size;
+  switch (falloff) {
+    case ProportionalFalloff::Smooth:
+      return 3.0f * d * d - 2.0f * d * d * d;
+    case ProportionalFalloff::Sphere:
+      return std::sqrt(std::max(0.0f, 2.0f * d - d * d));
+    case ProportionalFalloff::Root:
+      return std::sqrt(d);
+    case ProportionalFalloff::InverseSquare:
+      return d * (2.0f - d);
+    case ProportionalFalloff::Sharp:
+      return d * d;
+    case ProportionalFalloff::Linear:
+      return d;
+    case ProportionalFalloff::Constant:
+      return 1.0f;
+    case ProportionalFalloff::Random: {
+      /* The same amount for a point every time (a hash of its index). */
+      uint32_t x = uint32_t(point) * 2654435761u + 0x9e3779b9u;
+      x ^= x >> 16;
+      x *= 0x7feb352du;
+      x ^= x >> 15;
+      x *= 0x846ca68bu;
+      x ^= x >> 16;
+      return float(x >> 8) / float(1u << 24) * d;
+    }
+  }
+  return d;
 }
 
 }  // namespace sky

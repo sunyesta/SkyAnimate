@@ -67,7 +67,11 @@ doc.action = ""
 doc.frame_current = 0
 assert abs(angle() - 0.2) < 1e-6, "the mainline's setup changed too"
 doc.frame_current = 10
-assert abs(angle() - 0.5) < 1e-6, "its later keys didn't"
+assert abs(angle() - 0.7) < 1e-6, "its later keys hold the turn from the setup: they turn with it"
+doc.frame_current = 0
+rig.bone_set("arm", angle=0.0)
+doc.frame_current = 10
+assert abs(angle() - 0.5) < 1e-6
 
 # A second action, and the names stay unique.
 assert sky.ops.anim.action_new(name="wave") == {'FINISHED'} and doc.action == "wave.001"
@@ -93,6 +97,18 @@ assert abs(key["value"] - 1.0) < 1e-6 and key["selected"], key
 assert abs(angle() - 1.0) < 1e-6, "the pasted pose shows at once"
 sky.ops.ed.undo()
 assert frames() == [0, 10], "undo takes the paste back"
+
+# Pasted on frame 0, the copied key becomes the setup pose (and the keys after it follow on).
+doc.frame_current = 0
+setup_before = angle()
+assert sky.wm.event_simulate("V", ctrl=True, area="Timeline")
+assert frames() == [0, 10], frames()
+key = next(k for k in rig.keyframes('bones["arm"].angle') if k["frame"] == 0)
+# Keys hold the turn from the setup pose: frame 0's is none; the pasted turn went into the setup.
+assert abs(key["value"]) < 1e-6 and key["selected"], key
+assert abs(angle() - (setup_before + 1.0)) < 1e-6, "the new setup pose shows at once"
+sky.ops.ed.undo()
+assert abs(angle() - setup_before) < 1e-6, "undo brings the old setup back"
 doc.action = "wave"
 
 # --- A selected bone layer's summary has the animated layers inside it ---------------------------

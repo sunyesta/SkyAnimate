@@ -68,6 +68,15 @@ first.body = "import sky\nsky.data.document.frame_end = 99\n"
 texts.active = first
 assert sky.wm.event_simulate("P", alt=True, area="Text Editor", typing=True)
 assert doc.frame_end == 99
+# In a text field over another editor (renaming a layer), letters are typing, not that editor's
+# shortcuts: M and Shift M don't open the bone collection menus.
+doc.frame_current = 0  # rig changes are made on the setup frame
+assert sky.ops.layer.new_bone() == {'FINISHED'}
+assert sky.ops.armature.bone_add(name="b", head_x="0", head_y="0", tail_x="1", tail_y="0") == {'FINISHED'}
+for area in ("Layers", "Viewport"):
+    for shift in (False, True):
+        assert not sky.wm.event_simulate("M", shift=shift, area=area, typing=True), (area, shift)
+        assert sky.wm.event_simulate("M", shift=shift, area=area), ("not typing: the menu", area, shift)
 
 # --- Workspaces --------------------------------------------------------------
 # Background mode has one workspace slot, so cycling is unavailable there.

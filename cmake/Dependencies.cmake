@@ -66,6 +66,21 @@ set(PYBIND11_FINDPYTHON ON)
 
 FetchContent_MakeAvailable(SDL3 imgui pybind11 earcut miniz json)
 
+# Blender's number fields: Shift while dragging is precise (a tenth of the speed). ImGui makes
+# Shift ten times faster and has no setting for it, so its fetched copy is changed here (the same
+# every configure; Alt stays a hundredth).
+set(_sky_widgets "${imgui_SOURCE_DIR}/imgui_widgets.cpp")
+file(READ "${_sky_widgets}" _sky_text)
+set(_sky_fast "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 10.0f;")
+set(_sky_precise "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 1.0f / 10.0f; // SkyAnimate: Shift is precise, as in Blender")
+string(FIND "${_sky_text}" "${_sky_fast}" _sky_at)
+if(NOT _sky_at EQUAL -1)
+  string(REPLACE "${_sky_fast}" "${_sky_precise}" _sky_text "${_sky_text}")
+  file(WRITE "${_sky_widgets}" "${_sky_text}")
+elseif(NOT _sky_text MATCHES "SkyAnimate: Shift is precise")
+  message(WARNING "ImGui's drag code changed: Shift no longer made precise")
+endif()
+
 # ImGui has no CMake build of its own; compile the core plus the SDL3 and OpenGL 3 backends.
 add_library(sky_imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp

@@ -25,6 +25,9 @@ struct Modifier;
 /* Whether the layer shows anything other than its plain drawing. */
 bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool render);
 VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render);
+/* The layer's drawing as drawn on the setup frame, with its Mirror modifiers (bones don't bend
+ * it there): what brushed lines lay their dabs out on, so they stick to the artwork. */
+VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool render);
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);

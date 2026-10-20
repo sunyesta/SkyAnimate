@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace sky {
 
@@ -46,6 +47,15 @@ struct ViewportOverlays {
   bool points = true;
   HandleDisplay handles = HandleDisplay::Shape;
   ArmatureDisplay armature = ArmatureDisplay::On;
+  /* Bones drawn where their keys put them, and pale ghosts where bone dynamics have them (the
+   * artwork follows the ghosts); off, bones are drawn where dynamics have them. */
+  bool physics_ghosts = true;
+  /* Bone dynamics run live while a pose changes on a frame (trailing, swinging and settling in
+   * real time); off, the bones show the frame's own result. Live in any viewport of the
+   * workspace shown runs it. */
+  bool live_physics = true;
+  /* Bones with a custom shape (a pin) are drawn as it; off, every bone is drawn as a bone. */
+  bool bone_shapes = true;
 };
 
 struct Area {
@@ -63,6 +73,10 @@ struct Area {
    * (by key; a row missing here is at its default). */
   float channel_scroll = 0.0f;
   std::map<std::string, bool> timeline_open;
+  /* View > Group by Kind (the default), else by Owner. */
+  bool timeline_by_kind = true;
+  /* The names column's width, dragged by its edge (0: the default). */
+  float timeline_names_w = 0.0f;
 
   ViewportOverlays overlays;
 
@@ -81,6 +95,9 @@ struct Area {
 
   /* Layers editor: the layer being renamed, or 0. */
   uint64_t renaming_layer = 0;
+  /* Layers editor: list the drawing layers in this frame's draw order (top first), to reorder by
+   * dragging, instead of the tree. */
+  bool layers_draw_order_view = false;
 
   /* Text editor. */
   bool show_line_numbers = true;
@@ -110,6 +127,18 @@ void properties_draw(Area &area, Context &C);
 void layers_draw(Area &area, Context &C);
 /* Timeline editor, in timeline.cc. */
 void timeline_draw(Area &area, Context &C);
+/* The timeline's channel rows as a timeline with every row open lists them (for tests). */
+struct TimelineRowInfo {
+  int depth = 0;
+  std::string name;
+  /* In the Pinned or Selected sections. */
+  bool red = false;
+  /* A pinned property's row (with its pin). */
+  bool pinned = false;
+  /* A copy's (reference layer's) channel changed from its original (teal). */
+  bool changed = false;
+};
+std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool by_kind);
 /* Text editor, in text_editor.cc. */
 void text_editor_draw(Area &area, Context &C);
 /* Python console, in console.cc. */

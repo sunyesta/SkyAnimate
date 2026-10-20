@@ -12,14 +12,23 @@ namespace sky {
 
 struct BrushSettings;
 struct Context;
+struct Document;
 struct Layer;
+struct LayerMask;
 struct VectorDrawing;
 
 void layer_operators_register();
 void vector_operators_register();
 void asset_operators_register();
 void anim_operators_register();
+void draw_order_operators_register();
+void mask_operators_register();
 void rig_operators_register();
+
+/* A layer named by its id ("12") or its name. */
+Layer *layer_by_name_or_id(Document &doc, const std::string &text);
+/* "Inside head", "Outside mouth hole, teeth gap": what a mask does, for menus and undo steps. */
+std::string mask_label(const Document &doc, const LayerMask &mask);
 
 /* The bone layer rigging works on: the active layer if it is one, else the bone layer it is in. */
 Layer *active_armature(Context &C);
@@ -30,16 +39,19 @@ Bone *armature_add_bone(Layer &armature, const std::string &name, float2 head, f
 
 /* The layers keying works on: the active layer and those picked in the Layers editor. */
 std::vector<Layer *> keyed_layers(Context &C);
-/* What the timeline shows and edits keys of: keyed_layers, plus the animated layers inside a
- * selected bone layer. */
+/* What the timeline shows: keyed_layers, plus the animated layers inside a selected bone layer
+ * and the document's Simulation settings when keyed. */
+std::vector<Layer *> timeline_shown_layers(Context &C);
+/* What the timeline edits keys of: those, plus the layers of pinned channels (listed under
+ * Pinned whatever is picked). */
 std::vector<Layer *> timeline_layers(Context &C);
 
 /* Gives the selected shapes on every edited layer these brush settings. Returns how many shapes
  * changed (no undo step: the caller pushes one). */
 int shapes_set_brush(Context &C, const BrushSettings &brush);
 
-/* The active layer's drawing if it can be edited: a vector layer that is not a reference and
- * not locked. Null otherwise. */
+/* The active layer's drawing if it can be edited: a vector layer that is not locked (a reference's
+ * looks, and its points with Edit Points on). Null otherwise. */
 VectorDrawing *editable_drawing(Context &C, Layer **r_layer = nullptr);
 
 /* The layers point editing works on: the active layer when it is editable, then every other

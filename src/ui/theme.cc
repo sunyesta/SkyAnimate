@@ -14,6 +14,7 @@ static ImVec4 rgb(uint32_t hex, float alpha = 1.0f)
 }
 
 static ImFont *g_font_mono = nullptr;
+static ImFont *g_font_bold = nullptr;
 
 void theme_load_fonts()
 {
@@ -26,11 +27,18 @@ void theme_load_fonts()
   const char *mono_path = "C:/Windows/Fonts/consola.ttf";
   g_font_mono = std::filesystem::exists(mono_path) ? io.Fonts->AddFontFromFileTTF(mono_path, UI_FONT_SIZE)
                                                    : ui_font;
+  const char *bold_path = "C:/Windows/Fonts/segoeuib.ttf";
+  g_font_bold = std::filesystem::exists(bold_path) ? io.Fonts->AddFontFromFileTTF(bold_path, UI_FONT_SIZE) : ui_font;
 }
 
 ImFont *theme_font_mono()
 {
   return g_font_mono;
+}
+
+ImFont *theme_font_bold()
+{
+  return g_font_bold;
 }
 
 void theme_apply_blender(float ui_scale)

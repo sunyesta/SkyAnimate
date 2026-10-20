@@ -10,7 +10,10 @@
  * holds references to the group's children) while keeping its own settings, so the same
  * artwork can be visible in one group and act as an invisible mask in another. */
 
+#include <array>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -20,32 +23,285 @@
 
 namespace sky {
 
+/* --- Reference layers ------------------------------------------------------------------------
+ * A reference shows its original's drawing as it is now, with its own changes on top, each kept
+ * apart so everything else goes on following the original (as Blender's library overrides, Unity's
+ * prefab overrides and Figma's instances keep theirs). They find the original's points and shapes
+ * by id, so they stay on the right ones as the original changes. */
+
+/* A point moved on a reference: how far from the original's point, animatable. Its keys add to
+ * the original's motion (or, with Follow Original's Animation off, to its setup place). */
+struct ReferencePoint {
+  float2 offset;
+  Channel<float2> offset_keys;
+};
+
+/* A handle turned on a reference (R or S on its points): which one, by its point and the
+ * neighbour it points toward along the curve (0: none, at an open end), and `in` for the handle
+ * coming in from the previous point. Its offset is a ReferencePoint's. */
+struct ReferenceHandleKey {
+  uint64_t point = 0, toward = 0;
+  bool in = false;
+  auto operator<=>(const ReferenceHandleKey &) const = default;
+};
+
+/* A shape's look changed on a reference: each setting on its own (the rest follow the original). */
+struct ReferenceLook {
+  bool fill_set = false, line_set = false, width_set = false, brush_set = false;
+  bool has_fill_set = false, has_outline_set = false;
+  Color fill, line;
+  float line_width = 0.0f;
+  BrushSettings brush;
+  bool has_fill = true, has_outline = true;
+  /* The shape isn't shown on this reference. */
+  bool hidden = false;
+  bool empty() const
+  {
+    return !fill_set && !line_set && !width_set && !brush_set && !has_fill_set && !has_outline_set && !hidden;
+  }
+};
+
+/* A colour swapped on a reference: every shape of the original filled (`fill`) or lined (`line`)
+ * with `from` shows `to` instead, the shapes added later too, as recolouring a shared style. */
+struct ReferenceSwap {
+  Color from, to;
+  bool fill = true, line = true;
+};
+
+struct ReferenceSettings {
+  /* Its points can be moved (as offsets); off, only its shapes' looks can change. */
+  bool edit_points = false;
+  /* The original's animation comes through; off, only the original's setup shape (and this
+   * reference's own keys). */
+  bool follow_animation = true;
+  /* Shows the original's final shape, posed by the original's bones, where the original is (its
+   * own transform moving it from there); off, it binds to its own bone layer's bones. */
+  bool match_original = true;
+  /* By point id: moved points. By shape id: changed looks. */
+  std::map<uint64_t, ReferencePoint> points;
+  /* Turned or lengthened handles (as offsets from the original's). */
+  std::map<ReferenceHandleKey, ReferencePoint> handles;
+  /* The layer channels it has taken over ("position", "rotation", "scale", "opacity"): edited
+   * or keyed on the reference. The others follow the original's, animation and all. */
+  std::set<std::string> own_channels;
+  std::map<uint64_t, ReferenceLook> looks;
+  /* Edges shown or hidden on this reference unlike its original (Moho's Hide Edge), by the ids of
+   * the points at either end, in curve order: true hides it. */
+  std::map<std::pair<uint64_t, uint64_t>, bool> edges;
+  std::vector<ReferenceSwap> swaps;
+  /* With Match Original off: its points' own weights, by point id (for its own bone layer). */
+  std::map<uint64_t, std::vector<BoneWeight>> weights;
+
+  /* Runtime: the drawing as last built from the original (before any edit since), to tell what
+   * was edited: each point's place, radius and weights, and each shape's look. */
+  bool built = false;
+  std::vector<uint64_t> built_ids;
+  std::vector<float2> built_pos;
+  std::vector<float> built_radius;
+  std::vector<std::vector<BoneWeight>> built_weights;
+  std::vector<Shape> built_shapes;
+  std::vector<Curve> built_curves;
+  float2 built_position, built_scale;
+  float built_rotation = 0.0f, built_opacity = 1.0f;
+};
+
 /* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). */
 enum class LayerType { Vector, Group, Bone };
 
-/* Moho's MM_* masking modes for a layer inside a masking group. */
-/* Moho's masking modes, in the order its Masking menu lists them. Subtracting always hides the
- * layer, as in Moho's menu. */
-enum class MaskMode {
-  Masked,
-  NotMasked,
-  Add,
-  AddInvisible,
-  SubtractInvisible,
-  ClearAdd,
-  ClearAddInvisible,
-};
+/* One of a layer's masks (After Effects' track matte, Blender Grease Pencil's layer masks): the
+ * layer shows only Inside (or only Outside) the shapes of the layers it names, any of them. A
+ * layer is shown where every mask that is on holds, and a group's masks apply to everything in
+ * it. Masks name layers by id, so the order of the layers never matters, and a hidden layer still
+ * masks. */
+/* A mask's Extend: the layers' shapes stretched to the edge of everything in one direction (the mask
+ * layer's own up, down, left or right, so it turns with the layer and its bone): "Outside the mouth
+ * line, extended up" hides the mouth and everything above it. */
+enum class MaskExtend : uint8_t { None, Up, Down, Left, Right };
+const char *mask_extend_identifier(MaskExtend extend);
+bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_extend);
 
-/* Moho's GROUP_MASK_* settings for a group. */
-enum class GroupMask { None, ShowAll, HideAll };
+struct LayerMask {
+  bool outside = false;
+  std::vector<uint64_t> layers;
+  /* Masking in the viewport; off, it's kept but doesn't mask there (to see what it cuts). */
+  bool enabled = true;
+  /* Masking in renders. */
+  bool render = true;
+  /* How the layers' shapes mask: grown by a pixel (hides thin seams along the edges); only their
+   * fills, not their strokes (Moho's two options, per mask); and `filled`, every shape as if it
+   * were filled, an outline-only shape too (an open one closed by a straight line), as Rive clips
+   * with a shape's path. Mask With in the Masking tab: As Drawn, Fills Only, Filled Shape (filled
+   * and its stroke), Filled Shape, No Stroke (filled and fills_only). */
+  bool expand = false;
+  bool fills_only = false;
+  bool filled = false;
+  MaskExtend extend = MaskExtend::None;
+  /* Shown open in the Masking tab. */
+  bool show_expanded = true;
+  bool operator==(const LayerMask &o) const
+  {
+    return outside == o.outside && layers == o.layers && enabled == o.enabled && render == o.render &&
+           expand == o.expand && fills_only == o.fills_only && filled == o.filled && extend == o.extend;
+  }
+};
 
 /* Label colours for the Layers editor, as in Moho. */
 enum class LabelColor { None, Red, Orange, Yellow, Green, Blue, Purple, Gray };
 
+/* Bone constraints, Blender's stack with Moho's kinds: run top to bottom on posed frames (never
+ * on the setup frame, frame 0), after keys and smart actions. Dynamics, a simulation, always
+ * comes last. */
+enum class BoneConstraintType {
+  /* Moho's angle constraints: the angle (relative to the parent) stays between min and max. */
+  LimitAngle,
+  /* Moho's independent angle: keeps its angle in the bone layer when the parent turns. */
+  IndependentAngle,
+  /* Blender's Maintain Volume: the width follows the length however it got there (keys, IK,
+   * Stretch To, Copy Scale, dynamics), so the bone keeps its area; it replaces Moho's squash and
+   * stretch scaling. */
+  MaintainVolume,
+  /* Moho's control bones: follow another bone's change (from its setup) by `factor`, `delay`
+   * frames behind. */
+  CopyAngle,
+  CopyPosition,
+  CopyScale,
+  /* Blender's: point at the target bone's base; also stretch to reach it. */
+  TrackTo,
+  StretchTo,
+  /* Moho's IK target: the bone's tip reaches for the target bone's base, turning `chain` bones up
+   * from it (0: up to a bone Ignored by IK, or the root). */
+  IK,
+  /* Moho's bone dynamics: springs per channel, simulated from frame to frame. */
+  Dynamics,
+};
+inline constexpr int BONE_CONSTRAINT_TYPES = 10;
+const char *bone_constraint_identifier(BoneConstraintType type);
+const char *bone_constraint_name(BoneConstraintType type);
+bool bone_constraint_from_identifier(const std::string &identifier, BoneConstraintType *r_type);
+
+/* One channel of a bone's dynamics: Angle (the tip swings), Position (the head jiggles) or Scale
+ * (Squash & Stretch: the bone's length stretches and squashes; Maintain Volume thins it). Movement throws it off where its keys put it and a spring settles it
+ * back; see anim/dynamics.cc. */
+struct BoneSpring {
+  bool enabled = false;
+  /* How quickly the swinging dies down once nothing moves it: at 1 in about half a second, at 2
+   * twice as fast. A big swing still takes longer to calm than a small one. */
+  float settle_speed = 1.0f;
+  /* How far past where its keys put it it swings, as a fraction of the way (0 to 0.9): 0 eases
+   * in without passing, more swings further and more times. */
+  float bounce = 0.3f;
+  /* Angle, Position: how much movement throws it off (what it hangs from moving or turning): 1
+   * is natural, 0 moves rigidly with the body. */
+  float inertia = 1.0f;
+  /* Squash & Stretch: how stretchy it is: the head moving along the bone stretches or squashes
+   * it, and swinging fast pulls it longer. */
+  float stretch = 0.5f;
+  /* Whether it has a furthest it can stray from its keys (`limit`, neared softly). Angle:
+   * radians; Position: bone layer units; Scale: a fraction of its size. Kept while off. */
+  bool use_limit = false;
+  float limit = 0.5f;
+  /* Keys for the numbers above: they are animatable (the on/off switches aren't). Settings are
+   * keyed by hand: I and auto-keying leave them alone until one is keyed with its key button. */
+  Channel<float> settle_speed_keys = Channel<float>::by_hand(), bounce_keys = Channel<float>::by_hand(),
+                 inertia_keys = Channel<float>::by_hand(),
+                 stretch_keys = Channel<float>::by_hand(), limit_keys = Channel<float>::by_hand();
+};
+
+struct BoneConstraint {
+  BoneConstraintType type = BoneConstraintType::LimitAngle;
+  /* Shown in its box's header; the type's name to start with. */
+  std::string name;
+  bool enabled = true;
+  /* Shown open in the Bone Constraints tab. */
+  bool expanded = true;
+  /* How much of its effect it has, 0-1; animatable. */
+  float influence = 1.0f;
+  Channel<float> influence_keys;
+  /* LimitAngle: radians, relative to the parent. */
+  float min_angle = -1.5707964f;
+  float max_angle = 1.5707964f;
+  /* MaintainVolume: how much the width follows the length (1: keeps its area, in place of its
+   * own X scale). */
+  float amount = 1.0f;
+  /* Copy*, TrackTo, StretchTo, IK: the other bone's id. */
+  uint64_t target = 0;
+  /* Copy*: how much of the other bone's change it takes. */
+  float factor = 1.0f;
+  /* Copy*: frames behind. */
+  int delay = 0;
+  /* IK: how many bones up it turns (0: up to a bone Ignored by IK, or the root). */
+  int chain = 0;
+  /* IK: how far the chain may stretch to reach (1: not at all, 1.5: half again). */
+  float max_stretch = 1.0f;
+  /* Dynamics, per channel. */
+  BoneSpring angle_spring{.limit = 0.7853982f}, position_spring{.limit = 0.1f},
+      scale_spring{.limit = 0.5f};
+  /* Dynamics, for the whole bone: how heavy it is (how hard gravity pulls it, in every channel:
+   * down for Angle and Position, along the bone for Squash & Stretch), and how much the wind
+   * catches it (1 all of it, 0 none; a ribbon catches more than a braid). The wind doesn't follow
+   * Weight: it pushes on a bone's surface, not its mass. */
+  float weight = 1.0f;
+  float wind_catch = 1.0f;
+  /* Dynamics: this bone's own gravity, and its own wind, each in place of the document's (radians
+   * for the wind's direction). */
+  bool own_gravity = false;
+  bool own_wind = false;
+  /* Whether it has had its own (they start as the document's the first time, and are kept while
+   * unticked, so ticking it again brings them back). */
+  bool own_gravity_set = false;
+  bool own_wind_set = false;
+  float gravity = 0.0f;
+  float wind = 0.0f;
+  float wind_direction = 0.0f;
+  /* As Document's. */
+  float wind_gusts = 0.0f;
+  float wind_gust_speed = 1.0f;
+  float wind_turbulence = 0.0f;
+  /* Keys for Weight, Wind Catch and the six above, as the document's are keyed (by hand, as
+   * settings are). */
+  Channel<float> weight_keys = Channel<float>::by_hand(), wind_catch_keys = Channel<float>::by_hand();
+  Channel<float> gravity_keys = Channel<float>::by_hand(), wind_keys = Channel<float>::by_hand(),
+                 wind_direction_keys = Channel<float>::by_hand(), wind_gusts_keys = Channel<float>::by_hand(),
+                 wind_gust_speed_keys = Channel<float>::by_hand(), wind_turbulence_keys = Channel<float>::by_hand();
+};
+
+/* Where dynamics put a bone right now, in the bone layer's space (runtime). */
+struct BoneDynamicsState {
+  float angle = 0.0f;
+  float2 head;
+  /* The length scale (Y). */
+  float scale = 1.0f;
+  bool angle_on = false, position_on = false, scale_on = false;
+};
+
 /* One bone of a bone layer's skeleton, as in Moho's M_Bone. Its frame is the parent bone's
  * (or, for a root, the bone layer's) space moved by `position`, turned by `angle` and scaled by
- * `scale`; the bone runs `length` along its own x axis. The values at frame 0 are the setup
+ * `scale`; the bone runs `length` from head to tail. As in Blender, the bone's own Y axis runs
+ * along it (scale.y: its length) and X across (scale.x: its thickness); inside, the frame lays
+ * the bone along x, so the solver swaps them. The values at frame 0 are the setup
  * pose; the difference from it is what moves bound artwork. */
+/* Blender's bone collections: named sets of a bone layer's bones, and of the drawings inside it that
+ * are Editable in Bone Group (whose points are then edited along with the bones). A bone or drawing
+ * can be in several. Every bone layer also has All, a fixed collection holding every bone and every
+ * editable drawing (nothing is assigned to it or removed from it). As in Blender, a bone shows while
+ * any collection holding it shows, so while All shows, everything does. Hiding hides bones, and
+ * drawings' points and wires; their artwork still renders. */
+struct BoneCollection {
+  uint64_t id = 0;
+  std::string name;
+  bool visible = true;
+  /* Blender's star: while any collection is soloed, only soloed ones show. */
+  bool solo = false;
+};
+
+/* What a bone is drawn as while the viewport shows custom bone shapes: a bone, a pin (Moho's pin
+ * bones, which have no length) or another layer's drawing (Custom). */
+enum class BoneShape { None, Pin, Custom };
+/* Blender's bone colour sets: 0 its Default Colors, 1 to BONE_COLOR_THEME_SETS its theme sets,
+ * BONE_COLOR_CUSTOM the bone's own three shades. */
+inline constexpr int BONE_COLOR_THEME_SETS = 15;
+inline constexpr int BONE_COLOR_CUSTOM = BONE_COLOR_THEME_SETS + 1;
+
 struct Bone {
   uint64_t id = 0;
   std::string name;
@@ -55,10 +311,15 @@ struct Bone {
   /* Radians, counter-clockwise. */
   float angle = 0.0f;
   float length = 0.5f;
-  float scale = 1.0f;
+  /* Posing only (frame 0 changes sizes, not scale): x across the bone, y along it. */
+  float2 scale = {1.0f, 1.0f};
   /* How far automatic weights reach, as a multiple of the length (Moho's bone strength). */
   float strength = 1.0f;
-  LabelColor color = LabelColor::None;
+  /* Its colour set (see BONE_COLOR_CUSTOM) and, for Custom, its regular, selected and active shades
+   * (display colours): what it is drawn in, whatever its shape. */
+  int color_set = 0;
+  std::array<Color, 3> custom_colors = {Color{0.6f, 0.6f, 0.6f, 1.0f}, Color{1.0f, 0.55f, 0.0f, 1.0f},
+                                        Color{1.0f, 0.75f, 0.31f, 1.0f}};
   /* Connected, as in Blender: the head sits on the parent's tail and moves with it. */
   bool connected = false;
   /* Blender's edit-bone selection: the body, and the round joints at either end. A selected body
@@ -66,9 +327,33 @@ struct Bone {
   bool selected = false;
   bool select_head = false;
   bool select_tail = false;
+  /* The setup pose (frame 0): where the bone rests in its parent's space. Set by editing on frame 0
+   * (taken when frame 0's edits are recorded); posing never moves it. */
+  float2 setup_position;
+  float setup_angle = 0.0f;
+  /* Transform and Angle, as the Bone panel shows them away from frame 0: position and angle less
+   * the setup's, the Transform measured along the bone's rest axes (x along the bone as it rests,
+   * y across it), as Blender's pose location. These are what the position and angle keys hold (so moving the setup on frame 0
+   * moves every pose with it, as in Blender); worked out from position and angle whenever the keys
+   * are read or written (bone_changes_from_values). */
+  float2 transform;
+  float turn = 0.0f;
   Channel<float2> position_keys;
   Channel<float> angle_keys;
-  Channel<float> scale_keys;
+  Channel<float2> scale_keys;
+  /* Top to bottom (see BoneConstraintType). */
+  std::vector<BoneConstraint> constraints;
+  /* Moho's Ignored by IK: IK chains stop below it and never turn it. */
+  bool ik_ignore = false;
+  /* Moho's Arc IK solver: a chain ending at this bone bends evenly, as an arc. */
+  bool arc_ik = false;
+  BoneShape shape = BoneShape::None;
+  /* Pin: its size against the standard pin (it stays that size on screen, whatever the zoom). */
+  float pin_size = 1.0f;
+  /* Custom: the layer whose drawing it is drawn as (its id; 0 for none). */
+  uint64_t shape_layer = 0;
+  /* The bone collections it is in (their ids, in its bone layer). */
+  std::vector<uint64_t> collections;
 };
 
 /* Blender-style modifiers, run on a layer's drawing in stack order. Armature is the bones
@@ -98,9 +383,23 @@ struct Modifier {
   bool mirror_bones = true;
 };
 
+/* An animatable number known by its path, for things that aren't a layer's own (the document's
+ * Simulation settings, on Document::simulation). */
+struct CustomChannel {
+  std::string path;
+  float value = 0.0f;
+  /* For a value mirrored elsewhere (a Document field): what both last agreed on, so whichever
+   * changes since wins (an edit there, or keys here). */
+  float synced = 0.0f;
+  /* Settings are keyed by hand (see Channel::keyed_by_hand). */
+  Channel<float> keys = Channel<float>::by_hand();
+};
+
 struct Layer {
   uint64_t id = 0;
   std::string name;
+  /* Extra animatable numbers (see CustomChannel). */
+  std::vector<CustomChannel> custom_channels;
   LayerType type = LayerType::Vector;
   bool visible = true;
   /* Drawn in renders (Blender's camera toggle). Off, the layer still shows in the viewport. */
@@ -131,16 +430,23 @@ struct Layer {
     return c;
   }();
   float visible_value = 1.0f;
+  /* Draw Order (anim/draw_order.hh): 0 Normal, a layer's id for In Front Of it, minus it for
+   * Behind it. Keyed like visibility: each key holds until the next. */
+  float draw_order = 0.0f;
+  Channel<float> draw_order_keys = [] {
+    Channel<float> c;
+    c.keyed_by_hand = true;
+    c.constant = true;
+    return c;
+  }();
 
-  MaskMode mask_mode = MaskMode::Masked;
-  /* Moho's masking options for the layer's part of its group's mask: grow it by a pixel (hides
-   * thin seams along mask edges), and leave out strokes so only fills mask. */
-  bool mask_expand = false;
-  bool mask_exclude_strokes = false;
-  GroupMask group_mask = GroupMask::None;
+  /* Its masks (see LayerMask). */
+  std::vector<LayerMask> masks;
 
   /* Id of the layer this one shows, or 0. */
   uint64_t reference_source = 0;
+  /* A reference's own changes on top of its original (see anim/reference.hh). */
+  ReferenceSettings reference;
 
   VectorDrawing drawing;
   /* Group children, top of the stack first, as the Layers editor lists them. */
@@ -152,22 +458,34 @@ struct Layer {
   uint64_t active_bone = 0;
   /* Moho's layer binding: a layer inside a bone layer can follow one bone as a whole. */
   uint64_t parent_bone = 0;
-  /* Inside a bone layer: its points can be picked and moved while the bone layer is the active
-   * one, together with the bones. */
+  /* Bone layers: their bone collections, in list order, and the active one (its id; 0: All). */
+  std::vector<BoneCollection> bone_collections;
+  uint64_t next_collection_id = 1;
+  uint64_t active_collection = 0;
+  /* Bone layers: the All collection's eye and star. */
+  bool all_bones_visible = true;
+  bool all_bones_solo = false;
+  /* Inside a bone layer: its points can be picked and moved along with the bones while the bone
+   * layer is the active one (it is in All, and can be put in other collections too). */
   bool edit_with_bones = false;
+  /* A drawing that is: the bone collections it is in besides All (their ids). */
+  std::vector<uint64_t> collections;
   /* Run on the drawing in order (see ModifierType). */
   std::vector<Modifier> modifiers;
   /* Bone layers: the names of their actions, alternative timelines for the layer and everything
    * inside it (see anim/animation.hh). */
   std::vector<std::string> actions;
+  /* Bone layers, runtime: the frame the bones show (for constraints' delays) and where dynamics put
+   * them on it, by bone id. */
+  int pose_frame = 0;
+  std::map<uint64_t, BoneDynamicsState> dynamics_now;
 
   bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
   bool is_bone_layer() const { return type == LayerType::Bone; }
   bool is_reference() const { return reference_source != 0; }
-  bool mask_hides_layer() const;
-  bool mask_adds() const;
-  bool mask_subtracts() const;
-  bool mask_clears() const;
+  /* The bone it follows as a whole (0 for none): a copy posed Same as Original moves with its
+   * original's bones, so its own Parent Bone waits until it is given Own Bones. */
+  uint64_t followed_bone() const { return is_reference() && reference.match_original ? 0 : parent_bone; }
   Transform2D local_transform() const;
 
   static const rna::StructRNA &rna();

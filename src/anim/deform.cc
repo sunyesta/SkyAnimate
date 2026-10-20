@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 
+#include "anim/reference.hh"
 #include "data/bones.hh"
+#include "data/layer.hh"
 #include "core/log.hh"
 #include "data/document.hh"
 
@@ -210,8 +212,9 @@ struct Deformer {
 static bool deformer_init(const Document &doc, const Layer &layer, Deformer &r)
 {
   r.armature = layer_armature(doc, layer.id);
-  if (!r.armature || r.armature->bones.empty() || layer.parent_bone != 0) {
-    /* A layer bound to one bone moves as a whole (its transform), not point by point. */
+  if (!r.armature || r.armature->bones.empty() || layer.followed_bone() != 0 || layer_binding_group(doc, layer.id)) {
+    /* A layer bound to one bone (or inside a group that is) moves as a whole (its transform), not
+     * point by point. */
     return false;
   }
   r.poses = armature_pose(*r.armature, doc.frame_current == 0);
@@ -331,8 +334,20 @@ static bool modifier_on(const Modifier &m, bool render)
   return render ? m.show_render : m.show_viewport;
 }
 
+/* A reference with Match Original on: its original, whose modifiers and bones shape it. */
+static const Layer *matched_original(const Document &doc, const Layer &layer)
+{
+  if (!layer.is_reference() || !layer.reference.match_original) {
+    return nullptr;
+  }
+  return layer_find(doc, layer.reference_source);
+}
+
 bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool render)
 {
+  if (matched_original(doc, layer)) {
+    return true;
+  }
   for (const Modifier &m : layer.modifiers) {
     if (!modifier_on(m, render)) {
       continue;
@@ -340,7 +355,7 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
     if (m.type == ModifierType::Mirror && (m.axis_x || m.axis_y)) {
       return true;
     }
-    if (m.type == ModifierType::Armature && layer.parent_bone == 0) {
+    if (m.type == ModifierType::Armature && layer.followed_bone() == 0 && !layer_binding_group(doc, layer.id)) {
       const Layer *armature = layer_armature(doc, layer.id);
       if (armature && !armature->bones.empty()) {
         return true;
@@ -350,8 +365,44 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
   return false;
 }
 
+/* Moves a drawing's points and handles by `t`. */
+static void transform_drawing(VectorDrawing &drawing, const Transform2D &t)
+{
+  for (MeshPoint &p : drawing.points) {
+    p.pos = t.apply(p.pos);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.handle_in = t.apply_vector(cp.handle_in);
+      cp.handle_out = t.apply_vector(cp.handle_out);
+    }
+  }
+}
+
 VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render)
 {
+  if (const Layer *original = matched_original(doc, layer)) {
+    /* Match Original: shaped by the original's modifiers and posed by its bones, where it is. */
+    VectorDrawing drawing = layer.drawing;
+    const Layer *bones = layer_armature(doc, original->id);
+    const auto flip = [bones](uint64_t bone) { return bones ? bone_mirror_id(*bones, bone) : bone; };
+    for (const Modifier &m : original->modifiers) {
+      if (!modifier_on(m, render)) {
+        continue;
+      }
+      if (m.type == ModifierType::Mirror) {
+        drawing = drawing_mirror(drawing, m, flip);
+      }
+      else if (m.type == ModifierType::Armature) {
+        Deformer d;
+        if (deformer_init(doc, *original, d)) {
+          deform(d, drawing);
+        }
+      }
+    }
+    transform_drawing(drawing, reference_match_transform(doc, layer));
+    return drawing;
+  }
   VectorDrawing drawing = layer_drawing(doc, layer);
   const Layer *armature = layer_armature(doc, layer.id);
   const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
@@ -372,10 +423,58 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
   return drawing;
 }
 
+VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool render)
+{
+  if (layer.is_reference()) {
+    /* As built on the setup frame; matched, with the original's Mirror and where it is. */
+    VectorDrawing drawing = reference_build(doc, layer, true);
+    if (const Layer *original = matched_original(doc, layer)) {
+      const Layer *bones = layer_armature(doc, original->id);
+      const auto flip = [bones](uint64_t bone) { return bones ? bone_mirror_id(*bones, bone) : bone; };
+      for (const Modifier &m : original->modifiers) {
+        if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
+          drawing = drawing_mirror(drawing, m, flip);
+        }
+      }
+      transform_drawing(drawing, reference_match_transform(doc, layer));
+      return drawing;
+    }
+    const Layer *armature = layer_armature(doc, layer.id);
+    const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
+    for (const Modifier &m : layer.modifiers) {
+      if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
+        drawing = drawing_mirror(drawing, m, flip);
+      }
+    }
+    return drawing;
+  }
+  VectorDrawing drawing = drawing_setup_pose(layer_drawing(doc, layer));
+  const Layer *armature = layer_armature(doc, layer.id);
+  const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
+  for (const Modifier &m : layer.modifiers) {
+    if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
+      drawing = drawing_mirror(drawing, m, flip);
+    }
+  }
+  return drawing;
+}
+
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer)
 {
   const VectorDrawing &drawing = layer_drawing(doc, layer);
   std::vector<Transform2D> skins(drawing.points.size());
+  if (const Layer *original = matched_original(doc, layer)) {
+    /* Match Original: posed by the original's bones, then put where the original is. */
+    const Transform2D match = reference_match_transform(doc, layer);
+    Deformer d;
+    const bool posed = std::any_of(original->modifiers.begin(), original->modifiers.end(),
+                                   [](const Modifier &m) { return m.type == ModifierType::Armature && m.show_viewport; }) &&
+                       deformer_init(doc, *original, d);
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      skins[i] = posed ? match * point_skin(d, drawing.points[i]) : match;
+    }
+    return skins;
+  }
   const bool on = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
     return m.type == ModifierType::Armature && m.show_viewport;
   });
@@ -566,6 +665,10 @@ static std::vector<BoneWeight> neighbour_weights(const VectorDrawing &drawing, i
 
 static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
 {
+  /* A reference matching its original moves by the original's weights. */
+  if (layer.is_reference() && layer.reference.match_original) {
+    return false;
+  }
   Deformer d;
   if (!weightable(doc, layer, d)) {
     return false;

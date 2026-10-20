@@ -56,4 +56,32 @@ sky.ops.mesh.select_none()
 sky.ops.mesh.select_all()
 assert all(p[2] for p in b.points)
 
+# Delete Layer removes the active layer and every layer picked with it.
+def names():
+    return [l.name for l in sky.data.layers]
+
+
+sky.ops.layer.new()
+c = layers.active
+sky.ops.layer.new()
+d = layers.active
+sky.ops.layer.new()
+keep = layers.active
+layers.active = d
+c.select = True
+keep_name, c_name, d_name = keep.name, c.name, d.name
+assert sky.ops.layer.delete() == {'FINISHED'}
+assert c_name not in names() and d_name not in names(), names()
+assert keep_name in names() and layers.active.name in names(), "an unpicked layer stays, and becomes active"
+# A picked layer inside a picked group goes with the group.
+sky.ops.layer.new()
+inner = layers.active
+assert sky.ops.layer.group() == {'FINISHED'}
+group = layers.active
+group_name, inner_name = group.name, inner.name
+inner.select = True
+before = len(names())
+assert sky.ops.layer.delete() == {'FINISHED'}
+assert group_name not in names() and len(names()) == before - 1, names()
+
 print("Multi-layer tests passed")

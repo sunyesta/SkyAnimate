@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 import zlib
 
+import _sky
 import sky
 
 
@@ -122,5 +123,40 @@ layer = sky.data.layers.active
 b = layer.shape_brush(0)
 assert b["name"] == "Ink" and b["align"] and abs(b["spacing"] - 0.1) < 1e-6, b
 assert layer.shape_brush(1)["name"] == ""
+
+# --- Dabs stick to the artwork -------------------------------------------------------------------
+# A brushed line drawn on the setup frame, then animated: on frame 10 its middle point moves right,
+# stretching the first segment to 1.4 times its length and squashing the second to 0.6. Each dab
+# stays at the same place on its segment (it doesn't slide along the line).
+doc = sky.data.document
+doc.auto_key = True
+doc.frame_current = 0
+layer.add_curve([(0.0, 2.0), (1.0, 2.0), (2.0, 2.0)])
+shape = layer.shape_count - 1
+first = layer.point_count - 3
+sky.ops.mesh.select_none()
+layer.select_points([first])
+assert sky.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
+rest = _sky.layer_shape_dabs(layer.id, shape)
+assert len(rest) > 20 and all(a == 1.0 for x, y, a in rest)
+doc.frame_current = 10
+layer.set_point(first + 1, (1.4, 2.0))
+moved = _sky.layer_shape_dabs(layer.id, shape)
+assert len(moved) == len(rest), "the same dabs"
+for (x0, y0, a0), (x1, y1, a1) in zip(rest, moved):
+    expected = x0 * 1.4 if x0 <= 1.0 else 1.4 + (x0 - 1.0) * 0.6
+    assert abs(x1 - expected) < 1e-3 and abs(y1 - 2.0) < 1e-6, ("each dab keeps its place on the line", x0, x1)
+# Squashed below 3/4, every other dab fades (here to 40%); the stretched segment keeps all of its.
+assert all(a == 1.0 for x, y, a in moved if x < 1.4)
+assert any(abs(a - 0.4) < 1e-3 for x, y, a in moved if x > 1.4), "a squashed segment thins out"
+# Stretched past 1.5 times, dabs fade in halfway between its own (at 1.9 times, 80% of the way in).
+doc.frame_current = 20
+layer.set_point(first + 1, (1.9, 2.0))
+stretched = _sky.layer_shape_dabs(layer.id, shape)
+fills = [x for x, y, a in stretched if abs(a - 0.8) < 1e-3]
+assert len(fills) > 10 and all(x < 1.9 for x in fills), "a stretched segment fills its gaps"
+# Back on the setup frame, the line is as drawn.
+doc.frame_current = 0
+assert _sky.layer_shape_dabs(layer.id, shape) == rest
 
 print("Brush tests passed")

@@ -5,6 +5,7 @@
  * Bones arrive in milestone 4. Keep this a plain copyable value: undo snapshots copy it. */
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,24 @@ struct Document {
   uint64_t action_layer = 0;
   /* Runtime: some plain value has a smart action's amount added (see Channel::smart). */
   bool smart_applied = false;
+  /* Bone dynamics for the whole document (Moho's): gravity and wind push every dynamic bone (by
+   * its weight; the wind pushes them all the same); simulating starts at `simulation_start`. */
+  float gravity = 0.0f;
+  float wind = 0.0f;
+  /* Radians: the way the wind blows (0: to the right). */
+  float wind_direction = 0.0f;
+  /* The wind isn't steady (as Unity's wind zones): gusts make it stronger and weaker and waver its
+   * direction (0: steady, 0.5: between half and one and a half times as strong), coming about
+   * every two seconds at a gust speed of 1 and sweeping across the drawing; turbulence is a small,
+   * fast flutter on top, along the wind and across it. */
+  float wind_gusts = 0.0f;
+  float wind_gust_speed = 1.0f;
+  float wind_turbulence = 0.0f;
+  int simulation_start = 1;
+  /* Keys for gravity and the wind: they are animatable, kept as channels on a layer that isn't in
+   * the tree (SIMULATION_LAYER_ID, "Simulation"), so the timeline and key tools handle them as
+   * any layer's; animation copies them into the fields above for each frame shown. */
+  Layer simulation;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 
@@ -73,6 +92,8 @@ Text &document_text_add(Document &doc, const std::string &name, const std::strin
  * Layers
  */
 
+/* The id of Document::simulation; layer_find finds it too. */
+inline constexpr uint64_t SIMULATION_LAYER_ID = ~uint64_t(0) - 1;
 Layer *layer_find(Document &doc, uint64_t id);
 const Layer *layer_find(const Document &doc, uint64_t id);
 /* The list holding a layer (the document's or a group's children), and its index there. */
@@ -82,6 +103,9 @@ Layer *layer_parent(Document &doc, uint64_t id);
 Layer *document_active_layer(Document &doc);
 /* Layer to document transform, including every parent group. */
 Transform2D layer_world_transform(const Document &doc, uint64_t id);
+/* The same with the bones at rest (as on the setup frame): where a layer is before any Parent Bone
+ * moves it. */
+Transform2D layer_setup_world_transform(const Document &doc, uint64_t id);
 /* The drawing a layer shows: its own, or its reference source's. */
 const VectorDrawing &layer_drawing(const Document &doc, const Layer &layer);
 /* Every layer in Layers-editor order (top first), depth-first. */
@@ -92,10 +116,13 @@ Layer &document_add_layer(Document &doc, LayerType type, const std::string &name
 /* Names like "Layer 3" that no other layer uses. */
 std::string document_layer_unique_name(const Document &doc, const std::string &base);
 /* A deep copy with fresh ids, for duplicating. */
-Layer layer_copy_with_new_ids(Document &doc, const Layer &layer);
+Layer layer_copy_with_new_ids(Document &doc, const Layer &layer,
+                              std::map<uint64_t, uint64_t> *r_remap = nullptr);
 /* A reference to `source`: same name, its own id and settings; for a group, references of
  * each child. */
 Layer layer_make_reference(Document &doc, const Layer &source);
+/* Points `layer`'s masks at the layers `remap` gives for the ones they name (copies of them). */
+void layer_masks_remap(Layer &layer, const std::map<uint64_t, uint64_t> &remap);
 /* Removes a layer and makes a neighbour active. References to it become ordinary layers. */
 bool document_remove_layer(Document &doc, uint64_t id);
 /* Moves a layer up (-1) or down (+1) among its siblings. */

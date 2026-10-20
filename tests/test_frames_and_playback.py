@@ -50,4 +50,15 @@ assert doc.action == "", "the timeline starts on the mainline"
 doc.action = "head_turn"
 assert doc.action == "", "there is no such action (see test_actions.py)"
 
+# Shift Z over the viewport toggles its overlays (the viewport flips them as it draws).
+assert sky.wm.event_simulate("Z", shift=True, area="Viewport")
+
+# Tab: to the setup frame (0) and back to the frame you came from.
+doc.frame_current = 17
+assert sky.wm.event_simulate("TAB", area="Viewport")
+assert doc.frame_current == 0
+assert sky.wm.event_simulate("TAB", area="Viewport")
+assert doc.frame_current == 17
+assert not sky.wm.event_simulate("TAB", area="Viewport", typing=True) or doc.frame_current == 17, "a text field keeps Tab"
+
 print("Frame and playback tests passed")

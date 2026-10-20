@@ -34,7 +34,73 @@ bool interp_from_identifier(const std::string &identifier, Interp *r_interp)
   return false;
 }
 
+static constexpr const char *EASE_IDS[EASE_COUNT] = {"SINE", "QUAD", "CUBIC", "QUART", "QUINT", "EXPO", "CIRC"};
+static constexpr const char *EASE_NAMES[EASE_COUNT] = {"Gentle (Sine)", "Quad",          "Cubic", "Quart",
+                                                       "Quint",         "Strong (Expo)", "Circ"};
+
+const char *ease_identifier(Ease ease)
+{
+  return EASE_IDS[int(ease)];
+}
+
+const char *ease_name(Ease ease)
+{
+  return EASE_NAMES[int(ease)];
+}
+
+bool ease_from_identifier(const std::string &identifier, Ease *r_ease)
+{
+  for (int i = 0; i < EASE_COUNT; i++) {
+    if (identifier == EASE_IDS[i]) {
+      *r_ease = Ease(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+NewKeySettings &new_key_settings()
+{
+  static NewKeySettings settings;
+  return settings;
+}
+
+static bool g_stepped_preview = false;
+
+bool stepped_preview()
+{
+  return g_stepped_preview;
+}
+
+void stepped_preview_set(bool on)
+{
+  g_stepped_preview = on;
+}
+
 /* --- Easing curves, 0..1 -> 0..1 (Blender's BLI_easing ease-out forms). --------------- */
+
+/* Slowing into the end (Penner's "out" form) at each strength. */
+static float ease_slowing(Ease ease, float t)
+{
+  const float u = 1.0f - t;
+  switch (ease) {
+    case Ease::Sine:
+      return std::sin(t * PI * 0.5f);
+    case Ease::Quad:
+      return 1.0f - u * u;
+    case Ease::Cubic:
+      return 1.0f - u * u * u;
+    case Ease::Quart:
+      return 1.0f - u * u * u * u;
+    case Ease::Quint:
+      return 1.0f - u * u * u * u * u;
+    case Ease::Expo:
+      return t >= 1.0f ? 1.0f : 1.0f - std::pow(2.0f, -10.0f * t);
+    case Ease::Circ:
+      return std::sqrt(std::max(0.0f, 1.0f - u * u));
+  }
+  return t;
+}
 
 static float ease_back(float t, float overshoot)
 {
@@ -59,13 +125,65 @@ static float ease_bounce(float t)
   return 7.5625f * t * t + 0.984375f;
 }
 
-static float ease_elastic(float t)
+static float ease_elastic(float t, float amplitude, float period)
 {
   if (t <= 0.0f || t >= 1.0f) {
     return t <= 0.0f ? 0.0f : 1.0f;
   }
-  const float period = 0.3f;
-  return std::pow(2.0f, -10.0f * t) * std::sin((t - period / 4.0f) * (2.0f * PI) / period) + 1.0f;
+  period = std::max(period, 0.02f);
+  /* Penner's elastic out: below 1 the swing can't reach past the move, so it is the move. */
+  float s = period / 4.0f;
+  if (amplitude < 1.0f) {
+    amplitude = 1.0f;
+  }
+  else {
+    s = period / (2.0f * PI) * std::asin(1.0f / amplitude);
+  }
+  return amplitude * std::pow(2.0f, -10.0f * t) * std::sin((t - s) * (2.0f * PI) / period) + 1.0f;
+}
+
+/* Moho's names: Ease In slows into the next key, Ease Out slows away from this one. */
+static float ease_shaped(Interp interp, Ease ease, float t)
+{
+  switch (interp) {
+    case Interp::EaseIn:
+      return ease_slowing(ease, t);
+    case Interp::EaseOut:
+      return 1.0f - ease_slowing(ease, 1.0f - t);
+    default:
+      return t < 0.5f ? 0.5f - 0.5f * ease_slowing(ease, 1.0f - 2.0f * t)
+                      : 0.5f + 0.5f * ease_slowing(ease, 2.0f * t - 1.0f);
+  }
+}
+
+float interp_curve(const KeySettings &s, float t)
+{
+  t = std::clamp(t, 0.0f, 1.0f);
+  switch (s.interp) {
+    case Interp::Step:
+    case Interp::Pose:
+      return t >= 1.0f ? 1.0f : 0.0f;
+    case Interp::Linear:
+    case Interp::Noisy:
+      return t;
+    case Interp::EaseIn:
+    case Interp::EaseOut:
+    case Interp::EaseInOut:
+      return ease_shaped(s.interp, s.ease, t);
+    case Interp::Back:
+      return ease_back(t, s.overshoot);
+    case Interp::Bounce:
+      return ease_bounce(t);
+    case Interp::Elastic:
+      return ease_elastic(t, s.elastic_amplitude, s.elastic_period);
+    case Interp::Cycle:
+      /* Back to the start and again: a saw. */
+      return t < 0.5f ? t * 2.0f : (t - 0.5f) * 2.0f;
+    case Interp::Smooth:
+    case Interp::Bezier:
+      break;
+  }
+  return t * t * (3.0f - 2.0f * t);
 }
 
 /* Smooth noise, -1..1, from a hash at whole numbers. */
@@ -149,6 +267,10 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   const int k = int(after - keys.begin()) - 1;
   const Key<T> &a = keys[k];
 
+  if (g_stepped_preview) {
+    /* Blocking: hold each key until the next. */
+    return a.value;
+  }
   if (a.interp == Interp::Cycle) {
     /* Play again from an earlier frame, looping until the next key. */
     const int start = a.cycle_absolute ? a.cycle_frame : (a.cycle_back > 0 ? a.frame - a.cycle_back : keys.front().frame);
@@ -184,19 +306,15 @@ template<typename T> T Channel<T>::evaluate(int frame) const
     case Interp::Linear:
       return a.value + (b.value - a.value) * t;
     case Interp::EaseInOut:
-      return a.value + (b.value - a.value) * (t * t * (3.0f - 2.0f * t));
     case Interp::EaseIn:
-      /* Slows only on arrival. */
-      return a.value + (b.value - a.value) * (t * (2.0f - t));
     case Interp::EaseOut:
-      /* Slows only on departure. */
-      return a.value + (b.value - a.value) * (t * t);
+      return a.value + (b.value - a.value) * ease_shaped(a.interp, a.ease, t);
     case Interp::Back:
       return a.value + (b.value - a.value) * ease_back(t, a.overshoot);
     case Interp::Bounce:
       return a.value + (b.value - a.value) * ease_bounce(t);
     case Interp::Elastic:
-      return a.value + (b.value - a.value) * ease_elastic(t);
+      return a.value + (b.value - a.value) * ease_elastic(t, a.elastic_amplitude, a.elastic_period);
     case Interp::Noisy:
       return a.value + (b.value - a.value) * t + noise_of(a.value, a, float(frame));
     case Interp::Smooth:
@@ -241,7 +359,7 @@ template<typename T> const Key<T> *Channel<T>::key_at(int frame) const
   return const_cast<Channel<T> *>(this)->key_at(frame);
 }
 
-template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value, Interp default_interp)
+template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value)
 {
   if (Key<T> *existing = key_at(frame)) {
     existing->value = value;
@@ -252,10 +370,12 @@ template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value, Inte
   Key<T> key;
   key.frame = frame;
   key.value = value;
-  key.interp = at != keys.begin() ? std::prev(at)->interp : default_interp;
-  if (key.interp == Interp::Cycle) {
+  const NewKeySettings &defaults = new_key_settings();
+  const bool copy = defaults.copy_previous && at != keys.begin();
+  key_settings_apply(key, copy ? key_settings(*std::prev(at)) : defaults.settings);
+  if (copy && key.interp == Interp::Cycle) {
     /* A cycle key ends a loop; the keys after it start out ordinary. */
-    key.interp = default_interp;
+    key.interp = defaults.settings.interp == Interp::Cycle ? Interp::Smooth : defaults.settings.interp;
   }
   if (constant) {
     key.interp = Interp::Step;

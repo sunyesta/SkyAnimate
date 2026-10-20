@@ -141,6 +141,21 @@ static void playback_operators_register()
   };
   operators().add(std::move(cancel));
 
+  /* Tab, as Blender's edit mode toggle: to the setup frame (0), where the rig and drawing are
+   * edited, and back to the frame you were posing on. */
+  frame_operator_register("screen.frame_setup_toggle", "Toggle Setup Frame",
+                          "Go to the setup frame (0), or back to the frame you came from (Tab)", [](Context &C) {
+                            Document &doc = *C.document;
+                            if (doc.frame_current != 0) {
+                              C.wm->frame_before_setup = doc.frame_current;
+                              doc.frame_current = 0;
+                            }
+                            else {
+                              doc.frame_current = C.wm->frame_before_setup > 0 ? C.wm->frame_before_setup
+                                                                               : doc.frame_start;
+                            }
+                            return OpStatus::Finished;
+                          });
   frame_operator_register("screen.frame_jump_start", "Jump to Start", "Jump to the first frame of the range",
                           [](Context &C) {
                             C.document->frame_current = C.document->frame_start;
@@ -257,6 +272,18 @@ void builtin_operators_register()
   workspace_operators_register();
   ed_undo_register();
   ed_redo_register();
+  {
+    OperatorType ot;
+    ot.idname = "view.overlays_toggle";
+    ot.name = "Toggle Overlays";
+    ot.description = "Show or hide the viewport's overlays (Shift Z), as the Overlays button does";
+    ot.poll = [](Context &C) { return C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      C.wm->overlays_toggle_request = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   wm_ui_scale_register("wm.ui_scale_increase", "Increase Interface Scale", 0.25f);
   wm_ui_scale_register("wm.ui_scale_decrease", "Decrease Interface Scale", -0.25f);
   wm_ui_scale_register("wm.ui_scale_reset", "Reset Interface Scale", 0.0f);

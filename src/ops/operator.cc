@@ -79,6 +79,11 @@ std::string op_arg(const Context &C, const std::string &name, const std::string 
   return fallback;
 }
 
+bool op_has_arg(const Context &C, const std::string &name)
+{
+  return C.op_args && C.op_args->count(name) > 0;
+}
+
 bool op_arg_bool(const Context &C, const std::string &name)
 {
   const std::string value = op_arg(C, name);
@@ -137,7 +142,11 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   /* Arguments are visible to the operator while it runs; restore for nested calls. */
   const OpArgs *outer_args = C.op_args;
   C.op_args = &args;
+  const std::string outer_undo = C.undo_name;
+  C.undo_name.clear();
   const OpStatus status = ot.exec(C);
+  const std::string undo_name = C.undo_name.empty() ? ot.name : C.undo_name;
+  C.undo_name = outer_undo;
   C.op_args = outer_args;
   /* An operator that changed the frame (a frame jump, undo) shows the new frame's values. */
   if (C.document) {
@@ -153,7 +162,7 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     report(ReportType::Operator, operator_call_repr(ot.idname, args));
   }
   if ((ot.flag & OPTYPE_UNDO) && C.undo && C.document) {
-    C.undo->push(ot.name, *C.document);
+    C.undo->push(undo_name, *C.document);
     /* Recording may have keyed a bone that drives a smart action. */
     animation_refresh_smart(*C.document);
   }

@@ -13,6 +13,7 @@
 
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "data/bones.hh"
 
 namespace sky {
 
@@ -110,8 +111,17 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.interval != defaults.interval) {
       key["interval"] = k.interval;
     }
+    if (k.ease != defaults.ease) {
+      key["ease"] = ease_identifier(k.ease);
+    }
     if (k.overshoot != defaults.overshoot) {
       key["overshoot"] = num(k.overshoot);
+    }
+    if (k.elastic_amplitude != defaults.elastic_amplitude) {
+      key["elastic_amplitude"] = num(k.elastic_amplitude);
+    }
+    if (k.elastic_period != defaults.elastic_period) {
+      key["elastic_period"] = num(k.elastic_period);
     }
     if (k.noise_amplitude != defaults.noise_amplitude) {
       key["noise_amplitude"] = num(k.noise_amplitude);
@@ -140,6 +150,10 @@ template<typename T> static void put_keys(json &j, const char *name, const Chann
   if (ch.animated()) {
     j[name] = keys_to_json(ch);
   }
+  /* Pinned to the timeline: kept even without keys. */
+  if (ch.pinned) {
+    j[std::string(name) + "_pinned"] = true;
+  }
   /* Other timelines' keys: actions by name, and "" for the mainline while an action is edited. */
   if (!ch.actions.empty()) {
     json actions = json::object();
@@ -156,7 +170,7 @@ static json drawing_to_json(const VectorDrawing &drawing)
 {
   json points = json::array();
   for (const MeshPoint &p : drawing.points) {
-    json point = {{"pos", float2_to_json(p.pos)}};
+    json point = {{"id", p.id}, {"pos", float2_to_json(p.pos)}};
     if (p.radius != 1.0f) {
       point["radius"] = num(p.radius);
     }
@@ -207,13 +221,87 @@ static json drawing_to_json(const VectorDrawing &drawing)
     for (const ShapeEdge &edge : shape.edges) {
       edges.push_back(json::array({edge.curve, edge.segment}));
     }
-    shapes.push_back({{"name", shape.name},
+    shapes.push_back({{"id", shape.id},
+                      {"name", shape.name},
                       {"fill", shape.has_fill},
                       {"outline", shape.has_outline},
                       {"style", style_to_json(shape.style)},
                       {"edges", std::move(edges)}});
   }
-  return {{"points", std::move(points)}, {"curves", std::move(curves)}, {"shapes", std::move(shapes)}};
+  return {{"points", std::move(points)},
+          {"curves", std::move(curves)},
+          {"shapes", std::move(shapes)},
+          {"next_id", drawing.next_id}};
+}
+
+/* A reference's own changes on top of its original. */
+static json reference_to_json(const ReferenceSettings &rs)
+{
+  json points = json::array();
+  for (const auto &[id, o] : rs.points) {
+    json p = {{"id", id}, {"offset", float2_to_json(o.offset)}};
+    put_keys(p, "offset_keys", o.offset_keys);
+    points.push_back(std::move(p));
+  }
+  json looks = json::array();
+  for (const auto &[id, look] : rs.looks) {
+    json l = {{"id", id}};
+    if (look.fill_set) {
+      l["fill"] = color_to_json(look.fill);
+    }
+    if (look.line_set) {
+      l["line"] = color_to_json(look.line);
+    }
+    if (look.width_set) {
+      l["line_width"] = num(look.line_width);
+    }
+    if (look.brush_set) {
+      l["brush"] = brush_to_json(look.brush);
+    }
+    if (look.has_fill_set) {
+      l["has_fill"] = look.has_fill;
+    }
+    if (look.has_outline_set) {
+      l["has_outline"] = look.has_outline;
+    }
+    if (look.hidden) {
+      l["hidden"] = true;
+    }
+    looks.push_back(std::move(l));
+  }
+  json swaps = json::array();
+  for (const ReferenceSwap &s : rs.swaps) {
+    swaps.push_back({{"from", color_to_json(s.from)}, {"to", color_to_json(s.to)}, {"fill", s.fill}, {"line", s.line}});
+  }
+  json weights = json::array();
+  for (const auto &[id, list] : rs.weights) {
+    json ws = json::array();
+    for (const BoneWeight &w : list) {
+      ws.push_back(json::array({w.bone, num(w.weight)}));
+    }
+    weights.push_back({{"id", id}, {"weights", std::move(ws)}});
+  }
+  json handles = json::array();
+  for (const auto &[key, o] : rs.handles) {
+    json h = {{"point", key.point}, {"toward", key.toward}, {"side", key.in ? "IN" : "OUT"},
+              {"offset", float2_to_json(o.offset)}};
+    put_keys(h, "offset_keys", o.offset_keys);
+    handles.push_back(std::move(h));
+  }
+  json edges = json::array();
+  for (const auto &[key, hidden] : rs.edges) {
+    edges.push_back({{"from", key.first}, {"to", key.second}, {"hidden", hidden}});
+  }
+  return {{"edit_points", rs.edit_points},
+          {"follow_animation", rs.follow_animation},
+          {"match_original", rs.match_original},
+          {"own_channels", rs.own_channels},
+          {"handles", std::move(handles)},
+          {"edges", std::move(edges)},
+          {"points", std::move(points)},
+          {"looks", std::move(looks)},
+          {"swaps", std::move(swaps)},
+          {"weights", std::move(weights)}};
 }
 
 static json layer_to_json(const Layer &layer)
@@ -232,13 +320,24 @@ static json layer_to_json(const Layer &layer)
       {"rotation", num(layer.rotation)},
       {"scale", float2_to_json(layer.scale)},
       {"opacity", num(layer.opacity)},
-      {"mask_mode", enum_identifier("mask_mode", int(layer.mask_mode))},
-      {"group_mask", enum_identifier("group_mask", int(layer.group_mask))},
-      {"mask_expand", layer.mask_expand},
-      {"mask_exclude_strokes", layer.mask_exclude_strokes},
   };
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
+  }
+  if (!layer.masks.empty()) {
+    json masks = json::array();
+    for (const LayerMask &m : layer.masks) {
+      masks.push_back({{"outside", m.outside},
+                       {"layers", m.layers},
+                       {"enabled", m.enabled},
+                       {"render", m.render},
+                       {"expand", m.expand},
+                       {"fills_only", m.fills_only},
+                       {"filled", m.filled},
+                       {"extend", mask_extend_identifier(m.extend)},
+                       {"show_expanded", m.show_expanded}});
+    }
+    j["masks"] = std::move(masks);
   }
   if (!layer.modifiers.empty()) {
     json modifiers = json::array();
@@ -268,16 +367,101 @@ static json layer_to_json(const Layer &layer)
                  {"parent", b.parent},
                  {"position", float2_to_json(b.position)},
                  {"angle", num(b.angle)},
+                 {"setup_position", float2_to_json(b.setup_position)},
+                 {"setup_angle", num(b.setup_angle)},
                  {"length", num(b.length)},
-                 {"scale", num(b.scale)},
-                 {"strength", num(b.strength)},
-                 {"label_color", enum_identifier("label_color", int(b.color))}};
+                 {"scale", float2_to_json(b.scale)},
+                 {"strength", num(b.strength)}};
+      if (b.color_set != 0) {
+        bj["color_set"] = bone_color_set_identifier(b.color_set);
+      }
+      if (b.color_set == BONE_COLOR_CUSTOM) {
+        json shades = json::array();
+        for (const Color &c : b.custom_colors) {
+          shades.push_back({num(c.r), num(c.g), num(c.b)});
+        }
+        bj["custom_colors"] = shades;
+      }
       if (b.connected) {
         bj["connected"] = true;
       }
       put_keys(bj, "position_keys", b.position_keys);
       put_keys(bj, "angle_keys", b.angle_keys);
       put_keys(bj, "scale_keys", b.scale_keys);
+      if (b.ik_ignore) {
+        bj["ik_ignore"] = true;
+      }
+      if (b.arc_ik) {
+        bj["arc_ik"] = true;
+      }
+      if (b.shape != BoneShape::None) {
+        bj["shape"] = b.shape == BoneShape::Pin ? "PIN" : "CUSTOM";
+      }
+      if (b.pin_size != 1.0f) {
+        bj["pin_size"] = num(b.pin_size);
+      }
+      if (b.shape_layer != 0) {
+        bj["shape_layer"] = b.shape_layer;
+      }
+      if (!b.collections.empty()) {
+        bj["collections"] = b.collections;
+      }
+      if (!b.constraints.empty()) {
+        json constraints = json::array();
+        for (const BoneConstraint &c : b.constraints) {
+          const auto spring = [](const BoneSpring &s) {
+            json sj{{"enabled", s.enabled}, {"settle_speed", num(s.settle_speed)},
+                    {"bounce", num(s.bounce)},        {"inertia", num(s.inertia)},
+                    {"stretch", num(s.stretch)},
+                    {"use_limit", s.use_limit},       {"limit", num(s.limit)}};
+            put_keys(sj, "settle_speed_keys", s.settle_speed_keys);
+            put_keys(sj, "bounce_keys", s.bounce_keys);
+            put_keys(sj, "inertia_keys", s.inertia_keys);
+            put_keys(sj, "stretch_keys", s.stretch_keys);
+            put_keys(sj, "limit_keys", s.limit_keys);
+            return sj;
+          };
+          json cj = {{"type", bone_constraint_identifier(c.type)},
+                     {"name", c.name},
+                     {"enabled", c.enabled},
+                     {"expanded", c.expanded},
+                     {"influence", num(c.influence)},
+                     {"min_angle", num(c.min_angle)},
+                     {"max_angle", num(c.max_angle)},
+                     {"amount", num(c.amount)},
+                     {"target", c.target},
+                     {"factor", num(c.factor)},
+                     {"delay", c.delay},
+                     {"chain", c.chain},
+                     {"max_stretch", num(c.max_stretch)},
+                     {"weight", num(c.weight)},
+                     {"wind_catch", num(c.wind_catch)},
+                     {"own_gravity", c.own_gravity},
+                     {"own_wind", c.own_wind},
+                     {"own_gravity_set", c.own_gravity_set},
+                     {"own_wind_set", c.own_wind_set},
+                     {"gravity", num(c.gravity)},
+                     {"wind", num(c.wind)},
+                     {"wind_direction", num(c.wind_direction)},
+                     {"wind_gusts", num(c.wind_gusts)},
+                     {"wind_gust_speed", num(c.wind_gust_speed)},
+                     {"wind_turbulence", num(c.wind_turbulence)},
+                     {"angle_spring", spring(c.angle_spring)},
+                     {"position_spring", spring(c.position_spring)},
+                     {"scale_spring", spring(c.scale_spring)}};
+          put_keys(cj, "influence_keys", c.influence_keys);
+          put_keys(cj, "weight_keys", c.weight_keys);
+          put_keys(cj, "wind_catch_keys", c.wind_catch_keys);
+          put_keys(cj, "gravity_keys", c.gravity_keys);
+          put_keys(cj, "wind_keys", c.wind_keys);
+          put_keys(cj, "wind_direction_keys", c.wind_direction_keys);
+          put_keys(cj, "wind_gusts_keys", c.wind_gusts_keys);
+          put_keys(cj, "wind_gust_speed_keys", c.wind_gust_speed_keys);
+          put_keys(cj, "wind_turbulence_keys", c.wind_turbulence_keys);
+          constraints.push_back(std::move(cj));
+        }
+        bj["constraints"] = std::move(constraints);
+      }
       bones.push_back(std::move(bj));
     }
     j["bones"] = std::move(bones);
@@ -286,15 +470,35 @@ static json layer_to_json(const Layer &layer)
     }
     j["next_bone_id"] = layer.next_bone_id;
     j["active_bone"] = layer.active_bone;
+    if (!layer.bone_collections.empty()) {
+      json collections = json::array();
+      for (const BoneCollection &c : layer.bone_collections) {
+        collections.push_back({{"id", c.id}, {"name", c.name}, {"visible", c.visible}, {"solo", c.solo}});
+      }
+      j["bone_collections"] = std::move(collections);
+      j["active_collection"] = layer.active_collection;
+    }
+    j["next_collection_id"] = layer.next_collection_id;
+    if (!layer.all_bones_visible || layer.all_bones_solo) {
+      j["all_bones"] = {{"visible", layer.all_bones_visible}, {"solo", layer.all_bones_solo}};
+    }
+  }
+  if (!layer.collections.empty()) {
+    j["collections"] = layer.collections;
   }
   put_keys(j, "position_keys", layer.position_keys);
   put_keys(j, "rotation_keys", layer.rotation_keys);
   put_keys(j, "scale_keys", layer.scale_keys);
   put_keys(j, "opacity_keys", layer.opacity_keys);
   put_keys(j, "visible_keys", layer.visible_keys);
+  if (layer.draw_order != 0.0f) {
+    j["draw_order"] = std::llround(layer.draw_order);
+  }
+  put_keys(j, "draw_order_keys", layer.draw_order_keys);
   if (layer.is_reference()) {
     /* A reference's drawing lives in its source; storing a copy would only go stale. */
     j["reference_source"] = layer.reference_source;
+    j["reference"] = reference_to_json(layer.reference);
   }
   else if (!layer.is_group()) {
     j["drawing"] = drawing_to_json(layer.drawing);
@@ -319,6 +523,11 @@ std::string sky_document_to_json(const Document &doc)
   for (const Layer &layer : doc.layers) {
     layers.push_back(layer_to_json(layer));
   }
+  /* Keys of the animated gravity and wind, by setting. */
+  json simulation_keys = json::object();
+  for (const CustomChannel &c : doc.simulation.custom_channels) {
+    put_keys(simulation_keys, c.path.c_str(), c.keys);
+  }
   const json root = {
       {"format", FORMAT_NAME},
       {"version", SKY_FILE_VERSION},
@@ -338,6 +547,14 @@ std::string sky_document_to_json(const Document &doc)
            {"render_samples", doc.render_samples},
            {"render_quality", doc.render_quality},
            {"action", doc.action},
+           {"gravity", num(doc.gravity)},
+           {"wind", num(doc.wind)},
+           {"wind_direction", num(doc.wind_direction)},
+           {"wind_gusts", num(doc.wind_gusts)},
+           {"wind_gust_speed", num(doc.wind_gust_speed)},
+           {"wind_turbulence", num(doc.wind_turbulence)},
+           {"simulation_start", doc.simulation_start},
+           {"simulation_keys", std::move(simulation_keys)},
            {"action_layer", doc.action_layer},
            {"active_layer", doc.active_layer},
            {"next_layer_id", doc.next_layer_id},
@@ -519,6 +736,11 @@ static bool value_from_json(const json &j, float *r)
 
 static bool value_from_json(const json &j, float2 *r)
 {
+  /* One number for both (bone scale before X and Y). */
+  if (j.is_number()) {
+    *r = {j.get<float>(), j.get<float>()};
+    return true;
+  }
   if (!j.is_array() || j.size() != 2 || !j[0].is_number() || !j[1].is_number()) {
     return false;
   }
@@ -543,7 +765,12 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     }
     key.hold = std::max(0, get_int(k, "hold", key.hold));
     key.interval = std::max(1, get_int(k, "interval", key.interval));
+    if (!ease_from_identifier(get_string(k, "ease", "QUAD"), &key.ease)) {
+      key.ease = Ease::Quad;
+    }
     key.overshoot = get_float(k, "overshoot", key.overshoot);
+    key.elastic_amplitude = get_float(k, "elastic_amplitude", key.elastic_amplitude);
+    key.elastic_period = std::max(0.02f, get_float(k, "elastic_period", key.elastic_period));
     key.noise_amplitude = get_float(k, "noise_amplitude", key.noise_amplitude);
     key.noise_frequency = get_float(k, "noise_frequency", key.noise_frequency);
     key.cycle_back = std::max(0, get_int(k, "cycle_back", key.cycle_back));
@@ -560,6 +787,9 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
 template<typename T> static void get_keys(const json &j, const char *name, Channel<T> &r_ch)
 {
   get_key_list(j, name, r_ch);
+  if (auto it = j.find(std::string(name) + "_pinned"); it != j.end() && it->is_boolean()) {
+    r_ch.pinned = it->get<bool>();
+  }
   auto it = j.find(std::string(name) + "_actions");
   if (it == j.end() || !it->is_object()) {
     return;
@@ -584,6 +814,7 @@ static VectorDrawing drawing_from_json(const json &j)
     if (p.is_object()) {
       drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
                                 false, get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
+      drawing.points.back().id = get_id(p, "id");
       for (const json &w : get_array(p, "weights")) {
         if (w.is_array() && w.size() == 2 && w[0].is_number_unsigned() && w[1].is_number()) {
           drawing.points.back().weights.push_back({w[0].get<uint64_t>(), std::clamp(w[1].get<float>(), 0.0f, 1.0f)});
@@ -643,6 +874,7 @@ static VectorDrawing drawing_from_json(const json &j)
       continue;
     }
     Shape shape;
+    shape.id = get_id(s, "id");
     shape.name = get_string(s, "name");
     shape.has_fill = get_bool(s, "fill", true);
     shape.has_outline = get_bool(s, "outline", true);
@@ -663,10 +895,163 @@ static VectorDrawing drawing_from_json(const json &j)
       drawing.shapes.push_back(std::move(shape));
     }
   }
+  /* Older files' points and shapes get their ids now. */
+  drawing.next_id = std::max<uint64_t>(1, get_id(j, "next_id"));
+  drawing_ensure_ids(drawing);
   /* Older files' Automatic and Vector handles become stored ones now, from the setup pose. */
   drawing_init_handles(drawing);
   drawing_repair_stale_handle_keys(drawing);
   return drawing;
+}
+
+static ReferenceSettings reference_from_json(const json &j)
+{
+  ReferenceSettings rs;
+  if (!j.is_object()) {
+    return rs;
+  }
+  rs.edit_points = get_bool(j, "edit_points", false);
+  rs.follow_animation = get_bool(j, "follow_animation", true);
+  rs.match_original = get_bool(j, "match_original", true);
+  for (const json &p : get_array(j, "points")) {
+    if (const uint64_t id = get_id(p, "id"); id != 0) {
+      ReferencePoint &o = rs.points[id];
+      o.offset = get_float2(p, "offset", {});
+      get_keys(p, "offset_keys", o.offset_keys);
+    }
+  }
+  for (const json &h : get_array(j, "handles")) {
+    const ReferenceHandleKey key{get_id(h, "point"), get_id(h, "toward"), get_string(h, "side") == "IN"};
+    if (key.point != 0) {
+      ReferencePoint &o = rs.handles[key];
+      o.offset = get_float2(h, "offset", {});
+      get_keys(h, "offset_keys", o.offset_keys);
+    }
+  }
+  for (const json &e : get_array(j, "edges")) {
+    const uint64_t from = get_id(e, "from"), to = get_id(e, "to");
+    if (from != 0 && to != 0) {
+      rs.edges[{from, to}] = get_bool(e, "hidden", true);
+    }
+  }
+  for (const json &c : get_array(j, "own_channels")) {
+    if (c.is_string()) {
+      rs.own_channels.insert(c.get<std::string>());
+    }
+  }
+  for (const json &l : get_array(j, "looks")) {
+    const uint64_t id = get_id(l, "id");
+    if (id == 0) {
+      continue;
+    }
+    ReferenceLook look;
+    look.fill_set = l.contains("fill");
+    look.fill = get_color(l, "fill", {});
+    look.line_set = l.contains("line");
+    look.line = get_color(l, "line", {});
+    look.width_set = l.contains("line_width");
+    look.line_width = get_float(l, "line_width", 0.0f);
+    look.brush_set = l.contains("brush");
+    if (look.brush_set) {
+      look.brush = brush_from_json(l["brush"]);
+    }
+    look.has_fill_set = l.contains("has_fill");
+    look.has_fill = get_bool(l, "has_fill", true);
+    look.has_outline_set = l.contains("has_outline");
+    look.has_outline = get_bool(l, "has_outline", true);
+    look.hidden = get_bool(l, "hidden", false);
+    if (!look.empty()) {
+      rs.looks[id] = look;
+    }
+  }
+  for (const json &s : get_array(j, "swaps")) {
+    rs.swaps.push_back({get_color(s, "from", {}), get_color(s, "to", {}), get_bool(s, "fill", true),
+                        get_bool(s, "line", true)});
+  }
+  for (const json &w : get_array(j, "weights")) {
+    const uint64_t id = get_id(w, "id");
+    std::vector<BoneWeight> list;
+    for (const json &e : get_array(w, "weights")) {
+      if (e.is_array() && e.size() == 2 && e[0].is_number_unsigned() && e[1].is_number()) {
+        list.push_back({e[0].get<uint64_t>(), std::clamp(e[1].get<float>(), 0.0f, 1.0f)});
+      }
+    }
+    if (id != 0) {
+      rs.weights[id] = std::move(list);
+    }
+  }
+  return rs;
+}
+
+/* Moho-style masking read from an older file, by layer id: (mask_mode, group_mask). */
+static std::map<uint64_t, std::pair<std::string, std::string>> g_old_masks;
+/* A mask layer's Expand by a Pixel and Fills Only from an older file, by layer id. */
+static std::map<uint64_t, std::pair<bool, bool>> g_old_mask_options;
+
+/* The masks naming a layer that had the two options take them. */
+static void migrate_old_mask_options(std::vector<Layer> &layers)
+{
+  for (Layer &layer : layers) {
+    for (LayerMask &m : layer.masks) {
+      for (const uint64_t id : m.layers) {
+        if (const auto it = g_old_mask_options.find(id); it != g_old_mask_options.end()) {
+          m.expand |= it->second.first;
+          m.fills_only |= it->second.second;
+        }
+      }
+    }
+    migrate_old_mask_options(layer.children);
+  }
+}
+
+/* Turns a masking group's Moho modes into masks that name layers. Bottom up, as Moho builds the
+ * mask: Clear starts it over, Add adds a layer's shape, Subtract cuts one out; each Masked layer
+ * then shows inside what was added (if anything was, or the group hides all) and outside what was
+ * cut. The masking-only (invisible) layers become hidden layers, which still mask. A Subtract
+ * followed by an Add of the same area is the one order this can't say exactly. */
+static void migrate_old_masks(std::vector<Layer> &layers)
+{
+  for (Layer &group : layers) {
+    migrate_old_masks(group.children);
+    const auto g = g_old_masks.find(group.id);
+    const std::string group_mask = g != g_old_masks.end() ? g->second.second : "NONE";
+    if (!group.is_group() || group_mask == "NONE") {
+      continue;
+    }
+    bool full = group_mask == "SHOW_ALL";
+    std::vector<uint64_t> added, cut;
+    for (auto it = group.children.rbegin(); it != group.children.rend(); ++it) {
+      Layer &child = *it;
+      const auto c = g_old_masks.find(child.id);
+      const std::string mode = c != g_old_masks.end() ? c->second.first : "MASKED";
+      if (mode == "CLEAR_ADD" || mode == "CLEAR_ADD_INVISIBLE") {
+        added.clear();
+        cut.clear();
+        full = false;
+      }
+      if (mode == "ADD" || mode == "ADD_INVISIBLE" || mode == "CLEAR_ADD" || mode == "CLEAR_ADD_INVISIBLE") {
+        added.push_back(child.id);
+      }
+      if (mode == "SUBTRACT_INVISIBLE") {
+        cut.push_back(child.id);
+      }
+      if (mode == "ADD_INVISIBLE" || mode == "SUBTRACT_INVISIBLE" || mode == "CLEAR_ADD_INVISIBLE") {
+        child.visible = false;
+        continue;
+      }
+      if (mode != "MASKED") {
+        continue;
+      }
+      std::vector<LayerMask> masks;
+      if (!full && !added.empty()) {
+        masks.push_back({false, added, true});
+      }
+      if (!cut.empty()) {
+        masks.push_back({true, cut, true});
+      }
+      child.masks.insert(child.masks.begin(), masks.begin(), masks.end());
+    }
+  }
 }
 
 static Layer layer_from_json(const json &j, int depth)
@@ -722,29 +1107,224 @@ static Layer layer_from_json(const json &j, int depth)
     b.parent = get_id(bj, "parent");
     b.position = get_float2(bj, "position", {});
     b.angle = get_float(bj, "angle", 0.0f);
+    b.setup_position = get_float2(bj, "setup_position", b.position);
+    b.setup_angle = get_float(bj, "setup_angle", b.angle);
     b.length = std::max(0.0f, get_float(bj, "length", 0.5f));
-    b.scale = get_float(bj, "scale", 1.0f);
+    if (auto it = bj.find("scale"); it == bj.end() || !value_from_json(*it, &b.scale)) {
+      b.scale = {1.0f, 1.0f};
+    }
     b.strength = std::max(0.0f, get_float(bj, "strength", 1.0f));
-    b.color = get_enum(bj, "label_color", LabelColor::None);
+    b.color_set = std::max(0, bone_color_set_from_identifier(bj.value("color_set", std::string("DEFAULT"))));
+    if (const json shades = bj.value("custom_colors", json()); shades.is_array() && shades.size() == 3) {
+      for (size_t k = 0; k < 3; k++) {
+        if (shades[k].is_array() && shades[k].size() >= 3) {
+          b.custom_colors[k] = {shades[k][0].get<float>(), shades[k][1].get<float>(), shades[k][2].get<float>(), 1.0f};
+        }
+      }
+    }
     b.connected = bj.contains("connected") && bj["connected"].is_boolean() && bj["connected"].get<bool>();
     get_keys(bj, "position_keys", b.position_keys);
     get_keys(bj, "angle_keys", b.angle_keys);
     get_keys(bj, "scale_keys", b.scale_keys);
+    b.ik_ignore = get_bool(bj, "ik_ignore", false);
+    b.arc_ik = get_bool(bj, "arc_ik", false);
+    const std::string shape = bj.value("shape", std::string());
+    b.shape = shape == "PIN" ? BoneShape::Pin : shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
+    b.pin_size = std::clamp(get_float(bj, "pin_size", 1.0f), 0.1f, 20.0f);
+    b.shape_layer = bj.value("shape_layer", uint64_t(0));
+    for (const json &c : get_array(bj, "collections")) {
+      if (c.is_number_unsigned()) {
+        b.collections.push_back(c.get<uint64_t>());
+      }
+    }
+    for (const json &cj : get_array(bj, "constraints")) {
+      if (!cj.is_object()) {
+        continue;
+      }
+      BoneConstraint c;
+      if (!bone_constraint_from_identifier(get_string(cj, "type"), &c.type)) {
+        continue;
+      }
+      /* Saved before the bone's one Weight, each channel had its own (Position's 0 by default). */
+      struct OldWeight {
+        float weight = 1.0f;
+        Channel<float> keys = Channel<float>::by_hand();
+      };
+      std::map<const BoneSpring *, OldWeight> old_weight;
+      const auto spring = [&](const char *name, BoneSpring &s) {
+        auto it = cj.find(name);
+        if (it == cj.end() || !it->is_object()) {
+          return;
+        }
+        OldWeight &ow = old_weight[&s];
+        s.enabled = get_bool(*it, "enabled", s.enabled);
+        get_keys(*it, "settle_speed_keys", s.settle_speed_keys);
+        get_keys(*it, "bounce_keys", s.bounce_keys);
+        get_keys(*it, "weight_keys", ow.keys);
+        get_keys(*it, "inertia_keys", s.inertia_keys);
+        get_keys(*it, "stretch_keys", s.stretch_keys);
+        get_keys(*it, "limit_keys", s.limit_keys);
+        if (it->contains("torque")) {
+          /* Saved before Weight: Torque bent a bone half as far. */
+          ow.weight = get_float(*it, "torque", 2.0f) / 2.0f;
+          if (it->contains("spring") && !it->contains("settle_speed")) {
+            /* Saved with Moho's Spring, Damping and Weight (scaled by 89 and 7.5 a second): the
+             * same spring as Settle Speed and Bounce, and the same bend from gravity. */
+            const float mass = std::max(0.01f, get_float(*it, "weight", 2.0f));
+            const float omega2 = std::max(1e-3f, 89.0f * get_float(*it, "spring", 2.0f) / mass);
+            const float decay = 7.5f * get_float(*it, "damping", 1.0f) / mass / 2.0f;
+            const float zeta = decay / std::sqrt(omega2);
+            s.settle_speed = decay / 8.0f;
+            s.bounce = zeta >= 1.0f ? 0.0f : std::exp(-zeta * PI / std::sqrt(1.0f - zeta * zeta));
+            ow.weight *= 5.0f / mass / omega2 / 0.028f;
+          }
+        }
+        else {
+          ow.weight = std::max(0.0f, get_float(*it, "weight", ow.weight));
+        }
+        s.settle_speed = std::clamp(get_float(*it, "settle_speed", s.settle_speed), 0.05f, 20.0f);
+        s.bounce = std::clamp(get_float(*it, "bounce", s.bounce), 0.0f, 0.9f);
+        s.inertia = std::max(0.0f, get_float(*it, "inertia", s.inertia));
+        s.stretch = std::max(0.0f, get_float(*it, "stretch", s.stretch));
+        /* Saved before Use Limit: a limit of 0 was none. */
+        const float limit = get_float(*it, "limit", s.limit);
+        s.use_limit = get_bool(*it, "use_limit", limit > 0.0f);
+        if (limit > 0.0f) {
+          s.limit = limit;
+        }
+      };
+      c.name = get_string(cj, "name", bone_constraint_name(c.type));
+      c.enabled = get_bool(cj, "enabled", true);
+      c.expanded = get_bool(cj, "expanded", true);
+      c.influence = std::clamp(get_float(cj, "influence", 1.0f), 0.0f, 1.0f);
+      c.min_angle = get_float(cj, "min_angle", c.min_angle);
+      c.max_angle = get_float(cj, "max_angle", c.max_angle);
+      c.amount = get_float(cj, "amount", c.amount);
+      c.target = get_id(cj, "target");
+      c.factor = get_float(cj, "factor", c.factor);
+      c.delay = std::max(0, get_int(cj, "delay", 0));
+      c.chain = std::max(0, get_int(cj, "chain", 0));
+      c.max_stretch = std::max(1.0f, get_float(cj, "max_stretch", 1.0f));
+      /* Saved with one Own Gravity & Wind for both. */
+      const bool own_forces = get_bool(cj, "own_forces", false);
+      c.own_gravity = get_bool(cj, "own_gravity", own_forces);
+      c.own_wind = get_bool(cj, "own_wind", own_forces);
+      c.wind_catch = std::clamp(get_float(cj, "wind_catch", 1.0f), 0.0f, 10.0f);
+      get_keys(cj, "wind_catch_keys", c.wind_catch_keys);
+      c.gravity = get_float(cj, "gravity", 0.0f);
+      c.wind = get_float(cj, "wind", 0.0f);
+      c.wind_direction = get_float(cj, "wind_direction", 0.0f);
+      c.wind_gusts = std::clamp(get_float(cj, "wind_gusts", 0.0f), 0.0f, 2.0f);
+      c.wind_gust_speed = std::clamp(get_float(cj, "wind_gust_speed", 1.0f), 0.05f, 10.0f);
+      c.wind_turbulence = std::clamp(get_float(cj, "wind_turbulence", 0.0f), 0.0f, 2.0f);
+      /* Older files: it had its own if they were ticked. */
+      const bool own_set = get_bool(cj, "own_forces_set", own_forces);
+      c.own_gravity_set = get_bool(cj, "own_gravity_set", own_set);
+      c.own_wind_set = get_bool(cj, "own_wind_set", own_set);
+      spring("angle_spring", c.angle_spring);
+      spring("position_spring", c.position_spring);
+      spring("scale_spring", c.scale_spring);
+      if (cj.contains("weight")) {
+        c.weight = std::max(0.0f, get_float(cj, "weight", 1.0f));
+        get_keys(cj, "weight_keys", c.weight_keys);
+      }
+      else if (c.type == BoneConstraintType::Dynamics) {
+        /* The Weight of the channel that mattered most: Angle's, else the first one on. */
+        const BoneSpring *from = &c.angle_spring;
+        for (const BoneSpring *s : {&c.angle_spring, &c.scale_spring, &c.position_spring}) {
+          if (s->enabled) {
+            from = s;
+            break;
+          }
+        }
+        if (const auto it = old_weight.find(from); it != old_weight.end()) {
+          c.weight = it->second.weight;
+          c.weight_keys = it->second.keys;
+        }
+      }
+      get_keys(cj, "influence_keys", c.influence_keys);
+      get_keys(cj, "gravity_keys", c.gravity_keys);
+      get_keys(cj, "wind_keys", c.wind_keys);
+      get_keys(cj, "wind_direction_keys", c.wind_direction_keys);
+      get_keys(cj, "wind_gusts_keys", c.wind_gusts_keys);
+      get_keys(cj, "wind_gust_speed_keys", c.wind_gust_speed_keys);
+      get_keys(cj, "wind_turbulence_keys", c.wind_turbulence_keys);
+      b.constraints.push_back(std::move(c));
+    }
     layer.next_bone_id = std::max(layer.next_bone_id, b.id + 1);
     layer.bones.push_back(std::move(b));
   }
   layer.next_bone_id = std::max<uint64_t>(layer.next_bone_id, get_id(j, "next_bone_id"));
   layer.active_bone = get_id(j, "active_bone");
+  for (const json &cj : get_array(j, "bone_collections")) {
+    if (!cj.is_object()) {
+      continue;
+    }
+    BoneCollection c;
+    c.id = get_id(cj, "id");
+    c.name = get_string(cj, "name", "Collection");
+    c.visible = get_bool(cj, "visible", true);
+    c.solo = get_bool(cj, "solo", false);
+    layer.next_collection_id = std::max(layer.next_collection_id, c.id + 1);
+    layer.bone_collections.push_back(std::move(c));
+  }
+  layer.next_collection_id = std::max<uint64_t>(layer.next_collection_id, get_id(j, "next_collection_id"));
+  layer.active_collection = get_id(j, "active_collection");
+  for (const json &c : get_array(j, "collections")) {
+    if (c.is_number_unsigned()) {
+      layer.collections.push_back(c.get<uint64_t>());
+    }
+  }
+  if (const json all = j.value("all_bones", json()); all.is_object()) {
+    layer.all_bones_visible = get_bool(all, "visible", true);
+    layer.all_bones_solo = get_bool(all, "solo", false);
+  }
+  /* Files saved while collections replaced Editable in Bone Group: a drawing in one is editable. */
+  if (!j.contains("edit_with_bones") && !layer.collections.empty()) {
+    layer.edit_with_bones = true;
+  }
   get_keys(j, "position_keys", layer.position_keys);
   get_keys(j, "rotation_keys", layer.rotation_keys);
   get_keys(j, "scale_keys", layer.scale_keys);
   get_keys(j, "opacity_keys", layer.opacity_keys);
   get_keys(j, "visible_keys", layer.visible_keys);
-  layer.mask_mode = get_enum(j, "mask_mode", MaskMode::Masked);
-  layer.group_mask = get_enum(j, "group_mask", GroupMask::None);
-  layer.mask_expand = get_bool(j, "mask_expand", false);
-  layer.mask_exclude_strokes = get_bool(j, "mask_exclude_strokes", false);
+  layer.draw_order = float(get_int(j, "draw_order", 0));
+  get_keys(j, "draw_order_keys", layer.draw_order_keys);
+  for (const json &mj : get_array(j, "masks")) {
+    if (!mj.is_object()) {
+      continue;
+    }
+    LayerMask m;
+    m.outside = get_bool(mj, "outside", false);
+    m.enabled = get_bool(mj, "enabled", true);
+    m.render = get_bool(mj, "render", true);
+    m.expand = get_bool(mj, "expand", false);
+    m.fills_only = get_bool(mj, "fills_only", false);
+    m.filled = get_bool(mj, "filled", false);
+    if (!mask_extend_from_identifier(get_string(mj, "extend", "NONE"), &m.extend)) {
+      m.extend = MaskExtend::None;
+    }
+    m.show_expanded = get_bool(mj, "show_expanded", true);
+    for (const json &id : get_array(mj, "layers")) {
+      if (id.is_number_unsigned() || id.is_number_integer()) {
+        m.layers.push_back(id.get<uint64_t>());
+      }
+    }
+    layer.masks.push_back(std::move(m));
+  }
+  /* Files from before masks named layers: Moho's masking group modes, turned into masks below. */
+  if (j.contains("mask_mode") || j.contains("group_mask")) {
+    g_old_masks[layer.id] = {get_string(j, "mask_mode", "MASKED"), get_string(j, "group_mask", "NONE")};
+  }
+  /* Files from before the two options were each mask's: the mask layer's, given to the masks
+   * naming it (below). */
+  if (get_bool(j, "mask_expand", false) || get_bool(j, "mask_exclude_strokes", false)) {
+    g_old_mask_options[layer.id] = {get_bool(j, "mask_expand", false), get_bool(j, "mask_exclude_strokes", false)};
+  }
   layer.reference_source = get_id(j, "reference_source");
+  if (auto it = j.find("reference"); it != j.end() && layer.reference_source != 0) {
+    layer.reference = reference_from_json(*it);
+  }
   if (auto it = j.find("drawing"); it != j.end() && !layer.is_group()) {
     layer.drawing = drawing_from_json(*it);
   }
@@ -792,15 +1372,76 @@ static void layers_validate(Document &doc)
       layer.reference_source = 0;
     }
   });
-  /* A reference must lead to a real drawing; break chains and loops of references. */
+  /* A reference must lead to a real drawing: a reference of a reference follows the chain to the
+   * original (references never chain), and a loop of references breaks. */
   layers_visit(doc.layers, [&](Layer &layer) {
-    if (const Layer *source = layer_find(doc, layer.reference_source); source && source->is_reference()) {
-      layer.reference_source = 0;
+    std::set<uint64_t> visited{layer.id};
+    uint64_t original = layer.reference_source;
+    for (const Layer *source = layer_find(doc, original); source && source->is_reference();
+         source = layer_find(doc, original))
+    {
+      if (!visited.insert(source->id).second) {
+        original = 0;
+        break;
+      }
+      original = source->reference_source;
     }
+    if (original == layer.id) {
+      original = 0;
+    }
+    layer.reference_source = original;
   });
   doc.next_layer_id = std::max(doc.next_layer_id, max_id + 1);
   if (!layer_find(doc, doc.active_layer)) {
     doc.active_layer = doc.layers.empty() ? 0 : doc.layers.front().id;
+  }
+}
+
+/* Format 1 kept bones' own position and angle in their keys, as Moho does (the Moho converter
+ * still writes those): the setup pose is frame 0's key (the mainline's, while an action was being
+ * edited), and every key, in every timeline, becomes the change from it. */
+template<typename T> static void keys_to_changes(Channel<T> &ch, const std::string &action, T *r_setup)
+{
+  const std::vector<Key<T>> *mainline = &ch.keys;
+  if (!action.empty()) {
+    const auto it = ch.actions.find("");
+    mainline = it != ch.actions.end() ? &it->second : nullptr;
+  }
+  if (mainline && !mainline->empty()) {
+    Channel<T> c;
+    c.keys = *mainline;
+    *r_setup = c.evaluate(0);
+  }
+  for (Key<T> &k : ch.keys) {
+    k.value -= *r_setup;
+  }
+  for (auto &[name, keys] : ch.actions) {
+    for (Key<T> &k : keys) {
+      k.value -= *r_setup;
+    }
+  }
+}
+
+static void migrate_bone_keys(std::vector<Layer> &layers, const std::string &action)
+{
+  for (Layer &layer : layers) {
+    for (Bone &b : layer.bones) {
+      b.setup_position = b.position;
+      b.setup_angle = b.angle;
+      keys_to_changes(b.angle_keys, action, &b.setup_angle);
+      keys_to_changes(b.position_keys, action, &b.setup_position);
+      /* A Transform is measured along the bone's rest axes. */
+      const auto along_rest = [&](std::vector<Key<float2>> &keys) {
+        for (Key<float2> &k : keys) {
+          k.value = rotate(k.value, -b.setup_angle);
+        }
+      };
+      along_rest(b.position_keys.keys);
+      for (auto &[name, keys] : b.position_keys.actions) {
+        along_rest(keys);
+      }
+    }
+    migrate_bone_keys(layer.children, action);
   }
 }
 
@@ -843,14 +1484,34 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
   doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
   doc.action = get_string(j, "action");
+  doc.gravity = get_float(j, "gravity", 0.0f);
+  doc.wind = get_float(j, "wind", 0.0f);
+  doc.wind_direction = get_float(j, "wind_direction", 0.0f);
+  doc.wind_gusts = std::clamp(get_float(j, "wind_gusts", 0.0f), 0.0f, 2.0f);
+  doc.wind_gust_speed = std::clamp(get_float(j, "wind_gust_speed", 1.0f), 0.05f, 10.0f);
+  doc.wind_turbulence = std::clamp(get_float(j, "wind_turbulence", 0.0f), 0.0f, 2.0f);
+  doc.simulation_start = std::max(1, get_int(j, "simulation_start", 1));
+  if (auto it = j.find("simulation_keys"); it != j.end() && it->is_object()) {
+    for (CustomChannel &c : document_simulation(doc).custom_channels) {
+      get_keys(*it, c.path.c_str(), c.keys);
+    }
+  }
   doc.action_layer = get_id(j, "action_layer");
   doc.active_layer = get_id(j, "active_layer");
   doc.next_layer_id = std::max<uint64_t>(1, get_id(j, "next_layer_id"));
+  g_old_masks.clear();
+  g_old_mask_options.clear();
   for (const json &layer : get_array(j, "layers")) {
     if (layer.is_object()) {
       doc.layers.push_back(layer_from_json(layer, 0));
     }
   }
+  migrate_old_masks(doc.layers);
+  migrate_old_mask_options(doc.layers);
+  if (version < 2) {
+    migrate_bone_keys(doc.layers, doc.action);
+  }
+  g_old_masks.clear();
   for (const json &t : get_array(j, "texts")) {
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});

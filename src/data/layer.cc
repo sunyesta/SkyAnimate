@@ -2,25 +2,22 @@
 
 namespace sky {
 
-bool Layer::mask_hides_layer() const
+static constexpr const char *MASK_EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
+
+const char *mask_extend_identifier(MaskExtend extend)
 {
-  return mask_mode == MaskMode::AddInvisible || mask_mode == MaskMode::SubtractInvisible ||
-         mask_mode == MaskMode::ClearAddInvisible;
+  return MASK_EXTEND_IDS[int(extend)];
 }
 
-bool Layer::mask_adds() const
+bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_extend)
 {
-  return mask_mode == MaskMode::Add || mask_mode == MaskMode::AddInvisible || mask_clears();
-}
-
-bool Layer::mask_subtracts() const
-{
-  return mask_mode == MaskMode::SubtractInvisible;
-}
-
-bool Layer::mask_clears() const
-{
-  return mask_mode == MaskMode::ClearAdd || mask_mode == MaskMode::ClearAddInvisible;
+  for (int i = 0; i < 5; i++) {
+    if (identifier == MASK_EXTEND_IDS[i]) {
+      *r_extend = MaskExtend(i);
+      return true;
+    }
+  }
+  return false;
 }
 
 Transform2D Layer::local_transform() const
@@ -75,8 +72,9 @@ const rna::StructRNA &Layer::rna()
                         "Draw the layer in renders; off, it still shows in the viewport", &Layer::render_visible),
         def_bool<Layer>("locked", "Locked", "Protect the layer's drawing from editing", &Layer::locked),
         def_bool<Layer>("edit_with_bones", "Editable in Bone Group",
-                        "Inside a bone group: pick and move this layer's points while the bone group is the active "
-                        "layer, along with its bones",
+                        "Inside a bone group: pick and move this layer's points along with its bones while the bone "
+                        "group is the active layer. It is then in the bone group's All collection; Assign or M put "
+                        "it in others",
                         &Layer::edit_with_bones),
         def_enum<Layer, LabelColor>("label_color", "Label Color", "Colour tag in the Layers editor",
                                     &Layer::label_color,
@@ -103,25 +101,6 @@ const rna::StructRNA &Layer::rna()
             "scale_y", "Scale Y", "Vertical scale", -1000.0f, 1000.0f, [](const Layer &l) { return l.scale.y; },
             [](Layer &l, float v) { l.scale.y = v; }),
         def_float<Layer>("opacity", "Opacity", "How opaque the layer is", &Layer::opacity, 0.0f, 1.0f),
-        def_enum<Layer, MaskMode>("mask_mode", "Masking", "How this layer takes part in its group's mask",
-                                  &Layer::mask_mode,
-                                  {{"MASKED", "Mask this layer"},
-                                   {"NOT_MASKED", "Don't mask this layer"},
-                                   {"ADD", "+ Add to mask"},
-                                   {"ADD_INVISIBLE", "+ Add to mask, but keep invisible"},
-                                   {"SUBTRACT_INVISIBLE", "- Subtract from mask (this layer will be invisible)"},
-                                   {"CLEAR_ADD", "+ Clear the mask, then add this layer to it"},
-                                   {"CLEAR_ADD_INVISIBLE", "+ Clear the mask, then add this layer invisibly to it"}}),
-        def_enum<Layer, GroupMask>("group_mask", "Group Mask", "Masking for this group's children",
-                                   &Layer::group_mask,
-                                   {{"NONE", "No masking"},
-                                    {"SHOW_ALL", "Reveal all"},
-                                    {"HIDE_ALL", "Hide all"}}),
-        def_bool<Layer>("mask_expand", "Expand mask by a pixel",
-                        "Grow this layer's part of the mask by one pixel, hiding thin seams along its edges",
-                        &Layer::mask_expand),
-        def_bool<Layer>("mask_exclude_strokes", "Exclude strokes",
-                        "Only this layer's fills go into the mask, not its strokes", &Layer::mask_exclude_strokes),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
     };

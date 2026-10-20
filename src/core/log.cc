@@ -24,4 +24,21 @@ const std::vector<Report> &reports()
   return g_reports;
 }
 
+static MouseReport g_mouse_report;
+
+void report_at_mouse(ReportType type, const std::string &message, const std::string &at_mouse,
+                     const std::string &title)
+{
+  report(type, message);
+  g_mouse_report.type = type;
+  g_mouse_report.title = title;
+  g_mouse_report.message = at_mouse.empty() ? message : at_mouse;
+  g_mouse_report.serial++;
+}
+
+const MouseReport &mouse_report()
+{
+  return g_mouse_report;
+}
+
 }  // namespace sky

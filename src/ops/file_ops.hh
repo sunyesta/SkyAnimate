@@ -31,6 +31,8 @@ void document_save_then(Context &C, std::function<void()> then);
 
 /* %LOCALAPPDATA%\SkyAnimate, created on first use. */
 std::string user_data_dir();
+/* Where crash reports go: <user_data_dir>/crashes (see core/crash.hh). */
+std::string crash_dir();
 std::string autosave_dir();
 std::string quit_file_path();
 

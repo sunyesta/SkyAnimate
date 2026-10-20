@@ -17,6 +17,10 @@ namespace sky {
 struct Preferences {
   /* The asset library folder (UTF-8). Empty until one is chosen. */
   std::string asset_library;
+  /* Remote control (wm/remote.hh): programs on this computer, such as Claude through the MCP
+   * bridge in tools/mcp, may drive the app. Off until turned on. */
+  bool remote_control = false;
+  int remote_port = 7853;
 };
 
 /* The current preferences. Loaded at startup from %LOCALAPPDATA%\SkyAnimate\preferences.json;

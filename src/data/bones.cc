@@ -1,11 +1,46 @@
 #include "data/bones.hh"
 
 #include <algorithm>
+#include <functional>
+#include <cmath>
 #include <map>
 
 #include "data/document.hh"
 
 namespace sky {
+
+static const char *const CONSTRAINT_IDS[BONE_CONSTRAINT_TYPES] = {
+    "LIMIT_ANGLE", "INDEPENDENT_ANGLE", "MAINTAIN_VOLUME", "COPY_ANGLE", "COPY_POSITION",
+    "COPY_SCALE",  "TRACK_TO",          "STRETCH_TO",     "IK",         "DYNAMICS"};
+static const char *const CONSTRAINT_NAMES[BONE_CONSTRAINT_TYPES] = {
+    "Limit Angle", "Independent Angle", "Maintain Volume", "Copy Angle", "Copy Position",
+    "Copy Scale",  "Track To",          "Stretch To",       "IK",         "Dynamics"};
+
+const char *bone_constraint_identifier(BoneConstraintType type)
+{
+  return CONSTRAINT_IDS[int(type)];
+}
+
+const char *bone_constraint_name(BoneConstraintType type)
+{
+  return CONSTRAINT_NAMES[int(type)];
+}
+
+bool bone_constraint_from_identifier(const std::string &identifier, BoneConstraintType *r_type)
+{
+  /* Moho's Squash & Stretch, before it became Maintain Volume. */
+  if (identifier == "SQUASH_STRETCH") {
+    *r_type = BoneConstraintType::MaintainVolume;
+    return true;
+  }
+  for (int i = 0; i < BONE_CONSTRAINT_TYPES; i++) {
+    if (identifier == CONSTRAINT_IDS[i]) {
+      *r_type = BoneConstraintType(i);
+      return true;
+    }
+  }
+  return false;
+}
 
 /* The setup value is the one at frame 0: the frame-0 key when animated, else the value (or,
  * away from frame 0, the value from before an edit not yet keyed). */
@@ -14,64 +49,495 @@ template<typename T> static T setup_value(const Channel<T> &ch, const T &value, 
   if (ch.animated()) {
     return ch.evaluate(0);
   }
-  return !setup_frame && ch.has_last ? ch.last : value;
+  /* Unkeyed, the plain value is the setup, less what smart actions add to it now (they move the
+   * bone away from its setup, so its points follow; left in, the setup would move with it). */
+  return (!setup_frame && ch.has_last ? ch.last : value) - ch.smart;
 }
 
-static Transform2D bone_local(float2 position, float angle, float scale)
+float2 bone_setup_position(const Bone &bone)
 {
-  return Transform2D::translate(position) * Transform2D::rotate(angle) * Transform2D::scaling({scale, scale});
+  return bone.setup_position;
 }
 
-static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool setup_frame);
-
-std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame)
+float bone_setup_angle(const Bone &bone)
 {
-  return bones_pose(armature.bones, setup_frame);
+  return bone.setup_angle;
 }
 
-static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool setup_frame)
+float2 bone_transform_from_position(const Bone &bone, float2 position)
 {
-  struct {
-    const std::vector<Bone> &bones;
-  } armature{bones};
-  std::vector<BonePose> poses(armature.bones.size());
-  std::map<uint64_t, int> index;
-  for (int i = 0; i < int(armature.bones.size()); i++) {
-    index[armature.bones[i].id] = i;
+  return rotate(position - bone.setup_position, -bone.setup_angle);
+}
+
+float2 bone_position_from_transform(const Bone &bone, float2 transform)
+{
+  return bone.setup_position + rotate(transform, bone.setup_angle);
+}
+
+void bone_changes_from_values(Bone &bone)
+{
+  /* Only what moved since bone_values_from_changes: setup + change - setup isn't always the change
+   * to the last bit, and a value that differs from its last recorded one is an edit (a stray key). */
+  if (bone.position != bone_position_from_transform(bone, bone.transform)) {
+    bone.transform = bone_transform_from_position(bone, bone.position);
   }
-  std::vector<bool> done(armature.bones.size(), false);
+  if (bone.angle != bone.setup_angle + bone.turn) {
+    bone.turn = bone.angle - bone.setup_angle;
+  }
+}
+
+void bone_values_from_changes(Bone &bone)
+{
+  bone.position = bone_position_from_transform(bone, bone.transform);
+  bone.angle = bone.setup_angle + bone.turn;
+}
+
+void bone_take_setup(Bone &bone)
+{
+  /* What smart actions add is a Transform (along the rest axes): off before the setup moves. */
+  bone.setup_position = bone.position - rotate(bone.position_keys.smart, bone.setup_angle);
+  bone.setup_angle = bone.angle - bone.angle_keys.smart;
+  bone_changes_from_values(bone);
+}
+
+float2 bone_position_at(const Bone &bone, int frame, bool without_smart)
+{
+  if (bone.position_keys.animated()) {
+    return bone_position_from_transform(bone, bone.position_keys.evaluate(std::max(0, frame)));
+  }
+  return without_smart ? bone.position - rotate(bone.position_keys.smart, bone.setup_angle) : bone.position;
+}
+
+float bone_angle_at(const Bone &bone, int frame, bool without_smart)
+{
+  if (bone.angle_keys.animated()) {
+    return bone.setup_angle + bone.angle_keys.evaluate(std::max(0, frame));
+  }
+  return without_smart ? bone.angle - bone.angle_keys.smart : bone.angle;
+}
+
+/* The bone's frame lays it along x: its Y scale (length) goes on x, its X (thickness) on y. */
+static Transform2D bone_local(float2 position, float angle, float2 scale)
+{
+  return Transform2D::translate(position) * Transform2D::rotate(angle) * Transform2D::scaling({scale.y, scale.x});
+}
+
+/* Whether bone index `j` sits below the bone `ancestor_id` (or is it). */
+static bool bone_is_descendant_in(const std::vector<Bone> &bones, const std::map<uint64_t, int> &index,
+                                  uint64_t ancestor_id, int j)
+{
+  for (int at = j, guard = 0; at >= 0 && guard < 256; guard++) {
+    if (bones[at].id == ancestor_id) {
+      return true;
+    }
+    const auto it = index.find(bones[at].parent);
+    at = it == index.end() ? -1 : it->second;
+  }
+  return false;
+}
+
+namespace {
+
+/* What a pose takes besides the bones' own values. */
+struct PoseExtras {
+  /* The frame shown (for constraints' delays). */
+  int frame = 0;
+  /* Where dynamics put bones (bone layer space), by id. */
+  const std::map<uint64_t, BoneDynamicsState> *dynamics = nullptr;
+  /* IK's turn (radians) and stretch for each bone, by index. */
+  const std::vector<float> *ik_angle = nullptr;
+  const std::vector<float> *ik_stretch = nullptr;
+};
+
+}  // namespace
+
+static float transform_angle(const Transform2D &t)
+{
+  return std::atan2(t.b, t.a);
+}
+
+static float wrap_pi(float a)
+{
+  return a - 2.0f * PI * std::round(a / (2.0f * PI));
+}
+
+static float direction_angle(float2 v)
+{
+  return std::atan2(v.y, v.x);
+}
+
+/* A value at `frame`: its key there when animated, else the plain value. */
+template<typename T> static T value_at(const Channel<T> &ch, const T &value, int frame)
+{
+  return ch.animated() ? ch.evaluate(std::max(0, frame)) : value;
+}
+
+static Transform2D bone_local_xy(float2 position, float angle, float sx, float sy)
+{
+  return Transform2D::translate(position) * Transform2D::rotate(angle) * Transform2D::scaling({sx, sy});
+}
+
+static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool setup_frame, const PoseExtras &extras)
+{
+  const size_t n = bones.size();
+  std::vector<BonePose> poses(n);
+  std::map<uint64_t, int> index;
+  for (int i = 0; i < int(n); i++) {
+    index[bones[i].id] = i;
+  }
+  /* 0 not yet, 1 being worked out, 2 done. */
+  std::vector<int> state(n, 0);
+  const auto find = [&](uint64_t id) {
+    const auto it = index.find(id);
+    return it == index.end() ? -1 : it->second;
+  };
   /* Parents first, whatever order the bones are stored in (a cycle stops at its root). */
   const auto solve = [&](auto &&self, int i, int depth) -> void {
-    if (done[i]) {
+    if (state[i] != 0) {
       return;
     }
-    const Bone &bone = armature.bones[i];
+    state[i] = 1;
+    const Bone &bone = bones[i];
     Transform2D parent_setup, parent_pose;
-    if (auto it = index.find(bone.parent); it != index.end() && it->second != i && depth < 256) {
-      self(self, it->second, depth + 1);
-      parent_setup = poses[it->second].setup;
-      parent_pose = poses[it->second].pose;
+    const int pi = find(bone.parent);
+    if (pi >= 0 && pi != i && depth < 256) {
+      self(self, pi, depth + 1);
+      parent_setup = poses[pi].setup;
+      parent_pose = poses[pi].pose;
     }
     BonePose &p = poses[i];
     p.id = bone.id;
-    p.pose = parent_pose * bone_local(bone.position, bone.angle, bone.scale);
+    const float2 setup_position = bone.setup_position;
+    const float setup_angle = bone.setup_angle;
+    const float2 setup_scale = setup_value(bone.scale_keys, bone.scale, false);
+    float2 position = bone.position;
+    float angle = bone.angle;
+    float2 scale = bone.scale;
+    float sx = 1.0f, sy = 1.0f;
+    if (!setup_frame) {
+      if (extras.ik_angle) {
+        angle += (*extras.ik_angle)[i];
+      }
+      for (const BoneConstraint &c : bone.constraints) {
+        const float w = std::clamp(c.influence, 0.0f, 1.0f);
+        if (!c.enabled || w <= 0.0f) {
+          continue;
+        }
+        const int ti = find(c.target);
+        const Bone *t = ti >= 0 && ti != i ? &bones[ti] : nullptr;
+        const int then = extras.frame - c.delay;
+        switch (c.type) {
+          case BoneConstraintType::LimitAngle: {
+            const float lo = std::min(c.min_angle, c.max_angle), hi = std::max(c.min_angle, c.max_angle);
+            angle += (std::clamp(angle, lo, hi) - angle) * w;
+            break;
+          }
+          case BoneConstraintType::IndependentAngle:
+            angle -= wrap_pi(transform_angle(parent_pose) - transform_angle(parent_setup)) * w;
+            break;
+          case BoneConstraintType::CopyAngle:
+            if (t) {
+              const float now = c.delay > 0 ? bone_angle_at(*t, then, false) : t->angle;
+              angle += (now - t->setup_angle) * c.factor * w;
+            }
+            break;
+          case BoneConstraintType::CopyPosition:
+            if (t) {
+              const float2 now = c.delay > 0 ? bone_position_at(*t, then, false) : t->position;
+              position += (now - t->setup_position) * (c.factor * w);
+            }
+            break;
+          case BoneConstraintType::CopyScale:
+            if (t) {
+              const float2 now = c.delay > 0 ? value_at(t->scale_keys, t->scale, then) : t->scale;
+              const float2 base = setup_value(t->scale_keys, t->scale, false);
+              if (std::abs(base.x) > 1e-6f) {
+                scale.x *= 1.0f + (now.x / base.x - 1.0f) * c.factor * w;
+              }
+              if (std::abs(base.y) > 1e-6f) {
+                scale.y *= 1.0f + (now.y / base.y - 1.0f) * c.factor * w;
+              }
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      /* Dynamics: where the simulation has the bone, in place of where the keys and the constraints
+       * above put it. Dynamics is last in the stack, so those shape what it aims at (a Limit Angle
+       * limits the aim) but don't hold its swing, which can overshoot them. */
+      if (extras.dynamics) {
+        if (const auto it = extras.dynamics->find(bone.id); it != extras.dynamics->end()) {
+          const BoneDynamicsState &d = it->second;
+          if (d.angle_on) {
+            angle = d.angle - transform_angle(parent_pose);
+          }
+          if (d.position_on) {
+            position = parent_pose.inverted().apply(d.head);
+          }
+          if (d.scale_on) {
+            scale.y = d.scale;
+          }
+        }
+      }
+      if (extras.ik_stretch) {
+        sx *= (*extras.ik_stretch)[i];
+      }
+    }
+    p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+    if (!setup_frame) {
+      /* Pointing at another bone: after the rest, from where this bone has ended up. */
+      for (const BoneConstraint &c : bone.constraints) {
+        const float w = std::clamp(c.influence, 0.0f, 1.0f);
+        const bool aims = c.type == BoneConstraintType::TrackTo || c.type == BoneConstraintType::StretchTo;
+        const int ti = find(c.target);
+        if (!aims || !c.enabled || w <= 0.0f || ti < 0 || ti == i || state[ti] == 1 ||
+            bone_is_descendant_in(bones, index, bone.id, ti))
+        {
+          continue;
+        }
+        self(self, ti, depth + 1);
+        const float2 head = p.pose.apply({0, 0});
+        const float2 goal = poses[ti].head;
+        if (distance(head, goal) < 1e-7f) {
+          continue;
+        }
+        angle += wrap_pi(direction_angle(goal - head) - transform_angle(p.pose)) * w;
+        p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+        if (c.type == BoneConstraintType::StretchTo) {
+          const float reach = distance(p.pose.apply({bone.length, 0}), head);
+          if (reach > 1e-7f) {
+            sx *= 1.0f + (distance(goal, head) / reach - 1.0f) * w;
+            p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+          }
+        }
+      }
+      /* Maintain Volume, last: the width follows the length however it got there, in place of
+       * the bone's own X scale (at full amount), so the bone keeps its area. */
+      for (const BoneConstraint &c : bone.constraints) {
+        const float w = std::clamp(c.influence, 0.0f, 1.0f);
+        if (c.type != BoneConstraintType::MaintainVolume || !c.enabled || w <= 0.0f) {
+          continue;
+        }
+        const float along = std::abs(setup_scale.y) > 1e-6f ? std::abs(scale.y * sx / setup_scale.y) : 1.0f;
+        const float across = std::abs(setup_scale.x) > 1e-6f ? std::abs(scale.x / setup_scale.x) : 1.0f;
+        if (along > 1e-6f && across > 1e-6f) {
+          const float a = std::max(c.amount, 0.0f) * w;
+          sy *= std::pow(across, -a) * std::pow(along, -a);
+          p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+        }
+      }
+    }
     /* On frame 0 the bones are the setup pose, even mid-drag before the edit is recorded:
      * moving one there rigs, it doesn't move the artwork. */
-    p.setup = setup_frame ? p.pose
-                          : parent_setup * bone_local(setup_value(bone.position_keys, bone.position, false),
-                                                      setup_value(bone.angle_keys, bone.angle, false),
-                                                      setup_value(bone.scale_keys, bone.scale, false));
+    p.setup = setup_frame ? p.pose : parent_setup * bone_local(setup_position, setup_angle, setup_scale);
     p.skin = p.pose * p.setup.inverted();
     p.setup_head = p.setup.apply({0, 0});
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
-    done[i] = true;
+    state[i] = 2;
   };
-  for (int i = 0; i < int(armature.bones.size()); i++) {
+  for (int i = 0; i < int(n); i++) {
     solve(solve, i, 0);
   }
   return poses;
+}
+
+/* Bones from `i` up its parents that an IK chain turns: up to `limit` bones (0: no limit), not
+ * past a bone Ignored by IK. */
+static std::vector<int> ik_chain(const std::vector<Bone> &bones, const std::map<uint64_t, int> &index, int i,
+                                 int limit)
+{
+  std::vector<int> chain;
+  for (int at = i, guard = 0; at >= 0 && guard < 256; guard++) {
+    if (bones[at].ik_ignore || (limit > 0 && int(chain.size()) >= limit)) {
+      break;
+    }
+    chain.push_back(at);
+    const auto it = index.find(bones[at].parent);
+    at = it == index.end() ? -1 : it->second;
+  }
+  return chain;
+}
+
+/* Turns a chain's bones so its last bone's tip reaches `goal`: cyclic coordinate descent, or, for
+ * an arc, the even bend (with a turn at its base) that comes closest. `turn(j, radians)` turns
+ * bone j; `pose()` works the bones out again; `tip()` and `head(j)` read them. */
+static void ik_solve(const std::vector<int> &chain, float2 goal, bool arc, const std::function<void(int, float)> &turn,
+                     const std::function<void()> &pose, const std::function<float2()> &tip,
+                     const std::function<float2(int)> &head)
+{
+  if (chain.empty()) {
+    return;
+  }
+  if (!arc || chain.size() < 2) {
+    for (int iteration = 0; iteration < 24 && distance(tip(), goal) > 1e-5f; iteration++) {
+      for (const int j : chain) {
+        const float2 h = head(j);
+        const float2 e = tip();
+        if (distance(e, h) < 1e-7f || distance(goal, h) < 1e-7f) {
+          continue;
+        }
+        turn(j, wrap_pi(direction_angle(goal - h) - direction_angle(e - h)));
+        pose();
+      }
+    }
+    return;
+  }
+  /* The arc: every bone bends by the same k; the base turns the whole chain to face the goal. */
+  const int base = chain.back();
+  float bent = 0.0f;
+  const auto bend = [&](float k) {
+    for (const int j : chain) {
+      if (j != base) {
+        turn(j, k - bent);
+      }
+    }
+    bent = k;
+    pose();
+  };
+  const auto miss = [&](float k) {
+    bend(k);
+    const float2 h = head(base);
+    return std::abs(distance(tip(), h) - distance(goal, h));
+  };
+  float best = 0.0f, best_miss = miss(0.0f);
+  for (float k = -1.5f; k <= 1.5f; k += 0.02f) {
+    if (const float m = miss(k); m < best_miss) {
+      best_miss = m;
+      best = k;
+    }
+  }
+  for (float k = best - 0.02f; k <= best + 0.02f; k += 0.0005f) {
+    if (const float m = miss(k); m < best_miss) {
+      best_miss = m;
+      best = k;
+    }
+  }
+  /* Of the two even bends that reach as far, the one curving the same way as the rest. */
+  bend(best);
+  const float2 h = head(base);
+  turn(base, wrap_pi(direction_angle(goal - h) - direction_angle(tip() - h)));
+  pose();
+}
+
+/* The whole pose of some bones: constraints, dynamics and IK targets included. */
+static std::vector<BonePose> bones_full_pose(const std::vector<Bone> &bones, bool setup_frame, int frame,
+                                             const std::map<uint64_t, BoneDynamicsState> *dynamics)
+{
+  struct {
+    const std::vector<Bone> &bones;
+  } armature{bones};
+  PoseExtras extras;
+  extras.frame = frame;
+  extras.dynamics = dynamics;
+  std::vector<BonePose> poses = bones_pose(armature.bones, setup_frame, extras);
+  if (setup_frame) {
+    return poses;
+  }
+  /* IK targets: the chains are turned (and stretched) after everything else. */
+  const size_t n = armature.bones.size();
+  std::map<uint64_t, int> index;
+  for (int i = 0; i < int(n); i++) {
+    index[armature.bones[i].id] = i;
+  }
+  std::vector<float> ik_angle(n, 0.0f), ik_stretch(n, 1.0f);
+  bool any = false;
+  for (int i = 0; i < int(n); i++) {
+    for (const BoneConstraint &c : armature.bones[i].constraints) {
+      const float w = std::clamp(c.influence, 0.0f, 1.0f);
+      const auto target = index.find(c.target);
+      if (c.type != BoneConstraintType::IK || !c.enabled || w <= 0.0f || target == index.end() ||
+          target->second == i)
+      {
+        continue;
+      }
+      if (!any) {
+        extras.ik_angle = &ik_angle;
+        extras.ik_stretch = &ik_stretch;
+        any = true;
+      }
+      const std::vector<int> chain = ik_chain(armature.bones, index, i, c.chain);
+      const std::vector<float> before = ik_angle;
+      const float2 goal = poses[target->second].head;
+      const auto pose = [&] { poses = bones_pose(armature.bones, false, extras); };
+      ik_solve(
+          chain, goal, armature.bones[i].arc_ik, [&](int j, float d) { ik_angle[j] += d; }, pose,
+          [&] { return poses[i].tail; }, [&](int j) { return poses[j].head; });
+      /* Out of reach: the chain may stretch, up to max_stretch. The stretch goes on the chain's
+       * base (the bones above it stretch with it, along the chain) and is corrected until the tip
+       * just reaches. */
+      if (c.max_stretch > 1.0f && !chain.empty()) {
+        const int root = chain.back();
+        const float2 base = poses[root].head;
+        const float start = ik_stretch[root];
+        for (int pass = 0; pass < 6; pass++) {
+          const float reach = distance(poses[i].tail, base);
+          if (reach < 1e-6f) {
+            break;
+          }
+          const float want = std::clamp(ik_stretch[root] / start * distance(goal, base) / reach, 1.0f, c.max_stretch);
+          ik_stretch[root] = start * want;
+          pose();
+        }
+      }
+      /* Influence: part of the way. */
+      if (w < 1.0f) {
+        for (const int j : chain) {
+          ik_angle[j] = before[j] + (ik_angle[j] - before[j]) * w;
+          ik_stretch[j] = 1.0f + (ik_stretch[j] - 1.0f) * w;
+        }
+        pose();
+      }
+    }
+  }
+  return poses;
+}
+
+std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame)
+{
+  return bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now);
+}
+
+std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame)
+{
+  return bones_full_pose(armature.bones, setup_frame, armature.pose_frame, nullptr);
+}
+
+bool armature_reach(Layer &armature, uint64_t bone_id, float2 goal)
+{
+  std::map<uint64_t, int> index;
+  for (int i = 0; i < int(armature.bones.size()); i++) {
+    index[armature.bones[i].id] = i;
+  }
+  const auto it = index.find(bone_id);
+  if (it == index.end()) {
+    return false;
+  }
+  const int i = it->second;
+  const std::vector<int> chain = ik_chain(armature.bones, index, i, 0);
+  if (chain.size() < 2) {
+    return false;
+  }
+  /* A bone with Limit Angle stays inside it as the chain turns. */
+  const auto clamp_limits = [&](Bone &b) {
+    for (const BoneConstraint &c : b.constraints) {
+      if (c.type == BoneConstraintType::LimitAngle && c.enabled && c.influence >= 1.0f) {
+        b.angle = std::clamp(b.angle, std::min(c.min_angle, c.max_angle), std::max(c.min_angle, c.max_angle));
+      }
+    }
+  };
+  std::vector<BonePose> poses = armature_keyed_pose(armature, false);
+  ik_solve(
+      chain, goal, armature.bones[i].arc_ik,
+      [&](int j, float d) {
+        armature.bones[j].angle += d;
+        clamp_limits(armature.bones[j]);
+      },
+      [&] { poses = armature_keyed_pose(armature, false); }, [&] { return poses[i].tail; },
+      [&](int j) { return poses[j].head; });
+  return true;
 }
 
 const BonePose *bone_pose_find(const std::vector<BonePose> &poses, uint64_t id)
@@ -212,7 +678,8 @@ static std::vector<int> bones_parents_first(const Layer &armature)
   return order;
 }
 
-void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<float2, float2>> &targets)
+void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<float2, float2>> &targets,
+                         const std::map<uint64_t, float> *world_angles)
 {
   const std::vector<BonePose> poses = armature_pose(armature);
   const size_t n = armature.bones.size();
@@ -232,7 +699,12 @@ void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<flo
     if (auto it = targets.find(b.id); it != targets.end()) {
       head[i] = it->second.first;
       tail[i] = it->second.second;
-      changed[i] = true;
+      /* Only a bone that has somewhere else to be is rebuilt: one already there keeps its numbers
+       * exactly (rebuilding would round them, and mirror editing would take that for a move). */
+      const auto w = world_angles ? world_angles->find(b.id) : decltype(world_angles->end()){};
+      const bool turns = world_angles && w != world_angles->end() &&
+                         std::abs(wrap_pi(w->second - transform_angle(poses[i].pose))) > 1e-6f;
+      changed[i] = distance(head[i], poses[i].head) > 1e-7f || distance(tail[i], poses[i].tail) > 1e-7f || turns;
     }
     if (b.connected && has_parent) {
       head[i] = tail[parent->second];
@@ -259,10 +731,53 @@ void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<flo
         angle += 2.0f * PI * std::round((b.angle - angle) / (2.0f * PI));
         b.angle = angle;
       }
-      b.length = distance(h, t) / std::max(std::abs(b.scale), 1e-6f);
+      else if (const auto w = world_angles ? world_angles->find(b.id) : decltype(world_angles->end()){};
+               world_angles && w != world_angles->end())
+      {
+        float angle = w->second - transform_angle(parent_frame);
+        angle += 2.0f * PI * std::round((b.angle - angle) / (2.0f * PI));
+        b.angle = angle;
+      }
+      b.length = distance(h, t) / std::max(std::abs(b.scale.y), 1e-6f);
     }
     frame[i] = parent_frame * bone_local(b.position, b.angle, b.scale);
   }
+}
+
+/* The setup frame edits the rig as Blender's edit mode: only the joints being moved move. After a
+ * transform worked the bones out from `original` (carrying children along with their parents),
+ * each bone end not in `moves` (head, tail) goes back where it was, and a connected bone's head
+ * stays on its parent's tail. */
+static void hold_still_joints(Layer &armature, const std::vector<Bone> &original,
+                              const std::vector<std::pair<bool, bool>> &moves)
+{
+  if (original.size() != armature.bones.size() || moves.size() != original.size()) {
+    return;
+  }
+  const std::vector<BonePose> now = armature_pose(armature, true);
+  std::vector<Bone> moved = std::move(armature.bones);
+  armature.bones = original;
+  const std::vector<BonePose> was = armature_pose(armature, true);
+  std::map<uint64_t, std::pair<float2, float2>> targets;
+  std::map<uint64_t, float> angles;
+  for (size_t i = 0; i < original.size(); i++) {
+    const auto [head, tail] = moves[i];
+    targets[original[i].id] = {head ? now[i].head : was[i].head, tail ? now[i].tail : was[i].tail};
+    angles[original[i].id] = transform_angle(head || tail ? now[i].pose : was[i].pose);
+  }
+  armature.bones = std::move(moved);
+  armature_set_joints(armature, targets, &angles);
+}
+
+/* The picked ends: a selected bone's both, else whichever joint is selected (a connected bone's
+ * head is its parent's tail). */
+static std::vector<std::pair<bool, bool>> picked_joints(const Layer &armature)
+{
+  std::vector<std::pair<bool, bool>> moves;
+  for (const Bone &b : armature.bones) {
+    moves.push_back({b.selected || bone_head_selected(armature, b), b.selected || bone_tail_selected(armature, b)});
+  }
+  return moves;
 }
 
 /* Whether the bone is picked for G as a whole (its body or its base), or by its tip alone. A
@@ -329,10 +844,10 @@ bool armature_clear_pose(Layer &armature, bool position, bool angle, bool scale)
       continue;
     }
     if (position) {
-      b.position = setup_value(b.position_keys, b.position, false);
+      b.position = b.setup_position;
     }
     if (angle) {
-      b.angle = setup_value(b.angle_keys, b.angle, false);
+      b.angle = b.setup_angle;
     }
     if (scale) {
       b.scale = setup_value(b.scale_keys, b.scale, false);
@@ -349,7 +864,7 @@ bool armature_any_picked(const Layer &armature)
 
 std::vector<float2> armature_picked_heads(const Layer &armature, bool setup_frame)
 {
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   std::vector<float2> heads;
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (bone_picked(armature.bones[i])) {
@@ -359,10 +874,25 @@ std::vector<float2> armature_picked_heads(const Layer &armature, bool setup_fram
   return heads;
 }
 
-void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, float2 delta, bool setup_frame)
+/* Each bone's angle as the last update of a drag left it (the start's when the bones aren't the
+ * same ones): a turn picks its whole turns nearest to that, so dragging round past half a turn
+ * from where the drag began keeps turning the same way instead of flipping back. */
+static std::vector<float> turned_angles(const Layer &armature, const std::vector<Bone> &original)
 {
+  std::vector<float> angles(original.size());
+  for (size_t i = 0; i < original.size(); i++) {
+    const bool same = i < armature.bones.size() && armature.bones[i].id == original[i].id;
+    angles[i] = same ? armature.bones[i].angle : original[i].angle;
+  }
+  return angles;
+}
+
+void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, float2 delta, bool setup_frame,
+                            bool auto_ik)
+{
+  const std::vector<float> was_turned = turned_angles(armature, original);
   armature.bones = original;
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   const auto moves = [&](const Bone &b) { return grabs_whole(b) || grabs_tip(armature, b, setup_frame); };
   std::vector<std::pair<size_t, bool>> todo;
   for (size_t i = 0; i < armature.bones.size(); i++) {
@@ -380,25 +910,36 @@ void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, 
       b.position += to_parent.apply_vector(delta);
       continue;
     }
+    /* Posing by the tip with Auto IK: the chain above turns too, so the tip reaches the mouse
+     * (Moho's IK). A connected bone grabbed by its body only turns itself. */
+    if (!setup_frame && auto_ik && b.select_tail && !b.selected && armature_reach(armature, b.id, poses[i].tail + delta)) {
+      continue;
+    }
     /* The tip follows the mouse: the bone turns about its base, and on the setup frame it also
      * grows or shrinks (length isn't animated, so elsewhere it only turns). */
     const float2 tip = to_parent.apply(poses[i].tail + delta);
     const float2 d = tip - b.position;
     if (length(d) > 1e-7f) {
       float angle = std::atan2(d.y, d.x);
-      angle += 2.0f * PI * std::round((b.angle - angle) / (2.0f * PI));
+      angle += 2.0f * PI * std::round((was_turned[i] - angle) / (2.0f * PI));
       b.angle = angle;
     }
     if (setup_frame) {
-      b.length = length(d) / std::max(std::abs(b.scale), 1e-6f);
+      b.length = length(d) / std::max(std::abs(b.scale.y), 1e-6f);
     }
+  }
+  /* Auto IK turns its chains by the shortest way from the start: the same whole turns as before. */
+  for (size_t i = 0; i < armature.bones.size() && i < was_turned.size(); i++) {
+    float &angle = armature.bones[i].angle;
+    angle += 2.0f * PI * std::round((was_turned[i] - angle) / (2.0f * PI));
   }
   if (setup_frame) {
     seat_connected_children(armature);
+    hold_still_joints(armature, original, picked_joints(armature));
   }
 }
 
-void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original, float angle)
+void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original, float angle, bool setup_frame)
 {
   armature.bones = original;
   /* A picked group turns as one: a child already turns with a picked parent, so it isn't turned
@@ -413,12 +954,36 @@ void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original
       armature.bones[i].angle += angle;
     }
   }
+  if (setup_frame) {
+    hold_still_joints(armature, original, picked_joints(armature));
+  }
 }
 
-void armature_scale_selected(Layer &armature, const std::vector<Bone> &original, float factor)
+void armature_scale_selected(Layer &armature, const std::vector<Bone> &original, float factor, bool setup_frame,
+                             int axis, bool squash)
 {
   armature.bones = original;
-  /* A child already grows with a picked parent; scaling it too would grow it twice over. */
+  if (setup_frame) {
+    /* Frame 0 changes sizes, not scale: the picked joints spread out or close in about the middle
+     * of the picked bases, as Blender's edit mode scales, so bones get longer or shorter. */
+    float2 sum;
+    const std::vector<float2> heads = armature_picked_heads(armature, true);
+    for (const float2 &h : heads) {
+      sum += h;
+    }
+    const float2 pivot = sum / float(std::max<size_t>(heads.size(), 1));
+    const Transform2D map = Transform2D::translate(pivot) * Transform2D::scaling({factor, factor}) *
+                            Transform2D::translate(-pivot);
+    armature_map_selected(armature, original, map, true);
+    return;
+  }
+  /* Posing: each bone along its own axes. A child already grows with a picked parent; scaling
+   * it too would grow it twice over. */
+  float2 f(axis == 2 ? 1.0f : factor, axis == 1 ? 1.0f : factor);
+  if (squash) {
+    /* Longer and thinner (or shorter and fatter), keeping its area. */
+    f = {1.0f / std::max(std::abs(factor), 1e-4f), factor};
+  }
   std::vector<bool> scales(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
@@ -426,14 +991,14 @@ void armature_scale_selected(Layer &armature, const std::vector<Bone> &original,
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (scales[i]) {
-      armature.bones[i].scale *= factor;
+      armature.bones[i].scale = {armature.bones[i].scale.x * f.x, armature.bones[i].scale.y * f.y};
     }
   }
 }
 
 bool armature_picked_bounds(const Layer &armature, bool setup_frame, float2 &lo, float2 &hi)
 {
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   bool any = false;
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (!bone_picked(armature.bones[i])) {
@@ -464,8 +1029,9 @@ bool armature_picked_bounds(const Layer &armature, bool setup_frame, float2 &lo,
 void armature_map_selected(Layer &armature, const std::vector<Bone> &original, const Transform2D &map,
                            bool setup_frame)
 {
+  const std::vector<float> was_turned = turned_angles(armature, original);
   armature.bones = original;
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   const size_t n = armature.bones.size();
   std::map<uint64_t, int> index;
   for (int i = 0; i < int(n); i++) {
@@ -497,16 +1063,21 @@ void armature_map_selected(Layer &armature, const std::vector<Bone> &original, c
       const float dist = distance(h, t);
       if (dist > 1e-9f) {
         float angle = std::atan2(t.y - h.y, t.x - h.x);
-        angle += 2.0f * PI * std::round((original[i].angle - angle) / (2.0f * PI));
+        angle += 2.0f * PI * std::round((was_turned[i] - angle) / (2.0f * PI));
         b.angle = angle;
       }
       if (b.length > 1e-4f) {
         /* The setup pose takes a new length; a pose (length isn't animated) takes a scale. */
         if (setup_frame) {
-          b.length = dist / std::max(std::abs(b.scale), 1e-6f);
+          b.length = dist / std::max(std::abs(b.scale.y), 1e-6f);
         }
         else {
-          b.scale = dist / b.length;
+          b.scale.y = dist / b.length;
+          if (picked) {
+            /* Across the bone: how much the map stretches that way. */
+            const float2 across = normalize(was.apply_vector({0.0f, 1.0f}));
+            b.scale.x = original[i].scale.x * length(map.apply_vector(across));
+          }
         }
       }
       else if (!setup_frame) {
@@ -515,17 +1086,24 @@ void armature_map_selected(Layer &armature, const std::vector<Bone> &original, c
     }
     frame[i] = parent_frame * bone_local(b.position, b.angle, b.scale);
   }
+  if (setup_frame) {
+    seat_connected_children(armature);
+    hold_still_joints(armature, original, picked_joints(armature));
+  }
 }
 
 void armature_select_joints_in(Layer &armature, bool setup_frame, const std::function<bool(float2)> &inside,
                                bool extend, bool deselect)
 {
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   if (!extend && !deselect) {
     armature_deselect_all(armature);
   }
   uint64_t first = 0;
   for (size_t i = 0; i < armature.bones.size(); i++) {
+    if (!bone_shown(armature, armature.bones[i])) {
+      continue;
+    }
     Bone &b = armature.bones[i];
     const bool h = inside(poses[i].head), t = inside(poses[i].tail);
     if (h) {
@@ -558,12 +1136,15 @@ void armature_select_joints_in(Layer &armature, bool setup_frame, const std::fun
 void armature_select_bones_in(Layer &armature, bool setup_frame, const std::function<bool(float2)> &inside,
                               bool extend, bool deselect)
 {
-  const std::vector<BonePose> poses = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   if (!extend && !deselect) {
     armature_deselect_all(armature);
   }
   uint64_t first = 0;
   for (size_t i = 0; i < armature.bones.size(); i++) {
+    if (!bone_shown(armature, armature.bones[i])) {
+      continue;
+    }
     /* Any of eleven points along the bone, as Moho's gizmo tests. */
     bool hit = false;
     for (int j = 0; j <= 10 && !hit; j++) {
@@ -584,8 +1165,9 @@ void armature_select_bones_in(Layer &armature, bool setup_frame, const std::func
 
 void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, bool setup_frame)
 {
-  const std::vector<BonePose> before = bones_pose(original, setup_frame);
-  const std::vector<BonePose> after = armature_pose(armature, setup_frame);
+  const std::vector<BonePose> before =
+      bones_full_pose(original, setup_frame, armature.pose_frame, nullptr);
+  const std::vector<BonePose> after = armature_keyed_pose(armature, setup_frame);
   const size_t n = armature.bones.size();
   if (before.size() != n) {
     return;
@@ -596,7 +1178,8 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
   }
   std::vector<bool> changed(n);
   for (size_t i = 0; i < n; i++) {
-    changed[i] = distance(before[i].head, after[i].head) > 1e-7f || distance(before[i].tail, after[i].tail) > 1e-7f;
+    /* Past rounding: a bone that was only rebuilt in place didn't move. */
+    changed[i] = distance(before[i].head, after[i].head) > 1e-5f || distance(before[i].tail, after[i].tail) > 1e-5f;
   }
   /* Each bone that moved drives its other side, unless that side moved too (both picked). */
   std::vector<int> source(n, -1);
@@ -634,6 +1217,16 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
       }
     }
     frame[i] = parent_frame * bone_local(b.position, b.angle, b.scale);
+  }
+  if (setup_frame) {
+    /* The other side's bones that followed move whole; what hangs from them stays, as on this side. */
+    std::vector<std::pair<bool, bool>> moves = picked_joints(armature);
+    for (size_t i = 0; i < n; i++) {
+      if (source[i] >= 0) {
+        moves[i] = {true, true};
+      }
+    }
+    hold_still_joints(armature, original, moves);
   }
 }
 
@@ -698,9 +1291,291 @@ static const Layer *armature_in(const std::vector<Layer> &list, const Layer *arm
   return nullptr;
 }
 
+static Color hex_color(unsigned rgb)
+{
+  return {float((rgb >> 16) & 0xff) / 255.0f, float((rgb >> 8) & 0xff) / 255.0f, float(rgb & 0xff) / 255.0f, 1.0f};
+}
+
+/* Blender's default theme (release/datafiles/userdef/userdef_default_theme.c, `tarm`), and its
+ * Default Colors as SkyAnimate draws bones. */
+static const struct {
+  const char *name;
+  unsigned regular, select, active;
+} BONE_COLOR_SETS[BONE_COLOR_THEME_SETS + 1] = {
+    {"Default Colors", 0x9a9a9a, 0xff8c00, 0xffc050}, {"01 - Red", 0x9a0000, 0xbd1111, 0xf70a0a},
+    {"02 - Orange", 0xf74018, 0xf66913, 0xfa9900},    {"03 - Green", 0x1e9109, 0x59b70b, 0x83ef1d},
+    {"04 - Blue", 0x0a3694, 0x3667df, 0x5ec1ef},      {"05 - Pink", 0xa9294e, 0xc1416a, 0xf05d91},
+    {"06 - Purple", 0x430c78, 0x543aa3, 0x8764d5},    {"07 - Teal", 0x24785a, 0x3c9579, 0x6fb6ab},
+    {"08 - Slate", 0x4b707c, 0x6a8691, 0x9bc2cd},     {"09 - Yellow", 0xf4c90c, 0xeec236, 0xf3ff00},
+    {"10 - Black", 0x1e2024, 0x484c56, 0xffffff},     {"11 - Magenta", 0x6f2f6a, 0x9845be, 0xd330d6},
+    {"12 - Lime", 0x6c8e22, 0x7fb022, 0xbbef5b},      {"13 - Gray", 0x8d8d8d, 0xb0b0b0, 0xdedede},
+    {"14 - Brown", 0x834326, 0x8b5811, 0xbd6a11},     {"15 - Dark Green", 0x08310e, 0x1c430b, 0x34622b}};
+
+BoneColors bone_color_set(int set)
+{
+  const auto &s = BONE_COLOR_SETS[std::clamp(set, 0, BONE_COLOR_THEME_SETS)];
+  return {hex_color(s.regular), hex_color(s.select), hex_color(s.active)};
+}
+
+const char *bone_color_set_name(int set)
+{
+  return set == BONE_COLOR_CUSTOM ? "Custom Color Set" : BONE_COLOR_SETS[std::clamp(set, 0, BONE_COLOR_THEME_SETS)].name;
+}
+
+std::string bone_color_set_identifier(int set)
+{
+  if (set == BONE_COLOR_CUSTOM) {
+    return "CUSTOM";
+  }
+  if (set <= 0 || set > BONE_COLOR_THEME_SETS) {
+    return "DEFAULT";
+  }
+  return std::string(set < 10 ? "THEME0" : "THEME") + std::to_string(set);
+}
+
+int bone_color_set_from_identifier(const std::string &identifier)
+{
+  for (int set = 0; set <= BONE_COLOR_CUSTOM; set++) {
+    if (bone_color_set_identifier(set) == identifier) {
+      return set;
+    }
+  }
+  return -1;
+}
+
+BoneColors bone_colors(const Bone &bone)
+{
+  if (bone.color_set == BONE_COLOR_CUSTOM) {
+    return {bone.custom_colors[0], bone.custom_colors[1], bone.custom_colors[2]};
+  }
+  return bone_color_set(bone.color_set);
+}
+
+void bone_set_color_set(Bone &bone, int set)
+{
+  if (set == BONE_COLOR_CUSTOM && bone.color_set != BONE_COLOR_CUSTOM) {
+    const BoneColors from = bone_colors(bone);
+    bone.custom_colors = {from.regular, from.select, from.active};
+  }
+  bone.color_set = std::clamp(set, 0, BONE_COLOR_CUSTOM);
+}
+
+BoneCollection *bone_collection_find(Layer &armature, uint64_t id)
+{
+  for (BoneCollection &c : armature.bone_collections) {
+    if (c.id == id && id != 0) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+const BoneCollection *bone_collection_find(const Layer &armature, uint64_t id)
+{
+  return bone_collection_find(const_cast<Layer &>(armature), id);
+}
+
+BoneCollection *bone_collection_find_by_name(Layer &armature, const std::string &name)
+{
+  for (BoneCollection &c : armature.bone_collections) {
+    if (c.name == name) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+static bool any_solo(const Layer &armature)
+{
+  return armature.all_bones_solo || std::any_of(armature.bone_collections.begin(), armature.bone_collections.end(),
+                                                [](const BoneCollection &c) { return c.solo; });
+}
+
+bool bone_collection_all_shown(const Layer &armature)
+{
+  return any_solo(armature) ? armature.all_bones_solo : armature.all_bones_visible;
+}
+
+bool bone_collection_shown(const Layer &armature, const BoneCollection &collection)
+{
+  return any_solo(armature) ? collection.solo : collection.visible;
+}
+
+bool bone_collections_show(const Layer &armature, const std::vector<uint64_t> &collections)
+{
+  /* As in Blender: shown while any collection holding it shows; All holds everything. */
+  if (bone_collection_all_shown(armature)) {
+    return true;
+  }
+  for (const uint64_t id : collections) {
+    if (const BoneCollection *c = bone_collection_find(armature, id); c && bone_collection_shown(armature, *c)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool bone_shown(const Layer &armature, const Bone &bone)
+{
+  return bone_collections_show(armature, bone.collections);
+}
+
+bool layer_edited_with_bones(const Document &doc, const Layer &layer)
+{
+  const Layer *armature = layer.edit_with_bones && layer.type == LayerType::Vector ? layer_armature(doc, layer.id)
+                                                                                    : nullptr;
+  return armature && bone_collections_show(*armature, layer.collections);
+}
+
+std::string bone_collection_unique_name(const Layer &armature, const std::string &name)
+{
+  const auto taken = [&](const std::string &n) {
+    return n == BONE_COLLECTION_ALL ||
+           std::any_of(armature.bone_collections.begin(), armature.bone_collections.end(),
+                       [&](const BoneCollection &c) { return c.name == n; });
+  };
+  const std::string base = name.empty() ? "Collection" : name;
+  if (!taken(base)) {
+    return base;
+  }
+  for (int i = 1;; i++) {
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), ".%03d", i);
+    if (!taken(base + suffix)) {
+      return base + suffix;
+    }
+  }
+}
+
+BoneCollection &bone_collection_add(Layer &armature, const std::string &name)
+{
+  BoneCollection c;
+  c.id = armature.next_collection_id++;
+  c.name = bone_collection_unique_name(armature, name);
+  /* After the active one (All, first of all, puts it at the top). */
+  auto at = bone_collection_find(armature, armature.active_collection) ? armature.bone_collections.end()
+                                                                         : armature.bone_collections.begin();
+  for (auto it = armature.bone_collections.begin(); it != armature.bone_collections.end(); ++it) {
+    if (it->id == armature.active_collection) {
+      at = it + 1;
+    }
+  }
+  at = armature.bone_collections.insert(at, std::move(c));
+  armature.active_collection = at->id;
+  return *at;
+}
+
+static void drop_collection(std::vector<Layer> &list, uint64_t armature_id, uint64_t id, const Document &doc)
+{
+  for (Layer &l : list) {
+    if (const Layer *a = layer_armature(doc, l.id); a && a->id == armature_id) {
+      std::erase(l.collections, id);
+    }
+    drop_collection(l.children, armature_id, id, doc);
+  }
+}
+
+void bone_collection_remove(Document &doc, Layer &armature, uint64_t id)
+{
+  const auto it = std::find_if(armature.bone_collections.begin(), armature.bone_collections.end(),
+                               [&](const BoneCollection &c) { return c.id == id; });
+  if (it == armature.bone_collections.end()) {
+    return;
+  }
+  const size_t at = size_t(it - armature.bone_collections.begin());
+  armature.bone_collections.erase(it);
+  for (Bone &b : armature.bones) {
+    std::erase(b.collections, id);
+  }
+  drop_collection(doc.layers, armature.id, id, doc);
+  if (armature.active_collection == id) {
+    /* The one before it (All before the first). */
+    armature.active_collection = at == 0 ? 0 : armature.bone_collections[at - 1].id;
+  }
+}
+
+Layer *collection_armature(Document &doc)
+{
+  Layer *active = document_active_layer(doc);
+  if (!active) {
+    return nullptr;
+  }
+  if (active->is_bone_layer()) {
+    return active;
+  }
+  return active->type == LayerType::Vector ? const_cast<Layer *>(layer_armature(doc, active->id)) : nullptr;
+}
+
+std::vector<Layer *> collection_drawings(Document &doc, const Layer &armature)
+{
+  std::vector<Layer *> drawings;
+  for (const Layer *l : document_layers_flat(doc)) {
+    /* Picked in the Layers editor, the active layer, or selected in the viewport: a drawing edited
+     * along with the bones with some of its points (or handles) selected. */
+    const auto points_picked = [&] {
+      if (!layer_edited_with_bones(doc, *l)) {
+        return false;
+      }
+      for (const MeshPoint &p : l->drawing.points) {
+        if (p.selected) {
+          return true;
+        }
+      }
+      for (const Curve &curve : l->drawing.curves) {
+        for (const CurvePoint &cp : curve.points) {
+          if (cp.select_in || cp.select_out) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    if (l->type != LayerType::Vector || !l->edit_with_bones ||
+        !(l->selected || l->id == doc.active_layer || points_picked()))
+    {
+      continue;
+    }
+    if (const Layer *owner = layer_armature(doc, l->id); owner && owner->id == armature.id) {
+      drawings.push_back(layer_find(doc, l->id));
+    }
+  }
+  return drawings;
+}
+
+void armature_deselect_hidden(Layer &armature)
+{
+  for (Bone &b : armature.bones) {
+    if (!bone_shown(armature, b)) {
+      b.selected = b.select_head = b.select_tail = false;
+    }
+  }
+}
+
 const Layer *layer_armature(const Document &doc, uint64_t layer_id)
 {
   return armature_in(doc.layers, nullptr, layer_id);
+}
+
+static const Layer *binding_group_in(const std::vector<Layer> &list, const Layer *group, uint64_t id)
+{
+  for (const Layer &layer : list) {
+    if (layer.id == id) {
+      return group;
+    }
+    /* A bone layer starts again: groups above it bind to another skeleton. */
+    const Layer *inside = layer.is_bone_layer()                                 ? nullptr
+                          : !group && layer.is_group() && layer.parent_bone != 0 ? &layer
+                                                                                 : group;
+    if (const Layer *found = binding_group_in(layer.children, inside, id)) {
+      return found;
+    }
+  }
+  return nullptr;
+}
+
+const Layer *layer_binding_group(const Document &doc, uint64_t layer_id)
+{
+  return binding_group_in(doc.layers, nullptr, layer_id);
 }
 
 static bool sync_in(std::vector<Layer> &list, bool inside)

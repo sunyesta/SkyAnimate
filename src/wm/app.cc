@@ -1,6 +1,7 @@
 #include "wm/app.hh"
 
 #include "anim/animation.hh"
+#include "anim/dynamics.hh"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -18,6 +19,7 @@
 
 #include "assets/asset_library.hh"
 #include "assets/brushes.hh"
+#include "core/crash.hh"
 #include "core/log.hh"
 #include "editors/brush_settings.hh"
 #include "editors/ui.hh"
@@ -30,6 +32,7 @@
 #include "wm/event_system.hh"
 #include "wm/file_dialog.hh"
 #include "wm/keymap.hh"
+#include "wm/remote.hh"
 
 namespace sky {
 
@@ -55,6 +58,7 @@ static std::string key_type_from_sdl(SDL_Keycode key)
       {"Space", "SPACE"},       {"Escape", "ESC"},          {"Return", "RET"},         {"Delete", "DEL"},
       {"Backspace", "BACK_SPACE"}, {"Tab", "TAB"},           {"PageUp", "PAGE_UP"},     {"PageDown", "PAGE_DOWN"},
       {"Left", "LEFT_ARROW"},   {"Right", "RIGHT_ARROW"},   {"Up", "UP_ARROW"},        {"Down", "DOWN_ARROW"},
+      {"]", "RIGHT_BRACKET"},   {"[", "LEFT_BRACKET"},      {"}", "RIGHT_BRACKET"},    {"{", "LEFT_BRACKET"},
   };
   std::string name = SDL_GetKeyName(key);
   for (const auto &[sdl_name, blender_name] : renames) {
@@ -73,6 +77,11 @@ int App::run(const LaunchOptions &options)
   wm_.background = options.background;
   /* Tests run without the user's preferences (and never change them). */
   preferences_set_persistent(!options.background);
+  /* A crash writes a report (a minidump and a readable call stack) to %LOCALAPPDATA%\SkyAnimate\crashes;
+   * tests never write to the user's folder. */
+  if (!options.background) {
+    crash_handler_install(crash_dir());
+  }
   preferences_load();
   ctx_.document = &doc_;
   ctx_.undo = &undo_;
@@ -88,6 +97,8 @@ int App::run(const LaunchOptions &options)
   vector_operators_register();
   asset_operators_register();
   anim_operators_register();
+  draw_order_operators_register();
+  mask_operators_register();
   rig_operators_register();
   file_operators_register();
 
@@ -108,6 +119,7 @@ int App::run(const LaunchOptions &options)
   }
 
   if (options.background) {
+    remote_stop();
     python::shutdown();
     return ok ? 0 : 1;
   }
@@ -116,7 +128,16 @@ int App::run(const LaunchOptions &options)
     python::shutdown();
     return 1;
   }
+  if (preferences().remote_control) {
+    remote_start(preferences().remote_port);
+  }
+  /* The last session crashed: say where its report is. */
+  if (const std::string crashed = crash_report_unseen(crash_dir()); !crashed.empty()) {
+    report(ReportType::Warning, "SkyAnimate crashed last time. Its crash report is " + crashed);
+  }
   main_loop();
+  /* Requests still waiting run Python: stop before it does. */
+  remote_stop();
   autosave_quit(ctx_);
   window_exit();
   python::shutdown();
@@ -158,6 +179,8 @@ bool App::window_init()
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  /* Blender's number fields: a click without dragging starts typing, a drag changes the value. */
+  io.ConfigDragClickToInputText = true;
   /* The default layout is rebuilt on every launch until workspaces are saved in files. */
   io.IniFilename = nullptr;
 
@@ -204,6 +227,8 @@ void App::main_loop()
       ImGui_ImplSDL3_ProcessEvent(&event);
       handle_event(event);
     }
+    /* Remote control's requests run here, between frames (screenshots after drawing). */
+    remote_process(ctx_);
     if (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) {
       SDL_Delay(10);
       continue;
@@ -212,6 +237,18 @@ void App::main_loop()
     playback_update();
     /* The frame may have moved (playback, scrubbing): show its animation. */
     animation_sync(doc_);
+    /* Bone dynamics follow a pose being changed in real time (the frame's own result once still). */
+    {
+      static uint64_t last_ns = SDL_GetTicksNS();
+      const uint64_t now_ns = SDL_GetTicksNS();
+      /* Not while playing, nor with Live Physics off in every viewport shown. */
+      const std::vector<Area> &areas = workspaces_[wm_.workspace_index].areas;
+      const bool live = std::any_of(areas.begin(), areas.end(), [](const Area &a) {
+        return a.open && a.type == EditorType::Viewport && a.overlays.live_physics;
+      });
+      dynamics_live_tick(doc_, double(now_ns - last_ns) * 1e-9, live && !wm_.playing);
+      last_ns = now_ns;
+    }
     file_dialog_process();
     autosave_update(ctx_, SDL_GetTicksNS());
     update_window_title();
@@ -223,8 +260,12 @@ void App::main_loop()
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    /* Over the viewport Tab is the keymap's (the setup frame and back), never ImGui's hop to the
+     * next text field of whichever panel was clicked last. */
+    GImGui->ConfigNavEnableTabbing = ctx_.area_type != "Viewport";
     ImGui::NewFrame();
     draw_ui();
+    ui_mouse_report_draw();
     ImGui::Render();
 
     int width = 0, height = 0;
@@ -234,6 +275,7 @@ void App::main_loop()
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     ui_eyedropper_sample(height);
+    remote_capture(width, height);
     SDL_GL_SwapWindow(window_);
   }
 }
@@ -308,8 +350,8 @@ void App::handle_event(const SDL_Event &event)
       /* While typing in a text field, or with the mouse over the text editor or console, only
        * that editor's keymap applies (Alt P in the text editor), so arrows, Ctrl Z and the like
        * stay with the text, as in Blender. */
-      const bool typing = ImGui::GetIO().WantTextInput || ctx_.area_type == "Text Editor" ||
-                          ctx_.area_type == "Console";
+      bool typing = ImGui::GetIO().WantTextInput || ctx_.area_type == "Text Editor" ||
+                    ctx_.area_type == "Console";
       /* A running G/R/S takes the keys itself (X, Y, numbers, Enter, Esc), and a modal
        * prompt (unsaved changes) keeps shortcuts from editing behind it. */
       const SDL_Keymod mod = event.key.mod;
@@ -321,6 +363,14 @@ void App::handle_event(const SDL_Event &event)
       }
       if (ImGui::GetTopMostPopupModal()) {
         break;
+      }
+      /* Tab with the mouse over the viewport toggles the setup frame even while a text field
+       * elsewhere is being edited: that field lets go (its edit stays). */
+      if (key.type == "TAB" && ctx_.area_type == "Viewport") {
+        if (ImGui::GetActiveID() != 0) {
+          ImGui::ClearActiveID();
+        }
+        typing = false;
       }
       if (!key.type.empty()) {
         wm_handle_key_event(ctx_, key, typing);
@@ -518,16 +568,16 @@ void App::draw_workspace_tabs()
     if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
       ImGui::OpenPopup("##workspace_menu");
     }
-    if (ImGui::BeginPopup("##workspace_menu")) {
+    if (ui_menu_begin("##workspace_menu")) {
       ImGui::TextDisabled("%s", workspaces_[i].name.c_str());
       ImGui::Separator();
-      if (ImGui::MenuItem("Duplicate")) {
+      if (ui_menu_item("Duplicate")) {
         duplicate_index = i;
       }
-      if (ImGui::MenuItem("Delete", nullptr, false, workspaces_.size() > 1)) {
+      if (ui_menu_item("Delete", nullptr, false, workspaces_.size() > 1)) {
         delete_index = i;
       }
-      ImGui::EndPopup();
+      ui_menu_end();
     }
     ImGui::PopID();
     ImGui::SameLine(0.0f, 2.0f);
@@ -854,14 +904,14 @@ void App::draw_asset_library_prompts()
   }
 }
 
-/* Edit > Preferences: where the asset library is, and bringing in Moho's brushes. */
+/* Edit > Preferences: where the asset library is, bringing in Moho's brushes, and remote control. */
 void App::draw_preferences()
 {
   if (!show_preferences_) {
     return;
   }
   const ImGuiViewport *main = ImGui::GetMainViewport();
-  ImGui::SetNextWindowSize(ImVec2(560, 260), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(560, 340), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
   if (!ImGui::Begin("Preferences", &show_preferences_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
     ImGui::End();
@@ -898,6 +948,35 @@ void App::draw_preferences()
     operator_call(ctx_, "preferences.brushes_reload");
   }
   ImGui::EndDisabled();
+
+  /* Remote control, for Claude through the MCP bridge (tools/mcp). */
+  ImGui::SeparatorText("Remote Control");
+  Preferences &prefs = preferences();
+  if (ImGui::Checkbox("Allow Remote Control", &prefs.remote_control)) {
+    if (prefs.remote_control) {
+      prefs.remote_control = remote_start(prefs.remote_port) != 0;
+    }
+    else {
+      remote_stop();
+    }
+    preferences_save();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Let programs on this computer drive SkyAnimate: run Python in it, take screenshots,\n"
+                      "read its state and press keys. Claude uses this through the MCP bridge in tools/mcp.\n"
+                      "Only this computer can connect (127.0.0.1).");
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(prefs.remote_control);
+  ImGui::SetNextItemWidth(90);
+  if (ImGui::InputInt("Port", &prefs.remote_port, 0)) {
+    prefs.remote_port = std::clamp(prefs.remote_port, 1024, 65535);
+    preferences_save();
+  }
+  ImGui::EndDisabled();
+  if (remote_port() != 0) {
+    ImGui::TextDisabled("Listening on 127.0.0.1:%d", remote_port());
+  }
   ImGui::End();
 }
 
@@ -1019,6 +1098,8 @@ void App::draw_ui()
   draw_preferences();
   draw_asset_library_prompts();
   ui_eyedropper_overlay();
+  ui_layer_eyedropper_overlay();
+  ui_flash_update(wm_);
 
   if (show_about_) {
     ImGui::OpenPopup("About SkyAnimate");

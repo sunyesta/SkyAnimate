@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "anim/channel.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "ops/file_ops.hh"
@@ -66,6 +67,43 @@ void preferences_load()
   if (auto it = j.find("asset_library"); it != j.end() && it->is_string()) {
     preferences().asset_library = it->get<std::string>();
   }
+  if (auto it = j.find("remote_control"); it != j.end() && it->is_boolean()) {
+    preferences().remote_control = it->get<bool>();
+  }
+  if (auto it = j.find("remote_port"); it != j.end() && it->is_number_integer()) {
+    preferences().remote_port = std::clamp(it->get<int>(), 1024, 65535);
+  }
+  /* What new keys get (the timeline's Interpolation menu with no keys selected). */
+  if (auto it = j.find("new_keys"); it != j.end() && it->is_object()) {
+    NewKeySettings &keys = new_key_settings();
+    KeySettings &s = keys.settings;
+    const json &k = *it;
+    if (auto v = k.find("interp"); v != k.end() && v->is_string()) {
+      interp_from_identifier(v->get<std::string>(), &s.interp);
+    }
+    if (auto v = k.find("ease"); v != k.end() && v->is_string()) {
+      ease_from_identifier(v->get<std::string>(), &s.ease);
+    }
+    const auto number = [&](const char *name, auto &r_value) {
+      if (auto v = k.find(name); v != k.end() && v->is_number()) {
+        r_value = v->get<std::decay_t<decltype(r_value)>>();
+      }
+    };
+    number("hold", s.hold);
+    number("interval", s.interval);
+    number("overshoot", s.overshoot);
+    number("elastic_amplitude", s.elastic_amplitude);
+    number("elastic_period", s.elastic_period);
+    number("noise_amplitude", s.noise_amplitude);
+    number("noise_frequency", s.noise_frequency);
+    number("cycle_back", s.cycle_back);
+    s.hold = std::max(0, s.hold);
+    s.interval = std::clamp(s.interval, 1, 3);
+    s.elastic_period = std::max(0.02f, s.elastic_period);
+    if (auto v = k.find("copy_previous"); v != k.end() && v->is_boolean()) {
+      keys.copy_previous = v->get<bool>();
+    }
+  }
   brushes_reload();
 }
 
@@ -74,7 +112,24 @@ void preferences_save()
   if (!g_persistent) {
     return;
   }
-  const json j = {{"version", 1}, {"asset_library", preferences().asset_library}};
+  const NewKeySettings &keys = new_key_settings();
+  const KeySettings &s = keys.settings;
+  const json new_keys = {{"interp", interp_identifier(s.interp)},
+                         {"ease", ease_identifier(s.ease)},
+                         {"hold", s.hold},
+                         {"interval", s.interval},
+                         {"overshoot", s.overshoot},
+                         {"elastic_amplitude", s.elastic_amplitude},
+                         {"elastic_period", s.elastic_period},
+                         {"noise_amplitude", s.noise_amplitude},
+                         {"noise_frequency", s.noise_frequency},
+                         {"cycle_back", s.cycle_back},
+                         {"copy_previous", keys.copy_previous}};
+  const json j = {{"version", 1},
+                  {"asset_library", preferences().asset_library},
+                  {"remote_control", preferences().remote_control},
+                  {"remote_port", preferences().remote_port},
+                  {"new_keys", new_keys}};
   std::ofstream out(preferences_path(), std::ios::trunc);
   out << j.dump(2) << "\n";
 }

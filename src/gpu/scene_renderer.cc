@@ -4,6 +4,7 @@
 #include <string>
 
 #include "anim/deform.hh"
+#include "anim/draw_order.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "data/document.hh"
@@ -324,7 +325,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   document_to_pixels_ = document_to_pixels;
   final_render_ = background != nullptr;
   required_stencil_ = 0;
-  stencil_level_ = 0;
+  mask_clauses_.clear();
+  coverage_test_ = 0;
   mask_pass_ = {};
 
   glDisable(GL_SCISSOR_TEST);
@@ -397,22 +399,28 @@ bool SceneRenderer::shown(const Layer &layer) const
   return layer.visible && (!final_render_ || layer.render_visible);
 }
 
-void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &layers, const Transform2D &parent,
+void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &layers, const Transform2D & /*parent*/,
                                 Target *target, float opacity)
 {
-  /* The list is top first; draw from the bottom up. */
-  for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
-    draw_layer(doc, *it, parent, target, opacity);
+  /* Bottom first, in Draw Order, each with the masks of it and the groups holding it. */
+  const std::vector<DrawStep> steps = draw_order_steps(doc, layers, [this](const Layer &l) { return shown(l); });
+  const unsigned outer_required = required_stencil_;
+  for (const DrawStep &step : steps) {
+    required_stencil_ = outer_required | apply_masks(doc, step.masked);
+    draw_layer(doc, *step.layer, Transform2D(), target, opacity);
   }
+  required_stencil_ = outer_required;
 }
 
-void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Transform2D &parent, Target *target,
+void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, Target *target,
                                float opacity)
 {
   if (!shown(layer) || layer.opacity <= 0.0f) {
     return;
   }
-  const Transform2D transform = parent * layer.local_transform();
+  /* Where the layer is, bones included: a Parent Bone (its own, or a group's above it) moves it,
+   * as everything else that places layers sees it. */
+  const Transform2D transform = layer_world_transform(doc, layer.id);
   const float layer_opacity = opacity * layer.opacity;
 
   if (!layer.is_group()) {
@@ -422,23 +430,18 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
   }
   if (layer.opacity < 1.0f) {
     /* Fade the group as a whole, so its overlapping children don't show through each other. Its
-     * own image has its own stencil, so its masks start from the first bit; the masks it sits
-     * inside clip it when it is composited back. */
+     * own image has its own stencil for the masks inside it; the masks it has (and those of the
+     * groups holding it) clip it when it is composited back. */
     Target *group = acquire_target();
     bind_target(group);
     clear(Color{0, 0, 0, 0});
     const unsigned outer_required = required_stencil_;
-    const int outer_level = stencil_level_;
+    const std::vector<MaskClause> outer_clauses = std::move(mask_clauses_);
+    mask_clauses_.clear();
     required_stencil_ = 0;
-    stencil_level_ = 0;
-    if (layer.group_mask != GroupMask::None) {
-      draw_masked_group(doc, layer, transform, group, 1.0f);
-    }
-    else {
-      draw_layers(doc, layer.children, transform, group, 1.0f);
-    }
+    draw_layers(doc, layer.children, transform, group, 1.0f);
     required_stencil_ = outer_required;
-    stencil_level_ = outer_level;
+    mask_clauses_ = outer_clauses;
     resolve(group);
     bind_target(target);
     use_color_stencil();
@@ -446,69 +449,108 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     release_target(group);
     return;
   }
-  if (layer.group_mask != GroupMask::None) {
-    draw_masked_group(doc, layer, transform, target, layer_opacity);
-    return;
-  }
   draw_layers(doc, layer.children, transform, target, layer_opacity);
 }
 
-void SceneRenderer::draw_masked_group(const Document &doc, const Layer &group, const Transform2D &transform,
-                                      Target *target, float opacity)
+/* The masks that are on, of `masked` (outermost first), as clauses; ones naming no layer that's
+ * still there are left out. */
+static std::vector<SceneRenderer::MaskClause> clauses_of(const Document &doc, const std::vector<const Layer *> &masked,
+                                                          bool render)
 {
-  /* Eight stencil bits: deeper nesting draws unmasked rather than wrongly. */
-  if (stencil_level_ >= 8) {
-    draw_layers(doc, group.children, transform, target, opacity);
-    return;
+  std::vector<SceneRenderer::MaskClause> clauses;
+  for (const Layer *l : masked) {
+    for (const LayerMask &m : l->masks) {
+      /* Each mask can be on in the viewport and in renders apart. */
+      if (!(render ? m.render : m.enabled)) {
+        continue;
+      }
+      SceneRenderer::MaskClause c;
+      c.outside = m.outside;
+      c.expand = m.expand;
+      c.fills_only = m.fills_only;
+      c.filled = m.filled;
+      c.extend = int(m.extend);
+      for (const uint64_t id : m.layers) {
+        if (id != 0 && layer_find(doc, id)) {
+          c.layers.push_back(id);
+        }
+      }
+      if (!c.layers.empty()) {
+        clauses.push_back(std::move(c));
+      }
+    }
   }
-  const unsigned bit = 1u << stencil_level_;
-  stencil_level_++;
-  stencil_fill(bit, group.group_mask == GroupMask::ShowAll);
-
-  /* Bottom up, as Moho processes a masking group. */
-  for (auto it = group.children.rbegin(); it != group.children.rend(); ++it) {
-    const Layer &child = *it;
-    if (!shown(child)) {
-      continue;
-    }
-    if (child.mask_clears()) {
-      stencil_fill(bit, false);
-    }
-    if (child.mask_adds() || child.mask_subtracts()) {
-      const MaskPass outer = mask_pass_;
-      mask_pass_ = {outer.expand || child.mask_expand, outer.exclude_strokes || child.mask_exclude_strokes};
-      draw_coverage(doc, child, transform, bit, child.mask_adds());
-      mask_pass_ = outer;
-    }
-    if (child.mask_hides_layer()) {
-      continue;
-    }
-    const unsigned outer_required = required_stencil_;
-    if (child.mask_mode == MaskMode::Masked) {
-      required_stencil_ |= bit;
-    }
-    draw_layer(doc, child, transform, target, opacity);
-    required_stencil_ = outer_required;
-  }
-  stencil_level_--;
+  return clauses;
 }
 
-void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const Transform2D &parent, unsigned bit,
+unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const Layer *> &masked)
+{
+  const std::vector<MaskClause> clauses = clauses_of(doc, masked, final_render_);
+  /* Six bits for a layer's masks; the top two are for its mask layers' own masks. */
+  const size_t count = std::min<size_t>(clauses.size(), 6);
+  unsigned required = 0;
+  for (size_t k = 0; k < count; k++) {
+    required |= 1u << k;
+  }
+  if (clauses == mask_clauses_) {
+    /* The same as the last thing drawn (its neighbour, usually): the stencil already holds them. */
+    return required;
+  }
+  for (size_t k = 0; k < count; k++) {
+    const unsigned bit = 1u << k;
+    /* Inside: start empty and add the layers' shapes; Outside: start full and cut them out. */
+    stencil_fill(bit, clauses[k].outside);
+    for (const uint64_t id : clauses[k].layers) {
+      if (const Layer *source = layer_find(doc, id)) {
+        mask_pass_ = {clauses[k].expand, clauses[k].fills_only, clauses[k].filled, clauses[k].extend};
+        draw_mask_source(doc, *source, bit, !clauses[k].outside);
+        mask_pass_ = {};
+      }
+    }
+  }
+  mask_clauses_ = clauses;
+  return required;
+}
+
+void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool set)
+{
+  /* The mask layer's own masks count (one level): its shape goes in only where they hold. */
+  const std::vector<MaskClause> own = clauses_of(doc, {&source}, final_render_);
+  const MaskPass pass = mask_pass_;
+  unsigned test = 0;
+  for (size_t k = 0; k < own.size() && k < 2; k++) {
+    const unsigned own_bit = 1u << (7 - k);
+    stencil_fill(own_bit, own[k].outside);
+    mask_pass_ = {own[k].expand, own[k].fills_only, own[k].filled, own[k].extend};
+    for (const uint64_t id : own[k].layers) {
+      if (const Layer *l = layer_find(doc, id)) {
+        draw_coverage(doc, *l, Transform2D(), own_bit, !own[k].outside);
+      }
+    }
+    test |= own_bit;
+  }
+  mask_pass_ = pass;
+  coverage_test_ = test;
+  draw_coverage(doc, source, Transform2D(), bit, set);
+  coverage_test_ = 0;
+}
+
+void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, unsigned bit,
                                   bool set)
 {
-  if (!shown(layer)) {
-    return;
-  }
-  const Transform2D transform = parent * layer.local_transform();
+  /* Hidden layers still mask: a mask shape is often kept hidden. */
   if (layer.is_group()) {
     for (const Layer &child : layer.children) {
-      draw_coverage(doc, child, transform, bit, set);
+      draw_coverage(doc, child, Transform2D(), bit, set);
     }
     return;
   }
+  const Transform2D transform = layer_world_transform(doc, layer.id);
   glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
   glStencilMask(bit);
-  glStencilFunc(GL_ALWAYS, set ? GLint(bit) : 0, bit);
+  /* With coverage_test_, only where those bits are set (the mask layer's own masks). */
+  glStencilFunc(coverage_test_ ? GL_EQUAL : GL_ALWAYS, GLint((set ? bit : 0u) | coverage_test_),
+                coverage_test_ ? coverage_test_ : bit);
   glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
   coverage_pass_ = true;
   draw_drawing(doc, layer, transform, 1.0f);
@@ -556,19 +598,21 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   std::vector<float> aspects;
   BrushDabs dabs;
   uint32_t seed = 0;
+  /* The drawing as on the setup frame, which brushed lines lay their dabs out on (made when the
+   * first one needs it). */
+  VectorDrawing setup;
+  bool setup_made = false;
   /* One stroke (the whole outline, or a run between hidden edges). */
   const auto stroke = [&](const Shape &shape, const std::vector<float2> &pts, const std::vector<float> &half,
                           bool is_closed, const std::vector<StrokeJoin> &stroke_joins) {
-    if (brush) {
-      brush_stroke(pts, half, is_closed, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
-    }
-    else {
-      tessellate_stroke(pts, half, is_closed, shape.style.line, feather, vertices, &stroke_joins);
-    }
+    tessellate_stroke(pts, half, is_closed, shape.style.line, feather, vertices, &stroke_joins);
   };
 
   for (int shape_index = 0; shape_index < int(drawing.shapes.size()); shape_index++) {
     const Shape &shape = drawing.shapes[shape_index];
+    if (shape.hidden) {
+      continue;
+    }
     bool closed = false;
     /* Quality sets the samples per segment, and the stray allowed where handles stretch a
      * segment: a quarter pixel at the viewport's default 12, finer for renders. */
@@ -577,7 +621,27 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     if (outline.size() < 2) {
       continue;
     }
-    if (shape.has_fill && closed) {
+    /* A mask's Extend: the edges that mask swept to far off in the layer's own direction, so the
+     * shape and everything beyond it that way masks. A filled shape (or Filled Shape) sweeps its
+     * whole outline; an outline-only one just the edges it draws, so a line with hidden edges (an
+     * upper lip drawn from a whole mouth shape) cuts along what shows. */
+    if (coverage_pass_ && mask_pass_.extend != 0) {
+      static const float2 DIRS[] = {{0, 0}, {0, 1}, {0, -1}, {-1, 0}, {1, 0}};
+      const float2 reach = DIRS[std::clamp(mask_pass_.extend, 0, 4)] * (pixel * 100000.0f);
+      const bool area = (shape.has_fill && closed) || mask_pass_.filled;
+      const bool strokes = shape.has_outline && !mask_pass_.exclude_strokes;
+      const size_t n = outline.size();
+      for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
+        if (!area && !(strokes && i < visible.size() && visible[i])) {
+          continue;
+        }
+        const float2 a = outline[i], b = outline[(i + 1) % n];
+        tessellate_fill({a, b, b + reach, a + reach}, shape.style.fill, feather, vertices);
+      }
+    }
+    /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
+    const bool fill_for_mask = coverage_pass_ && mask_pass_.filled;
+    if ((shape.has_fill && closed) || fill_for_mask) {
       tessellate_fill(outline, shape.style.fill, feather, vertices);
       if (mask_pass_.expand) {
         /* Expand mask by a pixel: a one-pixel rim around the fill. */
@@ -602,6 +666,24 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
         }
         dabs.count = 0;
         seed = brush_seed(shape.style.brush, layer.id, shape_index, doc.frame_current);
+        /* Dabs stick to the artwork: laid out on the line as on the setup frame, put on it as it
+         * is now (hidden edges get none). */
+        if (!setup_made) {
+          setup = layer_setup_drawing(doc, layer, final_render_);
+          setup_made = true;
+        }
+        const float extra = mask_pass_.expand ? pixel : 0.0f;
+        const BrushPath shown = brush_path(drawing, shape, extra);
+        const BrushPath rest = shape_index < int(setup.shapes.size()) && setup.shapes.size() == drawing.shapes.size()
+                                   ? brush_path(setup, setup.shapes[shape_index], extra)
+                                   : shown;
+        brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
+        if (dabs.count > 0) {
+          flush();
+          draw_dabs(dabs, *images, brush->is_color && !shape.style.brush.tint, shape.style.brush.merged_alpha,
+                    transform, opacity);
+        }
+        continue;
       }
       /* Half widths for the tessellator: the shape's width scaled by each point's radius, a pixel
        * wider when the mask expands, and never thinner than a pixel so hairlines stay visible. */
@@ -648,11 +730,6 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
           run_joins.push_back(joins[j]);
         }
         flush_run();
-      }
-      if (brush && dabs.count > 0) {
-        flush();
-        draw_dabs(dabs, *images, brush->is_color && !shape.style.brush.tint, shape.style.brush.merged_alpha,
-                  transform, opacity);
       }
     }
   }

@@ -10,6 +10,7 @@
 
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/dynamics.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -41,7 +42,7 @@ static bool on_setup_frame(Context &C)
   if (C.document->frame_current == 0) {
     return true;
   }
-  report(ReportType::Warning, "Switch to Setup (frame 0) to change the rig");
+  report_at_mouse(ReportType::Warning, "Switch to Setup (frame 0) to change the rig");
   return false;
 }
 
@@ -71,7 +72,7 @@ static void bone_place(Bone &bone, const Transform2D &parent, float2 head, float
   bone.position = h;
   bone.angle = std::atan2(t.y - h.y, t.x - h.x);
   bone.length = distance(h, t);
-  bone.scale = 1.0f;
+  bone.scale = {1.0f, 1.0f};
 }
 
 std::string armature_unique_bone_name(const Layer &armature, const std::string &base)
@@ -97,6 +98,10 @@ Bone *armature_add_bone(Layer &armature, const std::string &name, float2 head, f
   bone.name = armature_unique_bone_name(armature, name.empty() ? "Bone" : name);
   bone.parent = pp ? parent : 0;
   bone_place(bone, pp ? pp->setup : Transform2D(), head, tail);
+  /* A new bone joins the active collection, as in Blender. */
+  if (bone_collection_find(armature, armature.active_collection)) {
+    bone.collections.push_back(armature.active_collection);
+  }
   armature_deselect_all(armature);
   bone_select(bone, true);
   armature.active_bone = bone.id;
@@ -136,6 +141,27 @@ static bool any_point_selected(const Layer &layer)
 {
   return std::any_of(layer.drawing.points.begin(), layer.drawing.points.end(),
                      [](const MeshPoint &p) { return p.selected; });
+}
+
+/* The collection an operator names (`collection`, by name), or the active one; null for All (and for
+ * none of that name). */
+static BoneCollection *collection_arg(Context &C, Layer &armature)
+{
+  const std::string name = op_arg(C, "collection");
+  return name.empty() ? bone_collection_find(armature, armature.active_collection)
+                      : bone_collection_find_by_name(armature, name);
+}
+
+/* Whether an operator means All: by name, or, named nothing, with All active. */
+static bool all_arg(Context &C, const Layer &armature)
+{
+  const std::string name = op_arg(C, "collection");
+  return name == BONE_COLLECTION_ALL || (name.empty() && !bone_collection_find(armature, armature.active_collection));
+}
+
+static bool in_collection(const std::vector<uint64_t> &ids, uint64_t id)
+{
+  return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
 void rig_operators_register()
@@ -179,7 +205,7 @@ void rig_operators_register()
                bone_layer_active, [](Context &C) {
                  Layer &armature = *document_active_layer(*C.document);
                  for (Bone &b : armature.bones) {
-                   bone_select(b, true);
+                   bone_select(b, bone_shown(armature, b));
                  }
                  if (!bone_find(armature, armature.active_bone) && !armature.bones.empty()) {
                    armature.active_bone = armature.bones.front().id;
@@ -312,7 +338,7 @@ void rig_operators_register()
                  }
                  const uint64_t parent_id = parent ? parent->id : 0;
                  if (parent_id != 0 && bone_is_descendant(armature, parent_id, bone->id)) {
-                   report(ReportType::Warning, "A bone can't hang from itself or one of its children");
+                   report_at_mouse(ReportType::Warning, "A bone can't hang from itself or one of its children");
                    return OpStatus::Cancelled;
                  }
                  if (parent_id == bone->parent) {
@@ -322,7 +348,8 @@ void rig_operators_register()
                  const std::vector<BonePose> poses = armature_pose(armature);
                  const BonePose *self = bone_pose_find(poses, bone->id);
                  const BonePose *pp = bone_pose_find(poses, parent_id);
-                 const float length = bone->length, scale = bone->scale;
+                 const float length = bone->length;
+                 const float2 scale = bone->scale;
                  bone_place(*bone, pp ? pp->setup : Transform2D(), self->setup_head, self->setup_tail);
                  bone->length = length;
                  bone->scale = scale;
@@ -475,10 +502,15 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  const std::string name = op_arg(C, "bone");
-                 int changed = 0;
+                 int changed = 0, same_as_original = 0;
                  for (Layer *layer : keyed_layers(C)) {
                    const Layer *armature = layer_armature(*C.document, layer->id);
                    if (!armature || layer->is_bone_layer()) {
+                     continue;
+                   }
+                   /* A copy posed Same as Original moves with its original's bones. */
+                   if (layer->is_reference() && layer->reference.match_original) {
+                     same_as_original++;
                      continue;
                    }
                    const Bone *bone = name.empty() ? nullptr : bone_find_by_name(*armature, name);
@@ -492,8 +524,167 @@ void rig_operators_register()
                      changed++;
                    }
                  }
+                 if (changed == 0 && same_as_original > 0) {
+                   report(ReportType::Warning, "Its pose is Same as Original: choose Own Bones in the Reference tab "
+                                               "to give it a parent bone");
+                 }
                  return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                });
+
+  rig_operator("armature.copy_bone_color_to_selected", "Copy Bone Color to Selected",
+               "Give the other selected bones the active bone's colour set (and its custom colours), as "
+               "Blender's",
+               [](Context &C) {
+                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+                 return l && l->is_bone_layer() && bone_find(*l, l->active_bone);
+               },
+               [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 const Bone from = *bone_find(armature, armature.active_bone);
+                 int changed = 0;
+                 for (Bone &b : armature.bones) {
+                   const bool picked = b.selected || b.select_head || b.select_tail;
+                   if (!picked || b.id == from.id) {
+                     continue;
+                   }
+                   b.color_set = from.color_set;
+                   b.custom_colors = from.custom_colors;
+                   changed++;
+                 }
+                 if (changed == 0) {
+                   report(ReportType::Warning, "Select other bones to copy this bone's colour to");
+                   return OpStatus::Cancelled;
+                 }
+                 return OpStatus::Finished;
+               });
+
+  /* --- Bone constraints ------------------------------------------------------------------- */
+  /* The bone named `bone` (default: the active one) of the active bone layer. */
+  const auto constraint_bone = [](Context &C) -> Bone * {
+    Layer *armature = C.document ? document_active_layer(*C.document) : nullptr;
+    if (!armature || !armature->is_bone_layer()) {
+      return nullptr;
+    }
+    const std::string name = op_arg(C, "bone");
+    return name.empty() ? bone_find(*armature, armature->active_bone)
+                        : const_cast<Bone *>(bone_find_by_name(*armature, name));
+  };
+  rig_operator("armature.constraint_add", "Add Bone Constraint",
+               "Add a constraint (type=LIMIT_ANGLE, INDEPENDENT_ANGLE, MAINTAIN_VOLUME, COPY_ANGLE, COPY_POSITION, "
+               "COPY_SCALE, TRACK_TO, STRETCH_TO, IK or DYNAMICS) to the bone `bone` (default: the active bone)",
+               bone_layer_active, [constraint_bone](Context &C) {
+                 Bone *bone = constraint_bone(C);
+                 BoneConstraintType type;
+                 if (!bone) {
+                   report(ReportType::Warning, "Select a bone to add a constraint to");
+                   return OpStatus::Cancelled;
+                 }
+                 if (!bone_constraint_from_identifier(op_arg(C, "type", "LIMIT_ANGLE"), &type)) {
+                   report(ReportType::Error, "Unknown constraint type " + op_arg(C, "type"));
+                   return OpStatus::Cancelled;
+                 }
+                 BoneConstraint c;
+                 c.type = type;
+                 c.name = bone_constraint_name(type);
+                 const auto dynamics = std::find_if(bone->constraints.begin(), bone->constraints.end(), [](const auto &x) {
+                   return x.type == BoneConstraintType::Dynamics;
+                 });
+                 if (type == BoneConstraintType::Dynamics) {
+                   if (dynamics != bone->constraints.end()) {
+                     report(ReportType::Warning, "A bone has one Dynamics constraint");
+                     return OpStatus::Cancelled;
+                   }
+                   c.angle_spring.enabled = true;
+                   bone->constraints.push_back(c);
+                 }
+                 else {
+                   /* Dynamics stays last. */
+                   bone->constraints.insert(dynamics, c);
+                 }
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.constraint_remove", "Remove Bone Constraint",
+               "Remove constraint `index` of the bone `bone` (default: the active bone)", bone_layer_active,
+               [constraint_bone](Context &C) {
+                 Bone *bone = constraint_bone(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 if (!bone || index < 0 || index >= int(bone->constraints.size())) {
+                   return OpStatus::Cancelled;
+                 }
+                 bone->constraints.erase(bone->constraints.begin() + index);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.constraint_move", "Move Bone Constraint",
+               "Move constraint `index` up (direction=-1) or down (1) the stack; Dynamics stays last",
+               bone_layer_active, [constraint_bone](Context &C) {
+                 Bone *bone = constraint_bone(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 const int to = index + (op_arg_int(C, "direction", 1) < 0 ? -1 : 1);
+                 if (!bone || index < 0 || to < 0 || index >= int(bone->constraints.size()) ||
+                     to >= int(bone->constraints.size()) ||
+                     bone->constraints[index].type == BoneConstraintType::Dynamics ||
+                     bone->constraints[to].type == BoneConstraintType::Dynamics)
+                 {
+                   return OpStatus::Cancelled;
+                 }
+                 std::swap(bone->constraints[index], bone->constraints[to]);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.constraint_move_to", "Move Bone Constraint",
+               "Move constraint `index` to place `to` in the stack (dragging its box); Dynamics stays last",
+               bone_layer_active, [constraint_bone](Context &C) {
+                 Bone *bone = constraint_bone(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 int to = op_arg_int(C, "to", -1);
+                 if (!bone || index < 0 || index >= int(bone->constraints.size()) ||
+                     bone->constraints[index].type == BoneConstraintType::Dynamics)
+                 {
+                   return OpStatus::Cancelled;
+                 }
+                 /* Nothing goes below Dynamics. */
+                 int last = int(bone->constraints.size()) - 1;
+                 if (bone->constraints.back().type == BoneConstraintType::Dynamics) {
+                   last--;
+                 }
+                 to = std::clamp(to, 0, last);
+                 if (to == index) {
+                   return OpStatus::Cancelled;
+                 }
+                 BoneConstraint moved = std::move(bone->constraints[index]);
+                 bone->constraints.erase(bone->constraints.begin() + index);
+                 bone->constraints.insert(bone->constraints.begin() + to, std::move(moved));
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.dynamics_bake", "Bake Dynamics",
+               "Turn the bone dynamics into keys, from the simulation start to the end of the frame range, and switch "
+               "the Dynamics constraints off (all=1: every bone layer)",
+               [](Context &C) { return C.document != nullptr; },
+               [](Context &C) {
+                 Layer *active = document_active_layer(*C.document);
+                 Layer *only = op_arg_bool(C, "all") || !active || !active->is_bone_layer() ? nullptr : active;
+                 const int keys = dynamics_bake(*C.document, only);
+                 if (keys == 0) {
+                   report(ReportType::Warning, "No bone has dynamics to bake");
+                   return OpStatus::Cancelled;
+                 }
+                 report(ReportType::Info, "Baked " + std::to_string(keys) + " keys");
+                 /* Show the frame from its new keys. */
+                 animation_evaluate(*C.document, C.document->frame_current);
+                 return OpStatus::Finished;
+               });
+  {
+    OperatorType ot;
+    ot.idname = "armature.dynamics_clear_cache";
+    ot.name = "Clear Dynamics Cache";
+    ot.description = "Simulate the bone dynamics again from the start";
+    ot.flag = OPTYPE_REGISTER;
+    ot.exec = [](Context &C) {
+      dynamics_clear_cache();
+      animation_evaluate(*C.document, C.document->frame_current);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
 
   rig_operator("armature.bone_primitive_add", "Add Bone",
                "Add a new bone at the bone layer's origin, pointing up (Shift A, as in Blender)", armature_poll,
@@ -622,7 +813,9 @@ void rig_operators_register()
                      bone.position = {piece, 0.0f};
                      bone.length = piece;
                      bone.strength = bone_find(armature, id)->strength;
-                     bone.color = bone_find(armature, id)->color;
+                     bone.color_set = bone_find(armature, id)->color_set;
+                     bone.custom_colors = bone_find(armature, id)->custom_colors;
+                     bone.collections = bone_find(armature, id)->collections;
                      bone_select(bone, true);
                      previous = bone.id;
                      armature.bones.push_back(std::move(bone));
@@ -705,11 +898,12 @@ void rig_operators_register()
                      continue;
                    }
                    if (bone_is_descendant(armature, parent_id, b.id)) {
-                     report(ReportType::Warning, "A bone can't hang from one of its children: " + b.name);
+                     report_at_mouse(ReportType::Warning, "A bone can't hang from one of its children: " + b.name);
                      continue;
                    }
                    const BonePose *self = bone_pose_find(poses, b.id);
-                   const float length = b.length, scale = b.scale;
+                   const float length = b.length;
+                   const float2 scale = b.scale;
                    bone_place(b, pp->setup, self->setup_head, self->setup_tail);
                    b.length = length;
                    b.scale = scale;
@@ -755,7 +949,8 @@ void rig_operators_register()
                    b.connected = false;
                    if (clear) {
                      const BonePose *self = bone_pose_find(poses, b.id);
-                     const float length = b.length, scale = b.scale;
+                     const float length = b.length;
+                   const float2 scale = b.scale;
                      bone_place(b, Transform2D(), self->setup_head, self->setup_tail);
                      b.length = length;
                      b.scale = scale;
@@ -780,6 +975,314 @@ void rig_operators_register()
     const std::string menu_name = menu;
     ot.exec = [menu_name](Context &C) {
       C.wm->menu_request = menu_name;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
+  /* --- Bone collections, as Blender's ------------------------------------------------------- */
+  rig_operator("armature.collection_add", "Add Bone Collection",
+               "Add a bone collection after the active one (`name`, default \"Collection\") and make it active",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 bone_collection_add(armature, op_arg(C, "name"));
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.collection_remove", "Remove Bone Collection",
+               "Remove the active bone collection (or `collection`); its bones and drawings just leave it",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 if (all_arg(C, armature)) {
+                   report(ReportType::Warning, "All always holds every bone: it can't be removed");
+                   return OpStatus::Cancelled;
+                 }
+                 const BoneCollection *c = collection_arg(C, armature);
+                 if (!c) {
+                   return OpStatus::Cancelled;
+                 }
+                 bone_collection_remove(*C.document, armature, c->id);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.collection_move", "Move Bone Collection",
+               "Move the active bone collection up or down the list (`direction` UP or DOWN)", bone_layer_active,
+               [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 auto &list = armature.bone_collections;
+                 const auto it = std::find_if(list.begin(), list.end(),
+                                              [&](const BoneCollection &c) { return c.id == armature.active_collection; });
+                 if (it == list.end()) {
+                   return OpStatus::Cancelled;
+                 }
+                 const bool up = op_arg(C, "direction", "UP") == "UP";
+                 if ((up && it == list.begin()) || (!up && it + 1 == list.end())) {
+                   return OpStatus::Cancelled;
+                 }
+                 std::iter_swap(it, up ? it - 1 : it + 1);
+                 return OpStatus::Finished;
+               });
+  /* Assign / Remove: the selected bones, and the drawings picked in the Layers editor. */
+  for (const bool assign : {true, false}) {
+    rig_operator(
+        assign ? "armature.collection_assign" : "armature.collection_unassign",
+        assign ? "Assign to Bone Collection" : "Remove from Bone Collection",
+        assign ? "Put the selected bones, and the drawings inside this bone layer picked in the Layers editor, in the "
+                 "active bone collection (or `collection`)"
+               : "Take the selected bones, and the picked drawings, out of the active bone collection (or `collection`)",
+        bone_layer_active, [assign](Context &C) {
+          Document &doc = *C.document;
+          Layer &armature = *document_active_layer(doc);
+          if (all_arg(C, armature)) {
+            report(ReportType::Warning, "Every bone is in All: assign to (or remove from) another collection");
+            return OpStatus::Cancelled;
+          }
+          const BoneCollection *c = collection_arg(C, armature);
+          if (!c) {
+            report(ReportType::Warning, "Add a bone collection first");
+            return OpStatus::Cancelled;
+          }
+          int changed = 0;
+          const auto apply = [&](std::vector<uint64_t> &ids) {
+            if (assign && !in_collection(ids, c->id)) {
+              ids.push_back(c->id);
+              changed++;
+            }
+            else if (!assign && in_collection(ids, c->id)) {
+              std::erase(ids, c->id);
+              changed++;
+            }
+          };
+          for (Bone &b : armature.bones) {
+            if (b.selected || b.select_head || b.select_tail) {
+              apply(b.collections);
+            }
+          }
+          for (Layer *d : collection_drawings(doc, armature)) {
+            apply(d->collections);
+          }
+          if (changed == 0) {
+            report(ReportType::Warning, assign ? "Select bones (or pick drawings in the Layers editor) to assign"
+                                               : "None of the selected bones or picked drawings is in it");
+            return OpStatus::Cancelled;
+          }
+          armature_deselect_hidden(armature);
+          return OpStatus::Finished;
+        });
+  }
+  /* Select / Deselect: every shown bone of the collection, and its drawings' points. */
+  for (const bool select : {true, false}) {
+    rig_operator(select ? "armature.collection_select" : "armature.collection_deselect",
+                 select ? "Select Bone Collection" : "Deselect Bone Collection",
+                 select ? "Select the bones of the active bone collection (or `collection`), and its drawings' points"
+                        : "Deselect the bones of the active bone collection (or `collection`), and its drawings' points",
+                 bone_layer_active, [select](Context &C) {
+                   Document &doc = *C.document;
+                   Layer &armature = *document_active_layer(doc);
+                   /* All: every shown bone and editable drawing. */
+                   const bool all = all_arg(C, armature);
+                   const BoneCollection *c = all ? nullptr : collection_arg(C, armature);
+                   if (!all && !c) {
+                     return OpStatus::Cancelled;
+                   }
+                   int touched = 0;
+                   for (Bone &b : armature.bones) {
+                     if ((all || in_collection(b.collections, c->id)) && bone_shown(armature, b)) {
+                       bone_select(b, select);
+                       touched++;
+                     }
+                   }
+                   for (const Layer *l : document_layers_flat(doc)) {
+                     const Layer *owner = layer_armature(doc, l->id);
+                     if (owner && owner->id == armature.id && (all || in_collection(l->collections, c->id)) &&
+                         layer_edited_with_bones(doc, *l))
+                     {
+                       for (MeshPoint &p : layer_find(doc, l->id)->drawing.points) {
+                         p.selected = select;
+                       }
+                       touched++;
+                     }
+                   }
+                   return touched ? OpStatus::Finished : OpStatus::Cancelled;
+                 });
+  }
+  rig_operator("armature.collection_set", "Set Bone Collection",
+               "Change a bone collection (`collection`, default the active one): `name`, `visible` (the eye), `solo` "
+               "(the star) or `active`",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 if (all_arg(C, armature)) {
+                   /* All: its eye, its star, or made active; it keeps its name. */
+                   if (const std::string v = op_arg(C, "visible"); !v.empty()) {
+                     armature.all_bones_visible = v == "1";
+                   }
+                   if (const std::string v = op_arg(C, "solo"); !v.empty()) {
+                     armature.all_bones_solo = v == "1";
+                   }
+                   if (op_arg(C, "active") == "1") {
+                     armature.active_collection = 0;
+                   }
+                   armature_deselect_hidden(armature);
+                   return OpStatus::Finished;
+                 }
+                 BoneCollection *c = collection_arg(C, armature);
+                 if (!c) {
+                   return OpStatus::Cancelled;
+                 }
+                 if (const std::string name = op_arg(C, "name"); !name.empty() && name != c->name) {
+                   c->name = bone_collection_unique_name(armature, name);
+                 }
+                 if (const std::string v = op_arg(C, "visible"); !v.empty()) {
+                   c->visible = v == "1";
+                 }
+                 if (const std::string v = op_arg(C, "solo"); !v.empty()) {
+                   c->solo = v == "1";
+                 }
+                 if (op_arg(C, "active") == "1") {
+                   armature.active_collection = c->id;
+                 }
+                 armature_deselect_hidden(armature);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.collection_show_all", "Show All Bone Collections", "Turn every bone collection's eye on",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 armature.all_bones_visible = true;
+                 for (BoneCollection &c : armature.bone_collections) {
+                   c.visible = true;
+                 }
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.collection_unsolo_all", "Unsolo All Bone Collections", "Turn every bone collection's star off",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 armature.all_bones_solo = false;
+                 for (BoneCollection &c : armature.bone_collections) {
+                   c.solo = false;
+                 }
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.collection_remove_unused", "Remove Unused Bone Collections",
+               "Remove the bone collections with no bones and no drawings in them", bone_layer_active, [](Context &C) {
+                 Document &doc = *C.document;
+                 Layer &armature = *document_active_layer(doc);
+                 std::vector<uint64_t> unused;
+                 for (const BoneCollection &c : armature.bone_collections) {
+                   bool used = std::any_of(armature.bones.begin(), armature.bones.end(),
+                                           [&](const Bone &b) { return in_collection(b.collections, c.id); });
+                   for (const Layer *l : document_layers_flat(doc)) {
+                     const Layer *owner = layer_armature(doc, l->id);
+                     used |= owner && owner->id == armature.id && in_collection(l->collections, c.id);
+                   }
+                   if (!used) {
+                     unused.push_back(c.id);
+                   }
+                 }
+                 for (const uint64_t id : unused) {
+                   bone_collection_remove(doc, armature, id);
+                 }
+                 return unused.empty() ? OpStatus::Cancelled : OpStatus::Finished;
+               });
+  /* M and Shift M: Blender's Move to Collection (leave the others, join one) and Assign to
+   * Collection (join one, keep the others); `new` 1 makes a new collection for it. */
+  for (const bool move : {true, false}) {
+    rig_operator(move ? "armature.move_to_collection" : "armature.assign_to_collection",
+                 move ? "Move to Bone Collection" : "Assign to Bone Collection",
+                 move ? "Put the selected bones (the bone layer active) or the active and picked drawings inside it in "
+                        "bone collection `collection` only (`new` 1: a new one)"
+                      : "Add the selected bones (the bone layer active) or the active and picked drawings inside it to "
+                        "bone collection `collection` (`new` 1: a new one)",
+                 [](Context &C) { return C.document && collection_armature(*C.document); },
+                 [move](Context &C) {
+                   /* With the bone layer active: its selected bones and the picked drawings. With
+                    * a drawing inside it active: that drawing and the other picked ones. */
+                   Document &doc = *C.document;
+                   Layer &armature = *collection_armature(doc);
+                   std::vector<Bone *> bones;
+                   for (Bone &b : armature.bones) {
+                     if (doc.active_layer == armature.id && (b.selected || b.select_head || b.select_tail)) {
+                       bones.push_back(&b);
+                     }
+                   }
+                   const std::vector<Layer *> drawings = collection_drawings(doc, armature);
+                   if (bones.empty() && drawings.empty()) {
+                     const Layer *active = document_active_layer(doc);
+                     report(ReportType::Warning, active && active->type == LayerType::Vector && !active->edit_with_bones
+                                                     ? "Turn on Editable in Bone Group (Layer tab) to put this drawing in collections"
+                                                     : "Select bones (or pick drawings in the Layers editor) first");
+                     return OpStatus::Cancelled;
+                   }
+                   const BoneCollection *c = op_arg(C, "new") == "1" ? &bone_collection_add(armature, "")
+                                                                    : collection_arg(C, armature);
+                   if (!c) {
+                     return OpStatus::Cancelled;
+                   }
+                   const uint64_t id = c->id;
+                   const auto apply = [&](std::vector<uint64_t> &ids) {
+                     if (move) {
+                       ids.clear();
+                     }
+                     if (!in_collection(ids, id)) {
+                       ids.push_back(id);
+                     }
+                   };
+                   for (Bone *b : bones) {
+                     apply(b->collections);
+                   }
+                   for (Layer *d : drawings) {
+                     apply(d->collections);
+                   }
+                   armature_deselect_hidden(armature);
+                   return OpStatus::Finished;
+                 });
+  }
+  for (const auto &[idname, name, menu] :
+       {std::tuple{"armature.move_to_collection_menu", "Move to Bone Collection", "bone_collection_move"},
+        std::tuple{"armature.assign_to_collection_menu", "Assign to Bone Collection", "bone_collection_assign"}})
+  {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = "Choose a bone collection for the selected bones, or for the active and picked drawings inside a "
+                     "bone layer, as Blender's M and Shift M";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document && collection_armature(*C.document); };
+    const std::string menu_name = menu;
+    ot.exec = [menu_name](Context &C) {
+      C.wm->menu_request = menu_name;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  /* A drawing joins or leaves one of its bone layer's collections (its Layer tab, or the Layers
+   * editor's right-click menu). */
+  {
+    OperatorType ot;
+    ot.idname = "layer.bone_collection_toggle";
+    ot.name = "Drawing in Bone Collection";
+    ot.description = "Put drawing `layer` (default the active layer) in bone collection `collection` of its bone "
+                     "layer, or take it out (`on` 0)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string id = op_arg(C, "layer");
+      Layer *layer = id.empty() ? document_active_layer(doc) : layer_find(doc, std::strtoull(id.c_str(), nullptr, 10));
+      Layer *armature = layer && layer->type == LayerType::Vector ? const_cast<Layer *>(layer_armature(doc, layer->id))
+                                                                  : nullptr;
+      BoneCollection *c = armature ? bone_collection_find_by_name(*armature, op_arg(C, "collection")) : nullptr;
+      if (!c) {
+        report(ReportType::Warning, "A drawing inside a bone layer can join that bone layer's collections");
+        return OpStatus::Cancelled;
+      }
+      const bool on = op_arg(C, "on", "1") == "1";
+      if (on == in_collection(layer->collections, c->id)) {
+        return OpStatus::Cancelled;
+      }
+      if (on) {
+        layer->collections.push_back(c->id);
+      }
+      else {
+        std::erase(layer->collections, c->id);
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

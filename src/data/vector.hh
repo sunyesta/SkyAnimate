@@ -50,6 +50,9 @@ struct MeshPoint {
   /* Keys for the position and radius (see anim/channel.hh). */
   Channel<float2> pos_keys;
   Channel<float> radius_keys;
+  /* Its own number in the drawing, kept for good (0: not given one yet; see drawing_ensure_ids):
+   * what a reference's overrides find it by, whatever happens to the points around it. */
+  uint64_t id = 0;
 };
 
 struct CurvePoint {
@@ -145,6 +148,10 @@ struct Shape {
   bool has_fill = true;
   bool has_outline = true;
   Style style;
+  /* Not drawn (a reference hiding one of its original's shapes). */
+  bool hidden = false;
+  /* Its own number in the drawing, kept for good (as MeshPoint::id). */
+  uint64_t id = 0;
   /* No selection flag of its own: a shape counts as selected when all its points are (see
    * drawing_selected_shapes), so the viewport and the Properties shape list always agree. */
 };
@@ -153,6 +160,8 @@ struct VectorDrawing {
   std::vector<MeshPoint> points;
   std::vector<Curve> curves;
   std::vector<Shape> shapes;
+  /* The next point or shape id to give out. */
+  uint64_t next_id = 1;
 
   bool empty() const { return points.empty(); }
 };
@@ -185,6 +194,27 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
                           std::vector<float2> &r_points, float tolerance = 0.0f);
 /* The point indices at either end of a segment. */
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to);
+
+/* A shape's edges in the order its outline runs, each with the way it is run (`reversed`: from
+ * its segment's end to its start). Returns false if they don't all join into one run;
+ * `r_closed` says whether the run returns to its start. */
+struct OrientedEdge {
+  ShapeEdge edge;
+  bool reversed = false;
+};
+bool shape_chain(const VectorDrawing &drawing, const Shape &shape, std::vector<OrientedEdge> &r_chain,
+                 bool *r_closed);
+
+/* Gives every point and shape without an id (or with one already taken, as a copy has) a new
+ * one. Returns true if any changed. */
+bool drawing_ensure_ids(VectorDrawing &drawing);
+/* The index of the point or shape with `id`, or -1. */
+int drawing_point_index(const VectorDrawing &drawing, uint64_t id);
+int drawing_shape_index(const VectorDrawing &drawing, uint64_t id);
+
+/* The drawing as it is on the setup frame (0): every animated point, radius, curvature and
+ * handle at its frame-0 value (what was drawn, before any animation). */
+VectorDrawing drawing_setup_pose(const VectorDrawing &drawing);
 
 /* The outline of a shape as a polyline in drawing space, edges joined end to end.
  * `r_radii` (optional) gets the point radius (0-1) at each sample, blended between points.
@@ -288,12 +318,47 @@ std::vector<int> shape_points(const VectorDrawing &drawing, const Shape &shape);
 bool drawing_points_mean(const VectorDrawing &drawing, const std::vector<int> &points, float2 *r_mean);
 void drawing_points_move(VectorDrawing &drawing, const std::vector<int> &points, float2 delta);
 
+/* Proportional editing (Blender's, O): moving selected points drags the points around them too,
+ * the less the further they are, out to the proportional size. Falloffs as Blender's menu. */
+enum class ProportionalFalloff { Smooth, Sphere, Root, InverseSquare, Sharp, Linear, Constant, Random };
+constexpr int PROPORTIONAL_FALLOFF_COUNT = 8;
+/* Its name in the menu ("Inverse Square"), and its identifier for scripts ("INVERSE_SQUARE"). */
+const char *proportional_falloff_name(ProportionalFalloff falloff);
+const char *proportional_falloff_identifier(ProportionalFalloff falloff);
+bool proportional_falloff_from_identifier(const std::string &id, ProportionalFalloff *r_falloff);
+/* How far each point is from the selected points (0 for those; infinity where it can't reach):
+ * straight across, or along the curves (`connected`, Blender's Connected Only: only points on a
+ * curve that has selected points move). `positions`: where the points are, one per point. */
+std::vector<float> drawing_proportional_distances(const VectorDrawing &drawing, const std::vector<float2> &positions,
+                                                  bool connected);
+/* How much of the move a point `distance` from the selection gets, from 1 (selected) to 0 at
+ * `size` and beyond. `point`: its index (Random gives each point its own amount). */
+float proportional_weight(ProportionalFalloff falloff, float distance, float size, int point);
+
+/* Where a point is in the setup pose (frame 0): its frame-0 key, or, not keyed, its value as last
+ * recorded. Mirror editing pairs points by it, so the pairs hold on every frame. */
+float2 point_setup_pos(const MeshPoint &point);
 /* Mirror editing (Blender's mesh symmetry), across the layer's vertical (`x`) and/or horizontal
- * (`y`) axis. The point at `point`'s mirror image, or -1 (a point on the axis has none). */
+ * (`y`) axis. The point at `point`'s mirror image in the setup pose, or -1 (a point on the axis has
+ * none). */
 int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, bool y);
 /* Gives `dst`'s curve points the alignment, curvature and (reflected) handles of the matching
  * curve points of `src`, its mirror image. */
 void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bool y);
+
+/* A moving point (`src`) and its mirror image (`dst`, not moving itself), reflected across x, y
+ * or both. */
+struct MirrorPair {
+  int src = -1, dst = -1;
+  bool x = false, y = false;
+};
+/* The mirror images of the `moving` points, paired in the setup pose; selected points move by
+ * themselves, so they are no one's image. */
+std::vector<MirrorPair> drawing_mirror_pairs(const VectorDrawing &drawing, const std::vector<int> &moving, bool mirror_x,
+                                             bool mirror_y);
+/* After the moving points moved, snaps their images to the reflected spot, handles too, on any
+ * frame. */
+void drawing_apply_mirror(VectorDrawing &drawing, const std::vector<MirrorPair> &pairs);
 /* After changing the selected points' (or handles') handles: the same on their mirror images,
  * for each mirror axis that is on. */
 void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool mirror_y);

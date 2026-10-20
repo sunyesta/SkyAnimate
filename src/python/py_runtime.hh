@@ -46,4 +46,8 @@ void console_clear();
 /* Runs a text block's code as __main__, printing into the console. False if it raised. */
 bool text_run(const std::string &name, const std::string &source);
 
+/* Runs code sent through remote control (scripts/modules/sky/_remote.py): JSON of what was
+ * printed ("output"), the last line's value ("result", its repr) and any traceback ("error"). */
+std::string remote_run(const std::string &code);
+
 }  // namespace sky::python

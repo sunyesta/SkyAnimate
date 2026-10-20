@@ -17,7 +17,9 @@ namespace sky {
 VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
 {
   Layer *layer = C.document ? document_active_layer(*C.document) : nullptr;
-  if (!layer || layer->is_group() || layer->is_reference() || layer->locked) {
+  /* A reference's drawing can be edited too: its looks always, its points with Edit Points on
+   * (edits become its overrides; see anim/reference.hh). */
+  if (!layer || layer->is_group() || layer->locked) {
     return nullptr;
   }
   if (r_layer) {
@@ -38,18 +40,17 @@ std::vector<Layer *> editable_layers(Context &C)
     layers.push_back(active);
   }
   for (const Layer *layer : document_layers_flat(doc)) {
-    if (layer->selected && layer != active && layer->visible && !layer->is_group() && !layer->is_reference() &&
-        !layer->locked)
+    if (layer->selected && layer != active && layer->visible && !layer->is_group() && !layer->locked)
     {
       layers.push_back(layer_find(doc, layer->id));
     }
   }
-  /* A bone layer being worked in brings its layers marked Editable in Bone Group. */
+  /* A bone layer being worked in brings the drawings in its shown bone collections. */
   if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
     for (const Layer *layer : document_layers_flat(doc)) {
       const Layer *owner = layer_armature(doc, layer->id);
-      if (layer->edit_with_bones && owner && owner->id == bones->id && layer->visible && !layer->is_group() &&
-          !layer->is_reference() && !layer->locked &&
+      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->visible && !layer->is_group() &&
+          !layer->locked &&
           std::find(layers.begin(), layers.end(), layer) == layers.end())
       {
         layers.push_back(layer_find(doc, layer->id));
@@ -263,6 +264,100 @@ void vector_operators_register()
                     return OpStatus::Finished;
                   });
 
+  /* What the X menu offers, as Blender's Delete menu: each whatever the selection mode is. */
+  vector_operator("mesh.delete_points", "Delete Points", "Delete the selected points and the curves left too short",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    for (Layer *layer : editable_layers(C)) {
+                      std::vector<bool> remove(layer->drawing.points.size());
+                      for (size_t i = 0; i < layer->drawing.points.size(); i++) {
+                        remove[i] = layer->drawing.points[i].selected;
+                      }
+                      drawing_remove_points(layer->drawing, remove);
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.delete_edges", "Delete Edges",
+                  "Delete the segments between selected points, keeping the points: curves split there",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    int deleted = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      deleted += drawing_delete_edges(layer->drawing, drawing_selected_edges(layer->drawing));
+                    }
+                    return deleted ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
+  vector_operator("mesh.dissolve_points", "Dissolve Points",
+                  "Remove the selected points, joining the curve across each gap so lines and shapes stay whole",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    for (Layer *layer : editable_layers(C)) {
+                      VectorDrawing &drawing = layer->drawing;
+                      /* One at a time: each dissolve renumbers the points (it also clears out
+                       * points nothing uses any more). */
+                      for (;;) {
+                        int last = -1;
+                        for (int i = int(drawing.points.size()) - 1; i >= 0 && last < 0; i--) {
+                          last = drawing.points[i].selected ? i : -1;
+                        }
+                        const size_t before = drawing.points.size();
+                        if (last < 0) {
+                          break;
+                        }
+                        drawing_dissolve_point(drawing, last);
+                        if (drawing.points.size() >= before) {
+                          drawing.points[last].selected = false;
+                        }
+                      }
+                    }
+                    return OpStatus::Finished;
+                  });
+  {
+    /* X opens the Delete menu at the mouse, as in Blender. */
+    OperatorType ot;
+    ot.idname = "mesh.delete_menu";
+    ot.name = "Delete";
+    ot.description = "Choose what to delete: the selected points, the edges between them, or dissolve the points";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = editable_with_selection_poll;
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "mesh_delete";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
+  vector_operator("mesh.select_point_layers", "Select Layers of Selected Points",
+                  "Make the layer whose points (or handles) are selected the active layer, and pick the others "
+                  "that have some, keeping the points selected: to edit them on their own layer",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    Document &doc = *C.document;
+                    std::vector<uint64_t> owners;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (has_selection(layer->drawing)) {
+                        owners.push_back(layer->id);
+                      }
+                    }
+                    if (owners.empty()) {
+                      return OpStatus::Cancelled;
+                    }
+                    for (const Layer *l : document_layers_flat(doc)) {
+                      layer_find(doc, l->id)->selected = false;
+                    }
+                    /* The first in the Layers editor's order is active; the others are picked. */
+                    bool first = true;
+                    for (const Layer *l : document_layers_flat(doc)) {
+                      if (std::find(owners.begin(), owners.end(), l->id) == owners.end()) {
+                        continue;
+                      }
+                      if (first) {
+                        doc.active_layer = l->id;
+                        first = false;
+                      }
+                      else {
+                        layer_find(doc, l->id)->selected = true;
+                      }
+                    }
+                    return OpStatus::Finished;
+                  });
+
   vector_operator("mesh.create_shape", "Create Shape",
                   "Fill the closed loop through the selected points, or outline an open run", UNDO,
                   editable_with_selection_poll, [](Context &C) {
@@ -459,6 +554,44 @@ void vector_operators_register()
   transform_op("transform.rotate", "Rotate", "Rotate the selected points with the mouse", 'R');
   transform_op("transform.resize", "Scale", "Scale the selected points with the mouse", 'S');
   transform_op("mesh.extrude", "Extrude", "Add a new point beyond each selected end point and move it", 'E');
+  /* Proportional editing: O, Shift O and Alt O, as in Blender. Only for points: they need an
+   * editable layer with points. */
+  const auto proportional_op = [](const char *idname, const char *name, const char *description,
+                                  void (*change)(ToolSettings &ts)) {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = description;
+    ot.poll = [](Context &C) {
+      if (!C.document || !C.wm) {
+        return false;
+      }
+      for (const Layer *layer : editable_layers(C)) {
+        if (!layer->drawing.points.empty()) {
+          return true;
+        }
+      }
+      return false;
+    };
+    ot.exec = [change](Context &C) {
+      change(C.wm->tool_settings);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  };
+  proportional_op("transform.proportional_toggle", "Proportional Editing",
+                  "Turn proportional editing on or off: moving points drags the points around them too (O)",
+                  [](ToolSettings &ts) { ts.proportional = !ts.proportional; });
+  proportional_op("transform.proportional_falloff_cycle", "Proportional Falloff",
+                  "Switch proportional editing to the next falloff (Shift O)", [](ToolSettings &ts) {
+                    ts.proportional_falloff =
+                        ProportionalFalloff((int(ts.proportional_falloff) + 1) % PROPORTIONAL_FALLOFF_COUNT);
+                    report(ReportType::Info,
+                           std::string("Proportional falloff: ") + proportional_falloff_name(ts.proportional_falloff));
+                  });
+  proportional_op("transform.proportional_connected_toggle", "Proportional Connected Only",
+                  "Proportional editing only along the curves, or straight across (Alt O)",
+                  [](ToolSettings &ts) { ts.proportional_connected = !ts.proportional_connected; });
 
   /* Blender's Arrange (Page Up/Down) for shapes, Moho's Raise and Lower Shape. */
   const auto arrange_op = [](const char *idname, const char *name, const char *description, ShapeArrange arrange) {

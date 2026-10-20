@@ -16,6 +16,7 @@
 namespace sky {
 
 struct Bone;
+struct BoneCollection;
 struct Document;
 struct Layer;
 
@@ -35,6 +36,13 @@ struct BonePose {
  * frame 0, where moving a bone changes the setup pose itself. Elsewhere an edit not yet keyed
  * is a pose: the setup stays where the bone was before it. */
 std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame = true);
+/* The pose without bone dynamics: where the keys (constraints and IK included) put the bones.
+ * Editing works from it, so a dynamic bone lands where it is put, the physics swinging after. */
+std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame);
+/* Interactive IK while posing (Moho's): turns the bone and its parents (up to a bone Ignored by
+ * IK) so the bone's tip reaches `goal` (bone layer space); an Arc IK bone bends its chain evenly.
+ * Returns false when the bone has no parent to turn with. */
+bool armature_reach(Layer &armature, uint64_t bone, float2 goal);
 const BonePose *bone_pose_find(const std::vector<BonePose> &poses, uint64_t id);
 Bone *bone_find(Layer &armature, uint64_t id);
 const Bone *bone_find(const Layer &armature, uint64_t id);
@@ -61,11 +69,35 @@ bool armature_any_picked(const Layer &armature);
  * bones' position, angle or scale go back to the setup pose (frame 0). Returns false when no bone
  * is picked. */
 bool armature_clear_pose(Layer &armature, bool position, bool angle, bool scale);
+/* A bone's position and angle in the setup pose (frame 0). Posing shows them as Blender's pose
+ * transform: Transform and Angle, the change from these, which is what their keys hold. */
+float2 bone_setup_position(const Bone &bone);
+float bone_setup_angle(const Bone &bone);
+/* A move of the bone's base from its setup position, measured along its rest axes (x along the bone
+ * as it rests in the setup pose, y across it), and back to a position in its parent's space. */
+float2 bone_transform_from_position(const Bone &bone, float2 position);
+float2 bone_position_from_transform(const Bone &bone, float2 transform);
+/* Transform and Angle (Bone::transform, Bone::turn) from the bone's position and angle, and back. */
+void bone_changes_from_values(Bone &bone);
+void bone_values_from_changes(Bone &bone);
+/* Frame 0's edits become the setup pose (the bone's changes there are none). */
+void bone_take_setup(Bone &bone);
+/* The bone's position and angle as its keys have them on `frame` (the setup plus its Transform or
+ * Angle there); not animated, as they are now. `without_smart`: less what smart actions add. */
+float2 bone_position_at(const Bone &bone, int frame, bool without_smart);
+float bone_angle_at(const Bone &bone, int frame, bool without_smart);
 /* The bases of the picked bones (bone layer space), for the pivot shown while turning. */
 std::vector<float2> armature_picked_heads(const Layer &armature, bool setup_frame);
-void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, float2 delta, bool setup_frame);
-void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original, float angle);
-void armature_scale_selected(Layer &armature, const std::vector<Bone> &original, float factor);
+void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, float2 delta, bool setup_frame,
+                            bool auto_ik = false);
+void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original, float angle,
+                              bool setup_frame = false);
+/* S. On the setup frame it resizes the picked bones (their joints spread about the middle of
+ * their bases, so bones get longer; their scale stays). Posing, it scales each along its own axes:
+ * `axis` 0 both, 1 X (thickness), 2 Y (length); `squash` makes it longer and thinner (or shorter
+ * and fatter), keeping its area. */
+void armature_scale_selected(Layer &armature, const std::vector<Bone> &original, float factor, bool setup_frame,
+                             int axis = 0, bool squash = false);
 /* X mirror editing: every bone that changed since `original` puts its other side (by _L / _R name)
  * in the mirror image across the bone layer's vertical axis, on any frame. */
 void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, bool setup_frame);
@@ -87,8 +119,10 @@ void armature_select_joints_in(Layer &armature, bool setup_frame, const std::fun
 void armature_select_bones_in(Layer &armature, bool setup_frame, const std::function<bool(float2)> &inside,
                               bool extend, bool deselect);
 /* Puts bones' ends (setup pose, bone layer space) where `targets` says, by bone id, keeping every
- * other bone where it is (connected heads follow their parent's tail). */
-void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<float2, float2>> &targets);
+ * other bone where it is (connected heads follow their parent's tail). `world_angles` (optional):
+ * which way bones with no length point (bone layer space), as their ends can't say. */
+void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<float2, float2>> &targets,
+                         const std::map<uint64_t, float> *world_angles = nullptr);
 
 /* Blender's symmetry names: "arm_L" <-> "arm_R", "arm.L" <-> "arm.R", "Left arm" <-> "Right arm".
  * Names without a side come back unchanged. */
@@ -96,8 +130,63 @@ std::string bone_mirror_name(const std::string &name);
 /* The id of the bone on the other side (by name), or `id` itself when there is none. */
 uint64_t bone_mirror_id(const Layer &armature, uint64_t id);
 
+/* A bone colour set's shades (display colours): drawn normally, selected, and active. */
+struct BoneColors {
+  Color regular, select, active;
+};
+/* The shades of colour set `set` (0 Default Colors, 1-15 Blender's theme sets). */
+BoneColors bone_color_set(int set);
+/* "Default Colors", "01 - Red" ... "15 - Dark Green", "Custom Color Set". */
+const char *bone_color_set_name(int set);
+/* "DEFAULT", "THEME01" ... "THEME15", "CUSTOM" (as Blender's Python names them); -1 for none. */
+std::string bone_color_set_identifier(int set);
+int bone_color_set_from_identifier(const std::string &identifier);
+/* The shades a bone is drawn in. */
+BoneColors bone_colors(const Bone &bone);
+/* Gives a bone colour set `set`. Going to Custom starts from the shades it had, as in Blender. */
+void bone_set_color_set(Bone &bone, int set);
+
+/* --- Bone collections ---------------------------------------------------------------------- */
+
+BoneCollection *bone_collection_find(Layer &armature, uint64_t id);
+const BoneCollection *bone_collection_find(const Layer &armature, uint64_t id);
+BoneCollection *bone_collection_find_by_name(Layer &armature, const std::string &name);
+/* The All collection's name: every bone layer has it, holding all its bones (and editable drawings). */
+inline constexpr const char *BONE_COLLECTION_ALL = "All";
+/* Whether a collection shows: by its eye, or, while any collection is soloed (All included), by its
+ * star. */
+bool bone_collection_shown(const Layer &armature, const BoneCollection &collection);
+/* Whether All shows. */
+bool bone_collection_all_shown(const Layer &armature);
+/* Whether a bone (or an editable drawing, by its collections) shows: as in Blender, while any
+ * collection holding it shows. All holds everything, so while it shows, everything does. */
+bool bone_collections_show(const Layer &armature, const std::vector<uint64_t> &collections);
+bool bone_shown(const Layer &armature, const Bone &bone);
+/* Whether a drawing is edited along with its bone layer's bones: it is Editable in Bone Group, and
+ * shows by its collections. */
+bool layer_edited_with_bones(const Document &doc, const Layer &layer);
+/* "Collection", "Collection.001", ... unique among the bone layer's collections. */
+std::string bone_collection_unique_name(const Layer &armature, const std::string &name);
+/* Adds a collection after the active one and makes it active. */
+BoneCollection &bone_collection_add(Layer &armature, const std::string &name);
+/* Removes a collection; its bones and drawings just leave it. */
+void bone_collection_remove(Document &doc, Layer &armature, uint64_t id);
+/* The bone layer whose collections M and Shift M (and Assign) work with: the active layer when it is a
+ * bone layer, else the one the active drawing is inside; null for neither. */
+Layer *collection_armature(Document &doc);
+/* The drawings inside `armature` they take, of those Editable in Bone Group: those picked in the Layers
+ * editor, the active layer when it is one of them, and those edited along with the bones whose points
+ * are selected in the viewport. */
+std::vector<Layer *> collection_drawings(Document &doc, const Layer &armature);
+/* Bones that no longer show are deselected (after hiding or soloing), so moves leave them be. */
+void armature_deselect_hidden(Layer &armature);
+
 /* The nearest bone layer the layer sits in, or null. */
 const Layer *layer_armature(const Document &doc, uint64_t layer_id);
+/* The group (inside that bone layer) above the layer whose Parent Bone moves it, the outermost if
+ * several have one, or null. Its bone overrides the layer's own Parent Bone and weights: everything
+ * inside moves as a whole with it. */
+const Layer *layer_binding_group(const Document &doc, uint64_t layer_id);
 /* Gives every vector layer inside a bone layer its Armature modifier, and takes it from those
  * that left one. Returns true when anything changed. */
 bool document_sync_armature_modifiers(Document &doc);
