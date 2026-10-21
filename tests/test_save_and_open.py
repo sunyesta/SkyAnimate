@@ -70,6 +70,11 @@ doc.viewport_quality = 6
 doc.render_quality = 48
 doc.viewport_samples = 8
 doc.render_samples = 2
+# The Playback popover's settings (Blender's names).
+assert (doc.sync_mode, doc.play_audio, doc.use_audio_scrub) == ("FRAME_DROP", True, False), "the defaults"
+doc.sync_mode = "NONE"
+doc.play_audio = False
+doc.use_audio_scrub = True
 oanim.data.texts.new().body = "print('hello from the file')\n"
 layers.active = art
 before = snapshot()
@@ -103,6 +108,7 @@ assert oanim.ops.wm.read_homefile() == {'FINISHED'}
 assert len(layers) == 1 and layers[0].name == "Layer 1" and oanim.data.filepath == ""
 assert oanim.ops.wm.open_mainfile(filepath=walk) == {'FINISHED'}
 assert snapshot() == before, "everything round-trips"
+assert (doc.sync_mode, doc.play_audio, doc.use_audio_scrub) == ("NONE", False, True)
 assert not oanim.data.is_dirty and not oanim.ops.ed.undo.poll(), "opening starts a fresh undo history"
 reopened_ref = layers["Mask"]
 assert reopened_ref.reference_source == layers["Layer 1"], "references still follow their original"
@@ -176,6 +182,7 @@ assert (a.point_count, a.curve_count, a.shape_count) == (2, 1, 1)
 assert a.label_color == "NONE", "unknown enum names fall back to the default"
 assert a.id != b.id and b.reference_source is None
 assert doc.frame_end == 250, "missing values take their defaults"
+assert (doc.sync_mode, doc.play_audio, doc.use_audio_scrub) == ("FRAME_DROP", True, False)
 oanim.ops.layer.new()
 assert len({l.id for l in layers.all()}) == 3, "new layers get ids no loaded layer uses"
 

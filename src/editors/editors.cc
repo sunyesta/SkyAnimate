@@ -476,6 +476,30 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
   ImGui::PopID();
 }
 
+void ui_prop_check(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path,
+                   const char *heading)
+{
+  const rna::PropertyRNA *prop = ptr.type->find(identifier);
+  if (!prop || prop->type != rna::PropType::Bool) {
+    return;
+  }
+  ui_label(heading);
+  ImGui::PushID(identifier);
+  ImGui::BeginDisabled(!prop->set);
+  bool value = std::get<bool>(prop->get(ptr.data));
+  if (ImGui::Checkbox(prop->name.c_str(), &value) && prop->set) {
+    prop->set(ptr.data, value);
+    if (C.undo && C.document) {
+      C.undo->push("Change " + prop->name, *C.document);
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("%s\n\nPython: %s.%s", prop->description.c_str(), python_path, prop->identifier.c_str());
+  }
+  ImGui::EndDisabled();
+  ImGui::PopID();
+}
+
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
                   const char *first_prefix, const char *second, const char *second_prefix, const char *python_path)
 {

@@ -79,6 +79,10 @@ float ui_key_button_width();
 /* A row drawn by hand: its label, then `body` (given the width it has, the key button's room left
  * out), then the key button if ui_key_next asked for one. */
 void ui_row(const char *label, const std::function<void(float width)> &body);
+/* A Bool property as Blender's checkbox, its name to the right of the box, in the value column;
+ * `heading` in the label column names the group (empty for the rest of it): "Audio  [x] Scrubbing". */
+void ui_prop_check(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path,
+                   const char *heading = "");
 /* Two properties side by side under one label, as Blender shows Location X and Y:
  * "Location  [X 0.000] [Y 0.000]". */
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,

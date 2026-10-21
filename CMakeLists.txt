@@ -29,6 +29,7 @@ set(OANIM_SOURCES
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
+  src/data/media_layer.cc
   src/data/vector.cc
   src/editors/brush_settings.cc
   src/editors/console.cc
@@ -37,15 +38,19 @@ set(OANIM_SOURCES
   src/editors/properties.cc
   src/editors/text_editor.cc
   src/editors/timeline.cc
+  src/editors/timeline_media.cc
   src/editors/viewport.cc
   src/gpu/brush_stroke.cc
   src/gpu/gl.cc
   src/gpu/scene_renderer.cc
   src/gpu/tessellate.cc
   src/io/oanim_file.cc
+  src/media/audio.cc
+  src/media/media.cc
   src/ops/anim_ops.cc
   src/ops/draw_order_ops.cc
   src/ops/mask_ops.cc
+  src/ops/media_ops.cc
   src/ops/asset_ops.cc
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
@@ -69,7 +74,8 @@ add_executable(OpenAnimate ${OANIM_SOURCES})
 target_include_directories(OpenAnimate PRIVATE src)
 # Header-only libraries as system headers, so /W4 doesn't report their warnings.
 target_include_directories(OpenAnimate SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include ${json_SOURCE_DIR}/single_include)
-target_link_libraries(OpenAnimate PRIVATE oanim_imgui SDL3::SDL3 pybind11::embed miniz opengl32 ws2_32 dbghelp)
+target_link_libraries(OpenAnimate PRIVATE oanim_imgui SDL3::SDL3 pybind11::embed miniz opengl32 ws2_32 dbghelp
+  mfplat mfreadwrite mfuuid windowscodecs ole32 propsys)
 target_compile_definitions(OpenAnimate PRIVATE
   OANIM_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts"
   OANIM_PYTHON_HOME="${OANIM_PYTHON_ROOT}"
@@ -171,3 +177,5 @@ add_test(NAME detail_levels
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_detail_levels.py)
 add_test(NAME transform_points
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_points.py)
+add_test(NAME media
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_media.py)

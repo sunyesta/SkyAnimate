@@ -18,6 +18,7 @@
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
+#include "editors/timeline_media.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -878,11 +879,13 @@ static void timeline_header(Area &area, Context &C)
   ImGui::SetCursorScreenPos(origin + ImVec2(pad, top));
   area_editor_type_menu(area);
   ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+  ImVec2 playback_at;
   for (const char *menu : {"View", "Marker", "Playback"}) {
     ImGui::SameLine();
     if (ImGui::Button(menu)) {
       ImGui::OpenPopup(menu);
     }
+    playback_at = ImGui::GetItemRectMin();
   }
   ImGui::PopStyleColor();
   ImGui::SameLine(0.0f, pad * 2.0f);
@@ -924,11 +927,33 @@ static void timeline_header(Area &area, Context &C)
     }
     ImGui::EndPopup();
   }
+  /* Blender's Playback popover: headings on the left, the settings beside them. It opens against its
+   * button, upwards (the timeline is usually at the bottom), and ImGui keeps it on screen. */
+  if (ImGui::IsPopupOpen("Playback")) {
+    ImGui::SetNextWindowPos(playback_at, ImGuiCond_Appearing, ImVec2(0.0f, 1.0f));
+  }
   if (ImGui::BeginPopup("Playback")) {
-    ImGui::MenuItem("Loop Playback", nullptr, &wm.play_loop);
-    ImGui::MenuItem("Auto Keying", nullptr, &doc.auto_key);
-    if (ImGui::MenuItem("Stepped Preview", nullptr, stepped_preview())) {
-      operator_call(C, "screen.stepped_preview");
+    if (ImGui::BeginTable("##playback", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(h * 11.0f, 0.0f))) {
+      ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+      const rna::PointerRNA ptr{&doc, &Document::rna()};
+      const char *path = "oanim.data.document";
+      ui_prop(C, ptr, "sync_mode", path);
+      ui_prop_check(C, ptr, "use_audio_scrub", path, "Audio");
+      ui_prop_check(C, ptr, "play_audio", path);
+      ui_row("Playback", [&](float) { ImGui::Checkbox("Loop Playback", &wm.play_loop); });
+      ui_row("", [&](float) {
+        bool stepped = stepped_preview();
+        if (ImGui::Checkbox("Stepped Preview", &stepped)) {
+          operator_call(C, "screen.stepped_preview");
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Play everything as Step, holding each key until the next, to judge the timing of the "
+                            "poses. No key changes");
+        }
+      });
+      ui_prop_check(C, ptr, "auto_key", path, "Keying");
+      ImGui::EndTable();
     }
     ImGui::EndPopup();
   }
@@ -1229,6 +1254,10 @@ struct ChannelRow {
   /* One pinned property's row: its pin (by its layer and path) unpins it. */
   uint64_t pin_layer = 0;
   std::string pin_path;
+  /* A Media layer's clips (its id): bars to move and trim instead of keys, two rows tall (the second
+   * row, part 1, is the bars' lower half). */
+  uint64_t media = 0;
+  int media_part = 0;
 };
 
 /* Folding rows open or folded as the project keeps them (saved with it, as panels are). */
@@ -1352,6 +1381,24 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   /* Selected: the motion of the selected points and bones, and the picked camera's Position, Zoom and
    * Roll (a layer's own transform is a prop, so only the camera's pass as selected). */
   const KeyFilter selected_motion{motion | KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
+  /* The active layer when it is a Media layer: under Selected, its clips (start and end) and its own
+   * keyed channels (where it is, its opacity). */
+  Layer *media = nullptr;
+  for (Layer *l : owned) {
+    if (l->is_media() && l->id == doc.active_layer) {
+      media = l;
+    }
+  }
+  const auto media_rows = [&](int depth) {
+    if (media) {
+      add(media->name + ": Clips", {media}, KeyFilter{0, false}, depth, "", false, true, 0);
+      rows.back().media = media->id;
+      add("", {media}, KeyFilter{0, false}, depth, "", false, true, 0);
+      rows.back().media = media->id;
+      rows.back().media_part = 1;
+      property_rows(media, KeyFilter{KEY_LAYER, false}, depth, true, true);
+    }
+  };
   const auto camera_rows = [&](int depth) {
     const KeyFilter camera{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
     for (Layer *l : owned) {
@@ -1423,7 +1470,8 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
       }
     }
-    if (anything_selected(owned) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+    if ((anything_selected(owned) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+      media_rows(1);
       camera_rows(1);
       for (Layer *l : owned) {
         for (const Bone &b : l->bones) {
@@ -1502,7 +1550,8 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
     bones_and_points(false, 1, "");
   }
-  if (anything_selected(owned) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+  if ((anything_selected(owned) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+    media_rows(1);
     camera_rows(1);
     bones_and_points(true, 1, "sel_");
   }
@@ -1632,6 +1681,10 @@ static void timeline_body(Area &area, Context &C)
 
   const auto frame_x = [&](float frame) { return k0.x + (frame - area.view_start) / span * keys_w; };
   const auto x_frame = [&](float x) { return area.view_start + (x - k0.x) / keys_w * span; };
+  const TimelineMediaView media_view{k0.x, p1.x, area.view_start, span, keys_w};
+  /* A file dropped on the keys region starts on the frame under it. */
+  C.wm->timeline_drop_areas.push_back({k0.x, p0.y, p1.x, p1.y, area.view_start, span / keys_w});
+  const bool media_dragging = timeline_media_drag_update(C, media_view);
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const float key_r = std::max(4.0f, std::min(font_size * 0.36f, row_h * 0.4f));
   std::vector<std::map<int, KeyFrameSummary>> summaries(rows.size());
@@ -1739,10 +1792,14 @@ static void timeline_body(Area &area, Context &C)
       ImGui::OpenPopup("##reference_channel");
     }
   }
-  else if (!names_resizing && !over_names && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-    /* Right-click a key: what it has keyed (as Ctrl-click). */
+  else if (!names_resizing && !over_names && !media_dragging && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    /* Right-click a key: what it has keyed (as Ctrl-click); on a Media row, the clip menu. */
     int r = -1;
-    if (const int hit = key_under(io.MousePos, &r); hit >= 0) {
+    const int row = row_at(io.MousePos.y);
+    if (row >= 0 && rows[row].media) {
+      timeline_media_menu_open(C, media_view, *rows[row].layers[0]);
+    }
+    else if (const int hit = key_under(io.MousePos, &r); hit >= 0) {
       keyed_open(r, hit);
     }
   }
@@ -1770,9 +1827,17 @@ static void timeline_body(Area &area, Context &C)
       g_press = {};
     }
     else {
-      /* The ruler scrubs; below it a click picks keys of a row and a drag boxes them. */
+      /* The ruler scrubs; below it a click picks keys of a row and a drag boxes them (a Media row's
+       * clips are picked and dragged by their own code). */
       g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
-      if (!g_press.scrub) {
+      const int media_row = g_press.scrub ? -1 : row_at(io.MousePos.y);
+      if (media_row >= 0 && rows[media_row].media &&
+          timeline_media_row_press(C, media_view, *rows[media_row].layers[0],
+                                   row_top(size_t(media_row - rows[media_row].media_part)), row_h * 2.0f))
+      {
+        g_press = {};
+      }
+      if (g_press.active && !g_press.scrub) {
         const int r = row_at(io.MousePos.y);
         int hit = -1;
         if (r >= 0) {
@@ -1927,6 +1992,7 @@ static void timeline_body(Area &area, Context &C)
       ImGui::EndTooltip();
     }
   }
+  timeline_media_menu(C);
   if (ui_menu_begin("##reference_channel")) {
     if (ui_menu_item("Reset Channel to Original")) {
       operator_call(C, "layer.reference_sync", {{"layer", std::to_string(g_sync_layer)}, {"path", g_sync_path}});
@@ -2031,13 +2097,31 @@ static void timeline_body(Area &area, Context &C)
     if (rows[r].selected) {
       /* The Selected section: red rows, as Moho marks the selected bones' and points' keys. */
       dl->AddRectFilled(ImVec2(k0.x, top), ImVec2(p1.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 38));
-      dl->AddLine(ImVec2(k0.x, ky), ImVec2(p1.x, ky), IM_COL32(0xd0, 0x40, 0x40, 110));
+      if (!rows[r].media) {
+        dl->AddLine(ImVec2(k0.x, ky), ImVec2(p1.x, ky), IM_COL32(0xd0, 0x40, 0x40, 110));
+      }
     }
     else if (r % 2 == 1) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(p1.x, top + row_h), IM_COL32(0xff, 0xff, 0xff, 6));
     }
-    dl->AddLine(ImVec2(p0.x, top + row_h), ImVec2(p1.x, top + row_h), IM_COL32(0x22, 0x22, 0x22, 255));
+    if (!(rows[r].media && rows[r].media_part == 0)) {
+      dl->AddLine(ImVec2(p0.x, top + row_h), ImVec2(p1.x, top + row_h), IM_COL32(0x22, 0x22, 0x22, 255));
+    }
     std::map<int, KeyFrameSummary> &sum_row = summaries[r];
+    if (rows[r].media) {
+      /* Two rows tall: drawn with its first row, or with the second when the first is scrolled off. */
+      const bool first = rows[r].media_part == 0;
+      if (first || row_top(r - 1) + row_h < rows_top) {
+        const float bar_top = first ? top : top - row_h;
+        dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
+        timeline_media_row_draw(C, dl, media_view, *rows[r].layers[0], bar_top, row_h * 2.0f);
+        dl->PopClipRect();
+        if (hovered && !media_dragging && !g_press.active && io.MousePos.x >= k0.x) {
+          timeline_media_row_hover(C, media_view, *rows[r].layers[0], bar_top, row_h * 2.0f);
+        }
+      }
+      continue;
+    }
     dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
     const bool order_row = rows[r].filter.path == "draw_order" && rows[r].layers.size() == 1;
     if (order_row) {

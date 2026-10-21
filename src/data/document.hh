@@ -23,6 +23,11 @@ struct Text {
   std::string filepath;
 };
 
+/* How playback keeps time (Blender's Sync): every frame drawn even if that plays slower than the
+ * frame rate, frames skipped to keep the true speed, or kept to the sound (which drops frames the
+ * same way until the document has sound). Ordered as the RNA items. */
+enum class PlaybackSync { EveryFrame, FrameDropping, Audio };
+
 struct Document {
   /* The viewports' overlays (kept as they are through undo, as Blender's are). */
   ViewportOverlays overlays;
@@ -44,6 +49,11 @@ struct Document {
   int evaluated_frame = -1;
   /* Edits at frames other than 0 add keys (Blender's record button, on by default). */
   bool auto_key = true;
+  /* The timeline's Playback popover (Blender's scene settings). The audio ones are kept for when the
+   * document has sound: playing it with the animation, and short bits of it while scrubbing. */
+  PlaybackSync sync = PlaybackSync::FrameDropping;
+  bool play_audio = true;
+  bool audio_scrub = false;
   float fps = 24.0f;
   int width = 1920;
   int height = 1080;

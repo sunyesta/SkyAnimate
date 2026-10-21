@@ -114,6 +114,24 @@ struct WindowManager {
   uint64_t play_last_ns = 0;
   double play_frames_due = 0.0;
 
+  /* Where the timelines' frames are on screen (set as they draw), so a file dropped on one starts on
+   * the frame it lands on. */
+  struct TimelineDropArea {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    float first_frame = 0, frames_per_unit = 1;
+  };
+  std::vector<TimelineDropArea> timeline_drop_areas;
+
+  /* Mouse events from oanim.wm.mouse_simulate (checking the UI from scripts), in the window's UI
+   * units: one is given to ImGui each frame, so a press and its release land on different frames.
+   * `button` -1 only moves the mouse. */
+  struct SimulatedMouse {
+    float x = 0.0f, y = 0.0f;
+    int button = -1;
+    bool down = false;
+  };
+  std::vector<SimulatedMouse> mouse_simulated;
+
   /* Active workspace tab, and how many there are. */
   int workspace_index = 0;
   int workspace_count = 1;

@@ -8,6 +8,7 @@
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "data/document.hh"
+#include "data/media_layer.hh"
 #include "gpu/brush_stroke.hh"
 #include "gpu/gl.hh"
 #include "gpu/tessellate.hh"
@@ -71,6 +72,27 @@ void main()
     discard;
   }
   frag_color = c * u_opacity;
+}
+)";
+
+/* A Media layer's picture (premultiplied): greyscale and the light table's tint work on its
+ * colours, the dark parts taking the tint and the light ones staying white, as blue-line pencil. */
+static const char *MEDIA_FRAGMENT_SHADER = R"(#version 330 core
+in vec2 v_uv;
+in vec4 v_color;
+uniform sampler2D u_image;
+uniform float u_opacity;
+uniform float u_grey;
+uniform vec4 u_tint;
+out vec4 frag_color;
+void main()
+{
+  vec4 t = texture(u_image, v_uv);
+  vec3 c = t.a > 0.0 ? t.rgb / t.a : vec3(0.0);
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  c = mix(c, vec3(l), u_grey);
+  c = mix(c, mix(u_tint.rgb, vec3(1.0), l), u_tint.a);
+  frag_color = vec4(c * t.a, t.a) * u_opacity;
 }
 )";
 
@@ -159,8 +181,12 @@ SceneRenderer::~SceneRenderer()
     gl::DeleteProgram(composite_program_);
     gl::DeleteProgram(stencil_program_);
     gl::DeleteProgram(brush_program_);
+    gl::DeleteProgram(media_program_);
     for (const auto &[id, texture] : brush_textures_) {
       glDeleteTextures(1, &texture);
+    }
+    for (const auto &[id, texture] : media_textures_) {
+      glDeleteTextures(1, &texture.texture);
     }
     gl::DeleteBuffers(1, &brush_vbo_);
     gl::DeleteVertexArrays(1, &brush_vao_);
@@ -183,7 +209,8 @@ bool SceneRenderer::init()
   composite_program_ = link(COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER);
   stencil_program_ = link(COMPOSITE_VERTEX_SHADER, STENCIL_FRAGMENT_SHADER);
   brush_program_ = link(BRUSH_VERTEX_SHADER, BRUSH_FRAGMENT_SHADER);
-  if (!color_program_ || !composite_program_ || !stencil_program_ || !brush_program_) {
+  media_program_ = link(BRUSH_VERTEX_SHADER, MEDIA_FRAGMENT_SHADER);
+  if (!color_program_ || !composite_program_ || !stencil_program_ || !brush_program_ || !media_program_) {
     failed_ = true;
     return false;
   }
@@ -339,6 +366,14 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   bind_target(output_);
   clear(background ? Color{background->r, background->g, background->b, 1.0f} : Color{0, 0, 0, 0});
   draw_layers(doc, doc.layers, Transform2D(), output_, 1.0f);
+  /* Media layers In Front: over everything, unmasked. */
+  required_stencil_ = 0;
+  for (const Layer *l : document_layers_flat(doc)) {
+    if (l->is_media() && l->media.in_front && layer_shown_through_parents(doc, *l)) {
+      use_color_stencil();
+      draw_media(doc, *l, layer_world_transform(doc, l->id), layer_opacity_through_parents(doc, *l));
+    }
+  }
   resolve(output_);
 
   glDisable(GL_STENCIL_TEST);
@@ -396,7 +431,27 @@ void SceneRenderer::stencil_fill(unsigned bit, bool set)
 
 bool SceneRenderer::shown(const Layer &layer) const
 {
-  return layer.visible && (!final_render_ || layer.render_visible);
+  /* A Guide is for working against: never in renders. */
+  return layer.visible && (!final_render_ || (layer.render_visible && !(layer.is_media() && layer.media.guide)));
+}
+
+bool SceneRenderer::layer_shown_through_parents(const Document &doc, const Layer &layer) const
+{
+  for (const Layer *l = &layer; l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
+    if (!shown(*l) || l->opacity <= 0.0f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+float SceneRenderer::layer_opacity_through_parents(const Document &doc, const Layer &layer) const
+{
+  float opacity = 1.0f;
+  for (const Layer *l = &layer; l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
+    opacity *= l->opacity;
+  }
+  return opacity;
 }
 
 void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &layers, const Transform2D & /*parent*/,
@@ -423,6 +478,13 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
   const Transform2D transform = layer_world_transform(doc, layer.id);
   const float layer_opacity = opacity * layer.opacity;
 
+  if (layer.is_media()) {
+    if (!layer.media.in_front) {
+      use_color_stencil();
+      draw_media(doc, layer, transform, layer_opacity);
+    }
+    return;
+  }
   if (!layer.is_group()) {
     use_color_stencil();
     draw_drawing(doc, layer, transform, layer_opacity);
@@ -807,6 +869,66 @@ void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImag
     composite(own, opacity);
     release_target(own);
   }
+}
+
+void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
+{
+  const MediaShown shown_now = media_shown_at(doc, layer, doc.frame_current);
+  if (!shown_now.clip || opacity <= 0.0f) {
+    return;
+  }
+  const MediaClip &clip = *shown_now.clip;
+  const std::string file = media_clip_file(clip);
+  /* A render waits for the exact frame; the viewport shows the nearest one until it comes. */
+  const MediaFramePtr frame = media_frame(file, clip.sequence, shown_now.seconds, final_render_);
+  if (!frame || frame->rgba.empty()) {
+    return;
+  }
+  MediaTexture &tex = media_textures_[layer.id];
+  if (!tex.texture) {
+    glGenTextures(1, &tex.texture);
+  }
+  glBindTexture(GL_TEXTURE_2D, tex.texture);
+  if (tex.serial != frame->serial) {
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (tex.width != frame->width || tex.height != frame->height) {
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frame->width, frame->height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                   frame->rgba.data());
+      tex.width = frame->width;
+      tex.height = frame->height;
+    }
+    else {
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame->width, frame->height, GL_RGBA, GL_UNSIGNED_BYTE,
+                      frame->rgba.data());
+    }
+    gl::GenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    tex.serial = frame->serial;
+  }
+  const MediaInfo info = media_clip_info(clip);
+  float2 q[4];
+  media_quad(doc, layer, info.source_width > 0 ? info.source_width : frame->width,
+             info.source_height > 0 ? info.source_height : frame->height, q);
+  /* Texture rows run top first: v 0 is the top edge. */
+  const BrushVertex v[6] = {{q[0].x, q[0].y, 0, 1, 1, 1, 1, 1}, {q[1].x, q[1].y, 1, 1, 1, 1, 1, 1},
+                            {q[2].x, q[2].y, 1, 0, 1, 1, 1, 1}, {q[0].x, q[0].y, 0, 1, 1, 1, 1, 1},
+                            {q[2].x, q[2].y, 1, 0, 1, 1, 1, 1}, {q[3].x, q[3].y, 0, 0, 1, 1, 1, 1}};
+  gl::UseProgram(media_program_);
+  set_matrix(media_program_, transform);
+  gl::Uniform1i(gl::GetUniformLocation(media_program_, "u_image"), 0);
+  gl::Uniform1f(gl::GetUniformLocation(media_program_, "u_opacity"), opacity);
+  gl::Uniform1f(gl::GetUniformLocation(media_program_, "u_grey"), layer.media.greyscale ? 1.0f : 0.0f);
+  const Color &tint = layer.media.tint;
+  gl::Uniform4f(gl::GetUniformLocation(media_program_, "u_tint"), tint.r, tint.g, tint.b, layer.media.tint_amount);
+  gl::ActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex.texture);
+  gl::BindVertexArray(brush_vao_);
+  gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
+  gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(sizeof(v)), v, GL_STREAM_DRAW);
+  glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
 void SceneRenderer::draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform)

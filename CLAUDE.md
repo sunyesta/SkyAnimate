@@ -71,9 +71,13 @@ Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated c
 (`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,
 points, radius, curvature and stored handles; edits become keys through `src/anim/animation.*`
 (recorded before every undo push, frame change and save; frame 0 is the setup frame; auto-key on
-`Document`); I / Alt I, keyframe jumps, key diamonds in the timeline. Next: key buttons in
-Properties, dope sheet, frame-by-frame layers and onion skins, switch and image layers, PNG
-sequence export, playback range.
+`Document`); I / Alt I, keyframe jumps, key diamonds in the timeline. Media layers
+(`LayerType::Media`: images, sequences, video and sound as clips): decoding in `src/media/media.*`
+(WIC and Media Foundation, a worker thread per video), playback sound in `src/media/audio.*` (SDL
+audio stream; Sync to Audio, scrubbing), clips and packing in `src/data/media_layer.*`, operators in
+`src/ops/media_ops.cc`, the timeline's clip bars in `src/editors/timeline_media.*`; test media in
+`tests/data/media`. Next: key buttons in Properties, dope sheet, frame-by-frame layers and onion
+skins, switch layers, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,
 `src/data/bones.*` for the skeleton and _L/_R names), weights (automatic for new points,

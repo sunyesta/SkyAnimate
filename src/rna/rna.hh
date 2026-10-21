@@ -116,6 +116,33 @@ PropertyRNA def_float_fn(const char *id, const char *name, const char *desc, flo
   return prop;
 }
 
+/* A bool stored somewhere other than a plain member (a nested struct's). */
+template<typename T>
+PropertyRNA def_bool_fn(const char *id, const char *name, const char *desc, std::function<bool(const T &)> get,
+                        std::function<void(T &, bool)> set)
+{
+  PropertyRNA prop{id, name, desc, PropType::Bool};
+  prop.get = [get](const void *data) -> Value { return get(*static_cast<const T *>(data)); };
+  if (set) {
+    prop.set = [set](void *data, const Value &v) { set(*static_cast<T *>(data), std::get<bool>(v)); };
+  }
+  return prop;
+}
+
+/* An enum (item index) stored somewhere other than a plain member. */
+template<typename T>
+PropertyRNA def_enum_fn(const char *id, const char *name, const char *desc, std::vector<EnumItem> items,
+                        std::function<int(const T &)> get, std::function<void(T &, int)> set)
+{
+  PropertyRNA prop{id, name, desc, PropType::Enum};
+  prop.items = std::move(items);
+  prop.get = [get](const void *data) -> Value { return get(*static_cast<const T *>(data)); };
+  if (set) {
+    prop.set = [set](void *data, const Value &v) { set(*static_cast<T *>(data), std::get<int>(v)); };
+  }
+  return prop;
+}
+
 /* A read-only int computed from the data, such as a count. */
 template<typename T>
 PropertyRNA def_int_readonly(const char *id, const char *name, const char *desc, std::function<int(const T &)> get)

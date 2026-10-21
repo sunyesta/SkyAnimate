@@ -1,5 +1,7 @@
 #include "data/layer.hh"
 
+#include <algorithm>
+
 namespace oanim {
 
 static constexpr const char *MASK_EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
@@ -28,7 +30,10 @@ Transform2D Layer::local_transform() const
 
 const char *layer_type_name(LayerType type)
 {
-  return type == LayerType::Bone ? "Bone" : type == LayerType::Group ? "Group" : "Vector";
+  return type == LayerType::Bone    ? "Bone"
+         : type == LayerType::Group ? "Group"
+         : type == LayerType::Media ? "Media"
+                                    : "Vector";
 }
 
 Color label_color_value(LabelColor label)
@@ -62,7 +67,8 @@ const rna::StructRNA &Layer::rna()
     s.identifier = "Layer";
     s.name = "Layer";
     PropertyRNA type_prop = def_enum<Layer, LayerType>("type", "Type", "Kind of layer", &Layer::type,
-                                                       {{"VECTOR", "Vector"}, {"GROUP", "Group"}, {"BONE", "Bone"}});
+                                                       {{"VECTOR", "Vector"}, {"GROUP", "Group"}, {"BONE", "Bone"},
+                                                        {"MEDIA", "Media"}});
     type_prop.set = nullptr;
     s.properties = {
         def_string<Layer>("name", "Name", "Name shown in the Layers editor", &Layer::name),
@@ -103,6 +109,31 @@ const rna::StructRNA &Layer::rna()
         def_float<Layer>("opacity", "Opacity", "How opaque the layer is", &Layer::opacity, 0.0f, 1.0f),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
+        /* Media layers (data/media_layer.hh). */
+        def_bool_fn<Layer>(
+            "media_guide", "Guide", "Show it while you work, never in renders (a reference to trace or time against)",
+            [](const Layer &l) { return l.media.guide; }, [](Layer &l, bool v) { l.media.guide = v; }),
+        def_enum_fn<Layer>(
+            "media_fit", "Fit", "How the picture sits in the camera's frame (at zoom 1)",
+            {{"FIT", "Fit"}, {"FILL", "Fill"}, {"STRETCH", "Stretch"}, {"ORIGINAL", "Original Size"}},
+            [](const Layer &l) { return int(l.media.fit); },
+            [](Layer &l, int v) { l.media.fit = MediaFit(std::clamp(v, 0, 3)); }),
+        def_bool_fn<Layer>(
+            "media_greyscale", "Greyscale", "Show the picture in shades of grey, so drawing over it stands out",
+            [](const Layer &l) { return l.media.greyscale; }, [](Layer &l, bool v) { l.media.greyscale = v; }),
+        def_float_fn<Layer>(
+            "media_tint_amount", "Tint", "How far the picture is tinted towards the tint colour (a light table's look)",
+            0.0f, 1.0f, [](const Layer &l) { return l.media.tint_amount; },
+            [](Layer &l, float v) { l.media.tint_amount = v; }),
+        def_bool_fn<Layer>(
+            "media_in_front", "In Front", "Draw it over everything (unmasked) rather than at its place in the stack",
+            [](const Layer &l) { return l.media.in_front; }, [](Layer &l, bool v) { l.media.in_front = v; }),
+        def_float_fn<Layer>(
+            "media_volume", "Volume", "How loud its sound plays (1: as recorded)", 0.0f, 4.0f,
+            [](const Layer &l) { return l.media.volume; }, [](Layer &l, float v) { l.media.volume = v; }),
+        def_bool_fn<Layer>(
+            "media_muted", "Mute", "Silence its sound", [](const Layer &l) { return l.media.muted; },
+            [](Layer &l, bool v) { l.media.muted = v; }),
     };
     return s;
   }();

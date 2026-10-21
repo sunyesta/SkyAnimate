@@ -14,6 +14,7 @@
 
 #include "core/log.hh"
 #include "data/document.hh"
+#include "data/media_layer.hh"
 #include "io/oanim_file.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
@@ -220,6 +221,14 @@ bool document_open(Context &C, const std::string &given_path)
   document_replace(C, std::move(doc), path, true);
   recent_files_add(C, path);
   report(ReportType::Info, "Opened \"" + file_name(path) + "\"");
+  /* Missing media say so once, and where to fix it (no dialog in the way). */
+  if (const int missing = media_missing_count(*C.document); missing > 0) {
+    report_banner(ReportType::Warning,
+                  std::to_string(missing) + (missing == 1 ? " media file is" : " media files are") +
+                      " missing (moved or renamed)",
+                  "Select its Media layer (marked red in the Layers editor) and click Locate in its Media tab",
+                  "Missing media");
+  }
   return true;
 }
 

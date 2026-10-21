@@ -82,6 +82,7 @@ assert close(where(d), bump)
 # the detail point is hidden: it can't be selected, and rides the curve.
 assert oanim.ops.mesh.detail_level_set(level="0") == {'FINISHED'}
 assert layer.detail["hidden"][d], layer.detail
+assert layer.detail["wires"][0] == [0, 1, 2, 3], ("the wire runs through the points shown", layer.detail["wires"])
 oanim.ops.mesh.select_all()
 assert not layer.points[d][2], "hidden detail isn't selected"
 assert oanim.ops.mesh.transform_selected(pivot_x="0", pivot_y="0", scale_x="2", scale_y="2") == {'FINISHED'}
@@ -107,12 +108,29 @@ assert close(where(d), bump, 1e-3), "and frame 0 is as it was"
 # The detail point keyed at its level: its keys hold its offset from the curve.
 assert oanim.ops.mesh.select_all() == {'FINISHED'}
 assert oanim.ops.mesh.detail_level_set(level="1") == {'FINISHED'}
+assert layer.detail["wires"][0] == [0, d, 1, 2, 3], layer.detail["wires"]
 doc.frame_current = 20
 layer.set_point(d, (where(d)[0], where(d)[1] - 0.3))
 doc.frame_current = 21
 assert [k["frame"] for k in layer.keyframes("points[%d].pos" % d)] == [0, 20], layer.keyframes("points[%d].pos" % d)
 doc.frame_current = 0
 assert close(where(d), bump, 1e-3)
+
+# Smooth to Lower Level: the detail point back onto the curve of the level below (half way, then all
+# the way), on the setup frame here.
+oanim.ops.mesh.select_none()
+layer.select_points([d])
+assert oanim.ops.mesh.detail_smooth(influence="0.5") == {'FINISHED'}
+assert close(where(d), ((bump[0] + on_curve[0]) / 2, (bump[1] + on_curve[1]) / 2), 1e-3), where(d)
+assert oanim.ops.mesh.detail_smooth() == {'FINISHED'}
+assert close(where(d), on_curve, 1e-3), ("on the level below's curve", where(d), on_curve)
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+assert close(where(d), bump, 1e-3)
+oanim.ops.mesh.select_none()
+layer.select_points([0])
+assert oanim.ops.mesh.detail_smooth() == {'CANCELLED'}, "a base point has no level below"
+oanim.ops.mesh.select_all()
 
 # Saved with the project: levels, places and offsets.
 folder = tempfile.mkdtemp(prefix="oanim_detail_")
@@ -134,6 +152,11 @@ assert same_outline(before, outline()), "the bump went with it: the square is as
 oanim.ops.ed.undo()
 assert layer.point_count == 5 and same_outline(look, outline())
 
+# Rebuild Levels on a shape whose every point makes its shape changes nothing (not even its levels).
+levels_before = layer.detail["levels"]
+assert oanim.ops.mesh.detail_rebuild(tolerance="0.001") == {'CANCELLED'}
+assert layer.detail["levels"] == levels_before and same_outline(look, outline()), "left as it was"
+
 # Apply Detail: the detail points become the shape's own, looking the same.
 oanim.ops.mesh.select_all()
 assert oanim.ops.mesh.detail_apply() == {'FINISHED'}
@@ -150,12 +173,25 @@ line_before = outline(layer2, 1)
 assert oanim.ops.mesh.detail_rebuild(tolerance="0.01") == {'FINISHED'}
 levels = layer2.detail["levels"][-11:]
 assert levels[0] == 0 and levels[-1] == 0 and levels[5] == 0, levels
-assert levels.count(1) >= 6, levels
+assert levels.count(1) >= 4, levels
+line_first = layer2.point_count - 11
 assert same_outline(line_before, outline(layer2, 1)), "rebuilt, it looks the same"
+
+# A round shape drawn with many points keeps a few and makes the rest detail.
+import math
+oanim.ops.mesh.select_none()
+layer2.add_curve([(3 + math.cos(a * math.pi / 8), math.sin(a * math.pi / 8)) for a in range(16)], closed=True, fill=True)
+oanim.ops.mesh.select_none()
+layer2.select_points([layer2.point_count - 1])
+round_before = outline(layer2, layer2.shape_count - 1)
+assert oanim.ops.mesh.detail_rebuild(tolerance="0.02") == {'FINISHED'}
+round_levels = layer2.detail["levels"][-16:]
+assert round_levels.count(1) >= 6 and round_levels.count(0) >= 3, round_levels
+assert same_outline(round_before, outline(layer2, layer2.shape_count - 1)), "rebuilt, the circle looks the same"
 
 # Deleting a coarse point next to detail keeps the detail on the joined segment.
 oanim.ops.mesh.select_none()
-first = layer2.point_count - 11
+first = line_first
 layer2.select_points([first + 5])
 assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
 assert layer2.detail["levels"].count(1) >= 6

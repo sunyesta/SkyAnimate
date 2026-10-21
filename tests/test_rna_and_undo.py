@@ -96,4 +96,30 @@ doc.frame_end = 250  # restore what test.raises changed
 oanim.utils.unregister_class(TEST_OT_raises)
 expect_error(KeyError, lambda: oanim.ops.test.raises())
 
+
+# An operator that calls others that make undo steps makes one step for all of it (as a Blender
+# macro does); one that raises leaves later steps working.
+class TEST_OT_two_layers(oanim.types.Operator):
+    bl_idname = "test.two_layers"
+    bl_label = "Two Layers"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        oanim.ops.layer.new()
+        oanim.ops.layer.new()
+        return {"FINISHED"}
+
+
+oanim.utils.register_class(TEST_OT_two_layers)
+layer_count = len(oanim.data.layers.all())
+steps = len(oanim.wm.undo_history()[0])
+assert oanim.ops.test.two_layers() == {'FINISHED'}
+assert len(oanim.data.layers.all()) == layer_count + 2
+assert oanim.wm.undo_history()[0][steps:] == ["Two Layers"], oanim.wm.undo_history()[0][steps:]
+oanim.ops.ed.undo()
+assert len(oanim.data.layers.all()) == layer_count, "one undo takes both layers away"
+assert oanim.ops.layer.new() == {'FINISHED'}
+assert len(oanim.wm.undo_history()[0]) == steps + 1, "a plain operator still makes its own step"
+oanim.utils.unregister_class(TEST_OT_two_layers)
+
 print("RNA and undo tests passed")

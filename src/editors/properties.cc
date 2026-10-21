@@ -6,7 +6,10 @@
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
+#include <SDL3/SDL_opengl.h>
+
 #include <algorithm>
+#include <filesystem>
 #include <map>
 #include <cmath>
 #include <set>
@@ -20,11 +23,13 @@
 #include "data/detail.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "data/media_layer.hh"
 #include "editors/editors.hh"
 #include "assets/brushes.hh"
 #include "editors/brush_settings.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
+#include "ops/media_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
@@ -39,7 +44,8 @@ enum PropertiesTab {
   TAB_CONSTRAINTS = 4,
   TAB_REFERENCE = 5,
   TAB_MASKING = 6,
-  TAB_CAMERA = 7
+  TAB_CAMERA = 7,
+  TAB_MEDIA = 8
 };
 
 static void key_next(Context &C, Layer &layer, std::vector<std::string> paths);
@@ -2612,6 +2618,275 @@ static void layer_tab(Context &C)
   }
 }
 
+/* The Media tab's picture of the current frame: a small texture per Media layer, refilled when the
+ * frame it shows changes. */
+static unsigned int media_thumbnail(const Layer &layer, const MediaFrame &frame)
+{
+  struct Thumb {
+    unsigned int texture = 0;
+    uint64_t serial = 0;
+  };
+  static std::map<uint64_t, Thumb> thumbs;
+  Thumb &t = thumbs[layer.id];
+  if (!t.texture) {
+    glGenTextures(1, &t.texture);
+  }
+  if (t.serial != frame.serial) {
+    glBindTexture(GL_TEXTURE_2D, t.texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frame.width, frame.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame.rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    t.serial = frame.serial;
+  }
+  return t.texture;
+}
+
+/* How a clip's timing reads in words: "30 fps video in a 24 fps scene: plays in real time". */
+static std::string media_timing_text(const Document &doc, const MediaClip &clip, const MediaInfo &info)
+{
+  char text[200];
+  if (info.kind == MediaKind::Sequence) {
+    std::snprintf(text, sizeof(text), "One image per frame (%d images)", info.frame_count);
+  }
+  else if (info.kind == MediaKind::Video && clip.timing == MediaTiming::FrameByFrame) {
+    std::snprintf(text, sizeof(text), "%.3g fps video in a %.3g fps scene: one video frame per frame (%.2gx speed)",
+                  info.fps, double(doc.fps), double(doc.fps) / std::max(info.fps, 1.0));
+  }
+  else if (info.kind == MediaKind::Video) {
+    std::snprintf(text, sizeof(text), "%.3g fps video in a %.3g fps scene: plays in real time", info.fps,
+                  double(doc.fps));
+  }
+  else {
+    return {};
+  }
+  return text;
+}
+
+/* A clip setting changed in the tab: overwrite what it now covers, and the undo step. */
+static void media_clip_changed(Context &C, Layer &layer, const MediaClip &clip, const char *undo_name)
+{
+  media_clips_tidy(*C.document, layer, clip.id);
+  C.undo->push(undo_name, *C.document);
+}
+
+/* The Media tab: the file (what it is, Replace, Reload, Pack; Locate when it is missing), the clip at
+ * the current frame (Start, Length, In, After End, Timing), how it looks, and its sound. */
+static void media_tab(Context &C)
+{
+  Document &doc = *C.document;
+  Layer *layer = document_active_layer(doc);
+  if (!layer || !layer->is_media()) {
+    ImGui::TextDisabled("Select a Media layer.");
+    return;
+  }
+  const rna::PointerRNA ptr{layer, &Layer::rna()};
+  const char *path = "oanim.data.layers.active";
+  /* The clip on this frame; else the one picked in the timeline, else the nearest. */
+  MediaClip *clip = media_clip_at(*layer, doc.frame_current);
+  const bool on_frame = clip != nullptr;
+  for (MediaClip &c : layer->media.clips) {
+    if (!clip && c.selected) {
+      clip = &c;
+    }
+  }
+  int nearest = INT32_MAX;
+  for (MediaClip &c : layer->media.clips) {
+    const int away = std::min(std::abs(c.start - doc.frame_current), std::abs(c.start + c.length - 1 - doc.frame_current));
+    if (!on_frame && !std::any_of(layer->media.clips.begin(), layer->media.clips.end(),
+                                  [](const MediaClip &k) { return k.selected; }) && away < nearest)
+    {
+      nearest = away;
+      clip = &c;
+    }
+  }
+  const float h = ImGui::GetFrameHeight();
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const std::string id = std::to_string(layer->id);
+
+  if (ui_panel_begin("Media")) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TableSetColumnIndex(1);
+    if (!clip) {
+      ImGui::TextDisabled("No clips: Replace from Current Frame adds one");
+    }
+    else {
+      if (!on_frame) {
+        ImGui::TextDisabled("Not on this frame: shows on frames %d to %d", clip->start, clip->start + clip->length - 1);
+      }
+      const MediaInfo info = media_clip_info(*clip);
+      const bool missing = media_clip_missing(*clip);
+      /* The frame showing, small (the clip's first, when it isn't on this frame). */
+      const MediaShown shown = media_shown_at(doc, *layer, doc.frame_current);
+      const double seconds = on_frame ? (shown.clip ? shown.seconds : -1.0)
+                                      : media_clip_seconds(doc, *clip, double(clip->start));
+      if (MediaFramePtr frame = seconds >= 0.0 ? media_frame(media_clip_file(*clip), clip->sequence, seconds, false)
+                                               : nullptr)
+      {
+        const float w = std::min(ImGui::GetContentRegionAvail().x, h * 9.0f);
+        const float th = w * float(frame->height) / float(std::max(frame->width, 1));
+        ImGui::Image(ImTextureRef(ImTextureID(intptr_t(media_thumbnail(*layer, *frame)))), ImVec2(w, std::min(th, w)));
+      }
+      const std::u8string name = std::filesystem::path(std::u8string(clip->filepath.begin(), clip->filepath.end()))
+                                     .filename()
+                                     .u8string();
+      ImGui::TextUnformatted(std::string(name.begin(), name.end()).c_str());
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", clip->filepath.c_str());
+      }
+      if (missing) {
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0xff, 0x70, 0x70, 255));
+        ImGui::TextWrapped("Missing: the file isn't where it was");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Locate...", ImVec2(-FLT_MIN, 0))) {
+          operator_call(C, "media.locate", {{"layer", id}, {"clip", std::to_string(clip->id)}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Point it at where the file is now; other missing files in that folder are found too");
+        }
+      }
+      else {
+        ImGui::TextDisabled("%s%s", media_info_text(info).c_str(), clip->packed.empty() ? "" : " (packed)");
+      }
+    }
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    const float third = (ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f;
+    if (ImGui::Button("Replace...", ImVec2(third, 0))) {
+      operator_call(C, "media.replace", {{"layer", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show another file in this clip, keeping its timing");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload", ImVec2(third, 0))) {
+      operator_call(C, "media.reload", {{"layer", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Read the files again, after changing them in another program");
+    }
+    ImGui::SameLine();
+    const bool packed = clip && !clip->packed.empty();
+    if (ImGui::Button(packed ? "Unpack" : "Pack", ImVec2(-FLT_MIN, 0))) {
+      operator_call(C, packed ? "media.unpack" : "media.pack", {{"layer", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(packed ? "Use the files on disk again instead of the copies inside the .oanim"
+                               : "Keep a copy of the files inside the .oanim, so it opens anywhere (a bigger file)");
+    }
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    if (ImGui::Button("Replace from Current Frame...", ImVec2(-FLT_MIN, 0))) {
+      operator_call(C, "media.replace_from_frame", {{"layer", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show another file from this frame on: this clip ends here and a new one starts");
+    }
+    ui_panel_end();
+  }
+
+  if (clip && ui_panel_begin("Clip")) {
+    const MediaInfo info = media_clip_info(*clip);
+    ui_row("Start", [&](float w) {
+      ImGui::SetNextItemWidth(w);
+      ImGui::DragInt("##start", &clip->start, 0.25f, 1, 1048574, "%d", ImGuiSliderFlags_AlwaysClamp);
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        media_clip_changed(C, *layer, *clip, "Move Clip");
+      }
+    });
+    ui_row("Length", [&](float w) {
+      ImGui::SetNextItemWidth(w);
+      ImGui::DragInt("##length", &clip->length, 0.25f, 1, 1048574, "%d frames", ImGuiSliderFlags_AlwaysClamp);
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        media_clip_changed(C, *layer, *clip, "Trim Clip");
+      }
+    });
+    if (info.kind != MediaKind::Image) {
+      ui_row("In", [&](float w) {
+        ImGui::SetNextItemWidth(w);
+        float in = float(clip->in);
+        const double limit = std::max(info.duration, 0.0);
+        if (ImGui::DragFloat("##in", &in, 0.01f, 0.0f, float(limit), "%.2f s into the file",
+                             ImGuiSliderFlags_AlwaysClamp))
+        {
+          clip->in = double(in);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          media_clip_changed(C, *layer, *clip, "Slip Clip");
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Where in the file the clip starts (Alt-drag the clip in the timeline to slip it)");
+        }
+      });
+      ui_row("After End", [&](float w) {
+        static const char *const ends[] = {"Hold Last Frame", "Loop", "Hide"};
+        int end = int(clip->end);
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::Combo("##end", &end, ends, 3)) {
+          clip->end = MediaEnd(end);
+          media_clip_changed(C, *layer, *clip, "Change Clip");
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("What the clip shows once its file runs out, until its Length ends");
+        }
+      });
+    }
+    if (info.kind == MediaKind::Video) {
+      ui_row("Timing", [&](float w) {
+        static const char *const timings[] = {"Real Time", "Frame by Frame"};
+        int timing = int(clip->timing);
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::Combo("##timing", &timing, timings, 2)) {
+          /* Keep it covering the same part of the file: its length follows the new speed. */
+          const double before = media_clip_file_frames(doc, *clip);
+          clip->timing = MediaTiming(timing);
+          const double after = media_clip_file_frames(doc, *clip);
+          if (before > 0.0) {
+            clip->length = std::max(1, int(std::lround(double(clip->length) * after / before)));
+          }
+          media_clip_changed(C, *layer, *clip, "Change Clip Timing");
+        }
+      });
+    }
+    const std::string timing = media_timing_text(doc, *clip, info);
+    if (!timing.empty()) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextDisabled("%s", timing.c_str());
+    }
+    ui_panel_end();
+  }
+
+  if (ui_panel_begin("Look")) {
+    ui_prop(C, ptr, "media_guide", path);
+    ui_prop(C, ptr, "media_fit", path);
+    key_next(C, *layer, {"opacity"});
+    ui_prop(C, ptr, "opacity", path);
+    ui_prop(C, ptr, "media_greyscale", path);
+    float rgba[4] = {layer->media.tint.r, layer->media.tint.g, layer->media.tint.b, 1.0f};
+    if (ui_color(C, "Tint Color", rgba, "Change Tint Color")) {
+      layer->media.tint = {rgba[0], rgba[1], rgba[2], 1.0f};
+    }
+    ui_prop(C, ptr, "media_tint_amount", path);
+    ui_prop(C, ptr, "media_in_front", path);
+    ui_panel_end();
+  }
+
+  const bool sound = std::any_of(layer->media.clips.begin(), layer->media.clips.end(),
+                                 [](const MediaClip &c) { return media_clip_info(c).has_audio; });
+  if (sound && ui_panel_begin("Sound")) {
+    ui_prop(C, ptr, "media_volume", path);
+    ui_prop(C, ptr, "media_muted", path);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextDisabled("Playback > Play Audio and Scrubbing (timeline)");
+    ui_panel_end();
+  }
+}
+
 static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape);
 static void point_panel(Context &C, VectorDrawing &drawing);
 static void edge_panel(Context &C, VectorDrawing &drawing);
@@ -2623,7 +2898,7 @@ static void drawing_tab(Context &C)
 {
   Document &doc = *C.document;
   Layer *active = document_active_layer(doc);
-  if (!active || active->is_group()) {
+  if (!active || !active->has_drawing()) {
     ImGui::TextDisabled("Select a vector layer to see its shapes.");
     return;
   }
@@ -3292,7 +3567,7 @@ void properties_draw(Area &area, Context &C)
   const bool bones = active_layer && active_layer->is_bone_layer();
   /* Drawings have a Modifiers tab, left of their Drawing tab, as Blender's modifier tab sits
    * beside the object data tab. */
-  const bool modifiers = active_layer && !active_layer->is_group();
+  const bool modifiers = active_layer && active_layer->has_drawing();
   struct TabEntry {
     const char *label;
     int id;
@@ -3308,9 +3583,11 @@ void properties_draw(Area &area, Context &C)
     area.properties_tab = TAB_LAYER;
   }
   /* A drawing has its Drawing tab and a bone layer its Armature tab; a group has neither. */
-  const bool drawing = active_layer && (bones || !active_layer->is_group());
+  const bool drawing = active_layer && (bones || active_layer->has_drawing());
   /* A reference (a copy of another layer) has its link's tab. */
   const bool reference = active_layer && active_layer->is_reference();
+  /* A Media layer has its Media tab: the file, the clip on this frame, its look and sound. */
+  const bool media = active_layer && active_layer->is_media();
   if (camera) {
     tabs.push_back({"Camera", TAB_CAMERA});
   }
@@ -3332,9 +3609,12 @@ void properties_draw(Area &area, Context &C)
     if (reference) {
       tabs.push_back({"Reference", TAB_REFERENCE});
     }
+    if (media) {
+      tabs.push_back({"Media", TAB_MEDIA});
+    }
     if ((area.properties_tab == TAB_MASKING && !active_layer) || (area.properties_tab == TAB_REFERENCE && !reference) ||
         (area.properties_tab == TAB_MODIFIERS && !modifiers) || (area.properties_tab == TAB_DRAWING && !drawing) ||
-        (area.properties_tab == TAB_CONSTRAINTS && !bones))
+        (area.properties_tab == TAB_CONSTRAINTS && !bones) || (area.properties_tab == TAB_MEDIA && !media))
     {
       area.properties_tab = TAB_LAYER;
     }
@@ -3371,6 +3651,9 @@ void properties_draw(Area &area, Context &C)
         break;
       case TAB_REFERENCE:
         reference_tab(C);
+        break;
+      case TAB_MEDIA:
+        media_tab(C);
         break;
       case TAB_CONSTRAINTS:
         constraints_panel(C, *document_active_layer(*C.document));

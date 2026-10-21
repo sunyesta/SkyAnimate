@@ -15,6 +15,7 @@
 #include "data/camera.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "data/media_layer.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
@@ -118,6 +119,41 @@ static void icon_lock(ImDrawList *dl, ImVec2 c, float s, bool locked)
 static void icon_layer_type(ImDrawList *dl, ImVec2 c, float s, const Layer &layer)
 {
   const ImU32 col = layer.is_reference() ? COL_REFERENCE : COL_ICON;
+  if (layer.is_media()) {
+    /* What it holds: a picture (a frame with a hill), film (a frame with sprocket holes) or sound
+     * (a speaker); a red mark when a file is missing. */
+    const MediaKind kind = layer.media.clips.empty() ? MediaKind::Image : media_clip_info(layer.media.clips[0]).kind;
+    if (kind == MediaKind::Audio) {
+      dl->AddRectFilled(c + ImVec2(-s * 0.8f, -s * 0.3f), c + ImVec2(-s * 0.35f, s * 0.3f), col, 1.0f);
+      dl->AddTriangleFilled(c + ImVec2(-s * 0.4f, -s * 0.3f), c + ImVec2(s * 0.15f, -s * 0.8f),
+                            c + ImVec2(s * 0.15f, s * 0.8f), col);
+      dl->AddTriangleFilled(c + ImVec2(-s * 0.4f, -s * 0.3f), c + ImVec2(s * 0.15f, s * 0.8f),
+                            c + ImVec2(-s * 0.4f, s * 0.3f), col);
+      dl->PathArcTo(c + ImVec2(s * 0.2f, 0.0f), s * 0.55f, -0.9f, 0.9f, 8);
+      dl->PathStroke(col, 0, 1.3f);
+    }
+    else {
+      dl->AddRect(c + ImVec2(-s * 0.85f, -s * 0.65f), c + ImVec2(s * 0.85f, s * 0.65f), col, 1.5f, 0, 1.3f);
+      if (kind == MediaKind::Video || kind == MediaKind::Sequence) {
+        for (int i = 0; i < 3; i++) {
+          const float x = -s * 0.5f + float(i) * s * 0.5f;
+          dl->AddRectFilled(c + ImVec2(x - s * 0.12f, -s * 0.5f), c + ImVec2(x + s * 0.12f, -s * 0.3f), col);
+          dl->AddRectFilled(c + ImVec2(x - s * 0.12f, s * 0.3f), c + ImVec2(x + s * 0.12f, s * 0.5f), col);
+        }
+      }
+      else {
+        dl->AddTriangleFilled(c + ImVec2(-s * 0.7f, s * 0.5f), c + ImVec2(-s * 0.15f, -s * 0.15f),
+                              c + ImVec2(s * 0.35f, s * 0.5f), col);
+        dl->AddCircleFilled(c + ImVec2(s * 0.4f, -s * 0.25f), s * 0.16f, col);
+      }
+    }
+    if (std::any_of(layer.media.clips.begin(), layer.media.clips.end(), media_clip_missing)) {
+      dl->AddCircleFilled(c + ImVec2(s * 0.7f, s * 0.55f), s * 0.42f, IM_COL32(0xe0, 0x40, 0x40, 255), 12);
+      dl->AddLine(c + ImVec2(s * 0.7f, s * 0.32f), c + ImVec2(s * 0.7f, s * 0.6f), IM_COL32_WHITE, 1.4f);
+      dl->AddCircleFilled(c + ImVec2(s * 0.7f, s * 0.75f), 1.1f, IM_COL32_WHITE);
+    }
+    return;
+  }
   if (layer.is_group()) {
     /* A folder. */
     dl->AddRectFilled(c + ImVec2(-s * 0.8f, -s * 0.55f), c + ImVec2(-s * 0.1f, -s * 0.3f), col, 1.0f);
@@ -761,6 +797,7 @@ void layers_draw(Area &area, Context &C)
     menu_op(C, "Vector Layer", "layer.new");
     menu_op(C, "Group", "layer.new_group");
     menu_op(C, "Bone Layer", "layer.new_bone");
+    menu_op(C, "Media...", "media.import");
     ImGui::Separator();
     menu_op(C, "Reference of Active Layer", "layer.make_reference");
     ImGui::EndPopup();

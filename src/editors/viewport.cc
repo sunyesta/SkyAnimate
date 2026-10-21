@@ -664,7 +664,7 @@ static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
   const bool bones = active && active->is_bone_layer();
   if (tool == Tool::WeightPaint || tool == Tool::WeightSelect) {
     /* Weights are for drawings that bones move. */
-    return !bones && active && !active->is_group() && in_bone_layer;
+    return !bones && active && active->has_drawing() && in_bone_layer;
   }
   switch (tool) {
     case Tool::Select:
@@ -973,12 +973,6 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Outline the active layer's mask layers, dashed and labelled (\"inside head\").\n"
                         "Off: they only show while a mask's symbol or Layers field is under the mouse.");
-    }
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
-    ImGui::Checkbox("Detail Cage", &ov.detail_cage);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Draw the curve each shape is edited at (without the detail above its level) faintly.\n"
-                        "Off: it only shows while points move.");
     }
   }
   if (overlay_section("Armature")) {
@@ -2183,13 +2177,13 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
       ShapeEdge edge;
       float t;
-      /* Where the lines show: posed by bones, and a reference matching its original where that is. */
+      /* Where the lines show: posed by bones, and a reference matching its original where that is; at
+       * the shape's detail level, as its wires are drawn. */
       const Posed shown = posed(*C.document, *layer);
-      if (drawing_pick_segment(*shown.drawing, to_document.inverted().apply(mouse_document), PICK_PIXELS * pixel,
-                               &edge, &t))
-      {
+      const VectorDrawing lines = drawing_detail_shown_curves(*shown.drawing);
+      if (drawing_pick_segment(lines, to_document.inverted().apply(mouse_document), PICK_PIXELS * pixel, &edge, &t)) {
         int a, b;
-        curve_segment_points(layer->drawing.curves[edge.curve], edge.segment, &a, &b);
+        curve_segment_points(lines.curves[edge.curve], edge.segment, &a, &b);
         hit_layer = layer;
         picked = C.wm->tool_settings.select_mode == SelectMode::Edge ? std::vector<int>{a, b} : std::vector<int>{a};
         break;
@@ -2448,61 +2442,18 @@ static void draw_grid(ImDrawList *dl, const ViewMapping &view, float grid)
   }
 }
 
-/* Detail levels: draw the curves shapes are edited at (Viewport Overlays > Detail Cage, or while points
- * move). */
-static bool g_detail_cage = false;
-
-/* The detail cage: each curve as its shapes are edited, without the detail above their level, faint. */
-static void draw_detail_cage(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
-                             const ViewMapping &view, int quality)
-{
-  VectorDrawing cage = drawing;
-  const std::vector<int> levels = drawing_curve_detail_levels(drawing);
-  std::vector<bool> trimmed(cage.curves.size(), false);
-  for (size_t c = 0; c < cage.curves.size(); c++) {
-    const size_t before = cage.curves[c].points.size();
-    std::erase_if(cage.curves[c].points,
-                  [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
-    trimmed[c] = cage.curves[c].points.size() != before;
-  }
-  drawing_detail_final_handles(cage);
-  std::vector<float2> samples;
-  std::vector<ImVec2> line;
-  for (size_t c = 0; c < cage.curves.size(); c++) {
-    const Curve &curve = cage.curves[c];
-    if (!trimmed[c] || curve.points.size() < 2) {
-      continue;
-    }
-    for (int s = 0; s < curve.segment_count(); s++) {
-      samples.clear();
-      curve_segment_sample(cage, curve, s, quality, samples, 0.5f / std::max(view.zoom * to_document.scale(), 1e-6f));
-      int a, b;
-      curve_segment_points(curve, s, &a, &b);
-      samples.push_back(cage.points[b].pos);
-      line.clear();
-      for (const float2 &p : samples) {
-        line.push_back(view.to_screen(to_document.apply(p)));
-      }
-      dl->AddPolyline(line.data(), int(line.size()), IM_COL32(0x47, 0x72, 0xb3, 150), 0, 1.0f);
-    }
-  }
-}
-
 static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
                                  const ViewMapping &view, bool show_wires, bool show_points, int quality,
                                  HandleDisplay handles, bool point_squares = true)
 {
   std::vector<float2> samples;
-  /* Lines show as drawn: detail's handles final (data/detail.hh). */
-  VectorDrawing final_shape;
+  /* Wires show each curve as it is edited: at its shape's detail level, through the points shown
+   * (data/detail.hh); the stroke under them draws all of its detail. */
+  VectorDrawing shown_curves;
   const VectorDrawing *lines = &drawing;
   if (drawing_has_detail(drawing)) {
-    final_shape = drawing;
-    drawing_detail_final_handles(final_shape);
-    lines = &final_shape;
-    if (show_wires && g_detail_cage) {
-      draw_detail_cage(dl, drawing, to_document, view, quality);
-    }
+    shown_curves = drawing_detail_shown_curves(drawing);
+    lines = &shown_curves;
   }
   for (const Curve &curve : lines->curves) {
     if (!show_wires) {
@@ -4776,6 +4727,10 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
   if (C.wm->action_panel_toggle_request) {
     ui_fold_record(ACTION_PANEL_KEY, false, !ui_fold_state(ACTION_PANEL_KEY, false));
     C.wm->action_panel_toggle_request = false;
+    /* Folding it is kept with the project, but leaves what it adjusts adjustable. */
+    if (last) {
+      operator_last_redo_keep(C);
+    }
   }
   const bool panel_open = ui_fold_state(ACTION_PANEL_KEY, false);
   if (!last || last->area != "Viewport") {
@@ -4812,6 +4767,7 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
   if (ImGui::InvisibleButton("##action_panel_header", ImVec2(w, header_h))) {
     /* Shown the new way from the next frame. */
     ui_fold_record(ACTION_PANEL_KEY, false, !panel_open);
+    operator_last_redo_keep(C);
   }
   const ImU32 text = IM_COL32(0xd9, 0xd9, 0xd9, 255);
   /* Blender's chevrons: > folded, v open. */
@@ -4889,6 +4845,14 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%g", v);
         args[prop.name] = buf;
+        changed = true;
+      }
+    }
+    else if (prop.kind == OpProperty::Kind::Int) {
+      int v = std::atoi(value.c_str());
+      ImGui::SetNextItemWidth(value_w);
+      if (ImGui::DragInt("##value", &v, 0.25f, int(prop.min), int(prop.max), "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        args[prop.name] = std::to_string(v);
         changed = true;
       }
     }
@@ -5085,7 +5049,6 @@ static void viewport_draw_contents(Area &area, Context &C)
   g_keyed_bones = ov.physics_ghosts;
   g_bone_shapes = ov.bone_shapes;
   g_relationship_lines = ov.relationship_lines;
-  g_detail_cage = ov.detail_cage || (g_modal.active && g_modal.area == area.id);
   /* The camera's frame, the canvas outside it darkened, and its name above it (orange while picked). */
   if (ov.show && (ov.camera_frame || through_camera)) {
     ImVec2 frame[4];
@@ -5266,6 +5229,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (hovered && !drawing && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ts.tool != Tool::Cursor) {
     const Layer *active = document_active_layer(doc);
     report(ReportType::Info, !active                 ? "Add a layer to draw on (Layers editor, +)"
+                             : active->is_media()    ? "This is a Media layer: add a vector layer above it to draw over it"
                              : active->is_group()    ? "Select a vector layer to draw on"
                              : active->is_reference() ? "This is a reference layer: Break Reference to draw on it"
                                                       : "This layer is locked");
@@ -5538,6 +5502,14 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Smooth", "mesh.smooth");
     ImGui::Separator();
     menu_operator(C, "Symmetrize", "mesh.symmetrize");
+    /* Detail points picked: back onto the curve of the level below. */
+    bool detail = false;
+    for (const Layer *editing : editable_layers(C)) {
+      detail |= !editing->is_reference() && drawing_detail_selected(editing->drawing);
+    }
+    if (detail) {
+      menu_operator(C, "Smooth to Lower Level", "mesh.detail_smooth");
+    }
     ImGui::Separator();
     menu_operator(C, "Delete", "mesh.delete");
     ImGui::Separator();

@@ -40,9 +40,6 @@ struct ViewportOverlays {
   bool live_physics = true;
   /* Bones with a custom shape (a pin) are drawn as it; off, every bone is drawn as a bone. */
   bool bone_shapes = true;
-  /* Detail levels: the curve a shape is edited at (without the detail above it) drawn faintly, always;
-   * off, only while points move. */
-  bool detail_cage = false;
 
   bool operator==(const ViewportOverlays &) const = default;
 };

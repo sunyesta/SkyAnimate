@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
@@ -22,11 +23,15 @@
 #include "core/crash.hh"
 #include "core/log.hh"
 #include "data/camera.hh"
+#include "data/media_layer.hh"
 #include "editors/brush_settings.hh"
+#include "media/audio.hh"
+#include "media/media.hh"
 #include "editors/ui.hh"
 #include "ops/builtin_ops.hh"
 #include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
+#include "ops/media_ops.hh"
 #include "ops/operator.hh"
 #include "python/py_runtime.hh"
 #include "ui/theme.hh"
@@ -84,6 +89,7 @@ int App::run(const LaunchOptions &options)
     crash_handler_install(crash_dir());
   }
   preferences_load();
+  media_init();
   ctx_.document = &doc_;
   ctx_.undo = &undo_;
   ctx_.wm = &wm_;
@@ -103,6 +109,7 @@ int App::run(const LaunchOptions &options)
   mask_operators_register();
   rig_operators_register();
   file_operators_register();
+  media_operators_register();
 
   /* The file opens first, so scripts given with it work on it, as in Blender. */
   bool ok = options.open_file.empty() || document_open(ctx_, options.open_file);
@@ -123,12 +130,17 @@ int App::run(const LaunchOptions &options)
   if (options.background) {
     remote_stop();
     python::shutdown();
+    media_shutdown();
     return ok ? 0 : 1;
   }
 
   if (!window_init()) {
     python::shutdown();
+    media_shutdown();
     return 1;
+  }
+  if (!audio_open()) {
+    report(ReportType::Warning, std::string("No sound: ") + SDL_GetError(), false);
   }
   if (preferences().remote_control) {
     remote_start(preferences().remote_port);
@@ -141,8 +153,10 @@ int App::run(const LaunchOptions &options)
   /* Requests still waiting run Python: stop before it does. */
   remote_stop();
   autosave_quit(ctx_);
+  audio_close();
   window_exit();
   python::shutdown();
+  media_shutdown();
   return 0;
 }
 
@@ -262,10 +276,19 @@ void App::main_loop()
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    if (!wm_.mouse_simulated.empty()) {
+      const WindowManager::SimulatedMouse m = wm_.mouse_simulated.front();
+      wm_.mouse_simulated.erase(wm_.mouse_simulated.begin());
+      ImGui::GetIO().AddMousePosEvent(m.x, m.y);
+      if (m.button >= 0) {
+        ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
+      }
+    }
     /* Over the viewport Tab is the keymap's (the setup frame and back), never ImGui's hop to the
      * next text field of whichever panel was clicked last. */
     GImGui->ConfigNavEnableTabbing = ctx_.area_type != "Viewport";
     ImGui::NewFrame();
+    wm_.timeline_drop_areas.clear();
     draw_ui();
     record_selection();
     ImGui::Render();
@@ -283,26 +306,53 @@ void App::main_loop()
 }
 
 /* Advances the current frame in real time at the document's frame rate. When drawing falls
- * behind, frames are skipped so playback keeps the true speed. */
+ * behind, Frame Dropping skips frames so playback keeps the true speed; Play Every Frame shows each
+ * one and plays slower instead; Sync to Audio shows the frame the sound being heard is on (Frame
+ * Dropping when there is no sound). Sound plays forward only, as in Blender. */
 void App::playback_update()
 {
+  const double fps = std::max(double(doc_.fps), 1.0);
+  const bool sound = wm_.playing && !wm_.play_reverse && doc_.play_audio && media_has_sound(doc_);
+  if (!sound && audio_playing()) {
+    audio_stop();
+  }
   if (!wm_.playing) {
     wm_.play_last_ns = 0;
+    /* Scrubbing: a frame's worth of sound each time the frame changes. */
+    if (doc_.frame_current != scrub_frame_) {
+      if (scrub_frame_ >= 0 && doc_.audio_scrub && doc_.play_audio && media_has_sound(doc_)) {
+        audio_scrub(doc_, double(doc_.frame_current) / fps);
+      }
+      scrub_frame_ = doc_.frame_current;
+    }
     return;
   }
+  if (sound && !audio_playing()) {
+    audio_play_from(doc_, double(doc_.frame_current) / fps);
+  }
+  audio_feed(doc_);
   const uint64_t now = SDL_GetTicksNS();
   if (wm_.play_last_ns == 0) {
     wm_.play_last_ns = now;
     return;
   }
-  wm_.play_frames_due += double(now - wm_.play_last_ns) * 1e-9 * double(doc_.fps);
+  wm_.play_frames_due += double(now - wm_.play_last_ns) * 1e-9 * fps;
   wm_.play_last_ns = now;
 
-  const int frames = int(wm_.play_frames_due);
-  if (frames == 0) {
+  int frames = int(wm_.play_frames_due);
+  wm_.play_frames_due -= frames;
+  if (sound && doc_.sync == PlaybackSync::Audio) {
+    /* The frame the sound being heard is on. */
+    frames = int(std::floor(audio_clock() * fps + 1e-6)) - doc_.frame_current;
+    wm_.play_frames_due = 0.0;
+  }
+  else if (doc_.sync == PlaybackSync::EveryFrame && frames > 1) {
+    /* One frame per redraw: the time a slow one took is not made up later. */
+    frames = 1;
+  }
+  if (frames <= 0) {
     return;
   }
-  wm_.play_frames_due -= frames;
 
   const int start = doc_.frame_start;
   const int end = std::max(doc_.frame_start, doc_.frame_end);
@@ -317,7 +367,12 @@ void App::playback_update()
       wm_.playing = false;
     }
   }
+  /* Looping back to the start (or drifting off): the sound starts again from the frame. */
+  if (sound && wm_.playing && std::fabs(audio_clock() - double(frame) / fps) > 0.2) {
+    audio_play_from(doc_, double(frame) / fps);
+  }
   doc_.frame_current = frame;
+  scrub_frame_ = frame;
 }
 
 void App::handle_event(const SDL_Event &event)
@@ -328,7 +383,21 @@ void App::handle_event(const SDL_Event &event)
       operator_call(ctx_, "wm.quit");
       break;
     case SDL_EVENT_DROP_FILE:
-      if (event.drop.data) {
+      if (event.drop.data && media_kind_from_path(event.drop.data) != MediaKind::None) {
+        /* A picture, video or sound becomes a Media layer: starting on the frame it is dropped on in a
+         * timeline, else on frame 1; its options then show in the ViewportActionPanel. */
+        int start = 1;
+        for (const WindowManager::TimelineDropArea &a : wm_.timeline_drop_areas) {
+          if (event.drop.x >= a.x0 && event.drop.x < a.x1 && event.drop.y >= a.y0 && event.drop.y < a.y1) {
+            start = std::max(1, int(std::lround(a.first_frame + (event.drop.x - a.x0) * a.frames_per_unit)));
+          }
+        }
+        const std::string area = ctx_.area_type;
+        ctx_.area_type = "Viewport";
+        operator_call(ctx_, "media.add", {{"filepath", event.drop.data}, {"frame_start", std::to_string(start)}});
+        ctx_.area_type = area;
+      }
+      else if (event.drop.data) {
         operator_call(ctx_, "wm.open_mainfile", {{"filepath", event.drop.data}});
       }
       break;
@@ -790,6 +859,11 @@ void App::draw_file_menu()
   menu_operator(ctx_, "Save As...", "wm.save_as_mainfile");
   menu_operator(ctx_, "Save Copy...", "wm.save_copy");
   menu_operator(ctx_, "Save Incremental", "wm.save_incremental");
+  ImGui::Separator();
+  if (ImGui::BeginMenu("Import")) {
+    menu_operator(ctx_, "Media (Image, Video, Sound)...", "media.add");
+    ImGui::EndMenu();
+  }
   ImGui::Separator();
   menu_operator(ctx_, "Quit", "wm.quit");
   ImGui::EndMenu();

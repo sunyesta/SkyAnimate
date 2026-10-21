@@ -32,6 +32,16 @@ const rna::StructRNA &Document::rna()
         def_bool<Document>("auto_key", "Auto Keying",
                            "Editing at a frame other than 0 keys what changes there (the record button)",
                            &Document::auto_key),
+        def_enum<Document, PlaybackSync>(
+            "sync_mode", "Sync",
+            "How playback keeps time: every frame (slower than the frame rate if drawing can't keep up), "
+            "dropping frames to keep the true speed, or kept to the sound",
+            &Document::sync,
+            {{"NONE", "Play Every Frame"}, {"FRAME_DROP", "Frame Dropping"}, {"AUDIO_SYNC", "Sync to Audio"}}),
+        def_bool<Document>("play_audio", "Play Audio", "Play the document's sound with the animation",
+                           &Document::play_audio),
+        def_bool<Document>("use_audio_scrub", "Scrubbing", "Play a short bit of the sound at each frame while scrubbing",
+                           &Document::audio_scrub),
         def_float<Document>("fps", "Frame Rate", "Frames per second", &Document::fps, 1.0f, 240.0f),
         def_float<Document>("gravity", "Gravity", "How hard gravity pulls dynamic bones down (by their weight)",
                             &Document::gravity, -100.0f, 100.0f),

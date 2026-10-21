@@ -92,8 +92,22 @@ class SceneRenderer {
   /* Blends `source`'s resolved image onto the bound target. */
   void composite(const Target *source, float opacity);
 
-  /* A layer this render draws: visible, and shown in renders when this is a final render. */
+  /* A layer this render draws: visible, and shown in renders when this is a final render (a Media
+   * layer's Guide never is). */
   bool shown(const Layer &layer) const;
+  bool layer_shown_through_parents(const Document &doc, const Layer &layer) const;
+  float layer_opacity_through_parents(const Document &doc, const Layer &layer) const;
+  /* A Media layer's picture on this frame (the nearest decoded one in the viewport until the exact
+   * one comes; a final render waits for it). */
+  void draw_media(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity);
+  struct MediaTexture {
+    unsigned int texture = 0;
+    uint64_t serial = 0;
+    int width = 0, height = 0;
+  };
+  /* One texture per Media layer, refilled when its frame changes. */
+  std::map<uint64_t, MediaTexture> media_textures_;
+  unsigned int media_program_ = 0;
 
   bool final_render_ = false;
   /* Drawing a mask's coverage into the stencil (no colour): brush dabs count where they're

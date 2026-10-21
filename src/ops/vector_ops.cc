@@ -22,7 +22,7 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
   Layer *layer = C.document ? document_active_layer(*C.document) : nullptr;
   /* A reference's drawing can be edited too: its looks always, its points with Edit Points on
    * (edits become its overrides; see anim/reference.hh). */
-  if (!layer || layer->is_group() || layer->locked) {
+  if (!layer || !layer->has_drawing() || layer->locked) {
     return nullptr;
   }
   if (r_layer) {
@@ -43,7 +43,7 @@ std::vector<Layer *> editable_layers(Context &C)
     layers.push_back(active);
   }
   for (const Layer *layer : document_layers_flat(doc)) {
-    if (layer->selected && layer != active && layer->visible && !layer->is_group() && !layer->locked)
+    if (layer->selected && layer != active && layer->visible && layer->has_drawing() && !layer->locked)
     {
       layers.push_back(layer_find(doc, layer->id));
     }
@@ -52,7 +52,7 @@ std::vector<Layer *> editable_layers(Context &C)
   if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
     for (const Layer *layer : document_layers_flat(doc)) {
       const Layer *owner = layer_armature(doc, layer->id);
-      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->visible && !layer->is_group() &&
+      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->visible && layer->has_drawing() &&
           !layer->locked &&
           std::find(layers.begin(), layers.end(), layer) == layers.end())
       {
@@ -782,9 +782,45 @@ void vector_operators_register()
                       report(ReportType::Info, "No detail above this level");
                       return OpStatus::Cancelled;
                     }
-                    report(ReportType::Info, "Removed " + std::to_string(removed) + " detail points");
+                    report(ReportType::Info, "Removed " + std::to_string(removed) + (removed == 1 ? " detail point" : " detail points"));
                     return OpStatus::Finished;
                   });
+  /* Smooth to Lower Level (right-click on detail points): back onto the curve of the level below, by
+   * Influence; adjustable in the ViewportActionPanel. Away from frame 0 it poses them (auto-key keys it). */
+  {
+    OperatorType ot;
+    ot.idname = "mesh.detail_smooth";
+    ot.name = "Smooth to Lower Level";
+    ot.description = "Move the selected detail points (and handles of detail points picked on their own) onto the "
+                     "curve of the level below, so they keep none of their own offset (influence 1: all the way)";
+    ot.flag = UNDO;
+    ot.poll = editable_with_selection_poll;
+    OpProperty influence;
+    influence.name = "influence";
+    influence.label = "Influence";
+    influence.description = "How far onto the curve of the level below (1: all the way, 0: unchanged)";
+    influence.kind = OpProperty::Kind::Float;
+    influence.fallback = "1";
+    influence.min = 0.0f;
+    influence.max = 1.0f;
+    influence.step = 0.01f;
+    ot.props = {influence};
+    ot.exec = [](Context &C) {
+      const float amount = std::clamp(op_arg_float(C, "influence", 1.0f), 0.0f, 1.0f);
+      int changed = 0;
+      for (Layer *layer : editable_layers(C)) {
+        if (!layer->is_reference()) {
+          changed += drawing_detail_smooth_selected(layer->drawing, amount);
+        }
+      }
+      if (changed == 0) {
+        report(ReportType::Warning, "Select detail points (level 1 and up) to smooth them to the level below");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   /* Apply Detail and Rebuild Levels reshape the setup: frame 0 only. */
   const auto setup_frame = [](Context &C, const char *what) {
     if (C.document->frame_current == 0) {
@@ -815,7 +851,7 @@ void vector_operators_register()
                       return OpStatus::Cancelled;
                     }
                     report(dropped ? ReportType::Warning : ReportType::Info,
-                           "Applied " + std::to_string(changed) + " detail points" +
+                           "Applied " + std::to_string(changed) + (changed == 1 ? " detail point" : " detail points") +
                                (dropped ? " (their keys were removed)" : ""));
                     return OpStatus::Finished;
                   });
@@ -838,8 +874,13 @@ void vector_operators_register()
                       report(ReportType::Warning, "Select a shape first");
                       return OpStatus::Cancelled;
                     }
+                    if (made == 0) {
+                      report(ReportType::Info, "No point is close enough to the curve without it to be detail: "
+                                               "raise the Tolerance, or add detail with the knife (K)");
+                      return OpStatus::Cancelled;
+                    }
                     report(dropped ? ReportType::Warning : ReportType::Info,
-                           std::to_string(made) + " points became detail" +
+                           std::to_string(made) + (made == 1 ? " point became detail" : " points became detail") +
                                (dropped ? " (their keys were removed)" : ""));
                     return made > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                   });

@@ -4,8 +4,11 @@
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
 
+#include <SDL3/SDL.h>
+
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 
@@ -17,6 +20,8 @@
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
+#include "data/media_layer.hh"
+#include "media/media.hh"
 #include "assets/asset_library.hh"
 #include "assets/brushes.hh"
 #include "core/crash.hh"
@@ -398,7 +403,24 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       crash_now();
     }
   });
-  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 7); });
+  /* A file dropped on the window at (x, y), as from Explorer (oanim.wm.drop_simulate): the same SDL
+   * event, handled on the next frame. */
+  m.def("drop_simulate", [](const std::string &path, float x, float y) {
+    /* SDL keeps the pointer until the event is handled. */
+    static std::vector<std::unique_ptr<std::string>> paths;
+    paths.push_back(std::make_unique<std::string>(path));
+    SDL_Event e{};
+    e.type = SDL_EVENT_DROP_FILE;
+    e.drop.x = x;
+    e.drop.y = y;
+    e.drop.data = paths.back()->c_str();
+    return SDL_PushEvent(&e);
+  });
+  /* Queues a mouse move (button -1) or press/release (oanim.wm.mouse_simulate), one per frame. */
+  m.def("mouse_simulate", [](float x, float y, int button, bool down) {
+    current_context().wm->mouse_simulated.push_back({x, y, button, down});
+  });
+  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 8); });
   /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
   static const std::pair<const char *, bool ViewportOverlays::*> overlay_switches[] = {
       {"show", &ViewportOverlays::show},
@@ -413,7 +435,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       {"physics_ghosts", &ViewportOverlays::physics_ghosts},
       {"live_physics", &ViewportOverlays::live_physics},
       {"bone_shapes", &ViewportOverlays::bone_shapes},
-      {"detail_cage", &ViewportOverlays::detail_cage},
   };
   /* Panels and folding rows open or folded, as the project keeps them ("<editor>/<panel>": open). */
   m.def("ui_open", []() { return current_context().document->ui_open; });
@@ -778,7 +799,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       [layer_or_raise](uint64_t id, const std::vector<std::pair<float, float>> &points, bool closed, bool fill) {
         Context &C = current_context();
         Layer &layer = layer_or_raise(id);
-        if (layer.is_group() || layer.is_reference()) {
+        if (!layer.has_drawing() || layer.is_reference()) {
           throw py::value_error("Curves can only be added to vector layers that are not references");
         }
         if (points.size() < 2) {
@@ -1911,7 +1932,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                        bool fill) {
         Context &C = current_context();
         Layer &layer = layer_or_raise(id);
-        if (layer.is_group() || layer.is_reference()) {
+        if (!layer.has_drawing() || layer.is_reference()) {
           throw py::value_error("Shapes can only be added to vector layers that are not references");
         }
         PrimitiveKind kind;
@@ -1967,8 +1988,94 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     r["hidden"] = hidden;
     r["shape_levels"] = shape_levels;
     r["shape_max_levels"] = shape_max;
+    /* The points each curve's wire runs through, at its edit level. */
+    py::list wires;
+    for (const Curve &curve : drawing_detail_shown_curves(drawing).curves) {
+      py::list points;
+      for (const CurvePoint &cp : curve.points) {
+        points.append(cp.point);
+      }
+      wires.append(points);
+    }
+    r["wires"] = wires;
     return r;
   });
+  /* Media layers' clips, as dicts (oanim.Layer.media_clips). */
+  m.def("layer_media_clips", [layer_or_raise](uint64_t id) {
+    static const char *const ends[] = {"HOLD", "LOOP", "HIDE"};
+    static const char *const timings[] = {"REAL_TIME", "FRAME_BY_FRAME"};
+    py::list clips;
+    for (const MediaClip &c : layer_or_raise(id).media.clips) {
+      py::dict d;
+      d["id"] = c.id;
+      d["filepath"] = c.filepath;
+      d["sequence"] = c.sequence;
+      d["packed"] = !c.packed.empty();
+      d["start"] = c.start;
+      d["length"] = c.length;
+      d["in_point"] = c.in;
+      d["end"] = ends[int(c.end)];
+      d["timing"] = timings[int(c.timing)];
+      d["missing"] = media_clip_missing(c);
+      d["selected"] = c.selected;
+      clips.append(d);
+    }
+    return clips;
+  });
+  /* What a Media layer shows on a frame: (clip id, seconds into its file), or None. */
+  m.def("layer_media_shown", [layer_or_raise](uint64_t id, int frame) -> py::object {
+    const MediaShown shown = media_shown_at(*current_context().document, layer_or_raise(id), frame);
+    if (!shown.clip) {
+      return py::none();
+    }
+    return py::make_tuple(shown.clip->id, shown.seconds);
+  });
+  m.def("media_probe", [](const std::string &path, bool sequence) {
+    static const char *const kinds[] = {"NONE", "IMAGE", "SEQUENCE", "VIDEO", "AUDIO"};
+    const MediaInfo info = media_probe(path, sequence);
+    py::dict d;
+    d["kind"] = kinds[int(info.kind)];
+    d["width"] = info.width;
+    d["height"] = info.height;
+    d["source_width"] = info.source_width;
+    d["source_height"] = info.source_height;
+    d["duration"] = info.duration;
+    d["fps"] = info.fps;
+    d["frame_count"] = info.frame_count;
+    d["has_audio"] = info.has_audio;
+    d["error"] = info.error;
+    return d;
+  });
+  /* A decoded picture's pixel (waiting for the exact frame): (width, height, (r, g, b, a), time). */
+  m.def("media_pixel", [](const std::string &path, bool sequence, double seconds, int x, int y) -> py::object {
+    const MediaFramePtr f = media_frame(path, sequence, seconds, true);
+    if (!f || f->rgba.empty()) {
+      return py::none();
+    }
+    const int px = std::clamp(x, 0, f->width - 1), py_ = std::clamp(y, 0, f->height - 1);
+    const uint8_t *p = &f->rgba[(size_t(py_) * f->width + px) * 4];
+    return py::make_tuple(f->width, f->height, py::make_tuple(p[0], p[1], p[2], p[3]), f->time);
+  });
+  /* The document's sound at `seconds` for `frames` stereo frames (interleaved), once every source
+   * has decoded. */
+  m.def("media_mix", [](double seconds, int frames) {
+    Document &doc = *current_context().document;
+    for (Layer *l : media_layers(doc)) {
+      for (const MediaClip &c : l->media.clips) {
+        if (media_clip_info(c).has_audio) {
+          media_sound(media_clip_file(c), true);
+        }
+      }
+    }
+    std::vector<float> out(size_t(std::max(frames, 0)) * 2, 0.0f);
+    media_mix(doc, seconds, size_t(std::max(frames, 0)), out.data());
+    py::list samples;
+    for (const float v : out) {
+      samples.append(v);
+    }
+    return samples;
+  });
+  m.def("media_missing_count", []() { return media_missing_count(*current_context().document); });
   /* A layer's masks: [{"outside", "layers" (names; "" for one that's gone), "enabled"}]. */
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;

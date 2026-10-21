@@ -40,6 +40,10 @@ void drawing_detail_sync(VectorDrawing &drawing, bool capture);
  * For a copy (drawing, rendering), never the drawing itself. */
 void drawing_detail_final_handles(VectorDrawing &drawing);
 
+/* The curves as edited: each without the points above its edit level, its handles as they are at
+ * that level (the wires drawn over a drawing, and the segments Edges and Strokes picking finds). Points
+ * keep their indices; shapes don't match its curves, so a copy for drawing and picking only. */
+VectorDrawing drawing_detail_shown_curves(const VectorDrawing &drawing);
 /* Each curve's edit level: the highest detail level of the shapes using it (a curve no shape uses
  * shows every level). */
 std::vector<int> drawing_curve_detail_levels(const VectorDrawing &drawing);
@@ -80,15 +84,23 @@ int shape_detail_point_count(const VectorDrawing &drawing, const Shape &shape);
 inline constexpr int DETAIL_LEVEL_MAX = 4;
 int shape_detail_level_limit(const VectorDrawing &drawing, const Shape &shape);
 
+/* Smooth to Lower Level: the selected detail points (and handles of detail points picked on their
+ * own) move `influence` of the way (1: all of it) onto the curve of the level below, so they keep only
+ * what that curve gives them: no offset of their own. Returns how many points and handles changed. */
+int drawing_detail_smooth_selected(VectorDrawing &drawing, float influence);
+/* Whether any selected point (or handle picked on its own) is detail. */
+bool drawing_detail_selected(const VectorDrawing &drawing);
+
 /* Delete Higher: removes the detail above each picked shape's edit level. Returns how many points
  * went. */
 int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool> &shapes);
 /* Apply Detail: the picked shapes' detail points become base points, as they show. Returns how
  * many points changed; `r_keys_dropped` says whether any had keys (their offsets' keys go). */
 int drawing_detail_apply(VectorDrawing &drawing, const std::vector<bool> &shapes, bool *r_keys_dropped);
-/* Rebuild Levels: the picked shapes' curves keep the points that matter for their shape (within
- * `tolerance`, Douglas-Peucker) as base points, and the rest become level 1 detail, as they show.
- * Returns how many points became detail; `r_keys_dropped` as above. */
+/* Rebuild Levels: the picked shapes' curves (their detail flattened first) keep the points that make
+ * their shape as base points, and each point within `tolerance` of the curve its neighbours make
+ * without it becomes level 1 detail, as they show. Returns how many points became detail; when none
+ * can, the drawing is left as it was. `r_keys_dropped` as above. */
 int drawing_detail_rebuild(VectorDrawing &drawing, const std::vector<bool> &shapes, float tolerance,
                            bool *r_keys_dropped);
 

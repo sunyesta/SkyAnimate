@@ -105,8 +105,65 @@ struct ReferenceSettings {
   float built_rotation = 0.0f, built_opacity = 1.0f;
 };
 
-/* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). */
-enum class LayerType { Vector, Group, Bone };
+/* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). Media: an
+ * image, image sequence, video or sound (data/media_layer.hh). */
+enum class LayerType { Vector, Group, Bone, Media };
+
+/* --- Media layers ------------------------------------------------------------------------------
+ * A Media layer shows clips along the timeline, as a video editor's track: each clip is a file shown
+ * from its Start frame for its Length, starting In seconds into the file (After Effects' in point;
+ * slipping changes it). Swapping the file part way through the animation makes a new clip there. The
+ * layer is a Guide by default: shown while you work, never rendered (After Effects' guide layers,
+ * Blender's reference images). Anything with sound plays it with the animation. */
+
+/* How a picture sits in the camera's frame (at zoom 1): all of it inside (Fit), covering it (Fill),
+ * stretched to it, or one picture pixel per rendered pixel (Original Size). */
+enum class MediaFit : uint8_t { Fit, Fill, Stretch, Original };
+/* What a clip shows after its file runs out, until its Length ends: the last frame, the file again
+ * from its In point, or nothing. */
+enum class MediaEnd : uint8_t { Hold, Loop, Hide };
+/* How a clip's frames map to the document's: at the file's own speed (a 30 fps video plays in real
+ * time in a 24 fps scene), or one file frame per document frame (a reference made at 12 fps stepped
+ * through a drawing at a time). Sequences are always frame by frame. */
+enum class MediaTiming : uint8_t { RealTime, FrameByFrame };
+
+struct MediaClip {
+  uint64_t id = 0;
+  /* The file, absolute (saved relative to the .oanim when it can be, and found from either). */
+  std::string filepath;
+  /* A numbered image sequence starting at `filepath`. */
+  bool sequence = false;
+  /* Packed into the .oanim: its content's id in the packed store (data/media_layer.hh); "" linked. */
+  std::string packed;
+  /* The first frame it shows on, and how many frames it covers. */
+  int start = 1;
+  int length = 1;
+  /* Seconds into the file where it starts (its In point). */
+  double in = 0.0;
+  MediaTiming timing = MediaTiming::RealTime;
+  MediaEnd end = MediaEnd::Hold;
+  /* Picked in the timeline. Not saved. */
+  bool selected = false;
+};
+
+struct MediaSettings {
+  /* In time order; they never overlap. */
+  std::vector<MediaClip> clips;
+  uint64_t next_clip_id = 1;
+  /* Shown in the viewport only, never rendered. */
+  bool guide = true;
+  MediaFit fit = MediaFit::Fit;
+  /* Shown in shades of grey, and/or tinted towards `tint` by `tint_amount` (a light table's look,
+   * so drawing over it stands out). */
+  bool greyscale = false;
+  Color tint = {0.2f, 0.45f, 1.0f, 1.0f};
+  float tint_amount = 0.0f;
+  /* Drawn over everything (and unmasked), rather than at its place in the layer stack. */
+  bool in_front = false;
+  /* Sound: how loud (1: as recorded), and silenced. */
+  float volume = 1.0f;
+  bool muted = false;
+};
 
 /* One of a layer's masks (After Effects' track matte, Blender Grease Pencil's layer masks): the
  * layer shows only Inside (or only Outside) the shapes of the layers it names, any of them. A
@@ -449,6 +506,8 @@ struct Layer {
   ReferenceSettings reference;
 
   VectorDrawing drawing;
+  /* Media layers: their clips and how they show. */
+  MediaSettings media;
   /* Group children, top of the stack first, as the Layers editor lists them. */
   std::vector<Layer> children;
 
@@ -482,6 +541,9 @@ struct Layer {
 
   bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
   bool is_bone_layer() const { return type == LayerType::Bone; }
+  bool is_media() const { return type == LayerType::Media; }
+  /* Has a drawing of its own to show and edit (vector layers and references of them). */
+  bool has_drawing() const { return type == LayerType::Vector; }
   bool is_reference() const { return reference_source != 0; }
   /* The bone it follows as a whole (0 for none): a copy posed Same as Original moves with its
    * original's bones, so its own Parent Bone waits until it is given Own Bones. */

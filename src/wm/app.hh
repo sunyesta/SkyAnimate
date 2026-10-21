@@ -49,6 +49,8 @@ class App {
   void main_loop();
   void handle_event(const SDL_Event &event);
   void playback_update();
+  /* The frame last shown, to play a frame's sound when scrubbing moves it. */
+  int scrub_frame_ = -1;
   void draw_ui();
   /* A selection changed with no undo step of its own gets one ("Select"), once the mouse is up. */
   void record_selection();

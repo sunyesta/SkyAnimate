@@ -26,7 +26,7 @@ enum OperatorFlag : unsigned {
  * properties in Adjust Last Operation): changing it there runs the operator again with it. Values
  * travel as OpArgs strings, as every argument does. */
 struct OpProperty {
-  enum class Kind { Enum, Bool, Float };
+  enum class Kind { Enum, Bool, Float, Int };
   std::string name;
   std::string label;
   std::string description;
@@ -87,6 +87,9 @@ struct LastOperation {
   uint64_t change_count = 0;
 };
 const LastOperation *operator_last_redo(const Context &C);
+/* A change that leaves the last operation as it was (folding or opening the ViewportActionPanel,
+ * which the project keeps): it stays adjustable. Call right after making it, while it still was. */
+void operator_last_redo_keep(const Context &C);
 /* Runs it again with `args` instead: undoes its step, then runs it with them. */
 OpStatus operator_redo_last(Context &C, const OpArgs &args);
 

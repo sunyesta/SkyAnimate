@@ -8,13 +8,14 @@ oanim.types     base classes to subclass: oanim.types.Operator
 oanim.utils     register_class() and unregister_class()
 oanim.keymap    bind keys to operators
 oanim.wm        window-manager helpers, such as simulating key presses in tests
+oanim.media     media files as Media layers read them: probe(), pixel(), mix()
 """
 
 import _oanim
 
-from . import keymap, ops, types, utils, wm
+from . import keymap, media, ops, types, utils, wm
 
-__all__ = ("assets", "context", "data", "keymap", "ops", "types", "utils", "wm")
+__all__ = ("assets", "context", "data", "keymap", "media", "ops", "types", "utils", "wm")
 
 
 class _Text:
@@ -187,7 +188,8 @@ class _Layer:
     def detail(self):
         """Detail levels: {"levels": each point's level (0: its own points, 1 and up: detail the
         knife added), "hidden": each point hidden at its shape's level, "shape_levels": each shape's
-        edit level, "shape_max_levels": each shape's highest detail level}."""
+        edit level, "shape_max_levels": each shape's highest detail level, "wires": the points each curve's wire runs through, at its
+        edit level}."""
         return dict(_oanim.layer_detail(self._id))
 
     def shape_outline(self, index, steps=16):
@@ -232,6 +234,22 @@ class _Layer:
     def set_selected_corner(self, corner):
         """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
         _oanim.layer_set_selected_corner(self._id, corner)
+
+    @property
+    def media_clips(self):
+        """A Media layer's clips, in time order: dicts with id, filepath, sequence (a numbered image
+        sequence), packed (kept inside the .oanim), start (its first frame), length (frames), in_point
+        (seconds into the file it starts at), end ("HOLD", "LOOP" or "HIDE": after the file runs out),
+        timing ("REAL_TIME" or "FRAME_BY_FRAME"), missing and selected. Change them with
+        oanim.ops.media.clip_set(clip=..., start=..., length=..., in_point=...)."""
+        return [dict(c) for c in _oanim.layer_media_clips(self._id)]
+
+    def media_shown(self, frame=None):
+        """What a Media layer shows on `frame` (the current one by default): (clip id, seconds into
+        its file; a sequence's image number / 1000), or None between clips."""
+        if frame is None:
+            frame = data.document.frame_current
+        return _oanim.layer_media_shown(self._id, int(frame))
 
     @property
     def bones(self):

@@ -16,12 +16,14 @@
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
+#include "data/media_layer.hh"
 
 namespace oanim {
 
 using json = nlohmann::ordered_json;
 
 static constexpr const char *DOCUMENT_ENTRY = "document.json";
+static constexpr const char *MEDIA_ENTRY_PREFIX = "media/";
 static constexpr const char *FORMAT_NAME = "OpenAnimate";
 /* What files said before Open Animate was renamed from SkyAnimate: they open as they are. */
 static constexpr const char *LEGACY_FORMAT_NAME = "SkyAnimate";
@@ -344,6 +346,53 @@ static json reference_to_json(const ReferenceSettings &rs)
           {"weights", std::move(weights)}};
 }
 
+/* The folder of the .oanim being written or read: media files are saved relative to it as well as
+ * absolute, and found from either (the project folder moved, or the drive letter changed). */
+static std::filesystem::path g_file_folder;
+
+static const char *const MEDIA_FIT_IDS[] = {"FIT", "FILL", "STRETCH", "ORIGINAL"};
+static const char *const MEDIA_TIMING_IDS[] = {"REAL_TIME", "FRAME_BY_FRAME"};
+static const char *const MEDIA_END_IDS[] = {"HOLD", "LOOP", "HIDE"};
+
+static json media_to_json(const MediaSettings &m)
+{
+  json clips = json::array();
+  for (const MediaClip &c : m.clips) {
+    json cj = {{"id", c.id},
+               {"filepath", c.filepath},
+               {"start", c.start},
+               {"length", c.length},
+               {"in", c.in},
+               {"timing", MEDIA_TIMING_IDS[int(c.timing)]},
+               {"end", MEDIA_END_IDS[int(c.end)]}};
+    if (!g_file_folder.empty() && !c.filepath.empty()) {
+      std::error_code ec;
+      const std::filesystem::path rel = std::filesystem::relative(path_from_utf8(c.filepath), g_file_folder, ec);
+      if (!ec && !rel.empty()) {
+        const std::u8string text = rel.generic_u8string();
+        cj["relative"] = std::string(text.begin(), text.end());
+      }
+    }
+    if (c.sequence) {
+      cj["sequence"] = true;
+    }
+    if (!c.packed.empty()) {
+      cj["packed"] = c.packed;
+    }
+    clips.push_back(std::move(cj));
+  }
+  return {{"guide", m.guide},
+          {"fit", MEDIA_FIT_IDS[int(m.fit)]},
+          {"greyscale", m.greyscale},
+          {"tint", color_to_json(m.tint)},
+          {"tint_amount", num(m.tint_amount)},
+          {"in_front", m.in_front},
+          {"volume", num(m.volume)},
+          {"muted", m.muted},
+          {"next_clip_id", m.next_clip_id},
+          {"clips", std::move(clips)}};
+}
+
 static json layer_to_json(const Layer &layer)
 {
   json j = {
@@ -546,6 +595,9 @@ static json layer_to_json(const Layer &layer)
     j["reference_source"] = layer.reference_source;
     j["reference"] = reference_to_json(layer.reference);
   }
+  else if (layer.is_media()) {
+    j["media"] = media_to_json(layer.media);
+  }
   else if (!layer.is_group()) {
     j["drawing"] = drawing_to_json(layer.drawing);
   }
@@ -599,6 +651,9 @@ std::string oanim_document_to_json(const Document &doc)
            {"frame_end", doc.frame_end},
            {"frame_current", doc.frame_current},
            {"auto_key", doc.auto_key},
+           {"sync_mode", Document::rna().find("sync_mode")->items[size_t(doc.sync)].identifier},
+           {"play_audio", doc.play_audio},
+           {"use_audio_scrub", doc.audio_scrub},
            {"fps", num(doc.fps)},
            {"width", doc.width},
            {"height", doc.height},
@@ -643,7 +698,9 @@ bool oanim_file_write(const Document &doc, const std::string &path, std::string 
   /* What smart actions add isn't data: it is worked out again on opening. */
   Document data = doc;
   animation_strip_smart(data);
+  g_file_folder = path_from_utf8(path).parent_path();
   const std::string text = oanim_document_to_json(data);
+  g_file_folder.clear();
 
   /* Build the archive in memory: miniz's file functions can't open non-ASCII Windows paths. */
   mz_zip_archive zip{};
@@ -653,8 +710,15 @@ bool oanim_file_write(const Document &doc, const std::string &path, std::string 
   }
   void *buffer = nullptr;
   size_t size = 0;
-  const bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_DEFAULT_LEVEL) &&
-                     mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
+  bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_DEFAULT_LEVEL);
+  /* Packed media beside it, as media/<id>/<name> (video and sound are compressed already: stored). */
+  for (const std::string &id : media_packed_used(data)) {
+    if (const std::string *bytes = media_packed_bytes(id); bytes && built) {
+      const std::string entry = std::string(MEDIA_ENTRY_PREFIX) + id + "/" + media_packed_name(id);
+      built = mz_zip_writer_add_mem(&zip, entry.c_str(), bytes->data(), bytes->size(), MZ_NO_COMPRESSION);
+    }
+  }
+  built = built && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
   mz_zip_writer_end(&zip);
   if (!built) {
     mz_free(buffer);
@@ -884,7 +948,6 @@ static constexpr std::pair<const char *, bool ViewportOverlays::*> OVERLAY_SWITC
     {"physics_ghosts", &ViewportOverlays::physics_ghosts},
     {"live_physics", &ViewportOverlays::live_physics},
     {"bone_shapes", &ViewportOverlays::bone_shapes},
-    {"detail_cage", &ViewportOverlays::detail_cage},
 };
 static constexpr const char *HANDLE_DISPLAYS[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
 static constexpr const char *ARMATURE_DISPLAYS[] = {"OFF", "SELECTED", "ON"};
@@ -1268,6 +1331,64 @@ static void migrate_old_masks(std::vector<Layer> &layers)
   }
 }
 
+template<size_t N> static int id_index(const char *const (&ids)[N], const std::string &id, int fallback)
+{
+  for (size_t i = 0; i < N; i++) {
+    if (id == ids[i]) {
+      return int(i);
+    }
+  }
+  return fallback;
+}
+
+static MediaSettings media_from_json(const json &j)
+{
+  MediaSettings m;
+  m.guide = get_bool(j, "guide", m.guide);
+  m.fit = MediaFit(id_index(MEDIA_FIT_IDS, get_string(j, "fit", ""), 0));
+  m.greyscale = get_bool(j, "greyscale", false);
+  m.tint = get_color(j, "tint", m.tint);
+  m.tint_amount = std::clamp(get_float(j, "tint_amount", 0.0f), 0.0f, 1.0f);
+  m.in_front = get_bool(j, "in_front", false);
+  m.volume = std::clamp(get_float(j, "volume", 1.0f), 0.0f, 4.0f);
+  m.muted = get_bool(j, "muted", false);
+  m.next_clip_id = std::max<uint64_t>(get_id(j, "next_clip_id"), 1);
+  std::error_code ec;
+  for (const json &cj : get_array(j, "clips")) {
+    if (!cj.is_object()) {
+      continue;
+    }
+    MediaClip c;
+    c.id = get_id(cj, "id");
+    c.filepath = get_string(cj, "filepath", "");
+    /* Found where it was, or else beside the file as it was relative to it. */
+    const std::string rel = get_string(cj, "relative", "");
+    if (!rel.empty() && !g_file_folder.empty() && !std::filesystem::is_regular_file(path_from_utf8(c.filepath), ec)) {
+      const std::filesystem::path beside = (g_file_folder / path_from_utf8(rel)).lexically_normal();
+      if (std::filesystem::is_regular_file(beside, ec)) {
+        const std::u8string text = beside.u8string();
+        c.filepath = std::string(text.begin(), text.end());
+      }
+    }
+    c.sequence = get_bool(cj, "sequence", false);
+    c.packed = get_string(cj, "packed", "");
+    c.start = std::max(get_int(cj, "start", 1), 1);
+    c.length = std::max(get_int(cj, "length", 1), 1);
+    if (auto it = cj.find("in"); it != cj.end() && it->is_number()) {
+      c.in = std::max(it->get<double>(), 0.0);
+    }
+    c.timing = MediaTiming(id_index(MEDIA_TIMING_IDS, get_string(cj, "timing", ""), 0));
+    c.end = MediaEnd(id_index(MEDIA_END_IDS, get_string(cj, "end", ""), 0));
+    if (c.id == 0 || std::any_of(m.clips.begin(), m.clips.end(), [&](const MediaClip &o) { return o.id == c.id; })) {
+      c.id = m.next_clip_id++;
+    }
+    m.next_clip_id = std::max(m.next_clip_id, c.id + 1);
+    m.clips.push_back(std::move(c));
+  }
+  std::stable_sort(m.clips.begin(), m.clips.end(), [](const MediaClip &a, const MediaClip &b) { return a.start < b.start; });
+  return m;
+}
+
 static Layer layer_from_json(const json &j, int depth)
 {
   Layer layer;
@@ -1543,8 +1664,11 @@ static Layer layer_from_json(const json &j, int depth)
   if (auto it = j.find("reference"); it != j.end() && layer.reference_source != 0) {
     layer.reference = reference_from_json(*it);
   }
-  if (auto it = j.find("drawing"); it != j.end() && !layer.is_group()) {
+  if (auto it = j.find("drawing"); it != j.end() && layer.has_drawing()) {
     layer.drawing = drawing_from_json(*it);
+  }
+  if (auto it = j.find("media"); it != j.end() && it->is_object() && layer.is_media()) {
+    layer.media = media_from_json(*it);
   }
   /* Older files without flexi-binding: points that weren't bound stayed put, and still do. */
   if (!get_bool(j, "flexi_binding", true)) {
@@ -1694,7 +1818,12 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.frame_end = std::max(doc.frame_start, get_int(j, "frame_end", doc.frame_end));
   doc.frame_current = std::max(0, get_int(j, "frame_current", doc.frame_current));
   doc.auto_key = get_bool(j, "auto_key", true);
-  doc.fps = std::clamp(get_float(j, "fps", doc.fps), 1.0f, 1000.0f);
+  if (const int sync = Document::rna().find("sync_mode")->enum_index(get_string(j, "sync_mode", "")); sync >= 0) {
+    doc.sync = PlaybackSync(sync);
+  }
+  doc.play_audio = get_bool(j, "play_audio", doc.play_audio);
+  doc.audio_scrub = get_bool(j, "use_audio_scrub", doc.audio_scrub);
+  doc.fps =std::clamp(get_float(j, "fps", doc.fps), 1.0f, 1000.0f);
   doc.width = std::clamp(get_int(j, "width", doc.width), 1, 65536);
   doc.height = std::clamp(get_int(j, "height", doc.height), 1, 65536);
   doc.background = get_color(j, "background", doc.background);
@@ -1795,6 +1924,26 @@ bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_er
   }
   size_t size = 0;
   void *data = mz_zip_reader_extract_file_to_heap(&zip, DOCUMENT_ENTRY, &size, 0);
+  /* Packed media: media/<id>/<name>. */
+  const std::string prefix = MEDIA_ENTRY_PREFIX;
+  for (mz_uint i = 0; data && i < mz_zip_reader_get_num_files(&zip); i++) {
+    char name[1024];
+    mz_zip_reader_get_filename(&zip, i, name, sizeof(name));
+    const std::string entry = name;
+    const size_t slash = entry.find('/', prefix.size());
+    if (entry.compare(0, prefix.size(), prefix) != 0 || slash == std::string::npos || slash + 1 >= entry.size()) {
+      continue;
+    }
+    const std::string id = entry.substr(prefix.size(), slash - prefix.size());
+    if (media_packed_has(id)) {
+      continue;
+    }
+    size_t bytes_size = 0;
+    if (void *packed = mz_zip_reader_extract_to_heap(&zip, i, &bytes_size, 0)) {
+      media_packed_add(id, entry.substr(slash + 1), std::string(static_cast<const char *>(packed), bytes_size));
+      mz_free(packed);
+    }
+  }
   mz_zip_reader_end(&zip);
   if (!data) {
     *r_error = std::string("The file has no ") + DOCUMENT_ENTRY + ": " + path;
@@ -1802,7 +1951,10 @@ bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_er
   }
   const std::string text(static_cast<const char *>(data), size);
   mz_free(data);
-  return oanim_document_from_json(text, r_doc, r_error);
+  g_file_folder = path_from_utf8(path).parent_path();
+  const bool read = oanim_document_from_json(text, r_doc, r_error);
+  g_file_folder.clear();
+  return read;
 }
 
 }  // namespace oanim

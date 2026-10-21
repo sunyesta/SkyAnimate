@@ -138,6 +138,13 @@ const LastOperation *operator_last_redo(const Context &C)
   return &g_last_redo;
 }
 
+void operator_last_redo_keep(const Context &C)
+{
+  if (g_has_last_redo && C.undo) {
+    g_last_redo.change_count = C.undo->change_count();
+  }
+}
+
 OpStatus operator_redo_last(Context &C, const OpArgs &args)
 {
   const LastOperation *last = operator_last_redo(C);
@@ -165,6 +172,10 @@ OpStatus operator_redo_last(Context &C, const OpArgs &args)
   return status;
 }
 
+/* How many operators that make an undo step are running: one called inside another's run is part of
+ * that step (Blender's macros, a Python operator calling others), so only the outermost pushes. */
+static int g_undo_depth = 0;
+
 OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
 {
   const OperatorType *found = operators().find(idname);
@@ -184,7 +195,17 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   C.op_args = &args;
   const std::string outer_undo = C.undo_name;
   C.undo_name.clear();
-  const OpStatus status = ot.exec(C);
+  const bool undo_step = (ot.flag & OPTYPE_UNDO) && g_undo_depth == 0;
+  struct UndoDepth {
+    bool counts;
+    explicit UndoDepth(bool c) : counts(c) { g_undo_depth += counts ? 1 : 0; }
+    ~UndoDepth() { g_undo_depth -= counts ? 1 : 0; }
+  };
+  OpStatus status;
+  {
+    const UndoDepth depth((ot.flag & OPTYPE_UNDO) != 0);
+    status = ot.exec(C);
+  }
   const std::string undo_name = C.undo_name.empty() ? ot.name : C.undo_name;
   C.undo_name = outer_undo;
   C.op_args = outer_args;
@@ -201,7 +222,7 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   if (ot.flag & OPTYPE_REGISTER) {
     report(ReportType::Operator, operator_call_repr(ot.idname, args));
   }
-  if ((ot.flag & OPTYPE_UNDO) && C.undo && C.document) {
+  if (undo_step && C.undo && C.document) {
     C.undo->push(undo_name, *C.document);
     /* Recording may have keyed a bone that drives a smart action. */
     animation_refresh_smart(*C.document);

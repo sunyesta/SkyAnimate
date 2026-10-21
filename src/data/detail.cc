@@ -235,6 +235,21 @@ std::vector<int> drawing_curve_detail_levels(const VectorDrawing &drawing)
   return levels;
 }
 
+VectorDrawing drawing_detail_shown_curves(const VectorDrawing &drawing)
+{
+  VectorDrawing shown = drawing;
+  if (!drawing_has_detail(drawing)) {
+    return shown;
+  }
+  const std::vector<int> levels = drawing_curve_detail_levels(drawing);
+  for (size_t c = 0; c < shown.curves.size(); c++) {
+    std::erase_if(shown.curves[c].points,
+                  [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
+  }
+  drawing_detail_final_handles(shown);
+  return shown;
+}
+
 void drawing_detail_update_shown(VectorDrawing &drawing)
 {
   for (MeshPoint &p : drawing.points) {
@@ -519,6 +534,52 @@ static std::set<int> picked_curves(const VectorDrawing &drawing, const std::vect
   return curves;
 }
 
+bool drawing_detail_selected(const VectorDrawing &drawing)
+{
+  for (const Curve &curve : drawing.curves) {
+    for (const CurvePoint &cp : curve.points) {
+      const MeshPoint &p = drawing.points[cp.point];
+      if (p.detail.level > 0 && (p.selected || cp.select_in || cp.select_out)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+int drawing_detail_smooth_selected(VectorDrawing &drawing, float influence)
+{
+  drawing_detail_sync(drawing, true);
+  const float keep = 1.0f - std::clamp(influence, 0.0f, 1.0f);
+  int changed = 0;
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      MeshPoint &p = drawing.points[cp.point];
+      PointDetail &dt = p.detail;
+      if (dt.level == 0) {
+        continue;
+      }
+      if (p.selected) {
+        dt.pos = dt.pos * keep;
+        dt.in = dt.in * keep;
+        dt.out = dt.out * keep;
+        changed++;
+        continue;
+      }
+      for (const bool in : {true, false}) {
+        if (in ? cp.select_in : cp.select_out) {
+          (in ? dt.in : dt.out) = (in ? dt.in : dt.out) * keep;
+          changed++;
+        }
+      }
+    }
+  }
+  if (changed > 0) {
+    drawing_detail_sync(drawing, false);
+  }
+  return changed;
+}
+
 int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool> &shapes)
 {
   RawEdit raw;
@@ -609,31 +670,95 @@ int drawing_detail_apply(VectorDrawing &drawing, const std::vector<bool> &shapes
   return changed;
 }
 
-/* Douglas-Peucker over a run of points (by index into `pts`): marks the ones to keep. */
-static void keep_shape_points(const std::vector<float2> &pts, int first, int last, float tolerance,
-                              std::vector<bool> &keep)
+/* The points of a curve (its final shape) that can be detail at `tolerance`: one at a time, the point
+ * nearest the curve its neighbours would make without it (their facing handles lengthened as a split
+ * there would have shortened them, the split where it sits along the curve between them), while that is
+ * within the tolerance. Ends of an open curve, points on other curves too (`welded`), and enough points
+ * to keep a closed curve's shape stay. */
+static std::vector<bool> curve_detail_candidates(const VectorDrawing &drawing, const Curve &curve,
+                                                 const std::vector<bool> &welded, float tolerance)
 {
-  if (last <= first + 1) {
-    return;
+  const int n = int(curve.points.size());
+  std::vector<bool> detail(n, false);
+  if (n < (curve.closed ? 4 : 3)) {
+    return detail;
   }
-  const float2 a = pts[first], b = pts[last];
-  const float2 ab = b - a;
-  const float ab2 = std::max(dot(ab, ab), 1e-12f);
-  float worst = -1.0f;
-  int index = -1;
-  for (int i = first + 1; i < last; i++) {
-    const float t = std::clamp(dot(pts[i] - a, ab) / ab2, 0.0f, 1.0f);
-    const float d = distance(pts[i], a + ab * t);
-    if (d > worst) {
-      worst = d;
-      index = i;
+  /* How far along the curve each point is. */
+  std::vector<float> along(size_t(n) + 1, 0.0f);
+  std::vector<float2> samples;
+  for (int s = 0; s < curve.segment_count(); s++) {
+    samples.clear();
+    curve_segment_sample(drawing, curve, s, 16, samples);
+    int a, b;
+    curve_segment_points(curve, s, &a, &b);
+    samples.push_back(drawing.points[b].pos);
+    float l = 0.0f;
+    for (size_t k = 0; k + 1 < samples.size(); k++) {
+      l += distance(samples[k], samples[k + 1]);
     }
+    along[size_t(s) + 1] = along[size_t(s)] + l;
   }
-  if (worst > tolerance) {
-    keep[index] = true;
-    keep_shape_points(pts, first, index, tolerance, keep);
-    keep_shape_points(pts, index, last, tolerance, keep);
+  const float total = along[size_t(curve.segment_count())];
+  std::vector<float2> in(n), out(n);
+  for (int i = 0; i < n; i++) {
+    in[i] = curve.points[i].handle_in;
+    out[i] = curve.points[i].handle_out;
   }
+  int kept = n;
+  const auto step = [&](int i, int dir) {
+    for (int k = 1; k < n; k++) {
+      const int j = curve.closed ? ((i + dir * k) % n + n) % n : i + dir * k;
+      if (j < 0 || j >= n) {
+        return -1;
+      }
+      if (!detail[j]) {
+        return j;
+      }
+    }
+    return -1;
+  };
+  const auto at = [&](int i) { return drawing.points[curve.points[i].point].pos; };
+  for (;;) {
+    if (kept <= (curve.closed ? 3 : 2)) {
+      break;
+    }
+    int best = -1;
+    float best_error = tolerance;
+    float best_t = 0.5f;
+    for (int i = 0; i < n; i++) {
+      if (detail[i] || welded[curve.points[i].point] || (!curve.closed && (i == 0 || i == n - 1))) {
+        continue;
+      }
+      const int a = step(i, -1), b = step(i, 1);
+      if (a < 0 || b < 0 || a == b) {
+        continue;
+      }
+      float from = along[a], to = along[b], here = along[i];
+      if (to <= from) {
+        to += total;
+      }
+      if (here < from) {
+        here += total;
+      }
+      const float split = std::clamp((here - from) / std::max(to - from, 1e-9f), 0.05f, 0.95f);
+      const float2 ctrl[4] = {at(a), at(a) + out[a] / split, at(b) + in[b] / (1.0f - split), at(b)};
+      const float error = distance(at(i), bezier_eval(ctrl, split));
+      if (error <= best_error) {
+        best = i;
+        best_error = error;
+        best_t = split;
+      }
+    }
+    if (best < 0) {
+      break;
+    }
+    const int a = step(best, -1), b = step(best, 1);
+    out[a] = out[a] / best_t;
+    in[b] = in[b] / (1.0f - best_t);
+    detail[best] = true;
+    kept--;
+  }
+  return detail;
 }
 
 int drawing_detail_rebuild(VectorDrawing &drawing, const std::vector<bool> &shapes, float tolerance,
@@ -641,74 +766,53 @@ int drawing_detail_rebuild(VectorDrawing &drawing, const std::vector<bool> &shap
 {
   *r_keys_dropped = false;
   const std::set<int> curves = picked_curves(drawing, shapes);
+  /* Worked out on a copy: when no point can be detail, the drawing stays as it was. */
+  VectorDrawing work = drawing;
+  bool dropped = false;
   {
     RawEdit raw;
-    drawing_detail_sync(drawing, true);
+    drawing_detail_sync(work, true);
     for (const int c : curves) {
-      curve_apply(drawing, drawing.curves[c], r_keys_dropped);
+      curve_apply(work, work.curves[c], &dropped);
     }
   }
   /* Points on more than one curve stay base points (detail sits on one curve). */
-  std::vector<int> uses(drawing.points.size(), 0);
-  for (const Curve &curve : drawing.curves) {
+  std::vector<bool> welded(work.points.size(), false);
+  std::vector<int> uses(work.points.size(), 0);
+  for (const Curve &curve : work.curves) {
     for (const CurvePoint &cp : curve.points) {
-      uses[cp.point]++;
+      welded[cp.point] = ++uses[cp.point] > 1;
     }
   }
   int made = 0;
   for (const int c : curves) {
-    Curve &curve = drawing.curves[c];
-    const int n = int(curve.points.size());
-    if (n < 4) {
-      continue;
-    }
-    std::vector<float2> pts;
-    for (const CurvePoint &cp : curve.points) {
-      pts.push_back(drawing.points[cp.point].pos);
-    }
-    std::vector<bool> keep(n, false);
-    keep[0] = true;
-    if (curve.closed) {
-      /* Split the loop at the point furthest from the first. */
-      int far = 1;
-      for (int i = 1; i < n; i++) {
-        far = distance(pts[i], pts[0]) > distance(pts[far], pts[0]) ? i : far;
-      }
-      keep[far] = true;
-      keep_shape_points(pts, 0, far, tolerance, keep);
-      pts.push_back(pts[0]);
-      std::vector<bool> keep_loop(keep);
-      keep_loop.push_back(true);
-      keep_shape_points(pts, far, n, tolerance, keep_loop);
-      for (int i = 0; i < n; i++) {
-        keep[i] = keep[i] || keep_loop[i];
-      }
-    }
-    else {
-      keep[n - 1] = true;
-      keep_shape_points(pts, 0, n - 1, tolerance, keep);
-    }
-    std::vector<bool> retime(n, false);
-    for (int i = 0; i < n; i++) {
-      MeshPoint &p = drawing.points[curve.points[i].point];
-      if (keep[i] || uses[curve.points[i].point] > 1) {
+    Curve &curve = work.curves[c];
+    const std::vector<bool> detail = curve_detail_candidates(work, curve, welded, tolerance);
+    std::vector<bool> retime(curve.points.size(), false);
+    for (size_t i = 0; i < curve.points.size(); i++) {
+      if (!detail[i]) {
         continue;
       }
-      if (p.pos_keys.animated() || curve.points[i].handle_in_keys.animated() ||
-          curve.points[i].handle_out_keys.animated())
-      {
-        *r_keys_dropped = true;
+      CurvePoint &cp = curve.points[i];
+      MeshPoint &p = work.points[cp.point];
+      if (p.pos_keys.animated() || cp.handle_in_keys.animated() || cp.handle_out_keys.animated()) {
+        dropped = true;
       }
       p.pos_keys = {};
-      curve.points[i].handle_in_keys = {};
-      curve.points[i].handle_out_keys = {};
+      cp.handle_in_keys = {};
+      cp.handle_out_keys = {};
       p.detail = {};
       p.detail.level = 1;
       retime[i] = true;
       made++;
     }
-    curve_from_final(drawing, curve, retime);
+    curve_from_final(work, curve, retime);
   }
+  if (made == 0) {
+    return 0;
+  }
+  drawing = std::move(work);
+  *r_keys_dropped = dropped;
   drawing_detail_update_shown(drawing);
   return made;
 }
