@@ -8,8 +8,9 @@
  * Video decodes on a worker thread per source, as Blender's movie clip cache does: a request seeks to
  * the keyframe before the frame and decodes forward to it, then keeps going a little ahead, so
  * playback finds its frames waiting. Until the asked-for frame is ready the nearest decoded one shows,
- * never a blank. Sound decodes whole, in the background, to 48 kHz stereo. Pictures are capped at
- * MEDIA_MAX_SIZE on their longer side (halved until they fit), which keeps a 4K reference light. */
+ * never a blank. Sound decodes whole, in the background, to 48 kHz stereo. Pictures keep their full
+ * size up to MEDIA_MAX_SIZE on their longer side (larger ones are shrunk to just fit, averaging the
+ * pixels each one covers), so a 5000 pixel render shows sharp. */
 
 #include <atomic>
 #include <cstdint>
@@ -19,7 +20,9 @@
 
 namespace oanim {
 
-inline constexpr int MEDIA_MAX_SIZE = 2048;
+inline constexpr int MEDIA_MAX_SIZE = 8192;
+/* The size a picture of w x h decodes at: as it is, or shrunk to fit MEDIA_MAX_SIZE. */
+void media_fit_size(int w, int h, int *r_w, int *r_h);
 /* Sound is mixed at this rate, in stereo. */
 inline constexpr int MEDIA_AUDIO_RATE = 48000;
 

@@ -70,7 +70,17 @@ static float2 computed_handle(const VectorDrawing &drawing, const Curve &curve, 
   if (second_id == i) {
     return here;
   }
-  float2 dir = normalize(pos(post_id) - pos(pre_id));
+  /* The tangent bisects the directions to the next point and from the previous one (as Moho draws
+   * it), not the line between the neighbours: a point with one neighbour close by (a cheek's
+   * corner) keeps the curve's own direction there. */
+  const float2 to_next = pos(post_id) - here, from_prev = here - pos(pre_id);
+  const float next_len = length(to_next), prev_len = length(from_prev);
+  float2 dir = (next_len > 1e-9f ? to_next / next_len : float2()) + (prev_len > 1e-9f ? from_prev / prev_len : float2());
+  if (length(dir) < 1e-9f) {
+    /* Neighbours straight back the way it came: across, as the old line between them was. */
+    dir = pos(post_id) - pos(pre_id);
+  }
+  dir = normalize(dir);
   if (pre) {
     dir = -dir;
   }
@@ -497,6 +507,28 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
   return connected;
 }
 
+std::vector<Shape> shape_runs(const VectorDrawing &drawing, const Shape &shape)
+{
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  if (shape.edges.empty() || shape_chain(drawing, shape, chain, &closed)) {
+    return {shape};
+  }
+  std::vector<Shape> runs;
+  Shape rest = shape;
+  while (!rest.edges.empty()) {
+    shape_chain(drawing, rest, chain, &closed);
+    Shape run = shape;
+    run.edges.clear();
+    for (const OrientedEdge &o : chain) {
+      run.edges.push_back(o.edge);
+      std::erase(rest.edges, o.edge);
+    }
+    runs.push_back(std::move(run));
+  }
+  return runs;
+}
+
 /* ---------------------------------------------------------------------------------
  * Editing helpers
  */
@@ -850,6 +882,199 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point)
   std::erase_if(drawing.shapes, [](const Shape &shape) { return shape.edges.empty(); });
   drawing_remove_curves(drawing, remove_curve);
   drawing_remove_unused_points(drawing);
+}
+
+/* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of
+ * p3, back along the curve), to the samples `d`: the two handle lengths, by least squares, with the
+ * samples' places along the curve refined by Newton steps. */
+static void fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const std::vector<float2> &d,
+                               float *r_a1, float *r_a2)
+{
+  const float chord = distance(p0, p3);
+  *r_a1 = *r_a2 = chord / 3.0f;
+  const size_t n = d.size();
+  if (n < 3 || chord < 1e-9f) {
+    return;
+  }
+  /* Places along the curve by distance along the samples. */
+  std::vector<float> u(n, 0.0f);
+  for (size_t i = 1; i < n; i++) {
+    u[i] = u[i - 1] + distance(d[i], d[i - 1]);
+  }
+  for (float &x : u) {
+    x /= std::max(u.back(), 1e-9f);
+  }
+  float a1 = chord / 3.0f, a2 = chord / 3.0f;
+  for (int round = 0; round < 24; round++) {
+    double c00 = 0, c01 = 0, c11 = 0, x0 = 0, x1 = 0;
+    for (size_t i = 0; i < n; i++) {
+      const float t = u[i], s = 1.0f - t;
+      const float b0 = s * s * s, b1 = 3 * s * s * t, b2 = 3 * s * t * t, b3 = t * t * t;
+      const float2 A1 = t1 * b1, A2 = t2 * b2;
+      const float2 rest = d[i] - (p0 * (b0 + b1) + p3 * (b2 + b3));
+      c00 += dot(A1, A1);
+      c01 += dot(A1, A2);
+      c11 += dot(A2, A2);
+      x0 += dot(rest, A1);
+      x1 += dot(rest, A2);
+    }
+    const double det = c00 * c11 - c01 * c01;
+    if (std::fabs(det) < 1e-12) {
+      break;
+    }
+    a1 = float((x0 * c11 - x1 * c01) / det);
+    a2 = float((c00 * x1 - c01 * x0) / det);
+    /* A handle turned back or vanishing means no good fit this way: thirds of the chord. */
+    if (a1 < chord * 1e-3f || a2 < chord * 1e-3f) {
+      a1 = a2 = chord / 3.0f;
+      break;
+    }
+    /* Newton steps: each sample's place moves to the nearest point of the curve as now fitted. */
+    const float2 c[4] = {p0, p0 + t1 * a1, p3 + t2 * a2, p3};
+    for (size_t i = 1; i + 1 < n; i++) {
+      const float t = u[i], s = 1.0f - t;
+      const float2 q = bezier_eval(c, t);
+      const float2 q1 = (c[1] - c[0]) * (3 * s * s) + (c[2] - c[1]) * (6 * s * t) + (c[3] - c[2]) * (3 * t * t);
+      const float2 q2 = (c[2] - c[1] * 2.0f + c[0]) * (6 * s) + (c[3] - c[2] * 2.0f + c[1]) * (6 * t);
+      const float num = dot(q - d[i], q1), den = dot(q1, q1) + dot(q - d[i], q2);
+      if (std::fabs(den) > 1e-12f) {
+        u[i] = std::clamp(t - num / den, 0.0f, 1.0f);
+      }
+    }
+  }
+  *r_a1 = a1;
+  *r_a2 = a2;
+}
+
+void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &points)
+{
+  /* Points are followed by id through the removals. */
+  drawing_ensure_ids(drawing);
+  std::vector<bool> gone(drawing.points.size(), false);
+  for (const int p : points) {
+    if (p >= 0 && p < int(gone.size())) {
+      gone[p] = true;
+    }
+  }
+  /* First, while the curves are as they were: each span from a kept point over removed ones to the
+   * next kept point, sampled, and the handle lengths that fit one segment to it. */
+  struct Fit {
+    uint64_t from = 0, to = 0;
+    float2 out, in;
+  };
+  std::vector<Fit> fits;
+  /* Detail points that go on their own (see below). */
+  std::vector<uint64_t> detail_ids;
+  for (Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    /* The spans: from a kept point over removed ones to the next kept point. */
+    struct Span {
+      int a = 0, b = 0, steps = 0;
+    };
+    std::vector<Span> spans;
+    for (int a = 0; a < n; a++) {
+      if (gone[curve.points[a].point] || (!curve.closed && a == n - 1)) {
+        continue;
+      }
+      /* The run of removed points after a, and the kept point that ends it. */
+      int b = a, steps = 0;
+      do {
+        b = (b + 1) % n;
+        steps++;
+      } while (gone[curve.points[b].point] && steps < n && (curve.closed || b < n - 1));
+      if (steps < 2 || gone[curve.points[b].point] || b == a || (!curve.closed && b < a)) {
+        continue;
+      }
+      /* Removed points that are all detail above both kept ones (the knife's, at a detail level) ride
+       * on the curve of the level below, which goes on as it was: nothing to fit. */
+      const int ends = std::max(drawing.points[curve.points[a].point].detail.level,
+                                drawing.points[curve.points[b].point].detail.level);
+      bool detail_only = true;
+      for (int k = 1; k < steps; k++) {
+        detail_only &= drawing.points[curve.points[(a + k) % n].point].detail.level > ends;
+      }
+      if (!detail_only) {
+        spans.push_back({a, b, steps});
+      }
+      else {
+        for (int k = 1; k < steps; k++) {
+          detail_ids.push_back(drawing.points[curve.points[(a + k) % n].point].id);
+        }
+      }
+    }
+    /* The ends of a span keep their handles as they show now (worked out from their neighbours, they
+     * would change with a neighbour gone). */
+    for (const Span &s : spans) {
+      own_handles(drawing, curve, s.a);
+      own_handles(drawing, curve, s.b);
+    }
+    for (const Span &s : spans) {
+      const int a = s.a, b = s.b, steps = s.steps;
+      std::vector<float2> samples;
+      float2 t1, t2;
+      for (int k = 0; k < steps; k++) {
+        float2 ctrl[4];
+        curve_segment_bezier(drawing, curve, (a + k) % n, ctrl);
+        if (k == 0) {
+          t1 = length(ctrl[1] - ctrl[0]) > 1e-9f ? ctrl[1] - ctrl[0] : ctrl[3] - ctrl[0];
+        }
+        if (k == steps - 1) {
+          t2 = length(ctrl[2] - ctrl[3]) > 1e-9f ? ctrl[2] - ctrl[3] : ctrl[0] - ctrl[3];
+        }
+        for (int j = k == 0 ? 0 : 1; j <= 24; j++) {
+          samples.push_back(bezier_eval(ctrl, float(j) / 24.0f));
+        }
+      }
+      if (length(t1) < 1e-9f || length(t2) < 1e-9f) {
+        continue;
+      }
+      t1 = normalize(t1);
+      t2 = normalize(t2);
+      float a1 = 0.0f, a2 = 0.0f;
+      fit_handle_lengths(samples.front(), samples.back(), t1, t2, samples, &a1, &a2);
+      fits.push_back({drawing.points[curve.points[a].point].id, drawing.points[curve.points[b].point].id, t1 * a1, t2 * a2});
+    }
+  }
+  /* Then the points go: detail riding on the level below as Delete Higher removes it (that level's
+   * handles kept, so the curve is exactly what it was before the knife), the rest one at a time,
+   * highest index first as each dissolve renumbers the ones after it... */
+  std::vector<uint64_t> other_ids;
+  for (int i = 0; i < int(gone.size()); i++) {
+    if (gone[i] && std::find(detail_ids.begin(), detail_ids.end(), drawing.points[i].id) == detail_ids.end()) {
+      other_ids.push_back(drawing.points[i].id);
+    }
+  }
+  if (!detail_ids.empty()) {
+    drawing_detail_remove_points(drawing, detail_ids);
+  }
+  std::vector<int> order;
+  for (const uint64_t id : other_ids) {
+    if (const int p = drawing_point_index(drawing, id); p >= 0) {
+      order.push_back(p);
+    }
+  }
+  std::sort(order.begin(), order.end());
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    drawing_dissolve_point(drawing, *it);
+  }
+  /* ...and the joined segments take the fitted handles (the other handle of each point stays). */
+  for (const Fit &f : fits) {
+    const int from = drawing_point_index(drawing, f.from), to = drawing_point_index(drawing, f.to);
+    if (from < 0 || to < 0) {
+      continue;
+    }
+    for (Curve &curve : drawing.curves) {
+      const int n = int(curve.points.size());
+      for (int i = 0; i < n; i++) {
+        const int j = (i + 1) % n;
+        if (curve.points[i].point != from || curve.points[j].point != to || (!curve.closed && j == 0)) {
+          continue;
+        }
+        curve_point_move_handle(drawing, curve, i, false, drawing.points[from].pos + f.out, true);
+        curve_point_move_handle(drawing, curve, j, true, drawing.points[to].pos + f.in, true);
+      }
+    }
+  }
 }
 
 void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)

@@ -94,17 +94,30 @@ static void icon_eye(ImDrawList *dl, ImVec2 c, float s, bool open)
   }
 }
 
-/* Blender's render toggle: a small camera, struck through when the layer is left out. */
-static void icon_camera(ImDrawList *dl, ImVec2 c, float s, bool on)
+/* Blender's render toggle: a small camera while the layer renders; off, it is a guide, shown as a
+ * dashed frame in the guides' light blue (brighter while the viewport hides guides, saying why the
+ * layer isn't there). */
+static constexpr ImU32 COL_GUIDE = IM_COL32(0x86, 0xc4, 0xd6, 255);
+static void icon_camera(ImDrawList *dl, ImVec2 c, float s, bool on, bool guides_hidden)
 {
-  const ImU32 col = on ? COL_ICON : COL_ICON_OFF;
+  if (!on) {
+    const ImU32 col = guides_hidden ? IM_COL32(0xb8, 0xe6, 0xf2, 255) : COL_GUIDE;
+    const ImVec2 a = c + ImVec2(-s * 0.85f, -s * 0.7f), b = c + ImVec2(s * 0.85f, s * 0.7f);
+    /* Two dashes a side, corners left open. */
+    for (const float u : {0.12f, 0.58f}) {
+      const float v = u + 0.3f;
+      dl->AddLine(ImVec2(a.x + (b.x - a.x) * u, a.y), ImVec2(a.x + (b.x - a.x) * v, a.y), col, 1.4f);
+      dl->AddLine(ImVec2(a.x + (b.x - a.x) * u, b.y), ImVec2(a.x + (b.x - a.x) * v, b.y), col, 1.4f);
+      dl->AddLine(ImVec2(a.x, a.y + (b.y - a.y) * u), ImVec2(a.x, a.y + (b.y - a.y) * v), col, 1.4f);
+      dl->AddLine(ImVec2(b.x, a.y + (b.y - a.y) * u), ImVec2(b.x, a.y + (b.y - a.y) * v), col, 1.4f);
+    }
+    return;
+  }
+  const ImU32 col = COL_ICON;
   dl->AddRect(c + ImVec2(-s * 0.95f, -s * 0.5f), c + ImVec2(s * 0.35f, s * 0.6f), col, 1.5f, 0, 1.3f);
   dl->AddTriangleFilled(c + ImVec2(s * 0.35f, s * 0.05f), c + ImVec2(s * 0.95f, -s * 0.4f),
                         c + ImVec2(s * 0.95f, s * 0.5f), col);
   dl->AddRectFilled(c + ImVec2(-s * 0.75f, -s * 0.85f), c + ImVec2(-s * 0.2f, -s * 0.5f), col, 1.0f);
-  if (!on) {
-    dl->AddLine(c + ImVec2(-s * 0.95f, s * 0.75f), c + ImVec2(s * 0.95f, -s * 0.85f), col, 1.3f);
-  }
 }
 
 static void icon_lock(ImDrawList *dl, ImVec2 c, float s, bool locked)
@@ -198,9 +211,10 @@ struct DropRequest {
   uint64_t target = 0;
   /* -1 above the target, +1 below it, 0 into it (groups). */
   int where = 0;
-  /* Alt held: mask the target with the dragged layer instead of moving it (Shift: outside it). */
+  /* Alt held: a mask row of the dragged layer on the target instead of moving it (Add; Shift:
+   * Subtract). */
   bool mask = false;
-  bool outside = false;
+  bool subtract = false;
 };
 
 /* A small circle, its left half filled (inside a layer) or its right half (outside it). */
@@ -239,7 +253,7 @@ static float mask_symbol(Context &C, Layer &layer, float x, float y, float h, fl
   const ImU32 col = !any_on ? IM_COL32(0x80, 0x80, 0x80, 255)
                     : over  ? IM_COL32(0xff, 0xc0, 0x80, 255)
                             : IM_COL32(0xff, 0x9a, 0x3c, 255);
-  icon_mask(dl, ImVec2(x + w * 0.5f, y + h * 0.5f), fs * 0.3f, layer.masks.size() == 1 && layer.masks[0].outside,
+  icon_mask(dl, ImVec2(x + w * 0.5f, y + h * 0.5f), fs * 0.3f, layer.masks.size() == 1 && mask_cuts(layer.masks[0]),
             col);
   if (over) {
     std::string tip;
@@ -247,7 +261,7 @@ static float mask_symbol(Context &C, Layer &layer, float x, float y, float h, fl
       C.wm->mask_hover.insert(C.wm->mask_hover.end(), m.layers.begin(), m.layers.end());
       tip += mask_label(doc, m) + (m.enabled ? "" : " (off)") + "\n";
     }
-    tip += "Click: open the Masking tab";
+    tip += mask_summary(doc, layer) + "\nClick: open the Masking tab";
     ImGui::SetTooltip("%s", tip.c_str());
   }
   if (clicked) {
@@ -334,7 +348,7 @@ static void camera_row(Context &C)
   const float icon = h * 0.32f;
   const float cy = row_min.y + h * 0.5f;
   const float x = row_min.x + 8.0f + h * 0.7f;
-  icon_camera(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, true);
+  icon_camera(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, true, false);
   dl->AddText(ImVec2(x + h * 0.9f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0xe6, 0xe6, 0xe6, 255), "Camera");
   ImGui::PopID();
   /* A line between it and the layers. */
@@ -355,15 +369,39 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
   ImDrawList *dl = ImGui::GetWindowDrawList();
   ImGui::PushID(int(layer.id));
 
+  /* Show Active (.): scroll so this row is in the middle, and flash it. */
+  if (C.wm->layers_show_active == layer.id && area.show_active_seen != C.wm->layers_show_active_serial) {
+    area.show_active_seen = C.wm->layers_show_active_serial;
+    area.show_active_layer = layer.id;
+    area.show_active_time = ImGui::GetTime();
+    ImGui::SetScrollHereY(0.5f);
+  }
+
   /* The row itself: click to make active, drag to move, double-click to rename. */
   ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("##row", ImVec2(row_w, h));
   const bool row_hovered = ImGui::IsItemHovered();
-  if (row_hovered && C.wm->draw_order_pick.mode != 0) {
+  /* Alt over the line under a row (its lower part): clicking clips it to the layer below, or
+   * releases it (Photoshop's Alt-click between layers). */
+  const bool clip_zone = row_hovered && ImGui::GetIO().KeyAlt && !ImGui::GetDragDropPayload() &&
+                         ImGui::GetIO().MousePos.y > row_min.y + h * 0.6f &&
+                         (layer.clip_to_below || layer_clip_base(doc, layer));
+  if (clip_zone) {
+    const float line_y = row_min.y + h;
+    dl->AddLine(ImVec2(row_min.x, line_y), ImVec2(row_min.x + row_w, line_y), IM_COL32(0xff, 0x9a, 0x3c, 255), 2.0f);
+    ImGui::SetTooltip(layer.clip_to_below ? "Release %s's clip" : "Clip %s to the layer below", layer.name.c_str());
+  }
+  if (clip_zone && ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    operator_call(C, "mask.clip_to_below", {{"layer", std::to_string(layer.id)}});
+  }
+  else if (row_hovered && C.wm->draw_order_pick.mode != 0) {
     /* In Front Of... / Behind...: pointing at a row shows the result in the viewport. */
     C.wm->draw_order_pick.hover = layer.id;
   }
-  if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ui_layer_eyedropper_active()) {
+  if (clip_zone) {
+    /* The click was the clip's. */
+  }
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ui_layer_eyedropper_active()) {
     /* The layer eyedropper takes the click: this layer becomes the bone's custom shape. */
     ui_layer_eyedropper_pick(C, layer.id);
   }
@@ -406,24 +444,25 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     ImGui::EndDragDropSource();
   }
   if (ImGui::BeginDragDropTarget() && ImGui::GetIO().KeyAlt) {
-    /* Alt: mask this layer with the dragged one (Shift: outside it). */
+    /* Alt: a mask row of the dragged layer on this one (Add; Shift: Subtract). */
     const ImGuiPayload *peek = ImGui::GetDragDropPayload();
     uint64_t moving = 0;
     if (peek && peek->IsDataType(LAYER_PAYLOAD)) {
       std::memcpy(&moving, peek->Data, sizeof(moving));
     }
     const Layer *source = layer_find(doc, moving);
-    const bool outside = ImGui::GetIO().KeyShift;
+    const bool subtract = ImGui::GetIO().KeyShift;
     dl->AddRect(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0x9a, 0x3c, 255), 3.0f, 0, 2.0f);
     if (source && source->id != layer.id) {
-      ImGui::SetTooltip("Mask %s %s %s%s", layer.name.c_str(), outside ? "outside" : "inside", source->name.c_str(),
-                        outside ? "" : "\n(Shift: outside it)");
+      C.wm->mask_hover.push_back(source->id);
+      ImGui::SetTooltip(subtract ? "Mask %s: Subtract %s (cut it out)" : "Mask %s: Add %s (show inside it)%s",
+                        layer.name.c_str(), source->name.c_str(), subtract ? "" : "\nShift: Subtract");
     }
     if (ImGui::AcceptDragDropPayload(LAYER_PAYLOAD, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
       drop.moving = moving;
       drop.target = layer.id;
       drop.mask = true;
-      drop.outside = outside;
+      drop.subtract = subtract;
     }
     ImGui::EndDragDropTarget();
   }
@@ -499,6 +538,13 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     /* While the camera is picked the active layer waits, shown lighter. */
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), doc.camera.selected ? COL_SELECTED_ROW : COL_ACTIVE_ROW, 3.0f);
   }
+  /* Just shown with Show Active: a white outline fading over a second. */
+  if (area.show_active_layer == layer.id) {
+    const float fade = 1.0f - float(ImGui::GetTime() - area.show_active_time);
+    if (fade > 0.0f) {
+      dl->AddRect(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0xff, 0xff, int(220 * fade)), 3.0f, 0, 2.0f);
+    }
+  }
   else if (layer.selected) {
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_SELECTED_ROW, 3.0f);
   }
@@ -514,6 +560,16 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
   /* Expand arrow, type icon and name. */
   float x = row_min.x + 8.0f + float(depth) * h * 0.8f;
   const float cy = row_min.y + h * 0.5f;
+  if (layer.clip_to_below && layer_clip_base(doc, layer)) {
+    /* Clipped: indented, with a hook down to the layer it clips to (Photoshop's). */
+    const ImU32 hook = IM_COL32(0xff, 0x9a, 0x3c, 255);
+    const float hx = x + h * 0.2f;
+    dl->AddLine(ImVec2(hx + icon * 0.9f, cy - icon * 0.5f), ImVec2(hx, cy - icon * 0.5f), hook, 1.5f);
+    dl->AddLine(ImVec2(hx, cy - icon * 0.5f), ImVec2(hx, row_min.y + h - icon * 0.3f), hook, 1.5f);
+    dl->AddTriangleFilled(ImVec2(hx - icon * 0.4f, row_min.y + h - icon * 0.6f),
+                          ImVec2(hx + icon * 0.4f, row_min.y + h - icon * 0.6f), ImVec2(hx, row_min.y + h), hook);
+    x += h * 0.6f;
+  }
   if (layer.is_group()) {
     ImGui::SetCursorScreenPos(ImVec2(x, row_min.y));
     if (ImGui::InvisibleButton("##expand", ImVec2(h * 0.7f, h))) {
@@ -554,7 +610,9 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     }
   }
   else {
-    const ImU32 text = layer.visible ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
+    /* Faded while hidden: by its eye, or as a guide while the viewport hides guides. */
+    const bool guide_hidden = !layer.render_visible && !(doc.overlays.show && doc.overlays.guides);
+    const ImU32 text = layer.visible && !guide_hidden ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
     dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
     float after = x + ImGui::CalcTextSize(layer.name.c_str()).x + 8.0f;
     const float limit = row_min.x + row_w - h * 4.0f;
@@ -576,12 +634,17 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
   ImGui::SetCursorScreenPos(ImVec2(right - h * 2.0f, row_min.y));
   if (ImGui::InvisibleButton("##render", ImVec2(h, h))) {
     layer.render_visible = !layer.render_visible;
-    push_undo(C, layer.render_visible ? "Show in Renders" : "Hide in Renders");
+    push_undo(C, layer.render_visible ? "Show in Renders" : "Make Guide");
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Show or hide the layer in renders");
+    ImGui::SetTooltip(layer.render_visible
+                          ? "Rendered.\nClick to make it a guide: shown while you work, hidden with the viewport's "
+                            "overlays (Shift Z), never rendered"
+                          : "Guide: shown while you work, hidden with the viewport's overlays (Shift Z), never "
+                            "rendered.\nClick to render it");
   }
-  icon_camera(dl, ImVec2(right - h * 1.5f, cy), icon, layer.render_visible);
+  icon_camera(dl, ImVec2(right - h * 1.5f, cy), icon, layer.render_visible,
+              !(doc.overlays.show && doc.overlays.guides));
   ImGui::SetCursorScreenPos(ImVec2(right - h, row_min.y));
   if (ImGui::InvisibleButton("##lock", ImVec2(h, h))) {
     layer.locked = !layer.locked;
@@ -677,7 +740,7 @@ static void apply_drop(Context &C, const DropRequest &drop)
   }
   if (drop.mask) {
     operator_call(C, "mask.add", {{"layer", std::to_string(drop.target)}, {"sources", std::to_string(drop.moving)},
-                                  {"outside", drop.outside ? "1" : "0"}});
+                                  {"mode", drop.subtract ? "SUBTRACT" : "ADD"}});
     return;
   }
   if (move_layers(doc, dragged_layers(doc, drop.moving), drop.target, drop.where)) {

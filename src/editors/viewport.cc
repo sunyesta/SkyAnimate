@@ -24,6 +24,7 @@
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/layer_pick.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
@@ -176,6 +177,102 @@ static float turn_between(float2 from, float2 to, float2 pivot)
   return std::atan2(cross(a, b), dot(a, b));
 }
 
+/* Numbers typed while G, R or S runs, as Blender's numeric input: digits and a point type into the
+ * field being typed (Move has X and Y: Tab goes to the other), minus flips its sign (before or after
+ * the digits), Backspace takes the last character back, Ctrl Backspace clears it. Once anything is
+ * typed the mouse stops moving the value; a field left empty counts as 0 (Move) or as the other
+ * one (Scale). Read from the keys the transform takes, as text input is off while it runs. */
+struct NumInput {
+  std::string text[2];
+  bool negative[2] = {false, false};
+  int field = 0;
+
+  bool any() const { return has(0) || has(1) || negative[0] || negative[1]; }
+  bool has(int i) const
+  {
+    const std::string &t = text[i];
+    return !t.empty() && t != ".";
+  }
+  float value(int i, float fallback) const
+  {
+    if (!has(i)) {
+      return negative[i] ? -fallback : fallback;
+    }
+    const float v = std::strtof(text[i].c_str(), nullptr);
+    return negative[i] ? -v : v;
+  }
+  /* The field as the header shows it: what's typed, with a caret in the field being typed. */
+  std::string shown(int i, float live, const char *format) const
+  {
+    std::string s;
+    if (has(i) || negative[i] || (i == field && any())) {
+      s = (negative[i] ? "-" : "") + text[i];
+      if (i == field) {
+        s = "[" + s + "|]";
+      }
+      return s;
+    }
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), format, double(live));
+    return buf;
+  }
+};
+
+/* Takes the typed keys of a running transform into `num`; `fields` is 2 for Move and Scale (Tab
+ * switches), 1 otherwise. Returns whether anything changed. */
+static bool modal_key_take(Context &C, const char *type, bool any_modifiers = false);
+static bool num_input_keys(Context &C, NumInput &num, int fields)
+{
+  bool changed = false;
+  std::vector<ModalKey> &keys = C.wm->modal_keys;
+  for (auto it = keys.begin(); it != keys.end();) {
+    std::string t = it->type;
+    if (t.rfind("KEYPAD_", 0) == 0) {
+      t = t.substr(7);
+    }
+    std::string &text = num.text[num.field];
+    bool used = true;
+    if (it->ctrl && t == "BACK_SPACE") {
+      text.clear();
+      num.negative[num.field] = false;
+    }
+    else if (it->ctrl) {
+      used = false;
+    }
+    else if (t.size() == 1 && t[0] >= '0' && t[0] <= '9') {
+      text.push_back(t[0]);
+    }
+    else if ((t == "." || t == "PERIOD" || t == "NUMPAD_PERIOD" || t == ",") && text.find('.') == std::string::npos) {
+      text.push_back('.');
+    }
+    else if (t == "-" || t == "MINUS") {
+      num.negative[num.field] = !num.negative[num.field];
+    }
+    else if (t == "BACK_SPACE") {
+      if (!text.empty()) {
+        text.pop_back();
+      }
+      else {
+        num.negative[num.field] = false;
+      }
+    }
+    else if (t == "TAB" && fields > 1) {
+      num.field = (num.field + 1) % fields;
+    }
+    else {
+      used = false;
+    }
+    if (used) {
+      changed = true;
+      it = keys.erase(it);
+    }
+    else {
+      ++it;
+    }
+  }
+  return changed;
+}
+
 struct ModalTransform {
   bool active = false;
   int area = 0;
@@ -218,7 +315,7 @@ struct ModalTransform {
   float turned = 0.0f;
   /* 0 free, 1 X only, 2 Y only. */
   int axis = 0;
-  std::string typed;
+  NumInput num;
   /* Started by dragging a handle: ends when the mouse button is let go. */
   bool tweak = false;
   /* Only handles move: S lengthens and R turns each handle about its own point. */
@@ -306,6 +403,7 @@ static Posed posed(const Document &doc, const Layer &layer)
   return r;
 }
 static uint64_t pick_bone(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse);
+static void layer_pick_click(Context &C, const ViewMapping &view, ImVec2 mouse, bool shift, bool ctrl);
 
 /* ---------------------------------------------------------------------------------
  * Helpers
@@ -339,7 +437,8 @@ static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSetting
   return ov.handles;
 }
 
-/* For the Shape handle display: the points of every shape any of whose points is selected. */
+/* For the Shape handle display: the points of every shape any of whose points (or handles, picked
+ * on their own) is selected. */
 static const std::vector<bool> &shape_handle_points(const VectorDrawing &drawing)
 {
   /* Worked out once per drawing per frame, not for every handle. */
@@ -355,9 +454,11 @@ static const std::vector<bool> &shape_handle_points(const VectorDrawing &drawing
   for (const Shape &shape : drawing.shapes) {
     bool touched = false;
     for (const ShapeEdge &e : shape.edges) {
-      int a, b;
-      curve_segment_points(drawing.curves[e.curve], e.segment, &a, &b);
-      touched |= drawing.points[a].selected || drawing.points[b].selected;
+      /* The segment's two curve points: a picked handle counts as much as a picked point. */
+      const Curve &curve = drawing.curves[e.curve];
+      const int n = int(curve.points.size());
+      touched |= curve_point_selected(drawing, curve.points[e.segment]) ||
+                 curve_point_selected(drawing, curve.points[(e.segment + 1) % n]);
     }
     if (!touched) {
       continue;
@@ -496,6 +597,26 @@ static void tool_icon(ImDrawList *dl, Tool tool, ImVec2 c, float s, ImU32 col)
       dl->AddTriangleFilled(c, c + ImVec2(s * 0.9f, s * 0.35f), c + ImVec2(s * 0.35f, s * 0.9f), col);
       break;
     }
+    case Tool::SelectLayer: {
+      /* Two stacked layers with an arrow on the top one. */
+      const auto sheet = [&](float dy, bool filled) {
+        const ImVec2 q[4] = {c + ImVec2(-s * 0.85f, dy), c + ImVec2(0, dy - s * 0.42f), c + ImVec2(s * 0.85f, dy),
+                             c + ImVec2(0, dy + s * 0.42f)};
+        if (filled) {
+          dl->AddConvexPolyFilled(q, 4, col);
+        }
+        else {
+          dl->AddPolyline(q, 4, col, ImDrawFlags_Closed, t);
+        }
+      };
+      sheet(s * 0.35f, false);
+      sheet(-s * 0.15f, true);
+      const ImVec2 tip = c + ImVec2(s * 0.15f, -s * 0.2f);
+      dl->AddTriangleFilled(tip, tip + ImVec2(s * 0.75f, s * 0.3f), tip + ImVec2(s * 0.3f, s * 0.75f),
+                            IM_COL32(0x20, 0x20, 0x20, 255));
+      dl->AddTriangle(tip, tip + ImVec2(s * 0.75f, s * 0.3f), tip + ImVec2(s * 0.3f, s * 0.75f), col, t * 0.8f);
+      break;
+    }
     case Tool::Cursor:
       dl->AddCircle(c, s * 0.55f, col, 20, t);
       dl->AddLine(c - ImVec2(s * 0.9f, 0), c - ImVec2(s * 0.3f, 0), col, t);
@@ -595,6 +716,11 @@ struct ToolInfo {
 
 static const ToolInfo TOOLS[] = {
     {Tool::Select, "Select Box", "Click to select, drag to box select. Shift adds, Ctrl removes", "wm.tool_select"},
+    {Tool::SelectLayer, "Select Layer",
+     "Click the drawing to select its layer (the topmost shown there; click again in the same spot for the one "
+     "below). Shift adds or takes out, Ctrl takes out. Media layers are never picked.\n"
+     "Alt-click does this from any tool, Alt-Shift-click adds",
+     "wm.tool_select_layer"},
     {Tool::Cursor, "Cursor", "Place the 2D cursor", "wm.tool_cursor"},
     {Tool::Draw, "Draw",
      "Draw: freehand strokes; tablet pressure sets the width.\n"
@@ -672,6 +798,7 @@ static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
   }
   switch (tool) {
     case Tool::Select:
+    case Tool::SelectLayer:
     case Tool::Cursor:
       return true;
     case Tool::Draw:
@@ -977,6 +1104,12 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Outline the active layer's mask layers, dashed and labelled (\"inside head\").\n"
                         "Off: they only show while a mask's symbol or Layers field is under the mouse.");
+    }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
+    ImGui::Checkbox("Guides", &ov.guides);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show guides: layers with Show in Renders off (references, Media layers).\n"
+                        "Off, or with the overlays off (Shift Z), the viewport shows what renders.");
     }
   }
   if (overlay_section("Armature")) {
@@ -1347,6 +1480,21 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     ImGui::SameLine(0, 4);
   }
   switch (ts.tool) {
+    case Tool::SelectLayer:
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Pick");
+      ImGui::SameLine();
+      if (header_toggle("Layer", !ts.layer_pick_group, "Pick the layer clicked")) {
+        ts.layer_pick_group = false;
+      }
+      ImGui::SameLine(0, 1);
+      if (header_toggle("Group", ts.layer_pick_group,
+                        "Pick the outermost group holding the layer clicked (to move a whole character)")) {
+        ts.layer_pick_group = true;
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("Click: select  |  again: the one below  |  Shift: add  |  Ctrl: remove  |  Alt-click from any tool");
+      break;
     case Tool::Select:
       if (!editable_points) {
         break;
@@ -1732,7 +1880,7 @@ static void modal_end(Context &C, bool confirm)
 }
 
 /* Takes a key pressed since the last frame, without modifiers unless `any_modifiers`. */
-static bool modal_key_take(Context &C, const char *type, bool any_modifiers = false)
+static bool modal_key_take(Context &C, const char *type, bool any_modifiers)
 {
   std::vector<ModalKey> &keys = C.wm->modal_keys;
   for (auto it = keys.begin(); it != keys.end(); ++it) {
@@ -1878,16 +2026,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
   if (modal_key_take(C, "Y")) {
     g_modal.axis = g_modal.axis == 2 ? 0 : 2;
   }
-  for (const ImWchar ch : io.InputQueueCharacters) {
-    if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
-      g_modal.typed.push_back(char(ch));
-    }
-  }
-  while (modal_key_take(C, "BACK_SPACE", true)) {
-    if (!g_modal.typed.empty()) {
-      g_modal.typed.pop_back();
-    }
-  }
+  num_input_keys(C, g_modal.num, g_modal.kind == 'R' || g_modal.axis != 0 ? 1 : 2);
   if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
     g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     modal_end(C, false);
@@ -1906,10 +2045,11 @@ static std::string modal_update(Context &C, const ViewMapping &view)
   }
   const float2 mouse = view.to_document(io.MousePos);
   const bool snap = io.KeyCtrl || C.wm->tool_settings.snap_grid;
-  char typed_buf[32];
-  std::snprintf(typed_buf, sizeof(typed_buf), "%s", g_modal.typed.c_str());
-  const bool has_typed = !g_modal.typed.empty() && g_modal.typed != "-" && g_modal.typed != ".";
-  const float typed = has_typed ? std::strtof(typed_buf, nullptr) : 0.0f;
+  const NumInput &num = g_modal.num;
+  if (g_modal.axis != 0) {
+    /* Along one axis there's one field. */
+    g_modal.num.field = 0;
+  }
   const char *axis_label = g_modal.axis == 1 ? "  along X" : (g_modal.axis == 2 ? "  along Y" : "");
 
   std::string info;
@@ -1919,8 +2059,10 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
-    if (has_typed) {
-      delta = g_modal.axis == 2 ? float2(0, typed) : float2(typed, g_modal.axis == 1 ? 0.0f : delta.y * 0.0f);
+    if (num.any()) {
+      delta = g_modal.axis == 2 ? float2(0.0f, num.value(0, 0.0f))
+              : g_modal.axis == 1 ? float2(num.value(0, 0.0f), 0.0f)
+                                  : float2(num.value(0, 0.0f), num.value(1, 0.0f));
     }
     if (g_modal.axis == 1) {
       delta.y = 0.0f;
@@ -1932,8 +2074,11 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       const float w = weight(item);
       w > 0.0f ? place(item, item.start + delta * w) : rest(item);
     }
-    std::snprintf(text, sizeof(text), "%s  X: %.3f  Y: %.3f%s", g_modal.extrude ? "Extrude" : "Move", delta.x,
-                  delta.y, axis_label);
+    const std::string sx = g_modal.axis == 2 ? "" : num.shown(0, delta.x, "%.3f");
+    const std::string sy = g_modal.axis == 1 ? "" : num.shown(g_modal.axis == 2 ? 0 : 1, delta.y, "%.3f");
+    std::snprintf(text, sizeof(text), "%s  %s%s%s%s%s%s", g_modal.extrude ? "Extrude" : "Move",
+                  g_modal.axis == 2 ? "" : "X: ", sx.c_str(), g_modal.axis == 0 ? "  " : "",
+                  g_modal.axis == 1 ? "" : "Y: ", sy.c_str(), axis_label);
   }
   else if (g_modal.kind == 'R') {
     g_modal.turned += turn_between(g_modal.last_mouse, mouse, g_modal.pivot);
@@ -1942,8 +2087,8 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       degrees = std::round(degrees / 5.0f) * 5.0f;
     }
-    if (has_typed) {
-      degrees = typed;
+    if (num.any()) {
+      degrees = num.value(0, 0.0f);
     }
     const float angle = degrees * PI / 180.0f;
     for (const ModalTransform::Item &item : g_modal.items) {
@@ -1951,7 +2096,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       const float w = weight(item);
       w > 0.0f ? place(item, c + rotate(item.start - c, angle * w)) : rest(item);
     }
-    std::snprintf(text, sizeof(text), "Rotate  %.1f\xC2\xB0", degrees);
+    std::snprintf(text, sizeof(text), "Rotate  %s\xC2\xB0", num.shown(0, degrees, "%.1f").c_str());
   }
   else {
     const float start = std::max(distance(g_modal.start_mouse, g_modal.pivot), 1e-6f);
@@ -1959,10 +2104,16 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       factor = std::round(factor * 10.0f) / 10.0f;
     }
-    if (has_typed) {
-      factor = typed;
+    float2 f(g_modal.axis == 2 ? 1.0f : factor, g_modal.axis == 1 ? 1.0f : factor);
+    if (num.any()) {
+      /* Typed: one number scales every way (or along the axis); with Y typed too, each its own. */
+      const float x = num.value(0, num.has(1) ? 1.0f : 1.0f);
+      factor = x;
+      f = g_modal.axis == 1 ? float2(x, 1.0f)
+          : g_modal.axis == 2 ? float2(1.0f, x)
+          : num.has(1) || num.negative[1] ? float2(num.has(0) ? x : 1.0f, num.value(1, 1.0f))
+                                          : float2(x, x);
     }
-    const float2 f(g_modal.axis == 2 ? 1.0f : factor, g_modal.axis == 1 ? 1.0f : factor);
     for (const ModalTransform::Item &item : g_modal.items) {
       const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
       const float2 d = item.start - c;
@@ -1973,7 +2124,13 @@ static std::string modal_update(Context &C, const ViewMapping &view)
       }
       place(item, c + float2(d.x * (1.0f + (f.x - 1.0f) * w), d.y * (1.0f + (f.y - 1.0f) * w)));
     }
-    std::snprintf(text, sizeof(text), "Scale  %.3f%s", factor, axis_label);
+    if (g_modal.axis == 0 && (num.field == 1 || num.has(1))) {
+      std::snprintf(text, sizeof(text), "Scale  X: %s  Y: %s", num.shown(0, f.x, "%.3f").c_str(),
+                    num.shown(1, f.y, "%.3f").c_str());
+    }
+    else {
+      std::snprintf(text, sizeof(text), "Scale  %s%s", num.shown(0, factor, "%.3f").c_str(), axis_label);
+    }
   }
   modal_mirror(C, g_modal, layers);
   info = text;
@@ -1981,9 +2138,6 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     char size_text[64];
     std::snprintf(size_text, sizeof(size_text), "   Proportional size: %.3f", ts.proportional_size);
     info += size_text;
-  }
-  if (!g_modal.typed.empty()) {
-    info += "   [" + g_modal.typed + "]";
   }
   if (confirm) {
     /* Keys that came in with the confirming click (a quick click then E) were meant for after
@@ -2879,8 +3033,8 @@ struct BoneModal {
   int axis = 0;
   /* S S: squash and stretch, longer and thinner (posing). */
   bool squash = false;
-  /* A number typed while transforming. */
-  std::string typed;
+  /* Numbers typed while transforming. */
+  NumInput num;
 };
 static BoneModal g_bone_modal;
 
@@ -3319,7 +3473,7 @@ struct LayerModal {
   float2 start_mouse, last_mouse;
   float turned = 0.0f;
   int axis = 0;
-  std::string typed;
+  NumInput num;
 };
 static LayerModal g_layer_modal;
 
@@ -3387,21 +3541,14 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
   if (modal_key_take(C, "Y")) {
     lm.axis = lm.axis == 2 ? 0 : 2;
   }
-  for (const ImWchar ch : ImGui::GetIO().InputQueueCharacters) {
-    if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
-      lm.typed.push_back(char(ch));
-    }
-  }
-  while (modal_key_take(C, "BACK_SPACE", true)) {
-    if (!lm.typed.empty()) {
-      lm.typed.pop_back();
-    }
-  }
   if (lm.kind == 'R') {
     lm.axis = 0;
   }
-  const bool has_typed = !lm.typed.empty() && lm.typed != "-" && lm.typed != ".";
-  const float typed = has_typed ? std::strtof(lm.typed.c_str(), nullptr) : 0.0f;
+  num_input_keys(C, lm.num, lm.kind == 'R' || lm.axis != 0 ? 1 : 2);
+  if (lm.axis != 0) {
+    lm.num.field = 0;
+  }
+  const NumInput &num = lm.num;
   if (!ImGui::IsMousePosValid()) {
     if (confirm) {
       layer_modal_end(C, true);
@@ -3417,8 +3564,10 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
     if (snap) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
-    if (has_typed) {
-      delta = lm.axis == 2 ? float2(0.0f, typed) : float2(typed, 0.0f);
+    if (num.any()) {
+      delta = lm.axis == 2 ? float2(0.0f, num.value(0, 0.0f))
+              : lm.axis == 1 ? float2(num.value(0, 0.0f), 0.0f)
+                             : float2(num.value(0, 0.0f), num.value(1, 0.0f));
     }
     if (lm.axis == 1) {
       delta.y = 0.0f;
@@ -3427,8 +3576,14 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
       delta.x = 0.0f;
     }
     layer->position = lm.position + lm.to_parent.apply_vector(delta);
-    std::snprintf(text, sizeof(text), "Move Layer  X: %.3f  Y: %.3f%s", delta.x, delta.y,
-                  lm.axis == 1 ? "  along X" : lm.axis == 2 ? "  along Y" : "");
+    if (lm.axis == 0) {
+      std::snprintf(text, sizeof(text), "Move Layer  X: %s  Y: %s", num.shown(0, delta.x, "%.3f").c_str(),
+                    num.shown(1, delta.y, "%.3f").c_str());
+    }
+    else {
+      std::snprintf(text, sizeof(text), "Move Layer  %s: %s  along %s", lm.axis == 1 ? "X" : "Y",
+                    num.shown(0, lm.axis == 1 ? delta.x : delta.y, "%.3f").c_str(), lm.axis == 1 ? "X" : "Y");
+    }
   }
   else {
     /* Blender's dashed line from the centre to the mouse. */
@@ -3446,11 +3601,11 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
       if (snap) {
         degrees = std::round(degrees / 5.0f) * 5.0f;
       }
-      if (has_typed) {
-        degrees = typed;
+      if (num.any()) {
+        degrees = num.value(0, 0.0f);
       }
       layer->rotation = lm.rotation + degrees;
-      std::snprintf(text, sizeof(text), "Rotate Layer  %.1f\xC2\xB0", degrees);
+      std::snprintf(text, sizeof(text), "Rotate Layer  %s\xC2\xB0", num.shown(0, degrees, "%.1f").c_str());
     }
     else {
       const float start = std::max(distance(lm.start_mouse, lm.pivot), 1e-6f);
@@ -3458,12 +3613,24 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
       if (snap) {
         factor = std::round(factor * 10.0f) / 10.0f;
       }
-      if (has_typed) {
-        factor = typed;
+      float2 f(lm.axis == 2 ? 1.0f : factor, lm.axis == 1 ? 1.0f : factor);
+      if (num.any()) {
+        const float x = num.value(0, 1.0f);
+        factor = x;
+        f = lm.axis == 1 ? float2(x, 1.0f)
+            : lm.axis == 2 ? float2(1.0f, x)
+            : num.has(1) || num.negative[1] ? float2(num.has(0) ? x : 1.0f, num.value(1, 1.0f))
+                                            : float2(x, x);
       }
-      layer->scale = {lm.axis == 2 ? lm.scale.x : lm.scale.x * factor, lm.axis == 1 ? lm.scale.y : lm.scale.y * factor};
-      std::snprintf(text, sizeof(text), "Scale Layer  %.3f%s", factor,
-                    lm.axis == 1 ? "  along X" : lm.axis == 2 ? "  along Y" : "");
+      layer->scale = {lm.scale.x * f.x, lm.scale.y * f.y};
+      if (lm.axis == 0 && (num.field == 1 || num.has(1))) {
+        std::snprintf(text, sizeof(text), "Scale Layer  X: %s  Y: %s", num.shown(0, f.x, "%.3f").c_str(),
+                      num.shown(1, f.y, "%.3f").c_str());
+      }
+      else {
+        std::snprintf(text, sizeof(text), "Scale Layer  %s%s", num.shown(0, factor, "%.3f").c_str(),
+                      lm.axis == 1 ? "  along X" : lm.axis == 2 ? "  along Y" : "");
+      }
     }
   }
   if (confirm) {
@@ -3552,22 +3719,15 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     bm.squash = !bm.squash;
     bm.axis = 0;
   }
-  for (const ImWchar ch : ImGui::GetIO().InputQueueCharacters) {
-    if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
-      bm.typed.push_back(char(ch));
-    }
-  }
-  while (modal_key_take(C, "BACK_SPACE", true)) {
-    if (!bm.typed.empty()) {
-      bm.typed.pop_back();
-    }
-  }
   if (bm.kind == 'R' || (bm.kind == 'S' && bm.setup_frame)) {
     /* Turning has no axis in 2D; frame 0 resizes bones the same every way. */
     bm.axis = 0;
   }
-  const bool has_typed = !bm.typed.empty() && bm.typed != "-" && bm.typed != ".";
-  const float typed = has_typed ? std::strtof(bm.typed.c_str(), nullptr) : 0.0f;
+  num_input_keys(C, bm.num, bm.kind == 'G' && bm.axis == 0 ? 2 : 1);
+  if (bm.axis != 0 || bm.kind != 'G') {
+    bm.num.field = 0;
+  }
+  const NumInput &num = bm.num;
   if (!ImGui::IsMousePosValid()) {
     if (confirm) {
       bone_modal_end(C, true);
@@ -3583,8 +3743,10 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
-    if (has_typed) {
-      delta = bm.axis == 2 ? float2(0.0f, typed) : float2(typed, 0.0f);
+    if (num.any()) {
+      delta = bm.axis == 2 ? float2(0.0f, num.value(0, 0.0f))
+              : bm.axis == 1 ? float2(num.value(0, 0.0f), 0.0f)
+                             : float2(num.value(0, 0.0f), num.value(1, 0.0f));
     }
     if (bm.axis == 1) {
       delta.y = 0.0f;
@@ -3594,8 +3756,14 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     }
     armature_grab_selected(*armature, g_bone_modal.bones, g_bone_modal.to_armature.apply_vector(delta),
                            g_bone_modal.setup_frame, C.wm->tool_settings.auto_ik);
-    std::snprintf(text, sizeof(text), "Move Bones  X: %.3f  Y: %.3f%s", delta.x, delta.y,
-                  bm.axis == 1 ? "  along X" : bm.axis == 2 ? "  along Y" : "");
+    if (bm.axis == 0) {
+      std::snprintf(text, sizeof(text), "Move Bones  X: %s  Y: %s", num.shown(0, delta.x, "%.3f").c_str(),
+                    num.shown(1, delta.y, "%.3f").c_str());
+    }
+    else {
+      std::snprintf(text, sizeof(text), "Move Bones  %s: %s  along %s", bm.axis == 1 ? "X" : "Y",
+                    num.shown(0, bm.axis == 1 ? delta.x : delta.y, "%.3f").c_str(), bm.axis == 1 ? "X" : "Y");
+    }
   }
   else if (g_bone_modal.kind == 'R') {
     g_bone_modal.turned += turn_between(g_bone_modal.last_mouse, mouse, g_bone_modal.pivot);
@@ -3604,11 +3772,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       degrees = std::round(degrees / 5.0f) * 5.0f;
     }
-    if (has_typed) {
-      degrees = typed;
+    if (num.any()) {
+      degrees = num.value(0, 0.0f);
     }
     armature_rotate_selected(*armature, g_bone_modal.bones, degrees * PI / 180.0f, g_bone_modal.setup_frame);
-    std::snprintf(text, sizeof(text), "Rotate Bones  %.1f\xC2\xB0", degrees);
+    std::snprintf(text, sizeof(text), "Rotate Bones  %s\xC2\xB0", num.shown(0, degrees, "%.1f").c_str());
   }
   else {
     const float start = std::max(distance(g_bone_modal.start_mouse, g_bone_modal.pivot), 1e-6f);
@@ -3616,12 +3784,13 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       factor = std::round(factor * 10.0f) / 10.0f;
     }
-    if (has_typed) {
-      factor = typed;
+    if (num.any()) {
+      factor = num.value(0, 1.0f);
     }
     armature_scale_selected(*armature, g_bone_modal.bones, factor, bm.setup_frame, bm.axis, bm.squash);
-    std::snprintf(text, sizeof(text), "%s  %.3f%s",
-                  bm.setup_frame ? "Resize Bones" : bm.squash ? "Squash & Stretch" : "Scale Bones", factor,
+    std::snprintf(text, sizeof(text), "%s  %s%s",
+                  bm.setup_frame ? "Resize Bones" : bm.squash ? "Squash & Stretch" : "Scale Bones",
+                  num.shown(0, factor, "%.3f").c_str(),
                   bm.axis == 1   ? "  along the bones' X (thickness)"
                   : bm.axis == 2 ? "  along the bones' Y (length)"
                                  : "");
@@ -3960,6 +4129,12 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
                   return s.x >= lo_s.x && s.x <= hi_s.x && s.y >= lo_s.y && s.y <= hi_s.y;
                 },
                 io.KeyShift, io.KeyAlt);
+          }
+          else if (io.KeyAlt) {
+            /* Alt-drag takes bones out of the selection; an Alt-click picks the layer. */
+            g_gizmo.mode = GizmoMode::None;
+            layer_pick_click(C, view, g_gizmo.start_screen, io.KeyShift, false);
+            break;
           }
           else {
             const uint64_t picked = pick_bone(doc, armature, view, io.MousePos);
@@ -4390,6 +4565,11 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
           if (dragged) {
             select_box(C, view, g.start_screen, io.MousePos, handles_shown(doc.overlays, ts));
           }
+          else if (io.KeyAlt) {
+            g.mode = GizmoMode::None;
+            layer_pick_click(C, view, g.start_screen, io.KeyShift, false);
+            break;
+          }
           else {
             select_click(C, view, view.to_document(io.MousePos), handles_shown(doc.overlays, ts));
           }
@@ -4716,12 +4896,16 @@ static void bone_parent_menus(Context &C, bool hovered)
 }
 
 /* The top layer shown under the mouse: one with a filled shape there, or a line close by. */
-static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, ImVec2 mouse)
+static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, ImVec2 mouse,
+                                  const std::vector<uint64_t> &local_view)
 {
+  /* Local View hides the rest, so a click can't pick them. */
+  const std::set<uint64_t> local = local_view_layers(doc, local_view);
   const float2 at = view.to_document(mouse);
   const float px = std::max(distance(view.to_document(mouse + ImVec2(1.0f, 0.0f)), at), 1e-9f);
   /* Top first, as drawn (Draw Order included). */
-  const std::vector<const Layer *> order = draw_order_layers(doc, [](const Layer &l) { return l.visible; });
+  const std::vector<const Layer *> order = draw_order_layers(
+      doc, [&](const Layer &l) { return l.visible && (local.empty() || local.contains(l.id)); });
   const auto find = [&]() -> uint64_t {
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
       const Layer &layer = **it;
@@ -4832,6 +5016,137 @@ static void draw_layer_box(ImDrawList *dl, const Document &doc, const Layer &lay
   dl->AddRect(lo - ImVec2(4, 4), hi + ImVec2(4, 4), IM_COL32(0, 0, 0, 150), 3.0f, 0, 3.0f);
   dl->AddRect(lo - ImVec2(4, 4), hi + ImVec2(4, 4), IM_COL32(0x6f, 0xb8, 0xff, 255), 3.0f, 0, 1.5f);
   dl->AddText(ImVec2(lo.x - 4.0f, lo.y - 6.0f - ImGui::GetFontSize()), IM_COL32(0x6f, 0xb8, 0xff, 255), layer.name.c_str());
+}
+
+/* ---------------------------------------------------------------------------------
+ * Select Layer (the tool, and Alt-click from any tool)
+ */
+
+/* A click being made with the Select Layer tool or Alt: it picks on release, unless the mouse moved. */
+struct LayerPickClick {
+  bool active = false;
+  int area = 0;
+  ImVec2 start;
+};
+static LayerPickClick g_layer_click;
+/* The last pick, for clicking again in the same spot to take the layer below. */
+static ImVec2 g_layer_pick_pos(-1e9f, -1e9f);
+static uint64_t g_layer_pick_last = 0;
+
+/* What a click at `mouse` can pick, top first: a shown bone's bone layer (bones are drawn over
+ * everything), then the drawing layers shown there (anim/layer_pick.hh), as groups with Pick: Group. */
+static std::vector<uint64_t> layer_pick_hits(Context &C, const ViewMapping &view, ImVec2 mouse)
+{
+  const Document &doc = *C.document;
+  const ViewportOverlays &ov = doc.overlays;
+  const std::set<uint64_t> local = local_view_layers(doc, C.wm->local_view);
+  std::vector<uint64_t> hits;
+  if (ov.show && ov.armature != ArmatureDisplay::Off) {
+    const auto visit = [&](auto &&self, const std::vector<Layer> &list) -> void {
+      for (const Layer &l : list) {
+        if (!l.visible || (!local.empty() && !local.contains(l.id))) {
+          continue;
+        }
+        if (l.is_bone_layer() &&
+            (ov.armature == ArmatureDisplay::On || l.selected || l.id == doc.active_layer) &&
+            pick_bone(doc, l, view, mouse) != 0)
+        {
+          hits.push_back(l.id);
+        }
+        self(self, l.children);
+      }
+    };
+    visit(visit, doc.layers);
+  }
+  LayerPickOptions options;
+  options.tolerance = 4.0f / std::max(view.zoom, 1e-6f);
+  options.show_guides = ov.show && ov.guides;
+  options.local_view = C.wm->local_view;
+  for (const uint64_t id : layers_at(doc, view.to_document(mouse), options)) {
+    hits.push_back(id);
+  }
+  if (C.wm->tool_settings.layer_pick_group) {
+    std::vector<uint64_t> groups;
+    for (const uint64_t id : hits) {
+      const uint64_t top = layer_pick_group(doc, id);
+      if (std::find(groups.begin(), groups.end(), top) == groups.end()) {
+        groups.push_back(top);
+      }
+    }
+    hits = std::move(groups);
+  }
+  return hits;
+}
+
+/* The layer a click at `mouse` would pick: the top one, or, clicking again where the last pick was,
+ * the one below it (round to the top again after the bottom). */
+static uint64_t layer_pick_target(Context &C, const ViewMapping &view, ImVec2 mouse)
+{
+  const std::vector<uint64_t> hits = layer_pick_hits(C, view, mouse);
+  if (hits.empty()) {
+    return 0;
+  }
+  const ImVec2 d = mouse - g_layer_pick_pos;
+  if (d.x * d.x + d.y * d.y <= 16.0f) {
+    const auto at = std::find(hits.begin(), hits.end(), g_layer_pick_last);
+    if (at != hits.end()) {
+      return std::next(at) != hits.end() ? *std::next(at) : hits.front();
+    }
+  }
+  return hits.front();
+}
+
+/* A pick click: Shift adds (or takes out), Ctrl takes out, else the layer alone. */
+static void layer_pick_click(Context &C, const ViewMapping &view, ImVec2 mouse, bool shift, bool ctrl)
+{
+  const uint64_t id = layer_pick_target(C, view, mouse);
+  if (id == 0) {
+    g_layer_pick_last = 0;
+    return;
+  }
+  const char *mode = ctrl ? "REMOVE" : shift ? "TOGGLE" : "SET";
+  operator_call(C, "layer.select_at", {{"layer", std::to_string(id)}, {"mode", mode}});
+  g_layer_pick_pos = mouse;
+  g_layer_pick_last = id;
+}
+
+/* Whether a press starts a pick click: always with the Select Layer tool; with Alt from the tools
+ * whose Alt-drags mean nothing else (not the Shape tool's centred shapes, a handle's drag or the
+ * transform boxes, which pick on their own click instead). */
+static bool layer_pick_wanted(Context &C, const ViewMapping &view)
+{
+  const ToolSettings &ts = C.wm->tool_settings;
+  if (ts.tool == Tool::SelectLayer) {
+    return true;
+  }
+  if (!ImGui::GetIO().KeyAlt || ts.tool == Tool::Shape || ts.tool == Tool::TransformBones ||
+      ts.tool == Tool::TransformPoints)
+  {
+    return false;
+  }
+  if (ts.tool == Tool::Select &&
+      pick_handle(C, view, ImGui::GetIO().MousePos, handles_shown(C.document->overlays, ts)).layer)
+  {
+    return false;
+  }
+  return true;
+}
+
+/* Runs a pick click: shows what it would pick, and picks on release if the mouse stayed put. */
+static void layer_pick_update(Context &C, const ViewMapping &view, ImDrawList *dl)
+{
+  const ImGuiIO &io = ImGui::GetIO();
+  if (const Layer *target = layer_find(*C.document, layer_pick_target(C, view, g_layer_click.start))) {
+    draw_layer_box(dl, *C.document, *target, view);
+  }
+  if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    return;
+  }
+  const ImVec2 d = io.MousePos - g_layer_click.start;
+  if (d.x * d.x + d.y * d.y <= 9.0f) {
+    layer_pick_click(C, view, g_layer_click.start, io.KeyShift, io.KeyCtrl && !io.KeyAlt);
+  }
+  g_layer_click = {};
 }
 
 /* The bone or points of the timeline's Keyed Here item under the mouse, outlined in white so you
@@ -5119,10 +5434,10 @@ static void viewport_draw_contents(Area &area, Context &C)
   ui_draw_order_pick_update(C);
   ui_mask_pick_update(C);
   if (mouse_here && wm.draw_order_pick.mode != 0) {
-    wm.draw_order_pick.hover = layer_under_mouse(doc, view, io.MousePos);
+    wm.draw_order_pick.hover = layer_under_mouse(doc, view, io.MousePos, wm.local_view);
   }
   if (mouse_here && ui_layer_eyedropper_active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-    ui_layer_eyedropper_pick(C, layer_under_mouse(doc, view, io.MousePos));
+    ui_layer_eyedropper_pick(C, layer_under_mouse(doc, view, io.MousePos, wm.local_view));
   }
 
   /* --- Navigation: wheel zooms at the mouse, middle drag pans, Home frames the camera. --- */
@@ -5211,6 +5526,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   std::vector<std::pair<Layer *, float>> order_preview;
   const WindowManager::DrawOrderPick &pick = wm.draw_order_pick;
   ui_draw_order_preview_begin(doc, order_preview, pick.hover, pick.mode, pick.layers);
+  /* Guides (layers not rendered) are overlays: with them off, the viewport shows what renders. */
+  renderer->set_show_guides(doc.overlays.show && doc.overlays.guides);
+  renderer->set_local_view(doc, wm.local_view);
   if (const unsigned int texture = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
                                                              doc.viewport_samples)) {
     dl->AddCallback(premultiplied_blend, nullptr);
@@ -5342,6 +5660,21 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (g_bone_modal.active) {
     if (g_bone_modal.area == area.id) {
       modal_info = bone_modal_update(C, view);
+    }
+  }
+  else if (g_layer_click.active && g_layer_click.area == area.id) {
+    layer_pick_update(C, view, dl);
+  }
+  else if (hovered && !g_modal.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && layer_pick_wanted(C, view)) {
+    g_layer_click = {true, area.id, io.MousePos};
+    layer_pick_update(C, view, dl);
+  }
+  else if (ts.tool == Tool::SelectLayer && !g_modal.active) {
+    /* The tool: the layer a click would pick, outlined. */
+    if (hovered) {
+      if (const Layer *target = layer_find(doc, layer_pick_target(C, view, io.MousePos))) {
+        draw_layer_box(dl, doc, *target, view);
+      }
     }
   }
   else if (armature_active && !g_modal.active) {
@@ -5536,6 +5869,10 @@ static void viewport_draw_contents(Area &area, Context &C)
             shape_commit(C, *drawing, ts.shape,
                          shape_drag_points(ts.shape, g_drag.shape_start, shape_snap(C, mouse_layer)));
           }
+          else if (io.KeyAlt) {
+            /* Alt-drag draws from the centre; an Alt-click picks the layer, as from any tool. */
+            layer_pick_click(C, view, g_drag.start, io.KeyShift, false);
+          }
           break;
         }
         case Tool::Cursor:
@@ -5627,14 +5964,43 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* The active layer's masks, dashed (Mask Outlines); a mask symbol or field under the mouse,
    * stronger, whatever the overlay. */
   if (const Layer *masked = document_active_layer(doc); masked && ov.show && ov.mask_outlines) {
-    for (const LayerMask &m : masked->masks) {
+    for (const LayerMask &m : layer_mask_rows(doc, *masked)) {
       if (!m.enabled) {
         continue;
       }
       for (const uint64_t id : m.layers) {
         const bool hovered_mask = std::find(wm.mask_hover.begin(), wm.mask_hover.end(), id) != wm.mask_hover.end();
         if (const Layer *source = layer_find(doc, id); source && !hovered_mask) {
-          draw_mask_outline(dl, doc, *source, view, m.outside, false);
+          draw_mask_outline(dl, doc, *source, view, mask_cuts(m), false);
+        }
+      }
+    }
+  }
+  /* A material under the mouse in the Shape panel's list: every shape using it, outlined. */
+  if (wm.material_hover != 0 && ImGui::GetFrameCount() - wm.material_hover_frame <= 1) {
+    for (const Layer *l : document_layers_flat(doc)) {
+      if (l->type != LayerType::Vector || !l->visible) {
+        continue;
+      }
+      const VectorDrawing &d = layer_drawing(doc, *l);
+      const Transform2D shape_to_document = layer_world_transform(doc, l->id);
+      for (const Shape &shape : d.shapes) {
+        if (shape.material != wm.material_hover || shape.hidden) {
+          continue;
+        }
+        for (const Shape &run : shape_runs(d, shape)) {
+          std::vector<float2> outline;
+          bool closed = false;
+          shape_outline(d, run, 8, outline, nullptr, &closed);
+          std::vector<ImVec2> pts;
+          for (const float2 q : outline) {
+            pts.push_back(view.to_screen(shape_to_document.apply(q)));
+          }
+          if (pts.size() >= 2) {
+            dl->AddPolyline(pts.data(), int(pts.size()), IM_COL32(0, 0, 0, 160), closed ? ImDrawFlags_Closed : 0, 4.0f);
+            dl->AddPolyline(pts.data(), int(pts.size()), IM_COL32(0x6f, 0xb8, 0xff, 255), closed ? ImDrawFlags_Closed : 0,
+                            2.0f);
+          }
         }
       }
     }
@@ -5643,8 +6009,8 @@ static void viewport_draw_contents(Area &area, Context &C)
     if (const Layer *source = layer_find(doc, id)) {
       bool outside = false;
       if (const Layer *masked = document_active_layer(doc)) {
-        for (const LayerMask &m : masked->masks) {
-          outside |= m.outside && std::find(m.layers.begin(), m.layers.end(), id) != m.layers.end();
+        for (const LayerMask &m : layer_mask_rows(doc, *masked)) {
+          outside |= mask_cuts(m) && std::find(m.layers.begin(), m.layers.end(), id) != m.layers.end();
         }
       }
       draw_mask_outline(dl, doc, *source, view, outside, true);
@@ -5762,9 +6128,21 @@ static void viewport_draw_contents(Area &area, Context &C)
       std::snprintf(detail, sizeof(detail), "  |  Detail %d/%d", level, top);
     }
   }
-  std::snprintf(info, sizeof(info), "Camera  |  Frame %d  |  %s%s%s", doc.frame_current,
+  /* Guides switched off in the overlays: how many are hidden, so a missing layer isn't a mystery. */
+  char guides[48] = "";
+  if (!doc.overlays.guides) {
+    int hidden = 0;
+    for (const Layer *l : document_layers_flat(doc)) {
+      hidden += l->visible && !l->render_visible ? 1 : 0;
+    }
+    if (hidden > 0) {
+      std::snprintf(guides, sizeof(guides), "  |  %d guide%s hidden", hidden, hidden == 1 ? "" : "s");
+    }
+  }
+  std::snprintf(info, sizeof(info), "Camera%s  |  Frame %d  |  %s%s%s%s%s", wm.local_view.empty() ? "" : " (Local)",
+                doc.frame_current,
                 active ? active->name.c_str() : "No layer", active && active->is_reference() ? "  (reference)" : "",
-                detail);
+                active && !active->render_visible ? "  (guide)" : "", detail, guides);
   const float bar_w = ImGui::GetFrameHeight() * 1.35f + 16.0f;
   action_panel_draw(C, origin, size, bar_w + 4.0f);
   if (ov.show && ov.info) {

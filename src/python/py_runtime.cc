@@ -423,8 +423,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     file_drag_set({!files.empty(), files, x, y});
   });
   /* Queues a mouse move (button -1) or press/release (oanim.wm.mouse_simulate), one per frame. */
-  m.def("mouse_simulate", [](float x, float y, int button, bool down) {
-    current_context().wm->mouse_simulated.push_back({x, y, button, down});
+  m.def("mouse_simulate", [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift) {
+    current_context().wm->mouse_simulated.push_back({x, y, button, down, ctrl, alt, shift});
+  });
+  m.def("local_view", []() {
+    Context &C = current_context();
+    py::list names;
+    for (const uint64_t id : C.wm->local_view) {
+      if (const Layer *l = layer_find(*C.document, id)) {
+        names.append(l->name);
+      }
+    }
+    return names;
   });
   m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 8); });
   /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
@@ -441,6 +451,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       {"physics_ghosts", &ViewportOverlays::physics_ghosts},
       {"live_physics", &ViewportOverlays::live_physics},
       {"bone_shapes", &ViewportOverlays::bone_shapes},
+      {"guides", &ViewportOverlays::guides},
   };
   /* Panels and folding rows open or folded, as the project keeps them ("<editor>/<panel>": open). */
   m.def("ui_open", []() { return current_context().document->ui_open; });
@@ -513,6 +524,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       "event_simulate",
       [](const std::string &type, bool ctrl, bool shift, bool alt, const std::string &area, bool typing) {
         Context &C = current_context();
+        if (C.wm->modal_running) {
+          /* A running G/R/S takes the keys itself, as a real key press goes to it. */
+          C.wm->modal_keys.push_back({to_upper(type), ctrl, shift, alt});
+          return true;
+        }
         const std::string saved_area = C.area_type;
         if (!area.empty()) {
           C.area_type = area;
@@ -764,7 +780,26 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["has_fill"] = s.has_fill;
     d["has_outline"] = s.has_outline;
     d["hidden"] = s.hidden;
+    d["brush"] = s.style.brush.name;
+    const Material *material = material_find(*current_context().document, s.material);
+    d["material"] = material ? material->name : std::string();
     return d;
+  });
+  /* The document's materials: [{"name", "users", "fill", "line", "line_width", "brush"}]. */
+  m.def("materials", []() {
+    const Document &doc = *current_context().document;
+    py::list list;
+    for (const Material &mat : doc.materials) {
+      py::dict d;
+      d["name"] = mat.name;
+      d["users"] = material_users(doc, mat.id);
+      d["fill"] = py::make_tuple(mat.style.fill.r, mat.style.fill.g, mat.style.fill.b, mat.style.fill.a);
+      d["line"] = py::make_tuple(mat.style.line.r, mat.style.line.g, mat.style.line.b, mat.style.line.a);
+      d["line_width"] = mat.style.line_width;
+      d["brush"] = mat.style.brush.name;
+      list.append(d);
+    }
+    return list;
   });
   /* Changes a shape's look, as the Shape panel does (on a reference, it becomes its override). */
   m.def("layer_set_shape_style", [layer_or_raise](uint64_t id, int index, py::dict values) {
@@ -798,6 +833,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         throw py::key_error("unknown shape setting '" + key + "'");
       }
     }
+    /* A linked shape's look is its material's: every shape sharing it changes too. */
+    document_sync_materials(*current_context().document);
     current_context().undo->mark_changed();
   });
   m.def(
@@ -2082,16 +2119,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return samples;
   });
   m.def("media_missing_count", []() { return media_missing_count(*current_context().document); });
-  /* A layer's masks: [{"outside", "layers" (names; "" for one that's gone), "enabled"}]. */
+  /* A layer's mask rows: [{"mode", "invert", "layers" (names; "" for one that's gone), "enabled", ...}]. */
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;
     py::list result;
     for (const LayerMask &mask : layer_or_raise(id).masks) {
       py::dict d;
-      d["outside"] = mask.outside;
+      d["mode"] = mask_mode_identifier(mask.mode);
+      d["invert"] = mask.invert;
+      d["grow"] = mask.grow;
+      /* As before rows: Outside was a Subtract, Expand a grow. */
+      d["outside"] = mask.mode == MaskMode::Subtract;
+      d["expand"] = mask.grow > 0.0f;
       d["enabled"] = mask.enabled;
       d["render"] = mask.render;
-      d["expand"] = mask.expand;
       d["fills_only"] = mask.fills_only;
       d["filled"] = mask.filled;
       d["extend"] = mask_extend_identifier(mask.extend);
@@ -2105,13 +2146,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return result;
   });
+  m.def("layer_mask_summary", [layer_or_raise](uint64_t id) {
+    return mask_summary(*current_context().document, layer_or_raise(id));
+  });
   /* The layers whose masks name this one. */
   m.def("layer_masking", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;
     layer_or_raise(id);
     py::list names;
     for (const Layer *l : document_layers_flat(doc)) {
-      for (const LayerMask &mask : l->masks) {
+      for (const LayerMask &mask : layer_mask_rows(doc, *l)) {
         if (std::find(mask.layers.begin(), mask.layers.end(), id) != mask.layers.end()) {
           names.append(l->name);
           break;

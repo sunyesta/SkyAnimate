@@ -95,7 +95,7 @@ mask = group["children"][0]
 assert "drawing" not in mask, "a reference stores no copy of the drawing"
 masked = group["children"][1]
 m = masked["masks"][0]
-assert (m["outside"], m["layers"], m["enabled"], m["render"], m["expand"], m["fills_only"], m["filled"]) == (True, [mask["id"]], True, False, True, True, False), m
+assert (m["mode"], m["layers"], m["enabled"], m["render"], m["grow"], m["fills_only"], m["filled"]) == ("SUBTRACT", [mask["id"]], True, False, 1.0, True, False), m
 
 # Saving without .oanim adds it.
 assert oanim.ops.wm.save_as_mainfile(filepath=path("walk_alt")) == {'FINISHED'}

@@ -40,6 +40,9 @@ struct ViewportOverlays {
   bool live_physics = true;
   /* Bones with a custom shape (a pin) are drawn as it; off, every bone is drawn as a bone. */
   bool bone_shapes = true;
+  /* Guides: layers with Show in Renders off (references, Media layers by default). With them and the
+   * overlays off, the viewport shows what renders. */
+  bool guides = true;
 
   bool operator==(const ViewportOverlays &) const = default;
 };

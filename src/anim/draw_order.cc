@@ -131,7 +131,7 @@ struct Flatten {
       if (!shown(l) || l.opacity <= 0.0f) {
         continue;
       }
-      const bool has_masks = !l.masks.empty();
+      const bool has_masks = !l.masks.empty() || l.clip_to_below;
       if (has_masks) {
         masked.push_back(&l);
       }

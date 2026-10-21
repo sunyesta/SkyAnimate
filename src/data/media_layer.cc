@@ -238,6 +238,106 @@ bool media_layer_range(const Layer &layer, int *r_first, int *r_last)
   return true;
 }
 
+static int clip_end(const MediaClip &c)
+{
+  return c.start + c.length;
+}
+
+void media_clip_drag_bounds(const std::vector<MediaClip> &clips, uint64_t id, MediaDragKind kind, bool magnet,
+                            int *r_lowest_start, int *r_highest_end)
+{
+  *r_lowest_start = 1;
+  *r_highest_end = INT32_MAX / 2;
+  const auto self = std::find_if(clips.begin(), clips.end(), [&](const MediaClip &c) { return c.id == id; });
+  if (self == clips.end() || kind == MediaDragKind::Move) {
+    return;
+  }
+  for (const MediaClip &c : clips) {
+    if (c.id == id) {
+      continue;
+    }
+    if (c.start < self->start) {
+      /* Before it: without the magnet its end is a wall; with it, the clip before gives way down to a
+       * frame of its own. */
+      *r_lowest_start = std::max(*r_lowest_start, magnet ? c.start + 1 : clip_end(c));
+    }
+    else if (!magnet) {
+      *r_highest_end = std::min(*r_highest_end, c.start);
+    }
+  }
+}
+
+bool media_clips_drag(const std::vector<MediaClip> &before, const MediaClip &dragged, MediaDragKind kind, bool magnet,
+                      std::vector<MediaClip> &r_clips)
+{
+  r_clips = before;
+  std::stable_sort(r_clips.begin(), r_clips.end(), [](const MediaClip &a, const MediaClip &b) { return a.start < b.start; });
+  const auto at = std::find_if(r_clips.begin(), r_clips.end(), [&](const MediaClip &c) { return c.id == dragged.id; });
+  if (at == r_clips.end()) {
+    return false;
+  }
+  const MediaClip was = *at;
+  *at = dragged;
+  const int ns = dragged.start, ne = clip_end(dragged);
+  if (!magnet) {
+    for (const MediaClip &c : r_clips) {
+      if (c.id != dragged.id && c.start < ne && clip_end(c) > ns) {
+        return false;
+      }
+    }
+    return true;
+  }
+  /* The others in time order, as they were. */
+  std::vector<MediaClip *> others;
+  for (MediaClip &c : r_clips) {
+    if (c.id != dragged.id) {
+      others.push_back(&c);
+    }
+  }
+  if (kind == MediaDragKind::TrimEnd) {
+    /* The clips stuck to its end (no gap, one after another) move with it... */
+    const int delta = ne - clip_end(was);
+    int stuck_end = clip_end(was);
+    for (MediaClip *c : others) {
+      if (c->start < was.start) {
+        continue;
+      }
+      if (c->start != stuck_end) {
+        break;
+      }
+      stuck_end = clip_end(*c);
+      c->start += delta;
+    }
+  }
+  else if (kind == MediaDragKind::TrimStart) {
+    /* ...and the clip before its start stays against it (or gives way). */
+    for (auto it = others.rbegin(); it != others.rend(); ++it) {
+      MediaClip &c = **it;
+      if (c.start >= was.start) {
+        continue;
+      }
+      if (clip_end(c) == was.start || clip_end(c) > ns) {
+        c.length = std::max(ns - c.start, 1);
+      }
+      break;
+    }
+    return true;
+  }
+  /* What it now runs into is pushed along, one after another. */
+  int cursor = ne;
+  for (MediaClip *c : others) {
+    if (clip_end(*c) <= ns) {
+      continue; /* Wholly before it: left alone. */
+    }
+    if (c->start < cursor) {
+      c->start = cursor;
+    }
+    cursor = clip_end(*c);
+  }
+  std::stable_sort(r_clips.begin(), r_clips.end(), [](const MediaClip &a, const MediaClip &b) { return a.start < b.start; });
+  return true;
+}
+
 void media_quad(const Document &doc, const Layer &layer, int width, int height, float2 r_corners[4])
 {
   /* The camera's frame at zoom 1: 2 units tall, as wide as the document's shape (data/camera.hh). */

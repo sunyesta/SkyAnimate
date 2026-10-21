@@ -94,6 +94,9 @@ bool drawing_detail_selected(const VectorDrawing &drawing);
 /* Delete Higher: removes the detail above each picked shape's edit level. Returns how many points
  * went. */
 int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool> &shapes);
+/* Removes detail points (by id) as Delete Higher does: the coarser points keep their own-level handles,
+ * so the curve is the level below's, exactly as it was before the knife added them. */
+void drawing_detail_remove_points(VectorDrawing &drawing, const std::vector<uint64_t> &ids);
 /* Apply Detail: the picked shapes' detail points become base points, as they show. Returns how
  * many points changed; `r_keys_dropped` says whether any had keys (their offsets' keys go). */
 int drawing_detail_apply(VectorDrawing &drawing, const std::vector<bool> &shapes, bool *r_keys_dropped);

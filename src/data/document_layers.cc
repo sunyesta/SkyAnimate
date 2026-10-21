@@ -172,6 +172,37 @@ std::string document_layer_unique_name(const Document &doc, const std::string &b
   }
 }
 
+const Layer *layer_clip_base(const Document &doc, const Layer &layer)
+{
+  int index = 0;
+  const std::vector<Layer> *container = layer_container(const_cast<Document &>(doc), layer.id, &index);
+  if (!container) {
+    return nullptr;
+  }
+  for (size_t i = size_t(index) + 1; i < container->size(); i++) {
+    if (!(*container)[i].clip_to_below) {
+      return &(*container)[i];
+    }
+  }
+  return nullptr;
+}
+
+std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer)
+{
+  std::vector<LayerMask> rows = layer.masks;
+  if (layer.clip_to_below) {
+    if (const Layer *base = layer_clip_base(doc, layer)) {
+      LayerMask clip;
+      clip.mode = MaskMode::Intersect;
+      clip.layers = {base->id};
+      clip.clip = true;
+      clip.fills_only = layer.clip_exclude_strokes;
+      rows.push_back(clip);
+    }
+  }
+  return rows;
+}
+
 Layer &document_add_layer(Document &doc, LayerType type, const std::string &name)
 {
   Layer layer;

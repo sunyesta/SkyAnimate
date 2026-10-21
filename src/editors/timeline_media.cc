@@ -104,7 +104,11 @@ struct MediaDrag {
   DragMode mode = DragMode::Move;
   float start_x = 0.0f;
   MediaClip original;
+  /* The layer's clips as they were: every update starts again from them. */
+  std::vector<MediaClip> before;
   bool moved = false;
+  /* Without the magnet, dropped on another clip: it goes back. */
+  bool refused = false;
 };
 static MediaDrag g_drag;
 
@@ -215,6 +219,7 @@ bool timeline_media_row_press(Context &/*C*/, const TimelineMediaView &v, Layer 
   g_drag.mode = mode;
   g_drag.start_x = io.MousePos.x;
   g_drag.original = clip;
+  g_drag.before = layer.media.clips;
   return true;
 }
 
@@ -245,7 +250,7 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
   const MediaClip &o = g_drag.original;
   /* Esc or a right-click: put it back. */
   if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-    *clip = o;
+    layer->media.clips = g_drag.before;
     g_drag = {};
     return false;
   }
@@ -261,12 +266,20 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
   const MediaInfo info = media_clip_info(o);
   const double rate = clip_rate(doc, o, info);
   int d = int(std::lround(dx / v.px_per_frame()));
-  /* Ctrl: the magnet, as ToonSquid's: edges snap to the playhead, the range's ends and other clips. */
-  const bool snap = io.KeyCtrl;
+  /* Ctrl: the magnet, as ToonSquid's: the other clips make way (see media_clips_drag), and edges snap
+   * to the playhead, the range's ends and other clips. */
+  const bool magnet = io.KeyCtrl;
+  const bool snap = magnet;
   const std::vector<int> targets = snap ? snap_targets(doc, o.id) : std::vector<int>();
   const int end = o.start + o.length;
   float best = SNAP_PX + 1.0f;
-  *clip = o;
+  const MediaDragKind kind = g_drag.mode == DragMode::TrimStart ? MediaDragKind::TrimStart
+                             : g_drag.mode == DragMode::TrimEnd ? MediaDragKind::TrimEnd
+                                                                : MediaDragKind::Move;
+  int lowest = 1, highest = INT32_MAX / 2;
+  media_clip_drag_bounds(g_drag.before, o.id, kind, magnet, &lowest, &highest);
+  layer->media.clips = g_drag.before;
+  clip = clip_by_id(*layer, o.id);
   switch (g_drag.mode) {
     case DragMode::Move: {
       if (snap) {
@@ -282,9 +295,10 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
       if (snap) {
         s += snap_offset(v, targets, s, &best);
       }
-      /* Not before the file's start (its In can't go below 0), and at least a frame long. */
+      /* Not before the file's start (its In can't go below 0), nor past the clip before (it gives way
+       * with the magnet, down to a frame of its own), and at least a frame long. */
       const int earliest = info.kind == MediaKind::Image ? 1 : o.start - int(std::floor(o.in * rate + 1e-6));
-      s = std::clamp(s, std::max(earliest, 1), end - 1);
+      s = std::clamp(s, std::max({earliest, lowest, 1}), end - 1);
       clip->start = s;
       clip->length = end - s;
       if (info.kind != MediaKind::Image) {
@@ -297,7 +311,7 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
       if (snap) {
         e += snap_offset(v, targets, e, &best);
       }
-      clip->length = std::max(e, o.start + 1) - o.start;
+      clip->length = std::clamp(e, o.start + 1, std::max(highest, o.start + 1)) - o.start;
       break;
     }
     case DragMode::Slip: {
@@ -307,14 +321,33 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
       break;
     }
   }
-  drag_readout(doc, *clip);
+  g_drag.refused = false;
+  if (g_drag.mode != DragMode::Slip) {
+    const MediaClip dragged = *clip;
+    std::vector<MediaClip> placed;
+    g_drag.refused = !media_clips_drag(g_drag.before, dragged, kind, magnet, placed);
+    layer->media.clips = std::move(placed);
+    clip = clip_by_id(*layer, o.id);
+  }
+  if (g_drag.refused) {
+    ImGui::SetTooltip("Can't drop on another clip: hold Ctrl to push the others along");
+  }
+  else {
+    drag_readout(doc, *clip);
+  }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    /* Dropped: what it now covers is overwritten, and the step goes in the undo history. */
-    media_clips_tidy(doc, *layer, clip->id);
-    C.undo->push(g_drag.mode == DragMode::Move   ? "Move Clip"
-                 : g_drag.mode == DragMode::Slip ? "Slip Clip"
-                                                 : "Trim Clip",
-                 doc);
+    /* Dropped on another clip without the magnet: back where it was. Otherwise the step goes in the
+     * undo history. */
+    if (g_drag.refused) {
+      layer->media.clips = g_drag.before;
+    }
+    else {
+      media_clips_tidy(doc, *layer, 0);
+      C.undo->push(g_drag.mode == DragMode::Move   ? "Move Clip"
+                   : g_drag.mode == DragMode::Slip ? "Slip Clip"
+                                                   : "Trim Clip",
+                   doc);
+    }
     g_drag = {};
     return false;
   }
@@ -422,6 +455,10 @@ void timeline_media_row_draw(Context &C, ImDrawList *dl, const TimelineMediaView
       dl->AddText(ImVec2(tx, (y0 + y1 - ts.y) * 0.5f), COL_TEXT, name.c_str());
     }
     dl->PopClipRect();
+    if (g_drag.active && g_drag.refused && g_drag.layer == layer.id && g_drag.clip == c.id) {
+      dl->AddRect(a - ImVec2(1.5f, 1.5f), b + ImVec2(1.5f, 1.5f), IM_COL32(0xe0, 0x40, 0x40, 255), 5.0f, 0, 3.0f);
+      continue;
+    }
     if (!c.selected) {
       dl->AddRect(a, b, IM_COL32(0, 0, 0, 160), 3.0f, 0, 1.0f);
       continue;
@@ -476,7 +513,7 @@ void timeline_media_row_hover(Context &C, const TimelineMediaView &v, const Laye
                        : mode == DragMode::TrimStart ? "Drag to trim its start"
                                                      : "Drag to trim its end";
     ImGui::SetTooltip("%s\n%s\nFrames %d to %d, %.2f s into the file\n\n%s (a picked clip's end handles trim it, "
-                      "Alt-drag slips, Ctrl: magnet; X deletes; right-click for more)",
+                      "Alt-drag slips, Ctrl: magnet, the other clips make way; X deletes; right-click for more)",
                       file_name(c->filepath).c_str(),
                       media_clip_missing(*c) ? "Missing: right-click > Locate..." : media_info_text(info).c_str(),
                       c->start, c->start + c->length - 1, c->in, what);

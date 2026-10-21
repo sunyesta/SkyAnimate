@@ -220,7 +220,7 @@ void media_operators_register()
         }
         Layer &layer = document_add_layer(doc, LayerType::Media, name);
         const bool picture = info.kind != MediaKind::Audio;
-        layer.media.guide = op_has_arg(C, "guide") ? op_arg_bool(C, "guide") : true;
+        layer.render_visible = !(op_has_arg(C, "guide") ? op_arg_bool(C, "guide") : true);
         const std::string fit = op_arg(C, "fit", "FIT");
         layer.media.fit = fit == "FILL" ? MediaFit::Fill : fit == "STRETCH" ? MediaFit::Stretch
                           : fit == "ORIGINAL"                               ? MediaFit::Original
@@ -452,6 +452,58 @@ void media_operators_register()
           }
         }
         media_clips_tidy(doc, layer, clip->id);
+        return OpStatus::Finished;
+      });
+
+  /* What a drag in the timeline does (see media_clips_drag): kind MOVE (to `start`), TRIM_START (its
+   * start to `start`) or TRIM_END (its length to `length`); `magnet` as holding Ctrl. */
+  add_operator(
+      "media.clip_drag", "Drag Clip",
+      "Move or trim a clip as the timeline does: with the magnet the other clips make way, without it none "
+      "changes",
+      media_poll, [](Context &C) {
+        Document &doc = *C.document;
+        Layer &layer = *media_target_layer(C);
+        MediaClip *clip = target_clip(C, layer);
+        if (!clip) {
+          return OpStatus::Cancelled;
+        }
+        const std::string kind_id = op_arg(C, "kind", "MOVE");
+        const MediaDragKind kind = kind_id == "TRIM_START" ? MediaDragKind::TrimStart
+                                   : kind_id == "TRIM_END" ? MediaDragKind::TrimEnd
+                                                           : MediaDragKind::Move;
+        const bool magnet = op_arg_bool(C, "magnet");
+        const std::vector<MediaClip> before = layer.media.clips;
+        const MediaClip o = *clip;
+        int lowest = 1, highest = INT32_MAX / 2;
+        media_clip_drag_bounds(before, o.id, kind, magnet, &lowest, &highest);
+        MediaClip dragged = o;
+        const int end = o.start + o.length;
+        if (kind == MediaDragKind::Move) {
+          dragged.start = std::max(op_arg_int(C, "start", o.start), 1);
+        }
+        else if (kind == MediaDragKind::TrimStart) {
+          const MediaInfo info = media_clip_info(o);
+          const double rate = clip_rate(doc, o);
+          const int earliest = info.kind == MediaKind::Image ? 1 : o.start - int(std::floor(o.in * rate + 1e-6));
+          const int s = std::clamp(op_arg_int(C, "start", o.start), std::max({earliest, lowest, 1}), end - 1);
+          dragged.start = s;
+          dragged.length = end - s;
+          if (info.kind != MediaKind::Image) {
+            dragged.in = std::max(o.in + double(s - o.start) / rate, 0.0);
+          }
+        }
+        else {
+          const int e = std::clamp(o.start + op_arg_int(C, "length", o.length), o.start + 1,
+                                   std::max(highest, o.start + 1));
+          dragged.length = e - o.start;
+        }
+        std::vector<MediaClip> placed;
+        if (!media_clips_drag(before, dragged, kind, magnet, placed)) {
+          report(ReportType::Warning, "Can't drop a clip on another: use the magnet (Ctrl) to push the others along");
+          return OpStatus::Cancelled;
+        }
+        layer.media.clips = std::move(placed);
         return OpStatus::Finished;
       });
 

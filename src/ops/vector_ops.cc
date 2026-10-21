@@ -419,22 +419,14 @@ void vector_operators_register()
                   UNDO, editable_with_selection_poll, [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
                       VectorDrawing &drawing = layer->drawing;
-                      /* One at a time: each dissolve renumbers the points (it also clears out
-                       * points nothing uses any more). */
-                      for (;;) {
-                        int last = -1;
-                        for (int i = int(drawing.points.size()) - 1; i >= 0 && last < 0; i--) {
-                          last = drawing.points[i].selected ? i : -1;
-                        }
-                        const size_t before = drawing.points.size();
-                        if (last < 0) {
-                          break;
-                        }
-                        drawing_dissolve_point(drawing, last);
-                        if (drawing.points.size() >= before) {
-                          drawing.points[last].selected = false;
+                      /* All at once, so a run of neighbouring points is fitted as one span. */
+                      std::vector<int> selected;
+                      for (int i = 0; i < int(drawing.points.size()); i++) {
+                        if (drawing.points[i].selected) {
+                          selected.push_back(i);
                         }
                       }
+                      drawing_dissolve_points(drawing, selected);
                     }
                     return OpStatus::Finished;
                   });
@@ -588,6 +580,7 @@ void vector_operators_register()
     operators().add(std::move(ot));
   }
   tool_op("wm.tool_select", "Select Box Tool", Tool::Select);
+  tool_op("wm.tool_select_layer", "Select Layer Tool", Tool::SelectLayer);
   tool_op("wm.tool_cursor", "Cursor Tool", Tool::Cursor);
   {
     /* oanim.ops.wm.tool_draw(mode="PEN"): the Draw tool, optionally picking freehand or the pen. */

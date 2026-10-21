@@ -169,10 +169,10 @@ picked = layers.active
 assert picked.type == "GROUP" and [c.name for c in picked.children] == [b.name, a.name]
 assert not a.select, "the extra selection clears"
 
-# Mask With Layer Below: b shows only inside a (Photoshop's clipping mask).
+# Mask With Layer Below: b clips to a (Photoshop's clipping mask).
 layers.active = b
 assert oanim.ops.mask.with_layer_below() == {'FINISHED'}
-assert b.masks == [{"outside": False, "layers": [a.name], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
+assert b.masks == [] and b.clip_to_below
 assert a.masking == [b.name]
 layers.active = a
 assert oanim.ops.mask.with_layer_below() == {'CANCELLED'}, "nothing below the bottom layer"
@@ -280,6 +280,38 @@ assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
 assert menu_layer.point_count == 5 and menu_layer.shape_count == 2, (menu_layer.point_count, menu_layer.shape_count)
 outline, closed = menu_layer.shape_outline(1, 4)
 assert closed, "the shape still closes"
+# Dissolve keeps the curve's shape: the joined segment's handles are fitted to what was there. Every
+# other point of an 8-point circle (and three in a row of a 12-point one) leave the outline within 1%
+# of its width (it was 9% and 20% before the fit).
+import math
+
+
+def far(a, b):
+    worst = 0.0
+    for p in a:
+        best = 1e9
+        for i in range(len(b)):
+            q, r = b[i], b[(i + 1) % len(b)]
+            dx, dy = r[0] - q[0], r[1] - q[1]
+            t = max(0.0, min(1.0, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / max(dx * dx + dy * dy, 1e-12)))
+            best = min(best, math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy))
+        worst = max(worst, best)
+    return worst
+
+
+for n, gone in ((8, [1, 3, 5, 7]), (12, [3, 4, 5])):
+    oanim.ops.layer.new()
+    ring = oanim.data.layers.active
+    ring.add_curve([(math.cos(2 * math.pi * k / n), math.sin(2 * math.pi * k / n)) for k in range(n)], closed=True, fill=True)
+    before, _ = ring.shape_outline(0, 64)
+    oanim.ops.mesh.select_none()
+    ring.select_points(gone)
+    assert oanim.ops.mesh.dissolve_points() == {'FINISHED'} and ring.point_count == n - len(gone)
+    after, _ = ring.shape_outline(0, 64)
+    assert far(after, before) < 0.02, (n, far(after, before))
+    oanim.ops.layer.delete()
+oanim.data.layers.active = menu_layer
+
 # Delete Points: the points go, and lines left too short with them.
 oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
@@ -289,5 +321,43 @@ assert menu_layer.point_count == 3 and menu_layer.curve_count == 1, (menu_layer.
 oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
 assert oanim.ops.mesh.delete_edges() == {'CANCELLED'}
+
+# --- Local View (/): the picked layers alone, and back ---------------------------------------------------
+layers = oanim.data.layers
+assert oanim.wm.local_view() == []
+for l in layers.all():
+    l.select = False
+layers.active = menu_layer
+shown_before = [l.visible for l in layers.all()]
+assert oanim.wm.event_simulate("SLASH", area="Viewport"), "/ is Local View"
+assert oanim.wm.local_view() == [menu_layer.name], oanim.wm.local_view()
+assert [l.visible for l in layers.all()] == shown_before, "a view: no layer's visibility changes"
+assert oanim.ops.view.local_view() == {'FINISHED'} and oanim.wm.local_view() == [], "again: back to everything"
+# Several picked layers go in together; nothing undoes or saves it.
+others = [l for l in layers.all() if l.name != menu_layer.name][:1]
+for l in others:
+    l.select = True
+assert oanim.ops.view.local_view() == {'FINISHED'}
+assert sorted(oanim.wm.local_view()) == sorted([menu_layer.name] + [l.name for l in others]), oanim.wm.local_view()
+assert oanim.wm.event_simulate("NUMPAD_SLASH", area="Viewport") and oanim.wm.local_view() == []
+
+# --- Show Active (. over the Layers editor): opens the groups the active layer is in ----------------------
+oanim.ops.layer.new()
+inner = layers.active
+inner.name = "inner"
+assert oanim.ops.layer.group() == {'FINISHED'}
+middle = layers.active
+assert oanim.ops.layer.group() == {'FINISHED'}
+outer = layers.active
+outer.expanded = False
+middle.expanded = False
+layers.active = inner
+assert oanim.wm.event_simulate("PERIOD", area="Layers"), ". is Show Active"
+assert outer.expanded and middle.expanded, "every group holding it opens"
+assert oanim.wm.undo_history()[0][-1] != "Show Active", "a view, not an undo step"
+assert oanim.wm.event_simulate("NUMPAD_PERIOD", area="Layers")
+outer.select = False
+layers.active = outer
+oanim.ops.layer.delete()
 
 print("Drawing and layer tests passed")

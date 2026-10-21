@@ -85,6 +85,7 @@ static json brush_to_json(const BrushSettings &b)
           {"valDrift", num(b.val_drift)}};
 }
 
+static json materials_to_json(const Document &doc);
 static json style_to_json(const Style &style)
 {
   json j = {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
@@ -266,6 +267,12 @@ static json drawing_to_json(const VectorDrawing &drawing)
                       {"outline", shape.has_outline},
                       {"style", style_to_json(shape.style)},
                       {"edges", std::move(edges)}});
+    if (shape.material != 0) {
+      shapes.back()["material"] = shape.material;
+    }
+    if (!shape.material_last.empty()) {
+      shapes.back()["material_last"] = shape.material_last;
+    }
     if (shape.detail_level > 0) {
       shapes.back()["detail_level"] = shape.detail_level;
     }
@@ -381,8 +388,7 @@ static json media_to_json(const MediaSettings &m)
     }
     clips.push_back(std::move(cj));
   }
-  return {{"guide", m.guide},
-          {"fit", MEDIA_FIT_IDS[int(m.fit)]},
+  return {{"fit", MEDIA_FIT_IDS[int(m.fit)]},
           {"greyscale", m.greyscale},
           {"tint", color_to_json(m.tint)},
           {"tint_amount", num(m.tint_amount)},
@@ -414,14 +420,21 @@ static json layer_to_json(const Layer &layer)
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
   }
+  if (layer.clip_to_below) {
+    j["clip_to_below"] = true;
+  }
+  if (layer.clip_exclude_strokes) {
+    j["clip_exclude_strokes"] = true;
+  }
   if (!layer.masks.empty()) {
     json masks = json::array();
     for (const LayerMask &m : layer.masks) {
-      masks.push_back({{"outside", m.outside},
+      masks.push_back({{"mode", mask_mode_identifier(m.mode)},
+                       {"invert", m.invert},
                        {"layers", m.layers},
                        {"enabled", m.enabled},
                        {"render", m.render},
-                       {"expand", m.expand},
+                       {"grow", num(m.grow)},
                        {"fills_only", m.fills_only},
                        {"filled", m.filled},
                        {"extend", mask_extend_identifier(m.extend)},
@@ -680,6 +693,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"next_layer_id", doc.next_layer_id},
            {"layers", std::move(layers)},
            {"texts", std::move(texts)},
+           {"materials", materials_to_json(doc)},
        }},
   };
   return root.dump(1, '\t');
@@ -854,6 +868,15 @@ static Style style_from_json(const json &j)
   return style;
 }
 
+static json materials_to_json(const Document &doc)
+{
+  json list = json::array();
+  for (const Material &m : doc.materials) {
+    list.push_back({{"id", m.id}, {"name", m.name}, {"style", style_to_json(m.style)}});
+  }
+  return list;
+}
+
 static bool value_from_json(const json &j, float *r)
 {
   if (!j.is_number()) {
@@ -948,6 +971,7 @@ static constexpr std::pair<const char *, bool ViewportOverlays::*> OVERLAY_SWITC
     {"physics_ghosts", &ViewportOverlays::physics_ghosts},
     {"live_physics", &ViewportOverlays::live_physics},
     {"bone_shapes", &ViewportOverlays::bone_shapes},
+    {"guides", &ViewportOverlays::guides},
 };
 static constexpr const char *HANDLE_DISPLAYS[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
 static constexpr const char *ARMATURE_DISPLAYS[] = {"OFF", "SELECTED", "ON"};
@@ -1149,6 +1173,8 @@ static VectorDrawing drawing_from_json(const json &j)
     if (auto it = s.find("style"); it != s.end()) {
       shape.style = style_from_json(*it);
     }
+    shape.material = get_id(s, "material");
+    shape.material_last = get_string(s, "material_last");
     shape.detail_level = std::clamp(get_int(s, "detail_level", 0), 0, DETAIL_LEVEL_MAX);
     for (const json &e : get_array(s, "edges")) {
       if (!e.is_array() || e.size() != 2 || !e[0].is_number_integer() || !e[1].is_number_integer()) {
@@ -1272,7 +1298,7 @@ static void migrate_old_mask_options(std::vector<Layer> &layers)
     for (LayerMask &m : layer.masks) {
       for (const uint64_t id : m.layers) {
         if (const auto it = g_old_mask_options.find(id); it != g_old_mask_options.end()) {
-          m.expand |= it->second.first;
+          m.grow = it->second.first ? std::max(m.grow, 1.0f) : m.grow;
           m.fills_only |= it->second.second;
         }
       }
@@ -1321,10 +1347,15 @@ static void migrate_old_masks(std::vector<Layer> &layers)
       }
       std::vector<LayerMask> masks;
       if (!full && !added.empty()) {
-        masks.push_back({false, added, true});
+        LayerMask add;
+        add.layers = added;
+        masks.push_back(add);
       }
       if (!cut.empty()) {
-        masks.push_back({true, cut, true});
+        LayerMask subtract;
+        subtract.mode = MaskMode::Subtract;
+        subtract.layers = cut;
+        masks.push_back(subtract);
       }
       child.masks.insert(child.masks.begin(), masks.begin(), masks.end());
     }
@@ -1344,7 +1375,6 @@ template<size_t N> static int id_index(const char *const (&ids)[N], const std::s
 static MediaSettings media_from_json(const json &j)
 {
   MediaSettings m;
-  m.guide = get_bool(j, "guide", m.guide);
   m.fit = MediaFit(id_index(MEDIA_FIT_IDS, get_string(j, "fit", ""), 0));
   m.greyscale = get_bool(j, "greyscale", false);
   m.tint = get_color(j, "tint", m.tint);
@@ -1628,16 +1658,22 @@ static Layer layer_from_json(const json &j, int depth)
   get_keys(j, "opacity_keys", layer.opacity_keys);
   get_keys(j, "visible_keys", layer.visible_keys);
   layer.draw_order = float(get_int(j, "draw_order", 0));
+  layer.clip_to_below = get_bool(j, "clip_to_below", false);
+  layer.clip_exclude_strokes = get_bool(j, "clip_exclude_strokes", false);
   get_keys(j, "draw_order_keys", layer.draw_order_keys);
   for (const json &mj : get_array(j, "masks")) {
     if (!mj.is_object()) {
       continue;
     }
     LayerMask m;
-    m.outside = get_bool(mj, "outside", false);
+    /* Files from before mask rows: Inside/Outside masks that all had to hold, as rows that say so. */
+    if (!mask_mode_from_identifier(get_string(mj, "mode", ""), &m.mode)) {
+      m.mode = mask_mode_from_inside_outside(get_bool(mj, "outside", false), layer.masks.empty());
+    }
+    m.invert = get_bool(mj, "invert", false);
     m.enabled = get_bool(mj, "enabled", true);
     m.render = get_bool(mj, "render", true);
-    m.expand = get_bool(mj, "expand", false);
+    m.grow = std::clamp(get_float(mj, "grow", get_bool(mj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
     m.fills_only = get_bool(mj, "fills_only", false);
     m.filled = get_bool(mj, "filled", false);
     if (!mask_extend_from_identifier(get_string(mj, "extend", "NONE"), &m.extend)) {
@@ -1669,6 +1705,10 @@ static Layer layer_from_json(const json &j, int depth)
   }
   if (auto it = j.find("media"); it != j.end() && it->is_object() && layer.is_media()) {
     layer.media = media_from_json(*it);
+    /* Files from before a Media layer's Guide was its Show in Renders. */
+    if (get_bool(*it, "guide", false)) {
+      layer.render_visible = false;
+    }
   }
   /* Older files without flexi-binding: points that weren't bound stayed put, and still do. */
   if (!get_bool(j, "flexi_binding", true)) {
@@ -1898,6 +1938,21 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   for (const json &t : get_array(j, "texts")) {
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});
+    }
+  }
+  for (const json &mj : get_array(j, "materials")) {
+    if (!mj.is_object()) {
+      continue;
+    }
+    Material m;
+    m.id = get_id(mj, "id");
+    m.name = get_string(mj, "name", "Material");
+    if (auto it = mj.find("style"); it != mj.end()) {
+      m.style = style_from_json(*it);
+    }
+    if (m.id != 0 && !material_find(doc, m.id)) {
+      doc.next_material_id = std::max(doc.next_material_id, m.id + 1);
+      doc.materials.push_back(std::move(m));
     }
   }
   layers_validate(doc);

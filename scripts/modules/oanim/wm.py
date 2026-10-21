@@ -12,11 +12,13 @@ def event_simulate(type, *, ctrl=False, shift=False, alt=False, area="", typing=
     return _oanim.event_simulate(type, ctrl, shift, alt, area, typing)
 
 
-def mouse_simulate(x, y, button=None, down=True):
+def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False):
     """Move the mouse to (x, y) in the window's UI units (as a remote screenshot of the whole
     window shows them), and press (down=True) or release a button: 0 left, 1 right, 2 middle; None
-    only moves. Events queue and one is used per frame, so a click is a press then a release."""
-    _oanim.mouse_simulate(float(x), float(y), -1 if button is None else int(button), bool(down))
+    only moves; `ctrl`, `alt`, `shift`: held. Events queue and one is used per frame, so a click is a
+    press then a release."""
+    _oanim.mouse_simulate(float(x), float(y), -1 if button is None else int(button), bool(down), bool(ctrl),
+                          bool(alt), bool(shift))
 
 
 def drop_simulate(filepath, x, y):
@@ -32,11 +34,12 @@ def file_drag_simulate(filepaths, x=0, y=0):
     _oanim.file_drag_simulate(list(filepaths), float(x), float(y))
 
 
-def mouse_click(x, y, button=0):
-    """A click at (x, y): moves there, presses, releases (over three frames)."""
-    mouse_simulate(x, y)
-    mouse_simulate(x, y, button, True)
-    mouse_simulate(x, y, button, False)
+def mouse_click(x, y, button=0, ctrl=False, alt=False, shift=False):
+    """A click at (x, y): moves there, presses, releases (over three frames), with the keys held."""
+    mouse_simulate(x, y, None, True, ctrl, alt, shift)
+    mouse_simulate(x, y, button, True, ctrl, alt, shift)
+    mouse_simulate(x, y, button, False, ctrl, alt, shift)
+    mouse_simulate(x, y, None, True)
 
 
 def debug_crash():
@@ -51,6 +54,11 @@ def properties_tab(tab):
     "MASKING", "CAMERA" (the picked camera's) or "MEDIA" (a Media layer's)."""
     _oanim.properties_tab(["DOCUMENT", "LAYER", "DRAWING", "MODIFIERS", "CONSTRAINTS", "REFERENCE",
                          "MASKING", "CAMERA", "MEDIA"].index(tab.upper()))
+
+
+def local_view():
+    """The names of the layers Local View shows on their own (/ or Numpad /), or [] when it's off."""
+    return list(_oanim.local_view())
 
 
 def overlays():

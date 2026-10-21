@@ -58,6 +58,10 @@ assert oanim.ops.media.add(filepath=VIDEO) == {'FINISHED'}
 video = layers.active
 assert video.type == "MEDIA" and video.name == "counting" and len(layers.all()) == before + 1
 assert video.media_guide and near(video.opacity, 0.5, 1e-6) and video.media_fit == "FIT", "a guide at half opacity"
+assert not video.render_visible, "a guide is a layer with Show in Renders off"
+video.media_guide = False
+assert video.render_visible
+video.media_guide = True
 (clip,) = video.media_clips
 assert (clip["start"], clip["length"], clip["timing"], clip["end"]) == (1, 48, "REAL_TIME", "HOLD"), clip
 assert oanim.ops.ed.undo() == {'FINISHED'} and len(layers.all()) == before
@@ -126,6 +130,49 @@ assert len(added) == 1 and added[0]["sequence"] and added[0]["length"] == 3 and 
 assert [c["start"] for c in video.media_clips] == [1, 10, 12, 15], video.media_clips
 oanim.ops.ed.undo()
 assert len(video.media_clips) == 2
+
+# Timeline drags, as ToonSquid's: without the magnet nothing else changes; with it the others make way.
+saved_end = doc.frame_end
+doc.frame_end = 30
+assert oanim.ops.media.add(filepath=STILL) == {'FINISHED'}
+lane = layers.active
+oanim.ops.media.clip_split(frame="11")
+oanim.ops.media.clip_split(frame="21")
+a, b, c = [x["id"] for x in lane.media_clips]
+oanim.ops.media.clip_set(clip=str(c), start="25", length="6")
+
+
+def spans():
+    return [(x["start"], x["start"] + x["length"] - 1) for x in lane.media_clips]
+
+
+def drag(clip, **args):
+    return oanim.ops.media.clip_drag(clip=str(clip), **{k: str(v) for k, v in args.items()})
+
+
+assert spans() == [(1, 10), (11, 20), (25, 30)]
+drag(a, kind="TRIM_END", length=15)
+assert spans() == [(1, 10), (11, 20), (25, 30)], "no magnet: the end stops at the next clip"
+assert drag(c, kind="MOVE", start=12) == {'CANCELLED'} and spans() == [(1, 10), (11, 20), (25, 30)], "no dropping on others"
+assert drag(c, kind="MOVE", start=22) == {'FINISHED'} and spans() == [(1, 10), (11, 20), (22, 27)]
+oanim.ops.ed.undo()
+drag(a, kind="TRIM_END", length=13, magnet=1)
+assert spans() == [(1, 13), (14, 23), (25, 30)], "the clip stuck to its end comes along; the one after a gap stays"
+drag(a, kind="TRIM_END", length=16, magnet=1)
+assert spans() == [(1, 16), (17, 26), (27, 32)], "and what it runs into is pushed along"
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+drag(b, kind="TRIM_START", start=14, magnet=1)
+assert spans() == [(1, 13), (14, 20), (25, 30)], "the clip before stays against its start"
+oanim.ops.ed.undo()
+drag(b, kind="TRIM_START", start=5)
+assert spans() == [(1, 10), (11, 20), (25, 30)], "no magnet: the start stops at the clip before"
+drag(c, kind="MOVE", start=11, magnet=1)
+assert spans() == [(1, 10), (11, 16), (17, 26)], "a moved clip pushes the ones it lands on along"
+oanim.ops.ed.undo()
+doc.frame_end = saved_end
+oanim.ops.layer.delete()
+layers.active = video
 
 # Replace keeps the timing.
 doc.frame_current = 5
@@ -227,6 +274,27 @@ assert oanim.ops.media.unpack() == {'FINISHED'}
 written = m.media_clips[0]["filepath"]
 assert os.path.isfile(written) and not m.media_clips[0]["packed"], written
 assert os.path.normcase(os.path.dirname(written)) == os.path.normcase(os.path.join(moved, "media"))
+
+# Guides are overlays: Overlays > Guides is saved with the project.
+assert oanim.wm.overlays()["guides"]
+oanim.wm.set_overlay("guides", False)
+assert oanim.ops.wm.save_mainfile(filepath=os.path.join(moved, "shot.oanim")) == {'FINISHED'}
+# A file from before Guide was Show in Renders: its Media layer's "guide" makes it a guide.
+import json, zipfile
+src = os.path.join(moved, "shot.oanim")
+with zipfile.ZipFile(src) as z:
+    data = json.loads(z.read("document.json"))
+for l in data["document"]["layers"]:
+    if l["type"] == "MEDIA":
+        l["render_visible"] = True
+        l["media"]["guide"] = True
+old_file = os.path.join(moved, "old.oanim")
+with zipfile.ZipFile(old_file, "w") as z:
+    z.writestr("document.json", json.dumps(data))
+assert oanim.ops.wm.open_mainfile(filepath=old_file, confirmed="1") == {'FINISHED'}
+assert not oanim.wm.overlays()["guides"], "the Guides switch came back off"
+m = [l for l in oanim.data.layers.all() if l.type == "MEDIA"][0]
+assert not m.render_visible and m.media_guide
 
 shutil.rmtree(folder, ignore_errors=True)
 print("Media tests passed")

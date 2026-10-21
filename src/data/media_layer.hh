@@ -56,6 +56,22 @@ void media_clips_tidy(const Document &doc, Layer &layer, uint64_t keep = 0);
 /* The first and last frame of all its clips (false for none). */
 bool media_layer_range(const Layer &layer, int *r_first, int *r_last);
 
+/* --- The timeline's clip drags, as ToonSquid's timeline does them. Without the magnet no other clip
+ * changes: trimming stops at the neighbouring clip and a clip can't be dropped on another. With the
+ * magnet (Ctrl) the others make way: trimming the end carries the clips stuck to it (no gap) along and
+ * pushes those it runs into, trimming the start retimes the clip before it (they stay together, or it
+ * gives way), and a moved clip pushes the clips it lands on along. */
+enum class MediaDragKind { Move, TrimStart, TrimEnd };
+/* The frames a clip's start can go down to and its end (one past its last frame) up to, from the
+ * others in `clips` (from the setup before the drag). */
+void media_clip_drag_bounds(const std::vector<MediaClip> &clips, uint64_t id, MediaDragKind kind, bool magnet,
+                            int *r_lowest_start, int *r_highest_end);
+/* Puts `dragged` (the clip as dragged, its start and length within the bounds) in place of its old self
+ * in `before` and makes the others way as above, into `r_clips`. False when, without the magnet, it
+ * would overlap another clip (r_clips then shows it overlapping, for the drag to show). */
+bool media_clips_drag(const std::vector<MediaClip> &before, const MediaClip &dragged, MediaDragKind kind, bool magnet,
+                      std::vector<MediaClip> &r_clips);
+
 /* Where the picture goes in the layer's own space, from the file's size and the layer's Fit: its
  * corners bottom left, bottom right, top right, top left. */
 void media_quad(const Document &doc, const Layer &layer, int width, int height, float2 r_corners[4]);

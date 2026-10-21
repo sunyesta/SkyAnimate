@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "data/layer.hh"
+#include "data/material.hh"
 #include "data/view_settings.hh"
 #include "rna/rna.hh"
 
@@ -98,6 +99,9 @@ struct Document {
   /* How dark the canvas outside the camera's frame is in the viewport, 0 to 1 (Blender's
    * passepartout). */
   float camera_passepartout = 0.6f;
+  /* Shared looks for shapes (data/material.hh), in the order they were made. */
+  std::vector<Material> materials;
+  uint64_t next_material_id = 1;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 
@@ -134,6 +138,12 @@ const Layer *layer_find(const Document &doc, uint64_t id);
 std::vector<Layer> *layer_container(Document &doc, uint64_t id, int *r_index);
 /* The group containing a layer, or null at the top level. */
 Layer *layer_parent(Document &doc, uint64_t id);
+/* What a layer with Clip to Below clips to: the first layer below it in its group that isn't clipped
+ * itself (null at the bottom). */
+const Layer *layer_clip_base(const Document &doc, const Layer &layer);
+/* A layer's mask rows as they apply: its own, then its Clip to Below as an Intersect with what its
+ * base shows (LayerMask::clip). */
+std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer);
 Layer *document_active_layer(Document &doc);
 /* Layer to document transform, including every parent group. */
 Transform2D layer_world_transform(const Document &doc, uint64_t id);

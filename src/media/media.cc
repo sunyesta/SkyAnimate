@@ -177,26 +177,94 @@ std::vector<std::string> media_sequence_files(const std::string &path)
  * Pictures
  */
 
-/* Halves the picture until its longer side fits MEDIA_MAX_SIZE (a 2x2 average each time). */
+void media_fit_size(int w, int h, int *r_w, int *r_h)
+{
+  const int longer = std::max(w, h);
+  if (longer <= MEDIA_MAX_SIZE) {
+    *r_w = w;
+    *r_h = h;
+    return;
+  }
+  const double scale = double(MEDIA_MAX_SIZE) / double(longer);
+  *r_w = std::max(1, int(std::lround(w * scale)));
+  *r_h = std::max(1, int(std::lround(h * scale)));
+}
+
+/* Shrinks a picture larger than MEDIA_MAX_SIZE to just fit (not by halves, which could leave a
+ * picture a little over the limit at a quarter of its size): each new pixel is the average of the
+ * part of the picture it covers, weighted by how much of each old pixel that is. */
 static void fit_max_size(MediaFrame &f)
 {
-  while (std::max(f.width, f.height) > MEDIA_MAX_SIZE && f.width > 1 && f.height > 1) {
-    const int w = f.width / 2, h = f.height / 2;
-    std::vector<uint8_t> out(size_t(w) * h * 4);
-    for (int y = 0; y < h; y++) {
-      const uint8_t *r0 = &f.rgba[size_t(y * 2) * f.width * 4];
-      const uint8_t *r1 = &f.rgba[size_t(y * 2 + 1) * f.width * 4];
-      uint8_t *o = &out[size_t(y) * w * 4];
-      for (int x = 0; x < w; x++) {
+  int w = 0, h = 0;
+  media_fit_size(f.width, f.height, &w, &h);
+  if (w == f.width && h == f.height) {
+    return;
+  }
+  /* Each new column's (and row's) span of old ones, with the share of the edge ones it covers. */
+  struct Span {
+    int first, last;
+    float first_share, last_share;
+  };
+  const auto spans = [](int from, int to) {
+    std::vector<Span> r(static_cast<size_t>(to));
+    const double step = double(from) / double(to);
+    for (int i = 0; i < to; i++) {
+      const double a = i * step, b = (i + 1) * step;
+      Span s;
+      s.first = int(a);
+      s.last = std::min(int(std::ceil(b)) - 1, from - 1);
+      s.first_share = float(std::min(b, double(s.first + 1)) - a);
+      s.last_share = s.last > s.first ? float(b - s.last) : s.first_share;
+      r[size_t(i)] = s;
+    }
+    return r;
+  };
+  const std::vector<Span> xs = spans(f.width, w), ys = spans(f.height, h);
+  const auto share = [](const Span &s, int k) {
+    return k == s.first ? s.first_share : k == s.last ? s.last_share : 1.0f;
+  };
+  /* Columns first into a float row buffer, then rows. */
+  std::vector<float> narrow(size_t(w) * f.height * 4);
+  for (int y = 0; y < f.height; y++) {
+    const uint8_t *row = &f.rgba[size_t(y) * f.width * 4];
+    float *o = &narrow[size_t(y) * w * 4];
+    for (int x = 0; x < w; x++) {
+      const Span &s = xs[size_t(x)];
+      float sum[4] = {0, 0, 0, 0}, total = 0.0f;
+      for (int k = s.first; k <= s.last; k++) {
+        const float wk = share(s, k);
         for (int c = 0; c < 4; c++) {
-          o[x * 4 + c] = uint8_t((r0[x * 8 + c] + r0[x * 8 + 4 + c] + r1[x * 8 + c] + r1[x * 8 + 4 + c] + 2) / 4);
+          sum[c] += row[k * 4 + c] * wk;
         }
+        total += wk;
+      }
+      for (int c = 0; c < 4; c++) {
+        o[x * 4 + c] = sum[c] / std::max(total, 1e-6f);
       }
     }
-    f.width = w;
-    f.height = h;
-    f.rgba = std::move(out);
   }
+  std::vector<uint8_t> out(size_t(w) * h * 4);
+  for (int y = 0; y < h; y++) {
+    const Span &s = ys[size_t(y)];
+    uint8_t *o = &out[size_t(y) * w * 4];
+    for (int x = 0; x < w; x++) {
+      float sum[4] = {0, 0, 0, 0}, total = 0.0f;
+      for (int k = s.first; k <= s.last; k++) {
+        const float wk = share(s, k);
+        const float *p = &narrow[(size_t(k) * w + x) * 4];
+        for (int c = 0; c < 4; c++) {
+          sum[c] += p[c] * wk;
+        }
+        total += wk;
+      }
+      for (int c = 0; c < 4; c++) {
+        o[x * 4 + c] = uint8_t(std::clamp(sum[c] / std::max(total, 1e-6f) + 0.5f, 0.0f, 255.0f));
+      }
+    }
+  }
+  f.width = w;
+  f.height = h;
+  f.rgba = std::move(out);
 }
 
 /* Reads an image file with WIC (premultiplied RGBA, top row first). */
@@ -834,16 +902,8 @@ static MediaInfo probe_file(const std::string &path, bool sequence, std::vector<
     info.kind = MediaKind::Video;
     info.source_width = layout.crop_w;
     info.source_height = layout.crop_h;
-    MediaFrame probe;
-    probe.width = layout.crop_w;
-    probe.height = layout.crop_h;
     /* The size it will be decoded at. */
-    while (std::max(probe.width, probe.height) > MEDIA_MAX_SIZE && probe.width > 1 && probe.height > 1) {
-      probe.width /= 2;
-      probe.height /= 2;
-    }
-    info.width = probe.width;
-    info.height = probe.height;
+    media_fit_size(layout.crop_w, layout.crop_h, &info.width, &info.height);
     info.fps = layout.fps > 0.0 ? layout.fps : 30.0;
     info.frame_count = std::max(1, int(std::lround(info.duration * info.fps)));
     return info;

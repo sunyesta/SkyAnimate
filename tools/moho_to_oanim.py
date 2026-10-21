@@ -5,7 +5,8 @@ Open Animate file (.oanim).
 
 What comes across: the document (size, frame rate, frame range, background), the layer tree (bone,
 group and vector layers, bottom-to-top order turned into Open Animate's top-first lists), each layer's
-transform, opacity and visibility (not masking: set masks up after converting), vector drawings (points with widths, curves with Moho's
+transform, opacity and visibility (not masking: set masks up after converting; layers Moho only masks
+with, invisibly, come in hidden), vector drawings (points with widths, curves with Moho's
 curvature, weights and offsets, hidden edges, shapes with their fill, line colour, line width and
 brush), bones (place, angle, length, scale, strength, parents; pin bones get the Pin shape; bone tags become bone collections), point binding (a point bound to one
 bone, not bound, or flexi-bound), layers bound to a bone, reference layers (linked to their
@@ -95,12 +96,17 @@ def action_names(o, found):
             action_names(v, found)
 
 
+# Moho keeps a line width as a fraction of the frame's height (its tools show width * Height() pixels);
+# Open Animate keeps it in units, where the frame is 2 tall (width * height / 2 pixels).
+LINE_WIDTH_SCALE = 2.0
+
+
 def style_of(shape, doc_styles):
     """A shape's look: its own style, with what a named library style defines laid over it."""
     own = shape.get("style", {})
     style = {"fill": value_of(own["fill_color"]["val"][0], "Color") if "fill_color" in own else [1, 1, 1, 1],
              "line": value_of(own["line_color"]["val"][0], "Color") if "line_color" in own else [0, 0, 0, 1],
-             "line_width": own.get("line_width", 0.008)}
+             "line_width": own.get("line_width", 0.004) * LINE_WIDTH_SCALE}
     brush = own.get("brush_name", "")
     for name in (shape.get("inherited_style_name", ""), shape.get("inherited_style2_name", "")):
         lib = doc_styles.get(name)
@@ -111,7 +117,7 @@ def style_of(shape, doc_styles):
         if lib.get("define_line_col"):
             style["line"] = value_of(lib["line_color"]["val"][0], "Color")
         if lib.get("define_line_width"):
-            style["line_width"] = lib["line_width"]
+            style["line_width"] = lib["line_width"] * LINE_WIDTH_SCALE
         if lib.get("brush_name"):
             brush = lib["brush_name"]
             own = lib
@@ -208,7 +214,10 @@ class Converter:
         self.next_id += 1
         self.by_uuid[l.get("uuid")] = lid
         kind = l.get("type")
-        j = {"id": lid, "name": l.get("name", "Layer"), "visible": bool(l.get("visible", True)),
+        # A layer that only adds to or cuts the mask, invisibly (Moho's MM_ADD_MASK_INVIS,
+        # MM_SUB_MASK_INVIS, MM_CLEAR_ADD_MASK_INVIS), is never drawn: hidden, ready to be a mask.
+        mask_only = l.get("masking") in (4, 5, 7)
+        j = {"id": lid, "name": l.get("name", "Layer"), "visible": bool(l.get("visible", True)) and not mask_only,
              "expanded": bool(l.get("expanded", True))}
         t = l.get("transforms", {})
         if "translation" in t:

@@ -2208,11 +2208,11 @@ static void draw_order_row(Context &C, Layer &layer)
   }
 }
 
-/* Mask: the layer shows only inside (or outside) the layers each mask names, where every mask
- * that's on holds; then which layers use this one as a mask, and how its shape masks them. */
+/* Mask: the layer's mask rows, read top to bottom (Add, Subtract, Intersect, Difference), and Clip
+ * to Below; then which layers use this one as a mask. */
 static constexpr const char *MASK_PAYLOAD = "OANIM_MASK";
 
-/* A circle with its left half filled (Inside) or its right half (Outside). */
+/* A circle with its left half filled (a row that shows its shape) or its right half (one that cuts it). */
 static void mask_icon(ImDrawList *dl, ImVec2 c, float r, bool outside, ImU32 col)
 {
   dl->AddCircle(c, r, col, 16, 1.2f);
@@ -2221,28 +2221,65 @@ static void mask_icon(ImDrawList *dl, ImVec2 c, float r, bool outside, ImU32 col
   dl->PathFillConvex(col);
 }
 
-/* The Masking tab's masks, as the Modifiers tab's boxes: a header with the open arrow, the mask's
- * icon and what it does, viewport and render switches, remove and a grip to reorder; inside, the
- * mode, its layers, and how their shapes mask. */
+/* The modes' names and what they do, in MaskMode's order. */
+static const char *const MASK_MODE_NAMES[] = {"Add", "Subtract", "Intersect", "Difference"};
+static const char *const MASK_MODE_TIPS[] = {
+    "Show inside this shape too (a union with the rows above)",
+    "Cut this shape out of what the rows above show",
+    "Keep only what's inside this shape of what the rows above show",
+    "Flip what shows inside this shape: shown becomes hidden and hidden shown"};
+
+/* The Masking tab's rows, as the Modifiers tab's boxes: they read top to bottom, each combining its
+ * shape (its layers together) with what the rows above show. A header line says the result in
+ * words; each row's header has the open arrow, its mode, its layers, viewport and render switches,
+ * remove and a grip to reorder; inside, Invert, Grow/Shrink and how the shapes mask. Hovering a
+ * row outlines its layers in the viewport. */
 static void mask_cards(Context &C, Layer &layer)
 {
   Document &doc = *C.document;
   const ImGuiStyle &style = ImGui::GetStyle();
   const float h = ImGui::GetFrameHeight();
   const std::string id = std::to_string(layer.id);
+
+  /* The result in words. */
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.45f, 1.0f), "%s", mask_summary(doc, layer).c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
+
   const float half = (ImGui::GetContentRegionAvail().x - 2.0f) * 0.5f;
-  if (ImGui::Button("+  Add Mask...", ImVec2(half, 0))) {
-    operator_call(C, "mask.pick", {{"layer", id}, {"mode", "INSIDE"}});
+  if (ImGui::Button("+  Add Row...", ImVec2(half, 0))) {
+    operator_call(C, "mask.pick", {{"layer", id}, {"mode", "ADD"}});
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Click the layer to show this one inside of, in the viewport or the Layers editor");
+    ImGui::SetTooltip("Click the layer to show this one inside of, in the viewport or the Layers editor\n"
+                      "(or Alt-drag a layer onto it in the Layers editor; Shift to Subtract)");
   }
   ImGui::SameLine(0, 2);
-  if (ImGui::Button("With Layer Below", ImVec2(-FLT_MIN, 0))) {
-    operator_call(C, "mask.with_layer_below", {{"layer", id}});
+  const Layer *base = layer_clip_base(doc, layer);
+  bool clipped = layer.clip_to_below && base;
+  if (ImGui::Checkbox("Clip to Below", &clipped)) {
+    operator_call(C, "mask.clip_to_below", {{"layer", id}, {"set", clipped ? "1" : "0"}});
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Show it only inside the layer just below it (Ctrl Alt G)");
+    ImGui::SetTooltip("Show it only where the layer below shows (Ctrl Alt G, or Alt-click the line under it in "
+                      "the Layers editor)");
+  }
+  if (layer.clip_to_below && base) {
+    ImGui::Indent(ImGui::GetFrameHeight());
+    bool exclude = layer.clip_exclude_strokes;
+    if (ImGui::Checkbox("Exclude Strokes", &exclude)) {
+      operator_call(C, "mask.clip_to_below", {{"layer", id}, {"exclude_strokes", exclude ? "1" : "0"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Clip only to %s's fills, not its lines (shading stops inside the outline)",
+                        base->name.c_str());
+    }
+    ImGui::TextDisabled("Clipped to %s (after the rows)", base->name.c_str());
+    if (ImGui::IsItemHovered()) {
+      C.wm->mask_hover = {base->id};
+    }
+    ImGui::Unindent(ImGui::GetFrameHeight());
   }
   ImGui::Spacing();
 
@@ -2265,7 +2302,7 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::BeginGroup();
     const float inner_w = box_w - 8.0f;
 
-    /* Header. */
+    /* Header: open arrow, mode, layers, switches, remove, grip. */
     if (ImGui::ArrowButtonEx("##expand", m.show_expanded ? ImGuiDir_Down : ImGuiDir_Right, ImVec2(h * 0.8f, h),
                              ImGuiButtonFlags_None)) {
       layer.masks[size_t(i)].show_expanded = !m.show_expanded;
@@ -2273,28 +2310,46 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::SameLine(0, 2);
     const ImVec2 icon_at = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(h, h));
-    mask_icon(dl, ImVec2(icon_at.x + h * 0.5f, icon_at.y + h * 0.5f), h * 0.28f, m.outside,
-              IM_COL32(0xff, 0x9a, 0x3c, 255));
+    mask_icon(dl, ImVec2(icon_at.x + h * 0.5f, icon_at.y + h * 0.5f), h * 0.28f, mask_cuts(m),
+              m.enabled ? IM_COL32(0xff, 0x9a, 0x3c, 255) : IM_COL32(0x80, 0x80, 0x80, 255));
+    ImGui::SameLine(0, 2);
+    const int mode = int(m.mode);
+    ImGui::SetNextItemWidth(h * 4.2f);
+    if (ImGui::BeginCombo("##mode", MASK_MODE_NAMES[mode])) {
+      for (int k = 0; k < 4; k++) {
+        if (ImGui::Selectable(MASK_MODE_NAMES[k], k == mode) && k != mode) {
+          operator_call(C, "mask.set", with("mode", mask_mode_identifier(MaskMode(k))));
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", MASK_MODE_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", MASK_MODE_TIPS[mode]);
+    }
     ImGui::SameLine(0, 4);
     const float right_w = h * 3.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 6.0f;
     const float title_w = std::max(40.0f, inner_w - (ImGui::GetCursorScreenPos().x - box_min.x) - right_w);
     const ImVec2 title_at = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(title_w, h));
-    if (ImGui::IsItemHovered()) {
-      C.wm->mask_hover = m.layers;
+    std::string names;
+    for (const uint64_t l : m.layers) {
+      const Layer *found = layer_find(doc, l);
+      names += (names.empty() ? "" : " + ") + (found ? found->name : std::string("(missing)"));
     }
-    const std::string title = m.layers.empty() ? std::string(m.outside ? "Outside (pick a layer)" : "Inside (pick a layer)")
-                                               : mask_label(doc, m);
+    const std::string title = (m.invert ? "outside " : "") + (names.empty() ? std::string("(pick a layer)") : names);
     ImGui::PushClipRect(title_at, title_at + ImVec2(title_w, h), true);
     dl->AddText(ImVec2(title_at.x, title_at.y + style.FramePadding.y),
                 m.enabled ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255), title.c_str());
     ImGui::PopClipRect();
     ImGui::SameLine(0, 4);
-    if (icon_toggle("##viewport", m.enabled, "Mask in the viewport (off: kept, to see what it cuts)", icon_monitor)) {
+    if (icon_toggle("##viewport", m.enabled, "Row in the viewport (off: kept, to see what it does)", icon_monitor)) {
       operator_call(C, "mask.set", with("enabled", m.enabled ? "0" : "1"));
     }
     ImGui::SameLine(0, 1);
-    if (icon_toggle("##render", m.render, "Mask in renders", icon_camera)) {
+    if (icon_toggle("##render", m.render, "Row in renders", icon_camera)) {
       operator_call(C, "mask.set", with("render", m.render ? "0" : "1"));
     }
     ImGui::SameLine(0, 4);
@@ -2304,7 +2359,7 @@ static void mask_cards(Context &C, Layer &layer)
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Remove mask");
+      ImGui::SetTooltip("Remove row");
     }
     ImGui::SameLine(0, 2);
     const ImVec2 grip = ImGui::GetCursorScreenPos();
@@ -2319,9 +2374,12 @@ static void mask_cards(Context &C, Layer &layer)
     if (grip_hovered) {
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Drag to reorder (rows apply top to bottom)");
+    }
     if (ImGui::BeginDragDropSource()) {
       ImGui::SetDragDropPayload(MASK_PAYLOAD, &i, sizeof(int));
-      ImGui::TextUnformatted(title.c_str());
+      ImGui::Text("%s %s", MASK_MODE_NAMES[mode], title.c_str());
       ImGui::EndDragDropSource();
     }
 
@@ -2330,32 +2388,10 @@ static void mask_cards(Context &C, Layer &layer)
       ImGui::Spacing();
       const float column = inner_w * 0.38f;
       ImGui::PushItemWidth(-4.0f);
-      modifier_row_label("Mode", column, "Inside: shown only inside these layers' shapes. Outside: cut out where they are");
-      const float seg = (ImGui::GetContentRegionAvail().x - 4.0f - 2.0f) * 0.5f;
-      for (const bool outside : {false, true}) {
-        if (outside) {
-          ImGui::SameLine(0, 2);
-        }
-        const bool on = m.outside == outside;
-        if (on) {
-          ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        }
-        if (ImGui::Button(outside ? "Outside" : "Inside", ImVec2(seg, 0)) && !on) {
-          operator_call(C, "mask.set", with("outside", outside ? "1" : "0"));
-        }
-        if (on) {
-          ImGui::PopStyleColor();
-        }
-      }
-      modifier_row_label("Layers", column, "Inside or outside any of these layers (hidden ones still mask)");
-      std::string names;
-      for (const uint64_t l : m.layers) {
-        const Layer *found = layer_find(doc, l);
-        names += (names.empty() ? "" : ", ") + (found ? found->name : std::string("(missing)"));
-      }
+      modifier_row_label("Layers", column, "Together these layers make the row's shape (hidden ones still mask)");
       ImGui::SetNextItemWidth(std::max(h, ImGui::GetContentRegionAvail().x - h - 6.0f));
       if (ImGui::BeginCombo("##layers", names.empty() ? "Pick a layer" : names.c_str(), ImGuiComboFlags_HeightLarge)) {
-        ImGui::TextDisabled("Inside or outside any of the ticked layers");
+        ImGui::TextDisabled("The ticked layers together make the shape");
         for (const Layer *l : document_layers_flat(doc)) {
           if (l->id == layer.id) {
             continue;
@@ -2383,27 +2419,39 @@ static void mask_cards(Context &C, Layer &layer)
         ImGui::EndCombo();
       }
       if (ImGui::IsItemHovered()) {
-        C.wm->mask_hover = m.layers;
         C.wm->layers_hover = m.layers;
         C.wm->layers_hover_frame = ImGui::GetFrameCount();
       }
       ImGui::SameLine(0, 2);
       const ImVec2 pick_at = ImGui::GetCursorScreenPos();
       if (ImGui::Button("##pick", ImVec2(h, h))) {
-        operator_call(C, "mask.pick", with("mode", m.outside ? "OUTSIDE" : "INSIDE"));
+        operator_call(C, "mask.pick", at);
       }
       ui_eyedropper_icon(dl, pick_at + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, IM_COL32(0xe6, 0xe6, 0xe6, 255));
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Click a layer to add it to this mask");
+        ImGui::SetTooltip("Click a layer to add it to this row's shape");
       }
-      ImGui::Spacing();
       modifier_row_label("", column);
-      bool expand = m.expand;
-      if (ImGui::Checkbox("Expand by a Pixel", &expand)) {
-        operator_call(C, "mask.set", with("expand", expand ? "1" : "0"));
+      bool invert = m.invert;
+      if (ImGui::Checkbox("Invert", &invert)) {
+        operator_call(C, "mask.set", with("invert", invert ? "1" : "0"));
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Grow the layers' shapes by a pixel here, hiding thin seams along the mask's edge");
+        ImGui::SetTooltip("Use what's outside the shape instead of what's inside");
+      }
+      modifier_row_label("Grow", column,
+                         "Grow the shape by pixels (negative shrinks it); a pixel hides thin seams along the edge");
+      float grow = m.grow;
+      if (ImGui::DragFloat("##grow", &grow, 0.1f, -64.0f, 64.0f, grow < 0.0f ? "Shrink %.1f px" : "Grow %.1f px",
+                           ImGuiSliderFlags_AlwaysClamp))
+      {
+        /* Shown as it changes; one undo step when let go. */
+        layer.masks[size_t(i)].grow = grow;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        char value[32];
+        std::snprintf(value, sizeof(value), "%g", double(layer.masks[size_t(i)].grow));
+        operator_call(C, "mask.set", with("grow", value));
       }
       /* Mask With: what of the layers' shapes masks. */
       static const char *const USE_IDS[] = {"AS_DRAWN", "FILLS_ONLY", "FILLED", "FILLED_NO_STROKE"};
@@ -2414,7 +2462,7 @@ static void mask_cards(Context &C, Layer &layer)
           "The inside of every shape, filled or not (an outline-only shape too), and its stroke",
           "The inside of every shape, filled or not, without the stroke"};
       const int use = (m.filled ? 2 : 0) + (m.fills_only ? 1 : 0);
-      modifier_row_label("Mask With", column, "What of the layers' shapes masks");
+      modifier_row_label("Shape", column, "What of the layers' shapes masks");
       if (ImGui::BeginCombo("##use", USE_NAMES[use])) {
         for (int u = 0; u < 4; u++) {
           if (ImGui::Selectable(USE_NAMES[u], u == use) && u != use) {
@@ -2434,9 +2482,9 @@ static void mask_cards(Context &C, Layer &layer)
       static const char *const EXTEND_NAMES[] = {"None", "Up", "Down", "Left", "Right"};
       const int ext = int(m.extend);
       modifier_row_label("Extend", column,
-                         "Stretch the layers' shapes to the edge one way (the mask layer's own up, down, left or "
-                         "right, turning with it): Outside the mouth line, extended Up, hides the mouth and "
-                         "everything above it");
+                         "Stretch the shape to the edge one way (the mask layer's own up, down, left or right, "
+                         "turning with it): Subtract the mouth line, extended Up, hides the mouth and everything "
+                         "above it");
       if (ImGui::BeginCombo("##extend", EXTEND_NAMES[ext])) {
         for (int e = 0; e < 5; e++) {
           if (ImGui::Selectable(EXTEND_NAMES[e], e == ext) && e != ext) {
@@ -2450,8 +2498,15 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::EndGroup();
     const ImVec2 box_max(box_min.x + box_w, ImGui::GetItemRectMax().y + 6.0f);
     dl->ChannelsSetCurrent(0);
+    /* Hovering the row outlines its area in the viewport. */
+    const bool box_hovered = ImGui::IsMouseHoveringRect(box_min, box_max) && ImGui::IsWindowHovered(
+                                                                              ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    if (box_hovered && C.wm->mask_hover.empty()) {
+      C.wm->mask_hover = m.layers;
+    }
     dl->AddRectFilled(box_min, box_max, COL_MOD_BOX, 5.0f);
-    dl->AddRect(box_min, box_max, IM_COL32(0x2a, 0x2a, 0x2a, 255), 5.0f, 0, 1.0f);
+    dl->AddRect(box_min, box_max, box_hovered ? IM_COL32(0xff, 0x9a, 0x3c, 160) : IM_COL32(0x2a, 0x2a, 0x2a, 255),
+                5.0f, 0, 1.0f);
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(box_min);
     ImGui::Dummy(ImVec2(box_w, box_max.y - box_min.y));
@@ -2469,8 +2524,8 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::Spacing();
     ImGui::PopID();
   }
-  if (layer.masks.empty()) {
-    ImGui::TextDisabled("No masks: the layer shows everywhere.");
+  if (layer.masks.empty() && !layer.clip_to_below) {
+    ImGui::TextDisabled("No mask rows: the layer shows everywhere.");
   }
   if (remove >= 0) {
     operator_call(C, "mask.remove", {{"layer", id}, {"index", std::to_string(remove)}});
@@ -3250,9 +3305,212 @@ static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
   ui_panel_end();
 }
 
+/* A material's preview: a disc in its fill colour ringed in its line colour. */
+static void material_swatch(ImDrawList *dl, ImVec2 c, float r, const Style &style)
+{
+  dl->AddCircleFilled(c, r, ImGui::ColorConvertFloat4ToU32(ImVec4(style.fill.r, style.fill.g, style.fill.b, 1.0f)), 20);
+  dl->AddCircle(c, r, ImGui::ColorConvertFloat4ToU32(ImVec4(style.line.r, style.line.g, style.line.b, 1.0f)), 20,
+                std::max(1.5f, r * 0.28f));
+}
+
+/* Blender's data-block selector for the shape's material: browse (the shared materials, with a search),
+ * the material's name (rename it here) and how many shapes use it (click: this shape keeps the look as
+ * its own). With the shape's own look: browse and New (make it a shared material). */
+static void material_row(Context &C, Shape &shape, bool reference)
+{
+  Document &doc = *C.document;
+  const float h = ImGui::GetFrameHeight();
+  Material *material = material_find(doc, shape.material);
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Material");
+  ImGui::TableSetColumnIndex(1);
+  /* A copy's looks are its own changes on its original's: materials are set on the original. */
+  ImGui::BeginDisabled(reference);
+
+  /* Browse. */
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  if (ImGui::Button("##browse", ImVec2(h * 1.5f, h))) {
+    ImGui::OpenPopup("##materials");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(reference ? "A copy's shapes take their material from the original"
+                                : "Link the shape to a shared material");
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  material_swatch(dl, at + ImVec2(h * 0.55f, h * 0.5f), h * 0.28f, shape.style);
+  const ImVec2 arrow = at + ImVec2(h * 1.15f, h * 0.45f);
+  dl->AddTriangleFilled(arrow + ImVec2(-h * 0.12f, -h * 0.06f), arrow + ImVec2(h * 0.12f, -h * 0.06f),
+                        arrow + ImVec2(0, h * 0.1f), IM_COL32(0xd0, 0xd0, 0xd0, 255));
+  ImGui::SameLine(0, 2);
+
+  const float rest = ImGui::GetContentRegionAvail().x;
+  if (!material) {
+    if (ImGui::Button("New", ImVec2(rest, 0))) {
+      operator_call(C, "material.new");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make this look a shared material: other shapes can then use it, and changing it changes "
+                        "them all");
+    }
+  }
+  else {
+    const int users = material_users(doc, material->id);
+    char count[16];
+    std::snprintf(count, sizeof(count), "%d", users);
+    const float count_w = ImGui::CalcTextSize(count).x + ImGui::GetStyle().FramePadding.x * 2.0f + 4.0f;
+    std::string name = material->name;
+    ImGui::SetNextItemWidth(rest - count_w - 2.0f);
+    ImGui::InputText("##material_name", &name);
+    if (ImGui::IsItemDeactivatedAfterEdit() && !name.empty() && name != material->name) {
+      operator_call(C, "material.rename", {{"material", std::to_string(material->id)}, {"name", name}});
+    }
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button(count, ImVec2(count_w, 0))) {
+      operator_call(C, "material.unlink");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%d shape%s use%s %s. Click: give this shape its own look (it looks the same)", users,
+                        users == 1 ? "" : "s", users == 1 ? "s" : "", material->name.c_str());
+    }
+  }
+  ImGui::EndDisabled();
+
+  /* The list: every material with its preview and users, searched by name. Hovering one outlines its
+   * shapes in the viewport; right-click deletes it. */
+  if (ImGui::BeginPopup("##materials")) {
+    static std::string search;
+    if (ImGui::IsWindowAppearing()) {
+      search.clear();
+    }
+    std::string lower_search = search;
+    for (char &c : lower_search) {
+      c = char(std::tolower(static_cast<unsigned char>(c)));
+    }
+    ImGui::BeginChild("##material_list", ImVec2(h * 10.0f, std::min(float(doc.materials.size()) + 1.0f, 12.0f) * h));
+    if (doc.materials.empty()) {
+      ImGui::TextDisabled("No materials yet: New makes one from a shape's look");
+    }
+    uint64_t remove = 0;
+    for (const Material &m : doc.materials) {
+      std::string lower = m.name;
+      for (char &c : lower) {
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+      }
+      if (!lower_search.empty() && lower.find(lower_search) == std::string::npos) {
+        continue;
+      }
+      ImGui::PushID(int(m.id));
+      const int users = material_users(doc, m.id);
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      const bool picked = ImGui::Selectable("##m", m.id == shape.material, 0, ImVec2(0, h));
+      if (ImGui::IsItemHovered()) {
+        C.wm->material_hover = m.id;
+        C.wm->material_hover_frame = ImGui::GetFrameCount();
+      }
+      ImDrawList *ldl = ImGui::GetWindowDrawList();
+      material_swatch(ldl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.3f, m.style);
+      const ImU32 text = users > 0 ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
+      ldl->AddText(p + ImVec2(h * 1.1f, (h - ImGui::GetFontSize()) * 0.5f), text, m.name.c_str());
+      char count[16];
+      std::snprintf(count, sizeof(count), "%d", users);
+      const float cw = ImGui::CalcTextSize(count).x;
+      ldl->AddText(ImVec2(p.x + ImGui::GetContentRegionAvail().x - cw - 4.0f, p.y + (h - ImGui::GetFontSize()) * 0.5f),
+                   IM_COL32(0x90, 0x90, 0x90, 255), count);
+      if (picked && m.id != shape.material) {
+        operator_call(C, "material.assign", {{"material", std::to_string(m.id)}});
+      }
+      if (ImGui::BeginPopupContextItem("##material_menu")) {
+        if (ImGui::MenuItem("Delete Material")) {
+          remove = m.id;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("The shapes using it keep its look as their own");
+        }
+        ImGui::EndPopup();
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndChild();
+    if (remove != 0) {
+      operator_call(C, "material.remove", {{"material", std::to_string(remove)}});
+    }
+    /* The search, at the bottom as in Blender, typed into as soon as the list opens. */
+    if (ImGui::IsWindowAppearing()) {
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(h * 10.0f - h * 4.6f);
+    ImGui::InputTextWithHint("##search", "Search", &search);
+    ImGui::SameLine(0, 2);
+    bool unused = false;
+    for (const Material &m : doc.materials) {
+      unused |= material_users(doc, m.id) == 0;
+    }
+    ImGui::BeginDisabled(!unused);
+    if (ImGui::Button("Remove Unused", ImVec2(-FLT_MIN, 0))) {
+      operator_call(C, "material.remove_unused");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Delete the materials no shape uses (greyed out in the list)");
+    }
+    ImGui::EndPopup();
+  }
+
+  if (material && !reference) {
+    const int users = material_users(doc, material->id);
+    if (users > 1) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextDisabled("Changes here change all %d shapes using %s", users, material->name.c_str());
+    }
+  }
+}
+
 static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
 {
   Document &doc = *C.document;
+  Layer *owner = document_active_layer(doc);
+  const bool reference = owner && owner->is_reference();
+  /* On a reference: what this copy changed of this shape (teal), and what a recolour changed. */
+  const ReferenceLook *look = nullptr;
+  const Shape *original = nullptr;
+  if (reference) {
+    if (const auto it = owner->reference.looks.find(shape.id); it != owner->reference.looks.end()) {
+      look = &it->second;
+    }
+    if (const Layer *source = layer_find(doc, owner->reference_source)) {
+      const int si = drawing_shape_index(source->drawing, shape.id);
+      original = si >= 0 ? &source->drawing.shapes[si] : nullptr;
+    }
+  }
+  const std::string sid = std::to_string(shape.id);
+  const auto setting = [&](const char *name) {
+    return std::vector<OpArgs>{{{"kind", "LOOK"}, {"id", sid}, {"setting", name}}};
+  };
+  /* A colour changed by Recolor: its swap's index, or -1. */
+  const auto swapped = [&](bool fill) {
+    if (!reference || !original) {
+      return -1;
+    }
+    const Color from = fill ? original->style.fill : original->style.line;
+    for (size_t i = 0; i < owner->reference.swaps.size(); i++) {
+      const ReferenceSwap &sw = owner->reference.swaps[i];
+      if ((fill ? sw.fill : sw.line) && same_color(sw.from, from)) {
+        return int(i);
+      }
+    }
+    return -1;
+  };
+  const auto color_change = [&](bool fill, bool set) {
+    if (set) {
+      return setting(fill ? "fill" : "line");
+    }
+    const int s = swapped(fill);
+    return s >= 0 ? std::vector<OpArgs>{{{"kind", "SWAP"}, {"id", std::to_string(s)}}} : std::vector<OpArgs>{};
+  };
+
   if (ui_panel_begin("Shape")) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
@@ -3260,8 +3518,6 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     ImGui::TextUnformatted("Name");
     ImGui::TableSetColumnIndex(1);
     ImGui::SetNextItemWidth(-1);
-    Layer *owner = document_active_layer(doc);
-    const bool reference = owner && owner->is_reference();
     /* A reference's shapes are named by its original. */
     ImGui::BeginDisabled(reference);
     ImGui::InputText("##name", &shape.name);
@@ -3282,44 +3538,6 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     if (points_locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip("%s", LOCKED_TIP);
     }
-
-    /* On a reference: what this copy changed of this shape (teal), and what a recolour changed. */
-    const ReferenceLook *look = nullptr;
-    const Shape *original = nullptr;
-    if (reference) {
-      if (const auto it = owner->reference.looks.find(shape.id); it != owner->reference.looks.end()) {
-        look = &it->second;
-      }
-      if (const Layer *source = layer_find(doc, owner->reference_source)) {
-        const int si = drawing_shape_index(source->drawing, shape.id);
-        original = si >= 0 ? &source->drawing.shapes[si] : nullptr;
-      }
-    }
-    const std::string sid = std::to_string(shape.id);
-    const auto setting = [&](const char *name) {
-      return std::vector<OpArgs>{{{"kind", "LOOK"}, {"id", sid}, {"setting", name}}};
-    };
-    /* A colour changed by Recolor: its swap's index, or -1. */
-    const auto swapped = [&](bool fill) {
-      if (!reference || !original) {
-        return -1;
-      }
-      const Color from = fill ? original->style.fill : original->style.line;
-      for (size_t i = 0; i < owner->reference.swaps.size(); i++) {
-        const ReferenceSwap &sw = owner->reference.swaps[i];
-        if ((fill ? sw.fill : sw.line) && same_color(sw.from, from)) {
-          return int(i);
-        }
-      }
-      return -1;
-    };
-    const auto color_change = [&](bool fill, bool set) {
-      if (set) {
-        return setting(fill ? "fill" : "line");
-      }
-      const int s = swapped(fill);
-      return s >= 0 ? std::vector<OpArgs>{{{"kind", "SWAP"}, {"id", std::to_string(s)}}} : std::vector<OpArgs>{};
-    };
 
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
@@ -3342,10 +3560,16 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
       changed_end(C, on, "##changed_flags", both, both);
     }
 
+    ui_panel_end();
+  }
+  /* The look, in a panel of its own: the material (shared, or the shape's own) and what it sets. */
+  if (ui_panel_begin("Material")) {
+    material_row(C, shape, reference);
+
     /* A colour changed on a copy has a revert button beside it. */
     bool revert = false;
     float fill[4] = {shape.style.fill.r, shape.style.fill.g, shape.style.fill.b, shape.style.fill.a};
-    on = changed_begin((look && look->fill_set) || swapped(true) >= 0);
+    bool on = changed_begin((look && look->fill_set) || swapped(true) >= 0);
     if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr)) {
       shape.style.fill = {fill[0], fill[1], fill[2], fill[3]};
     }

@@ -1,6 +1,7 @@
-/* Mask operators: a layer's masks name other layers (data/layer.hh LayerMask). Add, remove, turn
- * on and off, Inside/Outside, Mask With Layer Below (Ctrl Alt G), and picking the mask layer by
- * clicking it (mask.pick, with the layer eyedropper). */
+/* Mask operators: a layer's mask rows name other layers (data/layer.hh LayerMask) and read top to
+ * bottom (Add, Subtract, Intersect, Difference). Add, remove, reorder, turn on and off, Clip to
+ * Below (Ctrl Alt G), and picking the mask layer by clicking it (mask.pick, with the layer
+ * eyedropper). */
 
 #include <algorithm>
 #include <cstdlib>
@@ -88,6 +89,30 @@ static bool mask_use_set(const std::string &use, LayerMask *m)
   return false;
 }
 
+/* The row's settings every operator that makes or changes rows takes: mode=, invert=, grow=, and the
+ * older outside= (Subtract; inside is Add for the first row, else Intersect, as before rows) and
+ * expand= (grow a pixel). `index` is the row's place (for the outside= rule). */
+static bool mask_row_args(Context &C, LayerMask *m, int index)
+{
+  if (op_has_arg(C, "outside")) {
+    m->mode = mask_mode_from_inside_outside(op_arg_bool(C, "outside"), index == 0);
+  }
+  if (op_has_arg(C, "mode") && !mask_mode_from_identifier(op_arg(C, "mode"), &m->mode)) {
+    report(ReportType::Error, "mode is ADD, SUBTRACT, INTERSECT or DIFFERENCE");
+    return false;
+  }
+  if (op_has_arg(C, "invert")) {
+    m->invert = op_arg_bool(C, "invert");
+  }
+  if (op_has_arg(C, "expand")) {
+    m->grow = op_arg_bool(C, "expand") ? 1.0f : 0.0f;
+  }
+  if (op_has_arg(C, "grow")) {
+    m->grow = std::clamp(op_arg_float(C, "grow", 0.0f), -64.0f, 64.0f);
+  }
+  return true;
+}
+
 static bool mask_poll(Context &C)
 {
   return C.document && document_active_layer(*C.document) != nullptr;
@@ -101,8 +126,56 @@ std::string mask_label(const Document &doc, const LayerMask &m)
     names += (names.empty() ? "" : ", ") + (l ? l->name : std::string("(missing)"));
   }
   static const char *const BEYOND[] = {"", " and above", " and below", " and left of it", " and right of it"};
-  return std::string(m.outside ? "Outside " : "Inside ") + (names.empty() ? std::string("nothing") : names) +
-         BEYOND[int(m.extend)];
+  static const char *const MODES[] = {"Add ", "Subtract ", "Intersect ", "Difference "};
+  return std::string(MODES[int(m.mode)]) + (m.invert ? "outside " : "") +
+         (names.empty() ? std::string("nothing") : names) + BEYOND[int(m.extend)];
+}
+
+std::string mask_summary(const Document &doc, const Layer &layer)
+{
+  /* "Shows: inside head, minus mouth, plus tongue": the rows in words, as they apply. */
+  std::string text;
+  bool any = false;
+  for (const LayerMask &m : layer_mask_rows(doc, layer)) {
+    if (!m.enabled) {
+      continue;
+    }
+    std::string names;
+    for (const uint64_t id : m.layers) {
+      if (const Layer *l = layer_find(doc, id)) {
+        names += (names.empty() ? "" : " + ") + l->name;
+      }
+    }
+    if (names.empty()) {
+      continue;
+    }
+    /* After the first row the shape's name says enough: "minus mouth". */
+    const std::string where = (m.invert ? "outside " : "") + names;
+    if (!any) {
+      /* A first Subtract cuts from everything; cutting what's outside leaves what's inside. */
+      text = m.mode != MaskMode::Subtract ? (m.invert ? "outside " : "inside ") + names
+             : m.invert                  ? "inside " + names
+                                         : "everything but " + names;
+    }
+    else {
+      switch (m.mode) {
+        case MaskMode::Add:
+          text += ", plus " + where;
+          break;
+        case MaskMode::Subtract:
+          text += ", minus " + where;
+          break;
+        case MaskMode::Intersect:
+          text += ", within " + where;
+          break;
+        case MaskMode::Difference:
+          text += ", flipped by " + where;
+          break;
+      }
+    }
+    any = true;
+  }
+  return any ? "Shows: " + text : "Shows everything";
 }
 
 void mask_operators_register()
@@ -111,9 +184,12 @@ void mask_operators_register()
     OperatorType ot;
     ot.idname = "mask.add";
     ot.name = "Add Mask";
-    ot.description = "Mask a layer (the active and picked ones without layer=) with other layers: it shows only "
-                     "inside them, or with outside=1 only outside them. sources: layers' ids or names, | between "
-                     "them (inside or outside any of them); expand=1 grows their shapes a pixel, fills_only=1 leaves "
+    ot.description = "Add a mask row to a layer (the active and picked ones without layer=): the layers in "
+                     "sources (ids or names, | between them; together they make one shape) combined with the rows "
+                     "above by mode=ADD, SUBTRACT, INTERSECT or DIFFERENCE (without it: Add for the first row, "
+                     "Intersect after; outside=1 is Subtract). A first row of Subtract or Intersect starts from "
+                     "everything. invert=1 uses what's outside the shape; grow= grows it by pixels (negative "
+                     "shrinks; expand=1 is a pixel); fills_only=1 leaves "
                      "their strokes out, filled=1 fills every shape (an outline too); or use=AS_DRAWN, FILLS_ONLY, FILLED "
                      "or FILLED_NO_STROKE for both; extend=UP, DOWN, LEFT or RIGHT stretches their shapes to the edge that way. "
                      "Hidden layers still mask; the order of layers doesn't matter";
@@ -122,8 +198,6 @@ void mask_operators_register()
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       LayerMask m;
-      m.outside = op_arg_bool(C, "outside");
-      m.expand = op_arg_bool(C, "expand");
       m.fills_only = op_arg_bool(C, "fills_only");
       m.filled = op_arg_bool(C, "filled");
       if (op_has_arg(C, "use") && !mask_use_set(op_arg(C, "use"), &m)) {
@@ -144,6 +218,12 @@ void mask_operators_register()
       std::string undo;
       for (Layer *layer : mask_targets(C)) {
         LayerMask own = m;
+        if (!op_has_arg(C, "mode") && !op_has_arg(C, "outside")) {
+          own.mode = layer->masks.empty() ? MaskMode::Add : MaskMode::Intersect;
+        }
+        if (!mask_row_args(C, &own, int(layer->masks.size()))) {
+          return OpStatus::Cancelled;
+        }
         std::erase(own.layers, layer->id);
         if (own.layers.empty()) {
           report(ReportType::Warning, "A layer can't be its own mask");
@@ -200,8 +280,9 @@ void mask_operators_register()
     OperatorType ot;
     ot.idname = "mask.set";
     ot.name = "Change Mask";
-    ot.description = "Change one of a layer's masks (index=): outside=0/1, enabled=0/1 (in the viewport), "
-                     "render=0/1 (in renders), expand=0/1, fills_only=0/1, filled=0/1, use= (AS_DRAWN, "
+    ot.description = "Change one of a layer's mask rows (index=): mode= (ADD, SUBTRACT, INTERSECT, DIFFERENCE), "
+                     "invert=0/1, grow= (pixels, negative shrinks), enabled=0/1 (in the viewport), render=0/1 (in "
+                     "renders), outside=0/1 and expand=0/1 (as before rows), fills_only=0/1, filled=0/1, use= (AS_DRAWN, "
                      "FILLS_ONLY, FILLED, FILLED_NO_STROKE), extend= (NONE, UP, DOWN, LEFT, RIGHT), sources= (| between "
                      "layers' ids or names), toggle=1 "
                      "turns it off or on in the viewport";
@@ -221,17 +302,14 @@ void mask_operators_register()
           continue;
         }
         LayerMask &m = layer->masks[size_t(index)];
-        if (op_has_arg(C, "outside")) {
-          m.outside = op_arg_bool(C, "outside");
+        if (!mask_row_args(C, &m, index)) {
+          return OpStatus::Cancelled;
         }
         if (op_has_arg(C, "enabled")) {
           m.enabled = op_arg_bool(C, "enabled");
         }
         if (op_has_arg(C, "render")) {
           m.render = op_arg_bool(C, "render");
-        }
-        if (op_has_arg(C, "expand")) {
-          m.expand = op_arg_bool(C, "expand");
         }
         if (op_has_arg(C, "fills_only")) {
           m.fills_only = op_arg_bool(C, "fills_only");
@@ -268,8 +346,8 @@ void mask_operators_register()
     OperatorType ot;
     ot.idname = "mask.move";
     ot.name = "Move Mask";
-    ot.description = "Move one of a layer's masks (index=) to another place in its list (to=), as dragging its grip "
-                     "does (the order is only for tidiness: every mask applies)";
+    ot.description = "Move one of a layer's mask rows (index=) to another place in its list (to=), as dragging its "
+                     "grip does (rows apply top to bottom, so this can change what shows)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = mask_poll;
     ot.exec = [](Context &C) {
@@ -286,43 +364,87 @@ void mask_operators_register()
       LayerMask m = layer.masks[size_t(from)];
       layer.masks.erase(layer.masks.begin() + from);
       layer.masks.insert(layer.masks.begin() + to, m);
+      C.undo_name = "Move Mask Row";
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
   }
+  /* Clip to Below on the targets: set 1 or 0, or -1 to turn it over (on unless all of them are). */
+  static const auto clip_to_below = [](Context &C, int set) {
+    Document &doc = *C.document;
+    std::vector<Layer *> targets = mask_targets(C);
+    if (targets.empty()) {
+      return OpStatus::Cancelled;
+    }
+    bool all_on = true;
+    for (const Layer *l : targets) {
+      all_on &= l->clip_to_below;
+    }
+    const bool on = set >= 0 ? set == 1 : !all_on;
+    int count = 0;
+    std::string undo;
+    for (Layer *layer : targets) {
+      if (layer->clip_to_below == on) {
+        continue;
+      }
+      if (on && !layer_clip_base(doc, *layer)) {
+        report(ReportType::Info, layer->name + " has no layer below to clip to");
+        continue;
+      }
+      layer->clip_to_below = on;
+      const Layer *base = layer_clip_base(doc, *layer);
+      undo = on ? "Clip " + layer->name + " to " + (base ? base->name : std::string("Below"))
+                : "Release " + layer->name + "'s Clip";
+      count++;
+    }
+    if (count == 0) {
+      return OpStatus::Cancelled;
+    }
+    C.undo_name = count == 1 ? undo : (on ? "Clip to Below" : "Release Clips");
+    return OpStatus::Finished;
+  };
   {
     OperatorType ot;
-    ot.idname = "mask.with_layer_below";
-    ot.name = "Mask With Layer Below";
-    ot.description = "Show the layer only inside the layer just below it (Photoshop's clipping mask; Ctrl Alt G)";
+    ot.idname = "mask.clip_to_below";
+    ot.name = "Clip to Below";
+    ot.description = "Show the layer only where the layer below it shows (Photoshop's clipping mask; Ctrl Alt G "
+                     "turns it on and off). Several layers in a row can clip to one: they clip to the first layer "
+                     "below them that doesn't. set=0/1 instead of turning it over; exclude_strokes=0/1 alone sets "
+                     "Exclude Strokes (clip to the base's fills only, not its lines)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = mask_poll;
     ot.exec = [](Context &C) {
-      Document &doc = *C.document;
-      int count = 0;
-      std::string undo;
-      for (Layer *layer : mask_targets(C)) {
-        int index = 0;
-        const std::vector<Layer> *container = layer_container(doc, layer->id, &index);
-        if (!container || index + 1 >= int(container->size())) {
-          continue;
+      if (op_has_arg(C, "exclude_strokes") && !op_has_arg(C, "set")) {
+        const bool exclude = op_arg_bool(C, "exclude_strokes");
+        int count = 0;
+        for (Layer *layer : mask_targets(C)) {
+          count += layer->clip_exclude_strokes != exclude ? 1 : 0;
+          layer->clip_exclude_strokes = exclude;
         }
-        const Layer &below = (*container)[size_t(index + 1)];
-        const LayerMask m{false, {below.id}, true};
-        if (std::find(layer->masks.begin(), layer->masks.end(), m) != layer->masks.end()) {
-          continue;
+        if (count == 0) {
+          return OpStatus::Cancelled;
         }
-        layer->masks.push_back(m);
-        undo = "Mask " + layer->name + " With " + below.name;
-        count++;
+        C.undo_name = exclude ? "Clip Excluding Strokes" : "Clip Including Strokes";
+        return OpStatus::Finished;
       }
-      if (count == 0) {
-        report(ReportType::Info, "No layer below to mask with (or it already does)");
-        return OpStatus::Cancelled;
+      if (op_has_arg(C, "exclude_strokes")) {
+        for (Layer *layer : mask_targets(C)) {
+          layer->clip_exclude_strokes = op_arg_bool(C, "exclude_strokes");
+        }
       }
-      C.undo_name = count == 1 ? undo : "Mask With Layer Below";
-      return OpStatus::Finished;
+      return clip_to_below(C, op_has_arg(C, "set") ? int(op_arg_bool(C, "set")) : -1);
     };
+    operators().add(std::move(ot));
+  }
+  {
+    /* The older name: turns Clip to Below on. */
+    OperatorType ot;
+    ot.idname = "mask.with_layer_below";
+    ot.name = "Mask With Layer Below";
+    ot.description = "Clip to Below, on (see mask.clip_to_below)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) { return clip_to_below(C, 1); };
     operators().add(std::move(ot));
   }
   {
@@ -330,19 +452,24 @@ void mask_operators_register()
     OperatorType ot;
     ot.idname = "mask.pick";
     ot.name = "Pick Mask Layer";
-    ot.description = "Click the layer to mask with (mode=INSIDE or OUTSIDE), in the viewport or the Layers editor; "
-                     "with index=, it joins that mask instead. Esc cancels";
+    ot.description = "Click the layer to mask with (a new row, mode=ADD, SUBTRACT, INTERSECT or DIFFERENCE; INSIDE "
+                     "is Add for a first row and Intersect after, OUTSIDE is Subtract), in the viewport or the "
+                     "Layers editor; with index=, it joins that row instead. Esc cancels";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = mask_poll;
     ot.exec = [](Context &C) {
-      const std::string mode = op_arg(C, "mode", "INSIDE");
-      if (mode != "INSIDE" && mode != "OUTSIDE") {
-        report(ReportType::Error, "mode is INSIDE or OUTSIDE");
+      std::string mode = op_arg(C, "mode", "INSIDE");
+      MaskMode parsed;
+      if (mode == "OUTSIDE") {
+        mode = "SUBTRACT";
+      }
+      if (mode != "INSIDE" && !mask_mode_from_identifier(mode, &parsed)) {
+        report(ReportType::Error, "mode is ADD, SUBTRACT, INTERSECT, DIFFERENCE, INSIDE or OUTSIDE");
         return OpStatus::Cancelled;
       }
       WindowManager::MaskPick &pick = C.wm->mask_pick;
       pick = {};
-      pick.outside = mode == "OUTSIDE";
+      pick.mode = mode == "INSIDE" ? std::string() : mode;
       pick.index = op_arg_int(C, "index", -1);
       for (const Layer *l : mask_targets(C)) {
         pick.layers.push_back(l->id);

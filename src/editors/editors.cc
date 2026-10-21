@@ -995,16 +995,23 @@ void ui_mask_pick_update(Context &C)
                           {{"layer", std::to_string(id)}, {"index", std::to_string(p.index)}, {"sources", sources}});
           }
           else {
-            operator_call(C, "mask.add",
-                          {{"layer", std::to_string(id)}, {"sources", std::to_string(source)}, {"outside", p.outside ? "1" : "0"}});
+            OpArgs add = {{"layer", std::to_string(id)}, {"sources", std::to_string(source)}};
+            if (!p.mode.empty()) {
+              add["mode"] = p.mode;
+            }
+            operator_call(C, "mask.add", add);
           }
         }
         return true;
       },
       [wm]() {
         const WindowManager::MaskPick &p = wm->mask_pick;
-        return std::string(p.outside ? "Click the layer to show it outside of" : "Click the layer to show it inside of") +
-               "  |  Esc cancels";
+        const char *what = p.index >= 0              ? "Click the layer to join the mask row"
+                           : p.mode == "SUBTRACT"   ? "Click the layer to cut out (Subtract)"
+                           : p.mode == "INTERSECT"  ? "Click the layer to keep only what's inside (Intersect)"
+                           : p.mode == "DIFFERENCE" ? "Click the layer to flip (Difference)"
+                                                    : "Click the layer to show it inside of (Add)";
+        return std::string(what) + "  |  Esc cancels";
       });
 }
 
@@ -1032,15 +1039,20 @@ void ui_mask_menu_items(Context &C, uint64_t layer_id)
       operator_call(C, idname, extra);
     }
   };
-  item("Mask With Layer Below", "mask.with_layer_below");
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Show it only inside the layer just below it");
+  {
+    const std::string shortcut = keymaps().shortcut_for("mask.clip_to_below");
+    if (ImGui::MenuItem("Clip to Below", shortcut.empty() ? nullptr : shortcut.c_str(), layer && layer->clip_to_below)) {
+      operator_call(C, "mask.clip_to_below", args);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show it only where the layer below shows (Alt-click the line between them in the Layers editor)");
+    }
   }
-  item("Inside Layer...", "mask.pick", {{"mode", "INSIDE"}});
+  item("Add Layer...", "mask.pick", {{"mode", "ADD"}});
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Then click the layer to show it inside of (viewport or Layers editor)");
   }
-  item("Outside Layer...", "mask.pick", {{"mode", "OUTSIDE"}});
+  item("Subtract Layer...", "mask.pick", {{"mode", "SUBTRACT"}});
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Then click the layer to cut out of it (viewport or Layers editor)");
   }

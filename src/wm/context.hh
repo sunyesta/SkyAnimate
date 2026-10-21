@@ -20,7 +20,7 @@ class UndoStack;
 using OpArgs = std::map<std::string, std::string>;
 
 /* Viewport tools, as on the toolbar. */
-enum class Tool { Select, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones, TransformPoints };
+enum class Tool { Select, SelectLayer, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones, TransformPoints };
 /* Tools that only work on the setup frame (0): drawing and rigging. */
 bool tool_setup_only(Tool tool);
 
@@ -33,6 +33,9 @@ enum class SelectMode { Point, Edge, Stroke };
 /* Settings shared by the viewport tools, like Blender's ToolSettings. */
 struct ToolSettings {
   Tool tool = Tool::Select;
+  /* The Select Layer tool's Pick: the layer clicked, or its outermost group (Photoshop's Auto-Select
+   * Layer / Group). Alt-click picks the same way from any tool. */
+  bool layer_pick_group = false;
   /* K switches to Split Curve for a single split; afterwards (or on Esc or right-click) the
    * tool it came from returns. */
   bool tool_temporary = false;
@@ -131,6 +134,10 @@ struct WindowManager {
     float x = 0.0f, y = 0.0f;
     int button = -1;
     bool down = false;
+    /* Ctrl held with it (a magnet drag in the timeline, say). */
+    bool ctrl = false;
+    bool alt = false;
+    bool shift = false;
   };
   std::vector<SimulatedMouse> mouse_simulated;
 
@@ -145,6 +152,9 @@ struct WindowManager {
   /* Set by view.overlays_toggle (Shift Z): the viewport under the mouse shows or hides its
    * overlays. */
   bool overlays_toggle_request = false;
+  /* Local View (Blender's, / or Numpad /): the layers the viewports show alone, or empty for all.
+   * The view stays where it is. Not saved and not undone, as a view. */
+  std::vector<uint64_t> local_view;
   /* Set by screen.redo_last (F9): the ViewportActionPanel opens, or folds if open. */
   bool action_panel_toggle_request = false;
   /* A Properties tab to show (oanim.wm.properties_tab), taken by the next Properties editor drawn
@@ -186,7 +196,8 @@ struct WindowManager {
    * `index` >= 0 adds it to that mask of theirs instead of a new one. */
   struct MaskPick {
     bool active = false;
-    bool outside = false;
+    /* The new row's mode (a MaskMode identifier), or empty: Add for a first row, Intersect after. */
+    std::string mode;
     int index = -1;
     std::vector<uint64_t> layers;
     bool started = false;
@@ -198,6 +209,14 @@ struct WindowManager {
    * the next). */
   std::vector<uint64_t> layers_hover;
   int layers_hover_frame = -10;
+  /* A material under the mouse in the Shape panel's list: the viewport outlines its shapes (set with
+   * the ImGui frame it was set on). */
+  uint64_t material_hover = 0;
+  int material_hover_frame = -10;
+  /* Show Active (. over the Layers editor): the layer whose row the Layers editors scroll to (its
+   * row flashes for a moment), and a count of the requests, so each is taken once. */
+  uint64_t layers_show_active = 0;
+  uint64_t layers_show_active_serial = 0;
   /* Mouse position in document space while over a viewport, for operators that act at the
    * mouse (L select linked). */
   float2 mouse_document;

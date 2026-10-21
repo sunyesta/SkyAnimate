@@ -142,7 +142,13 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
   std::vector<float2> points = input_points;
   std::vector<float> half_widths = input_half_widths;
   std::vector<StrokeJoin> joins = input_joins ? *input_joins : std::vector<StrokeJoin>(points.size(), StrokeJoin::Smooth);
-  dedupe(points, &half_widths, closed, aa * 0.01f, &joins);
+  /* Points far closer than the line is wide merge: a dot drawn as a zero-length stroke (Moho's
+   * freckles) has its points a rounding error apart, and their directions would be noise. */
+  float widest = 0.0f;
+  for (const float hw : half_widths) {
+    widest = std::max(widest, hw);
+  }
+  dedupe(points, &half_widths, closed, std::max(aa * 0.01f, widest * 1e-3f), &joins);
   const size_t n = points.size();
   if (n == 0) {
     return;

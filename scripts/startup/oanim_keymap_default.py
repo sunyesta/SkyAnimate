@@ -37,6 +37,9 @@ KEYMAP = (
     ("Text Editor", "text.new", "N", {"alt": True}),
     # Viewport: editing the active vector layer, as in Blender's Grease Pencil edit mode.
     ("Viewport", "view.overlays_toggle", "Z", {"shift": True}),
+    # Blender's Local View: the picked layers alone, and back.
+    ("Viewport", "view.local_view", "SLASH", {}),
+    ("Viewport", "view.local_view", "NUMPAD_SLASH", {}),
     ("Viewport", "screen.redo_last", "F9", {}),
     ("Viewport", "transform.translate", "G", {}),
     # Draw order, as Photoshop and Figma arrange: Ctrl ] / Ctrl [ one step, with Shift all the way.
@@ -45,7 +48,7 @@ KEYMAP = (
     ("Window", "layer.draw_order_front", "RIGHT_BRACKET", {"ctrl": True, "shift": True}),
     ("Window", "layer.draw_order_back", "LEFT_BRACKET", {"ctrl": True, "shift": True}),
     # Photoshop's clipping mask: show the layer only inside the one below.
-    ("Window", "mask.with_layer_below", "G", {"ctrl": True, "alt": True}),
+    ("Window", "mask.clip_to_below", "G", {"ctrl": True, "alt": True}),
     ("Viewport", "transform.rotate", "R", {}),
     ("Viewport", "transform.resize", "S", {}),
     ("Viewport", "transform.proportional_toggle", "O", {}),
@@ -117,6 +120,9 @@ KEYMAP = (
     ("Timeline", "anim.interpolation_menu", "T", {}),
     # Layers editor.
     ("Layers", "layer.delete", "X", {}),
+    # Blender's Outliner Show Active.
+    ("Layers", "layer.show_active", "PERIOD", {}),
+    ("Layers", "layer.show_active", "NUMPAD_PERIOD", {}),
     ("Layers", "layer.delete", "DEL", {}),
     ("Layers", "layer.duplicate", "D", {"shift": True}),
     # Blender's Duplicate Linked: a live copy.

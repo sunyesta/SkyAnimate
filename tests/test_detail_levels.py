@@ -196,4 +196,36 @@ layer2.select_points([first + 5])
 assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
 assert layer2.detail["levels"].count(1) >= 6
 
+# The knife, then Dissolve of what it added (not moved): the curve comes back exactly, at a detail level
+# or not, cut off-centre, or cut twice in one segment (the cuts are exact splits of the segment below).
+def far(a, b):
+    worst = 0.0
+    for p in a:
+        best = 1e9
+        for i in range(len(b) - 1):
+            q, r = b[i], b[i + 1]
+            dx, dy = r[0] - q[0], r[1] - q[1]
+            t = max(0.0, min(1.0, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / max(dx * dx + dy * dy, 1e-12)))
+            best = min(best, math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy))
+        worst = max(worst, best)
+    return worst
+
+
+for level in (0, 1):
+    for cuts in ([(2, 0.2)], [(2, 0.3), (3, 0.6)]):
+        oanim.ops.layer.new()
+        wave = oanim.data.layers.active
+        wave.add_curve([(x * 0.3, math.sin(x * 0.9) * 0.6) for x in range(6)])
+        if level:
+            oanim.ops.mesh.select_all()
+            oanim.ops.mesh.detail_level_set(level="1")
+        before, _ = wave.shape_outline(0, 64)
+        made = [wave.split_segment(0, s, t) for s, t in cuts]
+        oanim.ops.mesh.select_none()
+        wave.select_points(made)
+        assert oanim.ops.mesh.dissolve_points() == {'FINISHED'} and wave.point_count == 6
+        after, _ = wave.shape_outline(0, 64)
+        assert far(after, before) < 5e-4, (level, cuts, far(after, before))
+        oanim.ops.layer.delete()
+
 print("Detail level tests passed")

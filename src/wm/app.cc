@@ -66,6 +66,8 @@ static std::string key_type_from_sdl(SDL_Keycode key)
       {"Backspace", "BACK_SPACE"}, {"Tab", "TAB"},           {"PageUp", "PAGE_UP"},     {"PageDown", "PAGE_DOWN"},
       {"Left", "LEFT_ARROW"},   {"Right", "RIGHT_ARROW"},   {"Up", "UP_ARROW"},        {"Down", "DOWN_ARROW"},
       {"]", "RIGHT_BRACKET"},   {"[", "LEFT_BRACKET"},      {"}", "RIGHT_BRACKET"},    {"{", "LEFT_BRACKET"},
+      {"/", "SLASH"},           {"?", "SLASH"},             {"Keypad /", "NUMPAD_SLASH"},
+      {".", "PERIOD"},          {"Keypad .", "NUMPAD_PERIOD"},
   };
   std::string name = SDL_GetKeyName(key);
   for (const auto &[sdl_name, blender_name] : renames) {
@@ -108,6 +110,7 @@ int App::run(const LaunchOptions &options)
   anim_operators_register();
   draw_order_operators_register();
   mask_operators_register();
+  material_operators_register();
   rig_operators_register();
   file_operators_register();
   media_operators_register();
@@ -283,6 +286,9 @@ void App::main_loop()
     if (!wm_.mouse_simulated.empty()) {
       const WindowManager::SimulatedMouse m = wm_.mouse_simulated.front();
       wm_.mouse_simulated.erase(wm_.mouse_simulated.begin());
+      ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, m.ctrl);
+      ImGui::GetIO().AddKeyEvent(ImGuiMod_Alt, m.alt);
+      ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, m.shift);
       ImGui::GetIO().AddMousePosEvent(m.x, m.y);
       if (m.button >= 0) {
         ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
@@ -294,6 +300,9 @@ void App::main_loop()
     ImGui::NewFrame();
     wm_.timeline_drop_areas.clear();
     draw_ui();
+    /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
+     * its material from the next frame. */
+    document_sync_materials(doc_);
     record_selection();
     ImGui::Render();
 

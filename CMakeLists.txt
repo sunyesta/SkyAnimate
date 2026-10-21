@@ -17,6 +17,7 @@ set(OANIM_SOURCES
   src/anim/channel.cc
   src/anim/deform.cc
   src/anim/draw_order.cc
+  src/anim/layer_pick.cc
   src/anim/dynamics.cc
   src/anim/reference.cc
   src/assets/asset_library.cc
@@ -29,6 +30,7 @@ set(OANIM_SOURCES
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
+  src/data/material.cc
   src/data/media_layer.cc
   src/data/vector.cc
   src/editors/brush_settings.cc
@@ -50,6 +52,7 @@ set(OANIM_SOURCES
   src/ops/anim_ops.cc
   src/ops/draw_order_ops.cc
   src/ops/mask_ops.cc
+  src/ops/material_ops.cc
   src/ops/media_ops.cc
   src/ops/asset_ops.cc
   src/ops/builtin_ops.cc
@@ -160,6 +163,10 @@ add_test(NAME draw_order
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_order.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
+add_test(NAME materials
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_materials.py)
+add_test(NAME layer_pick
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_pick.py)
 add_test(NAME bone_collections
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_collections.py)
 add_test(NAME bone_transform

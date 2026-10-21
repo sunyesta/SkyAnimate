@@ -112,9 +112,10 @@ enum class LayerType { Vector, Group, Bone, Media };
 /* --- Media layers ------------------------------------------------------------------------------
  * A Media layer shows clips along the timeline, as a video editor's track: each clip is a file shown
  * from its Start frame for its Length, starting In seconds into the file (After Effects' in point;
- * slipping changes it). Swapping the file part way through the animation makes a new clip there. The
- * layer is a Guide by default: shown while you work, never rendered (After Effects' guide layers,
- * Blender's reference images). Anything with sound plays it with the animation. */
+ * slipping changes it). Swapping the file part way through the animation makes a new clip there. A
+ * new one is a guide (Show in Renders off): shown while you work, hidden with the viewport's overlays,
+ * never rendered (After Effects' guide layers, Blender's reference images). Anything with sound plays
+ * it with the animation. */
 
 /* How a picture sits in the camera's frame (at zoom 1): all of it inside (Fit), covering it (Fill),
  * stretched to it, or one picture pixel per rendered pixel (Original Size). */
@@ -150,8 +151,6 @@ struct MediaSettings {
   /* In time order; they never overlap. */
   std::vector<MediaClip> clips;
   uint64_t next_clip_id = 1;
-  /* Shown in the viewport only, never rendered. */
-  bool guide = true;
   MediaFit fit = MediaFit::Fit;
   /* Shown in shades of grey, and/or tinted towards `tint` by `tint_amount` (a light table's look,
    * so drawing over it stands out). */
@@ -165,11 +164,24 @@ struct MediaSettings {
   bool muted = false;
 };
 
-/* One of a layer's masks (After Effects' track matte, Blender Grease Pencil's layer masks): the
- * layer shows only Inside (or only Outside) the shapes of the layers it names, any of them. A
- * layer is shown where every mask that is on holds, and a group's masks apply to everything in
- * it. Masks name layers by id, so the order of the layers never matters, and a hidden layer still
- * masks. */
+/* A layer's masks are a list of rows read top to bottom, as After Effects' mask modes (and CSS's
+ * mask-composite), each naming layers as its track mattes do: the shape of a row is all its layers
+ * together (as drawn, or as Mask With says), and its mode says what it does to what the rows above
+ * show. Add shows inside it too, Subtract hides inside it, Intersect keeps only where it overlaps
+ * what is shown, Difference flips where it overlaps. With nothing above, a list that starts with
+ * Subtract or Intersect starts from everything shown (so "outside the mouth" is one row), else from
+ * nothing. A group's masks apply to everything in it, as well as each layer's own. Masks name layers
+ * by id, so the order of the layers never matters, and a hidden layer still masks. Clip to Below
+ * (Layer::clip_to_below) is a quick one more: Intersect with the layer below. */
+enum class MaskMode : uint8_t { Add, Subtract, Intersect, Difference };
+const char *mask_mode_identifier(MaskMode mode);
+bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode);
+/* What an Inside/Outside mask of files from before mask rows does at its place in the list (they
+ * all had to hold): the first Inside adds, a later one intersects, Outside subtracts. */
+MaskMode mask_mode_from_inside_outside(bool outside, bool first);
+struct LayerMask;
+/* Whether a row cuts its shape away (drawn as a cut: Subtract, or Intersect inverted). */
+bool mask_cuts(const LayerMask &mask);
 /* A mask's Extend: the layers' shapes stretched to the edge of everything in one direction (the mask
  * layer's own up, down, left or right, so it turns with the layer and its bone): "Outside the mouth
  * line, extended up" hides the mouth and everything above it. */
@@ -178,27 +190,31 @@ const char *mask_extend_identifier(MaskExtend extend);
 bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_extend);
 
 struct LayerMask {
-  bool outside = false;
+  MaskMode mode = MaskMode::Add;
+  /* The row's shape inside out: everything but its layers. */
+  bool invert = false;
   std::vector<uint64_t> layers;
   /* Masking in the viewport; off, it's kept but doesn't mask there (to see what it cuts). */
   bool enabled = true;
   /* Masking in renders. */
   bool render = true;
-  /* How the layers' shapes mask: grown by a pixel (hides thin seams along the edges); only their
-   * fills, not their strokes (Moho's two options, per mask); and `filled`, every shape as if it
-   * were filled, an outline-only shape too (an open one closed by a straight line), as Rive clips
-   * with a shape's path. Mask With in the Masking tab: As Drawn, Fills Only, Filled Shape (filled
-   * and its stroke), Filled Shape, No Stroke (filled and fills_only). */
-  bool expand = false;
+  /* How the layers' shapes mask: grown by `grow` pixels (on screen; 1 hides thin seams along the
+   * edges) or shrunk by a negative one; only their fills, not their strokes; and `filled`, every
+   * shape as if it were filled, an outline-only shape too (an open one closed by a straight line), as
+   * Rive clips with a shape's path. Mask With in the Masking tab: As Drawn, Fills Only, Filled Shape
+   * (filled and its stroke), Filled Shape, No Stroke (filled and fills_only). */
+  float grow = 0.0f;
   bool fills_only = false;
   bool filled = false;
   MaskExtend extend = MaskExtend::None;
   /* Shown open in the Masking tab. */
   bool show_expanded = true;
+  /* Not saved: the row Clip to Below makes (layer_mask_rows), which masks with what its base shows. */
+  bool clip = false;
   bool operator==(const LayerMask &o) const
   {
-    return outside == o.outside && layers == o.layers && enabled == o.enabled && render == o.render &&
-           expand == o.expand && fills_only == o.fills_only && filled == o.filled && extend == o.extend;
+    return mode == o.mode && invert == o.invert && layers == o.layers && enabled == o.enabled && render == o.render &&
+           grow == o.grow && fills_only == o.fills_only && filled == o.filled && extend == o.extend;
   }
 };
 
@@ -459,7 +475,8 @@ struct Layer {
   std::vector<CustomChannel> custom_channels;
   LayerType type = LayerType::Vector;
   bool visible = true;
-  /* Drawn in renders (Blender's camera toggle). Off, the layer still shows in the viewport. */
+  /* Drawn in renders (Blender's camera toggle). Off, the layer is a guide: shown in the viewport while
+   * its overlays are (and Overlays > Guides is on), never rendered, so overlays off shows the render. */
   bool render_visible = true;
   bool locked = false;
   /* Shown open in the Layers editor (groups). */
@@ -499,6 +516,13 @@ struct Layer {
 
   /* Its masks (see LayerMask). */
   std::vector<LayerMask> masks;
+  /* Photoshop's and Procreate's clipping: shown only where the layer below it (in its group, as the
+   * Layers editor lists them; the first one down that isn't clipped itself, so several can clip to
+   * one) has its shapes, as drawn. Alt-click between two rows in the Layers editor. */
+  bool clip_to_below = false;
+  /* Clip to Below's Exclude Strokes: clipped only to the base's fills, not its lines (so a
+   * shading layer stops inside the outline instead of covering it). */
+  bool clip_exclude_strokes = false;
 
   /* Id of the layer this one shows, or 0. */
   uint64_t reference_source = 0;

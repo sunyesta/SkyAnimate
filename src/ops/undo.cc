@@ -14,6 +14,8 @@ void UndoStack::reset(const Document &doc)
 
 void UndoStack::push(const std::string &name, Document &doc)
 {
+  /* A linked shape's look changed changes its material, and the step holds every shape using it. */
+  document_sync_materials(doc);
   animation_record(doc);
   if (steps_.empty()) {
     reset(doc);

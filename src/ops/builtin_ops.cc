@@ -291,6 +291,34 @@ void builtin_operators_register()
     operators().add(std::move(ot));
   }
   {
+    OperatorType ot;
+    ot.idname = "view.local_view";
+    ot.name = "Local View";
+    ot.description = "Show only the picked layers (and what's inside them) in the viewport, as Blender's Local "
+                     "View, leaving the view where it is; again to show every layer (/ or Numpad /)";
+    ot.poll = [](Context &C) { return C.wm != nullptr && C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      WindowManager &wm = *C.wm;
+      Document &doc = *C.document;
+      if (!wm.local_view.empty()) {
+        wm.local_view.clear();
+        return OpStatus::Finished;
+      }
+      /* The picked layers; a layer inside a picked group comes with it anyway. */
+      for (const Layer *l : document_layers_flat(doc)) {
+        if (l->selected || l->id == doc.active_layer) {
+          wm.local_view.push_back(l->id);
+        }
+      }
+      if (wm.local_view.empty()) {
+        report(ReportType::Info, "Pick the layers to show on their own");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
     /* F9: Blender's Adjust Last Operation, opening (or folding) the ViewportActionPanel. */
     OperatorType ot;
     ot.idname = "screen.redo_last";

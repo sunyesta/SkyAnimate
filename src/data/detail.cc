@@ -476,12 +476,85 @@ int drawing_knife_level(const VectorDrawing &drawing, int curve)
 
 int drawing_detail_split(VectorDrawing &drawing, ShapeEdge edge, float t, int level)
 {
+  /* A cut into a run whose detail points are all where the splits of their parents' segment put them
+   * (none moved since: no offsets), or into a segment with nothing finer on it yet: the cut is one
+   * more exact split of the parents' segment, at a place along it known exactly, and the parents keep
+   * their handles. Worked out from the final shape instead, the run's places would be guessed from
+   * the length along the curve, and the parents' handles from that guess: removing the points later
+   * wouldn't give back the curve exactly. */
+  drawing_ensure_ids(drawing);
+  const int clamped = std::clamp(level, 0, DETAIL_LEVEL_MAX);
+  Curve &cut = drawing.curves[edge.curve];
+  const int n = int(cut.points.size());
+  const auto level_of = [&](int i) { return drawing.points[cut.points[i].point].detail.level; };
+  const auto untouched = [&](int i) {
+    const PointDetail &d = drawing.points[cut.points[i].point].detail;
+    return length(d.pos) + length(d.in) + length(d.out) < 1e-6f &&
+           length(d.setup_pos) + length(d.setup_in) + length(d.setup_out) < 1e-6f;
+  };
+  bool exact = clamped > 0;
+  int ia = edge.segment, ib = (edge.segment + 1) % n;
+  for (int guard = 0; exact && level_of(ia) == clamped && guard < n; guard++) {
+    exact = untouched(ia) && (cut.closed || ia > 0);
+    ia = (ia + n - 1) % n;
+  }
+  for (int guard = 0; exact && level_of(ib) == clamped && guard < n; guard++) {
+    exact = untouched(ib) && (cut.closed || ib < n - 1);
+    ib = (ib + 1) % n;
+  }
+  exact = exact && level_of(ia) < clamped && level_of(ib) < clamped && ia != ib && cut.points[ia].handles_set &&
+          cut.points[ib].handles_set;
+  uint64_t a_id = 0, b_id = 0;
+  float2 a_out, b_in;
+  float t_parent = t;
+  std::vector<std::pair<uint64_t, float>> run;
+  if (exact) {
+    a_id = drawing.points[cut.points[ia].point].id;
+    b_id = drawing.points[cut.points[ib].point].id;
+    a_out = cut.points[ia].handle_out;
+    b_in = cut.points[ib].handle_in;
+    const int from = edge.segment, to = (edge.segment + 1) % n;
+    const float ta = from == ia ? 0.0f : drawing.points[cut.points[from].point].detail.t;
+    const float tb = to == ib ? 1.0f : drawing.points[cut.points[to].point].detail.t;
+    t_parent = ta + (tb - ta) * t;
+    for (int i = (ia + 1) % n; i != ib; i = (i + 1) % n) {
+      run.push_back({drawing.points[cut.points[i].point].id, drawing.points[cut.points[i].point].detail.t});
+    }
+  }
+
   DetailEdit edit = edit_begin(drawing, level > 0);
   const int point = drawing_split_segment(drawing, edge, t);
   drawing.points[point].detail = {};
-  drawing.points[point].detail.level = std::clamp(level, 0, DETAIL_LEVEL_MAX);
+  drawing.points[point].detail.level = clamped;
+  drawing_ensure_ids(drawing);
+  const uint64_t id = drawing.points[point].id;
   drawing_detail_edit_end(drawing, edit);
-  return point;
+
+  if (exact) {
+    run.push_back({id, t_parent});
+    Curve &curve = drawing.curves[edge.curve];
+    for (CurvePoint &cp : curve.points) {
+      MeshPoint &p = drawing.points[cp.point];
+      if (p.id == a_id) {
+        cp.handle_out = a_out;
+      }
+      if (p.id == b_id) {
+        cp.handle_in = b_in;
+      }
+      for (const auto &[rid, rt] : run) {
+        if (p.id == rid) {
+          PointDetail &d = p.detail;
+          d.t = rt;
+          d.pos = d.in = d.out = {};
+          d.setup_pos = d.setup_in = d.setup_out = {};
+          d.built = false;
+        }
+      }
+    }
+    RawEdit raw;
+    drawing_detail_sync(drawing, false);
+  }
+  return drawing_point_index(drawing, id);
 }
 
 std::vector<int> shape_curves(const VectorDrawing &drawing, const Shape &shape)
@@ -604,6 +677,22 @@ int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool>
   }
   drawing_detail_sync(drawing, false);
   return int(remove.size());
+}
+
+void drawing_detail_remove_points(VectorDrawing &drawing, const std::vector<uint64_t> &ids)
+{
+  RawEdit raw;
+  drawing_detail_sync(drawing, true);
+  std::set<int> remove;
+  for (const uint64_t id : ids) {
+    if (const int p = drawing_point_index(drawing, id); p >= 0) {
+      remove.insert(p);
+    }
+  }
+  for (auto it = remove.rbegin(); it != remove.rend(); ++it) {
+    drawing_dissolve_point(drawing, *it);
+  }
+  drawing_detail_sync(drawing, false);
 }
 
 /* Turns a curve's detail points into base points as the curve shows (its handles final). Their keys

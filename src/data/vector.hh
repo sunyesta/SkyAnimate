@@ -165,6 +165,7 @@ struct Style {
   /* Line width in document units (the frame is 2 units tall). */
   float line_width = 0.008f;
   BrushSettings brush;
+  bool operator==(const Style &) const = default;
 };
 
 /* One curve segment: from curve point `segment` to the next one. */
@@ -183,6 +184,10 @@ struct Shape {
   Style style;
   /* Not drawn (a reference hiding one of its original's shapes). */
   bool hidden = false;
+  /* The material it takes its whole look from (data/material.hh), or 0 for its own look; and the
+   * last one it was linked to, for naming a variant made from it ("Skin.001"). */
+  uint64_t material = 0;
+  std::string material_last;
   /* Detail levels: the level it is edited at (its curves show their points up to it; see
    * data/detail.hh). */
   int detail_level = 0;
@@ -264,6 +269,11 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_p
                    std::vector<bool> *r_visible = nullptr, std::vector<StrokeJoin> *r_joins = nullptr,
                    float tolerance = 0.0f);
 
+/* A shape split into its connected runs of edges, each as a shape of its own (the same look): just
+ * the shape when its edges join up. A Moho stroke shape can be loose edges across many curves (a
+ * row of stitches), each run drawn as a line of its own. */
+std::vector<Shape> shape_runs(const VectorDrawing &drawing, const Shape &shape);
+
 /* ---------------------------------------------------------------------------------
  * Editing helpers
  */
@@ -294,6 +304,11 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t);
 /* Removes a point from every curve through it, joining its neighbours, so shapes keep their
  * other edges. Then removes the point itself. */
 void drawing_dissolve_point(VectorDrawing &drawing, int point);
+/* Dissolves `points` (indices) keeping the curves' shape: each span of removed points becomes one
+ * segment whose two handles keep their directions and take the lengths that fit it closest to the
+ * curve as it was (Schneider's least-squares fit, Graphics Gems 1990, as Blender's Dissolve Vertices
+ * fits curves). A run of neighbouring points is fitted at once. */
+void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &points);
 /* Reverses a curve's direction, keeping shapes that use it intact. */
 void drawing_reverse_curve(VectorDrawing &drawing, int curve);
 /* Removes points no curve uses. */

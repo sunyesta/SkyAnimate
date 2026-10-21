@@ -22,6 +22,34 @@ bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_ex
   return false;
 }
 
+static constexpr const char *MASK_MODE_IDS[] = {"ADD", "SUBTRACT", "INTERSECT", "DIFFERENCE"};
+
+const char *mask_mode_identifier(MaskMode mode)
+{
+  return MASK_MODE_IDS[int(mode)];
+}
+
+bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode)
+{
+  for (int i = 0; i < 4; i++) {
+    if (identifier == MASK_MODE_IDS[i]) {
+      *r_mode = MaskMode(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool mask_cuts(const LayerMask &mask)
+{
+  return (mask.mode == MaskMode::Subtract && !mask.invert) || (mask.mode == MaskMode::Intersect && mask.invert);
+}
+
+MaskMode mask_mode_from_inside_outside(bool outside, bool first)
+{
+  return outside ? MaskMode::Subtract : first ? MaskMode::Add : MaskMode::Intersect;
+}
+
 Transform2D Layer::local_transform() const
 {
   return Transform2D::translate(position) * Transform2D::rotate(rotation * PI / 180.0f) *
@@ -75,7 +103,9 @@ const rna::StructRNA &Layer::rna()
         type_prop,
         def_bool<Layer>("visible", "Visible", "Show the layer in the viewport and renders", &Layer::visible),
         def_bool<Layer>("render_visible", "Show in Renders",
-                        "Draw the layer in renders; off, it still shows in the viewport", &Layer::render_visible),
+                        "Draw the layer in renders; off, it is a guide: shown while you work, hidden with the "
+                        "viewport's overlays (Shift Z), never rendered",
+                        &Layer::render_visible),
         def_bool<Layer>("locked", "Locked", "Protect the layer's drawing from editing", &Layer::locked),
         def_bool<Layer>("edit_with_bones", "Editable in Bone Group",
                         "Inside a bone group: pick and move this layer's points along with its bones while the bone "
@@ -109,10 +139,21 @@ const rna::StructRNA &Layer::rna()
         def_float<Layer>("opacity", "Opacity", "How opaque the layer is", &Layer::opacity, 0.0f, 1.0f),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
+        def_bool<Layer>("expanded", "Expanded", "A group shows its layers in the Layers editor (open)",
+                        &Layer::expanded),
+        def_bool<Layer>("clip_to_below", "Clip to Below",
+                        "Show the layer only where the layer below it (the first one down that isn't clipped "
+                        "itself) has its shapes, as Photoshop's clipping masks",
+                        &Layer::clip_to_below),
+        def_bool<Layer>("clip_exclude_strokes", "Exclude Strokes",
+                        "Clip to Below clips to the layer below's fills only, leaving its lines out",
+                        &Layer::clip_exclude_strokes),
         /* Media layers (data/media_layer.hh). */
         def_bool_fn<Layer>(
-            "media_guide", "Guide", "Show it while you work, never in renders (a reference to trace or time against)",
-            [](const Layer &l) { return l.media.guide; }, [](Layer &l, bool v) { l.media.guide = v; }),
+            "media_guide", "Guide",
+            "Show it while you work, hidden with the viewport's overlays (Shift Z), never rendered: the same as Show in "
+            "Renders off",
+            [](const Layer &l) { return !l.render_visible; }, [](Layer &l, bool v) { l.render_visible = !v; }),
         def_enum_fn<Layer>(
             "media_fit", "Fit", "How the picture sits in the camera's frame (at zoom 1)",
             {{"FIT", "Fit"}, {"FILL", "Fill"}, {"STRETCH", "Stretch"}, {"ORIGINAL", "Original Size"}},

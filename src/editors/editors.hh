@@ -62,6 +62,11 @@ struct Area {
 
   /* Layers editor: the layer being renamed, or 0. */
   uint64_t renaming_layer = 0;
+  /* Layers editor: the last Show Active it took (WindowManager::layers_show_active_serial), and the
+   * row it scrolled to, flashing since `show_active_time`. */
+  uint64_t show_active_seen = 0;
+  uint64_t show_active_layer = 0;
+  double show_active_time = -10.0;
   /* Layers editor: list the drawing layers in this frame's draw order (top first), to reorder by
    * dragging, instead of the tree. */
   bool layers_draw_order_view = false;

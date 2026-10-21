@@ -199,15 +199,22 @@ class _Layer:
 
     @property
     def masks(self):
-        """Its masks: [{"outside", "layers" (names), "enabled" (in the viewport), "render",
-        "expand", "fills_only", "filled", "extend"}]. It shows only inside (or outside) any of a mask's layers, where
-        every mask that's on holds. Change them with oanim.ops.mask.add / set / remove / move /
-        with_layer_below."""
+        """Its mask rows, top to bottom: [{"mode" (ADD, SUBTRACT, INTERSECT, DIFFERENCE), "invert",
+        "layers" (names; together one shape), "enabled" (in the viewport), "render", "grow" (pixels,
+        negative shrinks), "fills_only", "filled", "extend", and "outside" (mode is SUBTRACT) and
+        "expand" (grow > 0) as before rows}]. Each row combines its shape with the rows above; a first
+        row of Subtract or Intersect starts from everything. Clip to Below is `clip_to_below`. Change
+        them with oanim.ops.mask.add / set / remove / move / clip_to_below."""
         return [dict(m) for m in _oanim.layer_masks(self._id)]
 
     @property
+    def mask_summary(self):
+        """Its mask rows in words, as the Masking tab's header says them ("Shows: inside head, minus mouth")."""
+        return _oanim.layer_mask_summary(self._id)
+
+    @property
     def masking(self):
-        """The names of the layers whose masks name this one."""
+        """The names of the layers whose masks name this one (or that clip to it)."""
         return list(_oanim.layer_masking(self._id))
 
     @property
@@ -471,6 +478,10 @@ class _Layer:
         for a plain line."""
         return _oanim.layer_shape_brush(self._id, index)
 
+    def shape_material(self, index):
+        """The name of the material shape `index` is linked to, or "" when its look is its own."""
+        return self.shape_style(index)["material"]
+
     def shape_style(self, index):
         """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden}."""
         return dict(_oanim.layer_shape_style(self._id, index))
@@ -661,6 +672,13 @@ class _Data:
         """The names of the drawing layers as drawn now, bottom first: the Layers editor's order
         with every layer's Draw Order rule applied (hidden layers left out)."""
         return list(_oanim.draw_order())
+
+    @property
+    def materials(self):
+        """The shared looks shapes link to: [{"name", "users" (shapes using it), "fill", "line",
+        "line_width", "brush"}]. Change them with oanim.ops.material.new / assign / unlink / rename /
+        remove / remove_unused; a linked shape's set_shape_style changes its material."""
+        return [dict(m) for m in _oanim.materials()]
 
     @property
     def filepath(self):

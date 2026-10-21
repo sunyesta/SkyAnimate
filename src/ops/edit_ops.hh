@@ -23,12 +23,16 @@ void asset_operators_register();
 void anim_operators_register();
 void draw_order_operators_register();
 void mask_operators_register();
+void material_operators_register();
 void rig_operators_register();
 
 /* A layer named by its id ("12") or its name. */
 Layer *layer_by_name_or_id(Document &doc, const std::string &text);
 /* "Inside head", "Outside mouth hole, teeth gap": what a mask does, for menus and undo steps. */
 std::string mask_label(const Document &doc, const LayerMask &mask);
+/* A layer's mask rows in words, as the Masking tab's header shows them ("Shows: inside head, minus
+ * mouth, plus tongue"). */
+std::string mask_summary(const Document &doc, const Layer &layer);
 
 /* The bone layer rigging works on: the active layer if it is one, else the bone layer it is in. */
 Layer *active_armature(Context &C);

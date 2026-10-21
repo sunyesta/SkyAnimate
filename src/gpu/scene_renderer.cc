@@ -429,10 +429,40 @@ void SceneRenderer::stencil_fill(unsigned bit, bool set)
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+std::set<uint64_t> local_view_layers(const Document &doc, const std::vector<uint64_t> &ids)
+{
+  std::set<uint64_t> local_view_;
+  for (const uint64_t id : ids) {
+    const Layer *layer = layer_find(doc, id);
+    if (!layer) {
+      continue;
+    }
+    const auto inside = [&](auto &&self, const Layer &l) -> void {
+      local_view_.insert(l.id);
+      for (const Layer &child : l.children) {
+        self(self, child);
+      }
+    };
+    inside(inside, *layer);
+    for (const Layer *p = layer_parent(const_cast<Document &>(doc), id); p; p = layer_parent(const_cast<Document &>(doc), p->id)) {
+      local_view_.insert(p->id);
+    }
+  }
+  return local_view_;
+}
+
+void SceneRenderer::set_local_view(const Document &doc, const std::vector<uint64_t> &ids)
+{
+  local_view_ = local_view_layers(doc, ids);
+}
+
 bool SceneRenderer::shown(const Layer &layer) const
 {
-  /* A Guide is for working against: never in renders. */
-  return layer.visible && (!final_render_ || (layer.render_visible && !(layer.is_media() && layer.media.guide)));
+  if (!final_render_ && !local_view_.empty() && !local_view_.contains(layer.id)) {
+    return false;
+  }
+  /* A layer not rendered is a guide: in the viewport only while it shows guides (its overlays). */
+  return layer.visible && (layer.render_visible || (!final_render_ && show_guides_));
 }
 
 bool SceneRenderer::layer_shown_through_parents(const Document &doc, const Layer &layer) const
@@ -498,7 +528,7 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     bind_target(group);
     clear(Color{0, 0, 0, 0});
     const unsigned outer_required = required_stencil_;
-    const std::vector<MaskClause> outer_clauses = std::move(mask_clauses_);
+    const MaskLevels outer_clauses = std::move(mask_clauses_);
     mask_clauses_.clear();
     required_stencil_ = 0;
     draw_layers(doc, layer.children, transform, group, 1.0f);
@@ -514,86 +544,201 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
   draw_layers(doc, layer.children, transform, target, layer_opacity);
 }
 
-/* The masks that are on, of `masked` (outermost first), as clauses; ones naming no layer that's
- * still there are left out. */
-static std::vector<SceneRenderer::MaskClause> clauses_of(const Document &doc, const std::vector<const Layer *> &masked,
-                                                          bool render)
+/* A layer's mask rows that are on (in renders or the viewport), with the layers still there; rows
+ * left with no layer are left out. Clip to Below comes in as a row (layer_mask_rows). */
+static std::vector<SceneRenderer::MaskRow> rows_of(const Document &doc, const Layer &layer, bool render)
 {
-  std::vector<SceneRenderer::MaskClause> clauses;
-  for (const Layer *l : masked) {
-    for (const LayerMask &m : l->masks) {
-      /* Each mask can be on in the viewport and in renders apart. */
-      if (!(render ? m.render : m.enabled)) {
-        continue;
-      }
-      SceneRenderer::MaskClause c;
-      c.outside = m.outside;
-      c.expand = m.expand;
-      c.fills_only = m.fills_only;
-      c.filled = m.filled;
-      c.extend = int(m.extend);
-      for (const uint64_t id : m.layers) {
-        if (id != 0 && layer_find(doc, id)) {
-          c.layers.push_back(id);
-        }
-      }
-      if (!c.layers.empty()) {
-        clauses.push_back(std::move(c));
+  std::vector<SceneRenderer::MaskRow> rows;
+  for (const LayerMask &m : layer_mask_rows(doc, layer)) {
+    if (!(render ? m.render : m.enabled)) {
+      continue;
+    }
+    SceneRenderer::MaskRow row;
+    row.mode = m.mode;
+    row.invert = m.invert;
+    row.grow = m.grow;
+    row.fills_only = m.fills_only;
+    row.filled = m.filled;
+    row.extend = int(m.extend);
+    row.clip = m.clip;
+    for (const uint64_t id : m.layers) {
+      if (id != 0 && id != layer.id && layer_find(doc, id)) {
+        row.layers.push_back(id);
       }
     }
+    if (!row.layers.empty()) {
+      rows.push_back(std::move(row));
+    }
   }
-  return clauses;
+  return rows;
 }
+
+/* Stencil bits: one result per masked level (0 to 3), a spare for combining a clip base's levels (4),
+ * the scratch a row's shape goes in (5), and the same two for a mask layer's own rows (6, 7). */
+static constexpr int MASK_LEVELS_MAX = 4;
+static constexpr unsigned MASK_SPARE = 1u << 4;
+static constexpr unsigned MASK_SCRATCH = 1u << 5;
+static constexpr unsigned MASK_NESTED = 1u << 6;
+static constexpr unsigned MASK_NESTED_SCRATCH = 1u << 7;
 
 unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const Layer *> &masked)
 {
-  const std::vector<MaskClause> clauses = clauses_of(doc, masked, final_render_);
-  /* Six bits for a layer's masks; the top two are for its mask layers' own masks. */
-  const size_t count = std::min<size_t>(clauses.size(), 6);
+  MaskLevels levels;
+  for (const Layer *l : masked) {
+    std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
+    if (!rows.empty() && int(levels.size()) < MASK_LEVELS_MAX) {
+      levels.push_back(std::move(rows));
+    }
+  }
   unsigned required = 0;
-  for (size_t k = 0; k < count; k++) {
+  for (size_t k = 0; k < levels.size(); k++) {
     required |= 1u << k;
   }
-  if (clauses == mask_clauses_) {
+  if (levels == mask_clauses_) {
     /* The same as the last thing drawn (its neighbour, usually): the stencil already holds them. */
     return required;
   }
-  for (size_t k = 0; k < count; k++) {
-    const unsigned bit = 1u << k;
-    /* Inside: start empty and add the layers' shapes; Outside: start full and cut them out. */
-    stencil_fill(bit, clauses[k].outside);
-    for (const uint64_t id : clauses[k].layers) {
-      if (const Layer *source = layer_find(doc, id)) {
-        mask_pass_ = {clauses[k].expand, clauses[k].fills_only, clauses[k].filled, clauses[k].extend};
-        draw_mask_source(doc, *source, bit, !clauses[k].outside);
-        mask_pass_ = {};
-      }
-    }
+  for (size_t k = 0; k < levels.size(); k++) {
+    /* The levels after this one, and the spare, are free while it is worked out. */
+    const unsigned free = (MASK_SPARE | (MASK_SPARE - 1u)) & ~((2u << k) - 1u);
+    evaluate_mask_rows(doc, levels[k], 1u << k, MASK_SCRATCH, false, free);
   }
-  mask_clauses_ = clauses;
+  mask_clauses_ = std::move(levels);
   return required;
 }
 
-void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool set)
+void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref, unsigned op)
 {
-  /* The mask layer's own masks count (one level): its shape goes in only where they hold. */
-  const std::vector<MaskClause> own = clauses_of(doc, {&source}, final_render_);
-  const MaskPass pass = mask_pass_;
-  unsigned test = 0;
-  for (size_t k = 0; k < own.size() && k < 2; k++) {
-    const unsigned own_bit = 1u << (7 - k);
-    stencil_fill(own_bit, own[k].outside);
-    mask_pass_ = {own[k].expand, own[k].fills_only, own[k].filled, own[k].extend};
-    for (const uint64_t id : own[k].layers) {
-      if (const Layer *l = layer_find(doc, id)) {
-        draw_coverage(doc, *l, Transform2D(), own_bit, !own[k].outside);
+  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+  glStencilMask(write);
+  /* The reference holds both the value tested (under `test`) and the one written (under `write`). */
+  glStencilFunc(GL_EQUAL, GLint(value | (ref & ~test)), test);
+  glStencilOp(GL_KEEP, GL_KEEP, GLenum(op));
+  gl::UseProgram(stencil_program_);
+  gl::BindVertexArray(quad_vao_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result,
+                                       unsigned scratch, bool nested, unsigned free)
+{
+  /* Rows read top to bottom. Starting with Subtract or Intersect starts from everything (cutting
+   * from the whole picture); anything else from nothing. */
+  const MaskMode first = rows.front().mode;
+  stencil_fill(result, first == MaskMode::Subtract || first == MaskMode::Intersect);
+  for (const MaskRow &row : rows) {
+    /* The row's shape: the union of its layers, grown or shrunk. Shrinking draws the areas, then
+     * clears a band around each area's edge, then draws the lines (thinner). */
+    stencil_fill(scratch, false);
+    static const MaskPass::Stage SHRINK[] = {MaskPass::Areas, MaskPass::Bands, MaskPass::Lines};
+    static const MaskPass::Stage GROW[] = {MaskPass::All};
+    const bool shrink = row.grow < 0.0f;
+    for (int s = 0; s < (shrink ? 3 : 1); s++) {
+      for (const uint64_t id : row.layers) {
+        if (const Layer *source = layer_find(doc, id)) {
+          mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend};
+          if (row.clip) {
+            /* Clip to Below: what the base shows, not every shape in it. */
+            std::vector<const Layer *> chain;
+            mask_pass_ = {};
+            mask_pass_.exclude_strokes = row.fills_only;
+            draw_clip_base(doc, *source, scratch, nested, free, chain);
+          }
+          else {
+            draw_mask_source(doc, *source, scratch, nested);
+          }
+        }
       }
     }
-    test |= own_bit;
+    mask_pass_ = {};
+    /* Where the row's shape is (or with Invert, where it isn't). */
+    const unsigned inside = row.invert ? 0u : scratch;
+    switch (row.mode) {
+      case MaskMode::Add:
+        stencil_where(scratch, inside, result, result, GL_REPLACE);
+        break;
+      case MaskMode::Subtract:
+        stencil_where(scratch, inside, result, 0, GL_REPLACE);
+        break;
+      case MaskMode::Intersect:
+        stencil_where(scratch, inside ^ scratch, result, 0, GL_REPLACE);
+        break;
+      case MaskMode::Difference:
+        stencil_where(scratch, inside, result, 0, GL_INVERT);
+        break;
+    }
   }
-  mask_pass_ = pass;
+}
+
+void SceneRenderer::draw_clip_base(const Document &doc, const Layer &layer, unsigned bit, bool nested, unsigned free,
+                                    std::vector<const Layer *> &chain)
+{
+  /* Hidden layers (and guides in a render) don't show, so they don't clip, unlike a mask row's. */
+  if (!shown(layer) || layer.opacity <= 0.0f) {
+    return;
+  }
+  chain.push_back(&layer);
+  if (layer.is_group()) {
+    for (const Layer &child : layer.children) {
+      draw_clip_base(doc, child, bit, nested, free, chain);
+    }
+  }
+  else {
+    /* Where the layer's masks and its groups' (down from the base) all show it, as they draw: each
+     * level's rows into a result bit (their layers' own masks counting), the next levels into another
+     * and kept only where both hold. Short of free bits, one level deep in the nested bits. */
+    unsigned bits[3] = {0, 0, 0};
+    int count = 0;
+    for (unsigned b = 1; b <= MASK_SPARE && count < 3; b <<= 1) {
+      if (free & b) {
+        bits[count++] = b;
+      }
+    }
+    const bool deep = count >= 2;
+    const unsigned result = deep ? bits[0] : MASK_NESTED;
+    const unsigned scratch = deep ? bits[1] : MASK_NESTED_SCRATCH;
+    const unsigned more = deep ? bits[2] : MASK_SPARE & free;
+    unsigned test = 0;
+    if (!nested) {
+      const MaskPass pass = mask_pass_;
+      for (const Layer *l : chain) {
+        const std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
+        if (rows.empty()) {
+          continue;
+        }
+        if (test == 0) {
+          evaluate_mask_rows(doc, rows, result, scratch, !deep);
+          test = result;
+        }
+        else if (more) {
+          evaluate_mask_rows(doc, rows, more, scratch, !deep);
+          stencil_where(more, 0, result, 0, GL_REPLACE);
+        }
+      }
+      mask_pass_ = pass;
+    }
+    coverage_test_ = test;
+    draw_coverage(doc, layer, Transform2D(), bit, true);
+    coverage_test_ = 0;
+  }
+  chain.pop_back();
+}
+
+void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool nested)
+{
+  /* The mask layer's own masks count (one level deep): its shape goes in only where they hold. */
+  unsigned test = 0;
+  if (!nested) {
+    const std::vector<MaskRow> own = rows_of(doc, source, final_render_);
+    if (!own.empty()) {
+      const MaskPass pass = mask_pass_;
+      evaluate_mask_rows(doc, own, MASK_NESTED, MASK_NESTED_SCRATCH, true);
+      mask_pass_ = pass;
+      test = MASK_NESTED;
+    }
+  }
   coverage_test_ = test;
-  draw_coverage(doc, source, Transform2D(), bit, set);
+  draw_coverage(doc, source, Transform2D(), bit, mask_pass_.stage != MaskPass::Bands);
   coverage_test_ = 0;
 }
 
@@ -671,127 +816,152 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   };
 
   for (int shape_index = 0; shape_index < int(drawing.shapes.size()); shape_index++) {
-    const Shape &shape = drawing.shapes[shape_index];
-    if (shape.hidden) {
-      continue;
-    }
-    bool closed = false;
-    /* Quality sets the samples per segment, and the stray allowed where handles stretch a
-     * segment: a quarter pixel at the viewport's default 12, finer for renders. */
-    shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins,
-                  pixel * 3.0f / float(quality_));
-    if (outline.size() < 2) {
-      continue;
-    }
-    /* A mask's Extend: the edges that mask swept to far off in the layer's own direction, so the
-     * shape and everything beyond it that way masks. A filled shape (or Filled Shape) sweeps its
-     * whole outline; an outline-only one just the edges it draws, so a line with hidden edges (an
-     * upper lip drawn from a whole mouth shape) cuts along what shows. */
-    if (coverage_pass_ && mask_pass_.extend != 0) {
-      static const float2 DIRS[] = {{0, 0}, {0, 1}, {0, -1}, {-1, 0}, {1, 0}};
-      const float2 reach = DIRS[std::clamp(mask_pass_.extend, 0, 4)] * (pixel * 100000.0f);
-      const bool area = (shape.has_fill && closed) || mask_pass_.filled;
-      const bool strokes = shape.has_outline && !mask_pass_.exclude_strokes;
-      const size_t n = outline.size();
-      for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
-        if (!area && !(strokes && i < visible.size() && visible[i])) {
-          continue;
-        }
-        const float2 a = outline[i], b = outline[(i + 1) % n];
-        tessellate_fill({a, b, b + reach, a + reach}, shape.style.fill, feather, vertices);
+    /* Each connected run of the shape's edges draws on its own (see shape_runs). */
+    const std::vector<Shape> runs = shape_runs(drawing, drawing.shapes[shape_index]);
+    for (size_t run_index = 0; run_index < runs.size(); run_index++) {
+      const Shape &shape = runs[run_index];
+      if (shape.hidden) {
+        continue;
       }
-    }
-    /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
-    const bool fill_for_mask = coverage_pass_ && mask_pass_.filled;
-    if ((shape.has_fill && closed) || fill_for_mask) {
-      tessellate_fill(outline, shape.style.fill, feather, vertices);
-      if (mask_pass_.expand) {
-        /* Expand mask by a pixel: a one-pixel rim around the fill. */
-        tessellate_stroke(outline, std::vector<float>(outline.size(), pixel), true, shape.style.fill, feather,
-                          vertices);
+      bool closed = false;
+      /* Quality sets the samples per segment, and the stray allowed where handles stretch a
+       * segment: a quarter pixel at the viewport's default 12, finer for renders. */
+      shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins,
+                    pixel * 3.0f / float(quality_));
+      if (outline.size() < 2) {
+        continue;
       }
-    }
-    if (shape.has_outline && shape.style.line_width > 0.0f && !mask_pass_.exclude_strokes) {
-      /* A brushed line, if its brush is in the library and has images; otherwise solid. */
-      brush = brush_find(shape.style.brush.name);
-      images = brush ? &brush_images(*brush) : nullptr;
-      if (images && images->empty()) {
-        brush = nullptr;
-      }
-      if (brush) {
-        aspects.clear();
-        for (const BrushImage &image : *images) {
-          aspects.push_back(float(image.width) / float(std::max(image.height, 1)));
-        }
-        for (auto &list : dabs.per_image) {
-          list.clear();
-        }
-        dabs.count = 0;
-        seed = brush_seed(shape.style.brush, layer.id, shape_index, doc.frame_current);
-        /* Dabs stick to the artwork: laid out on the line as on the setup frame, put on it as it
-         * is now (hidden edges get none). */
-        if (!setup_made) {
-          setup = layer_setup_drawing(doc, layer, final_render_);
-          setup_made = true;
-        }
-        const float extra = mask_pass_.expand ? pixel : 0.0f;
-        const BrushPath shown = brush_path(drawing, shape, extra);
-        const BrushPath rest = shape_index < int(setup.shapes.size()) && setup.shapes.size() == drawing.shapes.size()
-                                   ? brush_path(setup, setup.shapes[shape_index], extra)
-                                   : shown;
-        brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
-        if (dabs.count > 0) {
-          flush();
-          draw_dabs(dabs, *images, brush->is_color && !shape.style.brush.tint, shape.style.brush.merged_alpha,
-                    transform, opacity);
+      /* A mask's Extend: the edges that mask swept to far off in the layer's own direction, so the
+       * shape and everything beyond it that way masks. A filled shape (or Filled Shape) sweeps its
+       * whole outline; an outline-only one just the edges it draws, so a line with hidden edges (an
+       * upper lip drawn from a whole mouth shape) cuts along what shows. */
+      const MaskPass::Stage stage = coverage_pass_ ? mask_pass_.stage : MaskPass::All;
+      const float grow = coverage_pass_ ? mask_pass_.grow * pixel : 0.0f;
+      const bool is_area = (shape.has_fill && closed) || (coverage_pass_ && mask_pass_.filled);
+      if (stage == MaskPass::Bands) {
+        /* Shrinking: clear a band as wide as the shrink around the area's edge. */
+        if (is_area) {
+          tessellate_stroke(outline, std::vector<float>(outline.size(), -grow), true, shape.style.fill, feather,
+                            vertices);
         }
         continue;
       }
-      /* Half widths for the tessellator: the shape's width scaled by each point's radius, a pixel
-       * wider when the mask expands, and never thinner than a pixel so hairlines stay visible. */
-      for (float &r : radii) {
-        r = std::max(r * shape.style.line_width * 0.5f + (mask_pass_.expand ? pixel : 0.0f), pixel * 0.5f);
-      }
-      const int n = int(outline.size());
-      const int pieces = closed ? n : n - 1;
-      int hidden_at = -1;
-      for (int i = 0; i < pieces && hidden_at < 0; i++) {
-        hidden_at = visible[i] ? -1 : i;
-      }
-      if (hidden_at < 0) {
-        stroke(shape, outline, radii, closed, joins);
-      }
-      else {
-        /* Hidden edges break the outline into open runs. A closed outline starts just after a
-         * hidden piece so no run wraps around its start. */
-        const int start = closed ? hidden_at + 1 : 0;
-        run.clear();
-        run_radii.clear();
-        run_joins.clear();
-        const auto flush_run = [&] {
-          if (run.size() >= 2) {
-            stroke(shape, run, run_radii, false, run_joins);
+      if (coverage_pass_ && mask_pass_.extend != 0 && stage != MaskPass::Lines) {
+        static const float2 DIRS[] = {{0, 0}, {0, 1}, {0, -1}, {-1, 0}, {1, 0}};
+        const float2 reach = DIRS[std::clamp(mask_pass_.extend, 0, 4)] * (pixel * 100000.0f);
+        const bool area = (shape.has_fill && closed) || mask_pass_.filled;
+        const bool strokes = shape.has_outline && !mask_pass_.exclude_strokes;
+        const size_t n = outline.size();
+        for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
+          if (!area && !(strokes && i < visible.size() && visible[i])) {
+            continue;
           }
+          const float2 a = outline[i], b = outline[(i + 1) % n];
+          tessellate_fill({a, b, b + reach, a + reach}, shape.style.fill, feather, vertices);
+        }
+      }
+      /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
+      if (is_area && stage != MaskPass::Lines) {
+        tessellate_fill(outline, shape.style.fill, feather, vertices);
+        if (grow > 0.0f) {
+          /* A mask's Grow: a rim that wide around the area. */
+          tessellate_stroke(outline, std::vector<float>(outline.size(), grow), true, shape.style.fill, feather,
+                            vertices);
+        }
+      }
+      if (shape.has_outline && shape.style.line_width > 0.0f && !(coverage_pass_ && mask_pass_.exclude_strokes) &&
+          stage != MaskPass::Areas)
+      {
+        /* A brushed line, if its brush is in the library and has images; otherwise solid. */
+        brush = brush_find(shape.style.brush.name);
+        images = brush ? &brush_images(*brush) : nullptr;
+        if (images && images->empty()) {
+          brush = nullptr;
+        }
+        if (brush) {
+          aspects.clear();
+          for (const BrushImage &image : *images) {
+            aspects.push_back(float(image.width) / float(std::max(image.height, 1)));
+          }
+          for (auto &list : dabs.per_image) {
+            list.clear();
+          }
+          dabs.count = 0;
+          seed = brush_seed(shape.style.brush, layer.id, shape_index, doc.frame_current);
+          /* Dabs stick to the artwork: laid out on the line as on the setup frame, put on it as it
+           * is now (hidden edges get none). */
+          if (!setup_made) {
+            setup = layer_setup_drawing(doc, layer, final_render_);
+            setup_made = true;
+          }
+          const float extra = grow;
+          const BrushPath shown = brush_path(drawing, shape, extra);
+          std::vector<Shape> setup_runs;
+          if (shape_index < int(setup.shapes.size()) && setup.shapes.size() == drawing.shapes.size()) {
+            setup_runs = shape_runs(setup, setup.shapes[shape_index]);
+          }
+          const BrushPath rest = run_index < setup_runs.size() ? brush_path(setup, setup_runs[run_index], extra) : shown;
+          brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
+          if (dabs.count > 0) {
+            flush();
+            draw_dabs(dabs, *images, brush->is_color && !shape.style.brush.tint, shape.style.brush.merged_alpha,
+                      transform, opacity);
+          }
+          continue;
+        }
+        /* Half widths for the tessellator: the shape's width scaled by each point's radius, a pixel
+         * wider when the mask expands, and never thinner than a pixel so hairlines stay visible. */
+        bool any_width = false;
+        for (float &r : radii) {
+          r = r * shape.style.line_width * 0.5f + grow;
+          /* Hairlines stay a pixel wide; a line shrunk away is gone. */
+          r = grow < 0.0f ? std::max(r, 0.0f) : std::max(r, pixel * 0.5f);
+          any_width |= r > 0.0f;
+        }
+        if (!any_width) {
+          continue;
+        }
+        const int n = int(outline.size());
+        const int pieces = closed ? n : n - 1;
+        int hidden_at = -1;
+        for (int i = 0; i < pieces && hidden_at < 0; i++) {
+          hidden_at = visible[i] ? -1 : i;
+        }
+        if (hidden_at < 0) {
+          stroke(shape, outline, radii, closed, joins);
+        }
+        else {
+          /* Hidden edges break the outline into open runs. A closed outline starts just after a
+           * hidden piece so no run wraps around its start. */
+          const int start = closed ? hidden_at + 1 : 0;
           run.clear();
           run_radii.clear();
           run_joins.clear();
-        };
-        for (int k = 0; k < pieces; k++) {
-          const int i = (start + k) % n, j = (i + 1) % n;
-          if (!visible[i]) {
-            flush_run();
-            continue;
+          const auto flush_run = [&] {
+            if (run.size() >= 2) {
+              stroke(shape, run, run_radii, false, run_joins);
+            }
+            run.clear();
+            run_radii.clear();
+            run_joins.clear();
+          };
+          for (int k = 0; k < pieces; k++) {
+            const int i = (start + k) % n, j = (i + 1) % n;
+            if (!visible[i]) {
+              flush_run();
+              continue;
+            }
+            if (run.empty()) {
+              run.push_back(outline[i]);
+              run_radii.push_back(radii[i]);
+              run_joins.push_back(joins[i]);
+            }
+            run.push_back(outline[j]);
+            run_radii.push_back(radii[j]);
+            run_joins.push_back(joins[j]);
           }
-          if (run.empty()) {
-            run.push_back(outline[i]);
-            run_radii.push_back(radii[i]);
-            run_joins.push_back(joins[i]);
-          }
-          run.push_back(outline[j]);
-          run_radii.push_back(radii[j]);
-          run_joins.push_back(joins[j]);
+          flush_run();
         }
-        flush_run();
       }
     }
   }

@@ -9,10 +9,12 @@
 #include <set>
 
 #include "anim/draw_order.hh"
+#include "anim/layer_pick.hh"
 #include "anim/reference.hh"
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/operator.hh"
+#include "ops/undo.hh"
 #include "wm/context.hh"
 
 namespace oanim {
@@ -49,6 +51,85 @@ static void layers_deselect(Document &doc)
 
 void layer_operators_register()
 {
+  {
+    /* Blender's Outliner Show Active (. or Numpad .). */
+    OperatorType ot;
+    ot.idname = "layer.show_active";
+    ot.name = "Show Active";
+    ot.description = "Scroll the Layers editor to the active layer, opening the groups it's in (. or Numpad ., as "
+                     "Blender's Outliner)";
+    ot.poll = [](Context &C) { return C.document && C.wm && document_active_layer(*C.document); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const uint64_t id = doc.active_layer;
+      bool opened = false;
+      for (Layer *p = layer_parent(doc, id); p; p = layer_parent(doc, p->id)) {
+        opened |= !p->expanded;
+        p->expanded = true;
+      }
+      if (opened && C.undo) {
+        /* Folding is the project's (saved), not an edit to undo. */
+        C.undo->mark_changed();
+      }
+      C.wm->layers_show_active = id;
+      C.wm->layers_show_active_serial++;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* The Select Layer tool and Alt-click: the layer shown at a point. */
+    OperatorType ot;
+    ot.idname = "layer.select_at";
+    ot.name = "Select Layer";
+    ot.description = "Select the drawing layer shown at x=, y= (document space; the topmost, or layer= names it), as "
+                     "the Select Layer tool and Alt-click do: mode=SET (it alone), TOGGLE (add it, or take it out "
+                     "if picked; Shift) or REMOVE (Ctrl). group=1 picks its outermost group instead. Media layers, "
+                     "hidden layers and where a layer's masks hide it are never picked; tolerance= is how near a "
+                     "line counts, in document units";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      uint64_t id = 0;
+      if (op_has_arg(C, "layer")) {
+        const Layer *l = layer_by_name_or_id(doc, op_arg(C, "layer"));
+        id = l ? l->id : 0;
+      }
+      else {
+        LayerPickOptions options;
+        options.tolerance = std::max(0.0f, op_arg_float(C, "tolerance", 0.0f));
+        options.show_guides = doc.overlays.show && doc.overlays.guides;
+        if (C.wm) {
+          options.local_view = C.wm->local_view;
+        }
+        const std::vector<uint64_t> hits =
+            layers_at(doc, {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)}, options);
+        id = hits.empty() ? 0 : hits.front();
+      }
+      if (id != 0 && op_arg_bool(C, "group")) {
+        id = layer_pick_group(doc, id);
+      }
+      if (id == 0) {
+        return OpStatus::Cancelled;
+      }
+      const std::string mode = op_arg(C, "mode", "SET");
+      const LayerPickMode pick = mode == "TOGGLE" ? LayerPickMode::Toggle
+                                 : mode == "REMOVE" ? LayerPickMode::Remove
+                                                    : LayerPickMode::Set;
+      if (mode != "SET" && mode != "TOGGLE" && mode != "REMOVE") {
+        report(ReportType::Error, "mode is SET, TOGGLE or REMOVE");
+        return OpStatus::Cancelled;
+      }
+      if (!layer_pick_apply(doc, id, pick)) {
+        return OpStatus::Cancelled;
+      }
+      const Layer *picked = layer_find(doc, id);
+      C.undo_name = std::string(pick == LayerPickMode::Remove ? "Deselect " : "Select ") + picked->name;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   layer_operator("layer.new", "New Layer", "Add a vector layer above the active layer", nullptr, [](Context &C) {
     document_add_layer(*C.document, LayerType::Vector, "");
     return OpStatus::Finished;
