@@ -536,6 +536,10 @@ void vector_operators_register()
         return false;
       }
       const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
+      /* A Media layer moves, turns and scales as a whole. */
+      if (active && active->is_media()) {
+        return !active->locked;
+      }
       if (active && active->is_bone_layer()) {
         /* A bone picked by its body or by either ball, or points of its layers marked Editable in
          * Bone Group. */

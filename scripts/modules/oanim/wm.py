@@ -26,6 +26,12 @@ def drop_simulate(filepath, x, y):
     return _oanim.drop_simulate(filepath, float(x), float(y))
 
 
+def file_drag_simulate(filepaths, x=0, y=0):
+    """As if `filepaths` were being dragged from Explorer over the window at (x, y): the viewport and
+    timeline show where they would land. An empty list ends the drag (nothing is dropped)."""
+    _oanim.file_drag_simulate(list(filepaths), float(x), float(y))
+
+
 def mouse_click(x, y, button=0):
     """A click at (x, y): moves there, presses, releases (over three frames)."""
     mouse_simulate(x, y)

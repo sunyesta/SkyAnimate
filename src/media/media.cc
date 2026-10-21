@@ -55,13 +55,15 @@ uint64_t media_generation()
   return g_generation.load();
 }
 
-/* COM on the calling thread, once: the main thread may already have it (SDL's dialogs), in either
- * model, which is fine for what is done here. */
+/* COM on the calling thread, once. Worker threads take the multithreaded model; the main thread is
+ * single-threaded (media_init), as OLE needs: SDL's OleInitialize fails on a multithreaded thread and
+ * falls back to drops that carry no position. */
+static thread_local bool g_com_done = false;
+
 static void com_thread()
 {
-  thread_local bool done = false;
-  if (!done) {
-    done = true;
+  if (!g_com_done) {
+    g_com_done = true;
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     (void)hr;
   }
@@ -71,7 +73,11 @@ static bool g_mf_started = false;
 
 void media_init()
 {
-  com_thread();
+  if (!g_com_done) {
+    g_com_done = true;
+    const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    (void)hr;
+  }
   g_mf_started = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_FULL));
 }
 

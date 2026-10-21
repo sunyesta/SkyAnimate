@@ -59,6 +59,10 @@ KEYMAP = (
     ("Viewport", "armature.parent_clear_menu", "P", {"alt": True}),
     ("Viewport", "armature.move_to_collection_menu", "M", {}),
     ("Viewport", "armature.assign_to_collection_menu", "M", {"shift": True}),
+    # An active Media layer: the layer itself (as Blender's Clear Location / Rotation / Scale).
+    ("Viewport", "layer.clear_location", "G", {"alt": True}),
+    ("Viewport", "layer.clear_rotation", "R", {"alt": True}),
+    ("Viewport", "layer.clear_scale", "S", {"alt": True}),
     ("Viewport", "armature.clear_location", "G", {"alt": True}),
     # Selected points, when no bone is picked (the first operator that can run takes the key).
     ("Viewport", "mesh.clear_location", "G", {"alt": True}),
@@ -101,6 +105,9 @@ KEYMAP = (
     ("Timeline", "anim.keys_transform_move", "G", {}),
     ("Timeline", "anim.keys_transform_scale", "S", {}),
     ("Timeline", "anim.keys_duplicate_move", "D", {"shift": True}),
+    # Clips picked in a Media layer's row go first; otherwise the selected keys.
+    ("Timeline", "media.clips_delete_selected", "X", {}),
+    ("Timeline", "media.clips_delete_selected", "DEL", {}),
     ("Timeline", "anim.keys_delete", "X", {}),
     ("Timeline", "anim.keys_delete", "DEL", {}),
     ("Timeline", "anim.keys_select_all", "A", {}),

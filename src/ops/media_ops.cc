@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <tuple>
 
 #include "anim/animation.hh"
 #include "core/log.hh"
@@ -278,32 +279,44 @@ void media_operators_register()
 
   /* Replace from Playhead: the source changes part way through: a new clip from the current frame
    * on, as long as its file, over what was there. */
-  add_operator(
-      "media.replace_from_frame", "Replace from Current Frame",
-      "Show another file from the current frame on: the clip there ends and a new one starts", media_poll,
-      [](Context &C) {
-        const std::string path = op_arg(C, "filepath");
-        if (path.empty()) {
-          return ask_for_media(C, "media.replace_from_frame");
-        }
-        Document &doc = *C.document;
-        Layer &layer = *media_target_layer(C);
-        const bool sequence = op_has_arg(C, "sequence") ? op_arg_bool(C, "sequence") : !media_sequence_files(path).empty();
-        MediaInfo info;
-        if (!readable(path, sequence, &info)) {
-          return OpStatus::Cancelled;
-        }
-        const int frame = std::max(op_arg_int(C, "frame", doc.frame_current), 1);
-        split_at(doc, layer, frame);
-        MediaClip clip = media_clip_new(doc, layer, path, sequence, frame);
-        const uint64_t id = clip.id;
-        layer.media.clips.push_back(clip);
-        media_clips_tidy(doc, layer, id);
-        if (info.has_audio) {
-          media_sound(path);
-        }
-        return OpStatus::Finished;
-      });
+  /* A clip of `filepath` from `frame` (the current one by default) on, as long as its file, over
+   * what was there (the clip it lands in ends there); it becomes the picked clip. */
+  const auto clip_from_frame = [](const char *idname) {
+    return [idname](Context &C) {
+      const std::string path = op_arg(C, "filepath");
+      if (path.empty()) {
+        return ask_for_media(C, idname);
+      }
+      Document &doc = *C.document;
+      Layer &layer = *media_target_layer(C);
+      const bool sequence = op_has_arg(C, "sequence") ? op_arg_bool(C, "sequence") : !media_sequence_files(path).empty();
+      MediaInfo info;
+      if (!readable(path, sequence, &info)) {
+        return OpStatus::Cancelled;
+      }
+      const int frame = std::max(op_arg_int(C, "frame", doc.frame_current), 1);
+      split_at(doc, layer, frame);
+      MediaClip clip = media_clip_new(doc, layer, path, sequence, frame);
+      for (MediaClip &c : layer.media.clips) {
+        c.selected = false;
+      }
+      clip.selected = true;
+      const uint64_t id = clip.id;
+      layer.media.clips.push_back(clip);
+      media_clips_tidy(doc, layer, id);
+      if (info.has_audio) {
+        media_sound(path);
+      }
+      return OpStatus::Finished;
+    };
+  };
+  add_operator("media.replace_from_frame", "Replace from Current Frame",
+               "Show another file from the current frame on: the clip there ends and a new one starts", media_poll,
+               clip_from_frame("media.replace_from_frame"));
+  /* A file dropped on a Media layer's row in the timeline: a clip of it in that layer, where it lands. */
+  add_operator("media.clip_add", "Add Clip",
+               "Add a file to the Media layer as a clip starting on a frame (over what was there)", media_poll,
+               clip_from_frame("media.clip_add"));
 
   add_operator(
       "media.reload", "Reload Media", "Read the layer's files again (after changing them in another program)",
@@ -415,6 +428,10 @@ void media_operators_register()
         if (!clip) {
           return OpStatus::Cancelled;
         }
+        /* Picked in the timeline, as a click there does. */
+        if (op_has_arg(C, "select")) {
+          clip->selected = op_arg_bool(C, "select");
+        }
         clip->start = std::max(op_arg_int(C, "start", clip->start), 1);
         clip->length = std::max(op_arg_int(C, "length", clip->length), 1);
         if (op_has_arg(C, "in_point")) {
@@ -443,6 +460,69 @@ void media_operators_register()
         Document &doc = *C.document;
         return split_at(doc, *media_target_layer(C), op_arg_int(C, "frame", doc.frame_current)) ? OpStatus::Finished
                                                                                                  : OpStatus::Cancelled;
+      });
+
+  /* Alt G / Alt R / Alt S on an active Media layer: its Location, Rotation or Scale cleared, as
+   * Blender's Clear Location / Rotation / Scale do an object's (keyed away from frame 0, as any edit). */
+  for (const auto &[idname, name, what] :
+       {std::tuple{"layer.clear_location", "Clear Location", 0}, std::tuple{"layer.clear_rotation", "Clear Rotation", 1},
+        std::tuple{"layer.clear_scale", "Clear Scale", 2}})
+  {
+    const int kind = what;
+    add_operator(
+        idname, name,
+        kind == 0   ? "Put the active Media layer back at the centre (Location 0, 0)"
+        : kind == 1 ? "Turn the active Media layer back upright (Rotation 0)"
+                    : "Give the active Media layer back its own size (Scale 1, 1)",
+        [](Context &C) {
+          const Layer *l = media_target_layer(C);
+          return l && !l->locked;
+        },
+        [kind](Context &C) {
+          Layer &l = *media_target_layer(C);
+          const Layer before = l;
+          if (kind == 0) {
+            l.position = {0.0f, 0.0f};
+          }
+          else if (kind == 1) {
+            l.rotation = 0.0f;
+          }
+          else {
+            l.scale = {1.0f, 1.0f};
+          }
+          const bool changed = l.position.x != before.position.x || l.position.y != before.position.y ||
+                               l.rotation != before.rotation || l.scale.x != before.scale.x ||
+                               l.scale.y != before.scale.y;
+          return changed ? OpStatus::Finished : OpStatus::Cancelled;
+        });
+  }
+
+  /* X or Delete over the timeline while clips are picked there (before the keys' Delete, which takes
+   * the key otherwise): every Media layer's picked clips go. */
+  add_operator(
+      "media.clips_delete_selected", "Delete Clips", "Delete the clips picked in the timeline",
+      [](Context &C) {
+        for (Layer *l : C.document ? media_layers(*C.document) : std::vector<Layer *>()) {
+          if (std::any_of(l->media.clips.begin(), l->media.clips.end(), [](const MediaClip &c) { return c.selected; })) {
+            return !l->locked;
+          }
+        }
+        return false;
+      },
+      [](Context &C) {
+        int deleted = 0;
+        for (Layer *l : media_layers(*C.document)) {
+          if (l->locked) {
+            continue;
+          }
+          std::vector<MediaClip> &clips = l->media.clips;
+          const size_t before = clips.size();
+          clips.erase(std::remove_if(clips.begin(), clips.end(), [](const MediaClip &c) { return c.selected; }),
+                      clips.end());
+          deleted += int(before - clips.size());
+        }
+        C.undo_name = deleted == 1 ? "Delete Clip" : "Delete Clips";
+        return deleted > 0 ? OpStatus::Finished : OpStatus::Cancelled;
       });
 
   add_operator(

@@ -15,6 +15,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -27,14 +28,17 @@
 #include "data/camera.hh"
 #include "data/detail.hh"
 #include "data/document.hh"
+#include "data/media_layer.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
 #include "gpu/scene_renderer.hh"
 #include "ops/edit_ops.hh"
+#include "ops/media_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
 #include "wm/event_system.hh"
+#include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 
 namespace oanim {
@@ -3297,6 +3301,180 @@ static uint64_t pick_bone(const Document &doc, const Layer &armature, const View
 /* G, R or S on the selected bones, on any frame. G moves a bone picked by its body or base and
  * aims (and on the setup frame stretches) one picked by its tip; R turns bones about their bases;
  * S scales them. Children come along, as in Moho. */
+/* G, R and S on an active Media layer move, turn and scale the layer itself (its Location, Rotation
+ * and Scale; keyed away from frame 0, as any edit), as Blender does an object: turning and scaling
+ * about the layer's centre (its picture's middle). X or Y keeps to one axis (G: the document's, S:
+ * the layer's own), Ctrl snaps (the grid, 5°, tenths), a typed number sets it. */
+struct LayerModal {
+  bool active = false;
+  int area = 0;
+  char kind = 'G';
+  uint64_t layer = 0;
+  Document snapshot;
+  float2 position, scale;
+  float rotation = 0.0f;
+  /* Document -> the layer's parent space (for G). */
+  Transform2D to_parent;
+  float2 pivot;
+  float2 start_mouse, last_mouse;
+  float turned = 0.0f;
+  int axis = 0;
+  std::string typed;
+};
+static LayerModal g_layer_modal;
+
+static bool layer_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
+{
+  Document &doc = *C.document;
+  Layer *layer = document_active_layer(doc);
+  if (!layer || !layer->is_media() || layer->locked || kind == 'E') {
+    return false;
+  }
+  LayerModal modal;
+  modal.area = area.id;
+  modal.kind = kind;
+  modal.layer = layer->id;
+  const Transform2D world = layer_world_transform(doc, layer->id);
+  modal.to_parent = (world * layer->local_transform().inverted()).inverted();
+  modal.pivot = world.apply(float2());
+  modal.position = layer->position;
+  modal.rotation = layer->rotation;
+  modal.scale = layer->scale;
+  modal.snapshot = doc;
+  modal.start_mouse = mouse_document;
+  modal.last_mouse = mouse_document;
+  modal.active = true;
+  g_layer_modal = std::move(modal);
+  C.wm->modal_running = true;
+  C.wm->modal_keys.clear();
+  return true;
+}
+
+static void layer_modal_end(Context &C, bool confirm)
+{
+  if (confirm) {
+    push_undo(C, g_layer_modal.kind == 'R' ? "Rotate Layer" : g_layer_modal.kind == 'S' ? "Scale Layer" : "Move Layer");
+  }
+  else {
+    const int frame = C.document->frame_current;
+    *C.document = g_layer_modal.snapshot;
+    C.document->frame_current = frame;
+  }
+  g_layer_modal.active = false;
+  g_layer_modal.snapshot = Document();
+  C.wm->modal_running = false;
+  C.wm->modal_keys.clear();
+}
+
+static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDrawList *dl)
+{
+  LayerModal &lm = g_layer_modal;
+  Layer *layer = layer_find(*C.document, lm.layer);
+  if (!layer) {
+    layer_modal_end(C, false);
+    return {};
+  }
+  if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    layer_modal_end(C, false);
+    return {};
+  }
+  const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
+                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+  if (modal_key_take(C, "X")) {
+    lm.axis = lm.axis == 1 ? 0 : 1;
+  }
+  if (modal_key_take(C, "Y")) {
+    lm.axis = lm.axis == 2 ? 0 : 2;
+  }
+  for (const ImWchar ch : ImGui::GetIO().InputQueueCharacters) {
+    if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
+      lm.typed.push_back(char(ch));
+    }
+  }
+  while (modal_key_take(C, "BACK_SPACE", true)) {
+    if (!lm.typed.empty()) {
+      lm.typed.pop_back();
+    }
+  }
+  if (lm.kind == 'R') {
+    lm.axis = 0;
+  }
+  const bool has_typed = !lm.typed.empty() && lm.typed != "-" && lm.typed != ".";
+  const float typed = has_typed ? std::strtof(lm.typed.c_str(), nullptr) : 0.0f;
+  if (!ImGui::IsMousePosValid()) {
+    if (confirm) {
+      layer_modal_end(C, true);
+    }
+    return "";
+  }
+  const ImGuiIO &io = ImGui::GetIO();
+  const float2 mouse = view.to_document(io.MousePos);
+  const bool snap = io.KeyCtrl;
+  char text[160];
+  if (lm.kind == 'G') {
+    float2 delta = mouse - lm.start_mouse;
+    if (snap) {
+      delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
+    }
+    if (has_typed) {
+      delta = lm.axis == 2 ? float2(0.0f, typed) : float2(typed, 0.0f);
+    }
+    if (lm.axis == 1) {
+      delta.y = 0.0f;
+    }
+    else if (lm.axis == 2) {
+      delta.x = 0.0f;
+    }
+    layer->position = lm.position + lm.to_parent.apply_vector(delta);
+    std::snprintf(text, sizeof(text), "Move Layer  X: %.3f  Y: %.3f%s", delta.x, delta.y,
+                  lm.axis == 1 ? "  along X" : lm.axis == 2 ? "  along Y" : "");
+  }
+  else {
+    /* Blender's dashed line from the centre to the mouse. */
+    const ImVec2 a = view.to_screen(lm.pivot), b = io.MousePos;
+    const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+    for (float t = 0.0f; t < len; t += 8.0f) {
+      const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 4.0f, len) / std::max(len, 1.0f);
+      dl->AddLine(ImVec2(a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0),
+                  ImVec2(a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1), IM_COL32(0, 0, 0, 200), 1.0f);
+    }
+    if (lm.kind == 'R') {
+      lm.turned += turn_between(lm.last_mouse, mouse, lm.pivot);
+      lm.last_mouse = mouse;
+      float degrees = lm.turned * 180.0f / PI;
+      if (snap) {
+        degrees = std::round(degrees / 5.0f) * 5.0f;
+      }
+      if (has_typed) {
+        degrees = typed;
+      }
+      layer->rotation = lm.rotation + degrees;
+      std::snprintf(text, sizeof(text), "Rotate Layer  %.1f\xC2\xB0", degrees);
+    }
+    else {
+      const float start = std::max(distance(lm.start_mouse, lm.pivot), 1e-6f);
+      float factor = distance(mouse, lm.pivot) / start;
+      if (snap) {
+        factor = std::round(factor * 10.0f) / 10.0f;
+      }
+      if (has_typed) {
+        factor = typed;
+      }
+      layer->scale = {lm.axis == 2 ? lm.scale.x : lm.scale.x * factor, lm.axis == 1 ? lm.scale.y : lm.scale.y * factor};
+      std::snprintf(text, sizeof(text), "Scale Layer  %.3f%s", factor,
+                    lm.axis == 1 ? "  along X" : lm.axis == 2 ? "  along Y" : "");
+    }
+  }
+  if (confirm) {
+    layer_modal_end(C, true);
+  }
+  else {
+    C.wm->modal_keys.clear();
+  }
+  return text;
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
@@ -5066,6 +5244,47 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (ov.show && ov.grid) {
     draw_grid(dl, view, ts.grid_size);
   }
+  /* A file dragged in from Explorer over the viewport: where its picture would sit (fitted to the
+   * camera's frame, as Add Media puts it), and what it would make. */
+  if (const FileDrag &fd = file_drag(); fd.active && fd.x >= origin.x && fd.x < origin.x + size.x &&
+                                        fd.y >= origin.y && fd.y < origin.y + size.y)
+  {
+    MediaClip clip;
+    MediaInfo info;
+    for (const std::string &f : fd.files) {
+      if (!media_clip_preview(doc, f, 1, &clip, &info)) {
+        continue;
+      }
+      if (info.kind != MediaKind::Audio) {
+        Layer fitted;
+        fitted.type = LayerType::Media;
+        float2 q[4];
+        media_quad(doc, fitted, info.source_width, info.source_height, q);
+        ImVec2 s[4];
+        for (int i = 0; i < 4; i++) {
+          s[i] = view.to_screen(q[i]);
+        }
+        dl->AddConvexPolyFilled(s, 4, IM_COL32(0x6f, 0xb8, 0xff, 50));
+        for (int i = 0; i < 4; i++) {
+          const ImVec2 a = s[i], b = s[(i + 1) % 4];
+          const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+          for (float t = 0.0f; t < len; t += 10.0f) {
+            const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 5.0f, len) / std::max(len, 1.0f);
+            dl->AddLine(ImVec2(a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0),
+                        ImVec2(a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1), IM_COL32(0x6f, 0xb8, 0xff, 255), 2.0f);
+          }
+        }
+      }
+      const std::u8string name = std::filesystem::path(std::u8string(f.begin(), f.end())).filename().u8string();
+      const std::string text = "New Media layer: " + std::string(name.begin(), name.end()) + "\n" + media_info_text(info) +
+                               ", frames 1 to " + std::to_string(clip.length);
+      const ImVec2 ts2 = ImGui::CalcTextSize(text.c_str());
+      const ImVec2 at(fd.x + 16.0f, fd.y + 16.0f);
+      dl->AddRectFilled(at - ImVec2(5, 4), at + ts2 + ImVec2(5, 4), IM_COL32(0x18, 0x18, 0x18, 230), 4.0f);
+      dl->AddText(at, IM_COL32(0xf0, 0xf0, 0xf0, 255), text.c_str());
+      break;
+    }
+  }
 
   /* --- Editing. --- */
   Layer *layer = nullptr;
@@ -5093,7 +5312,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     C.document->overlays.show = !C.document->overlays.show;
     wm.overlays_toggle_request = false;
   }
-  if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active) {
+  if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active && !g_layer_modal.active) {
     g_pending_transform = wm.transform_request;
     g_pending_area = area.id;
     wm.transform_request = 0;
@@ -5105,8 +5324,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (g_pending_transform && g_pending_area == area.id && !g_modal.active && !g_drag.active &&
       !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
       ImGui::IsMousePosValid()) {
-    if (!bone_modal_start(C, area, g_pending_transform, view.to_document(io.MousePos))) {
-      modal_start(C, area, g_pending_transform, view.to_document(io.MousePos));
+    const float2 at = view.to_document(io.MousePos);
+    if (!layer_modal_start(C, area, g_pending_transform, at) && !bone_modal_start(C, area, g_pending_transform, at)) {
+      modal_start(C, area, g_pending_transform, at);
     }
     g_pending_transform = 0;
   }
@@ -5114,7 +5334,12 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (armature_active && !armature_active->is_bone_layer()) {
     armature_active = nullptr;
   }
-  if (g_bone_modal.active) {
+  if (g_layer_modal.active) {
+    if (g_layer_modal.area == area.id) {
+      modal_info = layer_modal_update(C, view, dl);
+    }
+  }
+  else if (g_bone_modal.active) {
     if (g_bone_modal.area == area.id) {
       modal_info = bone_modal_update(C, view);
     }
@@ -5229,7 +5454,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (hovered && !drawing && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ts.tool != Tool::Cursor) {
     const Layer *active = document_active_layer(doc);
     report(ReportType::Info, !active                 ? "Add a layer to draw on (Layers editor, +)"
-                             : active->is_media()    ? "This is a Media layer: add a vector layer above it to draw over it"
+                             : active->is_media()    ? "This is a Media layer: G, R and S move, turn and scale it; add a vector layer above it to draw over it"
                              : active->is_group()    ? "Select a vector layer to draw on"
                              : active->is_reference() ? "This is a reference layer: Break Reference to draw on it"
                                                       : "This layer is locked");

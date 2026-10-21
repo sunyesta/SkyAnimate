@@ -105,11 +105,40 @@ oanim.ops.media.clip_split(frame="30")
 assert len(video.media_clips) == 3 and video.media_clips[2]["start"] == 30
 assert oanim.ops.media.clip_delete(clip=str(video.media_clips[2]["id"])) == {'FINISHED'}
 assert len(video.media_clips) == 2
+# X over the timeline deletes the picked clips; with none picked it is the keys' Delete again.
+for c in video.media_clips:  # Replace from Current Frame picked its clip
+    oanim.ops.media.clip_set(clip=str(c["id"]), select="0")
+oanim.ops.media.clip_split(frame="15")
+assert len(video.media_clips) == 3
+oanim.ops.media.clip_set(clip=str(video.media_clips[1]["id"]), select="1")
+assert oanim.wm.event_simulate("X", area="Timeline")
+assert [c["start"] for c in video.media_clips] == [1, 15] and oanim.wm.undo_history()[0][-1] == "Delete Clip"
+assert not oanim.ops.media.clips_delete_selected.poll(), "nothing picked: X goes to the keys"
+for _ in range(3):  # the delete, the pick and the split
+    oanim.ops.ed.undo()
+assert len(video.media_clips) == 2 and not any(c["selected"] for c in video.media_clips)
+
+# Add Clip (a file dropped on the layer's clips row): a clip of it in this layer where it lands,
+# picked, over what was there.
+assert oanim.ops.media.clip_add(layer=str(video.id), filepath=SEQ, frame="12") == {'FINISHED'}
+added = [c for c in video.media_clips if c["start"] == 12]
+assert len(added) == 1 and added[0]["sequence"] and added[0]["length"] == 3 and added[0]["selected"], video.media_clips
+assert [c["start"] for c in video.media_clips] == [1, 10, 12, 15], video.media_clips
+oanim.ops.ed.undo()
+assert len(video.media_clips) == 2
 
 # Replace keeps the timing.
 doc.frame_current = 5
 assert oanim.ops.media.replace(filepath=VIDEO) == {'FINISHED'}
 assert video.media_clips[0]["filepath"] == VIDEO and video.media_clips[0]["length"] == 9
+
+# Alt G, Alt R, Alt S over the viewport clear the Media layer's Location, Rotation and Scale.
+video.location_x, video.location_y, video.rotation, video.scale_x, video.scale_y = 0.3, -0.2, 30.0, 2.0, 1.5
+assert oanim.wm.event_simulate("G", alt=True, area="Viewport")
+assert (video.location_x, video.location_y, video.rotation) == (0.0, 0.0, 30.0)
+assert oanim.wm.event_simulate("R", alt=True, area="Viewport") and video.rotation == 0.0
+assert oanim.wm.event_simulate("S", alt=True, area="Viewport") and (video.scale_x, video.scale_y) == (1.0, 1.0)
+assert oanim.wm.undo_history()[0][-3:] == ["Clear Location", "Clear Rotation", "Clear Scale"]
 
 # The look, through RNA.
 video.media_greyscale = True

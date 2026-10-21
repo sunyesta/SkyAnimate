@@ -34,6 +34,10 @@ bool timeline_media_row_press(Context &C, const TimelineMediaView &v, Layer &lay
 bool timeline_media_drag_update(Context &C, const TimelineMediaView &v);
 /* The mouse over the row, no button down: the cursor for what a drag would do, and a tooltip. */
 void timeline_media_row_hover(Context &C, const TimelineMediaView &v, const Layer &layer, float top, float h);
+/* A file being dragged in from Explorer over the timeline: the clip it would make, at the frame under
+ * it, in the band from `top` (`h` tall): into `layer`'s clips row, or (null) as a new Media layer. */
+void timeline_media_drop_preview(Context &C, ImDrawList *dl, const TimelineMediaView &v, const Layer *layer, float top,
+                                 float h);
 /* Right-click on the row: the clip menu (opened here, drawn by timeline_media_menu). */
 void timeline_media_menu_open(Context &C, const TimelineMediaView &v, const Layer &layer);
 void timeline_media_menu(Context &C);

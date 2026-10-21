@@ -65,6 +65,7 @@ set(OANIM_SOURCES
   src/wm/app.cc
   src/wm/event_system.cc
   src/wm/file_dialog.cc
+  src/wm/file_drop.cc
   src/wm/keymap.cc
   src/wm/remote.cc
 )
@@ -75,7 +76,7 @@ target_include_directories(OpenAnimate PRIVATE src)
 # Header-only libraries as system headers, so /W4 doesn't report their warnings.
 target_include_directories(OpenAnimate SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include ${json_SOURCE_DIR}/single_include)
 target_link_libraries(OpenAnimate PRIVATE oanim_imgui SDL3::SDL3 pybind11::embed miniz opengl32 ws2_32 dbghelp
-  mfplat mfreadwrite mfuuid windowscodecs ole32 propsys)
+  mfplat mfreadwrite mfuuid windowscodecs ole32 propsys shell32)
 target_compile_definitions(OpenAnimate PRIVATE
   OANIM_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts"
   OANIM_PYTHON_HOME="${OANIM_PYTHON_ROOT}"

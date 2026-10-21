@@ -46,6 +46,10 @@ double media_clip_in_frames(const Document &doc, const MediaClip &clip);
 /* A new clip for `path` starting at `start`: as long as its file (a still image: to the end of the
  * frame range), a numbered image sequence when `sequence`. Its id comes from the layer. */
 MediaClip media_clip_new(const Document &doc, Layer &layer, const std::string &path, bool sequence, int start);
+/* The clip Add Media would make of `path` starting at `start` (a numbered image as a sequence), for
+ * previews while a file is dragged over the window: false when it isn't a file Media layers read.
+ * Whether it is a sequence is looked up once per file. */
+bool media_clip_preview(const Document &doc, const std::string &path, int start, MediaClip *r_clip, MediaInfo *r_info);
 /* Keeps the clips in time order without overlaps: a clip moved over another trims the one it lands
  * on (the moved clip wins), as a video editor's overwrite. `keep` is the clip that wins (0: none). */
 void media_clips_tidy(const Document &doc, Layer &layer, uint64_t keep = 0);

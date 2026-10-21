@@ -35,6 +35,7 @@
 #include "rna/rna.hh"
 #include "wm/context.hh"
 #include "wm/event_system.hh"
+#include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
 #include "editors/editors.hh"
@@ -415,6 +416,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     e.drop.y = y;
     e.drop.data = paths.back()->c_str();
     return SDL_PushEvent(&e);
+  });
+  /* Files being dragged over the window at (x, y) (oanim.wm.file_drag_simulate): the previews show
+   * them as for a drag from Explorer. No files: the drag ends. */
+  m.def("file_drag_simulate", [](const std::vector<std::string> &files, float x, float y) {
+    file_drag_set({!files.empty(), files, x, y});
   });
   /* Queues a mouse move (button -1) or press/release (oanim.wm.mouse_simulate), one per frame. */
   m.def("mouse_simulate", [](float x, float y, int button, bool down) {

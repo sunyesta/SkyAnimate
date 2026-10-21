@@ -119,6 +119,8 @@ struct WindowManager {
   struct TimelineDropArea {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     float first_frame = 0, frames_per_unit = 1;
+    /* A Media layer's clips row: a file dropped on it becomes a clip of that layer (0: none). */
+    uint64_t media_layer = 0;
   };
   std::vector<TimelineDropArea> timeline_drop_areas;
 

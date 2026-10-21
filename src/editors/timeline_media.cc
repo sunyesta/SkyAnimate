@@ -21,16 +21,19 @@
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
+#include "wm/file_drop.hh"
 
 namespace oanim {
 
-static constexpr ImU32 COL_SELECTED = IM_COL32(0xff, 0xbe, 0x33, 255);
+/* The picked clip, as ToonSquid marks it: a light blue frame with a dark pill handle at each end. */
+static constexpr ImU32 COL_SELECTED = IM_COL32(0x86, 0xc4, 0xd6, 255);
+static constexpr ImU32 COL_HANDLE = IM_COL32(0x22, 0x22, 0x22, 255);
 static constexpr ImU32 COL_TEXT = IM_COL32(0xf2, 0xf2, 0xf2, 255);
 static constexpr ImU32 COL_MISSING = IM_COL32(0xa0, 0x30, 0x30, 230);
-/* Screen distance an edge snaps from, and how far either side of a drawn edge grabs it: twice the
- * drawn handle's width, as img.ly's editor found handles need. */
+/* Screen distance an edge snaps from (with the magnet, Ctrl), and how far in from each end of the
+ * picked clip its handles grab: wider than they are drawn, as img.ly's editor found handles need. */
 static constexpr float SNAP_PX = 8.0f;
-static constexpr float EDGE_PX = 7.0f;
+static constexpr float HANDLE_PX = 12.0f;
 
 static ImU32 clip_color(MediaKind kind)
 {
@@ -121,15 +124,19 @@ static MediaClip *clip_by_id(Layer &layer, uint64_t id)
   return nullptr;
 }
 
-/* What a drag at x over a clip's bar would do: its edges trim, Alt anywhere slips, else it moves. */
+/* What a drag at x over a clip's bar would do, as in ToonSquid: the picked clip's two end handles trim
+ * it, anywhere else moves it (an unpicked clip has no handles: it moves whole); Alt slips. */
 static DragMode mode_at(const TimelineMediaView &v, const MediaClip &c, float x, bool alt, bool can_slip)
 {
   const float a = bar_left(v, c.start), b = bar_right(v, c.start, c.length);
   if (alt && can_slip) {
     return DragMode::Slip;
   }
+  if (!c.selected) {
+    return DragMode::Move;
+  }
   /* A narrow bar keeps a middle to move it by. */
-  const float edge = std::min(EDGE_PX, (b - a) * 0.3f);
+  const float edge = std::min(HANDLE_PX, (b - a) * 0.35f);
   if (x < a + edge) {
     return DragMode::TrimStart;
   }
@@ -139,14 +146,16 @@ static DragMode mode_at(const TimelineMediaView &v, const MediaClip &c, float x,
   return DragMode::Move;
 }
 
+/* The clip at x; where two meet, the picked one (its handle). */
 static const MediaClip *clip_under(const TimelineMediaView &v, const Layer &layer, float x)
 {
+  const MediaClip *hit = nullptr;
   for (const MediaClip &c : layer.media.clips) {
-    if (x >= bar_left(v, c.start) - EDGE_PX * 0.5f && x < bar_right(v, c.start, c.length) + EDGE_PX * 0.5f) {
-      return &c;
+    if (x >= bar_left(v, c.start) && x < bar_right(v, c.start, c.length) && (!hit || c.selected)) {
+      hit = &c;
     }
   }
-  return nullptr;
+  return hit;
 }
 
 /* Frames an edge snaps to: the playhead, the frame range's ends, and every other clip's edges. */
@@ -185,6 +194,10 @@ bool timeline_media_row_press(Context &/*C*/, const TimelineMediaView &v, Layer 
     return false;
   }
   const MediaClip *under = clip_under(v, layer, io.MousePos.x);
+  /* What the press does is decided before it picks: only a clip already picked shows its handles. */
+  const DragMode mode = under ? mode_at(v, *under, io.MousePos.x, io.KeyAlt,
+                                        media_clip_info(*under).kind != MediaKind::Image)
+                              : DragMode::Move;
   if (!io.KeyShift) {
     for (MediaClip &c : layer.media.clips) {
       c.selected = false;
@@ -195,12 +208,11 @@ bool timeline_media_row_press(Context &/*C*/, const TimelineMediaView &v, Layer 
   }
   MediaClip &clip = *clip_by_id(layer, under->id);
   clip.selected = io.KeyShift ? !clip.selected : true;
-  const MediaInfo info = media_clip_info(clip);
   g_drag = {};
   g_drag.active = true;
   g_drag.layer = layer.id;
   g_drag.clip = clip.id;
-  g_drag.mode = mode_at(v, clip, io.MousePos.x, io.KeyAlt, info.kind != MediaKind::Image);
+  g_drag.mode = mode;
   g_drag.start_x = io.MousePos.x;
   g_drag.original = clip;
   return true;
@@ -249,8 +261,8 @@ bool timeline_media_drag_update(Context &C, const TimelineMediaView &v)
   const MediaInfo info = media_clip_info(o);
   const double rate = clip_rate(doc, o, info);
   int d = int(std::lround(dx / v.px_per_frame()));
-  /* Ctrl: no snapping, for a precise place next to something. */
-  const bool snap = !io.KeyCtrl;
+  /* Ctrl: the magnet, as ToonSquid's: edges snap to the playhead, the range's ends and other clips. */
+  const bool snap = io.KeyCtrl;
   const std::vector<int> targets = snap ? snap_targets(doc, o.id) : std::vector<int>();
   const int end = o.start + o.length;
   float best = SNAP_PX + 1.0f;
@@ -401,7 +413,8 @@ void timeline_media_row_draw(Context &C, ImDrawList *dl, const TimelineMediaView
     /* Its name, on a dark backing so it reads over the pictures. */
     const std::string name = (missing ? "Missing: " : "") + file_name(c.filepath);
     const ImVec2 ts = ImGui::CalcTextSize(name.c_str());
-    const float tx = std::max(a.x, v.x0) + 4.0f;
+    /* Clear of the picked clip's handle. */
+    const float tx = std::max(a.x + (c.selected ? 14.0f : 0.0f), v.x0) + 4.0f;
     if (b.x - tx > 12.0f) {
       dl->AddRectFilled(ImVec2(tx - 2.0f, (y0 + y1 - ts.y) * 0.5f - 1.0f),
                         ImVec2(std::min(tx + ts.x + 2.0f, b.x - 2.0f), (y0 + y1 + ts.y) * 0.5f + 1.0f),
@@ -409,11 +422,22 @@ void timeline_media_row_draw(Context &C, ImDrawList *dl, const TimelineMediaView
       dl->AddText(ImVec2(tx, (y0 + y1 - ts.y) * 0.5f), COL_TEXT, name.c_str());
     }
     dl->PopClipRect();
-    /* The grab handles: a light strip at each end, brighter when picked. */
-    const ImU32 edge = c.selected ? COL_SELECTED : IM_COL32(255, 255, 255, 90);
-    dl->AddRectFilled(a, ImVec2(std::min(a.x + 3.0f, b.x), b.y), edge, 3.0f, ImDrawFlags_RoundCornersLeft);
-    dl->AddRectFilled(ImVec2(std::max(b.x - 3.0f, a.x), a.y), b, edge, 3.0f, ImDrawFlags_RoundCornersRight);
-    dl->AddRect(a, b, c.selected ? COL_SELECTED : IM_COL32(0, 0, 0, 160), 3.0f, 0, c.selected ? 2.0f : 1.0f);
+    if (!c.selected) {
+      dl->AddRect(a, b, IM_COL32(0, 0, 0, 160), 3.0f, 0, 1.0f);
+      continue;
+    }
+    /* Picked, as ToonSquid's: a light blue frame round it with a dark rim inside, and a dark pill
+     * handle at each end to trim it by. */
+    dl->AddRect(a - ImVec2(1.5f, 1.5f), b + ImVec2(1.5f, 1.5f), COL_SELECTED, 5.0f, 0, 3.0f);
+    dl->AddRect(a + ImVec2(1.5f, 1.5f), b - ImVec2(1.5f, 1.5f), IM_COL32(0x20, 0x20, 0x20, 230), 3.0f, 0, 1.5f);
+    const float ph = (y1 - y0) * 0.62f, pw = 7.0f, cy = (y0 + y1) * 0.5f;
+    if (b.x - a.x > pw * 4.0f) {
+      for (const float px : {a.x + 7.0f, b.x - 7.0f}) {
+        const ImVec2 pa(px - pw * 0.5f, cy - ph * 0.5f), pb(px + pw * 0.5f, cy + ph * 0.5f);
+        dl->AddRectFilled(pa, pb, COL_HANDLE, pw * 0.5f);
+        dl->AddRect(pa, pb, COL_SELECTED, pw * 0.5f, 0, 1.0f);
+      }
+    }
   }
   /* While trimming or slipping: the whole file, faded, so what is left out shows. */
   if (g_drag.active && g_drag.moved && g_drag.layer == layer.id && g_drag.mode != DragMode::Move) {
@@ -451,13 +475,67 @@ void timeline_media_row_hover(Context &C, const TimelineMediaView &v, const Laye
                        : mode == DragMode::Slip      ? "Drag to slip it: the bar stays, the part of the file it shows moves"
                        : mode == DragMode::TrimStart ? "Drag to trim its start"
                                                      : "Drag to trim its end";
-    ImGui::SetTooltip("%s\n%s\nFrames %d to %d, %.2f s into the file\n\n%s (edges trim, Alt-drag slips, Ctrl: no "
-                      "snapping; right-click for more)",
+    ImGui::SetTooltip("%s\n%s\nFrames %d to %d, %.2f s into the file\n\n%s (a picked clip's end handles trim it, "
+                      "Alt-drag slips, Ctrl: magnet; X deletes; right-click for more)",
                       file_name(c->filepath).c_str(),
                       media_clip_missing(*c) ? "Missing: right-click > Locate..." : media_info_text(info).c_str(),
                       c->start, c->start + c->length - 1, c->in, what);
   }
   (void)C;
+}
+
+/* A dashed rectangle (the drop preview's outline). */
+static void dashed_rect(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col)
+{
+  const auto dash = [&](ImVec2 p, ImVec2 q) {
+    const float len = std::max(std::fabs(q.x - p.x), std::fabs(q.y - p.y));
+    for (float t = 0.0f; t < len; t += 8.0f) {
+      const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 4.0f, len) / std::max(len, 1.0f);
+      dl->AddLine(ImVec2(p.x + (q.x - p.x) * u0, p.y + (q.y - p.y) * u0),
+                  ImVec2(p.x + (q.x - p.x) * u1, p.y + (q.y - p.y) * u1), col, 1.5f);
+    }
+  };
+  dash(a, ImVec2(b.x, a.y));
+  dash(ImVec2(b.x, a.y), b);
+  dash(b, ImVec2(a.x, b.y));
+  dash(ImVec2(a.x, b.y), a);
+}
+
+void timeline_media_drop_preview(Context &C, ImDrawList *dl, const TimelineMediaView &v, const Layer *layer, float top,
+                                 float h)
+{
+  const FileDrag &drag = file_drag();
+  const Document &doc = *C.document;
+  const int start = std::max(1, int(std::lround(v.frame_of(drag.x))));
+  MediaClip clip;
+  MediaInfo info;
+  const std::string *file = nullptr;
+  for (const std::string &f : drag.files) {
+    if (!file && media_clip_preview(doc, f, start, &clip, &info)) {
+      file = &f;
+    }
+  }
+  if (!file) {
+    return;
+  }
+  const float y0 = top + 2.0f, y1 = top + h - 2.0f;
+  const float xa = bar_left(v, clip.start), xb = bar_right(v, clip.start, clip.length);
+  dl->PushClipRect(ImVec2(v.x0, top), ImVec2(v.x1, top + h), true);
+  ImU32 fill = clip_color(info.kind);
+  fill = (fill & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 150);
+  dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill, 3.0f);
+  dashed_rect(dl, ImVec2(xa, y0), ImVec2(xb, y1), IM_COL32(255, 255, 255, 220));
+  /* Where it starts, through the whole band. */
+  dl->AddLine(ImVec2(xa, top), ImVec2(xa, top + h), COL_SELECTED, 2.0f);
+  char text[200];
+  std::snprintf(text, sizeof(text), "%s %s: frames %d to %d", layer ? "Add clip" : "New Media layer",
+                file_name(*file).c_str(), clip.start, clip.start + clip.length - 1);
+  const ImVec2 ts = ImGui::CalcTextSize(text);
+  const float tx = std::max(xa, v.x0) + 6.0f, ty = (y0 + y1 - ts.y) * 0.5f;
+  dl->AddRectFilled(ImVec2(tx - 3.0f, ty - 1.0f), ImVec2(tx + ts.x + 3.0f, ty + ts.y + 1.0f), IM_COL32(0, 0, 0, 170),
+                    3.0f);
+  dl->AddText(ImVec2(tx, ty), COL_TEXT, text);
+  dl->PopClipRect();
 }
 
 /* --- The clip menu ---------------------------------------------------------------------------- */
@@ -504,7 +582,7 @@ void timeline_media_menu(Context &C)
     {
       operator_call(C, "media.clip_split", {{"layer", lid}, {"frame", frame}});
     }
-    if (ui_menu_item("Delete Clip")) {
+    if (ui_menu_item("Delete Clip", clip->selected ? "X" : nullptr)) {
       operator_call(C, "media.clip_delete", {{"layer", lid}, {"clip", cid}});
     }
     ImGui::Separator();

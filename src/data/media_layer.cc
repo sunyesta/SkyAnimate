@@ -158,6 +158,25 @@ MediaClip media_clip_new(const Document &doc, Layer &layer, const std::string &p
   return clip;
 }
 
+bool media_clip_preview(const Document &doc, const std::string &path, int start, MediaClip *r_clip, MediaInfo *r_info)
+{
+  if (media_kind_from_path(path) == MediaKind::None) {
+    return false;
+  }
+  static std::map<std::string, bool> sequences;
+  auto it = sequences.find(path);
+  if (it == sequences.end()) {
+    it = sequences.emplace(path, !media_sequence_files(path).empty()).first;
+  }
+  *r_info = media_probe(path, it->second);
+  if (!r_info->ok()) {
+    return false;
+  }
+  Layer scratch;
+  *r_clip = media_clip_new(doc, scratch, path, it->second, start);
+  return true;
+}
+
 void media_clips_tidy(const Document &doc, Layer &layer, uint64_t keep)
 {
   std::vector<MediaClip> &clips = layer.media.clips;

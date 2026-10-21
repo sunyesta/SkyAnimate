@@ -24,6 +24,7 @@
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
+#include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 
 namespace oanim {
@@ -2113,6 +2114,8 @@ static void timeline_body(Area &area, Context &C)
       const bool first = rows[r].media_part == 0;
       if (first || row_top(r - 1) + row_h < rows_top) {
         const float bar_top = first ? top : top - row_h;
+        C.wm->timeline_drop_areas.push_back({k0.x, std::max(bar_top, rows_top), p1.x, std::min(bar_top + row_h * 2.0f, p1.y),
+                                             area.view_start, span / keys_w, rows[r].media});
         dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
         timeline_media_row_draw(C, dl, media_view, *rows[r].layers[0], bar_top, row_h * 2.0f);
         dl->PopClipRect();
@@ -2265,6 +2268,24 @@ static void timeline_body(Area &area, Context &C)
   }
   if (!transform_info.empty()) {
     dl->AddText(ImVec2(k0.x + 8.0f, p0.y + ruler_h + 4.0f), IM_COL32_WHITE, transform_info.c_str());
+  }
+
+  /* A file dragged in from Explorer: where it would land, live. On a Media layer's clips row it joins
+   * that layer; anywhere else it makes a new Media layer (shown under the ruler). */
+  if (const FileDrag &drag = file_drag();
+      drag.active && drag.x >= k0.x && drag.x < p1.x && drag.y >= p0.y && drag.y < p1.y)
+  {
+    const int r = row_at(drag.y);
+    if (r >= 0 && rows[r].media) {
+      timeline_media_drop_preview(C, dl, media_view, rows[r].layers[0], row_top(size_t(r - rows[r].media_part)),
+                                  row_h * 2.0f);
+    }
+    else {
+      /* At the mouse's height, kept below the ruler. */
+      const float band = row_h * 2.0f;
+      timeline_media_drop_preview(C, dl, media_view, nullptr,
+                                  std::clamp(drag.y - band * 0.5f, rows_top, std::max(rows_top, p1.y - band)), band);
+    }
   }
 
   /* Playhead: a blue line with the frame number in a box on the ruler; red on the setup frame (0),

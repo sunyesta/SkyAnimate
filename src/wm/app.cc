@@ -37,6 +37,7 @@
 #include "ui/theme.hh"
 #include "wm/event_system.hh"
 #include "wm/file_dialog.hh"
+#include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
 
@@ -211,6 +212,9 @@ bool App::window_init()
   workspaces_.push_back(workspace_new("Layout", WorkspaceKind::Layout));
   workspaces_.push_back(workspace_new("Scripting", WorkspaceKind::Scripting));
   wm_.workspace_count = int(workspaces_.size());
+
+  /* Files dragged in from Explorer are known while still being dragged, for the editors to preview. */
+  file_drop_install(window_);
 
   update_window_title();
   SDL_MaximizeWindow(window_);
@@ -387,10 +391,31 @@ void App::handle_event(const SDL_Event &event)
         /* A picture, video or sound becomes a Media layer: starting on the frame it is dropped on in a
          * timeline, else on frame 1; its options then show in the ViewportActionPanel. */
         int start = 1;
+        uint64_t into = 0;
+        /* Where it landed; a drop that came without a position (Windows' older drop messages) is where
+         * the mouse is. */
+        float drop_x = event.drop.x, drop_y = event.drop.y;
+        if (drop_x == 0.0f && drop_y == 0.0f) {
+          float gx = 0.0f, gy = 0.0f;
+          int wx = 0, wy = 0;
+          SDL_GetGlobalMouseState(&gx, &gy);
+          SDL_GetWindowPosition(window_, &wx, &wy);
+          drop_x = gx - float(wx);
+          drop_y = gy - float(wy);
+        }
         for (const WindowManager::TimelineDropArea &a : wm_.timeline_drop_areas) {
-          if (event.drop.x >= a.x0 && event.drop.x < a.x1 && event.drop.y >= a.y0 && event.drop.y < a.y1) {
-            start = std::max(1, int(std::lround(a.first_frame + (event.drop.x - a.x0) * a.frames_per_unit)));
+          if (drop_x >= a.x0 && drop_x < a.x1 && drop_y >= a.y0 && drop_y < a.y1 &&
+              (!into || a.media_layer))
+          {
+            start = std::max(1, int(std::lround(a.first_frame + (drop_x - a.x0) * a.frames_per_unit)));
+            into = a.media_layer;
           }
+        }
+        if (into) {
+          /* On a Media layer's clips row: a clip of that layer, where it lands. */
+          operator_call(ctx_, "media.clip_add",
+                        {{"layer", std::to_string(into)}, {"filepath", event.drop.data}, {"frame", std::to_string(start)}});
+          break;
         }
         const std::string area = ctx_.area_type;
         ctx_.area_type = "Viewport";
