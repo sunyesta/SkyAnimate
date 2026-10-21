@@ -16,6 +16,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/drivers.hh"
 #include "anim/draw_order.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
@@ -503,7 +504,10 @@ static void bones_panel(Context &C, Layer &armature)
       label(name);
       ImGui::SetNextItemWidth(-ui_key_button_width());
       const int pushed = ui_key_tint_push(state);
+      const int driven = ui_driver_field_begin(C, armature.id, bone_path + channel, -1);
       field();
+      ui_driver_typed(C, armature.id, bone_path + channel, -1);
+      ui_driver_field_end(C, armature.id, bone_path + channel, -1, driven);
       ImGui::PopStyleColor(pushed);
       ImGui::PushID(name);
       if (ui_key_button("##key", state)) {
@@ -930,7 +934,7 @@ static void changed_end(Context &C, bool on, const char *id, const std::vector<O
   }
   ImGui::PopStyleColor(6);
   const bool row_hovered = ImGui::GetCurrentTable() && ImGui::TableGetHoveredRow() == ImGui::TableGetRowIndex();
-  if (row_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+  if (row_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ui_driver_menu_opened_this_frame()) {
     ImGui::OpenPopup(id);
   }
   if (row_hovered && !ImGui::IsPopupOpen(id) && ImGui::IsMouseHoveringRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax())) {
@@ -1821,10 +1825,14 @@ static void constraints_panel(Context &C, Layer &armature)
       const auto keyed_begin = [&](const std::string &p) {
         const int state = layer_key_state(armature, {p}, doc.frame_current);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-        return std::pair<int, int>(state, ui_key_tint_push(state));
+        const int tint = ui_key_tint_push(state);
+        /* The driver tint over the key's: pushed last, popped first. */
+        return std::pair<int, int>(state, tint | (ui_driver_field_begin(C, armature.id, p, -1) << 8));
       };
       const auto keyed_end = [&](const std::string &p, std::pair<int, int> s) {
-        ImGui::PopStyleColor(s.second);
+        ui_driver_typed(C, armature.id, p, -1);
+        ui_driver_field_end(C, armature.id, p, -1, s.second >> 8);
+        ImGui::PopStyleColor(s.second & 0xff);
         ImGui::PushID(p.c_str());
         if (ui_key_button("##key", s.first)) {
           operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(armature.id)}, {"paths", p}});
@@ -2079,7 +2087,10 @@ static void constraints_panel(Context &C, Layer &armature)
       modifier_row_label("Influence", column, "How much of the constraint's effect is used: 0 none, 1 all. It can be keyed");
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       const int tint = ui_key_tint_push(state);
+      const int driven = ui_driver_field_begin(C, armature.id, path, -1);
       ImGui::SliderFloat("##influence", &c.influence, 0.0f, 1.0f, "%.3f");
+      ui_driver_typed(C, armature.id, path, -1);
+      ui_driver_field_end(C, armature.id, path, -1, driven);
       ImGui::PopStyleColor(tint);
       done("Influence");
       if (ui_key_button("##key", state)) {
@@ -3415,11 +3426,6 @@ static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
   ui_panel_end();
 }
 
-/* Shared materials' colour: the fields a shared material sets are tinted with it, its header and
- * marks are drawn in it (as Blender colours keyed and driven fields). */
-static const ImVec4 SHARED_BG(0.27f, 0.25f, 0.47f, 1.0f), SHARED_HOVER(0.33f, 0.31f, 0.56f, 1.0f),
-    SHARED_ACTIVE(0.39f, 0.36f, 0.64f, 1.0f);
-static constexpr ImU32 SHARED_TEXT = IM_COL32(0xb4, 0xa8, 0xff, 255);
 
 /* The shared mark (Illustrator's global swatch triangle): a small triangle in a swatch's lower right. */
 static void shared_mark(ImDrawList *dl, ImVec2 corner, float s)
@@ -3700,7 +3706,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     ui_panel_end();
   }
   /* The look, in a panel of its own: the material (shared, or the shape's own) and what it sets. A
-   * shared one's fields are tinted, and its header says so even folded. */
+   * shared one's header says so even folded. */
   const Material *shared = reference ? nullptr : material_find(doc, shape.material);
   std::string header = "Material: Own look";
   if (shared) {
@@ -3716,22 +3722,15 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     }
     header = text;
   }
-  if (ui_panel_begin("Material", header, shared ? SHARED_TEXT : 0u)) {
+  if (ui_panel_begin("Material", header, 0u)) {
     material_row(C, shape, reference);
-    if (shared) {
-      ImGui::PushStyleColor(ImGuiCol_FrameBg, SHARED_BG);
-      ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, SHARED_HOVER);
-      ImGui::PushStyleColor(ImGuiCol_FrameBgActive, SHARED_ACTIVE);
-      ImGui::PushStyleColor(ImGuiCol_Button, SHARED_BG);
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, SHARED_HOVER);
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive, SHARED_ACTIVE);
-    }
 
     /* A colour changed on a copy has a revert button beside it. */
     bool revert = false;
     float fill[4] = {shape.style.fill.r, shape.style.fill.g, shape.style.fill.b, shape.style.fill.a};
     bool on = changed_begin((look && look->fill_set) || swapped(true) >= 0);
     bool pick = false;
+    ui_driver_next(owner_layer.id, driver_shape_color_path(shape.id, true));
     if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("FILL"))) {
       shape.style.fill = {fill[0], fill[1], fill[2], fill[3]};
     }
@@ -3750,6 +3749,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     float line[4] = {shape.style.line.r, shape.style.line.g, shape.style.line.b, shape.style.line.a};
     on = changed_begin((look && look->line_set) || swapped(false) >= 0);
     pick = false;
+    ui_driver_next(owner_layer.id, driver_shape_color_path(shape.id, false));
     if (ui_color(C, "Line Color", line, "Line Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("LINE"))) {
       shape.style.line = {line[0], line[1], line[2], line[3]};
     }
@@ -3803,9 +3803,6 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
       operator_call(C, "layer.reference_revert", setting("brush")[0]);
     }
     changed_end(C, on, "##changed_brush", setting("brush"), setting("brush"));
-    if (shared) {
-      ImGui::PopStyleColor(6);
-    }
     ui_panel_end();
   }
   detail_panel(C, drawing, shape);

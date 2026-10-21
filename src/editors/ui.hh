@@ -185,4 +185,20 @@ bool ui_submenu_begin(const char *label, bool enabled = true);
 void ui_submenu_end();
 void ui_menu_end();
 
+/* Drivers (src/editors/driver_ui.cc). A keyable field or colour is wrapped in ui_driver_field_begin /
+ * _end: purple while driven, red while its driver doesn't work, and right-clicking it offers Add,
+ * Edit, Copy, Paste and Delete Driver. `component` -1 is the whole field (every part of a colour or a
+ * position), 0 / 1 one of a pair's X / Y. Begin returns what End pops. */
+int ui_driver_field_begin(Context &C, uint64_t layer, const std::string &path, int component);
+void ui_driver_field_end(Context &C, uint64_t layer, const std::string &path, int component, int pushed);
+/* After a number field (before ui_driver_field_end): "#expression" typed into it drives it. */
+void ui_driver_typed(Context &C, uint64_t layer, const std::string &path, int component);
+/* The colour ui_color draws next ("shapes[<id>].fill"), so it can be driven. */
+void ui_driver_next(uint64_t layer, const std::string &path);
+bool ui_driver_next_take(uint64_t *r_layer, std::string *r_path);
+/* True when a field's driver menu opened this frame (a row's own right-click menu then stays shut). */
+bool ui_driver_menu_opened_this_frame();
+/* The Driver window, drawn once a frame with the other floating windows. */
+void ui_driver_window_draw(Context &C);
+
 }  // namespace oanim

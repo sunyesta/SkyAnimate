@@ -112,6 +112,7 @@ int App::run(const LaunchOptions &options)
   draw_order_operators_register();
   mask_operators_register();
   material_operators_register();
+  driver_operators_register();
   rig_operators_register();
   file_operators_register();
   media_operators_register();
@@ -302,6 +303,7 @@ void App::main_loop()
     wm_.timeline_drop_areas.clear();
     draw_ui();
     brush_window_draw(ctx_);
+    ui_driver_window_draw(ctx_);
     /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
      * its material from the next frame. */
     document_sync_materials(doc_);

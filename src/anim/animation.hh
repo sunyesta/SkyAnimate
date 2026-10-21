@@ -72,6 +72,8 @@ void animation_refresh_smart(Document &doc);
 Layer &document_simulation(Document &doc);
 /* Whether a path names one of them. */
 bool simulation_path(const std::string &path);
+/* Writes the Simulation channels' values into the document's settings (after drivers set them). */
+void simulation_values_out(Document &doc);
 /* One of them on `frame`: its keys there when animated, else `plain` (the setting now). */
 float simulation_value_at(const Document &doc, const char *path, float plain, int frame);
 

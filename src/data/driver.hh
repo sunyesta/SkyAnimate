@@ -1,0 +1,61 @@
+#pragma once
+
+/* Drivers (Blender's): a value worked out every frame from other values, instead of keyed.
+ *
+ * A driver sets one number: a layer's channel (its path as in anim/animation.hh: "rotation",
+ * "opacity", 'bones["arm"].angle', the camera's "zoom", the simulation's "gravity"), one component of
+ * a two-number channel ("position" X or Y), or one component of a shape's colour
+ * ("shapes[12].fill", R G B A). Its variables read other such numbers (or the frame), and its type
+ * combines them: an expression (anim/expression.hh), or their average, sum, smallest or largest.
+ * Remap then maps a range of the result onto another, as a smart bone maps an angle to an action. */
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace oanim {
+
+/* A number drivers set or read: a layer's (by id, the camera and the simulation included) channel or
+ * colour at `path`, and its `component` (-1 for a one-number channel). */
+struct DriverRef {
+  uint64_t layer = 0;
+  std::string path;
+  int component = -1;
+
+  bool operator==(const DriverRef &) const = default;
+};
+
+struct DriverVar {
+  /* What the expression calls it. */
+  std::string name = "var";
+  DriverRef source;
+
+  bool operator==(const DriverVar &) const = default;
+};
+
+enum class DriverType : uint8_t { Expression, Average, Sum, Min, Max };
+
+struct Driver {
+  DriverRef target;
+  DriverType type = DriverType::Expression;
+  std::string expression = "var";
+  std::vector<DriverVar> vars;
+  /* Remap: the result's range from_min..from_max goes to to_min..to_max (clamped to it with
+   * `clamp`). */
+  bool remap = false;
+  float from_min = 0.0f, from_max = 1.0f;
+  float to_min = 0.0f, to_max = 1.0f;
+  bool clamp = true;
+  /* Why it couldn't be worked out on the last evaluation ("" when it could): a missing layer, a bad
+   * expression, a loop. Not saved. */
+  std::string error;
+
+  bool same_setup(const Driver &o) const
+  {
+    return type == o.type && expression == o.expression && vars == o.vars && remap == o.remap &&
+           from_min == o.from_min && from_max == o.from_max && to_min == o.to_min && to_max == o.to_max &&
+           clamp == o.clamp;
+  }
+};
+
+}  // namespace oanim

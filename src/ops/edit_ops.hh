@@ -25,6 +25,7 @@ void anim_operators_register();
 void draw_order_operators_register();
 void mask_operators_register();
 void material_operators_register();
+void driver_operators_register();
 void rig_operators_register();
 
 /* A layer named by its id ("12") or its name. */

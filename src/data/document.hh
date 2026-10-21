@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "data/driver.hh"
 #include "data/layer.hh"
 #include "data/material.hh"
 #include "data/view_settings.hh"
@@ -104,6 +105,8 @@ struct Document {
   float camera_passepartout = 0.6f;
   /* Brush presets made in this project, saved with it (assets/brush_presets.hh). */
   std::vector<BrushPreset> brush_presets;
+  /* Values worked out from other values every frame (data/driver.hh, anim/drivers.hh). */
+  std::vector<Driver> drivers;
   /* Shared looks for shapes (data/material.hh), in the order they were made. */
   std::vector<Material> materials;
   uint64_t next_material_id = 1;

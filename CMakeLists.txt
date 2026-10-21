@@ -14,6 +14,8 @@ include(cmake/Dependencies.cmake)
 set(OANIM_SOURCES
   src/main.cc
   src/anim/animation.cc
+  src/anim/drivers.cc
+  src/anim/expression.cc
   src/anim/channel.cc
   src/anim/deform.cc
   src/anim/draw_order.cc
@@ -36,6 +38,7 @@ set(OANIM_SOURCES
   src/data/vector.cc
   src/editors/brush_editor.cc
   src/editors/console.cc
+  src/editors/driver_ui.cc
   src/editors/editors.cc
   src/editors/layers_editor.cc
   src/editors/properties.cc
@@ -56,6 +59,7 @@ set(OANIM_SOURCES
   src/ops/material_ops.cc
   src/ops/media_ops.cc
   src/ops/asset_ops.cc
+  src/ops/driver_ops.cc
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
   src/ops/layer_ops.cc
@@ -126,6 +130,8 @@ add_test(NAME brush_presets
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_presets.py)
 add_test(NAME brush_settings
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_settings.py)
+add_test(NAME drivers
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drivers.py)
 add_test(NAME handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
 add_test(NAME animation

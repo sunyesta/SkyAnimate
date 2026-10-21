@@ -1,5 +1,7 @@
 #include "anim/animation.hh"
 
+#include "anim/drivers.hh"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -219,6 +221,11 @@ static void simulation_out(Document &doc)
   }
 }
 
+void simulation_values_out(Document &doc)
+{
+  simulation_out(doc);
+}
+
 float simulation_value_at(const Document &doc, const char *path, float plain, int frame)
 {
   for (const CustomChannel &c : doc.simulation.custom_channels) {
@@ -236,6 +243,8 @@ void animation_record(Document &doc)
     animation_evaluate(doc, doc.frame_current);
     return;
   }
+  /* A driven value is the driver's: an edit to it isn't kept (nor keyed). */
+  drivers_evaluate(doc);
   const int frame = doc.evaluated_frame;
   const bool auto_key = doc.auto_key;
   /* New points get their weights, so they follow the bones like their neighbours. */
@@ -296,6 +305,8 @@ void animation_evaluate(Document &doc, int frame)
   layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   doc.smart_applied = false;
   apply_smart_actions(doc);
+  /* Drivers on top of keys and smart actions, before references copy their originals. */
+  drivers_evaluate(doc);
   /* References show their originals as they now are. */
   references_build(doc);
   /* Bone dynamics swing from the pose the keys and smart actions give (and set each bone layer's
@@ -324,6 +335,8 @@ void animation_sync(Document &doc)
      * setting whose keys just went shows its value). */
     simulation_in(doc);
     animation_refresh_smart(doc);
+    /* Drivers follow what they read at once (a bone turned on this frame). */
+    drivers_evaluate(doc);
     /* References follow edits to their originals at once, and edits to them become theirs. */
     references_capture(doc);
     dynamics_update(doc);

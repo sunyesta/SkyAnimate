@@ -114,6 +114,7 @@ static json brush_to_json(const BrushSettings &b)
 
 static json materials_to_json(const Document &doc);
 static json brush_presets_to_json(const Document &doc);
+static json drivers_to_json(const Document &doc);
 static json style_to_json(const Style &style)
 {
   json j = {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
@@ -724,6 +725,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"texts", std::move(texts)},
            {"materials", materials_to_json(doc)},
            {"brush_presets", brush_presets_to_json(doc)},
+           {"drivers", drivers_to_json(doc)},
        }},
   };
   return root.dump(1, '\t');
@@ -943,6 +945,30 @@ static Style style_from_json(const json &j)
     style.brush = brush_from_json(*it);
   }
   return style;
+}
+
+/* Drivers: [{"target": {"layer", "path", "component"}, "type", "expression", "vars": [{"name",
+ * "source"}], "remap": {...} when on}]. */
+static json drivers_to_json(const Document &doc)
+{
+  const auto ref_json = [](const DriverRef &r) {
+    return json{{"layer", r.layer}, {"path", r.path}, {"component", r.component}};
+  };
+  json list = json::array();
+  for (const Driver &d : doc.drivers) {
+    static const char *const TYPES[] = {"EXPRESSION", "AVERAGE", "SUM", "MIN", "MAX"};
+    json vars = json::array();
+    for (const DriverVar &v : d.vars) {
+      vars.push_back({{"name", v.name}, {"source", ref_json(v.source)}});
+    }
+    json dj = {{"target", ref_json(d.target)}, {"type", TYPES[int(d.type)]}, {"expression", d.expression}, {"vars", vars}};
+    if (d.remap) {
+      dj["remap"] = {{"from_min", num(d.from_min)}, {"from_max", num(d.from_max)}, {"to_min", num(d.to_min)},
+                     {"to_max", num(d.to_max)}, {"clamp", d.clamp}};
+    }
+    list.push_back(std::move(dj));
+  }
+  return list;
 }
 
 static json brush_presets_to_json(const Document &doc)
@@ -2037,6 +2063,43 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   for (const json &t : get_array(j, "texts")) {
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});
+    }
+  }
+  for (const json &dj : get_array(j, "drivers")) {
+    if (!dj.is_object()) {
+      continue;
+    }
+    const auto ref_from = [](const json &r) {
+      DriverRef ref;
+      if (r.is_object()) {
+        ref.layer = get_id(r, "layer");
+        ref.path = get_string(r, "path");
+        ref.component = get_int(r, "component", -1);
+      }
+      return ref;
+    };
+    Driver d;
+    d.target = ref_from(dj.value("target", json::object()));
+    const std::string type = get_string(dj, "type", "EXPRESSION");
+    d.type = type == "AVERAGE" ? DriverType::Average : type == "SUM" ? DriverType::Sum
+             : type == "MIN"   ? DriverType::Min   : type == "MAX" ? DriverType::Max
+                                                                     : DriverType::Expression;
+    d.expression = get_string(dj, "expression", "var");
+    for (const json &vj : get_array(dj, "vars")) {
+      if (vj.is_object()) {
+        d.vars.push_back({get_string(vj, "name", "var"), ref_from(vj.value("source", json::object()))});
+      }
+    }
+    if (auto it = dj.find("remap"); it != dj.end() && it->is_object()) {
+      d.remap = true;
+      d.from_min = get_float(*it, "from_min", 0.0f);
+      d.from_max = get_float(*it, "from_max", 1.0f);
+      d.to_min = get_float(*it, "to_min", 0.0f);
+      d.to_max = get_float(*it, "to_max", 1.0f);
+      d.clamp = get_bool(*it, "clamp", true);
+    }
+    if (!d.target.path.empty()) {
+      doc.drivers.push_back(std::move(d));
     }
   }
   for (const json &pj : get_array(j, "brush_presets")) {

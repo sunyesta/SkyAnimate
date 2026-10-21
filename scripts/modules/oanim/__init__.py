@@ -681,6 +681,15 @@ class _Data:
         return [dict(m) for m in _oanim.materials()]
 
     @property
+    def drivers(self):
+        """Values worked out every frame from other values (Blender's drivers): [{"target": {"layer",
+        "path", "component"}, "label", "type" (EXPRESSION, AVERAGE, SUM, MIN, MAX), "expression",
+        "vars": [{"name", "source": {...}}], "remap", "from", "to", "clamp", "error" ("" when it works),
+        "value"}]. Change them with oanim.ops.anim.driver_add / driver_set / driver_remove /
+        driver_copy_new / driver_copy / driver_paste."""
+        return [dict(d) for d in _oanim.drivers()]
+
+    @property
     def filepath(self):
         """The .oanim file the document was opened from or saved to; "" for a new document."""
         return _oanim.file_state()[0]

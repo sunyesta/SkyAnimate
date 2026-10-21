@@ -23,6 +23,7 @@
 #include "data/media_layer.hh"
 #include "media/media.hh"
 #include "assets/asset_library.hh"
+#include "anim/drivers.hh"
 #include "assets/brush_presets.hh"
 #include "assets/brushes.hh"
 #include "core/crash.hh"
@@ -972,6 +973,43 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("brush_categories", []() { return library_brush_categories(); });
   m.def("asset_library", []() { return preferences().asset_library; });
+  m.def("drivers", []() {
+    Document &doc = *current_context().document;
+    const auto ref_dict = [](const DriverRef &r) {
+      py::dict d;
+      d["layer"] = r.layer;
+      d["path"] = r.path;
+      d["component"] = r.component;
+      return d;
+    };
+    static const char *const TYPES[] = {"EXPRESSION", "AVERAGE", "SUM", "MIN", "MAX"};
+    py::list result;
+    for (const Driver &drv : doc.drivers) {
+      py::dict d;
+      d["target"] = ref_dict(drv.target);
+      d["label"] = driver_ref_label(doc, drv.target);
+      d["type"] = TYPES[int(drv.type)];
+      d["expression"] = drv.expression;
+      py::list vars;
+      for (const DriverVar &v : drv.vars) {
+        py::dict vd;
+        vd["name"] = v.name;
+        vd["source"] = ref_dict(v.source);
+        vars.append(vd);
+      }
+      d["vars"] = vars;
+      d["remap"] = drv.remap;
+      d["from"] = py::make_tuple(drv.from_min, drv.from_max);
+      d["to"] = py::make_tuple(drv.to_min, drv.to_max);
+      d["clamp"] = drv.clamp;
+      d["error"] = drv.error;
+      float value = 0.0f;
+      d["value"] = driver_ref_read(doc, drv.target, &value) ? py::object(py::float_(value)) : py::object(py::none());
+      result.append(d);
+    }
+    return result;
+  });
+  m.def("driver_clipboard_size", []() { return int(driver_clipboard().size()); });
   m.def("layer_shape_brush", [layer_or_raise, brush_to_dict](uint64_t id, int index) {
     const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
     if (index < 0 || index >= int(drawing.shapes.size())) {

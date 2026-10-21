@@ -800,7 +800,12 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
   ui_label(prop->name.c_str());
   ImGui::PushID(identifier);
   const int pushed = g_key_next.pending ? ui_key_tint_push(g_key_next.state) : 0;
+  const uint64_t dl = g_key_next.flash_layer;
+  const std::string dp = g_key_next.flash_path;
+  const int driven = ui_driver_field_begin(C, dl, dp, -1);
   prop_field(C, ptr, prop, python_path, nullptr);
+  ui_driver_typed(C, dl, dp, -1);
+  ui_driver_field_end(C, dl, dp, -1, driven);
   key_button_finish(pushed);
   ImGui::PopID();
 }
@@ -844,11 +849,20 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
   const float spacing = 2.0f;
   const float avail = ImGui::GetContentRegionAvail().x - (keyed ? ui_key_button_width() : 0.0f);
   const float w = (avail - spacing) * 0.5f;
+  const uint64_t dl = g_key_next.flash_layer;
+  const std::string dp = g_key_next.flash_path;
+  /* Each of the pair is one part of the channel (a position's X and Y), driven on its own. */
+  int driven = ui_driver_field_begin(C, dl, dp, 0);
   ImGui::SetNextItemWidth(w);
   prop_field(C, ptr, a, python_path, first_prefix);
+  ui_driver_typed(C, dl, dp, 0);
+  ui_driver_field_end(C, dl, dp, 0, driven);
   ImGui::SameLine(0.0f, spacing);
+  driven = ui_driver_field_begin(C, dl, dp, 1);
   ImGui::SetNextItemWidth(keyed ? w : -FLT_MIN);
   prop_field(C, ptr, b, python_path, second_prefix);
+  ui_driver_typed(C, dl, dp, 1);
+  ui_driver_field_end(C, dl, dp, 1, driven);
   key_button_finish(pushed);
   ImGui::PopID();
 }
@@ -860,7 +874,12 @@ bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_nam
   ImGui::PushID(label);
   bool finished = false;
   const float revert_w = (r_revert ? ui_revert_button_space() : 0.0f) + (r_pick ? ui_revert_button_space() : 0.0f);
+  uint64_t dl = 0;
+  std::string dp;
+  ui_driver_next_take(&dl, &dp);
+  const int driven = ui_driver_field_begin(C, dl, dp, -1);
   const bool changed = ui_color_edit("##color", rgba, true, &finished, revert_w);
+  ui_driver_field_end(C, dl, dp, -1, driven);
   if (finished && C.undo && C.document && undo_name) {
     C.undo->push(undo_name, *C.document);
   }
