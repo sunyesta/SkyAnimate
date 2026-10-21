@@ -13,11 +13,13 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "core/math.hh"
 #include "data/layer.hh"
+#include "gpu/brush_stroke.hh"
 #include "gpu/tessellate.hh"
 
 namespace oanim {
@@ -113,8 +115,11 @@ class SceneRenderer {
   void draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform);
   /* Draws brush dabs. `own_colors`: a colour brush shown in its own colours. Merged alpha
    * draws them into an image of their own first, keeping the strongest dab where they overlap. */
+  /* `vaos`, `vbos` (optional): a kept step's buffers, one per image, so its stamps stay on the GPU
+   * (uploaded the first time). */
   void draw_dabs(const BrushDabs &dabs, const std::vector<BrushImage> &images, bool own_colors, bool merged,
-                 const Transform2D &transform, float opacity);
+                 const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos = nullptr,
+                 std::vector<unsigned int> *vbos = nullptr);
   unsigned int brush_texture(const BrushImage &image);
   void set_matrix(unsigned int program, const Transform2D &transform);
   /* Blends `source`'s resolved image onto the bound target. */
@@ -156,13 +161,30 @@ class SceneRenderer {
   /* Within one render: each layer's evaluated drawing (bones, modifiers), worked out once though
    * masks draw a layer again for each of their passes. */
   std::unordered_map<uint64_t, VectorDrawing> evaluated_;
-  /* Across renders: a drawing's triangles, by a hash of everything they're made from (its points,
-   * curves and shapes, the pixel size, quality and mask pass; see draw_drawing), so a drawing that
-   * didn't change isn't tessellated again. In layer space, so moving the layer keeps them. */
-  struct Tessellated {
+  /* Across renders: a drawing as drawn, by a hash of everything that makes it (its points, curves
+   * and shapes, their brushes, the setup shape brushed lines lay their stamps on, the pixel size,
+   * quality and mask pass; see draw_drawing), so a drawing that didn't change isn't tessellated or
+   * stamped again. In layer space, so moving the layer keeps it. Its steps, in order: batches of
+   * triangles, and brushed lines' stamps. */
+  struct PaintStep {
     std::vector<Vertex> vertices;
+    bool is_dabs = false;
+    BrushDabs dabs;
+    std::string brush;
+    BrushSettings settings;
+    bool own_colors = false;
+    bool merged_alpha = false;
+    /* On the GPU once drawn (uploaded once, kept with it): the triangles' buffer and layout, or the
+     * stamps' per image. */
+    unsigned int vao = 0, vbo = 0;
+    std::vector<unsigned int> dab_vaos, dab_vbos;
+  };
+  struct Tessellated {
+    std::vector<PaintStep> steps;
     uint64_t used = 0;
   };
+  void draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity);
+  static void free_step(PaintStep &step);
   std::unordered_map<uint64_t, Tessellated> tessellated_;
   uint64_t render_serial_ = 0;
   int samples_ = 1;

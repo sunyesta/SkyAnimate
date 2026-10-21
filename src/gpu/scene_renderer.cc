@@ -177,6 +177,13 @@ SceneRenderer::~SceneRenderer()
   if (gl::DeleteFramebuffers) {
     free_targets();
   }
+  if (initialized_ && gl::DeleteBuffers) {
+    for (auto &[key, kept] : tessellated_) {
+      for (PaintStep &step : kept.steps) {
+        free_step(step);
+      }
+    }
+  }
   if (initialized_ && gl::DeleteProgram) {
     gl::DeleteProgram(color_program_);
     gl::DeleteProgram(composite_program_);
@@ -385,8 +392,17 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
   gl::BindVertexArray(0);
   gl::UseProgram(0);
-  /* Triangles no render has used for a while (another zoom, a drawing since changed) go. */
-  std::erase_if(tessellated_, [this](const auto &item) { return item.second.used + 120 < render_serial_; });
+  /* Drawings no render has used for a while (another zoom, a drawing since changed) go, with their
+   * buffers. */
+  std::erase_if(tessellated_, [this](auto &item) {
+    if (item.second.used + 120 >= render_serial_) {
+      return false;
+    }
+    for (PaintStep &step : item.second.steps) {
+      free_step(step);
+    }
+    return true;
+  });
   return output_->texture;
 }
 
@@ -821,6 +837,61 @@ static uint64_t drawing_geometry_hash(const VectorDrawing &d)
   return h;
 }
 
+static uint64_t hash_value(uint64_t h, float v) { return hash_float(h, v); }
+static uint64_t hash_value(uint64_t h, int v) { return hash_mix(h, uint64_t(uint32_t(v))); }
+static uint64_t hash_value(uint64_t h, bool v) { return hash_mix(h, v ? 1 : 2); }
+static uint64_t hash_value(uint64_t h, const std::string &v) { return hash_mix(h, std::hash<std::string>()(v)); }
+
+/* Every setting of a brush (they all change its stamps). */
+static uint64_t brush_settings_hash(uint64_t h, const BrushSettings &b)
+{
+#define OANIM_BRUSH_HASH(type, field, key) h = hash_value(h, b.field);
+  OANIM_BRUSH_SETTINGS(OANIM_BRUSH_HASH)
+#undef OANIM_BRUSH_HASH
+  return h;
+}
+
+/* The setup pose brushed lines lay their stamps out on: the points' and handles' rest places. */
+static uint64_t setup_hash(const VectorDrawing &d)
+{
+  uint64_t h = hash_mix(0, d.points.size());
+  for (const MeshPoint &p : d.points) {
+    h = hash_float(hash_float(h, p.setup_pos.x), p.setup_pos.y);
+  }
+  for (const Curve &c : d.curves) {
+    for (const CurvePoint &cp : c.points) {
+      h = hash_float(hash_float(hash_float(hash_float(h, cp.setup_in.x), cp.setup_in.y), cp.setup_out.x), cp.setup_out.y);
+    }
+  }
+  return h;
+}
+
+static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, size_t bytes, bool brush);
+
+void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity)
+{
+  for (PaintStep &step : steps) {
+    if (!step.is_dabs) {
+      if (!step.vertices.empty()) {
+        gl::UseProgram(color_program_);
+        gl::Uniform1f(gl::GetUniformLocation(color_program_, "u_opacity"), opacity);
+        set_matrix(color_program_, transform);
+        if (step.vao == 0) {
+          upload_kept(step.vao, step.vbo, step.vertices.data(), step.vertices.size() * sizeof(Vertex), false);
+        }
+        gl::BindVertexArray(step.vao);
+        glDrawArrays(GL_TRIANGLES, 0, GLsizei(step.vertices.size()));
+      }
+      continue;
+    }
+    /* The brush's images (a brush reloaded since gets its textures again). */
+    if (const Brush *brush = brush_find(step.brush)) {
+      draw_dabs(step.dabs, brush_tip_images(*brush, step.settings), step.own_colors, step.merged_alpha, transform,
+                opacity, &step.dab_vaos, &step.dab_vbos);
+    }
+  }
+}
+
 void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
 {
   /* Modifiers (Mirror, the bones) draw from an evaluated copy, made once per render; otherwise the
@@ -844,31 +915,38 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   const float pixel = 1.0f / std::max(to_pixels.scale(), 1e-6f);
   constexpr float feather = 0.0f;
 
-  /* A drawing without brushed lines is one batch of triangles: kept, and drawn again while what it's
-   * made from stays the same. (Brushed lines lay their stamps out by the frame, for line boil.) A
-   * brush that isn't there draws a solid line, so it counts once it's found. */
-  bool brushed = false;
+  /* What it's drawn as is kept, and drawn again while what makes it stays the same. Brushed lines
+   * add their brushes (a brush that isn't there draws a solid line, so it counts once it's found),
+   * the setup shape their stamps are laid out on, and with line boil the frame. */
+  uint64_t key = hash_mix(drawing_geometry_hash(drawing), layer.id);
+  bool brushed = false, boils = false;
   for (const Shape &s : drawing.shapes) {
-    brushed = brushed || (s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name));
-  }
-  uint64_t key = 0;
-  if (!brushed) {
-    key = hash_mix(drawing_geometry_hash(drawing), layer.id);
-    key = hash_float(hash_mix(key, uint64_t(quality_)), pixel);
-    key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
-                            uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
-                            uint64_t(mask_pass_.extend) << 6);
-    key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
-    if (auto it = tessellated_.find(key); it != tessellated_.end()) {
-      it->second.used = render_serial_;
-      if (!it->second.vertices.empty()) {
-        gl::UseProgram(color_program_);
-        gl::Uniform1f(gl::GetUniformLocation(color_program_, "u_opacity"), opacity);
-        draw_vertices(it->second.vertices, transform);
-      }
-      return;
+    const bool has_brush = s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name);
+    key = hash_mix(key, has_brush ? 1 : 0);
+    if (has_brush) {
+      brushed = true;
+      boils = boils || s.style.brush.randomize;
+      key = brush_settings_hash(key, s.style.brush);
     }
   }
+  if (brushed) {
+    key = hash_mix(key, setup_hash(layer.drawing));
+    key = hash_mix(key, uint64_t(final_render_));
+    if (boils) {
+      key = hash_mix(key, uint64_t(uint32_t(doc.frame_current)));
+    }
+  }
+  key = hash_float(hash_mix(key, uint64_t(quality_)), pixel);
+  key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
+                          uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
+                          uint64_t(mask_pass_.extend) << 6);
+  key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
+  if (auto it = tessellated_.find(key); it != tessellated_.end()) {
+    it->second.used = render_serial_;
+    draw_steps(it->second.steps, transform, opacity);
+    return;
+  }
+  std::vector<PaintStep> steps;
 
   std::vector<Vertex> vertices;
   std::vector<float2> outline;
@@ -879,12 +957,12 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   std::vector<float> run_radii;
   std::vector<StrokeJoin> run_joins;
 
-  /* The colour batch so far: drawn before a brushed line so shapes keep their stacking order. */
+  /* The colour batch so far, as a step: before a brushed line so shapes keep their stacking order. */
   const auto flush = [&] {
     if (!vertices.empty()) {
-      gl::UseProgram(color_program_);
-      gl::Uniform1f(gl::GetUniformLocation(color_program_, "u_opacity"), opacity);
-      draw_vertices(vertices, transform);
+      PaintStep step;
+      step.vertices = std::move(vertices);
+      steps.push_back(std::move(step));
       vertices.clear();
     }
   };
@@ -992,8 +1070,14 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
           brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
           if (dabs.count > 0) {
             flush();
-            draw_dabs(dabs, *images, brush->is_color && !shape.style.brush.tint, shape.style.brush.merged_alpha,
-                      transform, opacity);
+            PaintStep step;
+            step.is_dabs = true;
+            step.dabs = dabs;
+            step.brush = shape.style.brush.name;
+            step.settings = shape.style.brush;
+            step.own_colors = brush->is_color && !shape.style.brush.tint;
+            step.merged_alpha = shape.style.brush.merged_alpha;
+            steps.push_back(std::move(step));
           }
           continue;
         }
@@ -1053,10 +1137,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
       }
     }
   }
-  if (!brushed) {
-    tessellated_[key] = {vertices, render_serial_};
-  }
   flush();
+  draw_steps(steps, transform, opacity);
+  tessellated_[key] = {std::move(steps), render_serial_};
 }
 
 void SceneRenderer::set_matrix(unsigned int program, const Transform2D &transform)
@@ -1089,8 +1172,51 @@ unsigned int SceneRenderer::brush_texture(const BrushImage &image)
   return texture;
 }
 
+/* A buffer and layout for kept vertices, uploaded once: the colour program's (x, y, rgba) or the brush
+ * program's (x, y, u, v, rgba). */
+static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, size_t bytes, bool brush)
+{
+  gl::GenVertexArrays(1, &vao);
+  gl::GenBuffers(1, &vbo);
+  gl::BindVertexArray(vao);
+  gl::BindBuffer(GL_ARRAY_BUFFER, vbo);
+  gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(bytes), data, GL_STATIC_DRAW);
+  if (brush) {
+    gl::EnableVertexAttribArray(0);
+    gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(0));
+    gl::EnableVertexAttribArray(1);
+    gl::VertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(2 * sizeof(float)));
+    gl::EnableVertexAttribArray(2);
+    gl::VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(4 * sizeof(float)));
+  }
+  else {
+    gl::EnableVertexAttribArray(0);
+    gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(0));
+    gl::EnableVertexAttribArray(1);
+    gl::VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(2 * sizeof(float)));
+  }
+}
+
+void SceneRenderer::free_step(PaintStep &step)
+{
+  if (step.vao) {
+    gl::DeleteVertexArrays(1, &step.vao);
+    gl::DeleteBuffers(1, &step.vbo);
+  }
+  for (size_t i = 0; i < step.dab_vaos.size(); i++) {
+    if (step.dab_vaos[i]) {
+      gl::DeleteVertexArrays(1, &step.dab_vaos[i]);
+      gl::DeleteBuffers(1, &step.dab_vbos[i]);
+    }
+  }
+  step.vao = step.vbo = 0;
+  step.dab_vaos.clear();
+  step.dab_vbos.clear();
+}
+
 void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImage> &images, bool own_colors,
-                              bool merged, const Transform2D &transform, float opacity)
+                              bool merged, const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos,
+                              std::vector<unsigned int> *vbos)
 {
   const Target *outer = bound_;
   Target *own = nullptr;
@@ -1112,13 +1238,27 @@ void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImag
   gl::ActiveTexture(GL_TEXTURE0);
   gl::BindVertexArray(brush_vao_);
   gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
+  if (vaos && vbos) {
+    vaos->resize(dabs.per_image.size(), 0);
+    vbos->resize(dabs.per_image.size(), 0);
+  }
   for (size_t i = 0; i < dabs.per_image.size() && i < images.size(); i++) {
     const std::vector<BrushVertex> &list = dabs.per_image[i];
     if (list.empty()) {
       continue;
     }
     glBindTexture(GL_TEXTURE_2D, brush_texture(images[i]));
-    gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(list.size() * sizeof(BrushVertex)), list.data(), GL_STREAM_DRAW);
+    if (vaos && vbos) {
+      if ((*vaos)[i] == 0) {
+        upload_kept((*vaos)[i], (*vbos)[i], list.data(), list.size() * sizeof(BrushVertex), true);
+      }
+      gl::BindVertexArray((*vaos)[i]);
+    }
+    else {
+      gl::BindVertexArray(brush_vao_);
+      gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
+      gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(list.size() * sizeof(BrushVertex)), list.data(), GL_STREAM_DRAW);
+    }
     glDrawArrays(GL_TRIANGLES, 0, GLsizei(list.size()));
   }
   if (own) {
