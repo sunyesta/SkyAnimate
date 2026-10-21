@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -18,9 +19,9 @@ namespace oanim {
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
 
-static constexpr int LIBRARY_VERSION = 1;
+static constexpr int LIBRARY_VERSION = 2;
 static constexpr const char *LIBRARY_FILE = "library.json";
-static constexpr const char *BRUSHES_DIR = "Brushes";
+static constexpr const char *SHAPES_DIR = "Brush Shapes";
 
 static fs::path path_from_utf8(const std::string &path)
 {
@@ -145,8 +146,8 @@ bool asset_library_set(const std::string &folder)
 {
   const fs::path root = path_from_utf8(folder);
   std::error_code ec;
-  fs::create_directories(root / BRUSHES_DIR, ec);
-  fs::create_directories(root / "Brush Presets", ec);
+  fs::create_directories(root / SHAPES_DIR, ec);
+  fs::create_directories(root / "Brushes", ec);
   if (ec) {
     report(ReportType::Error, "Can't create the asset library in " + folder + ": " + ec.message());
     return false;
@@ -166,106 +167,32 @@ bool asset_library_set(const std::string &folder)
   return true;
 }
 
-std::string asset_library_brushes_dir()
+std::string asset_library_shapes_dir()
 {
   if (preferences().asset_library.empty()) {
     return "";
   }
-  return path_to_utf8(path_from_utf8(preferences().asset_library) / BRUSHES_DIR);
+  return path_to_utf8(path_from_utf8(preferences().asset_library) / SHAPES_DIR);
 }
 
-std::vector<std::string> moho_brush_dirs()
+int asset_library_version()
 {
-  std::vector<std::string> dirs;
-  std::error_code ec;
-  const auto add = [&](const fs::path &p) {
-    if (fs::is_directory(p, ec)) {
-      dirs.push_back(path_to_utf8(p));
-    }
-  };
-  /* Installed brushes: Program Files\Moho <version>\Resources\Support\{Common,Pro,Debut}\Brushes. */
-  for (const fs::path program_files : {fs::path(L"C:\\Program Files"), fs::path(L"C:\\Program Files (x86)")}) {
-    for (const fs::directory_entry &e : fs::directory_iterator(program_files, ec)) {
-      const std::wstring name = e.path().filename().wstring();
-      if (!e.is_directory(ec) || (name.rfind(L"Moho", 0) != 0 && name.rfind(L"Anime Studio", 0) != 0)) {
-        continue;
-      }
-      for (const wchar_t *variant : {L"Common", L"Pro", L"Debut"}) {
-        add(e.path() / L"Resources" / L"Support" / variant / L"Brushes");
-      }
-    }
+  if (preferences().asset_library.empty()) {
+    return 0;
   }
-  /* The user's custom content: Documents\MohoCustomContent\<edition>\Brushes. */
-  wchar_t *profile = nullptr;
-  size_t length = 0;
-  if (_wdupenv_s(&profile, &length, L"USERPROFILE") == 0 && profile) {
-    const fs::path custom = fs::path(profile) / L"Documents" / L"MohoCustomContent";
-    for (const fs::directory_entry &e : fs::directory_iterator(custom, ec)) {
-      if (e.is_directory(ec)) {
-        add(e.path() / L"Brushes");
-      }
-    }
-  }
-  std::free(profile);
-  return dirs;
+  std::ifstream in(path_from_utf8(preferences().asset_library) / LIBRARY_FILE, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const json j = json::parse(text, nullptr, false);
+  return j.is_object() ? j.value("version", 0) : 0;
 }
 
-/* Copies a file or folder unless the destination already exists. */
-static bool copy_new(const fs::path &from, const fs::path &to)
+void asset_library_mark_current()
 {
-  std::error_code ec;
-  if (fs::exists(to, ec)) {
-    return false;
+  if (preferences().asset_library.empty()) {
+    return;
   }
-  fs::copy(from, to, fs::copy_options::recursive, ec);
-  if (ec) {
-    report(ReportType::Warning, "Couldn't copy " + path_to_utf8(from) + ": " + ec.message());
-    return false;
-  }
-  return true;
-}
-
-int asset_library_import_moho_brushes(const std::vector<std::string> &dirs)
-{
-  const std::string brushes_dir = asset_library_brushes_dir();
-  if (brushes_dir.empty()) {
-    report(ReportType::Warning, "Set up an asset library first (Edit > Preferences)");
-    return -1;
-  }
-  const fs::path dest = path_from_utf8(brushes_dir);
-  std::error_code ec;
-  fs::create_directories(dest, ec);
-
-  int added = 0;
-  for (const std::string &dir : dirs) {
-    /* Read the folder the way the library does, then copy each brush's settings and images. */
-    std::vector<Brush> found;
-    brushes_scan(dir, found);
-    const fs::path source = path_from_utf8(dir);
-    for (const Brush &brush : found) {
-      const fs::path settings = source / path_from_utf8(brush.name + ".mohobrush");
-      bool copied = false;
-      if (fs::is_regular_file(settings, ec)) {
-        copied = copy_new(settings, dest / settings.filename());
-      }
-      /* Images: a PNG beside the brush, or a multi-brush folder. */
-      std::set<fs::path> parts;
-      for (const std::string &file : brush.files) {
-        fs::path rel = path_from_utf8(file).lexically_relative(source);
-        if (rel.empty() || *rel.begin() == "..") {
-          continue;
-        }
-        parts.insert(*rel.begin());
-      }
-      for (const fs::path &part : parts) {
-        copied = copy_new(source / part, dest / part) || copied;
-      }
-      added += copied ? 1 : 0;
-    }
-  }
-  brushes_reload();
-  report(ReportType::Info, "Imported " + std::to_string(added) + " Moho brushes");
-  return added;
+  std::ofstream out(path_from_utf8(preferences().asset_library) / LIBRARY_FILE, std::ios::trunc);
+  out << json{{"format", "Open Animate asset library"}, {"version", LIBRARY_VERSION}}.dump(2) << "\n";
 }
 
 }  // namespace oanim

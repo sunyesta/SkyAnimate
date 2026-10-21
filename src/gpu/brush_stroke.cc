@@ -210,13 +210,53 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
 
   float h0, s0, v0;
   rgb_to_hsv(color.r, color.g, color.b, h0, s0, v0);
-  const bool drift = brush.hue_drift != 0.0f || brush.sat_drift != 0.0f || brush.val_drift != 0.0f;
+  /* A section switched off keeps its values but doesn't apply. */
+  const bool shape_dyn = brush.shape_dynamics, scatter_on = brush.scattering, transfer = brush.transfer;
+  const bool drift = brush.color_dynamics && (brush.hue_drift != 0.0f || brush.sat_drift != 0.0f || brush.val_drift != 0.0f);
   const float spacing = std::max(brush.spacing, 0.01f);
   const float wave = std::max(brush.size_variation_scale, 0.001f) * FRAME_HEIGHT;
+  /* How many places along the line (known once they're laid out), for the fades at its ends. */
+  int places = 0;
+  /* 0 to 1 over the first `in` and the last `out` places. */
+  const auto fade = [&](int k, int in, int out) {
+    float f = 1.0f;
+    if (in > 0) {
+      f = std::min(f, float(k + 1) / float(in));
+    }
+    if (out > 0) {
+      f = std::min(f, float(places - k) / float(out));
+    }
+    return std::clamp(f, 0.0f, 1.0f);
+  };
+
+  /* One stamp: its middle `p`, the way the line runs there, its size and turn, and `id` for its own
+   * random values. */
+  const auto stamp = [&](float2 p, float size, float angle, float squash, int image, Color c, float shows) {
+    if (size <= 0.0f || c.a <= 0.0f || r_dabs.count >= MAX_DABS) {
+      return;
+    }
+    /* The image's longer side spans the line's width; Roundness squashes it across. */
+    const float aspect = aspects[image] > 0.0f ? aspects[image] : 1.0f;
+    const float hx = aspect >= 1.0f ? size * 0.5f : size * 0.5f * aspect;
+    const float hy = (aspect >= 1.0f ? size * 0.5f / aspect : size * 0.5f) * squash;
+    const float ca = std::cos(angle), sa = std::sin(angle);
+    const float2 ax(ca * hx, sa * hx), ay(-sa * hy, ca * hy);
+    const float u0 = brush.flip_x ? 1.0f : 0.0f, u1 = 1.0f - u0, v0 = brush.flip_y ? 1.0f : 0.0f, v1 = 1.0f - v0;
+    const BrushVertex tl{p.x - ax.x + ay.x, p.y - ax.y + ay.y, u0, v0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex tr{p.x + ax.x + ay.x, p.y + ax.y + ay.y, u1, v0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex br{p.x + ax.x - ay.x, p.y + ax.y - ay.y, u1, v1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    const BrushVertex bl{p.x - ax.x - ay.x, p.y - ax.y - ay.y, u0, v1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
+    std::vector<BrushVertex> &out = r_dabs.per_image[image];
+    out.insert(out.end(), {tl, tr, br, tl, br, bl});
+    r_dabs.centers.push_back(p);
+    r_dabs.alphas.push_back(shows);
+    r_dabs.count++;
+  };
 
   /* One dab, `s` along the rest line. `id` picks its random values (each dab its own, kept as
-   * the line moves), `order` its image in turn, `alpha` how much of it shows. Everything that
-   * varies along the line goes by the rest line, so it stays put on the artwork. */
+   * the line moves), `order` its image in turn and its place for the fades, `alpha` how much of it
+   * shows. Everything that varies along the line goes by the rest line, so it stays put on the
+   * artwork. With Scattering, a dab is several stamps, pushed off the line. */
   const auto dab = [&](float s, uint32_t id, int order, float alpha) {
     if (r_dabs.count >= MAX_DABS || alpha <= 0.0f) {
       return;
@@ -231,47 +271,71 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
     const float2 p = edge_point(shown_table[e], u, &dir);
     const float half = std::max(edge.half0 + (edge.half1 - edge.half0) * u, min_half);
     const float here = rest_half(s);
+    const float width = 2.0f * half;
 
-    float size = 2.0f * half;
-    if (brush.size_variation_amp > 0.0f) {
-      size *= std::max(0.0f, 1.0f + brush.size_variation_amp * smooth_noise(seed ^ 0xa511e9b3U, s / wave));
+    float base_size = width;
+    float base_angle = brush.tip_angle;
+    if (shape_dyn) {
+      if (brush.size_variation_amp > 0.0f) {
+        base_size *= std::max(0.0f, 1.0f + brush.size_variation_amp * smooth_noise(seed ^ 0xa511e9b3U, s / wave));
+      }
+      base_size *= fade(order, brush.size_fade_in, brush.size_fade_out);
+      /* Upright, or the image's top along the line. */
+      if (brush.align) {
+        base_angle += std::atan2(dir.y, dir.x) - PI * 0.5f;
+      }
+      if (brush.angle_drift != 0.0f) {
+        base_angle += brush.angle_drift * smooth_noise(seed ^ 0x63d83595U, s / std::max(40.0f * here, 1e-6f));
+      }
     }
-    /* Upright, or the image's top along the line. */
-    float angle = brush.align ? std::atan2(dir.y, dir.x) - PI * 0.5f : 0.0f;
-    angle += (random01(seed, id * 3 + 0) - 0.5f) * brush.jitter;
-    if (brush.angle_drift != 0.0f) {
-      angle += brush.angle_drift * smooth_noise(seed ^ 0x63d83595U, s / std::max(40.0f * here, 1e-6f));
+    const float base_shows = std::clamp(alpha, 0.0f, 1.0f) *
+                             (transfer ? fade(order, brush.opacity_fade_in, brush.opacity_fade_out) : 1.0f);
+    int copies = 1;
+    if (scatter_on && brush.count > 1) {
+      copies = brush.count;
+      if (brush.count_jitter > 0.0f) {
+        copies = std::max(1, int(std::lround(float(copies) * (1.0f - brush.count_jitter * random01(seed ^ 0x2f8a1b7dU, id)))));
+      }
     }
-    const int image = brush.random_order ? int(random01(seed, id * 3 + 1) * float(images)) % images
-                                         : order % images;
-    Color c = color;
-    if (drift) {
-      const float r1 = random01(seed, id * 3 + 2), r2 = random01(seed ^ 0x1b873593U, id),
-                  r3 = random01(seed ^ 0xcc9e2d51U, id);
-      hsv_to_rgb(h0 + (r1 - 0.5f) * 2.0f * brush.hue_drift,
-                 std::clamp(s0 + (r2 - 0.5f) * 2.0f * brush.sat_drift, 0.0f, 1.0f),
-                 std::clamp(v0 + (r3 - 0.5f) * 2.0f * brush.val_drift, 0.0f, 1.0f), c.r, c.g, c.b);
+    for (int copy = 0; copy < copies; copy++) {
+      /* The first stamp keeps the dab's own random values (as before Scattering); the others get
+       * their own. */
+      const uint32_t cid = copy == 0 ? id : hash(id * 31u + uint32_t(copy) * 0x9e3779b9U);
+      float2 at = p;
+      if (scatter_on && brush.scatter > 0.0f) {
+        const float2 across(-dir.y, dir.x);
+        at = at + across * ((random01(seed ^ 0x5bd1e995U, cid) * 2.0f - 1.0f) * brush.scatter * width);
+        if (brush.scatter_both) {
+          at = at + dir * ((random01(seed ^ 0x68e31da4U, cid) * 2.0f - 1.0f) * brush.scatter * width);
+        }
+      }
+      float size = base_size, angle = base_angle, squash = std::clamp(brush.roundness, 0.01f, 1.0f);
+      if (shape_dyn) {
+        if (brush.size_jitter > 0.0f) {
+          size *= std::max(brush.size_min, 1.0f - brush.size_jitter * random01(seed ^ 0x7a2c4e11U, cid));
+        }
+        angle += (random01(seed, cid * 3 + 0) - 0.5f) * brush.jitter;
+        if (brush.roundness_jitter > 0.0f) {
+          squash *= std::max(0.01f, 1.0f - brush.roundness_jitter * random01(seed ^ 0x3c6ef372U, cid));
+        }
+      }
+      const int image = brush.random_order ? int(random01(seed, cid * 3 + 1) * float(images)) % images
+                                           : order % images;
+      Color c = color;
+      if (drift) {
+        const float r1 = random01(seed, cid * 3 + 2), r2 = random01(seed ^ 0x1b873593U, cid),
+                    r3 = random01(seed ^ 0xcc9e2d51U, cid);
+        hsv_to_rgb(h0 + (r1 - 0.5f) * 2.0f * brush.hue_drift,
+                   std::clamp(s0 + (r2 - 0.5f) * 2.0f * brush.sat_drift, 0.0f, 1.0f),
+                   std::clamp(v0 + (r3 - 0.5f) * 2.0f * brush.val_drift, 0.0f, 1.0f), c.r, c.g, c.b);
+      }
+      float shows = base_shows;
+      if (transfer && brush.opacity_jitter > 0.0f) {
+        shows *= 1.0f - brush.opacity_jitter * random01(seed ^ 0x85ebca6bU, cid);
+      }
+      c.a *= shows;
+      stamp(at, size, angle, squash, image, c, shows);
     }
-    const float shows = std::clamp(alpha, 0.0f, 1.0f);
-    c.a *= shows;
-    if (size <= 0.0f || c.a <= 0.0f) {
-      return;
-    }
-    /* The image's longer side spans the line's width. */
-    const float aspect = aspects[image] > 0.0f ? aspects[image] : 1.0f;
-    const float hx = aspect >= 1.0f ? size * 0.5f : size * 0.5f * aspect;
-    const float hy = aspect >= 1.0f ? size * 0.5f / aspect : size * 0.5f;
-    const float ca = std::cos(angle), sa = std::sin(angle);
-    const float2 ax(ca * hx, sa * hx), ay(-sa * hy, ca * hy);
-    const BrushVertex tl{p.x - ax.x + ay.x, p.y - ax.y + ay.y, 0, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-    const BrushVertex tr{p.x + ax.x + ay.x, p.y + ax.y + ay.y, 1, 0, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-    const BrushVertex br{p.x + ax.x - ay.x, p.y + ax.y - ay.y, 1, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-    const BrushVertex bl{p.x - ax.x - ay.x, p.y - ax.y - ay.y, 0, 1, c.r * c.a, c.g * c.a, c.b * c.a, c.a};
-    std::vector<BrushVertex> &out = r_dabs.per_image[image];
-    out.insert(out.end(), {tl, tr, br, tl, br, bl});
-    r_dabs.centers.push_back(p);
-    r_dabs.alphas.push_back(shows);
-    r_dabs.count++;
   };
 
   /* The dabs' places along the rest line, at the brush's spacing (of the rest width). A closed
@@ -285,6 +349,12 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
       break;
     }
   }
+  /* How much of a stamp coming in or going out shows: as it fades, or (Pop In) all or nothing,
+   * switching halfway. */
+  const auto coming = [&](float a) {
+    a = std::clamp(a, 0.0f, 1.0f);
+    return brush.pop_in ? (a >= 0.5f ? 1.0f : 0.0f) : a;
+  };
   /* Between two dabs on a stretched segment: one halfway, fading in from 1.5 to 2 times its rest
    * length, then halfway again from 3 to 4 times, and so on. `code` numbers it within the gap
    * (1, then 2 and 3, ...) for its own random values. */
@@ -295,13 +365,14 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
     if (r <= lo) {
       return;
     }
-    dab(mid, uint32_t(k) * 32u + code, k, (r - lo) / (hi - lo));
+    dab(mid, uint32_t(k) * 32u + code, k, coming((r - lo) / (hi - lo)));
     if (level < MAX_FILL_LEVEL) {
       self(self, a, mid, level + 1, code * 2, k);
       self(self, mid, b, level + 1, code * 2 + 1, k);
     }
   };
   const int count = int(marks.size());
+  places = count;
   for (int k = 0; k < count; k++) {
     /* On a squashed segment, every other dab fades out from 3/4 to 1/2 its rest length, every
      * fourth from 3/8 to 1/4, ... (the first always stays). */
@@ -312,7 +383,7 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
         m++;
       }
       const float lo = std::ldexp(1.0f, -m), hi = lo * 1.5f;
-      alpha = std::clamp((stretch_at(marks[k]) - lo) / (hi - lo), 0.0f, 1.0f);
+      alpha = coming((stretch_at(marks[k]) - lo) / (hi - lo));
     }
     dab(marks[k], uint32_t(k) * 32u, k, alpha);
     const bool last = k + 1 >= count;

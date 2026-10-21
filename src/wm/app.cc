@@ -301,6 +301,7 @@ void App::main_loop()
     ImGui::NewFrame();
     wm_.timeline_drop_areas.clear();
     draw_ui();
+    brush_window_draw(ctx_);
     /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
      * its material from the next frame. */
     document_sync_materials(doc_);
@@ -961,15 +962,10 @@ void App::draw_unsaved_changes_prompt()
   }
 }
 
-/* Without an asset library the app asks for a folder to set one up in; once there is one with no
- * brushes, it offers to import Moho's. */
+/* Without an asset library the app asks for a folder to set one up in. */
 void App::draw_asset_library_prompts()
 {
   const bool ready = asset_library_ready();
-  if (ready && !library_was_ready_ && brushes().empty() && !moho_brush_dirs().empty()) {
-    offer_moho_import_ = true;
-  }
-  library_was_ready_ = ready;
 
   const char *setup = "Set Up Asset Library";
   if (!ready && !ImGui::IsPopupOpen(setup)) {
@@ -994,30 +990,9 @@ void App::draw_asset_library_prompts()
     ImGui::EndPopup();
   }
 
-  const char *import = "Import Moho Brushes";
-  if (offer_moho_import_ && !ImGui::IsPopupOpen(import) && !ImGui::IsPopupOpen(setup)) {
-    ImGui::OpenPopup(import);
-    offer_moho_import_ = false;
-  }
-  if (ImGui::BeginPopupModal(import, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-    ImGui::TextUnformatted("Moho is installed on this computer. Copy its brushes into the asset library?");
-    for (const std::string &dir : moho_brush_dirs()) {
-      ImGui::BulletText("%s", dir.c_str());
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Import")) {
-      operator_call(ctx_, "preferences.import_moho_brushes");
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Not Now")) {
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-  }
 }
 
-/* Edit > Preferences: where the asset library is, bringing in Moho's brushes, and remote control. */
+/* Edit > Preferences: where the asset library is, what's in it, and remote control. */
 void App::draw_preferences()
 {
   if (!show_preferences_) {
@@ -1041,22 +1016,11 @@ void App::draw_preferences()
   }
 
   ImGui::SeparatorText("Brushes");
-  ImGui::Text("%d brushes in the asset library", int(brushes().size()));
+  ImGui::Text("%d brushes and %d brush shapes in the asset library", int(library_brush_presets().size()),
+              int(brushes().size()));
+  ImGui::TextDisabled("Brushes: one .oabrush file each in Brushes, a folder per category. Shapes: PNGs (or folders of\n"
+                      "them) in Brush Shapes.");
   ImGui::BeginDisabled(!asset_library_ready());
-  if (ImGui::Button("Import Moho Brushes")) {
-    operator_call(ctx_, "preferences.import_moho_brushes");
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip("Copy the brushes of Moho's install and your Moho custom content into the asset library");
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Import From Folder...")) {
-    Context *ctx = &ctx_;
-    file_dialog_folder([ctx](const std::string &path) {
-      operator_call(*ctx, "preferences.import_moho_brushes", {{"directory", path}});
-    });
-  }
-  ImGui::SameLine();
   if (ImGui::Button("Reload")) {
     operator_call(ctx_, "preferences.brushes_reload");
   }

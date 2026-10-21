@@ -11,6 +11,7 @@
  * length or more fades in dabs between its own (more at four times, ...), and one squashed to
  * half or less fades out every other one, so a stretched line doesn't break into dots nor a
  * squashed one clot, without anything sliding (after Bénard et al.'s self-similar line textures).
+ * With the brush's Pop In they appear and go whole instead of fading.
  * The layout doesn't depend on the zoom, so the viewport and a render agree. */
 
 #include <cstdint>

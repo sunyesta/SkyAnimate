@@ -334,7 +334,13 @@ bool editor_rect(const std::string &name, int width, int height, int r_rect[4], 
   const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
   for (ImGuiWindow *window : g->Windows) {
     const std::string full = window->Name;
-    const size_t hash = full.find("###area");
+    /* An editor's window ("<editor>###area<id>"), or a floating one ("Brush Settings###..."). */
+    size_t hash = full.find("###area");
+    const bool floating = hash == std::string::npos && !(window->Flags & ImGuiWindowFlags_ChildWindow) &&
+                          !(window->Flags & ImGuiWindowFlags_Tooltip) && full.find("###") != std::string::npos;
+    if (floating) {
+      hash = full.find("###");
+    }
     if (hash == std::string::npos || !window->WasActive || window->Hidden) {
       continue;
     }

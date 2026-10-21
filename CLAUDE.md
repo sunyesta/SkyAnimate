@@ -62,9 +62,10 @@ Milestone 1 (Foundation) done. Milestone 2 (Drawing) in progress. Done: vector l
 model), GL renderer with masking groups, group and reference layers, Layers editor, Properties tabs,
 select/draw/pen/split/fill tools, G R S E, .oanim save and open (`src/io/oanim_file.cc`, zip + JSON
 with a format version), File menu, unsaved-changes prompt, autosave, File > Recover, Save
-Incremental, pen pressure, Moho stamp brushes (`src/assets`: the asset library set in Preferences,
-.mohobrush reading and Moho import; dabs in `src/gpu/brush_stroke.cc`; Brush Settings popup in
-`src/editors/brush_settings.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
+Incremental, pen pressure, stamp brushes (`src/assets`: the asset library set in Preferences, brush
+shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brushes as presets in
+`brush_presets.cc`; dabs in `src/gpu/brush_stroke.cc`; the Brush Settings window in
+`src/editors/brush_editor.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
 the style library.
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels

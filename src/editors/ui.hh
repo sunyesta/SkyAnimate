@@ -110,7 +110,10 @@ bool ui_revert_button(const char *id, const char *tooltip);
 /* How much room a revert button takes after a field (its width and the gap before it). */
 float ui_revert_button_space();
 /* `r_revert` (optional): also a revert button at the right end of the row, true when clicked. */
-bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert = nullptr);
+/* `r_pick` (optional): an eyedropper button at the row's very end (lit while `pick_active`), true when
+ * clicked. */
+bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert = nullptr,
+              bool *r_pick = nullptr, bool pick_active = false);
 
 /* A colour swatch that opens Open Animate's colour picker, which shows #RRGGBBAA and has an
  * eyedropper; with `hex`, a #RRGGBBAA field beside it too. Returns true while the colour
@@ -148,6 +151,21 @@ void ui_mask_menu_items(Context &C, uint64_t layer);
 void ui_draw_order_menu_items(Context &C, uint64_t layer);
 /* A click on `layer` while it is on (0: on no layer, which keeps it on). */
 void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
+/* The shape eyedropper: the same, for a shape clicked in the viewport (the brush eyedropper): `pick`
+ * gets its layer and its index in the drawing as shown, and returns true when it's done. Clicks in
+ * the Layers editor don't count. */
+void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
+                               const char *tag = "");
+bool ui_shape_eyedropper_active();
+/* Whether it's on for `tag` (which button started it: "BRUSH", "FILL"...). */
+bool ui_shape_eyedropper_active(const char *tag);
+/* Takes a look setting of a shape clicked in the viewport (mesh.style_copy_from: FILL, LINE, WIDTH or
+ * BRUSH) onto the selected shapes; `what_label` names it in the cue ("fill colour"). */
+void ui_style_eyedropper_start(const char *what, const char *what_label);
+/* An eyedropper button (a square, the pipette on it), lit while `active`. True when clicked. */
+bool ui_pick_button(const char *id, const char *tooltip, bool active);
+/* A click on shape `shape` of `layer` while it is on (layer 0: on no shape, which keeps it on). */
+void ui_shape_eyedropper_pick(Context &C, uint64_t layer, int shape);
 /* Its cue at the mouse, and stopping it; once a frame, after the editors drew. */
 void ui_layer_eyedropper_overlay();
 /* A pipette icon, as on Blender's eyedropper buttons. */

@@ -3,9 +3,12 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <regex>
@@ -17,6 +20,7 @@
 #include "assets/asset_library.hh"
 #include "assets/brush_presets.hh"
 #include "core/log.hh"
+#include "io/oanim_file.hh"
 
 namespace oanim {
 
@@ -62,6 +66,45 @@ static std::vector<std::string> folder_pngs(const fs::path &folder)
   std::sort(files.begin(), files.end());
   return files;
 }
+
+/* --- Brush Shapes ------------------------------------------------------------------------- */
+
+void brushes_scan(const std::string &folder, std::vector<Brush> &r_brushes)
+{
+  const fs::path root = path_from_utf8(folder);
+  std::error_code ec;
+  if (!fs::is_directory(root, ec)) {
+    return;
+  }
+  std::vector<fs::path> entries;
+  for (const fs::directory_entry &e : fs::directory_iterator(root, ec)) {
+    entries.push_back(e.path());
+  }
+  std::sort(entries.begin(), entries.end());
+  for (const fs::path &p : entries) {
+    Brush brush;
+    if (fs::is_regular_file(p, ec) && is_png(p)) {
+      brush.name = path_to_utf8(p.stem());
+      brush.files.push_back(path_to_utf8(p));
+    }
+    else if (fs::is_directory(p, ec)) {
+      brush.name = path_to_utf8(p.filename());
+      brush.files = folder_pngs(p);
+    }
+    if (brush.files.empty()) {
+      continue;
+    }
+    brush.defaults.name = brush.name;
+    r_brushes.push_back(std::move(brush));
+  }
+}
+
+/* --- Upgrading a version 1 library ----------------------------------------------------------
+ * It kept Moho's brushes in Brushes/: .mohobrush files (their settings and images) and plain PNGs
+ * or folders (settings in the name, as Name_<align>_<jitter>_<spacing>). Each becomes a shape in
+ * Brush Shapes, under its own name (so documents using it find it), and a brush file with its
+ * settings in the new Brushes/, in a category by what it looks like (Moho's and Chad Kerns'
+ * brushes; others go to Other). Once all of it is copied, the old folder goes. */
 
 /* brush.json from a .mohobrush zip. Read into memory: miniz can't open non-ASCII paths. */
 static json read_mohobrush(const fs::path &path)
@@ -129,9 +172,8 @@ static BrushSettings settings_from_name(const std::string &name)
   return b;
 }
 
-void brushes_scan(const std::string &folder, std::vector<Brush> &r_brushes)
+static void legacy_scan(const fs::path &root, std::vector<Brush> &r_brushes)
 {
-  const fs::path root = path_from_utf8(folder);
   std::error_code ec;
   if (!fs::is_directory(root, ec)) {
     return;
@@ -200,6 +242,162 @@ void brushes_scan(const std::string &folder, std::vector<Brush> &r_brushes)
   }
 }
 
+
+/* `name`, or "name.001"... while `taken` says it's used. */
+static std::string free_name(const std::string &name, const std::function<bool(const std::string &)> &taken)
+{
+  if (!taken(name)) {
+    return name;
+  }
+  for (int n = 1; n < 100000; n++) {
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), ".%03d", n);
+    if (!taken(name + suffix)) {
+      return name + suffix;
+    }
+  }
+  return name;
+}
+
+/* The preset group a converted brush goes in. */
+static std::string upgrade_group(const std::string &name)
+{
+  const auto starts = [&](const char *prefix) { return name.rfind(prefix, 0) == 0; };
+  if (starts("CK Hair") || name == "CK Hairy Toon") {
+    return "Hair & Fur";
+  }
+  if (starts("CK Ink") || name == "CK Inky" || starts("MC-") || starts("CK Low Pressure") || starts("Water Edge")) {
+    return "Ink";
+  }
+  if (name == "CK Grass") {
+    return "Nature";
+  }
+  if (name == "CK Sketch Sponge m" || name == "Spray") {
+    return "Texture";
+  }
+  if (name == "SimpleRound") {
+    return "Basic";
+  }
+  if (name == "Dots" || name == "Rainbow Lens" || starts("sz_fluff") || starts("CK NotBoroque")) {
+    return "Fun";
+  }
+  /* Moho's numbered brushes, by their number. */
+  if (starts("Brush") && name.size() >= 8 && std::isdigit((unsigned char)name[5])) {
+    const int n = std::atoi(name.c_str() + 5);
+    const auto in = [n](std::initializer_list<int> list) { return std::find(list.begin(), list.end(), n) != list.end(); };
+    if (in({508, 509, 548})) {
+      return "Basic";
+    }
+    if (in({5, 564})) {
+      return "Hair & Fur";
+    }
+    if (in({2, 505, 506, 515, 517, 519, 520, 521})) {
+      return "Nature";
+    }
+    if ((n >= 511 && n <= 514) || n == 516 || (n >= 522 && n <= 547 && n != 525)) {
+      return "Fun";
+    }
+    if (in({1, 4, 501, 502, 503, 504, 507, 510, 518, 525}) || (n >= 549 && n <= 573)) {
+      return "Texture";
+    }
+  }
+  return "Other";
+}
+
+/* A brush's name without the settings an older one carried in it ("Brush522_1_0_200": "Brush522"). */
+static std::string upgrade_preset_name(const std::string &name)
+{
+  static const std::regex pattern(R"(^(.*)_[01]_\d+_\d+$)");
+  std::smatch m;
+  return std::regex_match(name, m, pattern) ? std::string(m[1]) : name;
+}
+
+static void library_upgrade()
+{
+  const std::string library_dir = preferences().asset_library;
+  if (library_dir.empty()) {
+    return;
+  }
+  if (asset_library_version() >= 2) {
+    return;
+  }
+  const fs::path root = path_from_utf8(library_dir);
+  std::error_code ec;
+  if (!fs::is_directory(root / "Brushes", ec)) {
+    asset_library_mark_current();
+    return;
+  }
+  /* The old Brushes folder is set aside: the new one (brush files by category) takes its name. */
+  fs::path old = root / "Brushes (old)";
+  for (int n = 2; fs::exists(old, ec); n++) {
+    old = root / path_from_utf8("Brushes (old " + std::to_string(n) + ")");
+  }
+  fs::rename(root / "Brushes", old, ec);
+  if (ec) {
+    report(ReportType::Warning, "Couldn't upgrade the brush library: " + ec.message());
+    return;
+  }
+  std::vector<Brush> found;
+  legacy_scan(old, found);
+  const fs::path shapes = path_from_utf8(asset_library_shapes_dir());
+  const fs::path presets_root = root / "Brushes";
+  fs::create_directories(shapes, ec);
+  int failed = 0, made_shapes = 0, made_presets = 0;
+  for (const Brush &b : found) {
+    const bool single = b.files.size() == 1;
+    const std::string name = free_name(b.name, [&](const std::string &n) {
+      return fs::exists(shapes / path_from_utf8(n + ".png"), ec) || fs::exists(shapes / path_from_utf8(n), ec);
+    });
+    bool ok = true;
+    if (single) {
+      ok = fs::copy_file(path_from_utf8(b.files[0]), shapes / path_from_utf8(name + ".png"), ec) && !ec;
+    }
+    else {
+      const fs::path folder = shapes / path_from_utf8(name);
+      fs::create_directories(folder, ec);
+      for (const std::string &file : b.files) {
+        const fs::path from = path_from_utf8(file);
+        ok = ok && fs::copy_file(from, folder / from.filename(), ec) && !ec;
+      }
+    }
+    if (!ok) {
+      failed++;
+      report(ReportType::Warning, "Couldn't copy brush " + b.name + " into Brush Shapes");
+      continue;
+    }
+    made_shapes++;
+    /* Its settings as a preset, in its group. */
+    BrushSettings settings = b.defaults;
+    settings.name = name;
+    const fs::path presets = presets_root / path_from_utf8(upgrade_group(b.name));
+    fs::create_directories(presets, ec);
+    const std::string preset = free_name(upgrade_preset_name(b.name), [&](const std::string &n) {
+      return fs::exists(presets / path_from_utf8(n + ".oabrush"), ec);
+    });
+    const json j = {{"version", 1},
+                    {"name", preset},
+                    {"brush", json::parse(brush_settings_to_json(settings), nullptr, false)}};
+    std::ofstream out(presets / path_from_utf8(preset + ".oabrush"), std::ios::binary | std::ios::trunc);
+    out << j.dump(1, '\t');
+    if (out) {
+      made_presets++;
+    }
+    else {
+      failed++;
+    }
+  }
+  asset_library_mark_current();
+  if (failed == 0) {
+    fs::remove_all(old, ec);
+    report(ReportType::Info, "Brush library upgraded: " + std::to_string(made_shapes) + " shapes and " +
+                                 std::to_string(made_presets) + " brushes, sorted into categories; the old Brushes folder was removed");
+  }
+  else {
+    report(ReportType::Warning, "Brush library upgrade: " + std::to_string(failed) + " brushes couldn't be copied, so the old "
+                                    "brushes were kept in " + path_to_utf8(old.filename()));
+  }
+}
+
 static std::vector<Brush> &library()
 {
   static std::vector<Brush> brushes;
@@ -230,8 +428,67 @@ const Brush *brush_find_in_library(const std::string &name)
   return nullptr;
 }
 
+static const Brush &round_tip()
+{
+  static const Brush b = [] {
+    Brush r;
+    r.name = BRUSH_ROUND_TIP;
+    r.round_tip = true;
+    r.loaded = true;
+    /* Photoshop's Hard Round: tight spacing, so the line reads as a line. */
+    r.defaults.name = BRUSH_ROUND_TIP;
+    r.defaults.spacing = 0.1f;
+    r.defaults.random_order = false;
+    return r;
+  }();
+  return b;
+}
+
+std::string brush_display_name(const std::string &name)
+{
+  return name == BRUSH_ROUND_TIP ? std::string("Round") : name;
+}
+
+const std::vector<BrushImage> &brush_tip_images(const Brush &brush, const BrushSettings &settings)
+{
+  if (!brush.round_tip) {
+    return brush_images(brush);
+  }
+  /* One image per 5% of hardness, drawn when first asked for. */
+  static std::vector<BrushImage> levels[21];
+  static uint64_t next_id = uint64_t(1) << 40;
+  const int level = std::clamp(int(std::lround(settings.hardness * 20.0f)), 0, 20);
+  std::vector<BrushImage> &images = levels[level];
+  if (images.empty()) {
+    BrushImage image;
+    const int size = 128;
+    image.width = image.height = size;
+    image.rgba.resize(size_t(size) * size * 4);
+    const float hard = float(level) / 20.0f;
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        const float dx = (float(x) + 0.5f) / float(size) * 2.0f - 1.0f, dy = (float(y) + 0.5f) / float(size) * 2.0f - 1.0f;
+        const float r = std::sqrt(dx * dx + dy * dy);
+        /* Solid inside `hard` of the radius, then easing out to the edge; the edge a pixel soft. */
+        float a = r <= hard ? 1.0f : 1.0f - std::clamp((r - hard) / std::max(1.0f - hard, 1e-3f), 0.0f, 1.0f);
+        a = a * a * (3.0f - 2.0f * a);
+        a *= std::clamp((1.0f - r) * float(size) * 0.5f, 0.0f, 1.0f);
+        const uint8_t v = uint8_t(std::lround(std::clamp(a, 0.0f, 1.0f) * 255.0f));
+        uint8_t *out = &image.rgba[(size_t(y) * size + x) * 4];
+        out[0] = out[1] = out[2] = out[3] = v;
+      }
+    }
+    image.id = next_id++;
+    images.push_back(std::move(image));
+  }
+  return images;
+}
+
 const Brush *brush_find(const std::string &name)
 {
+  if (name == BRUSH_ROUND_TIP) {
+    return &round_tip();
+  }
   if (const Brush *b = brush_find_in_library(name)) {
     return b;
   }
@@ -285,10 +542,11 @@ bool brush_shape_bytes(const std::string &name, std::vector<std::string> &r_file
 
 void brushes_reload()
 {
+  library_upgrade();
   std::vector<Brush> found;
-  brushes_scan(asset_library_brushes_dir(), found);
+  brushes_scan(asset_library_shapes_dir(), found);
   std::sort(found.begin(), found.end(), [](const Brush &a, const Brush &b) { return lower(a.name) < lower(b.name); });
-  /* Two brushes with one name (a .mohobrush and a PNG of the same name): the first wins. */
+  /* Two shapes with one name (a PNG and a folder of the same name): the first wins. */
   found.erase(std::unique(found.begin(), found.end(), [](const Brush &a, const Brush &b) { return a.name == b.name; }),
               found.end());
   library() = std::move(found);
@@ -364,6 +622,9 @@ static bool image_load(const std::string &file, const std::string *bytes, BrushI
 
 const std::vector<BrushImage> &brush_images(const Brush &brush)
 {
+  if (brush.round_tip) {
+    return brush_tip_images(brush, brush.defaults);
+  }
   if (!brush.loaded) {
     static uint64_t next_id = 1;
     brush.loaded = true;
@@ -383,86 +644,6 @@ const std::vector<BrushImage> &brush_images(const Brush &brush)
     }
   }
   return brush.images;
-}
-
-bool brush_save(const std::string &name, const BrushSettings &settings, std::string *r_error)
-{
-  const std::string dir = asset_library_brushes_dir();
-  const Brush *source = brush_find(settings.name);
-  if (dir.empty()) {
-    *r_error = "Set up an asset library first (Edit > Preferences)";
-    return false;
-  }
-  if (name.empty() || name.find_first_of("\\/:*?\"<>|") != std::string::npos) {
-    *r_error = "Brush names can't be empty or use \\ / : * ? \" < > |";
-    return false;
-  }
-  if (!source) {
-    *r_error = "Pick a brush to save its settings as a new one";
-    return false;
-  }
-  if (brush_find(name)) {
-    *r_error = "There is already a brush called " + name;
-    return false;
-  }
-  const fs::path root = path_from_utf8(dir);
-  std::error_code ec;
-  /* One image beside the brush, or a folder of them for a multi-brush. */
-  std::string ref;
-  if (source->files.size() == 1) {
-    ref = name + ".png";
-    fs::copy_file(path_from_utf8(source->files[0]), root / path_from_utf8(ref), ec);
-  }
-  else {
-    ref = name;
-    fs::create_directories(root / path_from_utf8(ref), ec);
-    for (size_t i = 0; i < source->files.size() && !ec; i++) {
-      fs::copy_file(path_from_utf8(source->files[i]), root / path_from_utf8(ref) / path_from_utf8(source->files[i]).filename(), ec);
-    }
-  }
-  if (ec) {
-    *r_error = "Couldn't copy the brush images: " + ec.message();
-    return false;
-  }
-  const json j = {{"version", 1},
-                  {"align", settings.align},
-                  {"jitter", settings.jitter},
-                  {"spacing", settings.spacing},
-                  {"angleDrift", settings.angle_drift},
-                  {"randomize", settings.randomize},
-                  {"randomOrder", settings.random_order},
-                  {"mergedAlpha", settings.merged_alpha},
-                  {"sizeVariationAmp", settings.size_variation_amp},
-                  {"sizeVariationScale", settings.size_variation_scale},
-                  {"randomInterval", settings.random_interval},
-                  {"hueDrift", settings.hue_drift},
-                  {"satDrift", settings.sat_drift},
-                  {"valDrift", settings.val_drift},
-                  {"brushFiles", json::array({{{"brushFileRef", {{"relativeTo", "Project"}, {"path", ref}}}}})}};
-  const std::string text = j.dump();
-  mz_zip_archive zip{};
-  void *buffer = nullptr;
-  size_t size = 0;
-  const bool built = mz_zip_writer_init_heap(&zip, 0, 0) &&
-                     mz_zip_writer_add_mem(&zip, "brush.json", text.data(), text.size(), MZ_DEFAULT_LEVEL) &&
-                     mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-  mz_zip_writer_end(&zip);
-  if (built) {
-    std::ofstream out(root / path_from_utf8(name + ".mohobrush"), std::ios::binary | std::ios::trunc);
-    out.write(static_cast<const char *>(buffer), std::streamsize(size));
-    if (!out) {
-      *r_error = "Couldn't write " + name + ".mohobrush";
-      mz_free(buffer);
-      return false;
-    }
-  }
-  mz_free(buffer);
-  if (!built) {
-    *r_error = "Couldn't build " + name + ".mohobrush";
-    return false;
-  }
-  brushes_reload();
-  return true;
 }
 
 }  // namespace oanim

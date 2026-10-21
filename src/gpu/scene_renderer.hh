@@ -13,10 +13,12 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 #include "core/math.hh"
 #include "data/layer.hh"
+#include "gpu/tessellate.hh"
 
 namespace oanim {
 
@@ -151,6 +153,18 @@ class SceneRenderer {
   unsigned int brush_vbo_ = 0;
   /* Pieces per curve segment for the render in progress. */
   int quality_ = 12;
+  /* Within one render: each layer's evaluated drawing (bones, modifiers), worked out once though
+   * masks draw a layer again for each of their passes. */
+  std::unordered_map<uint64_t, VectorDrawing> evaluated_;
+  /* Across renders: a drawing's triangles, by a hash of everything they're made from (its points,
+   * curves and shapes, the pixel size, quality and mask pass; see draw_drawing), so a drawing that
+   * didn't change isn't tessellated again. In layer space, so moving the layer keeps them. */
+  struct Tessellated {
+    std::vector<Vertex> vertices;
+    uint64_t used = 0;
+  };
+  std::unordered_map<uint64_t, Tessellated> tessellated_;
+  uint64_t render_serial_ = 0;
   int samples_ = 1;
   /* Set while a layer draws its part of a group's mask: its masking options apply then. */
   struct MaskPass {

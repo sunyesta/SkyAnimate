@@ -156,14 +156,127 @@ struct BrushSettings {
   float sat_drift = 0.0f;
   float val_drift = 0.0f;
 
+  /* The preset these settings were loaded from or saved as ("" for none): the one the UI names first
+   * when several match, and the card it brings into view after saving. Not part of what a preset
+   * holds. */
+  std::string preset;
+
+  /* Photoshop's Brush Tip Shape: each stamp turned by tip_angle (radians), squashed across to
+   * `roundness` (1: as drawn), mirrored. `hardness` is the built-in Round tip's edge (1 hard, 0 soft). */
+  float tip_angle = 0.0f;
+  float roundness = 1.0f;
+  bool flip_x = false;
+  bool flip_y = false;
+  float hardness = 1.0f;
+  /* How stamps come and go as the line stretches and squashes (brush_stroke fills the gaps of a
+   * stretched segment and thins a squashed one): fading in and out, or off: popping in and out
+   * whole, halfway through the fade. */
+  bool pop_in = false;
+
+  /* Photoshop's sections, each on or off; one switched off keeps its values but doesn't apply.
+   * Shape Dynamics holds align, jitter, angle drift and the size variation too; Color Dynamics the
+   * hue, saturation and value drift. */
+  bool shape_dynamics = true;
+  bool scattering = true;
+  bool color_dynamics = true;
+  bool transfer = true;
+
+  /* Shape Dynamics: each stamp's size random, down to 1 - size_jitter (never under size_min, a
+   * fraction); the size growing over the first size_fade_in stamps and shrinking over the last
+   * size_fade_out (0: no fade); each stamp's roundness random down to 1 - roundness_jitter. */
+  float size_jitter = 0.0f;
+  float size_min = 0.0f;
+  int size_fade_in = 0;
+  int size_fade_out = 0;
+  float roundness_jitter = 0.0f;
+
+  /* Scattering: stamps pushed off the line by up to `scatter` line widths (across it, or along it
+   * too with scatter_both), `count` stamps at each place, randomly fewer by count_jitter. */
+  float scatter = 0.0f;
+  bool scatter_both = false;
+  int count = 1;
+  float count_jitter = 0.0f;
+
+  /* Transfer: each stamp's opacity random, down to 1 - opacity_jitter; fading in over the first
+   * opacity_fade_in stamps and out over the last opacity_fade_out. */
+  float opacity_jitter = 0.0f;
+  int opacity_fade_in = 0;
+  int opacity_fade_out = 0;
+
   bool operator==(const BrushSettings &) const = default;
 };
+
+/* Every brush setting: X(type, field, "pythonAndFileKey"). */
+#define OANIM_BRUSH_SETTINGS(X) \
+  X(std::string, name, "name") \
+  X(bool, align, "align") \
+  X(float, jitter, "jitter") \
+  X(float, spacing, "spacing") \
+  X(float, angle_drift, "angleDrift") \
+  X(bool, randomize, "randomize") \
+  X(bool, random_order, "randomOrder") \
+  X(bool, merged_alpha, "mergedAlpha") \
+  X(float, size_variation_amp, "sizeVariationAmp") \
+  X(float, size_variation_scale, "sizeVariationScale") \
+  X(int, random_interval, "randomInterval") \
+  X(bool, tint, "tint") \
+  X(float, hue_drift, "hueDrift") \
+  X(float, sat_drift, "satDrift") \
+  X(float, val_drift, "valDrift") \
+  X(std::string, preset, "preset") \
+  X(float, tip_angle, "tipAngle") \
+  X(float, roundness, "roundness") \
+  X(bool, flip_x, "flipX") \
+  X(bool, flip_y, "flipY") \
+  X(float, hardness, "hardness") \
+  X(bool, pop_in, "popIn") \
+  X(bool, shape_dynamics, "shapeDynamics") \
+  X(bool, scattering, "scattering") \
+  X(bool, color_dynamics, "colorDynamics") \
+  X(bool, transfer, "transfer") \
+  X(float, size_jitter, "sizeJitter") \
+  X(float, size_min, "sizeMin") \
+  X(int, size_fade_in, "sizeFadeIn") \
+  X(int, size_fade_out, "sizeFadeOut") \
+  X(float, roundness_jitter, "roundnessJitter") \
+  X(float, scatter, "scatter") \
+  X(bool, scatter_both, "scatterBoth") \
+  X(int, count, "count") \
+  X(float, count_jitter, "countJitter") \
+  X(float, opacity_jitter, "opacityJitter") \
+  X(int, opacity_fade_in, "opacityFadeIn") \
+  X(int, opacity_fade_out, "opacityFadeOut")
+
+/* What changed from `before` to `after`, copied into `target` (the rest of it stays): editing one
+ * setting of several shapes changes only that setting, keeping their other differences. */
+inline void brush_settings_apply_changes(const BrushSettings &before, const BrushSettings &after,
+                                         BrushSettings &target)
+{
+#define OANIM_BRUSH_APPLY(type, field, key) \
+  if (!(before.field == after.field)) { \
+    target.field = after.field; \
+  }
+  OANIM_BRUSH_SETTINGS(OANIM_BRUSH_APPLY)
+#undef OANIM_BRUSH_APPLY
+}
+
+/* The settings without the preset they came from, for comparing with presets. */
+inline BrushSettings brush_settings_unnamed(BrushSettings b)
+{
+  b.preset.clear();
+  return b;
+}
 
 /* A brush preset (assets/brush_presets.hh): a name and the settings it loads, `settings.name` being
  * its brush shape. A file preset also keeps a copy of the shape's images (file names and PNG
  * bytes), so the file carries them. */
 struct BrushPreset {
   std::string name;
+  /* A library preset's group: the subfolder of Brush Presets it's in ("" at the top), as
+   * Photoshop's brush folders. */
+  std::string group;
+  /* Built into the app (Basic's Hard Round and Soft Round): in no folder, and can't be deleted. */
+  bool builtin = false;
   BrushSettings settings;
   std::vector<std::string> shape_files;
   std::vector<std::string> shape_data;

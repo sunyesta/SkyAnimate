@@ -39,6 +39,7 @@
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
+#include "editors/brush_editor.hh"
 #include "editors/editors.hh"
 
 namespace py = pybind11;
@@ -438,6 +439,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return names;
   });
   m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 8); });
+  /* How long frames take (ms, ImGui's running average), for checking the app's speed. */
+  m.def("frame_ms", []() { return 1000.0f / std::max(ImGui::GetIO().Framerate, 1e-3f); });
+  m.def("brush_settings_open", [](bool tool) { brush_window_open(tool ? BrushTarget::Tool : BrushTarget::Shapes); });
   /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
   static const std::pair<const char *, bool ViewportOverlays::*> overlay_switches[] = {
       {"show", &ViewportOverlays::show},
@@ -934,27 +938,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* Brushes: settings travel as dicts with Moho's .mohobrush key names. */
   const auto brush_to_dict = [](const BrushSettings &b) {
     py::dict d;
-    d["name"] = b.name;
-    d["align"] = b.align;
-    d["jitter"] = b.jitter;
-    d["spacing"] = b.spacing;
-    d["angleDrift"] = b.angle_drift;
-    d["randomize"] = b.randomize;
-    d["randomOrder"] = b.random_order;
-    d["mergedAlpha"] = b.merged_alpha;
-    d["sizeVariationAmp"] = b.size_variation_amp;
-    d["sizeVariationScale"] = b.size_variation_scale;
-    d["randomInterval"] = b.random_interval;
-    d["tint"] = b.tint;
-    d["hueDrift"] = b.hue_drift;
-    d["satDrift"] = b.sat_drift;
-    d["valDrift"] = b.val_drift;
+#define OANIM_BRUSH_DICT(type, field, key) d[key] = b.field;
+    OANIM_BRUSH_SETTINGS(OANIM_BRUSH_DICT)
+#undef OANIM_BRUSH_DICT
     return d;
   };
-  m.def("brushes", [brush_to_dict]() {
+  m.def("brushes", []() {
     py::list result;
     for (const Brush &brush : brushes()) {
-      py::dict d = brush_to_dict(brush.defaults);
+      py::dict d;
       d["name"] = brush.name;
       d["images"] = int(brush.files.size());
       result.append(d);
@@ -972,10 +964,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["shape"] = p.settings.name;
       d["shape_missing"] = !p.settings.name.empty() && !brush_find(p.settings.name);
       d["shape_images"] = int(p.shape_data.size());
+      d["group"] = p.group;
+      d["builtin"] = p.builtin;
       result.append(d);
     }
     return result;
   });
+  m.def("brush_categories", []() { return library_brush_categories(); });
   m.def("asset_library", []() { return preferences().asset_library; });
   m.def("layer_shape_brush", [layer_or_raise, brush_to_dict](uint64_t id, int index) {
     const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));

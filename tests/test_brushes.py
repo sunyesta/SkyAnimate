@@ -1,4 +1,5 @@
-"""Brushes: the asset library, Moho's brush formats, importing, and shapes painted with a brush.
+"""Brushes: the asset library (Brush Shapes, Brushes by category), upgrading a version 1 library of
+Moho's brushes, and shapes painted with a brush.
 
 Run with:  OpenAnimate --background --python tests/test_brushes.py
 """
@@ -44,53 +45,73 @@ def write_mohobrush(path, image, **settings):
 
 root = pathlib.Path(tempfile.mkdtemp(prefix="oanim_brushes_"))
 
-# --- A Moho brush folder to import from -------------------------------------------------------
-moho = root / "Moho Brushes"
-moho.mkdir()
-write_png(moho / "Ink.png")
-write_mohobrush(moho / "Ink.mohobrush", "Ink.png", align=True, jitter=0.0, spacing=0.1)
-(moho / "Hair").mkdir()
-write_png(moho / "Hair" / "1.png")
-write_png(moho / "Hair" / "2.png")
-write_mohobrush(moho / "Hair.mohobrush", "Hair", randomize=True, randomInterval=4, sizeVariationAmp=0.5)
-# An older brush: settings in the name (align 1, jitter 0 degrees, spacing 200%).
-write_png(moho / "Arrow_1_0_200.png")
-write_png(moho / "Plain.png")
-(moho / "notes.txt").write_text("not a brush")
-
-# --- The asset library --------------------------------------------------------------------------
+# --- A new library --------------------------------------------------------------------------------
 assert oanim.assets.library == "", "tests start with no asset library"
 assert oanim.assets.brushes() == []
-library = root / "Library"
-assert oanim.ops.preferences.asset_library_set(directory=str(library)) == {'FINISHED'}
-assert (library / "library.json").is_file() and (library / "Brushes").is_dir()
-assert os.path.samefile(oanim.assets.library, library)
+fresh = root / "Fresh"
+assert oanim.ops.preferences.asset_library_set(directory=str(fresh)) == {'FINISHED'}
+assert (fresh / "Brush Shapes").is_dir() and (fresh / "Brushes").is_dir()
+assert json.loads((fresh / "library.json").read_text())["version"] == 2
+assert os.path.samefile(oanim.assets.library, fresh)
 assert oanim.assets.brushes() == []
+lib = {p["name"]: p for p in oanim.assets.brush_presets(True)}
+assert sorted(lib) == ["Hard Round", "Soft Round"], "the built-in Basic brushes"
+assert lib["Hard Round"]["group"] == "Basic" and lib["Hard Round"]["builtin"]
+assert oanim.ops.brush.preset_remove(preset="Hard Round", library="1") == {'CANCELLED'}, "built in"
 
-# Importing copies the brushes (settings and images) into the library.
-assert oanim.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
-brushes = {b["name"]: b for b in oanim.assets.brushes()}
-assert sorted(brushes) == ["Arrow_1_0_200", "Hair", "Ink", "Plain"], sorted(brushes)
-assert (library / "Brushes" / "Ink.mohobrush").is_file()
-assert (library / "Brushes" / "Hair" / "2.png").is_file()
-assert not (library / "Brushes" / "notes.txt").exists()
+# Shapes are plain PNGs, or folders of them.
+write_png(fresh / "Brush Shapes" / "Dot.png")
+(fresh / "Brush Shapes" / "Pair").mkdir()
+write_png(fresh / "Brush Shapes" / "Pair" / "a.png")
+write_png(fresh / "Brush Shapes" / "Pair" / "b.png")
+(fresh / "Brush Shapes" / "notes.txt").write_text("not a shape")
+assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
+assert {b["name"]: b["images"] for b in oanim.assets.brushes()} == {"Dot": 1, "Pair": 2}
 
-ink, hair, arrow, plain = brushes["Ink"], brushes["Hair"], brushes["Arrow_1_0_200"], brushes["Plain"]
-assert ink["align"] and ink["jitter"] == 0.0 and abs(ink["spacing"] - 0.1) < 1e-6 and ink["images"] == 1
-assert hair["images"] == 2 and hair["randomize"] and hair["randomInterval"] == 4
-assert abs(hair["sizeVariationAmp"] - 0.5) < 1e-6
+# --- Upgrading a version 1 library (Moho's brushes in Brushes/) ------------------------------------
+library = root / "Library"
+old = library / "Brushes"
+old.mkdir(parents=True)
+(library / "library.json").write_text(json.dumps({"format": "SkyAnimate asset library", "version": 1}))
+write_png(old / "Ink.png")
+write_mohobrush(old / "Ink.mohobrush", "Ink.png", align=True, jitter=0.0, spacing=0.1)
+(old / "Hair").mkdir()
+write_png(old / "Hair" / "1.png")
+write_png(old / "Hair" / "2.png")
+write_mohobrush(old / "Hair.mohobrush", "Hair", randomize=True, randomInterval=4, sizeVariationAmp=0.5)
+# Older brushes: settings in the name (align 1, jitter 0 degrees, spacing 200%), or none.
+write_png(old / "Arrow_1_0_200.png")
+write_png(old / "Plain.png")
+write_png(old / "SimpleRound.png")
+write_png(old / "Brush513.png")
+(old / "notes.txt").write_text("not a brush")
+assert oanim.ops.preferences.asset_library_set(directory=str(library)) == {'FINISHED'}
+shapes = library / "Brush Shapes"
+assert (shapes / "Ink.png").is_file() and (shapes / "Hair" / "2.png").is_file(), "the images became shapes"
+assert (shapes / "Arrow_1_0_200.png").is_file(), "under their own names, so documents still find them"
+assert not (library / "Brushes (old)").exists(), "the old folder goes once it's all copied"
+assert not list((library / "Brushes").rglob("*.mohobrush"))
+assert json.loads((library / "library.json").read_text())["version"] == 2
+names = {b["name"]: b for b in oanim.assets.brushes()}
+assert sorted(names) == ["Arrow_1_0_200", "Brush513", "Hair", "Ink", "Plain", "SimpleRound"], sorted(names)
+assert names["Hair"]["images"] == 2
+
+# Each brush became a brush file with its settings, in a category.
+lib = {p["name"]: p for p in oanim.assets.brush_presets(True)}
+assert (library / "Brushes" / "Other" / "Ink.oabrush").is_file()
+ink, hair, arrow = lib["Ink"]["brush"], lib["Hair"]["brush"], lib["Arrow"]["brush"]
+assert lib["Ink"]["shape"] == "Ink" and ink["align"] and ink["jitter"] == 0.0 and abs(ink["spacing"] - 0.1) < 1e-6
+assert hair["randomize"] and hair["randomInterval"] == 4 and abs(hair["sizeVariationAmp"] - 0.5) < 1e-6
+assert lib["Arrow"]["shape"] == "Arrow_1_0_200", "the preset drops the settings from its name"
 assert arrow["align"] and arrow["jitter"] == 0.0 and abs(arrow["spacing"] - 2.0) < 1e-6
-assert not plain["align"] and abs(plain["spacing"] - 0.25) < 1e-6
-
-# Importing again adds nothing and keeps what's there.
-assert oanim.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
-assert len(oanim.assets.brushes()) == 4
+assert lib["SimpleRound"]["group"] == "Basic" and lib["Brush513"]["group"] == "Fun" and lib["Plain"]["group"] == "Other"
+# Read again, nothing changes.
+assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
+assert len(oanim.assets.brush_presets(True)) == len(lib) and len(oanim.assets.brushes()) == 6
 
 # --- Dabs along a line ------------------------------------------------------------------------
-# A line 1 long and 0.1 wide: Ink (spacing 10% of the width) puts a dab every 0.01, Arrow (200%)
-# every 0.2.
-assert oanim.assets.brush_dab_count("Ink", 1.0, 0.1) == 101, oanim.assets.brush_dab_count("Ink", 1.0, 0.1)
-assert oanim.assets.brush_dab_count("Arrow_1_0_200", 1.0, 0.1) == 6
+# A line 1 long and 0.1 wide, at the default spacing (25% of the width): a dab every 0.025.
+assert oanim.assets.brush_dab_count("Ink", 1.0, 0.1) == 41, oanim.assets.brush_dab_count("Ink", 1.0, 0.1)
 
 # --- Shapes with a brush ------------------------------------------------------------------------
 layer = oanim.data.layers.active
@@ -101,14 +122,21 @@ assert layer.shape_brush(0)["name"] == "", "lines start plain"
 oanim.ops.mesh.select_none()
 assert oanim.ops.mesh.brush_set(brush="Ink") == {'CANCELLED'}, "nothing selected"
 layer.select_points([0])
+assert oanim.ops.brush.setting_set(setting="spacing", value="0.5") == {'FINISHED'}
 assert oanim.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
 b = layer.shape_brush(0)
-assert b["name"] == "Ink" and b["align"] and abs(b["spacing"] - 0.1) < 1e-6, "the brush's settings come along"
+assert b["name"] == "Ink" and abs(b["spacing"] - 0.5) < 1e-6, "a shape changes only the shape"
 assert layer.shape_brush(1)["name"] == "", "unselected shapes keep theirs"
 assert oanim.ops.mesh.brush_set(brush="Nope") == {'CANCELLED'}
+# A preset brings its settings.
+assert oanim.ops.brush.preset_load(preset="Ink", library="1") == {'FINISHED'}
+b = layer.shape_brush(0)
+assert b["name"] == "Ink" and b["align"] and abs(b["spacing"] - 0.1) < 1e-6
 
 oanim.ops.ed.undo()
+oanim.ops.ed.undo()
 assert layer.shape_brush(0)["name"] == ""
+oanim.ops.ed.redo()
 oanim.ops.ed.redo()
 assert layer.shape_brush(0)["name"] == "Ink"
 

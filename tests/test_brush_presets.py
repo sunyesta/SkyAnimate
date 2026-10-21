@@ -1,5 +1,5 @@
 """Brush presets: file presets (saved in the .oanim with a copy of their shape), library presets
-(<library>/Brush Presets), loading, auto-renaming and shapes copied into the library.
+(<library>/Brushes/<Category>/<Name>.oabrush), loading, auto-renaming and shapes copied into the library.
 
 Run with:  OpenAnimate --background --python tests/test_brush_presets.py
 """
@@ -36,18 +36,13 @@ def presets(library=False):
 
 
 root = pathlib.Path(tempfile.mkdtemp(prefix="oanim_presets_"))
-moho = root / "Moho"
-moho.mkdir()
-write_png(moho / "Ink.png")
-with zipfile.ZipFile(moho / "Ink.mohobrush", "w") as z:
-    z.writestr("brush.json", json.dumps({"version": 1, "align": True, "jitter": 0.0, "spacing": 0.1,
-                                         "brushFiles": [{"brushFileRef": {"relativeTo": "Project",
-                                                                          "path": "Ink.png"}}]}))
 library = root / "Library"
 assert oanim.ops.preferences.asset_library_set(directory=str(library)) == {'FINISHED'}
-assert (library / "Brush Presets").is_dir(), "the library gets a presets folder"
-assert oanim.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
-assert presets() == {} and presets(True) == {}
+assert (library / "Brushes").is_dir(), "the library gets a brushes folder"
+write_png(library / "Brush Shapes" / "Ink.png")
+assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
+BUILTIN = {"Hard Round", "Soft Round"}
+assert presets() == {} and set(presets(True)) == BUILTIN
 
 layer = oanim.data.layers.active
 layer.add_curve([(-0.5, 0.0), (0.5, 0.0)])
@@ -56,6 +51,9 @@ oanim.ops.mesh.select_none()
 assert oanim.ops.brush.preset_add(name="Nothing") == {'CANCELLED'}, "no shape selected"
 layer.select_points([0])
 assert oanim.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
+assert oanim.ops.brush.setting_set(setting="align", value="1") == {'FINISHED'}
+assert oanim.ops.brush.setting_set(setting="spacing", value="0.1") == {'FINISHED'}
+assert oanim.ops.brush.setting_set(setting="jitter", value="0") == {'FINISHED'}
 
 # --- File presets ------------------------------------------------------------------------------
 assert oanim.ops.brush.preset_add(name="Ink") == {'FINISHED'}
@@ -90,8 +88,7 @@ path = str(root / "presets.oanim")
 assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 with zipfile.ZipFile(path) as z:
     assert any(n.startswith("brush_shapes/") and n.endswith(".png") for n in z.namelist()), z.namelist()
-(library / "Brushes" / "Ink.mohobrush").unlink()
-(library / "Brushes" / "Ink.png").unlink()
+(library / "Brush Shapes" / "Ink.png").unlink()
 assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
 assert oanim.assets.brushes() == []
 assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
@@ -106,29 +103,29 @@ assert layer.shape_brush(1)["name"] == "Ink"
 
 # --- Saving to the library ---------------------------------------------------------------------
 assert oanim.ops.brush.preset_save_to_library(preset="Ink") == {'FINISHED'}
-assert (library / "Brush Presets" / "Ink.json").is_file()
-assert (library / "Brushes" / "Ink.png").is_file(), "the library lacked the shape: it's copied in"
+assert (library / "Brushes" / "My Brushes" / "Ink.oabrush").is_file(), "no category named: My Brushes"
+assert (library / "Brush Shapes" / "Ink.png").is_file(), "the library lacked the shape: it's copied in"
 lib = presets(True)
-assert sorted(lib) == ["Ink"] and lib["Ink"]["shape"] == "Ink" and not lib["Ink"]["shape_missing"]
+assert sorted(set(lib) - BUILTIN) == ["Ink"] and lib["Ink"]["shape"] == "Ink" and not lib["Ink"]["shape_missing"]
 assert abs(lib["Ink"]["brush"]["spacing"] - 0.1) < 1e-6
 
 # Again: the preset name gets a number; the same shape is reused, not copied again.
 assert oanim.ops.brush.preset_save_to_library(preset="Ink") == {'FINISHED'}
 lib = presets(True)
-assert sorted(lib) == ["Ink", "Ink.001"] and lib["Ink.001"]["shape"] == "Ink"
-assert not (library / "Brushes" / "Ink.001.png").exists()
+assert sorted(set(lib) - BUILTIN) == ["Ink", "Ink.001"] and lib["Ink.001"]["shape"] == "Ink"
+assert not (library / "Brush Shapes" / "Ink.001.png").exists()
 
 # Another image under the shape's name in the library: the copy gets a number and the saved preset
 # points at it.
-write_png(library / "Brushes" / "Ink.png", size=20, color=(40, 40, 40))
+write_png(library / "Brush Shapes" / "Ink.png", size=20, color=(40, 40, 40))
 assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
 assert oanim.ops.brush.preset_save_to_library(preset="Ink") == {'FINISHED'}
 lib = presets(True)
 assert lib["Ink.002"]["shape"] == "Ink.001", lib["Ink.002"]
-assert (library / "Brushes" / "Ink.001.png").is_file()
+assert (library / "Brush Shapes" / "Ink.001.png").is_file()
 
 # --- A preset whose shape is missing ------------------------------------------------------------
-(library / "Brush Presets" / "Gone.json").write_text(json.dumps(
+(library / "Brushes" / "Gone.oabrush").write_text(json.dumps(
     {"version": 1, "name": "Gone", "brush": {"name": "Vanished", "spacing": 0.5, "align": False}}))
 assert oanim.ops.preferences.brushes_reload() == {'FINISHED'}
 lib = presets(True)
@@ -140,8 +137,24 @@ assert abs(b["spacing"] - 0.5) < 1e-6 and not b["align"], "the rest of the prese
 
 # Deleting from the library removes the file (no undo step: the document didn't change).
 assert oanim.ops.brush.preset_remove(preset="Gone", library="1") == {'CANCELLED'}
-assert not (library / "Brush Presets" / "Gone.json").exists()
+assert not (library / "Brushes" / "Gone.oabrush").exists()
 assert "Gone" not in presets(True)
 assert oanim.ops.brush.preset_remove(preset="Gone", library="1") == {'CANCELLED'}
+
+# --- Saving straight to the library, in a category ------------------------------------------------
+oanim.ops.mesh.select_none()
+layer.select_points([2])
+assert oanim.ops.brush.preset_add(name="Wet Ink", library="1", category="Inks") == {'FINISHED'}
+assert (library / "Brushes" / "Inks" / "Wet Ink.oabrush").is_file(), "a new category is a new folder"
+lib = presets(True)
+assert lib["Wet Ink"]["group"] == "Inks" and "Wet Ink" not in presets(), "the library's, not the project's"
+assert layer.shape_brush(1)["preset"] == "Wet Ink", "the brush is now that preset's"
+assert "Inks" in oanim._oanim.brush_categories() and "Basic" in oanim._oanim.brush_categories()
+assert oanim.ops.brush.preset_add(name="Wet Ink", library="1", category="Inks") == {'FINISHED'}
+assert (library / "Brushes" / "Inks" / "Wet Ink.001.oabrush").is_file(), "a taken name gets a number"
+# A project preset saved into a chosen category.
+assert oanim.ops.brush.preset_add(name="Keep") == {'FINISHED'}
+assert oanim.ops.brush.preset_save_to_library(preset="Keep", category="Inks") == {'FINISHED'}
+assert presets(True)["Keep"]["group"] == "Inks"
 
 print("brush presets: ok")

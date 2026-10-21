@@ -124,6 +124,8 @@ add_test(NAME brushes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brushes.py)
 add_test(NAME brush_presets
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_presets.py)
+add_test(NAME brush_settings
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_settings.py)
 add_test(NAME handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
 add_test(NAME animation

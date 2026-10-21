@@ -1,6 +1,7 @@
 #include "gpu/scene_renderer.hh"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include "anim/deform.hh"
@@ -362,6 +363,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   glEnable(GL_STENCIL_TEST);
   set_blend_over();
 
+  evaluated_.clear();
+  render_serial_++;
   output_ = acquire_target();
   bind_target(output_);
   clear(background ? Color{background->r, background->g, background->b, 1.0f} : Color{0, 0, 0, 0});
@@ -382,6 +385,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
   gl::BindVertexArray(0);
   gl::UseProgram(0);
+  /* Triangles no render has used for a while (another zoom, a drawing since changed) go. */
+  std::erase_if(tessellated_, [this](const auto &item) { return item.second.used + 120 < render_serial_; });
   return output_->texture;
 }
 
@@ -764,15 +769,72 @@ void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const
   coverage_pass_ = false;
 }
 
+static uint64_t hash_mix(uint64_t h, uint64_t v)
+{
+  h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+  return h * 0xff51afd7ed558ccdull;
+}
+
+static uint64_t hash_float(uint64_t h, float f)
+{
+  uint32_t bits;
+  std::memcpy(&bits, &f, sizeof(bits));
+  return hash_mix(h, bits);
+}
+
+static uint64_t hash_color(uint64_t h, const Color &c)
+{
+  return hash_float(hash_float(hash_float(hash_float(h, c.r), c.g), c.b), c.a);
+}
+
+/* Everything a drawing's outlines and triangles are made from (shape_outline, shape_runs and the
+ * tessellators), and nothing they aren't (selection, keys, weights, names). */
+static uint64_t drawing_geometry_hash(const VectorDrawing &d)
+{
+  uint64_t h = hash_mix(0, d.points.size());
+  for (const MeshPoint &p : d.points) {
+    h = hash_float(hash_float(hash_float(h, p.pos.x), p.pos.y), p.radius);
+    h = hash_mix(hash_mix(h, uint64_t(p.corner)), uint64_t(p.detail.level));
+  }
+  h = hash_mix(h, d.curves.size());
+  for (const Curve &c : d.curves) {
+    h = hash_mix(hash_mix(h, c.points.size()), c.closed ? 1 : 0);
+    for (const CurvePoint &cp : c.points) {
+      h = hash_mix(h, uint64_t(cp.point));
+      h = hash_float(hash_float(hash_float(h, cp.curvature), cp.weight_in), cp.weight_out);
+      h = hash_float(hash_float(h, cp.offset_in), cp.offset_out);
+      h = hash_float(hash_float(hash_float(hash_float(h, cp.handle_in.x), cp.handle_in.y), cp.handle_out.x),
+                     cp.handle_out.y);
+      h = hash_mix(h, uint64_t(cp.edge_hidden) | uint64_t(cp.handles_set) << 1 | uint64_t(cp.aligned) << 2);
+    }
+  }
+  h = hash_mix(h, d.shapes.size());
+  for (const Shape &s : d.shapes) {
+    h = hash_mix(h, s.edges.size());
+    for (const ShapeEdge &e : s.edges) {
+      h = hash_mix(hash_mix(h, uint64_t(e.curve)), uint64_t(e.segment));
+    }
+    h = hash_mix(h, uint64_t(s.has_fill) | uint64_t(s.has_outline) << 1 | uint64_t(s.hidden) << 2);
+    h = hash_mix(h, uint64_t(s.detail_level));
+    h = hash_float(hash_color(hash_color(h, s.style.fill), s.style.line), s.style.line_width);
+  }
+  return h;
+}
+
 void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
 {
-  /* Modifiers (Mirror, the bones) draw from an evaluated copy; otherwise the drawing itself. */
-  VectorDrawing evaluated;
+  /* Modifiers (Mirror, the bones) draw from an evaluated copy, made once per render; otherwise the
+   * drawing itself. */
   const bool modified = layer_has_modifier_effect(doc, layer, final_render_);
+  const VectorDrawing *source = &layer_drawing(doc, layer);
   if (modified) {
-    evaluated = layer_evaluated_drawing(doc, layer, final_render_);
+    auto it = evaluated_.find(layer.id);
+    if (it == evaluated_.end()) {
+      it = evaluated_.emplace(layer.id, layer_evaluated_drawing(doc, layer, final_render_)).first;
+    }
+    source = &it->second;
   }
-  const VectorDrawing &drawing = modified ? evaluated : layer_drawing(doc, layer);
+  const VectorDrawing &drawing = *source;
   if (drawing.shapes.empty()) {
     return;
   }
@@ -781,6 +843,32 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
    * strip would bring back seams where edges meet. */
   const float pixel = 1.0f / std::max(to_pixels.scale(), 1e-6f);
   constexpr float feather = 0.0f;
+
+  /* A drawing without brushed lines is one batch of triangles: kept, and drawn again while what it's
+   * made from stays the same. (Brushed lines lay their stamps out by the frame, for line boil.) A
+   * brush that isn't there draws a solid line, so it counts once it's found. */
+  bool brushed = false;
+  for (const Shape &s : drawing.shapes) {
+    brushed = brushed || (s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name));
+  }
+  uint64_t key = 0;
+  if (!brushed) {
+    key = hash_mix(drawing_geometry_hash(drawing), layer.id);
+    key = hash_float(hash_mix(key, uint64_t(quality_)), pixel);
+    key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
+                            uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
+                            uint64_t(mask_pass_.extend) << 6);
+    key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
+    if (auto it = tessellated_.find(key); it != tessellated_.end()) {
+      it->second.used = render_serial_;
+      if (!it->second.vertices.empty()) {
+        gl::UseProgram(color_program_);
+        gl::Uniform1f(gl::GetUniformLocation(color_program_, "u_opacity"), opacity);
+        draw_vertices(it->second.vertices, transform);
+      }
+      return;
+    }
+  }
 
   std::vector<Vertex> vertices;
   std::vector<float2> outline;
@@ -874,7 +962,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
       {
         /* A brushed line, if its brush is in the library and has images; otherwise solid. */
         brush = brush_find(shape.style.brush.name);
-        images = brush ? &brush_images(*brush) : nullptr;
+        images = brush ? &brush_tip_images(*brush, shape.style.brush) : nullptr;
         if (images && images->empty()) {
           brush = nullptr;
         }
@@ -964,6 +1052,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
         }
       }
     }
+  }
+  if (!brushed) {
+    tessellated_[key] = {vertices, render_serial_};
   }
   flush();
 }

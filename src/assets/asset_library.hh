@@ -3,9 +3,14 @@
 /* The asset library: one folder, chosen once in Preferences, holding the app's brushes (and
  * later swatches, templates and the like) so every document shares them.
  *
- *   <library>/library.json   marks the folder as an Open Animate asset library
- *   <library>/Brushes/       brushes in Moho's own format (see assets/brushes.hh)
+ *   <library>/library.json                    marks it as an asset library (format version 2)
+ *   <library>/Brushes/<Category>/<Name>.oabrush   the brushes: one file each, a category a folder
+ *                                                 (assets/brush_presets.hh)
+ *   <library>/Brush Shapes/                   the images they paint with: PNGs, or folders of
+ *                                             them (assets/brushes.hh)
  *
+ * A version 1 library (Moho's brushes in Brushes/) is upgraded when it's read: see
+ * brushes_reload. *
  * When no library is set (or its folder is gone), the app asks for a folder at startup and
  * initializes it there. */
 
@@ -37,15 +42,11 @@ bool asset_library_ready();
  * it the asset library, saves the preferences and reloads the brushes. False (and a report) if
  * the folder can't be written. */
 bool asset_library_set(const std::string &folder);
-/* <library>/Brushes, or "" when no library is set. */
-std::string asset_library_brushes_dir();
-
-/* Moho's brush folders found on this computer: the installed brushes of each Moho version and
- * the user's Moho custom content brushes. */
-std::vector<std::string> moho_brush_dirs();
-/* Copies Moho brushes (.mohobrush files with their images, and plain brush PNGs) from `dirs`
- * into the library's Brushes folder, leaving brushes already there alone, then reloads the
- * brushes. Returns how many brushes were added, or -1 if there is no library. */
-int asset_library_import_moho_brushes(const std::vector<std::string> &dirs);
+/* <library>/Brush Shapes, or "" when no library is set. */
+std::string asset_library_shapes_dir();
+/* The library's format version (library.json), 0 without one. */
+int asset_library_version();
+/* Marks the library as being in the current format (after an upgrade). */
+void asset_library_mark_current();
 
 }  // namespace oanim

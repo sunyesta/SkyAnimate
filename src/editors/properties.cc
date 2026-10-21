@@ -3731,8 +3731,12 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     bool revert = false;
     float fill[4] = {shape.style.fill.r, shape.style.fill.g, shape.style.fill.b, shape.style.fill.a};
     bool on = changed_begin((look && look->fill_set) || swapped(true) >= 0);
-    if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr)) {
+    bool pick = false;
+    if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("FILL"))) {
       shape.style.fill = {fill[0], fill[1], fill[2], fill[3]};
+    }
+    if (pick) {
+      ui_style_eyedropper_start("FILL", "fill colour");
     }
     material_field_reach(C, shared);
     const std::vector<OpArgs> fill_change = color_change(true, look && look->fill_set);
@@ -3745,8 +3749,12 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     revert = false;
     float line[4] = {shape.style.line.r, shape.style.line.g, shape.style.line.b, shape.style.line.a};
     on = changed_begin((look && look->line_set) || swapped(false) >= 0);
-    if (ui_color(C, "Line Color", line, "Line Color", on ? &revert : nullptr)) {
+    pick = false;
+    if (ui_color(C, "Line Color", line, "Line Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("LINE"))) {
       shape.style.line = {line[0], line[1], line[2], line[3]};
+    }
+    if (pick) {
+      ui_style_eyedropper_start("LINE", "line colour");
     }
     material_field_reach(C, shared);
     const std::vector<OpArgs> line_change = color_change(false, look && look->line_set);
@@ -3762,8 +3770,8 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Line Width");
     ImGui::TableSetColumnIndex(1);
-    /* Changed on a copy: a revert button beside it, as beside a changed colour. */
-    ImGui::SetNextItemWidth(on ? -ui_revert_button_space() : -1.0f);
+    /* Changed on a copy: a revert button beside it, as beside a changed colour; the eyedropper last. */
+    ImGui::SetNextItemWidth(-(ui_revert_button_space() * (on ? 2.0f : 1.0f)));
     const float units_to_pixels = float(doc.height) * 0.5f;
     float pixels = shape.style.line_width * units_to_pixels;
     if (ImGui::DragFloat("##width", &pixels, 0.1f, 0.0f, 500.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
@@ -3779,22 +3787,19 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
         operator_call(C, "layer.reference_revert", setting("line_width")[0]);
       }
     }
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    if (ui_pick_button("##pick_width", "Eyedropper: click a shape in the viewport to take its line width",
+                       ui_shape_eyedropper_active("WIDTH"))) {
+      ui_style_eyedropper_start("WIDTH", "line width");
+    }
     changed_end(C, on, "##changed_width", setting("line_width"), setting("line_width"));
 
-    /* The brush (editors/brush_editor.hh): presets, a preview, the shape, spacing and the rest under
-     * Advanced. An edit goes to every selected shape. */
+    /* The brush (editors/brush_editor.hh): its preset or shape, and the preset button; both open the
+     * Brush Settings window. */
     on = changed_begin(look && look->brush_set);
-    BrushSettings brush = shape.style.brush;
-    const BrushEditResult brush_edit =
-        brush_editor(C, brush, shape.style, BrushTarget::Shapes, on ? "Revert to the original's brush" : nullptr);
+    const bool brush_revert = brush_row(C, shape.style.brush, shape.style, on ? "Revert to the original's brush" : nullptr);
     material_field_reach(C, shared);
-    if (brush_edit.changed) {
-      shapes_set_brush(C, brush);
-    }
-    if (brush_edit.done) {
-      C.undo->push("Brush", doc);
-    }
-    if (brush_edit.revert) {
+    if (brush_revert) {
       operator_call(C, "layer.reference_revert", setting("brush")[0]);
     }
     changed_end(C, on, "##changed_brush", setting("brush"), setting("brush"));

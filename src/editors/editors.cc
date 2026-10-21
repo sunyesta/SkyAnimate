@@ -853,12 +853,13 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
   ImGui::PopID();
 }
 
-bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert)
+bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert, bool *r_pick,
+              bool pick_active)
 {
   ui_label(label);
   ImGui::PushID(label);
   bool finished = false;
-  const float revert_w = r_revert ? ui_revert_button_space() : 0.0f;
+  const float revert_w = (r_revert ? ui_revert_button_space() : 0.0f) + (r_pick ? ui_revert_button_space() : 0.0f);
   const bool changed = ui_color_edit("##color", rgba, true, &finished, revert_w);
   if (finished && C.undo && C.document && undo_name) {
     C.undo->push(undo_name, *C.document);
@@ -866,6 +867,11 @@ bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_nam
   if (r_revert) {
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
     *r_revert = ui_revert_button("##revert", "Revert to the original's colour");
+  }
+  if (r_pick) {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    const std::string tip = std::string("Eyedropper: click a shape in the viewport to take its ") + label;
+    *r_pick = ui_pick_button("##pick", tip.c_str(), pick_active);
   }
   ImGui::PopID();
   return changed;
@@ -1147,7 +1153,11 @@ struct LayerEyedropper {
   /* Picking for something other than a bone's shape: what to do with the layer clicked (true when
    * done), and what to say at the mouse. */
   std::function<bool(Context &, uint64_t)> pick;
+  /* Picking a shape (ui_shape_eyedropper_start) rather than a layer. */
+  std::function<bool(Context &, uint64_t, int)> pick_shape;
   std::function<std::string()> cue;
+  /* What started a shape eyedropper (ui_shape_eyedropper_active(tag)). */
+  std::string tag;
   /* A click this frame went to it (a layer, or nothing under the mouse): not a click elsewhere. */
   bool took_click = false;
 };
@@ -1202,12 +1212,72 @@ void ui_bone_collection_menus(Context &C, bool hovered)
 
 void ui_layer_eyedropper_start(uint64_t armature, uint64_t bone)
 {
-  g_layer_eyedropper = {true, armature, bone, {}, {}, false};
+  g_layer_eyedropper = {true, armature, bone, {}, {}, {}, {}, false};
 }
 
 void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pick, std::function<std::string()> cue)
 {
-  g_layer_eyedropper = {true, 0, 0, std::move(pick), std::move(cue), false};
+  g_layer_eyedropper = {true, 0, 0, std::move(pick), {}, std::move(cue), {}, false};
+}
+
+void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
+                               const char *tag)
+{
+  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), std::move(cue), tag ? tag : "", false};
+}
+
+bool ui_shape_eyedropper_active()
+{
+  return g_layer_eyedropper.active && g_layer_eyedropper.pick_shape != nullptr;
+}
+
+bool ui_shape_eyedropper_active(const char *tag)
+{
+  return ui_shape_eyedropper_active() && g_layer_eyedropper.tag == tag;
+}
+
+void ui_style_eyedropper_start(const char *what, const char *what_label)
+{
+  const std::string setting = what, label = what_label;
+  ui_shape_eyedropper_start(
+      [setting](Context &C, uint64_t layer, int shape) {
+        operator_call(C, "mesh.style_copy_from",
+                      {{"layer", std::to_string(layer)}, {"shape", std::to_string(shape)}, {"what", setting}});
+        return true;
+      },
+      [label] { return "Click a shape to take its " + label + "  |  Esc cancels"; }, what);
+}
+
+bool ui_pick_button(const char *id, const char *tooltip, bool active)
+{
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  if (active) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+  }
+  /* A click while it's on stops it, as any click off a shape does. */
+  const bool clicked = ImGui::Button(id, ImVec2(h, h)) && !active;
+  if (active) {
+    ImGui::PopStyleColor();
+  }
+  if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("%s", active ? "Picking: click a shape in the viewport (Esc stops)" : tooltip);
+  }
+  ui_eyedropper_icon(ImGui::GetWindowDrawList(), ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.32f,
+                     ImGui::GetColorU32(ImGuiCol_Text));
+  return clicked;
+}
+
+void ui_shape_eyedropper_pick(Context &C, uint64_t layer, int shape)
+{
+  LayerEyedropper &e = g_layer_eyedropper;
+  if (!e.active || !e.pick_shape) {
+    return;
+  }
+  e.took_click = true;
+  if (layer != 0 && shape >= 0 && e.pick_shape(C, layer, shape)) {
+    e.active = false;
+  }
 }
 
 void ui_draw_order_pick_update(Context &C)
@@ -1446,7 +1516,8 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
     return;
   }
   g_layer_eyedropper.took_click = true;
-  if (layer_id == 0) {
+  /* A shape is picked in the viewport: a layer row says nothing about which. */
+  if (layer_id == 0 || g_layer_eyedropper.pick_shape) {
     return;
   }
   if (g_layer_eyedropper.pick) {

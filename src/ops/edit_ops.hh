@@ -15,6 +15,7 @@ struct Context;
 struct Document;
 struct Layer;
 struct LayerMask;
+struct Shape;
 struct VectorDrawing;
 
 void layer_operators_register();
@@ -56,6 +57,10 @@ int shapes_set_brush(Context &C, const BrushSettings &brush);
 /* The brush of the shape the Material panel shows (the active shape while selected, else the topmost
  * selected). False when no shape is selected. */
 bool shown_shape_brush(Context &C, BrushSettings *r_brush);
+Shape *shown_shape(Context &C);
+/* What changed from `before` to `after` (one field, typically), given to every selected shape;
+ * their other settings stay. Returns how many changed. */
+int shapes_change_brush(Context &C, const BrushSettings &before, const BrushSettings &after);
 
 /* The active layer's drawing if it can be edited: a vector layer that is not locked (a reference's
  * looks, and its points with Edit Points on). Null otherwise. */

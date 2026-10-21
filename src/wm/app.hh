@@ -80,8 +80,6 @@ class App {
   bool show_about_ = false;
   bool show_preferences_ = false;
   /* The asset library was set up while the app ran: offer Moho's brushes if it has none. */
-  bool library_was_ready_ = false;
-  bool offer_moho_import_ = false;
   /* The last render (Render Frame), shown in the Render Result window. */
   std::unique_ptr<SceneRenderer> render_renderer_;
   unsigned int render_texture_ = 0;

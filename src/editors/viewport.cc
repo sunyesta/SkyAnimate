@@ -31,6 +31,7 @@
 #include "data/document.hh"
 #include "data/media_layer.hh"
 #include "editors/brush_editor.hh"
+#include "media/media.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
 #include "gpu/scene_renderer.hh"
@@ -44,6 +45,7 @@
 #include "wm/keymap.hh"
 
 namespace oanim {
+
 
 /* Blender's edit-mode colours. */
 static constexpr ImU32 COL_VIEWPORT_BACK = IM_COL32(0x3d, 0x3d, 0x3d, 255);
@@ -1527,25 +1529,16 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
       ImGui::SameLine();
       {
-        /* The brush new strokes get, edited as the Material panel edits a shape's. */
-        const std::string &name = ts.style.brush.name;
-        if (ImGui::Button(((name.empty() ? std::string("Solid") : name) + "##tool_brush").c_str())) {
-          ImGui::OpenPopup("##tool_brush_popup");
+        /* The brush new strokes get: the Brush Settings window, on the tool. */
+        const float icon_h = ImGui::GetFrameHeight();
+        const ImVec2 icon_at = ImGui::GetCursorScreenPos();
+        if (ImGui::Button(("     " + brush_shown_name(doc, ts.style.brush) + "##tool_brush").c_str())) {
+          brush_window_open(BrushTarget::Tool);
         }
+        brush_preset_icon(ImGui::GetWindowDrawList(), icon_at + ImVec2(2.0f, 0.0f), icon_at + ImVec2(icon_h, icon_h),
+                          ImGui::GetColorU32(ImGuiCol_Text));
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("Brush for new strokes: presets, shape, spacing");
-        }
-        if (ImGui::BeginPopup("##tool_brush_popup")) {
-          if (ImGui::BeginTable("##tool_brush", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(440.0f, 0))) {
-            ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-            ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
-            BrushSettings brush = ts.style.brush;
-            if (brush_editor(C, brush, ts.style, BrushTarget::Tool).changed) {
-              ts.style.brush = brush;
-            }
-            ImGui::EndTable();
-          }
-          ImGui::EndPopup();
+          ImGui::SetTooltip("The brush for new strokes: click for Brush Settings");
         }
       }
       ImGui::SameLine();
@@ -5047,7 +5040,7 @@ static void bone_parent_menus(Context &C, bool hovered)
 
 /* The top layer shown under the mouse: one with a filled shape there, or a line close by. */
 static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, ImVec2 mouse,
-                                  const std::vector<uint64_t> &local_view)
+                                  const std::vector<uint64_t> &local_view, int *r_shape = nullptr)
 {
   /* Local View hides the rest, so a click can't pick them. */
   const std::set<uint64_t> local = local_view_layers(doc, local_view);
@@ -5068,7 +5061,19 @@ static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, 
       const Transform2D to_document = layer_world_transform(doc, layer.id);
       const float2 p = to_document.inverted().apply(at);
       const float scale = std::max(length(to_document.apply_vector({1.0f, 0.0f})), 1e-9f);
-      if (drawing_pick_shape(drawing, p, 4.0f * px / scale) >= 0) {
+      /* Picking a stroke (the brush eyedropper): anywhere on it as drawn, its width included. */
+      float reach = 4.0f * px / scale;
+      if (r_shape) {
+        float half = 0.0f;
+        for (const Shape &s : drawing.shapes) {
+          half = std::max(half, s.has_outline ? s.style.line_width * 0.5f : 0.0f);
+        }
+        reach += half;
+      }
+      if (const int shape = drawing_pick_shape(drawing, p, reach); shape >= 0) {
+        if (r_shape) {
+          *r_shape = shape;
+        }
         return layer.id;
       }
     }
@@ -5587,7 +5592,14 @@ static void viewport_draw_contents(Area &area, Context &C)
     wm.draw_order_pick.hover = layer_under_mouse(doc, view, io.MousePos, wm.local_view);
   }
   if (mouse_here && ui_layer_eyedropper_active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-    ui_layer_eyedropper_pick(C, layer_under_mouse(doc, view, io.MousePos, wm.local_view));
+    if (ui_shape_eyedropper_active()) {
+      int shape = -1;
+      const uint64_t layer = layer_under_mouse(doc, view, io.MousePos, wm.local_view, &shape);
+      ui_shape_eyedropper_pick(C, layer, shape);
+    }
+    else {
+      ui_layer_eyedropper_pick(C, layer_under_mouse(doc, view, io.MousePos, wm.local_view));
+    }
   }
 
   /* --- Navigation: wheel zooms at the mouse, middle drag pans, Home frames the camera. --- */
@@ -5679,8 +5691,39 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* Guides (layers not rendered) are overlays: with them off, the viewport shows what renders. */
   renderer->set_show_guides(doc.overlays.show && doc.overlays.guides);
   renderer->set_local_view(doc, wm.local_view);
-  if (const unsigned int texture = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
-                                                             doc.viewport_samples)) {
+  /* While a floating window (Brush Settings, a popup) is dragged nothing else happens, so the last
+   * render is reused: a big drawing takes far longer to render than the drag has per frame. */
+  struct LastRender {
+    unsigned int texture = 0;
+    int width = 0, height = 0;
+    Transform2D to_pixels;
+    int frame = 0, quality = 0, samples = 0;
+    uint64_t changes = 0;
+    /* Media decoded since (a video's frame arriving shows without anything else changing). */
+    uint64_t media = 0;
+    bool guides = false;
+    std::vector<uint64_t> local_view;
+  };
+  static std::map<int, LastRender> last_renders;
+  LastRender &last = last_renders[area.id];
+  const bool show_guides = doc.overlays.show && doc.overlays.guides;
+  const bool same = last.texture != 0 && last.width == width_px && last.height == height_px &&
+                    std::memcmp(&last.to_pixels, &document_to_pixels, sizeof(Transform2D)) == 0 &&
+                    last.frame == doc.frame_current && last.quality == doc.viewport_quality &&
+                    last.samples == doc.viewport_samples && last.changes == C.undo->change_count() &&
+                    last.media == media_generation() && last.guides == show_guides &&
+                    last.local_view == wm.local_view;
+  const bool window_moving = GImGui->MovingWindow != nullptr;
+  unsigned int rendered = 0;
+  if (same && window_moving && !wm.playing && order_preview.empty()) {
+    rendered = last.texture;
+  }
+  else {
+    rendered = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality, doc.viewport_samples);
+    last = {rendered, width_px, height_px, document_to_pixels, doc.frame_current, doc.viewport_quality,
+            doc.viewport_samples, C.undo->change_count(), media_generation(), show_guides, wm.local_view};
+  }
+  if (const unsigned int texture = rendered) {
     dl->AddCallback(premultiplied_blend, nullptr);
     dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), origin, origin + size, ImVec2(0, 1), ImVec2(1, 0));
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);

@@ -86,7 +86,30 @@ static json brush_to_json(const BrushSettings &b)
           {"tint", b.tint},
           {"hueDrift", num(b.hue_drift)},
           {"satDrift", num(b.sat_drift)},
-          {"valDrift", num(b.val_drift)}};
+          {"valDrift", num(b.val_drift)},
+          {"preset", b.preset},
+          {"tipAngle", num(b.tip_angle)},
+          {"roundness", num(b.roundness)},
+          {"flipX", b.flip_x},
+          {"flipY", b.flip_y},
+          {"hardness", num(b.hardness)},
+          {"popIn", b.pop_in},
+          {"shapeDynamics", b.shape_dynamics},
+          {"scattering", b.scattering},
+          {"colorDynamics", b.color_dynamics},
+          {"transfer", b.transfer},
+          {"sizeJitter", num(b.size_jitter)},
+          {"sizeMin", num(b.size_min)},
+          {"sizeFadeIn", b.size_fade_in},
+          {"sizeFadeOut", b.size_fade_out},
+          {"roundnessJitter", num(b.roundness_jitter)},
+          {"scatter", num(b.scatter)},
+          {"scatterBoth", b.scatter_both},
+          {"count", b.count},
+          {"countJitter", num(b.count_jitter)},
+          {"opacityJitter", num(b.opacity_jitter)},
+          {"opacityFadeIn", b.opacity_fade_in},
+          {"opacityFadeOut", b.opacity_fade_out}};
 }
 
 static json materials_to_json(const Document &doc);
@@ -866,6 +889,29 @@ static BrushSettings brush_from_json(const json &j)
   b.hue_drift = get_float(j, "hueDrift", b.hue_drift);
   b.sat_drift = get_float(j, "satDrift", b.sat_drift);
   b.val_drift = get_float(j, "valDrift", b.val_drift);
+  b.preset = get_string(j, "preset");
+  b.tip_angle = get_float(j, "tipAngle", b.tip_angle);
+  b.roundness = std::clamp(get_float(j, "roundness", b.roundness), 0.01f, 1.0f);
+  b.flip_x = get_bool(j, "flipX", b.flip_x);
+  b.flip_y = get_bool(j, "flipY", b.flip_y);
+  b.hardness = std::clamp(get_float(j, "hardness", b.hardness), 0.0f, 1.0f);
+  b.pop_in = get_bool(j, "popIn", b.pop_in);
+  b.shape_dynamics = get_bool(j, "shapeDynamics", b.shape_dynamics);
+  b.scattering = get_bool(j, "scattering", b.scattering);
+  b.color_dynamics = get_bool(j, "colorDynamics", b.color_dynamics);
+  b.transfer = get_bool(j, "transfer", b.transfer);
+  b.size_jitter = std::clamp(get_float(j, "sizeJitter", b.size_jitter), 0.0f, 1.0f);
+  b.size_min = std::clamp(get_float(j, "sizeMin", b.size_min), 0.0f, 1.0f);
+  b.size_fade_in = std::max(0, get_int(j, "sizeFadeIn", b.size_fade_in));
+  b.size_fade_out = std::max(0, get_int(j, "sizeFadeOut", b.size_fade_out));
+  b.roundness_jitter = std::clamp(get_float(j, "roundnessJitter", b.roundness_jitter), 0.0f, 1.0f);
+  b.scatter = std::max(0.0f, get_float(j, "scatter", b.scatter));
+  b.scatter_both = get_bool(j, "scatterBoth", b.scatter_both);
+  b.count = std::clamp(get_int(j, "count", b.count), 1, 16);
+  b.count_jitter = std::clamp(get_float(j, "countJitter", b.count_jitter), 0.0f, 1.0f);
+  b.opacity_jitter = std::clamp(get_float(j, "opacityJitter", b.opacity_jitter), 0.0f, 1.0f);
+  b.opacity_fade_in = std::max(0, get_int(j, "opacityFadeIn", b.opacity_fade_in));
+  b.opacity_fade_out = std::max(0, get_int(j, "opacityFadeOut", b.opacity_fade_out));
   return b;
 }
 

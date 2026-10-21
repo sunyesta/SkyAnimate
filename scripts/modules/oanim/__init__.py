@@ -706,8 +706,8 @@ class _Assets:
         return _oanim.asset_library()
 
     def brushes(self):
-        """The library's brushes, by name: dicts of their default settings plus "images", the
-        number of images (more than one for a multi-brush)."""
+        """The library's brush shapes (Brush Shapes): dicts of "name" and "images", the number of
+        images (more than one for a multi-image shape). Their settings live in presets."""
         return _oanim.brushes()
 
     def brush_presets(self, library=False):
@@ -716,6 +716,10 @@ class _Assets:
         "shape", "shape_missing" (no such shape here: loading keeps the current one) and
         "shape_images" (how many images a file preset carries)."""
         return _oanim.brush_presets(library)
+
+    def brush_categories(self):
+        """The library's brush categories: its folders of Brushes (Basic's built-ins included)."""
+        return _oanim.brush_categories()
 
     def brush_dab_count(self, name, length, width):
         """How many dabs brush `name` lays along a straight line `length` long and `width` wide

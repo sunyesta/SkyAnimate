@@ -48,6 +48,12 @@ def debug_crash():
     _oanim.debug_crash()
 
 
+def brush_settings_open(target="SHAPES"):
+    """Open the Brush Settings window on the selected shapes' brush, or with target "TOOL" the Draw
+    tool's."""
+    _oanim.brush_settings_open(target.upper() == "TOOL")
+
+
 def properties_tab(tab):
     """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "SHAPE"
     (the shapes and their looks; Armature for a bone layer; "DRAWING" still works), "MODIFIERS",
