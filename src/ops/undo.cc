@@ -1,6 +1,7 @@
 #include "ops/undo.hh"
 
 #include "anim/animation.hh"
+#include "assets/brush_presets.hh"
 
 namespace oanim {
 
@@ -37,6 +38,7 @@ bool UndoStack::undo(Document &doc)
   }
   active_--;
   doc = steps_[active_].state;
+  brush_presets_register_shapes(doc);
   changes_++;
   return true;
 }
@@ -48,6 +50,7 @@ bool UndoStack::redo(Document &doc)
   }
   active_++;
   doc = steps_[active_].state;
+  brush_presets_register_shapes(doc);
   changes_++;
   return true;
 }

@@ -22,6 +22,9 @@ struct WindowManager;
 /* A collapsible panel with a two-column (label, value) table. Call ui_panel_end() only when
  * this returns true. */
 bool ui_panel_begin(const char *title, bool default_open = true);
+/* The same with what the header says instead of `title` (which stays the panel's name, so it keeps its
+ * fold), in `color` (0: the usual). */
+bool ui_panel_begin(const char *title, const std::string &header, unsigned int color);
 /* Panels open or folded as the project keeps them (Document::ui_open, saved with it): the editors
  * get the project each frame (ui_bind_project). `key` is "<editor>/<panel>"; ui_fold_scope() is the
  * editor of the window being drawn ("Properties"). ui_fold_next() opens or folds the next
@@ -35,6 +38,15 @@ void ui_fold_next(const std::string &key, bool default_open);
 /* ImGui::CollapsingHeader, open or folded as the project keeps it (keyed by this window's editor
  * and `label`). */
 bool ui_collapsing_header(const char *label, bool default_open);
+/* Blender's panel boxes: between these, every panel and collapsing header is a rounded box with a
+ * grip at its header's right that drags it to another place; `scope` keeps their order ("Properties/
+ * Shape": Document::ui_panel_order, once one was dragged). A box runs to the next one. */
+void ui_boxes_begin(const std::string &scope);
+void ui_boxes_end();
+/* A sub-panel inside a panel (Blender's): a folding row (a table row, inside a panel's table) whose
+ * rows, while open, sit on a darker band. `key` keeps its fold; call ui_subpanel_end() when it's open. */
+bool ui_subpanel_begin(const std::string &key, const std::string &label, bool default_open);
+void ui_subpanel_end();
 
 /* Drag-and-drop reordering, as the Layers editor shows it: no yellow box, a blue line where the
  * dragged item will go. */

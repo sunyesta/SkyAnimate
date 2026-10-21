@@ -146,6 +146,7 @@ bool asset_library_set(const std::string &folder)
   const fs::path root = path_from_utf8(folder);
   std::error_code ec;
   fs::create_directories(root / BRUSHES_DIR, ec);
+  fs::create_directories(root / "Brush Presets", ec);
   if (ec) {
     report(ReportType::Error, "Can't create the asset library in " + folder + ": " + ec.message());
     return false;

@@ -35,6 +35,8 @@ struct Brush {
   BrushSettings defaults;
   /* Image files (UTF-8 paths), in the order a multi-brush uses them. */
   std::vector<std::string> files;
+  /* Or the images themselves (PNG bytes): a shape a file preset carries (assets/brush_presets.hh). */
+  std::vector<std::string> data;
   /* Loaded on first use (brush_images). */
   mutable std::vector<BrushImage> images;
   mutable bool loaded = false;
@@ -56,5 +58,12 @@ bool brush_save(const std::string &name, const BrushSettings &settings, std::str
 /* The brush's images, loaded (and scaled to at most 256 pixels) on first use. Empty if none
  * could be read. */
 const std::vector<BrushImage> &brush_images(const Brush &brush);
+/* The shapes file presets carry, found by brush_find when the library has none by that name. */
+void brushes_set_packed(std::vector<Brush> packed);
+/* A shape's images as file names and PNG bytes (read from its files, or its own copies). False when
+ * there's no such shape or a file can't be read. */
+bool brush_shape_bytes(const std::string &name, std::vector<std::string> &r_files, std::vector<std::string> &r_data);
+/* Whether the library (not a file preset) has a shape by this name. */
+const Brush *brush_find_in_library(const std::string &name);
 
 }  // namespace oanim

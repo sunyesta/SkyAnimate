@@ -6,6 +6,10 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <cstdlib>
+#include <map>
+
+#include "assets/brush_presets.hh"
 #include <set>
 
 #include <miniz.h>
@@ -86,6 +90,7 @@ static json brush_to_json(const BrushSettings &b)
 }
 
 static json materials_to_json(const Document &doc);
+static json brush_presets_to_json(const Document &doc);
 static json style_to_json(const Style &style)
 {
   json j = {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
@@ -676,6 +681,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"render_samples", doc.render_samples},
            {"viewport_overlays", overlays_to_json(doc.overlays)},
            {"ui_open", doc.ui_open},
+           {"ui_panel_order", doc.ui_panel_order},
            {"viewport_view", {{"center", {num(doc.view.center_x), num(doc.view.center_y)}}, {"zoom", num(doc.view.zoom)}}},
            {"render_quality", doc.render_quality},
            {"action", doc.action},
@@ -694,6 +700,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"layers", std::move(layers)},
            {"texts", std::move(texts)},
            {"materials", materials_to_json(doc)},
+           {"brush_presets", brush_presets_to_json(doc)},
        }},
   };
   return root.dump(1, '\t');
@@ -730,6 +737,15 @@ bool oanim_file_write(const Document &doc, const std::string &path, std::string 
     if (const std::string *bytes = media_packed_bytes(id); bytes && built) {
       const std::string entry = std::string(MEDIA_ENTRY_PREFIX) + id + "/" + media_packed_name(id);
       built = mz_zip_writer_add_mem(&zip, entry.c_str(), bytes->data(), bytes->size(), MZ_NO_COMPRESSION);
+    }
+  }
+  /* The shape images file presets carry, as brush_shapes/<preset>/<file> (PNGs: stored). */
+  for (size_t p = 0; p < data.brush_presets.size() && built; p++) {
+    const BrushPreset &preset = data.brush_presets[p];
+    for (size_t f = 0; f < preset.shape_files.size() && f < preset.shape_data.size() && built; f++) {
+      const std::string entry = "brush_shapes/" + std::to_string(p) + "/" + preset.shape_files[f];
+      built = mz_zip_writer_add_mem(&zip, entry.c_str(), preset.shape_data[f].data(), preset.shape_data[f].size(),
+                                    MZ_NO_COMPRESSION);
     }
   }
   built = built && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
@@ -853,6 +869,21 @@ static BrushSettings brush_from_json(const json &j)
   return b;
 }
 
+std::string brush_settings_to_json(const BrushSettings &settings)
+{
+  return brush_to_json(settings).dump();
+}
+
+bool brush_settings_from_json(const std::string &text, BrushSettings *r_settings)
+{
+  const json j = json::parse(text, nullptr, false);
+  if (!j.is_object()) {
+    return false;
+  }
+  *r_settings = brush_from_json(j);
+  return true;
+}
+
 static Style style_from_json(const json &j)
 {
   Style style;
@@ -866,6 +897,15 @@ static Style style_from_json(const json &j)
     style.brush = brush_from_json(*it);
   }
   return style;
+}
+
+static json brush_presets_to_json(const Document &doc)
+{
+  json list = json::array();
+  for (const BrushPreset &p : doc.brush_presets) {
+    list.push_back({{"name", p.name}, {"brush", brush_to_json(p.settings)}, {"shape_files", p.shape_files}});
+  }
+  return list;
 }
 
 static json materials_to_json(const Document &doc)
@@ -1087,7 +1127,7 @@ static VectorDrawing drawing_from_json(const json &j)
   }
   for (const json &p : get_array(j, "points")) {
     if (p.is_object()) {
-      drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
+      drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, POINT_RADIUS_MAX),
                                 get_bool(p, "selected", false),
                                 get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
       drawing.points.back().id = get_id(p, "id");
@@ -1888,6 +1928,19 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
       }
     }
   }
+  if (const auto it = j.find("ui_panel_order"); it != j.end() && it->is_object()) {
+    for (const auto &[key, order] : it->items()) {
+      if (!order.is_array()) {
+        continue;
+      }
+      std::vector<std::string> &names = doc.ui_panel_order[key];
+      for (const auto &name : order) {
+        if (name.is_string()) {
+          names.push_back(name.get<std::string>());
+        }
+      }
+    }
+  }
   doc.action = get_string(j, "action");
   doc.gravity = get_float(j, "gravity", 0.0f);
   doc.wind = get_float(j, "wind", 0.0f);
@@ -1939,6 +1992,22 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});
     }
+  }
+  for (const json &pj : get_array(j, "brush_presets")) {
+    if (!pj.is_object()) {
+      continue;
+    }
+    BrushPreset p;
+    p.name = get_string(pj, "name", "Preset");
+    if (auto it = pj.find("brush"); it != pj.end() && it->is_object()) {
+      p.settings = brush_from_json(*it);
+    }
+    for (const json &f : get_array(pj, "shape_files")) {
+      if (f.is_string()) {
+        p.shape_files.push_back(f.get<std::string>());
+      }
+    }
+    doc.brush_presets.push_back(std::move(p));
   }
   for (const json &mj : get_array(j, "materials")) {
     if (!mj.is_object()) {
@@ -1999,6 +2068,24 @@ bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_er
       mz_free(packed);
     }
   }
+  /* File presets' shape images: brush_shapes/<preset>/<file>. */
+  std::map<std::pair<size_t, std::string>, std::string> shape_bytes;
+  for (mz_uint i = 0; data && i < mz_zip_reader_get_num_files(&zip); i++) {
+    char name[1024];
+    mz_zip_reader_get_filename(&zip, i, name, sizeof(name));
+    const std::string entry = name;
+    static const std::string shapes_prefix = "brush_shapes/";
+    const size_t slash = entry.find('/', shapes_prefix.size());
+    if (entry.compare(0, shapes_prefix.size(), shapes_prefix) != 0 || slash == std::string::npos) {
+      continue;
+    }
+    size_t bytes_size = 0;
+    if (void *packed = mz_zip_reader_extract_to_heap(&zip, i, &bytes_size, 0)) {
+      const size_t index = size_t(std::strtoul(entry.substr(shapes_prefix.size(), slash - shapes_prefix.size()).c_str(), nullptr, 10));
+      shape_bytes[{index, entry.substr(slash + 1)}] = std::string(static_cast<const char *>(packed), bytes_size);
+      mz_free(packed);
+    }
+  }
   mz_zip_reader_end(&zip);
   if (!data) {
     *r_error = std::string("The file has no ") + DOCUMENT_ENTRY + ": " + path;
@@ -2009,6 +2096,20 @@ bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_er
   g_file_folder = path_from_utf8(path).parent_path();
   const bool read = oanim_document_from_json(text, r_doc, r_error);
   g_file_folder.clear();
+  if (read) {
+    for (size_t p = 0; p < r_doc.brush_presets.size(); p++) {
+      BrushPreset &preset = r_doc.brush_presets[p];
+      std::vector<std::string> files;
+      for (const std::string &f : preset.shape_files) {
+        if (auto it = shape_bytes.find({p, f}); it != shape_bytes.end()) {
+          files.push_back(f);
+          preset.shape_data.push_back(it->second);
+        }
+      }
+      preset.shape_files = files;
+    }
+    brush_presets_register_shapes(r_doc);
+  }
   return read;
 }
 

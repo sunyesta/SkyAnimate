@@ -159,6 +159,20 @@ struct BrushSettings {
   bool operator==(const BrushSettings &) const = default;
 };
 
+/* A brush preset (assets/brush_presets.hh): a name and the settings it loads, `settings.name` being
+ * its brush shape. A file preset also keeps a copy of the shape's images (file names and PNG
+ * bytes), so the file carries them. */
+struct BrushPreset {
+  std::string name;
+  BrushSettings settings;
+  std::vector<std::string> shape_files;
+  std::vector<std::string> shape_data;
+  bool operator==(const BrushPreset &) const = default;
+};
+
+/* How wide a line can be at a point, as a multiple of its shape's line width (1: the width itself). */
+inline constexpr float POINT_RADIUS_MAX = 10.0f;
+
 struct Style {
   Color fill = {0.95f, 0.85f, 0.7f, 1.0f};
   Color line = {0.0f, 0.0f, 0.0f, 1.0f};

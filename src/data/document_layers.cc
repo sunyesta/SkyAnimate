@@ -203,6 +203,30 @@ std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer)
   return rows;
 }
 
+void document_set_active_shape(Document &doc, const Layer &layer, int point, ShapeEdge edge)
+{
+  const VectorDrawing &drawing = layer.drawing;
+  for (int s = int(drawing.shapes.size()) - 1; s >= 0; s--) {
+    const Shape &shape = drawing.shapes[size_t(s)];
+    for (const ShapeEdge &e : shape.edges) {
+      bool hit = false;
+      if (edge.curve >= 0) {
+        hit = e == edge;
+      }
+      else if (e.curve < int(drawing.curves.size())) {
+        int a, b;
+        curve_segment_points(drawing.curves[size_t(e.curve)], e.segment, &a, &b);
+        hit = a == point || b == point;
+      }
+      if (hit) {
+        doc.active_shape_layer = layer.id;
+        doc.active_shape = shape.id;
+        return;
+      }
+    }
+  }
+}
+
 Layer &document_add_layer(Document &doc, LayerType type, const std::string &name)
 {
   Layer layer;

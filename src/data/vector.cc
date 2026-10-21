@@ -1309,10 +1309,10 @@ void drawing_set_selected_mean_radius(VectorDrawing &drawing, float mean)
   if (current < 0.0f) {
     return;
   }
-  const float delta = std::clamp(mean, 0.0f, 1.0f) - current;
+  const float delta = std::clamp(mean, 0.0f, POINT_RADIUS_MAX) - current;
   for (MeshPoint &p : drawing.points) {
     if (p.selected) {
-      p.radius = std::clamp(p.radius + delta, 0.0f, 1.0f);
+      p.radius = std::clamp(p.radius + delta, 0.0f, POINT_RADIUS_MAX);
     }
   }
 }

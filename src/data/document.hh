@@ -40,6 +40,9 @@ struct Document {
    * "Timeline/<row>"), where one differs from its default: saved with the project, kept through
    * undo (see ui_fold_state). */
   std::map<std::string, bool> ui_open;
+  /* The Properties panels' order where one was dragged, by tab ("Properties/Shape": the panels'
+   * names, top first; see ui_boxes_begin). Saved with the project, as the folds are. */
+  std::map<std::string, std::vector<std::string>> ui_panel_order;
   std::string name = "Untitled";
   int frame_start = 1;
   int frame_end = 250;
@@ -99,12 +102,19 @@ struct Document {
   /* How dark the canvas outside the camera's frame is in the viewport, 0 to 1 (Blender's
    * passepartout). */
   float camera_passepartout = 0.6f;
+  /* Brush presets made in this project, saved with it (assets/brush_presets.hh). */
+  std::vector<BrushPreset> brush_presets;
   /* Shared looks for shapes (data/material.hh), in the order they were made. */
   std::vector<Material> materials;
   uint64_t next_material_id = 1;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 
+  /* The active shape (Blender's active element): the shape last clicked, in the viewport or the
+   * Shape tab's list, by its layer and its id. The Shape and Material panels show it while it's
+   * selected (otherwise the topmost selected shape). */
+  uint64_t active_shape_layer = 0;
+  uint64_t active_shape = 0;
   /* Top-level layers, top of the stack first. */
   std::vector<Layer> layers;
   uint64_t active_layer = 0;
@@ -145,6 +155,9 @@ const Layer *layer_clip_base(const Document &doc, const Layer &layer);
  * base shows (LayerMask::clip). */
 std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer);
 Layer *document_active_layer(Document &doc);
+/* Makes the topmost shape of `layer` running through `point` (or along segment `edge`, when its curve
+ * is >= 0) the active shape; nothing changes when no shape does. */
+void document_set_active_shape(Document &doc, const Layer &layer, int point, ShapeEdge edge = {-1, 0});
 /* Layer to document transform, including every parent group. */
 Transform2D layer_world_transform(const Document &doc, uint64_t id);
 /* The same with the bones at rest (as on the setup frame): where a layer is before any Parent Bone

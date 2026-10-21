@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "assets/asset_library.hh"
+#include "assets/brush_presets.hh"
 #include "core/log.hh"
 
 namespace oanim {
@@ -210,7 +211,13 @@ const std::vector<Brush> &brushes()
   return library();
 }
 
-const Brush *brush_find(const std::string &name)
+static std::vector<Brush> &packed()
+{
+  static std::vector<Brush> brushes;
+  return brushes;
+}
+
+const Brush *brush_find_in_library(const std::string &name)
 {
   if (name.empty()) {
     return nullptr;
@@ -223,6 +230,59 @@ const Brush *brush_find(const std::string &name)
   return nullptr;
 }
 
+const Brush *brush_find(const std::string &name)
+{
+  if (const Brush *b = brush_find_in_library(name)) {
+    return b;
+  }
+  for (const Brush &b : packed()) {
+    if (b.name == name && !name.empty()) {
+      return &b;
+    }
+  }
+  return nullptr;
+}
+
+void brushes_set_packed(std::vector<Brush> brushes)
+{
+  /* Keep the ones already loaded (their images and GPU textures), by name and bytes. */
+  for (Brush &b : brushes) {
+    for (Brush &old : packed()) {
+      if (old.name == b.name && old.data == b.data) {
+        b = std::move(old);
+        break;
+      }
+    }
+  }
+  packed() = std::move(brushes);
+}
+
+bool brush_shape_bytes(const std::string &name, std::vector<std::string> &r_files, std::vector<std::string> &r_data)
+{
+  r_files.clear();
+  r_data.clear();
+  const Brush *brush = brush_find(name);
+  if (!brush) {
+    return false;
+  }
+  if (!brush->data.empty()) {
+    for (size_t i = 0; i < brush->data.size(); i++) {
+      r_files.push_back(std::to_string(i + 1) + ".png");
+      r_data.push_back(brush->data[i]);
+    }
+    return true;
+  }
+  for (const std::string &file : brush->files) {
+    std::ifstream in(path_from_utf8(file), std::ios::binary);
+    if (!in) {
+      return false;
+    }
+    r_files.push_back(path_to_utf8(path_from_utf8(file).filename()));
+    r_data.emplace_back((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  return true;
+}
+
 void brushes_reload()
 {
   std::vector<Brush> found;
@@ -232,13 +292,15 @@ void brushes_reload()
   found.erase(std::unique(found.begin(), found.end(), [](const Brush &a, const Brush &b) { return a.name == b.name; }),
               found.end());
   library() = std::move(found);
+  library_brush_presets_reload();
 }
 
 /* Reads one image: ink brushes become white with coverage as alpha (dark ink on white, times
  * the image's own alpha); colour images keep their colours, premultiplied. */
-static bool image_load(const std::string &file, BrushImage &r_image, bool *r_color)
+static bool image_load(const std::string &file, const std::string *bytes, BrushImage &r_image, bool *r_color)
 {
-  SDL_Surface *loaded = SDL_LoadPNG(file.c_str());
+  SDL_Surface *loaded = bytes ? SDL_LoadPNG_IO(SDL_IOFromConstMem(bytes->data(), bytes->size()), true)
+                              : SDL_LoadPNG(file.c_str());
   if (!loaded) {
     return false;
   }
@@ -305,10 +367,12 @@ const std::vector<BrushImage> &brush_images(const Brush &brush)
   if (!brush.loaded) {
     static uint64_t next_id = 1;
     brush.loaded = true;
-    for (const std::string &file : brush.files) {
+    const size_t count = brush.data.empty() ? brush.files.size() : brush.data.size();
+    for (size_t i = 0; i < count; i++) {
       BrushImage image;
       bool color = false;
-      if (image_load(file, image, &color)) {
+      const std::string file = brush.data.empty() ? brush.files[i] : brush.name;
+      if (image_load(file, brush.data.empty() ? nullptr : &brush.data[i], image, &color)) {
         image.id = next_id++;
         brush.is_color = brush.is_color || color;
         brush.images.push_back(std::move(image));

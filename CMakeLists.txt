@@ -22,6 +22,7 @@ set(OANIM_SOURCES
   src/anim/reference.cc
   src/assets/asset_library.cc
   src/assets/brushes.cc
+  src/assets/brush_presets.cc
   src/core/crash.cc
   src/core/log.cc
   src/data/bones.cc
@@ -33,7 +34,7 @@ set(OANIM_SOURCES
   src/data/material.cc
   src/data/media_layer.cc
   src/data/vector.cc
-  src/editors/brush_settings.cc
+  src/editors/brush_editor.cc
   src/editors/console.cc
   src/editors/editors.cc
   src/editors/layers_editor.cc
@@ -121,6 +122,8 @@ add_test(NAME frames_and_playback
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frames_and_playback.py)
 add_test(NAME brushes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brushes.py)
+add_test(NAME brush_presets
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_presets.py)
 add_test(NAME handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
 add_test(NAME animation

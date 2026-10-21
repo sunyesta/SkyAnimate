@@ -72,6 +72,8 @@ KEYMAP = (
     ("Viewport", "armature.clear_rotation", "R", {"alt": True}),
     ("Viewport", "mesh.clear_handles", "R", {"alt": True}),
     ("Viewport", "armature.clear_scale", "S", {"alt": True}),
+    # Points: Blender Grease Pencil's Shrink/Fatten (the line's width at them).
+    ("Viewport", "transform.radius", "S", {"alt": True}),
     ("Viewport", "mesh.extrude", "E", {}),
     ("Viewport", "mesh.duplicate_move", "D", {"shift": True}),
     ("Viewport", "anim.keyframe_insert", "I", {}),

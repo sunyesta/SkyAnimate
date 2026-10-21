@@ -31,5 +31,8 @@ bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_er
 /* The JSON text of a document, as stored in document.json. */
 std::string oanim_document_to_json(const Document &doc);
 bool oanim_document_from_json(const std::string &text, Document &r_doc, std::string *r_error);
+/* Brush settings as the file stores them (JSON text, Moho's names), for brush presets. */
+std::string brush_settings_to_json(const BrushSettings &settings);
+bool brush_settings_from_json(const std::string &text, BrushSettings *r_settings);
 
 }  // namespace oanim

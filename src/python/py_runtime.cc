@@ -23,6 +23,7 @@
 #include "data/media_layer.hh"
 #include "media/media.hh"
 #include "assets/asset_library.hh"
+#include "assets/brush_presets.hh"
 #include "assets/brushes.hh"
 #include "core/crash.hh"
 #include "core/log.hh"
@@ -956,6 +957,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::dict d = brush_to_dict(brush.defaults);
       d["name"] = brush.name;
       d["images"] = int(brush.files.size());
+      result.append(d);
+    }
+    return result;
+  });
+  m.def("brush_presets", [brush_to_dict](bool library) {
+    py::list result;
+    const std::vector<BrushPreset> &presets = library ? library_brush_presets()
+                                                      : current_context().document->brush_presets;
+    for (const BrushPreset &p : presets) {
+      py::dict d;
+      d["name"] = p.name;
+      d["brush"] = brush_to_dict(p.settings);
+      d["shape"] = p.settings.name;
+      d["shape_missing"] = !p.settings.name.empty() && !brush_find(p.settings.name);
+      d["shape_images"] = int(p.shape_data.size());
       result.append(d);
     }
     return result;

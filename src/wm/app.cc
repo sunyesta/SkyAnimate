@@ -24,7 +24,8 @@
 #include "core/log.hh"
 #include "data/camera.hh"
 #include "data/media_layer.hh"
-#include "editors/brush_settings.hh"
+#include "assets/brush_presets.hh"
+#include "editors/brush_editor.hh"
 #include "media/audio.hh"
 #include "media/media.hh"
 #include "editors/ui.hh"
@@ -303,6 +304,8 @@ void App::main_loop()
     /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
      * its material from the next frame. */
     document_sync_materials(doc_);
+    brush_presets_register_shapes(doc_);
+    brush_editor_frame_end(ctx_);
     record_selection();
     ImGui::Render();
 
@@ -1225,7 +1228,6 @@ void App::draw_ui()
 
   draw_unsaved_changes_prompt();
   draw_render_result();
-  brush_settings_draw(ctx_);
   draw_preferences();
   draw_asset_library_prompts();
   ui_eyedropper_overlay();

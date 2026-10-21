@@ -53,6 +53,9 @@ std::vector<Layer *> timeline_layers(Context &C);
 /* Gives the selected shapes on every edited layer these brush settings. Returns how many shapes
  * changed (no undo step: the caller pushes one). */
 int shapes_set_brush(Context &C, const BrushSettings &brush);
+/* The brush of the shape the Material panel shows (the active shape while selected, else the topmost
+ * selected). False when no shape is selected. */
+bool shown_shape_brush(Context &C, BrushSettings *r_brush);
 
 /* The active layer's drawing if it can be edited: a vector layer that is not locked (a reference's
  * looks, and its points with Edit Points on). Null otherwise. */

@@ -230,7 +230,7 @@ class _Layer:
 
     def set_selected_edges_visible(self, visible):
         """Show or hide the outline along the selected edges (both points selected), like the
-        Drawing tab's Edge > Visible. Returns how many edges changed."""
+        Shape tab's Edge > Visible. Returns how many edges changed."""
         return _oanim.layer_set_selected_edges_visible(self._id, visible)
 
     @property
@@ -709,6 +709,13 @@ class _Assets:
         """The library's brushes, by name: dicts of their default settings plus "images", the
         number of images (more than one for a multi-brush)."""
         return _oanim.brushes()
+
+    def brush_presets(self, library=False):
+        """Brush presets: this file's (each carrying a copy of its shape's images), or with
+        `library` the asset library's. Dicts: "name", "brush" (its settings, as brushes() gives),
+        "shape", "shape_missing" (no such shape here: loading keeps the current one) and
+        "shape_images" (how many images a file preset carries)."""
+        return _oanim.brush_presets(library)
 
     def brush_dab_count(self, name, length, width):
         """How many dabs brush `name` lays along a straight line `length` long and `width` wide

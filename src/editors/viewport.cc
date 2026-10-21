@@ -30,6 +30,7 @@
 #include "data/detail.hh"
 #include "data/document.hh"
 #include "data/media_layer.hh"
+#include "editors/brush_editor.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
 #include "gpu/scene_renderer.hh"
@@ -1525,6 +1526,29 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       ImGui::SameLine();
       color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
       ImGui::SameLine();
+      {
+        /* The brush new strokes get, edited as the Material panel edits a shape's. */
+        const std::string &name = ts.style.brush.name;
+        if (ImGui::Button(((name.empty() ? std::string("Solid") : name) + "##tool_brush").c_str())) {
+          ImGui::OpenPopup("##tool_brush_popup");
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Brush for new strokes: presets, shape, spacing");
+        }
+        if (ImGui::BeginPopup("##tool_brush_popup")) {
+          if (ImGui::BeginTable("##tool_brush", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(440.0f, 0))) {
+            ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+            ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+            BrushSettings brush = ts.style.brush;
+            if (brush_editor(C, brush, ts.style, BrushTarget::Tool).changed) {
+              ts.style.brush = brush;
+            }
+            ImGui::EndTable();
+          }
+          ImGui::EndPopup();
+        }
+      }
+      ImGui::SameLine();
       if (ts.tool == Tool::Shape) {
         if (header_toggle("Fill", ts.draw_fill, "Fill boxes and circles")) {
           ts.draw_fill = !ts.draw_fill;
@@ -2293,6 +2317,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   const std::vector<Layer *> layers = editable_layers(C);
   Layer *hit_layer = nullptr;
   std::vector<int> picked;
+  ShapeEdge hit_edge{-1, 0};
   float best = FLT_MAX;
   const HandleHit handle = pick_handle(C, view, view.to_screen(mouse_document), handles);
   Layer &camera = document_camera(*C.document);
@@ -2325,6 +2350,9 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
     bool &flag = handle.pre ? cp.select_in : cp.select_out;
     flag = io.KeyCtrl ? false : (io.KeyShift ? !flag : true);
     camera.selected &= io.KeyShift || io.KeyCtrl;
+    if (flag) {
+      document_set_active_shape(*C.document, *handle.layer, cp.point);
+    }
     return;
   }
   if (!hit_layer && C.wm->tool_settings.select_mode != SelectMode::Point) {
@@ -2344,6 +2372,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
         curve_segment_points(lines.curves[edge.curve], edge.segment, &a, &b);
         hit_layer = layer;
         picked = C.wm->tool_settings.select_mode == SelectMode::Edge ? std::vector<int>{a, b} : std::vector<int>{a};
+        hit_edge = edge;
         break;
       }
     }
@@ -2359,6 +2388,10 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       point.selected = io.KeyCtrl ? false : (io.KeyShift && picked.size() == 1 ? !point.selected : true);
     }
     drawing_expand_selection_by_mode(C, hit_layer->drawing);
+    /* The shape clicked becomes the active one (its panels show it), unless the click took it out. */
+    if (!picked.empty() && hit_layer->drawing.points[size_t(picked.front())].selected) {
+      document_set_active_shape(*C.document, *hit_layer, picked.front(), hit_edge);
+    }
   }
   /* The camera is picked by its frame's border where nothing else is, as Blender picks a camera by its
    * outline; a click elsewhere lets it go. */
@@ -3635,6 +3668,123 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
   }
   if (confirm) {
     layer_modal_end(C, true);
+  }
+  else {
+    C.wm->modal_keys.clear();
+  }
+  return text;
+}
+
+/* Alt S: the selected points' radius scaled about their middle, as S scales their places. */
+struct RadiusModal {
+  bool active = false;
+  int area = 0;
+  Document snapshot;
+  struct Item {
+    uint64_t layer;
+    int point;
+    float start;
+  };
+  std::vector<Item> items;
+  float2 pivot;
+  float2 start_mouse;
+  NumInput num;
+};
+static RadiusModal g_radius_modal;
+
+static bool radius_modal_start(Context &C, Area &area, float2 mouse_document)
+{
+  RadiusModal modal;
+  float2 sum;
+  int count = 0;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->is_reference() && !layer->reference.edit_points) {
+      continue;
+    }
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    for (int i = 0; i < int(layer->drawing.points.size()); i++) {
+      const MeshPoint &p = layer->drawing.points[size_t(i)];
+      if (p.selected) {
+        modal.items.push_back({layer->id, i, p.radius});
+        sum += to_document.apply(p.pos);
+        count++;
+      }
+    }
+  }
+  if (modal.items.empty()) {
+    return false;
+  }
+  modal.snapshot = *C.document;
+  modal.area = area.id;
+  modal.pivot = sum / float(count);
+  modal.start_mouse = mouse_document;
+  modal.active = true;
+  g_radius_modal = std::move(modal);
+  C.wm->modal_running = true;
+  C.wm->modal_keys.clear();
+  return true;
+}
+
+static void radius_modal_end(Context &C, bool confirm)
+{
+  if (confirm) {
+    push_undo(C, "Point Radius");
+  }
+  else {
+    const int frame = C.document->frame_current;
+    *C.document = g_radius_modal.snapshot;
+    C.document->frame_current = frame;
+  }
+  g_radius_modal = {};
+  C.wm->modal_running = false;
+  C.wm->modal_keys.clear();
+}
+
+static std::string radius_modal_update(Context &C, const ViewMapping &view, ImDrawList *dl)
+{
+  RadiusModal &rm = g_radius_modal;
+  const ImGuiIO &io = ImGui::GetIO();
+  if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    radius_modal_end(C, false);
+    return {};
+  }
+  const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
+                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+  num_input_keys(C, rm.num, 1);
+  if (!ImGui::IsMousePosValid()) {
+    if (confirm) {
+      radius_modal_end(C, true);
+    }
+    return "";
+  }
+  const float2 mouse = view.to_document(io.MousePos);
+  /* Blender's dashed line from the middle to the mouse. */
+  const ImVec2 a = view.to_screen(rm.pivot), b = io.MousePos;
+  const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+  for (float t = 0.0f; t < len; t += 8.0f) {
+    const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 4.0f, len) / std::max(len, 1.0f);
+    dl->AddLine(ImVec2(a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0),
+                ImVec2(a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1), IM_COL32(0, 0, 0, 200), 1.0f);
+  }
+  float factor = distance(mouse, rm.pivot) / std::max(distance(rm.start_mouse, rm.pivot), 1e-6f);
+  if (io.KeyCtrl) {
+    factor = std::round(factor * 10.0f) / 10.0f;
+  }
+  if (rm.num.any()) {
+    factor = rm.num.value(0, 1.0f);
+  }
+  factor = std::max(factor, 0.0f);
+  for (const RadiusModal::Item &item : rm.items) {
+    if (Layer *layer = layer_find(*C.document, item.layer); layer && item.point < int(layer->drawing.points.size())) {
+      layer->drawing.points[size_t(item.point)].radius = std::clamp(item.start * factor, 0.0f, POINT_RADIUS_MAX);
+    }
+  }
+  char text[96];
+  std::snprintf(text, sizeof(text), "Radius  %s%s", rm.num.shown(0, factor, "%.3f").c_str(),
+                rm.items.size() == 1 ? "" : "  (each point's own, scaled)");
+  if (confirm) {
+    radius_modal_end(C, true);
   }
   else {
     C.wm->modal_keys.clear();
@@ -5630,7 +5780,8 @@ static void viewport_draw_contents(Area &area, Context &C)
     C.document->overlays.show = !C.document->overlays.show;
     wm.overlays_toggle_request = false;
   }
-  if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active && !g_layer_modal.active) {
+  if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active && !g_layer_modal.active &&
+      !g_radius_modal.active) {
     g_pending_transform = wm.transform_request;
     g_pending_area = area.id;
     wm.transform_request = 0;
@@ -5643,7 +5794,10 @@ static void viewport_draw_contents(Area &area, Context &C)
       !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
       ImGui::IsMousePosValid()) {
     const float2 at = view.to_document(io.MousePos);
-    if (!layer_modal_start(C, area, g_pending_transform, at) && !bone_modal_start(C, area, g_pending_transform, at)) {
+    if (g_pending_transform == 'W') {
+      radius_modal_start(C, area, at);
+    }
+    else if (!layer_modal_start(C, area, g_pending_transform, at) && !bone_modal_start(C, area, g_pending_transform, at)) {
       modal_start(C, area, g_pending_transform, at);
     }
     g_pending_transform = 0;
@@ -5652,7 +5806,12 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (armature_active && !armature_active->is_bone_layer()) {
     armature_active = nullptr;
   }
-  if (g_layer_modal.active) {
+  if (g_radius_modal.active) {
+    if (g_radius_modal.area == area.id) {
+      modal_info = radius_modal_update(C, view, dl);
+    }
+  }
+  else if (g_layer_modal.active) {
     if (g_layer_modal.area == area.id) {
       modal_info = layer_modal_update(C, view, dl);
     }

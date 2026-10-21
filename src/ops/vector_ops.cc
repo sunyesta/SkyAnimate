@@ -647,6 +647,25 @@ void vector_operators_register()
   transform_op("transform.rotate", "Rotate", "Rotate the selected points with the mouse", 'R');
   transform_op("transform.resize", "Scale", "Scale the selected points with the mouse", 'S');
   transform_op("mesh.extrude", "Extrude", "Add a new point beyond each selected end point and move it", 'E');
+  {
+    /* Alt S: Blender Grease Pencil's Shrink/Fatten. */
+    OperatorType ot;
+    ot.idname = "transform.radius";
+    ot.name = "Scale Radius";
+    ot.description = "Scale the line's width at the selected points with the mouse (Alt S, Blender's Shrink/Fatten): "
+                     "away from their middle fattens, towards it thins; a typed number sets the factor, Ctrl snaps "
+                     "to tenths";
+    ot.poll = [](Context &C) {
+      const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
+      return C.wm->mouse_in_viewport && active && !active->is_media() && !active->is_bone_layer() &&
+             editable_with_selection_poll(C);
+    };
+    ot.exec = [](Context &C) {
+      C.wm->transform_request = 'W';
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   /* Proportional editing: O, Shift O and Alt O, as in Blender. Only for points: they need an
    * editable layer with points. */
   const auto proportional_op = [](const char *idname, const char *name, const char *description,

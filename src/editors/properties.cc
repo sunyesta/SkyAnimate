@@ -26,7 +26,7 @@
 #include "data/media_layer.hh"
 #include "editors/editors.hh"
 #include "assets/brushes.hh"
-#include "editors/brush_settings.hh"
+#include "editors/brush_editor.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/media_ops.hh"
@@ -1064,7 +1064,7 @@ static const char *channel_title(const std::string &name)
 }
 
 /* Recolor: every style change at once (colours, line widths, brushes, fill and outline), back to
- * the original's or pushed into it. Each colour changed in the Drawing tab has its own revert beside
+ * the original's or pushed into it. Each colour changed in the Shape tab has its own revert beside
  * it. */
 static void reference_recolor(Context &C, Layer &ref)
 {
@@ -1104,11 +1104,13 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       return false;
     }
     ImGui::AlignTextToFramePadding();
-    const std::string key = ui_fold_scope() + "/Changes/" + title;
-    ui_fold_next(key, true);
-    const bool open = ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_SpanAvailWidth, "%s (%d)", title, count);
-    ui_fold_record(key, true, open);
+    const bool open = ui_subpanel_begin(std::string("Changes/") + title,
+                                        std::string(title) + " (" + std::to_string(count) + ")###" + title, true);
     reset_push(C, title, args, can_push);
+    if (open) {
+      /* Its rows are indented under it, as a tree node's. */
+      ImGui::Indent();
+    }
     return open;
   };
   if (group("Colors", int(rs.swaps.size()), {{"kind", "SWAPS"}}, true)) {
@@ -1124,7 +1126,8 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       reset_push(C, "##rp", {{"kind", "SWAP"}, {"id", std::to_string(i)}}, true);
       ImGui::PopID();
     }
-    ImGui::TreePop();
+    ImGui::Unindent();
+    ui_subpanel_end();
   }
   if (group("Shapes", int(rs.looks.size()), {{"kind", "LOOKS"}}, true)) {
     for (const auto &[id, look] : rs.looks) {
@@ -1139,7 +1142,8 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       reset_push(C, "##rp", {{"kind", "LOOK"}, {"id", std::to_string(id)}}, si >= 0 && !rest.empty());
       ImGui::PopID();
     }
-    ImGui::TreePop();
+    ImGui::Unindent();
+    ui_subpanel_end();
   }
   /* Points, with their handles. */
   std::set<uint64_t> moved;
@@ -1173,7 +1177,8 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       reset_push(C, "##rp", {{"kind", "POINT"}, {"id", std::to_string(id)}}, pi >= 0);
       ImGui::PopID();
     }
-    ImGui::TreePop();
+    ImGui::Unindent();
+    ui_subpanel_end();
   }
   if (group("Layer Animation", int(rs.own_channels.size()), {{"kind", "CHANNELS"}}, source != nullptr)) {
     for (const std::string &name : rs.own_channels) {
@@ -1183,11 +1188,13 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       reset_push(C, "##rp", {{"kind", "CHANNEL"}, {"path", name}}, source != nullptr);
       ImGui::PopID();
     }
-    ImGui::TreePop();
+    ImGui::Unindent();
+    ui_subpanel_end();
   }
   if (group("Bone Weights", rs.weights.empty() ? 0 : 1, {{"kind", "WEIGHTS"}}, false)) {
     ImGui::TextDisabled("%d points move by this copy's own weights", int(rs.weights.size()));
-    ImGui::TreePop();
+    ImGui::Unindent();
+    ui_subpanel_end();
   }
 }
 
@@ -2942,7 +2949,8 @@ static void media_tab(Context &C)
   }
 }
 
-static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape);
+static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, Shape &shape);
+static void shared_mark(ImDrawList *dl, ImVec2 corner, float s);
 static void point_panel(Context &C, VectorDrawing &drawing);
 static void edge_panel(Context &C, VectorDrawing &drawing);
 
@@ -2969,103 +2977,205 @@ static void drawing_tab(Context &C)
   /* A reference (a copy): its looks change here as on any layer; changes show teal. */
   const bool reference = active->is_reference();
 
-  /* Shapes, top first like the layer list. The highlight follows the viewport: a shape is
-   * selected when any of its points is, and clicking one here selects its points. Dragging a
-   * shape onto another moves it to that place in the stacking order. */
-  const std::vector<bool> selected = drawing_selected_shapes(*drawing);
-  int selected_shape = -1;
-  int move_from = -1, move_to = -1;
+  /* Shapes of every picked layer being edited (multi-layer editing), each layer's top first like the
+   * layer list, under its name when there are several. The highlight follows the viewport: a shape
+   * is selected when any of its points is, and clicking one here selects its points. Dragging a
+   * shape onto another of its layer moves it to that place in the stacking order. */
+  std::vector<Layer *> listed = editable_layers(C);
+  std::erase_if(listed, [](const Layer *l) { return !l->has_drawing(); });
+  struct ShapeRef {
+    int layer = -1;
+    int shape = -1;
+  };
+  ShapeRef move_from, move_to;
   /* A shape clicked in the list, picked after the list is drawn: the undo step it makes rebuilds a
    * reference's drawing, which would pull the shapes out from under the rows still being drawn. */
-  int clicked = -1;
+  ShapeRef clicked;
   bool clicked_adds = false;
+  uint64_t make_active = 0;
+  /* The shape the panels below show: the active shape (the last clicked) while it's selected, else the
+   * topmost selected one, in the first listed layer that has one (the active layer comes first). Its
+   * row is marked as the active one. */
+  ShapeRef shown_shape;
+  for (int li = 0; li < int(listed.size()) && shown_shape.layer < 0; li++) {
+    if (listed[size_t(li)]->id != doc.active_shape_layer) {
+      continue;
+    }
+    const VectorDrawing &d = listed[size_t(li)]->drawing;
+    const int s = drawing_shape_index(d, doc.active_shape);
+    if (s >= 0 && drawing_selected_shapes(d)[size_t(s)]) {
+      shown_shape = {li, s};
+    }
+  }
+  for (int li = 0; li < int(listed.size()) && shown_shape.layer < 0; li++) {
+    const std::vector<bool> picked_shapes = drawing_selected_shapes(listed[size_t(li)]->drawing);
+    for (int s = 0; s < int(picked_shapes.size()); s++) {
+      if (picked_shapes[s]) {
+        shown_shape = {li, s};
+      }
+    }
+  }
   if (ui_collapsing_header("Shapes", true)) {
-    const float list_h = std::min(float(drawing->shapes.size()) + 1.0f, 10.0f) * ImGui::GetFrameHeight();
+    const bool several = listed.size() > 1;
+    int rows = 0;
+    for (const Layer *l : listed) {
+      rows += int(l->drawing.shapes.size()) + (several ? 1 : 0);
+    }
+    const float list_h = std::min(float(rows) + 1.0f, several ? 14.0f : 10.0f) * ImGui::GetFrameHeight();
     if (ImGui::BeginChild("##shapes", ImVec2(0, list_h), ImGuiChildFlags_Borders)) {
-      for (int s = int(drawing->shapes.size()) - 1; s >= 0; s--) {
-        Shape &shape = drawing->shapes[s];
-        ImGui::PushID(s);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float sw = ImGui::GetTextLineHeight();
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        if (ImGui::Selectable("##shape", selected[s], 0, ImVec2(0, ImGui::GetTextLineHeight()))) {
-          clicked = s;
-          /* Shift or Ctrl adds to the selection, as in the viewport. */
-          clicked_adds = ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl;
-        }
-        if (ImGui::BeginDragDropSource()) {
-          ImGui::SetDragDropPayload("OANIM_SHAPE", &s, sizeof(int));
-          ImGui::TextUnformatted(shape.name.empty() ? "Shape" : shape.name.c_str());
-          ImGui::EndDragDropSource();
-        }
-        if (ImGui::BeginDragDropTarget()) {
-          /* The list is top first: the upper half drops above this shape (stacked over it). */
-          const ImVec2 row_min = ImGui::GetItemRectMin(), row_max = ImGui::GetItemRectMax();
-          const bool upper = ImGui::GetIO().MousePos.y < (row_min.y + row_max.y) * 0.5f;
-          const float line_y = upper ? row_min.y : row_max.y;
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(row_min.x, line_y), ImVec2(row_max.x, line_y),
-                                              UI_DROP_LINE_COLOR, 2.0f);
-          if (const ImGuiPayload *payload =
-                  ImGui::AcceptDragDropPayload("OANIM_SHAPE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+      for (int li = 0; li < int(listed.size()); li++) {
+        Layer &owner = *listed[size_t(li)];
+        VectorDrawing &shapes_of = owner.drawing;
+        const std::vector<bool> picked_shapes = drawing_selected_shapes(shapes_of);
+        ImGui::PushID(int(owner.id));
+        if (several) {
+          /* The layer's name: clicking it makes it the active layer. */
+          const bool is_active = owner.id == doc.active_layer;
+          ImGui::PushStyleColor(ImGuiCol_Text, is_active ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xa0, 0xa0, 0xa0, 255));
+          if (ImGui::Selectable((owner.name + (is_active ? "  (active)" : "") + "##layer").c_str(), false,
+                                ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight())))
           {
-            move_from = *static_cast<const int *>(payload->Data);
-            /* Where it goes in the stacking order (bottom first), counted before it is taken out. */
-            move_to = upper ? s + 1 : s;
+            make_active = owner.id;
           }
-          ImGui::EndDragDropTarget();
+          ImGui::PopStyleColor();
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Click: make %s the active layer", owner.name.c_str());
+          }
+          ImGui::Indent(ImGui::GetTextLineHeight());
         }
-        /* Fill and line swatches, then the name. */
-        const auto swatch = [&](float x, const Color &c, bool on) {
-          const ImVec2 a = p + ImVec2(x, 1), b = a + ImVec2(sw - 2, sw - 2);
-          if (on) {
-            dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)), 2.0f);
+        for (int s = int(shapes_of.shapes.size()) - 1; s >= 0; s--) {
+          Shape &shape = shapes_of.shapes[s];
+          ImGui::PushID(s);
+          const ImVec2 p = ImGui::GetCursorScreenPos();
+          const float sw = ImGui::GetTextLineHeight();
+          ImDrawList *dl = ImGui::GetWindowDrawList();
+          if (ImGui::Selectable("##shape", picked_shapes[s], 0, ImVec2(0, ImGui::GetTextLineHeight()))) {
+            clicked = {li, s};
+            /* Shift or Ctrl adds to the selection, as in the viewport. */
+            clicked_adds = ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl;
           }
-          dl->AddRect(a, b, IM_COL32(0x80, 0x80, 0x80, 255), 2.0f);
-        };
-        swatch(2.0f, shape.style.fill, shape.has_fill);
-        swatch(sw + 4.0f, shape.style.line, shape.has_outline);
-        dl->AddText(p + ImVec2(sw * 2.0f + 10.0f, 0), IM_COL32(0xe6, 0xe6, 0xe6, 255), shape.name.c_str());
+          const bool is_shown = li == shown_shape.layer && s == shown_shape.shape;
+          if (is_shown) {
+            /* The one the panels below show: lighter, with a bar on its left (as the active layer's
+             * row stands out from the other picked ones). */
+            const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+            dl->AddRectFilled(r0, r1, IM_COL32(0x47, 0x72, 0xb3, 255), 2.0f);
+            dl->AddRectFilled(r0, ImVec2(r0.x + 3.0f, r1.y), IM_COL32(0xff, 0xff, 0xff, 255));
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(is_shown ? "Shown in the Shape and Material panels below"
+                                       : "Click: select it (Shift adds)");
+          }
+          if (ImGui::BeginDragDropSource()) {
+            const int payload[2] = {li, s};
+            ImGui::SetDragDropPayload("OANIM_SHAPE", payload, sizeof(payload));
+            ImGui::TextUnformatted(shape.name.empty() ? "Shape" : shape.name.c_str());
+            ImGui::EndDragDropSource();
+          }
+          if (ImGui::BeginDragDropTarget()) {
+            /* The list is top first: the upper half drops above this shape (stacked over it). Only
+             * within its own layer. */
+            const ImGuiPayload *peek = ImGui::GetDragDropPayload();
+            const bool same_layer = peek && peek->IsDataType("OANIM_SHAPE") && static_cast<const int *>(peek->Data)[0] == li;
+            const ImVec2 row_min = ImGui::GetItemRectMin(), row_max = ImGui::GetItemRectMax();
+            const bool upper = ImGui::GetIO().MousePos.y < (row_min.y + row_max.y) * 0.5f;
+            if (same_layer) {
+              const float line_y = upper ? row_min.y : row_max.y;
+              ImGui::GetWindowDrawList()->AddLine(ImVec2(row_min.x, line_y), ImVec2(row_max.x, line_y),
+                                                  UI_DROP_LINE_COLOR, 2.0f);
+              if (const ImGuiPayload *payload =
+                      ImGui::AcceptDragDropPayload("OANIM_SHAPE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+              {
+                move_from = {li, static_cast<const int *>(payload->Data)[1]};
+                /* Where it goes in the stacking order (bottom first), counted before it is taken out. */
+                move_to = {li, upper ? s + 1 : s};
+              }
+            }
+            ImGui::EndDragDropTarget();
+          }
+          /* Fill and line swatches, then the name. */
+          const auto swatch = [&](float x, const Color &c, bool on) {
+            const ImVec2 sa = p + ImVec2(x, 1), sb = sa + ImVec2(sw - 2, sw - 2);
+            if (on) {
+              dl->AddRectFilled(sa, sb, ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)), 2.0f);
+            }
+            dl->AddRect(sa, sb, IM_COL32(0x80, 0x80, 0x80, 255), 2.0f);
+          };
+          swatch(2.0f, shape.style.fill, shape.has_fill);
+          if (!owner.is_reference() && material_find(doc, shape.material)) {
+            /* Linked to a shared material: its mark. */
+            shared_mark(dl, p + ImVec2(sw, sw), sw * 0.5f);
+          }
+          swatch(sw + 4.0f, shape.style.line, shape.has_outline);
+          dl->AddText(p + ImVec2(sw * 2.0f + 10.0f, 0), is_shown ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 255),
+                      shape.name.c_str());
+          ImGui::PopID();
+        }
+        if (shapes_of.shapes.empty()) {
+          ImGui::TextDisabled(several ? "No shapes" : "No shapes yet. Draw, or select points and press F.");
+        }
+        if (several) {
+          ImGui::Unindent(ImGui::GetTextLineHeight());
+        }
         ImGui::PopID();
       }
-      if (drawing->shapes.empty()) {
-        ImGui::TextDisabled("No shapes yet. Draw, or select points and press F.");
+      if (listed.empty()) {
+        ImGui::TextDisabled("The layer is locked.");
       }
     }
     ImGui::EndChild();
   }
-  if (clicked >= 0 && clicked < int(drawing->shapes.size())) {
-    if (!clicked_adds) {
-      for (MeshPoint &pt : drawing->points) {
-        pt.selected = false;
+  if (make_active != 0) {
+    /* The layer becomes active; the others stay picked. */
+    const uint64_t previous = doc.active_layer;
+    if (Layer *was = layer_find(doc, previous); was && previous != make_active) {
+      was->selected = true;
+    }
+    doc.active_layer = make_active;
+    C.undo->push("Select", doc);
+    return;
+  }
+  if (clicked.layer >= 0 && clicked.layer < int(listed.size())) {
+    VectorDrawing &d = listed[size_t(clicked.layer)]->drawing;
+    if (clicked.shape < int(d.shapes.size())) {
+      if (!clicked_adds) {
+        for (Layer *l : listed) {
+          for (MeshPoint &pt : l->drawing.points) {
+            pt.selected = false;
+          }
+        }
       }
+      for (const ShapeEdge &e : d.shapes[clicked.shape].edges) {
+        int pa, pb;
+        curve_segment_points(d.curves[e.curve], e.segment, &pa, &pb);
+        d.points[pa].selected = d.points[pb].selected = true;
+      }
+      doc.active_shape_layer = listed[size_t(clicked.layer)]->id;
+      doc.active_shape = d.shapes[clicked.shape].id;
+      C.undo->push("Select Shape", doc);
     }
-    for (const ShapeEdge &e : drawing->shapes[clicked].edges) {
-      int a, b;
-      curve_segment_points(drawing->curves[e.curve], e.segment, &a, &b);
-      drawing->points[a].selected = drawing->points[b].selected = true;
-    }
-    C.undo->push("Select Shape", doc);
   }
   /* After the list, so its rows weren't shifting while it drew. A reference keeps its original's
    * stacking order. */
-  if (move_from >= 0 && !reference) {
-    const int to = move_to > move_from ? move_to - 1 : move_to;
-    if (to != move_from) {
-      Shape moved = std::move(drawing->shapes[move_from]);
-      drawing->shapes.erase(drawing->shapes.begin() + move_from);
-      drawing->shapes.insert(drawing->shapes.begin() + to, std::move(moved));
+  if (move_from.layer >= 0 && move_from.layer == move_to.layer && move_from.layer < int(listed.size()) &&
+      !listed[size_t(move_from.layer)]->is_reference())
+  {
+    VectorDrawing &d = listed[size_t(move_from.layer)]->drawing;
+    const int from = move_from.shape;
+    const int to = move_to.shape > from ? move_to.shape - 1 : move_to.shape;
+    if (to != from && from >= 0 && from < int(d.shapes.size())) {
+      Shape moved = std::move(d.shapes[from]);
+      d.shapes.erase(d.shapes.begin() + from);
+      d.shapes.insert(d.shapes.begin() + std::clamp(to, 0, int(d.shapes.size())), std::move(moved));
       C.undo->push("Move Shape", doc);
       return;
     }
   }
-  /* The panel shows the topmost selected shape. */
-  for (int s = 0; s < int(drawing->shapes.size()); s++) {
-    if (selected[s]) {
-      selected_shape = s;
+  if (shown_shape.layer >= 0) {
+    Layer &l = *listed[size_t(shown_shape.layer)];
+    if (shown_shape.shape < int(l.drawing.shapes.size())) {
+      shape_panel(C, l, l.drawing, l.drawing.shapes[size_t(shown_shape.shape)]);
     }
-  }
-  if (selected_shape >= 0) {
-    shape_panel(C, *drawing, drawing->shapes[selected_shape]);
   }
   if (reference) {
     /* Only where its points are (with Points: Editable); widths, corners and handle types follow the
@@ -3305,12 +3415,45 @@ static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
   ui_panel_end();
 }
 
-/* A material's preview: a disc in its fill colour ringed in its line colour. */
-static void material_swatch(ImDrawList *dl, ImVec2 c, float r, const Style &style)
+/* Shared materials' colour: the fields a shared material sets are tinted with it, its header and
+ * marks are drawn in it (as Blender colours keyed and driven fields). */
+static const ImVec4 SHARED_BG(0.27f, 0.25f, 0.47f, 1.0f), SHARED_HOVER(0.33f, 0.31f, 0.56f, 1.0f),
+    SHARED_ACTIVE(0.39f, 0.36f, 0.64f, 1.0f);
+static constexpr ImU32 SHARED_TEXT = IM_COL32(0xb4, 0xa8, 0xff, 255);
+
+/* The shared mark (Illustrator's global swatch triangle): a small triangle in a swatch's lower right. */
+static void shared_mark(ImDrawList *dl, ImVec2 corner, float s)
+{
+  dl->AddTriangleFilled(corner, corner - ImVec2(s, 0), corner - ImVec2(0, s), IM_COL32(0xff, 0xff, 0xff, 255));
+  dl->AddTriangle(corner, corner - ImVec2(s, 0), corner - ImVec2(0, s), IM_COL32(0x30, 0x30, 0x30, 255), 1.0f);
+}
+
+/* A material's preview: a disc in its fill colour ringed in its line colour; `shared` adds the mark. */
+static void material_swatch(ImDrawList *dl, ImVec2 c, float r, const Style &style, bool shared = false)
 {
   dl->AddCircleFilled(c, r, ImGui::ColorConvertFloat4ToU32(ImVec4(style.fill.r, style.fill.g, style.fill.b, 1.0f)), 20);
   dl->AddCircle(c, r, ImGui::ColorConvertFloat4ToU32(ImVec4(style.line.r, style.line.g, style.line.b, 1.0f)), 20,
                 std::max(1.5f, r * 0.28f));
+  if (shared) {
+    shared_mark(dl, c + ImVec2(r * 1.05f, r * 1.05f), r * 0.95f);
+  }
+}
+
+/* While a shared material's field is under the mouse or being changed: its shapes outlined in the
+ * viewport, and the header says the edit reaches them (next frame). */
+static int g_material_field_active_frame = -10;
+static void material_field_reach(Context &C, const Material *shared)
+{
+  if (!shared) {
+    return;
+  }
+  if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+    C.wm->material_hover = shared->id;
+    C.wm->material_hover_frame = ImGui::GetFrameCount();
+  }
+  if (ImGui::IsItemActive()) {
+    g_material_field_active_frame = ImGui::GetFrameCount();
+  }
 }
 
 /* Blender's data-block selector for the shape's material: browse (the shared materials, with a search),
@@ -3339,7 +3482,7 @@ static void material_row(Context &C, Shape &shape, bool reference)
                                 : "Link the shape to a shared material");
   }
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  material_swatch(dl, at + ImVec2(h * 0.55f, h * 0.5f), h * 0.28f, shape.style);
+  material_swatch(dl, at + ImVec2(h * 0.55f, h * 0.5f), h * 0.28f, shape.style, material && !reference);
   const ImVec2 arrow = at + ImVec2(h * 1.15f, h * 0.45f);
   dl->AddTriangleFilled(arrow + ImVec2(-h * 0.12f, -h * 0.06f), arrow + ImVec2(h * 0.12f, -h * 0.06f),
                         arrow + ImVec2(0, h * 0.1f), IM_COL32(0xd0, 0xd0, 0xd0, 255));
@@ -3347,12 +3490,13 @@ static void material_row(Context &C, Shape &shape, bool reference)
 
   const float rest = ImGui::GetContentRegionAvail().x;
   if (!material) {
-    if (ImGui::Button("New", ImVec2(rest, 0))) {
+    if (ImGui::Button("Make Shared", ImVec2(rest, 0))) {
       operator_call(C, "material.new");
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Make this look a shared material: other shapes can then use it, and changing it changes "
-                        "them all");
+      ImGui::SetTooltip("Make this look a shared material (named after the shape, or the material it last came "
+                        "from; rename it beside the swatch): other shapes can then use it, and changing it "
+                        "changes them all");
     }
   }
   else {
@@ -3410,7 +3554,7 @@ static void material_row(Context &C, Shape &shape, bool reference)
         C.wm->material_hover_frame = ImGui::GetFrameCount();
       }
       ImDrawList *ldl = ImGui::GetWindowDrawList();
-      material_swatch(ldl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.3f, m.style);
+      material_swatch(ldl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.3f, m.style, true);
       const ImU32 text = users > 0 ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
       ldl->AddText(p + ImVec2(h * 1.1f, (h - ImGui::GetFontSize()) * 0.5f), text, m.name.c_str());
       char count[16];
@@ -3458,21 +3602,14 @@ static void material_row(Context &C, Shape &shape, bool reference)
     ImGui::EndPopup();
   }
 
-  if (material && !reference) {
-    const int users = material_users(doc, material->id);
-    if (users > 1) {
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(1);
-      ImGui::TextDisabled("Changes here change all %d shapes using %s", users, material->name.c_str());
-    }
-  }
 }
 
-static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
+static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, Shape &shape)
 {
   Document &doc = *C.document;
-  Layer *owner = document_active_layer(doc);
-  const bool reference = owner && owner->is_reference();
+  Layer *owner = &owner_layer;
+  const bool reference = owner->is_reference();
+  const std::string shape_header = "Shape: " + (shape.name.empty() ? std::string("(unnamed)") : shape.name) + "  in " + owner->name;
   /* On a reference: what this copy changed of this shape (teal), and what a recolour changed. */
   const ReferenceLook *look = nullptr;
   const Shape *original = nullptr;
@@ -3511,7 +3648,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     return s >= 0 ? std::vector<OpArgs>{{{"kind", "SWAP"}, {"id", std::to_string(s)}}} : std::vector<OpArgs>{};
   };
 
-  if (ui_panel_begin("Shape")) {
+  if (ui_panel_begin("Shape", shape_header, 0u)) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
@@ -3562,9 +3699,33 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
 
     ui_panel_end();
   }
-  /* The look, in a panel of its own: the material (shared, or the shape's own) and what it sets. */
-  if (ui_panel_begin("Material")) {
+  /* The look, in a panel of its own: the material (shared, or the shape's own) and what it sets. A
+   * shared one's fields are tinted, and its header says so even folded. */
+  const Material *shared = reference ? nullptr : material_find(doc, shape.material);
+  std::string header = "Material: Own look";
+  if (shared) {
+    const int users = material_users(doc, shared->id);
+    char text[256];
+    if (ImGui::GetFrameCount() - g_material_field_active_frame <= 1) {
+      std::snprintf(text, sizeof(text), "Material: editing %s changes %d shape%s", shared->name.c_str(), users,
+                    users == 1 ? "" : "s");
+    }
+    else {
+      std::snprintf(text, sizeof(text), "Material: %s (shared by %d shape%s)", shared->name.c_str(), users,
+                    users == 1 ? "" : "s");
+    }
+    header = text;
+  }
+  if (ui_panel_begin("Material", header, shared ? SHARED_TEXT : 0u)) {
     material_row(C, shape, reference);
+    if (shared) {
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, SHARED_BG);
+      ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, SHARED_HOVER);
+      ImGui::PushStyleColor(ImGuiCol_FrameBgActive, SHARED_ACTIVE);
+      ImGui::PushStyleColor(ImGuiCol_Button, SHARED_BG);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, SHARED_HOVER);
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, SHARED_ACTIVE);
+    }
 
     /* A colour changed on a copy has a revert button beside it. */
     bool revert = false;
@@ -3573,6 +3734,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr)) {
       shape.style.fill = {fill[0], fill[1], fill[2], fill[3]};
     }
+    material_field_reach(C, shared);
     const std::vector<OpArgs> fill_change = color_change(true, look && look->fill_set);
     changed_end(C, on, "##changed_fill", fill_change, fill_change);
     if (revert) {
@@ -3586,6 +3748,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     if (ui_color(C, "Line Color", line, "Line Color", on ? &revert : nullptr)) {
       shape.style.line = {line[0], line[1], line[2], line[3]};
     }
+    material_field_reach(C, shared);
     const std::vector<OpArgs> line_change = color_change(false, look && look->line_set);
     changed_end(C, on, "##changed_line", line_change, line_change);
     if (revert) {
@@ -3606,6 +3769,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     if (ImGui::DragFloat("##width", &pixels, 0.1f, 0.0f, 500.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
       shape.style.line_width = pixels / units_to_pixels;
     }
+    material_field_reach(C, shared);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       C.undo->push("Line Width", doc);
     }
@@ -3617,38 +3781,26 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     }
     changed_end(C, on, "##changed_width", setting("line_width"), setting("line_width"));
 
-    /* Moho's brush: the button opens Brush Settings; OK gives every selected shape the result. */
+    /* The brush (editors/brush_editor.hh): presets, a preview, the shape, spacing and the rest under
+     * Advanced. An edit goes to every selected shape. */
     on = changed_begin(look && look->brush_set);
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Brush");
-    ImGui::TableSetColumnIndex(1);
-    const std::string &brush = shape.style.brush.name;
-    const bool missing = !brush.empty() && !brush_find(brush);
-    if (ImGui::Button(((brush.empty() ? std::string("None") : brush) + "##brush").c_str(),
-                      ImVec2(on ? -ui_revert_button_space() : -1.0f, 0))) {
-      Context *ctx = &C;
-      brush_settings_open(shape.style.brush, shape.style, [ctx](const BrushSettings &settings) {
-        if (shapes_set_brush(*ctx, settings) > 0) {
-          ctx->undo->push("Brush Settings", *ctx->document);
-        }
-      });
+    BrushSettings brush = shape.style.brush;
+    const BrushEditResult brush_edit =
+        brush_editor(C, brush, shape.style, BrushTarget::Shapes, on ? "Revert to the original's brush" : nullptr);
+    material_field_reach(C, shared);
+    if (brush_edit.changed) {
+      shapes_set_brush(C, brush);
     }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip(missing ? "This brush isn't in the asset library: the line is drawn plain"
-                                : "Paint the line with a brush from the asset library");
+    if (brush_edit.done) {
+      C.undo->push("Brush", doc);
     }
-    if (on) {
-      ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-      if (ui_revert_button("##revert_brush", "Revert to the original's brush")) {
-        operator_call(C, "layer.reference_revert", setting("brush")[0]);
-      }
-    }
-    if (missing) {
-      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Not in the asset library");
+    if (brush_edit.revert) {
+      operator_call(C, "layer.reference_revert", setting("brush")[0]);
     }
     changed_end(C, on, "##changed_brush", setting("brush"), setting("brush"));
+    if (shared) {
+      ImGui::PopStyleColor(6);
+    }
     ui_panel_end();
   }
   detail_panel(C, drawing, shape);
@@ -3698,11 +3850,12 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   ImGui::TableSetColumnIndex(1);
   ImGui::SetNextItemWidth(-1);
   float value = mean;
-  if (ImGui::SliderFloat("##mean_radius", &value, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+  if (ImGui::DragFloat("##mean_radius", &value, 0.005f, 0.0f, POINT_RADIUS_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
     drawing_set_selected_mean_radius(drawing, value);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Stroke radius at the selected points, as a fraction of the shape's line width");
+    ImGui::SetTooltip("Stroke radius at the selected points, as a multiple of the shape's line width (Alt S in the "
+                      "viewport scales it)");
   }
   if (ImGui::IsItemDeactivatedAfterEdit()) {
     C.undo->push("Point Radius", *C.document);
@@ -3786,10 +3939,10 @@ void properties_draw(Area &area, Context &C)
     area.properties_tab = C.wm->properties_tab_request;
     C.wm->properties_tab_request = -1;
   }
-  /* A bone layer has an Armature tab where a drawing has its Drawing tab. */
+  /* A bone layer has an Armature tab where a drawing has its Shape tab. */
   const Layer *active_layer = document_active_layer(*C.document);
   const bool bones = active_layer && active_layer->is_bone_layer();
-  /* Drawings have a Modifiers tab, left of their Drawing tab, as Blender's modifier tab sits
+  /* Drawings have a Modifiers tab, left of their Shape tab, as Blender's modifier tab sits
    * beside the object data tab. */
   const bool modifiers = active_layer && active_layer->has_drawing();
   struct TabEntry {
@@ -3806,7 +3959,7 @@ void properties_draw(Area &area, Context &C)
   if (!camera && area.properties_tab == TAB_CAMERA) {
     area.properties_tab = TAB_LAYER;
   }
-  /* A drawing has its Drawing tab and a bone layer its Armature tab; a group has neither. */
+  /* A drawing has its Shape tab and a bone layer its Armature tab; a group has neither. */
   const bool drawing = active_layer && (bones || active_layer->has_drawing());
   /* A reference (a copy of another layer) has its link's tab. */
   const bool reference = active_layer && active_layer->is_reference();
@@ -3824,7 +3977,7 @@ void properties_draw(Area &area, Context &C)
       tabs.push_back({"Modifiers", TAB_MODIFIERS});
     }
     if (drawing) {
-      tabs.push_back({bones ? "Armature" : "Drawing", TAB_DRAWING});
+      tabs.push_back({bones ? "Armature" : "Shape", TAB_DRAWING});
     }
     /* Bone layers have a Bone Constraints tab beside Armature. */
     if (bones) {
@@ -3860,6 +4013,14 @@ void properties_draw(Area &area, Context &C)
   }
   ImGui::Separator();
   if (ImGui::BeginChild("##properties", ImVec2(0, 0))) {
+    /* Each tab's panels in boxes, in the order kept for that tab. */
+    std::string tab_name = "Document";
+    for (const TabEntry &t : tabs) {
+      if (t.id == area.properties_tab) {
+        tab_name = t.label;
+      }
+    }
+    ui_boxes_begin("Properties/" + tab_name);
     switch (area.properties_tab) {
       case TAB_LAYER:
         layer_tab(C);
@@ -3896,6 +4057,7 @@ void properties_draw(Area &area, Context &C)
         document_tab(C);
         break;
     }
+    ui_boxes_end();
   }
   ImGui::EndChild();
 }

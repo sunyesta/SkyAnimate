@@ -49,11 +49,15 @@ def debug_crash():
 
 
 def properties_tab(tab):
-    """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "DRAWING"
-    (Armature for a bone layer), "MODIFIERS", "CONSTRAINTS" (Bone Constraints), "REFERENCE" (a reference's),
-    "MASKING", "CAMERA" (the picked camera's) or "MEDIA" (a Media layer's)."""
+    """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "SHAPE"
+    (the shapes and their looks; Armature for a bone layer; "DRAWING" still works), "MODIFIERS",
+    "CONSTRAINTS" (Bone Constraints), "REFERENCE" (a reference's), "MASKING", "CAMERA" (the picked
+    camera's) or "MEDIA" (a Media layer's)."""
+    name = tab.upper()
+    if name == "SHAPE":
+        name = "DRAWING"
     _oanim.properties_tab(["DOCUMENT", "LAYER", "DRAWING", "MODIFIERS", "CONSTRAINTS", "REFERENCE",
-                         "MASKING", "CAMERA", "MEDIA"].index(tab.upper()))
+                         "MASKING", "CAMERA", "MEDIA"].index(name))
 
 
 def local_view():

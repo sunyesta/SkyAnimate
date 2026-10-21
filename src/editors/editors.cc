@@ -79,6 +79,8 @@ static WindowManager *g_flash_wm = nullptr;
 
 static Document *g_fold_doc = nullptr;
 static UndoStack *g_fold_undo = nullptr;
+/* Where each open sub-panel's rows start (ui_subpanel_begin). */
+static std::vector<float> g_subpanel_tops;
 
 void ui_bind_project(Document *doc, UndoStack *undo)
 {
@@ -130,6 +132,311 @@ void ui_fold_next(const std::string &key, bool default_open)
   ImGui::SetNextItemOpen(ui_fold_state(key, default_open), ImGuiCond_Always);
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Boxes: Blender's Properties panels. Between ui_boxes_begin and ui_boxes_end every panel and
+ * collapsing header is a rounded box (its header and body one shade, apart from the editor's
+ * background), with a grip at the header's right for dragging it to another place. A box runs from
+ * its header to the next box (or the end).
+ *
+ * The order is kept per scope (Document::ui_panel_order once a box was dragged), without the editors
+ * drawing their panels in it: each box is placed where the order puts it, from the heights the boxes
+ * before it had (this frame's when drawn already, else the last frame's). */
+
+/* Blender's theme: a panel's back and its outline, and the shade over a sub-panel's rows. */
+static constexpr unsigned int BOX_BG = IM_COL32(0x3d, 0x3d, 0x3d, 255);
+static constexpr unsigned int BOX_OUTLINE = IM_COL32(0xff, 0xff, 0xff, 0x12);
+static constexpr unsigned int BOX_BAND = IM_COL32(0x00, 0x00, 0x00, 0x1f);
+static constexpr unsigned int BOX_GRIP = IM_COL32(0x80, 0x80, 0x80, 255);
+static constexpr const char *BOX_PAYLOAD = "OANIM_PANEL";
+
+namespace {
+
+struct BoxScope {
+  bool active = false;
+  std::string scope;
+  bool started = false;
+  float x0 = 0.0f, x1 = 0.0f, start_y = 0.0f, bottom = 0.0f;
+  /* This frame's boxes, as met, and the one open now. */
+  std::vector<std::string> seen;
+  std::map<std::string, float> heights;
+  bool open = false;
+  std::string id;
+  float top = 0.0f;
+  ImRect header;
+  ImDrawListSplitter splitter;
+  ImDrawList *dl = nullptr;
+};
+
+BoxScope g_box;
+/* Per scope: every box met, in order, and the last frame's boxes and heights. */
+std::map<std::string, std::vector<std::string>> g_box_order;
+std::map<std::string, std::map<std::string, float>> g_box_last_heights;
+
+}  // namespace
+
+static std::vector<std::string> &box_order()
+{
+  std::vector<std::string> &order = g_box_order[g_box.scope];
+  /* A dragged order is the project's. */
+  if (g_fold_doc) {
+    if (const auto it = g_fold_doc->ui_panel_order.find(g_box.scope);
+        it != g_fold_doc->ui_panel_order.end() && !it->second.empty())
+    {
+      for (const std::string &id : it->second) {
+        if (std::find(order.begin(), order.end(), id) == order.end()) {
+          order.push_back(id);
+        }
+      }
+      std::vector<std::string> sorted = it->second;
+      for (const std::string &id : order) {
+        if (std::find(sorted.begin(), sorted.end(), id) == sorted.end()) {
+          sorted.push_back(id);
+        }
+      }
+      order = sorted;
+    }
+  }
+  return order;
+}
+
+/* The room between a box's edges and what's in it. */
+static float box_padding()
+{
+  return ImGui::GetStyle().FramePadding.x;
+}
+
+static void box_close()
+{
+  BoxScope &b = g_box;
+  if (!b.open) {
+    return;
+  }
+  b.open = false;
+  ImGui::Unindent(box_padding());
+  const float pad = ImGui::GetStyle().ItemSpacing.y;
+  const bool body = ImGui::GetCursorScreenPos().y > b.header.Max.y + 1.0f;
+  if (body) {
+    ImGui::Dummy(ImVec2(0.0f, pad * 0.5f));
+  }
+  const float y1 = body ? ImGui::GetCursorScreenPos().y : b.header.Max.y;
+  const ImRect rect(ImVec2(b.x0, b.top), ImVec2(b.x1, y1));
+  b.splitter.SetCurrentChannel(b.dl, 0);
+  b.dl->AddRectFilled(rect.Min, rect.Max, BOX_BG, ImGui::GetStyle().FrameRounding);
+  b.splitter.Merge(b.dl);
+  /* The outline over the bands at the edges, a pixel wide. */
+  b.dl->AddRect(rect.Min + ImVec2(0.5f, 0.5f), rect.Max - ImVec2(0.5f, 0.5f), BOX_OUTLINE,
+                ImGui::GetStyle().FrameRounding, 0, 1.0f);
+  b.dl = nullptr;
+  const float height = rect.GetHeight() + pad;
+  b.heights[b.id] = height;
+  b.bottom = std::max(b.bottom, b.top + height);
+
+  /* Dropping a dragged box on this one: above its middle puts it before, below after. */
+  ImGuiDragDropFlags flags = ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+  if (ImGui::BeginDragDropTargetCustom(rect, ImGui::GetID((b.id + "##box_drop").c_str()))) {
+    const ImGuiPayload *peek = ImGui::GetDragDropPayload();
+    const std::string dragged = peek && peek->IsDataType(BOX_PAYLOAD)
+                                    ? std::string(static_cast<const char *>(peek->Data), size_t(peek->DataSize))
+                                    : std::string();
+    if (!dragged.empty() && dragged != b.id) {
+      const bool before = ImGui::GetIO().MousePos.y < rect.GetCenter().y;
+      const float line_y = before ? rect.Min.y - pad * 0.5f : rect.Max.y + pad * 0.5f;
+      ImGui::GetWindowDrawList()->AddLine(ImVec2(rect.Min.x, line_y), ImVec2(rect.Max.x, line_y), UI_DROP_LINE_COLOR,
+                                          2.0f);
+      if (ImGui::AcceptDragDropPayload(BOX_PAYLOAD, flags)) {
+        std::vector<std::string> &order = box_order();
+        std::erase(order, dragged);
+        auto at = std::find(order.begin(), order.end(), b.id);
+        order.insert(before ? at : (at == order.end() ? at : at + 1), dragged);
+        if (g_fold_doc) {
+          g_fold_doc->ui_panel_order[b.scope] = order;
+          if (g_fold_undo) {
+            g_fold_undo->mark_changed();
+          }
+        }
+      }
+    }
+    ImGui::EndDragDropTarget();
+  }
+  /* Whatever follows comes below every box so far (the next box places itself). */
+  ImGui::SetCursorScreenPos(ImVec2(b.x0, b.bottom));
+}
+
+/* Starts box `id` (closing the one before) where the order puts it. False outside ui_boxes_begin. */
+static bool box_open(const std::string &id)
+{
+  BoxScope &b = g_box;
+  if (!b.active) {
+    return false;
+  }
+  box_close();
+  if (!b.started) {
+    b.started = true;
+    b.x0 = ImGui::GetCursorScreenPos().x;
+    b.x1 = b.x0 + ImGui::GetContentRegionAvail().x;
+    b.start_y = b.bottom = ImGui::GetCursorScreenPos().y;
+  }
+  std::vector<std::string> &order = box_order();
+  if (std::find(order.begin(), order.end(), id) == order.end()) {
+    /* New: after the box met before it, so the editor's order is the default. */
+    auto at = b.seen.empty() ? order.begin() : std::find(order.begin(), order.end(), b.seen.back());
+    order.insert(at == order.end() ? at : (b.seen.empty() ? at : at + 1), id);
+  }
+  b.seen.push_back(id);
+  const std::map<std::string, float> &last = g_box_last_heights[b.scope];
+  float y = b.start_y;
+  for (const std::string &other : order) {
+    if (other == id) {
+      break;
+    }
+    if (const auto now = b.heights.find(other); now != b.heights.end()) {
+      y += now->second;
+    }
+    else if (const auto was = last.find(other); was != last.end()) {
+      y += was->second;
+    }
+  }
+  ImGui::SetCursorScreenPos(ImVec2(b.x0, y));
+  /* Its content keeps off the box's edges. */
+  ImGui::Indent(box_padding());
+  b.open = true;
+  b.id = id;
+  b.top = y;
+  b.dl = ImGui::GetWindowDrawList();
+  b.splitter.Split(b.dl, 3);
+  b.splitter.SetCurrentChannel(b.dl, 2);
+  return true;
+}
+
+/* The header of a box: ImGui's collapsing header on the box's shade, and the grip at its right. */
+static bool box_header(const char *label, const std::string &id)
+{
+  ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0xff, 0xff, 0xff, 0x0c));
+  ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(0xff, 0xff, 0xff, 0x14));
+  ImGui::SetNextItemAllowOverlap();
+  const bool open = ImGui::CollapsingHeader(label);
+  ImGui::PopStyleColor(3);
+  g_box.header = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+  const ImVec2 after = ImGui::GetCursorScreenPos();
+  /* The grip: 4 x 2 dots, as Blender's. */
+  const ImRect &h = g_box.header;
+  const float s = ImGui::GetFontSize() * 0.12f, step = s * 3.0f;
+  const ImVec2 grip_min(h.Max.x - step * 4.0f - s * 4.0f, h.Min.y);
+  ImGui::SetCursorScreenPos(grip_min);
+  ImGui::InvisibleButton((id + "##grip").c_str(), ImVec2(h.Max.x - grip_min.x, h.GetHeight()));
+  const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float cy = h.GetCenter().y;
+  for (int col = 0; col < 4; col++) {
+    for (int row = 0; row < 2; row++) {
+      dl->AddCircleFilled(ImVec2(grip_min.x + s * 2.0f + step * float(col), cy + (row == 0 ? -step : step) * 0.5f), s,
+                          hot ? ImGui::GetColorU32(ImGuiCol_Text) : BOX_GRIP);
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !ImGui::IsItemActive()) {
+    ImGui::SetTooltip("Drag to move the panel");
+  }
+  if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+    ImGui::SetDragDropPayload(BOX_PAYLOAD, id.data(), id.size());
+    std::string shown = label;
+    if (const size_t hash = shown.find("###"); hash != std::string::npos) {
+      shown = shown.substr(0, hash);
+    }
+    ImGui::TextUnformatted(shown.c_str());
+    ImGui::EndDragDropSource();
+  }
+  ImGui::SetCursorScreenPos(after);
+  return open;
+}
+
+void ui_boxes_begin(const std::string &scope)
+{
+  g_box = {};
+  g_box.active = true;
+  g_box.scope = scope;
+}
+
+void ui_boxes_end()
+{
+  BoxScope &b = g_box;
+  if (!b.active) {
+    return;
+  }
+  box_close();
+  if (b.started) {
+    ImGui::SetCursorScreenPos(ImVec2(b.x0, std::max(b.bottom, ImGui::GetCursorScreenPos().y)));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  }
+  g_box_last_heights[b.scope] = b.heights;
+  g_box.active = false;
+}
+
+/* The room a box's right edge keeps from its content. */
+static float box_inset()
+{
+  return g_box.open ? box_padding() : 0.0f;
+}
+
+bool ui_subpanel_begin(const std::string &key, const std::string &label, bool default_open)
+{
+  const std::string fold = ui_fold_scope() + "/" + key;
+  ui_fold_next(fold, default_open);
+  const bool in_table = ImGui::GetCurrentTable() != nullptr;
+  ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0xff, 0xff, 0xff, 0x0c));
+  ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(0xff, 0xff, 0xff, 0x14));
+  bool open;
+  if (in_table) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    open = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                                                   ImGuiTreeNodeFlags_FramePadding);
+  }
+  else {
+    open = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                                                   ImGuiTreeNodeFlags_FramePadding);
+  }
+  ImGui::PopStyleColor(3);
+  ui_fold_record(fold, default_open, open);
+  if (open) {
+    g_subpanel_tops.push_back(ImGui::GetItemRectMax().y);
+  }
+  return open;
+}
+
+void ui_subpanel_end()
+{
+  if (g_subpanel_tops.empty()) {
+    return;
+  }
+  const float top = g_subpanel_tops.back();
+  g_subpanel_tops.pop_back();
+  /* The rows under an open sub-panel sit on a darker band, the box's width (Blender's). */
+  const float pad = ImGui::GetStyle().ItemSpacing.y * 0.5f;
+  if (ImGuiTable *table = ImGui::GetCurrentTable()) {
+    /* The last row ends where the next one starts. */
+    ImGui::TableNextRow();
+    /* A row with a column, which the table's channels go back to after the background. */
+    ImGui::TableSetColumnIndex(0);
+    const float bottom = table->RowPosY1;
+    ImGui::TablePushBackgroundChannel();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const float x0 = g_box.open ? g_box.x0 : table->OuterRect.Min.x, x1 = g_box.open ? g_box.x1 : table->OuterRect.Max.x;
+    dl->PushClipRect(ImVec2(x0, top), ImVec2(x1, bottom), false);
+    dl->AddRectFilled(ImVec2(x0, top + 1.0f), ImVec2(x1, bottom), BOX_BAND);
+    dl->PopClipRect();
+    ImGui::TablePopBackgroundChannel();
+  }
+  else if (g_box.open && g_box.dl) {
+    ImGui::Dummy(ImVec2(0.0f, pad));
+    const float bottom = ImGui::GetCursorScreenPos().y;
+    g_box.splitter.SetCurrentChannel(g_box.dl, 1);
+    g_box.dl->AddRectFilled(ImVec2(g_box.x0, top + 1.0f), ImVec2(g_box.x1, bottom), BOX_BAND);
+    g_box.splitter.SetCurrentChannel(g_box.dl, 2);
+  }
+}
+
 bool ui_collapsing_header(const char *label, bool default_open)
 {
   /* "Changes (3)###changes": the part after ### is what it's kept by. */
@@ -138,13 +445,27 @@ bool ui_collapsing_header(const char *label, bool default_open)
     id = id.substr(hash + 3);
   }
   const std::string key = ui_fold_scope() + "/" + id;
+  /* The box first: closing the one before submits items, which would use up the fold. */
+  const bool boxed = box_open(id);
   ui_fold_next(key, default_open);
-  const bool open = ImGui::CollapsingHeader(label);
+  const bool open = boxed ? box_header(label, id) : ImGui::CollapsingHeader(label);
   ui_fold_record(key, default_open, open);
   return open;
 }
 
+bool ui_panel_begin(const char *title, const std::string &header, unsigned int color, bool default_open);
+
 bool ui_panel_begin(const char *title, bool default_open)
+{
+  return ui_panel_begin(title, std::string(), 0u, default_open);
+}
+
+bool ui_panel_begin(const char *title, const std::string &header, unsigned int color)
+{
+  return ui_panel_begin(title, header, color, true);
+}
+
+bool ui_panel_begin(const char *title, const std::string &header, unsigned int color, bool default_open)
 {
   const std::string key = ui_fold_scope() + "/" + title;
   /* A property being shown (ui_flash_bind) opens its panel. */
@@ -153,13 +474,21 @@ bool ui_panel_begin(const char *title, bool default_open)
   {
     ui_fold_record(key, default_open, true);
   }
+  const bool boxed = box_open(title);
   ui_fold_next(key, default_open);
-  const bool open = ImGui::CollapsingHeader(title);
+  if (color != 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+  }
+  const std::string label = header.empty() ? std::string(title) : header + "###" + title;
+  const bool open = boxed ? box_header(label.c_str(), title) : ImGui::CollapsingHeader(label.c_str());
+  if (color != 0) {
+    ImGui::PopStyleColor();
+  }
   ui_fold_record(key, default_open, open);
   if (!open) {
     return false;
   }
-  if (!ImGui::BeginTable(title, 2, ImGuiTableFlags_SizingStretchProp)) {
+  if (!ImGui::BeginTable(title, 2, ImGuiTableFlags_SizingStretchProp, ImVec2(-box_inset(), 0.0f))) {
     return false;
   }
   ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
