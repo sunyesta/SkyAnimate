@@ -35,9 +35,9 @@
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
 
-namespace sky {
+namespace oanim {
 
-static constexpr const char *SKY_VERSION = "0.1.0";
+static constexpr const char *OANIM_VERSION = "0.1.0";
 
 /* Scripts live next to the executable in a packaged build, and in the source tree
  * while developing so edits apply without rebuilding. */
@@ -49,7 +49,7 @@ static std::filesystem::path scripts_dir_find()
       return packaged;
     }
   }
-  return std::filesystem::path(reinterpret_cast<const char8_t *>(SKY_SCRIPTS_DIR));
+  return std::filesystem::path(reinterpret_cast<const char8_t *>(OANIM_SCRIPTS_DIR));
 }
 
 /* SDL key names to Blender's event type names ("Space" -> "SPACE", "A" -> "A"). */
@@ -78,7 +78,7 @@ int App::run(const LaunchOptions &options)
   wm_.background = options.background;
   /* Tests run without the user's preferences (and never change them). */
   preferences_set_persistent(!options.background);
-  /* A crash writes a report (a minidump and a readable call stack) to %LOCALAPPDATA%\SkyAnimate\crashes;
+  /* A crash writes a report (a minidump and a readable call stack) to %LOCALAPPDATA%\OpenAnimate\crashes;
    * tests never write to the user's folder. */
   if (!options.background) {
     crash_handler_install(crash_dir());
@@ -135,7 +135,7 @@ int App::run(const LaunchOptions &options)
   }
   /* The last session crashed: say where its report is. */
   if (const std::string crashed = crash_report_unseen(crash_dir()); !crashed.empty()) {
-    report(ReportType::Warning, "SkyAnimate crashed last time. Its crash report is " + crashed);
+    report(ReportType::Warning, "Open Animate crashed last time. Its crash report is " + crashed);
   }
   main_loop();
   /* Requests still waiting run Python: stop before it does. */
@@ -162,7 +162,7 @@ bool App::window_init()
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-  window_ = SDL_CreateWindow("SkyAnimate", 1600, 900,
+  window_ = SDL_CreateWindow("Open Animate", 1600, 900,
                              SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                  SDL_WINDOW_HIDDEN);
   if (!window_) {
@@ -201,7 +201,7 @@ bool App::window_init()
   update_window_title();
   SDL_MaximizeWindow(window_);
   SDL_ShowWindow(window_);
-  report(ReportType::Info, std::string("SkyAnimate ") + SKY_VERSION + " started", false);
+  report(ReportType::Info, std::string("Open Animate ") + OANIM_VERSION + " started", false);
   return true;
 }
 
@@ -385,13 +385,13 @@ void App::handle_event(const SDL_Event &event)
   }
 }
 
-/* "SkyAnimate - walk.sky * (D:/Anim/walk.sky)", with * while there are unsaved changes. */
+/* "Open Animate - walk.oanim * (D:/Anim/walk.oanim)", with * while there are unsaved changes. */
 void App::update_window_title()
 {
   if (!window_) {
     return;
   }
-  std::string title = "SkyAnimate - ";
+  std::string title = "Open Animate - ";
   if (wm_.filepath.empty()) {
     title += doc_.name;
   }
@@ -472,7 +472,7 @@ static void menu_operator(Context &C, const char *label, const char *idname)
     operator_call(C, idname);
   }
   if (!ot->description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("%s\n\nPython: sky.ops.%s()", ot->description.c_str(), idname);
+    ImGui::SetTooltip("%s\n\nPython: oanim.ops.%s()", ot->description.c_str(), idname);
   }
 }
 
@@ -484,7 +484,7 @@ static void menu_not_yet(const char *label, const char *shortcut, const char *mi
   }
 }
 
-/* SkyAnimate's mark at the left of the top bar, where Blender shows its logo: a small cloud
+/* Open Animate's mark at the left of the top bar, where Blender shows its logo: a small cloud
  * on a sky-blue disc. */
 static void app_icon_draw()
 {
@@ -721,7 +721,7 @@ void App::draw_top_bar()
     menu_not_yet("Manual", nullptr, "a later milestone");
     menu_not_yet("Python API Reference", nullptr, "milestone 5");
     ImGui::Separator();
-    if (ImGui::MenuItem("About SkyAnimate")) {
+    if (ImGui::MenuItem("About Open Animate")) {
       show_about_ = true;
     }
     ImGui::EndMenu();
@@ -865,9 +865,9 @@ void App::draw_asset_library_prompts()
     ImGui::OpenPopup(setup);
   }
   if (ImGui::BeginPopupModal(setup, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-    ImGui::TextUnformatted("SkyAnimate keeps its brushes in an asset library folder, shared by all your documents.");
+    ImGui::TextUnformatted("Open Animate keeps its brushes in an asset library folder, shared by all your documents.");
     if (preferences().asset_library.empty()) {
-      ImGui::TextUnformatted("Pick a folder where SkyAnimate can set one up.");
+      ImGui::TextUnformatted("Pick a folder where Open Animate can set one up.");
     }
     else {
       ImGui::Text("The asset library at %s can't be found.", preferences().asset_library.c_str());
@@ -964,7 +964,7 @@ void App::draw_preferences()
     preferences_save();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Let programs on this computer drive SkyAnimate: run Python in it, take screenshots,\n"
+    ImGui::SetTooltip("Let programs on this computer drive Open Animate: run Python in it, take screenshots,\n"
                       "read its state and press keys. Claude uses this through the MCP bridge in tools/mcp.\n"
                       "Only this computer can connect (127.0.0.1).");
   }
@@ -1125,11 +1125,11 @@ void App::draw_ui()
   ui_flash_update(wm_);
 
   if (show_about_) {
-    ImGui::OpenPopup("About SkyAnimate");
+    ImGui::OpenPopup("About Open Animate");
     show_about_ = false;
   }
-  if (ImGui::BeginPopupModal("About SkyAnimate", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("SkyAnimate %s", SKY_VERSION);
+  if (ImGui::BeginPopupModal("About Open Animate", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Open Animate %s", OANIM_VERSION);
     ImGui::TextDisabled("2D animation inspired by Moho and Blender");
     ImGui::TextDisabled("Dear ImGui %s", IMGUI_VERSION);
     if (ImGui::Button("Close")) {
@@ -1139,4 +1139,4 @@ void App::draw_ui()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

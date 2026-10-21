@@ -4,7 +4,7 @@ mask that's on holds. Adding, changing, turning off and removing them; Mask With
 (Ctrl Alt G); copies keeping their pairs; references of groups masking themselves; saving; and
 files from before, whose Moho masking groups become masks.
 
-Run with:  SkyAnimate --background --python tests/test_masks.py
+Run with:  OpenAnimate --background --python tests/test_masks.py
 """
 
 import json
@@ -12,11 +12,11 @@ import pathlib
 import tempfile
 import zipfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
-folder = pathlib.Path(tempfile.mkdtemp(prefix="sky_masks_"))
+doc = oanim.data.document
+layers = oanim.data.layers
+folder = pathlib.Path(tempfile.mkdtemp(prefix="oanim_masks_"))
 
 
 def find(name):
@@ -24,7 +24,7 @@ def find(name):
 
 
 def square(name, x0=0.0, x1=1.0):
-    sky.ops.layer.new()
+    oanim.ops.layer.new()
     l = layers.active
     l.name = name
     l.add_curve([(x0, 0.0), (x1, 0.0), (x1, 1.0), (x0, 1.0)], closed=True, fill=True)
@@ -40,51 +40,51 @@ tongue = square("tongue", 0.6, 1.4)
 
 # --- Adding, reading, changing, removing --------------------------------------------------------------
 layers.active = head
-assert sky.ops.mask.add(sources="hole", outside="1") == {'FINISHED'}
+assert oanim.ops.mask.add(sources="hole", outside="1") == {'FINISHED'}
 assert head.masks == [{"outside": True, "layers": ["hole"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
 assert hole.masking == ["head"]
-assert sky.wm.undo_history()[0][-1] == "Mask head: Outside hole", "the undo step says what happened"
-assert sky.ops.mask.add(sources="hole", outside="1") == {'CANCELLED'}, "the same mask twice is one mask"
-assert sky.ops.mask.add(sources="head") == {'CANCELLED'}, "a layer can't be its own mask"
-assert sky.ops.mask.add(sources="nothing here") == {'CANCELLED'}
+assert oanim.wm.undo_history()[0][-1] == "Mask head: Outside hole", "the undo step says what happened"
+assert oanim.ops.mask.add(sources="hole", outside="1") == {'CANCELLED'}, "the same mask twice is one mask"
+assert oanim.ops.mask.add(sources="head") == {'CANCELLED'}, "a layer can't be its own mask"
+assert oanim.ops.mask.add(sources="nothing here") == {'CANCELLED'}
 
 # One mask can name several layers: inside any of them.
 layers.active = tongue
-assert sky.ops.mask.add(sources="head|teeth") == {'FINISHED'}
+assert oanim.ops.mask.add(sources="head|teeth") == {'FINISHED'}
 assert tongue.masks[0]["layers"] == ["head", "teeth"]
 assert sorted(head.masking) == ["tongue"] and teeth.masking == ["tongue"]
 
 # Turn off and on, Inside/Outside, change its layers.
-assert sky.ops.mask.set(index="0", toggle="1") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", toggle="1") == {'FINISHED'}
 assert tongue.masks[0]["enabled"] is False
-assert sky.ops.mask.set(index="0", enabled="1", outside="1", sources="teeth") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", enabled="1", outside="1", sources="teeth") == {'FINISHED'}
 assert tongue.masks == [{"outside": True, "layers": ["teeth"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert tongue.masks[0] == {"outside": False, "layers": ["head", "teeth"], "enabled": False, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}
-assert sky.ops.mask.remove(index="0") == {'FINISHED'} and tongue.masks == []
+assert oanim.ops.mask.remove(index="0") == {'FINISHED'} and tongue.masks == []
 
 # The active and picked layers together; remove all.
 layers.active = teeth
 tongue.select = True
-assert sky.ops.mask.add(sources="head") == {'FINISHED'}
+assert oanim.ops.mask.add(sources="head") == {'FINISHED'}
 assert teeth.masks[0]["layers"] == ["head"] and tongue.masks[0]["layers"] == ["head"]
-assert sky.ops.mask.remove() == {'FINISHED'} and teeth.masks == [] and tongue.masks == []
+assert oanim.ops.mask.remove() == {'FINISHED'} and teeth.masks == [] and tongue.masks == []
 tongue.select = False
 
 # --- Mask With Layer Below (Ctrl Alt G) --------------------------------------------------------------
 layers.active = tongue
-assert sky.wm.event_simulate("G", ctrl=True, alt=True, area="Viewport")
+assert oanim.wm.event_simulate("G", ctrl=True, alt=True, area="Viewport")
 assert tongue.masks == [{"outside": False, "layers": ["teeth"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
-sky.ops.mask.remove()
+oanim.ops.mask.remove()
 
 # Picking the mask layer by clicking is asked of the editors.
-assert sky.ops.mask.pick(mode="OUTSIDE") == {'FINISHED'}
+assert oanim.ops.mask.pick(mode="OUTSIDE") == {'FINISHED'}
 
 # --- A layer and its mask copied together stay a pair -----------------------------------------------
 layers.active = teeth
-sky.ops.mask.add(sources="hole")
+oanim.ops.mask.add(sources="hole")
 hole.select = True
-assert sky.ops.layer.duplicate() == {'FINISHED'}
+assert oanim.ops.layer.duplicate() == {'FINISHED'}
 copy = layers.active
 assert copy.name != "teeth" and copy.masks[0]["layers"][0] != "hole", copy.masks
 copied_hole = copy.masks[0]["layers"][0]
@@ -94,36 +94,36 @@ assert teeth.masks[0]["layers"] == ["hole"], "the original keeps its own"
 for l in layers.all():
     l.select = False
 layers.active = teeth
-sky.ops.layer.duplicate()
+oanim.ops.layer.duplicate()
 assert layers.active.masks[0]["layers"] == ["hole"]
 
 # --- A reference of a group masks itself with its own copies ----------------------------------------
-sky.ops.layer.new_group()
+oanim.ops.layer.new_group()
 face = layers.active
 face.name = "Face"
 skin, freckles = square("skin", 0.0, 3.0), square("freckles", 1.0, 2.0)
 for l in (skin, freckles):
     layers.active = l
-    sky.ops.layer.move_to_group(group=str(face.id))
+    oanim.ops.layer.move_to_group(group=str(face.id))
 layers.active = freckles
-sky.ops.mask.add(sources="skin")
+oanim.ops.mask.add(sources="skin")
 layers.active = face
-assert sky.ops.layer.make_reference() == {'FINISHED'}
+assert oanim.ops.layer.make_reference() == {'FINISHED'}
 ref_face = layers.active
 ref_freckles = next(c for c in ref_face.children if c.reference_source == freckles)
 ref_skin = next(c for c in ref_face.children if c.reference_source == skin)
-assert sky.ops.mask.add.poll()
+assert oanim.ops.mask.add.poll()
 assert [l.name for l in ref_face.children] == [l.name for l in face.children]
 assert ref_freckles.masks[0]["layers"] == ["skin"]
 assert ref_skin.masking == ["freckles"] and skin.masking == ["freckles"], "each names its own skin"
 
 # --- Saved and opened again --------------------------------------------------------------------------
 layers.active = head
-sky.ops.mask.set(index="0", enabled="0")
-path = str(folder / "masks.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-layers = sky.data.layers
+oanim.ops.mask.set(index="0", enabled="0")
+path = str(folder / "masks.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+layers = oanim.data.layers
 assert find("head").masks == [{"outside": True, "layers": ["hole"], "enabled": False, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
 assert find("teeth").masks[0]["layers"] == ["hole"]
 
@@ -150,11 +150,11 @@ old = {
             vec(9, "head_shape", "CLEAR_ADD_INVISIBLE"),
         ]}]},
 }
-old_path = folder / "old.sky"
+old_path = folder / "old.oanim"
 with zipfile.ZipFile(old_path, "w") as archive:
     archive.writestr("document.json", json.dumps(old))
-assert sky.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
-layers = sky.data.layers
+assert oanim.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
+layers = oanim.data.layers
 assert find("inside").masks == [{"outside": False, "layers": ["head_shape"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
 assert find("head_art").masks == [{"outside": False, "layers": ["head_shape"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"},
                                   {"outside": True, "layers": ["hole_cut"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
@@ -169,8 +169,8 @@ old["document"]["layers"][0]["children"][5]["mask_expand"] = True          # hea
 old["document"]["layers"][0]["children"][3]["mask_exclude_strokes"] = True  # hole_cut
 with zipfile.ZipFile(old_path, "w") as archive:
     archive.writestr("document.json", json.dumps(old))
-assert sky.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
-layers = sky.data.layers
+assert oanim.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
+layers = oanim.data.layers
 head_art = find("head_art").masks
 assert (head_art[0]["expand"], head_art[0]["fills_only"]) == (True, False), head_art
 assert (head_art[1]["expand"], head_art[1]["fills_only"]) == (False, True), head_art
@@ -179,17 +179,17 @@ assert find("inside").masks[0]["expand"] and not find("line").masks[0]["expand"]
 # --- Each mask's own options, viewport and render switches, and order -------------------------------
 art = find("head_art")
 layers.active = art
-assert sky.ops.mask.set(index="1", expand="1", fills_only="0", render="0") == {'FINISHED'}
+assert oanim.ops.mask.set(index="1", expand="1", fills_only="0", render="0") == {'FINISHED'}
 m = art.masks[1]
 assert (m["expand"], m["fills_only"], m["render"], m["enabled"]) == (True, False, False, True)
-assert sky.ops.mask.move(index="1", to="0") == {'FINISHED'}
+assert oanim.ops.mask.move(index="1", to="0") == {'FINISHED'}
 assert art.masks[0]["layers"] == ["hole_cut"] and art.masks[1]["layers"] == ["head_shape"]
-assert sky.ops.mask.add(sources="line_shape", expand="1", fills_only="1") == {'FINISHED'}
+assert oanim.ops.mask.add(sources="line_shape", expand="1", fills_only="1") == {'FINISHED'}
 assert (art.masks[2]["expand"], art.masks[2]["fills_only"]) == (True, True)
-path = str(folder / "options.sky")
-sky.ops.wm.save_as_mainfile(filepath=path)
-sky.ops.wm.open_mainfile(filepath=path, confirmed="1")
-layers = sky.data.layers
+path = str(folder / "options.oanim")
+oanim.ops.wm.save_as_mainfile(filepath=path)
+oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
+layers = oanim.data.layers
 assert find("head_art").masks[0] == {"outside": True, "layers": ["hole_cut"], "enabled": True, "render": False,
                                      "expand": True, "fills_only": False, "filled": False, "extend": "NONE"}
 
@@ -199,28 +199,28 @@ art = find("head_art")
 layers.active = art
 for use, filled, fills in [("FILLED", True, False), ("FILLED_NO_STROKE", True, True), ("FILLS_ONLY", False, True),
                            ("AS_DRAWN", False, False)]:
-    assert sky.ops.mask.set(index="0", use=use) == {'FINISHED'}
+    assert oanim.ops.mask.set(index="0", use=use) == {'FINISHED'}
     assert (art.masks[0]["filled"], art.masks[0]["fills_only"]) == (filled, fills), use
-assert sky.ops.mask.set(index="0", use="SIDEWAYS") == {'CANCELLED'}
-assert sky.ops.mask.add(sources="line", use="FILLED") == {'FINISHED'} and art.masks[-1]["filled"]
-path = str(folder / "filled.sky")
-sky.ops.wm.save_as_mainfile(filepath=path)
-sky.ops.wm.open_mainfile(filepath=path, confirmed="1")
-layers = sky.data.layers
+assert oanim.ops.mask.set(index="0", use="SIDEWAYS") == {'CANCELLED'}
+assert oanim.ops.mask.add(sources="line", use="FILLED") == {'FINISHED'} and art.masks[-1]["filled"]
+path = str(folder / "filled.oanim")
+oanim.ops.wm.save_as_mainfile(filepath=path)
+oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
+layers = oanim.data.layers
 assert find("head_art").masks[-1]["filled"] and not find("head_art").masks[0]["filled"]
 
 # Extend: the shapes stretched to the edge one way ("Outside the mouth line and above").
 art = find("head_art")
 layers.active = art
-assert sky.ops.mask.set(index="0", extend="UP") == {'FINISHED'} and art.masks[0]["extend"] == "UP"
-assert sky.wm.undo_history()[0][-1].endswith(" and above"), sky.wm.undo_history()[0][-1]
-assert sky.ops.mask.set(index="0", extend="SIDEWAYS") == {'CANCELLED'}
-assert sky.ops.mask.add(sources="line_shape", outside="1", extend="DOWN") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", extend="UP") == {'FINISHED'} and art.masks[0]["extend"] == "UP"
+assert oanim.wm.undo_history()[0][-1].endswith(" and above"), oanim.wm.undo_history()[0][-1]
+assert oanim.ops.mask.set(index="0", extend="SIDEWAYS") == {'CANCELLED'}
+assert oanim.ops.mask.add(sources="line_shape", outside="1", extend="DOWN") == {'FINISHED'}
 assert art.masks[-1]["extend"] == "DOWN"
-path = str(folder / "extend.sky")
-sky.ops.wm.save_as_mainfile(filepath=path)
-sky.ops.wm.open_mainfile(filepath=path, confirmed="1")
-layers = sky.data.layers
+path = str(folder / "extend.oanim")
+oanim.ops.wm.save_as_mainfile(filepath=path)
+oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
+layers = oanim.data.layers
 assert find("head_art").masks[0]["extend"] == "UP" and find("head_art").masks[-1]["extend"] == "DOWN"
 
 print("test_masks: OK")

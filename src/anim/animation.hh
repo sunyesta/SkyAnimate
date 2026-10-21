@@ -23,7 +23,7 @@
 
 #include "anim/channel.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Bone;
 struct Document;
@@ -221,4 +221,4 @@ int layers_copy_selected_keys(const std::vector<Layer *> &layers);
 int layers_paste_keys(const std::vector<Layer *> &layers, int frame);
 bool key_clipboard_empty();
 
-}  // namespace sky
+}  // namespace oanim

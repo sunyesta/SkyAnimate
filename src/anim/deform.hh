@@ -16,7 +16,7 @@
 
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 struct Layer;
@@ -74,4 +74,4 @@ bool document_weight_new_points(Document &doc, bool exact = false);
 VectorDrawing drawing_mirror(const VectorDrawing &drawing, const Modifier &mirror,
                              const std::function<uint64_t(uint64_t)> &flip_bone);
 
-}  // namespace sky
+}  // namespace oanim

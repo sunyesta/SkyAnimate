@@ -22,7 +22,7 @@
 #include "wm/file_dialog.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Colours from Blender's default text editor theme. */
 static constexpr ImU32 COL_TEXT_BACK = IM_COL32(0x23, 0x23, 0x23, 255);
@@ -329,4 +329,4 @@ void text_editor_draw(Area &area, Context &C)
   text_body(area, C, *text);
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -2,7 +2,7 @@
 
 /* How the project is shown: settings saved with the file that aren't part of its artwork. */
 
-namespace sky {
+namespace oanim {
 
 /* Which curve handles the viewport shows, as Blender's Overlays > Handles. */
 /* Shape: every handle of the shapes being worked on (any of whose points is selected), plus the
@@ -55,4 +55,4 @@ struct ViewportView {
   float zoom = 0.0f;
 };
 
-}  // namespace sky
+}  // namespace oanim

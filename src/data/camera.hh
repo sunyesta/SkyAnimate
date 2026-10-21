@@ -13,7 +13,7 @@
 
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 struct Layer;
@@ -30,4 +30,4 @@ void camera_frame_corners(const Document &doc, float2 r_corners[4]);
 /* The frame's half width and height in document space. */
 float2 camera_half_size(const Document &doc);
 
-}  // namespace sky
+}  // namespace oanim

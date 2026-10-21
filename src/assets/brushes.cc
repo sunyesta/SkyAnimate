@@ -17,7 +17,7 @@
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 
-namespace sky {
+namespace oanim {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -401,4 +401,4 @@ bool brush_save(const std::string &name, const BrushSettings &settings, std::str
   return true;
 }
 
-}  // namespace sky
+}  // namespace oanim

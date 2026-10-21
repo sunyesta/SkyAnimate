@@ -4,7 +4,7 @@ keys; a point added to an animated curve takes its neighbours' motion; saving ke
 before (format 2, the points' own values in their keys, as the Moho converter writes) open
 converted.
 
-Run with:  SkyAnimate --background --python tests/test_point_transform.py
+Run with:  OpenAnimate --background --python tests/test_point_transform.py
 """
 
 import json
@@ -13,10 +13,10 @@ import pathlib
 import tempfile
 import zipfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 doc.frame_current = 0
 doc.auto_key = True
 
@@ -38,7 +38,7 @@ def sub(a, b):
 
 layer = layers.active
 layer.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 
 
 def keys(path):
@@ -111,9 +111,9 @@ assert [f for f, v in keys("points[%d].pos" % new)] == [0, 10]
 
 # --- Saved and opened ------------------------------------------------------------------------------------
 doc.frame_current = 0
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_point_transform_")) / "points.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_point_transform_")) / "points.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 layer = next(l for l in layers.all() if l.point_count > 0)
 p1 = 1 if new != 1 else 2
 doc.frame_current = 10
@@ -152,7 +152,7 @@ entries["document.json"] = json.dumps(root).encode("utf-8")
 with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
     for n, data in entries.items():
         z.writestr(n, data)
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 layer = next(l for l in layers.all() if l.point_count > 0)
 assert close(keys("points[%d].pos" % p1)[0][1], (0, 0)) and close(keys("points[%d].pos" % p1)[1][1], (0, 0.5))
 # The split put the new point before it on the curve: point 1 is the curve's third point now.
@@ -165,18 +165,18 @@ assert close(where(p1), shown_10), "it plays as it did"
 layers.active = layer
 doc.frame_current = 0
 rest_point, rest_handle = where(p1), sub(layer.curve_handles(0)[2][2], where(p1))
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([p1])
-assert not sky.wm.event_simulate("G", alt=True, area="Viewport"), "frame 0 is the setup already"
+assert not oanim.wm.event_simulate("G", alt=True, area="Viewport"), "frame 0 is the setup already"
 doc.frame_current = 10
 assert not close(where(p1), rest_point) and not close(sub(layer.curve_handles(0)[2][2], where(p1)), rest_handle)
 turned_handle = sub(layer.curve_handles(0)[2][2], where(p1))
 # Alt G: the point goes back; its handles keep their turn.
-assert sky.wm.event_simulate("G", alt=True, area="Viewport")
+assert oanim.wm.event_simulate("G", alt=True, area="Viewport")
 assert close(where(p1), rest_point), (where(p1), rest_point)
 assert close(sub(layer.curve_handles(0)[2][2], where(p1)), turned_handle), "Alt G leaves the handles"
 # Alt R: the handles go back to their setup shape.
-assert sky.wm.event_simulate("R", alt=True, area="Viewport")
+assert oanim.wm.event_simulate("R", alt=True, area="Viewport")
 assert close(sub(layer.curve_handles(0)[2][2], where(p1)), rest_handle)
 doc.frame_current = 11
 assert close(keys("points[%d].pos" % p1)[1][1], (0, 0)), "auto-key keyed it back"

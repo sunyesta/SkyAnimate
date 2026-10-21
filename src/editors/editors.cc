@@ -26,7 +26,7 @@
 #include "wm/context.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 const char *editor_type_label(EditorType type)
 {
@@ -1368,9 +1368,9 @@ bool area_draw(Area &area, Context &C)
   return hovered;
 }
 
-}  // namespace sky
+}  // namespace oanim
 
-namespace sky {
+namespace oanim {
 
 /* --- Menus at the mouse, with memory (see ui_menu_begin) -------------------------------------- */
 
@@ -1496,4 +1496,4 @@ void ui_menu_end()
   ImGui::EndPopup();
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -1,4 +1,4 @@
-# SkyAnimate
+# Open Animate
 
 A 2D animation app inspired by Moho and Blender: Moho's animation model (layers, bones, smart
 bones, actions) inside Blender's interface and editing habits. Windows only for now.
@@ -11,7 +11,7 @@ build instructions and project conventions.
 ```
 cmake --preset windows
 cmake --build --preset release
-build\bin\RelWithDebInfo\SkyAnimate.exe
+build\bin\RelWithDebInfo\OpenAnimate.exe
 ```
 
 Requires Visual Studio 2026 Build Tools (MSVC and its bundled CMake) and Python 3.14 at

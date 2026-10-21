@@ -1,11 +1,11 @@
 """Milestone 2 data: vector drawings, shapes, curve editing, layers, groups, references, masking.
 
-Run with:  SkyAnimate --background --python tests/test_drawing_and_layers.py
+Run with:  OpenAnimate --background --python tests/test_drawing_and_layers.py
 """
 
-import sky
+import oanim
 
-layers = sky.data.layers
+layers = oanim.data.layers
 layer = layers.active
 assert layer.name == "Layer 1" and layer.type == "VECTOR"
 
@@ -22,54 +22,54 @@ line = layer.add_curve([(1.0, 0.0), (1.5, 0.2), (2.0, 0.0)])
 assert counts(layer) == (7, 2, 2)
 
 # Select the open line's points (4, 5, 6) and peak them, then delete the middle one.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([4, 5, 6])
-assert sky.ops.mesh.peak() == {'FINISHED'}
-sky.ops.mesh.select_none()
+assert oanim.ops.mesh.peak() == {'FINISHED'}
+oanim.ops.mesh.select_none()
 layer.select_points([5])
-assert sky.ops.mesh.delete() == {'FINISHED'}
+assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (6, 2, 1), "deleting a point drops shapes on that curve"
 
 # Shapes come from the Shape tool only: F over the viewport makes none.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([0, 1, 2, 3])
-assert not sky.wm.event_simulate("F", area="Viewport")
+assert not oanim.wm.event_simulate("F", area="Viewport")
 assert layer.shape_count == 1
 
 # Keys over the viewport: A selects all, Alt A deselects, X deletes.
-assert sky.wm.event_simulate("A", area="Viewport")
+assert oanim.wm.event_simulate("A", area="Viewport")
 assert all(p[2] for p in layer.points)
-assert sky.wm.event_simulate("A", alt=True, area="Viewport")
+assert oanim.wm.event_simulate("A", alt=True, area="Viewport")
 assert not any(p[2] for p in layer.points)
-assert sky.wm.event_simulate("2", area="Viewport"), "2 switches to edge selection"
-assert sky.wm.event_simulate("3", area="Viewport"), "3 switches to stroke selection"
+assert oanim.wm.event_simulate("2", area="Viewport"), "2 switches to edge selection"
+assert oanim.wm.event_simulate("3", area="Viewport"), "3 switches to stroke selection"
 layer.select_points([0])
-assert sky.ops.mesh.select_mode_stroke() == {'FINISHED'}
+assert oanim.ops.mesh.select_mode_stroke() == {'FINISHED'}
 assert sum(p[2] for p in layer.points) == 4, "stroke mode selects the whole square"
-sky.ops.mesh.select_mode_point()
+oanim.ops.mesh.select_mode_point()
 
 # Undo restores deleted geometry.
 before = counts(layer)
-assert sky.wm.event_simulate("DEL", area="Viewport"), "Delete deletes the selected points at once (X opens a menu)"
+assert oanim.wm.event_simulate("DEL", area="Viewport"), "Delete deletes the selected points at once (X opens a menu)"
 assert layer.point_count == before[0] - 4
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert counts(layer) == before
 
 # Duplicate (Shift D) copies the selected curve and its shapes, and selects the copy.
 before = counts(layer)
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([0, 1, 2, 3])
-assert sky.wm.event_simulate("D", shift=True, area="Viewport")
+assert oanim.wm.event_simulate("D", shift=True, area="Viewport")
 assert counts(layer) == (before[0] + 4, before[1] + 1, before[2] + 1), counts(layer)
 assert [p[2] for p in layer.points[-4:]] == [True] * 4 and not any(p[2] for p in layer.points[:-4])
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert counts(layer) == before
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([0])
-assert sky.ops.mesh.duplicate_move() == {'CANCELLED'}, "one point has no curve piece to copy"
+assert oanim.ops.mesh.duplicate_move() == {'CANCELLED'}, "one point has no curve piece to copy"
 
 # Point radius: 1 by default; Mean Radius moves every selected point by the same amount.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 assert layer.mean_radius is None and all(r == 1.0 for r in layer.radii)
 layer.select_points([0, 1])
 layer.mean_radius = 0.5
@@ -81,10 +81,10 @@ assert [round(r, 4) for r in layer.radii[:3]] == [0.3333, 0.3333, 0.8333], "diff
 layer.mean_radius = 0.0
 assert [round(r, 4) for r in layer.radii[:3]] == [0.0, 0.0, 0.3333], "each point moves by the same amount, stopping at 0"
 layer.mean_radius = 1.0
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 
 # Corner type: Round by default; Sharp for the selected points only.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 assert all(c == "ROUND" for c in layer.corners)
 layer.select_points([1, 2])
 layer.set_selected_corner("SHARP")
@@ -95,13 +95,13 @@ try:
 except ValueError:
     pass
 layer.set_selected_corner("ROUND")
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 
 # Hide Edge: the outline skips a hidden segment, the fill keeps its boundary.
-sky.ops.layer.new()
+oanim.ops.layer.new()
 box = layers.active
 box.add_curve([(0, 0), (1, 0), (1, 1), (0, 1)], closed=True, fill=True)
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 box.select_points([0, 1])
 assert box.set_selected_edges_visible(False) == 1 and box.hidden_edges == [(0, 0)]
 assert box.shape_outline(0)[1], "the shape stays closed, so its fill is unchanged"
@@ -111,11 +111,11 @@ assert box.set_selected_edges_visible(True) == 2 and box.hidden_edges == []
 box.select_points([3], select=True)
 box.set_selected_edges_visible(False)
 assert box.hidden_edges == [(0, 0), (0, 1), (0, 2), (0, 3)], "a fully selected closed curve has four edges"
-sky.ops.layer.delete()
+oanim.ops.layer.delete()
 layers.active = layer
 
 # Arranging shapes (Page Up/Down), on a layer of three overlapping squares, bottom to top.
-sky.ops.layer.new()
+oanim.ops.layer.new()
 stack = layers.active
 for offset in (0.0, 0.2, 0.4):
     stack.add_curve([(offset, 0), (offset + 1, 0), (offset + 1, 1), (offset, 1)], closed=True, fill=True)
@@ -126,96 +126,96 @@ def order():
 
 
 stack.select_points([0, 1, 2, 3])
-assert sky.wm.event_simulate("PAGE_UP", area="Viewport") and order() == [1, 0, 2]
-assert sky.wm.event_simulate("PAGE_UP", shift=True, area="Viewport") and order() == [1, 2, 0]
-assert sky.ops.mesh.shape_raise() == {'CANCELLED'}, "already on top: nothing to undo"
-assert sky.wm.event_simulate("PAGE_DOWN", shift=True, area="Viewport") and order() == [0, 1, 2]
-assert sky.ops.mesh.shape_lower() == {'CANCELLED'}
+assert oanim.wm.event_simulate("PAGE_UP", area="Viewport") and order() == [1, 0, 2]
+assert oanim.wm.event_simulate("PAGE_UP", shift=True, area="Viewport") and order() == [1, 2, 0]
+assert oanim.ops.mesh.shape_raise() == {'CANCELLED'}, "already on top: nothing to undo"
+assert oanim.wm.event_simulate("PAGE_DOWN", shift=True, area="Viewport") and order() == [0, 1, 2]
+assert oanim.ops.mesh.shape_lower() == {'CANCELLED'}
 stack.select_points([4, 5, 6, 7])
-assert sky.ops.mesh.shape_raise_to_front() == {'FINISHED'} and order() == [2, 0, 1], "selected shapes keep their order"
-assert sky.ops.mesh.shape_lower() == {'FINISHED'} and order() == [0, 1, 2], "the block moves down one step"
-sky.ops.ed.undo()
+assert oanim.ops.mesh.shape_raise_to_front() == {'FINISHED'} and order() == [2, 0, 1], "selected shapes keep their order"
+assert oanim.ops.mesh.shape_lower() == {'FINISHED'} and order() == [0, 1, 2], "the block moves down one step"
+oanim.ops.ed.undo()
 assert order() == [2, 0, 1]
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 stack.select_points([9])
-assert sky.ops.mesh.shape_raise() == {'FINISHED'} and order() == [0, 2, 1], "one selected point selects its shape"
-sky.ops.mesh.select_none()
-assert sky.ops.mesh.shape_raise() == {'CANCELLED'}, "nothing selected, nothing to arrange"
-sky.ops.layer.delete()
+assert oanim.ops.mesh.shape_raise() == {'FINISHED'} and order() == [0, 2, 1], "one selected point selects its shape"
+oanim.ops.mesh.select_none()
+assert oanim.ops.mesh.shape_raise() == {'CANCELLED'}, "nothing selected, nothing to arrange"
+oanim.ops.layer.delete()
 layers.active = layer
 
 # --- Layers -----------------------------------------------------------------------
-assert sky.ops.layer.new_group() == {'FINISHED'}
+assert oanim.ops.layer.new_group() == {'FINISHED'}
 group = layers.active
 assert group.type == "GROUP" and group.name == "Group 1"
-assert sky.ops.layer.new() == {'FINISHED'}
+assert oanim.ops.layer.new() == {'FINISHED'}
 inner = layers.active
 assert inner.parent is None, "a new layer goes beside the active one, at the same level"
 
 # Group a layer, then check the tree.
 layers.active = layer
-assert sky.ops.layer.group() == {'FINISHED'}
+assert oanim.ops.layer.group() == {'FINISHED'}
 assert layer.parent is not None and layer.parent.type == "GROUP"
 holder = layer.parent
 
 # Group With Selection: the active layer and the Ctrl-clicked ones go into one new group, top first.
-sky.ops.layer.new()
+oanim.ops.layer.new()
 a = layers.active
-sky.ops.layer.new()
+oanim.ops.layer.new()
 b = layers.active
 a.select = True
-assert sky.ops.layer.group() == {'FINISHED'}
+assert oanim.ops.layer.group() == {'FINISHED'}
 picked = layers.active
 assert picked.type == "GROUP" and [c.name for c in picked.children] == [b.name, a.name]
 assert not a.select, "the extra selection clears"
 
 # Mask With Layer Below: b shows only inside a (Photoshop's clipping mask).
 layers.active = b
-assert sky.ops.mask.with_layer_below() == {'FINISHED'}
+assert oanim.ops.mask.with_layer_below() == {'FINISHED'}
 assert b.masks == [{"outside": False, "layers": [a.name], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
 assert a.masking == [b.name]
 layers.active = a
-assert sky.ops.mask.with_layer_below() == {'CANCELLED'}, "nothing below the bottom layer"
+assert oanim.ops.mask.with_layer_below() == {'CANCELLED'}, "nothing below the bottom layer"
 layers.active = picked
-sky.ops.layer.delete()
+oanim.ops.layer.delete()
 
 # --- References and masking ----------------------------------------------------------
 layers.active = layer
-assert sky.ops.layer.make_reference() == {'FINISHED'}
+assert oanim.ops.layer.make_reference() == {'FINISHED'}
 ref = layers.active
 assert ref.reference_source == layer and ref.points == layer.points
-assert sky.ops.mesh.select_all.poll(), "a reference's shapes can be picked (to change their looks)"
+assert oanim.ops.mesh.select_all.poll(), "a reference's shapes can be picked (to change their looks)"
 
 # The reference keeps its own masks while showing the original's drawing.
-assert sky.ops.mask.add(layer=str(ref.id), sources=str(holder.id)) == {'FINISHED'}
+assert oanim.ops.mask.add(layer=str(ref.id), sources=str(holder.id)) == {'FINISHED'}
 assert ref.masks[0]["layers"] == [holder.name] and layer.masks == []
-sky.ops.mask.remove(layer=str(ref.id))
+oanim.ops.mask.remove(layer=str(ref.id))
 
 # The original's edits show through the reference.
 layer.add_curve([(0, 0), (0.1, 0.1)])
 assert ref.point_count == layer.point_count
 
 # Breaking the reference keeps the drawing but stops following.
-assert sky.ops.layer.break_reference() == {'FINISHED'}
+assert oanim.ops.layer.break_reference() == {'FINISHED'}
 assert ref.reference_source is None and ref.point_count == layer.point_count
 layer.add_curve([(0, 0), (0.2, 0.2)])
 assert ref.point_count == layer.point_count - 2
 
 # Deleting an original turns its references into ordinary layers that keep the artwork.
 layers.active = layer
-sky.ops.layer.make_reference()
+oanim.ops.layer.make_reference()
 ref2 = layers.active
 layers.active = layer
-assert sky.ops.layer.delete() == {'FINISHED'}
+assert oanim.ops.layer.delete() == {'FINISHED'}
 assert ref2.reference_source is None and ref2.point_count > 0
 
 # --- Mean Position (Point panel) and shape Position (Shape panel) ------------------------------
-sky.ops.layer.new()
-pos_layer = sky.data.layers.active
+oanim.ops.layer.new()
+pos_layer = oanim.data.layers.active
 pos_layer.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=True, fill=True)
 pos_layer.add_curve([(3.0, 0.0), (4.0, 0.0)])
 assert pos_layer.shape_position(0) == (0.5, 0.5)
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 assert pos_layer.mean_position is None, "nothing selected"
 pos_layer.select_points([0, 1])
 assert pos_layer.mean_position == (0.5, 0.0)
@@ -226,68 +226,68 @@ pos_layer.set_shape_position(1, (0.0, 2.0))
 assert pos_layer.points[4][:2] == (-0.5, 2.0) and pos_layer.points[5][:2] == (0.5, 2.0)
 assert pos_layer.points[0][:2] == (0.0, 0.25), "only that shape's points move"
 # On a later frame, a shape move keys its points (auto-keying).
-sky.data.document.frame_current = 12
+oanim.data.document.frame_current = 12
 pos_layer.set_shape_position(1, (0.0, 3.0))
-sky.data.document.frame_current = 0
+oanim.data.document.frame_current = 0
 assert pos_layer.shape_position(1) == (0.0, 2.0), "frame 0 keeps the setup position"
-sky.data.document.frame_current = 12
+oanim.data.document.frame_current = 12
 assert pos_layer.shape_position(1) == (0.0, 3.0)
-sky.data.document.frame_current = 0
+oanim.data.document.frame_current = 0
 
 # --- Delete Edges (X > Edges) deletes the selected edges, not their points ----------------------
-sky.data.document.frame_current = 0
-sky.ops.layer.new()
-edge_layer = sky.data.layers.active
+oanim.data.document.frame_current = 0
+oanim.ops.layer.new()
+edge_layer = oanim.data.layers.active
 edge_layer.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], closed=True, fill=True)
-assert sky.ops.mesh.select_mode_edge() == {'FINISHED'}
-sky.ops.mesh.select_none()
+assert oanim.ops.mesh.select_mode_edge() == {'FINISHED'}
+oanim.ops.mesh.select_none()
 edge_layer.select_points([0, 1])  # the bottom edge
-assert sky.wm.event_simulate("X", area="Viewport"), "X opens the Delete menu"
+assert oanim.wm.event_simulate("X", area="Viewport"), "X opens the Delete menu"
 assert edge_layer.point_count == 4, "the menu only opens: nothing is deleted yet"
-assert sky.ops.mesh.delete_edges() == {'FINISHED'}  # its Edges
+assert oanim.ops.mesh.delete_edges() == {'FINISHED'}  # its Edges
 assert edge_layer.point_count == 4, "both points of the deleted edge stay"
 assert edge_layer.curve_count == 1 and edge_layer.shape_count == 1
 outline, closed = edge_layer.shape_outline(0, 4)
 assert not closed, "the loop opened where the edge was"
 # A middle edge of a line splits it into two lines.
 edge_layer.add_curve([(3.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0)])
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 edge_layer.select_points([5, 6])
-assert sky.ops.mesh.delete() == {'FINISHED'}
+assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert edge_layer.point_count == 8 and edge_layer.curve_count == 3, (edge_layer.point_count, edge_layer.curve_count)
 # A line that was a single edge goes, but its points stay.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 edge_layer.select_points([6, 7])
-assert sky.ops.mesh.delete() == {'FINISHED'}
+assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert edge_layer.point_count == 8 and edge_layer.curve_count == 2
-assert sky.ops.mesh.select_mode_point() == {'FINISHED'}
+assert oanim.ops.mesh.select_mode_point() == {'FINISHED'}
 
 # --- X's Delete menu: Points, Edges, Dissolve Points -----------------------------------------------
-sky.ops.layer.new()
-menu_layer = sky.data.layers.active
-sky.ops.mesh.select_none()
-assert not sky.wm.event_simulate("X", area="Viewport"), "no menu with nothing selected"
+oanim.ops.layer.new()
+menu_layer = oanim.data.layers.active
+oanim.ops.mesh.select_none()
+assert not oanim.wm.event_simulate("X", area="Viewport"), "no menu with nothing selected"
 # Dissolve: the line stays one line through the gap.
 menu_layer.add_curve([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0), (3.0, 0.5)])
 menu_layer.select_points([1, 2])
-assert sky.ops.mesh.dissolve_points() == {'FINISHED'}
+assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
 assert menu_layer.point_count == 2 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
 # Dissolving a corner of a filled square leaves a filled triangle.
 menu_layer.add_curve([(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)], closed=True, fill=True)
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 menu_layer.select_points([4])
-assert sky.ops.mesh.dissolve_points() == {'FINISHED'}
+assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
 assert menu_layer.point_count == 5 and menu_layer.shape_count == 2, (menu_layer.point_count, menu_layer.shape_count)
 outline, closed = menu_layer.shape_outline(1, 4)
 assert closed, "the shape still closes"
 # Delete Points: the points go, and lines left too short with them.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
-assert sky.ops.mesh.delete_points() == {'FINISHED'}
+assert oanim.ops.mesh.delete_points() == {'FINISHED'}
 assert menu_layer.point_count == 3 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
 # Delete Edges with no edge between the selected points does nothing.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
-assert sky.ops.mesh.delete_edges() == {'CANCELLED'}
+assert oanim.ops.mesh.delete_edges() == {'CANCELLED'}
 
 print("Drawing and layer tests passed")

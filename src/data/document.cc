@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-namespace sky {
+namespace oanim {
 
 const rna::StructRNA &Document::rna()
 {
@@ -169,4 +169,4 @@ uint64_t document_selection_hash(const Document &doc)
   return h;
 }
 
-}  // namespace sky
+}  // namespace oanim

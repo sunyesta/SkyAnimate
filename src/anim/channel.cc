@@ -4,7 +4,7 @@
 #include <cmath>
 #include <functional>
 
-namespace sky {
+namespace oanim {
 
 static constexpr const char *INTERP_IDS[INTERP_COUNT] = {"LINEAR", "SMOOTH", "EASE_IN_OUT", "EASE_IN", "EASE_OUT",
                                                          "STEP",   "BEZIER", "BACK",        "BOUNCE",  "ELASTIC",
@@ -393,4 +393,4 @@ template<typename T> bool Channel<T>::remove_key(int frame)
 template struct Channel<float>;
 template struct Channel<float2>;
 
-}  // namespace sky
+}  // namespace oanim

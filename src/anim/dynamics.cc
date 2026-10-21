@@ -9,7 +9,7 @@
 #include "data/bones.hh"
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 namespace {
 
@@ -1078,4 +1078,4 @@ int dynamics_bake(Document &doc, Layer *only)
   return count;
 }
 
-}  // namespace sky
+}  // namespace oanim

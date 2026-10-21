@@ -5,7 +5,17 @@ import pathlib
 import sys
 import traceback
 
-import _sky
+import _oanim
+
+
+def _legacy_alias():
+    """Scripts written before Open Animate was renamed from SkyAnimate (`import sky`, scripts saved in
+    older projects) keep working: `sky` is another name for `oanim`."""
+    import oanim
+    sys.modules.setdefault("sky", oanim)
+    for name, module in list(sys.modules.items()):
+        if name.startswith("oanim."):
+            sys.modules.setdefault("sky." + name[len("oanim."):], module)
 
 
 def load_startup_scripts(directory):
@@ -13,6 +23,7 @@ def load_startup_scripts(directory):
 
     Returns False if any script failed; the others still load.
     """
+    _legacy_alias()
     ok = True
     for path in sorted(pathlib.Path(directory).glob("*.py")):
         try:
@@ -24,5 +35,5 @@ def load_startup_scripts(directory):
                 module.register()
         except Exception:
             ok = False
-            _sky.report("ERROR", f"Error loading startup script {path.name}:\n{traceback.format_exc()}")
+            _oanim.report("ERROR", f"Error loading startup script {path.name}:\n{traceback.format_exc()}")
     return ok

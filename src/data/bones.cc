@@ -7,7 +7,7 @@
 
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 static const char *const CONSTRAINT_IDS[BONE_CONSTRAINT_TYPES] = {
     "LIMIT_ANGLE", "INDEPENDENT_ANGLE", "MAINTAIN_VOLUME", "COPY_ANGLE", "COPY_POSITION",
@@ -1297,7 +1297,7 @@ static Color hex_color(unsigned rgb)
 }
 
 /* Blender's default theme (release/datafiles/userdef/userdef_default_theme.c, `tarm`), and its
- * Default Colors as SkyAnimate draws bones. */
+ * Default Colors as Open Animate draws bones. */
 static const struct {
   const char *name;
   unsigned regular, select, active;
@@ -1608,4 +1608,4 @@ bool document_sync_armature_modifiers(Document &doc)
   return sync_in(doc.layers, false);
 }
 
-}  // namespace sky
+}  // namespace oanim

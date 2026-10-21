@@ -1,13 +1,13 @@
 """The Shape tool's boxes and circles, dragged out on Moho curves, and the Draw tool's modes.
 
-Run with:  SkyAnimate --background --python tests/test_shape_tool.py
+Run with:  OpenAnimate --background --python tests/test_shape_tool.py
 """
 
 import math
 
-import sky
+import oanim
 
-layer = sky.data.layers.active
+layer = oanim.data.layers.active
 
 
 def near(a, b, eps=1e-4):
@@ -20,14 +20,14 @@ def new_points(before):
 
 # --- The tool and its flyout's choice -------------------------------------------------------
 for shape in ("BOX", "CIRCLE"):
-    assert sky.ops.wm.tool_shape(shape=shape) == {'FINISHED'}
+    assert oanim.ops.wm.tool_shape(shape=shape) == {'FINISHED'}
 for other in ("CURVE", "LINE", "HEXAGON"):
-    assert sky.ops.wm.tool_shape(shape=other) == {'CANCELLED'}, f"{other} is not a shape"
+    assert oanim.ops.wm.tool_shape(shape=other) == {'CANCELLED'}, f"{other} is not a shape"
 # The pen is a mode of the Draw tool.
-assert sky.ops.wm.tool_draw(mode="PEN") == {'FINISHED'}
-assert sky.ops.wm.tool_draw(mode="FREEHAND") == {'FINISHED'}
-assert sky.ops.wm.tool_draw(mode="SPRAY") == {'CANCELLED'}
-assert sky.ops.wm.tool_pen() == {'FINISHED'}, "the old pen operator still works"
+assert oanim.ops.wm.tool_draw(mode="PEN") == {'FINISHED'}
+assert oanim.ops.wm.tool_draw(mode="FREEHAND") == {'FINISHED'}
+assert oanim.ops.wm.tool_draw(mode="SPRAY") == {'CANCELLED'}
+assert oanim.ops.wm.tool_pen() == {'FINISHED'}, "the old pen operator still works"
 
 # --- Box: four peaked corners, closed, filled on request --------------------------------------
 n = layer.point_count

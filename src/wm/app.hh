@@ -17,7 +17,7 @@ struct SDL_Window;
 struct SDL_GLContextState;
 union SDL_Event;
 
-namespace sky {
+namespace oanim {
 
 /* A workspace: a saved screen layout for one kind of work, chosen from the top bar's tabs,
  * like Blender's Layout and Scripting workspaces. Each keeps its own areas and docking layout. */
@@ -34,7 +34,7 @@ struct LaunchOptions {
   bool background = false;
   std::vector<std::string> python_files;
   std::vector<std::string> python_exprs;
-  /* A .sky file to open before running scripts. */
+  /* A .oanim file to open before running scripts. */
   std::string open_file;
 };
 
@@ -93,4 +93,4 @@ class App {
   SDL_GLContextState *gl_context_ = nullptr;
 };
 
-}  // namespace sky
+}  // namespace oanim

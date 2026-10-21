@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 struct Layer;
@@ -72,4 +72,4 @@ const Layer *draw_order_faded_group(const Document &doc, uint64_t layer);
 /* Whether `ancestor` is `layer` or holds it. */
 bool layer_inside(const Document &doc, uint64_t layer, uint64_t ancestor);
 
-}  // namespace sky
+}  // namespace oanim

@@ -19,7 +19,7 @@
 #include "anim/channel.hh"
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Moho's curvature presets (MOHO.SMOOTH, MOHO.PEAKED). */
 inline constexpr float CURVATURE_SMOOTH = 0.3f;
@@ -462,4 +462,4 @@ enum class ShapeArrange { Forward, Backward, ToFront, ToBack };
  * moved (none selected, or already at the top or bottom). */
 bool drawing_arrange_shapes(VectorDrawing &drawing, ShapeArrange arrange);
 
-}  // namespace sky
+}  // namespace oanim

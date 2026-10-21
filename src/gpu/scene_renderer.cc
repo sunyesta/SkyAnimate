@@ -12,7 +12,7 @@
 #include "gpu/gl.hh"
 #include "gpu/tessellate.hh"
 
-namespace sky {
+namespace oanim {
 
 static const char *COLOR_VERTEX_SHADER = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
@@ -829,4 +829,4 @@ void SceneRenderer::composite(const Target *source, float opacity)
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-}  // namespace sky
+}  // namespace oanim

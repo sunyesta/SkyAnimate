@@ -1,6 +1,6 @@
 """Brushes: the asset library, Moho's brush formats, importing, and shapes painted with a brush.
 
-Run with:  SkyAnimate --background --python tests/test_brushes.py
+Run with:  OpenAnimate --background --python tests/test_brushes.py
 """
 
 import json
@@ -11,8 +11,8 @@ import tempfile
 import zipfile
 import zlib
 
-import _sky
-import sky
+import _oanim
+import oanim
 
 
 def write_png(path, size=16, color=(0, 0, 0)):
@@ -42,7 +42,7 @@ def write_mohobrush(path, image, **settings):
         z.writestr("brush.json", json.dumps(brush))
 
 
-root = pathlib.Path(tempfile.mkdtemp(prefix="sky_brushes_"))
+root = pathlib.Path(tempfile.mkdtemp(prefix="oanim_brushes_"))
 
 # --- A Moho brush folder to import from -------------------------------------------------------
 moho = root / "Moho Brushes"
@@ -59,17 +59,17 @@ write_png(moho / "Plain.png")
 (moho / "notes.txt").write_text("not a brush")
 
 # --- The asset library --------------------------------------------------------------------------
-assert sky.assets.library == "", "tests start with no asset library"
-assert sky.assets.brushes() == []
+assert oanim.assets.library == "", "tests start with no asset library"
+assert oanim.assets.brushes() == []
 library = root / "Library"
-assert sky.ops.preferences.asset_library_set(directory=str(library)) == {'FINISHED'}
+assert oanim.ops.preferences.asset_library_set(directory=str(library)) == {'FINISHED'}
 assert (library / "library.json").is_file() and (library / "Brushes").is_dir()
-assert os.path.samefile(sky.assets.library, library)
-assert sky.assets.brushes() == []
+assert os.path.samefile(oanim.assets.library, library)
+assert oanim.assets.brushes() == []
 
 # Importing copies the brushes (settings and images) into the library.
-assert sky.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
-brushes = {b["name"]: b for b in sky.assets.brushes()}
+assert oanim.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
+brushes = {b["name"]: b for b in oanim.assets.brushes()}
 assert sorted(brushes) == ["Arrow_1_0_200", "Hair", "Ink", "Plain"], sorted(brushes)
 assert (library / "Brushes" / "Ink.mohobrush").is_file()
 assert (library / "Brushes" / "Hair" / "2.png").is_file()
@@ -83,43 +83,43 @@ assert arrow["align"] and arrow["jitter"] == 0.0 and abs(arrow["spacing"] - 2.0)
 assert not plain["align"] and abs(plain["spacing"] - 0.25) < 1e-6
 
 # Importing again adds nothing and keeps what's there.
-assert sky.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
-assert len(sky.assets.brushes()) == 4
+assert oanim.ops.preferences.import_moho_brushes(directory=str(moho)) == {'FINISHED'}
+assert len(oanim.assets.brushes()) == 4
 
 # --- Dabs along a line ------------------------------------------------------------------------
 # A line 1 long and 0.1 wide: Ink (spacing 10% of the width) puts a dab every 0.01, Arrow (200%)
 # every 0.2.
-assert sky.assets.brush_dab_count("Ink", 1.0, 0.1) == 101, sky.assets.brush_dab_count("Ink", 1.0, 0.1)
-assert sky.assets.brush_dab_count("Arrow_1_0_200", 1.0, 0.1) == 6
+assert oanim.assets.brush_dab_count("Ink", 1.0, 0.1) == 101, oanim.assets.brush_dab_count("Ink", 1.0, 0.1)
+assert oanim.assets.brush_dab_count("Arrow_1_0_200", 1.0, 0.1) == 6
 
 # --- Shapes with a brush ------------------------------------------------------------------------
-layer = sky.data.layers.active
+layer = oanim.data.layers.active
 layer.add_curve([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)], closed=True, fill=True)
 layer.add_curve([(1.0, 0.0), (1.5, 0.2)])
 assert layer.shape_brush(0)["name"] == "", "lines start plain"
 
-sky.ops.mesh.select_none()
-assert sky.ops.mesh.brush_set(brush="Ink") == {'CANCELLED'}, "nothing selected"
+oanim.ops.mesh.select_none()
+assert oanim.ops.mesh.brush_set(brush="Ink") == {'CANCELLED'}, "nothing selected"
 layer.select_points([0])
-assert sky.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
+assert oanim.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
 b = layer.shape_brush(0)
 assert b["name"] == "Ink" and b["align"] and abs(b["spacing"] - 0.1) < 1e-6, "the brush's settings come along"
 assert layer.shape_brush(1)["name"] == "", "unselected shapes keep theirs"
-assert sky.ops.mesh.brush_set(brush="Nope") == {'CANCELLED'}
+assert oanim.ops.mesh.brush_set(brush="Nope") == {'CANCELLED'}
 
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert layer.shape_brush(0)["name"] == ""
-sky.ops.ed.redo()
+oanim.ops.ed.redo()
 assert layer.shape_brush(0)["name"] == "Ink"
 
 # Saved and opened with the document.
-path = str(root / "brushed.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-sky.ops.mesh.select_all()
-assert sky.ops.mesh.brush_set(brush="") == {'FINISHED'}
+path = str(root / "brushed.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+oanim.ops.mesh.select_all()
+assert oanim.ops.mesh.brush_set(brush="") == {'FINISHED'}
 assert layer.shape_brush(0)["name"] == ""
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-layer = sky.data.layers.active
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+layer = oanim.data.layers.active
 b = layer.shape_brush(0)
 assert b["name"] == "Ink" and b["align"] and abs(b["spacing"] - 0.1) < 1e-6, b
 assert layer.shape_brush(1)["name"] == ""
@@ -128,20 +128,20 @@ assert layer.shape_brush(1)["name"] == ""
 # A brushed line drawn on the setup frame, then animated: on frame 10 its middle point moves right,
 # stretching the first segment to 1.4 times its length and squashing the second to 0.6. Each dab
 # stays at the same place on its segment (it doesn't slide along the line).
-doc = sky.data.document
+doc = oanim.data.document
 doc.auto_key = True
 doc.frame_current = 0
 layer.add_curve([(0.0, 2.0), (1.0, 2.0), (2.0, 2.0)])
 shape = layer.shape_count - 1
 first = layer.point_count - 3
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([first])
-assert sky.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
-rest = _sky.layer_shape_dabs(layer.id, shape)
+assert oanim.ops.mesh.brush_set(brush="Ink") == {'FINISHED'}
+rest = _oanim.layer_shape_dabs(layer.id, shape)
 assert len(rest) > 20 and all(a == 1.0 for x, y, a in rest)
 doc.frame_current = 10
 layer.set_point(first + 1, (1.4, 2.0))
-moved = _sky.layer_shape_dabs(layer.id, shape)
+moved = _oanim.layer_shape_dabs(layer.id, shape)
 assert len(moved) == len(rest), "the same dabs"
 for (x0, y0, a0), (x1, y1, a1) in zip(rest, moved):
     expected = x0 * 1.4 if x0 <= 1.0 else 1.4 + (x0 - 1.0) * 0.6
@@ -152,11 +152,11 @@ assert any(abs(a - 0.4) < 1e-3 for x, y, a in moved if x > 1.4), "a squashed seg
 # Stretched past 1.5 times, dabs fade in halfway between its own (at 1.9 times, 80% of the way in).
 doc.frame_current = 20
 layer.set_point(first + 1, (1.9, 2.0))
-stretched = _sky.layer_shape_dabs(layer.id, shape)
+stretched = _oanim.layer_shape_dabs(layer.id, shape)
 fills = [x for x, y, a in stretched if abs(a - 0.8) < 1e-3]
 assert len(fills) > 10 and all(x < 1.9 for x in fills), "a stretched segment fills its gaps"
 # Back on the setup frame, the line is as drawn.
 doc.frame_current = 0
-assert _sky.layer_shape_dabs(layer.id, shape) == rest
+assert _oanim.layer_shape_dabs(layer.id, shape) == rest
 
 print("Brush tests passed")

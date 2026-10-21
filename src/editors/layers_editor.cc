@@ -23,11 +23,11 @@
 #include "wm/context.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
-static constexpr const char *LAYER_PAYLOAD = "SKY_LAYER";
+static constexpr const char *LAYER_PAYLOAD = "OANIM_LAYER";
 /* A drawing layer dragged in the draw-order view. */
-static constexpr const char *ORDER_PAYLOAD = "SKY_DRAW_ORDER";
+static constexpr const char *ORDER_PAYLOAD = "OANIM_DRAW_ORDER";
 /* Draw Order markers and the draw-order view's insertion line. */
 static constexpr ImU32 COL_ORDER = IM_COL32(0xf0, 0xb0, 0x40, 255);
 
@@ -846,4 +846,4 @@ void layers_draw(Area &area, Context &C)
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

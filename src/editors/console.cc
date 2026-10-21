@@ -1,5 +1,5 @@
 /* Python console, like Blender's: scrollback coloured by kind of line, a prompt with history
- * (Up/Down) and completion (Tab). The interpreter itself lives in scripts/modules/sky/_console.py. */
+ * (Up/Down) and completion (Tab). The interpreter itself lives in scripts/modules/oanim/_console.py. */
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -12,7 +12,7 @@
 #include "ui/theme.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Colours from Blender's default console theme. */
 static constexpr ImU32 COL_CONSOLE_BACK = IM_COL32(0x1d, 0x1d, 0x1d, 255);
@@ -149,4 +149,4 @@ void console_draw(Area &area, Context & /*C*/)
   ImGui::PopFont();
 }
 
-}  // namespace sky
+}  // namespace oanim

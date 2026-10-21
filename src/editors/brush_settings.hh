@@ -7,7 +7,7 @@
 
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Context;
 
@@ -18,4 +18,4 @@ void brush_settings_open(const BrushSettings &current, const Style &style, Brush
 /* Draws the window while it is open. Call once per frame. */
 void brush_settings_draw(Context &C);
 
-}  // namespace sky
+}  // namespace oanim

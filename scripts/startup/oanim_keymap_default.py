@@ -4,7 +4,7 @@ Each entry is (keymap, operator idname, key, modifiers). Editor keymaps such as
 "Viewport" are tried before "Window" when the mouse is over that editor.
 """
 
-import sky
+import oanim
 
 KEYMAP = (
     ("Window", "ed.undo", "Z", {"ctrl": True}),
@@ -121,4 +121,4 @@ KEYMAP = (
 
 def register():
     for keymap, idname, key, modifiers in KEYMAP:
-        sky.keymap.add(keymap, idname, key, **modifiers)
+        oanim.keymap.add(keymap, idname, key, **modifiers)

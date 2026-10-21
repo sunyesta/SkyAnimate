@@ -12,7 +12,7 @@
 #include "ops/undo.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 OperatorRegistry &operators()
 {
@@ -106,10 +106,10 @@ float op_arg_float(const Context &C, const std::string &name, float fallback)
   return (!value.empty() && end && *end == 0) ? v : fallback;
 }
 
-/* sky.ops.wm.open_mainfile(filepath="walk.sky"), for the Info log. */
+/* oanim.ops.wm.open_mainfile(filepath="walk.oanim"), for the Info log. */
 static std::string operator_call_repr(const std::string &idname, const OpArgs &args)
 {
-  std::string text = "sky.ops." + idname + "(";
+  std::string text = "oanim.ops." + idname + "(";
   bool first = true;
   for (const auto &[name, value] : args) {
     text += (first ? "" : ", ") + name + "=\"";
@@ -234,4 +234,4 @@ const char *op_status_name(OpStatus status)
   return "CANCELLED";
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -10,7 +10,7 @@
 #include "core/log.hh"
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 /* --- Mirror --------------------------------------------------------------------------------- */
 
@@ -728,4 +728,4 @@ bool document_weight_new_points(Document &doc, bool exact)
   return changed;
 }
 
-}  // namespace sky
+}  // namespace oanim

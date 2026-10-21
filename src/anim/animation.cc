@@ -14,7 +14,7 @@
 #include "data/camera.hh"
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Calls f(channel, value) for every channel of a layer (not its children). */
 template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
@@ -1478,4 +1478,4 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame)
   return count;
 }
 
-}  // namespace sky
+}  // namespace oanim

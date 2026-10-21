@@ -11,7 +11,7 @@
 #include "data/document.hh"
 #include "data/layer.hh"
 
-namespace sky {
+namespace oanim {
 
 static bool same_color(Color a, Color b)
 {
@@ -1009,4 +1009,4 @@ void reference_swap_color(Layer &ref, Color from, Color to, bool fill, bool line
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

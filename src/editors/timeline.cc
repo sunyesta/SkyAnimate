@@ -25,7 +25,7 @@
 #include "wm/context.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Colours from Blender's default timeline (dope sheet) theme. */
 static constexpr ImU32 COL_ICON = IM_COL32(0xe6, 0xe6, 0xe6, 255);
@@ -197,7 +197,7 @@ static void action_menu(Context &C, float width)
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in (a separate "
-                      "animation for it and everything inside)\n\nPython: sky.data.document.action");
+                      "animation for it and everything inside)\n\nPython: oanim.data.document.action");
   }
   if (open) {
     std::string doomed;
@@ -2211,4 +2211,4 @@ void timeline_draw(Area &area, Context &C)
   timeline_body(area, C);
 }
 
-}  // namespace sky
+}  // namespace oanim

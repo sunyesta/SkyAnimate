@@ -37,7 +37,7 @@
 #include "wm/event_system.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Blender's edit-mode colours. */
 static constexpr ImU32 COL_VIEWPORT_BACK = IM_COL32(0x3d, 0x3d, 0x3d, 255);
@@ -5585,4 +5585,4 @@ static void viewport_draw_contents(Area &area, Context &C)
   ImGui::Dummy(ImVec2(1, 1));
 }
 
-}  // namespace sky
+}  // namespace oanim

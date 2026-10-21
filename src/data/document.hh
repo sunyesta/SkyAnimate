@@ -1,6 +1,6 @@
 #pragma once
 
-/* The document: everything that is saved in a .sky file.
+/* The document: everything that is saved in a .oanim file.
  *
  * Bones arrive in milestone 4. Keep this a plain copyable value: undo snapshots copy it. */
 
@@ -13,7 +13,7 @@
 #include "data/view_settings.hh"
 #include "rna/rna.hh"
 
-namespace sky {
+namespace oanim {
 
 /* A text block, like Blender's Text: scripts and notes saved with the document. */
 struct Text {
@@ -156,4 +156,4 @@ bool document_reparent_layer(Document &doc, uint64_t id, uint64_t new_parent, in
 /* Turns a reference into an ordinary layer with a copy of the drawing. */
 void layer_break_reference(Document &doc, uint64_t id);
 
-}  // namespace sky
+}  // namespace oanim

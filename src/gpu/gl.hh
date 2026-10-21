@@ -5,9 +5,9 @@
 
 #include <SDL3/SDL_opengl.h>
 
-namespace sky::gl {
+namespace oanim::gl {
 
-#define SKY_GL_FUNCTIONS(X) \
+#define OANIM_GL_FUNCTIONS(X) \
   X(PFNGLACTIVETEXTUREPROC, ActiveTexture) \
   X(PFNGLATTACHSHADERPROC, AttachShader) \
   X(PFNGLBINDBUFFERPROC, BindBuffer) \
@@ -50,11 +50,11 @@ namespace sky::gl {
   X(PFNGLUSEPROGRAMPROC, UseProgram) \
   X(PFNGLVERTEXATTRIBPOINTERPROC, VertexAttribPointer)
 
-#define SKY_GL_DECLARE(type, name) extern type name;
-SKY_GL_FUNCTIONS(SKY_GL_DECLARE)
-#undef SKY_GL_DECLARE
+#define OANIM_GL_DECLARE(type, name) extern type name;
+OANIM_GL_FUNCTIONS(OANIM_GL_DECLARE)
+#undef OANIM_GL_DECLARE
 
 /* Loads every function above. Needs a current OpenGL context. Returns false if any is missing. */
 bool load();
 
-}  // namespace sky::gl
+}  // namespace oanim::gl

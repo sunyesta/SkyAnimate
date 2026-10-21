@@ -3,17 +3,17 @@ whatever is selected, even with no keys left), Props (the settings: layer transf
 visibility, constraint settings, Simulation), All (the motion: bones and points) and Selected;
 inside them grouped by owner (the default) or by kind.
 
-Run with:  SkyAnimate --background --python tests/test_timeline_pins.py
+Run with:  OpenAnimate --background --python tests/test_timeline_pins.py
 """
 
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
-wm = sky.wm
+doc = oanim.data.document
+layers = oanim.data.layers
+wm = oanim.wm
 
 
 def rows(group_by="OWNER"):
@@ -32,12 +32,12 @@ doc.frame_current = 11
 assert [k["frame"] for k in art.keyframes("opacity")] == [0, 10]
 
 doc.frame_current = 0
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
-assert sky.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0") == {'FINISHED'}
+assert oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0") == {'FINISHED'}
 doc.frame_current = 5
 rig.bone_set("arm", angle=0.5)
-assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 
 def section(rows_, title):
     """The rows under top-level group `title`."""
@@ -71,9 +71,9 @@ for row in [(1, "Bones"), (2, "Bone Angle"), (3, "arm: Angle"), (2, "Bone Transf
 
 # Constraints' keyed settings get their own rows, by constraint and setting.
 rig.select_bone("arm")
-assert sky.ops.armature.constraint_add(type="DYNAMICS", bone="arm") == {'FINISHED'}
+assert oanim.ops.armature.constraint_add(type="DYNAMICS", bone="arm") == {'FINISHED'}
 bounce = 'bones["arm"].constraints[0].angle_spring.bounce'
-assert sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths=bounce) == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=bounce) == {'FINISHED'}
 assert (1, "Constraints") in section(names("KIND"), "Props")
 assert (2, "arm: Dynamics: Angle Bounce") in section(names("KIND"), "Props"), names("KIND")
 props = section(names(), "Props")
@@ -91,37 +91,37 @@ assert (1, art.name) not in names(), "only the pinned property shows, not its wh
 assert art.pin_channel("rotation") == {'FINISHED'}
 assert (1, art.name + ": Rotation") in names() and art.keyframes("rotation") == []
 # Its keys can be picked and moved though its layer isn't picked.
-assert sky.ops.anim.keys_select(layers=str(art.id), path="opacity", frame_start="10") == {'FINISHED'}
-assert sky.ops.anim.keys_offset(frames="2") == {'FINISHED'}
+assert oanim.ops.anim.keys_select(layers=str(art.id), path="opacity", frame_start="10") == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="2") == {'FINISHED'}
 assert [k["frame"] for k in art.keyframes("opacity")] == [0, 12], art.keyframes("opacity")
 # A bone's property shows as its bone's, and the document's gravity as Simulation's.
 assert rig.pin_channel('bones["arm"].angle') == {'FINISHED'}
-assert sky.data.simulation.pin_channel("gravity") == {'FINISHED'}
+assert oanim.data.simulation.pin_channel("gravity") == {'FINISHED'}
 listed = names()
 assert (1, "arm: Angle") in listed and (1, "Simulation: Gravity") in listed, listed
 # The pinned bone property's row in the bone layer's own rows carries its pin too.
 assert any(name == "Angle" and pinned for depth, name, red, pinned in rows()), rows()
 # Undo takes a pin back.
-assert sky.ops.ed.undo() == {'FINISHED'}
-assert not sky.data.simulation.channel_pinned("gravity")
-assert sky.ops.ed.redo() == {'FINISHED'}
-assert sky.data.simulation.channel_pinned("gravity")
+assert oanim.ops.ed.undo() == {'FINISHED'}
+assert not oanim.data.simulation.channel_pinned("gravity")
+assert oanim.ops.ed.redo() == {'FINISHED'}
+assert oanim.data.simulation.channel_pinned("gravity")
 # Unpinning (the pin's click) takes the row away.
 assert art.pin_channel("rotation", False) == {'FINISHED'}
 assert (1, art.name + ": Rotation") not in names()
 
 # --- Saved with the file -------------------------------------------------------------------------
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_pins_")) / "pins.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_pins_")) / "pins.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 art = next(l for l in layers if l.type != "BONE")
 rig = next(l for l in layers if l.type == "BONE")
 assert art.channel_pinned("opacity") and rig.channel_pinned('bones["arm"].angle')
-assert sky.data.simulation.channel_pinned("gravity") and not art.channel_pinned("rotation")
+assert oanim.data.simulation.channel_pinned("gravity") and not art.channel_pinned("rotation")
 
 # --- Clear Pins ----------------------------------------------------------------------------------
-assert sky.ops.anim.pins_clear() == {'FINISHED'}
+assert oanim.ops.anim.pins_clear() == {'FINISHED'}
 assert not any(name == "Pinned" for depth, name in names())
-assert sky.ops.anim.pins_clear() == {'CANCELLED'}, "nothing left to clear"
+assert oanim.ops.anim.pins_clear() == {'CANCELLED'}, "nothing left to clear"
 
 print("Timeline pin tests passed")

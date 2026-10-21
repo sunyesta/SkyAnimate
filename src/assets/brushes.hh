@@ -19,7 +19,7 @@
 
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct BrushImage {
   int width = 0, height = 0;
@@ -57,4 +57,4 @@ bool brush_save(const std::string &name, const BrushSettings &settings, std::str
  * could be read. */
 const std::vector<BrushImage> &brush_images(const Brush &brush);
 
-}  // namespace sky
+}  // namespace oanim

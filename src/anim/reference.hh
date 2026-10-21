@@ -17,7 +17,7 @@
 #include "core/math.hh"
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 struct Layer;
@@ -76,4 +76,4 @@ void reference_swap_color(Layer &ref, Color from, Color to, bool fill, bool line
 /* The original's shape look as this reference starts from it: with its colour swaps. */
 Style reference_swapped_style(const Layer &ref, const Style &style);
 
-}  // namespace sky
+}  // namespace oanim

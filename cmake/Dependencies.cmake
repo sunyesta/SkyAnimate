@@ -22,7 +22,7 @@ FetchContent_Declare(imgui
   GIT_SHALLOW TRUE
 )
 
-# --- pybind11: embedded Python and the `sky` module --------------------------
+# --- pybind11: embedded Python and the `oanim` module --------------------------
 FetchContent_Declare(pybind11
   GIT_REPOSITORY https://github.com/pybind/pybind11.git
   GIT_TAG v3.0.4
@@ -38,7 +38,7 @@ FetchContent_Declare(earcut
   SOURCE_SUBDIR do-not-build
 )
 
-# --- miniz: zip archives (.sky files are zips) -----------------------------------
+# --- miniz: zip archives (.oanim files are zips) -----------------------------------
 FetchContent_Declare(miniz
   GIT_REPOSITORY https://github.com/richgel999/miniz.git
   GIT_TAG 3.1.1
@@ -49,7 +49,7 @@ set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(INSTALL_PROJECT OFF CACHE BOOL "" FORCE)
 
-# --- nlohmann/json: the document inside a .sky file ----------------------------
+# --- nlohmann/json: the document inside a .oanim file ----------------------------
 # Header only, used from single_include; SOURCE_SUBDIR points nowhere so nothing is built.
 FetchContent_Declare(json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -59,8 +59,8 @@ FetchContent_Declare(json
 )
 
 # The Python installation to embed. Its DLL is copied next to the executable.
-set(SKY_PYTHON_ROOT "C:/Python314" CACHE PATH "Root of the Python installation to embed")
-set(Python_ROOT_DIR ${SKY_PYTHON_ROOT})
+set(OANIM_PYTHON_ROOT "C:/Python314" CACHE PATH "Root of the Python installation to embed")
+set(Python_ROOT_DIR ${OANIM_PYTHON_ROOT})
 find_package(Python 3.14 EXACT REQUIRED COMPONENTS Interpreter Development.Embed)
 set(PYBIND11_FINDPYTHON ON)
 
@@ -69,20 +69,20 @@ FetchContent_MakeAvailable(SDL3 imgui pybind11 earcut miniz json)
 # Blender's number fields: Shift while dragging is precise (a tenth of the speed). ImGui makes
 # Shift ten times faster and has no setting for it, so its fetched copy is changed here (the same
 # every configure; Alt stays a hundredth).
-set(_sky_widgets "${imgui_SOURCE_DIR}/imgui_widgets.cpp")
-file(READ "${_sky_widgets}" _sky_text)
-set(_sky_fast "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 10.0f;")
-set(_sky_precise "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 1.0f / 10.0f; // SkyAnimate: Shift is precise, as in Blender")
-string(FIND "${_sky_text}" "${_sky_fast}" _sky_at)
-if(NOT _sky_at EQUAL -1)
-  string(REPLACE "${_sky_fast}" "${_sky_precise}" _sky_text "${_sky_text}")
-  file(WRITE "${_sky_widgets}" "${_sky_text}")
-elseif(NOT _sky_text MATCHES "SkyAnimate: Shift is precise")
+set(_oanim_widgets "${imgui_SOURCE_DIR}/imgui_widgets.cpp")
+file(READ "${_oanim_widgets}" _oanim_text)
+set(_oanim_fast "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 10.0f;")
+set(_oanim_precise "if (g.IO.KeyShift && !(flags & ImGuiSliderFlags_NoSpeedTweaks))\n            adjust_delta *= 1.0f / 10.0f; // Open Animate: Shift is precise, as in Blender")
+string(FIND "${_oanim_text}" "${_oanim_fast}" _oanim_at)
+if(NOT _oanim_at EQUAL -1)
+  string(REPLACE "${_oanim_fast}" "${_oanim_precise}" _oanim_text "${_oanim_text}")
+  file(WRITE "${_oanim_widgets}" "${_oanim_text}")
+elseif(NOT _oanim_text MATCHES "Open Animate: Shift is precise")
   message(WARNING "ImGui's drag code changed: Shift no longer made precise")
 endif()
 
 # ImGui has no CMake build of its own; compile the core plus the SDL3 and OpenGL 3 backends.
-add_library(sky_imgui STATIC
+add_library(oanim_imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
   ${imgui_SOURCE_DIR}/imgui_demo.cpp
   ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -92,6 +92,6 @@ add_library(sky_imgui STATIC
   ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
   ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
 )
-target_include_directories(sky_imgui PUBLIC
+target_include_directories(oanim_imgui PUBLIC
   ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
-target_link_libraries(sky_imgui PUBLIC SDL3::SDL3)
+target_link_libraries(oanim_imgui PUBLIC SDL3::SDL3)

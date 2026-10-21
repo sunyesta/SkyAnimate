@@ -12,7 +12,7 @@
 #include <variant>
 #include <vector>
 
-namespace sky::rna {
+namespace oanim::rna {
 
 enum class PropType { Bool, Int, Float, String, Enum };
 
@@ -136,4 +136,4 @@ PropertyRNA def_string(const char *id, const char *name, const char *desc, std::
   return prop;
 }
 
-}  // namespace sky::rna
+}  // namespace oanim::rna

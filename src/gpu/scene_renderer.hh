@@ -16,7 +16,7 @@
 
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 struct Layer;
@@ -153,4 +153,4 @@ class SceneRenderer {
   Target *output_ = nullptr;
 };
 
-}  // namespace sky
+}  // namespace oanim

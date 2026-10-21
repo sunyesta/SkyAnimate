@@ -36,7 +36,7 @@
 
 namespace py = pybind11;
 
-namespace sky::python {
+namespace oanim::python {
 
 static Context *g_context = nullptr;
 static bool g_initialized = false;
@@ -45,7 +45,7 @@ static std::filesystem::path g_scripts_dir;
 static Context &current_context()
 {
   if (!g_context) {
-    throw std::runtime_error("SkyAnimate context is not available");
+    throw std::runtime_error("Open Animate context is not available");
   }
   return *g_context;
 }
@@ -144,18 +144,18 @@ static std::string to_upper(std::string text)
   return text;
 }
 
-}  // namespace sky::python
+}  // namespace oanim::python
 
 /* ---------------------------------------------------------------------------------
- * The `_sky` module. Keep it small: the friendly API lives in scripts/modules/sky.
+ * The `_oanim` module. Keep it small: the friendly API lives in scripts/modules/oanim.
  */
 
-PYBIND11_EMBEDDED_MODULE(_sky, m)
+PYBIND11_EMBEDDED_MODULE(_oanim, m)
 {
-  using namespace sky;
-  using namespace sky::python;
+  using namespace oanim;
+  using namespace oanim::python;
 
-  m.doc() = "Low-level SkyAnimate API. Use the `sky` package instead.";
+  m.doc() = "Low-level Open Animate API. Use the `oanim` package instead.";
 
   py::class_<rna::PointerRNA>(m, "PointerRNA")
       .def("__getattr__",
@@ -190,7 +190,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
              }
              return names;
            })
-      .def("__repr__", [](const rna::PointerRNA &ptr) { return "<sky " + ptr.type->identifier + ">"; });
+      .def("__repr__", [](const rna::PointerRNA &ptr) { return "<oanim " + ptr.type->identifier + ">"; });
 
   py::class_<Context>(m, "Context")
       .def_property_readonly("document",
@@ -391,7 +391,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     }
     C.undo->push("Rotate Bones", *C.document);
   });
-  /* Crashes on purpose, to try the crash report (sky.wm.debug_crash). */
+  /* Crashes on purpose, to try the crash report (oanim.wm.debug_crash). */
   m.def("debug_crash", []() {
     volatile bool go = true;
     if (go) {
@@ -558,7 +558,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     return py::make_tuple(names, undo.active());
   });
 
-  /* Text blocks, wrapped by sky.data.texts. Looked up by name on every call, so Python never
+  /* Text blocks, wrapped by oanim.data.texts. Looked up by name on every call, so Python never
    * holds a pointer into the document. */
   const auto text_or_raise = [](const std::string &name) -> Text & {
     Text *text = document_text_find(*current_context().document, name);
@@ -606,7 +606,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     current_context().text_name = name;
   });
 
-  /* Layers, wrapped by sky.data.layers. Looked up by id on every call, like texts. */
+  /* Layers, wrapped by oanim.data.layers. Looked up by id on every call, like texts. */
   const auto layer_or_raise = [](uint64_t id) -> Layer & {
     Document &doc = *current_context().document;
     Layer *layer = layer_find(doc, id);
@@ -2117,7 +2117,7 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
   });
 }
 
-namespace sky::python {
+namespace oanim::python {
 
 bool init(const std::filesystem::path &scripts_dir, Context *C)
 {
@@ -2128,7 +2128,7 @@ bool init(const std::filesystem::path &scripts_dir, Context *C)
    * on every machine. Home points at the Python installation the build used. */
   PyConfig config;
   PyConfig_InitIsolatedConfig(&config);
-  const std::wstring home = std::filesystem::path(SKY_PYTHON_HOME).wstring();
+  const std::wstring home = std::filesystem::path(OANIM_PYTHON_HOME).wstring();
   PyStatus status = PyConfig_SetString(&config, &config.home, home.c_str());
   if (PyStatus_Exception(status)) {
     PyConfig_Clear(&config);
@@ -2150,11 +2150,11 @@ bool init(const std::filesystem::path &scripts_dir, Context *C)
   try {
     py::module_ sys = py::module_::import("sys");
     sys.attr("path").attr("insert")(0, path_to_utf8(scripts_dir / "modules"));
-    py::module_ startup = py::module_::import("sky._startup");
+    py::module_ startup = py::module_::import("oanim._startup");
     return startup.attr("load_startup_scripts")(path_to_utf8(scripts_dir / "startup")).cast<bool>();
   }
   catch (py::error_already_set &error) {
-    report(ReportType::Error, "Error starting the sky module:\n" + format_exception(error));
+    report(ReportType::Error, "Error starting the oanim module:\n" + format_exception(error));
     return false;
   }
 }
@@ -2209,7 +2209,7 @@ template<typename... Args> static std::optional<py::object> console_call(const c
     return std::nullopt;
   }
   try {
-    py::object console = py::module_::import("sky._console").attr("get")();
+    py::object console = py::module_::import("oanim._console").attr("get")();
     return console.attr(method)(std::forward<Args>(args)...);
   }
   catch (py::error_already_set &error) {
@@ -2224,7 +2224,7 @@ uint64_t console_version()
     return 0;
   }
   try {
-    return py::module_::import("sky._console").attr("get")().attr("version").cast<uint64_t>();
+    return py::module_::import("oanim._console").attr("get")().attr("version").cast<uint64_t>();
   }
   catch (py::error_already_set &error) {
     report(ReportType::Error, "Console error:\n" + format_exception(error));
@@ -2239,7 +2239,7 @@ std::vector<ConsoleLine> console_lines()
     return lines;
   }
   try {
-    py::list items = py::module_::import("sky._console").attr("get")().attr("lines");
+    py::list items = py::module_::import("oanim._console").attr("get")().attr("lines");
     lines.reserve(items.size());
     for (py::handle item : items) {
       py::tuple pair = item.cast<py::tuple>();
@@ -2264,7 +2264,7 @@ std::vector<std::string> console_history()
     return {};
   }
   try {
-    return py::module_::import("sky._console").attr("get")().attr("history").cast<std::vector<std::string>>();
+    return py::module_::import("oanim._console").attr("get")().attr("history").cast<std::vector<std::string>>();
   }
   catch (py::error_already_set &error) {
     report(ReportType::Error, "Console error:\n" + format_exception(error));
@@ -2297,7 +2297,7 @@ bool text_run(const std::string &name, const std::string &source)
 std::string remote_run(const std::string &code)
 {
   try {
-    const py::object result = py::module_::import("sky._remote").attr("run")(code);
+    const py::object result = py::module_::import("oanim._remote").attr("run")(code);
     return py::module_::import("json").attr("dumps")(result).cast<std::string>();
   }
   catch (py::error_already_set &error) {
@@ -2320,4 +2320,4 @@ bool run_string(const std::string &code)
   }
 }
 
-}  // namespace sky::python
+}  // namespace oanim::python

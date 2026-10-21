@@ -2,15 +2,15 @@
 rows are open. Undo leaves them as they are (as Blender's undo leaves its views); a new file starts
 from the defaults.
 
-Run with:  SkyAnimate --background --python tests/test_view_settings.py
+Run with:  OpenAnimate --background --python tests/test_view_settings.py
 """
 
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-wm = sky.wm
+wm = oanim.wm
 defaults = wm.overlays()
 assert defaults["show"] and not defaults["grid"] and defaults["handles"] == "SHAPE" and defaults["armature"] == "ON"
 assert defaults["mask_outlines"] and defaults["relationship_lines"]
@@ -25,18 +25,18 @@ wm.set_ui_open("Timeline/All", False)
 wm.set_ui_open("Viewport/Adjust Last Operation", True)
 
 # Undo leaves them alone.
-assert sky.ops.layer.new() == {'FINISHED'}
-sky.ops.ed.undo()
+assert oanim.ops.layer.new() == {'FINISHED'}
+oanim.ops.ed.undo()
 ov = wm.overlays()
 assert ov["grid"] and not ov["mask_outlines"] and ov["handles"] == "ALL" and ov["armature"] == "SELECTED", ov
 assert wm.ui_open()["Properties/Transform"] is False and wm.ui_open()["Viewport/Adjust Last Operation"] is True
 
 # Saved with the project; a new file has the defaults; opening brings them back.
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_view_settings_")) / "view.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_view_settings_")) / "view.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
 assert wm.overlays() == defaults and wm.ui_open() == {}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 assert wm.overlays() == ov, wm.overlays()
 assert wm.ui_open() == {"Properties/Transform": False, "Timeline/All": False,
                         "Viewport/Adjust Last Operation": True}, wm.ui_open()

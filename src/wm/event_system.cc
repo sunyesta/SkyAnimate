@@ -8,7 +8,7 @@
 #include "wm/context.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 static bool try_keymap(Context &C, const std::string &keymap, const KeyEvent &event)
 {
@@ -55,4 +55,4 @@ bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only)
   return try_keymap(C, "Window", event);
 }
 
-}  // namespace sky
+}  // namespace oanim

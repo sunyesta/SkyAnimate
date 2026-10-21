@@ -16,7 +16,7 @@
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 /* What an operator acts on: its `layer` argument, else the active layer and the picked ones. */
 static std::vector<Layer *> draw_order_layers_of(Context &C)
@@ -298,4 +298,4 @@ void draw_order_operators_register()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -1,9 +1,9 @@
-"""Run operators by name, like bpy.ops: sky.ops.ed.undo() returns {'FINISHED'} or {'CANCELLED'}.
+"""Run operators by name, like bpy.ops: oanim.ops.ed.undo() returns {'FINISHED'} or {'CANCELLED'}.
 
-Keyword arguments become the operator's arguments: sky.ops.wm.open_mainfile(filepath="walk.sky").
+Keyword arguments become the operator's arguments: oanim.ops.wm.open_mainfile(filepath="walk.oanim").
 """
 
-import _sky
+import _oanim
 
 
 def _arg_string(value):
@@ -18,13 +18,13 @@ class _Operator:
 
     def __call__(self, **kwargs):
         args = {name: _arg_string(value) for name, value in kwargs.items()}
-        return {_sky.ops_call(self.idname, args)}
+        return {_oanim.ops_call(self.idname, args)}
 
     def poll(self):
-        return _sky.ops_poll(self.idname)
+        return _oanim.ops_poll(self.idname)
 
     def __repr__(self):
-        return f"sky.ops.{self.idname}"
+        return f"oanim.ops.{self.idname}"
 
 
 class _Category:
@@ -38,10 +38,10 @@ class _Category:
 
     def __dir__(self):
         prefix = self._name + "."
-        return sorted(op["idname"][len(prefix):] for op in _sky.ops_list() if op["idname"].startswith(prefix))
+        return sorted(op["idname"][len(prefix):] for op in _oanim.ops_list() if op["idname"].startswith(prefix))
 
     def __repr__(self):
-        return f"sky.ops.{self._name}"
+        return f"oanim.ops.{self._name}"
 
 
 def __getattr__(name):
@@ -51,4 +51,4 @@ def __getattr__(name):
 
 
 def __dir__():
-    return sorted({op["idname"].split(".")[0] for op in _sky.ops_list()})
+    return sorted({op["idname"].split(".")[0] for op in _oanim.ops_list()})

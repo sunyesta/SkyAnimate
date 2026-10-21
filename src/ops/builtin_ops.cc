@@ -12,7 +12,7 @@
 #include "python/py_runtime.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 /* What undo leaves alone: the playhead (as in Blender and Moho) and text blocks, so undoing a
  * drawing change never loses typed code. The action being edited is undone with the rest: its
@@ -323,4 +323,4 @@ void builtin_operators_register()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

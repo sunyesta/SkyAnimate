@@ -3,7 +3,7 @@ bones do: moving a bone on frame 0 moves every pose with it; going through frame
 saving keeps it; files from before (format 1, the bones' own values in their keys, as the Moho
 converter writes) open converted.
 
-Run with:  SkyAnimate --background --python tests/test_bone_transform.py
+Run with:  OpenAnimate --background --python tests/test_bone_transform.py
 """
 
 import json
@@ -12,16 +12,16 @@ import pathlib
 import tempfile
 import zipfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 doc.frame_current = 0
 doc.auto_key = True
 
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
-assert sky.ops.armature.bone_add(name="jaw", head_x="1", head_y="0", tail_x="2", tail_y="0", parent="") == {'FINISHED'}
+assert oanim.ops.armature.bone_add(name="jaw", head_x="1", head_y="0", tail_x="2", tail_y="0", parent="") == {'FINISHED'}
 
 
 def bone():
@@ -75,9 +75,9 @@ assert [f for f, v in keys("angle")] == [0, 10] and [f for f, v in keys("positio
 assert close(keys("angle")[0][1], 0.0)
 
 # --- Saved and opened ------------------------------------------------------------------------------
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_bone_transform_")) / "rig.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_bone_transform_")) / "rig.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in layers.all() if l.type == "BONE")
 assert close(bone()["setup_angle"], 0.5) and close(keys("angle")[1][1], 0.5)
 doc.frame_current = 10
@@ -109,7 +109,7 @@ entries["document.json"] = json.dumps(root).encode("utf-8")
 with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
     for n, data in entries.items():
         z.writestr(n, data)
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in layers.all() if l.type == "BONE")
 assert close(bone()["setup_angle"], 0.25) and close(bone()["setup_position"], (3.0, 0.0))
 assert close(keys("angle")[0][1], 0.0) and close(keys("angle")[1][1], 1.0), keys("angle")
@@ -119,7 +119,7 @@ assert close(bone()["angle"], 1.25) and close(bone()["position"], (3.5, 1.0)), "
 
 # --- Along the bone: a bone pointing up, moved up, moved along itself (Transform x) -----------------
 doc.frame_current = 0
-assert sky.ops.armature.bone_add(name="neck", head_x="0", head_y="5", tail_x="0", tail_y="6", parent="") == {'FINISHED'}
+assert oanim.ops.armature.bone_add(name="neck", head_x="0", head_y="5", tail_x="0", tail_y="6", parent="") == {'FINISHED'}
 doc.frame_current = 10
 neck = next(b for b in rig.bones if b["name"] == "neck")
 rig.bone_set("neck", position=(neck["position"][0], neck["position"][1] + 0.2))

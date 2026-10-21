@@ -2,17 +2,17 @@
 in the setup pose (frame 0), so the pairs hold on every frame, and it snaps to the reflected spot:
 the sides become symmetrical again on any frame.
 
-Run with:  SkyAnimate --background --python tests/test_mirror_points.py
+Run with:  OpenAnimate --background --python tests/test_mirror_points.py
 """
 
-import sky
+import oanim
 
-doc = sky.data.document
+doc = oanim.data.document
 doc.frame_current = 0
-sky.ops.layer.new()
-layer = sky.data.layers.active
+oanim.ops.layer.new()
+layer = oanim.data.layers.active
 layer.add_curve([(-1.0, 0.0), (-0.5, 0.5), (0.5, 0.5), (1.0, 0.0)])
-sky.wm.set_mirror_editing(x=True)
+oanim.wm.set_mirror_editing(x=True)
 
 
 def pos(i):
@@ -30,7 +30,7 @@ def settle():
     doc.frame_current = here
 
 
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layer.select_points([1])
 
 # Frame 0: the image goes to the reflected spot.
@@ -47,12 +47,12 @@ settle()
 # The sides differ on this frame (moved with mirroring off): the pair is still found although the
 # points no longer mirror each other here, and the image snaps back to symmetry.
 doc.frame_current = 20
-sky.wm.set_mirror_editing()
+oanim.wm.set_mirror_editing()
 assert layer.move_points((0.3, 0.0))
 settle()
 left, right = pos(1), pos(2)
 assert not close((-left[0], left[1]), right), "the sides differ now"
-sky.wm.set_mirror_editing(x=True)
+oanim.wm.set_mirror_editing(x=True)
 assert layer.move_points((0.1, 0.1))
 assert close(pos(1), (left[0] + 0.1, left[1] + 0.1)), pos(1)
 assert close(pos(2), (-(left[0] + 0.1), left[1] + 0.1)), ("snapped to the reflection", pos(2), right)
@@ -61,6 +61,6 @@ settle()
 # The setup pose is untouched by all that.
 doc.frame_current = 0
 assert close(pos(1), (-0.5, 0.7)) and close(pos(2), (0.5, 0.7)), (pos(1), pos(2))
-sky.wm.set_mirror_editing()
+oanim.wm.set_mirror_editing()
 
 print("Mirror point tests passed")

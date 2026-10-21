@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "skyanimate": {
+    "openanimate": {
       "command": "C:/Python314/python.exe",
-      "args": ["C:/Users/Mary/Documents/Code/MyAnimationApp/SkyAnimate/tools/mcp/skyanimate_mcp.py"]
+      "args": ["C:/Users/Mary/Documents/Code/MyAnimationApp/OpenAnimate/tools/mcp/openanimate_mcp.py"]
     }
   }
 }

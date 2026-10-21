@@ -3,24 +3,24 @@ bone's angle anywhere else to a frame of the action, whose changes from frame 0 
 A " 2" action covers turning the other way. The added amounts never become data: saving, undo
 and keying keep the plain values.
 
-Run with:  SkyAnimate --background --python tests/test_smart_actions.py
+Run with:  OpenAnimate --background --python tests/test_smart_actions.py
 """
 
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 doc.frame_current = 0
 
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
-sky.ops.armature.bone_add(name="dial", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
-sky.ops.layer.new()
+oanim.ops.armature.bone_add(name="dial", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+oanim.ops.layer.new()
 face = layers.active
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 layers.active = rig
 rig.select_bone("dial")
 
@@ -32,12 +32,12 @@ def dial(angle):
 
 
 # --- Make the smart action: the dial turns to 1.0 by frame 10, moving the face to x = 2 ----------
-assert sky.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
+assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
 doc.frame_current = 10
 rig.bone_set("dial", angle=1.0)
 face.location_x = 2.0
 doc.frame_current = 0
-assert sky.ops.anim.action_set(name="") == {'FINISHED'}
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
 
 # --- Turning the dial anywhere plays the action that far -----------------------------------------
 # Even before the dial has any key on the mainline: it works at once, while turning.
@@ -46,9 +46,9 @@ assert rig.keyframes('bones["dial"].angle') == []
 rig.bone_set("dial", angle=0.5)
 doc.frame_current = doc.frame_current  # a sync, as the app does every frame
 assert abs(face.location_x - 1.0) < 1e-3, ("unkeyed bone", face.location_x)
-sky.ops.armature.select_none()  # an undo step records (keys) the turn; still applied
+oanim.ops.armature.select_none()  # an undo step records (keys) the turn; still applied
 assert abs(face.location_x - 1.0) < 1e-3, ("after recording", face.location_x)
-sky.ops.armature.select_all()
+oanim.ops.armature.select_all()
 dial(0.5)
 assert abs(face.location_x - 1.0) < 1e-3, face.location_x
 dial(1.0)
@@ -69,11 +69,11 @@ assert abs(face.location_x - 1.5) < 1e-3, face.location_x
 # The added amount isn't data: the face's own position is still 0.
 dial(0.5)
 assert face.keyframes("position") == [], "no keys from smart actions"
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_smart_")) / "smart.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-doc = sky.data.document
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_smart_")) / "smart.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+doc = oanim.data.document
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 face = rig.children[0]
 assert abs(face.location_x - 1.0) < 1e-3, "worked out again on opening, not saved in"
 doc.frame_current = 0
@@ -81,13 +81,13 @@ assert abs(face.location_x) < 1e-6, "the setup pose is untouched"
 doc.frame_current = 20
 
 # Undo doesn't add it twice.
-sky.data.layers.active = rig
-sky.ops.anim.keys_select_all()
-sky.ops.ed.undo()
+oanim.data.layers.active = rig
+oanim.ops.anim.keys_select_all()
+oanim.ops.ed.undo()
 assert abs(face.location_x - 1.0) < 1e-3, face.location_x
 
 # Keying the face while the dial is turned keys its own value, not the smart part.
-sky.data.layers.active = face
+oanim.data.layers.active = face
 face.location_y = 0.5
 doc.frame_current = 21
 doc.frame_current = 20
@@ -96,36 +96,36 @@ assert keys and abs(keys[-1]["value"][0]) < 1e-4, keys
 assert abs(face.location_x - 1.0) < 1e-3
 
 # --- " 2": the other direction ------------------------------------------------------------------
-sky.data.layers.active = rig
+oanim.data.layers.active = rig
 doc.frame_current = 0
-assert sky.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial 2"
+assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial 2"
 doc.frame_current = 10
 rig.bone_set("dial", angle=-1.0)
 face.location_x = -4.0
 doc.frame_current = 0
-sky.ops.anim.action_set(name="")
+oanim.ops.anim.action_set(name="")
 doc.frame_current = 30
 dial(-0.5)
 assert abs(face.location_x + 2.0) < 1e-3, face.location_x
-assert sky.ops.anim.action_new(name="dial", smart="1") == {'CANCELLED'}, "both directions exist"
+assert oanim.ops.anim.action_new(name="dial", smart="1") == {'CANCELLED'}, "both directions exist"
 
 # --- A bone the action moves, with no keys of its own, moves its points too --------------------------
 doc.frame_current = 0
 layers.active = rig
-sky.ops.armature.bone_add(name="jaw", head_x="0", head_y="-1", tail_x="1", tail_y="-1", parent="")
-sky.ops.layer.new()
+oanim.ops.armature.bone_add(name="jaw", head_x="0", head_y="-1", tail_x="1", tail_y="-1", parent="")
+oanim.ops.layer.new()
 lip = layers.active
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 lip.add_curve([(0.5, -1.0), (0.5, -1.5)])
-sky.ops.mesh.select_all()
+oanim.ops.mesh.select_all()
 rig.select_bone("jaw")
-assert sky.ops.weight.assign(weight="1") == {'FINISHED'}
+assert oanim.ops.weight.assign(weight="1") == {'FINISHED'}
 layers.active = rig
-assert sky.ops.anim.action_set(name="dial") == {'FINISHED'}
+assert oanim.ops.anim.action_set(name="dial") == {'FINISHED'}
 doc.frame_current = 10
 rig.bone_set("jaw", position=(0.0, -2.0))
 doc.frame_current = 0
-assert sky.ops.anim.action_set(name="") == {'FINISHED'}
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
 assert rig.keyframes('bones["jaw"].position') == [], "no mainline keys: only the action moves it"
 doc.frame_current = 40
 dial(1.0)
@@ -155,21 +155,21 @@ rig.bone_set("dial", angle=0.0)
 # A half-turn action (as a mouth's open bone, pointing up and turned down): one drag of the tip round
 # past the end keeps turning that way, so the action holds its end instead of flipping to the start.
 import math
-sky.ops.armature.bone_add(name="knob", head_x="0", head_y="3", tail_x="1", tail_y="3", parent="")
-sky.ops.layer.new()
+oanim.ops.armature.bone_add(name="knob", head_x="0", head_y="3", tail_x="1", tail_y="3", parent="")
+oanim.ops.layer.new()
 slider = layers.active
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 layers.active = rig
 rig.select_bone("knob")
-assert sky.ops.anim.action_new(name="knob", smart="1") == {'FINISHED'} and doc.action == "knob"
+assert oanim.ops.anim.action_new(name="knob", smart="1") == {'FINISHED'} and doc.action == "knob"
 doc.frame_current = 10
 rig.bone_set("knob", angle=-math.pi)
 slider.location_x = 3.0
 doc.frame_current = 0
-assert sky.ops.anim.action_set(name="") == {'FINISHED'}
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
 doc.frame_current = 60
 layers.active = rig
-sky.ops.armature.select_none()
+oanim.ops.armature.select_none()
 rig.select_bone("knob", part="TAIL")
 steps = [math.radians(-d) for d in range(0, 235, 15)]  # clockwise, past -180 to -225 degrees
 assert rig.drag_bone_ends([(math.cos(a) - 1.0, math.sin(a)) for a in steps])
@@ -182,25 +182,25 @@ assert abs(slider.location_x - 3.0) < 1e-3, ("holds the last frame", slider.loca
 # A drag puts the bones back as they were when it began every update, their smart offsets too; the
 # replay takes those off first, so turning back past the start doesn't keep the end pose. Alone in a
 # new file: with another smart action playing, its offsets were taken off anyway.
-import _sky
+import _oanim
 
-assert sky.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
-doc = sky.data.document
+assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
+doc = oanim.data.document
 doc.frame_current = 0
-sky.ops.layer.new_bone()
-rig = sky.data.layers.active
-sky.ops.armature.bone_add(name="lever", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
-sky.ops.armature.bone_add(name="chin", head_x="0", head_y="-2", tail_x="1", tail_y="-2", parent="")
-sky.ops.armature.select_none()
+oanim.ops.layer.new_bone()
+rig = oanim.data.layers.active
+oanim.ops.armature.bone_add(name="lever", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+oanim.ops.armature.bone_add(name="chin", head_x="0", head_y="-2", tail_x="1", tail_y="-2", parent="")
+oanim.ops.armature.select_none()
 rig.select_bone("lever")
-assert sky.ops.anim.action_new(name="lever", smart="1") == {'FINISHED'} and doc.action == "lever"
+assert oanim.ops.anim.action_new(name="lever", smart="1") == {'FINISHED'} and doc.action == "lever"
 doc.frame_current = 10
 rig.bone_set("lever", angle=1.0)
 rig.bone_set("chin", position=(0.0, -2.5))
 doc.frame_current = 0
-assert sky.ops.anim.action_set(name="") == {'FINISHED'}
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
 doc.frame_current = 40
-sky.ops.armature.select_none()
+oanim.ops.armature.select_none()
 rig.select_bone("lever")
 
 
@@ -209,9 +209,9 @@ def chin_y():
 
 
 assert abs(chin_y() + 2.0) < 1e-4, chin_y()
-_sky.debug_rotate_bones(rig.id, [20, 45, 90, 150])  # past the end (1.0 rad, 57 degrees)
+_oanim.debug_rotate_bones(rig.id, [20, 45, 90, 150])  # past the end (1.0 rad, 57 degrees)
 assert abs(chin_y() + 2.5) < 1e-4, ("the action's end", chin_y())
-_sky.debug_rotate_bones(rig.id, [-30, -150, -170])  # back past the start, the other way
+_oanim.debug_rotate_bones(rig.id, [-30, -150, -170])  # back past the start, the other way
 assert abs(chin_y() + 2.0) < 1e-4, ("clamped at the start, not left at the end", chin_y())
 
 print("Smart action tests passed")

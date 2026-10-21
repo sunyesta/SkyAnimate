@@ -19,7 +19,7 @@
 #include "core/math.hh"
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct BrushVertex {
   float x, y;
@@ -64,4 +64,4 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest, const BrushSett
 /* The seed for one shape's line: Line boil changes it every `random_interval` frames. */
 uint32_t brush_seed(const BrushSettings &brush, uint64_t layer_id, int shape_index, int frame);
 
-}  // namespace sky
+}  // namespace oanim

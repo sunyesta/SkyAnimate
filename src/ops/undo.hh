@@ -12,7 +12,7 @@
 
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 class UndoStack {
  public:
@@ -48,4 +48,4 @@ class UndoStack {
   uint64_t changes_ = 0;
 };
 
-}  // namespace sky
+}  // namespace oanim

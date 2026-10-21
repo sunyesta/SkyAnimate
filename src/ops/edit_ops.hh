@@ -8,7 +8,7 @@
 
 /* Operators that edit layers and drawings. */
 
-namespace sky {
+namespace oanim {
 
 struct BrushSettings;
 struct Context;
@@ -64,4 +64,4 @@ std::vector<Layer *> editable_layers(Context &C);
  * the whole stroke moves together. Does nothing in Point and Edge mode. */
 void drawing_expand_selection_by_mode(Context &C, VectorDrawing &drawing);
 
-}  // namespace sky
+}  // namespace oanim

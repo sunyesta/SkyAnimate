@@ -13,7 +13,7 @@
 #include "core/log.hh"
 #include "ops/file_ops.hh"
 
-namespace sky {
+namespace oanim {
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -152,7 +152,7 @@ bool asset_library_set(const std::string &folder)
   }
   if (!fs::is_regular_file(root / LIBRARY_FILE, ec)) {
     std::ofstream out(root / LIBRARY_FILE, std::ios::trunc);
-    out << json{{"format", "SkyAnimate asset library"}, {"version", LIBRARY_VERSION}}.dump(2) << "\n";
+    out << json{{"format", "Open Animate asset library"}, {"version", LIBRARY_VERSION}}.dump(2) << "\n";
     if (!out) {
       report(ReportType::Error, "Can't write to " + folder);
       return false;
@@ -267,4 +267,4 @@ int asset_library_import_moho_brushes(const std::vector<std::string> &dirs)
   return added;
 }
 
-}  // namespace sky
+}  // namespace oanim

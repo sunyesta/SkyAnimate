@@ -1,6 +1,6 @@
 #include "data/layer.hh"
 
-namespace sky {
+namespace oanim {
 
 static constexpr const char *MASK_EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
 
@@ -109,4 +109,4 @@ const rna::StructRNA &Layer::rna()
   return srna;
 }
 
-}  // namespace sky
+}  // namespace oanim

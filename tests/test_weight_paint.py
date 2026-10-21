@@ -3,7 +3,7 @@ falloff and Draw, Add and Subtract modes (and a Selection Mask), weights stay no
 Weights / Assign / Remove / Normalize, mirrored halves follow the other side's bones, weights are
 saved, and older files' binding turns into the same weights.
 
-Run with:  SkyAnimate --background --python tests/test_weight_paint.py
+Run with:  OpenAnimate --background --python tests/test_weight_paint.py
 """
 
 import json
@@ -12,10 +12,10 @@ import pathlib
 import tempfile
 import zipfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 
 
 def close(a, b, eps=1e-4):
@@ -24,21 +24,21 @@ def close(a, b, eps=1e-4):
 
 doc.frame_current = 0
 art = layers.active
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
 layers.active = art
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 
 layers.active = rig
-sky.ops.armature.bone_add(name="upper_L", head_x="0", head_y="0", tail_x="0.5", tail_y="0")
-sky.ops.armature.bone_add(name="lower_L", head_x="0.5", head_y="0", tail_x="1", tail_y="0")
+oanim.ops.armature.bone_add(name="upper_L", head_x="0", head_y="0", tail_x="0.5", tail_y="0")
+oanim.ops.armature.bone_add(name="lower_L", head_x="0.5", head_y="0", tail_x="1", tail_y="0")
 
 layers.active = art
 art.add_curve([(0.1, 0.0), (0.3, 0.0), (0.7, 0.0), (0.9, 0.0)])
 
 # New points get automatic weights at the next undo step: nearer bones pull harder.
 assert art.weights == [{}, {}, {}, {}], "not weighted yet"
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 upper = art.bone_weights("upper_L")
 assert upper[0] > 0.9 and upper[3] < 0.1, upper
 assert all(abs(sum(w.values()) - 1.0) < 1e-4 for w in art.weights), art.weights
@@ -76,10 +76,10 @@ doc.frame_current = 0
 # --- Mirror: the reflection follows the other side's bones -------------------------------------
 layers.active = rig
 rig.select_bone("")
-sky.ops.armature.symmetrize()
+oanim.ops.armature.symmetrize()
 assert {b["name"] for b in rig.bones} == {"upper_L", "lower_L", "upper_R", "lower_R"}
 layers.active = art
-sky.ops.object.modifier_add(type="MIRROR")
+oanim.ops.object.modifier_add(type="MIRROR")
 doc.frame_current = 10
 rig.bone_set("lower_R", angle=-math.pi / 2)
 doc.frame_current = 10
@@ -90,10 +90,10 @@ doc.frame_current = 0
 
 # --- Saved -------------------------------------------------------------------------------------
 before = art.painted_weights
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_weights_")) / "weights.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_weights_")) / "weights.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 art = rig.children[0]
 after = art.painted_weights
 assert len(after) == len(before)
@@ -101,38 +101,38 @@ for a, b in zip(after, before):
     assert a.keys() == b.keys() and all(abs(a[k] - b[k]) < 1e-5 for k in a), (a, b)
 
 # --- Weight Select's buttons ------------------------------------------------------------------
-sky.data.layers.active = art
+oanim.data.layers.active = art
 # Weight tools (like Draw and Split Curve) are for the setup frame only.
 doc.frame_current = 4
-assert sky.ops.wm.tool_weight_paint() == {'CANCELLED'} and sky.ops.wm.tool_draw() == {'CANCELLED'}
-assert sky.ops.wm.tool_select() == {'FINISHED'}
+assert oanim.ops.wm.tool_weight_paint() == {'CANCELLED'} and oanim.ops.wm.tool_draw() == {'CANCELLED'}
+assert oanim.ops.wm.tool_select() == {'FINISHED'}
 doc.frame_current = 0
-assert sky.ops.wm.tool_weight_select() == {'FINISHED'}
-sky.ops.mesh.select_all()
+assert oanim.ops.wm.tool_weight_select() == {'FINISHED'}
+oanim.ops.mesh.select_all()
 rig.select_bone("lower_L")
-assert sky.ops.weight.assign(weight="1") == {'FINISHED'}
+assert oanim.ops.weight.assign(weight="1") == {'FINISHED'}
 assert all(w == {"lower_L": 1.0} for w in art.weights), art.weights
-assert sky.ops.weight.remove() == {'FINISHED'}
+assert oanim.ops.weight.remove() == {'FINISHED'}
 assert art.weights == [{}, {}, {}, {}] and max(art.bone_weights("lower_L")) == 0.0, "removed: they stay put"
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 assert art.weights == [{}, {}, {}, {}], "removed points don't get automatic weights again"
 # Automatic Weights uses every bone, even with the painted bone selected (it would be all red).
 assert rig.bones[[b["name"] for b in rig.bones].index("lower_L")]["selected"]
-assert sky.ops.weight.automatic() == {'FINISHED'}
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 assert art.bone_weights("upper_L")[0] > 0.9 and art.bone_weights("lower_L")[3] > 0.5, art.weights
 # bones=SELECTED limits it to the selected bones.
-assert sky.ops.weight.automatic(bones="SELECTED") == {'FINISHED'}
+assert oanim.ops.weight.automatic(bones="SELECTED") == {'FINISHED'}
 assert all(set(w) == {"lower_L"} for w in art.weights), "only the selected bone"
-assert sky.ops.weight.automatic() == {'FINISHED'}
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 # Normalize: weights that don't add up to 1 do again.
 art.select_points([0])
 art.weight_paint((0.1, 0.0), 0.05, "lower_L", weight=0.5, strength=1.0, mode="ADD", normalize=False)
 assert sum(art.weights[0].values()) > 1.01
-assert sky.ops.weight.normalize() == {'FINISHED'}
+assert oanim.ops.weight.normalize() == {'FINISHED'}
 assert abs(sum(art.weights[0].values()) - 1.0) < 1e-4
 
 # Selection Mask: only the selected point takes paint.
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 art.select_points([3])
 before = art.weights
 assert art.weight_paint((0.5, 0.0), 1.0, "upper_L", weight=1.0, strength=1.0, selected_only=True) == 1
@@ -141,13 +141,13 @@ assert after[:3] == before[:3] and after[3] != before[3]
 
 # A new stroke follows the bones at once.
 art.add_curve([(0.2, 0.3), (0.8, 0.3)])
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 assert art.weights[-1] and art.weights[-2], "new points got weights"
 assert art.bone_weights("lower_L")[-1] > 0.5
 
 # --- Older files: point binding and flexi-binding become weights -------------------------------
-path2 = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_weights_")) / "old.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path2) == {'FINISHED'}
+path2 = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_weights_")) / "old.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path2) == {'FINISHED'}
 with zipfile.ZipFile(path2) as z:
     data = json.loads(z.read("document.json"))
 bone_layer = next(l for l in data["document"]["layers"] if l.get("bones"))
@@ -158,8 +158,8 @@ for pj in points:
 points[1]["bone"] = lower_id
 with zipfile.ZipFile(path2, "w") as z:
     z.writestr("document.json", json.dumps(data))
-assert sky.ops.wm.open_mainfile(filepath=path2, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+assert oanim.ops.wm.open_mainfile(filepath=path2, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 art = rig.children[0]
 assert art.weights[1] == {"lower_L": 1.0}, "a bound point follows its bone alone"
 assert art.weights[0] and art.bone_weights("upper_L")[0] > 0.9, "flexi-bound points get the same weights"

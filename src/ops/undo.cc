@@ -2,7 +2,7 @@
 
 #include "anim/animation.hh"
 
-namespace sky {
+namespace oanim {
 
 void UndoStack::reset(const Document &doc)
 {
@@ -50,4 +50,4 @@ bool UndoStack::redo(Document &doc)
   return true;
 }
 
-}  // namespace sky
+}  // namespace oanim

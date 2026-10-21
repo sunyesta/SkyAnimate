@@ -11,7 +11,7 @@
 
 #include "rna/rna.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Context;
 struct Document;
@@ -42,7 +42,7 @@ inline constexpr unsigned int UI_DROP_LINE_COLOR = 0xFFFFB86Fu; /* IM_COL32(0x6f
 void ui_panel_end();
 
 /* One property row inside a panel. Edits push an undo step when the widget is released.
- * `python_path` is shown in the tooltip, e.g. "sky.data.document". */
+ * `python_path` is shown in the tooltip, e.g. "oanim.data.document". */
 void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path);
 /* Blender's keyframe button: state 0 not animated (a dot), 1 animated (a hollow diamond), 2 keyed
  * on this frame (a filled one). Called before ui_prop / ui_prop_pair, the next row's fields get
@@ -96,7 +96,7 @@ float ui_revert_button_space();
 /* `r_revert` (optional): also a revert button at the right end of the row, true when clicked. */
 bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_name, bool *r_revert = nullptr);
 
-/* A colour swatch that opens SkyAnimate's colour picker, which shows #RRGGBBAA and has an
+/* A colour swatch that opens Open Animate's colour picker, which shows #RRGGBBAA and has an
  * eyedropper; with `hex`, a #RRGGBBAA field beside it too. Returns true while the colour
  * changes; `r_finished` (optional) is set when an edit ends, for an undo step. */
 /* `right_space`: room left free at the right of the hex field (for a button after it). */
@@ -151,4 +151,4 @@ bool ui_submenu_begin(const char *label, bool enabled = true);
 void ui_submenu_end();
 void ui_menu_end();
 
-}  // namespace sky
+}  // namespace oanim

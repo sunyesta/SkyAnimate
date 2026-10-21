@@ -1,7 +1,7 @@
-import sky
+import oanim
 
 
-class SimpleOperator(sky.types.Operator):
+class SimpleOperator(oanim.types.Operator):
     """Tooltip"""
     bl_idname = "doc.simple_operator"
     bl_label = "Simple Operator"
@@ -17,15 +17,15 @@ class SimpleOperator(sky.types.Operator):
 
 
 def register():
-    sky.utils.register_class(SimpleOperator)
+    oanim.utils.register_class(SimpleOperator)
 
 
 def unregister():
-    sky.utils.unregister_class(SimpleOperator)
+    oanim.utils.unregister_class(SimpleOperator)
 
 
 if __name__ == "__main__":
     register()
 
     # test call
-    sky.ops.doc.simple_operator()
+    oanim.ops.doc.simple_operator()

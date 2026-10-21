@@ -29,7 +29,7 @@
 #include "ops/undo.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 enum PropertiesTab {
   TAB_DOCUMENT = 0,
@@ -49,7 +49,7 @@ static void pin_toggle(Context &C, uint64_t layer, const std::string &paths, int
 static void document_tab(Context &C)
 {
   const rna::PointerRNA ptr{C.document, &Document::rna()};
-  const char *path = "sky.data.document";
+  const char *path = "oanim.data.document";
   if (ui_panel_begin("Document")) {
     ui_prop(C, ptr, "name", path);
     ui_panel_end();
@@ -732,7 +732,7 @@ static void bone_display_panel(Context &C, Layer &armature)
       ImGui::EndCombo();
     }
     if (ImGui::BeginDragDropTarget()) {
-      if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("SKY_LAYER")) {
+      if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("OANIM_LAYER")) {
         uint64_t id = 0;
         std::memcpy(&id, payload->Data, sizeof(id));
         const Layer *dropped = layer_find(doc, id);
@@ -1354,7 +1354,7 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
 
 static constexpr ImU32 COL_MOD_BOX = IM_COL32(0x3d, 0x3d, 0x3d, 255);
 static constexpr ImU32 COL_MOD_ICON = IM_COL32(0xd0, 0xd0, 0xd0, 255);
-static constexpr const char *MODIFIER_PAYLOAD = "SKY_MODIFIER";
+static constexpr const char *MODIFIER_PAYLOAD = "OANIM_MODIFIER";
 
 /* A small square toggle with a drawn icon, blue when on, as Blender's header toggles. */
 static bool icon_toggle(const char *id, bool on, const char *tooltip, void (*icon)(ImDrawList *, ImVec2, float))
@@ -1634,7 +1634,7 @@ static void modifiers_panel(Context &C, Layer &layer)
 
 /* --- Bone Constraints tab: the Modifiers tab's boxes, for the active bone's constraints ------- */
 
-static constexpr const char *CONSTRAINT_PAYLOAD = "SKY_BONE_CONSTRAINT";
+static constexpr const char *CONSTRAINT_PAYLOAD = "OANIM_BONE_CONSTRAINT";
 
 /* A constraint's icon: a spring for Dynamics, a chain for IK, two linked rings for the rest (as
  * Blender marks constraints). */
@@ -2204,7 +2204,7 @@ static void draw_order_row(Context &C, Layer &layer)
 
 /* Mask: the layer shows only inside (or outside) the layers each mask names, where every mask
  * that's on holds; then which layers use this one as a mask, and how its shape masks them. */
-static constexpr const char *MASK_PAYLOAD = "SKY_MASK";
+static constexpr const char *MASK_PAYLOAD = "OANIM_MASK";
 
 /* A circle with its left half filled (Inside) or its right half (Outside). */
 static void mask_icon(ImDrawList *dl, ImVec2 c, float r, bool outside, ImU32 col)
@@ -2528,18 +2528,18 @@ static void camera_tab(Context &C)
   Layer &camera = document_camera(doc);
   const rna::PointerRNA ptr{&camera, &Layer::rna()};
   const rna::PointerRNA doc_ptr{&doc, &Document::rna()};
-  const char *path = "sky.data.camera";
+  const char *path = "oanim.data.camera";
   if (ui_panel_begin("Camera")) {
     key_next(C, camera, {"position"});
     ui_prop_pair(C, ptr, "Position", "location_x", "X", "location_y", "Y", path);
     key_next(C, camera, {"zoom"});
-    ui_prop(C, doc_ptr, "camera_zoom", "sky.data.document");
+    ui_prop(C, doc_ptr, "camera_zoom", "oanim.data.document");
     key_next(C, camera, {"rotation"});
-    ui_prop(C, doc_ptr, "camera_roll", "sky.data.document");
+    ui_prop(C, doc_ptr, "camera_roll", "oanim.data.document");
     ui_panel_end();
   }
   if (ui_panel_begin("Viewport Display")) {
-    ui_prop(C, doc_ptr, "camera_passepartout", "sky.data.document");
+    ui_prop(C, doc_ptr, "camera_passepartout", "oanim.data.document");
     ui_panel_end();
   }
 }
@@ -2566,7 +2566,7 @@ static void layer_tab(Context &C)
     return;
   }
   const rna::PointerRNA ptr{layer, &Layer::rna()};
-  const char *path = "sky.data.layers.active";
+  const char *path = "oanim.data.layers.active";
   if (ui_panel_begin("Layer")) {
     ui_prop(C, ptr, "name", path);
     key_next(C, *layer, {"visible"});
@@ -2664,7 +2664,7 @@ static void drawing_tab(Context &C)
           clicked_adds = ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl;
         }
         if (ImGui::BeginDragDropSource()) {
-          ImGui::SetDragDropPayload("SKY_SHAPE", &s, sizeof(int));
+          ImGui::SetDragDropPayload("OANIM_SHAPE", &s, sizeof(int));
           ImGui::TextUnformatted(shape.name.empty() ? "Shape" : shape.name.c_str());
           ImGui::EndDragDropSource();
         }
@@ -2676,7 +2676,7 @@ static void drawing_tab(Context &C)
           ImGui::GetWindowDrawList()->AddLine(ImVec2(row_min.x, line_y), ImVec2(row_max.x, line_y),
                                               UI_DROP_LINE_COLOR, 2.0f);
           if (const ImGuiPayload *payload =
-                  ImGui::AcceptDragDropPayload("SKY_SHAPE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+                  ImGui::AcceptDragDropPayload("OANIM_SHAPE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
           {
             move_from = *static_cast<const int *>(payload->Data);
             /* Where it goes in the stacking order (bottom first), counted before it is taken out. */
@@ -3393,4 +3393,4 @@ void properties_draw(Area &area, Context &C)
   ImGui::EndChild();
 }
 
-}  // namespace sky
+}  // namespace oanim

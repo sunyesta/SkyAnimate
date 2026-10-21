@@ -1,13 +1,13 @@
 #pragma once
 
 /* Keymaps: data that maps key presses to operators, grouped by editor like Blender's.
- * The default keymap is defined in Python (scripts/startup/sky_keymap_default.py). */
+ * The default keymap is defined in Python (scripts/startup/oanim_keymap_default.py). */
 
 #include <map>
 #include <string>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 struct KeyEvent {
   /* Key name in Blender's style: "A", "F3", "SPACE", "ESC", "RET", ... */
@@ -45,4 +45,4 @@ KeyMaps &keymaps();
 /* "Ctrl Shift Z" style label. */
 std::string key_event_label(const KeyEvent &event);
 
-}  // namespace sky
+}  // namespace oanim

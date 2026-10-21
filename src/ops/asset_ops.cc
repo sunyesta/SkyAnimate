@@ -12,7 +12,7 @@
 #include "wm/context.hh"
 #include "wm/file_dialog.hh"
 
-namespace sky {
+namespace oanim {
 
 int shapes_set_brush(Context &C, const BrushSettings &brush)
 {
@@ -45,7 +45,7 @@ static void asset_operator_add(const char *idname, const char *name, const char 
 void asset_operators_register()
 {
   asset_operator_add("preferences.asset_library_set", "Set Asset Library",
-                     "Choose the folder that holds SkyAnimate's brushes, and set it up there", OPTYPE_REGISTER,
+                     "Choose the folder that holds Open Animate's brushes, and set it up there", OPTYPE_REGISTER,
                      [](Context &C) {
                        const std::string directory = op_arg(C, "directory");
                        if (directory.empty()) {
@@ -106,4 +106,4 @@ void asset_operators_register()
                      });
 }
 
-}  // namespace sky
+}  // namespace oanim

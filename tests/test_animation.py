@@ -1,16 +1,16 @@
 """Animated channels: auto-keying, frame 0 as the setup frame, Moho's interpolation modes, holds
 and on-twos, I and Alt I, keyframe jumps, undo and saving.
 
-Run with:  SkyAnimate --background --python tests/test_animation.py
+Run with:  OpenAnimate --background --python tests/test_animation.py
 """
 
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layer = sky.data.layers.active
+doc = oanim.data.document
+layer = oanim.data.layers.active
 assert doc.auto_key, "auto-keying starts on"
 assert doc.frame_current == 0, "a new document opens on the setup frame"
 
@@ -128,25 +128,25 @@ assert abs(layer.points[1][1] - 0.5) < 1e-5, "points move between their keys"
 
 # --- I, Alt I and keyframe jumps --------------------------------------------------------------
 doc.frame_current = 30
-assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 assert 30 in frames("position") and 30 in frames("rotation") and 30 in frames("points[0].pos")
 assert 30 in layer.key_frames
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert 30 not in frames("rotation") and doc.frame_current == 30, "undo removes the keys, keeps the frame"
-sky.ops.ed.redo()
+oanim.ops.ed.redo()
 assert 30 in frames("rotation")
-assert sky.ops.anim.keyframe_delete() == {'FINISHED'} and 30 not in frames("rotation")
-assert sky.ops.anim.keyframe_delete() == {'CANCELLED'}, "no keys left on this frame"
+assert oanim.ops.anim.keyframe_delete() == {'FINISHED'} and 30 not in frames("rotation")
+assert oanim.ops.anim.keyframe_delete() == {'CANCELLED'}, "no keys left on this frame"
 
 doc.frame_current = 0
-assert sky.ops.screen.keyframe_jump_next() == {'FINISHED'} and doc.frame_current == 10
-assert sky.ops.screen.keyframe_jump_next() == {'FINISHED'} and doc.frame_current == 12
-assert sky.ops.screen.keyframe_jump_prev() == {'FINISHED'} and doc.frame_current == 10
+assert oanim.ops.screen.keyframe_jump_next() == {'FINISHED'} and doc.frame_current == 10
+assert oanim.ops.screen.keyframe_jump_next() == {'FINISHED'} and doc.frame_current == 12
+assert oanim.ops.screen.keyframe_jump_prev() == {'FINISHED'} and doc.frame_current == 10
 
 # --- Smooth holds still between equal keys (no overshoot) ----------------------------------
 doc.frame_current = 0
-sky.ops.layer.new()
-held = sky.data.layers.active
+oanim.ops.layer.new()
+held = oanim.data.layers.active
 for f, x in ((0, 0.0), (38, 1.0), (84, 0.0), (116, 0.0)):
     doc.frame_current = f
     held.location_x = x
@@ -158,80 +158,80 @@ for f in range(84, 117, 4):
 for f in range(0, 85, 2):
     doc.frame_current = f
     assert -1e-6 <= held.location_x <= 1.0 + 1e-6, ("never past its keys", f, held.location_x)
-sky.data.layers.active = layer
+oanim.data.layers.active = layer
 
 # --- Editing keys in the timeline ------------------------------------------------------------
 doc.frame_current = 0
 frames_before = layer.key_frames
-assert sky.ops.anim.keys_select(frame_start="10") == {'FINISHED'}
-assert sky.ops.anim.keys_offset(frames="5") == {'FINISHED'}
+assert oanim.ops.anim.keys_select(frame_start="10") == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="5") == {'FINISHED'}
 assert 15 in frames("position") and 10 not in frames("position"), frames("position")
-assert sky.ops.anim.keys_scale(factor="2") == {'FINISHED'}, "scales about the current frame (0)"
+assert oanim.ops.anim.keys_scale(factor="2") == {'FINISHED'}, "scales about the current frame (0)"
 assert 30 in frames("position"), frames("position")
 assert 0 in frames("position"), "frame-0 setup keys never move"
-sky.ops.ed.undo()
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
 assert 10 in frames("position")
 # Box select a range, then delete with X over the timeline.
-assert sky.ops.anim.keys_select(frame_start="11", frame_end="13") == {'FINISHED'}
-assert sky.wm.event_simulate("X", area="Timeline")
+assert oanim.ops.anim.keys_select(frame_start="11", frame_end="13") == {'FINISHED'}
+assert oanim.wm.event_simulate("X", area="Timeline")
 assert 12 not in layer.key_frames and 10 in layer.key_frames
-assert sky.wm.event_simulate("A", area="Timeline")
+assert oanim.wm.event_simulate("A", area="Timeline")
 # All were selected: with only frame 0 left the property isn't animated any more, as in Blender.
-assert sky.ops.anim.keys_delete() == {'FINISHED'} and frames("position") == []
-sky.ops.ed.undo()
-assert sky.wm.event_simulate("A", alt=True, area="Timeline")
-assert sky.ops.anim.keys_delete() == {'CANCELLED'}, "nothing selected"
-sky.ops.ed.undo()
-sky.ops.ed.undo()
-sky.ops.ed.undo()
-sky.ops.ed.undo()
+assert oanim.ops.anim.keys_delete() == {'FINISHED'} and frames("position") == []
+oanim.ops.ed.undo()
+assert oanim.wm.event_simulate("A", alt=True, area="Timeline")
+assert oanim.ops.anim.keys_delete() == {'CANCELLED'}, "nothing selected"
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
 assert 12 in layer.key_frames, layer.key_frames
 
 # --- Duplicating keys (Shift D) and hold bars ------------------------------------------------
 doc.frame_current = 0
-sky.ops.anim.keys_select(frame_start="10")
-assert sky.ops.anim.keys_duplicate(frames="30") == {'FINISHED'}
+oanim.ops.anim.keys_select(frame_start="10")
+assert oanim.ops.anim.keys_duplicate(frames="30") == {'FINISHED'}
 assert 10 in frames("position") and 40 in frames("position")
 k10 = next(k for k in layer.keyframes("position") if k["frame"] == 10)
 k40 = next(k for k in layer.keyframes("position") if k["frame"] == 40)
 assert k10["value"] == k40["value"] and k10["interp"] == k40["interp"]
 # Frame 40 copies frame 10 on every channel keyed there; any neighbours that are equal show a hold.
-sky.ops.anim.keys_select(frame_start="40")
-sky.ops.anim.keys_duplicate(frames="5")
-import _sky
-spans = [tuple(s) for s in _sky.timeline_hold_spans()]
+oanim.ops.anim.keys_select(frame_start="40")
+oanim.ops.anim.keys_duplicate(frames="5")
+import _oanim
+spans = [tuple(s) for s in _oanim.timeline_hold_spans()]
 assert (40, 45) in spans, spans
 assert (10, 12) not in spans, "frames where something changes have no bar"
-sky.ops.ed.undo()
-sky.ops.ed.undo()
-sky.ops.ed.undo()
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
 assert 40 not in frames("position")
 
 # --- Channel rows: keys of one selected layer at a time ----------------------------------------
 doc.frame_current = 0
-sky.ops.layer.new()
-other = sky.data.layers.active
+oanim.ops.layer.new()
+other = oanim.data.layers.active
 doc.frame_current = 10
 other.location_x = 2.0
 doc.frame_current = 0
 layer.select = True  # both layers are animated: the timeline shows a row for each
 assert 10 in other.key_frames and 10 in layer.key_frames
-assert sky.ops.anim.keys_select(frame_start="10", layers=str(other.id)) == {'FINISHED'}
-assert sky.ops.anim.keys_offset(frames="3") == {'FINISHED'}
+assert oanim.ops.anim.keys_select(frame_start="10", layers=str(other.id)) == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="3") == {'FINISHED'}
 assert 13 in other.key_frames and 10 not in other.key_frames
 assert 10 in layer.key_frames and 13 not in layer.key_frames, "the other row's keys stay"
-assert sky.ops.anim.keys_offset(frames="-3") == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="-3") == {'FINISHED'}
 assert 10 in other.key_frames
-sky.data.layers.active = layer
+oanim.data.layers.active = layer
 layer.select = False
 
 # --- Timeline rows pick keys of one kind (Angle, Transform...) or of selected things only ----------
-sky.ops.layer.new()
-rows = sky.data.layers.active
+oanim.ops.layer.new()
+rows = oanim.data.layers.active
 rows.add_curve([(0.0, 0.0), (1.0, 0.0)])
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 doc.frame_current = 12
 rows.rotation = 30.0
 rows.location_x = 1.0
@@ -239,31 +239,31 @@ rows.set_point(0, (0.0, 0.5))
 rows.set_point(1, (1.0, 0.5))
 doc.frame_current = 13
 KEY_LAYER_ANGLE, KEY_POINTS = 1, 64
-assert sky.ops.anim.keys_select(frame_start="12", kinds=str(KEY_LAYER_ANGLE)) == {'FINISHED'}
-assert sky.ops.anim.keys_offset(frames="2") == {'FINISHED'}
+assert oanim.ops.anim.keys_select(frame_start="12", kinds=str(KEY_LAYER_ANGLE)) == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="2") == {'FINISHED'}
 assert [k["frame"] for k in rows.keyframes("rotation")] == [0, 14], "the Angle row's keys moved"
 assert [k["frame"] for k in rows.keyframes("position")] == [0, 12], "the Transform keys stayed"
 # The Selected section: only the selected points' keys.
 rows.select_points([1])
-assert sky.ops.anim.keys_select(frame_start="12", kinds=str(KEY_POINTS), selected_only="1") == {'FINISHED'}
-assert sky.ops.anim.keys_offset(frames="3") == {'FINISHED'}
+assert oanim.ops.anim.keys_select(frame_start="12", kinds=str(KEY_POINTS), selected_only="1") == {'FINISHED'}
+assert oanim.ops.anim.keys_offset(frames="3") == {'FINISHED'}
 assert [k["frame"] for k in rows.keyframes("points[1].pos")] == [0, 15]
 assert [k["frame"] for k in rows.keyframes("points[0].pos")] == [0, 12], "the unselected point's stayed"
 doc.frame_current = 0
 
 # --- The keyframe button beside a property (Blender's diamond) ---------------------------------
-sky.ops.layer.new()
-lamp = sky.data.layers.active
+oanim.ops.layer.new()
+lamp = oanim.data.layers.active
 doc.frame_current = 15
-assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
 assert [k["frame"] for k in lamp.keyframes("rotation")] == [0, 15], "the first key also keys the setup"
 assert lamp.keyframes("position") == [], "only that property"
-assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
 assert lamp.keyframes("rotation") == [], "pressed again: the key goes, and the setup key with it"
 doc.frame_current = 0
-assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
 assert [k["frame"] for k in lamp.keyframes("rotation")] == [0], "keyed on frame 0 alone"
-assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
 assert lamp.keyframes("rotation") == []
 
 # Visibility animates (stepped), but only once keyed by hand: hiding a layer doesn't key it.
@@ -274,7 +274,7 @@ assert lamp.keyframes("visible") == [] and not lamp.visible, "auto-key leaves vi
 lamp.visible = True
 doc.frame_current = 10
 lamp.visible = False
-assert sky.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="visible") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="visible") == {'FINISHED'}
 assert [k["frame"] for k in lamp.keyframes("visible")] == [0, 10]
 doc.frame_current = 9
 assert lamp.visible, "shown until frame 10"
@@ -295,24 +295,24 @@ try:
 except ValueError:
     pass
 doc.frame_current = 0
-sky.data.layers.active = layer
+oanim.data.layers.active = layer
 
 # --- Saved with the document ------------------------------------------------------------------
 layer.keyframe_set("position", 0, interp="EASE_OUT", hold=2, interval=3)
 saved = {p: layer.keyframes(p) for p in ("position", "points[1].pos")}
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_anim_")) / "anim.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-layer = sky.data.layers.active
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_anim_")) / "anim.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+layer = oanim.data.layers.active
 for p, keys in saved.items():
     assert layer.keyframes(p) == keys, (p, layer.keyframes(p), keys)
-doc = sky.data.document
+doc = oanim.data.document
 doc.frame_current = 6
 assert abs(layer.points[1][1] - 0.5) < 1e-5, "opened files show their animation"
 
 # --- Rotation is a number, as in Moho: one key can turn a layer round twice -----------------------
-sky.ops.layer.new()
-spin = sky.data.layers.active
+oanim.ops.layer.new()
+spin = oanim.data.layers.active
 doc.frame_current = 24
 spin.rotation = 720.0
 doc.frame_current = 0
@@ -321,9 +321,9 @@ doc.frame_current = 12
 assert abs(spin.rotation - 360.0) < 1e-3, spin.rotation
 doc.frame_current = 6
 assert abs(spin.rotation - 180.0) < 1e-3, "the turn goes the long way round, not back to 0"
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-spin = next(l for l in sky.data.layers if l.name == spin.name)
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+spin = next(l for l in oanim.data.layers if l.name == spin.name)
 assert [k["value"] for k in spin.keyframes("rotation")] == [0.0, 720.0]
 
 print("Animation tests passed")

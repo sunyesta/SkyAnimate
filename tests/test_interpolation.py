@@ -3,19 +3,19 @@ the selected keys' mode, or with no keys selected the mode new keys get; ease st
 settings; Copy Previous Key; Copy and Paste Interpolation; Use for New Keys; Stepped Preview; and
 saving the new settings.
 
-Run with:  SkyAnimate --background --python tests/test_interpolation.py
+Run with:  OpenAnimate --background --python tests/test_interpolation.py
 """
 
 import math
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 doc.frame_current = 0
-sky.ops.layer.new()
+oanim.ops.layer.new()
 layer = layers.active
 layer.add_curve([(0.0, 0.0), (1.0, 0.0)])
 
@@ -30,11 +30,11 @@ def key(frame, path="position"):
 
 
 def select(frame):
-    assert sky.ops.anim.keys_select(frame_start=str(frame)) == {'FINISHED'}
+    assert oanim.ops.anim.keys_select(frame_start=str(frame)) == {'FINISHED'}
 
 
 def interp(**settings):
-    return sky.ops.anim.keys_interpolation_set(**{k: str(v) for k, v in settings.items()})
+    return oanim.ops.anim.keys_interpolation_set(**{k: str(v) for k, v in settings.items()})
 
 
 # --- New keys: Smooth unless the menu says otherwise --------------------------------------------------
@@ -82,7 +82,7 @@ assert key(0)["interval"] == 3, "on 1s, 2s or 3s"
 interp(interp="LINEAR", hold=0, interval=1)
 
 # --- Nothing selected: the mode new keys get --------------------------------------------------------
-sky.ops.anim.keys_deselect_all()
+oanim.ops.anim.keys_deselect_all()
 assert interp(interp="STEP") == {'FINISHED'}
 assert key(0)["interp"] == "LINEAR", "no key changed"
 doc.frame_current = 30
@@ -92,12 +92,12 @@ assert key(30)["interp"] == "STEP", "the new key gets the new-key mode"
 
 # Copy Previous Key: a new key copies the key before it instead.
 interp(interp="SMOOTH")
-assert sky.ops.anim.interpolation_copy_previous(enable="1") == {'FINISHED'}
+assert oanim.ops.anim.interpolation_copy_previous(enable="1") == {'FINISHED'}
 doc.frame_current = 40
 layer.location_x = 4.0
 doc.frame_current = 41
 assert key(40)["interp"] == "STEP", "copied from frame 30's key"
-sky.ops.anim.interpolation_copy_previous(enable="0")
+oanim.ops.anim.interpolation_copy_previous(enable="0")
 doc.frame_current = 50
 layer.location_x = 5.0
 doc.frame_current = 51
@@ -106,15 +106,15 @@ assert key(50)["interp"] == "SMOOTH"
 # --- Copy and Paste Interpolation, Use for New Keys -----------------------------------------------
 select(0)
 interp(interp="EASE_OUT", ease="QUINT", hold=2)
-assert sky.ops.anim.interpolation_copy() == {'FINISHED'}
+assert oanim.ops.anim.interpolation_copy() == {'FINISHED'}
 select(10)
-assert sky.ops.anim.interpolation_paste() == {'FINISHED'}
+assert oanim.ops.anim.interpolation_paste() == {'FINISHED'}
 k10 = key(10)
 assert k10["interp"] == "EASE_OUT" and k10["ease"] == "QUINT" and k10["hold"] == 2
 assert k10["value"] == (1.0, 0.0), "the value stays"
-assert sky.ops.anim.interpolation_use_for_new_keys() == {'FINISHED'}
-sky.ops.anim.keys_deselect_all()
-assert sky.ops.anim.interpolation_copy() == {'CANCELLED'}, "nothing selected to copy"
+assert oanim.ops.anim.interpolation_use_for_new_keys() == {'FINISHED'}
+oanim.ops.anim.keys_deselect_all()
+assert oanim.ops.anim.interpolation_copy() == {'CANCELLED'}, "nothing selected to copy"
 doc.frame_current = 60
 layer.location_x = 6.0
 doc.frame_current = 61
@@ -125,14 +125,14 @@ interp(interp="SMOOTH", ease="QUAD", hold=0)
 select(10)
 interp(interp="BOUNCE")
 assert key(10)["interp"] == "BOUNCE"
-sky.ops.ed.undo()
+oanim.ops.ed.undo()
 assert key(10)["interp"] == "EASE_OUT"
 
 # --- A yes/no property's keys stay Step ---------------------------------------------------------------
 doc.frame_current = 0
 layer.keyframe_insert("visible", 0)
 layer.keyframe_insert("visible", 10)
-sky.ops.anim.keys_select_all()
+oanim.ops.anim.keys_select_all()
 interp(interp="LINEAR")
 assert all(k["interp"] == "STEP" for k in layer.keyframes("visible"))
 assert key(0)["interp"] == "LINEAR"
@@ -140,10 +140,10 @@ assert key(0)["interp"] == "LINEAR"
 # --- Stepped Preview: everything holds its key, no key changes ------------------------------------
 smooth_5 = x_at(5)
 assert 0.0 < smooth_5 < 1.0
-assert sky.ops.screen.stepped_preview(enable="1") == {'FINISHED'}
+assert oanim.ops.screen.stepped_preview(enable="1") == {'FINISHED'}
 assert x_at(5) == 0.0 and x_at(10) == 1.0, "held from key to key"
 assert key(0)["interp"] == "LINEAR", "the keys are untouched"
-sky.ops.screen.stepped_preview()
+oanim.ops.screen.stepped_preview()
 assert abs(x_at(5) - smooth_5) < 1e-6, "toggled back off"
 
 # --- Saved and opened again -----------------------------------------------------------------------------
@@ -151,16 +151,16 @@ select(0)
 interp(interp="ELASTIC", elastic_amplitude=1.5, elastic_period=0.4)
 select(10)
 interp(interp="EASE_IN", ease="CIRC")
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_interp_")) / "interp.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-layer = sky.data.layers.active
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_interp_")) / "interp.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+layer = oanim.data.layers.active
 assert key(0)["interp"] == "ELASTIC" and abs(key(0)["elastic_amplitude"] - 1.5) < 1e-6
 assert abs(key(0)["elastic_period"] - 0.4) < 1e-6
 assert key(10)["interp"] == "EASE_IN" and key(10)["ease"] == "CIRC"
 
 # The T menu is asked of the timeline.
-assert sky.ops.anim.interpolation_menu() == {'FINISHED'}
-assert sky.ops.anim.interpolation_settings() == {'FINISHED'}
+assert oanim.ops.anim.interpolation_menu() == {'FINISHED'}
+assert oanim.ops.anim.interpolation_settings() == {'FINISHED'}
 
 print("test_interpolation: OK")

@@ -42,7 +42,7 @@
 #include "wm/event_system.hh"
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 using json = nlohmann::json;
 
@@ -155,7 +155,7 @@ void serve(SOCKET s)
         }
         reply = future.wait_for(std::chrono::seconds(30)) == std::future_status::ready
                     ? future.get()
-                    : failure(id, "SkyAnimate didn't answer in time (is it busy, or its window minimized?)");
+                    : failure(id, "Open Animate didn't answer in time (is it busy, or its window minimized?)");
       }
       if (!send_all(s, reply + "\n")) {
         hang_up = true;
@@ -238,7 +238,7 @@ json state_of(Context &C)
     s["active_layer"] = a;
   }
   json reports = json::array();
-  const std::vector<Report> &all = sky::reports();
+  const std::vector<Report> &all = oanim::reports();
   static const char *const TYPES[] = {"INFO", "OPERATOR", "WARNING", "ERROR"};
   for (size_t i = all.size() > 15 ? all.size() - 15 : 0; i < all.size(); i++) {
     reports.push_back({{"type", TYPES[int(all[i].type)]}, {"message", all[i].message}});
@@ -545,4 +545,4 @@ std::string remote_dispatch(Context &C, const std::string &request)
   return dispatch(C, message);
 }
 
-}  // namespace sky
+}  // namespace oanim

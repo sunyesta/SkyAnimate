@@ -2,18 +2,18 @@
 an active bone, Shift A, E (extrude), Shift D, Ctrl P (Connected / Keep Offset), Alt P, and moving
 bone ends on the setup frame.
 
-Run with:  SkyAnimate --background --python tests/test_bone_editing.py
+Run with:  OpenAnimate --background --python tests/test_bone_editing.py
 """
 
 import math
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
-wm = sky.wm
+doc = oanim.data.document
+layers = oanim.data.layers
+wm = oanim.wm
 
 
 def close(a, b, eps=1e-4):
@@ -24,7 +24,7 @@ def bones():
     return {b["name"]: b for b in rig.bones}
 
 
-assert sky.ops.layer.new_bone() == {'FINISHED'}
+assert oanim.ops.layer.new_bone() == {'FINISHED'}
 rig = layers.active
 doc.frame_current = 0
 
@@ -91,23 +91,23 @@ assert copy["selected"] and copy["active"] and not bones()[child["name"]]["selec
 assert copy["parent"] == name and close(copy["tail"], (0.5, 0.5))
 
 # --- Ctrl P: parent the selected bones to the active one ------------------------------------------
-assert sky.ops.armature.bone_add(name="free", head_x="2", head_y="0", tail_x="2", tail_y="1", parent="") == {'FINISHED'}
+assert oanim.ops.armature.bone_add(name="free", head_x="2", head_y="0", tail_x="2", tail_y="1", parent="") == {'FINISHED'}
 assert bones()["free"]["parent"] == ""
 rig.select_bone("free")
 rig.select_bone(name, extend=True)  # the parent last: it becomes active
-assert sky.ops.armature.parent_set(type="OFFSET") == {'FINISHED'}
+assert oanim.ops.armature.parent_set(type="OFFSET") == {'FINISHED'}
 f = bones()["free"]
 assert f["parent"] == name and not f["connected"] and close(f["head"], (2, 0)) and close(f["tail"], (2, 1))
-assert sky.ops.armature.parent_set(type="CONNECTED") == {'FINISHED'}
+assert oanim.ops.armature.parent_set(type="CONNECTED") == {'FINISHED'}
 f = bones()["free"]
 assert f["connected"] and close(f["head"], bones()[name]["tail"]), "connected: the base slides onto the tip"
 assert abs(f["length"] - 1.0) < 1e-4, "keeping its length and direction"
 
 # Alt P: disconnect, then clear.
 rig.select_bone("free")
-assert sky.ops.armature.parent_clear(type="DISCONNECT") == {'FINISHED'}
+assert oanim.ops.armature.parent_clear(type="DISCONNECT") == {'FINISHED'}
 assert bones()["free"]["parent"] == name and not bones()["free"]["connected"]
-assert sky.ops.armature.parent_clear(type="CLEAR") == {'FINISHED'}
+assert oanim.ops.armature.parent_clear(type="CLEAR") == {'FINISHED'}
 f = bones()["free"]
 assert f["parent"] == "" and close(f["head"], bones()[name]["tail"]), "cleared, it stays where it is"
 
@@ -125,7 +125,7 @@ assert bones()[child["name"]]["select_head"]
 
 # --- Away from frame 0, G on a tip only turns the bone toward it (length isn't animated) ------------
 before = bones()
-assert sky.ops.armature.select_none() == {'FINISHED'}
+assert oanim.ops.armature.select_none() == {'FINISHED'}
 rig.select_bone(name, part="TAIL")
 doc.frame_current = 12
 assert rig.move_bone_ends((0.75, -0.75))
@@ -137,8 +137,8 @@ assert close(bones()[name]["tail"], before[name]["tail"]), "the setup frame is u
 
 # --- Rig edits only on the setup frame --------------------------------------------------------------
 doc.frame_current = 10
-assert sky.ops.armature.extrude() == {'CANCELLED'}
-assert sky.ops.armature.bone_primitive_add() == {'CANCELLED'}
+assert oanim.ops.armature.extrude() == {'CANCELLED'}
+assert oanim.ops.armature.bone_primitive_add() == {'CANCELLED'}
 doc.frame_current = 0
 
 # --- S on a parent and child together grows both by the same amount ---------------------------------
@@ -227,8 +227,8 @@ assert wm.event_simulate("R", alt=True, area="Viewport")
 doc.frame_current = 0
 
 # --- X mirror editing: the other side (_L / _R) follows -----------------------------------------------
-sky.ops.armature.bone_add(name="arm_L", head_x="1", head_y="1", tail_x="1.5", tail_y="1", parent="")
-sky.ops.armature.bone_add(name="arm_R", head_x="-1", head_y="1", tail_x="-1.5", tail_y="1", parent="")
+oanim.ops.armature.bone_add(name="arm_L", head_x="1", head_y="1", tail_x="1.5", tail_y="1", parent="")
+oanim.ops.armature.bone_add(name="arm_R", head_x="-1", head_y="1", tail_x="-1.5", tail_y="1", parent="")
 wm.set_mirror_editing(x=True)
 rig.select_bone("arm_L")
 assert rig.move_bone_ends((0.25, 0.5))
@@ -246,7 +246,7 @@ doc.frame_current = 0
 
 # Extrude grows both sides, with matching names; the move mirrors the new tip.
 rig.select_bone("arm_L", part="TAIL")
-assert sky.ops.armature.extrude() == {'FINISHED'}
+assert oanim.ops.armature.extrude() == {'FINISHED'}
 assert "arm_L.001" in bones() and "arm_R.001" in bones()
 assert bones()["arm_R.001"]["parent"] == "arm_R" and bones()["arm_R.001"]["connected"]
 assert rig.move_bone_ends((0.5, 0.0))
@@ -256,7 +256,7 @@ assert close(r["tail"], (-l["tail"][0], l["tail"][1])), (l, r)
 # Subdivide splits both sides into connected halves; the child moves to the last piece.
 rig.select_bone("arm_L")
 before = bones()
-assert sky.ops.armature.subdivide() == {'FINISHED'}
+assert oanim.ops.armature.subdivide() == {'FINISHED'}
 after = bones()
 assert len(after) == len(before) + 2
 assert abs(after["arm_L"]["length"] - before["arm_L"]["length"] / 2) < 1e-4
@@ -267,15 +267,15 @@ assert after["arm_L.001"]["parent"] == piece["name"] and close(after["arm_L.001"
 
 # Delete takes the other side along.
 rig.select_bone("arm_L.001")
-assert sky.ops.armature.bone_delete() == {'FINISHED'}
+assert oanim.ops.armature.bone_delete() == {'FINISHED'}
 assert "arm_L.001" not in bones() and "arm_R.001" not in bones()
 wm.set_mirror_editing()
 
 # --- Box selection and the Transform Bones gizmo (Moho's sz_transform_bones_gizmo) ------------------
-assert sky.ops.layer.new_bone() == {'FINISHED'}
+assert oanim.ops.layer.new_bone() == {'FINISHED'}
 rig2 = layers.active
-sky.ops.armature.bone_add(name="p", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
-sky.ops.armature.bone_add(name="c", head_x="0", head_y="1", tail_x="1", tail_y="1", parent="p")
+oanim.ops.armature.bone_add(name="p", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+oanim.ops.armature.bone_add(name="c", head_x="0", head_y="1", tail_x="1", tail_y="1", parent="p")
 
 
 def bones2():
@@ -293,7 +293,7 @@ assert b["c"]["selected"] and not b["p"]["selected"] and not b["p"]["select_head
 rig2.box_select_bones((0.4, 0.9), (0.6, 1.1), whole=True, deselect=True)
 assert not bones2()["c"]["selected"]
 
-assert sky.ops.wm.tool_transform_bones() == {'FINISHED'}
+assert oanim.ops.wm.tool_transform_bones() == {'FINISHED'}
 rig2.select_bone("p")
 assert rig2.selected_bone_bounds is not None
 # Moving a bone leaves its unselected child where it was.
@@ -318,26 +318,26 @@ assert close(b["p"]["tail"], (1, 1)) and abs(b["p"]["length"] - 2.0) < 1e-4 and 
 assert close(b["c"]["head"], (0, 1)) and close(b["c"]["tail"], (1, 1)), b["c"]
 doc.frame_current = 0
 assert close(bones2()["p"]["tail"], (1, 2)), "the setup pose is untouched"
-sky.ops.wm.tool_select()
+oanim.ops.wm.tool_select()
 layers.active = rig
 
 # --- Connected is saved -------------------------------------------------------------------------------
 rig_name = rig.name
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_bones_")) / "bones.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.name == rig_name)
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_bones_")) / "bones.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.name == rig_name)
 assert bones()[child["name"]]["connected"] and not bones()["free"]["connected"]
 
 # --- Frame 0 edits the rig as Blender's edit mode: only what is picked moves ---------------------------
 # A parent, a child hanging from it (not connected), a connected child, and a pin under the parent.
-doc = sky.data.document
+doc = oanim.data.document
 doc.frame_current = 0
-sky.ops.layer.new_bone()
-rig = sky.data.layers.active
-sky.ops.armature.bone_add(name="up", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
-sky.ops.armature.bone_add(name="loose", head_x="1", head_y="1", tail_x="2", tail_y="1", parent="up")
-sky.ops.armature.bone_add(name="pinned", head_x="-1", head_y="0.5", tail_x="-0.9", tail_y="0.5", parent="up")
+oanim.ops.layer.new_bone()
+rig = oanim.data.layers.active
+oanim.ops.armature.bone_add(name="up", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+oanim.ops.armature.bone_add(name="loose", head_x="1", head_y="1", tail_x="2", tail_y="1", parent="up")
+oanim.ops.armature.bone_add(name="pinned", head_x="-1", head_y="0.5", tail_x="-0.9", tail_y="0.5", parent="up")
 rig.bone_set("pinned", length=0.0)  # a pin: no length
 rig.select_bone("up", part="TAIL")
 assert wm.event_simulate("E", area="Viewport")

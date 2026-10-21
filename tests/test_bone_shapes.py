@@ -2,24 +2,24 @@
 and a Bone Color (Blender's Default Colors, its 15 theme sets, or a Custom set of three shades). Both
 only change how the viewport draws the bone, and both are saved.
 
-Run with:  SkyAnimate --background --python tests/test_bone_shapes.py
+Run with:  OpenAnimate --background --python tests/test_bone_shapes.py
 """
 
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
+doc = oanim.data.document
 doc.frame_current = 0
-sky.ops.layer.new()
-teeth = sky.data.layers.active
+oanim.ops.layer.new()
+teeth = oanim.data.layers.active
 teeth.name = "top teeth"
 teeth.add_curve([(0.0, 1.0), (1.0, 1.0), (1.0, 1.2), (0.0, 1.2)], closed=True, fill=True)
-sky.ops.layer.new_bone()
-rig = sky.data.layers.active
-sky.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
-sky.ops.armature.bone_add(name="pin", head_x="2", head_y="0", tail_x="2.1", tail_y="0", parent="")
+oanim.ops.layer.new_bone()
+rig = oanim.data.layers.active
+oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+oanim.ops.armature.bone_add(name="pin", head_x="2", head_y="0", tail_x="2.1", tail_y="0", parent="")
 
 
 def bone(name):
@@ -69,29 +69,29 @@ except ValueError:
     pass
 
 # Copy Bone Color to Selected: the active bone's colours go to the other selected bones.
-sky.ops.armature.select_none()
+oanim.ops.armature.select_none()
 rig.select_bone("pin")
 rig.select_bone("arm", extend=True)  # active
-assert sky.ops.armature.copy_bone_color_to_selected() == {'FINISHED'}
+assert oanim.ops.armature.copy_bone_color_to_selected() == {'FINISHED'}
 assert bone("pin")["color_set"] == "CUSTOM" and bone("pin")["colors"] == bone("arm")["colors"]
-sky.ops.armature.select_none()
+oanim.ops.armature.select_none()
 rig.select_bone("arm")
-assert sky.ops.armature.copy_bone_color_to_selected() == {'CANCELLED'}, "no other bone selected"
+assert oanim.ops.armature.copy_bone_color_to_selected() == {'CANCELLED'}, "no other bone selected"
 
 # --- Saved and opened again ----------------------------------------------------------------------
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_shapes_")) / "shapes.sky")
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_shapes_")) / "shapes.oanim")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 assert bone("pin")["shape"] == "PIN" and abs(bone("pin")["pin_size"] - 1.5) < 1e-6
 assert bone("arm")["shape"] == "CUSTOM" and bone("arm")["shape_layer"] == "top teeth"
 assert bone("arm")["color_set"] == "CUSTOM"
 assert all(abs(a - b) < 1e-4 for a, b in zip(bone("arm")["colors"][2], (0.7, 0.8, 0.9)))
 
 # The shape's layer gone: the bone keeps the setting but has no layer to draw.
-teeth = next(l for l in sky.data.layers if l.name == "top teeth")
-sky.data.layers.active = teeth
-assert sky.ops.layer.delete() == {'FINISHED'}
+teeth = next(l for l in oanim.data.layers if l.name == "top teeth")
+oanim.data.layers.active = teeth
+assert oanim.ops.layer.delete() == {'FINISHED'}
 assert bone("arm")["shape"] == "CUSTOM" and bone("arm")["shape_layer"] == ""
 
 print("Bone shape tests passed")

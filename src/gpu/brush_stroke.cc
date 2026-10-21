@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace sky {
+namespace oanim {
 
 /* A runaway stroke (a huge line at a tiny spacing) stops here rather than stall the app. */
 static constexpr int MAX_DABS = 100000;
@@ -322,4 +322,4 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

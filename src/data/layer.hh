@@ -21,7 +21,7 @@
 #include "data/vector.hh"
 #include "rna/rna.hh"
 
-namespace sky {
+namespace oanim {
 
 /* --- Reference layers ------------------------------------------------------------------------
  * A reference shows its original's drawing as it is now, with its own changes on top, each kept
@@ -495,4 +495,4 @@ const char *layer_type_name(LayerType type);
 /* Colour of a label in the Layers editor, 0 alpha for None. */
 Color label_color_value(LabelColor label);
 
-}  // namespace sky
+}  // namespace oanim

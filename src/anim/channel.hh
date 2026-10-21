@@ -15,7 +15,7 @@
 
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Moho's interpolation modes (MOHO.INTERP_*), plus Blender's Back easing. */
 enum class Interp : uint8_t {
@@ -194,4 +194,4 @@ void stepped_preview_set(bool on);
  * draw it (Smooth as between two flat keys; Noisy without its jitter). */
 float interp_curve(const KeySettings &s, float t);
 
-}  // namespace sky
+}  // namespace oanim

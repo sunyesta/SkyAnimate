@@ -1,16 +1,16 @@
-"""SkyAnimate's Python API, shaped like Blender's bpy.
+"""Open Animate's Python API, shaped like Blender's bpy.
 
-sky.context   the current context: the document and the editor under the mouse
-sky.data      the open document: sky.data.document, sky.data.layers, sky.data.texts, sky.data.filepath
-sky.assets    the asset library: sky.assets.library, sky.assets.brushes()
-sky.ops       run operators by name: sky.ops.ed.undo()
-sky.types     base classes to subclass: sky.types.Operator
-sky.utils     register_class() and unregister_class()
-sky.keymap    bind keys to operators
-sky.wm        window-manager helpers, such as simulating key presses in tests
+oanim.context   the current context: the document and the editor under the mouse
+oanim.data      the open document: oanim.data.document, oanim.data.layers, oanim.data.texts, oanim.data.filepath
+oanim.assets    the asset library: oanim.assets.library, oanim.assets.brushes()
+oanim.ops       run operators by name: oanim.ops.ed.undo()
+oanim.types     base classes to subclass: oanim.types.Operator
+oanim.utils     register_class() and unregister_class()
+oanim.keymap    bind keys to operators
+oanim.wm        window-manager helpers, such as simulating key presses in tests
 """
 
-import _sky
+import _oanim
 
 from . import keymap, ops, types, utils, wm
 
@@ -29,58 +29,58 @@ class _Text:
 
     @property
     def body(self):
-        return _sky.text_body(self._name)
+        return _oanim.text_body(self._name)
 
     @body.setter
     def body(self, value):
-        _sky.text_set_body(self._name, value)
+        _oanim.text_set_body(self._name, value)
 
     @property
     def filepath(self):
-        return _sky.text_filepath(self._name)
+        return _oanim.text_filepath(self._name)
 
     def __eq__(self, other):
         return isinstance(other, _Text) and other._name == self._name
 
     def __repr__(self):
-        return f"sky.data.texts[{self._name!r}]"
+        return f"oanim.data.texts[{self._name!r}]"
 
 
 class _Texts:
     """The document's text blocks, like bpy.data.texts."""
 
     def new(self, name="Text"):
-        return _Text(_sky.text_new(name))
+        return _Text(_oanim.text_new(name))
 
     def remove(self, text):
-        _sky.text_remove(text.name)
+        _oanim.text_remove(text.name)
 
     def keys(self):
-        return _sky.text_names()
+        return _oanim.text_names()
 
     def __getitem__(self, name):
-        if name not in _sky.text_names():
+        if name not in _oanim.text_names():
             raise KeyError(name)
         return _Text(name)
 
     def __contains__(self, name):
-        return name in _sky.text_names()
+        return name in _oanim.text_names()
 
     def __iter__(self):
-        return iter([_Text(name) for name in _sky.text_names()])
+        return iter([_Text(name) for name in _oanim.text_names()])
 
     def __len__(self):
-        return len(_sky.text_names())
+        return len(_oanim.text_names())
 
     @property
     def active(self):
         """The text shown in the text editor, or None."""
-        name = _sky.text_active()
+        name = _oanim.text_active()
         return _Text(name) if name else None
 
     @active.setter
     def active(self, text):
-        _sky.text_set_active(text.name if text else "")
+        _oanim.text_set_active(text.name if text else "")
 
 
 class _Layer:
@@ -96,142 +96,142 @@ class _Layer:
 
     @property
     def children(self):
-        return [_Layer(i) for i in _sky.layer_children(self._id)]
+        return [_Layer(i) for i in _oanim.layer_children(self._id)]
 
     @property
     def parent(self):
-        parent = _sky.layer_parent(self._id)
+        parent = _oanim.layer_parent(self._id)
         return _Layer(parent) if parent else None
 
     @property
     def reference_source(self):
         """The layer this reference shows, or None."""
-        source = _sky.layer_reference_source(self._id)
+        source = _oanim.layer_reference_source(self._id)
         return _Layer(source) if source else None
 
     @property
     def selected(self):
         """Picked in the Layers editor (with the active layer, the layers edited together)."""
-        return _sky.layer_is_selected(self._id)
+        return _oanim.layer_is_selected(self._id)
 
     @selected.setter
     def selected(self, value):
-        _sky.layer_set_selected(self._id, bool(value))
+        _oanim.layer_set_selected(self._id, bool(value))
 
     @property
     def points(self):
         """[(x, y, selected), ...] for the drawing the layer shows."""
-        return _sky.layer_points(self._id)
+        return _oanim.layer_points(self._id)
 
     @property
     def radii(self):
         """Each point's stroke radius, 0-1, as a fraction of its shape's line width."""
-        return _sky.layer_radii(self._id)
+        return _oanim.layer_radii(self._id)
 
     @property
     def mean_radius(self):
         """Mean radius of the selected points (None if none are selected). Setting it moves each
         selected point's radius by the same amount, like Blender's Mean Radius field."""
-        return _sky.layer_mean_radius(self._id)
+        return _oanim.layer_mean_radius(self._id)
 
     @mean_radius.setter
     def mean_radius(self, value):
-        _sky.layer_set_mean_radius(self._id, value)
+        _oanim.layer_set_mean_radius(self._id, value)
 
     @property
     def mean_position(self):
         """Average position of the selected points (None if none); setting it moves them all."""
-        p = _sky.layer_mean_position(self._id, -1)
+        p = _oanim.layer_mean_position(self._id, -1)
         return tuple(p) if p is not None else None
 
     @mean_position.setter
     def mean_position(self, value):
-        _sky.layer_set_mean_position(self._id, -1, tuple(value))
+        _oanim.layer_set_mean_position(self._id, -1, tuple(value))
 
     def shape_position(self, index):
         """The middle of shape `index`'s points (the Shape panel's Position)."""
-        p = _sky.layer_mean_position(self._id, index)
+        p = _oanim.layer_mean_position(self._id, index)
         return tuple(p) if p is not None else None
 
     def set_shape_position(self, index, value):
         """Move shape `index` so the middle of its points is at `value`."""
-        _sky.layer_set_mean_position(self._id, index, tuple(value))
+        _oanim.layer_set_mean_position(self._id, index, tuple(value))
 
     @property
     def shapes(self):
         """[(name, [curve indices]), ...] in stacking order, bottom first."""
-        return [(name, list(curves)) for name, curves in _sky.layer_shapes(self._id)]
+        return [(name, list(curves)) for name, curves in _oanim.layer_shapes(self._id)]
 
     @property
     def point_count(self):
-        return _sky.layer_counts(self._id)[0]
+        return _oanim.layer_counts(self._id)[0]
 
     @property
     def curve_count(self):
-        return _sky.layer_counts(self._id)[1]
+        return _oanim.layer_counts(self._id)[1]
 
     @property
     def shape_count(self):
-        return _sky.layer_counts(self._id)[2]
+        return _oanim.layer_counts(self._id)[2]
 
     def add_curve(self, points, closed=False, fill=False):
         """Add a curve through points [(x, y), ...] with an outline shape (and a fill if closed and fill)."""
-        return _sky.layer_add_curve(self._id, points, closed, fill)
+        return _oanim.layer_add_curve(self._id, points, closed, fill)
 
     def add_primitive(self, kind, points, fill=False):
         """Add a box or circle as the Shape tool draws them: kind "BOX" or "CIRCLE", points = the
         drag's two corners. The new points become the selection. False if too small to draw."""
-        return _sky.layer_add_primitive(self._id, kind, points, fill)
+        return _oanim.layer_add_primitive(self._id, kind, points, fill)
 
     @property
     def detail(self):
         """Detail levels: {"levels": each point's level (0: its own points, 1 and up: detail the
         knife added), "hidden": each point hidden at its shape's level, "shape_levels": each shape's
         edit level, "shape_max_levels": each shape's highest detail level}."""
-        return dict(_sky.layer_detail(self._id))
+        return dict(_oanim.layer_detail(self._id))
 
     def shape_outline(self, index, steps=16):
         """(points, closed): shape `index`'s outline as drawn, `steps` samples per curve segment."""
-        points, closed = _sky.layer_shape_outline(self._id, index, steps)
+        points, closed = _oanim.layer_shape_outline(self._id, index, steps)
         return list(points), closed
 
     @property
     def masks(self):
         """Its masks: [{"outside", "layers" (names), "enabled" (in the viewport), "render",
         "expand", "fills_only", "filled", "extend"}]. It shows only inside (or outside) any of a mask's layers, where
-        every mask that's on holds. Change them with sky.ops.mask.add / set / remove / move /
+        every mask that's on holds. Change them with oanim.ops.mask.add / set / remove / move /
         with_layer_below."""
-        return [dict(m) for m in _sky.layer_masks(self._id)]
+        return [dict(m) for m in _oanim.layer_masks(self._id)]
 
     @property
     def masking(self):
         """The names of the layers whose masks name this one."""
-        return list(_sky.layer_masking(self._id))
+        return list(_oanim.layer_masking(self._id))
 
     @property
     def draw_order(self):
         """Its Draw Order now: ("NORMAL", ""), ("FRONT", name of the layer it's drawn in front of) or
-        ("BEHIND", name). Set it with sky.ops.layer.draw_order_set (keyed on frames other than 0)."""
-        return tuple(_sky.layer_draw_order(self._id))
+        ("BEHIND", name). Set it with oanim.ops.layer.draw_order_set (keyed on frames other than 0)."""
+        return tuple(_oanim.layer_draw_order(self._id))
 
     @property
     def hidden_edges(self):
         """[(curve, segment), ...] whose outline is hidden, as with Moho's Hide Edge."""
-        return [tuple(e) for e in _sky.layer_hidden_edges(self._id)]
+        return [tuple(e) for e in _oanim.layer_hidden_edges(self._id)]
 
     def set_selected_edges_visible(self, visible):
         """Show or hide the outline along the selected edges (both points selected), like the
         Drawing tab's Edge > Visible. Returns how many edges changed."""
-        return _sky.layer_set_selected_edges_visible(self._id, visible)
+        return _oanim.layer_set_selected_edges_visible(self._id, visible)
 
     @property
     def corners(self):
         """Each point's corner type, "ROUND" or "SHARP": how strokes turn and end there."""
-        return _sky.layer_corners(self._id)
+        return _oanim.layer_corners(self._id)
 
     def set_selected_corner(self, corner):
         """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
-        _sky.layer_set_selected_corner(self._id, corner)
+        _oanim.layer_set_selected_corner(self._id, corner)
 
     @property
     def bones(self):
@@ -240,13 +240,13 @@ class _Layer:
         scale, strength, selected, select_head, select_tail, connected, shape, pin_size, shape_layer,
         color_set, colors (its regular, selected and active shades), active, and head and tail (where it runs now, in the bone
         layer's space)."""
-        return _sky.layer_bones(self._id, False)
+        return _oanim.layer_bones(self._id, False)
 
     @property
     def bones_keyed(self):
         """As bones, with head and tail where the keys put them, without bone dynamics (what
         editing works from, and the viewport draws with Physics Ghosts on)."""
-        return _sky.layer_bones(self._id, True)
+        return _oanim.layer_bones(self._id, True)
 
     def bone_set(self, name, **values):
         """Pose or edit a bone: position=(x, y), angle, scale=(x, y) (x across the bone, y along
@@ -254,12 +254,12 @@ class _Layer:
         "PIN" or "CUSTOM", while the viewport shows custom bone shapes), pin_size, shape_layer (a
         vector layer's name, "" for none), color_set ("DEFAULT", "THEME01" to "THEME15" or
         "CUSTOM") and custom_colors (three (r, g, b): regular, selected, active; makes it Custom)."""
-        _sky.layer_bone_set(self._id, name, values)
+        _oanim.layer_bone_set(self._id, name, values)
 
     def select_bone(self, name, extend=False, part="BONE"):
         """Select bone `name` and make it active ("" deselects all). part: "BONE" (the body and
         both ends), "HEAD" or "TAIL" (one end, as clicking its circle does)."""
-        _sky.layer_select_bone(self._id, name, extend, part)
+        _oanim.layer_select_bone(self._id, name, extend, part)
 
     def transform_bones(self, offset=(0.0, 0.0), scale=(1.0, 1.0), angle=0.0, pivot=None):
         """The Transform Bones gizmo: scale and turn the selected bones about pivot (default: the
@@ -269,24 +269,24 @@ class _Layer:
             if bounds is None:
                 return False
             pivot = ((bounds[0][0] + bounds[1][0]) / 2, (bounds[0][1] + bounds[1][1]) / 2)
-        return _sky.layer_map_bones(self._id, offset[0], offset[1], scale[0], scale[1], angle, pivot[0], pivot[1])
+        return _oanim.layer_map_bones(self._id, offset[0], offset[1], scale[0], scale[1], angle, pivot[0], pivot[1])
 
     @property
     def selected_bone_bounds(self):
         """((min x, min y), (max x, max y)) around the selected bones' ends, or None."""
-        return _sky.layer_picked_bounds(self._id)
+        return _oanim.layer_picked_bounds(self._id)
 
     def box_select_bones(self, corner_a, corner_b, whole=False, extend=False, deselect=False):
         """Box-select bones (bone layer space). whole=False picks the ends inside, as the Select
         tool does; whole=True picks any bone touching the box, as the Transform Bones tool does."""
-        _sky.layer_box_select_bones(self._id, corner_a[0], corner_a[1], corner_b[0], corner_b[1], whole, extend,
+        _oanim.layer_box_select_bones(self._id, corner_a[0], corner_a[1], corner_b[0], corner_b[1], whole, extend,
                                     deselect)
 
     def bone_constraints(self, bone):
         """The constraints of bone `bone`, top first: dicts with type (LIMIT_ANGLE, INDEPENDENT_ANGLE,
         MAINTAIN_VOLUME, COPY_ANGLE, COPY_POSITION, COPY_SCALE, TRACK_TO, STRETCH_TO, IK, DYNAMICS)
         and settings (angles in radians, target as a bone name)."""
-        return list(_sky.layer_bone_constraints(self._id, bone))
+        return list(_oanim.layer_bone_constraints(self._id, bone))
 
     def bone_constraint_set(self, bone, index, **values):
         """Change constraint `index` of bone `bone`: enabled, influence, min_angle, max_angle,
@@ -296,40 +296,40 @@ class _Layer:
         scale_spring (dicts of enabled, settle_speed, bounce, inertia, stretch, use_limit
         and limit: radians for angle_spring, bone layer units for position_spring, a fraction of
         the size for scale_spring)."""
-        _sky.layer_bone_constraint_set(self._id, bone, index, values)
+        _oanim.layer_bone_constraint_set(self._id, bone, index, values)
 
     def rotate_bones(self, angle):
         """R on the selected bones by angle (radians), each about its base; children come along.
         A picked child of a picked parent doesn't turn twice."""
-        return _sky.layer_rotate_bones(self._id, angle)
+        return _oanim.layer_rotate_bones(self._id, angle)
 
     def scale_bones(self, factor, axis="", squash=False):
         """S on the selected bones, children along with them (once). On frame 0 it changes their
         size (lengths and places, about the middle of their bases). Posing, it scales each along
         its own axes: axis "" both, "X" across (thickness), "Y" along (length); squash=True is
         S S, longer and thinner (or shorter and fatter), keeping their area."""
-        return _sky.layer_scale_bones(self._id, factor, {"": 0, "X": 1, "Y": 2}[axis.upper()], squash)
+        return _oanim.layer_scale_bones(self._id, factor, {"": 0, "X": 1, "Y": 2}[axis.upper()], squash)
 
     def move_bone_ends(self, offset):
         """G on the selected bones by offset=(dx, dy): a bone picked by its body or base moves,
         one picked by its tip turns to follow it (and on frame 0 stretches). Children come along.
         Returns False when nothing is selected."""
-        return _sky.layer_move_bone_ends(self._id, offset[0], offset[1])
+        return _oanim.layer_move_bone_ends(self._id, offset[0], offset[1])
 
     def drag_bone_ends(self, offsets):
         """One G drag through each (dx, dy) in offsets in turn, every one measured from the
         drag's start, as dragging in the viewport does. Returns False when nothing is selected."""
-        return _sky.layer_drag_bone_ends(self._id, [(float(x), float(y)) for x, y in offsets])
+        return _oanim.layer_drag_bone_ends(self._id, [(float(x), float(y)) for x, y in offsets])
 
     @property
     def point_bones(self):
         """The bone that moves each point most, "" when none does."""
-        return list(_sky.layer_point_bones(self._id))
+        return list(_oanim.layer_point_bones(self._id))
 
     @property
     def parent_bone(self):
         """The bone this whole layer follows (Parent to Bone), or ""."""
-        return _sky.layer_parent_bone(self._id)
+        return _oanim.layer_parent_bone(self._id)
 
     @property
     def bone_collections(self):
@@ -338,42 +338,42 @@ class _Layer:
         solo (the star), shown, active, fixed, bones and layers (the drawings in it). Change them with the
         armature.collection_* operators (add, remove, move, assign, unassign, select, deselect,
         set) and armature.move_to_collection / assign_to_collection (M and Shift M)."""
-        return [dict(c) for c in _sky.layer_bone_collections(self._id)]
+        return [dict(c) for c in _oanim.layer_bone_collections(self._id)]
 
     @property
     def collections(self):
         """The bone collections this drawing is in (names, of its bone layer); layer.bone_collection_toggle
         puts it in one or takes it out."""
-        return list(_sky.layer_collections(self._id)[0])
+        return list(_oanim.layer_collections(self._id)[0])
 
     @property
     def edited_with_bones(self):
         """Whether this drawing's points are picked and moved along with its bone layer's bones now: it
         is in a bone collection that shows."""
-        return _sky.layer_collections(self._id)[1]
+        return _oanim.layer_collections(self._id)[1]
 
     def keyed_at(self, frame):
         """The paths of this layer's channels keyed at `frame`, as the timeline's Keyed Here list
         has them (Ctrl-click a key)."""
-        return list(_sky.layer_keyed_at(self._id, frame))
+        return list(_oanim.layer_keyed_at(self._id, frame))
 
     @property
     def parent_bone_group(self):
         """The group above whose Parent Bone overrides this layer's own (and its weights), or ""."""
-        return _sky.layer_parent_bone_group(self._id)
+        return _oanim.layer_parent_bone_group(self._id)
 
     def to_document(self, point):
         """Where `point` (layer space) shows in the document, bones and parents included."""
-        return _sky.layer_to_document(self._id, tuple(point))
+        return _oanim.layer_to_document(self._id, tuple(point))
 
     def bone_weights(self, bone):
         """How strongly bone `bone` moves each point, 0-1, from its weights."""
-        return list(_sky.layer_bone_weights(self._id, bone))
+        return list(_oanim.layer_bone_weights(self._id, bone))
 
     @property
     def weights(self):
         """Each point's weights, {bone name: weight} ({} when not weighted yet)."""
-        return list(_sky.layer_painted_weights(self._id))
+        return list(_oanim.layer_painted_weights(self._id))
 
     painted_weights = weights
 
@@ -382,26 +382,26 @@ class _Layer:
         """One dab of the Weight Paint brush at `center` (layer space): mode "DRAW", "ADD" or
         "SUBTRACT"; selected_only paints only selected points (Selection Mask). Returns how many
         points changed."""
-        return _sky.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize,
+        return _oanim.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize,
                                        selected_only)
 
     @property
     def modifiers(self):
         """The modifier stack, top first: dicts with type ("MIRROR" or "ARMATURE") and settings."""
-        return _sky.layer_modifiers(self._id)
+        return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):
-        _sky.layer_modifier_set(self._id, index, values)
+        _oanim.layer_modifier_set(self._id, index, values)
 
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
         shapes [(name, closed, connected)])."""
-        points, curves, shapes = _sky.layer_evaluated(self._id, render)
+        points, curves, shapes = _oanim.layer_evaluated(self._id, render)
         return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
 
     def channel_pinned(self, path):
         """Whether channel `path` is pinned to the timeline (its pin button)."""
-        return _sky.layer_channel_pinned(self._id, path)
+        return _oanim.layer_channel_pinned(self._id, path)
 
     def pin_channel(self, path, pinned=True):
         """Pin channel `path` to the timeline (or unpin it), as its pin button does."""
@@ -412,15 +412,15 @@ class _Layer:
         """The keys of channel `path` ("position", "rotation", "scale", "opacity",
         "points[3].pos", "points[3].radius", "curves[0].points[2].curvature", ...): dicts with
         "frame", "value", "interp" and the key's settings."""
-        return _sky.layer_keyframes(self._id, path)
+        return _oanim.layer_keyframes(self._id, path)
 
     def keyframe_insert(self, path="", frame=None):
         """Key channel `path` (or, with no path, every channel of the layer) at `frame` (default:
         the current frame) with its current value, like Blender's I."""
-        _sky.layer_keyframe_insert(self._id, path, -1 if frame is None else frame)
+        _oanim.layer_keyframe_insert(self._id, path, -1 if frame is None else frame)
 
     def keyframe_delete(self, path, frame):
-        return _sky.layer_keyframe_delete(self._id, path, frame)
+        return _oanim.layer_keyframe_delete(self._id, path, frame)
 
     def keyframe_set(self, path, frame, **settings):
         """Change one key: interp="LINEAR"|"SMOOTH"|"EASE_IN_OUT"|"EASE_IN"|"EASE_OUT"|"STEP"|
@@ -428,85 +428,85 @@ class _Layer:
         "QUART"|"QUINT"|"EXPO"|"CIRC" (how strongly the Ease modes slow), hold, interval,
         overshoot, elastic_amplitude, elastic_period, noise_amplitude, noise_frequency,
         cycle_back."""
-        _sky.layer_keyframe_set(self._id, path, frame, settings)
+        _oanim.layer_keyframe_set(self._id, path, frame, settings)
 
     @property
     def key_frames(self):
         """Frames where the layer or its drawing has keys."""
-        return list(_sky.layer_key_frames(self._id))
+        return list(_oanim.layer_key_frames(self._id))
 
     def curve_handles(self, curve):
         """[(alignment, (in_x, in_y), (out_x, out_y)), ...] for each point of curve `curve`:
         "ALIGNED" (its handles stay in line) or "FREE", and its handle positions in layer space."""
-        return [(t, tuple(i), tuple(o)) for t, i, o in _sky.layer_curve_handles(self._id, curve)]
+        return [(t, tuple(i), tuple(o)) for t, i, o in _oanim.layer_curve_handles(self._id, curve)]
 
     def move_handle(self, curve, index, side, pos):
         """Drag one handle ("IN" or "OUT") of a curve point to `pos`, as in the viewport: an
         aligned point's other handle turns to stay in line."""
-        _sky.layer_move_handle(self._id, curve, index, side, tuple(pos))
+        _oanim.layer_move_handle(self._id, curve, index, side, tuple(pos))
 
     def select_handle(self, curve, index, side):
-        _sky.layer_select_handle(self._id, curve, index, side)
+        _oanim.layer_select_handle(self._id, curve, index, side)
 
     def shape_brush(self, index):
         """Shape `index`'s brush settings as a dict with Moho's .mohobrush keys; "name" is ""
         for a plain line."""
-        return _sky.layer_shape_brush(self._id, index)
+        return _oanim.layer_shape_brush(self._id, index)
 
     def shape_style(self, index):
         """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden}."""
-        return dict(_sky.layer_shape_style(self._id, index))
+        return dict(_oanim.layer_shape_style(self._id, index))
 
     def set_shape_style(self, index, **values):
         """Change shape `index`'s look (fill, line, line_width, has_fill, has_outline), as the Shape
         panel does. On a reference this becomes its own look for that setting."""
-        _sky.layer_set_shape_style(self._id, index, values)
+        _oanim.layer_set_shape_style(self._id, index, values)
 
     @property
     def point_ids(self):
         """Each point's id, kept for good whatever happens to the points around it."""
-        return list(_sky.layer_point_ids(self._id))
+        return list(_oanim.layer_point_ids(self._id))
 
     @property
     def shape_ids(self):
-        return list(_sky.layer_shape_ids(self._id))
+        return list(_oanim.layer_shape_ids(self._id))
 
     @property
     def reference(self):
         """A reference's settings: {edit_points, follow_animation, match_original} (change them with
-        sky.ops.layer.reference_set)."""
-        return dict(_sky.layer_reference(self._id))
+        oanim.ops.layer.reference_set)."""
+        return dict(_oanim.layer_reference(self._id))
 
     def reference_overrides(self):
         """A reference's own changes: {"points": {point id: (dx, dy, keyed)}, "handles": {(point id,
         toward point id, "IN" or "OUT"): (dx, dy, keyed)}, "looks": {shape id: {setting: value}},
         "swaps": [(from, to, fill, line)], "weights": [point ids], "channels": [layer channels it took
         over]}."""
-        d = _sky.layer_reference_overrides(self._id)
+        d = _oanim.layer_reference_overrides(self._id)
         return {"points": dict(d["points"]), "looks": {k: dict(v) for k, v in d["looks"].items()},
                 "swaps": list(d["swaps"]), "weights": list(d["weights"]), "handles": dict(d["handles"]),
                 "channels": list(d["channels"])}
 
     def set_point(self, index, pos):
         """Move point `index` to `pos` (layer space), as dragging it in the viewport does."""
-        _sky.layer_set_point(self._id, index, tuple(pos))
+        _oanim.layer_set_point(self._id, index, tuple(pos))
 
     def split_segment(self, curve, segment, t=0.5):
         """Add a point on segment `segment` of curve `curve`, `t` along it, as the Split tool does
         (on an animated curve it takes its neighbours' motion). Returns the new point's index."""
-        return _sky.layer_split_segment(self._id, curve, segment, t)
+        return _oanim.layer_split_segment(self._id, curve, segment, t)
 
     def move_points(self, offset):
         """G on the selected points by offset=(dx, dy) (layer space), with mirror editing as in the
         viewport: each point's mirror image in the setup pose snaps to its reflection, on any frame.
         False with nothing selected."""
-        return _sky.layer_move_points(self._id, offset[0], offset[1])
+        return _oanim.layer_move_points(self._id, offset[0], offset[1])
 
     def select_points(self, indices, select=True):
-        _sky.layer_select_points(self._id, list(indices), select)
+        _oanim.layer_select_points(self._id, list(indices), select)
 
     def __getattr__(self, name):
-        return getattr(_sky.layer_pointer(self._id), name)
+        return getattr(_oanim.layer_pointer(self._id), name)
 
     def __setattr__(self, name, value):
         # Properties defined here (mean_radius) set themselves; the rest are RNA properties.
@@ -514,10 +514,10 @@ class _Layer:
         if isinstance(prop, property) and prop.fset:
             prop.fset(self, value)
             return
-        setattr(_sky.layer_pointer(self._id), name, value)
+        setattr(_oanim.layer_pointer(self._id), name, value)
 
     def __dir__(self):
-        return sorted(set(dir(_sky.layer_pointer(self._id))) | {"id", "children", "parent", "reference_source",
+        return sorted(set(dir(_oanim.layer_pointer(self._id))) | {"id", "children", "parent", "reference_source",
                                                                  "points", "radii", "mean_radius", "shapes", "point_count", "curve_count", "shape_count",
                                                                  "add_curve", "add_primitive", "shape_outline", "select_points"})
 
@@ -528,21 +528,21 @@ class _Layer:
         return hash(self._id)
 
     def __repr__(self):
-        return f"<sky Layer {self.name!r}>"
+        return f"<oanim Layer {self.name!r}>"
 
 
 class _Layers:
     """The document's layers, like Moho's layer list. Iterating gives the top level, top first."""
 
     def __iter__(self):
-        return iter([_Layer(i) for i in _sky.layer_ids()])
+        return iter([_Layer(i) for i in _oanim.layer_ids()])
 
     def __len__(self):
-        return len(_sky.layer_ids())
+        return len(_oanim.layer_ids())
 
     def __getitem__(self, key):
         if isinstance(key, int):
-            return _Layer(_sky.layer_ids()[key])
+            return _Layer(_oanim.layer_ids()[key])
         for layer in self.all():
             if layer.name == key:
                 return layer
@@ -555,19 +555,19 @@ class _Layers:
         def walk(ids):
             for i in ids:
                 result.append(_Layer(i))
-                walk(_sky.layer_children(i))
+                walk(_oanim.layer_children(i))
 
-        walk(_sky.layer_ids())
+        walk(_oanim.layer_ids())
         return result
 
     @property
     def active(self):
-        active = _sky.layer_active()
+        active = _oanim.layer_active()
         return _Layer(active) if active else None
 
     @active.setter
     def active(self, layer):
-        _sky.layer_set_active(layer.id)
+        _oanim.layer_set_active(layer.id)
 
 
 class _Camera(_Layer):
@@ -590,33 +590,33 @@ class _Camera(_Layer):
 
     @property
     def zoom(self):
-        return _sky.context().document.camera_zoom
+        return _oanim.context().document.camera_zoom
 
     @zoom.setter
     def zoom(self, value):
-        _sky.context().document.camera_zoom = value
+        _oanim.context().document.camera_zoom = value
 
     @property
     def roll(self):
-        return _sky.context().document.camera_roll
+        return _oanim.context().document.camera_roll
 
     @roll.setter
     def roll(self, value):
-        _sky.context().document.camera_roll = value
+        _oanim.context().document.camera_roll = value
 
     def to_frame(self, point):
         """Where a document point is in the camera's frame, as renders see it: the frame is
         [-aspect, aspect] x [-1, 1]."""
-        return _sky.camera_to_frame(point[0], point[1])
+        return _oanim.camera_to_frame(point[0], point[1])
 
     @property
     def passepartout(self):
         """How dark the canvas outside the frame is in the viewport, 0 to 1."""
-        return _sky.context().document.camera_passepartout
+        return _oanim.context().document.camera_passepartout
 
     @passepartout.setter
     def passepartout(self, value):
-        _sky.context().document.camera_passepartout = value
+        _oanim.context().document.camera_passepartout = value
 
 
 class _Data:
@@ -624,7 +624,7 @@ class _Data:
 
     @property
     def document(self):
-        return _sky.context().document
+        return _oanim.context().document
 
     @property
     def simulation(self):
@@ -642,17 +642,17 @@ class _Data:
     def draw_order(self):
         """The names of the drawing layers as drawn now, bottom first: the Layers editor's order
         with every layer's Draw Order rule applied (hidden layers left out)."""
-        return list(_sky.draw_order())
+        return list(_oanim.draw_order())
 
     @property
     def filepath(self):
-        """The .sky file the document was opened from or saved to; "" for a new document."""
-        return _sky.file_state()[0]
+        """The .oanim file the document was opened from or saved to; "" for a new document."""
+        return _oanim.file_state()[0]
 
     @property
     def is_dirty(self):
         """True when there are changes since the document was saved or opened."""
-        return _sky.file_state()[1]
+        return _oanim.file_state()[1]
 
     layers = _Layers()
     texts = _Texts()
@@ -667,17 +667,17 @@ class _Assets:
     @property
     def library(self):
         """The asset library folder; "" until one is chosen."""
-        return _sky.asset_library()
+        return _oanim.asset_library()
 
     def brushes(self):
         """The library's brushes, by name: dicts of their default settings plus "images", the
         number of images (more than one for a multi-brush)."""
-        return _sky.brushes()
+        return _oanim.brushes()
 
     def brush_dab_count(self, name, length, width):
         """How many dabs brush `name` lays along a straight line `length` long and `width` wide
         (document units), with its default settings."""
-        return _sky.brush_dab_count(name, length, width)
+        return _oanim.brush_dab_count(name, length, width)
 
 
 assets = _Assets()
@@ -686,5 +686,5 @@ assets = _Assets()
 def __getattr__(name):
     # The context changes as the mouse moves between editors, so it is looked up on access.
     if name == "context":
-        return _sky.context()
-    raise AttributeError(f"module 'sky' has no attribute '{name}'")
+        return _oanim.context()
+    raise AttributeError(f"module 'oanim' has no attribute '{name}'")

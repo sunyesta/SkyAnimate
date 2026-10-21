@@ -5,7 +5,7 @@
 
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 static constexpr float ZOOM_MIN = 1e-3f, ZOOM_MAX = 1e4f;
 
@@ -79,4 +79,4 @@ void camera_frame_corners(const Document &doc, float2 r_corners[4])
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

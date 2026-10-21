@@ -1,11 +1,11 @@
 #pragma once
 
 /* Remote control: lets a program on this computer (the MCP bridge in tools/mcp, so Claude can work
- * with the running app) run Python in SkyAnimate, take screenshots, read its state and press keys.
+ * with the running app) run Python in Open Animate, take screenshots, read its state and press keys.
  *
  * A thread listens on 127.0.0.1 only (never other computers), off unless turned on in
  * Preferences. Each request carries a token made afresh each time listening starts and written,
- * with the port, to %LOCALAPPDATA%/SkyAnimate/remote.json, where the bridge reads it: other
+ * with the port, to %LOCALAPPDATA%/OpenAnimate/remote.json, where the bridge reads it: other
  * programs and web pages can't know it, and a connection that doesn't open with a request (a
  * browser's HTTP request line) is closed unread. Each connection sends one JSON request per line,
  *   {"id": 1, "token": "...", "method": "run_python", "params": {"code": "..."}}
@@ -16,7 +16,7 @@
 
 #include <string>
 
-namespace sky {
+namespace oanim {
 
 struct Context;
 
@@ -39,4 +39,4 @@ void remote_capture(int width, int height);
 /* One request answered at once, JSON in and out (a screenshot can't be: there is no frame). */
 std::string remote_dispatch(Context &C, const std::string &request);
 
-}  // namespace sky
+}  // namespace oanim

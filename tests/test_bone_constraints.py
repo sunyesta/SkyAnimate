@@ -2,25 +2,25 @@
 Stretch, Copy Angle / Position / Scale with factor and delay, Track To, Stretch To, IK), never on
 the setup frame; interactive IK while posing; Dynamics simulated (and baked); all saved.
 
-Run with:  SkyAnimate --background --python tests/test_bone_constraints.py
+Run with:  OpenAnimate --background --python tests/test_bone_constraints.py
 """
 
 import math
 import pathlib
 import tempfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
+doc = oanim.data.document
+layers = oanim.data.layers
 doc.frame_current = 0
 
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
 
 
 def add(name, head, tail, parent=""):
-    assert sky.ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]),
+    assert oanim.ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]),
                                      tail_y=str(tail[1]), parent=parent) == {'FINISHED'}
 
 
@@ -39,7 +39,7 @@ def close(a, b, eps=1e-3):
 
 def constrain(bone, kind, **values):
     rig.select_bone(bone)
-    assert sky.ops.armature.constraint_add(type=kind, bone=bone) == {'FINISHED'}
+    assert oanim.ops.armature.constraint_add(type=kind, bone=bone) == {'FINISHED'}
     index = len(rig.bone_constraints(bone)) - 1
     if kind != "DYNAMICS":
         index = [c["type"] for c in rig.bone_constraints(bone)].index(kind)
@@ -159,10 +159,10 @@ constrain("tail", "DYNAMICS")
 assert rig.bone_constraints("tail")[-1]["angle_spring"]["enabled"]
 doc.frame_current = 1
 rig.bone_set("body", angle=0.0)
-assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 doc.frame_current = 4
 rig.bone_set("body", angle=1.0)
-assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 doc.frame_current = 4
 first_visit = direction(bones()["tail"])
 lag = abs(first_visit - 1.0)
@@ -252,14 +252,14 @@ rig.bone_constraint_set("tail", 0, own_forces=False, wind=0.0, wind_gusts=0.0, w
 doc.wind = 0.0
 # Gravity, the wind and the dynamics settings are animatable: keyed with their key buttons (I and
 # auto-keying leave settings alone until then), each frame simulated with its own value.
-sim = sky.data.simulation
+sim = oanim.data.simulation
 doc.frame_current = 20
 doc.gravity = 4.0
 doc.frame_current = 21
 assert sim.keyframes("gravity") == [], "editing a setting doesn't key it by itself"
 doc.frame_current = 30
 doc.gravity = 0.0
-assert sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="gravity") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="gravity") == {'FINISHED'}
 doc.frame_current = 60
 doc.gravity = 6.0  # animated now: the edit keys itself
 doc.frame_current = 45
@@ -272,7 +272,7 @@ assert direction(bones()["tail"]) < calm - 0.05, "heavier gravity later pulls it
 for f in (60, 30, 0):
     doc.frame_current = f
     if any(k["frame"] == f for k in sim.keyframes("gravity")):
-        assert sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="gravity") == {'FINISHED'}
+        assert oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="gravity") == {'FINISHED'}
 # With its keys gone it is what frame 0 had: the 4 it was set to (unkeyed) before it was keyed.
 assert sim.keyframes("gravity") == [] and doc.gravity == 4.0, (sim.keyframes("gravity"), doc.gravity)
 doc.gravity = 0.0
@@ -280,10 +280,10 @@ doc.gravity = 0.0
 rig.bone_constraint_set("tail", 0, own_forces=True)
 base = 'bones["tail"].constraints[0].'
 doc.frame_current = 30
-assert sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + "wind") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + "wind") == {'FINISHED'}
 doc.frame_current = 60
 rig.bone_constraint_set("tail", 0, wind=6.0)  # keyed by the next record (it's animated)
-assert sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + "angle_spring.settle_speed") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + "angle_spring.settle_speed") == {'FINISHED'}
 assert [k["frame"] for k in rig.keyframes(base + "wind")] == [0, 30, 60]
 assert [k["frame"] for k in rig.keyframes(base + "angle_spring.settle_speed")] == [0, 60]
 doc.frame_current = 30
@@ -294,7 +294,7 @@ for path in ("wind", "angle_spring.settle_speed"):
     for f in (60, 30, 0):
         doc.frame_current = f
         if any(k["frame"] == f for k in rig.keyframes(base + path)):
-            sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + path)
+            oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=base + path)
 assert rig.keyframes(base + "wind") == [] and rig.keyframes(base + "angle_spring.settle_speed") == []
 rig.bone_constraint_set("tail", 0, own_forces=False, wind=0.0)
 
@@ -307,7 +307,7 @@ add("streamer", (48, 0), (48, -0.4), parent="mast")
 constrain("streamer", "DYNAMICS", scale_spring={"enabled": True})
 rig.bone_constraint_set("streamer", 0, own_forces=True, wind=9.65, wind_direction=0.0)
 own_wind = 'bones["streamer"].constraints[0].wind'
-assert sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths=own_wind) == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=own_wind) == {'FINISHED'}
 doc.frame_current = 1
 rig.bone_constraint_set("streamer", 0, wind=0.0)
 doc.frame_current = 45
@@ -342,10 +342,10 @@ doc.frame_current = 0
 add("pole", (44, 0), (44, 0.3))
 add("flag", (44, 0), (44, -0.5), parent="pole")
 constrain("flag", "DYNAMICS")
-sim = sky.data.simulation
+sim = oanim.data.simulation
 doc.frame_current = 1
 doc.wind = 0.0
-assert sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind") == {'FINISHED'}
 doc.frame_current = 20
 doc.wind = 9.0
 doc.frame_current = 21
@@ -358,13 +358,13 @@ assert overshoot < math.radians(0.4), ("no jolt where the wind stops rising", ma
 for f in (20, 1, 0):
     doc.frame_current = f
     if any(k["frame"] == f for k in sim.keyframes("wind")):
-        sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind")
+        oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind")
 assert sim.keyframes("wind") == [] and doc.wind == 0.0
 # Wind already rising when the simulation starts (keyed from frame 0): the bone starts moving with
 # it, so its speed rises and eases off without a wobble catching up.
 doc.frame_current = 0
 doc.wind = 0.0
-assert sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind") == {'FINISHED'}
 doc.frame_current = 20
 doc.wind = 9.0
 doc.frame_current = 21
@@ -379,7 +379,7 @@ assert all(b <= a + 0.05 for a, b in zip(speeds[top:], speeds[top + 1:])), ("the
 for f in (20, 0):
     doc.frame_current = f
     if any(k["frame"] == f for k in sim.keyframes("wind")):
-        sky.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind")
+        oanim.ops.anim.keyframe_toggle(layer=str(sim.id), paths="wind")
 assert sim.keyframes("wind") == [] and doc.wind == 0.0
 
 # Bounce: none never swings past; more swings further. Settle Speed: lower takes longer to calm.
@@ -413,7 +413,7 @@ rig.bone_constraint_set("tail", 0, angle_spring={"bounce": 0.3})
 def key_bone(name, frame, **values):
     doc.frame_current = frame
     rig.bone_set(name, **values)
-    assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+    assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 
 
 def over(name, frames, measure):
@@ -460,7 +460,7 @@ assert max(swung) > 0.1, ("swings past the limit", max(swung))
 rig.bone_constraint_set("hair", limit, min_angle=-1.0, max_angle=-0.9)
 assert abs(over("hair", [40], direction)[0] + 1.0) < 0.02, "settles where the limit holds its aim"
 doc.frame_current = 0
-assert sky.ops.armature.constraint_remove(index=str(limit), bone="hair") == {'FINISHED'}
+assert oanim.ops.armature.constraint_remove(index=str(limit), bone="hair") == {'FINISHED'}
 
 # Stretch: moving along the bone squashes it (the tip stays behind) --------------------------------
 doc.frame_current = 0
@@ -555,7 +555,7 @@ rig.bone_constraint_set("hair", 0, own_forces=True, gravity=2.0, wind=1.0, wind_
 doc.frame_end = 30
 doc.frame_current = 4
 swung = direction(bones()["tail"])
-assert sky.ops.armature.dynamics_bake() == {'FINISHED'}
+assert oanim.ops.armature.dynamics_bake() == {'FINISHED'}
 assert not rig.bone_constraints("tail")[-1]["enabled"]
 assert 4 in [k["frame"] for k in rig.keyframes('bones["tail"].angle')]
 doc.frame_current = 4
@@ -565,38 +565,38 @@ assert abs(direction(bones()["tail"]) - swung) < 1e-3, "the keys hold the same m
 rig.select_bone("tail")
 constrain("tail", "LIMIT_ANGLE")
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["LIMIT_ANGLE", "DYNAMICS"], "added above Dynamics"
-assert sky.ops.armature.constraint_move(index="0", direction="1", bone="tail") == {'CANCELLED'}
-assert sky.ops.armature.constraint_add(type="DYNAMICS", bone="tail") == {'CANCELLED'}, "one Dynamics"
+assert oanim.ops.armature.constraint_move(index="0", direction="1", bone="tail") == {'CANCELLED'}
+assert oanim.ops.armature.constraint_add(type="DYNAMICS", bone="tail") == {'CANCELLED'}, "one Dynamics"
 constrain("tail", "COPY_SCALE")
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["LIMIT_ANGLE", "COPY_SCALE", "DYNAMICS"]
 assert rig.bone_constraints("tail")[1]["name"] == "Copy Scale", "named after its type"
 # Dragging a box: to a place in the stack, never below Dynamics.
-assert sky.ops.armature.constraint_move_to(index="1", to="0", bone="tail") == {'FINISHED'}
+assert oanim.ops.armature.constraint_move_to(index="1", to="0", bone="tail") == {'FINISHED'}
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["COPY_SCALE", "LIMIT_ANGLE", "DYNAMICS"]
-assert sky.ops.armature.constraint_move_to(index="0", to="2", bone="tail") == {'FINISHED'}
+assert oanim.ops.armature.constraint_move_to(index="0", to="2", bone="tail") == {'FINISHED'}
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["LIMIT_ANGLE", "COPY_SCALE", "DYNAMICS"]
-assert sky.ops.armature.constraint_move_to(index="2", to="0", bone="tail") == {'CANCELLED'}, "Dynamics stays put"
-assert sky.ops.armature.constraint_remove(index="0", bone="tail") == {'FINISHED'}
-assert sky.ops.armature.constraint_remove(index="0", bone="tail") == {'FINISHED'}
+assert oanim.ops.armature.constraint_move_to(index="2", to="0", bone="tail") == {'CANCELLED'}, "Dynamics stays put"
+assert oanim.ops.armature.constraint_remove(index="0", bone="tail") == {'FINISHED'}
+assert oanim.ops.armature.constraint_remove(index="0", bone="tail") == {'FINISHED'}
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["DYNAMICS"]
 
 # --- Saved ---------------------------------------------------------------------------------------------
 saved = {name: rig.bone_constraints(name) for name in ("arm", "follower", "hand", "tail", "hair")}
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="sky_constraints_")) / "constraints.sky")
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_constraints_")) / "constraints.oanim")
 doc.wind_gusts, doc.wind_gust_speed, doc.wind_turbulence = 0.3, 1.5, 0.2
 doc.frame_current = 10
-assert sky.ops.anim.keyframe_toggle(layer=str(sky.data.simulation.id), paths="wind") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(oanim.data.simulation.id), paths="wind") == {'FINISHED'}
 rig.bone_constraint_set("hair", 0, angle_spring={"bounce": 0.4})
-assert sky.ops.anim.keyframe_toggle(layer=str(rig.id), paths='bones["hair"].constraints[0].angle_spring.bounce') == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths='bones["hair"].constraints[0].angle_spring.bounce') == {'FINISHED'}
 saved = {name: rig.bone_constraints(name) for name in saved}
-saved_keys = (sky.data.simulation.keyframes("wind"), rig.keyframes('bones["hair"].constraints[0].angle_spring.bounce'))
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-d = sky.data.document
+saved_keys = (oanim.data.simulation.keyframes("wind"), rig.keyframes('bones["hair"].constraints[0].angle_spring.bounce'))
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+d = oanim.data.document
 assert close((d.wind_gusts, d.wind_gust_speed, d.wind_turbulence), (0.3, 1.5, 0.2), 1e-6), "the wind is saved"
-assert (sky.data.simulation.keyframes("wind"),
+assert (oanim.data.simulation.keyframes("wind"),
         rig.keyframes('bones["hair"].constraints[0].angle_spring.bounce')) == saved_keys, "their keys are saved"
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 def same(a, b):
     if isinstance(a, dict):
         return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
@@ -651,11 +651,11 @@ def old_scale(value):
 
 
 old_scale(data)
-old = path.replace("constraints.sky", "torque.sky")
+old = path.replace("constraints.oanim", "torque.oanim")
 with zipfile.ZipFile(old, "w") as z:
     z.writestr("document.json", json.dumps(data))
-assert sky.ops.wm.open_mainfile(filepath=old, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+assert oanim.ops.wm.open_mainfile(filepath=old, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 assert abs(rig.bone_constraints("tail")[-1]["weight"] - 2.0) < 1e-6, "Angle's Weight becomes the bone's"
 assert close(next(b for b in rig.bones if b["name"] == "tail")["scale"], (1.5, 1.5)), "one number: both ways"
 

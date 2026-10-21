@@ -18,7 +18,7 @@
 #include "gpu/scene_renderer.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 static constexpr const char *POPUP = "Brush Settings";
 static constexpr float DEG = 3.14159265f / 180.0f;
@@ -388,4 +388,4 @@ void brush_settings_draw(Context & /*C*/)
   ImGui::EndPopup();
 }
 
-}  // namespace sky
+}  // namespace oanim

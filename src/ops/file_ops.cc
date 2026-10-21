@@ -14,18 +14,20 @@
 
 #include "core/log.hh"
 #include "data/document.hh"
-#include "io/sky_file.hh"
+#include "io/oanim_file.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
 #include "wm/file_dialog.hh"
 
-namespace sky {
+namespace oanim {
 
 namespace fs = std::filesystem;
 
-static constexpr const char *FILTER_NAME = "SkyAnimate files";
-static constexpr const char *FILTER_PATTERN = "sky";
+static constexpr const char *FILTER_NAME = "Open Animate files";
+static constexpr const char *FILTER_PATTERN = "oanim";
+/* Opening also takes files saved before Open Animate was renamed from SkyAnimate (.sky). */
+static constexpr const char *OPEN_PATTERN = "oanim;sky";
 /* Blender's default autosave interval. */
 static constexpr uint64_t AUTOSAVE_INTERVAL_NS = 2ull * 60 * 1000000000;
 static constexpr size_t RECENT_FILES_MAX = 10;
@@ -62,25 +64,33 @@ static std::string path_normalize(const std::string &path)
   return path_to_utf8(p.lexically_normal().make_preferred());
 }
 
-/* Adds .sky unless the name already ends in it. */
+/* Adds .oanim unless the name already ends in it (or in .sky, the extension from before Open Animate
+ * was renamed). */
 static std::string path_with_extension(const std::string &path)
 {
   fs::path p = path_from_utf8(path);
   std::string ext = path_to_utf8(p.extension());
   std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-  return ext == ".sky" ? path : path + ".sky";
+  return ext == ".oanim" || ext == ".sky" ? path : path + ".oanim";
 }
 
 std::string user_data_dir()
 {
-  fs::path dir = fs::temp_directory_path() / "SkyAnimate";
+  fs::path base = fs::temp_directory_path();
   wchar_t *local = nullptr;
   size_t length = 0;
   if (_wdupenv_s(&local, &length, L"LOCALAPPDATA") == 0 && local) {
-    dir = fs::path(local) / "SkyAnimate";
+    base = fs::path(local);
   }
   std::free(local);
+  const fs::path dir = base / "OpenAnimate";
   std::error_code ec;
+  /* The first run after the rename from SkyAnimate brings its preferences, autosaves and crash
+   * reports along (a copy: a SkyAnimate still open keeps its own). */
+  if (const fs::path old = base / "SkyAnimate"; !fs::exists(dir, ec) && fs::is_directory(old, ec)) {
+    fs::copy(old, dir, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+    fs::remove(dir / "remote.json", ec);
+  }
   fs::create_directories(dir, ec);
   return path_to_utf8(dir);
 }
@@ -100,10 +110,10 @@ std::string autosave_dir()
 
 std::string quit_file_path()
 {
-  return path_to_utf8(path_from_utf8(user_data_dir()) / "quit.sky");
+  return path_to_utf8(path_from_utf8(user_data_dir()) / "quit.oanim");
 }
 
-/* The file open when SkyAnimate last quit, for reopening it next time. */
+/* The file open when Open Animate last quit, for reopening it next time. */
 static fs::path session_file_path()
 {
   return path_from_utf8(user_data_dir()) / "last_session.txt";
@@ -193,7 +203,7 @@ static Document document_new()
 static bool document_read(const std::string &path, Document &r_doc)
 {
   std::string error;
-  if (!sky_file_read(path, r_doc, &error)) {
+  if (!oanim_file_read(path, r_doc, &error)) {
     report(ReportType::Error, error);
     return false;
   }
@@ -220,7 +230,7 @@ static bool document_write(Context &C, const std::string &given_path, bool remem
   const std::string path = path_normalize(given_path);
   std::string error;
   animation_record(*C.document);
-  if (!sky_file_write(*C.document, path, &error)) {
+  if (!oanim_file_write(*C.document, path, &error)) {
     report(ReportType::Error, error);
     return false;
   }
@@ -235,7 +245,7 @@ static bool document_write(Context &C, const std::string &given_path, bool remem
 
 static std::string default_save_path(const Context &C)
 {
-  return C.wm->filepath.empty() ? C.document->name + ".sky" : C.wm->filepath;
+  return C.wm->filepath.empty() ? C.document->name + ".oanim" : C.wm->filepath;
 }
 
 void document_save_then(Context &C, std::function<void()> then)
@@ -283,13 +293,13 @@ static OpStatus ask_for_path(Context &C, const char *idname, bool save, const st
     file_dialog_save(FILTER_NAME, FILTER_PATTERN, default_save_path(C), std::move(done));
   }
   else {
-    file_dialog_open(FILTER_NAME, FILTER_PATTERN, std::move(done), folder);
+    file_dialog_open(FILTER_NAME, OPEN_PATTERN, std::move(done), folder);
   }
   /* Nothing happened yet; the dialog's answer runs the operator for real. */
   return OpStatus::Cancelled;
 }
 
-/* scene.sky -> scene_001.sky, scene_001.sky -> scene_002.sky, skipping files that exist. */
+/* scene.oanim -> scene_001.oanim, scene_001.oanim -> scene_002.oanim, skipping files that exist. */
 static std::string incremented_path(const std::string &path)
 {
   const fs::path p = path_from_utf8(path);
@@ -313,7 +323,7 @@ static std::string incremented_path(const std::string &path)
     if (digits.size() < width) {
       digits.insert(0, width - digits.size(), '0');
     }
-    const fs::path candidate = p.parent_path() / path_from_utf8(stem + digits + ".sky");
+    const fs::path candidate = p.parent_path() / path_from_utf8(stem + digits + ".oanim");
     if (!fs::exists(candidate)) {
       return path_to_utf8(candidate);
     }
@@ -352,7 +362,7 @@ void file_operators_register()
     return OpStatus::Finished;
   });
 
-  file_operator_add("wm.open_mainfile", "Open", "Open a .sky file", [](Context &C) {
+  file_operator_add("wm.open_mainfile", "Open", "Open a .oanim file", [](Context &C) {
     const std::string path = op_arg(C, "filepath");
     if (path.empty()) {
       return ask_for_path(C, "wm.open_mainfile", false);
@@ -393,7 +403,7 @@ void file_operators_register()
 
   file_operator_add(
       "wm.save_incremental", "Save Incremental",
-      "Save to the next numbered file (scene_001.sky, scene_002.sky, ...) and keep working there",
+      "Save to the next numbered file (scene_001.oanim, scene_002.oanim, ...) and keep working there",
       [](Context &C) {
         return document_write(C, incremented_path(C.wm->filepath), true) ? OpStatus::Finished : OpStatus::Cancelled;
       },
@@ -410,7 +420,7 @@ void file_operators_register()
       has_filepath);
 
   file_operator_add(
-      "wm.recover_last_session", "Recover Last Session", "Open the document as it was when SkyAnimate last quit",
+      "wm.recover_last_session", "Recover Last Session", "Open the document as it was when Open Animate last quit",
       [](Context &C) {
         if (confirm_unsaved(C, "wm.recover_last_session")) {
           return OpStatus::Cancelled;
@@ -449,7 +459,7 @@ void file_operators_register()
   OperatorType quit;
   quit.idname = "wm.quit";
   quit.name = "Quit";
-  quit.description = "Quit SkyAnimate";
+  quit.description = "Quit Open Animate";
   quit.exec = [](Context &C) {
     if (confirm_unsaved(C, "wm.quit")) {
       return OpStatus::Cancelled;
@@ -467,11 +477,11 @@ void file_operators_register()
 static fs::path g_autosave_path;
 static uint64_t g_autosave_last_ns = 0;
 
-/* walk_12345_autosave.sky: the process id keeps two running copies apart. */
+/* walk_12345_autosave.oanim: the process id keeps two running copies apart. */
 static fs::path autosave_path_for(const Context &C)
 {
   const std::string stem = C.wm->filepath.empty() ? "untitled" : path_to_utf8(path_from_utf8(C.wm->filepath).stem());
-  return path_from_utf8(autosave_dir()) / path_from_utf8(stem + "_" + std::to_string(_getpid()) + "_autosave.sky");
+  return path_from_utf8(autosave_dir()) / path_from_utf8(stem + "_" + std::to_string(_getpid()) + "_autosave.oanim");
 }
 
 void autosave_update(Context &C, uint64_t now_ns)
@@ -488,7 +498,7 @@ void autosave_update(Context &C, uint64_t now_ns)
   }
   const fs::path path = autosave_path_for(C);
   std::string error;
-  if (!sky_file_write(*C.document, path_to_utf8(path), &error)) {
+  if (!oanim_file_write(*C.document, path_to_utf8(path), &error)) {
     report(ReportType::Warning, "Autosave failed: " + error);
     return;
   }
@@ -510,8 +520,8 @@ void autosave_quit(Context &C)
     out << C.wm->filepath;
   }
   std::string error;
-  if (!sky_file_write(*C.document, quit_file_path(), &error)) {
-    report(ReportType::Warning, "Could not write quit.sky: " + error);
+  if (!oanim_file_write(*C.document, quit_file_path(), &error)) {
+    report(ReportType::Warning, "Could not write quit.oanim: " + error);
   }
   std::error_code ec;
   if (!g_autosave_path.empty()) {
@@ -524,7 +534,7 @@ std::vector<RecoverableFile> autosave_files()
   std::vector<std::pair<fs::file_time_type, RecoverableFile>> found;
   std::error_code ec;
   for (const fs::directory_entry &entry : fs::directory_iterator(path_from_utf8(autosave_dir()), ec)) {
-    if (entry.path().extension() != ".sky") {
+    if (entry.path().extension() != ".oanim" && entry.path().extension() != ".sky") {
       continue;
     }
     found.push_back({entry.last_write_time(ec),
@@ -556,4 +566,4 @@ bool session_reopen(Context &C)
   return document_open(C, path);
 }
 
-}  // namespace sky
+}  // namespace oanim

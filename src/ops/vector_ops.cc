@@ -15,7 +15,7 @@
 #include "ops/undo.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
 {
@@ -586,7 +586,7 @@ void vector_operators_register()
   tool_op("wm.tool_select", "Select Box Tool", Tool::Select);
   tool_op("wm.tool_cursor", "Cursor Tool", Tool::Cursor);
   {
-    /* sky.ops.wm.tool_draw(mode="PEN"): the Draw tool, optionally picking freehand or the pen. */
+    /* oanim.ops.wm.tool_draw(mode="PEN"): the Draw tool, optionally picking freehand or the pen. */
     OperatorType ot;
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
@@ -615,7 +615,7 @@ void vector_operators_register()
   tool_op("wm.tool_transform_bones", "Transform Bones Tool", Tool::TransformBones);
   tool_op("wm.tool_transform_points", "Transform Points Tool", Tool::TransformPoints);
   {
-    /* sky.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
+    /* oanim.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
     OperatorType ot;
     ot.idname = "wm.tool_shape";
     ot.name = "Shape Tool";
@@ -865,4 +865,4 @@ void vector_operators_register()
                   });
 }
 
-}  // namespace sky
+}  // namespace oanim

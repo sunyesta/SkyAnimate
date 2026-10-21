@@ -10,13 +10,13 @@
 #include "core/math.hh"
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Document;
 class UndoStack;
 
 /* Arguments to an operator call by name, like the keyword arguments of a bpy.ops call:
- * sky.ops.wm.open_mainfile(filepath="walk.sky"). */
+ * oanim.ops.wm.open_mainfile(filepath="walk.oanim"). */
 using OpArgs = std::map<std::string, std::string>;
 
 /* Viewport tools, as on the toolbar. */
@@ -127,7 +127,7 @@ struct WindowManager {
   bool overlays_toggle_request = false;
   /* Set by screen.redo_last (F9): the ViewportActionPanel opens, or folds if open. */
   bool action_panel_toggle_request = false;
-  /* A Properties tab to show (sky.wm.properties_tab), taken by the next Properties editor drawn
+  /* A Properties tab to show (oanim.wm.properties_tab), taken by the next Properties editor drawn
    * (-1: none): 0 Document, 1 Layer, 2 Drawing or Armature, 3 Modifiers, 4 Bone Constraints, 5 Reference. */
   int properties_tab_request = -1;
   /* A property to show in the Properties editor (picked from a key in the timeline): the panel
@@ -192,7 +192,7 @@ struct WindowManager {
   /* Latest pen pressure, 0-1 (1 for a mouse). */
   float pen_pressure = 1.0f;
 
-  /* The .sky file the document was opened from or saved to; empty for a new document. */
+  /* The .oanim file the document was opened from or saved to; empty for a new document. */
   std::string filepath;
   /* UndoStack::change_count() when the document was last saved or opened, and autosaved. */
   uint64_t saved_change = 0;
@@ -231,4 +231,4 @@ bool op_arg_bool(const Context &C, const std::string &name);
 int op_arg_int(const Context &C, const std::string &name, int fallback);
 float op_arg_float(const Context &C, const std::string &name, float fallback);
 
-}  // namespace sky
+}  // namespace oanim

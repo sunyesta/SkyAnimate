@@ -2,7 +2,7 @@
 
 /* Turns key events into operator calls through the keymaps. */
 
-namespace sky {
+namespace oanim {
 
 struct Context;
 struct KeyEvent;
@@ -12,4 +12,4 @@ struct KeyEvent;
  * keys a text field uses itself. Returns true if an operator ran. */
 bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only = false);
 
-}  // namespace sky
+}  // namespace oanim

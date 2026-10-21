@@ -7,7 +7,7 @@
 
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 /* Colours are premultiplied by alpha. */
 struct Vertex {
@@ -26,4 +26,4 @@ void tessellate_stroke(const std::vector<float2> &points, const std::vector<floa
                        Color color, float aa, std::vector<Vertex> &r_out,
                        const std::vector<StrokeJoin> *joins = nullptr);
 
-}  // namespace sky
+}  // namespace oanim

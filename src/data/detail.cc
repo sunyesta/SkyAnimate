@@ -5,7 +5,7 @@
 #include <cmath>
 #include <set>
 
-namespace sky {
+namespace oanim {
 
 /* drawing_detail_edit_begin / _end pairs in progress (the inner ones do nothing), and the detail
  * module's own raw edits, which must not turn curves final. */
@@ -713,4 +713,4 @@ int drawing_detail_rebuild(VectorDrawing &drawing, const std::vector<bool> &shap
   return made;
 }
 
-}  // namespace sky
+}  // namespace oanim

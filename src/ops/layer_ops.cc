@@ -15,7 +15,7 @@
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 static bool active_layer_poll(Context &C)
 {
@@ -383,4 +383,4 @@ void layer_operators_register()
 
 }
 
-}  // namespace sky
+}  // namespace oanim

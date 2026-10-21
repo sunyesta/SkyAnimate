@@ -4,24 +4,24 @@
 
 #include "core/log.hh"
 
-namespace sky::gl {
+namespace oanim::gl {
 
-#define SKY_GL_DEFINE(type, name) type name = nullptr;
-SKY_GL_FUNCTIONS(SKY_GL_DEFINE)
-#undef SKY_GL_DEFINE
+#define OANIM_GL_DEFINE(type, name) type name = nullptr;
+OANIM_GL_FUNCTIONS(OANIM_GL_DEFINE)
+#undef OANIM_GL_DEFINE
 
 bool load()
 {
   bool ok = true;
-#define SKY_GL_LOAD(type, name) \
+#define OANIM_GL_LOAD(type, name) \
   name = reinterpret_cast<type>(SDL_GL_GetProcAddress("gl" #name)); \
   if (!name) { \
     report(ReportType::Error, "OpenGL function missing: gl" #name); \
     ok = false; \
   }
-  SKY_GL_FUNCTIONS(SKY_GL_LOAD)
-#undef SKY_GL_LOAD
+  OANIM_GL_FUNCTIONS(OANIM_GL_LOAD)
+#undef OANIM_GL_LOAD
   return ok;
 }
 
-}  // namespace sky::gl
+}  // namespace oanim::gl

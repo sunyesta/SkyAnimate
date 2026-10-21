@@ -5,7 +5,7 @@
 
 #include "data/document.hh"
 
-namespace sky {
+namespace oanim {
 
 DrawOrderRule draw_order_rule(float value)
 {
@@ -286,4 +286,4 @@ const Layer *draw_order_faded_group(const Document &doc, uint64_t layer)
   return outer;
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -2,23 +2,23 @@
 dynamic bones simulate in real time (shown only) until the frame changes; and
 posing a swung bone works from where its keys put it, so it lands where it is put.
 
-Run with:  SkyAnimate --background --python tests/test_live_dynamics.py
+Run with:  OpenAnimate --background --python tests/test_live_dynamics.py
 """
 
 import math
 
-import _sky
-import sky
+import _oanim
+import oanim
 
-doc = sky.data.document
+doc = oanim.data.document
 doc.frame_current = 0
-sky.ops.layer.new_bone()
-rig = sky.data.layers.active
+oanim.ops.layer.new_bone()
+rig = oanim.data.layers.active
 for name, head, tail, parent in (("body", (0, 0), (1, 0), ""), ("tail", (1, 0), (2, 0), "body")):
-    assert sky.ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]),
+    assert oanim.ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]),
                                      tail_y=str(tail[1]), parent=parent) == {'FINISHED'}
 rig.select_bone("tail")
-assert sky.ops.armature.constraint_add(type="DYNAMICS", bone="tail") == {'FINISHED'}
+assert oanim.ops.armature.constraint_add(type="DYNAMICS", bone="tail") == {'FINISHED'}
 
 
 def bones():
@@ -31,7 +31,7 @@ def direction(b):
 
 
 def tick():
-    running, angles = _sky.dynamics_live_tick(1 / 60)
+    running, angles = _oanim.dynamics_live_tick(1 / 60)
     return running, angles["tail"]
 
 
@@ -80,19 +80,19 @@ def slide(speed):
     """A hanging bone carried sideways at `speed` (document units a second) in a steady wind of 5
     blowing right; its angle once the slide is steady (inertia off, so only the wind bends it)."""
     doc.frame_current = 0
-    sky.ops.layer.new_bone()
-    rig = sky.data.layers.active
-    sky.ops.armature.bone_add(name="mast", head_x="0", head_y="0", tail_x="0", tail_y="0.2")
-    sky.ops.armature.bone_add(name="hair", head_x="0", head_y="0", tail_x="0", tail_y="-0.8", parent="mast")
+    oanim.ops.layer.new_bone()
+    rig = oanim.data.layers.active
+    oanim.ops.armature.bone_add(name="mast", head_x="0", head_y="0", tail_x="0", tail_y="0.2")
+    oanim.ops.armature.bone_add(name="hair", head_x="0", head_y="0", tail_x="0", tail_y="-0.8", parent="mast")
     rig.select_bone("hair")
-    sky.ops.armature.constraint_add(type="DYNAMICS", bone="hair")
+    oanim.ops.armature.constraint_add(type="DYNAMICS", bone="hair")
     rig.bone_constraint_set("hair", 0, own_forces=True, wind=5.0, wind_direction=0.0,
                             angle_spring={"inertia": 0.0})
     path = 'bones["mast"].position'
     for f in (1, 40):
         doc.frame_current = f
         rig.bone_set("mast", position=(speed * (f - 1) / doc.fps, 0.0))
-        assert sky.ops.anim.keyframe_insert() == {'FINISHED'}
+        assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
         rig.keyframe_set(path, f, interp="LINEAR")
     doc.frame_current = 30
     b = {x["name"]: x for x in rig.bones}["hair"]

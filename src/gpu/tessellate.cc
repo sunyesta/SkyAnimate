@@ -7,7 +7,7 @@
 
 #include <mapbox/earcut.hpp>
 
-namespace sky {
+namespace oanim {
 
 static Vertex make_vertex(float2 p, Color c, float alpha_scale)
 {
@@ -339,4 +339,4 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
   cap(n - 1, seg_end[segments - 1], dirs[segments - 1]);
 }
 
-}  // namespace sky
+}  // namespace oanim

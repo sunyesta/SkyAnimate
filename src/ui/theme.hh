@@ -5,7 +5,7 @@
 
 struct ImFont;
 
-namespace sky {
+namespace oanim {
 
 /* Base font size in pixels at 100% interface scale. */
 inline constexpr float UI_FONT_SIZE = 15.0f;
@@ -19,4 +19,4 @@ ImFont *theme_font_bold();
 /* Resets the ImGui style to the Blender theme at the given interface scale. */
 void theme_apply_blender(float ui_scale);
 
-}  // namespace sky
+}  // namespace oanim

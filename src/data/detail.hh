@@ -26,7 +26,7 @@
 
 #include "data/vector.hh"
 
-namespace sky {
+namespace oanim {
 
 /* The highest level any detail point of the curve has (0: none). */
 int curve_detail_max_level(const VectorDrawing &drawing, const Curve &curve);
@@ -92,4 +92,4 @@ int drawing_detail_apply(VectorDrawing &drawing, const std::vector<bool> &shapes
 int drawing_detail_rebuild(VectorDrawing &drawing, const std::vector<bool> &shapes, float tolerance,
                            bool *r_keys_dropped);
 
-}  // namespace sky
+}  // namespace oanim

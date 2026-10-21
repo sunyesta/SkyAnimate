@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 enum class ReportType { Info, Operator, Warning, Error };
 
@@ -38,4 +38,4 @@ void report_banner(ReportType type, const std::string &message, const std::strin
                    const std::string &title = "");
 const BannerReport &banner_report();
 
-}  // namespace sky
+}  // namespace oanim

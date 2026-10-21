@@ -13,9 +13,9 @@ _namespace = {"__name__": "__remote__"}
 
 
 def run(code):
-    import sky
+    import oanim
 
-    _namespace.setdefault("sky", sky)
+    _namespace.setdefault("oanim", oanim)
     output = io.StringIO()
     result = None
     error = None

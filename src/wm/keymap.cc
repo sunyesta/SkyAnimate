@@ -1,6 +1,6 @@
 #include "wm/keymap.hh"
 
-namespace sky {
+namespace oanim {
 
 KeyMaps &keymaps()
 {
@@ -73,4 +73,4 @@ std::string key_event_label(const KeyEvent &event)
   return label + event.type;
 }
 
-}  // namespace sky
+}  // namespace oanim

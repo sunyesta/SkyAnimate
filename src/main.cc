@@ -1,8 +1,8 @@
-/* SkyAnimate entry point.
+/* Open Animate entry point.
  *
- *   SkyAnimate                                   open the window
- *   SkyAnimate walk.sky                          open a file
- *   SkyAnimate --background --python script.py   run a script without a window, then exit
+ *   Open Animate                                   open the window
+ *   OpenAnimate walk.oanim                          open a file
+ *   OpenAnimate --background --python script.py   run a script without a window, then exit
  */
 
 #include <cstdio>
@@ -14,7 +14,7 @@
 
 #include "wm/app.hh"
 
-/* SkyAnimate is a windowed app, so Windows gives it no console. When output is already
+/* Open Animate is a windowed app, so Windows gives it no console. When output is already
  * redirected (ctest, pipes) the standard handles work as-is; when started from a terminal,
  * attach to that terminal so printing and --background output still appear. */
 static void console_attach_to_parent()
@@ -35,7 +35,7 @@ static void console_attach_to_parent()
 static void print_help()
 {
   std::printf(
-      "Usage: SkyAnimate [options] [file.sky]\n"
+      "Usage: OpenAnimate [options] [file.oanim]\n"
       "\n"
       "  -b, --background       Run without a window and exit when scripts finish.\n"
       "                         The exit code is 1 if any script raised an error.\n"
@@ -48,7 +48,7 @@ int main(int argc, char **argv)
 {
   console_attach_to_parent();
 
-  sky::LaunchOptions options;
+  oanim::LaunchOptions options;
   for (int i = 1; i < argc; i++) {
     const char *arg = argv[i];
     const bool has_value = i + 1 < argc;
@@ -75,6 +75,6 @@ int main(int argc, char **argv)
     }
   }
 
-  sky::App app;
+  oanim::App app;
   return app.run(options);
 }

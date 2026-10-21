@@ -6,7 +6,7 @@
 
 #include <cmath>
 
-namespace sky {
+namespace oanim {
 
 struct float2 {
   float x = 0.0f;
@@ -102,4 +102,4 @@ inline constexpr float PI = 3.14159265358979323846f;
  * points (their corner type). At a stroke's end, Round draws a round cap and Sharp a flat one. */
 enum class StrokeJoin : uint8_t { Smooth, Round, Sharp };
 
-}  // namespace sky
+}  // namespace oanim

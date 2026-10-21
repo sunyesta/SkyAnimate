@@ -1,9 +1,9 @@
 """Property access through RNA, operator calls from Python, and undo history.
 
-Run with:  SkyAnimate --background --python tests/test_rna_and_undo.py
+Run with:  OpenAnimate --background --python tests/test_rna_and_undo.py
 """
 
-import sky
+import oanim
 
 
 def expect_error(error_type, func):
@@ -14,7 +14,7 @@ def expect_error(error_type, func):
     raise AssertionError(f"expected {error_type.__name__}")
 
 
-doc = sky.data.document
+doc = oanim.data.document
 
 # --- Properties ---------------------------------------------------------------
 assert "fps" in dir(doc) and "frame_end" in dir(doc)
@@ -30,7 +30,7 @@ doc.render_quality = 32
 assert (doc.viewport_samples, doc.render_samples) == (4, 16)
 doc.render_samples = 64
 assert doc.render_samples == 16, "samples are clamped to 1-16"
-assert not sky.ops.render.render.poll(), "rendering needs the window"
+assert not oanim.ops.render.render.poll(), "rendering needs the window"
 assert doc.name == "Walk cycle"
 expect_error(TypeError, lambda: setattr(doc, "fps", "fast"))
 expect_error(TypeError, lambda: setattr(doc, "frame_end", 2.5))
@@ -39,25 +39,25 @@ expect_error(AttributeError, lambda: doc.missing)
 expect_error(AttributeError, lambda: setattr(doc, "missing", 1))
 
 # --- Operators from Python ----------------------------------------------------
-layers = sky.data.layers
+layers = oanim.data.layers
 assert len(layers) == 1 and layers[0].name == "Layer 1", "a new document has one layer"
-assert sky.ops.layer.break_reference() == {'CANCELLED'}, "unavailable when the active layer is no reference"
-assert sky.ops.layer.new() == {'FINISHED'}
+assert oanim.ops.layer.break_reference() == {'CANCELLED'}, "unavailable when the active layer is no reference"
+assert oanim.ops.layer.new() == {'FINISHED'}
 assert len(layers) == 2 and layers.active.name == "Layer 2"
-assert sky.ops.layer.make_reference.poll()
-expect_error(KeyError, lambda: sky.ops.doc.does_not_exist())
-assert "new" in dir(sky.ops.layer)
+assert oanim.ops.layer.make_reference.poll()
+expect_error(KeyError, lambda: oanim.ops.doc.does_not_exist())
+assert "new" in dir(oanim.ops.layer)
 
 # --- Undo ---------------------------------------------------------------------
-history_before = len(sky.wm.undo_history()[0])
-assert sky.ops.ed.undo() == {'FINISHED'}
+history_before = len(oanim.wm.undo_history()[0])
+assert oanim.ops.ed.undo() == {'FINISHED'}
 assert len(layers) == 1
-assert sky.ops.ed.redo() == {'FINISHED'}
+assert oanim.ops.ed.redo() == {'FINISHED'}
 assert len(layers) == 2
 
 
 # --- Broken operators cancel and leave no undo step ----------------------------
-class TEST_OT_raises(sky.types.Operator):
+class TEST_OT_raises(oanim.types.Operator):
     bl_idname = "test.raises"
     bl_label = "Raises"
     bl_options = {'UNDO'}
@@ -67,7 +67,7 @@ class TEST_OT_raises(sky.types.Operator):
         raise RuntimeError("deliberate failure")
 
 
-class TEST_OT_bad_return(sky.types.Operator):
+class TEST_OT_bad_return(oanim.types.Operator):
     bl_idname = "test.bad_return"
     bl_label = "Bad Return"
     bl_options = {'UNDO'}
@@ -76,7 +76,7 @@ class TEST_OT_bad_return(sky.types.Operator):
         return "FINISHED"
 
 
-class TEST_OT_bad_idname(sky.types.Operator):
+class TEST_OT_bad_idname(oanim.types.Operator):
     bl_idname = "Test.BadName"
     bl_label = "Bad Name"
 
@@ -85,15 +85,15 @@ class TEST_OT_bad_idname(sky.types.Operator):
 
 
 for cls in (TEST_OT_raises, TEST_OT_bad_return):
-    sky.utils.register_class(cls)
-expect_error(ValueError, lambda: sky.utils.register_class(TEST_OT_bad_idname))
+    oanim.utils.register_class(cls)
+expect_error(ValueError, lambda: oanim.utils.register_class(TEST_OT_bad_idname))
 
-assert sky.ops.test.raises() == {'CANCELLED'}
-assert sky.ops.test.bad_return() == {'CANCELLED'}
-assert len(sky.wm.undo_history()[0]) == history_before, "cancelled operators push no undo step"
+assert oanim.ops.test.raises() == {'CANCELLED'}
+assert oanim.ops.test.bad_return() == {'CANCELLED'}
+assert len(oanim.wm.undo_history()[0]) == history_before, "cancelled operators push no undo step"
 doc.frame_end = 250  # restore what test.raises changed
 
-sky.utils.unregister_class(TEST_OT_raises)
-expect_error(KeyError, lambda: sky.ops.test.raises())
+oanim.utils.unregister_class(TEST_OT_raises)
+expect_error(KeyError, lambda: oanim.ops.test.raises())
 
 print("RNA and undo tests passed")

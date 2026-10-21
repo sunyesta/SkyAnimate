@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace sky {
+namespace oanim {
 
 static std::vector<Report> g_reports;
 static constexpr size_t REPORTS_MAX = 1000;
@@ -45,4 +45,4 @@ const BannerReport &banner_report()
   return g_banner;
 }
 
-}  // namespace sky
+}  // namespace oanim

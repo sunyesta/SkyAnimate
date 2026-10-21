@@ -8,7 +8,7 @@
 #include "data/bones.hh"
 #include "data/camera.hh"
 
-namespace sky {
+namespace oanim {
 
 template<typename LayerT, typename ListT> static LayerT *find_in(ListT &list, uint64_t id)
 {
@@ -390,4 +390,4 @@ void layer_break_reference(Document &doc, uint64_t id)
   layer->reference = ReferenceSettings();
 }
 
-}  // namespace sky
+}  // namespace oanim

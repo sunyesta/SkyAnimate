@@ -11,7 +11,7 @@
 
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 enum class OpStatus { Finished, Cancelled, PassThrough };
 
@@ -90,4 +90,4 @@ const LastOperation *operator_last_redo(const Context &C);
 /* Runs it again with `args` instead: undoes its step, then runs it with them. */
 OpStatus operator_redo_last(Context &C, const OpArgs &args);
 
-}  // namespace sky
+}  // namespace oanim

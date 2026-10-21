@@ -6,7 +6,7 @@ collection holding it shows (the eye, or, while any is soloed, the star), so whi
 everything does; hiding hides bones and drawings' points and wires (their artwork still renders). M
 and Shift M move or assign the selection.
 
-Run with:  SkyAnimate --background --python tests/test_bone_collections.py
+Run with:  OpenAnimate --background --python tests/test_bone_collections.py
 """
 
 import json
@@ -14,21 +14,21 @@ import pathlib
 import tempfile
 import zipfile
 
-import sky
+import oanim
 
-doc = sky.data.document
-layers = sky.data.layers
-ops = sky.ops.armature
+doc = oanim.data.document
+layers = oanim.data.layers
+ops = oanim.ops.armature
 doc.frame_current = 0
-sky.ops.layer.new_bone()
+oanim.ops.layer.new_bone()
 rig = layers.active
 for name, x in (("jaw", 0), ("lip_L", 1), ("lip_R", 2)):
     ops.bone_add(name=name, head_x=str(x), head_y="0", tail_x=str(x), tail_y="1", parent="")
-sky.ops.layer.new()
+oanim.ops.layer.new()
 lips = layers.active
 lips.name = "lips"
 lips.add_curve([(0.0, 2.0), (1.0, 2.0)])
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 layers.active = rig
 
 
@@ -98,7 +98,7 @@ rig.select_bone("jaw")
 assert ops.move_to_collection(new="1") == {'FINISHED'}
 assert bone("jaw")["collections"] == ["Collection"] and colls()["Collection"]["active"]
 # The keys open the menus.
-assert sky.wm.event_simulate("M", area="Viewport") and sky.wm.event_simulate("M", shift=True, area="Viewport")
+assert oanim.wm.event_simulate("M", area="Viewport") and oanim.wm.event_simulate("M", shift=True, area="Viewport")
 
 # --- Showing and hiding: as in Blender, shown while any collection holding it shows ----------------------
 # lip_L: Main + Mouth; jaw: Collection; lip_R: only All; lips: Mouth.
@@ -144,7 +144,7 @@ assert not bone("lip_L")["selected"] and not any(p[2] for p in lips.points)
 assert ops.collection_select(collection="All") == {'FINISHED'}
 assert all(b["selected"] for b in rig.bones), "All: every bone"
 ops.select_none()
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 
 # --- New bones join the active collection (none for All), as in Blender ------------------------------------
 assert ops.collection_set(collection="Main", active="1") == {'FINISHED'}
@@ -163,21 +163,21 @@ assert ops.assign_to_collection(collection="Mouth") == {'FINISHED'}
 assert lips.collections == ["Main", "Mouth"]
 assert ops.collection_unassign(collection="Mouth") == {'FINISHED'}
 assert lips.collections == ["Main"]
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 
 # --- M and Shift M with a drawing active: the active and picked drawings, not the bones ---------------------
-sky.ops.layer.new()
+oanim.ops.layer.new()
 teeth = layers.active
 teeth.name = "teeth"
 teeth.add_curve([(0.0, 3.0), (1.0, 3.0)])
-sky.ops.layer.move_to_group(group=str(rig.id))
+oanim.ops.layer.move_to_group(group=str(rig.id))
 assert ops.move_to_collection(collection="Mouth") == {'CANCELLED'}, "not Editable in Bone Group yet"
 teeth.edit_with_bones = True
 layers.active = rig
 rig.select_bone("chin")  # a selected bone: left alone while a drawing is active
 layers.active = teeth
 lips.select = True  # picked as well
-assert sky.wm.event_simulate("M", area="Viewport") and sky.wm.event_simulate("M", area="Layers"), "the menus open"
+assert oanim.wm.event_simulate("M", area="Viewport") and oanim.wm.event_simulate("M", area="Layers"), "the menus open"
 assert ops.move_to_collection(collection="Mouth") == {'FINISHED'}
 assert teeth.collections == ["Mouth"] and lips.collections == ["Mouth"], "M: only Mouth now"
 assert bone("chin")["collections"] == ["Main"], "the bones aren't touched"
@@ -185,19 +185,19 @@ assert ops.assign_to_collection(collection="Main") == {'FINISHED'}
 assert teeth.collections == ["Mouth", "Main"], "Shift M keeps the others"
 lips.select = False
 layers.active = teeth
-assert sky.ops.layer.delete() == {'FINISHED'}
+assert oanim.ops.layer.delete() == {'FINISHED'}
 layers.active = rig
 
 # --- Select Layers of Selected Points (the point menu): go to the layer of points edited from elsewhere -------
 layers.active = rig
 ops.select_none()
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 lips.select_points([1])
 assert lips.edited_with_bones and layers.active == rig
-assert sky.ops.mesh.select_point_layers() == {'FINISHED'}
+assert oanim.ops.mesh.select_point_layers() == {'FINISHED'}
 assert layers.active == lips, "the layer holding the selected point is active now"
 assert lips.points[1][2], "and its point stays selected"
-sky.ops.mesh.select_none()
+oanim.ops.mesh.select_none()
 layers.active = rig
 
 # --- Removing ------------------------------------------------------------------------------------------------
@@ -209,12 +209,12 @@ assert bone("chin")["collections"] == [] and lips.collections == ["Mouth"], "its
 assert colls()["All"]["bones"][-1] == "nose" and lips.edited_with_bones, "still in All"
 
 # --- Saved, and files from before ----------------------------------------------------------------------------
-folder = pathlib.Path(tempfile.mkdtemp(prefix="sky_collections_"))
-path = str(folder / "collections.sky")
+folder = pathlib.Path(tempfile.mkdtemp(prefix="oanim_collections_"))
+path = str(folder / "collections.oanim")
 assert ops.collection_set(collection="All", solo="1") == {'FINISHED'}
-assert sky.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
-assert sky.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 lips = next(l for l in rig.children if l.name == "lips")
 assert names() == ["All", "Mouth", "Collection"] and colls()["All"]["solo"]
 assert bone("lip_L")["collections"] == ["Mouth"] and lips.collections == ["Mouth"] and lips.edited_with_bones
@@ -231,11 +231,11 @@ def drop_flag(layers_json):
 
 
 drop_flag(data["document"]["layers"])
-between = str(folder / "between.sky")
+between = str(folder / "between.oanim")
 with zipfile.ZipFile(between, "w") as z:
     z.writestr("document.json", json.dumps(data))
-assert sky.ops.wm.open_mainfile(filepath=between, confirmed="1") == {'FINISHED'}
-rig = next(l for l in sky.data.layers if l.type == "BONE")
+assert oanim.ops.wm.open_mainfile(filepath=between, confirmed="1") == {'FINISHED'}
+rig = next(l for l in oanim.data.layers if l.type == "BONE")
 lips = next(l for l in rig.children if l.name == "lips")
 assert lips.edit_with_bones and lips.collections == ["Mouth"]
 

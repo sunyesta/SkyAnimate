@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 namespace {
 
@@ -78,4 +78,4 @@ void file_dialog_process()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

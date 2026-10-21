@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 struct Context;
 
@@ -117,4 +117,4 @@ void console_draw(Area &area, Context &C);
  * flat header menus. Returns true while the menu is open; then call ImGui::EndPopup(). */
 bool header_menu(const char *label);
 
-}  // namespace sky
+}  // namespace oanim

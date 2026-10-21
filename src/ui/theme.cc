@@ -5,7 +5,7 @@
 
 #include "imgui.h"
 
-namespace sky {
+namespace oanim {
 
 static ImVec4 rgb(uint32_t hex, float alpha = 1.0f)
 {
@@ -129,4 +129,4 @@ void theme_apply_blender(float ui_scale)
   ImGui::GetStyle() = style;
 }
 
-}  // namespace sky
+}  // namespace oanim

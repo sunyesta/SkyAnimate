@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace sky::rna {
+namespace oanim::rna {
 
 const PropertyRNA *StructRNA::find(std::string_view id) const
 {
@@ -58,4 +58,4 @@ Value clamp(const PropertyRNA &prop, const Value &value)
   return value;
 }
 
-}  // namespace sky::rna
+}  // namespace oanim::rna

@@ -18,7 +18,7 @@
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 Layer *active_armature(Context &C)
 {
@@ -1450,4 +1450,4 @@ void rig_operators_register()
                });
 }
 
-}  // namespace sky
+}  // namespace oanim

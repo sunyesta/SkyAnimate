@@ -11,9 +11,9 @@ import rlcompleter
 import sys
 import traceback
 
-import _sky
+import _oanim
 
-import sky
+import oanim
 
 MAX_LINES = 5000
 
@@ -26,9 +26,9 @@ class _Console:
         self.namespace = {
             "__name__": "__console__",
             "__builtins__": __builtins__,
-            "sky": sky,
-            "C": _sky.context(),
-            "D": sky.data,
+            "oanim": oanim,
+            "C": _oanim.context(),
+            "D": oanim.data,
         }
         self.interpreter = code.InteractiveConsole(self.namespace)
         self.more = False
@@ -40,8 +40,8 @@ class _Console:
     def _banner(self):
         self.write("INFO", f"PYTHON INTERACTIVE CONSOLE {sys.version.split()[0]}")
         self.write("INFO", "")
-        self.write("INFO", "Builtin Modules:       sky, sky.data, sky.ops, sky.types, sky.context, sky.utils, sky.keymap, sky.wm")
-        self.write("INFO", "Convenience Variables: C = sky.context, D = sky.data")
+        self.write("INFO", "Builtin Modules:       oanim, oanim.data, oanim.ops, oanim.types, oanim.context, oanim.utils, oanim.keymap, oanim.wm")
+        self.write("INFO", "Convenience Variables: C = oanim.context, D = oanim.data")
         self.write("INFO", "")
 
     def write(self, kind, text):
@@ -114,7 +114,7 @@ class _Console:
         except Exception:
             message = traceback.format_exc()
             self.write("ERROR", message)
-            _sky.report("ERROR", f"Error in text '{name}':\n{message}")
+            _oanim.report("ERROR", f"Error in text '{name}':\n{message}")
             return False
 
     def clear(self):

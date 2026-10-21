@@ -12,7 +12,7 @@
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 Layer *layer_by_name_or_id(Document &doc, const std::string &text)
 {
@@ -354,4 +354,4 @@ void mask_operators_register()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

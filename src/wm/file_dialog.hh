@@ -6,7 +6,7 @@
 #include <functional>
 #include <string>
 
-namespace sky {
+namespace oanim {
 
 using FileDialogDone = std::function<void(const std::string &path)>;
 
@@ -23,4 +23,4 @@ void file_dialog_folder(FileDialogDone done);
 /* Runs the callbacks of dialogs that have closed. Call once per frame. */
 void file_dialog_process();
 
-}  // namespace sky
+}  // namespace oanim

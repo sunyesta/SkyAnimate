@@ -3,7 +3,7 @@
 /* The asset library: one folder, chosen once in Preferences, holding the app's brushes (and
  * later swatches, templates and the like) so every document shares them.
  *
- *   <library>/library.json   marks the folder as a SkyAnimate asset library
+ *   <library>/library.json   marks the folder as an Open Animate asset library
  *   <library>/Brushes/       brushes in Moho's own format (see assets/brushes.hh)
  *
  * When no library is set (or its folder is gone), the app asks for a folder at startup and
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace sky {
+namespace oanim {
 
 struct Preferences {
   /* The asset library folder (UTF-8). Empty until one is chosen. */
@@ -23,7 +23,7 @@ struct Preferences {
   int remote_port = 7853;
 };
 
-/* The current preferences. Loaded at startup from %LOCALAPPDATA%\SkyAnimate\preferences.json;
+/* The current preferences. Loaded at startup from %LOCALAPPDATA%\OpenAnimate\preferences.json;
  * in background mode (tests) nothing is read or written, so runs never touch the user's. */
 Preferences &preferences();
 void preferences_load();
@@ -48,4 +48,4 @@ std::vector<std::string> moho_brush_dirs();
  * brushes. Returns how many brushes were added, or -1 if there is no library. */
 int asset_library_import_moho_brushes(const std::vector<std::string> &dirs);
 
-}  // namespace sky
+}  // namespace oanim

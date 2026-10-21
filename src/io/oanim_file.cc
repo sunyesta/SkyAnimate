@@ -1,4 +1,4 @@
-#include "io/sky_file.hh"
+#include "io/oanim_file.hh"
 
 #include <algorithm>
 #include <cstdio>
@@ -17,12 +17,14 @@
 #include "data/camera.hh"
 #include "data/detail.hh"
 
-namespace sky {
+namespace oanim {
 
 using json = nlohmann::ordered_json;
 
 static constexpr const char *DOCUMENT_ENTRY = "document.json";
-static constexpr const char *FORMAT_NAME = "SkyAnimate";
+static constexpr const char *FORMAT_NAME = "OpenAnimate";
+/* What files said before Open Animate was renamed from SkyAnimate: they open as they are. */
+static constexpr const char *LEGACY_FORMAT_NAME = "SkyAnimate";
 
 static std::filesystem::path path_from_utf8(const std::string &path)
 {
@@ -559,7 +561,7 @@ static json layer_to_json(const Layer &layer)
 
 static json overlays_to_json(const ViewportOverlays &ov);
 
-std::string sky_document_to_json(const Document &doc)
+std::string oanim_document_to_json(const Document &doc)
 {
   json texts = json::array();
   for (const Text &text : doc.texts) {
@@ -589,7 +591,7 @@ std::string sky_document_to_json(const Document &doc)
                  {"keys", std::move(camera_keys)}};
   const json root = {
       {"format", FORMAT_NAME},
-      {"version", SKY_FILE_VERSION},
+      {"version", OANIM_FILE_VERSION},
       {"document",
        {
            {"name", doc.name},
@@ -636,12 +638,12 @@ static bool file_write_bytes(const std::filesystem::path &path, const void *data
   return bool(out);
 }
 
-bool sky_file_write(const Document &doc, const std::string &path, std::string *r_error)
+bool oanim_file_write(const Document &doc, const std::string &path, std::string *r_error)
 {
   /* What smart actions add isn't data: it is worked out again on opening. */
   Document data = doc;
   animation_strip_smart(data);
-  const std::string text = sky_document_to_json(data);
+  const std::string text = oanim_document_to_json(data);
 
   /* Build the archive in memory: miniz's file functions can't open non-ASCII Windows paths. */
   mz_zip_archive zip{};
@@ -921,7 +923,7 @@ static void overlays_from_json(const json &j, ViewportOverlays &r_ov)
 }
 
 /* The file being read: its format version and the action that was being edited. */
-static int g_loading_version = SKY_FILE_VERSION;
+static int g_loading_version = OANIM_FILE_VERSION;
 static std::string g_loading_action;
 
 template<typename T> static const std::vector<Key<T>> *mainline_keys(const Channel<T> &ch)
@@ -1661,22 +1663,22 @@ static void migrate_bone_keys(std::vector<Layer> &layers, const std::string &act
   }
 }
 
-bool sky_document_from_json(const std::string &text, Document &r_doc, std::string *r_error)
+bool oanim_document_from_json(const std::string &text, Document &r_doc, std::string *r_error)
 {
   const json root = json::parse(text, nullptr, false);
   if (root.is_discarded() || !root.is_object()) {
     *r_error = "The document is damaged (not valid JSON)";
     return false;
   }
-  if (get_string(root, "format") != FORMAT_NAME) {
-    *r_error = "Not a SkyAnimate file";
+  if (const std::string format = get_string(root, "format"); format != FORMAT_NAME && format != LEGACY_FORMAT_NAME) {
+    *r_error = "Not an Open Animate file";
     return false;
   }
   const int version = get_int(root, "version", 0);
   g_loading_version = version;
-  if (version < 1 || version > SKY_FILE_VERSION) {
-    *r_error = "The file was saved by a newer SkyAnimate (format " + std::to_string(version) +
-               "); this version reads up to format " + std::to_string(SKY_FILE_VERSION);
+  if (version < 1 || version > OANIM_FILE_VERSION) {
+    *r_error = "The file was saved by a newer Open Animate (format " + std::to_string(version) +
+               "); this version reads up to format " + std::to_string(OANIM_FILE_VERSION);
     return false;
   }
   auto doc_it = root.find("document");
@@ -1777,7 +1779,7 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   return true;
 }
 
-bool sky_file_read(const std::string &path, Document &r_doc, std::string *r_error)
+bool oanim_file_read(const std::string &path, Document &r_doc, std::string *r_error)
 {
   std::ifstream in(path_from_utf8(path), std::ios::binary);
   if (!in) {
@@ -1788,7 +1790,7 @@ bool sky_file_read(const std::string &path, Document &r_doc, std::string *r_erro
 
   mz_zip_archive zip{};
   if (!mz_zip_reader_init_mem(&zip, bytes.data(), bytes.size(), 0)) {
-    *r_error = "Not a SkyAnimate file (not a zip archive): " + path;
+    *r_error = "Not an Open Animate file (not a zip archive): " + path;
     return false;
   }
   size_t size = 0;
@@ -1800,7 +1802,7 @@ bool sky_file_read(const std::string &path, Document &r_doc, std::string *r_erro
   }
   const std::string text(static_cast<const char *>(data), size);
   mz_free(data);
-  return sky_document_from_json(text, r_doc, r_error);
+  return oanim_document_from_json(text, r_doc, r_error);
 }
 
-}  // namespace sky
+}  // namespace oanim

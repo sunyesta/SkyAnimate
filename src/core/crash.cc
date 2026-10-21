@@ -18,7 +18,7 @@
 #include <filesystem>
 #include <fstream>
 
-namespace sky {
+namespace oanim {
 
 namespace {
 
@@ -82,7 +82,7 @@ void write_report(const char *reason, CONTEXT *context, EXCEPTION_POINTERS *poin
   }
   wchar_t exe[MAX_PATH] = L"";
   GetModuleFileNameW(nullptr, exe, MAX_PATH);
-  std::fprintf(out, "SkyAnimate crashed on %04d-%02d-%02d at %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour,
+  std::fprintf(out, "Open Animate crashed on %04d-%02d-%02d at %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour,
                t.wMinute, t.wSecond);
   std::fprintf(out, "Program: %ls\n", exe);
   std::fprintf(out, "Reason: %s\n", reason);
@@ -225,4 +225,4 @@ void crash_now()
   std::abort();
 }
 
-}  // namespace sky
+}  // namespace oanim

@@ -15,7 +15,7 @@
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
-namespace sky {
+namespace oanim {
 
 std::vector<Layer *> keyed_layers(Context &C)
 {
@@ -838,4 +838,4 @@ void anim_operators_register()
   }
 }
 
-}  // namespace sky
+}  // namespace oanim

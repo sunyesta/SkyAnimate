@@ -1,17 +1,17 @@
 """Converts a Moho project (.moho, Moho 13.5 and later: a zip holding Project.mohoproj) into a
-SkyAnimate file (.sky).
+Open Animate file (.oanim).
 
-    python tools/moho_to_sky.py "mouth rig.moho" [out.sky]
+    python tools/moho_to_oanim.py "mouth rig.moho" [out.oanim]
 
 What comes across: the document (size, frame rate, frame range, background), the layer tree (bone,
-group and vector layers, bottom-to-top order turned into SkyAnimate's top-first lists), each layer's
+group and vector layers, bottom-to-top order turned into Open Animate's top-first lists), each layer's
 transform, opacity and visibility (not masking: set masks up after converting), vector drawings (points with widths, curves with Moho's
 curvature, weights and offsets, hidden edges, shapes with their fill, line colour, line width and
 brush), bones (place, angle, length, scale, strength, parents; pin bones get the Pin shape; bone tags become bone collections), point binding (a point bound to one
 bone, not bound, or flexi-bound), layers bound to a bone, reference layers (linked to their
 originals, with their differences kept as the reference's own changes), and every channel's keys
 in the mainline and in each action (a smart bone's action plays from its bone's angle in
-SkyAnimate as in Moho). Moho features SkyAnimate doesn't have (3D, physics, layer effects,
+Open Animate as in Moho). Moho features Open Animate doesn't have (3D, physics, layer effects,
 switch layers' extras...) are left out and listed at the end.
 
 Only Python's standard library is needed.
@@ -23,7 +23,7 @@ import pathlib
 import sys
 import zipfile
 
-# Moho's interpolation numbers (MOHO.INTERP_*) to SkyAnimate's.
+# Moho's interpolation numbers (MOHO.INTERP_*) to Open Animate's.
 INTERP = {0: "LINEAR", 1: "SMOOTH", 2: "EASE_IN_OUT", 3: "STEP", 4: "NOISY", 5: "CYCLE", 6: "POSE",
           7: "EASE_IN", 8: "EASE_OUT", 9: "BEZIER", 10: "BOUNCE", 11: "ELASTIC"}
 
@@ -31,7 +31,7 @@ skipped = set()
 
 
 def value_of(v, kind):
-    """A Moho channel value as SkyAnimate saves it."""
+    """A Moho channel value as Open Animate saves it."""
     if kind == "Vec2":
         return [v["x"], v["y"]]
     if kind == "Vec3":
@@ -44,7 +44,7 @@ def value_of(v, kind):
 
 
 def keys_of(ch, convert=lambda v: v):
-    """A Moho channel's keys (when, val, interp) as SkyAnimate's key list."""
+    """A Moho channel's keys (when, val, interp) as Open Animate's key list."""
     kind = ch.get("type")
     keys = []
     for when, val, interp in zip(ch.get("when", []), ch.get("val", []), ch.get("interp", [])):
@@ -129,7 +129,7 @@ def style_of(shape, doc_styles):
 
 
 def drawing_of(mesh, bone_ids, flexi_moves, doc_styles):
-    """A Moho mesh as a SkyAnimate drawing. Point ids are their index + 1, shape ids Moho's."""
+    """A Moho mesh as a Open Animate drawing. Point ids are their index + 1, shape ids Moho's."""
     first_bone = next(iter(bone_ids.values()), 0)
     points = []
     for i, p in enumerate(mesh.get("points", [])):
@@ -145,7 +145,7 @@ def drawing_of(mesh, bone_ids, flexi_moves, doc_styles):
             # Not bound (or flexi-bound to bones with no strength): it stays put.
             if first_bone:
                 point["weights"] = [[first_bone, 0.0]]
-        # Flexi-bound with bones that have strength: SkyAnimate's automatic weights.
+        # Flexi-bound with bones that have strength: Open Animate's automatic weights.
         points.append(point)
     curves = []
     for c in mesh.get("curves", []):
@@ -198,8 +198,8 @@ class Converter:
     def __init__(self, project):
         self.project = project
         self.next_id = 1
-        self.by_uuid = {}       # Moho layer uuid -> SkyAnimate layer id
-        self.drawings = {}      # SkyAnimate layer id -> its drawing (for references)
+        self.by_uuid = {}       # Moho layer uuid -> Open Animate layer id
+        self.drawings = {}      # Open Animate layer id -> its drawing (for references)
         self.references = []    # (layer json, Moho layer, source uuid)
         self.doc_styles = {s.get("name"): s for s in project.get("styles", [])}
 
@@ -227,7 +227,7 @@ class Converter:
         origin = l.get("origin", {"x": 0, "y": 0})
         if abs(origin.get("x", 0)) > 1e-9 or abs(origin.get("y", 0)) > 1e-9:
             skipped.add("layer origins (layers turn about their own 0, 0)")
-        # Masking isn't converted: SkyAnimate's masks name their layers (set them up after converting).
+        # Masking isn't converted: Open Animate's masks name their layers (set them up after converting).
         parent_bone = l.get("parent_bone", -1)
         if parent_bone >= 0 and parent_bone in bone_ids:
             j["parent_bone"] = bone_ids[parent_bone]
@@ -288,7 +288,7 @@ class Converter:
             j["scale"] = put_channel(j, "scale", b["anim_scale"], lambda s: [s, s])
             j["length"] = b.get("length", 0.0)
             j["_tags"] = [bit for bit in range(32) if int(b.get("bone_tags", 0) or 0) & (1 << bit)]
-            # Moho's pin bones are the bones with no length: drawn as pins in SkyAnimate too.
+            # Moho's pin bones are the bones with no length: drawn as pins in Open Animate too.
             if j["length"] <= 0.0:
                 j["shape"] = "PIN"
             j["strength"] = b.get("strength", 0.0) if b.get("strength", 0.0) > 0 else 1.0
@@ -340,7 +340,7 @@ class Converter:
         layers = [self.layer(l, {}, False) for l in reversed(self.project.get("layers", []))]
         self.link_references()
         first = layers[0]["id"] if layers else 0
-        return {"format": "SkyAnimate", "version": 1,
+        return {"format": "OpenAnimate", "version": 1,
                 "document": {"name": "", "frame_start": int(pd.get("start_frame", 1)),
                              "frame_end": int(pd.get("end_frame", 72)), "frame_current": 0,
                              "fps": float(pd.get("fps", 24)), "width": int(pd.get("width", 1920)),
@@ -367,11 +367,11 @@ def main():
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
     src = pathlib.Path(sys.argv[1])
-    dst = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else src.with_suffix(".sky")
+    dst = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else src.with_suffix(".oanim")
     convert(src, dst)
     print(f"Wrote {dst}")
     if skipped:
-        print("Left out (SkyAnimate doesn't have them):")
+        print("Left out (Open Animate doesn't have them):")
         for s in sorted(skipped):
             print("  -", s)
 

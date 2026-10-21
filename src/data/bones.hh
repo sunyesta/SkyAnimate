@@ -13,7 +13,7 @@
 
 #include "core/math.hh"
 
-namespace sky {
+namespace oanim {
 
 struct Bone;
 struct BoneCollection;
@@ -191,4 +191,4 @@ const Layer *layer_binding_group(const Document &doc, uint64_t layer_id);
  * that left one. Returns true when anything changed. */
 bool document_sync_armature_modifiers(Document &doc);
 
-}  // namespace sky
+}  // namespace oanim

@@ -12,7 +12,7 @@
  * any change to the bones (keys, values, constraints) or to gravity and wind starts it again. The
  * setup frame (0) never moves. */
 
-namespace sky {
+namespace oanim {
 
 struct BoneConstraint;
 struct Document;
@@ -42,4 +42,4 @@ bool dynamics_live_running();
  * keys it set. */
 int dynamics_bake(Document &doc, Layer *armature);
 
-}  // namespace sky
+}  // namespace oanim

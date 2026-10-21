@@ -10,7 +10,7 @@
 #include <queue>
 #include <set>
 
-namespace sky {
+namespace oanim {
 
 namespace {
 /* Structural edits on a drawing with detail keep its look (see drawing_detail_edit_begin). */
@@ -2059,9 +2059,9 @@ float proportional_weight(ProportionalFalloff falloff, float distance, float siz
   return d;
 }
 
-}  // namespace sky
+}  // namespace oanim
 
-namespace sky {
+namespace oanim {
 
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
                                     const std::map<uint64_t, uint64_t> *weight_flip)
@@ -2236,4 +2236,4 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   return result;
 }
 
-}  // namespace sky
+}  // namespace oanim
