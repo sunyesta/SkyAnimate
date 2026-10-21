@@ -26,38 +26,6 @@ const char *editor_keymap_name(EditorType type);
 
 enum class AreaSplit { None, Vertical, Horizontal };
 
-/* What a viewport draws over the artwork, like Blender's viewport overlays. Each viewport has
- * its own; `show` turns them all off at once. */
-/* Which curve handles the viewport shows, as Blender's Overlays > Handles. */
-/* Shape: every handle of the shapes being worked on (any of whose points is selected), plus the
- * selected points'. */
-enum class HandleDisplay { None, Selected, Shape, All };
-/* Which bones the viewport shows: none, those of selected bone layers, or every bone layer's. */
-enum class ArmatureDisplay { Off, Selected, On };
-
-struct ViewportOverlays {
-  bool show = true;
-  bool grid = false;
-  bool cursor = true;
-  bool camera_frame = true;
-  /* Camera, frame and layer in the top-left corner. */
-  bool info = true;
-  /* Curve wires and points of the active layer while editing it. */
-  bool wireframe = true;
-  bool points = true;
-  HandleDisplay handles = HandleDisplay::Shape;
-  ArmatureDisplay armature = ArmatureDisplay::On;
-  /* Bones drawn where their keys put them, and pale ghosts where bone dynamics have them (the
-   * artwork follows the ghosts); off, bones are drawn where dynamics have them. */
-  bool physics_ghosts = true;
-  /* Bone dynamics run live while a pose changes on a frame (trailing, swinging and settling in
-   * real time); off, the bones show the frame's own result. Live in any viewport of the
-   * workspace shown runs it. */
-  bool live_physics = true;
-  /* Bones with a custom shape (a pin) are drawn as it; off, every bone is drawn as a bone. */
-  bool bone_shapes = true;
-};
-
 struct Area {
   int id = 0;
   EditorType type = EditorType::Viewport;
@@ -69,18 +37,17 @@ struct Area {
   float view_start = 0.0f;
   float view_end = 250.0f;
   bool view_initialized = false;
-  /* Timeline: how far the channel rows are scrolled, in pixels, and which folding rows are open
-   * (by key; a row missing here is at its default). */
+  /* Timeline: how far the channel rows are scrolled, in pixels (which folding rows are open is the
+   * project's: Document::ui_open). */
   float channel_scroll = 0.0f;
-  std::map<std::string, bool> timeline_open;
   /* View > Group by Kind (the default), else by Owner. */
   bool timeline_by_kind = true;
   /* The names column's width, dragged by its edge (0: the default). */
   float timeline_names_w = 0.0f;
 
-  ViewportOverlays overlays;
-
-  /* Viewport view: the document point at the centre and pixels per document unit. */
+  /* Viewport view: the document point at the centre and pixels per document unit (the project
+   * keeps a copy, Document::view, saved with it; `view_serial` is the project's view it took). */
+  uint64_t view_serial = 0;
   float view_center_x = 0.0f;
   float view_center_y = 0.0f;
   float view_zoom = 0.0f;
@@ -114,6 +81,8 @@ struct Area {
 
 /* Draws the area as a dockable window. Returns true while the mouse is over it. */
 bool area_draw(Area &area, Context &C);
+/* The viewport's own operators (mesh.transform_selected). */
+void viewport_operators_register();
 
 /* Starts every area header: a grip to drag the area elsewhere (right-click for the area
  * menu), then the editor-type dropdown. */

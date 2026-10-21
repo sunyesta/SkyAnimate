@@ -12,6 +12,7 @@
 
 #include "anim/draw_order.hh"
 #include "anim/reference.hh"
+#include "data/camera.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
@@ -264,6 +265,48 @@ static void layers_deselect(std::vector<Layer> &layers)
   }
 }
 
+/* The camera, pinned above the layers (it isn't one of them: it can't be moved, hidden or locked).
+ * A click picks it, as clicking its frame in the viewport does; Ctrl or Shift click toggles it. */
+static void camera_row(Context &C)
+{
+  Document &doc = *C.document;
+  Layer &camera = document_camera(doc);
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 row_min = ImGui::GetCursorScreenPos();
+  const float row_w = ImGui::GetContentRegionAvail().x;
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  ImGui::PushID("##camera_row");
+  ImGui::InvisibleButton("##row", ImVec2(row_w, h));
+  const bool hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    const ImGuiIO &io = ImGui::GetIO();
+    camera.selected = io.KeyCtrl || io.KeyShift ? !camera.selected : true;
+  }
+  if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    /* Its settings: the Camera tab. */
+    C.wm->properties_tab_request = 7;
+  }
+  if (hovered) {
+    ImGui::SetTooltip("The camera: what renders show. Picked, the viewport looks through it");
+  }
+  if (camera.selected) {
+    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f);
+  }
+  else if (hovered) {
+    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0xff, 0xff, 14), 3.0f);
+  }
+  const float icon = h * 0.32f;
+  const float cy = row_min.y + h * 0.5f;
+  const float x = row_min.x + 8.0f + h * 0.7f;
+  icon_camera(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, true);
+  dl->AddText(ImVec2(x + h * 0.9f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0xe6, 0xe6, 0xe6, 255), "Camera");
+  ImGui::PopID();
+  /* A line between it and the layers. */
+  const float y = row_min.y + h + 1.0f;
+  dl->AddLine(ImVec2(row_min.x, y), ImVec2(row_min.x + row_w, y), IM_COL32(0xff, 0xff, 0xff, 24), 1.0f);
+  ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + h + 3.0f));
+}
+
 static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropRequest &drop,
                       bool &r_context_open)
 {
@@ -304,6 +347,9 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     }
     else {
       layers_deselect(doc.layers);
+    }
+    if (!io.KeyCtrl && !io.KeyShift) {
+      doc.camera.selected = false;
     }
     doc.active_layer = layer.id;
   }
@@ -414,7 +460,8 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     }
   }
   if (doc.active_layer == layer.id) {
-    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f);
+    /* While the camera is picked the active layer waits, shown lighter. */
+    dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), doc.camera.selected ? COL_SELECTED_ROW : COL_ACTIVE_ROW, 3.0f);
   }
   else if (layer.selected) {
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), COL_SELECTED_ROW, 3.0f);
@@ -764,6 +811,7 @@ void layers_draw(Area &area, Context &C)
   DropRequest drop;
   bool context_open = false;
   if (ImGui::BeginChild("##layers", ImVec2(0, 0))) {
+    camera_row(C);
     for (Layer &layer : doc.layers) {
       layer_row(C, area, layer, 0, drop, context_open);
     }

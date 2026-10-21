@@ -42,7 +42,7 @@ static bool on_setup_frame(Context &C)
   if (C.document->frame_current == 0) {
     return true;
   }
-  report_at_mouse(ReportType::Warning, "Switch to Setup (frame 0) to change the rig");
+  report_banner(ReportType::Warning, "Switch to Setup (frame 0) to change the rig");
   return false;
 }
 
@@ -338,7 +338,7 @@ void rig_operators_register()
                  }
                  const uint64_t parent_id = parent ? parent->id : 0;
                  if (parent_id != 0 && bone_is_descendant(armature, parent_id, bone->id)) {
-                   report_at_mouse(ReportType::Warning, "A bone can't hang from itself or one of its children");
+                   report_banner(ReportType::Warning, "A bone can't hang from itself or one of its children");
                    return OpStatus::Cancelled;
                  }
                  if (parent_id == bone->parent) {
@@ -898,7 +898,7 @@ void rig_operators_register()
                      continue;
                    }
                    if (bone_is_descendant(armature, parent_id, b.id)) {
-                     report_at_mouse(ReportType::Warning, "A bone can't hang from one of its children: " + b.name);
+                     report_banner(ReportType::Warning, "A bone can't hang from one of its children: " + b.name);
                      continue;
                    }
                    const BonePose *self = bone_pose_find(poses, b.id);

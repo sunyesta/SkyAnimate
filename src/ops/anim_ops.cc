@@ -9,6 +9,7 @@
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
+#include "data/camera.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -67,9 +68,10 @@ std::vector<Layer *> timeline_layers(Context &C)
         layers.push_back(l);
       }
     }
-    Layer &sim = document_simulation(*C.document);
-    if (pins(sim) && std::find(layers.begin(), layers.end(), &sim) == layers.end()) {
-      layers.push_back(&sim);
+    for (Layer *own : {&document_simulation(*C.document), &document_camera(*C.document)}) {
+      if (pins(*own) && std::find(layers.begin(), layers.end(), own) == layers.end()) {
+        layers.push_back(own);
+      }
     }
   }
   return layers;
@@ -103,6 +105,13 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
   /* The document's animated gravity and wind (a Simulation row). */
   if (C.document && !layer_key_frames(document_simulation(*C.document)).empty()) {
     add(&C.document->simulation);
+  }
+  /* The camera's keys, while it is picked or once it has any (a Camera row). */
+  if (C.document) {
+    Layer &camera = document_camera(*C.document);
+    if (camera.selected || !layer_key_frames(camera).empty()) {
+      add(&camera);
+    }
   }
   return layers;
 }
@@ -672,6 +681,12 @@ void anim_operators_register()
         /* The document's Simulation settings: the Document tab. */
         if (layer == &simulation) {
           show(0, "Simulation");
+          return OpStatus::Finished;
+        }
+        /* The camera's: pick it, and show its tab. */
+        if (layer->id == CAMERA_LAYER_ID) {
+          layer->selected = true;
+          show(7, "Camera");
           return OpStatus::Finished;
         }
         /* A bone's: select the bone (its constraint settings also show in Bone Constraints). */

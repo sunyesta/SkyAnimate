@@ -16,6 +16,8 @@
 #include "anim/draw_order.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
+#include "data/camera.hh"
+#include "data/detail.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
@@ -36,7 +38,8 @@ enum PropertiesTab {
   TAB_MODIFIERS = 3,
   TAB_CONSTRAINTS = 4,
   TAB_REFERENCE = 5,
-  TAB_MASKING = 6
+  TAB_MASKING = 6,
+  TAB_CAMERA = 7
 };
 
 static void key_next(Context &C, Layer &layer, std::vector<std::string> paths);
@@ -142,7 +145,7 @@ static void star_icon(ImDrawList *dl, ImVec2 c, float s, bool on, ImU32 col)
 static void bone_collections_panel(Context &C, Layer &armature)
 {
   Document &doc = *C.document;
-  if (!ImGui::CollapsingHeader("Bone Collections", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (!ui_collapsing_header("Bone Collections", true)) {
     return;
   }
   const ImGuiStyle &style = ImGui::GetStyle();
@@ -1095,7 +1098,10 @@ static void reference_changes(Context &C, Layer &ref, const Layer *source)
       return false;
     }
     ImGui::AlignTextToFramePadding();
-    const bool open = ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen, "%s (%d)", title, count);
+    const std::string key = ui_fold_scope() + "/Changes/" + title;
+    ui_fold_next(key, true);
+    const bool open = ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_SpanAvailWidth, "%s (%d)", title, count);
+    ui_fold_record(key, true, open);
     reset_push(C, title, args, can_push);
     return open;
   };
@@ -1214,7 +1220,7 @@ static void reference_tab(Context &C)
   }
   ReferenceSettings &rs = ref->reference;
   if (!ref->is_group()) {
-    if (ImGui::CollapsingHeader("Pose", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ui_collapsing_header("Pose", true)) {
       const int pose = choice_buttons("Same as Original", "Own Bones", rs.match_original ? 0 : 1,
                                       "Posed by the original's bones (smart bones and dynamics too), wherever this copy sits",
                                       "Posed by this copy's own bone layer, with its own weights (starting as the "
@@ -1225,7 +1231,7 @@ static void reference_tab(Context &C)
       ImGui::TextDisabled(rs.match_original ? "It moves exactly like the original, wherever it is."
                                             : "It moves with the bones of the bone layer it's in.");
     }
-    if (ImGui::CollapsingHeader("Points", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ui_collapsing_header("Points", true)) {
       const int points = choice_buttons("Locked", "Editable", rs.edit_points ? 1 : 0,
                                         "Its points stay where the original has them; only looks can change here",
                                         "Its points can move here (kept as changes on top of the original, its motion "
@@ -1237,7 +1243,7 @@ static void reference_tab(Context &C)
                                          : "Unlock to move its points (also the lock in the viewport header).");
     }
     if (source) {
-      if (ImGui::CollapsingHeader("Recolor", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (ui_collapsing_header("Recolor", true)) {
         reference_recolor(C, *ref);
       }
     }
@@ -1245,14 +1251,14 @@ static void reference_tab(Context &C)
 
   const std::string changes_title = changes ? "Changes on This Copy (" + std::to_string(changes) + ")###changes"
                                               : std::string("Changes on This Copy (none)###changes");
-  if (ImGui::CollapsingHeader(changes_title.c_str())) {
+  if (ui_collapsing_header(changes_title.c_str(), false)) {
     /* Each group has its own Reset and Push (no all-at-once pair below them). */
     reference_changes(C, *ref, source);
     if (!changes) {
       ImGui::TextDisabled("Everything matches the original.");
     }
   }
-  if (ImGui::CollapsingHeader("More")) {
+  if (ui_collapsing_header("More", false)) {
     if (!ref->is_group()) {
       bool follow = rs.follow_animation;
       if (ImGui::Checkbox("Follow Original's Animation", &follow)) {
@@ -1570,7 +1576,11 @@ static void modifiers_panel(Context &C, Layer &layer)
         ImGui::Spacing();
         /* Blender keeps vertex group mirroring under Data. */
         ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
-        if (ImGui::TreeNodeEx("Data", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        const std::string data_key = ui_fold_scope() + "/Mirror/Data";
+        ui_fold_next(data_key, false);
+        const bool data_open = ImGui::TreeNodeEx("Data", ImGuiTreeNodeFlags_SpanAvailWidth);
+        ui_fold_record(data_key, false, data_open);
+        if (data_open) {
           modifier_row_label("", column);
           changed |= ImGui::Checkbox("Mirror Bones", &m.mirror_bones);
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -2511,6 +2521,29 @@ static void used_as_mask_panel(Context &C, Layer &layer)
   ui_panel_end();
 }
 
+/* The Camera tab: where the camera is, its zoom and roll (each keyable), and how the viewport shows it. */
+static void camera_tab(Context &C)
+{
+  Document &doc = *C.document;
+  Layer &camera = document_camera(doc);
+  const rna::PointerRNA ptr{&camera, &Layer::rna()};
+  const rna::PointerRNA doc_ptr{&doc, &Document::rna()};
+  const char *path = "sky.data.camera";
+  if (ui_panel_begin("Camera")) {
+    key_next(C, camera, {"position"});
+    ui_prop_pair(C, ptr, "Position", "location_x", "X", "location_y", "Y", path);
+    key_next(C, camera, {"zoom"});
+    ui_prop(C, doc_ptr, "camera_zoom", "sky.data.document");
+    key_next(C, camera, {"rotation"});
+    ui_prop(C, doc_ptr, "camera_roll", "sky.data.document");
+    ui_panel_end();
+  }
+  if (ui_panel_begin("Viewport Display")) {
+    ui_prop(C, doc_ptr, "camera_passepartout", "sky.data.document");
+    ui_panel_end();
+  }
+}
+
 /* The Masking tab: the active layer's masks, and how it masks other layers. */
 static void masking_tab(Context &C)
 {
@@ -2616,7 +2649,7 @@ static void drawing_tab(Context &C)
    * reference's drawing, which would pull the shapes out from under the rows still being drawn. */
   int clicked = -1;
   bool clicked_adds = false;
-  if (ImGui::CollapsingHeader("Shapes", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ui_collapsing_header("Shapes", true)) {
     const float list_h = std::min(float(drawing->shapes.size()) + 1.0f, 10.0f) * ImGui::GetFrameHeight();
     if (ImGui::BeginChild("##shapes", ImVec2(0, list_h), ImGuiChildFlags_Borders)) {
       for (int s = int(drawing->shapes.size()) - 1; s >= 0; s--) {
@@ -2854,6 +2887,94 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
   }
 }
 
+/* Detail levels (data/detail.hh): the shape's level, what it has, and Delete Higher, Apply Detail and
+ * Rebuild Levels (on the selected shapes). */
+static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
+{
+  const Layer *owner = document_active_layer(*C.document);
+  if (!ui_panel_begin("Detail")) {
+    return;
+  }
+  ImGui::BeginDisabled(owner && owner->is_reference());
+  const int top = shape_detail_max_level(drawing, shape);
+  const auto row = [](const char *label) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::TableSetColumnIndex(1);
+  };
+  row("Level");
+  if (ImGui::ArrowButton("##detail_down", ImGuiDir_Left)) {
+    operator_call(C, "mesh.detail_level_set", {{"delta", "-1"}});
+  }
+  ImGui::SameLine(0, 2);
+  int value = shape.detail_level;
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 2.0f);
+  if (ImGui::DragInt("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, "%d", ImGuiSliderFlags_AlwaysClamp) &&
+      value != shape.detail_level)
+  {
+    operator_call(C, "mesh.detail_level_set", {{"level", std::to_string(value)}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The level the shape is edited at: its curves show their points up to it, and the knife (K) "
+                      "adds detail points at it (Ctrl 0 to Ctrl 4, Alt Page Up / Page Down)");
+  }
+  ImGui::SameLine(0, 4);
+  ImGui::Text("/ %d", std::max(top, shape.detail_level));
+  ImGui::SameLine(0, 4);
+  if (ImGui::ArrowButton("##detail_up", ImGuiDir_Right)) {
+    operator_call(C, "mesh.detail_level_set", {{"delta", "1"}});
+  }
+  row("Has");
+  const int points = shape_detail_point_count(drawing, shape);
+  if (top == 0) {
+    ImGui::TextDisabled(shape.detail_level > 0 ? "No detail yet: the knife (K) adds some" : "No detail");
+  }
+  else {
+    ImGui::Text("Levels %d  \xc2\xb7  %d detail point%s", top, points, points == 1 ? "" : "s");
+  }
+  row("");
+  const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+  ImGui::BeginDisabled(top <= shape.detail_level);
+  if (ImGui::Button("Delete Higher", ImVec2(half, 0))) {
+    operator_call(C, "mesh.detail_delete_higher");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Remove the detail above the level the selected shapes are edited at");
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(top == 0);
+  if (ImGui::Button("Apply Detail", ImVec2(half, 0))) {
+    operator_call(C, "mesh.detail_apply");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Make the selected shapes' detail points their own points, as they show (setup frame)");
+  }
+  ImGui::EndDisabled();
+  row("");
+  static float tolerance = 0.02f;
+  ImGui::SetNextItemWidth(half);
+  ImGui::DragFloat("##rebuild_tolerance", &tolerance, 0.001f, 0.0f, 1.0f, "Tolerance %.3f",
+                   ImGuiSliderFlags_AlwaysClamp);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How far a point can stray from the line through the kept ones and still become detail");
+  }
+  ImGui::SameLine();
+  char tol[32];
+  std::snprintf(tol, sizeof(tol), "%g", tolerance);
+  if (ImGui::Button("Rebuild Levels", ImVec2(half, 0))) {
+    operator_call(C, "mesh.detail_rebuild", {{"tolerance", tol}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Keep the points that make the selected shapes' outline as their own and make the rest level 1 "
+                      "detail, as they show (setup frame): a dense drawing can then be edited with few points");
+  }
+  ImGui::EndDisabled();
+  ui_panel_end();
+}
+
 static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
 {
   Document &doc = *C.document;
@@ -3031,6 +3152,7 @@ static void shape_panel(Context &C, VectorDrawing &drawing, Shape &shape)
     changed_end(C, on, "##changed_brush", setting("brush"), setting("brush"));
     ui_panel_end();
   }
+  detail_panel(C, drawing, shape);
 }
 
 /* The selected edges (segments with both points selected). Visible is Moho's Hide Edge: off,
@@ -3175,34 +3297,47 @@ void properties_draw(Area &area, Context &C)
     const char *label;
     int id;
   };
-  std::vector<TabEntry> tabs = {{"Document", TAB_DOCUMENT}, {"Layer", TAB_LAYER}};
-  if (active_layer) {
-    tabs.push_back({"Masking", TAB_MASKING});
+  std::vector<TabEntry> tabs = {{"Document", TAB_DOCUMENT}};
+  /* The picked camera is what Properties shows, beside Document, as Blender shows the active object's
+   * tabs: it has no layer, masking, modifier or drawing settings. */
+  const bool camera = C.document->camera.selected;
+  if (camera && area.properties_tab != TAB_DOCUMENT) {
+    area.properties_tab = TAB_CAMERA;
   }
-  if (modifiers) {
-    tabs.push_back({"Modifiers", TAB_MODIFIERS});
+  if (!camera && area.properties_tab == TAB_CAMERA) {
+    area.properties_tab = TAB_LAYER;
   }
-  tabs.push_back({bones ? "Armature" : "Drawing", TAB_DRAWING});
-  /* Bone layers have a Bone Constraints tab beside Armature. */
-  if (bones) {
-    tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
-  }
+  /* A drawing has its Drawing tab and a bone layer its Armature tab; a group has neither. */
+  const bool drawing = active_layer && (bones || !active_layer->is_group());
   /* A reference (a copy of another layer) has its link's tab. */
   const bool reference = active_layer && active_layer->is_reference();
-  if (reference) {
-    tabs.push_back({"Reference", TAB_REFERENCE});
+  if (camera) {
+    tabs.push_back({"Camera", TAB_CAMERA});
   }
-  if (area.properties_tab == TAB_MASKING && !active_layer) {
-    area.properties_tab = TAB_LAYER;
-  }
-  if (area.properties_tab == TAB_REFERENCE && !reference) {
-    area.properties_tab = TAB_LAYER;
-  }
-  if (area.properties_tab == TAB_MODIFIERS && !modifiers) {
-    area.properties_tab = TAB_LAYER;
-  }
-  if (area.properties_tab == TAB_CONSTRAINTS && !bones) {
-    area.properties_tab = TAB_DRAWING;
+  else {
+    tabs.push_back({"Layer", TAB_LAYER});
+    if (active_layer) {
+      tabs.push_back({"Masking", TAB_MASKING});
+    }
+    if (modifiers) {
+      tabs.push_back({"Modifiers", TAB_MODIFIERS});
+    }
+    if (drawing) {
+      tabs.push_back({bones ? "Armature" : "Drawing", TAB_DRAWING});
+    }
+    /* Bone layers have a Bone Constraints tab beside Armature. */
+    if (bones) {
+      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
+    }
+    if (reference) {
+      tabs.push_back({"Reference", TAB_REFERENCE});
+    }
+    if ((area.properties_tab == TAB_MASKING && !active_layer) || (area.properties_tab == TAB_REFERENCE && !reference) ||
+        (area.properties_tab == TAB_MODIFIERS && !modifiers) || (area.properties_tab == TAB_DRAWING && !drawing) ||
+        (area.properties_tab == TAB_CONSTRAINTS && !bones))
+    {
+      area.properties_tab = TAB_LAYER;
+    }
   }
   for (size_t i = 0; i < tabs.size(); i++) {
     if (i > 0) {
@@ -3224,6 +3359,9 @@ void properties_draw(Area &area, Context &C)
     switch (area.properties_tab) {
       case TAB_LAYER:
         layer_tab(C);
+        break;
+      case TAB_CAMERA:
+        camera_tab(C);
         break;
       case TAB_MASKING:
         masking_tab(C);

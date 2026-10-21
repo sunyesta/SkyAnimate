@@ -1218,6 +1218,8 @@ struct ChannelRow {
   /* Key of a folding row's open state, "" when it doesn't fold. */
   std::string fold;
   bool open = false;
+  /* Open unless folded (its default, when the project keeps nothing for it). */
+  bool fold_default = false;
   /* A copy's (reference layer's) channel changed from its original (drawn teal). */
   bool changed = false;
   /* In the Pinned or Selected sections (drawn red). */
@@ -1229,16 +1231,20 @@ struct ChannelRow {
   std::string pin_path;
 };
 
+/* Folding rows open or folded as the project keeps them (saved with it, as panels are). */
 static bool row_open(const Area &area, const std::string &key, bool fallback)
 {
-  const auto it = area.timeline_open.find(key);
-  return it == area.timeline_open.end() ? fallback : it->second;
+  (void)area;
+  return ui_fold_state("Timeline/" + key, fallback);
 }
 
 /* Something selected for the Selected section: a point, or a bone (by body or ball). */
 static bool anything_selected(const std::vector<Layer *> &layers)
 {
   for (const Layer *l : layers) {
+    if (l->id == CAMERA_LAYER_ID && l->selected) {
+      return true;
+    }
     for (const MeshPoint &p : l->drawing.points) {
       if (p.selected) {
         return true;
@@ -1273,6 +1279,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     row.depth = depth;
     row.fold = fold;
     row.open = !fold.empty() && (open_all || row_open(area, fold, fold_default));
+    row.fold_default = fold_default;
     row.selected = red;
     row.layer = layer;
     rows.push_back(std::move(row));
@@ -1342,6 +1349,18 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   const uint32_t props = KEY_LAYER | KEY_CONSTRAINTS | KEY_SIMULATION;
   const uint32_t bone_motion = KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
   const uint32_t motion = bone_motion | KEY_POINTS;
+  /* Selected: the motion of the selected points and bones, and the picked camera's Position, Zoom and
+   * Roll (a layer's own transform is a prop, so only the camera's pass as selected). */
+  const KeyFilter selected_motion{motion | KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
+  const auto camera_rows = [&](int depth) {
+    const KeyFilter camera{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
+    for (Layer *l : owned) {
+      if (l->id == CAMERA_LAYER_ID && keyed({l}, camera) && add("Camera", {l}, camera, depth, "sel:camera", true, true, 0))
+      {
+        property_rows(l, camera, depth + 1, false, true);
+      }
+    }
+  };
 
   if (!area.timeline_by_kind) {
     /* Props, by owner: each layer (Transform, Opacity, Visibility, its bones' constraint settings),
@@ -1404,7 +1423,8 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
       }
     }
-    if (anything_selected(owned) && add("Selected", owned, KeyFilter{motion, true}, 0, "sel", true, true, 0)) {
+    if (anything_selected(owned) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+      camera_rows(1);
       for (Layer *l : owned) {
         for (const Bone &b : l->bones) {
           const KeyFilter one = bone_filter(b, bone_motion, true);
@@ -1482,7 +1502,8 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
     bones_and_points(false, 1, "");
   }
-  if (anything_selected(owned) && add("Selected", owned, KeyFilter{motion, true}, 0, "sel", true, true, 0)) {
+  if (anything_selected(owned) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+    camera_rows(1);
     bones_and_points(true, 1, "sel_");
   }
   return rows;
@@ -1739,7 +1760,7 @@ static void timeline_body(Area &area, Context &C)
                         {{"layer", std::to_string(row.pin_layer)}, {"paths", row.pin_path}, {"pinned", "0"}});
         }
         else if (!row.fold.empty() && (on_arrow || !row.layer)) {
-          area.timeline_open[row.fold] = !row.open;
+          ui_fold_record("Timeline/" + row.fold, row.fold_default, !row.open);
         }
         else if (row.layer) {
           doc.active_layer = row.layer;

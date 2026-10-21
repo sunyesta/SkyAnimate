@@ -110,6 +110,15 @@ class _Layer:
         return _Layer(source) if source else None
 
     @property
+    def selected(self):
+        """Picked in the Layers editor (with the active layer, the layers edited together)."""
+        return _sky.layer_is_selected(self._id)
+
+    @selected.setter
+    def selected(self, value):
+        _sky.layer_set_selected(self._id, bool(value))
+
+    @property
     def points(self):
         """[(x, y, selected), ...] for the drawing the layer shows."""
         return _sky.layer_points(self._id)
@@ -173,6 +182,13 @@ class _Layer:
         """Add a box or circle as the Shape tool draws them: kind "BOX" or "CIRCLE", points = the
         drag's two corners. The new points become the selection. False if too small to draw."""
         return _sky.layer_add_primitive(self._id, kind, points, fill)
+
+    @property
+    def detail(self):
+        """Detail levels: {"levels": each point's level (0: its own points, 1 and up: detail the
+        knife added), "hidden": each point hidden at its shape's level, "shape_levels": each shape's
+        edit level, "shape_max_levels": each shape's highest detail level}."""
+        return dict(_sky.layer_detail(self._id))
 
     def shape_outline(self, index, steps=16):
         """(points, closed): shape `index`'s outline as drawn, `steps` samples per curve segment."""
@@ -554,6 +570,55 @@ class _Layers:
         _sky.layer_set_active(layer.id)
 
 
+class _Camera(_Layer):
+    """The camera: what renders show, a frame on the infinite canvas (zoom 1 at the origin is 2
+    units tall). A layer outside the tree, for keyframes(path) and anim.keyframe_toggle with
+    "position" (its centre), "rotation" (its roll, degrees) and "zoom" (whose keys hold log2 of the
+    zoom, so it changes at a steady rate between them). `selected`: picked, the viewport looks
+    through it."""
+
+    def __init__(self):
+        super().__init__(2 ** 64 - 3)
+
+    @property
+    def position(self):
+        return (self.location_x, self.location_y)
+
+    @position.setter
+    def position(self, value):
+        self.location_x, self.location_y = value
+
+    @property
+    def zoom(self):
+        return _sky.context().document.camera_zoom
+
+    @zoom.setter
+    def zoom(self, value):
+        _sky.context().document.camera_zoom = value
+
+    @property
+    def roll(self):
+        return _sky.context().document.camera_roll
+
+    @roll.setter
+    def roll(self, value):
+        _sky.context().document.camera_roll = value
+
+    def to_frame(self, point):
+        """Where a document point is in the camera's frame, as renders see it: the frame is
+        [-aspect, aspect] x [-1, 1]."""
+        return _sky.camera_to_frame(point[0], point[1])
+
+    @property
+    def passepartout(self):
+        """How dark the canvas outside the frame is in the viewport, 0 to 1."""
+        return _sky.context().document.camera_passepartout
+
+    @passepartout.setter
+    def passepartout(self, value):
+        _sky.context().document.camera_passepartout = value
+
+
 class _Data:
     """All saved data: the document, its layers and its text blocks."""
 
@@ -567,6 +632,11 @@ class _Data:
         "wind_direction", "wind_gusts", "wind_gust_speed", "wind_turbulence"): a layer outside the
         tree, for keyframes(path) and anim.keyframe_toggle(layer=str(simulation.id), paths=...)."""
         return _Layer(2 ** 64 - 2)
+
+    @property
+    def camera(self):
+        """The camera (see _Camera)."""
+        return _Camera()
 
     @property
     def draw_order(self):

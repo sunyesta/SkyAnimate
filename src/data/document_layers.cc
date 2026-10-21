@@ -6,6 +6,7 @@
 #include "data/document.hh"
 
 #include "data/bones.hh"
+#include "data/camera.hh"
 
 namespace sky {
 
@@ -27,6 +28,9 @@ Layer *layer_find(Document &doc, uint64_t id)
   if (id == SIMULATION_LAYER_ID) {
     return &doc.simulation;
   }
+  if (id == CAMERA_LAYER_ID) {
+    return &document_camera(doc);
+  }
   return id ? find_in<Layer>(doc.layers, id) : nullptr;
 }
 
@@ -34,6 +38,9 @@ const Layer *layer_find(const Document &doc, uint64_t id)
 {
   if (id == SIMULATION_LAYER_ID) {
     return &doc.simulation;
+  }
+  if (id == CAMERA_LAYER_ID) {
+    return &doc.camera;
   }
   return id ? find_in<const Layer>(doc.layers, id) : nullptr;
 }

@@ -50,6 +50,10 @@ class App {
   void handle_event(const SDL_Event &event);
   void playback_update();
   void draw_ui();
+  /* A selection changed with no undo step of its own gets one ("Select"), once the mouse is up. */
+  void record_selection();
+  uint64_t selection_seen_changes_ = ~uint64_t(0);
+  uint64_t selection_seen_ = 0;
   void draw_top_bar();
   void build_default_layout(Workspace &workspace, unsigned int dockspace_id);
   Workspace workspace_new(const std::string &name, WorkspaceKind kind);

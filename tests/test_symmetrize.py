@@ -1,0 +1,119 @@
+"""Symmetrize (right-click on points): one side's selected points copied onto their partners across
+the layer's vertical axis, paired by where each reflection lands nearest; points on the axis snap
+onto it with even handles (flat when nearly flat); uneven sides change nothing, warn in the status
+bar and select the points without a partner; posed frames mirror the pose. Then the
+ViewportActionPanel's redo: changing Direction runs it again in place of the first run.
+
+Run with:  SkyAnimate --background --python tests/test_symmetrize.py
+"""
+
+import math
+
+import sky
+
+doc = sky.data.document
+layers = sky.data.layers
+doc.frame_current = 0
+doc.auto_key = True
+
+
+def close(a, b, eps=1e-4):
+    if isinstance(a, (tuple, list)):
+        return all(abs(x - y) < eps for x, y in zip(a, b))
+    return abs(a - b) < eps
+
+
+layer = layers.active
+# A face-like loop: top and bottom on the axis (one a hair off it), two hand-drawn points each side.
+shape = [(0.003, 1.0), (0.8, 0.7), (1.0, -0.2), (0.0, -1.0), (-1.1, -0.25), (-0.75, 0.75)]
+layer.add_curve(shape, closed=True, fill=True)
+sky.ops.mesh.select_all()
+
+
+def where(i):
+    return tuple(layer.points[i][:2])
+
+
+def handles(i):
+    """Point i's (in, out) handles as offsets from it (curve 0, curve point i)."""
+    _, hin, hout = layer.curve_handles(0)[i]
+    p = where(i)
+    return (hin[0] - p[0], hin[1] - p[1]), (hout[0] - p[0], hout[1] - p[1])
+
+
+# --- Right to Left (the default) ------------------------------------------------------------------
+assert sky.ops.mesh.symmetrize() == {'FINISHED'}
+assert close(where(5), (-0.8, 0.7)) and close(where(4), (-1.0, -0.2)), (where(4), where(5))
+assert close(where(1), (0.8, 0.7)) and close(where(2), (1.0, -0.2)), "the source side stays"
+assert close(where(0)[0], 0.0) and close(where(3)[0], 0.0), "on the axis: snapped onto it"
+# Mirror images run the other way round the loop: point 5's out handle is point 1's in, reflected.
+in1, out1 = handles(1)
+in5, out5 = handles(5)
+assert close(out5, (-in1[0], in1[1]), 1e-3) and close(in5, (-out1[0], out1[1]), 1e-3), (handles(1), handles(5))
+# The top point's handles mirror each other.
+in0, out0 = handles(0)
+assert close(in0, (-out0[0], out0[1]), 1e-3), handles(0)
+
+# --- The ViewportActionPanel: change Direction, and it runs again in place of the first run -----------
+last = sky.wm.last_operation()
+assert last is not None and last[0] == "mesh.symmetrize" and last[1]["direction"] == "RIGHT_TO_LEFT", last
+assert sky.wm.redo_last(direction="LEFT_TO_RIGHT") == "FINISHED"
+assert close(where(1), (0.75, 0.75)) and close(where(2), (1.1, -0.25)), "the left side copied to the right now"
+assert close(where(5), (-0.75, 0.75)), "the left side stays"
+assert sky.wm.last_operation()[1]["direction"] == "LEFT_TO_RIGHT"
+history = sky.wm.undo_history()[0]
+assert history.count("Symmetrize") == 1, ("one step, not two", history)
+sky.ops.ed.undo()
+assert close(where(5), (-0.75, 0.75)) and close(where(1), (0.8, 0.7)) and close(where(0), (0.003, 1.0)), \
+    "one undo: as before Symmetrize"
+assert sky.wm.last_operation() is None, "an undo leaves nothing to adjust"
+
+# --- Uneven sides: nothing changes, a warning, the odd one selected ---------------------------------------
+sky.ops.mesh.select_none()
+layer.select_points([1, 2, 5])
+before = [where(i) for i in range(6)]
+shown = sky.wm.banner_report()[0]
+assert sky.ops.mesh.symmetrize() == {'CANCELLED'}
+assert [where(i) for i in range(6)] == before, "nothing moved"
+report = sky.wm.banner_report()
+assert report[0] > shown and report[1] == "WARNING" and "2 on the right, 1 on the left" in report[4], report
+selected = [i for i, p in enumerate(layer.points) if p[2]]
+assert len(selected) == 1 and selected[0] in (1, 2), ("the point without a partner", selected)
+
+# --- One point on the axis: just its handles, flat when nearly flat --------------------------------------
+sky.ops.layer.new()
+line = layers.active
+line.add_curve([(-1.0, 0.1), (0.0, 0.0), (1.0, -0.05)])
+layer = line
+sky.ops.mesh.select_none()
+here = where(1)
+line.move_handle(0, 1, "OUT", (here[0] + 0.4, here[1] + 0.03))  # 4 degrees off flat (the in handle turns too)
+line.select_points([1])
+assert sky.ops.mesh.symmetrize() == {'FINISHED'}
+hin, hout = handles(1)
+assert close(hout, (0.4, 0.0), 1e-3) and close(hin, (-0.4, 0.0), 1e-3), ("flat and even", hin, hout)
+# A point off the axis alone can't be symmetrized.
+sky.ops.mesh.select_none()
+line.select_points([2])
+assert sky.ops.mesh.symmetrize() == {'CANCELLED'}
+
+# --- Posed: the pose is mirrored, not the drawing ----------------------------------------------------------
+sky.ops.layer.new()
+pose = layers.active
+pose.add_curve([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)])
+layer = pose
+sky.ops.mesh.select_none()
+doc.frame_current = 10
+pose.set_point(0, (1.2, 0.3))
+doc.frame_current = 11
+doc.frame_current = 10
+pose.select_points([0, 2])
+assert sky.ops.mesh.symmetrize() == {'FINISHED'}
+assert close(where(2), (-1.2, 0.3)), where(2)
+doc.frame_current = 11
+k = [(x["frame"], tuple(x["value"])) for x in pose.keyframes("points[2].pos")]
+assert [f for f, v in k] == [0, 10] and close(k[1][1], (-0.2, 0.3)), ("keyed as its Transform", k)
+doc.frame_current = 0
+assert close(where(2), (-1.0, 0.0)), "its setup stays"
+
+print("Symmetrize tests passed")

@@ -22,6 +22,21 @@ enum OperatorFlag : unsigned {
   OPTYPE_UNDO = 1 << 1,
 };
 
+/* An option an operator shows in the ViewportActionPanel after it runs (Blender's operator
+ * properties in Adjust Last Operation): changing it there runs the operator again with it. Values
+ * travel as OpArgs strings, as every argument does. */
+struct OpProperty {
+  enum class Kind { Enum, Bool, Float };
+  std::string name;
+  std::string label;
+  std::string description;
+  Kind kind = Kind::Enum;
+  /* Enum: (identifier, label) pairs. */
+  std::vector<std::pair<std::string, std::string>> items;
+  std::string fallback;
+  float min = 0.0f, max = 1.0f, step = 0.01f;
+};
+
 struct OperatorType {
   /* "category.name", e.g. "ed.undo". */
   std::string idname;
@@ -33,6 +48,8 @@ struct OperatorType {
   /* Optional: returns false when the operator can't run in this context. */
   std::function<bool(Context &C)> poll;
   std::function<OpStatus(Context &C)> exec;
+  /* Options for the ViewportActionPanel; with some, an undoable run can be redone with others. */
+  std::vector<OpProperty> props;
 };
 
 class OperatorRegistry {
@@ -59,5 +76,18 @@ bool operator_poll(Context &C, const OperatorType &ot);
 OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args = {});
 
 const char *op_status_name(OpStatus status);
+
+/* The last operator run, if it can be adjusted (Blender's last redo): an undoable operator with
+ * options, run from the editor `area`, that nothing has changed the document after. Its args have
+ * every option, the ones not given at their defaults. */
+struct LastOperation {
+  std::string idname;
+  OpArgs args;
+  std::string area;
+  uint64_t change_count = 0;
+};
+const LastOperation *operator_last_redo(const Context &C);
+/* Runs it again with `args` instead: undoes its step, then runs it with them. */
+OpStatus operator_redo_last(Context &C, const OpArgs &args);
 
 }  // namespace sky

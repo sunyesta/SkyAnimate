@@ -15,12 +15,26 @@ namespace sky {
 
 struct Context;
 struct Document;
+class UndoStack;
 struct Layer;
 struct WindowManager;
 
 /* A collapsible panel with a two-column (label, value) table. Call ui_panel_end() only when
  * this returns true. */
 bool ui_panel_begin(const char *title, bool default_open = true);
+/* Panels open or folded as the project keeps them (Document::ui_open, saved with it): the editors
+ * get the project each frame (ui_bind_project). `key` is "<editor>/<panel>"; ui_fold_scope() is the
+ * editor of the window being drawn ("Properties"). ui_fold_next() opens or folds the next
+ * collapsing header or tree node as kept; ui_fold_record() keeps what it shows (changing it is
+ * unsaved). */
+void ui_bind_project(Document *doc, UndoStack *undo);
+std::string ui_fold_scope();
+bool ui_fold_state(const std::string &key, bool default_open);
+void ui_fold_record(const std::string &key, bool default_open, bool open);
+void ui_fold_next(const std::string &key, bool default_open);
+/* ImGui::CollapsingHeader, open or folded as the project keeps it (keyed by this window's editor
+ * and `label`). */
+bool ui_collapsing_header(const char *label, bool default_open);
 
 /* Drag-and-drop reordering, as the Layers editor shows it: no yellow box, a blue line where the
  * dragged item will go. */
@@ -71,9 +85,10 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
                   const char *first_prefix, const char *second, const char *second_prefix, const char *python_path);
 
 /* A colour row inside a panel; returns true when the colour changed. */
-/* The latest report_at_mouse, beside the cursor where it happened: a yellow warning box (red for an
- * error) that stays until a click (or Esc) puts it away. Drawn over everything, once a frame. */
-void ui_mouse_report_draw();
+/* The status bar along the bottom of the window (Blender's), with its reports banner: the latest
+ * report, coloured by type, for a few seconds; hovering shows all of it, clicking lists the recent
+ * ones. Drawn before the docking space, which then sits above it. */
+void ui_status_bar_draw();
 /* A square revert button (a curved arrow turning back), `tooltip` on hover. True when clicked. */
 bool ui_revert_button(const char *id, const char *tooltip);
 /* How much room a revert button takes after a field (its width and the gap before it). */

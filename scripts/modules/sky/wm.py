@@ -14,16 +14,60 @@ def event_simulate(type, *, ctrl=False, shift=False, alt=False, area="", typing=
 
 def debug_crash():
     """Crash SkyAnimate on purpose, to try its crash report (written to
-    %LOCALAPPDATA%\SkyAnimate\crashes). Unsaved work is lost: save first."""
+    %LOCALAPPDATA%\\SkyAnimate\\crashes). Unsaved work is lost: save first."""
     _sky.debug_crash()
 
 
 def properties_tab(tab):
     """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "DRAWING"
-    (Armature for a bone layer), "MODIFIERS", "CONSTRAINTS" (Bone Constraints), "REFERENCE" (a reference's)
-    or "MASKING"."""
+    (Armature for a bone layer), "MODIFIERS", "CONSTRAINTS" (Bone Constraints), "REFERENCE" (a reference's),
+    "MASKING" or "CAMERA" (the picked camera's)."""
     _sky.properties_tab(["DOCUMENT", "LAYER", "DRAWING", "MODIFIERS", "CONSTRAINTS", "REFERENCE",
-                         "MASKING"].index(tab.upper()))
+                         "MASKING", "CAMERA"].index(tab.upper()))
+
+
+def overlays():
+    """The project's Viewport Overlays (saved with it): a dict of its switches ("show", "grid",
+    "cursor", "camera_frame", "info", "wireframe", "points", "mask_outlines", "relationship_lines",
+    "physics_ghosts", "live_physics", "bone_shapes", "detail_cage") and "handles" ("NONE",
+    "SELECTED", "SHAPE", "ALL") and "armature" ("OFF", "SELECTED", "ON")."""
+    return dict(_sky.overlays())
+
+
+def ui_open():
+    """Panels and folding rows the project keeps open or folded (saved with it), by
+    "<editor>/<panel>" ("Properties/Transform", "Timeline/<row>", "Viewport Overlays/Guides"): only
+    those not at their default."""
+    return dict(_sky.ui_open())
+
+
+def set_ui_open(key, open=True):
+    """Open or fold a panel as clicking its header does (kept by the project)."""
+    _sky.set_ui_open(key, bool(open))
+
+
+def set_overlay(name, on=True):
+    """Set a Viewport Overlays setting of the project: a switch by name to True or False, or "handles"
+    / "armature" to one of their values."""
+    _sky.set_overlay(name, on if isinstance(on, str) else bool(on))
+
+
+def last_operation():
+    """The operator the ViewportActionPanel adjusts, as (idname, args, editor it ran in), or None
+    when there's nothing to adjust (the last action wasn't one with options, or something changed
+    since)."""
+    return _sky.last_operation()
+
+
+def redo_last(**args):
+    """Run the last operation again with some options changed, as changing them in the
+    ViewportActionPanel does (its step is undone first). Returns "FINISHED" or "CANCELLED"."""
+    last = _sky.last_operation()
+    if last is None:
+        return "CANCELLED"
+    merged = dict(last[1])
+    merged.update({k: ("1" if v is True else "0" if v is False else str(v)) for k, v in args.items()})
+    return _sky.redo_last(merged)
 
 
 def properties_flash():
@@ -58,10 +102,11 @@ def undo_history():
     return _sky.undo_history()
 
 
-def mouse_report():
-    """The last warning shown at the mouse, as (how many have been shown, title, message): a
-    test compares the count before and after to see whether an action showed one."""
-    return _sky.mouse_report()
+def banner_report():
+    """The report the status bar shows, as (how many have been shown, type ("INFO", "WARNING" or
+    "ERROR"), title, message, hint): a test compares the count before and after to see whether an
+    action reported something."""
+    return _sky.banner_report()
 
 
 def report(message, type="INFO"):

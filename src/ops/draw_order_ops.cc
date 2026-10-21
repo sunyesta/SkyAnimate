@@ -85,7 +85,7 @@ static bool set_rule(Context &C, Layer &layer, const DrawOrderRule &rule)
       return false;
     }
     if (layer_inside(doc, rule.target, layer.id) || layer_inside(doc, layer.id, rule.target)) {
-      report_at_mouse(ReportType::Warning, "\"" + layer.name + "\" and \"" + target->name + "\": one holds the other",
+      report_banner(ReportType::Warning, "\"" + layer.name + "\" and \"" + target->name + "\": one holds the other",
                       "A layer goes in front of or behind a layer outside it", "Can't order a layer with its group");
       return false;
     }

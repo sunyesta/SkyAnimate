@@ -24,6 +24,8 @@
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
 #include "data/bones.hh"
+#include "data/camera.hh"
+#include "data/detail.hh"
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "editors/ui.hh"
@@ -77,14 +79,81 @@ struct ViewMapping {
   }
 };
 
+/* The view's zoom range (screen pixels per document unit): the canvas is infinite. */
+static constexpr float VIEW_ZOOM_MIN = 1e-3f, VIEW_ZOOM_MAX = 1e7f;
+
+/* The zoom that fits the camera's frame (turned with its roll) in a region of `size`, with a margin. */
+static float camera_fit_zoom(const Document &doc, ImVec2 size)
+{
+  const float2 half = camera_half_size(doc);
+  const float roll = doc.camera.rotation * PI / 180.0f;
+  const float c = std::fabs(std::cos(roll)), s = std::fabs(std::sin(roll));
+  const float hx = half.x * c + half.y * s, hy = half.x * s + half.y * c;
+  return std::clamp(std::min(size.x / (2.0f * hx * 1.15f), size.y / (2.0f * hy * 1.15f)), VIEW_ZOOM_MIN, VIEW_ZOOM_MAX);
+}
+
+/* Home: the view frames the camera. */
 static void view_fit(Area &area, const Document &doc, ImVec2 size)
 {
-  const float aspect = float(doc.width) / float(std::max(doc.height, 1));
-  area.view_center_x = 0.0f;
-  area.view_center_y = 0.0f;
-  area.view_zoom = std::max(1.0f, std::min(size.x / (2.0f * aspect * 1.15f), size.y / (2.0f * 1.15f)));
+  area.view_center_x = doc.camera.position.x;
+  area.view_center_y = doc.camera.position.y;
+  area.view_zoom = camera_fit_zoom(doc, size);
   area.view_fit_width = size.x;
   area.view_fit_height = size.y;
+}
+
+/* The camera's frame on screen: bottom left, bottom right, top right, top left. */
+static void camera_frame_screen(const Document &doc, const ViewMapping &view, ImVec2 r_corners[4])
+{
+  float2 corners[4];
+  camera_frame_corners(doc, corners);
+  for (int i = 0; i < 4; i++) {
+    r_corners[i] = view.to_screen(corners[i]);
+  }
+}
+
+/* How far `mouse` is from the camera frame's border, in screen pixels. */
+static float camera_border_distance(const Document &doc, const ViewMapping &view, ImVec2 mouse)
+{
+  ImVec2 q[4];
+  camera_frame_screen(doc, view, q);
+  float best = FLT_MAX;
+  for (int i = 0; i < 4; i++) {
+    const float2 a(q[i].x, q[i].y), b(q[(i + 1) % 4].x, q[(i + 1) % 4].y), m(mouse.x, mouse.y);
+    const float2 ab = b - a;
+    const float t = std::clamp(dot(m - a, ab) / std::max(dot(ab, ab), 1e-12f), 0.0f, 1.0f);
+    best = std::min(best, distance(m, a + ab * t));
+  }
+  return best;
+}
+
+/* Darkens the canvas outside the camera's frame (Blender's passepartout): four trapezoids from the
+ * frame's edges out to the frame grown far past the region, so they meet without overlapping. */
+static void draw_passepartout(ImDrawList *dl, const ImVec2 q[4], ImVec2 origin, ImVec2 size, float strength)
+{
+  if (strength <= 0.0f) {
+    return;
+  }
+  const ImU32 col = IM_COL32(0, 0, 0, int(std::clamp(strength, 0.0f, 1.0f) * 255.0f + 0.5f));
+  const ImVec2 c((q[0].x + q[2].x) * 0.5f, (q[0].y + q[2].y) * 0.5f);
+  const auto length = [](ImVec2 v) { return std::sqrt(v.x * v.x + v.y * v.y); };
+  const float half = 0.5f * std::min(length(q[1] - q[0]), length(q[3] - q[0]));
+  if (half < 1e-3f) {
+    dl->AddRectFilled(origin, origin + size, col);
+    return;
+  }
+  const ImVec2 middle = origin + size * 0.5f;
+  const float reach = length(middle - c) + length(size);
+  const float grow = std::max(2.0f, 2.0f * reach / half + 2.0f);
+  /* Without anti-aliasing the trapezoids' shared sides leave no seams. */
+  const ImDrawListFlags flags = dl->Flags;
+  dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+  for (int i = 0; i < 4; i++) {
+    const ImVec2 a = q[i], b = q[(i + 1) % 4];
+    const ImVec2 quad[4] = {a, c + (a - c) * grow, c + (b - c) * grow, b};
+    dl->AddConvexPolyFilled(quad, 4, col);
+  }
+  dl->Flags = flags;
 }
 
 /* ---------------------------------------------------------------------------------
@@ -193,6 +262,7 @@ static std::map<int, std::unique_ptr<SceneRenderer>> g_renderers;
 static void weight_paint_header(Context &C);
 static void weight_select_header(Context &C);
 static void transform_bones_header(Context &C);
+static void transform_points_header(Context &C);
 
 /* A layer's own drawing where its points show: moved by the bones (Blender's "on cage"). Points
  * keep their indices, so what is picked here is the same point in the stored drawing. */
@@ -299,6 +369,10 @@ static const std::vector<bool> &shape_handle_points(const VectorDrawing &drawing
 
 static bool handle_visible(const VectorDrawing &drawing, const CurvePoint &cp, HandleDisplay display)
 {
+  /* Detail above its curve's edit level shows nothing to edit. */
+  if (drawing.points[cp.point].detail.hidden) {
+    return false;
+  }
   switch (display) {
     case HandleDisplay::None:
       return false;
@@ -450,6 +524,19 @@ static void tool_icon(ImDrawList *dl, Tool tool, ImVec2 c, float s, ImU32 col)
       dl->AddConvexPolyFilled(quad, 4, col);
       break;
     }
+    case Tool::TransformPoints: {
+      /* A box with corner handles around three points on a curve. */
+      dl->AddRect(c - ImVec2(s * 0.8f, s * 0.8f), c + ImVec2(s * 0.8f, s * 0.8f), col, 0.0f, 0, t * 0.8f);
+      for (const ImVec2 k : {ImVec2(-1, -1), ImVec2(1, -1), ImVec2(1, 1), ImVec2(-1, 1)}) {
+        dl->AddCircleFilled(c + k * (s * 0.8f), s * 0.2f, col);
+      }
+      const ImVec2 a = c + ImVec2(-s * 0.45f, s * 0.3f), m = c + ImVec2(0, -s * 0.3f), b = c + ImVec2(s * 0.45f, s * 0.3f);
+      dl->AddBezierQuadratic(a, m, b, col, t * 0.8f);
+      for (const ImVec2 q : {a, c + ImVec2(0, 0), b}) {
+        dl->AddCircleFilled(q, s * 0.16f, col);
+      }
+      break;
+    }
     case Tool::WeightSelect: {
       /* A dashed selection box around blue, green and red points. */
       const ImVec2 a = c - ImVec2(s * 0.85f, s * 0.85f), b = c + ImVec2(s * 0.85f, s * 0.85f);
@@ -523,6 +610,12 @@ static const ToolInfo TOOLS[] = {
      "it (Ctrl snaps to bone ends). Outside: click or drag a box to select (Shift adds, Alt removes). "
      "Unselected children stay where they are",
      "wm.tool_transform_bones"},
+    {Tool::TransformPoints, "Transform Points",
+     "A box around the selected points, as Transform Bones has for bones: drag inside to move, around it to turn "
+     "about the pivot, a handle to scale (Alt: from the pivot, Shift: keep proportions), the pivot to move it "
+     "(Ctrl snaps to a point). Shift while moving keeps to one axis, Ctrl snaps to a point. Outside: click or "
+     "drag a box to select (Shift adds, Ctrl removes)",
+     "wm.tool_transform_points"},
     {Tool::WeightSelect, "Weight Select",
      "Select points to give weights to: click or drag a box (Shift adds, Ctrl removes). Ctrl-click a bone to "
      "make it active. The header has Automatic Weights (as Blender's), Assign, Remove and Normalize",
@@ -583,6 +676,8 @@ static bool tool_available(Tool tool, const Layer *active, bool in_bone_layer)
       return !bones;
     case Tool::TransformBones:
       return bones;
+    case Tool::TransformPoints:
+      return !bones;
     case Tool::WeightSelect:
     case Tool::WeightPaint:
       break;
@@ -800,14 +895,16 @@ static void overlay_checkbox_pair(const char *a, bool *va, const char *b, bool *
 static bool overlay_section(const char *title)
 {
   ImGui::Spacing();
-  return ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen |
-                                      ImGuiTreeNodeFlags_SpanAvailWidth);
+  const std::string key = std::string("Viewport Overlays/") + title;
+  ui_fold_next(key, true);
+  const bool open = ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+  ui_fold_record(key, true, open);
+  return open;
 }
 
 /* The overlays toggle and the arrow that opens their settings, like Blender's. */
-static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_w)
+static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, float arrow_w)
 {
-  ViewportOverlays &ov = area.overlays;
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetStyle().FrameRounding);
   /* Pop by the state the colour was pushed for: the click below may change it. */
   const bool highlighted = ov.show;
@@ -871,6 +968,18 @@ static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_
       ImGui::SetTooltip("Which curve handles to show: none, the selected points', every handle of the shapes you're "
                         "working on (any of whose points is selected), or all of them");
     }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
+    ImGui::Checkbox("Mask Outlines", &ov.mask_outlines);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Outline the active layer's mask layers, dashed and labelled (\"inside head\").\n"
+                        "Off: they only show while a mask's symbol or Layers field is under the mouse.");
+    }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
+    ImGui::Checkbox("Detail Cage", &ov.detail_cage);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Draw the curve each shape is edited at (without the detail above its level) faintly.\n"
+                        "Off: it only shows while points move.");
+    }
   }
   if (overlay_section("Armature")) {
     ImGui::AlignTextToFramePadding();
@@ -884,6 +993,11 @@ static void overlays_buttons(Area &area, ToolSettings &ts, float h, float arrow_
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Which bones to show: none, those of selected bone layers, or every bone layer's");
+    }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
+    ImGui::Checkbox("Relationship Lines", &ov.relationship_lines);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("A dashed line from each bone that isn't connected to its parent's tip");
     }
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
     ImGui::Checkbox("Physics Ghosts", &ov.physics_ghosts);
@@ -923,6 +1037,73 @@ static bool header_toggle(const char *label, bool on, const char *tooltip)
     ImGui::SetTooltip("%s", tooltip);
   }
   return pressed;
+}
+
+/* The selected shapes' detail level (data/detail.hh): `r_level` -1 when they differ, `r_top` the
+ * highest level among them. False when no shape is selected. */
+static bool selected_shapes_detail(Context &C, int *r_level, int *r_top)
+{
+  bool any = false;
+  *r_level = 0;
+  *r_top = 0;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->is_reference()) {
+      continue;
+    }
+    const VectorDrawing &drawing = layer->drawing;
+    const std::vector<bool> selected = drawing_selected_shapes(drawing);
+    for (size_t s = 0; s < drawing.shapes.size(); s++) {
+      if (!selected[s]) {
+        continue;
+      }
+      const Shape &shape = drawing.shapes[s];
+      if (!any) {
+        *r_level = shape.detail_level;
+      }
+      else if (*r_level != shape.detail_level) {
+        *r_level = -1;
+      }
+      *r_top = std::max({*r_top, shape_detail_max_level(drawing, shape), shape.detail_level});
+      any = true;
+    }
+  }
+  return any;
+}
+
+/* Detail ‹ 1 / 3 ›: the selected shapes' detail level, stepped with the arrows, dragged or typed. */
+static void detail_header(Context &C)
+{
+  int level = 0, top = 0;
+  if (!selected_shapes_detail(C, &level, &top)) {
+    return;
+  }
+  ImGui::SameLine(0, 14);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Detail");
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The selected shapes' detail level: their curves show their points up to it, and the knife "
+                      "(K) adds detail points at it. One past the highest is an empty level to add detail at "
+                      "(Ctrl 0 to Ctrl 4, Alt Page Up / Page Down)");
+  }
+  ImGui::SameLine(0, 4);
+  if (ImGui::ArrowButton("##detail_down", ImGuiDir_Left)) {
+    operator_call(C, "mesh.detail_level_set", {{"delta", "-1"}});
+  }
+  ImGui::SameLine(0, 2);
+  int value = std::max(level, 0);
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 1.6f);
+  if (ImGui::DragInt("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, level < 0 ? "-" : "%d",
+                     ImGuiSliderFlags_AlwaysClamp) &&
+      value != level)
+  {
+    operator_call(C, "mesh.detail_level_set", {{"level", std::to_string(value)}});
+  }
+  ImGui::SameLine(0, 4);
+  ImGui::Text("/ %d", top);
+  ImGui::SameLine(0, 4);
+  if (ImGui::ArrowButton("##detail_up", ImGuiDir_Right)) {
+    operator_call(C, "mesh.detail_level_set", {{"delta", "1"}});
+  }
 }
 
 static bool color_swatch(const char *id, Color &color, const char *tooltip)
@@ -1239,6 +1420,12 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     case Tool::TransformBones:
       transform_bones_header(C);
       break;
+    case Tool::TransformPoints:
+      transform_points_header(C);
+      break;
+  }
+  if (editable_points) {
+    detail_header(C);
   }
 
   /* On the right, as in Blender: snapping, then the overlays toggle and its dropdown. */
@@ -1299,14 +1486,32 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     proportional_buttons(ts, h, arrow_w);
   }
   ImGui::SameLine(0.0f, h * 0.6f);
-  overlays_buttons(area, ts, h, arrow_w);
+  overlays_buttons(C.document->overlays, ts, h, arrow_w);
 }
 
 /* ---------------------------------------------------------------------------------
  * Modal transform (G, R, S, E)
  */
 
+/* The points and handles a transform moves, gathered into `modal` (as modal_start does, without
+ * starting the modal: the Transform Points gizmo uses it too). False when nothing can move; then the
+ * document is as it was. */
+static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_document, ModalTransform &modal);
+
 static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document)
+{
+  ModalTransform modal;
+  if (!modal_collect(C, area, kind, mouse_document, modal)) {
+    return false;
+  }
+  modal.active = true;
+  g_modal = std::move(modal);
+  C.wm->modal_running = true;
+  C.wm->modal_keys.clear();
+  return true;
+}
+
+static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_document, ModalTransform &modal)
 {
   /* A reference's points move only when unlocked (Points: Editable), and never get new ones (Extrude). */
   std::vector<Layer *> layers;
@@ -1328,17 +1533,16 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
   /* Said whenever a copy's selected points stay put, even while other layers' points move. */
   if (held_picked || (layers.empty() && held)) {
     if (kind == 'E') {
-      report_at_mouse(ReportType::Warning, "A copy (reference layer) can't get new points: Break Reference to change its drawing");
+      report_banner(ReportType::Warning, "A copy (reference layer) can't get new points: Break Reference to change its drawing");
     }
     else {
-      report_at_mouse(ReportType::Warning, "This copy's points are locked: unlock them in the Reference tab",
+      report_banner(ReportType::Warning, "This copy's points are locked: unlock them in the Reference tab",
                       "Go to the Reference tab in Properties to unlock", "Reference layer points locked");
     }
   }
   if (layers.empty()) {
     return false;
   }
-  ModalTransform modal;
   modal.snapshot = *C.document;
   modal.area = area.id;
   modal.kind = kind == 'E' ? 'G' : kind;
@@ -1385,7 +1589,7 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
     }
     if (!any) {
       *C.document = modal.snapshot;
-      report_at_mouse(ReportType::Warning, "Extrude works from the ends of open curves");
+      report_banner(ReportType::Warning, "Extrude works from the ends of open curves");
       return false;
     }
   }
@@ -1442,7 +1646,7 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
         }
       }
       for (int i = 0; i < int(drawing.points.size()); i++) {
-        if (taken[i] || drawing.points[i].selected || !std::isfinite(reach[i])) {
+        if (taken[i] || drawing.points[i].selected || drawing.points[i].detail.hidden || !std::isfinite(reach[i])) {
           continue;
         }
         ModalTransform::Item item{layer->id, i, places[i]};
@@ -1455,7 +1659,8 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
       }
     }
     const auto dragged_along = [&](int point) {
-      return !reach.empty() && !drawing.points[point].selected && std::isfinite(reach[point]);
+      return !reach.empty() && !drawing.points[point].selected && !drawing.points[point].detail.hidden &&
+             std::isfinite(reach[point]);
     };
     /* Handles after the points, so they're placed once their points have moved. */
     for (int c = 0; c < int(drawing.curves.size()); c++) {
@@ -1510,10 +1715,6 @@ static bool modal_start(Context &C, Area &area, char kind, float2 mouse_document
   }
   modal.start_mouse = mouse_document;
   modal.last_mouse = mouse_document;
-  modal.active = true;
-  g_modal = std::move(modal);
-  C.wm->modal_running = true;
-  C.wm->modal_keys.clear();
   return true;
 }
 
@@ -1545,76 +1746,123 @@ static bool modal_key_take(Context &C, const char *type, bool any_modifiers = fa
   return false;
 }
 
+/* Each moved item's layer, and its way from document space into that layer. False when one is gone. */
+using ModalLayers = std::map<uint64_t, std::pair<Layer *, Transform2D>>;
+static bool modal_layers(Context &C, const ModalTransform &modal, ModalLayers &r_layers)
+{
+  for (const ModalTransform::Item &item : modal.items) {
+    if (!r_layers.count(item.layer)) {
+      Layer *layer = layer_find(*C.document, item.layer);
+      if (!layer || item.point >= int(layer->drawing.points.size())) {
+        return false;
+      }
+      r_layers[item.layer] = {layer, layer_world_transform(*C.document, item.layer).inverted()};
+    }
+  }
+  return true;
+}
+
+/* Places one moved point or handle at a document-space position. Points come first in the list, so
+ * a handle is placed relative to where its point now is. */
+static void modal_place(ModalLayers &layers, const ModalTransform::Item &item, float2 p)
+{
+  if (item.mirror_source >= 0) {
+    return; /* Placed from its source afterwards. */
+  }
+  const auto &[layer, to_layer] = layers[item.layer];
+  VectorDrawing &drawing = layer->drawing;
+  const float2 stored = item.unskin.apply(to_layer.apply(p));
+  if (item.curve < 0) {
+    drawing.points[item.point].pos = stored;
+    return;
+  }
+  if (item.curve >= int(drawing.curves.size()) || item.index >= int(drawing.curves[item.curve].points.size())) {
+    return;
+  }
+  Curve &curve = drawing.curves[item.curve];
+  CurvePoint &cp = curve.points[item.index];
+  if (item.direct) {
+    /* An aligned point's other handle turns to stay in line, unless it is moving too. Alt moves
+     * just this one, which breaks the line: the point is no longer aligned, so later moves don't
+     * snap the other handle back. */
+    const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
+    const bool alone = ImGui::GetIO().KeyAlt;
+    curve_point_move_handle(drawing, curve, item.index, item.pre, stored, partner_moves || alone);
+    if (alone && !partner_moves) {
+      cp.aligned = false;
+    }
+  }
+  else {
+    (item.pre ? cp.handle_in : cp.handle_out) = stored - drawing.points[cp.point].pos;
+  }
+}
+
+/* How much of the move an item gets: all, or by proportional editing's falloff. */
+static float modal_weight(const ToolSettings &ts, const ModalTransform::Item &item)
+{
+  if (!item.proportional) {
+    return 1.0f;
+  }
+  return ts.proportional ? proportional_weight(ts.proportional_falloff, item.reach, ts.proportional_size, item.point)
+                         : 0.0f;
+}
+
+/* An item that gets none of the move goes back exactly where it was. */
+static void modal_rest(ModalLayers &layers, const ModalTransform::Item &item)
+{
+  VectorDrawing &drawing = layers[item.layer].first->drawing;
+  if (item.curve < 0) {
+    drawing.points[item.point].pos = item.rest;
+  }
+  else if (item.curve < int(drawing.curves.size()) && item.index < int(drawing.curves[item.curve].points.size())) {
+    CurvePoint &cp = drawing.curves[item.curve].points[item.index];
+    (item.pre ? cp.handle_in : cp.handle_out) = item.rest;
+  }
+}
+
+/* Mirrored points snap to their sources, reflected (in the layer's stored space), on any frame;
+ * handles too; and handles dragged on their own: their mirror images follow. */
+static void modal_mirror(Context &C, const ModalTransform &modal, ModalLayers &layers)
+{
+  for (const ModalTransform::Item &item : modal.items) {
+    if (item.mirror_source < 0) {
+      continue;
+    }
+    const ModalTransform::Item &source = modal.items[item.mirror_source];
+    drawing_apply_mirror(layers[item.layer].first->drawing, {{source.point, item.point, item.mirror_x, item.mirror_y}});
+  }
+  if (C.wm->tool_settings.mirror_x || C.wm->tool_settings.mirror_y) {
+    for (const ModalTransform::Item &item : modal.items) {
+      if (item.curve < 0 || !item.direct) {
+        continue;
+      }
+      VectorDrawing &drawing = layers[item.layer].first->drawing;
+      for (const auto &[x, y] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+        if ((x && !C.wm->tool_settings.mirror_x) || (y && !C.wm->tool_settings.mirror_y)) {
+          continue;
+        }
+        const int dst = drawing_find_mirror_point(drawing, item.point, x, y);
+        if (dst >= 0) {
+          drawing_mirror_handles(drawing, item.point, dst, x, y);
+        }
+      }
+    }
+  }
+}
+
 /* Runs the transform for this frame; returns a line describing it for the header. */
 static std::string modal_update(Context &C, const ViewMapping &view)
 {
   ImGuiIO &io = ImGui::GetIO();
-  /* Each moved point's layer, and its way from document space into that layer. */
-  std::map<uint64_t, std::pair<Layer *, Transform2D>> layers;
-  for (const ModalTransform::Item &item : g_modal.items) {
-    if (!layers.count(item.layer)) {
-      Layer *layer = layer_find(*C.document, item.layer);
-      if (!layer || item.point >= int(layer->drawing.points.size())) {
-        modal_end(C, false);
-        return {};
-      }
-      layers[item.layer] = {layer, layer_world_transform(*C.document, item.layer).inverted()};
-    }
+  ModalLayers layers;
+  if (!modal_layers(C, g_modal, layers)) {
+    modal_end(C, false);
+    return {};
   }
-  /* Places one moved point or handle at a document-space position. Points come first in the
-   * list, so a handle is placed relative to where its point now is. */
-  const auto place = [&](const ModalTransform::Item &item, float2 p) {
-    if (item.mirror_source >= 0) {
-      return; /* Placed from its source afterwards. */
-    }
-    const auto &[layer, to_layer] = layers[item.layer];
-    VectorDrawing &drawing = layer->drawing;
-    const float2 stored = item.unskin.apply(to_layer.apply(p));
-    if (item.curve < 0) {
-      drawing.points[item.point].pos = stored;
-      return;
-    }
-    if (item.curve >= int(drawing.curves.size()) || item.index >= int(drawing.curves[item.curve].points.size())) {
-      return;
-    }
-    Curve &curve = drawing.curves[item.curve];
-    CurvePoint &cp = curve.points[item.index];
-    if (item.direct) {
-      /* An aligned point's other handle turns to stay in line, unless it is moving too. Alt moves
-       * just this one, which breaks the line: the point is no longer aligned, so later moves
-       * don't snap the other handle back. */
-      const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
-      const bool alone = ImGui::GetIO().KeyAlt;
-      curve_point_move_handle(drawing, curve, item.index, item.pre, stored, partner_moves || alone);
-      if (alone && !partner_moves) {
-        cp.aligned = false;
-      }
-    }
-    else {
-      (item.pre ? cp.handle_in : cp.handle_out) = stored - drawing.points[cp.point].pos;
-    }
-  };
-
-  /* How much of the move an item gets: all, or by proportional editing's falloff. One that gets
-   * none goes back exactly where it was. */
+  const auto place = [&](const ModalTransform::Item &item, float2 p) { modal_place(layers, item, p); };
   ToolSettings &ts = C.wm->tool_settings;
-  const auto weight = [&](const ModalTransform::Item &item) {
-    if (!item.proportional) {
-      return 1.0f;
-    }
-    return ts.proportional ? proportional_weight(ts.proportional_falloff, item.reach, ts.proportional_size, item.point)
-                           : 0.0f;
-  };
-  const auto rest = [&](const ModalTransform::Item &item) {
-    VectorDrawing &drawing = layers[item.layer].first->drawing;
-    if (item.curve < 0) {
-      drawing.points[item.point].pos = item.rest;
-    }
-    else if (item.curve < int(drawing.curves.size()) && item.index < int(drawing.curves[item.curve].points.size())) {
-      CurvePoint &cp = drawing.curves[item.curve].points[item.index];
-      (item.pre ? cp.handle_in : cp.handle_out) = item.rest;
-    }
-  };
+  const auto weight = [&](const ModalTransform::Item &item) { return modal_weight(ts, item); };
+  const auto rest = [&](const ModalTransform::Item &item) { modal_rest(layers, item); };
   /* Page Up and Page Down size proportional editing's reach (the wheel does too). */
   if (g_modal.proportional) {
     while (modal_key_take(C, "PAGE_UP", true)) {
@@ -1729,34 +1977,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     }
     std::snprintf(text, sizeof(text), "Scale  %.3f%s", factor, axis_label);
   }
-  /* Mirrored points snap to their sources, reflected (in the layer's stored space), on any frame;
-   * handles too: types that turned (R and S make Automatic handles Aligned) and their shape. */
-  for (const ModalTransform::Item &item : g_modal.items) {
-    if (item.mirror_source < 0) {
-      continue;
-    }
-    const ModalTransform::Item &source = g_modal.items[item.mirror_source];
-    drawing_apply_mirror(layers[item.layer].first->drawing,
-                         {{source.point, item.point, item.mirror_x, item.mirror_y}});
-  }
-  /* Handles dragged on their own: their mirror images follow, reflected. */
-  if (C.wm->tool_settings.mirror_x || C.wm->tool_settings.mirror_y) {
-    for (const ModalTransform::Item &item : g_modal.items) {
-      if (item.curve < 0 || !item.direct) {
-        continue;
-      }
-      VectorDrawing &drawing = layers[item.layer].first->drawing;
-      for (const auto &[x, y] : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
-        if ((x && !C.wm->tool_settings.mirror_x) || (y && !C.wm->tool_settings.mirror_y)) {
-          continue;
-        }
-        const int dst = drawing_find_mirror_point(drawing, item.point, x, y);
-        if (dst >= 0) {
-          drawing_mirror_handles(drawing, item.point, dst, x, y);
-        }
-      }
-    }
-  }
+  modal_mirror(C, g_modal, layers);
   info = text;
   if (g_modal.proportional && ts.proportional) {
     char size_text[64];
@@ -1870,7 +2091,15 @@ static SplitHit split_pick(Context &C, const ViewMapping &view, float2 mouse_doc
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
     const float2 mouse = to_document.inverted().apply(mouse_document);
-    VectorDrawing &drawing = layer->drawing;
+    /* Lines are cut where they show: detail's handles final. */
+    VectorDrawing final_shape;
+    const VectorDrawing *shape_ptr = &layer->drawing;
+    if (drawing_has_detail(layer->drawing)) {
+      final_shape = layer->drawing;
+      drawing_detail_final_handles(final_shape);
+      shape_ptr = &final_shape;
+    }
+    const VectorDrawing &drawing = *shape_ptr;
     float d = FLT_MAX;
     SplitHit candidate;
     if (point) {
@@ -1914,6 +2143,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   std::vector<int> picked;
   float best = FLT_MAX;
   const HandleHit handle = pick_handle(C, view, view.to_screen(mouse_document), handles);
+  Layer &camera = document_camera(*C.document);
   for (Layer *layer : layers) {
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
@@ -1942,6 +2172,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
     CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
     bool &flag = handle.pre ? cp.select_in : cp.select_out;
     flag = io.KeyCtrl ? false : (io.KeyShift ? !flag : true);
+    camera.selected &= io.KeyShift || io.KeyCtrl;
     return;
   }
   if (!hit_layer && C.wm->tool_settings.select_mode != SelectMode::Point) {
@@ -1976,6 +2207,17 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       point.selected = io.KeyCtrl ? false : (io.KeyShift && picked.size() == 1 ? !point.selected : true);
     }
     drawing_expand_selection_by_mode(C, hit_layer->drawing);
+  }
+  /* The camera is picked by its frame's border where nothing else is, as Blender picks a camera by its
+   * outline; a click elsewhere lets it go. */
+  const ViewportOverlays &ov = C.document->overlays;
+  if (!hit_layer && ov.show && ov.camera_frame &&
+      camera_border_distance(*C.document, view, view.to_screen(mouse_document)) <= PICK_PIXELS)
+  {
+    camera.selected = io.KeyCtrl ? false : (io.KeyShift ? !camera.selected : true);
+  }
+  else if (!io.KeyShift && !io.KeyCtrl) {
+    camera.selected = false;
   }
 }
 
@@ -2012,7 +2254,7 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
       }
     }
     for (size_t i = 0; i < drawing.points.size(); i++) {
-      if (inside(shown.drawing->points[i].pos)) {
+      if (inside(shown.drawing->points[i].pos) && !drawing.points[i].detail.hidden) {
         drawing.points[i].selected = !io.KeyCtrl;
       }
     }
@@ -2206,18 +2448,69 @@ static void draw_grid(ImDrawList *dl, const ViewMapping &view, float grid)
   }
 }
 
+/* Detail levels: draw the curves shapes are edited at (Viewport Overlays > Detail Cage, or while points
+ * move). */
+static bool g_detail_cage = false;
+
+/* The detail cage: each curve as its shapes are edited, without the detail above their level, faint. */
+static void draw_detail_cage(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
+                             const ViewMapping &view, int quality)
+{
+  VectorDrawing cage = drawing;
+  const std::vector<int> levels = drawing_curve_detail_levels(drawing);
+  std::vector<bool> trimmed(cage.curves.size(), false);
+  for (size_t c = 0; c < cage.curves.size(); c++) {
+    const size_t before = cage.curves[c].points.size();
+    std::erase_if(cage.curves[c].points,
+                  [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
+    trimmed[c] = cage.curves[c].points.size() != before;
+  }
+  drawing_detail_final_handles(cage);
+  std::vector<float2> samples;
+  std::vector<ImVec2> line;
+  for (size_t c = 0; c < cage.curves.size(); c++) {
+    const Curve &curve = cage.curves[c];
+    if (!trimmed[c] || curve.points.size() < 2) {
+      continue;
+    }
+    for (int s = 0; s < curve.segment_count(); s++) {
+      samples.clear();
+      curve_segment_sample(cage, curve, s, quality, samples, 0.5f / std::max(view.zoom * to_document.scale(), 1e-6f));
+      int a, b;
+      curve_segment_points(curve, s, &a, &b);
+      samples.push_back(cage.points[b].pos);
+      line.clear();
+      for (const float2 &p : samples) {
+        line.push_back(view.to_screen(to_document.apply(p)));
+      }
+      dl->AddPolyline(line.data(), int(line.size()), IM_COL32(0x47, 0x72, 0xb3, 150), 0, 1.0f);
+    }
+  }
+}
+
 static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
                                  const ViewMapping &view, bool show_wires, bool show_points, int quality,
                                  HandleDisplay handles, bool point_squares = true)
 {
   std::vector<float2> samples;
-  for (const Curve &curve : drawing.curves) {
+  /* Lines show as drawn: detail's handles final (data/detail.hh). */
+  VectorDrawing final_shape;
+  const VectorDrawing *lines = &drawing;
+  if (drawing_has_detail(drawing)) {
+    final_shape = drawing;
+    drawing_detail_final_handles(final_shape);
+    lines = &final_shape;
+    if (show_wires && g_detail_cage) {
+      draw_detail_cage(dl, drawing, to_document, view, quality);
+    }
+  }
+  for (const Curve &curve : lines->curves) {
     if (!show_wires) {
       break;
     }
     for (int s = 0; s < curve.segment_count(); s++) {
       samples.clear();
-      curve_segment_sample(drawing, curve, s, quality, samples,
+      curve_segment_sample(*lines, curve, s, quality, samples,
                            0.5f / std::max(view.zoom * to_document.scale(), 1e-6f));
       int a, b;
       curve_segment_points(curve, s, &a, &b);
@@ -2271,12 +2564,24 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
     /* Edges mode shows lines only, as Blender's edge select mode. */
     return;
   }
-  const float r = 3.0f;
+  /* On a curve edited above level 0, its coarser points are drawn bigger than the level's own. */
+  std::vector<bool> coarse(drawing.points.size(), false);
+  if (drawing_has_detail(drawing)) {
+    const std::vector<int> levels = drawing_curve_detail_levels(drawing);
+    for (size_t c = 0; c < drawing.curves.size(); c++) {
+      const int level = std::min(levels[c], curve_detail_max_level(drawing, drawing.curves[c]));
+      for (const CurvePoint &cp : drawing.curves[c].points) {
+        coarse[cp.point] = coarse[cp.point] || drawing.points[cp.point].detail.level < level;
+      }
+    }
+  }
   for (int pass = 0; pass < 2; pass++) {
-    for (const MeshPoint &p : drawing.points) {
-      if (p.selected != (pass == 1)) {
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      const MeshPoint &p = drawing.points[i];
+      if (p.selected != (pass == 1) || p.detail.hidden) {
         continue;
       }
+      const float r = coarse[i] ? 4.0f : 3.0f;
       const ImVec2 s = view.to_screen(to_document.apply(p.pos));
       dl->AddRectFilled(s - ImVec2(r, r), s + ImVec2(r, r), p.selected ? COL_POINT_SELECTED : COL_POINT);
       if (!p.selected) {
@@ -2508,7 +2813,7 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
     return;
   }
   if (!bone_find(*armature, armature->active_bone)) {
-    report_at_mouse(ReportType::Warning, "Pick a bone to paint its weights (Ctrl-click a bone)");
+    report_banner(ReportType::Warning, "Pick a bone to paint its weights (Ctrl-click a bone)");
     g_weight_painting = false;
     return;
   }
@@ -2639,6 +2944,8 @@ struct ScreenBone {
 static bool g_keyed_bones = true;
 /* Custom Bone Shapes on (Viewport Overlays): bones with a shape are drawn and picked as it. */
 static bool g_bone_shapes = true;
+/* Relationship Lines on (Viewport Overlays): dashed lines from unconnected bones to their parents. */
+static bool g_relationship_lines = true;
 static constexpr float PIN_RADIUS = 6.0f;
 /* The bone layer whose bones are being moved on the setup frame (0 for none): its picked bones are
  * drawn as bones meanwhile, whatever their shape, so their ends show where they go. Set as each
@@ -2837,7 +3144,7 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
     const Bone &bone = armature.bones[i];
     const auto parent = std::find_if(armature.bones.begin(), armature.bones.end(),
                                      [&](const Bone &b) { return b.id == bone.parent; });
-    if (bone.connected || parent == armature.bones.end() || !bone_shown(armature, bone) ||
+    if (!g_relationship_lines || bone.connected || parent == armature.bones.end() || !bone_shown(armature, bone) ||
         !bone_shown(armature, *parent))
     {
       continue;
@@ -3679,6 +3986,430 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
   dl->AddLine(pc - ImVec2(0, GIZMO_MARKER * 1.4f), pc + ImVec2(0, GIZMO_MARKER * 1.4f), COL_GIZMO, 1.0f);
 }
 
+/* ---------------------------------------------------------------------------------
+ * Transform Points tool: the same box gizmo around the selected points (and handles picked on
+ * their own), in the active layer's space, on any frame: inside moves, the band turns about the
+ * pivot, the eight handles scale, the pivot can be dragged (Ctrl snaps it to a point). Points move
+ * as G, R and S move them (across every edited layer, through their bones, with mirror and
+ * proportional editing). Outside, a click selects and a drag box-selects, as the Select tool does.
+ */
+
+struct PointGizmo {
+  GizmoMode mode = GizmoMode::None;
+  int handle = 0;
+  int area = 0;
+  /* The layer whose space it is in, and the selection it was laid round (a new one resets the pivot). */
+  uint64_t layer = 0;
+  uint64_t selection = 0;
+  float2 pivot_offset;
+  /* At the press: what moves, and the box. */
+  ModalTransform moving;
+  float2 lo, hi, pivot, start, last;
+  ImVec2 start_screen;
+  float turned = 0.0f;
+  bool changed = false;
+  float2 live_pivot;
+};
+static PointGizmo g_point_gizmo;
+
+/* The gizmo's space: the active layer's (document space without one). */
+static Transform2D point_gizmo_space(const Document &doc)
+{
+  return doc.active_layer ? layer_world_transform(doc, doc.active_layer) : Transform2D();
+}
+
+/* Where the selected points and handles picked on their own are shown, in the gizmo's space. */
+static std::vector<float2> point_gizmo_places(Context &C, const Transform2D &to_gizmo, bool selected)
+{
+  std::vector<float2> places;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->is_reference() && !layer->reference.edit_points) {
+      continue;
+    }
+    const Transform2D to = to_gizmo * layer_world_transform(*C.document, layer->id);
+    const Posed shown = posed(*C.document, *layer);
+    const VectorDrawing &d = *shown.drawing;
+    for (int i = 0; i < int(d.points.size()); i++) {
+      if (layer->drawing.points[i].selected == selected) {
+        places.push_back(to.apply(d.points[i].pos));
+      }
+    }
+    if (!selected) {
+      continue;
+    }
+    for (int c = 0; c < int(d.curves.size()); c++) {
+      for (int i = 0; i < int(d.curves[c].points.size()); i++) {
+        const CurvePoint &cp = layer->drawing.curves[c].points[i];
+        if (layer->drawing.points[cp.point].selected) {
+          continue;
+        }
+        for (const bool pre : {true, false}) {
+          if (pre ? cp.select_in : cp.select_out) {
+            places.push_back(to.apply(curve_handle(d, d.curves[c], i, pre)));
+          }
+        }
+      }
+    }
+  }
+  return places;
+}
+
+static bool point_gizmo_bounds(Context &C, const Transform2D &to_gizmo, float2 &lo, float2 &hi)
+{
+  const std::vector<float2> places = point_gizmo_places(C, to_gizmo, true);
+  if (places.empty()) {
+    return false;
+  }
+  lo = hi = places.front();
+  for (const float2 p : places) {
+    lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
+    hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+  }
+  return true;
+}
+
+/* The unselected point (gizmo space) nearest `p`: what Ctrl snaps to. */
+static bool nearest_point(Context &C, const Transform2D &to_gizmo, float2 p, float2 &out)
+{
+  float best = 1e30f;
+  for (const float2 q : point_gizmo_places(C, to_gizmo, false)) {
+    if (distance(q, p) < best) {
+      best = distance(q, p);
+      out = q;
+    }
+  }
+  return best < 1e30f;
+}
+
+/* Moves everything gathered in `moving` by `map` (gizmo space), proportional editing blending it. */
+static void point_gizmo_place(Context &C, ModalTransform &moving, const Transform2D &to_document,
+                              const Transform2D &map)
+{
+  ModalLayers layers;
+  if (!modal_layers(C, moving, layers)) {
+    return;
+  }
+  const Transform2D in_document = to_document * map * to_document.inverted();
+  for (const ModalTransform::Item &item : moving.items) {
+    const float w = modal_weight(C.wm->tool_settings, item);
+    if (w <= 0.0f) {
+      modal_rest(layers, item);
+      continue;
+    }
+    modal_place(layers, item, item.start + (in_document.apply(item.start) - item.start) * w);
+  }
+  modal_mirror(C, moving, layers);
+}
+
+/* The header's fields and buttons: mesh.transform_selected, one map of the selection as one undo step. */
+static void point_gizmo_apply(Context &C, float2 pivot, float2 move, float2 scale, float degrees)
+{
+  const auto num = [](float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", v);
+    return std::string(buf);
+  };
+  operator_call(C, "mesh.transform_selected",
+                {{"pivot_x", num(pivot.x)}, {"pivot_y", num(pivot.y)}, {"move_x", num(move.x)}, {"move_y", num(move.y)},
+                 {"scale_x", num(scale.x)}, {"scale_y", num(scale.y)}, {"angle", num(degrees)}});
+}
+
+void viewport_operators_register()
+{
+  OperatorType ot;
+  ot.idname = "mesh.transform_selected";
+  ot.name = "Transform Points";
+  ot.description = "Move, scale and turn the selected points (and handles picked on their own) about a pivot, in the "
+                   "active layer's space: move_x/move_y, scale_x/scale_y, angle (degrees), pivot_x/pivot_y (default: "
+                   "the middle of the selection), as the Transform Points tool's header does";
+  ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+  ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr && !editable_layers(C).empty(); };
+  ot.exec = [](Context &C) {
+    const Transform2D to_document = point_gizmo_space(*C.document);
+    float2 lo, hi;
+    if (!point_gizmo_bounds(C, to_document.inverted(), lo, hi)) {
+      return OpStatus::Cancelled;
+    }
+    const float2 middle = (lo + hi) * 0.5f;
+    const float2 pivot(op_arg_float(C, "pivot_x", middle.x), op_arg_float(C, "pivot_y", middle.y));
+    const float2 move(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
+    const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
+    const float angle = op_arg_float(C, "angle", 0.0f) * PI / 180.0f;
+    static Area area;
+    ModalTransform moving;
+    if (!modal_collect(C, area, 'G', {}, moving)) {
+      return OpStatus::Cancelled;
+    }
+    point_gizmo_place(C, moving, to_document, map_about(pivot, move, scale, angle));
+    return OpStatus::Finished;
+  };
+  operators().add(std::move(ot));
+}
+
+static void transform_points_header(Context &C)
+{
+  Document &doc = *C.document;
+  const Transform2D to_document = point_gizmo_space(doc);
+  float2 lo, hi;
+  const bool any = point_gizmo_bounds(C, to_document.inverted(), lo, hi);
+  const float2 pivot = (lo + hi) * 0.5f + g_point_gizmo.pivot_offset;
+  const float w = ImGui::GetFrameHeight() * 3.2f;
+  ImGui::BeginDisabled(!any);
+  ImGui::TextUnformatted("Position");
+  ImGui::SameLine();
+  float pos[2] = {any ? pivot.x : 0.0f, any ? pivot.y : 0.0f};
+  ImGui::SetNextItemWidth(w * 2.0f);
+  if (ImGui::InputFloat2("##points_pos", pos, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
+    point_gizmo_apply(C, pivot, float2(pos[0], pos[1]) - pivot, {1, 1}, 0.0f);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Where the pivot is (the active layer's space): type a place to move the selection there");
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Scale");
+  ImGui::SameLine();
+  float scale[2] = {1.0f, 1.0f};
+  ImGui::SetNextItemWidth(w * 2.0f);
+  if (ImGui::InputFloat2("##points_scale", scale, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
+    point_gizmo_apply(C, pivot, {}, {scale[0], scale[1]}, 0.0f);
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Angle");
+  ImGui::SameLine();
+  float angle = 0.0f;
+  ImGui::SetNextItemWidth(w);
+  if (ImGui::InputFloat("##points_angle", &angle, 0.0f, 0.0f, "%.1f\xC2\xB0", ImGuiInputTextFlags_EnterReturnsTrue) &&
+      any)
+  {
+    point_gizmo_apply(C, pivot, {}, {1, 1}, angle);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Flip H##points")) {
+    point_gizmo_apply(C, pivot, {}, {-1, 1}, 0.0f);
+  }
+  ImGui::SameLine(0, 1);
+  if (ImGui::Button("Flip V##points")) {
+    point_gizmo_apply(C, pivot, {}, {1, -1}, 0.0f);
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Symmetrize##points")) {
+    operator_call(C, "mesh.symmetrize");
+  }
+}
+
+static void transform_points_input(Context &C, Area &area, const ViewMapping &view, bool hovered, ImDrawList *dl)
+{
+  Document &doc = *C.document;
+  const ImGuiIO &io = ImGui::GetIO();
+  ToolSettings &ts = C.wm->tool_settings;
+  const Transform2D to_document = point_gizmo_space(doc);
+  const Transform2D to_gizmo = to_document.inverted();
+  const float2 mouse = to_gizmo.apply(view.to_document(io.MousePos));
+  PointGizmo &g = g_point_gizmo;
+  const uint64_t selection = document_selection_hash(doc);
+  if ((g.layer != doc.active_layer || g.selection != selection) && g.mode == GizmoMode::None) {
+    g.pivot_offset = {};
+    g.layer = doc.active_layer;
+    g.selection = selection;
+  }
+  float2 lo, hi;
+  const bool any = point_gizmo_bounds(C, to_gizmo, lo, hi);
+  const float2 pivot = (lo + hi) * 0.5f + g.pivot_offset;
+  if (any) {
+    gizmo_box(to_document, view, lo, hi);
+  }
+  const Layer &space_layer = *document_active_layer(doc);
+
+  /* Press: what the mouse is on decides the drag. */
+  if (hovered && g.mode == GizmoMode::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    int handle = 0;
+    GizmoMode mode =
+        any ? gizmo_hit(space_layer, to_document, view, io.MousePos, mouse, lo, hi, pivot, &handle) : GizmoMode::Select;
+    if (mode == GizmoMode::Move || mode == GizmoMode::Rotate || mode == GizmoMode::Scale) {
+      g.moving = ModalTransform();
+      if (!modal_collect(C, area, 'G', view.to_document(io.MousePos), g.moving)) {
+        mode = GizmoMode::None;
+      }
+    }
+    g.mode = mode;
+    g.handle = handle;
+    g.area = area.id;
+    g.lo = lo;
+    g.hi = hi;
+    g.pivot = pivot;
+    g.live_pivot = pivot;
+    g.start = mouse;
+    g.last = mouse;
+    g.start_screen = io.MousePos;
+    g.turned = 0.0f;
+    g.changed = false;
+  }
+  if (g.mode != GizmoMode::None && g.area == area.id) {
+    const bool released = !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right) && g.mode != GizmoMode::Select;
+    const ImVec2 d = io.MousePos - g.start_screen;
+    const bool dragged = d.x * d.x + d.y * d.y > 9.0f;
+    switch (g.mode) {
+      case GizmoMode::Select: {
+        if (dragged) {
+          dl->AddRectFilled(g.start_screen, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+          dl->AddRect(g.start_screen, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+        }
+        if (released) {
+          if (dragged) {
+            select_box(C, view, g.start_screen, io.MousePos, handles_shown(doc.overlays, ts));
+          }
+          else {
+            select_click(C, view, view.to_document(io.MousePos), handles_shown(doc.overlays, ts));
+          }
+          g.pivot_offset = {};
+          push_undo(C, "Select");
+          g.mode = GizmoMode::None;
+        }
+        break;
+      }
+      case GizmoMode::Pivot: {
+        float2 target = mouse;
+        if (io.KeyCtrl) {
+          nearest_point(C, to_gizmo, mouse, target);
+        }
+        g.pivot_offset = target - (g.lo + g.hi) * 0.5f;
+        g.live_pivot = target;
+        if (released || cancel) {
+          g.mode = GizmoMode::None;
+        }
+        break;
+      }
+      default: {
+        if (cancel) {
+          const int frame = doc.frame_current;
+          doc = g.moving.snapshot;
+          doc.frame_current = frame;
+          g.mode = GizmoMode::None;
+          break;
+        }
+        float2 offset, scale(1.0f, 1.0f), origin = g.pivot;
+        float angle = 0.0f;
+        if (g.mode == GizmoMode::Move) {
+          offset = mouse - g.start;
+          if (io.KeyShift) {
+            (std::abs(offset.x) > std::abs(offset.y) ? offset.y : offset.x) = 0.0f;
+          }
+          float2 snap;
+          if (io.KeyCtrl && nearest_point(C, to_gizmo, mouse, snap)) {
+            offset = snap - g.pivot;
+          }
+          g.live_pivot = g.pivot + offset;
+        }
+        else if (g.mode == GizmoMode::Rotate) {
+          g.turned += turn_between(g.last, mouse, g.pivot);
+          g.last = mouse;
+          angle = g.turned;
+          if (io.KeyShift) {
+            const float step = PI / 4.0f;
+            angle = std::round(angle / step) * step;
+          }
+        }
+        else {
+          const float2 lo0 = g.lo, hi0 = g.hi, c0 = (lo0 + hi0) * 0.5f;
+          static const float2 opposite[8] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}};
+          /* The anchor is the opposite corner or side (x/y: 0 = low, 1 = high, -1 = the middle). */
+          const float2 o = opposite[g.handle];
+          float2 anchor(o.x < 0 ? c0.x : (o.x > 0 ? hi0.x : lo0.x), o.y < 0 ? c0.y : (o.y > 0 ? hi0.y : lo0.y));
+          if (io.KeyAlt) {
+            anchor = g.pivot;
+          }
+          const float2 p0 = g.start - anchor, p1 = mouse - anchor;
+          if (std::abs(p0.x) > 1e-6f) {
+            scale.x = p1.x / p0.x;
+          }
+          if (std::abs(p0.y) > 1e-6f) {
+            scale.y = p1.y / p0.y;
+          }
+          if (g.handle == 4 || g.handle == 5) {
+            scale.y = 1.0f;
+          }
+          if (g.handle == 6 || g.handle == 7) {
+            scale.x = 1.0f;
+          }
+          if (io.KeyShift && g.handle < 4) {
+            scale.x = scale.y = (scale.x + scale.y) * 0.5f;
+          }
+          origin = anchor;
+          const float2 rel = g.pivot - anchor;
+          g.live_pivot = anchor + float2(rel.x * scale.x, rel.y * scale.y);
+        }
+        point_gizmo_place(C, g.moving, to_document, map_about(origin, offset, scale, angle));
+        g.changed |= dragged;
+        if (released) {
+          if (g.changed) {
+            push_undo(C, "Transform Points");
+            /* The pivot stays where the drag left it. */
+            float2 nlo, nhi;
+            if (point_gizmo_bounds(C, to_gizmo, nlo, nhi)) {
+              g.pivot_offset = g.live_pivot - (nlo + nhi) * 0.5f;
+            }
+            g.selection = document_selection_hash(doc);
+          }
+          else {
+            const int frame = doc.frame_current;
+            doc = g.moving.snapshot;
+            doc.frame_current = frame;
+          }
+          g.moving = ModalTransform();
+          g.mode = GizmoMode::None;
+        }
+        break;
+      }
+    }
+  }
+
+  /* The cursor says what a press would do. */
+  if (hovered && g.mode == GizmoMode::None && any) {
+    int handle = 0;
+    switch (gizmo_hit(space_layer, to_document, view, io.MousePos, mouse, lo, hi, pivot, &handle)) {
+      case GizmoMode::Move:
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        break;
+      case GizmoMode::Rotate:
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        break;
+      case GizmoMode::Scale:
+        ImGui::SetMouseCursor(handle == 0 || handle == 2   ? ImGuiMouseCursor_ResizeNESW
+                              : handle == 1 || handle == 3 ? ImGuiMouseCursor_ResizeNWSE
+                              : handle < 6                 ? ImGuiMouseCursor_ResizeEW
+                                                           : ImGuiMouseCursor_ResizeNS);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /* The gizmo. */
+  float2 dlo, dhi;
+  if (g.mode == GizmoMode::Select || !point_gizmo_bounds(C, to_gizmo, dlo, dhi)) {
+    return;
+  }
+  const auto screen = [&](float2 p) { return view.to_screen(to_document.apply(p)); };
+  const auto box = [&](float2 a, float2 b) {
+    const ImVec2 pts[4] = {screen(a), screen({a.x, b.y}), screen(b), screen({b.x, a.y})};
+    dl->AddPolyline(pts, 4, COL_GIZMO, ImDrawFlags_Closed, 1.0f);
+  };
+  const float band = gizmo_box(to_document, view, dlo, dhi);
+  box(dlo, dhi);
+  box(dlo - float2(band, band), dhi + float2(band, band));
+  for (const float2 &h : gizmo_handles(dlo, dhi)) {
+    dl->AddCircle(screen(h), GIZMO_MARKER, COL_GIZMO, 0, 2.0f);
+  }
+  const float2 shown_pivot = g.mode != GizmoMode::None ? g.live_pivot : (dlo + dhi) * 0.5f + g.pivot_offset;
+  const ImVec2 pc = screen(shown_pivot);
+  dl->AddCircle(pc, GIZMO_MARKER, COL_GIZMO, 0, 1.0f);
+  dl->AddLine(pc - ImVec2(GIZMO_MARKER * 1.4f, 0), pc + ImVec2(GIZMO_MARKER * 1.4f, 0), COL_GIZMO, 1.0f);
+  dl->AddLine(pc - ImVec2(0, GIZMO_MARKER * 1.4f), pc + ImVec2(0, GIZMO_MARKER * 1.4f), COL_GIZMO, 1.0f);
+}
+
 /* Whether a shown point of an edited layer is under the mouse (screen pixels). */
 static bool point_under(Context &C, const ViewMapping &view, ImVec2 mouse)
 {
@@ -3718,7 +4449,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
      * layer itself (Blender's tweak). */
     const HandleHit handle = io.KeyShift || io.KeyCtrl
                                  ? HandleHit()
-                                 : pick_handle(C, view, io.MousePos, handles_shown(area.overlays, C.wm->tool_settings));
+                                 : pick_handle(C, view, io.MousePos, handles_shown(C.document->overlays, C.wm->tool_settings));
     if (handle.layer) {
       const CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
       if (!(handle.pre ? cp.select_in : cp.select_out)) {
@@ -3745,7 +4476,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
       /* Drawings in shown bone collections: their points are picked along with the bones. */
       const std::vector<Layer *> point_layers = editable_layers(C);
-      const HandleDisplay handles = handles_shown(area.overlays, C.wm->tool_settings);
+      const HandleDisplay handles = handles_shown(C.document->overlays, C.wm->tool_settings);
       if (dragged) {
         const Transform2D to_document = layer_world_transform(doc, armature.id);
         const ImVec2 a = g_bone_box.start, b = io.MousePos;
@@ -4030,10 +4761,193 @@ static void draw_keyed_hover(ImDrawList *dl, Context &C, const ViewMapping &view
   }
 }
 
+/* The ViewportActionPanel, Blender's Adjust Last Operation: the last operator run in the viewport,
+ * while it can be adjusted, floats in the bottom-left corner folded to its name (as Blender's
+ * starts); open, its options show under it (labels on the left, values on the right), and changing
+ * one runs it again with it. Open or folded stays as last left, as Blender's panel does. Colours and
+ * sizes are Blender's: the menu background (#181818, outlined #242424), fields #282828 outlined
+ * #3D3D3D. */
+/* Kept by the project, as other panels are. */
+static constexpr const char *ACTION_PANEL_KEY = "Viewport/Adjust Last Operation";
+
+static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left)
+{
+  const LastOperation *last = operator_last_redo(C);
+  if (C.wm->action_panel_toggle_request) {
+    ui_fold_record(ACTION_PANEL_KEY, false, !ui_fold_state(ACTION_PANEL_KEY, false));
+    C.wm->action_panel_toggle_request = false;
+  }
+  const bool panel_open = ui_fold_state(ACTION_PANEL_KEY, false);
+  if (!last || last->area != "Viewport") {
+    return;
+  }
+  const OperatorType *ot = operators().find(last->idname);
+  if (!ot || ot->props.empty()) {
+    return;
+  }
+  const float unit = ImGui::GetFrameHeight();
+  const float fs = ImGui::GetFontSize();
+  const float pad = 6.0f, gap = 3.0f;
+  const float header_h = unit + 4.0f;
+  const float folded_w = std::max(unit * 7.5f, ImGui::CalcTextSize(ot->name.c_str()).x + unit * 2.5f);
+  const float w = panel_open ? std::max(folded_w, unit * 14.0f) : folded_w;
+  const float body_h = panel_open ? float(ot->props.size()) * (unit + gap) - gap + pad * 2.0f : 0.0f;
+  const ImVec2 min(origin.x + left, origin.y + size.y - header_h - body_h - 8.0f);
+  const ImVec2 max(min.x + w, min.y + header_h + body_h);
+  if (min.y < origin.y + unit * 2.0f || max.x > origin.x + size.x) {
+    return;
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float round = 4.0f;
+  dl->AddRectFilled(min, max, IM_COL32(0x18, 0x18, 0x18, 255), round);
+  dl->AddRect(min, max, IM_COL32(0x24, 0x24, 0x24, 255), round, 0, 1.0f);
+  /* The panel takes the clicks over it, not the viewport beneath. */
+  ImGui::SetCursorScreenPos(min);
+  ImGui::SetNextItemAllowOverlap();
+  ImGui::InvisibleButton("##action_panel", max - min);
+
+  /* The header: open arrow and the operator's name; clicking anywhere on it folds or opens. */
+  ImGui::SetCursorScreenPos(min);
+  ImGui::SetNextItemAllowOverlap();
+  if (ImGui::InvisibleButton("##action_panel_header", ImVec2(w, header_h))) {
+    /* Shown the new way from the next frame. */
+    ui_fold_record(ACTION_PANEL_KEY, false, !panel_open);
+  }
+  const ImU32 text = IM_COL32(0xd9, 0xd9, 0xd9, 255);
+  /* Blender's chevrons: > folded, v open. */
+  const ImVec2 arrow(min.x + pad + fs * 0.45f, min.y + header_h * 0.5f);
+  const float s = fs * 0.22f;
+  if (panel_open) {
+    const ImVec2 v[3] = {arrow + ImVec2(-s, -s * 0.5f), arrow + ImVec2(0, s * 0.5f), arrow + ImVec2(s, -s * 0.5f)};
+    dl->AddPolyline(v, 3, text, 0, 1.5f);
+  }
+  else {
+    const ImVec2 v[3] = {arrow + ImVec2(-s * 0.5f, -s), arrow + ImVec2(s * 0.5f, 0), arrow + ImVec2(-s * 0.5f, s)};
+    dl->AddPolyline(v, 3, text, 0, 1.5f);
+  }
+  dl->AddText(ImVec2(min.x + pad + fs * 1.25f, min.y + (header_h - fs) * 0.5f), text, ot->name.c_str());
+  if (!panel_open) {
+    return;
+  }
+
+  /* The options, as Blender lays them out (labels split off to the left). */
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0x28, 0x28, 0x28, 255));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(0x30, 0x30, 0x30, 255));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0x22, 0x22, 0x22, 255));
+  ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0x28, 0x28, 0x28, 255));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(0x30, 0x30, 0x30, 255));
+  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0x3d, 0x3d, 0x3d, 255));
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(0x18, 0x18, 0x18, 255));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, round);
+  const float inner = w - pad * 2.0f;
+  const float label_w = inner * 0.4f;
+  const float value_x = min.x + pad + label_w + 6.0f;
+  const float value_w = max.x - pad - value_x;
+  float y = min.y + header_h + pad - 2.0f;
+  OpArgs args = last->args;
+  bool changed = false;
+  for (const OpProperty &prop : ot->props) {
+    ImGui::PushID(prop.name.c_str());
+    const std::string value = args[prop.name];
+    if (prop.kind != OpProperty::Kind::Bool) {
+      const float tw = ImGui::CalcTextSize(prop.label.c_str()).x;
+      dl->AddText(ImVec2(value_x - 6.0f - tw, y + (unit - fs) * 0.5f), text, prop.label.c_str());
+    }
+    ImGui::SetCursorScreenPos(ImVec2(value_x, y));
+    if (prop.kind == OpProperty::Kind::Enum) {
+      std::string shown = value;
+      for (const auto &[id, label] : prop.items) {
+        if (id == value) {
+          shown = label;
+        }
+      }
+      ImGui::SetNextItemWidth(value_w);
+      const bool open = ImGui::BeginCombo("##value", shown.c_str(), ImGuiComboFlags_NoArrowButton);
+      {
+        /* Blender's dropdown chevron, at the right end of the field. */
+        const ImVec2 b = ImGui::GetItemRectMax(), a = ImGui::GetItemRectMin();
+        const ImVec2 c(b.x - unit * 0.5f, (a.y + b.y) * 0.5f);
+        const float k = fs * 0.2f;
+        const ImVec2 v[3] = {c + ImVec2(-k, -k * 0.5f), c + ImVec2(0, k * 0.5f), c + ImVec2(k, -k * 0.5f)};
+        dl->AddPolyline(v, 3, text, 0, 1.5f);
+      }
+      if (open) {
+        for (const auto &[id, label] : prop.items) {
+          if (ImGui::Selectable(label.c_str(), id == value) && id != value) {
+            args[prop.name] = id;
+            changed = true;
+          }
+        }
+        ImGui::EndCombo();
+      }
+    }
+    else if (prop.kind == OpProperty::Kind::Float) {
+      float v = std::strtof(value.c_str(), nullptr);
+      ImGui::SetNextItemWidth(value_w);
+      if (ImGui::DragFloat("##value", &v, prop.step, prop.min, prop.max, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%g", v);
+        args[prop.name] = buf;
+        changed = true;
+      }
+    }
+    else {
+      bool on = value == "1" || value == "true" || value == "True";
+      if (ImGui::Checkbox(prop.label.c_str(), &on)) {
+        args[prop.name] = on ? "1" : "0";
+        changed = true;
+      }
+    }
+    if (!prop.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", prop.description.c_str());
+    }
+    ImGui::PopID();
+    y += unit + gap;
+  }
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor(7);
+  if (changed) {
+    operator_redo_last(C, args);
+  }
+}
+
+static void viewport_draw_contents(Area &area, Context &C);
+
 void viewport_draw(Area &area, Context &C)
+{
+  /* The overlays are the project's: changing one (its popover, Shift Z, a script) is unsaved. */
+  const ViewportOverlays before = C.document->overlays;
+  /* A file opened with its own view: the viewport looks where it was left (none: frames the camera). */
+  Document &doc = *C.document;
+  if (area.view_serial != doc.view_serial) {
+    area.view_serial = doc.view_serial;
+    area.view_zoom = doc.view.zoom;
+    area.view_center_x = doc.view.center_x;
+    area.view_center_y = doc.view.center_y;
+    area.view_navigated = doc.view.zoom > 0.0f;
+  }
+  viewport_draw_contents(area, C);
+  /* The project keeps where this viewport looks, to save (moving the view isn't an edit). */
+  if (area.view_zoom > 0.0f) {
+    doc.view = {area.view_center_x, area.view_center_y, area.view_zoom};
+  }
+  if (!(C.document->overlays == before) && C.undo) {
+    C.undo->mark_changed();
+  }
+}
+
+static void viewport_draw_contents(Area &area, Context &C)
 {
   tool_follow_frame(C);
   Document &doc = *C.document;
+  /* Detail rides its curves as they are edited (data/detail.hh). */
+  for (const Layer *flat : document_layers_flat(doc)) {
+    Layer *l = layer_find(doc, flat->id);
+    if (l && l->type == LayerType::Vector && !l->is_reference() && drawing_has_detail(l->drawing)) {
+      drawing_detail_sync(l->drawing, true);
+    }
+  }
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
   ImGuiIO &io = ImGui::GetIO();
@@ -4070,29 +4984,62 @@ void viewport_draw(Area &area, Context &C)
   }
 
   /* --- Navigation: wheel zooms at the mouse, middle drag pans, Home frames the camera. --- */
+  /* Through the picked camera the view is the camera's: it fits the frame, and moving and zooming the
+   * view move and zoom the camera (Blender's Lock Camera to View), one undo step per gesture. */
+  Layer &camera = document_camera(doc);
+  const bool through_camera = camera.selected;
+  if (through_camera) {
+    area.view_center_x = camera.position.x;
+    area.view_center_y = camera.position.y;
+    area.view_zoom = camera_fit_zoom(doc, size);
+    area.view_navigated = true;
+    view = {origin, size, {area.view_center_x, area.view_center_y}, area.view_zoom};
+  }
   /* While points are dragged along by proportional editing, the wheel sizes its reach instead
    * (up for more). */
   const bool proportional_sizing =
       g_modal.active && g_modal.area == area.id && g_modal.proportional && ts.proportional;
+  /* The wheel or a middle drag moved the view this frame (only that moves the camera). */
+  bool navigated = false;
   if (proportional_sizing && io.MouseWheel != 0.0f) {
     ts.proportional_size = std::clamp(ts.proportional_size * std::pow(1.1f, io.MouseWheel), 1e-4f, 1e6f);
   }
   else if (hovered && io.MouseWheel != 0.0f) {
     const float2 under_mouse = view.to_document(io.MousePos);
     const float factor = std::pow(1.15f, io.MouseWheel);
-    view.zoom = std::clamp(view.zoom * factor, 2.0f, 200000.0f);
+    view.zoom = std::clamp(view.zoom * factor, VIEW_ZOOM_MIN, VIEW_ZOOM_MAX);
     view.center = under_mouse - (under_mouse - view.center) * (area.view_zoom / view.zoom);
     area.view_navigated = true;
+    navigated = true;
   }
-  if (region_active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
+  if (region_active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f) &&
+      (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f))
+  {
     view.center -= float2(io.MouseDelta.x, -io.MouseDelta.y) / view.zoom;
     area.view_navigated = true;
+    navigated = true;
   }
   if (hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
     view_fit(area, doc, size);
     area.view_navigated = false;
     view.center = {area.view_center_x, area.view_center_y};
     view.zoom = area.view_zoom;
+  }
+  if (through_camera) {
+    static bool moving = false;
+    static double last_wheel = 0.0;
+    if (navigated) {
+      camera.position = view.center;
+      camera_set_zoom(doc, camera_zoom(doc) * view.zoom / area.view_zoom);
+      view.zoom = camera_fit_zoom(doc, size);
+      moving = true;
+      last_wheel = io.MouseWheel != 0.0f ? ImGui::GetTime() : last_wheel;
+    }
+    /* The gesture is over once the middle button is up and the wheel has rested a moment. */
+    if (moving && !ImGui::IsMouseDown(ImGuiMouseButton_Middle) && ImGui::GetTime() - last_wheel > 0.4) {
+      moving = false;
+      push_undo(C, "Move Camera");
+    }
   }
   area.view_center_x = view.center.x;
   area.view_center_y = view.center.y;
@@ -4105,10 +5052,8 @@ void viewport_draw(Area &area, Context &C)
 
   /* --- Background, camera frame, rendered layers. --- */
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(origin, origin + size, COL_VIEWPORT_BACK);
-  const float aspect = float(doc.width) / float(std::max(doc.height, 1));
-  const ImVec2 frame_min = view.to_screen({-aspect, 1.0f}), frame_max = view.to_screen({aspect, -1.0f});
-  dl->AddRectFilled(frame_min, frame_max,
+  /* The canvas is infinite: the background goes on past the camera's frame. */
+  dl->AddRectFilled(origin, origin + size,
                     ImGui::ColorConvertFloat4ToU32(ImVec4(doc.background.r, doc.background.g, doc.background.b, 1.0f)));
 
   const float fb_scale = io.DisplayFramebufferScale.x > 0.0f ? io.DisplayFramebufferScale.x : 1.0f;
@@ -4136,11 +5081,24 @@ void viewport_draw(Area &area, Context &C)
       draw_layer_box(dl, doc, *target, view);
     }
   }
-  const ViewportOverlays &ov = area.overlays;
+  const ViewportOverlays &ov = C.document->overlays;
   g_keyed_bones = ov.physics_ghosts;
   g_bone_shapes = ov.bone_shapes;
-  if (ov.show && ov.camera_frame) {
-    dl->AddRect(frame_min, frame_max, IM_COL32(0x1d, 0x1d, 0x1d, 255), 0.0f, 0, 1.0f);
+  g_relationship_lines = ov.relationship_lines;
+  g_detail_cage = ov.detail_cage || (g_modal.active && g_modal.area == area.id);
+  /* The camera's frame, the canvas outside it darkened, and its name above it (orange while picked). */
+  if (ov.show && (ov.camera_frame || through_camera)) {
+    ImVec2 frame[4];
+    camera_frame_screen(doc, view, frame);
+    draw_passepartout(dl, frame, origin, size, doc.camera_passepartout);
+    const ImU32 line = through_camera ? COL_WIRE_SELECTED : IM_COL32(0x1d, 0x1d, 0x1d, 255);
+    dl->AddPolyline(frame, 4, line, ImDrawFlags_Closed, through_camera ? 2.0f : 1.0f);
+    const Color &bg = doc.background;
+    const float shade = (0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b) * (1.0f - doc.camera_passepartout);
+    const ImU32 text = through_camera ? COL_WIRE_SELECTED
+                       : shade > 0.5f ? IM_COL32(0x30, 0x30, 0x30, 255)
+                                      : IM_COL32(0xc8, 0xc8, 0xc8, 255);
+    dl->AddText(frame[3] + ImVec2(1.0f, -ImGui::GetTextLineHeight() - 2.0f), text, "Camera");
   }
   if (ov.show && ov.grid) {
     draw_grid(dl, view, ts.grid_size);
@@ -4169,7 +5127,7 @@ void viewport_draw(Area &area, Context &C)
 
   std::string modal_info;
   if (wm.overlays_toggle_request && hovered) {
-    area.overlays.show = !area.overlays.show;
+    C.document->overlays.show = !C.document->overlays.show;
     wm.overlays_toggle_request = false;
   }
   if (wm.transform_request && hovered && !g_modal.active && !g_bone_modal.active) {
@@ -4207,6 +5165,9 @@ void viewport_draw(Area &area, Context &C)
   else if (ts.tool == Tool::WeightSelect && drawing && !g_modal.active) {
     weight_select_input(C, area, view, hovered, dl);
   }
+  else if (ts.tool == Tool::TransformPoints && drawing && !g_modal.active) {
+    transform_points_input(C, area, view, hovered, dl);
+  }
   else if (g_modal.active && g_modal.area == area.id) {
     modal_info = modal_update(C, view);
     /* Proportional editing's reach, a circle about the middle of what moves, as Blender's. */
@@ -4233,7 +5194,7 @@ void viewport_draw(Area &area, Context &C)
      * there); other frames animate what is drawn. */
     const bool draws = ts.tool == Tool::Draw || ts.tool == Tool::Shape;
     if (draws && doc.frame_current != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-      report_at_mouse(ReportType::Warning, "Switch to Setup (frame 0) to draw");
+      report_banner(ReportType::Warning, "Switch to Setup (frame 0) to draw");
     }
     else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       g_drag = {};
@@ -4265,19 +5226,21 @@ void viewport_draw(Area &area, Context &C)
             push_undo(C, "Delete Point");
           }
           else {
-            const int p = drawing_split_segment(cut, hit.edge, io.KeyShift ? 0.5f : hit.t);
+            /* At a shape's detail level above 0 the new point is detail of that level. */
+            const int level = drawing_knife_level(cut, hit.edge.curve);
+            const int p = drawing_detail_split(cut, hit.edge, io.KeyShift ? 0.5f : hit.t, level);
             for (Layer *editing : editable_layers(C)) {
               deselect_all(editing->drawing);
             }
             cut.points[p].selected = true;
-            push_undo(C, "Split Curve");
+            push_undo(C, level > 0 ? "Add Detail Point" : "Split Curve");
           }
           split_curve_done(ts);
           break;
         }
         case Tool::Select: {
           /* Pressing on a shown handle drags it at once, as Blender's tweak does. */
-          const HandleHit handle = pick_handle(C, view, io.MousePos, handles_shown(area.overlays, ts));
+          const HandleHit handle = pick_handle(C, view, io.MousePos, handles_shown(C.document->overlays, ts));
           if (!handle.layer || io.KeyShift || io.KeyCtrl) {
             break;
           }
@@ -4362,10 +5325,10 @@ void viewport_draw(Area &area, Context &C)
       switch (ts.tool) {
         case Tool::Select:
           if (g_drag.box) {
-            select_box(C, view, g_drag.start, io.MousePos, handles_shown(area.overlays, ts));
+            select_box(C, view, g_drag.start, io.MousePos, handles_shown(C.document->overlays, ts));
           }
           else {
-            select_click(C, view, view.to_document(io.MousePos), handles_shown(area.overlays, ts));
+            select_click(C, view, view.to_document(io.MousePos), handles_shown(C.document->overlays, ts));
           }
           push_undo(C, "Select");
           break;
@@ -4472,8 +5435,9 @@ void viewport_draw(Area &area, Context &C)
     visit(visit, doc.layers, true);
   }
   draw_keyed_hover(dl, C, view);
-  /* The active layer's masks, dashed; a mask chip or field under the mouse, stronger. */
-  if (const Layer *masked = document_active_layer(doc); masked && ov.show) {
+  /* The active layer's masks, dashed (Mask Outlines); a mask symbol or field under the mouse,
+   * stronger, whatever the overlay. */
+  if (const Layer *masked = document_active_layer(doc); masked && ov.show && ov.mask_outlines) {
     for (const LayerMask &m : masked->masks) {
       if (!m.enabled) {
         continue;
@@ -4573,6 +5537,8 @@ void viewport_draw(Area &area, Context &C)
     menu_operator(C, "Peak", "mesh.peak");
     menu_operator(C, "Smooth", "mesh.smooth");
     ImGui::Separator();
+    menu_operator(C, "Symmetrize", "mesh.symmetrize");
+    ImGui::Separator();
     menu_operator(C, "Delete", "mesh.delete");
     ImGui::Separator();
     if (ui_submenu_begin("Draw Order")) {
@@ -4589,9 +5555,21 @@ void viewport_draw(Area &area, Context &C)
 
   const Layer *active = document_active_layer(doc);
   char info[256];
-  std::snprintf(info, sizeof(info), "Camera  |  Frame %d  |  %s%s", doc.frame_current,
-                active ? active->name.c_str() : "No layer", active && active->is_reference() ? "  (reference)" : "");
+  /* The selected shapes' detail level too, while they have detail to show. */
+  char detail[48] = "";
+  if (int level = 0, top = 0; selected_shapes_detail(C, &level, &top) && top > 0) {
+    if (level < 0) {
+      std::snprintf(detail, sizeof(detail), "  |  Detail -/%d", top);
+    }
+    else {
+      std::snprintf(detail, sizeof(detail), "  |  Detail %d/%d", level, top);
+    }
+  }
+  std::snprintf(info, sizeof(info), "Camera  |  Frame %d  |  %s%s%s", doc.frame_current,
+                active ? active->name.c_str() : "No layer", active && active->is_reference() ? "  (reference)" : "",
+                detail);
   const float bar_w = ImGui::GetFrameHeight() * 1.35f + 16.0f;
+  action_panel_draw(C, origin, size, bar_w + 4.0f);
   if (ov.show && ov.info) {
     dl->AddText(origin + ImVec2(bar_w + 10.0f, header_h + 8.0f), IM_COL32(0xe6, 0xe6, 0xe6, 255), info);
   }

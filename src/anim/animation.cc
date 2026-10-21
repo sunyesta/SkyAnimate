@@ -11,6 +11,7 @@
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
 #include "data/bones.hh"
+#include "data/camera.hh"
 #include "data/document.hh"
 
 namespace sky {
@@ -283,6 +284,7 @@ void animation_record(Document &doc)
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
+  layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { record(ch, value, frame, auto_key); });
 }
 
 void animation_evaluate(Document &doc, int frame)
@@ -291,6 +293,7 @@ void animation_evaluate(Document &doc, int frame)
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   simulation_out(doc);
+  layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   doc.smart_applied = false;
   apply_smart_actions(doc);
   /* References show their originals as they now are. */
@@ -551,15 +554,15 @@ void animation_refresh_smart(Document &doc)
     return;
   }
   /* Take off what was added (from the value and its recorded value alike), then work it out again
-   * from the bones as they are now. */
-  if (doc.smart_applied) {
-    layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
-      value -= ch.smart;
-      ch.last -= ch.smart;
-      ch.smart = {};
-    });
-    doc.smart_applied = false;
-  }
+   * from the bones as they are now. Always, whatever `smart_applied` says: a drag puts the bones
+   * back as they were when it began every update, their smart offsets with them (a smart bone
+   * turned past its action's end and then back the other way kept the end pose). */
+  layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
+    value -= ch.smart;
+    ch.last -= ch.smart;
+    ch.smart = {};
+  });
+  doc.smart_applied = false;
   apply_smart_actions(doc);
 }
 
@@ -913,6 +916,7 @@ int document_clear_pins(Document &doc)
     unpin(*layer_find(doc, layer->id));
   }
   unpin(doc.simulation);
+  unpin(doc.camera);
   return cleared;
 }
 
@@ -939,6 +943,7 @@ std::string channel_label(Layer &layer, const std::string &path, bool owner)
       {"weight", "Weight"},
       {"inertia", "Inertia"},
       {"stretch", "Stretch"},
+      {"zoom", "Zoom"},
   };
   const auto name_of = [](const std::string &id) -> std::string {
     for (const auto &[key, name] : NAMES) {
@@ -949,7 +954,8 @@ std::string channel_label(Layer &layer, const std::string &path, bool owner)
     return id;
   };
   if (path.rfind("bones[\"", 0) != 0) {
-    const std::string name = name_of(path);
+    /* The camera turns about its centre: its Roll. */
+    const std::string name = layer.id == CAMERA_LAYER_ID && path == "rotation" ? std::string("Roll") : name_of(path);
     return owner ? layer.name + ": " + name : name;
   }
   const size_t end = path.find("\"]");
@@ -1015,9 +1021,13 @@ KeyKind channel_kind(const std::string &path)
 }
 
 /* Whether the thing a channel animates is selected: the point (or the curve point's point), or
- * the bone. Layer channels have no thing of their own. */
+ * the bone; every channel of the camera while it is picked. Other layer channels have no thing of
+ * their own. */
 static bool channel_thing_selected(const Layer &layer, const std::string &path)
 {
+  if (layer.id == CAMERA_LAYER_ID) {
+    return layer.selected;
+  }
   const auto number_after = [&](size_t at) { return std::atoi(path.c_str() + at); };
   if (path.rfind("points[", 0) == 0) {
     const int i = number_after(7);

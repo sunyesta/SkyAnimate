@@ -21,6 +21,7 @@
 #include "assets/brushes.hh"
 #include "core/crash.hh"
 #include "core/log.hh"
+#include "data/camera.hh"
 #include "editors/brush_settings.hh"
 #include "editors/ui.hh"
 #include "ops/builtin_ops.hh"
@@ -95,6 +96,7 @@ int App::run(const LaunchOptions &options)
   builtin_operators_register();
   layer_operators_register();
   vector_operators_register();
+  viewport_operators_register();
   asset_operators_register();
   anim_operators_register();
   draw_order_operators_register();
@@ -199,7 +201,7 @@ bool App::window_init()
   update_window_title();
   SDL_MaximizeWindow(window_);
   SDL_ShowWindow(window_);
-  report(ReportType::Info, std::string("SkyAnimate ") + SKY_VERSION + " started");
+  report(ReportType::Info, std::string("SkyAnimate ") + SKY_VERSION + " started", false);
   return true;
 }
 
@@ -243,8 +245,8 @@ void App::main_loop()
       const uint64_t now_ns = SDL_GetTicksNS();
       /* Not while playing, nor with Live Physics off in every viewport shown. */
       const std::vector<Area> &areas = workspaces_[wm_.workspace_index].areas;
-      const bool live = std::any_of(areas.begin(), areas.end(), [](const Area &a) {
-        return a.open && a.type == EditorType::Viewport && a.overlays.live_physics;
+      const bool live = doc_.overlays.live_physics && std::any_of(areas.begin(), areas.end(), [](const Area &a) {
+        return a.open && a.type == EditorType::Viewport;
       });
       dynamics_live_tick(doc_, double(now_ns - last_ns) * 1e-9, live && !wm_.playing);
       last_ns = now_ns;
@@ -265,7 +267,7 @@ void App::main_loop()
     GImGui->ConfigNavEnableTabbing = ctx_.area_type != "Viewport";
     ImGui::NewFrame();
     draw_ui();
-    ui_mouse_report_draw();
+    record_selection();
     ImGui::Render();
 
     int width = 0, height = 0;
@@ -989,9 +991,10 @@ void App::render_frame()
     render_renderer_ = std::make_unique<SceneRenderer>();
   }
   const int width = std::max(doc_.width, 1), height = std::max(doc_.height, 1);
-  /* The camera frame is 2 document units tall, centred on the origin. */
+  /* The camera's frame (data/camera.hh) fills the picture: 2 units tall in its own space. */
   const float scale = float(height) * 0.5f;
-  const Transform2D document_to_pixels{scale, 0, 0, scale, float(width) * 0.5f, float(height) * 0.5f};
+  const Transform2D document_to_pixels = Transform2D{scale, 0, 0, scale, float(width) * 0.5f, float(height) * 0.5f} *
+                                         camera_to_frame(doc_);
   const uint64_t start = SDL_GetTicksNS();
   render_texture_ = render_renderer_->render(doc_, width, height, document_to_pixels, doc_.render_quality,
                                              doc_.render_samples, &doc_.background);
@@ -1063,12 +1066,32 @@ void App::draw_render_result()
   ImGui::End();
 }
 
+void App::record_selection()
+{
+  const uint64_t selection = document_selection_hash(doc_);
+  if (undo_.change_count() != selection_seen_changes_) {
+    /* Something was recorded (or undone) since: that is the selection the history has. */
+    selection_seen_changes_ = undo_.change_count();
+    selection_seen_ = selection;
+    return;
+  }
+  if (selection == selection_seen_ || wm_.modal_running || ImGui::IsAnyMouseDown()) {
+    return;
+  }
+  undo_.push("Select", doc_);
+  selection_seen_changes_ = undo_.change_count();
+  selection_seen_ = selection;
+}
+
 void App::draw_ui()
 {
   if (wm_.render_requested) {
     render_frame();
   }
+  /* Panels open or folded as the project keeps them. */
+  ui_bind_project(&doc_, &undo_);
   draw_top_bar();
+  ui_status_bar_draw();
 
   wm_.workspace_index = std::clamp(wm_.workspace_index, 0, int(workspaces_.size()) - 1);
   Workspace &workspace = workspaces_[wm_.workspace_index];

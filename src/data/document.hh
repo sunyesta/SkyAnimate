@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "data/layer.hh"
+#include "data/view_settings.hh"
 #include "rna/rna.hh"
 
 namespace sky {
@@ -23,6 +24,16 @@ struct Text {
 };
 
 struct Document {
+  /* The viewports' overlays (kept as they are through undo, as Blender's are). */
+  ViewportOverlays overlays;
+  /* The viewport's zoom and pan as last left (kept through undo too), and a number that changes when
+   * a file brings its own, so the viewports take it. */
+  ViewportView view;
+  uint64_t view_serial = 0;
+  /* Which panels and folding rows are open, by "<editor>/<panel>" ("Properties/Transform",
+   * "Timeline/<row>"), where one differs from its default: saved with the project, kept through
+   * undo (see ui_fold_state). */
+  std::map<std::string, bool> ui_open;
   std::string name = "Untitled";
   int frame_start = 1;
   int frame_end = 250;
@@ -70,6 +81,13 @@ struct Document {
    * the tree (SIMULATION_LAYER_ID, "Simulation"), so the timeline and key tools handle them as
    * any layer's; animation copies them into the fields above for each frame shown. */
   Layer simulation;
+  /* The camera (data/camera.hh): a layer outside the tree too (CAMERA_LAYER_ID), for its keys. Its
+   * `selected` flag is the camera picked (in the Layers editor, or by its frame in the viewport):
+   * the viewport then looks through it, and moving and zooming the view move and zoom it. */
+  Layer camera;
+  /* How dark the canvas outside the camera's frame is in the viewport, 0 to 1 (Blender's
+   * passepartout). */
+  float camera_passepartout = 0.6f;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
 
@@ -94,6 +112,12 @@ Text &document_text_add(Document &doc, const std::string &name, const std::strin
 
 /* The id of Document::simulation; layer_find finds it too. */
 inline constexpr uint64_t SIMULATION_LAYER_ID = ~uint64_t(0) - 1;
+/* The id of Document::camera; layer_find finds it too. */
+inline constexpr uint64_t CAMERA_LAYER_ID = ~uint64_t(0) - 2;
+/* A fingerprint of what is selected: the active layer and bone, selected layers, bones (and their
+ * ends), points and handles picked on their own. The app gives a change no undo step recorded one
+ * of its own ("Select"), so every selection is in the undo history. */
+uint64_t document_selection_hash(const Document &doc);
 Layer *layer_find(Document &doc, uint64_t id);
 const Layer *layer_find(const Document &doc, uint64_t id);
 /* The list holding a layer (the document's or a group's children), and its index there. */

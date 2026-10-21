@@ -125,6 +125,46 @@ static std::string operator_call_repr(const std::string &idname, const OpArgs &a
   return text + ")";
 }
 
+static LastOperation g_last_redo;
+static bool g_has_last_redo = false;
+
+const LastOperation *operator_last_redo(const Context &C)
+{
+  if (!g_has_last_redo || !C.undo || C.undo->change_count() != g_last_redo.change_count ||
+      !operators().find(g_last_redo.idname))
+  {
+    return nullptr;
+  }
+  return &g_last_redo;
+}
+
+OpStatus operator_redo_last(Context &C, const OpArgs &args)
+{
+  const LastOperation *last = operator_last_redo(C);
+  if (!last || !C.document) {
+    return OpStatus::Cancelled;
+  }
+  const std::string idname = last->idname, area = last->area;
+  /* As Undo does: the frame, the texts and the overlays aren't part of the step. */
+  const int frame = C.document->frame_current;
+  auto texts = C.document->texts;
+  const ViewportOverlays overlays = C.document->overlays;
+  auto ui_open = C.document->ui_open;
+  const ViewportView view = C.document->view;
+  C.undo->undo(*C.document);
+  C.document->view = view;
+  C.document->frame_current = frame;
+  C.document->texts = std::move(texts);
+  C.document->overlays = overlays;
+  C.document->ui_open = std::move(ui_open);
+  /* As it was first run: from the same editor. */
+  const std::string saved_area = C.area_type;
+  C.area_type = area;
+  const OpStatus status = operator_call(C, idname, args);
+  C.area_type = saved_area;
+  return status;
+}
+
 OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
 {
   const OperatorType *found = operators().find(idname);
@@ -165,6 +205,18 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     C.undo->push(undo_name, *C.document);
     /* Recording may have keyed a bone that drives a smart action. */
     animation_refresh_smart(*C.document);
+    /* Run by the user (not inside another operator) with options: it can be adjusted now. */
+    if (!ot.props.empty() && !outer_args) {
+      g_last_redo.idname = ot.idname;
+      g_last_redo.args = args;
+      for (const OpProperty &prop : ot.props) {
+        g_last_redo.args.try_emplace(prop.name, prop.fallback);
+      }
+      /* The editor it was done in: the one drawing its menu, else the one under the mouse. */
+      g_last_redo.area = C.drawing_area.empty() ? C.area_type : C.drawing_area;
+      g_last_redo.change_count = C.undo->change_count();
+      g_has_last_redo = true;
+    }
   }
   return status;
 }

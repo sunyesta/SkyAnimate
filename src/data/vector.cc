@@ -1,5 +1,7 @@
 #include "data/vector.hh"
 
+#include "data/detail.hh"
+
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -9,6 +11,18 @@
 #include <set>
 
 namespace sky {
+
+namespace {
+/* Structural edits on a drawing with detail keep its look (see drawing_detail_edit_begin). */
+struct DetailScope {
+  VectorDrawing &drawing;
+  DetailEdit edit;
+  explicit DetailScope(VectorDrawing &d) : drawing(d), edit(drawing_detail_edit_begin(d)) {}
+  ~DetailScope() { drawing_detail_edit_end(drawing, edit); }
+  DetailScope(const DetailScope &) = delete;
+  DetailScope &operator=(const DetailScope &) = delete;
+};
+}  // namespace
 
 int Curve::segment_count() const
 {
@@ -327,6 +341,22 @@ VectorDrawing drawing_setup_pose(const VectorDrawing &drawing)
       cp.handle_out = handle_setup(cp, false);
     }
   }
+  /* Detail in its setup pose, placed on the setup curve. */
+  for (MeshPoint &p : setup.points) {
+    if (p.detail.level > 0 && (p.pos_keys.has_last || p.pos_keys.animated())) {
+      p.detail.pos = p.detail.setup_pos;
+    }
+  }
+  for (Curve &curve : setup.curves) {
+    for (CurvePoint &cp : curve.points) {
+      PointDetail &dt = setup.points[cp.point].detail;
+      if (dt.level > 0) {
+        dt.in = cp.handle_in_keys.has_last || cp.handle_in_keys.animated() ? dt.setup_in : dt.in;
+        dt.out = cp.handle_out_keys.has_last || cp.handle_out_keys.animated() ? dt.setup_out : dt.out;
+      }
+    }
+  }
+  drawing_detail_sync(setup, false);
   return setup;
 }
 
@@ -495,6 +525,7 @@ static void shapes_remap_curves(VectorDrawing &drawing, const std::vector<int> &
 
 void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remove)
 {
+  DetailScope detail_scope(drawing);
   std::vector<int> point_remap(drawing.points.size(), -1);
   std::vector<MeshPoint> points;
   for (size_t i = 0; i < drawing.points.size(); i++) {
@@ -598,7 +629,8 @@ int drawing_pick_point(const VectorDrawing &drawing, float2 pos, float radius)
   float best_dist = radius;
   for (size_t i = 0; i < drawing.points.size(); i++) {
     const float d = distance(drawing.points[i].pos, pos);
-    if (d <= best_dist) {
+    /* Detail above its curve's edit level can't be picked. */
+    if (d <= best_dist && !drawing.points[i].detail.hidden) {
       best_dist = d;
       best = int(i);
     }
@@ -776,6 +808,7 @@ static int segment_after_removal(int s, int i, int n, bool closed)
 
 void drawing_dissolve_point(VectorDrawing &drawing, int point)
 {
+  DetailScope detail_scope(drawing);
   std::vector<bool> remove_curve(drawing.curves.size(), false);
   for (size_t c = 0; c < drawing.curves.size(); c++) {
     Curve &curve = drawing.curves[c];
@@ -821,6 +854,7 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point)
 
 void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
 {
+  DetailScope detail_scope(drawing);
   Curve &curve = drawing.curves[curve_index];
   const int segments = curve.segment_count();
   std::vector<bool> hidden(segments);
@@ -851,89 +885,6 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
   }
 }
 
-int drawing_shape_from_selection(VectorDrawing &drawing, bool fill, const Style &style)
-{
-  /* Segments with both ends selected form a graph over the points. */
-  std::vector<ShapeEdge> segments;
-  std::vector<std::pair<int, int>> ends;
-  for (size_t c = 0; c < drawing.curves.size(); c++) {
-    const Curve &curve = drawing.curves[c];
-    for (int s = 0; s < curve.segment_count(); s++) {
-      int a, b;
-      curve_segment_points(curve, s, &a, &b);
-      if (drawing.points[a].selected && drawing.points[b].selected) {
-        segments.push_back({int(c), s});
-        ends.emplace_back(a, b);
-      }
-    }
-  }
-  if (segments.empty()) {
-    return -1;
-  }
-
-  /* Shortest cycle: for each segment, the shortest path between its ends without it. */
-  std::vector<int> best_cycle;
-  for (size_t skip = 0; skip < segments.size(); skip++) {
-    const auto [start, goal] = ends[skip];
-    std::map<int, std::pair<int, int>> came_from; /* point -> (previous point, segment index) */
-    std::deque<int> queue = {start};
-    came_from[start] = {-1, -1};
-    while (!queue.empty() && !came_from.contains(goal)) {
-      const int p = queue.front();
-      queue.pop_front();
-      for (size_t e = 0; e < segments.size(); e++) {
-        if (e == skip) {
-          continue;
-        }
-        int other = -1;
-        if (ends[e].first == p) {
-          other = ends[e].second;
-        }
-        else if (ends[e].second == p) {
-          other = ends[e].first;
-        }
-        if (other >= 0 && !came_from.contains(other)) {
-          came_from[other] = {p, int(e)};
-          queue.push_back(other);
-        }
-      }
-    }
-    if (!came_from.contains(goal)) {
-      continue;
-    }
-    std::vector<int> cycle = {int(skip)};
-    for (int p = goal; came_from[p].second >= 0; p = came_from[p].first) {
-      cycle.push_back(came_from[p].second);
-    }
-    if (best_cycle.empty() || cycle.size() < best_cycle.size()) {
-      best_cycle = std::move(cycle);
-    }
-  }
-
-  Shape shape;
-  shape.style = style;
-  if (!best_cycle.empty()) {
-    for (int e : best_cycle) {
-      shape.edges.push_back(segments[e]);
-    }
-    shape.has_fill = fill;
-  }
-  else {
-    /* No closed loop: an outline along the selected segments, as Moho allows for open lines. */
-    shape.edges = segments;
-    shape.has_fill = false;
-    shape.has_outline = true;
-    std::vector<float2> outline;
-    bool closed;
-    if (!shape_outline(drawing, shape, 2, outline, nullptr, &closed)) {
-      return -1;
-    }
-  }
-  shape.name = "Shape " + std::to_string(drawing.shapes.size() + 1);
-  drawing.shapes.push_back(std::move(shape));
-  return int(drawing.shapes.size()) - 1;
-}
-
 bool drawing_selection_bounds(const VectorDrawing &drawing, float2 *r_min, float2 *r_max)
 {
   bool any = false;
@@ -953,6 +904,7 @@ bool drawing_selection_bounds(const VectorDrawing &drawing, float2 *r_min, float
 
 bool drawing_duplicate_selected(VectorDrawing &drawing)
 {
+  DetailScope detail_scope(drawing);
   const int old_point_count = int(drawing.points.size());
   const int old_curve_count = int(drawing.curves.size());
   std::vector<int> point_copy(old_point_count, -1);
@@ -1463,6 +1415,7 @@ void drawing_repair_stale_handle_keys(VectorDrawing &drawing)
 
 int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
 {
+  DetailScope detail_scope(drawing);
   const auto doomed = [&](int c, int seg) {
     return std::find(edges.begin(), edges.end(), ShapeEdge{c, seg}) != edges.end();
   };
@@ -1595,7 +1548,22 @@ float2 handle_from_change(float2 setup, float2 change)
 
 void drawing_changes_from_values(VectorDrawing &drawing)
 {
+  /* Detail edits since it was last placed become its offsets; its keys hold their change from the
+   * setup. */
+  drawing_detail_sync(drawing, true);
   for (MeshPoint &p : drawing.points) {
+    if (p.detail.level > 0) {
+      PointDetail &dt = p.detail;
+      if (!p.pos_keys.has_last && !p.pos_keys.animated()) {
+        dt.setup_pos = dt.pos;
+        p.setup_pos = p.pos;
+        p.transform = {};
+      }
+      else if (dt.pos != dt.setup_pos + p.transform) {
+        p.transform = dt.pos - dt.setup_pos;
+      }
+      continue;
+    }
     if (!p.pos_keys.has_last && !p.pos_keys.animated()) {
       p.setup_pos = p.pos;
       p.transform = {};
@@ -1606,11 +1574,25 @@ void drawing_changes_from_values(VectorDrawing &drawing)
   }
   for (Curve &curve : drawing.curves) {
     for (CurvePoint &cp : curve.points) {
+      PointDetail &dt = drawing.points[cp.point].detail;
       for (const bool in : {true, false}) {
         const Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
+        float2 &change = in ? cp.change_in : cp.change_out;
+        if (dt.level > 0) {
+          const float2 offset = in ? dt.in : dt.out;
+          float2 &detail_setup = in ? dt.setup_in : dt.setup_out;
+          if (!ch.has_last && !ch.animated()) {
+            detail_setup = offset;
+            (in ? cp.setup_in : cp.setup_out) = in ? cp.handle_in : cp.handle_out;
+            change = {};
+          }
+          else if (offset != detail_setup + change) {
+            change = offset - detail_setup;
+          }
+          continue;
+        }
         const float2 handle = in ? cp.handle_in : cp.handle_out;
         float2 &setup = in ? cp.setup_in : cp.setup_out;
-        float2 &change = in ? cp.change_in : cp.change_out;
         if (!ch.has_last && !ch.animated()) {
           setup = handle;
           change = {};
@@ -1626,19 +1608,37 @@ void drawing_changes_from_values(VectorDrawing &drawing)
 void drawing_values_from_changes(VectorDrawing &drawing)
 {
   for (MeshPoint &p : drawing.points) {
+    if (p.detail.level > 0) {
+      p.detail.pos = p.detail.setup_pos + p.transform;
+      continue;
+    }
     p.pos = p.setup_pos + p.transform;
   }
   for (Curve &curve : drawing.curves) {
     for (CurvePoint &cp : curve.points) {
+      if (PointDetail &dt = drawing.points[cp.point].detail; dt.level > 0) {
+        dt.in = dt.setup_in + cp.change_in;
+        dt.out = dt.setup_out + cp.change_out;
+        continue;
+      }
       cp.handle_in = handle_from_change(cp.setup_in, cp.change_in);
       cp.handle_out = handle_from_change(cp.setup_out, cp.change_out);
     }
   }
+  /* Detail placed from its offsets, on the curve as it now is. */
+  drawing_detail_sync(drawing, false);
 }
 
 void drawing_take_setup(VectorDrawing &drawing)
 {
+  drawing_detail_sync(drawing, true);
   for (MeshPoint &p : drawing.points) {
+    if (p.detail.level > 0) {
+      p.detail.setup_pos = p.detail.pos - p.pos_keys.smart;
+      p.transform = p.detail.pos - p.detail.setup_pos;
+      p.setup_pos = p.pos;
+      continue;
+    }
     p.setup_pos = p.pos - p.pos_keys.smart;
     p.transform = p.pos - p.setup_pos;
   }
@@ -1647,15 +1647,85 @@ void drawing_take_setup(VectorDrawing &drawing)
       cp.setup_in = cp.handle_in;
       cp.setup_out = cp.handle_out;
       cp.change_in = cp.change_out = {};
+      if (PointDetail &dt = drawing.points[cp.point].detail; dt.level > 0) {
+        dt.setup_in = dt.in;
+        dt.setup_out = dt.out;
+      }
     }
   }
+}
+
+int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool handles)
+{
+  int changed = 0;
+  /* Detail goes back to its setup offsets, and rides its curve from there. */
+  drawing_detail_sync(drawing, true);
+  bool detail = false;
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      MeshPoint &p = drawing.points[cp.point];
+      PointDetail &dt = p.detail;
+      if (dt.level == 0) {
+        continue;
+      }
+      if (positions && p.selected && dt.pos != dt.setup_pos && (p.pos_keys.has_last || p.pos_keys.animated())) {
+        dt.pos = dt.setup_pos;
+        changed++;
+        detail = true;
+      }
+      for (const bool in : {true, false}) {
+        const Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
+        float2 &offset = in ? dt.in : dt.out;
+        const float2 setup = in ? dt.setup_in : dt.setup_out;
+        if (handles && (p.selected || (in ? cp.select_in : cp.select_out)) && offset != setup &&
+            (ch.has_last || ch.animated()))
+        {
+          offset = setup;
+          changed++;
+          detail = true;
+        }
+      }
+    }
+  }
+  if (detail) {
+    drawing_detail_sync(drawing, false);
+  }
+  for (MeshPoint &p : drawing.points) {
+    if (p.detail.level > 0) {
+      continue;
+    }
+    if (positions && p.selected && p.pos != point_setup_pos(p)) {
+      p.pos = point_setup_pos(p);
+      changed++;
+    }
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      if (!handles) {
+        break;
+      }
+      const bool point = drawing.points[cp.point].selected;
+      if (drawing.points[cp.point].detail.level > 0) {
+        continue;
+      }
+      for (const bool in : {true, false}) {
+        float2 &handle = in ? cp.handle_in : cp.handle_out;
+        if (cp.handles_set && (point || (in ? cp.select_in : cp.select_out)) && handle != handle_setup(cp, in)) {
+          handle = handle_setup(cp, in);
+          changed++;
+        }
+      }
+    }
+  }
+  return changed;
 }
 
 void drawing_new_points_follow(VectorDrawing &drawing, int frame)
 {
   const auto is_new = [&](int pi) {
     const MeshPoint &p = drawing.points[pi];
-    return !p.pos_keys.has_last && !p.pos_keys.animated();
+    /* New detail rides its curve: it moves with it already. */
+    return !p.pos_keys.has_last && !p.pos_keys.animated() && p.detail.level == 0;
   };
   std::vector<bool> done(drawing.points.size(), false);
   for (const Curve &curve : drawing.curves) {
@@ -1987,6 +2057,183 @@ float proportional_weight(ProportionalFalloff falloff, float distance, float siz
     }
   }
   return d;
+}
+
+}  // namespace sky
+
+namespace sky {
+
+SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
+                                    const std::map<uint64_t, uint64_t> *weight_flip)
+{
+  SymmetrizeResult result;
+  const auto place = [&](int i) { return setup_frame ? drawing.points[i].pos : point_setup_pos(drawing.points[i]); };
+  const float thr = std::max(threshold, 0.0f);
+  std::vector<int> right, left, centre;
+  for (int i = 0; i < int(drawing.points.size()); i++) {
+    if (!drawing.points[i].selected) {
+      continue;
+    }
+    const float x = place(i).x;
+    (x > thr ? right : x < -thr ? left : centre).push_back(i);
+  }
+  result.right = int(right.size());
+  result.left = int(left.size());
+  result.centre = int(centre.size());
+  /* Pairs: the nearest reflection first, each point used once. */
+  struct Candidate {
+    float d;
+    int r, l;
+  };
+  std::vector<Candidate> candidates;
+  for (const int r : right) {
+    for (const int l : left) {
+      candidates.push_back({distance(reflect2(place(r), true, false), place(l)), r, l});
+    }
+  }
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) { return a.d < b.d; });
+  std::set<int> used;
+  std::vector<std::pair<int, int>> pairs;
+  for (const Candidate &c : candidates) {
+    if (!used.count(c.r) && !used.count(c.l)) {
+      used.insert(c.r);
+      used.insert(c.l);
+      pairs.push_back({c.r, c.l});
+    }
+  }
+  if (right.size() != left.size() || (pairs.empty() && centre.empty())) {
+    for (const int i : right) {
+      if (!used.count(i)) {
+        result.unmatched.push_back(i);
+      }
+    }
+    for (const int i : left) {
+      if (!used.count(i)) {
+        result.unmatched.push_back(i);
+      }
+    }
+    return result;
+  }
+
+  /* Every handle involved is stored, so it can be copied and set. */
+  std::set<int> involved(centre.begin(), centre.end());
+  for (const auto &[r, l] : pairs) {
+    involved.insert(r);
+    involved.insert(l);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      if (involved.count(curve.points[i].point)) {
+        own_handles(drawing, curve, i);
+      }
+    }
+  }
+  const auto neighbour = [&](const Curve &curve, int i, int dir) {
+    const int n = int(curve.points.size());
+    const int k = i + dir;
+    if (!curve.closed && (k < 0 || k >= n)) {
+      return -1;
+    }
+    return curve.points[(k % n + n) % n].point;
+  };
+  const auto find = [&](int point, Curve **r_curve) -> int {
+    for (Curve &curve : drawing.curves) {
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        if (curve.points[i].point == point) {
+          *r_curve = &curve;
+          return i;
+        }
+      }
+    }
+    return -1;
+  };
+
+  for (const auto &[r, l] : pairs) {
+    const int src = right_to_left ? r : l, dst = right_to_left ? l : r;
+    /* The handles first, while the neighbours are where they were: the copy runs the same way
+     * along its curve when the source's previous point reflects nearer its previous one. */
+    Curve *src_curve = nullptr;
+    const int si = find(src, &src_curve);
+    if (si >= 0) {
+      const CurvePoint from = src_curve->points[si];
+      const int sp = neighbour(*src_curve, si, -1), sn = neighbour(*src_curve, si, 1);
+      for (Curve &curve : drawing.curves) {
+        for (int j = 0; j < int(curve.points.size()); j++) {
+          if (curve.points[j].point != dst) {
+            continue;
+          }
+          const int dp = neighbour(curve, j, -1), dn = neighbour(curve, j, 1);
+          const auto gap = [&](int a, int b) {
+            return a < 0 || b < 0 ? std::numeric_limits<float>::max() : distance(reflect2(place(a), true, false), place(b));
+          };
+          const int s = sp >= 0 ? sp : sn;
+          const bool swap = s >= 0 && (s == sp ? gap(sp, dn) < gap(sp, dp) : gap(sn, dp) < gap(sn, dn));
+          CurvePoint &to = curve.points[j];
+          to.handle_in = reflect2(swap ? from.handle_out : from.handle_in, true, false);
+          to.handle_out = reflect2(swap ? from.handle_in : from.handle_out, true, false);
+          to.weight_in = swap ? from.weight_out : from.weight_in;
+          to.weight_out = swap ? from.weight_in : from.weight_out;
+          to.offset_in = -(swap ? from.offset_out : from.offset_in);
+          to.offset_out = -(swap ? from.offset_in : from.offset_out);
+          to.curvature = from.curvature;
+          to.aligned = from.aligned;
+          to.handles_set = true;
+        }
+      }
+    }
+    MeshPoint &to = drawing.points[dst];
+    const MeshPoint &from = drawing.points[src];
+    if (setup_frame) {
+      to.pos = reflect2(from.pos, true, false);
+    }
+    else {
+      to.pos = point_setup_pos(to) + reflect2(from.pos - point_setup_pos(from), true, false);
+    }
+    to.radius = from.radius;
+    to.corner = from.corner;
+    if (weight_flip) {
+      to.weights = from.weights;
+      for (BoneWeight &w : to.weights) {
+        if (const auto it = weight_flip->find(w.bone); it != weight_flip->end()) {
+          w.bone = it->second;
+        }
+      }
+    }
+  }
+
+  /* The axis's own points: on it, their handles mirroring each other (flat when within 10 degrees
+   * of flat). */
+  const float nearly_flat = std::tan(10.0f * PI / 180.0f);
+  for (const int c : centre) {
+    MeshPoint &p = drawing.points[c];
+    p.pos.x = setup_frame ? 0.0f : point_setup_pos(p).x;
+    for (Curve &curve : drawing.curves) {
+      for (CurvePoint &cp : curve.points) {
+        if (cp.point != c || !cp.handles_set) {
+          continue;
+        }
+        const auto flatten = [&](float2 &h) {
+          if (std::fabs(h.y) <= nearly_flat * std::fabs(h.x)) {
+            h.y = 0.0f;
+          }
+        };
+        const bool in_right = cp.handle_in.x > 0.0f, out_right = cp.handle_out.x > 0.0f;
+        if (in_right != out_right && std::fabs(cp.handle_in.x) > 1e-9f && std::fabs(cp.handle_out.x) > 1e-9f) {
+          /* One handle each way: the source side's sets both. */
+          float2 &source = (in_right == right_to_left) ? cp.handle_in : cp.handle_out;
+          float2 &image = (in_right == right_to_left) ? cp.handle_out : cp.handle_in;
+          flatten(source);
+          image = reflect2(source, true, false);
+        }
+        else {
+          flatten(cp.handle_in);
+          flatten(cp.handle_out);
+        }
+      }
+    }
+  }
+  result.done = true;
+  return result;
 }
 
 }  // namespace sky

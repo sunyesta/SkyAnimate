@@ -15,6 +15,8 @@
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
 #include "data/bones.hh"
+#include "data/camera.hh"
+#include "data/detail.hh"
 #include "assets/asset_library.hh"
 #include "assets/brushes.hh"
 #include "core/crash.hh"
@@ -371,6 +373,24 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     return result;
   });
 
+  /* R on the picked bones as the viewport's drag does it, one mouse update per angle (degrees, from
+   * where the drag began), then confirmed (for tests: a real drag needs a mouse). */
+  m.def("debug_rotate_bones", [](uint64_t id, const std::vector<float> &degrees) {
+    Context &C = current_context();
+    Layer *armature = layer_find(*C.document, id);
+    if (!armature || !armature->is_bone_layer()) {
+      throw py::value_error("not a bone layer");
+    }
+    const std::vector<Bone> original = armature->bones;
+    const bool setup = C.document->frame_current == 0;
+    for (const float d : degrees) {
+      armature_rotate_selected(*armature, original, d * PI / 180.0f, setup);
+      animation_refresh_smart(*C.document);
+      /* The frame after it, as the main loop does. */
+      animation_sync(*C.document);
+    }
+    C.undo->push("Rotate Bones", *C.document);
+  });
   /* Crashes on purpose, to try the crash report (sky.wm.debug_crash). */
   m.def("debug_crash", []() {
     volatile bool go = true;
@@ -378,7 +398,84 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       crash_now();
     }
   });
-  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 6); });
+  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 7); });
+  /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
+  static const std::pair<const char *, bool ViewportOverlays::*> overlay_switches[] = {
+      {"show", &ViewportOverlays::show},
+      {"grid", &ViewportOverlays::grid},
+      {"cursor", &ViewportOverlays::cursor},
+      {"camera_frame", &ViewportOverlays::camera_frame},
+      {"info", &ViewportOverlays::info},
+      {"wireframe", &ViewportOverlays::wireframe},
+      {"points", &ViewportOverlays::points},
+      {"mask_outlines", &ViewportOverlays::mask_outlines},
+      {"relationship_lines", &ViewportOverlays::relationship_lines},
+      {"physics_ghosts", &ViewportOverlays::physics_ghosts},
+      {"live_physics", &ViewportOverlays::live_physics},
+      {"bone_shapes", &ViewportOverlays::bone_shapes},
+      {"detail_cage", &ViewportOverlays::detail_cage},
+  };
+  /* Panels and folding rows open or folded, as the project keeps them ("<editor>/<panel>": open). */
+  m.def("ui_open", []() { return current_context().document->ui_open; });
+  m.def("set_ui_open", [](const std::string &key, bool open) {
+    Context &C = current_context();
+    C.document->ui_open[key] = open;
+    C.undo->mark_changed();
+  });
+  m.def("overlays", []() {
+    const ViewportOverlays &ov = current_context().document->overlays;
+    py::dict d;
+    for (const auto &[name, field] : overlay_switches) {
+      d[name] = ov.*field;
+    }
+    static const char *const handles[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
+    static const char *const armature[] = {"OFF", "SELECTED", "ON"};
+    d["handles"] = handles[int(ov.handles)];
+    d["armature"] = armature[int(ov.armature)];
+    return d;
+  });
+  m.def("set_overlay", [](const std::string &name, py::object value) {
+    Context &C = current_context();
+    ViewportOverlays &ov = C.document->overlays;
+    bool found = false;
+    for (const auto &[id, field] : overlay_switches) {
+      if (name == id) {
+        ov.*field = value.cast<bool>();
+        found = true;
+      }
+    }
+    if (name == "handles" || name == "armature") {
+      const std::string v = value.cast<std::string>();
+      static const char *const handles[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
+      static const char *const armature[] = {"OFF", "SELECTED", "ON"};
+      for (int i = 0; i < (name == "handles" ? 4 : 3); i++) {
+        if (v == (name == "handles" ? handles[i] : armature[i])) {
+          if (name == "handles") {
+            ov.handles = HandleDisplay(i);
+          }
+          else {
+            ov.armature = ArmatureDisplay(i);
+          }
+          found = true;
+        }
+      }
+    }
+    if (!found) {
+      throw py::value_error("no overlay setting " + name);
+    }
+    C.undo->mark_changed();
+  });
+  /* The ViewportActionPanel's operator: (idname, args, editor) or None, and running it again. */
+  m.def("last_operation", []() -> py::object {
+    const LastOperation *last = operator_last_redo(current_context());
+    if (!last) {
+      return py::none();
+    }
+    return py::make_tuple(last->idname, last->args, last->area);
+  });
+  m.def("redo_last", [](const std::map<std::string, std::string> &args) {
+    return std::string(op_status_name(operator_redo_last(current_context(), args)));
+  });
   /* What the Properties editor was asked to show and flash: (tab asked for, layer id, path, panel). */
   m.def("properties_flash", [] {
     const WindowManager &wm = *current_context().wm;
@@ -729,7 +826,9 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     {
       throw py::index_error("no segment " + std::to_string(segment) + " on curve " + std::to_string(curve));
     }
-    const int point = drawing_split_segment(layer.drawing, {curve, segment}, std::clamp(t, 0.0f, 1.0f));
+    /* At the curve's detail level, as the tool cuts (the segment as it shows). */
+    const int point = drawing_detail_split(layer.drawing, {curve, segment}, std::clamp(t, 0.0f, 1.0f),
+                                           drawing_knife_level(layer.drawing, curve));
     current_context().undo->mark_changed();
     return point;
   });
@@ -883,6 +982,15 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       throw py::value_error("side must be 'IN' or 'OUT'");
     }
     curve_point_move_handle(drawing, drawing.curves[curve_index], index, side == "IN", {pos.first, pos.second});
+    current_context().undo->mark_changed();
+  });
+  m.def("camera_to_frame", [](float x, float y) {
+    const float2 p = camera_to_frame(*current_context().document).apply({x, y});
+    return py::make_tuple(p.x, p.y);
+  });
+  m.def("layer_is_selected", [layer_or_raise](uint64_t id) { return layer_or_raise(id).selected; });
+  m.def("layer_set_selected", [layer_or_raise](uint64_t id, bool selected) {
+    layer_or_raise(id).selected = selected;
     current_context().undo->mark_changed();
   });
   m.def("layer_select_handle", [layer_or_raise](uint64_t id, int curve_index, int index, const std::string &side) {
@@ -1825,7 +1933,9 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       py::arg("id"), py::arg("kind"), py::arg("points"), py::arg("fill") = false);
   m.def("layer_shape_outline", [layer_or_raise](uint64_t id, int shape, int steps) {
     /* A shape's outline as drawn: steps samples per curve segment. */
-    const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    /* As drawn: detail's handles final. */
+    VectorDrawing drawing = layer_drawing(*current_context().document, layer_or_raise(id));
+    drawing_detail_final_handles(drawing);
     if (shape < 0 || shape >= int(drawing.shapes.size())) {
       throw py::index_error("Shape index out of range");
     }
@@ -1837,6 +1947,27 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
       result.append(py::make_tuple(p.x, p.y));
     }
     return py::make_tuple(result, closed);
+  });
+  /* Detail levels: each point's level and whether it is hidden, and each shape's edit level and
+   * highest level. */
+  m.def("layer_detail", [layer_or_raise](uint64_t id) {
+    VectorDrawing &drawing = layer_or_raise(id).drawing;
+    drawing_detail_sync(drawing, true);
+    py::list levels, hidden, shape_levels, shape_max;
+    for (const MeshPoint &pt : drawing.points) {
+      levels.append(pt.detail.level);
+      hidden.append(pt.detail.hidden);
+    }
+    for (const Shape &shape : drawing.shapes) {
+      shape_levels.append(shape.detail_level);
+      shape_max.append(shape_detail_max_level(drawing, shape));
+    }
+    py::dict r;
+    r["levels"] = levels;
+    r["hidden"] = hidden;
+    r["shape_levels"] = shape_levels;
+    r["shape_max_levels"] = shape_max;
+    return r;
   });
   /* A layer's masks: [{"outside", "layers" (names; "" for one that's gone), "enabled"}]. */
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
@@ -1968,10 +2099,11 @@ PYBIND11_EMBEDDED_MODULE(_sky, m)
     }
   });
 
-  /* The last warning shown at the mouse: (count shown so far, title, message). */
-  m.def("mouse_report", [] {
-    const MouseReport &r = mouse_report();
-    return py::make_tuple(r.serial, r.title, r.message);
+  /* The report the status bar shows: (count shown so far, type, title, message, hint). */
+  m.def("banner_report", [] {
+    const BannerReport &r = banner_report();
+    static const char *const TYPES[] = {"INFO", "OPERATOR", "WARNING", "ERROR"};
+    return py::make_tuple(r.serial, TYPES[int(r.type)], r.title, r.message, r.hint);
   });
   m.def("report", [](const std::string &type, const std::string &message) {
     ReportType report_type = ReportType::Info;

@@ -161,7 +161,7 @@ bool asset_library_set(const std::string &folder)
   preferences().asset_library = path_to_utf8(fs::absolute(root, ec).lexically_normal().make_preferred());
   preferences_save();
   brushes_reload();
-  report(ReportType::Info, "Asset library: " + preferences().asset_library);
+  report(ReportType::Info, "Asset library: " + preferences().asset_library, false);
   return true;
 }
 

@@ -14,6 +14,8 @@
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "data/bones.hh"
+#include "data/camera.hh"
+#include "data/detail.hh"
 
 namespace sky {
 
@@ -139,6 +141,9 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.color != 0) {
       key["color"] = k.color;
     }
+    if (k.selected) {
+      key["selected"] = true;
+    }
     keys.push_back(std::move(key));
   }
   return keys;
@@ -177,6 +182,9 @@ static json drawing_to_json(const VectorDrawing &drawing)
     if (p.corner == CornerType::Sharp) {
       point["corner"] = "SHARP";
     }
+    if (p.selected) {
+      point["selected"] = true;
+    }
     if (!p.weights.empty()) {
       json weights = json::array();
       for (const BoneWeight &w : p.weights) {
@@ -189,6 +197,18 @@ static json drawing_to_json(const VectorDrawing &drawing)
     }
     put_keys(point, "pos_keys", p.pos_keys);
     put_keys(point, "radius_keys", p.radius_keys);
+    /* A detail point: its level, place and offsets (data/detail.hh). */
+    if (p.detail.level > 0) {
+      const PointDetail &dt = p.detail;
+      point["detail"] = {{"level", dt.level},
+                         {"t", num(dt.t)},
+                         {"pos", float2_to_json(dt.pos)},
+                         {"in", float2_to_json(dt.in)},
+                         {"out", float2_to_json(dt.out)},
+                         {"setup_pos", float2_to_json(dt.setup_pos)},
+                         {"setup_in", float2_to_json(dt.setup_in)},
+                         {"setup_out", float2_to_json(dt.setup_out)}};
+    }
     points.push_back(std::move(point));
   }
   json curves = json::array();
@@ -201,6 +221,12 @@ static json drawing_to_json(const VectorDrawing &drawing)
                     {"weight_out", num(cp.weight_out)},
                     {"offset_in", num(cp.offset_in)},
                     {"offset_out", num(cp.offset_out)}};
+      if (cp.select_in) {
+        point["select_in"] = true;
+      }
+      if (cp.select_out) {
+        point["select_out"] = true;
+      }
       if (cp.edge_hidden) {
         point["edge_hidden"] = true;
       }
@@ -236,6 +262,9 @@ static json drawing_to_json(const VectorDrawing &drawing)
                       {"outline", shape.has_outline},
                       {"style", style_to_json(shape.style)},
                       {"edges", std::move(edges)}});
+    if (shape.detail_level > 0) {
+      shapes.back()["detail_level"] = shape.detail_level;
+    }
   }
   return {{"points", std::move(points)},
           {"curves", std::move(curves)},
@@ -324,6 +353,7 @@ static json layer_to_json(const Layer &layer)
       {"locked", layer.locked},
       {"edit_with_bones", layer.edit_with_bones},
       {"expanded", layer.expanded},
+      {"selected", layer.selected},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
       {"position", float2_to_json(layer.position)},
       {"rotation", num(layer.rotation)},
@@ -393,6 +423,11 @@ static json layer_to_json(const Layer &layer)
       }
       if (b.connected) {
         bj["connected"] = true;
+      }
+      if (b.selected || b.select_head || b.select_tail) {
+        bj["selected"] = b.selected;
+        bj["select_head"] = b.select_head;
+        bj["select_tail"] = b.select_tail;
       }
       put_keys(bj, "position_keys", b.position_keys);
       put_keys(bj, "angle_keys", b.angle_keys);
@@ -522,6 +557,8 @@ static json layer_to_json(const Layer &layer)
   return j;
 }
 
+static json overlays_to_json(const ViewportOverlays &ov);
+
 std::string sky_document_to_json(const Document &doc)
 {
   json texts = json::array();
@@ -537,6 +574,19 @@ std::string sky_document_to_json(const Document &doc)
   for (const CustomChannel &c : doc.simulation.custom_channels) {
     put_keys(simulation_keys, c.path.c_str(), c.keys);
   }
+  /* The camera: where it is now, and its keys (the zoom's hold log2 of the zoom, see data/camera.hh). */
+  json camera_keys = json::object();
+  put_keys(camera_keys, "position", doc.camera.position_keys);
+  put_keys(camera_keys, "rotation", doc.camera.rotation_keys);
+  for (const CustomChannel &c : doc.camera.custom_channels) {
+    put_keys(camera_keys, c.path.c_str(), c.keys);
+  }
+  json camera = {{"position", float2_to_json(doc.camera.position)},
+                 {"roll", num(doc.camera.rotation)},
+                 {"zoom", num(camera_zoom(doc))},
+                 {"selected", doc.camera.selected},
+                 {"passepartout", num(doc.camera_passepartout)},
+                 {"keys", std::move(camera_keys)}};
   const json root = {
       {"format", FORMAT_NAME},
       {"version", SKY_FILE_VERSION},
@@ -554,6 +604,9 @@ std::string sky_document_to_json(const Document &doc)
            {"viewport_quality", doc.viewport_quality},
            {"viewport_samples", doc.viewport_samples},
            {"render_samples", doc.render_samples},
+           {"viewport_overlays", overlays_to_json(doc.overlays)},
+           {"ui_open", doc.ui_open},
+           {"viewport_view", {{"center", {num(doc.view.center_x), num(doc.view.center_y)}}, {"zoom", num(doc.view.zoom)}}},
            {"render_quality", doc.render_quality},
            {"action", doc.action},
            {"gravity", num(doc.gravity)},
@@ -564,6 +617,7 @@ std::string sky_document_to_json(const Document &doc)
            {"wind_turbulence", num(doc.wind_turbulence)},
            {"simulation_start", doc.simulation_start},
            {"simulation_keys", std::move(simulation_keys)},
+           {"camera", std::move(camera)},
            {"action_layer", doc.action_layer},
            {"active_layer", doc.active_layer},
            {"next_layer_id", doc.next_layer_id},
@@ -786,6 +840,7 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.cycle_absolute = get_bool(k, "cycle_absolute", false);
     key.cycle_frame = std::max(0, get_int(k, "cycle_frame", 0));
     key.color = get_int(k, "color", 0);
+    key.selected = get_bool(k, "selected", false);
     if (!r_ch.key_at(key.frame)) {
       r_ch.keys.push_back(key);
     }
@@ -809,6 +864,58 @@ template<typename T> static void get_keys(const json &j, const char *name, Chann
     get_key_list(wrapper, "keys", other);
     if (!other.keys.empty()) {
       r_ch.actions[action] = std::move(other.keys);
+    }
+  }
+}
+
+/* The viewports' overlays, by name (older files have none: the defaults). */
+static constexpr std::pair<const char *, bool ViewportOverlays::*> OVERLAY_SWITCHES[] = {
+    {"show", &ViewportOverlays::show},
+    {"grid", &ViewportOverlays::grid},
+    {"cursor", &ViewportOverlays::cursor},
+    {"camera_frame", &ViewportOverlays::camera_frame},
+    {"info", &ViewportOverlays::info},
+    {"wireframe", &ViewportOverlays::wireframe},
+    {"points", &ViewportOverlays::points},
+    {"mask_outlines", &ViewportOverlays::mask_outlines},
+    {"relationship_lines", &ViewportOverlays::relationship_lines},
+    {"physics_ghosts", &ViewportOverlays::physics_ghosts},
+    {"live_physics", &ViewportOverlays::live_physics},
+    {"bone_shapes", &ViewportOverlays::bone_shapes},
+    {"detail_cage", &ViewportOverlays::detail_cage},
+};
+static constexpr const char *HANDLE_DISPLAYS[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
+static constexpr const char *ARMATURE_DISPLAYS[] = {"OFF", "SELECTED", "ON"};
+
+static json overlays_to_json(const ViewportOverlays &ov)
+{
+  json j = json::object();
+  for (const auto &[name, field] : OVERLAY_SWITCHES) {
+    j[name] = ov.*field;
+  }
+  j["handles"] = HANDLE_DISPLAYS[int(ov.handles)];
+  j["armature"] = ARMATURE_DISPLAYS[int(ov.armature)];
+  return j;
+}
+
+static void overlays_from_json(const json &j, ViewportOverlays &r_ov)
+{
+  if (!j.is_object()) {
+    return;
+  }
+  for (const auto &[name, field] : OVERLAY_SWITCHES) {
+    r_ov.*field = get_bool(j, name, r_ov.*field);
+  }
+  const std::string handles = get_string(j, "handles", HANDLE_DISPLAYS[int(r_ov.handles)]);
+  for (int i = 0; i < 4; i++) {
+    if (handles == HANDLE_DISPLAYS[i]) {
+      r_ov.handles = HandleDisplay(i);
+    }
+  }
+  const std::string armature = get_string(j, "armature", ARMATURE_DISPLAYS[int(r_ov.armature)]);
+  for (int i = 0; i < 3; i++) {
+    if (armature == ARMATURE_DISPLAYS[i]) {
+      r_ov.armature = ArmatureDisplay(i);
     }
   }
 }
@@ -892,7 +999,8 @@ static VectorDrawing drawing_from_json(const json &j)
   for (const json &p : get_array(j, "points")) {
     if (p.is_object()) {
       drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, 1.0f),
-                                false, get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
+                                get_bool(p, "selected", false),
+                                get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
       drawing.points.back().id = get_id(p, "id");
       for (const json &w : get_array(p, "weights")) {
         if (w.is_array() && w.size() == 2 && w[0].is_number_unsigned() && w[1].is_number()) {
@@ -906,6 +1014,17 @@ static VectorDrawing drawing_from_json(const json &j)
       get_keys(p, "pos_keys", drawing.points.back().pos_keys);
       drawing.points.back().setup_pos = get_float2(p, "setup_pos", drawing.points.back().pos);
       get_keys(p, "radius_keys", drawing.points.back().radius_keys);
+      if (auto it = p.find("detail"); it != p.end() && it->is_object()) {
+        PointDetail &dt = drawing.points.back().detail;
+        dt.level = std::clamp(get_int(*it, "level", 0), 0, DETAIL_LEVEL_MAX);
+        dt.t = std::clamp(get_float(*it, "t", 0.5f), 0.0f, 1.0f);
+        dt.pos = get_float2(*it, "pos", {});
+        dt.in = get_float2(*it, "in", {});
+        dt.out = get_float2(*it, "out", {});
+        dt.setup_pos = get_float2(*it, "setup_pos", dt.pos);
+        dt.setup_in = get_float2(*it, "setup_in", dt.in);
+        dt.setup_out = get_float2(*it, "setup_out", dt.out);
+      }
     }
   }
   const int point_count = int(drawing.points.size());
@@ -930,6 +1049,8 @@ static VectorDrawing drawing_from_json(const json &j)
       point.offset_in = get_float(cp, "offset_in", 0.0f);
       point.offset_out = get_float(cp, "offset_out", 0.0f);
       point.edge_hidden = get_bool(cp, "edge_hidden", false);
+      point.select_in = get_bool(cp, "select_in", false);
+      point.select_out = get_bool(cp, "select_out", false);
       /* Handles are stored when the file has them; older files' Automatic and Vector handles are
        * worked out once from their neighbours (drawing_init_handles), Vector ones straight. */
       const std::string legacy = get_string(cp, "handle_type", "AUTO");
@@ -963,6 +1084,7 @@ static VectorDrawing drawing_from_json(const json &j)
     if (auto it = s.find("style"); it != s.end()) {
       shape.style = style_from_json(*it);
     }
+    shape.detail_level = std::clamp(get_int(s, "detail_level", 0), 0, DETAIL_LEVEL_MAX);
     for (const json &e : get_array(s, "edges")) {
       if (!e.is_array() || e.size() != 2 || !e[0].is_number_integer() || !e[1].is_number_integer()) {
         continue;
@@ -1155,6 +1277,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.locked = get_bool(j, "locked", false);
   layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
   layer.expanded = get_bool(j, "expanded", true);
+  layer.selected = get_bool(j, "selected", false);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
   layer.position = get_float2(j, "position", {});
   layer.rotation = get_float(j, "rotation", 0.0f);
@@ -1213,6 +1336,9 @@ static Layer layer_from_json(const json &j, int depth)
       }
     }
     b.connected = bj.contains("connected") && bj["connected"].is_boolean() && bj["connected"].get<bool>();
+    b.selected = get_bool(bj, "selected", false);
+    b.select_head = get_bool(bj, "select_head", false);
+    b.select_tail = get_bool(bj, "select_tail", false);
     get_keys(bj, "position_keys", b.position_keys);
     get_keys(bj, "angle_keys", b.angle_keys);
     get_keys(bj, "scale_keys", b.scale_keys);
@@ -1574,6 +1700,23 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   doc.render_quality = std::clamp(get_int(j, "render_quality", doc.render_quality), 1, 64);
   doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
   doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
+  overlays_from_json(j.value("viewport_overlays", json::object()), doc.overlays);
+  if (const auto it = j.find("viewport_view"); it != j.end() && it->is_object()) {
+    const float2 center = get_float2(*it, "center", {});
+    doc.view.center_x = center.x;
+    doc.view.center_y = center.y;
+    doc.view.zoom = std::max(0.0f, get_float(*it, "zoom", 0.0f));
+  }
+  /* The viewports take the file's view (or frame the camera, without one). */
+  static uint64_t views_loaded = 0;
+  doc.view_serial = ++views_loaded;
+  if (const auto it = j.find("ui_open"); it != j.end() && it->is_object()) {
+    for (const auto &[key, open] : it->items()) {
+      if (open.is_boolean()) {
+        doc.ui_open[key] = open.get<bool>();
+      }
+    }
+  }
   doc.action = get_string(j, "action");
   doc.gravity = get_float(j, "gravity", 0.0f);
   doc.wind = get_float(j, "wind", 0.0f);
@@ -1585,6 +1728,23 @@ bool sky_document_from_json(const std::string &text, Document &r_doc, std::strin
   if (auto it = j.find("simulation_keys"); it != j.end() && it->is_object()) {
     for (CustomChannel &c : document_simulation(doc).custom_channels) {
       get_keys(*it, c.path.c_str(), c.keys);
+    }
+  }
+  /* Files from before the camera get one where the page was: at the origin, zoom 1. */
+  Layer &camera = document_camera(doc);
+  if (auto it = j.find("camera"); it != j.end() && it->is_object()) {
+    const json &cj = *it;
+    camera.position = get_float2(cj, "position", {});
+    camera.rotation = get_float(cj, "roll", 0.0f);
+    camera_set_zoom(doc, get_float(cj, "zoom", 1.0f));
+    camera.selected = get_bool(cj, "selected", false);
+    doc.camera_passepartout = std::clamp(get_float(cj, "passepartout", 0.6f), 0.0f, 1.0f);
+    if (auto keys = cj.find("keys"); keys != cj.end() && keys->is_object()) {
+      get_keys(*keys, "position", camera.position_keys);
+      get_keys(*keys, "rotation", camera.rotation_keys);
+      for (CustomChannel &c : camera.custom_channels) {
+        get_keys(*keys, c.path.c_str(), c.keys);
+      }
     }
   }
   doc.action_layer = get_id(j, "action_layer");

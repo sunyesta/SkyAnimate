@@ -36,6 +36,24 @@ struct BoneWeight {
   bool operator==(const BoneWeight &) const = default;
 };
 
+/* A detail point's place on its parents' segment (see data/detail.hh). Base points have level 0. */
+struct PointDetail {
+  int level = 0;
+  /* Where along the parents' segment, 0 to 1. */
+  float t = 0.5f;
+  /* Offsets of the point and its handles from where the segment split there puts them, along and
+   * across the segment at t, in lengths of it; and their setup pose (frame 0). Its keys hold the
+   * change from the setup (see drawing_changes_from_values). */
+  float2 pos, in, out;
+  float2 setup_pos, setup_in, setup_out;
+  /* The point and handles as last placed: one that differs since was moved, so its offsets are
+   * taken from it. Not saved. */
+  float2 built_pos, built_in, built_out;
+  bool built = false;
+  /* Above its curve's edit level: not shown, picked or selected. Not saved. */
+  bool hidden = false;
+};
+
 struct MeshPoint {
   float2 pos;
   /* Stroke radius here as a fraction (0-1) of the line width of the shape drawing the stroke,
@@ -58,7 +76,8 @@ struct MeshPoint {
   Channel<float> radius_keys;
   /* Its own number in the drawing, kept for good (0: not given one yet; see drawing_ensure_ids):
    * what a reference's overrides find it by, whatever happens to the points around it. */
-  uint64_t id = 0;
+  uint64_t id = 0;  /* Detail levels: a detail point's level and offsets. */
+  PointDetail detail;
 };
 
 struct CurvePoint {
@@ -164,6 +183,9 @@ struct Shape {
   Style style;
   /* Not drawn (a reference hiding one of its original's shapes). */
   bool hidden = false;
+  /* Detail levels: the level it is edited at (its curves show their points up to it; see
+   * data/detail.hh). */
+  int detail_level = 0;
   /* Its own number in the drawing, kept for good (as MeshPoint::id). */
   uint64_t id = 0;
   /* No selection flag of its own: a shape counts as selected when all its points are (see
@@ -280,9 +302,6 @@ void drawing_remove_unused_points(VectorDrawing &drawing);
  * stays, and shapes keep the outline of what is left, losing their fill when it no longer
  * closes. Returns how many went. */
 int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges);
-/* Finds a closed loop of segments whose points are all selected and makes a shape from it.
- * Returns the new shape index or -1. */
-int drawing_shape_from_selection(VectorDrawing &drawing, bool fill, const Style &style);
 /* Bounding box of selected points; false if none. */
 bool drawing_selection_bounds(const VectorDrawing &drawing, float2 *r_min, float2 *r_max);
 /* Copies the selected points with the curve pieces between them (runs of two or more selected
@@ -367,6 +386,11 @@ void drawing_changes_from_values(VectorDrawing &drawing);
 void drawing_values_from_changes(VectorDrawing &drawing);
 /* Frame 0's edits become the setup pose. */
 void drawing_take_setup(VectorDrawing &drawing);
+/* Away from frame 0, as Blender's Clear Location and Clear Rotation: `positions` (Alt G) puts the
+ * selected points back where they are in the setup pose (their Transform 0); `handles` (Alt R)
+ * gives their handles, or a handle picked on its own, back their setup shape (Angle and Length 0).
+ * Returns how many points and handles changed. */
+int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool handles);
 /* Points new since the keys were last recorded, on a curve whose points are animated: each takes
  * the motion of its nearest recorded neighbours along the curve (in between, blended by distance;
  * past an end, the end's), keyed where they are, so adding a point doesn't break the animation.
@@ -396,6 +420,24 @@ void drawing_apply_mirror(VectorDrawing &drawing, const std::vector<MirrorPair> 
 /* After changing the selected points' (or handles') handles: the same on their mirror images,
  * for each mirror axis that is on. */
 void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool mirror_y);
+
+/* Symmetrize (the right-click menu): makes the selected points mirror images across the layer's
+ * vertical axis, copying one side onto the other (`right_to_left`: the right side's onto the left).
+ * Points within `threshold` of the axis are its own: they snap onto it and their two handles mirror
+ * each other (made flat when nearly flat). The others pair up by where each one's reflection lands
+ * nearest, in the setup pose: each side needs as many as the other, or nothing changes. A copy takes
+ * its partner's place, handles (reflected), width and corner, and with `weight_flip` its weights
+ * (bone ids through the map: _L to _R). On the setup frame it reshapes the drawing; posed
+ * (`setup_frame` false) it mirrors the pose: each copy's change from its setup becomes its
+ * partner's, reflected. */
+struct SymmetrizeResult {
+  bool done = false;
+  int right = 0, left = 0, centre = 0;
+  /* Uneven: the points left without a partner. */
+  std::vector<int> unmatched;
+};
+SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
+                                    const std::map<uint64_t, uint64_t> *weight_flip);
 
 /* Deselects every handle. */
 void drawing_deselect_handles(VectorDrawing &drawing);

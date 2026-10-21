@@ -20,17 +20,23 @@ namespace sky {
 struct ViewState {
   int frame_current;
   std::vector<Text> texts;
+  ViewportOverlays overlays;
+  std::map<std::string, bool> ui_open;
+  ViewportView view;
 };
 
 static ViewState view_state_get(const Document &doc)
 {
-  return {doc.frame_current, doc.texts};
+  return {doc.frame_current, doc.texts, doc.overlays, doc.ui_open, doc.view};
 }
 
 static void view_state_restore(Document &doc, ViewState &view)
 {
   doc.frame_current = view.frame_current;
   doc.texts = std::move(view.texts);
+  doc.overlays = view.overlays;
+  doc.ui_open = std::move(view.ui_open);
+  doc.view = view.view;
 }
 
 static void ed_undo_register()
@@ -45,7 +51,7 @@ static void ed_undo_register()
     ViewState view = view_state_get(*C.document);
     C.undo->undo(*C.document);
     view_state_restore(*C.document, view);
-    report(ReportType::Info, "Undo: " + name);
+    report(ReportType::Info, "Undo: " + name, false);
     return OpStatus::Finished;
   };
   operators().add(std::move(ot));
@@ -62,7 +68,7 @@ static void ed_redo_register()
     ViewState view = view_state_get(*C.document);
     C.undo->redo(*C.document);
     view_state_restore(*C.document, view);
-    report(ReportType::Info, "Redo: " + C.undo->step_name(C.undo->active()));
+    report(ReportType::Info, "Redo: " + C.undo->step_name(C.undo->active()), false);
     return OpStatus::Finished;
   };
   operators().add(std::move(ot));
@@ -280,6 +286,19 @@ void builtin_operators_register()
     ot.poll = [](Context &C) { return C.wm != nullptr; };
     ot.exec = [](Context &C) {
       C.wm->overlays_toggle_request = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* F9: Blender's Adjust Last Operation, opening (or folding) the ViewportActionPanel. */
+    OperatorType ot;
+    ot.idname = "screen.redo_last";
+    ot.name = "Adjust Last Operation";
+    ot.description = "Open the last action's options in the ViewportActionPanel (F9), or fold them";
+    ot.poll = [](Context &C) { return C.wm != nullptr && operator_last_redo(C) != nullptr; };
+    ot.exec = [](Context &C) {
+      C.wm->action_panel_toggle_request = true;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

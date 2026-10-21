@@ -24,6 +24,8 @@ set(SKY_SOURCES
   src/core/crash.cc
   src/core/log.cc
   src/data/bones.cc
+  src/data/camera.cc
+  src/data/detail.cc
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
@@ -157,3 +159,15 @@ add_test(NAME bone_transform
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_transform.py)
 add_test(NAME point_transform
   COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_point_transform.py)
+add_test(NAME symmetrize
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_symmetrize.py)
+add_test(NAME view_settings
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_view_settings.py)
+add_test(NAME selection_saved
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selection_saved.py)
+add_test(NAME camera
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_camera.py)
+add_test(NAME detail_levels
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_detail_levels.py)
+add_test(NAME transform_points
+  COMMAND SkyAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_points.py)

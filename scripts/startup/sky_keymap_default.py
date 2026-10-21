@@ -37,6 +37,7 @@ KEYMAP = (
     ("Text Editor", "text.new", "N", {"alt": True}),
     # Viewport: editing the active vector layer, as in Blender's Grease Pencil edit mode.
     ("Viewport", "view.overlays_toggle", "Z", {"shift": True}),
+    ("Viewport", "screen.redo_last", "F9", {}),
     ("Viewport", "transform.translate", "G", {}),
     # Draw order, as Photoshop and Figma arrange: Ctrl ] / Ctrl [ one step, with Shift all the way.
     ("Window", "layer.draw_order_forward", "RIGHT_BRACKET", {"ctrl": True}),
@@ -59,7 +60,10 @@ KEYMAP = (
     ("Viewport", "armature.move_to_collection_menu", "M", {}),
     ("Viewport", "armature.assign_to_collection_menu", "M", {"shift": True}),
     ("Viewport", "armature.clear_location", "G", {"alt": True}),
+    # Selected points, when no bone is picked (the first operator that can run takes the key).
+    ("Viewport", "mesh.clear_location", "G", {"alt": True}),
     ("Viewport", "armature.clear_rotation", "R", {"alt": True}),
+    ("Viewport", "mesh.clear_handles", "R", {"alt": True}),
     ("Viewport", "armature.clear_scale", "S", {"alt": True}),
     ("Viewport", "mesh.extrude", "E", {}),
     ("Viewport", "mesh.duplicate_move", "D", {"shift": True}),
@@ -84,9 +88,15 @@ KEYMAP = (
     ("Viewport", "mesh.select_mode_stroke", "3", {}),
     ("Viewport", "mesh.delete_menu", "X", {}),
     ("Viewport", "mesh.delete", "DEL", {}),
-    ("Viewport", "mesh.create_shape", "F", {}),
-    ("Viewport", "mesh.create_line", "F", {"shift": True}),
     ("Viewport", "wm.tool_split_curve_temporary", "K", {}),
+    # Detail levels of the selected shapes, as Blender's multiresolution levels.
+    ("Viewport", "mesh.detail_level_0", "0", {"ctrl": True}),
+    ("Viewport", "mesh.detail_level_1", "1", {"ctrl": True}),
+    ("Viewport", "mesh.detail_level_2", "2", {"ctrl": True}),
+    ("Viewport", "mesh.detail_level_3", "3", {"ctrl": True}),
+    ("Viewport", "mesh.detail_level_4", "4", {"ctrl": True}),
+    ("Viewport", "mesh.detail_level_up", "PAGE_UP", {"alt": True}),
+    ("Viewport", "mesh.detail_level_down", "PAGE_DOWN", {"alt": True}),
     # Timeline: keys, as in Blender's.
     ("Timeline", "anim.keys_transform_move", "G", {}),
     ("Timeline", "anim.keys_transform_scale", "S", {}),

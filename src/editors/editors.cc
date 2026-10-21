@@ -77,15 +77,86 @@ std::string Area::window_name() const
 /* The window manager whose properties_flash a Properties editor drawing now shows (ui_flash_bind). */
 static WindowManager *g_flash_wm = nullptr;
 
+static Document *g_fold_doc = nullptr;
+static UndoStack *g_fold_undo = nullptr;
+
+void ui_bind_project(Document *doc, UndoStack *undo)
+{
+  g_fold_doc = doc;
+  g_fold_undo = undo;
+}
+
+std::string ui_fold_scope()
+{
+  const ImGuiWindow *window = ImGui::GetCurrentWindowRead();
+  if (!window) {
+    return "";
+  }
+  /* An area's window is "<editor>###area<id>"; a popup's its own name. */
+  std::string name = window->RootWindow ? window->RootWindow->Name : window->Name;
+  if (const size_t hash = name.find("##"); hash != std::string::npos) {
+    name = name.substr(0, hash);
+  }
+  return name;
+}
+
+bool ui_fold_state(const std::string &key, bool default_open)
+{
+  if (!g_fold_doc) {
+    return default_open;
+  }
+  const auto it = g_fold_doc->ui_open.find(key);
+  return it == g_fold_doc->ui_open.end() ? default_open : it->second;
+}
+
+void ui_fold_record(const std::string &key, bool default_open, bool open)
+{
+  if (!g_fold_doc || ui_fold_state(key, default_open) == open) {
+    return;
+  }
+  if (open == default_open) {
+    g_fold_doc->ui_open.erase(key);
+  }
+  else {
+    g_fold_doc->ui_open[key] = open;
+  }
+  if (g_fold_undo) {
+    g_fold_undo->mark_changed();
+  }
+}
+
+void ui_fold_next(const std::string &key, bool default_open)
+{
+  ImGui::SetNextItemOpen(ui_fold_state(key, default_open), ImGuiCond_Always);
+}
+
+bool ui_collapsing_header(const char *label, bool default_open)
+{
+  /* "Changes (3)###changes": the part after ### is what it's kept by. */
+  std::string id = label;
+  if (const size_t hash = id.find("###"); hash != std::string::npos) {
+    id = id.substr(hash + 3);
+  }
+  const std::string key = ui_fold_scope() + "/" + id;
+  ui_fold_next(key, default_open);
+  const bool open = ImGui::CollapsingHeader(label);
+  ui_fold_record(key, default_open, open);
+  return open;
+}
+
 bool ui_panel_begin(const char *title, bool default_open)
 {
+  const std::string key = ui_fold_scope() + "/" + title;
   /* A property being shown (ui_flash_bind) opens its panel. */
   if (g_flash_wm && g_flash_wm->properties_flash.layer != 0 && g_flash_wm->properties_flash.start < 0.0 &&
       g_flash_wm->properties_flash.panel == title)
   {
-    ImGui::SetNextItemOpen(true);
+    ui_fold_record(key, default_open, true);
   }
-  if (!ImGui::CollapsingHeader(title, default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+  ui_fold_next(key, default_open);
+  const bool open = ImGui::CollapsingHeader(title);
+  ui_fold_record(key, default_open, open);
+  if (!open) {
     return false;
   }
   if (!ImGui::BeginTable(title, 2, ImGuiTableFlags_SizingStretchProp)) {
@@ -162,7 +233,7 @@ void ui_flash_update(WindowManager &wm)
   }
   else if (f.start < 0.0 && f.frames > 4) {
     if (!f.seen_properties) {
-      report_at_mouse(ReportType::Info, "Open a Properties editor to see this property", "",
+      report_banner(ReportType::Info, "Open a Properties editor to see this property", "",
                       "No Properties editor open");
     }
     f = {};
@@ -447,66 +518,141 @@ bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_nam
   return changed;
 }
 
-void ui_mouse_report_draw()
+/* A report's icon, as Blender's: solid `ink` with its mark cut out in `cut` (the box's colour): a
+ * rounded square with "i" (info), a triangle with "!" (warning, ICON_ERROR), a disc with an X (error,
+ * ICON_CANCEL). */
+static void report_icon(ImDrawList *dl, ImVec2 c, float size, ReportType type, ImU32 ink, ImU32 cut)
 {
+  const float r = size * 0.42f;
+  if (type == ReportType::Warning) {
+    dl->AddTriangleFilled(ImVec2(c.x, c.y - r * 1.05f), ImVec2(c.x + r * 1.15f, c.y + r * 0.9f),
+                          ImVec2(c.x - r * 1.15f, c.y + r * 0.9f), ink);
+    dl->AddLine(ImVec2(c.x, c.y - r * 0.4f), ImVec2(c.x, c.y + r * 0.25f), cut, 1.8f);
+    dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.58f), 1.2f, cut);
+    return;
+  }
+  if (type == ReportType::Error) {
+    dl->AddCircleFilled(c, r, ink, 24);
+    const float x = r * 0.45f;
+    dl->AddLine(ImVec2(c.x - x, c.y - x), ImVec2(c.x + x, c.y + x), cut, 1.8f);
+    dl->AddLine(ImVec2(c.x - x, c.y + x), ImVec2(c.x + x, c.y - x), cut, 1.8f);
+    return;
+  }
+  dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ink, r * 0.45f);
+  dl->AddCircleFilled(ImVec2(c.x, c.y - r * 0.5f), 1.3f, cut);
+  dl->AddLine(ImVec2(c.x, c.y - r * 0.15f), ImVec2(c.x, c.y + r * 0.6f), cut, 1.8f);
+}
+
+void ui_status_bar_draw()
+{
+  /* As tall as Blender's (a button and a margin), so the banner's boxes fit with room round them. */
+  const float h = ImGui::GetFrameHeight() + 6.0f;
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0x18, 0x18, 0x18, 255));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 0.0f));
+  const bool open = ImGui::BeginViewportSideBar("##status_bar", ImGui::GetMainViewport(), ImGuiDir_Down, h,
+                                                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                                                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+  if (!open) {
+    ImGui::End();
+    return;
+  }
+  /* The reports banner, as Blender's: a new report flashes in, stays a while, then fades. */
   static uint64_t seen = 0;
-  static ImVec2 at;
-  static int shown_frame = 0;
-  static bool dismissed = false;
-  const MouseReport &r = mouse_report();
-  const ImGuiIO &io = ImGui::GetIO();
+  static double since = -100.0;
+  const BannerReport &r = banner_report();
+  const double now = ImGui::GetTime();
   if (r.serial != seen) {
     seen = r.serial;
-    at = io.MousePos;
-    shown_frame = ImGui::GetFrameCount();
-    dismissed = false;
+    since = now;
   }
-  if (seen == 0 || r.message.empty() || dismissed) {
-    return;
+  const double age = now - since;
+  const double stay = r.type == ReportType::Info ? 4.0 : 8.0, fade = 1.0;
+  const float alpha = age < stay ? 1.0f : age < stay + fade ? float(1.0 - (age - stay) / fade) : 0.0f;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  if (r.serial != 0 && alpha > 0.0f) {
+    std::string text = r.message;
+    if (!r.title.empty()) {
+      text = r.hint.empty() ? r.message : r.hint;
+    }
+    ImFont *bold = theme_font_bold();
+    const float fs = ImGui::GetFontSize();
+    const float title_w = r.title.empty() ? 0.0f : bold->CalcTextSizeA(fs, FLT_MAX, 0.0f, (r.title + "  ").c_str()).x;
+    /* As Blender's banner: a box in the report's colour holding its icon, joined to a box of the same
+     * colour, faint, holding the message; in the middle of the status bar, at most 800 wide. */
+    const float unit = h, icon_w = unit + 6.0f;
+    const float text_w = std::min(title_w + ImGui::CalcTextSize(text.c_str()).x, 800.0f);
+    const float box_w = icon_w + text_w + unit * 0.75f;
+    const float left = at.x + std::max(0.0f, (ImGui::GetContentRegionAvail().x - box_w) * 0.5f);
+    const ImVec2 min(left, at.y + 2.0f), max(left + box_w, at.y + h - 2.0f);
+    const auto a = [&](int v) { return int(float(v) * alpha); };
+    /* Blender's colours: the icon's box in the report's colour, the message's the same at a quarter
+     * over the bar, a grey outline round both; a new report brightens the icon's box briefly. */
+    int c[3];
+    if (r.type == ReportType::Error) {
+      c[0] = 0x9b, c[1] = 0x1c, c[2] = 0x1c;
+    }
+    else if (r.type == ReportType::Warning) {
+      c[0] = 0xac, c[1] = 0x87, c[2] = 0x37;
+    }
+    else {
+      c[0] = 0x28, c[1] = 0x48, c[2] = 0x7d;
+    }
+    const int brighten = age < 0.6 ? int(32.0 * (1.0 - age / 0.6)) : 0;
+    const auto lit = [&](int v) { return std::min(255, v + brighten); };
+    const auto quarter = [&](int v) { return 0x18 + (v - 0x18) / 4; };
+    const ImU32 icon_bg = IM_COL32(lit(c[0]), lit(c[1]), lit(c[2]), a(255));
+    const ImU32 text_bg = IM_COL32(quarter(c[0]), quarter(c[1]), quarter(c[2]), a(255));
+    const ImU32 ink = IM_COL32(0xff, 0xff, 0xff, a(255));
+    const ImU32 text_col = IM_COL32(0xcc, 0xcc, 0xcc, a(255));
+    const float round = (max.y - min.y) * 0.2f;
+    const float split = min.x + icon_w;
+    dl->AddRectFilled(min, ImVec2(split, max.y), icon_bg, round, ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(split, min.y), max, text_bg, round, ImDrawFlags_RoundCornersRight);
+    dl->AddRect(min, max, IM_COL32(0x3d, 0x3d, 0x3d, a(255)), round, 0, 1.0f);
+    report_icon(dl, ImVec2(min.x + icon_w * 0.5f, (min.y + max.y) * 0.5f), fs, r.type, ink, icon_bg);
+    float x = split + unit * 0.35f;
+    const float y = (min.y + max.y - fs) * 0.5f;
+    if (!r.title.empty()) {
+      dl->AddText(bold, fs, ImVec2(x, y), text_col, r.title.c_str());
+      x += title_w;
+    }
+    dl->PushClipRect(ImVec2(x, min.y), ImVec2(max.x - unit * 0.3f, max.y), true);
+    dl->AddText(ImVec2(x, y), text_col, text.c_str());
+    dl->PopClipRect();
+    ImGui::SetCursorScreenPos(min);
+    if (ImGui::InvisibleButton("##report_banner", max - min)) {
+      ImGui::OpenPopup("##recent_reports");
+    }
+    if (ImGui::IsItemHovered()) {
+      /* All of it, and it stays while looked at. */
+      since = std::max(since, now - stay + 0.5);
+      ImGui::SetTooltip("%s%s%s\n\nClick: recent reports", r.title.empty() ? "" : (r.title + "\n").c_str(),
+                        r.message.c_str(), r.hint.empty() ? "" : ("\n" + r.hint).c_str());
+    }
   }
-  /* It stays until a click (anywhere, after the one that caused it) or Esc puts it away. */
-  if (ImGui::GetFrameCount() > shown_frame &&
-      (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
-       ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-  {
-    dismissed = true;
-    return;
+  /* The recent reports, newest first, as the Info editor lists them. */
+  if (ImGui::BeginPopup("##recent_reports")) {
+    int shown = 0;
+    const std::vector<Report> &all = reports();
+    for (auto it = all.rbegin(); it != all.rend() && shown < 15; ++it) {
+      if (it->type == ReportType::Operator) {
+        continue;
+      }
+      const ImVec4 col = it->type == ReportType::Error   ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
+                         : it->type == ReportType::Warning ? ImVec4(0.95f, 0.75f, 0.3f, 1.0f)
+                                                           : ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+      ImGui::TextColored(col, "%s", it->message.c_str());
+      shown++;
+    }
+    if (shown == 0) {
+      ImGui::TextDisabled("No reports yet");
+    }
+    ImGui::EndPopup();
   }
-  const float alpha = 1.0f;
-  const auto with_alpha = [&](int r8, int g8, int b8) { return IM_COL32(r8, g8, b8, int(255.0f * alpha)); };
-  ImDrawList *dl = ImGui::GetForegroundDrawList();
-  /* A bold title line, if any, above the message. */
-  ImFont *bold = theme_font_bold();
-  const float font_size = ImGui::GetFontSize();
-  const ImVec2 title = r.title.empty() ? ImVec2(0, 0) : bold->CalcTextSizeA(font_size, FLT_MAX, 0.0f, r.title.c_str());
-  const ImVec2 body = ImGui::CalcTextSize(r.message.c_str());
-  const float gap = r.title.empty() ? 0.0f : 2.0f;
-  const ImVec2 text(std::max(title.x, body.x), title.y + gap + body.y);
-  const float pad = 6.0f, icon = font_size;
-  ImVec2 min(at.x + 14.0f, at.y + 18.0f);
-  const ImVec2 size(text.x + icon + pad * 3.0f, std::max(text.y, icon) + pad * 2.0f);
-  /* Kept inside the window. */
-  const ImVec2 display = io.DisplaySize;
-  min.x = std::max(4.0f, std::min(min.x, display.x - size.x - 4.0f));
-  min.y = std::max(4.0f, std::min(min.y, display.y - size.y - 4.0f));
-  const ImVec2 max(min.x + size.x, min.y + size.y);
-  const bool error = r.type == ReportType::Error;
-  dl->AddRectFilled(min, max, error ? with_alpha(0xc8, 0x3c, 0x3c) : with_alpha(0xe8, 0xb4, 0x2a), 4.0f);
-  dl->AddRect(min, max, with_alpha(0x20, 0x20, 0x20), 4.0f);
-  /* A warning sign: a triangle with an exclamation mark. */
-  const ImVec2 c(min.x + pad + icon * 0.5f, min.y + pad + std::min(text.y, icon) * 0.5f);
-  const ImU32 ink = with_alpha(0x1a, 0x1a, 0x1a);
-  dl->AddTriangle(ImVec2(c.x, c.y - icon * 0.45f), ImVec2(c.x + icon * 0.5f, c.y + icon * 0.42f),
-                  ImVec2(c.x - icon * 0.5f, c.y + icon * 0.42f), ink, 1.6f);
-  dl->AddLine(ImVec2(c.x, c.y - icon * 0.15f), ImVec2(c.x, c.y + icon * 0.13f), ink, 1.6f);
-  dl->AddCircleFilled(ImVec2(c.x, c.y + icon * 0.27f), 1.2f, ink);
-  const float x = min.x + pad * 2.0f + icon;
-  float y = min.y + (size.y - text.y) * 0.5f;
-  if (!r.title.empty()) {
-    dl->AddText(bold, font_size, ImVec2(x, y), ink, r.title.c_str());
-    y += title.y + gap;
-  }
-  dl->AddText(ImVec2(x, y), ink, r.message.c_str());
+  ImGui::End();
 }
 
 float ui_revert_button_space()
@@ -732,7 +878,7 @@ void ui_draw_order_pick_update(Context &C)
         Document &doc = *C.document;
         for (const uint64_t id : p.layers) {
           if (layer_inside(doc, target, id) || layer_inside(doc, id, target)) {
-            report_at_mouse(ReportType::Warning, "Pick a layer outside the one you're moving",
+            report_banner(ReportType::Warning, "Pick a layer outside the one you're moving",
                             "A layer goes in front of or behind a layer outside it", "That's the layer being moved");
             return false;
           }
@@ -805,7 +951,7 @@ void ui_mask_pick_update(Context &C)
         WindowManager::MaskPick &p = wm->mask_pick;
         Document &doc = *C.document;
         if (std::find(p.layers.begin(), p.layers.end(), source) != p.layers.end()) {
-          report_at_mouse(ReportType::Warning, "Pick another layer: a layer can't be its own mask",
+          report_banner(ReportType::Warning, "Pick another layer: a layer can't be its own mask",
                           "Click the layer whose shape it should show inside or outside", "That's the layer being masked");
           return false;
         }
@@ -953,7 +1099,7 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
     return;
   }
   if (!layer || layer->type != LayerType::Vector) {
-    report_at_mouse(ReportType::Warning, "A custom bone shape is a vector layer's drawing", "Pick a vector layer",
+    report_banner(ReportType::Warning, "A custom bone shape is a vector layer's drawing", "Pick a vector layer",
                     "Not a vector layer");
     return;
   }
@@ -1189,6 +1335,7 @@ bool area_draw(Area &area, Context &C)
   }
   const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
 
+  C.drawing_area = editor_keymap_name(area.type);
   if (visible) {
     switch (area.type) {
       case EditorType::Viewport:
@@ -1216,6 +1363,7 @@ bool area_draw(Area &area, Context &C)
         break;
     }
   }
+  C.drawing_area.clear();
   ImGui::End();
   return hovered;
 }

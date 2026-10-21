@@ -178,4 +178,40 @@ knob = next(b for b in rig.bones if b["name"] == "knob")
 assert abs(knob["angle"] - steps[-1]) < 1e-3, ("kept turning the same way", knob["angle"])
 assert abs(slider.location_x - 3.0) < 1e-3, ("holds the last frame", slider.location_x)
 
+# --- R past the action's end, then back the other way: the bones it drives come back -----------------
+# A drag puts the bones back as they were when it began every update, their smart offsets too; the
+# replay takes those off first, so turning back past the start doesn't keep the end pose. Alone in a
+# new file: with another smart action playing, its offsets were taken off anyway.
+import _sky
+
+assert sky.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
+doc = sky.data.document
+doc.frame_current = 0
+sky.ops.layer.new_bone()
+rig = sky.data.layers.active
+sky.ops.armature.bone_add(name="lever", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+sky.ops.armature.bone_add(name="chin", head_x="0", head_y="-2", tail_x="1", tail_y="-2", parent="")
+sky.ops.armature.select_none()
+rig.select_bone("lever")
+assert sky.ops.anim.action_new(name="lever", smart="1") == {'FINISHED'} and doc.action == "lever"
+doc.frame_current = 10
+rig.bone_set("lever", angle=1.0)
+rig.bone_set("chin", position=(0.0, -2.5))
+doc.frame_current = 0
+assert sky.ops.anim.action_set(name="") == {'FINISHED'}
+doc.frame_current = 40
+sky.ops.armature.select_none()
+rig.select_bone("lever")
+
+
+def chin_y():
+    return next(b for b in rig.bones if b["name"] == "chin")["position"][1]
+
+
+assert abs(chin_y() + 2.0) < 1e-4, chin_y()
+_sky.debug_rotate_bones(rig.id, [20, 45, 90, 150])  # past the end (1.0 rad, 57 degrees)
+assert abs(chin_y() + 2.5) < 1e-4, ("the action's end", chin_y())
+_sky.debug_rotate_bones(rig.id, [-30, -150, -170])  # back past the start, the other way
+assert abs(chin_y() + 2.0) < 1e-4, ("clamped at the start, not left at the end", chin_y())
+
 print("Smart action tests passed")

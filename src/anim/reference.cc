@@ -442,13 +442,13 @@ static void capture_one(const Document &doc, Layer &ref)
     /* Beside the cursor too: what was just tried isn't allowed on a copy. Locked points say so in
      * a bold line, and where to unlock them. */
     if (refused_locked) {
-      report_at_mouse(ReportType::Warning, "\"" + ref.name + "\": " + refused,
+      report_banner(ReportType::Warning, "\"" + ref.name + "\": " + refused,
                       "Go to the Reference tab in Properties to unlock", "Reference layer points locked");
     }
     else {
       std::string at_mouse = refused;
       at_mouse[0] = char(std::toupper(static_cast<unsigned char>(at_mouse[0])));
-      report_at_mouse(ReportType::Warning, "\"" + ref.name + "\": " + refused, at_mouse);
+      report_banner(ReportType::Warning, "\"" + ref.name + "\": " + refused, at_mouse);
     }
   }
 }

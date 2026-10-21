@@ -452,7 +452,7 @@ int remote_start(int port, bool publish)
     std::ofstream out(g_server.published, std::ios::trunc);
     out << json{{"port", g_server.port}, {"token", g_server.token}}.dump() << "\n";
   }
-  report(ReportType::Info, "Remote control: listening on 127.0.0.1:" + std::to_string(g_server.port));
+  report(ReportType::Info, "Remote control: listening on 127.0.0.1:" + std::to_string(g_server.port), false);
   return g_server.port;
 }
 

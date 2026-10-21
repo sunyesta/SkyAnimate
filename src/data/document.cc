@@ -1,6 +1,7 @@
 #include "data/document.hh"
 
 #include "anim/animation.hh"
+#include "data/camera.hh"
 
 #include <cstdio>
 
@@ -52,6 +53,17 @@ const rna::StructRNA &Document::rna()
                             &Document::wind_turbulence, 0.0f, 2.0f),
         def_int<Document>("simulation_start", "Simulation Start", "The frame bone dynamics start simulating from",
                           &Document::simulation_start, 1, 1048574),
+        def_float_fn<Document>(
+            "camera_zoom", "Zoom", "The camera's zoom: 2 shows half as much (its keys change it at a steady rate)",
+            0.001f, 10000.0f, [](const Document &d) { return camera_zoom(d); },
+            [](Document &d, float v) { camera_set_zoom(d, v); }),
+        def_float_fn<Document>(
+            "camera_roll", "Roll", "The camera's turn about its centre, in degrees, counter-clockwise", -100000.0f,
+            100000.0f, [](const Document &d) { return d.camera.rotation; },
+            [](Document &d, float v) { document_camera(d).rotation = v; }),
+        def_float<Document>("camera_passepartout", "Passepartout",
+                            "How dark the canvas outside the camera's frame is in the viewport",
+                            &Document::camera_passepartout, 0.0f, 1.0f),
         def_int<Document>("width", "Width", "Output width in pixels", &Document::width, 4, 16384),
         def_int<Document>("height", "Height", "Output height in pixels", &Document::height, 4, 16384),
         def_int<Document>("viewport_quality", "Viewport Quality",
@@ -121,6 +133,40 @@ Text &document_text_add(Document &doc, const std::string &name, const std::strin
 {
   doc.texts.push_back({document_text_unique_name(doc, name), body, ""});
   return doc.texts.back();
+}
+
+static void hash_mix(uint64_t &h, uint64_t v)
+{
+  h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+}
+
+static void selection_hash_layers(const std::vector<Layer> &layers, uint64_t &h)
+{
+  for (const Layer &layer : layers) {
+    hash_mix(h, layer.id);
+    hash_mix(h, layer.selected ? 1 : 0);
+    hash_mix(h, layer.active_bone);
+    for (const Bone &b : layer.bones) {
+      hash_mix(h, (b.selected ? 1 : 0) | (b.select_head ? 2 : 0) | (b.select_tail ? 4 : 0));
+    }
+    for (const MeshPoint &p : layer.drawing.points) {
+      hash_mix(h, p.selected ? 1 : 0);
+    }
+    for (const Curve &curve : layer.drawing.curves) {
+      for (const CurvePoint &cp : curve.points) {
+        hash_mix(h, (cp.select_in ? 1 : 0) | (cp.select_out ? 2 : 0));
+      }
+    }
+    selection_hash_layers(layer.children, h);
+  }
+}
+
+uint64_t document_selection_hash(const Document &doc)
+{
+  uint64_t h = doc.active_layer;
+  selection_hash_layers(doc.layers, h);
+  hash_mix(h, doc.camera.selected ? 1 : 0);
+  return h;
 }
 
 }  // namespace sky

@@ -5,6 +5,7 @@
 
 #include "anim/reference.hh"
 #include "data/bones.hh"
+#include "data/detail.hh"
 #include "data/layer.hh"
 #include "core/log.hh"
 #include "data/document.hh"
@@ -348,6 +349,10 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
   if (matched_original(doc, layer)) {
     return true;
   }
+  /* Detail shows its handles final (data/detail.hh). */
+  if (layer.type == LayerType::Vector && drawing_has_detail(layer_drawing(doc, layer))) {
+    return true;
+  }
   for (const Modifier &m : layer.modifiers) {
     if (!modifier_on(m, render)) {
       continue;
@@ -401,6 +406,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       }
     }
     transform_drawing(drawing, reference_match_transform(doc, layer));
+    drawing_detail_final_handles(drawing);
     return drawing;
   }
   VectorDrawing drawing = layer_drawing(doc, layer);
@@ -420,6 +426,8 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       }
     }
   }
+  /* Handles scale as the bones and Mirror move them, so the final ones can come last. */
+  drawing_detail_final_handles(drawing);
   return drawing;
 }
 
@@ -437,6 +445,7 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
         }
       }
       transform_drawing(drawing, reference_match_transform(doc, layer));
+      drawing_detail_final_handles(drawing);
       return drawing;
     }
     const Layer *armature = layer_armature(doc, layer.id);
@@ -446,6 +455,7 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
         drawing = drawing_mirror(drawing, m, flip);
       }
     }
+    drawing_detail_final_handles(drawing);
     return drawing;
   }
   VectorDrawing drawing = drawing_setup_pose(layer_drawing(doc, layer));
@@ -456,6 +466,7 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
       drawing = drawing_mirror(drawing, m, flip);
     }
   }
+  drawing_detail_final_handles(drawing);
   return drawing;
 }
 

@@ -309,12 +309,12 @@ layers.active = art3
 assert sky.ops.layer.make_reference() == {'FINISHED'}
 twin3 = layers.active
 assert twin3.reference["match_original"] and any(w for w in twin3.weights), twin3.weights
-shown = sky.wm.mouse_report()[0]
+shown = sky.wm.banner_report()[0]
 layers.active = rig3
 sky.ops.armature.select_all()
 assert sky.ops.armature.bone_delete() == {'FINISHED'}
 doc.frame_current = doc.frame_current  # a sync, as the app does every frame
-assert sky.wm.mouse_report()[0] == shown, ("no warning", sky.wm.mouse_report())
+assert sky.wm.banner_report()[0] == shown, ("no warning", sky.wm.banner_report())
 assert not any(w for w in art3.weights) and not any(w for w in twin3.weights), (art3.weights, twin3.weights)
 assert not twin3.reference_overrides()["weights"], "no weight changes of its own"
 

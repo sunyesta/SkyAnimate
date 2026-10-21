@@ -20,7 +20,7 @@ class UndoStack;
 using OpArgs = std::map<std::string, std::string>;
 
 /* Viewport tools, as on the toolbar. */
-enum class Tool { Select, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones };
+enum class Tool { Select, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones, TransformPoints };
 /* Tools that only work on the setup frame (0): drawing and rigging. */
 bool tool_setup_only(Tool tool);
 
@@ -125,6 +125,8 @@ struct WindowManager {
   /* Set by view.overlays_toggle (Shift Z): the viewport under the mouse shows or hides its
    * overlays. */
   bool overlays_toggle_request = false;
+  /* Set by screen.redo_last (F9): the ViewportActionPanel opens, or folds if open. */
+  bool action_panel_toggle_request = false;
   /* A Properties tab to show (sky.wm.properties_tab), taken by the next Properties editor drawn
    * (-1: none): 0 Document, 1 Layer, 2 Drawing or Armature, 3 Modifiers, 4 Bone Constraints, 5 Reference. */
   int properties_tab_request = -1;
@@ -207,6 +209,9 @@ struct Context {
   WindowManager *wm = nullptr;
   /* Keymap name of the editor under the mouse, e.g. "Viewport". */
   std::string area_type = "Window";
+  /* Keymap name of the editor being drawn right now ("" between editors): where an operator picked
+   * from its menus runs, whatever is under the mouse (the menu). */
+  std::string drawing_area;
   /* Text shown in the text editors; text.* operators act on it. */
   std::string text_name;
   /* Arguments of the operator running now. */

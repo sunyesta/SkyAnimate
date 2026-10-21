@@ -30,11 +30,11 @@ layer.select_points([5])
 assert sky.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (6, 2, 1), "deleting a point drops shapes on that curve"
 
-# Create Shape from a selected closed loop: select the square and press F over the viewport.
+# Shapes come from the Shape tool only: F over the viewport makes none.
 sky.ops.mesh.select_none()
 layer.select_points([0, 1, 2, 3])
-assert sky.wm.event_simulate("F", area="Viewport")
-assert layer.shape_count == 2
+assert not sky.wm.event_simulate("F", area="Viewport")
+assert layer.shape_count == 1
 
 # Keys over the viewport: A selects all, Alt A deselects, X deletes.
 assert sky.wm.event_simulate("A", area="Viewport")
@@ -60,7 +60,7 @@ before = counts(layer)
 sky.ops.mesh.select_none()
 layer.select_points([0, 1, 2, 3])
 assert sky.wm.event_simulate("D", shift=True, area="Viewport")
-assert counts(layer) == (before[0] + 4, before[1] + 1, before[2] + 2), counts(layer)
+assert counts(layer) == (before[0] + 4, before[1] + 1, before[2] + 1), counts(layer)
 assert [p[2] for p in layer.points[-4:]] == [True] * 4 and not any(p[2] for p in layer.points[:-4])
 sky.ops.ed.undo()
 assert counts(layer) == before

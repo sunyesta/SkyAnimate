@@ -4,12 +4,15 @@
 #include "ops/edit_ops.hh"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 
 #include "core/log.hh"
 #include "data/bones.hh"
+#include "data/detail.hh"
 #include "data/document.hh"
 #include "ops/operator.hh"
+#include "ops/undo.hh"
 #include "wm/context.hh"
 
 namespace sky {
@@ -63,6 +66,25 @@ std::vector<Layer *> editable_layers(Context &C)
 static bool editable_poll(Context &C)
 {
   return !editable_layers(C).empty();
+}
+
+/* Calls f for each editable layer with selected shapes (a point of theirs selected), with which;
+ * false when there are none. */
+static bool for_selected_shapes(Context &C, const std::function<void(Layer &, const std::vector<bool> &)> &f)
+{
+  bool any = false;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->is_reference()) {
+      continue;
+    }
+    const std::vector<bool> shapes = drawing_selected_shapes(layer->drawing);
+    if (std::find(shapes.begin(), shapes.end(), true) == shapes.end()) {
+      continue;
+    }
+    any = true;
+    f(*layer, shapes);
+  }
+  return any;
 }
 
 /* Selected points, or handles picked on their own (G, R and S move those too). */
@@ -153,12 +175,119 @@ void vector_operators_register()
                     });
   }
 
+  /* Away from frame 0, Blender's Clear Location (Alt G) and Clear Rotation (Alt R) for points: the
+   * selected points, or their handles (or a handle picked on its own), back to the setup pose, where
+   * their keys hold no change. Picked bones take the keys first. */
+  for (const bool positions : {true, false}) {
+    vector_operator(
+        positions ? "mesh.clear_location" : "mesh.clear_handles", positions ? "Clear Location" : "Clear Handles",
+        positions ? "Put the selected points back where they are in the setup pose (Alt G, away from frame 0)"
+                  : "Give the selected points' handles (or a handle picked on its own) back their setup shape (Alt R, "
+                    "away from frame 0)",
+        UNDO,
+        [](Context &C) { return C.document && C.document->frame_current != 0 && editable_with_selection_poll(C); },
+        [positions](Context &C) {
+          int changed = 0;
+          for (Layer *layer : editable_layers(C)) {
+            /* A copy's points are its original's: its own changes go with Reset to Original. */
+            if (!layer->is_reference()) {
+              changed += drawing_clear_selected_pose(layer->drawing, positions, !positions);
+            }
+          }
+          return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+        });
+  }
+
+  /* Symmetrize (right-click on points): one side's points copied onto their partners on the other,
+   * across the layer's vertical axis; adjustable in the ViewportActionPanel. */
+  {
+    OperatorType ot;
+    ot.idname = "mesh.symmetrize";
+    ot.name = "Symmetrize";
+    ot.description = "Make the selected points mirror images across the layer's vertical axis, copying one side onto "
+                     "the other; points on the axis get even handles";
+    ot.flag = UNDO;
+    ot.poll = editable_with_selection_poll;
+    OpProperty direction;
+    direction.name = "direction";
+    direction.label = "Direction";
+    direction.description = "Which side is copied onto the other";
+    direction.items = {{"RIGHT_TO_LEFT", "Right to Left"}, {"LEFT_TO_RIGHT", "Left to Right"}};
+    direction.fallback = "RIGHT_TO_LEFT";
+    OpProperty threshold;
+    threshold.name = "threshold";
+    threshold.label = "Threshold";
+    threshold.description = "How near the axis a point is to count as on it";
+    threshold.kind = OpProperty::Kind::Float;
+    threshold.fallback = "0.01";
+    threshold.min = 0.0f;
+    threshold.max = 10.0f;
+    threshold.step = 0.001f;
+    OpProperty weights;
+    weights.name = "weights";
+    weights.label = "Weights";
+    weights.description = "Copy the bone weights too, to the other side's bones (_L and _R)";
+    weights.kind = OpProperty::Kind::Bool;
+    weights.fallback = "0";
+    ot.props = {direction, threshold, weights};
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const bool right_to_left = op_arg(C, "direction", "RIGHT_TO_LEFT") != "LEFT_TO_RIGHT";
+      const float threshold = op_arg_float(C, "threshold", 0.01f);
+      const bool weights = op_arg_bool(C, "weights");
+      const bool setup = doc.frame_current == 0;
+      std::vector<Layer *> layers;
+      for (Layer *layer : editable_layers(C)) {
+        if (!layer->is_reference() && has_selection(layer->drawing)) {
+          layers.push_back(layer);
+        }
+      }
+      /* Each layer has to pair up before any changes. */
+      for (Layer *layer : layers) {
+        VectorDrawing trial = layer->drawing;
+        const SymmetrizeResult r = drawing_symmetrize(trial, right_to_left, threshold, setup, nullptr);
+        if (!r.done) {
+          for (MeshPoint &p : layer->drawing.points) {
+            p.selected = false;
+          }
+          for (const int i : r.unmatched) {
+            layer->drawing.points[i].selected = true;
+          }
+          C.undo->mark_changed();
+          const std::string side_counts = std::to_string(r.right) + " on the right, " + std::to_string(r.left) +
+                                          " on the left";
+          report_banner(ReportType::Warning,
+                        "Symmetrize: \"" + layer->name + "\" has " + side_counts +
+                            " (off the axis); each point needs a partner on the other side",
+                        side_counts + ": select the same number on each side (the ones without a partner are "
+                                      "selected now)",
+                        "Uneven sides");
+          return OpStatus::Cancelled;
+        }
+      }
+      for (Layer *layer : layers) {
+        std::map<uint64_t, uint64_t> flip;
+        if (weights) {
+          if (const Layer *armature = layer_armature(doc, layer->id)) {
+            for (const Bone &b : armature->bones) {
+              const Bone *other = bone_find_by_name(*armature, bone_mirror_name(b.name));
+              flip[b.id] = other ? other->id : b.id;
+            }
+          }
+        }
+        drawing_symmetrize(layer->drawing, right_to_left, threshold, setup, weights ? &flip : nullptr);
+      }
+      return layers.empty() ? OpStatus::Cancelled : OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
   /* --- Selection ------------------------------------------------------------- */
   vector_operator("mesh.select_all", "Select All", "Select every point in the active layer", UNDO, editable_poll,
                   [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
                       for (MeshPoint &p : layer->drawing.points) {
-                        p.selected = true;
+                        p.selected = !p.detail.hidden;
                       }
                     }
                     return OpStatus::Finished;
@@ -177,7 +306,7 @@ void vector_operators_register()
                   UNDO, editable_poll, [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
                       for (MeshPoint &p : layer->drawing.points) {
-                        p.selected = !p.selected;
+                        p.selected = !p.selected && !p.detail.hidden;
                       }
                     }
                     return OpStatus::Finished;
@@ -358,40 +487,6 @@ void vector_operators_register()
                     return OpStatus::Finished;
                   });
 
-  vector_operator("mesh.create_shape", "Create Shape",
-                  "Fill the closed loop through the selected points, or outline an open run", UNDO,
-                  editable_with_selection_poll, [](Context &C) {
-                    bool made = false;
-                    for (Layer *layer : editable_layers(C)) {
-                      if (has_selection(layer->drawing)) {
-                        made |= drawing_shape_from_selection(layer->drawing, true, C.wm->tool_settings.style) >= 0;
-                      }
-                    }
-                    if (!made) {
-                      report(ReportType::Warning, "Select points along a loop or a line to make a shape");
-                      return OpStatus::Cancelled;
-                    }
-                    return OpStatus::Finished;
-                  });
-
-  vector_operator("mesh.create_line", "Create Line", "Outline the selected points without a fill", UNDO,
-                  editable_with_selection_poll, [](Context &C) {
-                    bool made = false;
-                    for (Layer *layer : editable_layers(C)) {
-                      VectorDrawing &drawing = layer->drawing;
-                      if (!has_selection(drawing)) {
-                        continue;
-                      }
-                      if (const int shape = drawing_shape_from_selection(drawing, false, C.wm->tool_settings.style);
-                          shape >= 0)
-                      {
-                        drawing.shapes[shape].has_fill = false;
-                        made = true;
-                      }
-                    }
-                    return made ? OpStatus::Finished : OpStatus::Cancelled;
-                  });
-
   for (const bool peak : {true, false}) {
     vector_operator(peak ? "mesh.peak" : "mesh.smooth", peak ? "Peak" : "Smooth",
                     peak ? "Make the selected points sharp corners" : "Make the selected points smooth curves", UNDO,
@@ -518,6 +613,7 @@ void vector_operators_register()
   tool_op("wm.tool_weight_select", "Weight Select Tool", Tool::WeightSelect);
   tool_op("wm.tool_weight_paint", "Weight Paint Tool", Tool::WeightPaint);
   tool_op("wm.tool_transform_bones", "Transform Bones Tool", Tool::TransformBones);
+  tool_op("wm.tool_transform_points", "Transform Points Tool", Tool::TransformPoints);
   {
     /* sky.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
     OperatorType ot;
@@ -621,6 +717,132 @@ void vector_operators_register()
              ShapeArrange::ToFront);
   arrange_op("mesh.shape_lower_to_back", "Send to Back", "Move the selected shapes below all others",
              ShapeArrange::ToBack);
+
+  /* --- Detail levels (data/detail.hh) ------------------------------------------------ */
+  vector_operator(
+      "mesh.detail_level_set", "Detail Level",
+      "Set the selected shapes' detail level (level: 0 is their own points), or step it (delta: 1 or -1): a "
+      "shape's curves show their points up to it and the knife adds detail points at it; one past a shape's "
+      "highest level is an empty level to add detail at",
+      UNDO, editable_poll, [](Context &C) {
+        const int level = op_arg_int(C, "level", -1), delta = op_arg_int(C, "delta", 0);
+        bool changed = false;
+        const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
+          VectorDrawing &drawing = layer.drawing;
+          for (size_t s = 0; s < drawing.shapes.size(); s++) {
+            if (!shapes[s]) {
+              continue;
+            }
+            Shape &shape = drawing.shapes[s];
+            const int to = std::clamp(level >= 0 ? level : shape.detail_level + delta, 0,
+                                      shape_detail_level_limit(drawing, shape));
+            changed |= to != shape.detail_level;
+            shape.detail_level = to;
+          }
+          drawing_detail_update_shown(drawing);
+        });
+        if (!any) {
+          report(ReportType::Warning, "Select a shape first");
+          return OpStatus::Cancelled;
+        }
+        return changed ? OpStatus::Finished : OpStatus::Cancelled;
+      });
+  /* Its shortcuts (Ctrl 0 to Ctrl 4 set it, Alt Page Up and Page Down step it), as Blender's Ctrl 1
+   * to Ctrl 5 and Page Up and Down set and step multiresolution levels. */
+  for (int level = 0; level <= DETAIL_LEVEL_MAX; level++) {
+    static std::string names[DETAIL_LEVEL_MAX + 1][2];
+    names[level][0] = "mesh.detail_level_" + std::to_string(level);
+    names[level][1] = "Detail Level " + std::to_string(level);
+    vector_operator(names[level][0].c_str(), names[level][1].c_str(), "Set the selected shapes' detail level",
+                    OPTYPE_REGISTER, editable_poll, [level](Context &C) {
+                      return operator_call(C, "mesh.detail_level_set", {{"level", std::to_string(level)}});
+                    });
+  }
+  for (const int delta : {1, -1}) {
+    vector_operator(delta > 0 ? "mesh.detail_level_up" : "mesh.detail_level_down",
+                    delta > 0 ? "Detail Level Up" : "Detail Level Down",
+                    delta > 0 ? "Edit the selected shapes one detail level higher"
+                              : "Edit the selected shapes one detail level lower",
+                    OPTYPE_REGISTER, editable_poll, [delta](Context &C) {
+                      return operator_call(C, "mesh.detail_level_set", {{"delta", std::to_string(delta)}});
+                    });
+  }
+  vector_operator("mesh.detail_delete_higher", "Delete Higher",
+                  "Remove the selected shapes' detail above the level they are edited at", UNDO, editable_poll,
+                  [](Context &C) {
+                    int removed = 0;
+                    const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
+                      removed += drawing_detail_delete_higher(layer.drawing, shapes);
+                    });
+                    if (!any) {
+                      report(ReportType::Warning, "Select a shape first");
+                      return OpStatus::Cancelled;
+                    }
+                    if (removed == 0) {
+                      report(ReportType::Info, "No detail above this level");
+                      return OpStatus::Cancelled;
+                    }
+                    report(ReportType::Info, "Removed " + std::to_string(removed) + " detail points");
+                    return OpStatus::Finished;
+                  });
+  /* Apply Detail and Rebuild Levels reshape the setup: frame 0 only. */
+  const auto setup_frame = [](Context &C, const char *what) {
+    if (C.document->frame_current == 0) {
+      return true;
+    }
+    report(ReportType::Warning, std::string(what) + " works on the setup frame (0)");
+    return false;
+  };
+  vector_operator("mesh.detail_apply", "Apply Detail",
+                  "Make the selected shapes' detail points ordinary points, as they show (setup frame)", UNDO,
+                  editable_poll, [setup_frame](Context &C) {
+                    if (!setup_frame(C, "Apply Detail")) {
+                      return OpStatus::Cancelled;
+                    }
+                    int changed = 0;
+                    bool dropped = false;
+                    const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
+                      bool keys = false;
+                      changed += drawing_detail_apply(layer.drawing, shapes, &keys);
+                      dropped |= keys;
+                    });
+                    if (!any) {
+                      report(ReportType::Warning, "Select a shape first");
+                      return OpStatus::Cancelled;
+                    }
+                    if (changed == 0) {
+                      report(ReportType::Info, "No detail to apply");
+                      return OpStatus::Cancelled;
+                    }
+                    report(dropped ? ReportType::Warning : ReportType::Info,
+                           "Applied " + std::to_string(changed) + " detail points" +
+                               (dropped ? " (their keys were removed)" : ""));
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.detail_rebuild", "Rebuild Levels",
+                  "Keep the points that matter for the selected shapes' outline (within tolerance) as their own and "
+                  "make the rest level 1 detail, as they show (setup frame)",
+                  UNDO, editable_poll, [setup_frame](Context &C) {
+                    if (!setup_frame(C, "Rebuild Levels")) {
+                      return OpStatus::Cancelled;
+                    }
+                    const float tolerance = std::max(op_arg_float(C, "tolerance", 0.02f), 0.0f);
+                    int made = 0;
+                    bool dropped = false;
+                    const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
+                      bool keys = false;
+                      made += drawing_detail_rebuild(layer.drawing, shapes, tolerance, &keys);
+                      dropped |= keys;
+                    });
+                    if (!any) {
+                      report(ReportType::Warning, "Select a shape first");
+                      return OpStatus::Cancelled;
+                    }
+                    report(dropped ? ReportType::Warning : ReportType::Info,
+                           std::to_string(made) + " points became detail" +
+                               (dropped ? " (their keys were removed)" : ""));
+                    return made > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
 
   /* Blender's Duplicate (Shift D): copy, then move the copy. Cancelling the move leaves the
    * copy where it was made, as in Blender. */
