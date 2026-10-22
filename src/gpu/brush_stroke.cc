@@ -158,7 +158,8 @@ BrushPath brush_path(const VectorDrawing &drawing, const Shape &shape, float ext
 }
 
 void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const BrushSettings &brush, Color color,
-                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs)
+                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs,
+                  const BrushCut *cut, bool fade_thin)
 {
   const int edges = int(shown.edges.size());
   const int images = int(aspects.size());
@@ -229,6 +230,42 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
     return std::clamp(f, 0.0f, 1.0f);
   };
 
+  /* End Lines at Edge: whether the dab at (edge e, u) is cut away. With Flat its middle decides
+   * (the mask then cuts it straight). With Ends: Brush its middle must stay `stop` short of the
+   * edge along the line: a half width at Reach 0, so the whole dab fits and just touches the edge;
+   * less as Reach grows, until (past 0.5) the dab may go over by as much. */
+  const auto cut_away = [&](int e, float u) {
+    float2 dir;
+    const float2 p = edge_point(shown_table[size_t(e)], u, &dir);
+    if (!cut->taper) {
+      return !cut->shows(p);
+    }
+    const BrushPath::Edge &edge = shown.edges[size_t(e)];
+    const float half = std::max(edge.half0 + (edge.half1 - edge.half0) * u, min_half);
+    const float stop = half * (1.0f - 2.0f * cut->reach);
+    if (stop >= 0.0f) {
+      return !cut->shows(p) || !cut->shows(p + dir * stop) || !cut->shows(p - dir * stop);
+    }
+    /* Reaching past the edge: kept while the edge is within that much of its middle. */
+    return !cut->shows(p) && !cut->shows(p + dir * -stop) && !cut->shows(p - dir * -stop);
+  };
+  /* End Lines at Edge: for each place, how many places since the line was last cut away before
+   * it and until it is next (a large number when it isn't), for the cut ends' taper and fade. */
+  std::vector<int> since_cut, until_cut;
+  const auto cut_fade = [&](int k, int in, int out) {
+    if (!cut || !cut->taper || k < 0 || k >= int(since_cut.size())) {
+      return 1.0f;
+    }
+    float f = 1.0f;
+    if (in > 0) {
+      f = std::min(f, float(since_cut[size_t(k)]) / float(in));
+    }
+    if (out > 0) {
+      f = std::min(f, float(until_cut[size_t(k)]) / float(out));
+    }
+    return std::clamp(f, 0.0f, 1.0f);
+  };
+
   /* One stamp: its middle `p`, the way the line runs there, its size and turn, and `id` for its own
    * random values. */
   const auto stamp = [&](float2 p, float size, float angle, float squash, int image, Color c, float shows) {
@@ -269,7 +306,20 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
     }
     float2 dir;
     const float2 p = edge_point(shown_table[e], u, &dir);
-    const float half = std::max(edge.half0 + (edge.half1 - edge.half0) * u, min_half);
+    if (cut && cut->shows && cut_away(e, u)) {
+      return;
+    }
+    const float true_half = edge.half0 + (edge.half1 - edge.half0) * u;
+    const float half = std::max(true_half, min_half);
+    /* Thinner than the smallest dab: fainter rather than wider, so its weight stays true. The dabs
+     * keep the true width's spacing but are drawn wider, so about 1 / (spacing x thinness) of them
+     * overlap at any spot: each shows just enough that together they come to the thinness. */
+    float thin = 1.0f;
+    if (fade_thin && true_half < min_half) {
+      const float t = std::clamp(true_half / min_half, 0.0f, 1.0f);
+      const float overlap = std::max(0.5f / (spacing * std::max(t, 1e-3f)), 1.0f);
+      thin = 1.0f - std::pow(1.0f - t, 1.0f / overlap);
+    }
     const float here = rest_half(s);
     const float width = 2.0f * half;
 
@@ -279,7 +329,8 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
       if (brush.size_variation_amp > 0.0f) {
         base_size *= std::max(0.0f, 1.0f + brush.size_variation_amp * smooth_noise(seed ^ 0xa511e9b3U, s / wave));
       }
-      base_size *= fade(order, brush.size_fade_in, brush.size_fade_out);
+      base_size *= fade(order, brush.size_fade_in, brush.size_fade_out) *
+                   cut_fade(order, brush.size_fade_in, brush.size_fade_out);
       /* Upright, or the image's top along the line. */
       if (brush.align) {
         base_angle += std::atan2(dir.y, dir.x) - PI * 0.5f;
@@ -288,8 +339,10 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
         base_angle += brush.angle_drift * smooth_noise(seed ^ 0x63d83595U, s / std::max(40.0f * here, 1e-6f));
       }
     }
-    const float base_shows = std::clamp(alpha, 0.0f, 1.0f) *
-                             (transfer ? fade(order, brush.opacity_fade_in, brush.opacity_fade_out) : 1.0f);
+    const float base_shows = std::clamp(alpha, 0.0f, 1.0f) * thin *
+                             (transfer ? fade(order, brush.opacity_fade_in, brush.opacity_fade_out) *
+                                             cut_fade(order, brush.opacity_fade_in, brush.opacity_fade_out)
+                                       : 1.0f);
     int copies = 1;
     if (scatter_on && brush.count > 1) {
       copies = brush.count;
@@ -373,6 +426,38 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
   };
   const int count = int(marks.size());
   places = count;
+  if (cut && cut->shows) {
+    /* Which places the cut takes away, and from that how far each is from a cut on either side
+     * (a closed line wraps round). */
+    std::vector<char> gone(size_t(count), 0);
+    for (int k = 0; k < count; k++) {
+      int e;
+      const float u = locate(marks[size_t(k)], &e);
+      gone[size_t(k)] = shown.edges[size_t(e)].visible && cut_away(e, u);
+    }
+    constexpr int FAR = 1 << 20;
+    since_cut.assign(size_t(count), FAR);
+    until_cut.assign(size_t(count), FAR);
+    const int laps = rest.closed ? 2 : 1;
+    for (int pass = 0, last = -FAR; pass < laps * count; pass++) {
+      const int k = pass % count;
+      if (gone[size_t(k)]) {
+        last = pass;
+      }
+      else if (last > -FAR) {
+        since_cut[size_t(k)] = std::min(since_cut[size_t(k)], pass - last);
+      }
+    }
+    for (int pass = laps * count - 1, next = FAR; pass >= 0; pass--) {
+      const int k = pass % count;
+      if (gone[size_t(k)]) {
+        next = pass;
+      }
+      else if (next < FAR) {
+        until_cut[size_t(k)] = std::min(until_cut[size_t(k)], next - pass);
+      }
+    }
+  }
   for (int k = 0; k < count; k++) {
     /* On a squashed segment, every other dab fades out from 3/4 to 1/2 its rest length, every
      * fourth from 3/8 to 1/4, ... (the first always stays). */

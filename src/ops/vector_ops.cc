@@ -515,6 +515,61 @@ void vector_operators_register()
                     return deleted ? OpStatus::Finished : OpStatus::Cancelled;
                   });
 
+  {
+    /* Shapes by name (the Shapes list's right-click Delete): only those fills and outlines go; their
+     * curves and points stay for the shapes that share them. */
+    OperatorType ot;
+    ot.idname = "mesh.delete_shapes";
+    ot.name = "Delete Shapes";
+    ot.description = "Delete shapes by name or id (shapes=, | between them) from a layer (layer=, else the active "
+                     "one), keeping their curves and points for any other shape on them";
+    ot.flag = UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      Layer *layer = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : document_active_layer(doc);
+      if (!layer || !layer->has_drawing()) {
+        report(ReportType::Error, "No layer with a drawing to delete shapes from");
+        return OpStatus::Cancelled;
+      }
+      if (layer->is_reference()) {
+        report(ReportType::Warning, "A copy (reference layer) keeps its original's shapes: hide them in the Reference "
+                                    "tab, or Break Reference");
+        return OpStatus::Cancelled;
+      }
+      VectorDrawing &drawing = layer->drawing;
+      std::vector<bool> doomed(drawing.shapes.size(), false);
+      const std::string list = op_arg(C, "shapes");
+      for (size_t at = 0; at <= list.size();) {
+        const size_t bar = std::min(list.find('|', at), list.size());
+        const std::string name = list.substr(at, bar - at);
+        at = bar + 1;
+        if (name.empty()) {
+          continue;
+        }
+        bool found = false;
+        for (size_t s = 0; s < drawing.shapes.size(); s++) {
+          if (drawing.shapes[s].name == name || std::to_string(drawing.shapes[s].id) == name) {
+            doomed[s] = found = true;
+          }
+        }
+        if (!found) {
+          report(ReportType::Error, layer->name + " has no shape \"" + name + "\"");
+          return OpStatus::Cancelled;
+        }
+      }
+      const auto count = std::count(doomed.begin(), doomed.end(), true);
+      if (count == 0) {
+        return OpStatus::Cancelled;
+      }
+      size_t s = 0;
+      std::erase_if(drawing.shapes, [&](const Shape &) { return doomed[s++]; });
+      C.undo_name = count == 1 ? "Delete Shape" : "Delete Shapes";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
   /* --- Modal transforms -----------------------------------------------------------
    * These only ask the viewport to start; it makes the undo step when the move ends. */
   const auto transform_op = [](const char *idname, const char *name, const char *description, char kind) {
@@ -845,6 +900,43 @@ void vector_operators_register()
     report(ReportType::Warning, std::string(what) + " works on the setup frame (0)");
     return false;
   };
+  vector_operator("mesh.detail_raise", "Move to Higher Level",
+                  "Move the selected points one detail level up, keeping the curve's look: they then ride along "
+                  "the coarser points around them and show from that level (setup frame)",
+                  UNDO, editable_with_selection_poll, [setup_frame](Context &C) {
+                    if (!setup_frame(C, "Move to Higher Level")) {
+                      return OpStatus::Cancelled;
+                    }
+                    int raised = 0, skipped = 0;
+                    bool dropped = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (layer->is_reference()) {
+                        continue;
+                      }
+                      int s = 0;
+                      bool keys = false;
+                      raised += drawing_detail_raise_selected(layer->drawing, &s, &keys);
+                      skipped += s;
+                      dropped |= keys;
+                    }
+                    if (raised == 0) {
+                      report(ReportType::Warning,
+                             skipped > 0 ? "These points can't go up a level: an open curve's ends, points on more "
+                                           "than one curve and points at the top level stay where they are"
+                                         : "Select points to move up a detail level");
+                      return OpStatus::Cancelled;
+                    }
+                    std::string text = "Moved " + std::to_string(raised) + (raised == 1 ? " point" : " points") +
+                                       " up a detail level";
+                    if (skipped > 0) {
+                      text += "; " + std::to_string(skipped) + " couldn't (curve ends, or on more than one curve)";
+                    }
+                    if (dropped) {
+                      text += " (their keys were removed)";
+                    }
+                    report(dropped || skipped > 0 ? ReportType::Warning : ReportType::Info, text);
+                    return OpStatus::Finished;
+                  });
   vector_operator("mesh.detail_apply", "Apply Detail",
                   "Make the selected shapes' detail points ordinary points, as they show (setup frame)", UNDO,
                   editable_poll, [setup_frame](Context &C) {

@@ -492,7 +492,9 @@ void rig_operators_register()
 
   rig_operator("layer.parent_bone_set", "Parent to Bone",
                "Make the active and selected layers inside a bone layer follow bone `bone` as a whole, as "
-               "parenting to a bone in Blender (\"\" frees them). Setup frame only",
+               "parenting to a bone in Blender (\"\" frees them); `deform`=LAYER moves the layer (a bone's "
+               "squash and stretch squashes its lines too), POINTS its points (lines keep their width). "
+               "Either alone, or both. Setup frame only",
                [](Context &C) {
                  const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
                  return l && !l->is_bone_layer() && layer_armature(*C.document, l->id);
@@ -501,7 +503,13 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
+                 const bool set_bone = op_has_arg(C, "bone");
                  const std::string name = op_arg(C, "bone");
+                 const std::string deform = op_arg(C, "deform");
+                 if (!deform.empty() && deform != "LAYER" && deform != "POINTS") {
+                   report(ReportType::Error, "deform is LAYER or POINTS");
+                   return OpStatus::Cancelled;
+                 }
                  int changed = 0, same_as_original = 0;
                  for (Layer *layer : keyed_layers(C)) {
                    const Layer *armature = layer_armature(*C.document, layer->id);
@@ -519,8 +527,12 @@ void rig_operators_register()
                      return OpStatus::Cancelled;
                    }
                    const uint64_t id = bone ? bone->id : 0;
-                   if (layer->parent_bone != id) {
+                   if (set_bone && layer->parent_bone != id) {
                      layer->parent_bone = id;
+                     changed++;
+                   }
+                   if (!deform.empty() && layer->parent_bone_points != (deform == "POINTS")) {
+                     layer->parent_bone_points = deform == "POINTS";
                      changed++;
                    }
                  }

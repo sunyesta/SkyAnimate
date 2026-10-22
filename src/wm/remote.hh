@@ -5,7 +5,9 @@
  *
  * A thread listens on 127.0.0.1 only (never other computers), off unless turned on in
  * Preferences. Each request carries a token made afresh each time listening starts and written,
- * with the port, to %LOCALAPPDATA%/OpenAnimate/remote.json, where the bridge reads it: other
+ * with the port, the process id and the open file, to %LOCALAPPDATA%/OpenAnimate/remote/<process
+ * id>.json (one per running Open Animate, so the bridge can reach each open project), and to
+ * remote.json by the one holding the port Preferences asks for (others take a free port). Other
  * programs and web pages can't know it, and a connection that doesn't open with a request (a
  * browser's HTTP request line) is closed unread. Each connection sends one JSON request per line,
  *   {"id": 1, "token": "...", "method": "run_python", "params": {"code": "..."}}
@@ -20,8 +22,10 @@ namespace oanim {
 
 struct Context;
 
-/* Starts listening on `port` (0: any free one). Returns the port, or 0 if it couldn't. With
- * `publish`, the port and token go in remote.json for the bridge (not in tests). */
+/* Starts listening on `port`, or (taken by another Open Animate) any free one; 0 asks for any free
+ * one. Returns the port, or 0 if it couldn't. With `publish`, the port, token, process id and open
+ * file go in remote/<process id>.json, and remote.json while holding `port`, for the bridge (not in
+ * tests). */
 int remote_start(int port, bool publish = true);
 /* The token requests must carry ("" when off). */
 std::string remote_token();

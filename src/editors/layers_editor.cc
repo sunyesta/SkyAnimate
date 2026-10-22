@@ -186,7 +186,7 @@ static void icon_layer_type(ImDrawList *dl, ImVec2 c, float s, const Layer &laye
 }
 
 
-static bool menu_op(Context &C, const char *label, const char *idname)
+static bool menu_op(Context &C, const char *label, const char *idname, const OpArgs &args = {})
 {
   const OperatorType *ot = operators().find(idname);
   if (!ot) {
@@ -194,7 +194,7 @@ static bool menu_op(Context &C, const char *label, const char *idname)
   }
   const std::string shortcut = keymaps().shortcut_for(idname);
   if (ui_menu_item(label, shortcut.empty() ? nullptr : shortcut.c_str(), false, operator_poll(C, *ot))) {
-    operator_call(C, idname);
+    operator_call(C, idname, args);
     return true;
   }
   return false;
@@ -299,6 +299,10 @@ static void layer_context_menu(Context &C, Layer &layer)
   }
   menu_op(C, "Duplicate Layer", "layer.duplicate");
   menu_op(C, "Reference Layer", "layer.make_reference");
+  ImGui::Separator();
+  menu_op(C, "Symmetrize + to -", "layer.symmetrize", {{"direction", "POSITIVE_TO_NEGATIVE"}});
+  menu_op(C, "Symmetrize - to +", "layer.symmetrize", {{"direction", "NEGATIVE_TO_POSITIVE"}});
+  ImGui::Separator();
   menu_op(C, "Delete Layer", "layer.delete");
 }
 
@@ -312,6 +316,17 @@ static void layers_deselect(std::vector<Layer> &layers)
   for (Layer &layer : layers) {
     layer.selected = false;
     layers_deselect(layer.children);
+  }
+}
+
+/* The rows as the list shows them, top first: a group's layers while it's open. */
+static void shown_rows(std::vector<Layer> &layers, std::vector<Layer *> &r_rows)
+{
+  for (Layer &layer : layers) {
+    r_rows.push_back(&layer);
+    if (layer.is_group() && layer.expanded) {
+      shown_rows(layer.children, r_rows);
+    }
   }
 }
 
@@ -405,11 +420,54 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     /* The layer eyedropper takes the click: this layer becomes the bone's custom shape. */
     ui_layer_eyedropper_pick(C, layer.id);
   }
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl &&
+           layer_find(doc, doc.active_layer))
+  {
+    /* Shift click picks the rows from the active layer to this one, as Blender's Outliner and file
+     * lists do; the active layer stays, so the next Shift click ranges from it too. */
+    std::vector<Layer *> rows;
+    shown_rows(doc.layers, rows);
+    const auto at = [&](uint64_t id) {
+      return int(std::find_if(rows.begin(), rows.end(), [&](const Layer *l) { return l->id == id; }) - rows.begin());
+    };
+    const int from = at(doc.active_layer), to = at(layer.id);
+    layers_deselect(doc.layers);
+    if (from < int(rows.size())) {
+      for (int i = std::min(from, to); i <= std::max(from, to); i++) {
+        rows[size_t(i)]->selected = true;
+      }
+    }
+    else {
+      /* The active layer is in a closed group: just this one joins it. */
+      layer.selected = true;
+    }
+    doc.camera.selected = false;
+  }
+  else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ImGui::GetIO().KeyCtrl &&
+           (layer.selected || doc.active_layer == layer.id))
+  {
+    /* Ctrl click on a picked layer unpicks just it; the active one hands that to another picked
+     * layer, if there is one. */
+    layer.selected = false;
+    if (doc.active_layer == layer.id) {
+      for (const Layer *l : document_layers_flat(doc)) {
+        if (l->selected && l->id != layer.id) {
+          doc.active_layer = l->id;
+          layer_find(doc, l->id)->selected = false;
+          break;
+        }
+      }
+      if (doc.active_layer == layer.id) {
+        /* The only one picked: it stays (a layer is always active). */
+        layer.selected = false;
+      }
+    }
+  }
   else if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-    /* Ctrl or Shift click picks more layers, as in Moho; a plain click picks just this one. */
+    /* Ctrl click adds this layer to the picked ones (it becomes active); a plain click picks just
+     * this one. */
     const ImGuiIO &io = ImGui::GetIO();
-    if (io.KeyCtrl || io.KeyShift) {
-      layer.selected = !(layer.selected || doc.active_layer == layer.id);
+    if (io.KeyCtrl) {
       if (Layer *previous = layer_find(doc, doc.active_layer); previous && previous != &layer) {
         previous->selected = true;
       }
@@ -422,7 +480,7 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     else {
       layers_deselect(doc.layers);
     }
-    if (!io.KeyCtrl && !io.KeyShift) {
+    if (!io.KeyCtrl) {
       doc.camera.selected = false;
     }
     doc.active_layer = layer.id;

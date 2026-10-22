@@ -94,8 +94,8 @@ class SceneRenderer {
    * stencil bits nothing holds yet, which a Clip to Below row works out its base's masks in. */
   void evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result, unsigned scratch,
                           bool nested, unsigned free = 0);
-  /* A row's layer (grown or shrunk as the row says, in mask_pass_) into stencil bit `bit`, where
-   * its own masks hold. */
+  /* A row's layer (grown or shrunk as the row says, in mask_pass_) into stencil bit `bit`: its
+   * shapes as drawn, before any masks of its own. */
   void draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool nested);
   /* Clip to Below's base into stencil bit `bit` as it shows: only its shown layers, each where its
    * own masks (and its groups' inside the base) show it, worked out in `free` bits (in the nested
@@ -108,8 +108,11 @@ class SceneRenderer {
   void draw_coverage(const Document &doc, const Layer &layer, const Transform2D &parent, unsigned bit, bool set);
   /* Sets or clears one stencil bit everywhere. */
   void stencil_fill(unsigned bit, bool set);
-  /* Stencil test for colour drawing: every bit in required_stencil_ must be set. */
-  void use_color_stencil();
+  /* Stencil test for colour drawing: every bit in required_stencil_ must be set (for a layer's
+   * lines, all but line_free_stencil_'s; for its fills, all but fill_free_stencil_'s; a group faded
+   * as a whole goes by its fills). */
+  enum class Paint { Fill, Line };
+  void use_color_stencil(Paint paint = Paint::Fill);
   /* Draws a vector layer's shapes into the bound target. */
   void draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity);
   void draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform);
@@ -117,6 +120,8 @@ class SceneRenderer {
    * draws them into an image of their own first, keeping the strongest dab where they overlap. */
   /* `vaos`, `vbos` (optional): a kept step's buffers, one per image, so its stamps stay on the GPU
    * (uploaded the first time). */
+  /* How opaque a dab's pixel must be to count in a mask (see PaintStep::coverage_alpha). */
+  float coverage_alpha_ = 0.5f;
   void draw_dabs(const BrushDabs &dabs, const std::vector<BrushImage> &images, bool own_colors, bool merged,
                  const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos = nullptr,
                  std::vector<unsigned int> *vbos = nullptr);
@@ -174,6 +179,12 @@ class SceneRenderer {
     BrushSettings settings;
     bool own_colors = false;
     bool merged_alpha = false;
+    /* In a mask, how opaque a dab's pixel must be to count: half, or (a line cleared for Inside the
+     * Stroke) any that shows, so no soft edge of it is left. */
+    float coverage_alpha = 0.5f;
+    /* Lines (solid or brushed), drawn without the masks whose rows end them instead (End Lines at
+     * Edge with Ends: Brush; see line_free_stencil_). */
+    bool is_line = false;
     /* On the GPU once drawn (uploaded once, kept with it): the triangles' buffer and layout, or the
      * stamps' per image. */
     unsigned int vao = 0, vbo = 0;
@@ -196,13 +207,26 @@ class SceneRenderer {
      * clears, or only lines (see draw_mask_source). */
     enum Stage { All, Areas, Bands, Lines } stage = All;
     bool exclude_strokes = false;
-    /* Every shape fills, filled or not (a mask's Filled Shape). */
+    /* Every shape fills, filled or not (a mask's Fill Every Shape). */
     bool filled = false;
     /* A mask's Extend (MaskExtend): the shapes swept to far off that way. */
     int extend = 0;
+    /* Only the strokes (a mask's Strokes Only): no fills. */
+    bool exclude_fills = false;
+    /* Fills cut at their lines' inner edge (a mask's Inside the Stroke, with Fills Only). */
+    bool inside_stroke = false;
   } mask_pass_;
   /* Stencil bits a colour sample must have set (the masks it's inside). */
   unsigned required_stencil_ = 0;
+  /* Of those, the mask levels whose rows all end lines (End Lines at Edge, Ends: Brush): the lines
+   * end where those rows cut them, worked out along them, so they aren't sliced there too. */
+  unsigned line_free_stencil_ = 0;
+  /* What apply_masks found for line_free_stencil_. */
+  unsigned applied_line_free_ = 0;
+  /* Of required_stencil_, the levels a layer's fills leave out: a masked layer with rows that cut only
+   * lines or only fills gets a level for its lines and one for its fills, each left out by the other. */
+  unsigned fill_free_stencil_ = 0;
+  unsigned applied_fill_free_ = 0;
   /* Stencil bits a mask shape is only written where they are set (its own masks), or 0. */
   unsigned coverage_test_ = 0;
 
@@ -214,7 +238,12 @@ class SceneRenderer {
     std::vector<uint64_t> layers;
     float grow = 0.0f;
     bool fills_only = false;
+    bool strokes_only = false;
     bool filled = false;
+    bool inside_stroke = false;
+    /* End Lines at Edge with Ends: Brush (the lines it ends aren't sliced by it). */
+    bool end_lines_brush = false;
+    int cuts = 0;
     int extend = 0;
     bool clip = false;
     bool operator==(const MaskRow &) const = default;

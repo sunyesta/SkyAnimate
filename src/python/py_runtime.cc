@@ -24,6 +24,7 @@
 #include "media/media.hh"
 #include "assets/asset_library.hh"
 #include "anim/drivers.hh"
+#include "anim/layer_pick.hh"
 #include "assets/brush_presets.hh"
 #include "assets/brushes.hh"
 #include "core/crash.hh"
@@ -441,6 +442,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 8); });
   /* How long frames take (ms, ImGui's running average), for checking the app's speed. */
+  /* The left/right name rule bone Symmetrize and mirror editing pair by (bone_mirror_name). */
+  m.def("flip_name", [](const std::string &name) { return bone_mirror_name(name); });
   m.def("frame_ms", []() { return 1000.0f / std::max(ImGui::GetIO().Framerate, 1e-3f); });
   m.def("brush_settings_open", [](bool tool) { brush_window_open(tool ? BrushTarget::Tool : BrushTarget::Shapes); });
   /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
@@ -476,6 +479,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     static const char *const armature[] = {"OFF", "SELECTED", "ON"};
     d["handles"] = handles[int(ov.handles)];
     d["armature"] = armature[int(ov.armature)];
+    d["point_size"] = ov.point_size;
+    d["handle_size"] = ov.handle_size;
     return d;
   });
   m.def("set_overlay", [](const std::string &name, py::object value) {
@@ -487,6 +492,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         ov.*field = value.cast<bool>();
         found = true;
       }
+    }
+    if (name == "point_size" || name == "handle_size") {
+      (name == "point_size" ? ov.point_size : ov.handle_size) =
+          std::clamp(value.cast<float>(), OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX);
+      found = true;
     }
     if (name == "handles" || name == "armature") {
       const std::string v = value.cast<std::string>();
@@ -1745,6 +1755,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return result;
   });
+  m.def("layer_parent_bone_deform", [layer_or_raise](uint64_t id) {
+    return std::string(layer_or_raise(id).parent_bone_points ? "POINTS" : "LAYER");
+  });
   m.def("layer_parent_bone", [layer_or_raise](uint64_t id) {
     const Document &doc = *current_context().document;
     const Layer &layer = layer_or_raise(id);
@@ -2169,6 +2182,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("media_missing_count", []() { return media_missing_count(*current_context().document); });
   /* A layer's mask rows: [{"mode", "invert", "layers" (names; "" for one that's gone), "enabled", ...}]. */
+  m.def("layer_line_shows", [layer_or_raise](uint64_t id, float x, float y, bool render) {
+    Layer &layer = layer_or_raise(id);
+    const LineCutter cutter = line_cutter(*current_context().document, layer, render);
+    return line_cutter_shows(cutter, float2(x, y));
+  });
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;
     py::list result;
@@ -2183,6 +2201,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["enabled"] = mask.enabled;
       d["render"] = mask.render;
       d["fills_only"] = mask.fills_only;
+      d["strokes_only"] = mask.strokes_only;
+      d["inside_stroke"] = mask.inside_stroke;
+      d["end_lines"] = mask.end_lines;
+      d["ends"] = mask.end_lines_flat ? "FLAT" : "BRUSH";
+      d["reach"] = mask.line_reach;
+      d["cuts"] = mask_cuts_identifier(mask.cuts);
+      d["lines_only"] = mask.cuts == MaskCuts::Lines;
+      d["shape"] = mask.fills_only ? "FILLS_ONLY" : mask.strokes_only ? "STROKES_ONLY" : "AS_DRAWN";
       d["filled"] = mask.filled;
       d["extend"] = mask_extend_identifier(mask.extend);
       py::list names;

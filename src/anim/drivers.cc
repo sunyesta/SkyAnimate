@@ -332,6 +332,21 @@ Setting setting_find(Document &doc, uint64_t layer_id, const std::string &path)
     if (rest == "mode") return enum_setting(row + "Mode", &m.mode, 4);
     if (rest == "grow") return float_setting(row + "Grow", &m.grow, -64.0f, 64.0f);
     if (rest == "extend") return enum_setting(row + "Extend", &m.extend, 5);
+    if (rest == "filled") return bool_setting(row + "Fill Every Shape", &m.filled);
+    if (rest == "inside_stroke") return bool_setting(row + "Inside the Stroke", &m.inside_stroke);
+    if (rest == "end_lines") return bool_setting(row + "End Lines at Edge", &m.end_lines);
+    if (rest == "ends") return bool_setting(row + "Ends Flat", &m.end_lines_flat);
+    if (rest == "cuts") return enum_setting(row + "Cuts", &m.cuts, 3);
+    if (rest == "shape") {
+      /* As Drawn (0), Fills Only (1), Strokes Only (2). */
+      LayerMask *row_mask = &m;
+      return {1, row + "Shape", [row_mask](int) { return row_mask->fills_only ? 1.0f : row_mask->strokes_only ? 2.0f : 0.0f; },
+              [row_mask](int, float x) {
+                const int k = std::clamp(int(std::lround(x)), 0, 2);
+                row_mask->fills_only = k == 1;
+                row_mask->strokes_only = k == 2;
+              }};
+    }
     return {};
   }
   if (parse_index(path, "modifiers[", &i, &rest) && i < layer->modifiers.size()) {
@@ -532,7 +547,9 @@ std::vector<DriverRef> driver_field_refs(Document &doc, uint64_t layer, const st
 {
   const int size = driver_ref_size(doc, layer, path);
   std::vector<DriverRef> refs;
-  if (size == 0) {
+  /* Points and curves are read, not driven (as Blender doesn't drive a mesh's vertices); a part past
+   * the field's end names nothing. */
+  if (size == 0 || path.rfind("points[", 0) == 0 || path.rfind("curves[", 0) == 0 || component >= size) {
     return refs;
   }
   if (size == 1) {
@@ -559,6 +576,32 @@ std::string driver_shape_position_path(uint64_t shape_id)
   return "shapes[" + std::to_string(shape_id) + "].position";
 }
 
+void drivers_copy_for_layers(Document &doc, const std::map<uint64_t, uint64_t> &remap)
+{
+  const auto copied = [&](DriverRef &ref) {
+    const auto it = remap.find(ref.layer);
+    if (it != remap.end()) {
+      ref.layer = it->second;
+    }
+    /* Worked out again on the copy. */
+    ref.bone = 0;
+    ref.item = 0;
+  };
+  const size_t n = doc.drivers.size();
+  for (size_t i = 0; i < n; i++) {
+    if (!remap.contains(doc.drivers[i].target.layer)) {
+      continue;
+    }
+    Driver d = doc.drivers[i];
+    copied(d.target);
+    for (DriverVar &v : d.vars) {
+      copied(v.source);
+    }
+    d.error.clear();
+    doc.drivers.push_back(std::move(d));
+  }
+}
+
 std::vector<Driver> &driver_clipboard()
 {
   static std::vector<Driver> clipboard;
@@ -575,6 +618,88 @@ Driver driver_copying(const DriverRef &source)
 }
 
 /* --- Working them out --------------------------------------------------------------------------- */
+
+/* A channel's limits, as its field has them (Blender clamps a driven value to its property's): by
+ * the path's last name, the same for a constraint's own Gravity as the document's. */
+static void channel_range(const std::string &path, float *r_lo, float *r_hi)
+{
+  const size_t dot = path.rfind('.');
+  const std::string name = dot == std::string::npos ? path : path.substr(dot + 1);
+  struct Range {
+    const char *name;
+    float lo, hi;
+  };
+  static const Range RANGES[] = {
+      {"opacity", 0.0f, 1.0f},        {"visible", 0.0f, 1.0f},      {"influence", 0.0f, 1.0f},
+      {"wind_catch", 0.0f, 1.0f},     {"bounce", 0.0f, 0.9f},       {"settle_speed", 0.05f, 20.0f},
+      {"inertia", 0.0f, 2.0f},        {"stretch", 0.0f, 2.0f},      {"limit", 0.0f, FLT_MAX},
+      {"weight", 0.0f, FLT_MAX},      {"gravity", -100.0f, 100.0f}, {"wind", -100.0f, 100.0f},
+      {"wind_gusts", 0.0f, 2.0f},     {"wind_gust_speed", 0.05f, 10.0f}, {"wind_turbulence", 0.0f, 2.0f},
+      {"reach", -2.0f, 2.0f},
+  };
+  *r_lo = -FLT_MAX;
+  *r_hi = FLT_MAX;
+  for (const Range &r : RANGES) {
+    if (name == r.name) {
+      *r_lo = r.lo;
+      *r_hi = r.hi;
+    }
+  }
+}
+
+/* A bone's pose channel: 1 its position, 2 its angle, 3 its scale; 0 anything else. */
+static int bone_pose_part(const std::string &path)
+{
+  if (path.rfind("bones[\"", 0) != 0) {
+    return 0;
+  }
+  const size_t end = path.find("\"].");
+  const std::string rest = end == std::string::npos ? std::string() : path.substr(end + 3);
+  return rest == "position" ? 1 : rest == "angle" ? 2 : rest == "scale" ? 3 : 0;
+}
+
+/* A shape's points at their setup pose (no change from it), as evaluated: never an edit. */
+static void shape_points_rest(Layer &layer, const std::vector<int> &points)
+{
+  VectorDrawing &drawing = layer.drawing;
+  drawing_changes_from_values(drawing);
+  for (const int i : points) {
+    MeshPoint &p = drawing.points[size_t(i)];
+    p.transform = float2();
+    p.pos_keys.last = p.transform;
+    p.pos_keys.has_last = true;
+    p.pos_keys.smart = float2();
+  }
+  drawing_values_from_changes(drawing);
+}
+
+/* Some channels hold a stand-in for the value itself: Visibility a number for the `visible` flag, a
+ * bone's position and angle its change from the setup pose. A driven stand-in goes into the value at
+ * once (the next channel lookup works the stand-in out from the value again). */
+static void channel_value_applied(Document &doc, const DriverRef &target)
+{
+  Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return;
+  }
+  if (target.path == "visible") {
+    layer->visible = layer->visible_value > 0.5f;
+    return;
+  }
+  if (target.path.rfind("bones[\"", 0) != 0) {
+    return;
+  }
+  const size_t end = target.path.find("\"].");
+  if (end == std::string::npos) {
+    return;
+  }
+  const std::string rest = target.path.substr(end + 3);
+  if (rest == "position" || rest == "angle") {
+    if (Bone *bone = const_cast<Bone *>(bone_find_by_name(*layer, target.path.substr(7, end - 7)))) {
+      bone_values_from_changes(*bone);
+    }
+  }
+}
 
 /* Compiled expressions, by their text (a file has a handful; they're kept for good). */
 static const Expression *compiled(const std::string &text, std::string *r_error)
@@ -616,17 +741,28 @@ static bool driver_value(Document &doc, Driver &d, double *r_value)
     }
     std::vector<double> named;
     named.reserve(e->names.size());
+    /* A name is a variable first (the first of that name), then frame and the constants. */
     for (const std::string &name : e->names) {
-      if (name == "frame") {
-        named.push_back(double(doc.frame_current));
-        continue;
-      }
       const auto it = std::find_if(d.vars.begin(), d.vars.end(), [&](const DriverVar &v) { return v.name == name; });
-      if (it == d.vars.end()) {
+      if (it != d.vars.end()) {
+        named.push_back(values[size_t(it - d.vars.begin())]);
+      }
+      else if (name == "frame") {
+        named.push_back(double(doc.frame_current));
+      }
+      else if (name == "pi") {
+        named.push_back(3.14159265358979323846);
+      }
+      else if (name == "e") {
+        named.push_back(2.71828182845904523536);
+      }
+      else if (name == "True" || name == "False") {
+        named.push_back(name == "True" ? 1.0 : 0.0);
+      }
+      else {
         d.error = "No variable called '" + name + "'";
         return false;
       }
-      named.push_back(values[size_t(it - d.vars.begin())]);
     }
     result = expression_run(*e, named);
   }
@@ -657,8 +793,116 @@ static bool driver_value(Document &doc, Driver &d, double *r_value)
     d.error = "The result isn't a number (a division by zero?)";
     return false;
   }
+  if (std::abs(result) > double(FLT_MAX)) {
+    d.error = "The result is too big";
+    return false;
+  }
   *r_value = result;
   return true;
+}
+
+/* --- Following what a path means ------------------------------------------------------------------
+ * Paths name bones by name and constraints, modifiers and mask rows by their place, which renaming
+ * a bone or removing, adding or moving one of those changes (Blender fixes driver paths on renames
+ * the same way). Each reference keeps the bone's id and the item's uid it last meant, and before
+ * the drivers run, a path whose bone was renamed or whose item moved is written to match; one whose
+ * bone or item is gone is reported (`false`). */
+
+static uint64_t next_uid()
+{
+  static uint64_t uid = 0;
+  return ++uid;
+}
+
+/* `list[index]` in "<prefix>[index].rest" at `at`: follows it to where it is now. */
+template<typename T>
+static bool follow_item(std::vector<T> &list, DriverRef &ref, size_t at, const char *prefix)
+{
+  const size_t open = at + std::strlen(prefix);
+  const size_t close = ref.path.find(']', open);
+  if (close == std::string::npos) {
+    return true;
+  }
+  const size_t index = size_t(std::strtoull(ref.path.c_str() + open, nullptr, 10));
+  if (ref.item == 0) {
+    /* First time: what the index names now. */
+    if (index < list.size()) {
+      if (list[index].uid == 0) {
+        list[index].uid = next_uid();
+      }
+      ref.item = list[index].uid;
+    }
+    return true;
+  }
+  for (size_t i = 0; i < list.size(); i++) {
+    if (list[i].uid == ref.item) {
+      if (i != index) {
+        ref.path = ref.path.substr(0, open) + std::to_string(i) + ref.path.substr(close);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Brings `ref`'s path up to date (see above). False when what it named is gone. */
+static bool ref_follow(Document &doc, DriverRef &ref)
+{
+  if (ref.layer == 0) {
+    return true;
+  }
+  Layer *layer = layer_find(doc, ref.layer);
+  if (!layer) {
+    return false;
+  }
+  std::string &path = ref.path;
+  if (path.rfind("bones[\"", 0) == 0) {
+    const size_t end = path.find("\"]");
+    if (end == std::string::npos) {
+      return true;
+    }
+    Bone *bone = nullptr;
+    if (ref.bone != 0) {
+      bone = bone_find(*layer, ref.bone);
+      if (!bone) {
+        return false;
+      }
+      if (bone->name != path.substr(7, end - 7)) {
+        path = "bones[\"" + bone->name + path.substr(end);
+      }
+    }
+    else {
+      bone = const_cast<Bone *>(bone_find_by_name(*layer, path.substr(7, end - 7)));
+      if (!bone) {
+        return true;
+      }
+      ref.bone = bone->id;
+    }
+    const size_t at = path.find("\"].constraints[");
+    return at == std::string::npos || follow_item(bone->constraints, ref, at + 3, "constraints[");
+  }
+  if (path.rfind("modifiers[", 0) == 0) {
+    return follow_item(layer->modifiers, ref, 0, "modifiers[");
+  }
+  if (path.rfind("masks[", 0) == 0) {
+    return follow_item(layer->masks, ref, 0, "masks[");
+  }
+  return true;
+}
+
+/* Every driver's paths followed; drivers whose target is gone (its layer, bone or item deleted) go
+ * with it, as Blender's go with their object; a variable whose source is gone is marked so it
+ * reports (rather than reading whatever took its place). */
+static void drivers_follow(Document &doc)
+{
+  std::erase_if(doc.drivers, [&](Driver &d) { return !ref_follow(doc, d.target); });
+  for (Driver &d : doc.drivers) {
+    for (DriverVar &v : d.vars) {
+      if (!ref_follow(doc, v.source) && v.source.path.rfind("(gone) ", 0) != 0) {
+        v.source.path = "(gone) " + v.source.path;
+      }
+    }
+  }
 }
 
 /* A driver on a shape's look whose shape shares a material drives the material instead (the look is
@@ -691,11 +935,15 @@ static void drivers_onto_materials(Document &doc)
   }
 }
 
-void drivers_evaluate(Document &doc)
+bool drivers_evaluate(Document &doc)
 {
   std::vector<Driver> &drivers = doc.drivers;
   if (drivers.empty()) {
-    return;
+    return false;
+  }
+  drivers_follow(doc);
+  if (drivers.empty()) {
+    return false;
   }
   drivers_onto_materials(doc);
   /* Each after the drivers whose numbers it reads; a loop stops the drivers in it. */
@@ -730,6 +978,7 @@ void drivers_evaluate(Document &doc)
     visit(visit, i);
   }
   bool simulation = false;
+  bool posed = false;
   for (const size_t i : order) {
     Driver &d = drivers[i];
     d.error.clear();
@@ -737,11 +986,17 @@ void drivers_evaluate(Document &doc)
       d.error = "Loop: it depends on its own value";
       continue;
     }
+    /* The setup frame (0) is the rig at rest, as constraints leave it: drivers don't pose bones or move
+     * shapes there (it would become the setup pose, and every visit add to it again). */
+    const bool setup = doc.frame_current == 0;
     Layer *shape_layer = nullptr;
     std::vector<int> points;
     if (shape_position(doc, d.target.layer, d.target.path, &shape_layer, &points)) {
       double value = 0.0;
-      if ((d.target.component == 0 || d.target.component == 1) && driver_value(doc, d, &value)) {
+      if (setup) {
+        shape_points_rest(*shape_layer, points);
+      }
+      else if ((d.target.component == 0 || d.target.component == 1) && driver_value(doc, d, &value)) {
         shape_position_set(doc, *shape_layer, points, d.target.component, float(value));
       }
       continue;
@@ -760,13 +1015,24 @@ void drivers_evaluate(Document &doc)
       }
       continue;
     }
+    const int pose = bone_pose_part(d.target.path);
     double value = 0.0;
-    if (!driver_value(doc, d, &value)) {
+    if (setup && pose != 0) {
+      /* At rest: no change from the setup pose, a scale of 1. */
+      value = pose == 3 ? 1.0 : 0.0;
+    }
+    else if (!driver_value(doc, d, &value)) {
       continue;
     }
+    posed = posed || pose != 0;
     float v = float(value);
     if (shape_color(doc, d.target.layer, d.target.path)) {
       v = std::clamp(v, 0.0f, 1.0f);
+    }
+    else {
+      float lo = 0.0f, hi = 0.0f;
+      channel_range(d.target.path, &lo, &hi);
+      v = std::clamp(v, lo, hi);
     }
     *slot.value = v;
     if (slot.last) {
@@ -775,11 +1041,13 @@ void drivers_evaluate(Document &doc)
       *slot.last = v;
       *slot.has_last = true;
     }
+    channel_value_applied(doc, d.target);
     simulation = simulation || d.target.layer == SIMULATION_LAYER_ID;
   }
   if (simulation) {
     simulation_values_out(doc);
   }
+  return posed;
 }
 
 }  // namespace oanim

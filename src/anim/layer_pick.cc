@@ -24,9 +24,11 @@ static bool inside_polygon(const std::vector<float2> &poly, float2 p)
 }
 
 /* Whether a drawing covers `p` (in its layer's space): a fill containing it, or a line within its
- * half width plus `extra`. `fills_only` leaves lines out, `filled` fills every shape (a mask's
- * Shape options). Each connected run of a shape's edges counts, as drawn. */
-static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, bool fills_only, bool filled)
+ * half width plus `extra`. `fills_only` leaves lines out, `strokes_only` fills, `filled` fills every
+ * shape (a mask's Shape and Fill Every Shape). Each connected run of a shape's edges counts, as
+ * drawn. */
+static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, bool fills_only, bool filled,
+                           bool strokes_only = false, bool inside_stroke = false)
 {
   std::vector<float2> outline;
   for (const Shape &whole : drawing.shapes) {
@@ -39,8 +41,19 @@ static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, 
       if (outline.size() < 2) {
         continue;
       }
-      if (((shape.has_fill && closed) || filled) && outline.size() >= 3 && inside_polygon(outline, p)) {
-        return true;
+      if (!strokes_only && ((shape.has_fill && closed) || filled) && outline.size() >= 3 && inside_polygon(outline, p)) {
+        /* Inside the Stroke: not within the line's inner half. */
+        bool in_line = false;
+        if (inside_stroke && shape.has_outline) {
+          const float r = shape.style.line_width * 0.5f;
+          const size_t n = outline.size();
+          for (size_t i = 0; i < n && !in_line; i++) {
+            in_line = distance_to_segment(p, outline[i], outline[(i + 1) % n]) < r;
+          }
+        }
+        if (!in_line) {
+          return true;
+        }
       }
       if (fills_only || !shape.has_outline) {
         continue;
@@ -63,14 +76,14 @@ static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, 
 /* Whether a layer (a drawing, or anything in a group) covers `at`, in document space. `shown_only`:
  * hidden layers don't count (a clip base); otherwise they do (a mask layer is often hidden). */
 static bool layer_covers(const Document &doc, const Layer &layer, float2 at, float extra, bool fills_only,
-                         bool filled, bool shown_only)
+                         bool filled, bool shown_only, bool strokes_only = false, bool inside_stroke = false)
 {
   if (shown_only && !layer.visible) {
     return false;
   }
   if (layer.is_group()) {
     for (const Layer &child : layer.children) {
-      if (layer_covers(doc, child, at, extra, fills_only, filled, shown_only)) {
+      if (layer_covers(doc, child, at, extra, fills_only, filled, shown_only, strokes_only, inside_stroke)) {
         return true;
       }
     }
@@ -83,18 +96,20 @@ static bool layer_covers(const Document &doc, const Layer &layer, float2 at, flo
                                                                              : layer_drawing(doc, layer);
   const Transform2D to_document = layer_world_transform(doc, layer.id);
   const float scale = std::max(length(to_document.apply_vector({1.0f, 0.0f})), 1e-9f);
-  return drawing_covers(drawing, to_document.inverted().apply(at), extra / scale, fills_only, filled);
+  return drawing_covers(drawing, to_document.inverted().apply(at), extra / scale, fills_only, filled, strokes_only,
+                        inside_stroke);
 }
 
 static bool rows_show_at(const Document &doc, const Layer &owner, const std::vector<LayerMask> &rows, float2 at,
                          int depth);
 
-/* A layer's own rows (and Clip to Below) that are on in the viewport, without rows naming nothing. */
+/* A layer's own rows (and Clip to Below) that are on in the viewport, without rows naming nothing
+ * (nor rows that cut only lines: a layer's fills, which picking and clip bases go by, ignore them). */
 static std::vector<LayerMask> live_rows(const Document &doc, const Layer &layer)
 {
   std::vector<LayerMask> rows;
   for (LayerMask m : layer_mask_rows(doc, layer)) {
-    if (!m.enabled) {
+    if (!m.enabled || m.cuts == MaskCuts::Lines) {
       continue;
     }
     std::erase_if(m.layers, [&](uint64_t id) { return id == layer.id || !layer_find(doc, id); });
@@ -126,8 +141,9 @@ static bool clip_base_shows(const Document &doc, const Layer &base, float2 at, b
          (depth >= 2 || rows_show_at(doc, base, live_rows(doc, base), at, depth + 1));
 }
 
-/* Rows read top to bottom, as the renderer evaluates them (data/layer.hh). A row's mask layers count
- * their own masks one level deep, as the renderer does. */
+/* Rows read top to bottom, as the renderer evaluates them (data/layer.hh). A row's mask layers lend
+ * their shapes as drawn, before their own masks, as the renderer does; Clip to Below's base counts
+ * as it shows. */
 static bool rows_show_at(const Document &doc, const Layer & /*owner*/, const std::vector<LayerMask> &rows, float2 at,
                          int depth)
 {
@@ -146,8 +162,8 @@ static bool rows_show_at(const Document &doc, const Layer & /*owner*/, const std
         inside = clip_base_shows(doc, *source, at, row.fills_only, depth);
       }
       else {
-        inside = layer_covers(doc, *source, at, 0.0f, row.fills_only, row.filled, false) &&
-                 (depth > 0 || rows_show_at(doc, *source, live_rows(doc, *source), at, depth + 1));
+        inside = layer_covers(doc, *source, at, 0.0f, row.fills_only, row.filled, false, row.strokes_only,
+                              row.fills_only && row.inside_stroke);
       }
       if (inside) {
         break;
@@ -172,6 +188,134 @@ static bool rows_show_at(const Document &doc, const Layer & /*owner*/, const std
     }
   }
   return shows;
+}
+
+LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
+{
+  LineCutter cutter;
+  bool any_brush = false;
+  for (const Layer *l = &layer; l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
+    std::vector<LineCutter::Row> rows;
+    MaskLineEnding above;
+    for (const LayerMask &m : l->masks) {
+      bool flat = false;
+      if (!(render ? m.render : m.enabled) || !mask_row_ends_lines(m, &above, &flat)) {
+        continue;
+      }
+      LineCutter::Row row;
+      row.mode = int(m.mode);
+      row.invert = m.invert;
+      row.fills_only = m.fills_only;
+      row.strokes_only = m.strokes_only;
+      row.inside_stroke = m.fills_only && m.inside_stroke;
+      const auto add = [&](auto &&self, const Layer &source) -> void {
+        if (source.is_group()) {
+          for (const Layer &child : source.children) {
+            self(self, child);
+          }
+          return;
+        }
+        if (source.type != LayerType::Vector) {
+          return;
+        }
+        const VectorDrawing drawing = layer_has_modifier_effect(doc, source, render)
+                                          ? layer_evaluated_drawing(doc, source, render)
+                                          : layer_drawing(doc, source);
+        const Transform2D to_document = layer_world_transform(doc, source.id);
+        const float scale = length(to_document.apply_vector({1.0f, 0.0f}));
+        for (const Shape &whole : drawing.shapes) {
+          if (whole.hidden) {
+            continue;
+          }
+          for (const Shape &shape : shape_runs(drawing, whole)) {
+            LineCutter::Piece piece;
+            shape_outline(drawing, shape, 12, piece.outline, nullptr, &piece.closed);
+            if (piece.outline.size() < 2) {
+              continue;
+            }
+            for (float2 &p : piece.outline) {
+              p = to_document.apply(p);
+            }
+            piece.area = ((shape.has_fill && piece.closed) || m.filled) && piece.outline.size() >= 3;
+            piece.line = shape.has_outline && shape.style.line_width > 0.0f;
+            piece.half = shape.style.line_width * 0.5f * scale;
+            row.pieces.push_back(std::move(piece));
+          }
+        }
+      };
+      for (const uint64_t id : m.layers) {
+        if (const Layer *source = layer_find(const_cast<Document &>(doc), id); source && id != l->id) {
+          add(add, *source);
+        }
+      }
+      if (!any_brush && !flat) {
+        cutter.reach = m.line_reach;
+      }
+      any_brush = any_brush || !flat;
+      rows.push_back(std::move(row));
+    }
+    if (!rows.empty()) {
+      cutter.levels.push_back(std::move(rows));
+    }
+  }
+  cutter.flat = !cutter.levels.empty() && !any_brush;
+  return cutter;
+}
+
+static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
+{
+  for (const LineCutter::Piece &piece : row.pieces) {
+    const size_t n = piece.outline.size();
+    const auto near_line = [&](float reach) {
+      for (size_t i = 0; i + 1 < n + (piece.closed ? 1 : 0); i++) {
+        if (distance_to_segment(p, piece.outline[i], piece.outline[(i + 1) % n]) <= reach) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!row.strokes_only && piece.area && inside_polygon(piece.outline, p) &&
+        !(row.inside_stroke && piece.line && near_line(piece.half)))
+    {
+      return true;
+    }
+    if (!row.fills_only && piece.line && piece.half > 0.0f && near_line(piece.half)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool line_cutter_shows(const LineCutter &cutter, float2 at)
+{
+  for (const std::vector<LineCutter::Row> &rows : cutter.levels) {
+    const MaskMode first = MaskMode(rows.front().mode);
+    bool shows = first == MaskMode::Subtract || first == MaskMode::Intersect;
+    for (const LineCutter::Row &row : rows) {
+      bool inside = cutter_row_covers(row, at);
+      if (row.invert) {
+        inside = !inside;
+      }
+      switch (MaskMode(row.mode)) {
+        case MaskMode::Add:
+          shows = shows || inside;
+          break;
+        case MaskMode::Subtract:
+          shows = shows && !inside;
+          break;
+        case MaskMode::Intersect:
+          shows = shows && inside;
+          break;
+        case MaskMode::Difference:
+          shows = shows != inside;
+          break;
+      }
+    }
+    if (!shows) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool layer_masks_show_at(const Document &doc, const Layer &layer, float2 at)

@@ -60,8 +60,13 @@ struct Server {
   int port = 0;
   /* Set before listening starts, read by the connections. */
   std::string token;
-  /* remote.json, written for the bridge ("" in tests). */
+  /* What it publishes for the bridge ("" in tests): remote/<process id>.json, one per running Open
+   * Animate (with the file it has open), and remote.json too while it holds the port Preferences
+   * asks for (what a bridge naming no project reaches). */
   std::filesystem::path published;
+  std::filesystem::path published_main;
+  /* The open file last written into it. */
+  std::string published_file;
   std::thread accept_thread;
   /* Connections being served, each by its own thread (detached; counted to wait for them). */
   std::atomic<int> serving{0};
@@ -72,6 +77,35 @@ struct Server {
   std::vector<std::shared_ptr<Request>> screenshots;
 };
 Server g_server;
+
+/* Whether process `pid` is still running (a file left by one that crashed isn't). */
+bool process_alive(unsigned long pid)
+{
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, DWORD(pid));
+  if (!process) {
+    return false;
+  }
+  DWORD code = 0;
+  const bool alive = GetExitCodeProcess(process, &code) && code == STILL_ACTIVE;
+  CloseHandle(process);
+  return alive;
+}
+
+/* This instance's port, token, process and open file, for the bridge. */
+void publish_info(const std::string &filepath)
+{
+  const json info{{"port", g_server.port},
+                  {"token", g_server.token},
+                  {"pid", GetCurrentProcessId()},
+                  {"filepath", filepath}};
+  for (const std::filesystem::path &path : {g_server.published, g_server.published_main}) {
+    if (!path.empty()) {
+      std::ofstream out(path, std::ios::trunc);
+      out << info.dump() << "\n";
+    }
+  }
+  g_server.published_file = filepath;
+}
 
 std::string answer(const json &id, const json &result)
 {
@@ -437,9 +471,14 @@ int remote_start(int port, bool publish)
   /* No other program may take over the port while it is ours. */
   BOOL exclusive = TRUE;
   setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive), sizeof(exclusive));
-  if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
-      listen(listener, 4) != 0)
-  {
+  bool bound = listener != INVALID_SOCKET && bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+  /* Another Open Animate has the port: any free one (its own file says which). */
+  const bool preferred = bound || port == 0;
+  if (!bound && listener != INVALID_SOCKET && port != 0) {
+    address.sin_port = 0;
+    bound = bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+  }
+  if (!bound || listen(listener, 4) != 0) {
     if (listener != INVALID_SOCKET) {
       closesocket(listener);
     }
@@ -454,9 +493,20 @@ int remote_start(int port, bool publish)
   g_server.running = true;
   g_server.accept_thread = std::thread(accept_loop);
   if (publish) {
-    g_server.published = std::filesystem::path(reinterpret_cast<const char8_t *>(user_data_dir().c_str())) / "remote.json";
-    std::ofstream out(g_server.published, std::ios::trunc);
-    out << json{{"port", g_server.port}, {"token", g_server.token}}.dump() << "\n";
+    const std::filesystem::path dir = std::filesystem::path(reinterpret_cast<const char8_t *>(user_data_dir().c_str()));
+    const std::filesystem::path instances = dir / "remote";
+    std::error_code ec;
+    std::filesystem::create_directories(instances, ec);
+    /* Files left by instances that are gone (a crash doesn't remove its own). */
+    for (const auto &entry : std::filesystem::directory_iterator(instances, ec)) {
+      const unsigned long pid = std::strtoul(entry.path().stem().string().c_str(), nullptr, 10);
+      if (entry.path().extension() == ".json" && (pid == 0 || !process_alive(pid))) {
+        std::filesystem::remove(entry.path(), ec);
+      }
+    }
+    g_server.published = instances / (std::to_string(GetCurrentProcessId()) + ".json");
+    g_server.published_main = preferred ? dir / "remote.json" : std::filesystem::path();
+    publish_info(g_server.published_file);
   }
   report(ReportType::Info, "Remote control: listening on 127.0.0.1:" + std::to_string(g_server.port), false);
   return g_server.port;
@@ -494,10 +544,12 @@ void remote_stop()
   }
   g_server.port = 0;
   g_server.token.clear();
-  if (!g_server.published.empty()) {
-    std::error_code ec;
-    std::filesystem::remove(g_server.published, ec);
-    g_server.published.clear();
+  for (std::filesystem::path *path : {&g_server.published, &g_server.published_main}) {
+    if (!path->empty()) {
+      std::error_code ec;
+      std::filesystem::remove(*path, ec);
+      path->clear();
+    }
   }
   WSACleanup();
 }
@@ -514,6 +566,10 @@ int remote_port()
 
 void remote_process(Context &C)
 {
+  /* The open file goes in the published info as it changes (opened, saved as, new). */
+  if (g_server.running && !g_server.published.empty() && C.wm && C.wm->filepath != g_server.published_file) {
+    publish_info(C.wm->filepath);
+  }
   std::deque<std::shared_ptr<Request>> todo;
   {
     std::lock_guard lock(g_server.mutex);
@@ -524,7 +580,13 @@ void remote_process(Context &C)
       g_server.screenshots.push_back(r);
       continue;
     }
-    r->reply.set_value(dispatch(C, r->message));
+    std::string reply = dispatch(C, r->message);
+    /* A request that opened or saved a file: published before the answer, so the next request can
+     * already name the project by its new file. */
+    if (!g_server.published.empty() && C.wm && C.wm->filepath != g_server.published_file) {
+      publish_info(C.wm->filepath);
+    }
+    r->reply.set_value(std::move(reply));
   }
 }
 

@@ -206,6 +206,9 @@ struct Deformer {
   std::vector<BonePose> poses;
   /* Layer space <-> bone layer space. */
   Transform2D to_armature, from_armature;
+  /* Parent Bone moving the points (Deform: Points): every point all this bone's, whatever its
+   * weights. */
+  uint64_t whole_bone = 0;
 };
 
 }  // namespace
@@ -221,12 +224,17 @@ static bool deformer_init(const Document &doc, const Layer &layer, Deformer &r)
   r.poses = armature_pose(*r.armature, doc.frame_current == 0);
   r.to_armature = layer_world_transform(doc, r.armature->id).inverted() * layer_world_transform(doc, layer.id);
   r.from_armature = r.to_armature.inverted();
+  r.whole_bone = layer.points_follow_bone() ? layer.parent_bone : 0;
   return true;
 }
 
 /* Which bones move a point and how much (summing to 1, or empty: it doesn't move). */
 static std::vector<BoneWeight> point_weights(const Deformer &d, const MeshPoint &p)
 {
+  if (d.whole_bone != 0) {
+    return bone_pose_find(d.poses, d.whole_bone) ? std::vector<BoneWeight>{{d.whole_bone, 1.0f}}
+                                                 : std::vector<BoneWeight>{};
+  }
   std::vector<BoneWeight> weights;
   float total = 0.0f;
   for (const BoneWeight &w : p.weights) {

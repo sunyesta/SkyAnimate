@@ -63,6 +63,7 @@ set(OANIM_SOURCES
   src/ops/builtin_ops.cc
   src/ops/file_ops.cc
   src/ops/layer_ops.cc
+  src/ops/layer_clipboard.cc
   src/ops/operator.cc
   src/ops/rig_ops.cc
   src/ops/undo.cc
@@ -132,6 +133,34 @@ add_test(NAME brush_settings
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_brush_settings.py)
 add_test(NAME drivers
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drivers.py)
+add_test(NAME drivers_expressions
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drivers_expressions.py)
+add_test(NAME drivers_structure
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drivers_structure.py)
+add_test(NAME drivers_rig
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drivers_rig.py)
+add_test(NAME mcp_projects
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mcp_projects.py)
+add_test(NAME mask_line_ends
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mask_line_ends.py)
+add_test(NAME delete_shapes
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_delete_shapes.py)
+add_test(NAME detail_raise
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_detail_raise.py)
+add_test(NAME parent_bone_deform
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_parent_bone_deform.py)
+add_test(NAME resolution_link
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_resolution_link.py)
+add_test(NAME flip_name
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_flip_name.py)
+add_test(NAME layer_symmetrize
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_symmetrize.py)
+add_test(NAME layer_clipboard
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_clipboard.py)
+add_test(NAME mirror
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mirror.py)
+add_test(NAME mask_cuts
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mask_cuts.py)
 add_test(NAME handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles.py)
 add_test(NAME animation

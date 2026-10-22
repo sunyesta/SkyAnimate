@@ -15,6 +15,7 @@
  * The layout doesn't depend on the zoom, so the viewport and a render agree. */
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "core/math.hh"
@@ -54,13 +55,27 @@ struct BrushPath {
  * radii, plus `extra_half` (a mask's one-pixel rim). Empty if its edges don't join up. */
 BrushPath brush_path(const VectorDrawing &drawing, const Shape &shape, float extra_half);
 
+/* A mask's End Lines at Edge for a brushed line: whether the line shows at a point (layer space),
+ * and whether the ends it makes get the brush's taper and fade (Ends: Brush) or none (Flat). */
+struct BrushCut {
+  std::function<bool(float2)> shows;
+  bool taper = true;
+  /* With taper (Ends: Brush): how far the line reaches past the edge, in line widths (0: its last
+   * dab just touches it; 0.5: centred on it). */
+  float reach = 0.0f;
+};
+
 /* Dabs along `shown` (the line on the frame shown), laid out on `rest` (the same line on the
  * setup frame: the same segments, in the same order; `shown` itself when there is none).
  * `aspects`: one entry per image (width / height). `min_half` keeps a dab at least that big (half
- * a pixel), so a hairline still shows. `seed` picks the random pattern: the same seed gives the
- * same line. */
+ * a pixel), so a hairline still shows; with `fade_thin` a dab that thin shows only as much as it is
+ * thick (a line half a pixel wide is drawn a pixel wide at half strength), so a line keeps its
+ * weight however far the view is zoomed out. `seed` picks the random pattern: the same seed gives
+ * the same line. `cut` (optional): no dabs where it doesn't show, and the ends that makes tapered
+ * and faded as the brush's own ends are. */
 void brush_stroke(const BrushPath &shown, const BrushPath &rest, const BrushSettings &brush, Color color,
-                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs);
+                  const std::vector<float> &aspects, float min_half, uint32_t seed, BrushDabs &r_dabs,
+                  const BrushCut *cut = nullptr, bool fade_thin = false);
 
 /* The seed for one shape's line: Line boil changes it every `random_interval` frames. */
 uint32_t brush_seed(const BrushSettings &brush, uint64_t layer_id, int shape_index, int frame);

@@ -88,6 +88,12 @@ int shape_detail_level_limit(const VectorDrawing &drawing, const Shape &shape);
  * own) move `influence` of the way (1: all of it) onto the curve of the level below, so they keep only
  * what that curve gives them: no offset of their own. Returns how many points and handles changed. */
 int drawing_detail_smooth_selected(VectorDrawing &drawing, float influence);
+/* Move to Higher Level: the selected points go one detail level up, as the curve shows (it keeps
+ * its look; their places along their new parents' segment worked out anew). Points that can't are
+ * left (`r_skipped`): an open curve's ends, points on more than one curve, ones already at
+ * DETAIL_LEVEL_MAX, and any that would leave a closed curve too few coarser points to sit between.
+ * Their keys held places in their old frames, so they go (`r_keys_dropped`). Returns how many moved. */
+int drawing_detail_raise_selected(VectorDrawing &drawing, int *r_skipped, bool *r_keys_dropped);
 /* Whether any selected point (or handle picked on its own) is detail. */
 bool drawing_detail_selected(const VectorDrawing &drawing);
 

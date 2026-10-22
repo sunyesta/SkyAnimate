@@ -78,16 +78,20 @@ cases = {
     "clamp(5, 0, 1)": 1, "lerp(0, 10, 0.25)": 2.5, "smoothstep(0, 1, 0.5)": 0.5,
     "1 if 2 > 1 else 0": 1, "#2 + 1": 3, " #pi > 3": 1, "max(1, 7, 3)": 7, "degrees(pi)": 180, "not 0 and 1": 1, "abs(-3) == 3": 1,
 }
+# (On Scale Y: Opacity, as in Blender, is held to 0..1.)
 for text, want in cases.items():
-    assert ops.driver_add(layer=B, path="opacity", expression=text) == {'FINISHED'}
+    assert ops.driver_add(layer=B, path="scale", component="1", expression=text) == {'FINISHED'}
     doc.frame_current += 1
-    got = driver(B, "opacity")["value"]
+    got = driver(B, "scale", 1)["value"]
     assert abs(got - want) < 1e-4, (text, got)
 # Bad ones say why and leave the value alone.
 for text, why in (("sinn(1)", "Unknown function"), ("1 +", "ends too early"), ("bogus * 2", "No variable")):
-    assert ops.driver_add(layer=B, path="opacity", expression=text) == {'FINISHED'}
+    assert ops.driver_add(layer=B, path="scale", component="1", expression=text) == {'FINISHED'}
     doc.frame_current += 1
-    assert why in driver(B, "opacity")["error"], (text, driver(B, "opacity")["error"])
+    assert why in driver(B, "scale", 1)["error"], (text, driver(B, "scale", 1)["error"])
+assert ops.driver_add(layer=B, path="opacity", expression="5") == {'FINISHED'}
+doc.frame_current += 1
+assert b.opacity == 1.0, "a driven value is held to its field's range (Blender's)"
 
 # --- A loop is caught, not evaluated -----------------------------------------------------------------
 va = json.dumps([{"name": "var", "layer": b.id, "path": "rotation"}])

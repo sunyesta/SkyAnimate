@@ -62,6 +62,10 @@ struct Document {
   float fps = 24.0f;
   int width = 1920;
   int height = 1080;
+  /* Width and height linked (the button between them): changing one changes the other, keeping
+   * `resolution_aspect` (width / height when they were linked). */
+  bool resolution_linked = false;
+  float resolution_aspect = 16.0f / 9.0f;
   Color background = {0.92f, 0.92f, 0.92f, 1.0f};
   /* Stroke resolution: how many straight pieces draw each curve segment, in the viewport and in
    * renders, like Blender's curve resolution. Lower is faster, higher is smoother. */

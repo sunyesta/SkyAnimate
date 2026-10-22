@@ -27,5 +27,13 @@ def register_class(cls):
     _oanim.register_operator(cls.bl_idname, cls.bl_label or cls.__name__, description, sorted(cls.bl_options), poll, execute)
 
 
+def flip_name(name):
+    """The other side's name, as bpy.utils.flip_name: "arm_L" <-> "arm_R", "L_foot" <-> "R_foot", "L arm" <-> "R arm",
+    "Eye_Lash_L 2" <-> "Eye_Lash_R 2", "hand.L.001" <-> "hand.R.001", "LeftArm" <-> "RightArm"; a name
+    without a side comes back as it is. Bone Symmetrize, X mirror editing and Symmetrize's weights pair
+    bones by it."""
+    return _oanim.flip_name(str(name))
+
+
 def unregister_class(cls):
     _oanim.unregister_operator(cls.bl_idname)

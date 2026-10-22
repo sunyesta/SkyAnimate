@@ -581,6 +581,11 @@ struct SymmetrizeResult {
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
                                     const std::map<uint64_t, uint64_t> *weight_flip);
 
+/* Layer Symmetrize's copy: the drawing flipped left to right across its own vertical axis, as its
+ * setup pose, with its point, handle and curvature keys gone (so it rests there on every frame).
+ * Detail points flip across their segments. */
+void drawing_mirror_setup_x(VectorDrawing &drawing);
+
 /* Deselects every handle. */
 void drawing_deselect_handles(VectorDrawing &drawing);
 /* Whether curve point `cp` counts as selected for handle editing: its point or a handle is. */

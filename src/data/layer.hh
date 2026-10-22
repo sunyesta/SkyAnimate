@@ -166,7 +166,7 @@ struct MediaSettings {
 
 /* A layer's masks are a list of rows read top to bottom, as After Effects' mask modes (and CSS's
  * mask-composite), each naming layers as its track mattes do: the shape of a row is all its layers
- * together (as drawn, or as Mask With says), and its mode says what it does to what the rows above
+ * together, as drawn (before any masks of their own; their Shape and Fill Every Shape say which parts), and its mode says what it does to what the rows above
  * show. Add shows inside it too, Subtract hides inside it, Intersect keeps only where it overlaps
  * what is shown, Difference flips where it overlaps. With nothing above, a list that starts with
  * Subtract or Intersect starts from everything shown (so "outside the mouth" is one row), else from
@@ -182,12 +182,25 @@ MaskMode mask_mode_from_inside_outside(bool outside, bool first);
 struct LayerMask;
 /* Whether a row cuts its shape away (drawn as a cut: Subtract, or Intersect inverted). */
 bool mask_cuts(const LayerMask &mask);
+/* The rows above that end lines (End Lines at Edge), for mask_row_ends_lines. */
+struct MaskLineEnding {
+  bool active = false;
+  bool flat = false;
+};
+/* Whether row `m` ends the masked layer's lines, and with which Ends (`r_flat`), given the rows above
+ * it that are on (`above`, updated for the rows after): its own End Lines at Edge, or, for an Add row
+ * after one that ends lines, that row's, so the Add row brings back the lines it ended. */
+bool mask_row_ends_lines(const LayerMask &m, MaskLineEnding *above, bool *r_flat);
 /* A mask's Extend: the layers' shapes stretched to the edge of everything in one direction (the mask
  * layer's own up, down, left or right, so it turns with the layer and its bone): "Outside the mouth
  * line, extended up" hides the mouth and everything above it. */
 enum class MaskExtend : uint8_t { None, Up, Down, Left, Right };
 const char *mask_extend_identifier(MaskExtend extend);
 bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_extend);
+/* What of the masked layer a row cuts: all of it, only its fills, or only its lines. */
+enum class MaskCuts : uint8_t { All, Fills, Lines };
+const char *mask_cuts_identifier(MaskCuts cuts);
+bool mask_cuts_from_identifier(const std::string &identifier, MaskCuts *r_cuts);
 
 struct LayerMask {
   MaskMode mode = MaskMode::Add;
@@ -199,22 +212,48 @@ struct LayerMask {
   /* Masking in renders. */
   bool render = true;
   /* How the layers' shapes mask: grown by `grow` pixels (on screen; 1 hides thin seams along the
-   * edges) or shrunk by a negative one; only their fills, not their strokes; and `filled`, every
+   * edges) or shrunk by a negative one. The Masking tab's Shape: As Drawn (fills and strokes), Fills
+   * Only (`fills_only`) or Strokes Only (`strokes_only`); and its Fill Every Shape (`filled`): every
    * shape as if it were filled, an outline-only shape too (an open one closed by a straight line), as
-   * Rive clips with a shape's path. Mask With in the Masking tab: As Drawn, Fills Only, Filled Shape
-   * (filled and its stroke), Filled Shape, No Stroke (filled and fills_only). */
+   * Rive clips with a shape's path (nothing to do with Strokes Only). */
   float grow = 0.0f;
   bool fills_only = false;
+  bool strokes_only = false;
   bool filled = false;
+  /* With Fills Only: the fills cut at their lines' inner edge rather than down their middle (so a
+   * layer cut by this one shows over the whole line), whatever the zoom, as covering it with a copy
+   * of the fills would. */
+  bool inside_stroke = false;
+  /* End Lines at Edge: the masked layer's lines end where they cross this row's shape (worked out
+   * along them, before a brush lays its dabs) instead of being sliced by it; with Ends Brush the
+   * new ends stop short of the edge, whole dabs only (the brush's taper and fade on them), and the
+   * row doesn't slice the lines by pixels too; with Flat (`end_lines_flat`) the row's pixel clip then cuts them straight.
+   * Fills are masked as always. */
+  bool end_lines = false;
+  bool end_lines_flat = false;
+  /* With Ends: Brush, how far the lines reach past the edge (+) or stop short of it (-), in line
+   * widths at the end: 0 stops the line's round end just touching the edge, 0.5 puts its middle
+   * there. Animatable (keyed by hand, as settings are). */
+  float line_reach = 0.0f;
+  Channel<float> line_reach_keys = Channel<float>::by_hand();
+  /* Cuts: what of the masked layer the row masks. Lines: only its lines (ended or sliced), its fills
+   * showing as if the row weren't there, so two layers can cut each other's lines where they join
+   * without both fills going (a hole). Fills: only its fills (End Lines at Edge then does nothing),
+   * as Toon Boom cuts colour art apart from line art. */
+  MaskCuts cuts = MaskCuts::All;
   MaskExtend extend = MaskExtend::None;
   /* Shown open in the Masking tab. */
   bool show_expanded = true;
   /* Not saved: the row Clip to Below makes (layer_mask_rows), which masks with what its base shows. */
   bool clip = false;
+  /* Not saved: a number of its own for drivers to follow it by when rows move (0 until one does). */
+  uint64_t uid = 0;
   bool operator==(const LayerMask &o) const
   {
     return mode == o.mode && invert == o.invert && layers == o.layers && enabled == o.enabled && render == o.render &&
-           grow == o.grow && fills_only == o.fills_only && filled == o.filled && extend == o.extend;
+           grow == o.grow && fills_only == o.fills_only && strokes_only == o.strokes_only && filled == o.filled &&
+           inside_stroke == o.inside_stroke && end_lines == o.end_lines && end_lines_flat == o.end_lines_flat &&
+           line_reach == o.line_reach && cuts == o.cuts && extend == o.extend;
   }
 };
 
@@ -330,6 +369,9 @@ struct BoneConstraint {
   float wind_gusts = 0.0f;
   float wind_gust_speed = 1.0f;
   float wind_turbulence = 0.0f;
+  /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
+   * does). */
+  uint64_t uid = 0;
   /* Keys for Weight, Wind Catch and the six above, as the document's are keyed (by hand, as
    * settings are). */
   Channel<float> weight_keys = Channel<float>::by_hand(), wind_catch_keys = Channel<float>::by_hand();
@@ -454,6 +496,9 @@ struct Modifier {
   /* Mirrored points bound to a bone named ..._L follow ..._R (and the other way), as
    * Blender's mirror modifier flips vertex groups. */
   bool mirror_bones = true;
+  /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
+   * does). */
+  uint64_t uid = 0;
 };
 
 /* An animatable number known by its path, for things that aren't a layer's own (the document's
@@ -541,6 +586,11 @@ struct Layer {
   uint64_t active_bone = 0;
   /* Moho's layer binding: a layer inside a bone layer can follow one bone as a whole. */
   uint64_t parent_bone = 0;
+  /* What Parent Bone moves (Deform): false, the layer as a whole (Layer: a bone's squash and
+   * stretch squashes its lines and brush stamps too); true, its points, as if each were weighted
+   * all to that bone (Points: lines keep their width and stamps their shape). Groups move as a
+   * whole. */
+  bool parent_bone_points = false;
   /* Bone layers: their bone collections, in list order, and the active one (its id; 0: All). */
   std::vector<BoneCollection> bone_collections;
   uint64_t next_collection_id = 1;
@@ -571,7 +621,15 @@ struct Layer {
   bool is_reference() const { return reference_source != 0; }
   /* The bone it follows as a whole (0 for none): a copy posed Same as Original moves with its
    * original's bones, so its own Parent Bone waits until it is given Own Bones. */
-  uint64_t followed_bone() const { return is_reference() && reference.match_original ? 0 : parent_bone; }
+  uint64_t followed_bone() const
+  {
+    return (is_reference() && reference.match_original) || points_follow_bone() ? 0 : parent_bone;
+  }
+  /* Parent Bone moving its points rather than the layer (parent_bone_points). */
+  bool points_follow_bone() const
+  {
+    return parent_bone != 0 && parent_bone_points && !is_group() && !(is_reference() && reference.match_original);
+  }
   Transform2D local_transform() const;
 
   static const rna::StructRNA &rna();

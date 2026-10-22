@@ -63,6 +63,12 @@ static constexpr ImU32 COL_TOOLBAR = IM_COL32(0x28, 0x28, 0x28, 235);
 
 /* Pick radius in screen pixels. */
 static constexpr float PICK_PIXELS = 9.0f;
+
+/* How far from a point (or handle's end) drawn `size` pixels across a click still picks it. */
+static float pick_pixels(float size)
+{
+  return std::max(PICK_PIXELS, size * 0.5f + 4.0f);
+}
 /* A right-click that cancelled something (a move, a turn, a one-off tool) is spent: its release
  * doesn't open a context menu. Cleared once the button is up. */
 static bool g_right_click_spent = false;
@@ -430,10 +436,11 @@ static void deselect_all(VectorDrawing &drawing)
 static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSettings &ts)
 {
   /* Weights are about points, not curve shapes: handles would only get in the way there. Edges
-   * and Strokes modes pick lines, not points, so their handles go too. */
+   * and Strokes modes pick lines, not points, so their handles go too; and the Transform Points box
+   * works on the points as a whole. */
   if (!ov.show || !ov.points || (ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand) ||
-      ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect || ts.select_mode == SelectMode::Edge ||
-      ts.select_mode == SelectMode::Stroke)
+      ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect || ts.tool == Tool::TransformPoints ||
+      ts.select_mode == SelectMode::Edge || ts.select_mode == SelectMode::Stroke)
   {
     return HandleDisplay::None;
   }
@@ -528,7 +535,7 @@ static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, 
           }
           const ImVec2 s = view.to_screen(to_document.apply(h));
           const float d = std::sqrt((s.x - mouse.x) * (s.x - mouse.x) + (s.y - mouse.y) * (s.y - mouse.y));
-          if (d <= PICK_PIXELS && d < hit.distance) {
+          if (d <= pick_pixels(C.document->overlays.handle_size) && d < hit.distance) {
             hit = {layer, c, i, pre, d};
           }
         }
@@ -1102,6 +1109,21 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
       ImGui::SetTooltip("Which curve handles to show: none, the selected points', every handle of the shapes you're "
                         "working on (any of whose points is selected), or all of them");
     }
+    /* Sizes, as Blender's Vertex Size: how big points and handles' ends are drawn. */
+    const auto size_field = [&](const char *label, const char *id, float *value, const char *tip) {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(label);
+      ImGui::SameLine(column);
+      ImGui::SetNextItemWidth(column - ImGui::GetStyle().ItemSpacing.x);
+      ImGui::DragFloat(id, value, 0.1f, OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", tip);
+      }
+    };
+    size_field("Point Size", "##point_size", &ov.point_size,
+               "How big points are drawn, in pixels across (clicks reach a little past them)");
+    size_field("Handle Size", "##handle_size", &ov.handle_size,
+               "How big the dots at handles' ends are drawn, in pixels across");
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column);
     ImGui::Checkbox("Mask Outlines", &ov.mask_outlines);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -1264,15 +1286,15 @@ static void width_field(const Document &doc, ToolSettings &ts)
   }
 }
 
-static bool menu_operator(Context &C, const char *label, const char *idname)
+static bool menu_operator(Context &C, const char *label, const char *idname, const OpArgs &args = {})
 {
   const OperatorType *ot = operators().find(idname);
   if (!ot) {
     return false;
   }
-  const std::string shortcut = keymaps().shortcut_for(idname);
+  const std::string shortcut = args.empty() ? keymaps().shortcut_for(idname) : std::string();
   if (ui_menu_item(label, shortcut.empty() ? nullptr : shortcut.c_str(), false, operator_poll(C, *ot))) {
-    operator_call(C, idname);
+    operator_call(C, idname, args);
     return true;
   }
   return false;
@@ -1757,8 +1779,13 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
     }
   }
 
-  float2 sum;
   int counted = 0;
+  /* The selection's bounds (document space): S and R work about their middle. */
+  float2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+  const auto bound = [&](float2 p) {
+    lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
+    hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+  };
   for (Layer *layer : layers) {
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     VectorDrawing &drawing = layer->drawing;
@@ -1769,7 +1796,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
         ModalTransform::Item item{layer->id, i, p};
         item.unskin = shown.skins[i].inverted();
         modal.items.push_back(item);
-        sum += p;
+        bound(p);
         counted++;
       }
     }
@@ -1854,7 +1881,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
           }
           modal.items.push_back(item);
           if (direct) {
-            sum += h;
+            bound(h);
             counted++;
           }
         }
@@ -1865,7 +1892,8 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
     *C.document = modal.snapshot;
     return false;
   }
-  modal.pivot = sum / float(counted);
+  /* S and R about the middle of the selection's bounds (as Mirror and the Transform Points box). */
+  modal.pivot = (lo + hi) * 0.5f;
   /* Handles alone: the mouse measures turns and lengths about their points. */
   modal.about_points = std::none_of(modal.items.begin(), modal.items.end(),
                                     [](const ModalTransform::Item &item) { return item.curve < 0; });
@@ -2304,6 +2332,13 @@ static void split_curve_done(ToolSettings &ts)
 /* Picks the nearest point (or, in Edges and Strokes mode, the line) under the mouse across every
  * editable layer, and selects it as Blender does: a plain click replaces the selection, Shift
  * toggles, Ctrl removes. */
+/* A click on points where the last one was (the mouse within a couple of pixels): the next point under
+ * it, round to the nearest again, so points on top of each other can each be picked. */
+static struct {
+  ImVec2 pos{-1e9f, -1e9f};
+  uint64_t layer = 0, point = 0;
+} g_point_cycle;
+
 static void select_click(Context &C, const ViewMapping &view, float2 mouse_document, HandleDisplay handles)
 {
   const ImGuiIO &io = ImGui::GetIO();
@@ -2312,27 +2347,63 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   std::vector<int> picked;
   ShapeEdge hit_edge{-1, 0};
   float best = FLT_MAX;
-  const HandleHit handle = pick_handle(C, view, view.to_screen(mouse_document), handles);
+  const ImVec2 mouse_screen = view.to_screen(mouse_document);
+  const HandleHit handle = pick_handle(C, view, mouse_screen, handles);
   Layer &camera = document_camera(*C.document);
+  /* Every shown point within reach, nearest first. */
+  struct PointHit {
+    Layer *layer;
+    int point;
+    float d;
+  };
+  std::vector<PointHit> hits;
   for (Layer *layer : layers) {
-    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
-    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
-    const float2 mouse = to_document.inverted().apply(mouse_document);
-    const Posed shown = posed(*C.document, *layer);
     if (C.wm->tool_settings.select_mode == SelectMode::Edge) {
       /* Points don't show in Edges mode, so clicks pick lines (below). */
       continue;
     }
-    if (const int p = drawing_pick_point(*shown.drawing, mouse, PICK_PIXELS * pixel); p >= 0) {
-      const float d = distance(shown.drawing->points[p].pos, mouse) / pixel;
-      if (d < best) {
-        best = d;
-        hit_layer = layer;
-        picked = {p};
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    const float2 mouse = to_document.inverted().apply(mouse_document);
+    const float reach = pick_pixels(C.document->overlays.point_size);
+    const Posed shown = posed(*C.document, *layer);
+    drawing_ensure_ids(layer->drawing);
+    for (int p = 0; p < int(shown.drawing->points.size()); p++) {
+      if (shown.drawing->points[size_t(p)].detail.hidden) {
+        continue;
+      }
+      const float d = distance(shown.drawing->points[size_t(p)].pos, mouse) / pixel;
+      if (d <= reach) {
+        hits.push_back({layer, p, d});
       }
     }
   }
-  /* A handle nearer than any point takes the click: just that handle is selected. */
+  std::stable_sort(hits.begin(), hits.end(), [](const PointHit &a, const PointHit &b) { return a.d < b.d; });
+  size_t choice = 0;
+  bool cycled = false;
+  const ImVec2 moved = mouse_screen - g_point_cycle.pos;
+  if (!hits.empty() && moved.x * moved.x + moved.y * moved.y <= 16.0f) {
+    for (size_t k = 0; k < hits.size(); k++) {
+      if (hits[k].layer->id == g_point_cycle.layer &&
+          hits[k].layer->drawing.points[size_t(hits[k].point)].id == g_point_cycle.point)
+      {
+        choice = (k + 1) % hits.size();
+        cycled = true;
+        break;
+      }
+    }
+  }
+  if (!hits.empty()) {
+    best = cycled ? 0.0f : hits[choice].d;
+    hit_layer = hits[choice].layer;
+    picked = {hits[choice].point};
+    g_point_cycle = {mouse_screen, hit_layer->id, hit_layer->drawing.points[size_t(picked.front())].id};
+  }
+  else {
+    g_point_cycle = {};
+  }
+  /* A handle nearer than any point takes the click: just that handle is selected (not while clicking
+   * again goes through the points there). */
   if (handle.layer && handle.distance <= best) {
     if (!io.KeyShift && !io.KeyCtrl) {
       for (Layer *layer : layers) {
@@ -2626,9 +2697,12 @@ static void draw_grid(ImDrawList *dl, const ViewMapping &view, float grid)
   }
 }
 
+/* `cutter` (optional, End Lines at Edge): the stretches of the wires whose line it cuts away draw
+ * dashed and faint, as hidden edges do. */
 static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, const Transform2D &to_document,
                                  const ViewMapping &view, bool show_wires, bool show_points, int quality,
-                                 HandleDisplay handles, bool point_squares = true)
+                                 HandleDisplay handles, bool point_squares = true, const LineCutter *cutter = nullptr,
+                                 float point_size = 6.0f, float handle_size = 6.5f)
 {
   std::vector<float2> samples;
   /* Wires show each curve as it is edited: at its shape's detail level, through the points shown
@@ -2656,15 +2730,31 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
         line.push_back(view.to_screen(to_document.apply(p)));
       }
       const ImU32 col = selected ? COL_WIRE_SELECTED : COL_WIRE;
+      const ImU32 faint = (col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110);
+      const float thickness = selected ? 1.6f : 1.0f;
       if (curve.points[s].edge_hidden) {
         /* A hidden edge (Moho's Hide Edge) draws dashed and faint, so it can still be found. */
-        const ImU32 faint = (col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110);
         for (size_t i = 0; i + 1 < line.size(); i += 2) {
-          dl->AddLine(line[i], line[i + 1], faint, selected ? 1.6f : 1.0f);
+          dl->AddLine(line[i], line[i + 1], faint, thickness);
+        }
+      }
+      else if (cutter && !cutter->empty()) {
+        /* End Lines at Edge: solid where the line shows, dashed and faint where it's cut away. */
+        std::vector<char> shows(samples.size());
+        for (size_t i = 0; i < samples.size(); i++) {
+          shows[i] = line_cutter_shows(*cutter, to_document.apply(samples[i]));
+        }
+        for (size_t i = 0; i + 1 < line.size(); i++) {
+          if (shows[i] && shows[i + 1]) {
+            dl->AddLine(line[i], line[i + 1], col, thickness);
+          }
+          else if (i % 2 == 0) {
+            dl->AddLine(line[i], line[i + 1], faint, thickness);
+          }
         }
       }
       else {
-        dl->AddPolyline(line.data(), int(line.size()), col, ImDrawFlags_None, selected ? 1.6f : 1.0f);
+        dl->AddPolyline(line.data(), int(line.size()), col, ImDrawFlags_None, thickness);
       }
     }
   }
@@ -2690,8 +2780,9 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
         const ImU32 col = (cp.aligned ? COL_HANDLE_ALIGNED : COL_HANDLE_FREE)[selected ? 1 : 0];
         const ImVec2 end = view.to_screen(to_document.apply(h));
         dl->AddLine(at, end, col, 1.5f);
-        dl->AddCircleFilled(end, 3.2f, (pre ? cp.select_in : cp.select_out) ? IM_COL32(0xff, 0xff, 0xff, 255) : col);
-        dl->AddCircle(end, 3.2f, IM_COL32(0, 0, 0, 160));
+        const float r = handle_size * 0.5f;
+        dl->AddCircleFilled(end, r, (pre ? cp.select_in : cp.select_out) ? IM_COL32(0xff, 0xff, 0xff, 255) : col);
+        dl->AddCircle(end, r, IM_COL32(0, 0, 0, 160));
       }
     }
   }
@@ -2716,7 +2807,8 @@ static void draw_drawing_overlay(ImDrawList *dl, const VectorDrawing &drawing, c
       if (p.selected != (pass == 1) || p.detail.hidden) {
         continue;
       }
-      const float r = coarse[i] ? 4.0f : 3.0f;
+      /* Coarser points a third bigger. */
+      const float r = point_size * (coarse[i] ? 0.667f : 0.5f);
       const ImVec2 s = view.to_screen(to_document.apply(p.pos));
       dl->AddRectFilled(s - ImVec2(r, r), s + ImVec2(r, r), p.selected ? COL_POINT_SELECTED : COL_POINT);
       if (!p.selected) {
@@ -3399,27 +3491,37 @@ struct BoneHit {
   BonePart part = BonePart::None;
 };
 
-static BoneHit pick_bone_part(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+/* Everything a click at `mouse` hits, the best first: heads and tails within reach, pins and custom
+ * shapes, nearest first (a tail before a head at the same spot, so a shared joint is the parent's
+ * tip); then bodies near the line, nearest first. A connected bone's head is its parent's tail, so
+ * it isn't listed again. Clicking again in the same spot goes down this list. */
+static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &armature, const ViewMapping &view,
+                                            ImVec2 mouse)
 {
   const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
   const float2 m(mouse.x, mouse.y);
-  BoneHit best;
-  float best_d = 1e30f;
+  struct Candidate {
+    BoneHit hit;
+    int phase;
+    float d;
+    int order;
+  };
+  std::vector<Candidate> found;
   for (size_t i = 0; i < armature.bones.size(); i++) {
-    if (!bone_shown(armature, armature.bones[i])) {
+    const Bone &bone = armature.bones[i];
+    if (!bone_shown(armature, bone)) {
       continue;
     }
     /* A pin is one round thing: clicking it picks the whole bone. */
-    if (shows_pin(armature.bones[i])) {
+    if (shows_pin(bone)) {
       const float d = distance(m, float2(sbs[i].head.x, sbs[i].head.y));
-      if (d <= pin_radius(armature.bones[i]) + 3.0f && d < best_d - 0.01f) {
-        best_d = d;
-        best = {armature.bones[i].id, BonePart::Body};
+      if (d <= pin_radius(bone) + 3.0f) {
+        found.push_back({{bone.id, BonePart::Body}, 0, d, 0});
       }
       continue;
     }
     /* So is a custom shape: anywhere inside its fills, or near its lines. */
-    if (const std::vector<ShapeLoop> loops = custom_shape_loops(doc, armature.bones[i], sbs[i], view); !loops.empty()) {
+    if (const std::vector<ShapeLoop> loops = custom_shape_loops(doc, bone, sbs[i], view); !loops.empty()) {
       float d = 1e30f;
       for (const ShapeLoop &loop : loops) {
         const size_t n = loop.points.size();
@@ -3438,38 +3540,82 @@ static BoneHit pick_bone_part(const Document &doc, const Layer &armature, const 
           d = 0.0f;
         }
       }
-      if (d <= 4.0f && d < best_d - 0.01f) {
-        best_d = d;
-        best = {armature.bones[i].id, BonePart::Body};
+      if (d <= 4.0f) {
+        found.push_back({{bone.id, BonePart::Body}, 0, d, 0});
       }
       continue;
     }
     const float reach = bone_joint_radius(sbs[i]) + 3.0f;
-    /* Tails before heads, so a shared joint picks the parent's tip. */
-    const std::pair<ImVec2, BonePart> ends[2] = {{sbs[i].tail, BonePart::Tail}, {sbs[i].head, BonePart::Head}};
-    for (const auto &[p, part] : ends) {
-      const float d = distance(m, float2(p.x, p.y));
-      if (d <= reach && d < best_d - 0.01f) {
-        best_d = d;
-        best = {armature.bones[i].id, part};
-      }
+    const float tail_d = distance(m, float2(sbs[i].tail.x, sbs[i].tail.y));
+    if (tail_d <= reach) {
+      found.push_back({{bone.id, BonePart::Tail}, 0, tail_d, 0});
+    }
+    const float head_d = distance(m, float2(sbs[i].head.x, sbs[i].head.y));
+    if (head_d <= reach) {
+      found.push_back({{bone.id, BonePart::Head}, 0, head_d, 1});
+    }
+    const float body_d = distance_to_segment(m, {sbs[i].head.x, sbs[i].head.y}, {sbs[i].tail.x, sbs[i].tail.y});
+    if (body_d < PICK_PIXELS * 1.5f) {
+      found.push_back({{bone.id, BonePart::Body}, 1, body_d, 0});
     }
   }
-  if (best.bone) {
-    return best;
-  }
-  best_d = PICK_PIXELS * 1.5f;
-  for (size_t i = 0; i < armature.bones.size(); i++) {
-    if (!bone_shown(armature, armature.bones[i])) {
+  std::stable_sort(found.begin(), found.end(), [](const Candidate &a, const Candidate &b) {
+    if (a.phase != b.phase) {
+      return a.phase < b.phase;
+    }
+    if (std::abs(a.d - b.d) > 0.01f) {
+      return a.d < b.d;
+    }
+    return a.order < b.order;
+  });
+  std::vector<BoneHit> hits;
+  for (const Candidate &c : found) {
+    const Bone *bone = bone_find(armature, c.hit.bone);
+    if (c.hit.part == BonePart::Head && bone && bone->connected &&
+        std::any_of(hits.begin(), hits.end(), [&](const BoneHit &h) {
+          return h.bone == bone->parent && h.part == BonePart::Tail;
+        }))
+    {
       continue;
     }
-    const float d = distance_to_segment(m, {sbs[i].head.x, sbs[i].head.y}, {sbs[i].tail.x, sbs[i].tail.y});
-    if (d < best_d) {
-      best_d = d;
-      best = {armature.bones[i].id, BonePart::Body};
+    if (std::any_of(hits.begin(), hits.end(),
+                    [&](const BoneHit &h) { return h.bone == c.hit.bone && h.part == c.hit.part; }))
+    {
+      continue;
+    }
+    hits.push_back(c.hit);
+  }
+  return hits;
+}
+
+static BoneHit pick_bone_part(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+{
+  const std::vector<BoneHit> hits = pick_bone_parts(doc, armature, view, mouse);
+  return hits.empty() ? BoneHit() : hits.front();
+}
+
+/* A click on bones where the last one was (the mouse within a couple of pixels): the next thing
+ * under it, round to the first again, as clicking again picks the layer below. */
+static struct {
+  ImVec2 pos{-1e9f, -1e9f};
+  BoneHit last;
+} g_bone_cycle;
+
+static BoneHit pick_bone_cycling(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+{
+  const std::vector<BoneHit> hits = pick_bone_parts(doc, armature, view, mouse);
+  BoneHit hit = hits.empty() ? BoneHit() : hits.front();
+  const ImVec2 d = mouse - g_bone_cycle.pos;
+  if (!hits.empty() && d.x * d.x + d.y * d.y <= 16.0f) {
+    const auto at = std::find_if(hits.begin(), hits.end(), [&](const BoneHit &h) {
+      return h.bone == g_bone_cycle.last.bone && h.part == g_bone_cycle.last.part;
+    });
+    if (at != hits.end()) {
+      hit = std::next(at) != hits.end() ? *std::next(at) : hits.front();
     }
   }
-  return best;
+  g_bone_cycle = {mouse, hit};
+  return hit;
 }
 
 /* The bone under the mouse (screen pixels), or 0. */
@@ -4224,7 +4370,8 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
     g_gizmo.last_count = count;
   }
   float2 lo, hi;
-  const bool any = armature_picked_bounds(armature, setup, lo, hi);
+  /* With the overlays off (Shift Z) the box is gone: not drawn, and clicks select. */
+  const bool any = doc.overlays.show && armature_picked_bounds(armature, setup, lo, hi);
   const float2 pivot = (lo + hi) * 0.5f + g_gizmo.pivot_offset;
   if (any) {
     gizmo_box(to_document, view, lo, hi);
@@ -4411,7 +4558,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
 
   /* The gizmo. */
   float2 dlo, dhi;
-  if (g_gizmo.mode == GizmoMode::Select || !armature_picked_bounds(armature, setup, dlo, dhi)) {
+  if (g_gizmo.mode == GizmoMode::Select || !doc.overlays.show || !armature_picked_bounds(armature, setup, dlo, dhi)) {
     return;
   }
   const auto screen = [&](float2 p) { return view.to_screen(to_document.apply(p)); };
@@ -4458,6 +4605,14 @@ struct PointGizmo {
   float2 live_pivot;
 };
 static PointGizmo g_point_gizmo;
+
+/* While the Transform Points box is moving, turning, scaling or shearing points: they and their
+ * handles aren't drawn, so the shape itself is what's seen. */
+static bool point_gizmo_busy()
+{
+  const GizmoMode m = g_point_gizmo.mode;
+  return m == GizmoMode::Move || m == GizmoMode::Rotate || m == GizmoMode::Scale;
+}
 
 /* The gizmo's space: the active layer's (document space without one). */
 static Transform2D point_gizmo_space(const Document &doc)
@@ -4591,6 +4746,75 @@ void viewport_operators_register()
     return OpStatus::Finished;
   };
   operators().add(std::move(ot));
+
+  /* Mirror (right-click on points, Blender's): flip the selection across X or Y, along the document's
+   * axes through each layer's origin (Global), or the active layer's own axes through the selection's
+   * middle (Local). */
+  OperatorType mirror;
+  mirror.idname = "transform.mirror";
+  mirror.name = "Mirror";
+  mirror.description = "Flip the selected points (and handles picked on their own): axis=X (left and right swap) "
+                       "or Y (up and down), orientation=GLOBAL (the document's axes, through each point's layer's "
+                       "origin) or LOCAL (the active layer's own axes, turning with it, through the selection's "
+                       "middle)";
+  mirror.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+  mirror.poll = ot.poll;
+  OpProperty axis;
+  axis.name = "axis";
+  axis.label = "Axis";
+  axis.description = "X swaps left and right, Y up and down";
+  axis.items = {{"X", "X"}, {"Y", "Y"}};
+  axis.fallback = "X";
+  OpProperty orientation;
+  orientation.name = "orientation";
+  orientation.label = "Orientation";
+  orientation.description = "The document's axes, or the active layer's own (turning with it)";
+  orientation.items = {{"GLOBAL", "Global"}, {"LOCAL", "Local"}};
+  orientation.fallback = "GLOBAL";
+  mirror.props = {axis, orientation};
+  mirror.exec = [](Context &C) {
+    const std::string axis = op_arg(C, "axis", "X"), orientation = op_arg(C, "orientation", "GLOBAL");
+    if ((axis != "X" && axis != "Y") || (orientation != "GLOBAL" && orientation != "LOCAL")) {
+      report(ReportType::Error, "axis is X or Y; orientation is GLOBAL or LOCAL");
+      return OpStatus::Cancelled;
+    }
+    const Transform2D to_document = orientation == "LOCAL" ? point_gizmo_space(*C.document) : Transform2D();
+    float2 lo, hi;
+    if (!point_gizmo_bounds(C, to_document.inverted(), lo, hi)) {
+      return OpStatus::Cancelled;
+    }
+    static Area area;
+    ModalTransform moving;
+    if (!modal_collect(C, area, 'G', {}, moving)) {
+      return OpStatus::Cancelled;
+    }
+    const float2 flip = axis == "X" ? float2(-1.0f, 1.0f) : float2(1.0f, -1.0f);
+    if (orientation == "LOCAL") {
+      point_gizmo_place(C, moving, to_document, map_about((lo + hi) * 0.5f, {}, flip, 0.0f));
+    }
+    else {
+      /* Global: across the document's axes through each point's layer's origin. */
+      ModalLayers layers;
+      if (!modal_layers(C, moving, layers)) {
+        return OpStatus::Cancelled;
+      }
+      for (const ModalTransform::Item &item : moving.items) {
+        const float w = modal_weight(C.wm->tool_settings, item);
+        if (w <= 0.0f) {
+          modal_rest(layers, item);
+          continue;
+        }
+        const float2 origin = layer_world_transform(*C.document, item.layer).apply(float2(0.0f, 0.0f));
+        const float2 d = item.start - origin;
+        const float2 to = origin + float2(d.x * flip.x, d.y * flip.y);
+        modal_place(layers, item, item.start + (to - item.start) * w);
+      }
+      modal_mirror(C, moving, layers);
+    }
+    C.undo_name = "Mirror " + axis + (orientation == "LOCAL" ? " Local" : " Global");
+    return OpStatus::Finished;
+  };
+  operators().add(std::move(mirror));
 }
 
 static void transform_points_header(Context &C)
@@ -4661,7 +4885,8 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
     g.selection = selection;
   }
   float2 lo, hi;
-  const bool any = point_gizmo_bounds(C, to_gizmo, lo, hi);
+  /* With the overlays off (Shift Z) the box is gone: not drawn, and clicks select. */
+  const bool any = doc.overlays.show && point_gizmo_bounds(C, to_gizmo, lo, hi);
   const float2 pivot = (lo + hi) * 0.5f + g.pivot_offset;
   if (any) {
     gizmo_box(to_document, view, lo, hi);
@@ -4744,6 +4969,9 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
         }
         float2 offset, scale(1.0f, 1.0f), origin = g.pivot;
         float angle = 0.0f;
+        /* Ctrl on a side handle shears instead (as Illustrator's and Inkscape's): set below. */
+        bool sheared = false;
+        Transform2D shear;
         if (g.mode == GizmoMode::Move) {
           offset = mouse - g.start;
           if (io.KeyShift) {
@@ -4792,12 +5020,25 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
           origin = anchor;
           const float2 rel = g.pivot - anchor;
           g.live_pivot = anchor + float2(rel.x * scale.x, rel.y * scale.y);
+          if (io.KeyCtrl && g.handle >= 4) {
+            /* Top or bottom: slants along x, by how far from the anchor's line; left or right: along y. */
+            sheared = true;
+            if (g.handle >= 6) {
+              const float k = std::abs(p0.y) > 1e-6f ? (mouse.x - g.start.x) / p0.y : 0.0f;
+              shear = {1.0f, 0.0f, k, 1.0f, -k * anchor.y, 0.0f};
+            }
+            else {
+              const float k = std::abs(p0.x) > 1e-6f ? (mouse.y - g.start.y) / p0.x : 0.0f;
+              shear = {1.0f, k, 0.0f, 1.0f, 0.0f, -k * anchor.x};
+            }
+            g.live_pivot = shear.apply(g.pivot);
+          }
         }
-        point_gizmo_place(C, g.moving, to_document, map_about(origin, offset, scale, angle));
+        point_gizmo_place(C, g.moving, to_document, sheared ? shear : map_about(origin, offset, scale, angle));
         g.changed |= dragged;
         if (released) {
           if (g.changed) {
-            push_undo(C, "Transform Points");
+            push_undo(C, g.mode == GizmoMode::Scale && io.KeyCtrl && g.handle >= 4 ? "Shear Points" : "Transform Points");
             /* The pivot stays where the drag left it. */
             float2 nlo, nhi;
             if (point_gizmo_bounds(C, to_gizmo, nlo, nhi)) {
@@ -4829,6 +5070,11 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         break;
       case GizmoMode::Scale:
+        if (io.KeyCtrl && handle >= 4) {
+          /* Shear: along the side. */
+          ImGui::SetMouseCursor(handle < 6 ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
+          break;
+        }
         ImGui::SetMouseCursor(handle == 0 || handle == 2   ? ImGuiMouseCursor_ResizeNESW
                               : handle == 1 || handle == 3 ? ImGuiMouseCursor_ResizeNWSE
                               : handle < 6                 ? ImGuiMouseCursor_ResizeEW
@@ -4841,7 +5087,7 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
 
   /* The gizmo. */
   float2 dlo, dhi;
-  if (g.mode == GizmoMode::Select || !point_gizmo_bounds(C, to_gizmo, dlo, dhi)) {
+  if (g.mode == GizmoMode::Select || !doc.overlays.show || !point_gizmo_bounds(C, to_gizmo, dlo, dhi)) {
     return;
   }
   const auto screen = [&](float2 p) { return view.to_screen(to_document.apply(p)); };
@@ -4948,7 +5194,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       else {
         /* A point under the mouse wins over a bone's body (points are the smaller targets); a
          * bone's ball wins over a point. */
-        const BoneHit hit = pick_bone_part(doc, armature, view, g_bone_box.start);
+        const BoneHit hit = pick_bone_cycling(doc, armature, view, g_bone_box.start);
         /* A handle counts as a point here (Shift-click picks it as on the layer itself). */
         const bool on_point = !point_layers.empty() && (hit.part == BonePart::Body || !hit.bone) &&
                               (point_under(C, view, g_bone_box.start) ||
@@ -5010,6 +5256,8 @@ static void bone_parent_menus(Context &C, bool hovered)
     ImGui::Separator();
     menu_operator(C, "Make Parent...", "armature.parent_set_menu");
     menu_operator(C, "Clear Parent...", "armature.parent_clear_menu");
+    ImGui::Separator();
+    menu_operator(C, "Symmetrize", "armature.symmetrize");
     ImGui::Separator();
     menu_operator(C, "Delete", "armature.bone_delete");
     ui_menu_end();
@@ -5157,11 +5405,34 @@ static void draw_layer_box(ImDrawList *dl, const Document &doc, const Layer &lay
     if (l.type != LayerType::Vector) {
       return;
     }
+    /* The drawing as it shows (bones, modifiers, a reference's original), its curves followed between
+     * the points (a curve bulges past them), and as wide as its lines. */
     const Transform2D to_document = layer_world_transform(doc, l.id);
-    for (const MeshPoint &p : layer_drawing(doc, l).points) {
-      const ImVec2 s = view.to_screen(to_document.apply(p.pos));
-      lo = ImVec2(std::min(lo.x, s.x), std::min(lo.y, s.y));
-      hi = ImVec2(std::max(hi.x, s.x), std::max(hi.y, s.y));
+    const VectorDrawing shown = layer_evaluated_drawing(doc, l, false);
+    float half_line = 0.0f;
+    for (const Shape &shape : shown.shapes) {
+      if (shape.has_outline && !shape.hidden) {
+        half_line = std::max(half_line, shape.style.line_width * 0.5f);
+      }
+    }
+    const float pad = half_line * to_document.scale() * view.zoom;
+    const auto take = [&](float2 p) {
+      const ImVec2 s = view.to_screen(to_document.apply(p));
+      lo = ImVec2(std::min(lo.x, s.x - pad), std::min(lo.y, s.y - pad));
+      hi = ImVec2(std::max(hi.x, s.x + pad), std::max(hi.y, s.y + pad));
+    };
+    std::vector<float2> samples;
+    for (const Curve &curve : shown.curves) {
+      for (int seg = 0; seg < curve.segment_count(); seg++) {
+        samples.clear();
+        curve_segment_sample(shown, curve, seg, 12, samples);
+        for (const float2 &p : samples) {
+          take(p);
+        }
+      }
+    }
+    for (const MeshPoint &p : shown.points) {
+      take(p.pos);
     }
   };
   add(add, layer);
@@ -5591,8 +5862,17 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (mouse_here && wm.draw_order_pick.mode != 0) {
     wm.draw_order_pick.hover = layer_under_mouse(doc, view, io.MousePos, wm.local_view);
   }
+  /* The bone eyedropper names the bone under the mouse. */
+  if (const Layer *picking = layer_find(doc, ui_bone_eyedropper_armature()); picking && mouse_here) {
+    if (const Bone *under = bone_find(*picking, pick_bone(doc, *picking, view, io.MousePos))) {
+      ui_bone_eyedropper_hover(under->name);
+    }
+  }
   if (mouse_here && ui_layer_eyedropper_active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-    if (ui_shape_eyedropper_active()) {
+    if (const Layer *picking = layer_find(doc, ui_bone_eyedropper_armature())) {
+      ui_bone_eyedropper_pick(C, pick_bone(doc, *picking, view, io.MousePos));
+    }
+    else if (ui_shape_eyedropper_active()) {
       int shape = -1;
       const uint64_t layer = layer_under_mouse(doc, view, io.MousePos, wm.local_view, &shape);
       ui_shape_eyedropper_pick(C, layer, shape);
@@ -5738,8 +6018,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   g_keyed_bones = ov.physics_ghosts;
   g_bone_shapes = ov.bone_shapes;
   g_relationship_lines = ov.relationship_lines;
-  /* The camera's frame, the canvas outside it darkened, and its name above it (orange while picked). */
-  if (ov.show && (ov.camera_frame || through_camera)) {
+  /* The camera's frame, the canvas outside it darkened, and its name above it (orange while picked).
+   * A picked camera shows it even with the overlays off: it is what's being worked on. */
+  if ((ov.show && ov.camera_frame) || through_camera) {
     ImVec2 frame[4];
     camera_frame_screen(doc, view, frame);
     draw_passepartout(dl, frame, origin, size, doc.camera_passepartout);
@@ -6099,9 +6380,11 @@ static void viewport_draw_contents(Area &area, Context &C)
     /* A bone layer being worked in: the wires and points of the drawings in its shown bone
      * collections. */
     for (Layer *editing : editable_layers(C)) {
+      const LineCutter cut = line_cutter(doc, *editing, false);
       draw_drawing_overlay(dl, *posed(doc, *editing).drawing, layer_world_transform(doc, editing->id), view,
-                           ov.wireframe, ov.points, std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
-                           ts.select_mode != SelectMode::Edge);
+                           ov.wireframe, ov.points && !point_gizmo_busy(), std::clamp(doc.viewport_quality, 1, 64),
+                           handles_shown(ov, ts),
+                           ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
     }
   }
   if (drawing) {
@@ -6111,15 +6394,17 @@ static void viewport_draw_contents(Area &area, Context &C)
         if (editing->id == layer->id) {
           continue;
         }
+        const LineCutter cut = line_cutter(doc, *editing, false);
         draw_drawing_overlay(dl, *posed(doc, *editing).drawing, layer_world_transform(doc, editing->id), view, ov.wireframe,
-                             ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
+                             ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand) && !point_gizmo_busy(),
                              std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
-                             ts.select_mode != SelectMode::Edge);
+                             ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
       }
       const Posed shown = posed(doc, *layer);
-      draw_drawing_overlay(dl, *shown.drawing, to_document, view, ov.wireframe, ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand),
+      const LineCutter cut = line_cutter(doc, *layer, false);
+      draw_drawing_overlay(dl, *shown.drawing, to_document, view, ov.wireframe, ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand) && !point_gizmo_busy(),
                            std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
-                           ts.select_mode != SelectMode::Edge);
+                           ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
     }
     if (hovered && ts.tool == Tool::SplitCurve && !io.KeyCtrl) {
       if (const SplitHit hit = split_pick(C, view, view.to_document(io.MousePos), false); hit.layer) {
@@ -6294,12 +6579,23 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Peak", "mesh.peak");
     menu_operator(C, "Smooth", "mesh.smooth");
     ImGui::Separator();
+    /* Mirror, as Blender's: across the document's axes or the layer's own. */
+    if (ui_submenu_begin("Mirror")) {
+      menu_operator(C, "X Global", "transform.mirror", {{"axis", "X"}, {"orientation", "GLOBAL"}});
+      menu_operator(C, "Y Global", "transform.mirror", {{"axis", "Y"}, {"orientation", "GLOBAL"}});
+      ImGui::Separator();
+      menu_operator(C, "X Local", "transform.mirror", {{"axis", "X"}, {"orientation", "LOCAL"}});
+      menu_operator(C, "Y Local", "transform.mirror", {{"axis", "Y"}, {"orientation", "LOCAL"}});
+      ui_submenu_end();
+    }
     menu_operator(C, "Symmetrize", "mesh.symmetrize");
-    /* Detail points picked: back onto the curve of the level below. */
+    ImGui::Separator();
+    /* Detail levels: up a level; detail points picked, back onto the curve of the level below. */
     bool detail = false;
     for (const Layer *editing : editable_layers(C)) {
       detail |= !editing->is_reference() && drawing_detail_selected(editing->drawing);
     }
+    menu_operator(C, "Move to Higher Level", "mesh.detail_raise");
     if (detail) {
       menu_operator(C, "Smooth to Lower Level", "mesh.detail_smooth");
     }

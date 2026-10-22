@@ -1232,17 +1232,19 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
 
 std::string bone_mirror_name(const std::string &name)
 {
-  /* A number Blender adds to keep names unique stays at the end: "arm_L.001" <-> "arm_R.001". */
-  if (const size_t dot = name.find_last_of('.'); dot != std::string::npos && dot > 0 && dot + 1 < name.size() &&
-                                                 name.find_first_not_of("0123456789", dot + 1) == std::string::npos)
+  /* A number at the end stays there, after a dot (Blender's unique names), a space (Moho's copies) or
+   * an underscore: "arm_L.001" <-> "arm_R.001", "Eye_Lash_L 2" <-> "Eye_Lash_R 2". */
+  if (const size_t sep = name.find_last_of(". _"); sep != std::string::npos && sep > 0 && sep + 1 < name.size() &&
+                                                    name.find_first_not_of("0123456789", sep + 1) == std::string::npos)
   {
-    const std::string base = name.substr(0, dot);
+    const std::string base = name.substr(0, sep);
     const std::string flipped = bone_mirror_name(base);
     if (flipped != base) {
-      return flipped + name.substr(dot);
+      return flipped + name.substr(sep);
     }
   }
-  /* Suffixes first (_L, .L, -L, " L", either case), then Left/Right anywhere. */
+  /* Suffixes first (_L, .L, -L, " L", either case), then prefixes (L_, L., L-, "L ", either case), then
+   * Left/Right anywhere. */
   static const std::pair<const char *, const char *> suffixes[] = {
       {"_L", "_R"}, {".L", ".R"}, {"-L", "-R"}, {" L", " R"}, {"_l", "_r"}, {".l", ".r"}, {"-l", "-r"}, {" l", " r"}};
   for (const auto &[l, r] : suffixes) {
@@ -1250,6 +1252,16 @@ std::string bone_mirror_name(const std::string &name)
       const std::string f = from;
       if (name.size() > f.size() && name.compare(name.size() - f.size(), f.size(), f) == 0) {
         return name.substr(0, name.size() - f.size()) + to;
+      }
+    }
+  }
+  static const std::pair<const char *, const char *> prefixes[] = {
+      {"L_", "R_"}, {"L.", "R."}, {"L-", "R-"}, {"L ", "R "}, {"l_", "r_"}, {"l.", "r."}, {"l-", "r-"}, {"l ", "r "}};
+  for (const auto &[l, r] : prefixes) {
+    for (const auto &[from, to] : {std::pair{l, r}, std::pair{r, l}}) {
+      const std::string f = from;
+      if (name.size() > f.size() && name.compare(0, f.size(), f) == 0) {
+        return to + name.substr(f.size());
       }
     }
   }

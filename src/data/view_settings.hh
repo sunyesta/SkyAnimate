@@ -14,6 +14,10 @@ enum class ArmatureDisplay { Off, Selected, On };
 /* What the viewports draw over the artwork, like Blender's viewport overlays: part of the project,
  * saved with it (as a .blend keeps its views' overlays) but not of undo; `show` turns them all off
  * at once. */
+/* Point Size and Handle Size's range, in pixels. */
+constexpr float OVERLAY_SIZE_MIN = 2.0f;
+constexpr float OVERLAY_SIZE_MAX = 24.0f;
+
 struct ViewportOverlays {
   bool show = true;
   bool grid = false;
@@ -25,6 +29,10 @@ struct ViewportOverlays {
   bool wireframe = true;
   bool points = true;
   HandleDisplay handles = HandleDisplay::Shape;
+  /* How big points and handles' ends are drawn, in screen pixels across (Blender's Vertex Size);
+   * clicks reach a little past them. */
+  float point_size = 6.0f;
+  float handle_size = 6.5f;
   /* The active layer's mask layers outlined, dashed and labelled ("inside head"); off, they only
    * show while a mask's symbol or Layers field is under the mouse. */
   bool mask_outlines = true;

@@ -84,6 +84,15 @@ struct Parser {
   size_t at = 0;
   Expression &out;
   std::string error;
+  /* How deep the parse has gone (brackets, minuses, nots): a limit, so a pathological expression is
+   * an error rather than running out of stack. */
+  int depth = 0;
+  struct Deeper {
+    int &depth;
+    explicit Deeper(int &d) : depth(++d) {}
+    ~Deeper() { depth--; }
+  };
+  static constexpr int DEPTH_MAX = 256;
 
   void space()
   {
@@ -119,6 +128,10 @@ struct Parser {
 
   bool ternary()
   {
+    const Deeper deeper(depth);
+    if (depth > DEPTH_MAX) {
+      return fail("Too deeply nested");
+    }
     if (!or_expr()) {
       return false;
     }
@@ -164,6 +177,10 @@ struct Parser {
   }
   bool not_expr()
   {
+    const Deeper deeper(depth);
+    if (depth > DEPTH_MAX) {
+      return fail("Too deeply nested");
+    }
     if (eat("not")) {
       if (!not_expr()) {
         return false;
@@ -178,6 +195,10 @@ struct Parser {
     if (!sum()) {
       return false;
     }
+    /* The last operand's ops, for Python's chains: a < b < c is a < b and b < c (b worked out again;
+     * it has no side effects). */
+    size_t last_from = 0, last_to = 0;
+    bool chained = false;
     for (;;) {
       uint8_t code;
       if (eat("<=")) {
@@ -201,10 +222,21 @@ struct Parser {
       else {
         return true;
       }
+      if (chained) {
+        const std::vector<Expression::Op> again(out.ops.begin() + std::ptrdiff_t(last_from),
+                                                out.ops.begin() + std::ptrdiff_t(last_to));
+        out.ops.insert(out.ops.end(), again.begin(), again.end());
+      }
+      last_from = out.ops.size();
       if (!sum()) {
         return false;
       }
+      last_to = out.ops.size();
       emit(code);
+      if (chained) {
+        emit(AND);
+      }
+      chained = true;
     }
   }
   bool sum()
@@ -260,6 +292,10 @@ struct Parser {
   }
   bool unary()
   {
+    const Deeper deeper(depth);
+    if (depth > DEPTH_MAX) {
+      return fail("Too deeply nested");
+    }
     if (eat("-")) {
       if (!unary()) {
         return false;
@@ -349,18 +385,6 @@ struct Parser {
         emit(CALL, double(args), int(info->func));
         return true;
       }
-      if (name == "pi") {
-        emit(NUM, 3.14159265358979323846);
-        return true;
-      }
-      if (name == "e") {
-        emit(NUM, 2.71828182845904523536);
-        return true;
-      }
-      if (name == "True" || name == "False") {
-        emit(NUM, name == "True" ? 1.0 : 0.0);
-        return true;
-      }
       const auto it = std::find(out.names.begin(), out.names.end(), name);
       const int index = int(it - out.names.begin());
       if (it == out.names.end()) {
@@ -400,14 +424,18 @@ bool expression_compile(const std::string &text, Expression *r_expression, std::
 
 double expression_run(const Expression &expression, const std::vector<double> &values)
 {
-  double stack[64];
-  int top = 0;
-  const auto pop = [&]() { return top > 0 ? stack[--top] : 0.0; };
-  const auto push = [&](double v) {
-    if (top < 64) {
-      stack[top++] = v;
+  /* Kept between runs (every driver's expression runs each frame): no allocation once it's grown. */
+  thread_local std::vector<double> stack;
+  stack.clear();
+  const auto pop = [&]() {
+    if (stack.empty()) {
+      return 0.0;
     }
+    const double v = stack.back();
+    stack.pop_back();
+    return v;
   };
+  const auto push = [&](double v) { stack.push_back(v); };
   for (const Expression::Op &op : expression.ops) {
     switch (op.code) {
       case NUM: push(op.number); break;
@@ -483,8 +511,9 @@ double expression_run(const Expression &expression, const std::vector<double> &v
           case GE: r = a >= b; break;
           case EQ: r = a == b; break;
           case NE: r = a != b; break;
-          case AND: r = (a != 0.0 && b != 0.0) ? 1.0 : 0.0; break;
-          case OR: r = (a != 0.0 || b != 0.0) ? 1.0 : 0.0; break;
+          /* Python's: the operand that decides it ("x or 0.5" is x, or 0.5 when x is 0). */
+          case AND: r = a == 0.0 ? a : b; break;
+          case OR: r = a != 0.0 ? a : b; break;
           default: break;
         }
         push(r);
@@ -492,7 +521,7 @@ double expression_run(const Expression &expression, const std::vector<double> &v
       }
     }
   }
-  return top > 0 ? stack[top - 1] : 0.0;
+  return stack.empty() ? 0.0 : stack.back();
 }
 
 }  // namespace oanim

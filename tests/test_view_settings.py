@@ -14,12 +14,17 @@ wm = oanim.wm
 defaults = wm.overlays()
 assert defaults["show"] and not defaults["grid"] and defaults["handles"] == "SHAPE" and defaults["armature"] == "ON"
 assert defaults["mask_outlines"] and defaults["relationship_lines"]
+assert (defaults["point_size"], defaults["handle_size"]) == (6.0, 6.5), defaults
 assert wm.ui_open() == {}, "every panel at its default"
 
 wm.set_overlay("grid", True)
 wm.set_overlay("mask_outlines", False)
 wm.set_overlay("handles", "ALL")
 wm.set_overlay("armature", "SELECTED")
+# Point and handle sizes, in pixels (2 to 24).
+wm.set_overlay("point_size", 10)
+wm.set_overlay("handle_size", 100)
+assert (wm.overlays()["point_size"], wm.overlays()["handle_size"]) == (10.0, 24.0), "clamped"
 wm.set_ui_open("Properties/Transform", False)
 wm.set_ui_open("Timeline/All", False)
 wm.set_ui_open("Viewport/Adjust Last Operation", True)
@@ -29,6 +34,7 @@ assert oanim.ops.layer.new() == {'FINISHED'}
 oanim.ops.ed.undo()
 ov = wm.overlays()
 assert ov["grid"] and not ov["mask_outlines"] and ov["handles"] == "ALL" and ov["armature"] == "SELECTED", ov
+assert (ov["point_size"], ov["handle_size"]) == (10.0, 24.0), ov
 assert wm.ui_open()["Properties/Transform"] is False and wm.ui_open()["Viewport/Adjust Last Operation"] is True
 
 # Saved with the project; a new file has the defaults; opening brings them back.

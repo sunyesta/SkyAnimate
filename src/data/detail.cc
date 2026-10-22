@@ -653,6 +653,84 @@ int drawing_detail_smooth_selected(VectorDrawing &drawing, float influence)
   return changed;
 }
 
+int drawing_detail_raise_selected(VectorDrawing &drawing, int *r_skipped, bool *r_keys_dropped)
+{
+  *r_skipped = 0;
+  *r_keys_dropped = false;
+  RawEdit raw;
+  drawing_detail_sync(drawing, true);
+  std::vector<int> uses(drawing.points.size(), 0);
+  for (const Curve &curve : drawing.curves) {
+    for (const CurvePoint &cp : curve.points) {
+      uses[cp.point]++;
+    }
+  }
+  int raised = 0;
+  for (Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    std::vector<int> picked;
+    for (int i = 0; i < n; i++) {
+      const MeshPoint &p = drawing.points[curve.points[i].point];
+      if (p.selected && !p.detail.hidden) {
+        picked.push_back(i);
+      }
+    }
+    if (picked.empty()) {
+      continue;
+    }
+    /* Each point's level as it would be, one picked point at a time. */
+    std::vector<int> level(n);
+    for (int i = 0; i < n; i++) {
+      level[i] = drawing.points[curve.points[i].point].detail.level;
+    }
+    std::vector<bool> retime(n, false);
+    for (const int i : picked) {
+      const int up = level[i] + 1;
+      bool ok = uses[curve.points[i].point] == 1 && up <= DETAIL_LEVEL_MAX && n >= 3 &&
+                (curve.closed || (i != 0 && i != n - 1));
+      if (ok && curve.closed) {
+        int coarser = 0;
+        for (int j = 0; j < n; j++) {
+          coarser += j != i && level[j] < up ? 1 : 0;
+        }
+        ok = coarser >= 2;
+      }
+      if (!ok) {
+        (*r_skipped)++;
+        continue;
+      }
+      level[i] = up;
+      retime[i] = true;
+    }
+    if (std::none_of(retime.begin(), retime.end(), [](bool b) { return b; })) {
+      continue;
+    }
+    /* Worked out again from the curve as it shows, with the new levels. */
+    curve_final_handles(drawing, curve);
+    for (int i = 0; i < n; i++) {
+      if (!retime[i]) {
+        continue;
+      }
+      CurvePoint &cp = curve.points[i];
+      MeshPoint &p = drawing.points[cp.point];
+      if (p.pos_keys.animated() || cp.handle_in_keys.animated() || cp.handle_out_keys.animated() ||
+          !p.pos_keys.actions.empty() || !cp.handle_in_keys.actions.empty() || !cp.handle_out_keys.actions.empty())
+      {
+        *r_keys_dropped = true;
+      }
+      p.pos_keys = {};
+      cp.handle_in_keys = {};
+      cp.handle_out_keys = {};
+      p.detail = {};
+      p.detail.level = level[i];
+      raised++;
+    }
+    curve_from_final(drawing, curve, retime);
+  }
+  drawing_detail_update_shown(drawing);
+  return raised;
+}
+
 int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool> &shapes)
 {
   RawEdit raw;

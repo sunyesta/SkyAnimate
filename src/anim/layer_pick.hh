@@ -32,6 +32,42 @@ std::vector<uint64_t> layers_at(const Document &doc, float2 at, const LayerPickO
  * Grow and Extend aren't counted. */
 bool layer_masks_show_at(const Document &doc, const Layer &layer, float2 at);
 
+/* End Lines at Edge (LayerMask::end_lines): where a layer's lines show, as its rows with it on say
+ * (its own and its groups'), worked out once per frame with every mask shape in document space,
+ * then asked point by point along the lines. Grow and Extend aren't counted. */
+struct LineCutter {
+  struct Piece {
+    /* A shape run's outline in document space; whether it is an area (filled and closed, or Fill
+     * Every Shape) and has a line, and the line's half width (document units). */
+    std::vector<float2> outline;
+    bool closed = false;
+    bool area = false;
+    bool line = false;
+    float half = 0.0f;
+  };
+  struct Row {
+    int mode = 0;
+    bool invert = false;
+    bool fills_only = false;
+    bool strokes_only = false;
+    bool inside_stroke = false;
+    std::vector<Piece> pieces;
+  };
+  /* The layer's rows, then its group's, ... (each level must show). */
+  std::vector<std::vector<Row>> levels;
+  /* Ends: Flat (cut straight) rather than Brush (the brush's own taper and fade). */
+  bool flat = false;
+  /* Brush ends' Reach (LayerMask::line_reach, the first row with Brush ends): line widths past
+   * the edge. */
+  float reach = 0.0f;
+  bool empty() const { return levels.empty(); }
+};
+/* The cutter for `layer` (empty when no row of it or its groups has End Lines at Edge). `render`:
+ * rows on in renders rather than in the viewport. */
+LineCutter line_cutter(const Document &doc, const Layer &layer, bool render);
+/* Whether a line shows at `at` (document space) by those rows. */
+bool line_cutter_shows(const LineCutter &cutter, float2 at);
+
 /* The group a pick with Pick: Group takes instead of `id`: its outermost group (the layer itself at
  * the top level). */
 uint64_t layer_pick_group(const Document &doc, uint64_t id);

@@ -3,6 +3,7 @@
  * (-1: all of it: both numbers of a position, the four of a colour). A shape colour's operators can
  * act on every selected shape's same colour (`selected_shapes`), as the Material panel edits do. */
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 
@@ -80,11 +81,51 @@ static bool vars_from_json(const std::string &text, std::vector<DriverVar> *r_va
     if (!v.is_object()) {
       return false;
     }
+    /* Numbers may come as numbers or as text ("12"), as the other arguments do; anything else is
+     * refused rather than thrown. */
+    const auto number = [&](const char *key, double fallback, double *r_value) {
+      const auto it = v.find(key);
+      if (it == v.end() || it->is_null()) {
+        *r_value = fallback;
+        return true;
+      }
+      if (it->is_number()) {
+        *r_value = it->get<double>();
+        return true;
+      }
+      if (it->is_string()) {
+        const std::string t = it->get<std::string>();
+        char *end = nullptr;
+        *r_value = std::strtod(t.c_str(), &end);
+        return !t.empty() && end && *end == '\0';
+      }
+      return false;
+    };
+    const auto text_of = [&](const char *key, const char *fallback, std::string *r_text) {
+      const auto it = v.find(key);
+      if (it == v.end() || it->is_null()) {
+        *r_text = fallback;
+        return true;
+      }
+      if (!it->is_string()) {
+        return false;
+      }
+      *r_text = it->get<std::string>();
+      return true;
+    };
     DriverVar var;
-    var.name = v.value("name", std::string("var"));
-    var.source.layer = v.value("layer", uint64_t(0));
-    var.source.path = v.value("path", std::string());
-    var.source.component = v.value("component", -1);
+    double layer = 0.0, component = -1.0;
+    if (!text_of("name", "var", &var.name) || !text_of("path", "", &var.source.path) ||
+        !number("layer", 0.0, &layer) || !number("component", -1.0, &component) || layer < 0.0)
+    {
+      return false;
+    }
+    /* Layer ids above 2^53 (the camera's, the simulation's) don't survive a double: those come as text. */
+    const auto it = v.find("layer");
+    var.source.layer = it != v.end() && it->is_number_unsigned() ? it->get<uint64_t>()
+                       : it != v.end() && it->is_string()   ? std::strtoull(it->get<std::string>().c_str(), nullptr, 10)
+                                                            : uint64_t(layer);
+    var.source.component = int(component);
     r_vars->push_back(var);
   }
   return true;
@@ -292,15 +333,22 @@ void driver_operators_register()
                                                           " numbers; this field has " + std::to_string(size));
                           return OpStatus::Cancelled;
                         }
+                        int pasted = 0;
                         for (size_t i = 0; i < refs.size(); i++) {
                           const Driver &d = clip.size() == 1 ? clip[0] : clip[i % size];
-                          if (d.target == refs[i] || (d.vars.size() == 1 && d.vars[0].source == refs[i] &&
-                                                      d.type == DriverType::Expression && d.expression == "var"))
-                          {
-                            /* Pasting a field's own copy onto it would loop. */
+                          const bool reads_itself = std::any_of(d.vars.begin(), d.vars.end(), [&](const DriverVar &v) {
+                            return v.source == refs[i];
+                          });
+                          if (reads_itself) {
+                            /* A field driven by its own value would loop. */
                             continue;
                           }
                           put_driver(*C.document, d, refs[i]);
+                          pasted++;
+                        }
+                        if (pasted == 0) {
+                          report(ReportType::Warning, "A field can't be driven by its own value");
+                          return OpStatus::Cancelled;
                         }
                         return drivers_changed(C);
                       });

@@ -22,6 +22,24 @@ bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_ex
   return false;
 }
 
+static constexpr const char *MASK_CUTS_IDS[] = {"ALL", "FILLS", "LINES"};
+
+const char *mask_cuts_identifier(MaskCuts cuts)
+{
+  return MASK_CUTS_IDS[int(cuts)];
+}
+
+bool mask_cuts_from_identifier(const std::string &identifier, MaskCuts *r_cuts)
+{
+  for (int i = 0; i < 3; i++) {
+    if (identifier == MASK_CUTS_IDS[i]) {
+      *r_cuts = MaskCuts(i);
+      return true;
+    }
+  }
+  return false;
+}
+
 static constexpr const char *MASK_MODE_IDS[] = {"ADD", "SUBTRACT", "INTERSECT", "DIFFERENCE"};
 
 const char *mask_mode_identifier(MaskMode mode)
@@ -36,6 +54,23 @@ bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode)
       *r_mode = MaskMode(i);
       return true;
     }
+  }
+  return false;
+}
+
+bool mask_row_ends_lines(const LayerMask &m, MaskLineEnding *above, bool *r_flat)
+{
+  if (m.cuts == MaskCuts::Fills || m.clip) {
+    return false;
+  }
+  if (m.end_lines) {
+    *above = {true, m.end_lines_flat};
+    *r_flat = m.end_lines_flat;
+    return true;
+  }
+  if (above->active && m.mode == MaskMode::Add) {
+    *r_flat = above->flat;
+    return true;
   }
   return false;
 }

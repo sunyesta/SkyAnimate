@@ -3,9 +3,29 @@
 #include "anim/animation.hh"
 #include "data/camera.hh"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace oanim {
+
+/* The output width or height (4 to 16384 pixels); with Linked, setting one sets the other too, at
+ * the proportion they were linked at. */
+static rna::PropertyRNA resolution_side(const char *id, const char *name, const char *desc, bool is_width)
+{
+  rna::PropertyRNA prop = rna::def_int<Document>(id, name, desc, is_width ? &Document::width : &Document::height,
+                                                 4, 16384);
+  prop.set = [is_width](void *data, const rna::Value &v) {
+    Document &d = *static_cast<Document *>(data);
+    const int value = std::get<int>(v);
+    (is_width ? d.width : d.height) = value;
+    if (d.resolution_linked && d.resolution_aspect > 0.0f) {
+      const float other = is_width ? float(value) / d.resolution_aspect : float(value) * d.resolution_aspect;
+      (is_width ? d.height : d.width) = std::clamp(int(std::lround(other)), 4, 16384);
+    }
+  };
+  return prop;
+}
 
 const rna::StructRNA &Document::rna()
 {
@@ -74,8 +94,18 @@ const rna::StructRNA &Document::rna()
         def_float<Document>("camera_passepartout", "Passepartout",
                             "How dark the canvas outside the camera's frame is in the viewport",
                             &Document::camera_passepartout, 0.0f, 1.0f),
-        def_int<Document>("width", "Width", "Output width in pixels", &Document::width, 4, 16384),
-        def_int<Document>("height", "Height", "Output height in pixels", &Document::height, 4, 16384),
+        resolution_side("width", "Width", "Output width in pixels (with Linked, the height follows)", true),
+        resolution_side("height", "Height", "Output height in pixels (with Linked, the width follows)", false),
+        def_bool_fn<Document>(
+            "resolution_linked", "Linked",
+            "Width and height linked: changing one changes the other, keeping their proportion",
+            [](const Document &d) { return d.resolution_linked; },
+            [](Document &d, bool v) {
+              d.resolution_linked = v;
+              if (v) {
+                d.resolution_aspect = float(d.width) / float(std::max(d.height, 1));
+              }
+            }),
         def_int<Document>("viewport_quality", "Viewport Quality",
                           "Stroke resolution in the viewport: pieces drawn per curve segment",
                           &Document::viewport_quality, 1, 64),

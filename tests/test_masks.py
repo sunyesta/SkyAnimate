@@ -211,12 +211,39 @@ for use, filled, fills in [("FILLED", True, False), ("FILLED_NO_STROKE", True, T
     assert oanim.ops.mask.set(index="0", use=use) == {'FINISHED'}
     assert (art.masks[0]["filled"], art.masks[0]["fills_only"]) == (filled, fills), use
 assert oanim.ops.mask.set(index="0", use="SIDEWAYS") == {'CANCELLED'}
+# Shape (As Drawn, Fills Only, Strokes Only) and Fill Every Shape are set apart: one leaves the other.
+assert oanim.ops.mask.set(index="0", filled="1") == {'FINISHED'}
+for shape, fills, strokes in [("STROKES_ONLY", False, True), ("FILLS_ONLY", True, False), ("AS_DRAWN", False, False)]:
+    assert oanim.ops.mask.set(index="0", shape=shape) == {'FINISHED'}
+    m = art.masks[0]
+    assert (m["fills_only"], m["strokes_only"], m["shape"], m["filled"]) == (fills, strokes, shape, True), (shape, m)
+assert oanim.ops.mask.set(index="0", shape="SIDEWAYS") == {'CANCELLED'}
+assert oanim.ops.mask.set(index="0", strokes_only="1") == {'FINISHED'} and art.masks[0]["shape"] == "STROKES_ONLY"
+assert oanim.ops.mask.set(index="0", fills_only="1") == {'FINISHED'}
+assert (art.masks[0]["fills_only"], art.masks[0]["strokes_only"]) == (True, False), "never both"
+assert oanim.ops.mask.set(index="0", use="STROKES_ONLY") == {'FINISHED'}
+assert (art.masks[0]["shape"], art.masks[0]["filled"]) == ("STROKES_ONLY", False), "use= sets both, as before"
+assert oanim.ops.mask.set(index="0", use="AS_DRAWN") == {'FINISHED'}
 assert oanim.ops.mask.add(sources="line", use="FILLED") == {'FINISHED'} and art.masks[-1]["filled"]
 path = str(folder / "filled.oanim")
 oanim.ops.wm.save_as_mainfile(filepath=path)
 oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
 layers = oanim.data.layers
 assert find("head_art").masks[-1]["filled"] and not find("head_art").masks[0]["filled"]
+art = find("head_art")
+layers.active = art
+assert oanim.ops.mask.set(index="0", shape="STROKES_ONLY") == {'FINISHED'}
+assert oanim.ops.mask.add(sources="line", shape="FILLS_ONLY", inside_stroke="1") == {'FINISHED'}
+assert art.masks[-1]["inside_stroke"]
+path = str(folder / "strokes.oanim")
+oanim.ops.wm.save_as_mainfile(filepath=path)
+oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
+layers = oanim.data.layers
+assert find("head_art").masks[0]["shape"] == "STROKES_ONLY", "Strokes Only is saved"
+assert find("head_art").masks[-1]["inside_stroke"], "Inside the Stroke is saved"
+art = find("head_art")
+layers.active = art
+assert oanim.ops.mask.set(index="0", shape="AS_DRAWN") == {'FINISHED'}
 
 # Extend: the shapes stretched to the edge one way ("Outside the mouth line and above").
 art = find("head_art")
@@ -348,5 +375,16 @@ assert oanim.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FI
 layers = oanim.data.layers
 assert [(m["mode"], m["grow"]) for m in find("face").masks] == \
     [("SUBTRACT", 0.0), ("INTERSECT", 1.0), ("INTERSECT", 0.0), ("SUBTRACT", 0.0)], find("face").masks
+
+# A file from before mask rows lent shapes as drawn opens (with a note naming layers whose masks
+# named a layer with masks of its own); saving marks it.
+with zipfile.ZipFile(path) as archive:
+    stored = json.loads(archive.read("document.json"))
+assert stored["document"].get("mask_sources") == "shapes"
+del stored["document"]["mask_sources"]
+older = folder / "older_masks.oanim"
+with zipfile.ZipFile(older, "w") as archive:
+    archive.writestr("document.json", json.dumps(stored))
+assert oanim.ops.wm.open_mainfile(filepath=str(older), confirmed="1") == {'FINISHED'}
 
 print("test_masks: OK")

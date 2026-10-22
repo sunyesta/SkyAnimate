@@ -4,15 +4,21 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
+#include <functional>
+#include <limits>
 #include <map>
 #include <set>
 
 #include "anim/draw_order.hh"
+#include "anim/drivers.hh"
 #include "anim/layer_pick.hh"
 #include "anim/reference.hh"
 #include "core/log.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
+#include "data/vector.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
@@ -47,6 +53,335 @@ static void layers_deselect(Document &doc)
     }
   };
   clear(clear, doc.layers);
+}
+
+/* --- Layer Symmetrize -------------------------------------------------------------------- */
+
+/* The space a layer mirrors in: its bone layer's (across the line bone Symmetrize uses), or the
+ * document's. */
+static Transform2D symmetrize_axis_space(Document &doc, uint64_t id)
+{
+  for (const Layer *p = layer_parent(doc, id); p; p = layer_parent(doc, p->id)) {
+    if (p->is_bone_layer()) {
+      return layer_setup_world_transform(doc, p->id);
+    }
+  }
+  return Transform2D();
+}
+
+static Transform2D parent_setup_space(Document &doc, uint64_t id)
+{
+  const Layer *p = layer_parent(doc, id);
+  return p ? layer_setup_world_transform(doc, p->id) : Transform2D();
+}
+
+/* Which side of its axis a layer's drawings sit on (the middle of their box, on the setup frame):
+ * 1 the + side, -1 the - side, 0 on the axis or nothing drawn. */
+static int symmetrize_side(Document &doc, const Layer &layer)
+{
+  const Transform2D axis = symmetrize_axis_space(doc, layer.id).inverted();
+  float lo = std::numeric_limits<float>::max(), hi = -lo;
+  const auto walk = [&](auto &&self, const Layer &l) -> void {
+    if (l.has_drawing()) {
+      const Transform2D to_axis = axis * layer_setup_world_transform(doc, l.id);
+      for (const MeshPoint &p : layer_drawing(doc, l).points) {
+        const float x = to_axis.apply(p.pos).x;
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+      }
+    }
+    for (const Layer &child : l.children) {
+      self(self, child);
+    }
+  };
+  walk(walk, layer);
+  if (lo > hi) {
+    return 0;
+  }
+  const float middle = (lo + hi) * 0.5f;
+  return middle > 1e-4f ? 1 : middle < -1e-4f ? -1 : 0;
+}
+
+static void clear_transform_keys(Layer &l)
+{
+  l.position_keys = {};
+  l.rotation_keys = {};
+  l.scale_keys = {};
+}
+
+/* Sets a layer's position, rotation and scale from `t` (no shear), its scale's x keeping the sign
+ * `negative_x` gives. */
+static void layer_set_local_transform(Layer &l, const Transform2D &t, bool negative_x)
+{
+  float sx = std::sqrt(t.a * t.a + t.b * t.b);
+  if (sx < 1e-12f) {
+    return;
+  }
+  if (negative_x) {
+    sx = -sx;
+  }
+  l.position = {t.tx, t.ty};
+  l.rotation = std::atan2(t.b / sx, t.a / sx) * 180.0f / PI;
+  l.scale = {sx, (t.a * t.d - t.b * t.c) / sx};
+}
+
+/* The bones of the bone layer `id` is in, each to its other side's (_L to _R), or to itself. */
+static std::map<uint64_t, uint64_t> symmetrize_bone_flip(const Document &doc, uint64_t id)
+{
+  std::map<uint64_t, uint64_t> flip;
+  if (const Layer *armature = layer_armature(doc, id)) {
+    for (const Bone &b : armature->bones) {
+      const Bone *o = bone_find_by_name(*armature, bone_mirror_name(b.name));
+      flip[b.id] = o ? o->id : b.id;
+    }
+  }
+  return flip;
+}
+
+/* The copy's contents mirrored in place: drawings flipped (setup pose, no point keys), weights and
+ * Parent Bone moved to the other side's bones, the layers inside flipped about their parent's
+ * axis. */
+static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bone_flip, bool top)
+{
+  const auto flip_bone = [&](uint64_t id) {
+    const auto it = bone_flip.find(id);
+    return it != bone_flip.end() ? it->second : id;
+  };
+  if (l.has_drawing()) {
+    drawing_mirror_setup_x(l.drawing);
+    for (MeshPoint &p : l.drawing.points) {
+      for (BoneWeight &w : p.weights) {
+        w.bone = flip_bone(w.bone);
+      }
+    }
+  }
+  l.parent_bone = flip_bone(l.parent_bone);
+  if (!top) {
+    l.position.x = -l.position.x;
+    l.rotation = -l.rotation;
+    clear_transform_keys(l);
+  }
+  l.selected = false;
+  for (Layer &child : l.children) {
+    symmetrize_contents(child, bone_flip, false);
+  }
+}
+
+/* A copy to mirror: references become plain layers showing what they showed. */
+static void symmetrize_unreference(const Document &doc, Layer &l)
+{
+  if (l.is_reference()) {
+    l.drawing = layer_drawing(doc, l);
+    l.reference_source = 0;
+    l.reference = {};
+  }
+  for (Layer &child : l.children) {
+    symmetrize_unreference(doc, child);
+  }
+}
+
+static const Layer *layer_named(const Document &doc, const std::string &name)
+{
+  for (const Layer *l : document_layers_flat(doc)) {
+    if (l->name == name) {
+      return l;
+    }
+  }
+  return nullptr;
+}
+
+/* What Symmetrize did, for the report, and the copies it made (`copies` their top layers,
+ * `copy_ids` every layer in them). */
+struct SymmetrizeLog {
+  std::vector<std::string> made, replaced, centred, skipped;
+  std::vector<uint64_t> copies;
+  std::set<uint64_t> copy_ids;
+};
+
+/* Draw Order holds a layer's id (minus it for Behind). */
+static void draw_order_map(float &order, const std::function<uint64_t(uint64_t)> &map)
+{
+  if (order != 0.0f) {
+    const uint64_t id = map(uint64_t(std::fabs(order)));
+    order = order < 0.0f ? -float(id) : float(id);
+  }
+}
+
+static void layer_tree_walk(Layer &l, const std::function<void(Layer &)> &fn)
+{
+  fn(l);
+  for (Layer &child : l.children) {
+    layer_tree_walk(child, fn);
+  }
+}
+
+/* Makes (or remakes) the other side of the sided layer `id`, from whichever of the pair sits on the
+ * `from` side (1 +, -1 -). */
+static void symmetrize_pair(Document &doc, uint64_t id, int from, std::set<uint64_t> &done, SymmetrizeLog &log)
+{
+  const Layer *layer = layer_find(doc, id);
+  const std::string other_name = bone_mirror_name(layer->name);
+  /* The partner: a layer beside it with that name, or one anywhere. */
+  const Layer *partner = nullptr;
+  int index = 0;
+  if (const std::vector<Layer> *siblings = layer_container(doc, id, &index)) {
+    for (const Layer &l : *siblings) {
+      if (l.name == other_name) {
+        partner = &l;
+      }
+    }
+  }
+  if (!partner) {
+    partner = layer_named(doc, other_name);
+  }
+  if (done.count(id) || (partner && done.count(partner->id))) {
+    return;
+  }
+  done.insert(id);
+  if (partner) {
+    done.insert(partner->id);
+  }
+  const std::string side = from > 0 ? "+" : "-";
+  const Layer *source = nullptr, *target = nullptr;
+  if (symmetrize_side(doc, *layer) == from) {
+    source = layer;
+    target = partner;
+  }
+  else if (partner && symmetrize_side(doc, *partner) == from) {
+    source = partner;
+    target = layer;
+  }
+  else {
+    log.skipped.push_back(layer->name + (partner ? " (neither it nor " + partner->name + " is on the " + side + " side)"
+                                                 : " (not on the " + side + " side)"));
+    return;
+  }
+  const uint64_t source_id = source->id, target_id = target ? target->id : 0;
+
+  /* Where it goes: flipped across the source's axis, in the target's parent's space. */
+  const Transform2D flip_x = Transform2D::scaling({-1.0f, 1.0f});
+  const Transform2D axis = symmetrize_axis_space(doc, source_id);
+  const Transform2D target_parent = parent_setup_space(doc, target_id ? target_id : source_id);
+  const Transform2D local = target_parent.inverted() * axis * flip_x * axis.inverted() *
+                            parent_setup_space(doc, source_id) * source->local_transform() * flip_x;
+
+  Layer plain = *source;
+  symmetrize_unreference(doc, plain);
+  std::map<uint64_t, uint64_t> remap;
+  Layer copy = layer_copy_with_new_ids(doc, plain, &remap);
+  symmetrize_contents(copy, symmetrize_bone_flip(doc, source_id), true);
+  layer_set_local_transform(copy, local, source->scale.x < 0.0f);
+  clear_transform_keys(copy);
+  /* Draw Order naming a layer copied with it names its copy (masks already do). */
+  const auto copied = [&](uint64_t i) {
+    const auto it = remap.find(i);
+    return it != remap.end() ? it->second : i;
+  };
+  layer_tree_walk(copy, [&](Layer &l) {
+    draw_order_map(l.draw_order, copied);
+    for (auto &k : l.draw_order_keys.keys) {
+      draw_order_map(k.value, copied);
+    }
+  });
+
+  /* Remaking: the old contents go, and the new layers take the ids of the old ones of the same name,
+   * so masks naming those still find them. */
+  std::map<std::string, uint64_t> old_ids;
+  if (target_id) {
+    Layer *t = layer_find(doc, target_id);
+    for (Layer &child : t->children) {
+      layer_tree_walk(child, [&](Layer &l) { old_ids.emplace(l.name, l.id); });
+    }
+    t->children.clear();
+  }
+  std::map<uint64_t, uint64_t> reassign;
+  for (Layer &child : copy.children) {
+    layer_tree_walk(child, [&](Layer &l) {
+      const std::string flipped = bone_mirror_name(l.name);
+      if (const auto it = old_ids.find(flipped); it != old_ids.end()) {
+        reassign[l.id] = it->second;
+        l.id = it->second;
+        old_ids.erase(it);
+        l.name = flipped;
+      }
+      else {
+        l.name = layer_named(doc, flipped) ? document_layer_unique_name(doc, flipped) : flipped;
+      }
+    });
+  }
+  if (!reassign.empty()) {
+    for (auto &[from_id, to_id] : remap) {
+      if (const auto it = reassign.find(to_id); it != reassign.end()) {
+        to_id = it->second;
+      }
+    }
+    const auto reassigned = [&](uint64_t i) {
+      const auto it = reassign.find(i);
+      return it != reassign.end() ? it->second : i;
+    };
+    layer_tree_walk(copy, [&](Layer &l) {
+      layer_masks_remap(l, reassign);
+      draw_order_map(l.draw_order, reassigned);
+      for (auto &k : l.draw_order_keys.keys) {
+        draw_order_map(k.value, reassigned);
+      }
+    });
+  }
+
+  uint64_t placed = 0;
+  if (target_id) {
+    Layer &t = *layer_find(doc, target_id);
+    copy.id = t.id;
+    copy.name = t.name;
+    copy.expanded = t.expanded;
+    remap[source_id] = t.id;
+    t = std::move(copy);
+    placed = target_id;
+    log.replaced.push_back(t.name);
+  }
+  else {
+    copy.name = layer_named(doc, other_name) ? document_layer_unique_name(doc, other_name) : other_name;
+    placed = copy.id;
+    log.made.push_back(copy.name);
+    /* Above the source, so a Clip to Below source and its copy clip to the same layer. */
+    std::vector<Layer> *container = layer_container(doc, source_id, &index);
+    container->insert(container->begin() + index, std::move(copy));
+  }
+  log.copies.push_back(placed);
+  log.copy_ids.insert(placed);
+  for (const auto &[from_id, to_id] : remap) {
+    log.copy_ids.insert(to_id);
+  }
+}
+
+/* After every copy is made: their mask rows and Draw Order naming a sided layer outside them name
+ * that layer's other side instead, when there is one. */
+static void symmetrize_flip_links(Document &doc, const SymmetrizeLog &log)
+{
+  const std::function<uint64_t(uint64_t)> other = [&](uint64_t id) {
+    const Layer *l = log.copy_ids.count(id) ? nullptr : layer_find(doc, id);
+    if (!l) {
+      return id;
+    }
+    const std::string name = bone_mirror_name(l->name);
+    const Layer *o = name != l->name ? layer_named(doc, name) : nullptr;
+    return o ? o->id : id;
+  };
+  for (const uint64_t id : log.copies) {
+    if (Layer *copy = layer_find(doc, id)) {
+      layer_tree_walk(*copy, [&](Layer &l) {
+        for (LayerMask &m : l.masks) {
+          for (uint64_t &mid : m.layers) {
+            mid = other(mid);
+          }
+        }
+        draw_order_map(l.draw_order, other);
+        for (auto &k : l.draw_order_keys.keys) {
+          draw_order_map(k.value, other);
+        }
+      });
+    }
+  }
 }
 
 void layer_operators_register()
@@ -238,6 +573,8 @@ void layer_operators_register()
                        walk(walk, *copy);
                      }
                    }
+                   /* So do their drivers (as Blender copies an object's with it). */
+                   drivers_copy_for_layers(doc, remap);
                    for (const Layer *l : document_layers_flat(doc)) {
                      layer_find(doc, l->id)->selected = false;
                    }
@@ -249,6 +586,123 @@ void layer_operators_register()
                    doc.active_layer = active_copy ? active_copy : (copies.empty() ? doc.active_layer : copies.front());
                    return OpStatus::Finished;
                  });
+
+  {
+    /* The Layers editor's right-click Symmetrize + to - and - to +. */
+    OperatorType ot;
+    ot.idname = "layer.symmetrize";
+    ot.name = "Symmetrize Layers";
+    ot.description =
+        "Make the other side of the active and picked layers (and of the layers in picked groups), mirrored "
+        "across the document's vertical axis (a bone layer's, inside one). A layer named for a side (_L, .L, L_, "
+        "Left...) gets its partner made, or remade, from whichever of the two sits on the side direction= copies "
+        "from (POSITIVE_TO_NEGATIVE: + to -, or NEGATIVE_TO_POSITIVE); a layer named for neither is symmetrized "
+        "in place, as point Symmetrize does. On the setup frame; the copies rest in the setup pose (no point or "
+        "transform keys)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = active_layer_poll;
+    OpProperty direction;
+    direction.name = "direction";
+    direction.label = "Direction";
+    direction.description = "Which side is copied onto the other";
+    direction.items = {{"POSITIVE_TO_NEGATIVE", "+ to -"}, {"NEGATIVE_TO_POSITIVE", "- to +"}};
+    direction.fallback = "POSITIVE_TO_NEGATIVE";
+    ot.props = {direction};
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string direction = op_arg(C, "direction", "POSITIVE_TO_NEGATIVE");
+      if (direction != "POSITIVE_TO_NEGATIVE" && direction != "NEGATIVE_TO_POSITIVE") {
+        report(ReportType::Error, "direction is POSITIVE_TO_NEGATIVE or NEGATIVE_TO_POSITIVE");
+        return OpStatus::Cancelled;
+      }
+      if (doc.frame_current != 0) {
+        report_banner(ReportType::Warning, "Switch to Setup (frame 0) to symmetrize layers");
+        return OpStatus::Cancelled;
+      }
+      const int from = direction == "POSITIVE_TO_NEGATIVE" ? 1 : -1;
+      /* The picked layers, leaving out any inside a picked group (they go with it). */
+      std::vector<uint64_t> picked;
+      for (const Layer *l : document_layers_flat(doc)) {
+        if (l->id != doc.active_layer && !l->selected) {
+          continue;
+        }
+        bool inside = false;
+        for (const uint64_t p : picked) {
+          inside |= p != l->id && layer_inside(doc, l->id, p);
+        }
+        if (!inside) {
+          picked.push_back(l->id);
+        }
+      }
+      /* Sided layers (a group named for a side goes as a whole), and the drawings in the middle. */
+      std::vector<uint64_t> sided, centre;
+      const auto gather = [&](auto &&self, const Layer &l) -> void {
+        if (!l.is_bone_layer() && bone_mirror_name(l.name) != l.name) {
+          sided.push_back(l.id);
+        }
+        else if (l.is_group()) {
+          for (const Layer &child : l.children) {
+            self(self, child);
+          }
+        }
+        else if (l.has_drawing() && !l.is_reference() && !l.drawing.points.empty()) {
+          centre.push_back(l.id);
+        }
+      };
+      for (const uint64_t id : picked) {
+        gather(gather, *layer_find(doc, id));
+      }
+      SymmetrizeLog log;
+      std::set<uint64_t> done;
+      for (const uint64_t id : sided) {
+        if (layer_find(doc, id)) {
+          symmetrize_pair(doc, id, from, done, log);
+        }
+      }
+      symmetrize_flip_links(doc, log);
+      for (const uint64_t id : centre) {
+        Layer *layer = layer_find(doc, id);
+        if (!layer) {
+          continue;
+        }
+        const std::map<uint64_t, uint64_t> bone_flip = symmetrize_bone_flip(doc, id);
+        std::vector<bool> was;
+        for (MeshPoint &p : layer->drawing.points) {
+          was.push_back(p.selected);
+          p.selected = true;
+        }
+        const SymmetrizeResult r = drawing_symmetrize(layer->drawing, from > 0, 0.01f, true, &bone_flip);
+        for (size_t i = 0; i < was.size(); i++) {
+          layer->drawing.points[i].selected = was[i];
+        }
+        if (r.done) {
+          log.centred.push_back(layer->name);
+        }
+        else {
+          log.skipped.push_back(layer->name + " (" + std::to_string(r.right) + " points on the right, " +
+                                std::to_string(r.left) + " on the left)");
+        }
+      }
+      std::string message;
+      const auto add = [&](const char *what, const std::vector<std::string> &names) {
+        for (size_t i = 0; i < names.size(); i++) {
+          message += (i == 0 ? std::string(message.empty() ? "" : "; ") + what + " " : std::string(", ")) + names[i];
+        }
+      };
+      add("made", log.made);
+      add("remade", log.replaced);
+      add("symmetrized", log.centred);
+      add("skipped", log.skipped);
+      const bool changed = !log.made.empty() || !log.replaced.empty() || !log.centred.empty();
+      if (message.empty()) {
+        message = "nothing to do: name layers with _L or _R (or .L, L_, Left...) to make their other side";
+      }
+      report(changed ? ReportType::Info : ReportType::Warning, "Symmetrize: " + message);
+      C.undo_name = std::string("Symmetrize ") + (from > 0 ? "+ to -" : "- to +");
+      return changed ? OpStatus::Finished : OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
 
   layer_operator("layer.make_reference", "Duplicate as Reference",
                  "Add a live copy of the active layer that follows its drawing but keeps its own settings",

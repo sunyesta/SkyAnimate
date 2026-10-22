@@ -2462,3 +2462,50 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
 }
 
 }  // namespace oanim
+
+namespace oanim {
+
+void drawing_mirror_setup_x(VectorDrawing &drawing)
+{
+  const auto flip = [](float2 v) { return float2(-v.x, v.y); };
+  const auto across = [](float2 v) { return float2(v.x, -v.y); };
+  for (MeshPoint &p : drawing.points) {
+    /* From what shows on the setup frame. */
+    p.pos = flip(p.pos);
+    p.setup_pos = p.pos;
+    p.transform = {};
+    p.pos_keys = {};
+    p.radius_keys = {};
+    p.selected = false;
+    /* Along its segment stays along it; across it changes side, the segment's turn reversed. */
+    PointDetail &d = p.detail;
+    d.pos = across(d.pos);
+    d.in = across(d.in);
+    d.out = across(d.out);
+    d.setup_pos = d.pos;
+    d.setup_in = d.in;
+    d.setup_out = d.out;
+    d.built = false;
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      /* Handles not stored yet follow the (flipped) neighbours by themselves. */
+      if (cp.handles_set) {
+        cp.handle_in = flip(cp.handle_in);
+        cp.handle_out = flip(cp.handle_out);
+        cp.setup_in = cp.handle_in;
+        cp.setup_out = cp.handle_out;
+      }
+      cp.offset_in = -cp.offset_in;
+      cp.offset_out = -cp.offset_out;
+      cp.change_in = {};
+      cp.change_out = {};
+      cp.curvature_keys = {};
+      cp.handle_in_keys = {};
+      cp.handle_out_keys = {};
+      cp.select_in = cp.select_out = false;
+    }
+  }
+}
+
+}  // namespace oanim

@@ -57,8 +57,10 @@ silhouette by itself as the mouth slides past the edge.
 
 ## Work on a copy, then show the user
 
-- The user's own Open Animate is often open: read from it only (remote control,
-  `%LOCALAPPDATA%\OpenAnimate\remote.json`). Copy their saved `.oanim`/`.sky` file (check
+- The user's own Open Animate is often open: read from it only, and read the open document (unsaved
+  changes too) rather than the file on disk. Each running Open Animate publishes
+  `%LOCALAPPDATA%\OpenAnimate\remote\<process id>.json` (port, token, pid, open file); `remote.json` is
+  the one holding the usual port. With the MCP bridge: `list_projects`, then `project=` on each tool. Copy their saved `.oanim`/`.sky` file (check
   `oanim.data.is_dirty` is False first) into the scratchpad and animate that.
 - Run a private copy with its own settings: `LOCALAPPDATA=<scratch>/appdata`, a startup script that
   opens the copy, calls `_oanim.remote_start(0)` and writes its port, token and `os.getpid()` to a file.

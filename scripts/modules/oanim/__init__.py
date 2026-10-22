@@ -201,11 +201,18 @@ class _Layer:
     def masks(self):
         """Its mask rows, top to bottom: [{"mode" (ADD, SUBTRACT, INTERSECT, DIFFERENCE), "invert",
         "layers" (names; together one shape), "enabled" (in the viewport), "render", "grow" (pixels,
-        negative shrinks), "fills_only", "filled", "extend", and "outside" (mode is SUBTRACT) and
+        negative shrinks), "shape" (AS_DRAWN, FILLS_ONLY, STROKES_ONLY; also as "fills_only" and
+        "strokes_only"), "filled" (Fill Every Shape), "inside_stroke", "end_lines" (End Lines at Edge)
+        and "ends" (BRUSH, FLAT), "extend", and "outside" (mode is SUBTRACT) and
         "expand" (grow > 0) as before rows}]. Each row combines its shape with the rows above; a first
         row of Subtract or Intersect starts from everything. Clip to Below is `clip_to_below`. Change
         them with oanim.ops.mask.add / set / remove / move / clip_to_below."""
         return [dict(m) for m in _oanim.layer_masks(self._id)]
+
+    def line_shows(self, x, y, render=False):
+        """Whether this layer's lines show at (x, y) (document space) by its mask rows with End Lines
+        at Edge on (and its groups'): where they don't, the lines end. True with no such row."""
+        return _oanim.layer_line_shows(self._id, float(x), float(y), bool(render))
 
     @property
     def mask_summary(self):
@@ -381,6 +388,12 @@ class _Layer:
         """The paths of this layer's channels keyed at `frame`, as the timeline's Keyed Here list
         has them (Ctrl-click a key)."""
         return list(_oanim.layer_keyed_at(self._id, frame))
+
+    @property
+    def parent_bone_deform(self):
+        """What Parent Bone moves: "LAYER" (the layer as a whole, lines and stamps squashing with the
+        bone) or "POINTS" (its points; lines keep their width). Set with layer.parent_bone_set(deform=)."""
+        return _oanim.layer_parent_bone_deform(self._id)
 
     @property
     def parent_bone_group(self):

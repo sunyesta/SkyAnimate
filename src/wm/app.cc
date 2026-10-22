@@ -105,6 +105,7 @@ int App::run(const LaunchOptions &options)
 
   builtin_operators_register();
   layer_operators_register();
+  layer_clipboard_operators_register();
   vector_operators_register();
   viewport_operators_register();
   asset_operators_register();

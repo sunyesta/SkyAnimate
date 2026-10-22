@@ -129,7 +129,7 @@ pump(lambda: not t.is_alive(), seconds=60)
 assert out["code"] == 0, out
 answers = {m["id"]: m for m in map(json.loads, out["stdout"].splitlines())}
 assert answers[1]["result"]["serverInfo"]["name"] == "openanimate"
-assert {tool["name"] for tool in answers[2]["result"]["tools"]} == {"run_python", "screenshot", "get_state", "send_keys"}
+assert {tool["name"] for tool in answers[2]["result"]["tools"]} == {"list_projects", "run_python", "screenshot", "get_state", "send_keys"}
 assert answers[3]["result"]["content"][0]["text"] == "12" and not answers[3]["result"]["isError"], answers[3]
 assert json.loads(answers[4]["result"]["content"][0]["text"])["frame"] == 12
 assert answers[5]["result"]["isError"], "the screenshot's error comes back as a tool error"

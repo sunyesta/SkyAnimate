@@ -126,6 +126,8 @@ KEYMAP = (
     ("Layers", "layer.show_active", "PERIOD", {}),
     ("Layers", "layer.show_active", "NUMPAD_PERIOD", {}),
     ("Layers", "layer.delete", "DEL", {}),
+    ("Layers", "layer.copy", "C", {"ctrl": True}),
+    ("Layers", "layer.paste", "V", {"ctrl": True}),
     ("Layers", "layer.duplicate", "D", {"shift": True}),
     # Blender's Duplicate Linked: a live copy.
     ("Layers", "layer.make_reference", "D", {"alt": True}),

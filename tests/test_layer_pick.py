@@ -90,6 +90,60 @@ assert pick(0.15, 0.15) == {'FINISHED'} and layers.active.name == "front", "and 
 layers.active = front
 oanim.ops.mask.remove()
 
+# The mask's Shape: Strokes Only shows the layer along the mask's line, not inside it; Fills Only
+# inside, not along the line outside the fill.
+
+
+def top_at(x, y):
+    """The layer picked at (x, y), front left active after (the masks below are front's)."""
+    layers.active = back
+    pick(x, y)
+    name = layers.active.name
+    layers.active = front
+    return name
+
+
+hole.set_shape_style(0, line_width=0.04)
+layers.active = front
+assert oanim.ops.mask.add(sources="hole", mode="ADD", shape="STROKES_ONLY") == {'FINISHED'}
+# (A curve through the square's corners bulges: its line crosses y = 0 near x = 0.13.)
+assert top_at(0.0, 0.0) == "back", "Strokes Only: nothing inside"
+assert top_at(0.13, 0.0) == "front", "Strokes Only: along the line"
+assert front.mask_summary == "Shows: on hole's lines", front.mask_summary
+assert top_at(0.1, 0.1) == "front", "Strokes Only: through a corner"
+assert oanim.ops.mask.set(index="0", shape="FILLS_ONLY") == {'FINISHED'}
+assert top_at(0.0, 0.0) == "front", "Fills Only: inside"
+assert top_at(0.145, 0.0) == "back", "Fills Only: not the line's outer half"
+# Inside the Stroke: the fill ends at the line's inner edge (line 0.04 wide: 0.02 in from the outline).
+assert top_at(0.125, 0.0) == "front", "Fills Only reaches the line's middle"
+assert oanim.ops.mask.set(index="0", inside_stroke="1") == {'FINISHED'}
+assert top_at(0.125, 0.0) == "back", "Inside the Stroke: not within the line"
+assert top_at(0.0, 0.0) == "front", "Inside the Stroke: inside still masks"
+assert oanim.ops.mask.set(index="0", inside_stroke="0") == {'FINISHED'}
+oanim.ops.mask.remove()
+# Fill Every Shape: an outline-only shape masks with its inside too.
+outline = square("outline", -0.1, -0.1, 0.1, 0.1, fill=False)
+outline.visible = False
+layers.active = front
+assert oanim.ops.mask.add(sources="outline", mode="ADD") == {'FINISHED'}
+assert top_at(0.0, 0.0) == "back", "an outline's inside doesn't mask"
+assert oanim.ops.mask.set(index="0", filled="1") == {'FINISHED'}
+assert top_at(0.0, 0.0) == "front", "Fill Every Shape: it does"
+assert oanim.ops.mask.set(index="0", shape="STROKES_ONLY") == {'FINISHED'}
+assert top_at(0.0, 0.0) == "back", "Strokes Only has no inside to fill"
+oanim.ops.mask.remove()
+
+# A mask layer lends its shapes as drawn: its own masks don't cut the shape it lends (they only mask
+# how it shows itself).
+layers.active = outline
+assert oanim.ops.mask.add(sources="hole", mode="SUBTRACT") == {'FINISHED'}, "outline's own mask: minus hole"
+layers.active = front
+assert oanim.ops.mask.add(sources="outline", mode="ADD", filled="1") == {'FINISHED'}
+assert top_at(0.0, 0.0) == "front", "outline's own mask doesn't cut what it lends front"
+oanim.ops.mask.remove()
+layers.active = outline
+oanim.ops.mask.remove()
+
 # Guides (Show in Renders off) are picked while guides show, not while they're hidden.
 front.render_visible = False
 layers.active = back

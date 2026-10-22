@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "anim/animation.hh"
+#include "core/log.hh"
 #include "anim/deform.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
@@ -449,6 +450,9 @@ static json layer_to_json(const Layer &layer)
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
   }
+  if (layer.parent_bone_points) {
+    j["parent_bone_deform"] = "POINTS";
+  }
   if (layer.clip_to_below) {
     j["clip_to_below"] = true;
   }
@@ -458,16 +462,24 @@ static json layer_to_json(const Layer &layer)
   if (!layer.masks.empty()) {
     json masks = json::array();
     for (const LayerMask &m : layer.masks) {
-      masks.push_back({{"mode", mask_mode_identifier(m.mode)},
+      json mj = {{"mode", mask_mode_identifier(m.mode)},
                        {"invert", m.invert},
                        {"layers", m.layers},
                        {"enabled", m.enabled},
                        {"render", m.render},
                        {"grow", num(m.grow)},
                        {"fills_only", m.fills_only},
+                       {"strokes_only", m.strokes_only},
+                       {"inside_stroke", m.inside_stroke},
+                       {"end_lines", m.end_lines},
+                       {"end_lines_flat", m.end_lines_flat},
+                       {"line_reach", num(m.line_reach)},
+                       {"cuts", mask_cuts_identifier(m.cuts)},
                        {"filled", m.filled},
                        {"extend", mask_extend_identifier(m.extend)},
-                       {"show_expanded", m.show_expanded}});
+                       {"show_expanded", m.show_expanded}};
+      put_keys(mj, "line_reach_keys", m.line_reach_keys);
+      masks.push_back(std::move(mj));
     }
     j["masks"] = std::move(masks);
   }
@@ -699,6 +711,8 @@ std::string oanim_document_to_json(const Document &doc)
            {"fps", num(doc.fps)},
            {"width", doc.width},
            {"height", doc.height},
+           {"resolution_linked", doc.resolution_linked},
+           {"resolution_aspect", num(doc.resolution_aspect)},
            {"background", color_to_json(doc.background)},
            {"viewport_quality", doc.viewport_quality},
            {"viewport_samples", doc.viewport_samples},
@@ -726,6 +740,9 @@ std::string oanim_document_to_json(const Document &doc)
            {"materials", materials_to_json(doc)},
            {"brush_presets", brush_presets_to_json(doc)},
            {"drivers", drivers_to_json(doc)},
+           /* Mask rows take their layers' shapes before those layers' own masks (before this, a mask
+            * layer's own masks cut its shape first, one level deep). */
+           {"mask_sources", "shapes"},
        }},
   };
   return root.dump(1, '\t');
@@ -949,6 +966,36 @@ static Style style_from_json(const json &j)
 
 /* Drivers: [{"target": {"layer", "path", "component"}, "type", "expression", "vars": [{"name",
  * "source"}], "remap": {...} when on}]. */
+/* A file from before mask rows took their layers' shapes as drawn: says which layers mask with a layer
+ * that has masks of its own (those masks used to cut the shape first; now they don't), so a changed
+ * look isn't a mystery. */
+static void report_mask_sources_changed(const Document &doc)
+{
+  std::vector<std::string> pairs;
+  for (const Layer *layer : document_layers_flat(doc)) {
+    for (const LayerMask &m : layer->masks) {
+      for (const uint64_t id : m.layers) {
+        const Layer *source = layer_find(const_cast<Document &>(doc), id);
+        if (source && source->id != layer->id && !source->masks.empty()) {
+          pairs.push_back(layer->name + " (with " + source->name + ")");
+        }
+      }
+    }
+  }
+  if (pairs.empty()) {
+    return;
+  }
+  std::string list;
+  for (size_t i = 0; i < pairs.size() && i < 6; i++) {
+    list += (i ? ", " : "") + pairs[i];
+  }
+  if (pairs.size() > 6) {
+    list += " and " + std::to_string(pairs.size() - 6) + " more";
+  }
+  report(ReportType::Warning, "Masks now use their layers' shapes before those layers' own masks, so these may look "
+                              "different: " + list + ". Add the rows to the masked layer to get the old look");
+}
+
 static json drivers_to_json(const Document &doc)
 {
   const auto ref_json = [](const DriverRef &r) {
@@ -1096,6 +1143,8 @@ static json overlays_to_json(const ViewportOverlays &ov)
   }
   j["handles"] = HANDLE_DISPLAYS[int(ov.handles)];
   j["armature"] = ARMATURE_DISPLAYS[int(ov.armature)];
+  j["point_size"] = ov.point_size;
+  j["handle_size"] = ov.handle_size;
   return j;
 }
 
@@ -1107,6 +1156,8 @@ static void overlays_from_json(const json &j, ViewportOverlays &r_ov)
   for (const auto &[name, field] : OVERLAY_SWITCHES) {
     r_ov.*field = get_bool(j, name, r_ov.*field);
   }
+  r_ov.point_size = std::clamp(get_float(j, "point_size", r_ov.point_size), OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX);
+  r_ov.handle_size = std::clamp(get_float(j, "handle_size", r_ov.handle_size), OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX);
   const std::string handles = get_string(j, "handles", HANDLE_DISPLAYS[int(r_ov.handles)]);
   for (int i = 0; i < 4; i++) {
     if (handles == HANDLE_DISPLAYS[i]) {
@@ -1549,6 +1600,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.scale = get_float2(j, "scale", {1.0f, 1.0f});
   layer.opacity = std::clamp(get_float(j, "opacity", 1.0f), 0.0f, 1.0f);
   layer.parent_bone = get_id(j, "parent_bone");
+  layer.parent_bone_points = get_string(j, "parent_bone_deform", "LAYER") == "POINTS";
   for (const json &a : get_array(j, "actions")) {
     if (a.is_string() && !a.get<std::string>().empty()) {
       layer.actions.push_back(a.get<std::string>());
@@ -1787,6 +1839,17 @@ static Layer layer_from_json(const json &j, int depth)
     m.render = get_bool(mj, "render", true);
     m.grow = std::clamp(get_float(mj, "grow", get_bool(mj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
     m.fills_only = get_bool(mj, "fills_only", false);
+    m.strokes_only = !m.fills_only && get_bool(mj, "strokes_only", false);
+    m.inside_stroke = get_bool(mj, "inside_stroke", false);
+    m.end_lines = get_bool(mj, "end_lines", false);
+    m.end_lines_flat = get_bool(mj, "end_lines_flat", false);
+    m.line_reach = std::clamp(get_float(mj, "line_reach", 0.0f), -2.0f, 2.0f);
+    get_keys(mj, "line_reach_keys", m.line_reach_keys);
+    /* Lines Only came before Cuts. */
+    if (!mask_cuts_from_identifier(get_string(mj, "cuts", get_bool(mj, "lines_only", false) ? "LINES" : "ALL"),
+                                   &m.cuts)) {
+      m.cuts = MaskCuts::All;
+    }
     m.filled = get_bool(mj, "filled", false);
     if (!mask_extend_from_identifier(get_string(mj, "extend", "NONE"), &m.extend)) {
       m.extend = MaskExtend::None;
@@ -1978,6 +2041,11 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.fps =std::clamp(get_float(j, "fps", doc.fps), 1.0f, 1000.0f);
   doc.width = std::clamp(get_int(j, "width", doc.width), 1, 65536);
   doc.height = std::clamp(get_int(j, "height", doc.height), 1, 65536);
+  doc.resolution_linked = get_bool(j, "resolution_linked", false);
+  doc.resolution_aspect = get_float(j, "resolution_aspect", float(doc.width) / float(std::max(doc.height, 1)));
+  if (!(doc.resolution_aspect > 0.0f)) {
+    doc.resolution_aspect = float(doc.width) / float(std::max(doc.height, 1));
+  }
   doc.background = get_color(j, "background", doc.background);
   doc.viewport_quality = std::clamp(get_int(j, "viewport_quality", doc.viewport_quality), 1, 64);
   doc.render_quality = std::clamp(get_int(j, "render_quality", doc.render_quality), 1, 64);
@@ -2060,6 +2128,9 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     migrate_bone_keys(doc.layers, doc.action);
   }
   g_old_masks.clear();
+  if (get_string(j, "mask_sources") != "shapes") {
+    report_mask_sources_changed(doc);
+  }
   for (const json &t : get_array(j, "texts")) {
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});

@@ -5,9 +5,11 @@
  * Python.
  *
  *   numbers       1  0.5  2e-3
- *   names         variables, `frame`, `pi`, `e`
+ *   names         variables, then `frame`, `pi`, `e`, `True`, `False` (a variable may take one of
+ *                 their names; the caller resolves them, see Expression::names)
  *   operators     + - * / % ** (or ^), unary -, comparisons < <= > >= == != (1 or 0),
- *                 `and` `or` `not`, and Python's `a if test else b`
+ *                 chained as Python's (a < b < c), `and` `or` (Python's: the deciding operand) `not`,
+ *                 and Python's `a if test else b`
  *   functions     sin cos tan asin acos atan atan2 sqrt abs sign floor ceil round fmod pow exp log
  *                 min max clamp(x, lo, hi) lerp(a, b, t) smoothstep(lo, hi, x) radians degrees
  *

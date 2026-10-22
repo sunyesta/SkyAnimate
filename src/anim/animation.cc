@@ -66,6 +66,9 @@ template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
       }
     }
   }
+  for (LayerMask &m : layer.masks) {
+    f(m.line_reach_keys, m.line_reach);
+  }
   /* A reference's drawing is built from its original's: its own channels are its offsets. */
   for (auto &[id, o] : layer.reference.points) {
     f(o.offset_keys, o.offset);
@@ -243,8 +246,15 @@ void animation_record(Document &doc)
     animation_evaluate(doc, doc.frame_current);
     return;
   }
-  /* A driven value is the driver's: an edit to it isn't kept (nor keyed). */
-  drivers_evaluate(doc);
+  /* A driven value is the driver's: an edit to it isn't kept (nor keyed). Worked out for the frame
+   * being recorded, not the one being gone to (frame 0 would otherwise take another frame's pose
+   * as the setup). */
+  {
+    const int now = doc.frame_current;
+    doc.frame_current = doc.evaluated_frame;
+    drivers_evaluate(doc);
+    doc.frame_current = now;
+  }
   const int frame = doc.evaluated_frame;
   const bool auto_key = doc.auto_key;
   /* New points get their weights, so they follow the bones like their neighbours. */
@@ -305,8 +315,12 @@ void animation_evaluate(Document &doc, int frame)
   layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   doc.smart_applied = false;
   apply_smart_actions(doc);
-  /* Drivers on top of keys and smart actions, before references copy their originals. */
-  drivers_evaluate(doc);
+  /* Drivers on top of keys and smart actions, before references copy their originals. A driven
+   * smart bone plays its smart action, and drivers reading what that moves see it. */
+  if (drivers_evaluate(doc)) {
+    animation_refresh_smart(doc);
+    drivers_evaluate(doc);
+  }
   /* References show their originals as they now are. */
   references_build(doc);
   /* Bone dynamics swing from the pose the keys and smart actions give (and set each bone layer's
@@ -335,8 +349,12 @@ void animation_sync(Document &doc)
      * setting whose keys just went shows its value). */
     simulation_in(doc);
     animation_refresh_smart(doc);
-    /* Drivers follow what they read at once (a bone turned on this frame). */
-    drivers_evaluate(doc);
+    /* Drivers follow what they read at once (a bone turned on this frame), and smart actions what
+     * they pose. */
+    if (drivers_evaluate(doc)) {
+      animation_refresh_smart(doc);
+      drivers_evaluate(doc);
+    }
     /* References follow edits to their originals at once, and edits to them become theirs. */
     references_capture(doc);
     dynamics_update(doc);
@@ -713,6 +731,10 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   for (CustomChannel &c : layer.custom_channels) {
     add(c.path, c.keys, c.value);
   }
+  /* A mask row's End Lines at Edge Reach. */
+  for (size_t i = 0; i < layer.masks.size(); i++) {
+    add("masks[" + std::to_string(i) + "].reach", layer.masks[i].line_reach_keys, layer.masks[i].line_reach);
+  }
   if (!drawing) {
     return refs;
   }
@@ -767,7 +789,8 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
 
 bool layer_channel(Layer &layer, const std::string &path, ChannelRef *r_ref)
 {
-  const bool drawing = path.find('[') != std::string::npos;
+  /* Only a point's or curve's channel needs the drawing's (which works out every point's change). */
+  const bool drawing = path.rfind("points[", 0) == 0 || path.rfind("curves[", 0) == 0;
   for (ChannelRef &ref : layer_channels(layer, drawing)) {
     if (ref.path == path) {
       *r_ref = ref;
@@ -966,6 +989,11 @@ std::string channel_label(Layer &layer, const std::string &path, bool owner)
     }
     return id;
   };
+  if (path.rfind("masks[", 0) == 0) {
+    /* "Mask 1: Reach". */
+    const std::string name = "Mask " + std::to_string(std::atoi(path.c_str() + 6) + 1) + ": Reach";
+    return owner ? layer.name + ": " + name : name;
+  }
   if (path.rfind("bones[\"", 0) != 0) {
     /* The camera turns about its centre: its Roll. */
     const std::string name = layer.id == CAMERA_LAYER_ID && path == "rotation" ? std::string("Roll") : name_of(path);

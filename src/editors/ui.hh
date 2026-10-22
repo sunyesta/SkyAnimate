@@ -96,9 +96,11 @@ void ui_row(const char *label, const std::function<void(float width)> &body);
 void ui_prop_check(Context &C, const rna::PointerRNA &ptr, const char *identifier, const char *python_path,
                    const char *heading = "");
 /* Two properties side by side under one label, as Blender shows Location X and Y:
- * "Location  [X 0.000] [Y 0.000]". */
+ * "Location  [X 0.000] [Y 0.000]". `between` (optional) draws a square button between them (the
+ * resolution's link). */
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
-                  const char *first_prefix, const char *second, const char *second_prefix, const char *python_path);
+                  const char *first_prefix, const char *second, const char *second_prefix, const char *python_path,
+                  const std::function<void()> &between = {});
 
 /* A colour row inside a panel; returns true when the colour changed. */
 /* The status bar along the bottom of the window (Blender's), with its reports banner: the latest
@@ -166,6 +168,16 @@ void ui_style_eyedropper_start(const char *what, const char *what_label);
 bool ui_pick_button(const char *id, const char *tooltip, bool active);
 /* A click on shape `shape` of `layer` while it is on (layer 0: on no shape, which keeps it on). */
 void ui_shape_eyedropper_pick(Context &C, uint64_t layer, int shape);
+/* The bone eyedropper: the same, for a bone of bone layer `armature` clicked in the viewport (Parent
+ * Bone's): `pick` gets it and returns true when it's done. */
+void ui_bone_eyedropper_start(uint64_t armature, std::function<bool(Context &, uint64_t)> pick,
+                              std::function<std::string()> cue);
+/* The bone layer it picks from while it's on (0: it isn't on). */
+uint64_t ui_bone_eyedropper_armature();
+/* A click on `bone` while it is on (0: on no bone, which keeps it on). */
+void ui_bone_eyedropper_pick(Context &C, uint64_t bone);
+/* The bone under the mouse this frame, named at the mouse (the viewport says, each frame). */
+void ui_bone_eyedropper_hover(const std::string &bone_name);
 /* Its cue at the mouse, and stopping it; once a frame, after the editors drew. */
 void ui_layer_eyedropper_overlay();
 /* A pipette icon, as on Blender's eyedropper buttons. */

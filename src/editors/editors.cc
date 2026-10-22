@@ -841,7 +841,8 @@ void ui_prop_check(Context &C, const rna::PointerRNA &ptr, const char *identifie
 }
 
 void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, const char *first,
-                  const char *first_prefix, const char *second, const char *second_prefix, const char *python_path)
+                  const char *first_prefix, const char *second, const char *second_prefix, const char *python_path,
+                  const std::function<void()> &between)
 {
   const rna::PropertyRNA *a = ptr.type->find(first);
   const rna::PropertyRNA *b = ptr.type->find(second);
@@ -853,7 +854,8 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
   const bool keyed = g_key_next.pending;
   const int pushed = keyed ? ui_key_tint_push(g_key_next.state) : 0;
   const float spacing = 2.0f;
-  const float avail = ImGui::GetContentRegionAvail().x - (keyed ? ui_key_button_width() : 0.0f);
+  const float middle = between ? ImGui::GetFrameHeight() + spacing : 0.0f;
+  const float avail = ImGui::GetContentRegionAvail().x - (keyed ? ui_key_button_width() : 0.0f) - middle;
   const float w = (avail - spacing) * 0.5f;
   const uint64_t dl = g_key_next.flash_layer;
   const std::string dp = g_key_next.flash_path;
@@ -864,6 +866,10 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
   ui_driver_typed(C, dl, dp, 0);
   ui_driver_field_end(C, dl, dp, 0, driven);
   ImGui::SameLine(0.0f, spacing);
+  if (between) {
+    between();
+    ImGui::SameLine(0.0f, spacing);
+  }
   driven = ui_driver_field_begin(C, dl, dp, 1);
   ImGui::SetNextItemWidth(keyed ? w : -FLT_MIN);
   prop_field(C, ptr, b, python_path, second_prefix);
@@ -1180,6 +1186,10 @@ struct LayerEyedropper {
   std::function<bool(Context &, uint64_t)> pick;
   /* Picking a shape (ui_shape_eyedropper_start) rather than a layer. */
   std::function<bool(Context &, uint64_t, int)> pick_shape;
+  /* Picking a bone of `armature` (ui_bone_eyedropper_start). */
+  std::function<bool(Context &, uint64_t)> pick_bone;
+  /* The bone under the mouse this frame (its name), said at the mouse instead of the cue. */
+  std::string hover;
   std::function<std::string()> cue;
   /* What started a shape eyedropper (ui_shape_eyedropper_active(tag)). */
   std::string tag;
@@ -1237,18 +1247,46 @@ void ui_bone_collection_menus(Context &C, bool hovered)
 
 void ui_layer_eyedropper_start(uint64_t armature, uint64_t bone)
 {
-  g_layer_eyedropper = {true, armature, bone, {}, {}, {}, {}, false};
+  g_layer_eyedropper = {true, armature, bone, {}, {}, {}, {}, {}, {}, false};
 }
 
 void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pick, std::function<std::string()> cue)
 {
-  g_layer_eyedropper = {true, 0, 0, std::move(pick), {}, std::move(cue), {}, false};
+  g_layer_eyedropper = {true, 0, 0, std::move(pick), {}, {}, {}, std::move(cue), {}, false};
 }
 
 void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
                                const char *tag)
 {
-  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), std::move(cue), tag ? tag : "", false};
+  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), {}, {}, std::move(cue), tag ? tag : "", false};
+}
+
+void ui_bone_eyedropper_start(uint64_t armature, std::function<bool(Context &, uint64_t)> pick,
+                              std::function<std::string()> cue)
+{
+  g_layer_eyedropper = {true, armature, 0, {}, {}, std::move(pick), {}, std::move(cue), {}, false};
+}
+
+void ui_bone_eyedropper_hover(const std::string &bone_name)
+{
+  g_layer_eyedropper.hover = bone_name;
+}
+
+uint64_t ui_bone_eyedropper_armature()
+{
+  return g_layer_eyedropper.active && g_layer_eyedropper.pick_bone ? g_layer_eyedropper.armature : 0;
+}
+
+void ui_bone_eyedropper_pick(Context &C, uint64_t bone)
+{
+  LayerEyedropper &e = g_layer_eyedropper;
+  if (!e.active || !e.pick_bone) {
+    return;
+  }
+  e.took_click = true;
+  if (bone != 0 && e.pick_bone(C, bone)) {
+    e.active = false;
+  }
 }
 
 bool ui_shape_eyedropper_active()
@@ -1480,6 +1518,18 @@ void ui_mask_menu_items(Context &C, uint64_t layer_id)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Then click the layer to cut out of it (viewport or Layers editor)");
   }
+  {
+    int picked = 0;
+    for (const Layer *l : document_layers_flat(doc)) {
+      picked += l->id == doc.active_layer || l->selected ? 1 : 0;
+    }
+    if (ui_menu_item("Join Lines", nullptr, false, picked == 2)) {
+      operator_call(C, "mask.join_lines");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Two picked layers that meet cut each other's lines there, so they read as one shape");
+    }
+  }
   ImGui::Separator();
   if (ui_menu_item("Remove Masks", nullptr, false, layer && !layer->masks.empty())) {
     operator_call(C, "mask.remove", args);
@@ -1541,8 +1591,8 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
     return;
   }
   g_layer_eyedropper.took_click = true;
-  /* A shape is picked in the viewport: a layer row says nothing about which. */
-  if (layer_id == 0 || g_layer_eyedropper.pick_shape) {
+  /* A shape or bone is picked in the viewport: a layer row says nothing about which. */
+  if (layer_id == 0 || g_layer_eyedropper.pick_shape || g_layer_eyedropper.pick_bone) {
     return;
   }
   if (g_layer_eyedropper.pick) {
@@ -1587,7 +1637,11 @@ void ui_layer_eyedropper_overlay()
   ImDrawList *dl = ImGui::GetForegroundDrawList();
   const ImVec2 m = io.MousePos;
   eyedropper_icon(dl, ImVec2(m.x + 14.0f, m.y - 14.0f), 7.0f, IM_COL32(255, 255, 255, 230));
-  const std::string cue = e.cue ? e.cue() : std::string("Click a layer (viewport or Layers editor)  |  Esc cancels");
+  /* Over a bone: its name (what a click picks); else what to do. */
+  const std::string cue = !e.hover.empty() ? e.hover + "  |  click to pick, Esc cancels"
+                          : e.cue          ? e.cue()
+                                           : std::string("Click a layer (viewport or Layers editor)  |  Esc cancels");
+  e.hover.clear();
   dl->AddText(ImVec2(m.x + 26.0f, m.y - 22.0f), IM_COL32(255, 255, 255, 230), cue.c_str());
 }
 

@@ -75,7 +75,8 @@ def overlays():
     """The project's Viewport Overlays (saved with it): a dict of its switches ("show", "grid",
     "cursor", "camera_frame", "info", "wireframe", "points", "mask_outlines", "relationship_lines",
     "physics_ghosts", "live_physics", "bone_shapes") and "handles" ("NONE",
-    "SELECTED", "SHAPE", "ALL") and "armature" ("OFF", "SELECTED", "ON")."""
+    "SELECTED", "SHAPE", "ALL"), "armature" ("OFF", "SELECTED", "ON"), "point_size" and "handle_size"
+    (pixels across, 2 to 24)."""
     return dict(_oanim.overlays())
 
 
@@ -92,9 +93,12 @@ def set_ui_open(key, open=True):
 
 
 def set_overlay(name, on=True):
-    """Set a Viewport Overlays setting of the project: a switch by name to True or False, or "handles"
-    / "armature" to one of their values."""
-    _oanim.set_overlay(name, on if isinstance(on, str) else bool(on))
+    """Set a Viewport Overlays setting of the project: a switch by name to True or False, "handles"
+    / "armature" to one of their values, or "point_size" / "handle_size" to pixels (2 to 24)."""
+    if name in ("point_size", "handle_size"):
+        _oanim.set_overlay(name, float(on))
+    else:
+        _oanim.set_overlay(name, on if isinstance(on, str) else bool(on))
 
 
 def last_operation():

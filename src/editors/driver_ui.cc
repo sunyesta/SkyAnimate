@@ -222,21 +222,39 @@ void ui_driver_field_end(Context &C, uint64_t layer, const std::string &path, in
 
 void ui_driver_typed(Context &C, uint64_t layer, const std::string &path, int component)
 {
-  /* "#expression" typed into a number field (Blender's): ImGui keeps the text of the edit just
-   * finished, which a number field otherwise can't read. */
-  if (!C.document || path.empty() || !ImGui::IsItemDeactivated()) {
+  /* "#expression" typed into a number field (Blender's). A number field typed into is a text field
+   * for a while (ImGui's temp input) whose text it reads as a number and then lets go of, so the
+   * text is kept here as it is typed, and used when the edit ends (not when it's cancelled). */
+  static ImGuiID typing = 0;
+  static std::string typed;
+  if (!C.document || path.empty()) {
     return;
   }
   ImGuiContext &g = *GImGui;
-  if (g.InputTextDeactivatedState.ID != ImGui::GetItemID() || g.InputTextDeactivatedState.TextA.Size == 0) {
+  const ImGuiID id = ImGui::GetItemID();
+  if (id == 0) {
     return;
   }
-  const std::string text = g.InputTextDeactivatedState.TextA.Data;
-  if (text.size() < 2 || text[0] != '#') {
+  if (g.InputTextState.ID == id && (g.ActiveId == id || ImGui::IsItemDeactivated())) {
+    typing = id;
+    typed.assign(g.InputTextState.TextA.Data ? g.InputTextState.TextA.Data : "", size_t(std::max(g.InputTextState.TextLen, 0)));
+  }
+  if (!ImGui::IsItemDeactivated() || typing != id) {
+    return;
+  }
+  typing = 0;
+  const std::string text = std::move(typed);
+  typed.clear();
+  if (ImGui::IsKeyDown(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    return;
+  }
+  /* "#" and spaces before it allowed; the rest is the expression ("#frame / 10"). */
+  const size_t hash = text.find_first_not_of(" 	");
+  if (hash == std::string::npos || text[hash] != '#' || text.find_first_not_of(" 	", hash + 1) == std::string::npos) {
     return;
   }
   OpArgs args = field_args({layer, path, component})[0];
-  args["expression"] = text.substr(1);
+  args["expression"] = text.substr(hash + 1);
   operator_call(C, "anim.driver_add", args);
 }
 
@@ -273,7 +291,10 @@ static bool source_editor(Document &doc, DriverRef &source)
   Layer *current = layer_find(doc, source.layer);
   const float w = ImGui::GetContentRegionAvail().x;
   ImGui::SetNextItemWidth(w * 0.42f);
-  if (ImGui::BeginCombo("##layer", current ? current->name.c_str() : "(pick a layer)")) {
+  /* Layer 0: the document's own (its background, a material), from Copy As New Driver. */
+  const char *layer_name = current ? current->name.c_str() : source.layer == 0 && !source.path.empty() ? "Document"
+                                                                                                        : "(pick a layer)";
+  if (ImGui::BeginCombo("##layer", layer_name)) {
     for (Layer *l : source_layers(doc)) {
       ImGui::PushID(int(l->id & 0x7fffffff));
       if (ImGui::Selectable(l->name.c_str(), current == l)) {
@@ -290,7 +311,21 @@ static bool source_editor(Document &doc, DriverRef &source)
   ImGui::SameLine();
   const int size = driver_ref_size(doc, source.layer, source.path);
   ImGui::SetNextItemWidth(size == 2 ? w * 0.36f : -FLT_MIN);
-  const std::string shown = current && !source.path.empty() ? channel_label(*current, source.path, false) : std::string("(a value)");
+  ChannelRef channel;
+  std::string shown = "(a value)";
+  if (current && !source.path.empty() && layer_channel(*current, source.path, &channel)) {
+    shown = channel_label(*current, source.path, false);
+  }
+  else if (!source.path.empty()) {
+    /* A setting (Line Width, a mask row's Grow...): its label after the layer's name. */
+    DriverRef whole = source;
+    whole.component = -1;
+    shown = driver_ref_label(doc, whole);
+    const size_t colon = shown.rfind(": ");
+    if (colon != std::string::npos && current && shown.rfind(current->name, 0) == 0) {
+      shown = shown.substr(current->name.size() + 2);
+    }
+  }
   if (ImGui::BeginCombo("##path", shown.c_str())) {
     if (current) {
       for (const std::string &p : source_paths(*current)) {
@@ -315,6 +350,11 @@ static bool source_editor(Document &doc, DriverRef &source)
       }
       ImGui::EndCombo();
     }
+  }
+  if (changed) {
+    /* A new source: worked out afresh, not followed to where the old one went. */
+    source.bone = 0;
+    source.item = 0;
   }
   return changed;
 }

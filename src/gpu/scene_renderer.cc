@@ -6,6 +6,7 @@
 
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/layer_pick.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
 #include "data/document.hh"
@@ -360,6 +361,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   document_to_pixels_ = document_to_pixels;
   final_render_ = background != nullptr;
   required_stencil_ = 0;
+  line_free_stencil_ = 0;
   mask_clauses_.clear();
   coverage_test_ = 0;
   mask_pass_ = {};
@@ -426,16 +428,18 @@ bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int 
   return true;
 }
 
-void SceneRenderer::use_color_stencil()
+void SceneRenderer::use_color_stencil(Paint paint)
 {
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glStencilMask(0);
   glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-  if (required_stencil_ == 0) {
+  const unsigned required = paint == Paint::Line ? required_stencil_ & ~line_free_stencil_
+                                                 : required_stencil_ & ~fill_free_stencil_;
+  if (required == 0) {
     glStencilFunc(GL_ALWAYS, 0, 0);
   }
   else {
-    glStencilFunc(GL_EQUAL, GLint(required_stencil_), required_stencil_);
+    glStencilFunc(GL_EQUAL, GLint(required), required);
   }
 }
 
@@ -510,12 +514,17 @@ void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &l
 {
   /* Bottom first, in Draw Order, each with the masks of it and the groups holding it. */
   const std::vector<DrawStep> steps = draw_order_steps(doc, layers, [this](const Layer &l) { return shown(l); });
-  const unsigned outer_required = required_stencil_;
+  const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
+                 outer_fill_free = fill_free_stencil_;
   for (const DrawStep &step : steps) {
     required_stencil_ = outer_required | apply_masks(doc, step.masked);
+    line_free_stencil_ = outer_line_free | applied_line_free_;
+    fill_free_stencil_ = outer_fill_free | applied_fill_free_;
     draw_layer(doc, *step.layer, Transform2D(), target, opacity);
   }
   required_stencil_ = outer_required;
+  line_free_stencil_ = outer_line_free;
+  fill_free_stencil_ = outer_fill_free;
 }
 
 void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, Target *target,
@@ -548,12 +557,17 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     Target *group = acquire_target();
     bind_target(group);
     clear(Color{0, 0, 0, 0});
-    const unsigned outer_required = required_stencil_;
+    const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
+                   outer_fill_free = fill_free_stencil_;
     const MaskLevels outer_clauses = std::move(mask_clauses_);
     mask_clauses_.clear();
     required_stencil_ = 0;
+    line_free_stencil_ = 0;
+    fill_free_stencil_ = 0;
     draw_layers(doc, layer.children, transform, group, 1.0f);
     required_stencil_ = outer_required;
+    line_free_stencil_ = outer_line_free;
+    fill_free_stencil_ = outer_fill_free;
     mask_clauses_ = outer_clauses;
     resolve(group);
     bind_target(target);
@@ -570,15 +584,22 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
 static std::vector<SceneRenderer::MaskRow> rows_of(const Document &doc, const Layer &layer, bool render)
 {
   std::vector<SceneRenderer::MaskRow> rows;
+  MaskLineEnding above;
   for (const LayerMask &m : layer_mask_rows(doc, layer)) {
     if (!(render ? m.render : m.enabled)) {
       continue;
     }
+    bool flat = false;
+    const bool ends_lines = mask_row_ends_lines(m, &above, &flat);
     SceneRenderer::MaskRow row;
     row.mode = m.mode;
     row.invert = m.invert;
     row.grow = m.grow;
     row.fills_only = m.fills_only;
+    row.strokes_only = m.strokes_only;
+    row.inside_stroke = m.fills_only && m.inside_stroke;
+    row.end_lines_brush = ends_lines && !flat;
+    row.cuts = m.clip ? 0 : int(m.cuts);
     row.filled = m.filled;
     row.extend = int(m.extend);
     row.clip = m.clip;
@@ -605,10 +626,38 @@ static constexpr unsigned MASK_NESTED_SCRATCH = 1u << 7;
 unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const Layer *> &masked)
 {
   MaskLevels levels;
+  applied_line_free_ = 0;
+  applied_fill_free_ = 0;
   for (const Layer *l : masked) {
     std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
-    if (!rows.empty() && int(levels.size()) < MASK_LEVELS_MAX) {
+    if (rows.empty() || int(levels.size()) >= MASK_LEVELS_MAX) {
+      continue;
+    }
+    const auto all_end_lines = [](const std::vector<MaskRow> &level) {
+      return std::all_of(level.begin(), level.end(), [](const MaskRow &r) { return r.end_lines_brush; });
+    };
+    /* Rows that cut only lines or only fills: the lines go by a level of the rows that cut them, the
+     * fills by one of the rows that cut them, each left out by the other. */
+    std::vector<MaskRow> line_rows = rows, fill_rows = rows;
+    std::erase_if(line_rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Fills); });
+    std::erase_if(fill_rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Lines); });
+    if (line_rows.size() == rows.size() && fill_rows.size() == rows.size()) {
+      if (all_end_lines(rows)) {
+        applied_line_free_ |= 1u << levels.size();
+      }
       levels.push_back(std::move(rows));
+      continue;
+    }
+    if (!line_rows.empty()) {
+      applied_fill_free_ |= 1u << levels.size();
+      if (all_end_lines(line_rows)) {
+        applied_line_free_ |= 1u << levels.size();
+      }
+      levels.push_back(std::move(line_rows));
+    }
+    if (!fill_rows.empty() && int(levels.size()) < MASK_LEVELS_MAX) {
+      applied_line_free_ |= 1u << levels.size();
+      levels.push_back(std::move(fill_rows));
     }
   }
   unsigned required = 0;
@@ -653,11 +702,13 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
     stencil_fill(scratch, false);
     static const MaskPass::Stage SHRINK[] = {MaskPass::Areas, MaskPass::Bands, MaskPass::Lines};
     static const MaskPass::Stage GROW[] = {MaskPass::All};
-    const bool shrink = row.grow < 0.0f;
+    /* Inside the Stroke shrinks each area by its line's half width (worked out per shape). */
+    const bool shrink = row.grow < 0.0f || row.inside_stroke;
     for (int s = 0; s < (shrink ? 3 : 1); s++) {
       for (const uint64_t id : row.layers) {
         if (const Layer *source = layer_find(doc, id)) {
-          mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend};
+          mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend,
+                        row.strokes_only, row.inside_stroke};
           if (row.clip) {
             /* Clip to Below: what the base shows, not every shape in it. */
             std::vector<const Layer *> chain;
@@ -723,7 +774,9 @@ void SceneRenderer::draw_clip_base(const Document &doc, const Layer &layer, unsi
     if (!nested) {
       const MaskPass pass = mask_pass_;
       for (const Layer *l : chain) {
-        const std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
+        /* The base shows as its fills do: its rows that cut only lines left out. */
+        std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
+        std::erase_if(rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Lines); });
         if (rows.empty()) {
           continue;
         }
@@ -745,22 +798,12 @@ void SceneRenderer::draw_clip_base(const Document &doc, const Layer &layer, unsi
   chain.pop_back();
 }
 
-void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool nested)
+void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool /*nested*/)
 {
-  /* The mask layer's own masks count (one level deep): its shape goes in only where they hold. */
-  unsigned test = 0;
-  if (!nested) {
-    const std::vector<MaskRow> own = rows_of(doc, source, final_render_);
-    if (!own.empty()) {
-      const MaskPass pass = mask_pass_;
-      evaluate_mask_rows(doc, own, MASK_NESTED, MASK_NESTED_SCRATCH, true);
-      mask_pass_ = pass;
-      test = MASK_NESTED;
-    }
-  }
-  coverage_test_ = test;
-  draw_coverage(doc, source, Transform2D(), bit, mask_pass_.stage != MaskPass::Bands);
+  /* The mask layer's shapes as drawn, before any masks of its own (they mask how it shows, not the
+   * shape it lends; only Clip to Below takes what its base shows). */
   coverage_test_ = 0;
+  draw_coverage(doc, source, Transform2D(), bit, mask_pass_.stage != MaskPass::Bands);
 }
 
 void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, unsigned bit,
@@ -870,7 +913,13 @@ static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, 
 
 void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity)
 {
+  /* In colour, a layer's lines leave out the masks that end them (End Lines at Edge, Brush), and its
+   * fills the Lines Only ones. */
+  const bool lines_apart = !coverage_pass_ && (line_free_stencil_ | fill_free_stencil_) != 0;
   for (PaintStep &step : steps) {
+    if (lines_apart) {
+      use_color_stencil(step.is_line ? Paint::Line : Paint::Fill);
+    }
     if (!step.is_dabs) {
       if (!step.vertices.empty()) {
         gl::UseProgram(color_program_);
@@ -886,8 +935,10 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
     }
     /* The brush's images (a brush reloaded since gets its textures again). */
     if (const Brush *brush = brush_find(step.brush)) {
+      coverage_alpha_ = step.coverage_alpha;
       draw_dabs(step.dabs, brush_tip_images(*brush, step.settings), step.own_colors, step.merged_alpha, transform,
                 opacity, &step.dab_vaos, &step.dab_vbos);
+      coverage_alpha_ = 0.5f;
     }
   }
 }
@@ -939,8 +990,40 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   key = hash_float(hash_mix(key, uint64_t(quality_)), pixel);
   key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
                           uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
-                          uint64_t(mask_pass_.extend) << 6);
+                          uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
+                          uint64_t(mask_pass_.inside_stroke) << 10);
   key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
+  /* End Lines at Edge: where the masks' rows with it on let the lines show (in the colour pass; a
+   * layer lends its shapes to masks as drawn). Its shapes and where this layer is go in the key. */
+  const LineCutter cutter = coverage_pass_ ? LineCutter() : line_cutter(doc, layer, final_render_);
+  if (!cutter.empty()) {
+    key = hash_float(hash_mix(key, cutter.flat ? 0x5eedu : 0xf1a7u), cutter.reach);
+    for (const auto &rows : cutter.levels) {
+      for (const LineCutter::Row &row : rows) {
+        key = hash_mix(key, uint64_t(row.mode) | uint64_t(row.invert) << 4 | uint64_t(row.fills_only) << 5 |
+                                uint64_t(row.strokes_only) << 6 | uint64_t(row.inside_stroke) << 7);
+        for (const LineCutter::Piece &piece : row.pieces) {
+          key = hash_mix(key, uint64_t(piece.area) | uint64_t(piece.line) << 1 | uint64_t(piece.closed) << 2);
+          key = hash_float(key, piece.half);
+          for (const float2 &p : piece.outline) {
+            key = hash_float(hash_float(key, p.x), p.y);
+          }
+        }
+      }
+    }
+    for (const float v : {transform.apply({0.0f, 0.0f}).x, transform.apply({0.0f, 0.0f}).y,
+                          transform.apply({1.0f, 0.0f}).x, transform.apply({1.0f, 0.0f}).y,
+                          transform.apply({0.0f, 1.0f}).x, transform.apply({0.0f, 1.0f}).y})
+    {
+      key = hash_float(key, v);
+    }
+  }
+  /* A point of a line (layer space) shows by those rows. */
+  const auto line_shows = [&](float2 p) { return line_cutter_shows(cutter, transform.apply(p)); };
+  BrushCut brush_cut;
+  brush_cut.shows = line_shows;
+  brush_cut.taper = !cutter.flat;
+  brush_cut.reach = cutter.reach;
   if (auto it = tessellated_.find(key); it != tessellated_.end()) {
     it->second.used = render_serial_;
     draw_steps(it->second.steps, transform, opacity);
@@ -958,12 +1041,22 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   std::vector<StrokeJoin> run_joins;
 
   /* The colour batch so far, as a step: before a brushed line so shapes keep their stacking order. */
+  /* Whether the batch so far holds lines (they may be drawn under fewer masks than fills). */
+  bool batch_lines = false;
   const auto flush = [&] {
     if (!vertices.empty()) {
       PaintStep step;
       step.vertices = std::move(vertices);
+      step.is_line = batch_lines;
       steps.push_back(std::move(step));
       vertices.clear();
+    }
+  };
+  /* Starts a batch of lines or of fills, closing one of the other kind. */
+  const auto batch = [&](bool lines) {
+    if (batch_lines != lines) {
+      flush();
+      batch_lines = lines;
     }
   };
   const Brush *brush = nullptr;
@@ -978,6 +1071,23 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   /* One stroke (the whole outline, or a run between hidden edges). */
   const auto stroke = [&](const Shape &shape, const std::vector<float2> &pts, const std::vector<float> &half,
                           bool is_closed, const std::vector<StrokeJoin> &stroke_joins) {
+    batch(!coverage_pass_);
+    /* A line thinner than a pixel is drawn a pixel wide and as much fainter (in colour; a mask takes
+     * it as it is), so its weight stays true however far the view is zoomed out rather than every
+     * hairline looking a pixel thick. */
+    const float widest = half.empty() ? 0.0f : *std::max_element(half.begin(), half.end());
+    const float min_half = pixel * 0.5f;
+    if (!coverage_pass_ && widest > 0.0f && widest < min_half) {
+      const float k = min_half / widest;
+      std::vector<float> wider = half;
+      for (float &w : wider) {
+        w *= k;
+      }
+      Color faint = shape.style.line;
+      faint.a /= k;
+      tessellate_stroke(pts, wider, is_closed, faint, feather, vertices, &stroke_joins);
+      return;
+    }
     tessellate_stroke(pts, half, is_closed, shape.style.line, feather, vertices, &stroke_joins);
   };
 
@@ -1003,19 +1113,36 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
        * upper lip drawn from a whole mouth shape) cuts along what shows. */
       const MaskPass::Stage stage = coverage_pass_ ? mask_pass_.stage : MaskPass::All;
       const float grow = coverage_pass_ ? mask_pass_.grow * pixel : 0.0f;
-      const bool is_area = (shape.has_fill && closed) || (coverage_pass_ && mask_pass_.filled);
+      const bool is_area = !(coverage_pass_ && mask_pass_.exclude_fills) &&
+                           ((shape.has_fill && closed) || (coverage_pass_ && mask_pass_.filled));
+      /* Inside the Stroke: the area ends at its line's inner edge: the line's half width in from
+       * the outline at each point (as wide as the line is there), less any grow, and wherever the
+       * line itself is drawn (a brushed line's dabs, turned or jittered, reach past its width). */
+      const bool inside_stroke = coverage_pass_ && mask_pass_.inside_stroke && shape.has_outline &&
+                                 shape.style.line_width > 0.0f;
+      /* The line as drawn, to clear (Bands with Inside the Stroke): no grow, whatever the row's. */
+      bool line_as_drawn = false;
       if (stage == MaskPass::Bands) {
         /* Shrinking: clear a band as wide as the shrink around the area's edge. */
         if (is_area) {
-          tessellate_stroke(outline, std::vector<float>(outline.size(), -grow), true, shape.style.fill, feather,
-                            vertices);
+          std::vector<float> band(outline.size(), std::max(-grow, 0.0f));
+          if (inside_stroke) {
+            for (size_t k = 0; k < band.size(); k++) {
+              const float r = (k < radii.size() ? radii[k] : 1.0f) * shape.style.line_width * 0.5f;
+              band[k] = std::max(r - grow, 0.0f);
+            }
+          }
+          tessellate_stroke(outline, band, true, shape.style.fill, feather, vertices);
         }
-        continue;
+        if (!(is_area && inside_stroke)) {
+          continue;
+        }
+        line_as_drawn = true;
       }
-      if (coverage_pass_ && mask_pass_.extend != 0 && stage != MaskPass::Lines) {
+      if (coverage_pass_ && mask_pass_.extend != 0 && stage != MaskPass::Lines && !line_as_drawn) {
         static const float2 DIRS[] = {{0, 0}, {0, 1}, {0, -1}, {-1, 0}, {1, 0}};
         const float2 reach = DIRS[std::clamp(mask_pass_.extend, 0, 4)] * (pixel * 100000.0f);
-        const bool area = (shape.has_fill && closed) || mask_pass_.filled;
+        const bool area = !mask_pass_.exclude_fills && ((shape.has_fill && closed) || mask_pass_.filled);
         const bool strokes = shape.has_outline && !mask_pass_.exclude_strokes;
         const size_t n = outline.size();
         for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
@@ -1023,21 +1150,24 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
             continue;
           }
           const float2 a = outline[i], b = outline[(i + 1) % n];
+          batch(false);
           tessellate_fill({a, b, b + reach, a + reach}, shape.style.fill, feather, vertices);
         }
       }
       /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
-      if (is_area && stage != MaskPass::Lines) {
+      if (is_area && stage != MaskPass::Lines && !line_as_drawn) {
+        batch(false);
         tessellate_fill(outline, shape.style.fill, feather, vertices);
-        if (grow > 0.0f) {
+        if (grow > 0.0f && !inside_stroke) {
           /* A mask's Grow: a rim that wide around the area. */
           tessellate_stroke(outline, std::vector<float>(outline.size(), grow), true, shape.style.fill, feather,
                             vertices);
         }
       }
-      if (shape.has_outline && shape.style.line_width > 0.0f && !(coverage_pass_ && mask_pass_.exclude_strokes) &&
-          stage != MaskPass::Areas)
+      if (shape.has_outline && shape.style.line_width > 0.0f &&
+          (line_as_drawn || !(coverage_pass_ && mask_pass_.exclude_strokes)) && stage != MaskPass::Areas)
       {
+        const float line_grow = line_as_drawn ? 0.0f : grow;
         /* A brushed line, if its brush is in the library and has images; otherwise solid. */
         brush = brush_find(shape.style.brush.name);
         images = brush ? &brush_tip_images(*brush, shape.style.brush) : nullptr;
@@ -1060,14 +1190,15 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
             setup = layer_setup_drawing(doc, layer, final_render_);
             setup_made = true;
           }
-          const float extra = grow;
+          const float extra = line_grow;
           const BrushPath shown = brush_path(drawing, shape, extra);
           std::vector<Shape> setup_runs;
           if (shape_index < int(setup.shapes.size()) && setup.shapes.size() == drawing.shapes.size()) {
             setup_runs = shape_runs(setup, setup.shapes[shape_index]);
           }
           const BrushPath rest = run_index < setup_runs.size() ? brush_path(setup, setup_runs[run_index], extra) : shown;
-          brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs);
+          brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs,
+                       cutter.empty() ? nullptr : &brush_cut, !coverage_pass_);
           if (dabs.count > 0) {
             flush();
             PaintStep step;
@@ -1077,17 +1208,20 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
             step.settings = shape.style.brush;
             step.own_colors = brush->is_color && !shape.style.brush.tint;
             step.merged_alpha = shape.style.brush.merged_alpha;
+            step.coverage_alpha = line_as_drawn ? 0.02f : 0.5f;
+            step.is_line = !coverage_pass_;
             steps.push_back(std::move(step));
           }
           continue;
         }
         /* Half widths for the tessellator: the shape's width scaled by each point's radius, a pixel
-         * wider when the mask expands, and never thinner than a pixel so hairlines stay visible. */
+         * wider when the mask expands. A mask keeps hairlines a pixel wide; in colour they keep their
+         * true width here, and the stroke draws them a pixel wide and as much fainter. */
         bool any_width = false;
         for (float &r : radii) {
-          r = r * shape.style.line_width * 0.5f + grow;
-          /* Hairlines stay a pixel wide; a line shrunk away is gone. */
-          r = grow < 0.0f ? std::max(r, 0.0f) : std::max(r, pixel * 0.5f);
+          r = r * shape.style.line_width * 0.5f + line_grow;
+          /* A line shrunk away is gone. */
+          r = line_grow < 0.0f || !coverage_pass_ ? std::max(r, 0.0f) : std::max(r, pixel * 0.5f);
           any_width |= r > 0.0f;
         }
         if (!any_width) {
@@ -1095,17 +1229,38 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
         }
         const int n = int(outline.size());
         const int pieces = closed ? n : n - 1;
+        /* End Lines at Edge: whether each point shows (all of them without it). */
+        std::vector<char> shows(size_t(n), 1);
+        bool cut_any = false;
+        if (!cutter.empty() && !coverage_pass_) {
+          for (int i = 0; i < n; i++) {
+            shows[size_t(i)] = line_shows(outline[size_t(i)]);
+            cut_any = cut_any || !shows[size_t(i)];
+          }
+        }
         int hidden_at = -1;
         for (int i = 0; i < pieces && hidden_at < 0; i++) {
           hidden_at = visible[i] ? -1 : i;
         }
-        if (hidden_at < 0) {
+        if (hidden_at < 0 && !cut_any) {
           stroke(shape, outline, radii, closed, joins);
         }
         else {
-          /* Hidden edges break the outline into open runs. A closed outline starts just after a
-           * hidden piece so no run wraps around its start. */
-          const int start = closed ? hidden_at + 1 : 0;
+          /* Hidden edges (and End Lines at Edge) break the outline into open runs. A closed
+           * outline starts just after a hidden piece, or at a point cut away, so no run wraps
+           * around its start. */
+          int start = 0;
+          if (closed) {
+            start = hidden_at >= 0 ? hidden_at + 1 : 0;
+            if (hidden_at < 0) {
+              for (int i = 0; i < n; i++) {
+                if (!shows[size_t(i)]) {
+                  start = i;
+                  break;
+                }
+              }
+            }
+          }
           run.clear();
           run_radii.clear();
           run_joins.clear();
@@ -1117,20 +1272,73 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
             run_radii.clear();
             run_joins.clear();
           };
+          /* Where the line crosses the edge between points i and j, found by halving. An end made
+           * there is round (Ends: Brush) or flat (Flat). */
+          const StrokeJoin cut_join = cutter.flat ? StrokeJoin::Sharp : StrokeJoin::Smooth;
+          const auto crossing = [&](int i, int j, float2 *r_point, float *r_radius) {
+            const bool from = shows[size_t(i)] != 0;
+            float lo = 0.0f, hi = 1.0f;
+            for (int step = 0; step < 12; step++) {
+              const float mid = (lo + hi) * 0.5f;
+              const bool here = line_shows(outline[size_t(i)] + (outline[size_t(j)] - outline[size_t(i)]) * mid);
+              (here == from ? lo : hi) = mid;
+            }
+            const float t = (lo + hi) * 0.5f;
+            *r_point = outline[size_t(i)] + (outline[size_t(j)] - outline[size_t(i)]) * t;
+            *r_radius = radii[size_t(i)] + (radii[size_t(j)] - radii[size_t(i)]) * t;
+          };
           for (int k = 0; k < pieces; k++) {
             const int i = (start + k) % n, j = (i + 1) % n;
             if (!visible[i]) {
               flush_run();
               continue;
             }
-            if (run.empty()) {
+            const bool a = shows[size_t(i)] != 0, b = shows[size_t(j)] != 0;
+            if (!a && !b) {
+              flush_run();
+              continue;
+            }
+            if (a && run.empty()) {
               run.push_back(outline[i]);
               run_radii.push_back(radii[i]);
               run_joins.push_back(joins[i]);
             }
-            run.push_back(outline[j]);
-            run_radii.push_back(radii[j]);
-            run_joins.push_back(joins[j]);
+            if (a && b) {
+              run.push_back(outline[j]);
+              run_radii.push_back(radii[j]);
+              run_joins.push_back(joins[j]);
+              continue;
+            }
+            float2 at;
+            float r = 0.0f;
+            crossing(i, j, &at, &r);
+            if (!cutter.flat) {
+              /* A round end stops its radius short of the edge, back along the line, so it just
+               * touches it (Reach 0); Reach moves it on, past the edge from 0.5. */
+              const float stop = r * (1.0f - 2.0f * cutter.reach);
+              const float2 back = a ? outline[size_t(i)] - at : outline[size_t(j)] - at;
+              const float len = length(back);
+              if (len > 1e-9f) {
+                at = at + back * (std::clamp(stop, -len, len) / len);
+              }
+            }
+            if (a) {
+              /* Leaving: the run ends at the edge. */
+              run.push_back(at);
+              run_radii.push_back(r);
+              run_joins.push_back(cut_join);
+              flush_run();
+            }
+            else {
+              /* Coming back: a run starts at the edge. */
+              flush_run();
+              run.push_back(at);
+              run_radii.push_back(r);
+              run_joins.push_back(cut_join);
+              run.push_back(outline[j]);
+              run_radii.push_back(radii[j]);
+              run_joins.push_back(joins[j]);
+            }
           }
           flush_run();
         }
@@ -1234,7 +1442,7 @@ void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImag
   gl::Uniform1i(gl::GetUniformLocation(brush_program_, "u_image"), 0);
   gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_opacity"), own ? 1.0f : opacity);
   gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_own_colors"), own_colors ? 1.0f : 0.0f);
-  gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_alpha_test"), coverage_pass_ ? 0.5f : 0.0f);
+  gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_alpha_test"), coverage_pass_ ? coverage_alpha_ : 0.0f);
   gl::ActiveTexture(GL_TEXTURE0);
   gl::BindVertexArray(brush_vao_);
   gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);

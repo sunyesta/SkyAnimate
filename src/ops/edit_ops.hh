@@ -19,6 +19,8 @@ struct Shape;
 struct VectorDrawing;
 
 void layer_operators_register();
+/* layer.copy and layer.paste (ops/layer_clipboard.cc). */
+void layer_clipboard_operators_register();
 void vector_operators_register();
 void asset_operators_register();
 void anim_operators_register();
@@ -35,6 +37,8 @@ std::string mask_label(const Document &doc, const LayerMask &mask);
 /* A layer's mask rows in words, as the Masking tab's header shows them ("Shows: inside head, minus
  * mouth, plus tongue"). */
 std::string mask_summary(const Document &doc, const Layer &layer);
+/* Each row's part of the summary ("minus mouth"), one per layer_mask_rows (empty for a row that's off). */
+std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &layer);
 
 /* The bone layer rigging works on: the active layer if it is one, else the bone layer it is in. */
 Layer *active_armature(Context &C);

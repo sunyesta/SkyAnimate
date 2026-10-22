@@ -21,8 +21,16 @@ struct DriverRef {
   uint64_t layer = 0;
   std::string path;
   int component = -1;
+  /* Not saved: what the path meant when it was last worked out, so it can follow it (see
+   * drivers_evaluate): the bone's id for 'bones["arm"]...', and the constraint's, modifier's or mask
+   * row's uid for an index into them ("modifiers[1]..."). 0 until then. */
+  uint64_t bone = 0;
+  uint64_t item = 0;
 
-  bool operator==(const DriverRef &) const = default;
+  bool operator==(const DriverRef &o) const
+  {
+    return layer == o.layer && path == o.path && component == o.component;
+  }
 };
 
 struct DriverVar {
