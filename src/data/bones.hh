@@ -36,6 +36,15 @@ struct BonePose {
  * frame 0, where moving a bone changes the setup pose itself. Elsewhere an edit not yet keyed
  * is a pose: the setup stays where the bone was before it. */
 std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame = true);
+/* While one is alive, armature_pose works each bone layer's pose out once and hands back the same
+ * one after: for a render, where nothing changes and every layer a rig moves asks for its pose.
+ * Scopes nest; the poses are forgotten when the outermost ends. */
+struct ArmaturePoseCacheScope {
+  ArmaturePoseCacheScope();
+  ~ArmaturePoseCacheScope();
+  ArmaturePoseCacheScope(const ArmaturePoseCacheScope &) = delete;
+  ArmaturePoseCacheScope &operator=(const ArmaturePoseCacheScope &) = delete;
+};
 /* The pose without bone dynamics: where the keys (constraints and IK included) put the bones.
  * Editing works from it, so a dynamic bone lands where it is put, the physics swinging after. */
 std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame);

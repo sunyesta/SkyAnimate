@@ -9,6 +9,7 @@
 #include "anim/layer_pick.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "data/media_layer.hh"
 #include "gpu/brush_stroke.hh"
@@ -336,6 +337,8 @@ void SceneRenderer::clear(const Color &color)
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
                                    int quality, int samples, const Color *background)
 {
+  /* Every layer a rig moves asks for its pose: worked out once for the whole render. */
+  const ArmaturePoseCacheScope pose_cache;
   quality_ = std::clamp(quality, 1, 64);
   if (!init() || width <= 0 || height <= 0) {
     return 0;

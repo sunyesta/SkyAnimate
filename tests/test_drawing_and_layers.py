@@ -28,7 +28,36 @@ assert oanim.ops.mesh.peak() == {'FINISHED'}
 oanim.ops.mesh.select_none()
 layer.select_points([5])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
-assert counts(layer) == (6, 2, 1), "deleting a point drops shapes on that curve"
+assert counts(layer) == (6, 2, 2), "the line joins across the gap, and its shape stays"
+assert layer.shapes[1][1] == [1], layer.shapes
+
+# A point deleted from a loop: the loop closes across the gap and its filled shape stays.
+layer.add_curve([(3.0, 0.0), (4.0, 0.0), (4.5, 0.5), (4.0, 1.0), (3.5, 1.5), (3.0, 1.0)], closed=True, fill=True)
+assert counts(layer) == (12, 3, 3)
+oanim.ops.mesh.select_none()
+layer.select_points([10])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (11, 3, 3), "deleting a point from a shape keeps the shape"
+assert layer.shapes[2][1] == [2], layer.shapes
+oanim.ops.mesh.select_none()
+layer.select_points([6, 10])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (9, 3, 3), "the first and last points at once, across where the loop wraps round"
+# Down to two points, a loop is a line: its fill no longer goes round.
+oanim.ops.mesh.select_none()
+layer.select_points([8])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (8, 3, 2), counts(layer)
+oanim.ops.mesh.select_none()
+layer.select_points([6, 7])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (6, 2, 2), counts(layer)
+
+# Deleting a line's end leaves its shape short of where it went: the shape goes.
+oanim.ops.mesh.select_none()
+layer.select_points([5])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (4, 1, 1), counts(layer)
 
 # Shapes come from the Shape tool only: F over the viewport makes none.
 oanim.ops.mesh.select_none()

@@ -296,6 +296,9 @@ void App::main_loop()
       if (m.button >= 0) {
         ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
       }
+      if (m.wheel != 0.0f) {
+        ImGui::GetIO().AddMouseWheelEvent(0.0f, m.wheel);
+      }
     }
     /* Over the viewport Tab is the keymap's (the setup frame and back), never ImGui's hop to the
      * next text field of whichever panel was clicked last. */

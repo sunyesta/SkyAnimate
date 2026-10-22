@@ -495,8 +495,33 @@ static std::vector<BonePose> bones_full_pose(const std::vector<Bone> &bones, boo
   return poses;
 }
 
+static int g_pose_cache_depth = 0;
+static std::map<std::pair<const Layer *, bool>, std::vector<BonePose>> g_pose_cache;
+
+ArmaturePoseCacheScope::ArmaturePoseCacheScope()
+{
+  g_pose_cache_depth++;
+}
+
+ArmaturePoseCacheScope::~ArmaturePoseCacheScope()
+{
+  if (--g_pose_cache_depth == 0) {
+    g_pose_cache.clear();
+  }
+}
+
 std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame)
 {
+  if (g_pose_cache_depth > 0) {
+    const auto key = std::make_pair(&armature, setup_frame);
+    auto it = g_pose_cache.find(key);
+    if (it == g_pose_cache.end()) {
+      it = g_pose_cache
+               .emplace(key, bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now))
+               .first;
+    }
+    return it->second;
+  }
   return bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now);
 }
 

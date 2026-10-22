@@ -427,8 +427,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     file_drag_set({!files.empty(), files, x, y});
   });
   /* Queues a mouse move (button -1) or press/release (oanim.wm.mouse_simulate), one per frame. */
-  m.def("mouse_simulate", [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift) {
-    current_context().wm->mouse_simulated.push_back({x, y, button, down, ctrl, alt, shift});
+  m.def("mouse_simulate", [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift, float wheel) {
+    current_context().wm->mouse_simulated.push_back({x, y, button, down, ctrl, alt, shift, wheel});
   });
   m.def("local_view", []() {
     Context &C = current_context();

@@ -4041,71 +4041,124 @@ static void drawing_tab(Context &C)
 }
 
 /* The topmost selected shape's name, fill, outline and line width. */
-/* Away from frame 0, one handle picked on its own: its Handle Angle and Length, how far it has turned
- * and grown from the setup pose (what its keys hold), 0 at rest. An aligned partner turns with it. */
-static void handle_change_row(Context &C, VectorDrawing &drawing)
+/* One handle shown in the Point panel. */
+struct HandleRow {
+  CurvePoint *cp;
+  bool in;
+};
+
+/* The handles the Point panel shows: one picked on its own, or else the selected point's (one point,
+ * on each curve it is on; not the In of an open curve's first point nor the Out of its last). */
+static std::vector<HandleRow> point_panel_handles(VectorDrawing &drawing)
 {
-  if (C.document->frame_current == 0) {
-    return;
-  }
-  CurvePoint *picked = nullptr;
-  bool picked_in = false;
-  int count = 0;
+  std::vector<HandleRow> lone;
   for (Curve &curve : drawing.curves) {
     for (CurvePoint &cp : curve.points) {
       for (const bool in : {true, false}) {
         if (cp.handles_set && (in ? cp.select_in : cp.select_out)) {
-          picked = &cp;
-          picked_in = in;
-          count++;
+          lone.push_back({&cp, in});
         }
       }
     }
   }
-  if (count != 1) {
-    return;
+  if (!lone.empty()) {
+    return lone.size() == 1 ? lone : std::vector<HandleRow>{};
   }
-  CurvePoint &cp = *picked;
-  float2 &handle = picked_in ? cp.handle_in : cp.handle_out;
-  const float2 setup = handle_setup(cp, picked_in);
-  float2 change = handle_change(setup, handle, (picked_in ? cp.change_in : cp.change_out).x);
+  const std::vector<int> picked = drawing_selected_points(drawing);
+  if (picked.size() != 1) {
+    return {};
+  }
+  std::vector<HandleRow> rows;
+  for (Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    for (int i = 0; i < n; i++) {
+      CurvePoint &cp = curve.points[i];
+      if (cp.point != picked[0] || !cp.handles_set) {
+        continue;
+      }
+      if (curve.closed || i > 0) {
+        rows.push_back({&cp, true});
+      }
+      if (curve.closed || i < n - 1) {
+        rows.push_back({&cp, false});
+      }
+    }
+  }
+  return rows;
+}
+
+/* "Handle In  [Angle 135.0°] [Length 0.120]": a handle's direction (degrees, counter-clockwise from
+ * the layer's x axis) and length, as Moho and Illustrator give them. Away from frame 0, how far it has
+ * turned and grown from the setup pose instead (what its keys hold), 0 at rest. An aligned partner
+ * turns with it. `suffix` tells the curves apart when the point is on several. */
+static void handle_row(Context &C, const HandleRow &row, const char *suffix)
+{
+  CurvePoint &cp = *row.cp;
+  float2 &handle = row.in ? cp.handle_in : cp.handle_out;
+  const bool posed = C.document->frame_current != 0;
+  const float2 setup = handle_setup(cp, row.in);
+  float2 value = posed ? handle_change(setup, handle, (row.in ? cp.change_in : cp.change_out).x) :
+                         float2(std::atan2(handle.y, handle.x), length(handle));
+  const std::string label = std::string(row.in ? "Handle In" : "Handle Out") + suffix;
+  ImGui::PushID(label.c_str());
   ImGui::TableNextRow();
   ImGui::TableSetColumnIndex(0);
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Handle");
+  ImGui::TextUnformatted(label.c_str());
   ImGui::TableSetColumnIndex(1);
   const float w = (ImGui::GetContentRegionAvail().x - 2.0f) * 0.5f;
-  float degrees = change.x * 180.0f / PI;
+  float degrees = value.x * 180.0f / PI;
   bool edited = false, done = false;
   ImGui::SetNextItemWidth(w);
-  if (ImGui::DragFloat("##handle_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "Angle  %.1f\xC2\xB0")) {
-    change.x = degrees * PI / 180.0f;
+  if (ImGui::DragFloat("##angle", &degrees, 0.5f, -36000.0f, 36000.0f, "Angle  %.1f\xC2\xB0")) {
+    value.x = degrees * PI / 180.0f;
     edited = true;
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How far the handle has turned from the setup pose (frame 0)");
+    ImGui::SetTooltip(posed ? "How far the handle has turned from the setup pose (frame 0)" :
+                              "Which way the handle points: degrees, counter-clockwise from the layer's x axis");
   }
   done |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SameLine(0.0f, 2.0f);
   ImGui::SetNextItemWidth(-FLT_MIN);
-  if (ImGui::DragFloat("##handle_length", &change.y, 0.002f, -10000.0f, 10000.0f, "Length  %+.3f")) {
+  if (posed ? ImGui::DragFloat("##length", &value.y, 0.002f, -10000.0f, 10000.0f, "Length  %+.3f") :
+              ImGui::DragFloat("##length", &value.y, 0.002f, 0.0f, 10000.0f, "Length  %.3f",
+                               ImGuiSliderFlags_AlwaysClamp))
+  {
     edited = true;
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How much longer the handle is than in the setup pose (frame 0)");
+    ImGui::SetTooltip(posed ? "How much longer the handle is than in the setup pose (frame 0)" :
+                              "How far the handle reaches from its point: longer bends the curve more fully");
   }
   done |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::PopID();
   if (edited) {
     const float2 before = handle;
-    handle = handle_from_change(setup, change);
+    handle = posed ? handle_from_change(setup, value) : float2(std::cos(value.x), std::sin(value.x)) * value.y;
     if (cp.aligned && length(before) > 1e-9f && length(handle) > 1e-9f) {
       /* Its partner stays in line: it turns by as much. */
-      float2 &other = picked_in ? cp.handle_out : cp.handle_in;
+      float2 &other = row.in ? cp.handle_out : cp.handle_in;
       other = rotate(other, std::atan2(handle.y, handle.x) - std::atan2(before.y, before.x));
     }
   }
   if (done) {
     C.undo->push("Move Handle", *C.document);
+  }
+}
+
+static void handle_rows(Context &C, VectorDrawing &drawing)
+{
+  const std::vector<HandleRow> rows = point_panel_handles(drawing);
+  /* The point on two curves (welded): the second curve's handles are told apart. */
+  const CurvePoint *first = rows.empty() ? nullptr : rows[0].cp;
+  int curve = 1;
+  for (size_t i = 0; i < rows.size(); i++) {
+    if (i > 0 && rows[i].cp != rows[i - 1].cp) {
+      curve++;
+    }
+    const std::string suffix = (rows.back().cp == first) ? "" : " (" + std::to_string(curve) + ")";
+    handle_row(C, rows[i], suffix.c_str());
   }
 }
 
@@ -4684,7 +4737,15 @@ static void edge_panel(Context &C, VectorDrawing &drawing)
 static void point_panel(Context &C, VectorDrawing &drawing)
 {
   const float mean = drawing_selected_mean_radius(drawing);
-  if (mean < 0.0f || !ui_panel_begin("Point")) {
+  if (mean < 0.0f) {
+    /* Only a handle picked on its own: just its row. */
+    if (!point_panel_handles(drawing).empty() && ui_panel_begin("Point")) {
+      handle_rows(C, drawing);
+      ui_panel_end();
+    }
+    return;
+  }
+  if (!ui_panel_begin("Point")) {
     return;
   }
   mean_position_row(C, "Mean Position", drawing, drawing_selected_points(drawing),
@@ -4768,7 +4829,7 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Keep each point's two handles in line: moving one turns the other (Alt moves one alone)");
   }
-  handle_change_row(C, drawing);
+  handle_rows(C, drawing);
   ui_panel_end();
 }
 

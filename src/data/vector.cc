@@ -539,20 +539,83 @@ int drawing_add_point(VectorDrawing &drawing, float2 pos)
   return int(drawing.points.size()) - 1;
 }
 
-/* Removes shapes that use any of the marked curves, then renumbers curve indices. */
+/* Renumbers the shapes' curves and, where `segment_remap` has an entry for a curve (empty: it kept
+ * its segments), their segments: segments that joined into one become one edge. A shape whose
+ * outline lost a piece (a curve gone, or a segment, -1) is removed: it no longer goes round. */
 static void shapes_remap_curves(VectorDrawing &drawing, const std::vector<int> &curve_remap,
-                                const std::vector<bool> &curve_changed)
+                                const std::vector<std::vector<int>> &segment_remap)
 {
+  const auto new_segment = [&](const ShapeEdge &e) {
+    const std::vector<int> &map = segment_remap[e.curve];
+    return map.empty() ? e.segment : (e.segment >= 0 && e.segment < int(map.size()) ? map[e.segment] : -1);
+  };
   std::erase_if(drawing.shapes, [&](const Shape &shape) {
-    return std::any_of(shape.edges.begin(), shape.edges.end(), [&](const ShapeEdge &e) {
-      return curve_changed[e.curve] || curve_remap[e.curve] < 0;
-    });
+    return std::any_of(shape.edges.begin(), shape.edges.end(),
+                       [&](const ShapeEdge &e) { return curve_remap[e.curve] < 0 || new_segment(e) < 0; });
   });
   for (Shape &shape : drawing.shapes) {
-    for (ShapeEdge &e : shape.edges) {
-      e.curve = curve_remap[e.curve];
+    std::vector<ShapeEdge> edges;
+    for (const ShapeEdge &e : shape.edges) {
+      const ShapeEdge moved{curve_remap[e.curve], new_segment(e)};
+      if (edges.empty() || !(edges.back() == moved)) {
+        edges.push_back(moved);
+      }
+    }
+    while (edges.size() > 1 && edges.back() == edges.front()) {
+      edges.pop_back();
+    }
+    shape.edges = std::move(edges);
+  }
+}
+
+/* Where each segment of a curve goes when the marked points leave it (`removed`, one per curve
+ * point; `closed_after`: still a loop): the two segments either side of a removed point join into
+ * one; a segment past the last kept point at an open end, -1. */
+static std::vector<int> curve_segment_remap(const std::vector<bool> &removed, bool closed_before, bool closed_after)
+{
+  const int n = int(removed.size());
+  std::vector<int> new_index(n, -1);
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    if (!removed[i]) {
+      new_index[i] = m++;
     }
   }
+  const int segments = closed_before ? n : n - 1;
+  std::vector<int> map(std::max(segments, 0), -1);
+  for (int s = 0; s < segments; s++) {
+    /* The segment now starting here: from the last kept point at or before s... */
+    int start = -1;
+    for (int k = 0; k < n; k++) {
+      const int i = s - k;
+      if (i < 0 && !closed_before) {
+        break;
+      }
+      const int wrapped = (i + n) % n;
+      if (!removed[wrapped]) {
+        start = new_index[wrapped];
+        break;
+      }
+    }
+    /* ...to the first kept point after it, which must be there. */
+    bool end = false;
+    for (int k = 1; k <= n; k++) {
+      const int i = s + k;
+      if (i >= n && !closed_before) {
+        break;
+      }
+      if (!removed[i % n]) {
+        end = true;
+        break;
+      }
+    }
+    if (start < 0 || !end || m < 2) {
+      continue;
+    }
+    const int new_segments = closed_after ? m : m - 1;
+    map[s] = start < new_segments ? start : -1;
+  }
+  return map;
 }
 
 void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remove)
@@ -568,25 +631,32 @@ void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remo
   }
 
   std::vector<int> curve_remap(drawing.curves.size(), -1);
-  std::vector<bool> curve_changed(drawing.curves.size(), false);
+  std::vector<std::vector<int>> segment_remap(drawing.curves.size());
   std::vector<Curve> curves;
   for (size_t c = 0; c < drawing.curves.size(); c++) {
     Curve curve = drawing.curves[c];
-    const size_t before = curve.points.size();
+    const bool closed_before = curve.closed;
+    std::vector<bool> removed;
+    for (const CurvePoint &cp : curve.points) {
+      removed.push_back(remove[cp.point]);
+    }
     std::erase_if(curve.points, [&](const CurvePoint &cp) { return remove[cp.point]; });
-    curve_changed[c] = curve.points.size() != before;
     for (CurvePoint &cp : curve.points) {
       cp.point = point_remap[cp.point];
     }
     if (curve.closed && curve.points.size() < 3) {
       curve.closed = false;
     }
+    if (curve.points.size() != removed.size()) {
+      /* Shapes along it keep going round where the curve joins across the gap. */
+      segment_remap[c] = curve_segment_remap(removed, closed_before, curve.closed);
+    }
     if (curve.points.size() >= 2) {
       curve_remap[c] = int(curves.size());
       curves.push_back(std::move(curve));
     }
   }
-  shapes_remap_curves(drawing, curve_remap, curve_changed);
+  shapes_remap_curves(drawing, curve_remap, segment_remap);
   drawing.points = std::move(points);
   drawing.curves = std::move(curves);
 
@@ -618,7 +688,7 @@ void drawing_remove_curves(VectorDrawing &drawing, const std::vector<bool> &remo
       curves.push_back(drawing.curves[c]);
     }
   }
-  shapes_remap_curves(drawing, curve_remap, std::vector<bool>(drawing.curves.size(), false));
+  shapes_remap_curves(drawing, curve_remap, std::vector<std::vector<int>>(drawing.curves.size()));
   drawing.curves = std::move(curves);
 }
 

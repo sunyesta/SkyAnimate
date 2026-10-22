@@ -12,13 +12,14 @@ def event_simulate(type, *, ctrl=False, shift=False, alt=False, area="", typing=
     return _oanim.event_simulate(type, ctrl, shift, alt, area, typing)
 
 
-def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False):
+def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False, wheel=0.0):
     """Move the mouse to (x, y) in the window's UI units (as a remote screenshot of the whole
     window shows them), and press (down=True) or release a button: 0 left, 1 right, 2 middle; None
-    only moves; `ctrl`, `alt`, `shift`: held. Events queue and one is used per frame, so a click is a
-    press then a release."""
+    only moves; `ctrl`, `alt`, `shift`: held; `wheel`: notches the wheel turns there (up positive,
+    zooming the viewport in). Events queue and one is used per frame, so a click is a press then a
+    release."""
     _oanim.mouse_simulate(float(x), float(y), -1 if button is None else int(button), bool(down), bool(ctrl),
-                          bool(alt), bool(shift))
+                          bool(alt), bool(shift), float(wheel))
 
 
 def drop_simulate(filepath, x, y):

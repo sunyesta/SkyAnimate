@@ -89,11 +89,25 @@ Layer *document_active_layer(Document &doc)
 
 /* `armature` is the nearest bone layer above `list` (with its world transform), for layers
  * bound to one of its bones: such a layer moves with the bone's change from the setup pose. */
+static bool layers_hold(const std::vector<Layer> &list, uint64_t id)
+{
+  for (const Layer &layer : list) {
+    if (layer.id == id || layers_hold(layer.children, id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool world_transform_in(const std::vector<Layer> &list, const Transform2D &parent, const Layer *armature,
                                const Transform2D &armature_world, bool setup_frame, uint64_t id,
                                Transform2D *r_transform, bool bound = false)
 {
   for (const Layer &layer : list) {
+    /* Only the way down to the layer: the bones' pose is costly to work out. */
+    if (layer.id != id && !layers_hold(layer.children, id)) {
+      continue;
+    }
     Transform2D transform = parent * layer.local_transform();
     /* `bound`: a group above already follows a bone, and its bone overrides this layer's. */
     const bool binds = armature && !bound && layer.followed_bone() != 0;

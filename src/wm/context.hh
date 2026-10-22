@@ -138,6 +138,8 @@ struct WindowManager {
     bool ctrl = false;
     bool alt = false;
     bool shift = false;
+    /* Wheel notches turned there (up positive). */
+    float wheel = 0.0f;
   };
   std::vector<SimulatedMouse> mouse_simulated;
 
