@@ -69,6 +69,11 @@ template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
   for (LayerMask &m : layer.masks) {
     f(m.line_reach_keys, m.line_reach);
   }
+  for (Modifier &m : layer.modifiers) {
+    if (m.type == ModifierType::Boolean) {
+      f(m.merge_smoothing_keys, m.merge_smoothing);
+    }
+  }
   /* A reference's drawing is built from its original's: its own channels are its offsets. */
   for (auto &[id, o] : layer.reference.points) {
     f(o.offset_keys, o.offset);
@@ -738,6 +743,13 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   /* A mask row's End Lines at Edge Reach. */
   for (size_t i = 0; i < layer.masks.size(); i++) {
     add("masks[" + std::to_string(i) + "].reach", layer.masks[i].line_reach_keys, layer.masks[i].line_reach);
+  }
+  /* A Boolean modifier's Smoothing. */
+  for (size_t i = 0; i < layer.modifiers.size(); i++) {
+    if (layer.modifiers[i].type == ModifierType::Boolean) {
+      add("modifiers[" + std::to_string(i) + "].smoothing", layer.modifiers[i].merge_smoothing_keys,
+          layer.modifiers[i].merge_smoothing);
+    }
   }
   if (!drawing) {
     return refs;

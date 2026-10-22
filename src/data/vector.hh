@@ -311,6 +311,14 @@ struct Shape {
   Style style;
   /* Not drawn (a reference hiding one of its original's shapes). */
   bool hidden = false;
+  /* Its fill, or its line, not drawn here because another layer's Boolean modifier draws it as part
+   * of its outline (a Boolean takes what its own shape draws: fill, line or both); still picked as
+   * this layer's. Set on evaluated drawings only, never saved. */
+  bool merged_fill = false;
+  bool merged_line = false;
+  /* Made by a Boolean modifier (evaluated drawings only, never saved): a brushed line lays its stamps
+   * along it as it is, having no setup shape of its own to lay them out on. */
+  bool merge_made = false;
   /* The material it takes its whole look from (data/material.hh), or 0 for its own look; and the
    * last one it was linked to, for naming a variant made from it ("Skin.001"). */
   uint64_t material = 0;

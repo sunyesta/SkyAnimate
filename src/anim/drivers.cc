@@ -366,6 +366,10 @@ Setting setting_find(Document &doc, uint64_t layer_id, const std::string &path)
     const std::string mod = m.name + ": ";
     if (rest == "show_viewport") return bool_setting(mod + "Viewport", &m.show_viewport);
     if (rest == "show_render") return bool_setting(mod + "Render", &m.show_render);
+    if (m.type == ModifierType::Boolean) {
+      if (rest == "smoothing") return float_setting(mod + "Smoothing", &m.merge_smoothing, 0.0f, 100.0f);
+      return {};
+    }
     if (m.type != ModifierType::Mirror) return {};
     if (rest == "axis_x") return bool_setting(mod + "Axis X", &m.axis_x);
     if (rest == "axis_y") return bool_setting(mod + "Axis Y", &m.axis_y);

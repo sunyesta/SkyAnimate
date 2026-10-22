@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #include "anim/deform.hh"
@@ -734,7 +735,34 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
     static const MaskPass::Stage GROW[] = {MaskPass::All};
     /* Inside the Stroke shrinks each area by its line's half width (worked out per shape). */
     const bool shrink = row.grow < 0.0f || row.inside_stroke;
-    for (int s = 0; s < (shrink ? 3 : 1); s++) {
+    /* Each layer's lines trim only its own fills: worked out a layer at a time on a spare bit, then
+     * added, so a group's inner lines (strands drawn over another layer's fill) don't cut the
+     * fills of the layers around them. */
+    const unsigned own = !nested ? MASK_NESTED_SCRATCH : 0u;
+    if (row.inside_stroke && !row.clip && own) {
+      stencil_fill(own, false);
+      std::function<void(const Layer &)> each_layer = [&](const Layer &layer) {
+        if (layer.is_group()) {
+          for (const Layer &child : layer.children) {
+            each_layer(child);
+          }
+          return;
+        }
+        for (const MaskPass::Stage stage : SHRINK) {
+          mask_pass_ = {row.grow, stage, row.fills_only, row.filled, row.extend, row.strokes_only, row.inside_stroke};
+          draw_mask_source(doc, layer, own, nested);
+        }
+        /* Into the row's shape, and the bit cleared for the next. */
+        stencil_where(own, own, scratch, scratch, GL_REPLACE);
+        stencil_fill(own, false);
+      };
+      for (const uint64_t id : row.layers) {
+        if (const Layer *source = layer_find(doc, id)) {
+          each_layer(*source);
+        }
+      }
+    }
+    for (int s = 0; s < (shrink ? 3 : 1) && !(row.inside_stroke && !row.clip && own); s++) {
       for (const uint64_t id : row.layers) {
         if (const Layer *source = layer_find(doc, id)) {
           mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend,
@@ -944,7 +972,8 @@ static uint64_t drawing_geometry_hash(const VectorDrawing &d)
     for (const ShapeEdge &e : s.edges) {
       h = hash_mix(hash_mix(h, uint64_t(e.curve)), uint64_t(e.segment));
     }
-    h = hash_mix(h, uint64_t(s.has_fill) | uint64_t(s.has_outline) << 1 | uint64_t(s.hidden) << 2);
+    h = hash_mix(h, uint64_t(s.has_fill) | uint64_t(s.has_outline) << 1 | uint64_t(s.hidden) << 2 |
+                        uint64_t(s.merged_fill) << 3 | uint64_t(s.merged_line) << 4);
     h = hash_mix(h, uint64_t(s.detail_level));
     h = hash_float(hash_color(hash_color(h, s.style.fill), s.style.line), s.style.line_width);
   }
@@ -1166,10 +1195,14 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     /* Each connected run of the shape's edges draws on its own (see shape_runs). */
     const std::vector<Shape> runs = shape_runs(drawing, drawing.shapes[shape_index]);
     for (size_t run_index = 0; run_index < runs.size(); run_index++) {
-      const Shape &shape = runs[run_index];
-      if (shape.hidden) {
+      Shape shape = runs[run_index];
+      /* Merged: another layer's Boolean draws its fill or line (or both), as part of its outline, and
+       * masks with them. */
+      if (shape.hidden || (shape.merged_fill && shape.merged_line)) {
         continue;
       }
+      shape.has_fill = shape.has_fill && !shape.merged_fill;
+      shape.has_outline = shape.has_outline && !shape.merged_line;
       bool closed = false;
       /* Quality sets the samples per segment, and the stray allowed where handles stretch a
        * segment: a quarter pixel at the viewport's default 12, finer for renders. */
@@ -1264,7 +1297,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
           const float extra = line_grow;
           const BrushPath shown = brush_path(drawing, shape, extra);
           std::vector<Shape> setup_runs;
-          if (shape_index < int(setup.shapes.size()) && setup.shapes.size() == drawing.shapes.size()) {
+          if (!shape.merge_made && shape_index < int(setup.shapes.size()) &&
+              setup.shapes.size() == drawing.shapes.size())
+          {
             setup_runs = shape_runs(setup, setup.shapes[shape_index]);
           }
           const BrushPath rest = run_index < setup_runs.size() ? brush_path(setup, setup_runs[run_index], extra) : shown;

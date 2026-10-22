@@ -201,9 +201,42 @@ const Layer *layer_clip_base(const Document &doc, const Layer &layer)
   return nullptr;
 }
 
+/* Whether `a` has a Boolean modifier (on in the viewport or renders) taking in shapes of `b`. */
+static bool merges(const Layer &a, uint64_t b)
+{
+  for (const Modifier &m : a.modifiers) {
+    if (m.type == ModifierType::Boolean && (m.show_viewport || m.show_render) &&
+        std::any_of(m.merge_targets.begin(), m.merge_targets.end(), [&](const MergeTarget &t) { return t.layer == b; }))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<LayerMask> layer_mask_cards(const Document &doc, const Layer &layer)
 {
   std::vector<LayerMask> cards = layer.masks;
+  /* Two layers merged into one outline don't mask each other (a Join Lines pair, say): the outline
+   * holds both, so it would cut the whole of either away. Steps left naming nothing go, and a card
+   * left with no steps. */
+  bool pruned = false;
+  for (LayerMask &card : cards) {
+    for (MaskStep &step : card.steps) {
+      const size_t before = step.layers.size();
+      std::erase_if(step.layers, [&](uint64_t id) {
+        const Layer *other = layer_find(doc, id);
+        return other && (merges(*other, layer.id) || merges(layer, id));
+      });
+      pruned |= step.layers.size() != before;
+    }
+    if (pruned) {
+      std::erase_if(card.steps, [](const MaskStep &step) { return step.layers.empty(); });
+    }
+  }
+  if (pruned) {
+    std::erase_if(cards, [](const LayerMask &card) { return card.steps.empty(); });
+  }
   if (layer.clip_to_below) {
     if (const Layer *base = layer_clip_base(doc, layer)) {
       /* Hidden outside the base. */

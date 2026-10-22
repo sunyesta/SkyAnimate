@@ -58,13 +58,25 @@ FetchContent_Declare(json
   SOURCE_SUBDIR do-not-build
 )
 
+# --- Clipper2: polygon booleans and offsets (the Merge modifier) --------------------------
+FetchContent_Declare(Clipper2
+  GIT_REPOSITORY https://github.com/AngusJohnson/Clipper2.git
+  GIT_TAG Clipper2_1.5.4
+  GIT_SHALLOW TRUE
+  SOURCE_SUBDIR CPP
+)
+set(CLIPPER2_UTILS OFF CACHE BOOL "" FORCE)
+set(CLIPPER2_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLIPPER2_TESTS OFF CACHE BOOL "" FORCE)
+set(CLIPPER2_USINGZ "OFF" CACHE STRING "" FORCE)
+
 # The Python installation to embed. Its DLL is copied next to the executable.
 set(OANIM_PYTHON_ROOT "C:/Python314" CACHE PATH "Root of the Python installation to embed")
 set(Python_ROOT_DIR ${OANIM_PYTHON_ROOT})
 find_package(Python 3.14 EXACT REQUIRED COMPONENTS Interpreter Development.Embed)
 set(PYBIND11_FINDPYTHON ON)
 
-FetchContent_MakeAvailable(SDL3 imgui pybind11 earcut miniz json)
+FetchContent_MakeAvailable(SDL3 imgui pybind11 earcut miniz json Clipper2)
 
 # Blender's number fields: Shift while dragging is precise (a tenth of the speed). ImGui makes
 # Shift ten times faster and has no setting for it, so its fetched copy is changed here (the same

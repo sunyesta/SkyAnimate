@@ -500,7 +500,22 @@ struct Bone {
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature };
+enum class ModifierType { Mirror, Armature, Boolean };
+
+/* Boolean: how its targets' shapes go with the layer's own. */
+enum class MergeOperation { Union, Subtract, Intersect };
+
+/* A layer whose shapes a Boolean modifier takes in, and which of them (their ids; empty: every
+ * shape that goes all the way round). */
+struct MergeTarget {
+  uint64_t layer = 0;
+  std::vector<uint64_t> shapes;
+  bool operator==(const MergeTarget &) const = default;
+};
+
+struct Modifier;
+/* Whether Apply can make it part of the drawing (all but Armature, which comes with the bone layer). */
+bool modifier_can_apply(const Modifier &m);
 
 struct Modifier {
   ModifierType type = ModifierType::Mirror;
@@ -521,6 +536,19 @@ struct Modifier {
   /* Mirrored points bound to a bone named ..._L follow ..._R (and the other way), as
    * Blender's mirror modifier flips vertex groups. */
   bool mirror_bones = true;
+  /* Boolean: the layer's own shapes (ids; empty: every one that goes all the way round) and the
+   * other layers' shapes made one outline with them, as posed; the result takes the first own
+   * shape's place and look, and the target shapes it took in stop drawing on their own layers.
+   * Smoothing rounds the corners where the outlines meet (a radius in the layer's units); it can
+   * be keyed. */
+  std::vector<uint64_t> merge_shapes;
+  std::vector<MergeTarget> merge_targets;
+  MergeOperation merge_operation = MergeOperation::Union;
+  float merge_smoothing = 0.0f;
+  /* Corners Only: the layer's shapes just grow the rounded corners where they meet the others (a
+   * fill layer under an outline layer's merge), taking nothing from them. */
+  bool merge_corners_only = false;
+  Channel<float> merge_smoothing_keys = Channel<float>::by_hand();
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;

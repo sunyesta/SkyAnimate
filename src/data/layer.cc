@@ -4,6 +4,11 @@
 
 namespace oanim {
 
+bool modifier_can_apply(const Modifier &m)
+{
+  return m.type != ModifierType::Armature;
+}
+
 static constexpr const char *MASK_EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
 
 const char *mask_extend_identifier(MaskExtend extend)

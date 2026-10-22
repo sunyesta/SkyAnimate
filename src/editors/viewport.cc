@@ -5680,7 +5680,8 @@ static void bone_parent_menus(Context &C, bool hovered)
 
 /* The top layer shown under the mouse: one with a filled shape there, or a line close by. */
 static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, ImVec2 mouse,
-                                  const std::vector<uint64_t> &local_view, int *r_shape = nullptr)
+                                  const std::vector<uint64_t> &local_view, int *r_shape = nullptr,
+                                  uint64_t skip = 0)
 {
   /* Local View hides the rest, so a click can't pick them. */
   const std::set<uint64_t> local = local_view_layers(doc, local_view);
@@ -5692,7 +5693,7 @@ static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, 
   const auto find = [&]() -> uint64_t {
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
       const Layer &layer = **it;
-      if (layer.type != LayerType::Vector) {
+      if (layer.type != LayerType::Vector || layer.id == skip) {
         continue;
       }
       const VectorDrawing drawing = layer_has_modifier_effect(doc, layer, false)
@@ -6270,13 +6271,27 @@ static void viewport_draw_contents(Area &area, Context &C)
       ui_bone_eyedropper_hover(under->name);
     }
   }
+  /* The shape eyedropper names the shape under the mouse, and its layer. */
+  if (mouse_here && ui_shape_eyedropper_active()) {
+    int shape = -1;
+    if (const Layer *under = layer_find(doc, layer_under_mouse(doc, view, io.MousePos, wm.local_view, &shape,
+                                                                ui_shape_eyedropper_skip())))
+    {
+      const VectorDrawing shown = layer_has_modifier_effect(doc, *under, false) ? layer_evaluated_drawing(doc, *under, false)
+                                                                                : layer_drawing(doc, *under);
+      if (shape >= 0 && shape < int(shown.shapes.size())) {
+        ui_shape_eyedropper_hover(under->name, shown.shapes[size_t(shape)].name);
+      }
+    }
+  }
   if (mouse_here && ui_layer_eyedropper_active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (const Layer *picking = layer_find(doc, ui_bone_eyedropper_armature())) {
       ui_bone_eyedropper_pick(C, pick_bone(doc, *picking, view, io.MousePos));
     }
     else if (ui_shape_eyedropper_active()) {
       int shape = -1;
-      const uint64_t layer = layer_under_mouse(doc, view, io.MousePos, wm.local_view, &shape);
+      const uint64_t layer = layer_under_mouse(doc, view, io.MousePos, wm.local_view, &shape,
+                                               ui_shape_eyedropper_skip());
       ui_shape_eyedropper_pick(C, layer, shape);
     }
     else {

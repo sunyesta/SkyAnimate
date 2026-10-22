@@ -157,7 +157,11 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
  * gets its layer and its index in the drawing as shown, and returns true when it's done. Clicks in
  * the Layers editor don't count. */
 void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
-                               const char *tag = "");
+                               const char *tag = "", uint64_t skip = 0);
+/* The layer it looks past (`skip`), or 0. */
+uint64_t ui_shape_eyedropper_skip();
+/* The shape under the mouse this frame: the cue at the mouse says "Layer | Shape". */
+void ui_shape_eyedropper_hover(const std::string &layer_name, const std::string &shape_name);
 bool ui_shape_eyedropper_active();
 /* Whether it's on for `tag` (which button started it: "BRUSH", "FILL"...). */
 bool ui_shape_eyedropper_active(const char *tag);

@@ -1195,6 +1195,10 @@ struct LayerEyedropper {
   std::string tag;
   /* A click this frame went to it (a layer, or nothing under the mouse): not a click elsewhere. */
   bool took_click = false;
+  /* A layer the shape eyedropper looks past (a Boolean's own layer, drawn over what it merges). */
+  uint64_t skip = 0;
+  /* The shape under the mouse this frame, "Layer | Shape", said at the mouse as it is. */
+  std::string hover_shape;
 };
 LayerEyedropper g_layer_eyedropper;
 /* The document the eyedropper's cue names layers from. */
@@ -1256,9 +1260,14 @@ void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pic
 }
 
 void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
-                               const char *tag)
+                               const char *tag, uint64_t skip)
 {
-  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), {}, {}, std::move(cue), tag ? tag : "", false};
+  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), {}, {}, std::move(cue), tag ? tag : "", false, skip};
+}
+
+uint64_t ui_shape_eyedropper_skip()
+{
+  return ui_shape_eyedropper_active() ? g_layer_eyedropper.skip : 0;
 }
 
 void ui_bone_eyedropper_start(uint64_t armature, std::function<bool(Context &, uint64_t)> pick,
@@ -1270,6 +1279,11 @@ void ui_bone_eyedropper_start(uint64_t armature, std::function<bool(Context &, u
 void ui_bone_eyedropper_hover(const std::string &bone_name)
 {
   g_layer_eyedropper.hover = bone_name;
+}
+
+void ui_shape_eyedropper_hover(const std::string &layer_name, const std::string &shape_name)
+{
+  g_layer_eyedropper.hover_shape = layer_name + " | " + shape_name;
 }
 
 uint64_t ui_bone_eyedropper_armature()
@@ -1641,11 +1655,13 @@ void ui_layer_eyedropper_overlay()
   ImDrawList *dl = ImGui::GetForegroundDrawList();
   const ImVec2 m = io.MousePos;
   eyedropper_icon(dl, ImVec2(m.x + 14.0f, m.y - 14.0f), 7.0f, IM_COL32(255, 255, 255, 230));
-  /* Over a bone: its name (what a click picks); else what to do. */
-  const std::string cue = !e.hover.empty() ? e.hover + "  |  click to pick, Esc cancels"
-                          : e.cue          ? e.cue()
-                                           : std::string("Click a layer (viewport or Layers editor)  |  Esc cancels");
+  /* Over a shape: its layer and name; over a bone: its name (what a click picks); else what to do. */
+  const std::string cue = !e.hover_shape.empty() ? e.hover_shape
+                          : !e.hover.empty()     ? e.hover + "  |  click to pick, Esc cancels"
+                          : e.cue                ? e.cue()
+                                                 : std::string("Click a layer (viewport or Layers editor)  |  Esc cancels");
   e.hover.clear();
+  e.hover_shape.clear();
   dl->AddText(ImVec2(m.x + 26.0f, m.y - 22.0f), IM_COL32(255, 255, 255, 230), cue.c_str());
 }
 

@@ -18,6 +18,7 @@ set(OANIM_SOURCES
   src/anim/expression.cc
   src/anim/channel.cc
   src/anim/deform.cc
+  src/anim/merge.cc
   src/anim/draw_order.cc
   src/anim/layer_pick.cc
   src/anim/dynamics.cc
@@ -80,11 +81,14 @@ set(OANIM_SOURCES
 )
 
 add_executable(OpenAnimate ${OANIM_SOURCES})
+# Clipper2's inline code, optimized in here, has unreachable code of its own (C4702 comes from the
+# optimizer, past any pragma).
+set_source_files_properties(src/anim/merge.cc PROPERTIES COMPILE_OPTIONS "/wd4702")
 
 target_include_directories(OpenAnimate PRIVATE src)
 # Header-only libraries as system headers, so /W4 doesn't report their warnings.
 target_include_directories(OpenAnimate SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include ${json_SOURCE_DIR}/single_include)
-target_link_libraries(OpenAnimate PRIVATE oanim_imgui SDL3::SDL3 pybind11::embed miniz opengl32 ws2_32 dbghelp
+target_link_libraries(OpenAnimate PRIVATE oanim_imgui SDL3::SDL3 pybind11::embed miniz Clipper2 opengl32 ws2_32 dbghelp
   mfplat mfreadwrite mfuuid windowscodecs ole32 propsys shell32)
 target_compile_definitions(OpenAnimate PRIVATE
   OANIM_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts"
@@ -157,6 +161,10 @@ add_test(NAME layer_symmetrize
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_symmetrize.py)
 add_test(NAME make_segment
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_make_segment.py)
+add_test(NAME boolean_modifier
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_boolean_modifier.py)
+add_test(NAME modifier_apply
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_modifier_apply.py)
 add_test(NAME transform_panel
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_panel.py)
 add_test(NAME layer_clipboard

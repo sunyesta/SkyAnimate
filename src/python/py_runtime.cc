@@ -1858,7 +1858,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     py::list result;
     for (const Modifier &mod : layer_or_raise(id).modifiers) {
       py::dict d;
-      d["type"] = mod.type == ModifierType::Armature ? "ARMATURE" : "MIRROR";
+      d["type"] = mod.type == ModifierType::Armature ? "ARMATURE" : mod.type == ModifierType::Boolean ? "BOOLEAN" : "MIRROR";
       d["name"] = mod.name;
       d["show_viewport"] = mod.show_viewport;
       d["show_render"] = mod.show_render;
@@ -1869,6 +1869,38 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["merge"] = mod.merge;
         d["merge_distance"] = mod.merge_distance;
         d["mirror_bones"] = mod.mirror_bones;
+      }
+      if (mod.type == ModifierType::Boolean) {
+        const Document &doc = *current_context().document;
+        const Layer &self = layer_or_raise(id);
+        const auto shape_names = [](const Layer *l, const std::vector<uint64_t> &ids) {
+          py::list names;
+          for (const uint64_t sid : ids) {
+            for (const Shape &s : l ? l->drawing.shapes : std::vector<Shape>()) {
+              if (s.id == sid) {
+                names.append(s.name);
+              }
+            }
+          }
+          return names;
+        };
+        py::list targets;
+        py::dict target_shapes;
+        for (const MergeTarget &t : mod.merge_targets) {
+          const Layer *l = layer_find(doc, t.layer);
+          targets.append(l ? l->name : std::string());
+          if (l) {
+            target_shapes[py::str(l->name)] = shape_names(l, t.shapes);
+          }
+        }
+        d["targets"] = targets;
+        d["target_shapes"] = target_shapes;
+        d["shapes"] = shape_names(&self, mod.merge_shapes);
+        d["operation"] = mod.merge_operation == MergeOperation::Union      ? "UNION"
+                         : mod.merge_operation == MergeOperation::Subtract ? "SUBTRACT"
+                                                                           : "INTERSECT";
+        d["smoothing"] = mod.merge_smoothing;
+        d["corners_only"] = mod.merge_corners_only;
       }
       result.append(d);
     }
@@ -1910,6 +1942,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (mod.type == ModifierType::Mirror && key == "mirror_bones") {
         mod.mirror_bones = value.cast<bool>();
       }
+      else if (mod.type == ModifierType::Boolean && key == "smoothing") {
+        mod.merge_smoothing = std::max(0.0f, value.cast<float>());
+      }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
       }
@@ -1931,8 +1966,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         std::vector<float2> outline;
         for (const Shape &shape : d.shapes) {
           bool closed = false;
-          const bool connected = shape_outline(d, shape, 4, outline, nullptr, &closed);
-          shapes.append(py::make_tuple(shape.name, closed, connected));
+          const bool connected = shape_outline(d, shape, 16, outline, nullptr, &closed);
+          /* The area it fills (0 for an open one). */
+          double area = 0.0;
+          for (size_t k = 0; closed && k < outline.size(); k++) {
+            const float2 a = outline[k], b = outline[(k + 1) % outline.size()];
+            area += double(a.x) * b.y - double(b.x) * a.y;
+          }
+          const char *merged = shape.merged_fill && shape.merged_line ? "ALL"
+                               : shape.merged_fill                     ? "FILL"
+                               : shape.merged_line                     ? "LINE"
+                                                                       : "";
+          shapes.append(py::make_tuple(shape.name, closed, connected, merged, std::fabs(area) * 0.5));
         }
         return py::make_tuple(points, int(d.curves.size()), shapes);
       },

@@ -189,8 +189,9 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
   LineCutter cutter;
   bool any_brush = false;
   for (const Layer *l = &layer; l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
-    /* Each card that ends lines is a level of its own: the lines show where every one of them shows. */
-    for (const LayerMask &card : l->masks) {
+    /* Each card that ends lines is a level of its own: the lines show where every one of them shows.
+     * (As layer_mask_cards gives them: two layers merged into one outline don't cut each other.) */
+    for (const LayerMask &card : layer_mask_cards(doc, *l)) {
       bool flat = false;
       if (!(render ? card.render : card.enabled) || !mask_card_ends_lines(card, &flat)) {
         continue;

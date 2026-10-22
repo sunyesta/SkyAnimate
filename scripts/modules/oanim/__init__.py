@@ -436,7 +436,8 @@ class _Layer:
 
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
-        shapes [(name, closed, connected)])."""
+        shapes [(name, closed, connected, merged, area)]): merged, what another layer's Boolean
+        modifier draws of it instead ("ALL", "FILL", "LINE" or ""); area, what a closed one fills."""
         points, curves, shapes = _oanim.layer_evaluated(self._id, render)
         return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
 

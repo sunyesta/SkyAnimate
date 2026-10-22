@@ -493,7 +493,7 @@ static json layer_to_json(const Layer &layer)
   if (!layer.modifiers.empty()) {
     json modifiers = json::array();
     for (const Modifier &m : layer.modifiers) {
-      json mj = {{"type", m.type == ModifierType::Armature ? "ARMATURE" : "MIRROR"},
+      json mj = {{"type", m.type == ModifierType::Armature ? "ARMATURE" : m.type == ModifierType::Boolean ? "BOOLEAN" : "MIRROR"},
                  {"name", m.name},
                  {"show_viewport", m.show_viewport},
                  {"show_render", m.show_render},
@@ -505,6 +505,20 @@ static json layer_to_json(const Layer &layer)
         mj["merge"] = m.merge;
         mj["merge_distance"] = num(m.merge_distance);
         mj["mirror_bones"] = m.mirror_bones;
+      }
+      if (m.type == ModifierType::Boolean) {
+        mj["shapes"] = m.merge_shapes;
+        json targets = json::array();
+        for (const MergeTarget &t : m.merge_targets) {
+          targets.push_back({{"layer", t.layer}, {"shapes", t.shapes}});
+        }
+        mj["targets"] = std::move(targets);
+        mj["operation"] = m.merge_operation == MergeOperation::Union      ? "UNION"
+                          : m.merge_operation == MergeOperation::Subtract ? "SUBTRACT"
+                                                                          : "INTERSECT";
+        mj["smoothing"] = num(m.merge_smoothing);
+        mj["corners_only"] = m.merge_corners_only;
+        put_keys(mj, "smoothing_keys", m.merge_smoothing_keys);
       }
       modifiers.push_back(std::move(mj));
     }
@@ -1707,8 +1721,20 @@ static Layer layer_from_json(const json &j, int depth)
       continue;
     }
     Modifier m;
-    m.type = get_string(mj, "type", "MIRROR") == "ARMATURE" ? ModifierType::Armature : ModifierType::Mirror;
-    m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature" : "Mirror");
+    const std::string type = get_string(mj, "type", "MIRROR");
+    /* The Boolean modifier was called Merge at first: files saying MERGE open as Boolean. */
+    m.type = type == "ARMATURE"                       ? ModifierType::Armature
+             : type == "BOOLEAN" || type == "MERGE" ? ModifierType::Boolean
+                                                    : ModifierType::Mirror;
+    m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature"
+                                    : m.type == ModifierType::Boolean  ? "Boolean"
+                                                                     : "Mirror");
+    /* Its old default name ("Merge", "Merge.001") goes with it. */
+    if (type == "MERGE" && m.name.rfind("Merge", 0) == 0 &&
+        (m.name.size() == 5 || (m.name.size() == 9 && m.name[5] == '.')))
+    {
+      m.name = "Boolean" + m.name.substr(5);
+    }
     m.show_viewport = get_bool(mj, "show_viewport", true);
     m.show_render = get_bool(mj, "show_render", true);
     m.show_expanded = get_bool(mj, "show_expanded", true);
@@ -1718,6 +1744,32 @@ static Layer layer_from_json(const json &j, int depth)
     m.merge = get_bool(mj, "merge", true);
     m.merge_distance = std::max(0.0f, get_float(mj, "merge_distance", m.merge_distance));
     m.mirror_bones = get_bool(mj, "mirror_bones", true);
+    if (m.type == ModifierType::Boolean) {
+      const auto ids = [](const json &arr) {
+        std::vector<uint64_t> out;
+        if (arr.is_array()) {
+          for (const json &v : arr) {
+            if (v.is_number_unsigned() || v.is_number_integer()) {
+              out.push_back(v.get<uint64_t>());
+            }
+          }
+        }
+        return out;
+      };
+      m.merge_shapes = ids(mj.value("shapes", json::array()));
+      for (const json &tj : get_array(mj, "targets")) {
+        if (tj.is_object() && tj.contains("layer") && tj["layer"].is_number()) {
+          m.merge_targets.push_back({tj["layer"].get<uint64_t>(), ids(tj.value("shapes", json::array()))});
+        }
+      }
+      const std::string op = get_string(mj, "operation", "UNION");
+      m.merge_operation = op == "SUBTRACT"    ? MergeOperation::Subtract
+                          : op == "INTERSECT" ? MergeOperation::Intersect
+                                              : MergeOperation::Union;
+      m.merge_smoothing = std::max(0.0f, get_float(mj, "smoothing", 0.0f));
+      m.merge_corners_only = get_bool(mj, "corners_only", false);
+      get_keys(mj, "smoothing_keys", m.merge_smoothing_keys);
+    }
     layer.modifiers.push_back(std::move(m));
   }
   for (const json &bj : get_array(j, "bones")) {

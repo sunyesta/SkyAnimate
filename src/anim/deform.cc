@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "anim/merge.hh"
 #include "anim/reference.hh"
 #include "data/bones.hh"
 #include "data/detail.hh"
@@ -361,11 +362,17 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
   if (layer.type == LayerType::Vector && drawing_has_detail(layer_drawing(doc, layer))) {
     return true;
   }
+  if (layer.type == LayerType::Vector && merge_takes_from(doc, layer, render)) {
+    return true;
+  }
   for (const Modifier &m : layer.modifiers) {
     if (!modifier_on(m, render)) {
       continue;
     }
     if (m.type == ModifierType::Mirror && (m.axis_x || m.axis_y)) {
+      return true;
+    }
+    if (m.type == ModifierType::Boolean) {
       return true;
     }
     if (m.type == ModifierType::Armature && layer.followed_bone() == 0 && !layer_binding_group(doc, layer.id)) {
@@ -415,6 +422,13 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
     }
     transform_drawing(drawing, reference_match_transform(doc, layer));
     drawing_detail_final_handles(drawing);
+    /* Its own Merges still come last (an outline copy of a fill joining another layer's line). */
+    for (const Modifier &m : layer.modifiers) {
+      if (modifier_on(m, render) && m.type == ModifierType::Boolean) {
+        merge_modifier_apply(doc, layer, m, drawing, render);
+      }
+    }
+    merge_mark_taken(doc, layer, drawing, render);
     return drawing;
   }
   VectorDrawing drawing = layer_drawing(doc, layer);
@@ -436,6 +450,14 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
   }
   /* Handles scale as the bones and Mirror move them, so the final ones can come last. */
   drawing_detail_final_handles(drawing);
+  /* Merges come last, wherever they are in the stack: they join the drawing as posed. */
+  for (const Modifier &m : layer.modifiers) {
+    if (modifier_on(m, render) && m.type == ModifierType::Boolean) {
+      merge_modifier_apply(doc, layer, m, drawing, render);
+    }
+  }
+  /* Shapes another layer's Boolean draws as part of its outline don't draw here too. */
+  merge_mark_taken(doc, layer, drawing, render);
   return drawing;
 }
 

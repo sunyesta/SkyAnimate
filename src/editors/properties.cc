@@ -18,10 +18,13 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/deform.hh"
 #include "anim/drivers.hh"
 #include "anim/draw_order.hh"
+#include "anim/merge.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
+#include "core/log.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
 #include "data/bones.hh"
@@ -1561,6 +1564,10 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
     dl->AddTriangleFilled(ImVec2(c.x + s * 0.15f, c.y - s), ImVec2(c.x + s, c.y + s), ImVec2(c.x + s * 0.15f, c.y + s),
                           COL_MOD_ICON);
   }
+  else if (type == ModifierType::Boolean) {
+    dl->AddCircle(ImVec2(c.x - s * 0.35f, c.y), s * 0.65f, COL_MOD_ICON, 0, 1.3f);
+    dl->AddCircleFilled(ImVec2(c.x + s * 0.35f, c.y), s * 0.65f, COL_MOD_ICON);
+  }
   else {
     const ImVec2 head(c.x - s * 0.8f, c.y + s * 0.8f), tail(c.x + s * 0.8f, c.y - s * 0.8f);
     const ImVec2 mid(c.x - s * 0.45f, c.y + s * 0.45f), n(s * 0.3f, s * 0.3f);
@@ -1612,6 +1619,343 @@ static bool axis_toggles(const char *id, bool *x, bool *y)
   return changed;
 }
 
+using SegmentIcon = std::function<void(ImDrawList *, ImVec2, float, int, ImU32)>;
+static int segmented(const char *id, int value, int count, const char *const *names, const char *const *tips,
+                     const SegmentIcon &icon = {});
+
+/* "|" between ids, as the Boolean operator takes shapes and layers. */
+static std::string id_list(const std::vector<uint64_t> &ids)
+{
+  std::string out;
+  for (const uint64_t id : ids) {
+    out += (out.empty() ? "" : "|") + std::to_string(id);
+  }
+  return out;
+}
+
+static bool search_matches(const std::string &name, const std::string &needle);
+
+/* Which shapes of `drawing` a Boolean takes, picked in a popup of checkboxes ("All shapes" for every
+ * one going all the way round). Returns true, with the new picks, when they change. */
+static bool merge_shape_picker(const char *id, const VectorDrawing &drawing, const std::vector<uint64_t> &picked,
+                               std::vector<uint64_t> *r_picked)
+{
+  std::string label;
+  if (picked.empty()) {
+    label = "All shapes";
+  }
+  else {
+    for (const Shape &s : drawing.shapes) {
+      if (std::find(picked.begin(), picked.end(), s.id) != picked.end()) {
+        label += (label.empty() ? "" : ", ") + s.name;
+      }
+    }
+  }
+  bool changed = false;
+  ImGui::PushID(id);
+  const float width = ImGui::CalcItemWidth();
+  if (ImGui::Button((label + "##pick").c_str(), ImVec2(width, 0))) {
+    ImGui::OpenPopup("##shapes");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Which shapes merge: all that go all the way round, or the ones ticked");
+  }
+  if (ImGui::BeginPopup("##shapes")) {
+    static std::string search;
+    if (ImGui::IsWindowAppearing()) {
+      search.clear();
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(std::max(ImGui::CalcItemWidth(), 160.0f));
+    ImGui::InputTextWithHint("##search", "Search shapes", &search);
+    std::string needle = search;
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+    bool all = picked.empty();
+    if (ImGui::Checkbox("All shapes", &all) && all) {
+      r_picked->clear();
+      changed = true;
+    }
+    ImGui::Separator();
+    for (const Shape &s : drawing.shapes) {
+      if (!merge_takes_shape(drawing, s, {}) || !search_matches(s.name, needle)) {
+        continue;
+      }
+      bool on = std::find(picked.begin(), picked.end(), s.id) != picked.end();
+      ImGui::PushID(int(s.id));
+      if (ImGui::Checkbox(s.name.c_str(), &on)) {
+        *r_picked = picked;
+        if (on) {
+          r_picked->push_back(s.id);
+        }
+        else {
+          std::erase(*r_picked, s.id);
+        }
+        changed = true;
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopID();
+  return changed;
+}
+
+/* Whether `name` holds `needle` (already lower case), any case: the dropdowns' search. */
+static bool search_matches(const std::string &name, const std::string &needle)
+{
+  std::string lower = name;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+  return lower.find(needle) != std::string::npos;
+}
+
+/* A dropdown of layers as Parent Bone's is of bones: a search field on top, focused as it opens
+ * (any part of the name, any case); Enter takes the first layer left. Returns the layer picked, or 0. */
+static uint64_t layer_search_combo(const char *id, const char *preview, const std::vector<const Layer *> &choices,
+                                   uint64_t current)
+{
+  uint64_t picked = 0;
+  if (ImGui::BeginCombo(id, preview, ImGuiComboFlags_HeightLarge)) {
+    static std::string search;
+    if (ImGui::IsWindowAppearing()) {
+      search.clear();
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-1);
+    const bool entered = ImGui::InputTextWithHint("##search", "Search layers", &search,
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+    std::string needle = search;
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+    const Layer *first = nullptr;
+    for (const Layer *l : choices) {
+      if (!search_matches(l->name, needle)) {
+        continue;
+      }
+      first = first ? first : l;
+      ImGui::PushID(int(l->id));
+      if (ImGui::Selectable(l->name.c_str(), l->id == current) && l->id != current) {
+        picked = l->id;
+      }
+      ImGui::PopID();
+    }
+    if (!first) {
+      ImGui::TextDisabled(needle.empty() ? "No other drawing layers" : "No layer named like that");
+    }
+    if (entered && first) {
+      picked = first->id != current ? first->id : 0;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndCombo();
+  }
+  return picked;
+}
+
+/* The Boolean eyedropper: a shape clicked in the viewport, and its layer, go into Boolean `index` of
+ * layer `owner`, in place of layer `replace` (0: as a new one). It looks past the owner, which may
+ * be drawn over what it merges; a shape not going all the way round can't merge, so it waits for
+ * another click. */
+static void merge_eyedropper_start(uint64_t owner, int index, uint64_t replace, const std::string &tag)
+{
+  ui_shape_eyedropper_start(
+      [owner, index, replace](Context &C, uint64_t layer_id, int shape_index) {
+        Document &doc = *C.document;
+        Layer *own = layer_find(doc, owner);
+        const Layer *clicked = layer_find(doc, layer_id);
+        if (!own || index >= int(own->modifiers.size()) || own->modifiers[size_t(index)].type != ModifierType::Boolean) {
+          return true;
+        }
+        if (!clicked || clicked->id == owner || clicked->type != LayerType::Vector) {
+          return false;
+        }
+        const VectorDrawing shown = layer_evaluated_drawing(doc, *clicked, false);
+        if (shape_index < 0 || shape_index >= int(shown.shapes.size())) {
+          return false;
+        }
+        const Shape &shape = shown.shapes[size_t(shape_index)];
+        /* The Boolean's layer is the one the operator changes. */
+        doc.active_layer = owner;
+        OpArgs args{{"index", std::to_string(index)},
+                    {"pick", std::to_string(clicked->id)},
+                    {"pick_shape", std::to_string(shape.id)}};
+        if (replace != 0) {
+          args["replace"] = std::to_string(replace);
+        }
+        /* A shape that can't merge (not going all the way round) waits for another click. */
+        return operator_call(C, "object.modifier_boolean_set", args) == OpStatus::Finished;
+      },
+      [owner] { return std::string("Click a shape to merge it in  |  Esc cancels"); }, tag.c_str(), owner);
+}
+
+static void merge_drawing_layers(const std::vector<Layer> &list, std::vector<const Layer *> &r)
+{
+  for (const Layer &l : list) {
+    if (l.type == LayerType::Vector) {
+      r.push_back(&l);
+    }
+    merge_drawing_layers(l.children, r);
+  }
+}
+
+/* A Boolean modifier's body: the layer's own shapes, the layers merged in (each with its shapes), the
+ * operation, Smoothing (keyable) and Corners Only. Apply is the header menu's (Ctrl A). */
+static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+{
+  Document &doc = *C.document;
+  const std::string idx = std::to_string(index);
+  const auto set = [&](std::initializer_list<std::pair<const std::string, std::string>> args) {
+    OpArgs a(args);
+    a["index"] = idx;
+    operator_call(C, "object.modifier_boolean_set", a);
+  };
+  std::vector<uint64_t> picks;
+  modifier_row_label("Shapes", column,
+                     "This layer's shapes the others merge into; the result takes the first one's place and look");
+  if (merge_shape_picker("##own", layer.drawing, m.merge_shapes, &picks)) {
+    set({{"shapes", id_list(picks)}});
+  }
+
+  /* The layers merged in: a row each (the layer, as Parent Bone's dropdown with its search; its
+   * shapes; the eyedropper; x), then one to add a layer. */
+  modifier_row_label("Layers", column,
+                     "The layers whose shapes join this layer's, as they're posed. Shapes merged in stop drawing on "
+                     "their own layer, so nothing is drawn twice. The eyedropper takes a shape you click, and its layer");
+  std::vector<uint64_t> ids;
+  for (const MergeTarget &t : m.merge_targets) {
+    ids.push_back(t.layer);
+  }
+  std::vector<const Layer *> drawings;
+  merge_drawing_layers(doc.layers, drawings);
+  const float h = ImGui::GetFrameHeight();
+  int remove = -1;
+  for (int t = 0; t <= int(m.merge_targets.size()); t++) {
+    const bool adding = t == int(m.merge_targets.size());
+    const MergeTarget target = adding ? MergeTarget{} : m.merge_targets[t];
+    const Layer *l = adding ? nullptr : layer_find(doc, target.layer);
+    ImGui::PushID(t);
+    if (t > 0) {
+      modifier_row_label("", column);
+    }
+    /* Layers it can take: drawings other than this one and the ones already in. */
+    std::vector<const Layer *> choices;
+    for (const Layer *d : drawings) {
+      if (d->id != layer.id && (d->id == target.layer || std::find(ids.begin(), ids.end(), d->id) == ids.end())) {
+        choices.push_back(d);
+      }
+    }
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float layer_w = adding ? avail - h - 2.0f : (avail - h * 2.0f - 8.0f) * 0.5f;
+    /* Hidden, a layer isn't joined; it still cuts (Subtract, Intersect), as a mask shape does. */
+    const bool shown = adding || (l && (layer_shown_in_document(doc, target.layer) ||
+                                        m.merge_operation != MergeOperation::Union));
+    ImGui::SetNextItemWidth(layer_w);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(shown ? ImGuiCol_Text : ImGuiCol_TextDisabled));
+    const uint64_t picked = layer_search_combo("##layer", adding ? "Add Layer..." : l ? l->name.c_str() : "(gone)",
+                                               choices, target.layer);
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(adding ? "Add another layer: pick it, or click one of its shapes with the eyedropper"
+                        : !shown ? "Hidden: it isn't joined while it's hidden (with Subtract or Intersect it still "
+                                   "cuts, as a mask shape does)"
+                                 : "A layer merged in: pick another to merge it instead");
+    }
+    if (picked != 0) {
+      std::vector<uint64_t> next = ids;
+      if (adding) {
+        next.push_back(picked);
+      }
+      else {
+        next[size_t(t)] = picked;
+      }
+      set({{"targets", id_list(next)}});
+    }
+    if (!adding) {
+      ImGui::SameLine(0, 2);
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - h * 2.0f - 6.0f);
+      std::vector<uint64_t> target_picks;
+      if (l && merge_shape_picker("##target_shapes", l->drawing, target.shapes, &target_picks)) {
+        set({{"target", std::to_string(target.layer)}, {"target_shapes", id_list(target_picks)}});
+      }
+    }
+    ImGui::SameLine(0, 2);
+    const std::string tag = "BOOLEAN:" + std::to_string(layer.id) + ":" + idx + ":" + std::to_string(target.layer);
+    if (ui_pick_button("##pick", adding ? "Eyedropper: click a shape to merge in (its layer comes with it)"
+                                        : "Eyedropper: click a shape to merge in its place (its layer comes with it)",
+                       ui_shape_eyedropper_active(tag.c_str())))
+    {
+      merge_eyedropper_start(layer.id, index, target.layer, tag);
+    }
+    if (!adding) {
+      ImGui::SameLine(0, 2);
+      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+      if (ImGui::Button("x", ImVec2(h, 0))) {
+        remove = t;
+      }
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Stop merging this layer");
+      }
+    }
+    ImGui::PopID();
+  }
+  if (remove >= 0) {
+    std::vector<uint64_t> rest = ids;
+    rest.erase(rest.begin() + remove);
+    set({{"targets", id_list(rest)}});
+  }
+  ImGui::Spacing();
+
+  static const char *const OP_NAMES[] = {"Union", "Subtract", "Intersect"};
+  static const char *const OP_TIPS[] = {
+      "One outline round them all: the corners where they meet can be rounded",
+      "This layer's shapes with the others cut away, the outline running on along the cut",
+      "Only where this layer's shapes and the others overlap"};
+  static const char *const OP_IDS[] = {"UNION", "SUBTRACT", "INTERSECT"};
+  modifier_row_label("Operation", column, "How the other layers' shapes go with this layer's");
+  const int op = segmented("##operation", int(m.merge_operation), 3, OP_NAMES, OP_TIPS, {});
+  if (op >= 0 && op != int(m.merge_operation)) {
+    set({{"operation", OP_IDS[op]}});
+  }
+
+  /* Smoothing: keyable, with its key button, as a mask's Reach. */
+  const std::string path = "modifiers[" + idx + "].smoothing";
+  const int key_state = layer_key_state(layer, {path}, doc.frame_current);
+  modifier_row_label("Smoothing", column,
+                     "Rounds the corners where the outlines meet, as a radius: 0 keeps them sharp. Only there: the "
+                     "shapes' own corners stay as drawn. It can be keyed");
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+  const int tint = ui_key_tint_push(key_state);
+  const int driven = ui_driver_field_begin(C, layer.id, path, -1);
+  float smoothing = m.merge_smoothing;
+  if (ImGui::DragFloat("##smoothing", &smoothing, 0.001f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+    /* Shown as it changes; one undo step when let go. */
+    m.merge_smoothing = smoothing;
+  }
+  ui_driver_typed(C, layer.id, path, -1);
+  ui_driver_field_end(C, layer.id, path, -1, driven);
+  ImGui::PopStyleColor(tint);
+  if (ImGui::IsItemDeactivatedAfterEdit()) {
+    char value[32];
+    std::snprintf(value, sizeof(value), "%g", double(m.merge_smoothing));
+    set({{"smoothing", value}});
+  }
+  ImGui::SameLine(0, 4);
+  if (ui_key_button("##smoothing_key", key_state)) {
+    operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(layer.id)}, {"paths", path}});
+  }
+  ui_flash_row(layer.id, path);
+  modifier_row_label("", column);
+  bool corners = m.merge_corners_only;
+  ImGui::BeginDisabled(m.merge_operation != MergeOperation::Union);
+  if (ImGui::Checkbox("Corners Only", &corners)) {
+    set({{"corners_only", corners ? "1" : "0"}});
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Only grow the rounded corners where the shapes meet, taking nothing from the other layers: "
+                      "for a fill layer whose outline layer has the Boolean, so the rounded corners are filled too "
+                      "(give both the same Smoothing)");
+  }
+}
+
 /* Blender's modifier stack: Add Modifier, then a box per modifier, top first. Drag a box by
  * its handle (the dots on the right) to change the order. */
 static void modifiers_panel(Context &C, Layer &layer)
@@ -1626,15 +1970,25 @@ static void modifiers_panel(Context &C, Layer &layer)
     if (ImGui::MenuItem("Mirror")) {
       operator_call(C, "object.modifier_add", {{"type", "MIRROR"}});
     }
+    if (ImGui::MenuItem("Boolean")) {
+      operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Join this layer's shapes with other layers' into one outline, the corners where they "
+                        "meet rounded as you like");
+    }
     ImGui::EndPopup();
   }
   ImGui::Spacing();
 
-  int remove = -1, drag_from = -1, drag_to = -1;
+  int remove = -1, drag_from = -1, drag_to = -1, apply = -1, duplicate = -1;
   const float h = ImGui::GetFrameHeight();
+  /* Apply needs the setup frame, as the rig's changes do. */
+  const bool setup = doc.frame_current == 0;
   for (int i = 0; i < int(layer.modifiers.size()); i++) {
     Modifier &m = layer.modifiers[i];
     const bool armature = m.type == ModifierType::Armature;
+    const bool can_apply = modifier_can_apply(m) && setup;
     ImGui::PushID(i);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->ChannelsSplit(2);
@@ -1655,7 +2009,7 @@ static void modifiers_panel(Context &C, Layer &layer)
     ImGui::Dummy(ImVec2(h, h));
     modifier_type_icon(dl, ImVec2(icon_at.x + h * 0.5f, icon_at.y + h * 0.5f), h * 0.3f, m.type);
     ImGui::SameLine(0, 2);
-    const float right_w = h * 3.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 6.0f;
+    const float right_w = h * 4.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 8.0f;
     ImGui::SetNextItemWidth(std::max(40.0f, inner_w - (ImGui::GetCursorScreenPos().x - box_min.x) - right_w));
     ImGui::InputText("##name", &m.name);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -1671,7 +2025,43 @@ static void modifiers_panel(Context &C, Layer &layer)
       m.show_render = !m.show_render;
       C.undo->push("Modifier in Renders", doc);
     }
+    /* Blender's header menu: Apply, Duplicate, Move to First / Last. */
     ImGui::SameLine(0, 4);
+    const ImVec2 menu_at = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##menu", ImVec2(h, h))) {
+      ImGui::OpenPopup("##modifier_menu");
+    }
+    if (ImGui::IsItemHovered()) {
+      dl->AddRectFilled(menu_at, menu_at + ImVec2(h, h), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
+    }
+    ImGui::RenderArrow(dl, ImVec2(menu_at.x + h * 0.22f, menu_at.y + h * 0.22f), COL_MOD_ICON, ImGuiDir_Down, 0.75f);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Apply, duplicate or move the modifier");
+    }
+    if (ImGui::BeginPopup("##modifier_menu")) {
+      if (ImGui::MenuItem("Apply", "Ctrl A", false, can_apply)) {
+        apply = i;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(armature ? "The Armature modifier can't be applied: it comes with the bone layer"
+                          : !setup ? "On Setup (frame 0): make it part of the drawing"
+                                   : "Make it part of the drawing, and remove it");
+      }
+      if (ImGui::MenuItem("Duplicate", "Shift D", false, !armature)) {
+        duplicate = i;
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Move to First", nullptr, false, i > 0)) {
+        drag_from = i;
+        drag_to = 0;
+      }
+      if (ImGui::MenuItem("Move to Last", nullptr, false, i + 1 < int(layer.modifiers.size()))) {
+        drag_from = i;
+        drag_to = int(layer.modifiers.size());
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::SameLine(0, 2);
     ImGui::BeginDisabled(armature);
     ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
     if (ImGui::Button("X", ImVec2(h, h))) {
@@ -1717,6 +2107,9 @@ static void modifiers_panel(Context &C, Layer &layer)
         ImGui::EndDisabled();
         modifier_row_label("", column);
         ImGui::TextDisabled("The bone layer's bones move this drawing.");
+      }
+      else if (m.type == ModifierType::Boolean) {
+        merge_modifier_body(C, layer, m, i, column);
       }
       else {
         bool changed = false;
@@ -1787,6 +2180,24 @@ static void modifiers_panel(Context &C, Layer &layer)
     dl->AddRectFilled(box_min, box_max, COL_MOD_BOX, 5.0f);
     dl->AddRect(box_min, box_max, IM_COL32(0x2a, 0x2a, 0x2a, 255), 5.0f, 0, 1.0f);
     dl->ChannelsMerge();
+    /* Over its box, as in Blender: Ctrl A applies it (not the Armature modifier, and only on Setup),
+     * Shift D duplicates it. */
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseHoveringRect(box_min, box_max) &&
+        !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive())
+    {
+      if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_A, ImGuiInputFlags_None, ImGuiKeyOwner_Any)) {
+        if (can_apply) {
+          apply = i;
+        }
+        else {
+          report(ReportType::Warning, armature ? "The Armature modifier can't be applied"
+                                               : "Apply works on Setup (frame 0)");
+        }
+      }
+      if (!armature && ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_D, ImGuiInputFlags_None, ImGuiKeyOwner_Any)) {
+        duplicate = i;
+      }
+    }
     ImGui::SetCursorScreenPos(box_min);
     ImGui::Dummy(ImVec2(box_w, box_max.y - box_min.y));
     /* Dropping a modifier on this box puts it here (above or below by the half). */
@@ -1807,6 +2218,12 @@ static void modifiers_panel(Context &C, Layer &layer)
   }
   if (remove >= 0) {
     operator_call(C, "object.modifier_remove", {{"index", std::to_string(remove)}});
+  }
+  if (apply >= 0) {
+    operator_call(C, "object.modifier_apply", {{"index", std::to_string(apply)}});
+  }
+  if (duplicate >= 0) {
+    operator_call(C, "object.modifier_duplicate", {{"index", std::to_string(duplicate)}});
   }
   if (drag_from >= 0) {
     /* Index the modifier ends up at, after taking it out of its place. */
@@ -2507,9 +2924,8 @@ static void extend_icon(ImDrawList *dl, ImVec2 c, float s, int dir, ImU32 col)
 /* Blender's expanded enum: joined buttons, the chosen one blue. The others take the frame colour, so a
  * driven setting's tint shows. A segment too narrow for its name shows just its icon (the tooltip names
  * it). Returns the segment clicked (not the chosen one), or -1. */
-using SegmentIcon = std::function<void(ImDrawList *, ImVec2, float, int, ImU32)>;
 static int segmented(const char *id, int value, int count, const char *const *names, const char *const *tips,
-                     const SegmentIcon &icon = {})
+                     const SegmentIcon &icon)
 {
   const ImGuiStyle &style = ImGui::GetStyle();
   const float h = ImGui::GetFrameHeight();

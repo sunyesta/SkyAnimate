@@ -11,6 +11,7 @@
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/dynamics.hh"
+#include "anim/merge.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -57,6 +58,155 @@ static void rig_operator(const char *idname, const char *name, const char *descr
   ot.poll = std::move(poll);
   ot.exec = std::move(exec);
   operators().add(std::move(ot));
+}
+
+/* "|"-separated names or ids of `drawing`'s shapes as ids; false (and a report) for one not there. */
+static bool shape_ids_from(const VectorDrawing &drawing, const std::string &list, const std::string &layer_name,
+                           std::vector<uint64_t> *r_ids)
+{
+  r_ids->clear();
+  size_t at = 0;
+  while (at <= list.size()) {
+    const size_t bar = std::min(list.find('|', at), list.size());
+    const std::string part = list.substr(at, bar - at);
+    at = bar + 1;
+    if (part.empty()) {
+      continue;
+    }
+    const auto it = std::find_if(drawing.shapes.begin(), drawing.shapes.end(), [&](const Shape &s) {
+      return s.name == part || std::to_string(s.id) == part;
+    });
+    if (it == drawing.shapes.end()) {
+      report(ReportType::Warning, layer_name + " has no shape \"" + part + "\"");
+      return false;
+    }
+    if (std::find(r_ids->begin(), r_ids->end(), it->id) == r_ids->end()) {
+      r_ids->push_back(it->id);
+    }
+  }
+  return true;
+}
+
+/* A Boolean modifier's settings from the operator's arguments (see object.modifier_boolean_set). */
+static bool merge_settings(Context &C, const Layer &layer, Modifier &m)
+{
+  Document &doc = *C.document;
+  if (op_has_arg(C, "targets")) {
+    std::vector<MergeTarget> targets;
+    const std::string list = op_arg(C, "targets");
+    size_t at = 0;
+    while (at <= list.size()) {
+      const size_t bar = std::min(list.find('|', at), list.size());
+      const std::string part = list.substr(at, bar - at);
+      at = bar + 1;
+      if (part.empty()) {
+        continue;
+      }
+      const Layer *t = layer_by_name_or_id(doc, part);
+      if (!t || t->type != LayerType::Vector || t->id == layer.id) {
+        report(ReportType::Warning, t && t->id == layer.id ? "A layer merges its own shapes already: name others"
+                                                           : "There's no drawing layer \"" + part + "\" to merge");
+        return false;
+      }
+      if (std::none_of(targets.begin(), targets.end(), [&](const MergeTarget &x) { return x.layer == t->id; })) {
+        /* Kept: the shapes it already took from there. */
+        const auto old = std::find_if(m.merge_targets.begin(), m.merge_targets.end(),
+                                      [&](const MergeTarget &x) { return x.layer == t->id; });
+        targets.push_back(old != m.merge_targets.end() ? *old : MergeTarget{t->id, {}});
+      }
+    }
+    m.merge_targets = std::move(targets);
+  }
+  if (op_has_arg(C, "operation")) {
+    const std::string op = op_arg(C, "operation");
+    if (op == "UNION") {
+      m.merge_operation = MergeOperation::Union;
+    }
+    else if (op == "SUBTRACT") {
+      m.merge_operation = MergeOperation::Subtract;
+    }
+    else if (op == "INTERSECT") {
+      m.merge_operation = MergeOperation::Intersect;
+    }
+    else {
+      report(ReportType::Error, "operation is UNION, SUBTRACT or INTERSECT");
+      return false;
+    }
+  }
+  if (op_has_arg(C, "smoothing")) {
+    m.merge_smoothing = std::max(0.0f, op_arg_float(C, "smoothing", 0.0f));
+  }
+  if (op_has_arg(C, "corners_only")) {
+    m.merge_corners_only = op_arg_bool(C, "corners_only");
+  }
+  if (op_has_arg(C, "shapes") && !shape_ids_from(layer.drawing, op_arg(C, "shapes"), layer.name, &m.merge_shapes)) {
+    return false;
+  }
+  if (op_has_arg(C, "pick")) {
+    /* The eyedropper's click: a shape and its layer, in place of layer `replace` (or added). The
+     * shape joins that layer's picks; a layer taking all its shapes takes just the one clicked. */
+    const Layer *t = layer_by_name_or_id(doc, op_arg(C, "pick"));
+    if (!t || t->type != LayerType::Vector || t->id == layer.id) {
+      report(ReportType::Warning, t && t->id == layer.id ? "That's this layer's own shape: click another layer's"
+                                                         : "There's no drawing layer \"" + op_arg(C, "pick") + "\"");
+      return false;
+    }
+    std::vector<uint64_t> shape;
+    if (!shape_ids_from(t->drawing, op_arg(C, "pick_shape"), t->name, &shape) || shape.size() != 1) {
+      report(ReportType::Warning, "Name the shape picked (pick_shape=)");
+      return false;
+    }
+    const auto it = std::find_if(t->drawing.shapes.begin(), t->drawing.shapes.end(),
+                                 [&](const Shape &s) { return s.id == shape.front(); });
+    if (!merge_takes_shape(t->drawing, *it, {})) {
+      report(ReportType::Warning, "\"" + it->name + "\" doesn't go all the way round, so it can't merge");
+      return false;
+    }
+    const uint64_t replace = op_has_arg(C, "replace") ? uint64_t(std::stoull("0" + op_arg(C, "replace"))) : 0;
+    std::vector<MergeTarget> targets;
+    for (const MergeTarget &x : m.merge_targets) {
+      if (x.layer == t->id && x.layer != replace) {
+        /* Already in. */
+        continue;
+      }
+      targets.push_back(x.layer == replace ? MergeTarget{t->id, {}} : x);
+    }
+    const auto old = std::find_if(m.merge_targets.begin(), m.merge_targets.end(),
+                                  [&](const MergeTarget &x) { return x.layer == t->id && x.layer != replace; });
+    MergeTarget picked{t->id, shape};
+    if (old != m.merge_targets.end()) {
+      picked.shapes = old->shapes.empty() ? shape : old->shapes;
+      if (std::find(picked.shapes.begin(), picked.shapes.end(), shape.front()) == picked.shapes.end()) {
+        picked.shapes.push_back(shape.front());
+      }
+    }
+    const auto at = std::find_if(targets.begin(), targets.end(), [&](const MergeTarget &x) { return x.layer == t->id; });
+    if (at != targets.end()) {
+      *at = picked;
+    }
+    else if (old != m.merge_targets.end()) {
+      /* Kept where it was. */
+      targets.insert(targets.begin() + (old - m.merge_targets.begin()), picked);
+    }
+    else {
+      targets.push_back(picked);
+    }
+    m.merge_targets = std::move(targets);
+  }
+  if (op_has_arg(C, "target")) {
+    const Layer *t = layer_by_name_or_id(doc, op_arg(C, "target"));
+    const auto it = t ? std::find_if(m.merge_targets.begin(), m.merge_targets.end(),
+                                     [&](const MergeTarget &x) { return x.layer == t->id; })
+                      : m.merge_targets.end();
+    if (it == m.merge_targets.end()) {
+      report(ReportType::Warning, "\"" + op_arg(C, "target") + "\" isn't one of the layers merged");
+      return false;
+    }
+    if (!shape_ids_from(t->drawing, op_arg(C, "target_shapes"), t->name, &it->shapes)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static bool armature_poll(Context &C)
@@ -1397,10 +1547,29 @@ void rig_operators_register()
     Layer *layer = C.document ? document_active_layer(*C.document) : nullptr;
     return layer && !layer->is_group() ? layer : nullptr;
   };
-  rig_operator("object.modifier_add", "Add Modifier", "Add a modifier to the active layer (type=MIRROR)",
+  rig_operator("object.modifier_add", "Add Modifier",
+               "Add a modifier to the active layer (type=MIRROR or BOOLEAN; a Boolean takes the settings "
+               "object.modifier_boolean_set does)",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
                  const std::string type = op_arg(C, "type", "MIRROR");
+                 if (type == "BOOLEAN") {
+                   Layer &layer = *modifier_layer(C);
+                   if (layer.type != LayerType::Vector) {
+                     report(ReportType::Warning, "Boolean joins a drawing's shapes: pick a drawing layer");
+                     return OpStatus::Cancelled;
+                   }
+                   Modifier m;
+                   m.type = ModifierType::Boolean;
+                   m.name = "Boolean";
+                   /* It works on the drawing as posed, so it goes last (it runs last wherever it is). */
+                   layer.modifiers.push_back(m);
+                   if (!merge_settings(C, layer, layer.modifiers.back())) {
+                     layer.modifiers.pop_back();
+                     return OpStatus::Cancelled;
+                   }
+                   return OpStatus::Finished;
+                 }
                  if (type != "MIRROR") {
                    report(ReportType::Error, type == "ARMATURE" ? "The Armature modifier comes with a bone layer"
                                                                 : "Unknown modifier type " + type);
@@ -1445,6 +1614,136 @@ void rig_operators_register()
                  Modifier moving = std::move(layer.modifiers[index]);
                  layer.modifiers.erase(layer.modifiers.begin() + index);
                  layer.modifiers.insert(layer.modifiers.begin() + to, std::move(moving));
+                 return OpStatus::Finished;
+               });
+  rig_operator("object.modifier_boolean_set", "Boolean Settings",
+               "Change Boolean modifier `index` of the active layer: targets= (layers' names or ids, | between "
+               "them), operation= (UNION, SUBTRACT, INTERSECT), smoothing= (a radius, layer units), corners_only=1 "
+               "(only grow the rounded corners where they meet, taking nothing in), shapes= "
+               "(the layer's own shapes to merge, names or ids, | between; empty: all), target= with "
+               "target_shapes= (which shapes of that target; empty: all), pick= with pick_shape= (the eyedropper: a "
+               "layer and one of its shapes, added, or in place of layer replace=)",
+               [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
+               [modifier_layer](Context &C) {
+                 Layer &layer = *modifier_layer(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 if (index < 0 || index >= int(layer.modifiers.size()) ||
+                     layer.modifiers[index].type != ModifierType::Boolean)
+                 {
+                   report(ReportType::Warning, "No Boolean modifier there");
+                   return OpStatus::Cancelled;
+                 }
+                 Modifier m = layer.modifiers[index];
+                 if (!merge_settings(C, layer, m)) {
+                   return OpStatus::Cancelled;
+                 }
+                 layer.modifiers[index] = std::move(m);
+                 return OpStatus::Finished;
+               });
+  rig_operator("object.modifier_apply", "Apply Modifier",
+               "Make modifier `index` of the active layer part of its drawing (Ctrl A over it; on Setup, frame "
+               "0), as Blender's Apply: a Mirror's reflection becomes points of its own; a Boolean's outline "
+               "replaces the shapes it joined and the shapes it took from other layers leave them. The Armature "
+               "modifier can't be applied",
+               [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
+               [modifier_layer](Context &C) {
+                 Layer &layer = *modifier_layer(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 if (index < 0 || index >= int(layer.modifiers.size())) {
+                   return OpStatus::Cancelled;
+                 }
+                 if (!modifier_can_apply(layer.modifiers[index])) {
+                   report(ReportType::Warning, "The Armature modifier can't be applied: it comes with the bone layer");
+                   return OpStatus::Cancelled;
+                 }
+                 if (!on_setup_frame(C)) {
+                   return OpStatus::Cancelled;
+                 }
+                 Document &doc = *C.document;
+                 const Modifier m = layer.modifiers[index];
+                 if (m.type == ModifierType::Mirror) {
+                   const Layer *armature = layer_armature(doc, layer.id);
+                   const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
+                   layer.drawing = drawing_mirror(layer.drawing, m, flip);
+                   layer.modifiers.erase(layer.modifiers.begin() + index);
+                   C.undo_name = "Apply Mirror";
+                   return OpStatus::Finished;
+                 }
+                 /* The setup drawings, where the layers are. */
+                 const Transform2D to_layer = layer_world_transform(doc, layer.id).inverted();
+                 std::vector<MergeSource> sources;
+                 std::vector<VectorDrawing> drawings;
+                 drawings.reserve(m.merge_targets.size());
+                 for (const MergeTarget &t : m.merge_targets) {
+                   const Layer *target = layer_find(doc, t.layer);
+                   if (target && target->id != layer.id && target->type == LayerType::Vector &&
+                       (m.merge_operation != MergeOperation::Union || layer_shown_in_document(doc, target->id)))
+                   {
+                     drawings.push_back(target->drawing);
+                     sources.push_back({nullptr, to_layer * layer_world_transform(doc, target->id), t.shapes});
+                   }
+                 }
+                 for (size_t i = 0; i < sources.size(); i++) {
+                   sources[i].drawing = &drawings[i];
+                 }
+                 if (!drawing_merge(layer.drawing, m.merge_shapes, sources, m.merge_operation, m.merge_smoothing,
+                                    m.merge_corners_only))
+                 {
+                   report(ReportType::Warning, "The layer has no shape going all the way round to merge into");
+                   return OpStatus::Cancelled;
+                 }
+                 /* The shapes it took in leave their layers (their points and curves stay). */
+                 for (size_t i = 0; !m.merge_corners_only && i < m.merge_targets.size(); i++) {
+                   Layer *target = layer_find(doc, m.merge_targets[i].layer);
+                   if (!target || target->id == layer.id || target->type != LayerType::Vector ||
+                       (m.merge_operation == MergeOperation::Union && !layer_shown_in_document(doc, target->id)))
+                   {
+                     continue;
+                   }
+                   VectorDrawing &d = target->drawing;
+                   std::erase_if(d.shapes, [&](const Shape &s) {
+                     return merge_takes_shape(d, s, m.merge_targets[i].shapes);
+                   });
+                 }
+                 layer.modifiers.erase(layer.modifiers.begin() + index);
+                 C.undo_name = "Apply Boolean";
+                 return OpStatus::Finished;
+               });
+  rig_operator("object.modifier_duplicate", "Duplicate Modifier",
+               "Copy modifier `index` of the active layer, just below it (Shift D over it), as Blender's Duplicate. "
+               "The Armature modifier comes with the bone layer and isn't copied",
+               [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
+               [modifier_layer](Context &C) {
+                 Layer &layer = *modifier_layer(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 if (index < 0 || index >= int(layer.modifiers.size())) {
+                   return OpStatus::Cancelled;
+                 }
+                 if (layer.modifiers[index].type == ModifierType::Armature) {
+                   report(ReportType::Warning, "The Armature modifier comes with the bone layer: there's one");
+                   return OpStatus::Cancelled;
+                 }
+                 Modifier copy = layer.modifiers[index];
+                 copy.uid = 0;
+                 /* Blender's names: "Boolean.001", the next number free. */
+                 std::string base = copy.name;
+                 if (const size_t dot = base.rfind('.');
+                     dot != std::string::npos && dot + 4 == base.size() &&
+                     std::all_of(base.begin() + long(dot) + 1, base.end(), [](char ch) { return ch >= '0' && ch <= '9'; }))
+                 {
+                   base = base.substr(0, dot);
+                 }
+                 for (int n = 1;; n++) {
+                   char name[16];
+                   std::snprintf(name, sizeof(name), ".%03d", n);
+                   if (std::none_of(layer.modifiers.begin(), layer.modifiers.end(),
+                                    [&](const Modifier &x) { return x.name == base + name; }))
+                   {
+                     copy.name = base + name;
+                     break;
+                   }
+                 }
+                 layer.modifiers.insert(layer.modifiers.begin() + index + 1, std::move(copy));
                  return OpStatus::Finished;
                });
   rig_operator("object.modifier_move", "Move Modifier",
