@@ -461,24 +461,31 @@ static json layer_to_json(const Layer &layer)
   }
   if (!layer.masks.empty()) {
     json masks = json::array();
-    for (const LayerMask &m : layer.masks) {
-      json mj = {{"mode", mask_mode_identifier(m.mode)},
-                       {"invert", m.invert},
-                       {"layers", m.layers},
-                       {"enabled", m.enabled},
-                       {"render", m.render},
-                       {"grow", num(m.grow)},
-                       {"fills_only", m.fills_only},
-                       {"strokes_only", m.strokes_only},
-                       {"inside_stroke", m.inside_stroke},
-                       {"end_lines", m.end_lines},
-                       {"end_lines_flat", m.end_lines_flat},
-                       {"line_reach", num(m.line_reach)},
-                       {"cuts", mask_cuts_identifier(m.cuts)},
-                       {"filled", m.filled},
-                       {"extend", mask_extend_identifier(m.extend)},
-                       {"show_expanded", m.show_expanded}};
-      put_keys(mj, "line_reach_keys", m.line_reach_keys);
+    for (const LayerMask &card : layer.masks) {
+      json steps = json::array();
+      for (const MaskStep &m : card.steps) {
+        steps.push_back({{"mode", mask_mode_identifier(m.mode)},
+                         {"invert", m.invert},
+                         {"layers", m.layers},
+                         {"grow", num(m.grow)},
+                         {"fills_only", m.fills_only},
+                         {"strokes_only", m.strokes_only},
+                         {"inside_stroke", m.inside_stroke},
+                         {"filled", m.filled},
+                         {"extend", mask_extend_identifier(m.extend)},
+                         {"show_expanded", m.show_expanded}});
+      }
+      json mj = {{"name", card.name},
+                 {"start", card.start_shown ? "EVERYTHING" : "NOTHING"},
+                 {"steps", std::move(steps)},
+                 {"enabled", card.enabled},
+                 {"render", card.render},
+                 {"cuts", mask_cuts_identifier(card.cuts)},
+                 {"end_lines", card.end_lines},
+                 {"end_lines_flat", card.end_lines_flat},
+                 {"line_reach", num(card.line_reach)},
+                 {"show_expanded", card.show_expanded}};
+      put_keys(mj, "line_reach_keys", card.line_reach_keys);
       masks.push_back(std::move(mj));
     }
     j["masks"] = std::move(masks);
@@ -974,7 +981,7 @@ static void report_mask_sources_changed(const Document &doc)
   std::vector<std::string> pairs;
   for (const Layer *layer : document_layers_flat(doc)) {
     for (const LayerMask &m : layer->masks) {
-      for (const uint64_t id : m.layers) {
+      for (const uint64_t id : mask_card_layers(m)) {
         const Layer *source = layer_find(const_cast<Document &>(doc), id);
         if (source && source->id != layer->id && !source->masks.empty()) {
           pairs.push_back(layer->name + " (with " + source->name + ")");
@@ -1059,6 +1066,9 @@ static bool value_from_json(const json &j, float2 *r)
   return true;
 }
 
+/* The file being read: its format version. */
+static int g_loading_version = OANIM_FILE_VERSION;
+
 template<typename T> static void get_key_list(const json &j, const char *name, Channel<T> &r_ch)
 {
   for (const json &k : get_array(j, name)) {
@@ -1094,6 +1104,10 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     }
   }
   std::sort(r_ch.keys.begin(), r_ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
+  /* Before format 4 a key's curve was for the stretch after it: now it's the one arriving at it. */
+  if (g_loading_version < 4) {
+    keys_curves_to_arriving(r_ch.keys);
+  }
 }
 
 template<typename T> static void get_keys(const json &j, const char *name, Channel<T> &r_ch)
@@ -1172,8 +1186,7 @@ static void overlays_from_json(const json &j, ViewportOverlays &r_ov)
   }
 }
 
-/* The file being read: its format version and the action that was being edited. */
-static int g_loading_version = OANIM_FILE_VERSION;
+/* The action that was being edited in the file being read. */
 static std::string g_loading_action;
 
 template<typename T> static const std::vector<Key<T>> *mainline_keys(const Channel<T> &ch)
@@ -1453,12 +1466,94 @@ static ReferenceSettings reference_from_json(const json &j)
 static std::map<uint64_t, std::pair<std::string, std::string>> g_old_masks;
 /* A mask layer's Expand by a Pixel and Fills Only from an older file, by layer id. */
 static std::map<uint64_t, std::pair<bool, bool>> g_old_mask_options;
+/* Rows from files before mask cards (by layer id): each a step with the settings that are a card's
+ * now, and the layer's Start With (`start`: saved, or from the first row). Old files' fixes below
+ * work on these; then they become cards (mask_rows_to_cards). */
+struct OldMaskRow {
+  MaskStep step;
+  bool enabled = true, render = true;
+  MaskCuts cuts = MaskCuts::All;
+  bool end_lines = false, end_lines_flat = false;
+  float line_reach = 0.0f;
+  Channel<float> line_reach_keys = Channel<float>::by_hand();
+  bool show_expanded = true;
+};
+struct OldMaskRows {
+  std::vector<OldMaskRow> rows;
+  bool start_saved = false;
+  bool start = false;
+};
+static std::map<uint64_t, OldMaskRows> g_old_rows;
+
+/* Rows from before cards, as cards that show the same: one for the fills (the rows that masked them)
+ * and one for the lines (the rows that masked them, ending lines at the card's edge if any row
+ * ended them), or one for both when the two are the same rows; a row that was off, a card of its
+ * own, off. */
+static void mask_rows_to_cards(std::vector<Layer> &layers)
+{
+  for (Layer &layer : layers) {
+    mask_rows_to_cards(layer.children);
+    const auto it = g_old_rows.find(layer.id);
+    if (it == g_old_rows.end() || it->second.rows.empty()) {
+      continue;
+    }
+    const OldMaskRows &old = it->second;
+    const bool start = old.start_saved ? old.start : old.rows.front().step.mode == MaskMode::Subtract;
+    const auto card_of = [&](MaskCuts cuts, const std::vector<const OldMaskRow *> &rows, bool ends) {
+      LayerMask card;
+      card.start_shown = start;
+      card.cuts = cuts;
+      card.show_expanded = rows.front()->show_expanded;
+      for (const OldMaskRow *r : rows) {
+        card.steps.push_back(r->step);
+        if (ends && r->end_lines && !card.end_lines) {
+          card.end_lines = true;
+          card.end_lines_flat = r->end_lines_flat;
+          card.line_reach = r->line_reach;
+          card.line_reach_keys = r->line_reach_keys;
+        }
+      }
+      return card;
+    };
+    std::vector<const OldMaskRow *> fills, lines;
+    for (const OldMaskRow &r : old.rows) {
+      if (!r.enabled || !r.render) {
+        LayerMask off = card_of(r.cuts, {&r}, true);
+        mask_card_start_from_steps(off);
+        off.enabled = r.enabled;
+        off.render = r.render;
+        layer.masks.push_back(std::move(off));
+        continue;
+      }
+      if (r.cuts != MaskCuts::Lines) {
+        fills.push_back(&r);
+      }
+      if (r.cuts != MaskCuts::Fills) {
+        lines.push_back(&r);
+      }
+    }
+    std::vector<LayerMask> cards;
+    if (!fills.empty() && fills == lines) {
+      cards.push_back(card_of(MaskCuts::All, fills, true));
+    }
+    else {
+      if (!fills.empty()) {
+        cards.push_back(card_of(MaskCuts::Fills, fills, false));
+      }
+      if (!lines.empty()) {
+        cards.push_back(card_of(MaskCuts::Lines, lines, true));
+      }
+    }
+    layer.masks.insert(layer.masks.begin(), cards.begin(), cards.end());
+  }
+}
 
 /* The masks naming a layer that had the two options take them. */
 static void migrate_old_mask_options(std::vector<Layer> &layers)
 {
   for (Layer &layer : layers) {
-    for (LayerMask &m : layer.masks) {
+    for (OldMaskRow &row : g_old_rows[layer.id].rows) {
+      MaskStep &m = row.step;
       for (const uint64_t id : m.layers) {
         if (const auto it = g_old_mask_options.find(id); it != g_old_mask_options.end()) {
           m.grow = it->second.first ? std::max(m.grow, 1.0f) : m.grow;
@@ -1508,19 +1603,20 @@ static void migrate_old_masks(std::vector<Layer> &layers)
       if (mode != "MASKED") {
         continue;
       }
-      std::vector<LayerMask> masks;
+      std::vector<OldMaskRow> masks;
       if (!full && !added.empty()) {
-        LayerMask add;
-        add.layers = added;
+        OldMaskRow add;
+        add.step.layers = added;
         masks.push_back(add);
       }
       if (!cut.empty()) {
-        LayerMask subtract;
-        subtract.mode = MaskMode::Subtract;
-        subtract.layers = cut;
+        OldMaskRow subtract;
+        subtract.step.mode = MaskMode::Subtract;
+        subtract.step.layers = cut;
         masks.push_back(subtract);
       }
-      child.masks.insert(child.masks.begin(), masks.begin(), masks.end());
+      std::vector<OldMaskRow> &rows = g_old_rows[child.id].rows;
+      rows.insert(rows.begin(), masks.begin(), masks.end());
     }
   }
 }
@@ -1825,42 +1921,83 @@ static Layer layer_from_json(const json &j, int depth)
   layer.clip_to_below = get_bool(j, "clip_to_below", false);
   layer.clip_exclude_strokes = get_bool(j, "clip_exclude_strokes", false);
   get_keys(j, "draw_order_keys", layer.draw_order_keys);
-  for (const json &mj : get_array(j, "masks")) {
-    if (!mj.is_object()) {
-      continue;
-    }
-    LayerMask m;
-    /* Files from before mask rows: Inside/Outside masks that all had to hold, as rows that say so. */
-    if (!mask_mode_from_identifier(get_string(mj, "mode", ""), &m.mode)) {
-      m.mode = mask_mode_from_inside_outside(get_bool(mj, "outside", false), layer.masks.empty());
-    }
-    m.invert = get_bool(mj, "invert", false);
-    m.enabled = get_bool(mj, "enabled", true);
-    m.render = get_bool(mj, "render", true);
-    m.grow = std::clamp(get_float(mj, "grow", get_bool(mj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
-    m.fills_only = get_bool(mj, "fills_only", false);
-    m.strokes_only = !m.fills_only && get_bool(mj, "strokes_only", false);
-    m.inside_stroke = get_bool(mj, "inside_stroke", false);
-    m.end_lines = get_bool(mj, "end_lines", false);
-    m.end_lines_flat = get_bool(mj, "end_lines_flat", false);
-    m.line_reach = std::clamp(get_float(mj, "line_reach", 0.0f), -2.0f, 2.0f);
-    get_keys(mj, "line_reach_keys", m.line_reach_keys);
-    /* Lines Only came before Cuts. */
-    if (!mask_cuts_from_identifier(get_string(mj, "cuts", get_bool(mj, "lines_only", false) ? "LINES" : "ALL"),
-                                   &m.cuts)) {
-      m.cuts = MaskCuts::All;
-    }
-    m.filled = get_bool(mj, "filled", false);
-    if (!mask_extend_from_identifier(get_string(mj, "extend", "NONE"), &m.extend)) {
+  const auto read_step = [](const json &sj, MaskStep &m) {
+    m.grow = std::clamp(get_float(sj, "grow", get_bool(sj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
+    m.fills_only = get_bool(sj, "fills_only", false);
+    m.strokes_only = !m.fills_only && get_bool(sj, "strokes_only", false);
+    m.inside_stroke = get_bool(sj, "inside_stroke", false);
+    m.filled = get_bool(sj, "filled", false);
+    if (!mask_extend_from_identifier(get_string(sj, "extend", "NONE"), &m.extend)) {
       m.extend = MaskExtend::None;
     }
-    m.show_expanded = get_bool(mj, "show_expanded", true);
-    for (const json &id : get_array(mj, "layers")) {
+    for (const json &id : get_array(sj, "layers")) {
       if (id.is_number_unsigned() || id.is_number_integer()) {
         m.layers.push_back(id.get<uint64_t>());
       }
     }
-    layer.masks.push_back(std::move(m));
+  };
+  for (const json &mj : get_array(j, "masks")) {
+    if (!mj.is_object()) {
+      continue;
+    }
+    MaskCuts cuts = MaskCuts::All;
+    /* Lines Only came before Cuts. */
+    if (!mask_cuts_from_identifier(get_string(mj, "cuts", get_bool(mj, "lines_only", false) ? "LINES" : "ALL"), &cuts)) {
+      cuts = MaskCuts::All;
+    }
+    if (mj.contains("steps")) {
+      LayerMask card;
+      card.name = get_string(mj, "name");
+      card.start_shown = get_string(mj, "start", "EVERYTHING") == "EVERYTHING";
+      card.enabled = get_bool(mj, "enabled", true);
+      card.render = get_bool(mj, "render", true);
+      card.cuts = cuts;
+      card.end_lines = get_bool(mj, "end_lines", false);
+      card.end_lines_flat = get_bool(mj, "end_lines_flat", false);
+      card.line_reach = std::clamp(get_float(mj, "line_reach", 0.0f), -2.0f, 2.0f);
+      get_keys(mj, "line_reach_keys", card.line_reach_keys);
+      card.show_expanded = get_bool(mj, "show_expanded", true);
+      for (const json &sj : get_array(mj, "steps")) {
+        if (!sj.is_object()) {
+          continue;
+        }
+        MaskStep step;
+        if (!mask_mode_from_identifier(get_string(sj, "mode", "ADD"), &step.mode)) {
+          step.mode = MaskMode::Add;
+        }
+        step.invert = get_bool(sj, "invert", false);
+        step.show_expanded = get_bool(sj, "show_expanded", false);
+        read_step(sj, step);
+        card.steps.push_back(std::move(step));
+      }
+      layer.masks.push_back(std::move(card));
+      continue;
+    }
+    /* A row from before cards: its step and card settings, made a card once every row is in. */
+    OldMaskRows &old = g_old_rows[layer.id];
+    OldMaskRow row;
+    row.step.invert = get_bool(mj, "invert", false);
+    /* Older modes (Intersect, Difference) and files from before mask rows (Inside/Outside masks that
+     * all had to hold), as rows that say so. */
+    if (!mask_step_from_old_mode(get_string(mj, "mode", ""), get_bool(mj, "outside", false), old.rows.empty(),
+                                 &row.step)) {
+      row.step.mode = MaskMode::Add;
+    }
+    read_step(mj, row.step);
+    row.enabled = get_bool(mj, "enabled", true);
+    row.render = get_bool(mj, "render", true);
+    row.cuts = cuts;
+    row.end_lines = get_bool(mj, "end_lines", false);
+    row.end_lines_flat = get_bool(mj, "end_lines_flat", false);
+    row.line_reach = std::clamp(get_float(mj, "line_reach", 0.0f), -2.0f, 2.0f);
+    get_keys(mj, "line_reach_keys", row.line_reach_keys);
+    row.show_expanded = get_bool(mj, "show_expanded", true);
+    old.rows.push_back(std::move(row));
+  }
+  if (const std::string start = get_string(j, "mask_start"); !start.empty()) {
+    OldMaskRows &old = g_old_rows[layer.id];
+    old.start_saved = true;
+    old.start = start == "EVERYTHING";
   }
   /* Files from before masks named layers: Moho's masking group modes, turned into masks below. */
   if (j.contains("mask_mode") || j.contains("group_mask")) {
@@ -2015,6 +2152,10 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   }
   const int version = get_int(root, "version", 0);
   g_loading_version = version;
+  /* Keys read after this file (pasted, another file) go by their own format, however it ends. */
+  struct VersionReset {
+    ~VersionReset() { g_loading_version = OANIM_FILE_VERSION; }
+  } version_reset;
   if (version < 1 || version > OANIM_FILE_VERSION) {
     *r_error = "The file was saved by a newer Open Animate (format " + std::to_string(version) +
                "); this version reads up to format " + std::to_string(OANIM_FILE_VERSION);
@@ -2117,6 +2258,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.next_layer_id = std::max<uint64_t>(1, get_id(j, "next_layer_id"));
   g_old_masks.clear();
   g_old_mask_options.clear();
+  g_old_rows.clear();
   for (const json &layer : get_array(j, "layers")) {
     if (layer.is_object()) {
       doc.layers.push_back(layer_from_json(layer, 0));
@@ -2124,6 +2266,8 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   }
   migrate_old_masks(doc.layers);
   migrate_old_mask_options(doc.layers);
+  mask_rows_to_cards(doc.layers);
+  g_old_rows.clear();
   if (version < 2) {
     migrate_bone_keys(doc.layers, doc.action);
   }

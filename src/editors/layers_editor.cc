@@ -258,7 +258,8 @@ static float mask_symbol(Context &C, Layer &layer, float x, float y, float h, fl
   if (over) {
     std::string tip;
     for (const LayerMask &m : layer.masks) {
-      C.wm->mask_hover.insert(C.wm->mask_hover.end(), m.layers.begin(), m.layers.end());
+      const std::vector<uint64_t> named = mask_card_layers(m);
+      C.wm->mask_hover.insert(C.wm->mask_hover.end(), named.begin(), named.end());
       tip += mask_label(doc, m) + (m.enabled ? "" : " (off)") + "\n";
     }
     tip += mask_summary(doc, layer) + "\nClick: open the Masking tab";

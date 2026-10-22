@@ -192,13 +192,25 @@ struct WindowManager {
     /* The eyedropper is on for it. */
     bool started = false;
   } draw_order_pick;
+  /* A mask card's View button, while held: the viewport shows `layer`'s mask after its row `upto`
+   * in black and white instead of the drawing (the lines' mask with `lines`, else the fills').
+   * `frame` is the UI frame it was last held on (it stops a frame after it's let go). */
+  struct MaskPreview {
+    uint64_t layer = 0;
+    bool lines = false;
+    int upto = -1;
+    int frame = -10;
+  } mask_preview;
   /* Inside... / Outside... (mask.pick): waiting for a click on the layer to mask `layers` with;
    * `index` >= 0 adds it to that mask of theirs instead of a new one. */
   struct MaskPick {
     bool active = false;
-    /* The new row's mode (a MaskMode identifier), or empty: Add for a first row, Intersect after. */
+    /* The new row's mode (a MaskMode identifier), or empty: Add for a first row, Subtract of the
+     * outside after. */
     std::string mode;
+    /* `index` >= 0: a new step of that card; with `step` >= 0 too, that step's layers. */
     int index = -1;
+    int step = -1;
     std::vector<uint64_t> layers;
     bool started = false;
   } mask_pick;

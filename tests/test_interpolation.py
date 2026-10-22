@@ -46,19 +46,20 @@ assert key(0)["interp"] == "SMOOTH" and key(10)["interp"] == "SMOOTH"
 assert key(0)["ease"] == "QUAD"
 
 # --- The selected keys' mode --------------------------------------------------------------------------
-select(0)
+# A key's mode is for the stretch arriving at it (as Moho's): 0 -> 10 goes by key 10's.
+select(10)
 assert interp(interp="LINEAR") == {'FINISHED'}
-assert key(0)["interp"] == "LINEAR" and key(10)["interp"] == "SMOOTH", "only the selected key"
+assert key(10)["interp"] == "LINEAR" and key(0)["interp"] == "SMOOTH", "only the selected key"
 assert abs(x_at(5) - 0.5) < 1e-5
 
-# Ease strengths: Ease In slows into the next key, Ease Out away from this one.
+# Ease strengths: Ease In slows into this key, Ease Out away from the one before.
 assert interp(interp="EASE_IN", ease="SINE") == {'FINISHED'}
-assert key(0)["interp"] == "EASE_IN" and key(0)["ease"] == "SINE"
+assert key(10)["interp"] == "EASE_IN" and key(10)["ease"] == "SINE"
 assert abs(x_at(5) - math.sin(math.pi / 4)) < 1e-4, "Sine ease in"
 interp(interp="EASE_OUT", ease="QUAD")
 assert abs(x_at(5) - 0.25) < 1e-4, "Quad ease out"
 interp(ease="CUBIC")
-assert key(0)["interp"] == "EASE_OUT", "only the strength changed"
+assert key(10)["interp"] == "EASE_OUT", "only the strength changed"
 assert abs(x_at(5) - 0.125) < 1e-4, "Cubic ease out"
 interp(interp="EASE_IN_OUT", ease="EXPO")
 assert abs(x_at(5) - 0.5) < 1e-4 and x_at(2) < 0.05, "Strong (Expo) barely moves at first"
@@ -67,15 +68,17 @@ assert interp(interp="NOT_A_MODE") == {'CANCELLED'}
 
 # Each mode's settings.
 interp(interp="BACK", overshoot=3.0)
-assert abs(key(0)["overshoot"] - 3.0) < 1e-6
+assert abs(key(10)["overshoot"] - 3.0) < 1e-6
 back_peak = max(x_at(f) for f in range(1, 10))
 interp(overshoot=0.5)
 assert max(x_at(f) for f in range(1, 10)) < back_peak, "less overshoot"
 interp(interp="ELASTIC", elastic_amplitude=2.0, elastic_period=0.5)
-assert abs(key(0)["elastic_amplitude"] - 2.0) < 1e-6 and abs(key(0)["elastic_period"] - 0.5) < 1e-6
+assert abs(key(10)["elastic_amplitude"] - 2.0) < 1e-6 and abs(key(10)["elastic_period"] - 0.5) < 1e-6
 assert max(x_at(f) for f in range(1, 10)) > 1.0
+# Hold and the interval are for after a key: key 0's.
+select(0)
 interp(hold=4, interval=2)
-assert key(0)["hold"] == 4 and key(0)["interval"] == 2 and key(0)["interp"] == "ELASTIC"
+assert key(0)["hold"] == 4 and key(0)["interval"] == 2 and key(10)["interp"] == "ELASTIC"
 assert x_at(4) == 0.0, "held"
 interp(interval=9)
 assert key(0)["interval"] == 3, "on 1s, 2s or 3s"
@@ -158,6 +161,40 @@ layer = oanim.data.layers.active
 assert key(0)["interp"] == "ELASTIC" and abs(key(0)["elastic_amplitude"] - 1.5) < 1e-6
 assert abs(key(0)["elastic_period"] - 0.4) < 1e-6
 assert key(10)["interp"] == "EASE_IN" and key(10)["ease"] == "CIRC"
+
+# A file from before format 4 had each key's mode for the stretch after it: opened, each moves onto the
+# key after (a Cycle key keeps its loop), so the motion is the same.
+import json
+import zipfile
+
+with zipfile.ZipFile(path) as archive:
+    stored = json.loads(archive.read("document.json"))
+stored["version"] = 3
+
+
+def old_keys(layer_list):
+    for l in layer_list:
+        if "position_keys" in l:
+            keys = l["position_keys"]
+            keys[0].update({"interp": "EASE_OUT", "ease": "CUBIC", "hold": 2})
+            keys[1].update({"interp": "STEP", "ease": "QUAD", "hold": 0})
+        old_keys(l.get("children", []))
+
+
+old_keys(stored["document"]["layers"])
+old = pathlib.Path(path).with_name("old_interp.oanim")
+with zipfile.ZipFile(old, "w") as archive:
+    archive.writestr("document.json", json.dumps(stored))
+assert oanim.ops.wm.open_mainfile(filepath=str(old), confirmed="1") == {'FINISHED'}
+layer = oanim.data.layers.active
+assert (key(10)["interp"], key(10)["ease"]) == ("EASE_OUT", "CUBIC"), key(10)
+assert key(0)["hold"] == 2 and key(10)["hold"] == 0, "hold stays where it was"
+assert x_at(2) == 0.0, "held 2 frames"
+assert abs(x_at(6) - 0.125) < 1e-4, ("Cubic ease out from frame 2, as before", x_at(6))
+frames = [k["frame"] for k in layer.keyframes("position")]
+after_10 = frames[frames.index(10) + 1]
+assert key(after_10)["interp"] == "STEP", (frames, key(after_10))
+assert x_at(after_10 - 1) == x_at(10), "key 10's Step moved to the next key: held until it"
 
 # The T menu is asked of the timeline.
 assert oanim.ops.anim.interpolation_menu() == {'FINISHED'}

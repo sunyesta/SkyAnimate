@@ -2424,17 +2424,15 @@ static void draw_order_row(Context &C, Layer &layer)
   }
 }
 
-/* Mask: the layer's mask rows, read top to bottom (Add, Subtract, Intersect, Difference), and Clip
- * to Below; then which layers use this one as a mask. */
+/* Mask: what the layer's mask starts with, its rows painting on it top to bottom (Add white,
+ * Subtract black), and Clip to Below; then which layers use this one as a mask. */
 static constexpr const char *MASK_PAYLOAD = "OANIM_MASK";
 
 /* The modes' names and what they do, in MaskMode's order. */
-static const char *const MASK_MODE_NAMES[] = {"Add", "Subtract", "Intersect", "Difference"};
+static const char *const MASK_MODE_NAMES[] = {"Add", "Subtract"};
 static const char *const MASK_MODE_TIPS[] = {
-    "Show inside this shape too (a union with the rows above)",
-    "Cut this shape out of what the rows above show",
-    "Keep only what's inside this shape of what the rows above show",
-    "Flip what shows inside this shape: shown becomes hidden and hidden shown"};
+    "+ Shape: paint the mask white inside this shape, so it shows there\n(with Invert, outside it)",
+    "- Shape: paint the mask black inside this shape, so it's hidden there\n(with Invert, outside it)"};
 
 static constexpr ImU32 COL_MOD_SUBPANEL = IM_COL32(0x33, 0x33, 0x33, 255);
 
@@ -2470,36 +2468,13 @@ static bool mask_subpanel(const char *id, const char *label, const std::string &
   return open;
 }
 
-/* A mode's icon, as Figma draws its boolean operations: two overlapping squares, what the rows above
- * show (back) and this row's shape (front), filled where the result shows. `bg` is what's behind. */
-static void mask_mode_icon(ImDrawList *dl, ImVec2 c, float s, MaskMode mode, ImU32 col, ImU32 bg)
+/* The paint a mode lays on the mask, as a swatch: white (Add, and Start With Everything) or black
+ * (Subtract, Nothing), outlined in `col`. */
+static void mask_paint_icon(ImDrawList *dl, ImVec2 c, float s, bool white, ImU32 col)
 {
-  const float half = s * 0.5f, o = s * 0.26f;
-  const ImVec2 a0(c.x - o - half, c.y - o - half), a1(c.x - o + half, c.y - o + half);
-  const ImVec2 b0(c.x + o - half, c.y + o - half), b1(c.x + o + half, c.y + o + half);
-  const ImVec2 i0(b0.x, b0.y), i1(a1.x, a1.y);
-  const float round = s * 0.12f;
-  switch (mode) {
-    case MaskMode::Add:
-      dl->AddRectFilled(a0, a1, col, round);
-      dl->AddRectFilled(b0, b1, col, round);
-      break;
-    case MaskMode::Subtract:
-      dl->AddRectFilled(a0, a1, col, round);
-      dl->AddRectFilled(b0, b1, bg, round);
-      dl->AddRect(b0, b1, col, round, 0, 1.2f);
-      break;
-    case MaskMode::Intersect:
-      dl->AddRect(a0, a1, col, round, 0, 1.2f);
-      dl->AddRect(b0, b1, col, round, 0, 1.2f);
-      dl->AddRectFilled(i0, i1, col);
-      break;
-    case MaskMode::Difference:
-      dl->AddRectFilled(a0, a1, col, round);
-      dl->AddRectFilled(b0, b1, col, round);
-      dl->AddRectFilled(i0, i1, bg);
-      break;
-  }
+  const ImVec2 lo(c.x - s, c.y - s), hi(c.x + s, c.y + s);
+  dl->AddRectFilled(lo, hi, white ? IM_COL32(0xf2, 0xf2, 0xf2, 255) : IM_COL32(0x10, 0x10, 0x10, 255), s * 0.25f);
+  dl->AddRect(lo, hi, col, s * 0.25f, 0, 1.2f);
 }
 
 /* Which part of a shape: 0 fill and line, 1 the fill, 2 the line (Cuts and Use draw these). */
@@ -2592,12 +2567,12 @@ static int segmented(const char *id, int value, int count, const char *const *na
   return clicked;
 }
 
-/* The Masking tab's rows, as the Modifiers tab's boxes: they read top to bottom, each combining its
- * shape (its layers together) with what the rows above show. The result in words comes first, a row
- * to a line (hovering one points at its row). Each row's header has the open arrow, its mode (icon and
- * menu), its layers (folded: the row in words), viewport and render switches, a menu and a grip to
- * reorder; inside, its layers as chips, Invert, Affects, then the Shape and End Lines at Edge
- * subpanels. Hovering a row outlines its layers in the viewport. */
+/* The Masking tab's cards, as the Modifiers tab's boxes: each a mask of its own, and the layer shows
+ * only where all of them show it. The result in words comes first, a card to a line (hovering one
+ * points at its card). Each card's header has the open arrow, its name (folded: the card in words),
+ * viewport and render switches, a menu, an x and a grip to reorder; inside, Start With, its steps
+ * (each + or - Shape: its layers as chips, Invert and its Shape subpanel), + Shape and - Shape,
+ * Affects with View, then Line Ends. Hovering a card outlines its layers in the viewport. */
 static void mask_cards(Context &C, Layer &layer)
 {
   Document &doc = *C.document;
@@ -2605,10 +2580,10 @@ static void mask_cards(Context &C, Layer &layer)
   const float h = ImGui::GetFrameHeight();
   const std::string id = std::to_string(layer.id);
 
-  /* The result in words, a row to a line ("Shows:", "everything but head", "plus tongue"). */
+  /* The result in words, a card to a line ("Shows:", "everything but head", "lines: ..."). */
   const std::vector<std::string> phrases = mask_row_phrases(doc, layer);
   int summary_hover = -1;
-  /* The row a summary line was clicked for (its uid, or index + 1), scrolled to when drawn. */
+  /* The card a summary line was clicked for (its uid, or index + 1), scrolled to when drawn. */
   static uint64_t scroll_to = 0;
   const ImVec4 summary_color(1.0f, 0.75f, 0.45f, 1.0f);
   ImGui::PushTextWrapPos(0.0f);
@@ -2623,10 +2598,10 @@ static void mask_cards(Context &C, Layer &layer)
         continue;
       }
       ImGui::TextColored(summary_color, "%s", phrases[k].c_str());
-      /* Hovering a line points at its row (and its layers in the viewport); clicking opens the row. */
+      /* Hovering a line points at its card (and its layers in the viewport); clicking opens the card. */
       if (k < layer.masks.size() && ImGui::IsItemHovered()) {
         summary_hover = int(k);
-        C.wm->mask_hover = layer.masks[k].layers;
+        C.wm->mask_hover = mask_card_layers(layer.masks[k]);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           layer.masks[k].show_expanded = true;
           scroll_to = layer.masks[k].uid ? layer.masks[k].uid : k + 1;
@@ -2639,25 +2614,28 @@ static void mask_cards(Context &C, Layer &layer)
   ImGui::Spacing();
 
   const float half = (ImGui::GetContentRegionAvail().x - 2.0f) * 0.5f;
-  if (ImGui::Button("+  Add Row", ImVec2(half, 0))) {
-    ImGui::OpenPopup("##add_row");
+  if (ImGui::Button("+  Add Mask", ImVec2(half, 0))) {
+    ImGui::OpenPopup("##add_mask");
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Pick how the row combines, then click its layer in the viewport or the Layers editor\n"
-                      "(or Alt-drag a layer onto this one in the Layers editor; Shift to Subtract)");
+    ImGui::SetTooltip("A new mask card, then click its first layer in the viewport or the Layers editor\n"
+                      "(or Alt-drag a layer onto this one in the Layers editor; Shift to hide it)");
   }
-  if (ImGui::BeginPopup("##add_row")) {
+  if (ImGui::BeginPopup("##add_mask")) {
     ImGui::TextDisabled("Then click the layer");
-    for (int k = 0; k < 4; k++) {
-      const std::string label = std::string("      ") + MASK_MODE_NAMES[k] + "...";
-      if (ImGui::Selectable(label.c_str())) {
+    static const char *const ADD_LABELS[] = {"      Show Inside a Layer...", "      Hide Inside a Layer..."};
+    static const char *const ADD_TIPS[] = {
+        "Starts with nothing and shows the layer only inside the shape (+ Shape on black)",
+        "Starts with everything and hides the layer inside the shape (- Shape on white)"};
+    for (int k = 0; k < 2; k++) {
+      if (ImGui::Selectable(ADD_LABELS[k])) {
         operator_call(C, "mask.pick", {{"layer", id}, {"mode", mask_mode_identifier(MaskMode(k))}});
       }
       const ImVec2 lo = ImGui::GetItemRectMin();
-      mask_mode_icon(ImGui::GetWindowDrawList(), ImVec2(lo.x + h * 0.4f, lo.y + ImGui::GetItemRectSize().y * 0.5f),
-                     h * 0.3f, MaskMode(k), IM_COL32(0xff, 0x9a, 0x3c, 255), ImGui::GetColorU32(ImGuiCol_PopupBg));
+      mask_paint_icon(ImGui::GetWindowDrawList(), ImVec2(lo.x + h * 0.4f, lo.y + ImGui::GetItemRectSize().y * 0.5f),
+                      h * 0.22f, k == 0, IM_COL32(0x90, 0x90, 0x90, 255));
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("%s", MASK_MODE_TIPS[k]);
+        ImGui::SetTooltip("%s", ADD_TIPS[k]);
       }
     }
     ImGui::EndPopup();
@@ -2706,7 +2684,7 @@ static void mask_cards(Context &C, Layer &layer)
       ImGui::SetTooltip("Clip only to %s's fills, not its lines (shading stops inside the outline)",
                         base->name.c_str());
     }
-    ImGui::TextDisabled("Clipped to %s (after the rows)", base->name.c_str());
+    ImGui::TextDisabled("Clipped to %s (with the cards)", base->name.c_str());
     if (ImGui::IsItemHovered()) {
       C.wm->mask_hover = {base->id};
     }
@@ -2720,12 +2698,8 @@ static void mask_cards(Context &C, Layer &layer)
     RowAction action = RowAction::None;
   } row_action;
   int drag_from = -1, drag_to = -1;
-  MaskLineEnding ending_above;
   for (int i = 0; i < int(layer.masks.size()); i++) {
     const LayerMask m = layer.masks[size_t(i)];
-    /* An Add row after one that ends lines ends them too (it brings back the lines that row ended). */
-    bool brought_flat = false;
-    const bool brought_ends = m.enabled && mask_row_ends_lines(m, &ending_above, &brought_flat) && !m.end_lines;
     const OpArgs at{{"layer", id}, {"index", std::to_string(i)}};
     const auto with = [&](const char *key, const std::string &value) {
       OpArgs args = at;
@@ -2742,79 +2716,43 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::BeginGroup();
     const float inner_w = box_w - 8.0f;
 
-    /* Header: open arrow, icon, mode, Invert, its layers (folded: the row in words), switches, menu,
-     * grip. */
+    /* Header: open arrow, its name (folded: the card in words), switches, menu, x, grip. */
     if (ImGui::ArrowButtonEx("##expand", m.show_expanded ? ImGuiDir_Down : ImGuiDir_Right, ImVec2(h * 0.8f, h),
                              ImGuiButtonFlags_None)) {
       layer.masks[size_t(i)].show_expanded = !m.show_expanded;
     }
     ImGui::SameLine(0, 2);
-    const ImVec2 icon_at = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(h * 1.15f, h));
-    mask_mode_icon(dl, ImVec2(icon_at.x + h * 0.575f, icon_at.y + h * 0.5f), h * 0.44f, m.mode,
-                   m.enabled ? IM_COL32(0xff, 0x9a, 0x3c, 255) : IM_COL32(0x80, 0x80, 0x80, 255), COL_MOD_BOX);
+    /* Its Start With, as a swatch: white or black. */
+    const ImVec2 swatch_at = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(h * 0.8f, h));
+    mask_paint_icon(dl, ImVec2(swatch_at.x + h * 0.4f, swatch_at.y + h * 0.5f), h * 0.24f, m.start_shown,
+                    m.enabled ? IM_COL32(0xff, 0x9a, 0x3c, 255) : IM_COL32(0x80, 0x80, 0x80, 255));
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("%s", MASK_MODE_TIPS[int(m.mode)]);
-    }
-    ImGui::SameLine(0, 2);
-    const int mode = int(m.mode);
-    ImGui::SetNextItemWidth(h * 4.2f);
-    const std::string driven_mode_path = std::string("masks[" + std::to_string(i) + "].") + "mode";
-    const int driven_mode = ui_driver_field_begin(C, layer.id, driven_mode_path, -1);
-    if (ImGui::BeginCombo("##mode", MASK_MODE_NAMES[mode])) {
-      for (int k = 0; k < 4; k++) {
-        const std::string label = std::string("      ") + MASK_MODE_NAMES[k];
-        if (ImGui::Selectable(label.c_str(), k == mode) && k != mode) {
-          operator_call(C, "mask.set", with("mode", mask_mode_identifier(MaskMode(k))));
-        }
-        const ImVec2 lo = ImGui::GetItemRectMin();
-        mask_mode_icon(ImGui::GetWindowDrawList(), ImVec2(lo.x + h * 0.4f, lo.y + ImGui::GetItemRectSize().y * 0.5f),
-                       h * 0.3f, MaskMode(k), IM_COL32(0xff, 0x9a, 0x3c, 255),
-                       ImGui::GetColorU32(k == mode ? ImGuiCol_Header : ImGuiCol_PopupBg));
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("%s", MASK_MODE_TIPS[k]);
-        }
-      }
-      ImGui::EndCombo();
-    }
-    ui_driver_typed(C, layer.id, driven_mode_path, -1);
-    ui_driver_field_end(C, layer.id, driven_mode_path, -1, driven_mode);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("%s", MASK_MODE_TIPS[mode]);
+      ImGui::SetTooltip(m.start_shown ? "Starts with everything (white)" : "Starts with nothing (black)");
     }
     ImGui::SameLine(0, 4);
     const float right_w = h * 4.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 8.0f;
     const float title_w = std::max(40.0f, inner_w - (ImGui::GetCursorScreenPos().x - box_min.x) - right_w);
-    const ImVec2 title_at = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(title_w, h));
-    std::string names;
-    for (const uint64_t l : m.layers) {
-      const Layer *found = layer_find(doc, l);
-      names += (names.empty() ? "" : " + ") + (found ? found->name : std::string("(missing)"));
-    }
-    /* Folded, the row says what it does ("minus Ear_L (its lines), lines ending at Ear_L's edge"). */
+    /* Its name, edited in place as a modifier's is; empty, it reads "Mask 2" by its place. */
     const std::string phrase = size_t(i) < phrases.size() ? phrases[size_t(i)] : std::string();
-    const std::string title = !m.show_expanded && !phrase.empty() ? phrase
-                              : names.empty()                     ? std::string("(pick a layer)")
-                                                                  : names;
-    ImGui::PushClipRect(title_at, title_at + ImVec2(title_w, h), true);
-    dl->AddText(ImVec2(title_at.x, title_at.y + style.FramePadding.y),
-                m.enabled ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255), title.c_str());
-    ImGui::PopClipRect();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !phrase.empty() &&
-        ImGui::CalcTextSize(title.c_str()).x > title_w)
-    {
+    const std::string hint = "Mask " + std::to_string(i + 1);
+    ImGui::SetNextItemWidth(title_w);
+    ImGui::InputTextWithHint("##name", hint.c_str(), &layer.masks[size_t(i)].name);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      C.undo->push("Rename Mask", doc);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !phrase.empty() && !ImGui::IsItemActive()) {
       ImGui::SetTooltip("%s", phrase.c_str());
     }
     ImGui::SameLine(0, 4);
-    if (icon_toggle("##viewport", m.enabled, "Row in the viewport (off: kept, to see what it does)", icon_monitor)) {
+    if (icon_toggle("##viewport", m.enabled, "Mask in the viewport (off: kept, to see what it does)", icon_monitor)) {
       operator_call(C, "mask.set", with("enabled", m.enabled ? "0" : "1"));
     }
     ImGui::SameLine(0, 1);
-    if (icon_toggle("##render", m.render, "Row in renders", icon_camera)) {
+    if (icon_toggle("##render", m.render, "Mask in renders", icon_camera)) {
       operator_call(C, "mask.set", with("render", m.render ? "0" : "1"));
     }
-    /* The row's menu, as Blender's modifier headers have: Duplicate, Move to First / Last, Delete. */
+    /* The card's menu, as Blender's modifier headers have: Duplicate, Move to First / Last, Delete. */
     ImGui::SameLine(0, 4);
     const ImVec2 menu_at = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("##menu", ImVec2(h, h))) {
@@ -2825,7 +2763,7 @@ static void mask_cards(Context &C, Layer &layer)
     }
     ImGui::RenderArrow(dl, ImVec2(menu_at.x + h * 0.22f, menu_at.y + h * 0.22f), COL_MOD_ICON, ImGuiDir_Down, 0.75f);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Duplicate, move or delete the row");
+      ImGui::SetTooltip("Duplicate, move or delete the mask");
     }
     if (ImGui::BeginPopup("##row_menu")) {
       if (ImGui::MenuItem("Duplicate")) {
@@ -2859,7 +2797,7 @@ static void mask_cards(Context &C, Layer &layer)
       dl->AddLine(ImVec2(xc.x - xs, xc.y + xs), ImVec2(xc.x + xs, xc.y - xs), COL_MOD_ICON, 1.5f);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Delete the row");
+      ImGui::SetTooltip("Delete the mask");
     }
     ImGui::SameLine(0, 2);
     const ImVec2 grip = ImGui::GetCursorScreenPos();
@@ -2875,16 +2813,16 @@ static void mask_cards(Context &C, Layer &layer)
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Drag to reorder (rows apply top to bottom)");
+      ImGui::SetTooltip("Drag to reorder");
     }
     if (ImGui::BeginDragDropSource()) {
       ImGui::SetDragDropPayload(MASK_PAYLOAD, &i, sizeof(int));
-      ImGui::Text("%s %s", MASK_MODE_NAMES[mode], title.c_str());
+      ImGui::Text("%s", mask_card_name(m, i).c_str());
       ImGui::EndDragDropSource();
     }
 
-    /* Body: Layers and Cuts (what of this layer the row cuts), then the Shape and Line Ends
-     * subpanels, as Blender's modifier panels group theirs. */
+    /* Body: Start With, the steps (each + or - Shape, its layers, Invert and Shape), + Shape and
+     * - Shape, Affects with View, then Line Ends, as Blender's modifier panels group theirs. */
     if (scroll_to != 0 && (scroll_to == m.uid || scroll_to == uint64_t(i) + 1)) {
       ImGui::SetScrollHereY(0.0f);
       scroll_to = 0;
@@ -2895,245 +2833,53 @@ static void mask_cards(Context &C, Layer &layer)
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, style.Alpha * (m.enabled ? 1.0f : 0.5f));
       const float column = inner_w * 0.38f;
       ImGui::PushItemWidth(-4.0f);
-      /* Layers: a chip each (hover to see it, x to take it out), + for the list, the eyedropper. */
-      modifier_row_label("Layers", column, "Together these layers make the row's shape (hidden ones still mask)");
-      ImGui::BeginGroup();
-      const float chips_right = ImGui::GetCursorScreenPos().x + ImGui::CalcItemWidth() - (h + 2.0f) * 2.0f;
-      for (size_t k = 0; k < m.layers.size(); k++) {
-        const Layer *source = layer_find(doc, m.layers[k]);
-        const std::string chip_name = source ? source->name : std::string("(missing)");
-        const float chip_w = ImGui::CalcTextSize(chip_name.c_str()).x + style.FramePadding.x * 2.0f + h * 0.7f;
-        if (k > 0 && ImGui::GetItemRectMax().x + 3.0f + chip_w <= chips_right) {
-          ImGui::SameLine(0, 3);
-        }
-        ImGui::PushID(int(k));
-        const ImVec2 chip_at = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##chip", ImVec2(chip_w, h));
-        const bool chip_hovered = ImGui::IsItemHovered();
-        const bool on_x = chip_hovered && ImGui::GetIO().MousePos.x > chip_at.x + chip_w - h * 0.75f;
-        dl->AddRectFilled(chip_at, chip_at + ImVec2(chip_w, h),
-                          ImGui::GetColorU32(chip_hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), h * 0.5f);
-        dl->AddText(ImVec2(chip_at.x + style.FramePadding.x, chip_at.y + style.FramePadding.y),
-                    source ? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32(0xe0, 0x60, 0x60, 255), chip_name.c_str());
-        const ImVec2 xc(chip_at.x + chip_w - h * 0.45f, chip_at.y + h * 0.5f);
-        const float xs = h * 0.15f;
-        const ImU32 x_col = on_x ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0x9a, 0x9a, 0x9a, 255);
-        dl->AddLine(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), x_col, 1.3f);
-        dl->AddLine(ImVec2(xc.x - xs, xc.y + xs), ImVec2(xc.x + xs, xc.y - xs), x_col, 1.3f);
-        if (chip_hovered) {
-          C.wm->layers_hover = {m.layers[k]};
-          C.wm->layers_hover_frame = ImGui::GetFrameCount();
-          C.wm->mask_hover = {m.layers[k]};
-          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip(on_x ? "Take %s out of the row" : "%s (x takes it out)", chip_name.c_str());
-          }
-        }
-        if (ImGui::IsItemClicked() && on_x) {
-          std::string sources;
-          for (size_t n = 0; n < m.layers.size(); n++) {
-            if (n != k) {
-              sources += (sources.empty() ? "" : "|") + std::to_string(m.layers[n]);
-            }
-          }
-          operator_call(C, "mask.set", with("sources", sources));
-        }
-        ImGui::PopID();
-      }
-      if (!m.layers.empty()) {
-        ImGui::SameLine(0, 3);
-      }
-      const ImVec2 plus_at = ImGui::GetCursorScreenPos();
-      if (ImGui::Button("##more", ImVec2(m.layers.empty() ? std::max(h, chips_right - plus_at.x) : h, h))) {
-        ImGui::OpenPopup("##layers");
-      }
-      if (m.layers.empty()) {
-        dl->AddText(ImVec2(plus_at.x + style.FramePadding.x, plus_at.y + style.FramePadding.y),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), "Pick a layer");
-      }
-      else {
-        const ImVec2 pc(plus_at.x + h * 0.5f, plus_at.y + h * 0.5f);
-        dl->AddLine(ImVec2(pc.x - h * 0.22f, pc.y), ImVec2(pc.x + h * 0.22f, pc.y), COL_MOD_ICON, 1.4f);
-        dl->AddLine(ImVec2(pc.x, pc.y - h * 0.22f), ImVec2(pc.x, pc.y + h * 0.22f), COL_MOD_ICON, 1.4f);
-      }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Choose the layers that make the row's shape");
-      }
-      ImGui::SameLine(0, 2);
-      const ImVec2 pick_at = ImGui::GetCursorScreenPos();
-      if (ImGui::Button("##pick", ImVec2(h, h))) {
-        operator_call(C, "mask.pick", at);
-      }
-      ui_eyedropper_icon(dl, pick_at + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, IM_COL32(0xe6, 0xe6, 0xe6, 255));
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Click a layer to add it to this row's shape");
-      }
-      ImGui::EndGroup();
-      if (ImGui::BeginPopup("##layers")) {
-        ImGui::TextDisabled("The ticked layers together make the shape");
-        for (const Layer *l : document_layers_flat(doc)) {
-          if (l->id == layer.id) {
-            continue;
-          }
-          bool ticked = std::find(m.layers.begin(), m.layers.end(), l->id) != m.layers.end();
-          const bool changed = ImGui::Checkbox(l->name.c_str(), &ticked);
-          if (ImGui::IsItemHovered()) {
-            C.wm->layers_hover = {l->id};
-            C.wm->layers_hover_frame = ImGui::GetFrameCount();
-            C.wm->mask_hover = {l->id};
-          }
-          if (changed) {
-            std::vector<uint64_t> next = m.layers;
-            std::erase(next, l->id);
-            if (ticked) {
-              next.push_back(l->id);
-            }
-            std::string sources;
-            for (const uint64_t n : next) {
-              sources += (sources.empty() ? "" : "|") + std::to_string(n);
-            }
-            operator_call(C, "mask.set", with("sources", sources));
-          }
-        }
-        ImGui::EndPopup();
-      }
-      {
-        /* Invert: the outside of the shape instead. */
-        modifier_row_label("", column);
-        const std::string driven_invert_path = "masks[" + std::to_string(i) + "].invert";
-        const int driven_invert = ui_driver_field_begin(C, layer.id, driven_invert_path, -1);
-        bool invert = m.invert;
-        if (ImGui::Checkbox("Invert (use the outside)", &invert)) {
-          operator_call(C, "mask.set", with("invert", invert ? "1" : "0"));
-        }
-        ui_driver_field_end(C, layer.id, driven_invert_path, -1, driven_invert);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("Use what's outside the shape instead of what's inside");
-        }
-      }
-      /* Cuts: what of this layer the row masks (Shape below says what of the mask layers it uses). */
+      /* Affects: what of this layer the card masks. */
       static const char *const CUTS_NAMES[] = {"All", "Fills", "Lines"};
       static const char *const CUTS_TIPS[] = {
           "All of this layer: its fills and its lines",
-          "Only this layer's fills; its lines show as if the row weren't there",
-          "Only this layer's lines (sliced, or ended with Line Ends); its fills show as if the row weren't there, "
+          "Only this layer's fills; its lines show as if the mask weren't there",
+          "Only this layer's lines (sliced, or ended with Line Ends); its fills show as if the mask weren't there, "
           "so two layers that cut each other's lines keep both fills where they overlap"};
       const int cuts = int(m.cuts);
-      modifier_row_label("Affects", column, "What of this layer the row masks: all of it, only its fills, or only its lines");
+      modifier_row_label("Affects", column, "What of this layer the mask masks: all of it, only its fills, or only its lines");
       const std::string driven_cuts_path = "masks[" + std::to_string(i) + "].cuts";
       const int driven_cuts = ui_driver_field_begin(C, layer.id, driven_cuts_path, -1);
+      const float view_w = ImGui::CalcTextSize("View").x + style.FramePadding.x * 2.0f + h * 0.8f;
+      ImGui::SetNextItemWidth(std::max(h * 3.0f, ImGui::GetContentRegionAvail().x - view_w - 2.0f));
       const int cuts_clicked = segmented("##cuts", cuts, 3, CUTS_NAMES, CUTS_TIPS, shape_part_icon);
       if (cuts_clicked >= 0) {
         operator_call(C, "mask.set", with("cuts", mask_cuts_identifier(MaskCuts(cuts_clicked))));
       }
       ui_driver_field_end(C, layer.id, driven_cuts_path, -1, driven_cuts);
-
-      /* Shape: which parts of the mask layers' shapes count, and how far they reach. */
-      ImGui::Spacing();
-      std::string shape_note = m.fills_only ? "Fills" : m.strokes_only ? "Strokes" : "As Drawn";
-      if (m.filled && !m.strokes_only) {
-        shape_note += ", every shape filled";
+      /* View: held, the viewport shows this mask in black and white over the drawing (the lines' when it
+       * affects only lines, else the fills'). */
+      ImGui::SameLine(0, 2);
+      const ImVec2 view_at = ImGui::GetCursorScreenPos();
+      ImGui::Button("##view", ImVec2(ImGui::GetContentRegionAvail().x, 0));
+      const bool viewing = ImGui::IsItemActive();
+      if (viewing) {
+        C.wm->mask_preview = {layer.id, m.cuts == MaskCuts::Lines, i, ImGui::GetFrameCount()};
       }
-      if (m.inside_stroke && m.fills_only) {
-        shape_note += ", inside the stroke";
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(m.cuts == MaskCuts::Lines
+                              ? "Hold to see this mask in the viewport:\nwhite where it shows the lines, "
+                                "black where it hides them"
+                              : "Hold to see this mask in the viewport:\nwhite where it shows the fills, "
+                                "black where it hides them");
       }
-      if (m.grow != 0.0f) {
-        char grow_text[32];
-        std::snprintf(grow_text, sizeof(grow_text), ", %+.1f px", double(m.grow));
-        shape_note += grow_text;
+      {
+        /* A half white, half black square, then the label. */
+        const ImVec2 c(view_at.x + style.FramePadding.x + h * 0.3f, view_at.y + h * 0.5f);
+        const float s = h * 0.26f;
+        ImDrawList *vdl = ImGui::GetWindowDrawList();
+        vdl->AddRectFilled(ImVec2(c.x - s, c.y - s), ImVec2(c.x, c.y + s), IM_COL32(0xf2, 0xf2, 0xf2, 255));
+        vdl->AddRectFilled(ImVec2(c.x, c.y - s), ImVec2(c.x + s, c.y + s), IM_COL32(0x10, 0x10, 0x10, 255));
+        vdl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), IM_COL32(0x90, 0x90, 0x90, 255));
+        vdl->AddText(ImVec2(c.x + s + 4.0f, view_at.y + style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
+                     "View");
       }
-      static const char *const EXTEND_NOTES[] = {"", ", extended up", ", extended down", ", extended left",
-                                                 ", extended right"};
-      shape_note += EXTEND_NOTES[int(m.extend)];
-      if (mask_subpanel("shape", "Masking Shape", shape_note, inner_w)) {
-        static const char *const SHAPE_IDS[] = {"AS_DRAWN", "FILLS_ONLY", "STROKES_ONLY"};
-        static const char *const SHAPE_NAMES[] = {"As Drawn", "Fills", "Strokes"};
-        static const char *const SHAPE_TIPS[] = {"As Drawn: their fills and strokes, as they're drawn",
-                                                 "Fills Only: their fills, not their strokes",
-                                                 "Strokes Only: their strokes, not their fills"};
-        const int shape = m.fills_only ? 1 : m.strokes_only ? 2 : 0;
-        modifier_row_label("Mask With", column, "Which parts of the mask layers' shapes make the row's shape");
-        const std::string driven_shape_path = "masks[" + std::to_string(i) + "].shape";
-        const int driven_shape = ui_driver_field_begin(C, layer.id, driven_shape_path, -1);
-        const int shape_clicked = segmented("##shape", shape, 3, SHAPE_NAMES, SHAPE_TIPS, shape_part_icon);
-        if (shape_clicked >= 0) {
-          operator_call(C, "mask.set", with("shape", SHAPE_IDS[shape_clicked]));
-        }
-        ui_driver_field_end(C, layer.id, driven_shape_path, -1, driven_shape);
-        /* Under it, the two settings that depend on it. Fill Every Shape: the inside of an outline-only
-         * (or open) shape masks too; Strokes Only has no insides to fill. */
-        const float sub = h * 0.7f;
-        modifier_row_label("", column);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sub);
-        ImGui::BeginDisabled(m.strokes_only);
-        const std::string driven_filled_path = "masks[" + std::to_string(i) + "].filled";
-        const int driven_filled = ui_driver_field_begin(C, layer.id, driven_filled_path, -1);
-        bool filled = m.filled && !m.strokes_only;
-        if (ImGui::Checkbox("Fill Every Shape", &filled)) {
-          operator_call(C, "mask.set", with("filled", filled ? "1" : "0"));
-        }
-        ui_driver_field_end(C, layer.id, driven_filled_path, -1, driven_filled);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::SetTooltip(m.strokes_only ? "Strokes Only has no insides to fill"
-                                           : "Mask with the inside of every shape, as if it were filled: an "
-                                             "outline-only shape too (an open one closed by a straight line)");
-        }
-        /* Inside the Stroke: with Fills Only, the fills end at their lines' inner edge. */
-        modifier_row_label("", column);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sub);
-        ImGui::BeginDisabled(!m.fills_only);
-        const std::string driven_inside_path = "masks[" + std::to_string(i) + "].inside_stroke";
-        const int driven_inside = ui_driver_field_begin(C, layer.id, driven_inside_path, -1);
-        bool inside_stroke = m.inside_stroke && m.fills_only;
-        if (ImGui::Checkbox("Inside the Stroke", &inside_stroke)) {
-          operator_call(C, "mask.set", with("inside_stroke", inside_stroke ? "1" : "0"));
-        }
-        ui_driver_field_end(C, layer.id, driven_inside_path, -1, driven_inside);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::SetTooltip(!m.fills_only ? "With Fills Only: the fills end at their lines' inner edge"
-                                          : "The fills end at their lines' inner edge, not down the middle of the "
-                                            "lines, at any zoom: a layer cut by this one shows over the whole line");
-        }
-        modifier_row_label("Grow", column,
-                           "Grow the shape by pixels (negative shrinks it); a pixel hides thin seams along the edge");
-        float grow = m.grow;
-        const std::string driven_grow_path = std::string("masks[" + std::to_string(i) + "].") + "grow";
-        const int driven_grow = ui_driver_field_begin(C, layer.id, driven_grow_path, -1);
-        if (ImGui::DragFloat("##grow", &grow, 0.1f, -64.0f, 64.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
-          /* Shown as it changes; one undo step when let go. */
-          layer.masks[size_t(i)].grow = grow;
-        }
-        ui_driver_typed(C, layer.id, driven_grow_path, -1);
-        ui_driver_field_end(C, layer.id, driven_grow_path, -1, driven_grow);
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-          char value[32];
-          std::snprintf(value, sizeof(value), "%g", double(layer.masks[size_t(i)].grow));
-          operator_call(C, "mask.set", with("grow", value));
-        }
-        /* Extend: the shapes stretched to the edge one way, in the mask layer's own directions. */
-        static const char *const EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
-        static const char *const EXTEND_NAMES[] = {"None", "Up", "Down", "Left", "Right"};
-        static const char *const EXTEND_TIPS[] = {"None: the shape as it is", "Up: stretched to the top edge",
-                                                  "Down: stretched to the bottom edge", "Left: stretched to the left edge",
-                                                  "Right: stretched to the right edge"};
-        const int ext = int(m.extend);
-        modifier_row_label("Extend", column,
-                           "Stretch the shape to the edge one way (the mask layer's own up, down, left or right, "
-                           "turning with it): Subtract the mouth line, extended Up, hides the mouth and everything "
-                           "above it");
-        const std::string driven_extend_path = std::string("masks[" + std::to_string(i) + "].") + "extend";
-        const int driven_extend = ui_driver_field_begin(C, layer.id, driven_extend_path, -1);
-        /* Icons only: five names don't fit beside each other. */
-        const int extend_clicked = segmented("##extend", ext, 5, nullptr, EXTEND_TIPS, extend_icon);
-        if (extend_clicked >= 0) {
-          operator_call(C, "mask.set", with("extend", EXTEND_IDS[extend_clicked]));
-        }
-        ui_driver_field_end(C, layer.id, driven_extend_path, -1, driven_extend);
-      }
-
       /* Line Ends: whether this layer's lines end where they cross the edge rather than being sliced
-       * by it, and how. A row that affects only fills leaves the lines alone. */
+       * by it, and how. A mask that affects only fills leaves the lines alone. */
       ImGui::Spacing();
       const bool lines_cut = m.cuts != MaskCuts::Fills;
       char ends_note[64] = "off";
@@ -3143,9 +2889,6 @@ static void mask_cards(Context &C, Layer &layer)
       else if (m.end_lines) {
         std::snprintf(ends_note, sizeof(ends_note), m.end_lines_flat ? "Flat" : "Brush, reach %.2f",
                       double(m.line_reach));
-      }
-      else if (brought_ends) {
-        std::snprintf(ends_note, sizeof(ends_note), "as the row above ends them");
       }
       if (mask_subpanel("line_ends", "Line Ends", ends_note, inner_w)) {
         ImGui::BeginDisabled(!lines_cut);
@@ -3158,15 +2901,12 @@ static void mask_cards(Context &C, Layer &layer)
         }
         ui_driver_field_end(C, layer.id, driven_end_path, -1, driven_end);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::SetTooltip(!lines_cut ? "The row affects only fills: it leaves the lines alone"
-                                       : "This layer's lines end where they cross the edge, as if drawn to there, "
-                                         "instead of being sliced by it (a brushed line's dabs aren't cut in half)");
+          ImGui::SetTooltip(!lines_cut ? "The mask affects only fills: it leaves the lines alone"
+                                       : "This layer's lines end where they cross the edge of this mask's shape, as "
+                                         "if drawn to there, instead of being sliced by it (a brushed line's dabs "
+                                         "aren't cut in half)");
         }
         ImGui::EndDisabled();
-        if (brought_ends) {
-          modifier_row_label("", column);
-          ImGui::TextDisabled("Lines end here anyway: this Add row brings back lines a row above ends");
-        }
         ImGui::BeginDisabled(!lines_cut || !m.end_lines);
         static const char *const ENDS_IDS[] = {"BRUSH", "FLAT"};
         static const char *const ENDS_NAMES[] = {"Brush", "Flat"};
@@ -3228,17 +2968,335 @@ static void mask_cards(Context &C, Layer &layer)
         }
         ImGui::EndDisabled();
       }
+      ImGui::Spacing();
+      /* Start With: the card's colour before its steps paint on it. */
+      {
+        static const char *const START_NAMES[] = {"Everything", "Nothing"};
+        static const char *const START_TIPS[] = {
+            "Start with a white mask: everything shows, and - Shape hides parts of it",
+            "Start with a black mask: nothing shows, and + Shape shows parts of it"};
+        modifier_row_label("Start With", column, "What the mask starts as, before its steps paint on it");
+        const std::string driven_start_path = "masks[" + std::to_string(i) + "].start";
+        const int driven_start = ui_driver_field_begin(C, layer.id, driven_start_path, -1);
+        const int start = segmented("##start", m.start_shown ? 0 : 1, 2, START_NAMES, START_TIPS,
+                                    [](ImDrawList *d, ImVec2 c, float sz, int k, ImU32 col) {
+                                      mask_paint_icon(d, c, sz * 0.8f, k == 0, col);
+                                    });
+        if (start >= 0) {
+          operator_call(C, "mask.set", with("start", start == 0 ? "EVERYTHING" : "NOTHING"));
+        }
+        ui_driver_field_end(C, layer.id, driven_start_path, -1, driven_start);
+      }
+      /* The steps, each painting its shape on the mask in turn. */
+      int step_removed = -1;
+      for (size_t si = 0; si < m.steps.size(); si++) {
+        const MaskStep &st = m.steps[si];
+        const std::string step_path = "masks[" + std::to_string(i) + "].steps[" + std::to_string(si) + "].";
+        OpArgs step_at = at;
+        step_at["step"] = std::to_string(si);
+        const auto with_step = [&](const char *key, const std::string &value) {
+          OpArgs args = step_at;
+          args[key] = value;
+          return args;
+        };
+        ImGui::PushID(int(si));
+        ImGui::Spacing();
+      /* Layers: a chip each (hover to see it, x to take it out), + for the list, the eyedropper. */
+      /* + or - Shape: white or black paint, as joined buttons. */
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 2.0f);
+      ImGui::SetNextItemWidth(h * 2.4f);
+      const std::string driven_mode_path = step_path + "mode";
+      const int driven_mode = ui_driver_field_begin(C, layer.id, driven_mode_path, -1);
+      const int picked_mode = segmented("##mode", int(st.mode), 2, nullptr, MASK_MODE_TIPS,
+                                        [](ImDrawList *d, ImVec2 c, float sz, int k, ImU32) {
+                                          mask_paint_icon(d, c, sz * 0.85f, k == 0, IM_COL32(0x90, 0x90, 0x90, 255));
+                                        });
+      if (picked_mode >= 0) {
+        operator_call(C, "mask.set", with_step("mode", mask_mode_identifier(MaskMode(picked_mode))));
+      }
+      ui_driver_typed(C, layer.id, driven_mode_path, -1);
+      ui_driver_field_end(C, layer.id, driven_mode_path, -1, driven_mode);
+      ImGui::SameLine(0, 4);
+      ImGui::BeginGroup();
+      const float chips_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - (h + 2.0f) * 3.0f;
+      for (size_t k = 0; k < st.layers.size(); k++) {
+        const Layer *source = layer_find(doc, st.layers[k]);
+        const std::string chip_name = source ? source->name : std::string("(missing)");
+        const float chip_w = ImGui::CalcTextSize(chip_name.c_str()).x + style.FramePadding.x * 2.0f + h * 0.7f;
+        if (k > 0 && ImGui::GetItemRectMax().x + 3.0f + chip_w <= chips_right) {
+          ImGui::SameLine(0, 3);
+        }
+        ImGui::PushID(int(k));
+        const ImVec2 chip_at = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##chip", ImVec2(chip_w, h));
+        const bool chip_hovered = ImGui::IsItemHovered();
+        const bool on_x = chip_hovered && ImGui::GetIO().MousePos.x > chip_at.x + chip_w - h * 0.75f;
+        dl->AddRectFilled(chip_at, chip_at + ImVec2(chip_w, h),
+                          ImGui::GetColorU32(chip_hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), h * 0.5f);
+        dl->AddText(ImVec2(chip_at.x + style.FramePadding.x, chip_at.y + style.FramePadding.y),
+                    source ? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32(0xe0, 0x60, 0x60, 255), chip_name.c_str());
+        const ImVec2 xc(chip_at.x + chip_w - h * 0.45f, chip_at.y + h * 0.5f);
+        const float xs = h * 0.15f;
+        const ImU32 x_col = on_x ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0x9a, 0x9a, 0x9a, 255);
+        dl->AddLine(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), x_col, 1.3f);
+        dl->AddLine(ImVec2(xc.x - xs, xc.y + xs), ImVec2(xc.x + xs, xc.y - xs), x_col, 1.3f);
+        if (chip_hovered) {
+          C.wm->layers_hover = {st.layers[k]};
+          C.wm->layers_hover_frame = ImGui::GetFrameCount();
+          C.wm->mask_hover = {st.layers[k]};
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(on_x ? "Take %s out of the shape" : "%s (x takes it out)", chip_name.c_str());
+          }
+        }
+        if (ImGui::IsItemClicked() && on_x) {
+          std::string sources;
+          for (size_t n = 0; n < st.layers.size(); n++) {
+            if (n != k) {
+              sources += (sources.empty() ? "" : "|") + std::to_string(st.layers[n]);
+            }
+          }
+          operator_call(C, "mask.set", with_step("sources", sources));
+        }
+        ImGui::PopID();
+      }
+      if (!st.layers.empty()) {
+        ImGui::SameLine(0, 3);
+      }
+      const ImVec2 plus_at = ImGui::GetCursorScreenPos();
+      if (ImGui::Button("##more", ImVec2(st.layers.empty() ? std::max(h, chips_right - plus_at.x) : h, h))) {
+        ImGui::OpenPopup("##layers");
+      }
+      if (st.layers.empty()) {
+        dl->AddText(ImVec2(plus_at.x + style.FramePadding.x, plus_at.y + style.FramePadding.y),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), "Pick a layer");
+      }
+      else {
+        const ImVec2 pc(plus_at.x + h * 0.5f, plus_at.y + h * 0.5f);
+        dl->AddLine(ImVec2(pc.x - h * 0.22f, pc.y), ImVec2(pc.x + h * 0.22f, pc.y), COL_MOD_ICON, 1.4f);
+        dl->AddLine(ImVec2(pc.x, pc.y - h * 0.22f), ImVec2(pc.x, pc.y + h * 0.22f), COL_MOD_ICON, 1.4f);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Choose the layers that make this shape");
+      }
+      ImGui::SameLine(0, 2);
+      const ImVec2 pick_at = ImGui::GetCursorScreenPos();
+      if (ImGui::Button("##pick", ImVec2(h, h))) {
+        operator_call(C, "mask.pick", step_at);
+      }
+      ui_eyedropper_icon(dl, pick_at + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, IM_COL32(0xe6, 0xe6, 0xe6, 255));
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Click a layer to add it to this shape");
+      }
+      /* Take the step out (a card keeps at least one). */
+      ImGui::SameLine(0, 2);
+      const ImVec2 sx_at = ImGui::GetCursorScreenPos();
+      ImGui::BeginDisabled(m.steps.size() < 2);
+      if (ImGui::InvisibleButton("##remove_step", ImVec2(h, h))) {
+        step_removed = int(si);
+      }
+      const bool sx_hovered = ImGui::IsItemHovered();
+      ImGui::EndDisabled();
+      {
+        const ImVec2 xc(sx_at.x + h * 0.5f, sx_at.y + h * 0.5f);
+        const float xs = h * 0.17f;
+        const ImU32 xcol = m.steps.size() < 2 ? IM_COL32(0x60, 0x60, 0x60, 255) : COL_MOD_ICON;
+        if (sx_hovered) {
+          dl->AddRectFilled(sx_at, sx_at + ImVec2(h, h), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
+          ImGui::SetTooltip("Take this step out");
+        }
+        dl->AddLine(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), xcol, 1.3f);
+        dl->AddLine(ImVec2(xc.x - xs, xc.y + xs), ImVec2(xc.x + xs, xc.y - xs), xcol, 1.3f);
+      }
+      ImGui::EndGroup();
+      if (ImGui::BeginPopup("##layers")) {
+        ImGui::TextDisabled("The ticked layers together make the shape");
+        for (const Layer *l : document_layers_flat(doc)) {
+          if (l->id == layer.id) {
+            continue;
+          }
+          bool ticked = std::find(st.layers.begin(), st.layers.end(), l->id) != st.layers.end();
+          const bool changed = ImGui::Checkbox(l->name.c_str(), &ticked);
+          if (ImGui::IsItemHovered()) {
+            C.wm->layers_hover = {l->id};
+            C.wm->layers_hover_frame = ImGui::GetFrameCount();
+            C.wm->mask_hover = {l->id};
+          }
+          if (changed) {
+            std::vector<uint64_t> next = st.layers;
+            std::erase(next, l->id);
+            if (ticked) {
+              next.push_back(l->id);
+            }
+            std::string sources;
+            for (const uint64_t n : next) {
+              sources += (sources.empty() ? "" : "|") + std::to_string(n);
+            }
+            operator_call(C, "mask.set", with_step("sources", sources));
+          }
+        }
+        ImGui::EndPopup();
+      }
+      {
+        /* Invert: the outside of the shape instead. */
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + h * 2.4f + 6.0f);
+        const std::string driven_invert_path = step_path + "invert";
+        const int driven_invert = ui_driver_field_begin(C, layer.id, driven_invert_path, -1);
+        bool invert = st.invert;
+        if (ImGui::Checkbox("Invert (use the outside)", &invert)) {
+          operator_call(C, "mask.set", with_step("invert", invert ? "1" : "0"));
+        }
+        ui_driver_field_end(C, layer.id, driven_invert_path, -1, driven_invert);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Use what's outside the shape instead of what's inside");
+        }
+      }
+      /* Shape: which parts of the step's layers' shapes count, and how far they reach. */
+      std::string shape_note = st.fills_only ? "Fills" : st.strokes_only ? "Strokes" : "As Drawn";
+      if (st.filled && !st.strokes_only) {
+        shape_note += ", every shape filled";
+      }
+      if (st.inside_stroke && st.fills_only) {
+        shape_note += ", inside the stroke";
+      }
+      if (st.grow != 0.0f) {
+        char grow_text[32];
+        std::snprintf(grow_text, sizeof(grow_text), ", %+.1f px", double(st.grow));
+        shape_note += grow_text;
+      }
+      static const char *const EXTEND_NOTES[] = {"", ", extended up", ", extended down", ", extended left",
+                                                 ", extended right"};
+      shape_note += EXTEND_NOTES[int(st.extend)];
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + h * 2.4f + 6.0f);
+      if (mask_subpanel("shape", "Shape", shape_note, inner_w - h * 2.4f - 10.0f)) {
+        static const char *const SHAPE_IDS[] = {"AS_DRAWN", "FILLS_ONLY", "STROKES_ONLY"};
+        static const char *const SHAPE_NAMES[] = {"As Drawn", "Fills", "Strokes"};
+        static const char *const SHAPE_TIPS[] = {"As Drawn: their fills and strokes, as they're drawn",
+                                                 "Fills Only: their fills, not their strokes",
+                                                 "Strokes Only: their strokes, not their fills"};
+        const int shape = st.fills_only ? 1 : st.strokes_only ? 2 : 0;
+        modifier_row_label("Mask With", column, "Which parts of the layers' shapes make this shape");
+        const std::string driven_shape_path = step_path + "shape";
+        const int driven_shape = ui_driver_field_begin(C, layer.id, driven_shape_path, -1);
+        const int shape_clicked = segmented("##shape", shape, 3, SHAPE_NAMES, SHAPE_TIPS, shape_part_icon);
+        if (shape_clicked >= 0) {
+          operator_call(C, "mask.set", with_step("shape", SHAPE_IDS[shape_clicked]));
+        }
+        ui_driver_field_end(C, layer.id, driven_shape_path, -1, driven_shape);
+        /* Under it, the two settings that depend on it. Fill Every Shape: the inside of an outline-only
+         * (or open) shape masks too; Strokes Only has no insides to fill. */
+        const float sub = h * 0.7f;
+        modifier_row_label("", column);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sub);
+        ImGui::BeginDisabled(st.strokes_only);
+        const std::string driven_filled_path = step_path + "filled";
+        const int driven_filled = ui_driver_field_begin(C, layer.id, driven_filled_path, -1);
+        bool filled = st.filled && !st.strokes_only;
+        if (ImGui::Checkbox("Fill Every Shape", &filled)) {
+          operator_call(C, "mask.set", with_step("filled", filled ? "1" : "0"));
+        }
+        ui_driver_field_end(C, layer.id, driven_filled_path, -1, driven_filled);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip(st.strokes_only ? "Strokes Only has no insides to fill"
+                                           : "Mask with the inside of every shape, as if it were filled: an "
+                                             "outline-only shape too (an open one closed by a straight line)");
+        }
+        /* Inside the Stroke: with Fills Only, the fills end at their lines' inner edge. */
+        modifier_row_label("", column);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sub);
+        ImGui::BeginDisabled(!st.fills_only);
+        const std::string driven_inside_path = step_path + "inside_stroke";
+        const int driven_inside = ui_driver_field_begin(C, layer.id, driven_inside_path, -1);
+        bool inside_stroke = st.inside_stroke && st.fills_only;
+        if (ImGui::Checkbox("Inside the Stroke", &inside_stroke)) {
+          operator_call(C, "mask.set", with_step("inside_stroke", inside_stroke ? "1" : "0"));
+        }
+        ui_driver_field_end(C, layer.id, driven_inside_path, -1, driven_inside);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip(!st.fills_only ? "With Fills Only: the fills end at their lines' inner edge"
+                                          : "The fills end at their lines' inner edge, not down the middle of the "
+                                            "lines, at any zoom: a layer cut by this one shows over the whole line");
+        }
+        modifier_row_label("Grow", column,
+                           "Grow the shape by pixels (negative shrinks it); a pixel hides thin seams along the edge");
+        float grow = st.grow;
+        const std::string driven_grow_path = step_path + "grow";
+        const int driven_grow = ui_driver_field_begin(C, layer.id, driven_grow_path, -1);
+        if (ImGui::DragFloat("##grow", &grow, 0.1f, -64.0f, 64.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
+          /* Shown as it changes; one undo step when let go. */
+          layer.masks[size_t(i)].steps[si].grow = grow;
+        }
+        ui_driver_typed(C, layer.id, driven_grow_path, -1);
+        ui_driver_field_end(C, layer.id, driven_grow_path, -1, driven_grow);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          char value[32];
+          std::snprintf(value, sizeof(value), "%g", double(layer.masks[size_t(i)].steps[si].grow));
+          operator_call(C, "mask.set", with_step("grow", value));
+        }
+        /* Extend: the shapes stretched to the edge one way, in the mask layer's own directions. */
+        static const char *const EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};
+        static const char *const EXTEND_NAMES[] = {"None", "Up", "Down", "Left", "Right"};
+        static const char *const EXTEND_TIPS[] = {"None: the shape as it is", "Up: stretched to the top edge",
+                                                  "Down: stretched to the bottom edge", "Left: stretched to the left edge",
+                                                  "Right: stretched to the right edge"};
+        const int ext = int(st.extend);
+        modifier_row_label("Extend", column,
+                           "Stretch the shape to the edge one way (the mask layer's own up, down, left or right, "
+                           "turning with it): Subtract the mouth line, extended Up, hides the mouth and everything "
+                           "above it");
+        const std::string driven_extend_path = step_path + "extend";
+        const int driven_extend = ui_driver_field_begin(C, layer.id, driven_extend_path, -1);
+        /* Icons only: five names don't fit beside each other. */
+        const int extend_clicked = segmented("##extend", ext, 5, nullptr, EXTEND_TIPS, extend_icon);
+        if (extend_clicked >= 0) {
+          operator_call(C, "mask.set", with_step("extend", EXTEND_IDS[extend_clicked]));
+        }
+        ui_driver_field_end(C, layer.id, driven_extend_path, -1, driven_extend);
+      }
+        ImGui::PopID();
+      }
+      if (step_removed >= 0) {
+        OpArgs remove = at;
+        remove["step"] = std::to_string(step_removed);
+        operator_call(C, "mask.remove", remove);
+      }
+      /* + Shape / - Shape: another step, then click its layer. */
+      {
+        ImGui::Spacing();
+        const float step_w = (ImGui::GetContentRegionAvail().x - 6.0f) * 0.5f;
+        static const char *const STEP_LABELS[] = {"      + Shape", "      - Shape"};
+        static const char *const STEP_TIPS[] = {"Show inside another layer too (paint white), then click it",
+                                                "Hide inside another layer (paint black), then click it"};
+        for (int k = 0; k < 2; k++) {
+          if (k > 0) {
+            ImGui::SameLine(0, 2);
+          }
+          const ImVec2 b_at = ImGui::GetCursorScreenPos();
+          if (ImGui::Button(STEP_LABELS[k], ImVec2(k == 0 ? step_w : ImGui::GetContentRegionAvail().x - 4.0f, 0))) {
+            OpArgs pick = at;
+            pick["mode"] = mask_mode_identifier(MaskMode(k));
+            operator_call(C, "mask.pick", pick);
+          }
+          mask_paint_icon(dl, ImVec2(b_at.x + h * 0.5f, b_at.y + h * 0.5f), h * 0.2f, k == 0,
+                          IM_COL32(0x90, 0x90, 0x90, 255));
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("%s", STEP_TIPS[k]);
+          }
+        }
+        ImGui::Spacing();
+      }
       ImGui::PopItemWidth();
       ImGui::PopStyleVar();
     }
     ImGui::EndGroup();
     const ImVec2 box_max(box_min.x + box_w, ImGui::GetItemRectMax().y + 6.0f);
     dl->ChannelsSetCurrent(0);
-    /* Hovering the row outlines its area in the viewport. */
+    /* Hovering the card outlines its layers in the viewport. */
     const bool box_hovered = ImGui::IsMouseHoveringRect(box_min, box_max) && ImGui::IsWindowHovered(
                                                                               ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     if (box_hovered && C.wm->mask_hover.empty()) {
-      C.wm->mask_hover = m.layers;
+      C.wm->mask_hover = mask_card_layers(m);
     }
     dl->AddRectFilled(box_min, box_max, COL_MOD_BOX, 5.0f);
     const bool pointed_at = box_hovered || summary_hover == i;
@@ -3262,9 +3320,9 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::PopID();
   }
   if (layer.masks.empty() && !layer.clip_to_below) {
-    ImGui::TextDisabled("No mask rows: the layer shows everywhere.");
+    ImGui::TextDisabled("No masks: the layer shows everywhere.");
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("Add Row, or Alt-drag a layer onto this one in the Layers editor (Shift to cut it out). "
+    ImGui::TextDisabled("Add Mask, or Alt-drag a layer onto this one in the Layers editor (Shift to hide it). "
                         "Join Lines takes two picked layers that meet.");
     ImGui::PopTextWrapPos();
   }
@@ -3304,7 +3362,8 @@ static void used_as_mask_panel(Context &C, Layer &layer)
   std::vector<const Layer *> users;
   for (const Layer *l : document_layers_flat(doc)) {
     for (const LayerMask &m : l->masks) {
-      if (std::find(m.layers.begin(), m.layers.end(), layer.id) != m.layers.end()) {
+      const std::vector<uint64_t> named = mask_card_layers(m);
+      if (std::find(named.begin(), named.end(), layer.id) != named.end()) {
         users.push_back(l);
         break;
       }

@@ -1446,20 +1446,26 @@ void ui_mask_pick_update(Context &C)
           if (!layer) {
             continue;
           }
-          if (p.index >= 0 && p.index < int(layer->masks.size())) {
-            /* Joins that mask: inside or outside any of its layers. */
+          const LayerMask *card =
+              p.index >= 0 && p.index < int(layer->masks.size()) ? &layer->masks[size_t(p.index)] : nullptr;
+          if (card && p.step >= 0 && p.step < int(card->steps.size())) {
+            /* Joins that step: its shape is all its layers together. */
             std::string sources;
-            for (const uint64_t l : layer->masks[size_t(p.index)].layers) {
+            for (const uint64_t l : card->steps[size_t(p.step)].layers) {
               sources += std::to_string(l) + "|";
             }
             sources += std::to_string(source);
             operator_call(C, "mask.set",
-                          {{"layer", std::to_string(id)}, {"index", std::to_string(p.index)}, {"sources", sources}});
+                          {{"layer", std::to_string(id)}, {"index", std::to_string(p.index)},
+                           {"step", std::to_string(p.step)}, {"sources", sources}});
           }
           else {
             OpArgs add = {{"layer", std::to_string(id)}, {"sources", std::to_string(source)}};
             if (!p.mode.empty()) {
               add["mode"] = p.mode;
+            }
+            if (card) {
+              add["card"] = std::to_string(p.index);
             }
             operator_call(C, "mask.add", add);
           }
@@ -1468,10 +1474,8 @@ void ui_mask_pick_update(Context &C)
       },
       [wm]() {
         const WindowManager::MaskPick &p = wm->mask_pick;
-        const char *what = p.index >= 0              ? "Click the layer to join the mask row"
-                           : p.mode == "SUBTRACT"   ? "Click the layer to cut out (Subtract)"
-                           : p.mode == "INTERSECT"  ? "Click the layer to keep only what's inside (Intersect)"
-                           : p.mode == "DIFFERENCE" ? "Click the layer to flip (Difference)"
+        const char *what = p.index >= 0 && p.step >= 0 ? "Click the layer to join the step's shape"
+                           : p.mode == "SUBTRACT"   ? "Click the layer to hide it inside of (Subtract)"
                                                     : "Click the layer to show it inside of (Add)";
         return std::string(what) + "  |  Esc cancels";
       });

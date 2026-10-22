@@ -187,20 +187,26 @@ const Layer *layer_clip_base(const Document &doc, const Layer &layer)
   return nullptr;
 }
 
-std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer)
+std::vector<LayerMask> layer_mask_cards(const Document &doc, const Layer &layer)
 {
-  std::vector<LayerMask> rows = layer.masks;
+  std::vector<LayerMask> cards = layer.masks;
   if (layer.clip_to_below) {
     if (const Layer *base = layer_clip_base(doc, layer)) {
+      /* Hidden outside the base. */
+      MaskStep step;
+      step.mode = MaskMode::Subtract;
+      step.invert = true;
+      step.layers = {base->id};
+      step.clip = true;
+      step.fills_only = layer.clip_exclude_strokes;
       LayerMask clip;
-      clip.mode = MaskMode::Intersect;
-      clip.layers = {base->id};
+      clip.start_shown = true;
       clip.clip = true;
-      clip.fills_only = layer.clip_exclude_strokes;
-      rows.push_back(clip);
+      clip.steps.push_back(step);
+      cards.push_back(clip);
     }
   }
-  return rows;
+  return cards;
 }
 
 void document_set_active_shape(Document &doc, const Layer &layer, int point, ShapeEdge edge)
@@ -287,9 +293,11 @@ Layer layer_copy_with_new_ids(Document &doc, const Layer &layer, std::map<uint64
 void layer_masks_remap(Layer &layer, const std::map<uint64_t, uint64_t> &remap)
 {
   for (LayerMask &m : layer.masks) {
-    for (uint64_t &id : m.layers) {
-      if (auto it = remap.find(id); it != remap.end()) {
-        id = it->second;
+    for (MaskStep &s : m.steps) {
+      for (uint64_t &id : s.layers) {
+        if (auto it = remap.find(id); it != remap.end()) {
+          id = it->second;
+        }
       }
     }
   }

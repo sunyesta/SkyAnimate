@@ -27,8 +27,10 @@ OLD_KEYS = ("outside", "layers", "enabled", "render", "expand", "fills_only", "f
 
 
 def rows(layer):
-    """Its mask rows as the keys from before rows (outside: a Subtract row; expand: grown)."""
-    return [{k: m[k] for k in OLD_KEYS} for m in layer.masks]
+    """Its masks' steps in order, as the keys from before rows (outside: a Subtract step; expand:
+    grown; enabled and render: its card's)."""
+    return [{k: (card[k] if k in ("enabled", "render") else step[k]) for k in OLD_KEYS}
+            for card in layer.masks for step in card["steps"]]
 
 
 def square(name, x0=0.0, x1=1.0):
@@ -180,21 +182,22 @@ with zipfile.ZipFile(old_path, "w") as archive:
     archive.writestr("document.json", json.dumps(old))
 assert oanim.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
 layers = oanim.data.layers
-head_art = find("head_art").masks
+head_art = find("head_art").masks[0]["steps"]
 assert (head_art[0]["expand"], head_art[0]["fills_only"]) == (True, False), head_art
 assert (head_art[1]["expand"], head_art[1]["fills_only"]) == (False, True), head_art
 assert find("inside").masks[0]["expand"] and not find("line").masks[0]["expand"]
 
-# --- Each mask's own options, viewport and render switches, and order -------------------------------
+# --- Each step's own options, its card's viewport and render switches, and order ---------------------
 art = find("head_art")
 layers.active = art
-assert oanim.ops.mask.set(index="1", expand="1", fills_only="0", render="0") == {'FINISHED'}
-m = art.masks[1]
-assert (m["expand"], m["fills_only"], m["render"], m["enabled"]) == (True, False, False, True)
-assert oanim.ops.mask.move(index="1", to="0") == {'FINISHED'}
-assert art.masks[0]["layers"] == ["hole_cut"] and art.masks[1]["layers"] == ["head_shape"]
-assert oanim.ops.mask.add(sources="line_shape", expand="1", fills_only="1") == {'FINISHED'}
-assert (art.masks[2]["expand"], art.masks[2]["fills_only"]) == (True, True)
+assert oanim.ops.mask.set(index="0", step="1", expand="1", fills_only="0", render="0") == {'FINISHED'}
+m = art.masks[0]
+s = m["steps"][1]
+assert (s["expand"], s["fills_only"], m["render"], m["enabled"]) == (True, False, False, True)
+assert oanim.ops.mask.move(index="0", step="1", to="0") == {'FINISHED'}
+assert [s["layers"] for s in art.masks[0]["steps"]] == [["hole_cut"], ["head_shape"]]
+assert oanim.ops.mask.add(sources="line_shape", expand="1", fills_only="1") == {'FINISHED'}, "a card of its own"
+assert len(art.masks) == 2 and (art.masks[1]["expand"], art.masks[1]["fills_only"]) == (True, True)
 path = str(folder / "options.oanim")
 oanim.ops.wm.save_as_mainfile(filepath=path)
 oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
@@ -249,7 +252,7 @@ assert oanim.ops.mask.set(index="0", shape="AS_DRAWN") == {'FINISHED'}
 art = find("head_art")
 layers.active = art
 assert oanim.ops.mask.set(index="0", extend="UP") == {'FINISHED'} and art.masks[0]["extend"] == "UP"
-assert oanim.wm.undo_history()[0][-1].endswith(" and above"), oanim.wm.undo_history()[0][-1]
+assert "hole_cut and above" in oanim.wm.undo_history()[0][-1], oanim.wm.undo_history()[0][-1]
 assert oanim.ops.mask.set(index="0", extend="SIDEWAYS") == {'CANCELLED'}
 assert oanim.ops.mask.add(sources="line_shape", outside="1", extend="DOWN") == {'FINISHED'}
 assert art.masks[-1]["extend"] == "DOWN"
@@ -259,7 +262,7 @@ oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
 layers = oanim.data.layers
 assert find("head_art").masks[0]["extend"] == "UP" and find("head_art").masks[-1]["extend"] == "DOWN"
 
-# --- Rows: read top to bottom, each combining its shape with the rows above ----------------------------
+# --- Steps: read top to bottom, each painting its shape on its card's mask -------------------------------
 assert oanim.ops.wm.read_homefile() == {'FINISHED'}
 layers = oanim.data.layers
 base = layers.active
@@ -271,33 +274,48 @@ tongue = square("tongue", 0.8, 1.2)
 jaw = square("jaw", 0.0, 1.0)
 face = square("face", 0.0, 3.0)
 layers.active = face
-assert oanim.ops.mask.add(sources="head") == {'FINISHED'} and face.masks[0]["mode"] == "ADD", "a first row adds"
-assert oanim.ops.mask.add(sources="mouth", mode="SUBTRACT") == {'FINISHED'}
-assert oanim.ops.mask.add(sources="tongue", mode="ADD") == {'FINISHED'}
-assert [m["mode"] for m in face.masks] == ["ADD", "SUBTRACT", "ADD"]
+
+
+def steps():
+    return face.masks[0]["steps"]
+
+
+assert oanim.ops.mask.add(sources="head") == {'FINISHED'} and face.masks[0]["mode"] == "ADD", "a first step adds"
+assert face.masks[0]["start"] == "NOTHING", "a first + Shape starts from nothing"
+assert oanim.ops.mask.add(card="0", sources="mouth", mode="SUBTRACT") == {'FINISHED'}
+assert oanim.ops.mask.add(card="0", sources="tongue", mode="ADD") == {'FINISHED'}
+assert len(face.masks) == 1 and [s["mode"] for s in steps()] == ["ADD", "SUBTRACT", "ADD"]
 assert face.mask_summary == "Shows: inside head, minus mouth, plus tongue", face.mask_summary
-assert oanim.ops.mask.add(sources="jaw") == {'FINISHED'} and face.masks[3]["mode"] == "INTERSECT", \
-    "without a mode, a later row must hold too (as masks did before rows)"
+assert oanim.ops.mask.add(card="0", sources="jaw") == {'FINISHED'} and \
+    (steps()[3]["mode"], steps()[3]["invert"]) == ("SUBTRACT", True), \
+    "without a mode, a later step must hold too (as masks did before rows): it hides outside jaw"
 assert face.mask_summary.endswith(", within jaw"), face.mask_summary
 assert oanim.ops.mask.add(sources="jaw", mode="SIDEWAYS") == {'CANCELLED'}
+assert oanim.ops.mask.add(card="5", sources="jaw") == {'CANCELLED'}, "no such card"
 
-# Several layers in one row make one shape.
+# Several layers in one step make one shape.
 assert oanim.ops.mask.set(index="0", sources="head|jaw") == {'FINISHED'}
 assert face.masks[0]["layers"] == ["head", "jaw"] and face.mask_summary.startswith("Shows: inside head + jaw")
 
-# Invert, Grow/Shrink, Difference; outside= and expand= as before rows.
-assert oanim.ops.mask.set(index="3", mode="DIFFERENCE", invert="1", grow="-2.5") == {'FINISHED'}
-m = face.masks[3]
-assert (m["mode"], m["invert"], m["grow"], m["expand"]) == ("DIFFERENCE", True, -2.5, False), m
-assert face.mask_summary.endswith(", flipped by outside jaw"), face.mask_summary
-assert oanim.ops.mask.set(index="3", grow="100") == {'FINISHED'} and face.masks[3]["grow"] == 64.0
-assert oanim.ops.mask.set(index="3", outside="1") == {'FINISHED'} and face.masks[3]["mode"] == "SUBTRACT"
-assert oanim.ops.mask.set(index="3", outside="0", expand="1") == {'FINISHED'}
-assert (face.masks[3]["mode"], face.masks[3]["grow"]) == ("INTERSECT", 1.0)
+# Invert, Grow/Shrink; Intersect and Difference are gone (Subtract with Invert keeps only inside);
+# outside= and expand= as before rows.
+assert oanim.ops.mask.set(index="0", step="3", mode="DIFFERENCE") == {'CANCELLED'}
+assert oanim.ops.mask.set(index="0", step="3", mode="ADD", invert="1", grow="-2.5") == {'FINISHED'}
+m = steps()[3]
+assert (m["mode"], m["invert"], m["grow"], m["expand"]) == ("ADD", True, -2.5, False), m
+assert face.mask_summary.endswith(", plus outside jaw"), face.mask_summary
+assert oanim.ops.mask.set(index="0", step="3", mode="INTERSECT") == {'FINISHED'}
+assert (steps()[3]["mode"], steps()[3]["invert"]) == ("SUBTRACT", True), "INTERSECT: hide outside"
+assert oanim.ops.mask.set(index="0", step="3", grow="100") == {'FINISHED'} and steps()[3]["grow"] == 64.0
+assert oanim.ops.mask.set(index="0", step="3", outside="1") == {'FINISHED'}
+assert (steps()[3]["mode"], steps()[3]["invert"]) == ("SUBTRACT", False)
+assert oanim.ops.mask.set(index="0", step="3", outside="0", expand="1") == {'FINISHED'}
+assert (steps()[3]["mode"], steps()[3]["invert"], steps()[3]["grow"]) == ("SUBTRACT", True, 1.0)
 assert oanim.ops.mask.set(index="0", outside="0") == {'FINISHED'} and face.masks[0]["mode"] == "ADD"
-assert oanim.ops.mask.set(index="3", invert="0", grow="-3") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", step="3", grow="-3") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", step="4", grow="1") == {'CANCELLED'}, "no such step"
 
-# A first Subtract starts from everything.
+# A first - Shape starts from everything.
 oanim.ops.layer.new()
 cut = layers.active
 cut.name = "cut"
@@ -305,14 +323,24 @@ assert oanim.ops.mask.add(sources="mouth", mode="SUBTRACT") == {'FINISHED'}
 assert cut.mask_summary == "Shows: everything but mouth", cut.mask_summary
 assert cut.masks[0]["outside"]
 
-# Reordering changes what shows: rows apply in order.
+# Reordering changes what shows: steps apply in order.
 layers.active = face
-assert oanim.ops.mask.move(index="2", to="0") == {'FINISHED'}
-assert [m["layers"][0] for m in face.masks] == ["tongue", "head", "mouth", "jaw"]
-assert oanim.wm.undo_history()[0][-1] == "Move Mask Row"
+assert oanim.ops.mask.move(index="0", step="2", to="0") == {'FINISHED'}
+assert [s["layers"][0] for s in steps()] == ["tongue", "head", "mouth", "jaw"]
+assert oanim.wm.undo_history()[0][-1] == "Move Mask Step"
 assert face.mask_summary == "Shows: inside tongue, plus head + jaw, minus mouth, within jaw", face.mask_summary
 oanim.ops.ed.undo()
-assert [m["layers"][0] for m in face.masks] == ["head", "mouth", "tongue", "jaw"]
+assert [s["layers"][0] for s in steps()] == ["head", "mouth", "tongue", "jaw"]
+
+# Cards multiply: a second card hides what it hides whatever the first shows.
+layers.active = face
+assert oanim.ops.mask.add(sources="mouth", mode="SUBTRACT") == {'FINISHED'} and len(face.masks) == 2
+assert face.masks[1]["start"] == "EVERYTHING"
+assert face.mask_summary.endswith("; everything but mouth"), face.mask_summary
+assert oanim.ops.mask.remove(index="1") == {'FINISHED'} and len(face.masks) == 1
+# Taking a step out; a card's last step goes with the card.
+assert oanim.ops.mask.add(card="0", sources="base") == {'FINISHED'} and len(steps()) == 5
+assert oanim.ops.mask.remove(index="0", step="4") == {'FINISHED'} and len(steps()) == 4
 
 # --- Clip to Below (Photoshop's clipping mask) ----------------------------------------------------------
 # Several layers in a row clip to the first layer below them that doesn't clip.
@@ -346,8 +374,9 @@ assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 layers = oanim.data.layers
 face = find("face")
-assert [(m["mode"], m["invert"], m["grow"]) for m in face.masks] == \
-    [("ADD", False, 0.0), ("SUBTRACT", False, 0.0), ("ADD", False, 0.0), ("INTERSECT", False, -3.0)], face.masks
+assert [(s["mode"], s["invert"], s["grow"]) for s in face.masks[0]["steps"]] == \
+    [("ADD", False, 0.0), ("SUBTRACT", False, 0.0), ("ADD", False, 0.0), ("SUBTRACT", True, -3.0)], face.masks
+assert face.masks[0]["start"] == "NOTHING"
 assert find("mouth").clip_to_below and find("tongue").clip_to_below and not find("head").clip_to_below
 assert find("mouth").clip_exclude_strokes and not find("tongue").clip_exclude_strokes, ("Exclude Strokes is saved", find("mouth").clip_exclude_strokes, find("tongue").clip_exclude_strokes)
 
@@ -359,11 +388,11 @@ with zipfile.ZipFile(path) as archive:
 
 
 def strip(layer_list):
+    """face's card as the rows of a file from before them: Inside or Outside each."""
     for l in layer_list:
         if l.get("name") == "face":
-            for m, outside in zip(l["masks"], (True, False, False, True)):
-                del m["mode"], m["invert"], m["grow"]
-                m["outside"] = outside
+            l["masks"] = [{"outside": outside, "layers": s["layers"]}
+                          for s, outside in zip(l["masks"][0]["steps"], (True, False, False, True))]
             l["masks"][1]["expand"] = True
         strip(l.get("children", []))
 
@@ -373,8 +402,11 @@ with zipfile.ZipFile(old_path, "w") as archive:
     archive.writestr("document.json", json.dumps(stored))
 assert oanim.ops.wm.open_mainfile(filepath=str(old_path), confirmed="1") == {'FINISHED'}
 layers = oanim.data.layers
-assert [(m["mode"], m["grow"]) for m in find("face").masks] == \
-    [("SUBTRACT", 0.0), ("INTERSECT", 1.0), ("INTERSECT", 0.0), ("SUBTRACT", 0.0)], find("face").masks
+assert len(find("face").masks) == 1, "the rows become one card"
+assert [(s["mode"], s["invert"], s["grow"]) for s in find("face").masks[0]["steps"]] == \
+    [("SUBTRACT", False, 0.0), ("SUBTRACT", True, 1.0), ("SUBTRACT", True, 0.0), ("SUBTRACT", False, 0.0)], \
+    find("face").masks
+assert find("face").masks[0]["start"] == "EVERYTHING", "a first Outside row started from everything"
 
 # A file from before mask rows lent shapes as drawn opens (with a note naming layers whose masks
 # named a layer with masks of its own); saving marks it.

@@ -164,58 +164,60 @@ struct MediaSettings {
   bool muted = false;
 };
 
-/* A layer's masks are a list of rows read top to bottom, as After Effects' mask modes (and CSS's
- * mask-composite), each naming layers as its track mattes do: the shape of a row is all its layers
- * together, as drawn (before any masks of their own; their Shape and Fill Every Shape say which parts), and its mode says what it does to what the rows above
- * show. Add shows inside it too, Subtract hides inside it, Intersect keeps only where it overlaps
- * what is shown, Difference flips where it overlaps. With nothing above, a list that starts with
- * Subtract or Intersect starts from everything shown (so "outside the mouth" is one row), else from
- * nothing. A group's masks apply to everything in it, as well as each layer's own. Masks name layers
- * by id, so the order of the layers never matters, and a hidden layer still masks. Clip to Below
- * (Layer::clip_to_below) is a quick one more: Intersect with the layer below. */
-enum class MaskMode : uint8_t { Add, Subtract, Intersect, Difference };
+/* A layer's masks are cards, each a mask of its own, painted as Photoshop's layer masks are: it
+ * starts white (everything shown) or black (nothing shown), as its Start With says, and its steps,
+ * read top to bottom, each paint their shape onto it: Add (+ Shape) paints white, shows inside it;
+ * Subtract (- Shape) black, hides inside it; Invert paints the outside instead. A step's shape is all
+ * its layers together, as drawn (before any masks of their own; its Shape and Fill Every Shape say
+ * which parts), named as track mattes name theirs. Each card says what of the layer it masks
+ * (Affects: all, its fills or its lines) and how it cuts lines (sliced, or ended at its shape's
+ * edge), and the layer shows only where every card that masks that part shows it (they multiply).
+ * A group's masks apply to everything in it, as well as each layer's own. Masks name layers by id,
+ * so the order of the layers never matters, and a hidden layer still masks. Clip to Below
+ * (Layer::clip_to_below) is a quick card more: everything but outside the layer below. */
+enum class MaskMode : uint8_t { Add, Subtract };
 const char *mask_mode_identifier(MaskMode mode);
 bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode);
-/* What an Inside/Outside mask of files from before mask rows does at its place in the list (they
- * all had to hold): the first Inside adds, a later one intersects, Outside subtracts. */
-MaskMode mask_mode_from_inside_outside(bool outside, bool first);
+struct MaskStep;
 struct LayerMask;
-/* Whether a row cuts its shape away (drawn as a cut: Subtract, or Intersect inverted). */
-bool mask_cuts(const LayerMask &mask);
-/* The rows above that end lines (End Lines at Edge), for mask_row_ends_lines. */
-struct MaskLineEnding {
-  bool active = false;
-  bool flat = false;
-};
-/* Whether row `m` ends the masked layer's lines, and with which Ends (`r_flat`), given the rows above
- * it that are on (`above`, updated for the rows after): its own End Lines at Edge, or, for an Add row
- * after one that ends lines, that row's, so the Add row brings back the lines it ended. */
-bool mask_row_ends_lines(const LayerMask &m, MaskLineEnding *above, bool *r_flat);
+/* Rows saved before cards, with their modes' old names: INTERSECT (keep only inside) is Subtract of
+ * the outside, DIFFERENCE is read as Add. `identifier` is the saved mode (or empty: an Inside/Outside
+ * mask from before rows, which all had to hold: the first Inside adds, a later one keeps only inside,
+ * Outside subtracts). Returns false for a name it doesn't know. */
+bool mask_step_from_old_mode(const std::string &identifier, bool outside, bool first, MaskStep *s);
+/* Whether a step cuts its shape away (Subtract of the inside). */
+bool mask_step_cuts(const MaskStep &step);
+/* Whether a card cuts away (its first step does, on a white start), for the outline drawn dashed. */
+bool mask_cuts(const LayerMask &card);
+/* Whether a card ends the masked layer's lines at its shape's edge (End Lines at Edge, on a card that
+ * masks lines), and with which Ends (`r_flat`). */
+bool mask_card_ends_lines(const LayerMask &card, bool *r_flat);
+/* A card's name as shown: its own, or "Mask 2" by its place (`index`, from 0). */
+std::string mask_card_name(const LayerMask &card, int index);
+/* Every layer a card's steps name, once each. */
+std::vector<uint64_t> mask_card_layers(const LayerMask &card);
 /* A mask's Extend: the layers' shapes stretched to the edge of everything in one direction (the mask
  * layer's own up, down, left or right, so it turns with the layer and its bone): "Outside the mouth
  * line, extended up" hides the mouth and everything above it. */
 enum class MaskExtend : uint8_t { None, Up, Down, Left, Right };
 const char *mask_extend_identifier(MaskExtend extend);
 bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_extend);
-/* What of the masked layer a row cuts: all of it, only its fills, or only its lines. */
+/* What of the masked layer a card masks: all of it, only its fills, or only its lines. */
 enum class MaskCuts : uint8_t { All, Fills, Lines };
 const char *mask_cuts_identifier(MaskCuts cuts);
 bool mask_cuts_from_identifier(const std::string &identifier, MaskCuts *r_cuts);
 
-struct LayerMask {
+/* One step of a card's chain: its layers' shape painted on the card's mask. */
+struct MaskStep {
   MaskMode mode = MaskMode::Add;
-  /* The row's shape inside out: everything but its layers. */
+  /* The shape inside out: everything but its layers. */
   bool invert = false;
   std::vector<uint64_t> layers;
-  /* Masking in the viewport; off, it's kept but doesn't mask there (to see what it cuts). */
-  bool enabled = true;
-  /* Masking in renders. */
-  bool render = true;
   /* How the layers' shapes mask: grown by `grow` pixels (on screen; 1 hides thin seams along the
-   * edges) or shrunk by a negative one. The Masking tab's Shape: As Drawn (fills and strokes), Fills
-   * Only (`fills_only`) or Strokes Only (`strokes_only`); and its Fill Every Shape (`filled`): every
-   * shape as if it were filled, an outline-only shape too (an open one closed by a straight line), as
-   * Rive clips with a shape's path (nothing to do with Strokes Only). */
+   * edges) or shrunk by a negative one. Shape: As Drawn (fills and strokes), Fills Only
+   * (`fills_only`) or Strokes Only (`strokes_only`); and Fill Every Shape (`filled`): every shape as
+   * if it were filled, an outline-only shape too (an open one closed by a straight line), as Rive
+   * clips with a shape's path (nothing to do with Strokes Only). */
   float grow = 0.0f;
   bool fills_only = false;
   bool strokes_only = false;
@@ -224,11 +226,40 @@ struct LayerMask {
    * layer cut by this one shows over the whole line), whatever the zoom, as covering it with a copy
    * of the fills would. */
   bool inside_stroke = false;
-  /* End Lines at Edge: the masked layer's lines end where they cross this row's shape (worked out
-   * along them, before a brush lays its dabs) instead of being sliced by it; with Ends Brush the
-   * new ends stop short of the edge, whole dabs only (the brush's taper and fade on them), and the
-   * row doesn't slice the lines by pixels too; with Flat (`end_lines_flat`) the row's pixel clip then cuts them straight.
-   * Fills are masked as always. */
+  MaskExtend extend = MaskExtend::None;
+  /* Shown open (its shape settings) in the Masking tab. */
+  bool show_expanded = false;
+  /* Not saved: Clip to Below's (layer_mask_cards), which masks with what its base shows. */
+  bool clip = false;
+  bool operator==(const MaskStep &o) const
+  {
+    return mode == o.mode && invert == o.invert && layers == o.layers && grow == o.grow && fills_only == o.fills_only &&
+           strokes_only == o.strokes_only && filled == o.filled && inside_stroke == o.inside_stroke &&
+           extend == o.extend && clip == o.clip;
+  }
+};
+
+/* A card: one mask, its steps painted on its start, with how it cuts. */
+struct LayerMask {
+  /* Its name in the Masking tab ("Ear join"); empty, it's "Mask 1", "Mask 2"... by its place. */
+  std::string name;
+  /* Start With: white, everything shown, for the steps to paint on; false, black, nothing shown. */
+  bool start_shown = true;
+  std::vector<MaskStep> steps;
+  /* Masking in the viewport; off, it's kept but doesn't mask there (to see what it cuts). */
+  bool enabled = true;
+  /* Masking in renders. */
+  bool render = true;
+  /* Affects: what of the masked layer the card masks. Lines: only its lines (ended or sliced), its
+   * fills showing as if the card weren't there, so two layers can cut each other's lines where they
+   * join without both fills going (a hole). Fills: only its fills (End Lines at Edge then does
+   * nothing), as Toon Boom cuts colour art apart from line art. */
+  MaskCuts cuts = MaskCuts::All;
+  /* End Lines at Edge: the masked layer's lines end where they cross the edge of the card's shape
+   * (worked out along them, before a brush lays its dabs) instead of being sliced by it; with Ends
+   * Brush the new ends stop short of the edge, whole dabs only (the brush's taper and fade on them),
+   * and the card doesn't slice the lines by pixels too; with Flat (`end_lines_flat`) the card's pixel
+   * clip then cuts them straight. Fills are masked as always. */
   bool end_lines = false;
   bool end_lines_flat = false;
   /* With Ends: Brush, how far the lines reach past the edge (+) or stop short of it (-), in line
@@ -236,24 +267,18 @@ struct LayerMask {
    * there. Animatable (keyed by hand, as settings are). */
   float line_reach = 0.0f;
   Channel<float> line_reach_keys = Channel<float>::by_hand();
-  /* Cuts: what of the masked layer the row masks. Lines: only its lines (ended or sliced), its fills
-   * showing as if the row weren't there, so two layers can cut each other's lines where they join
-   * without both fills going (a hole). Fills: only its fills (End Lines at Edge then does nothing),
-   * as Toon Boom cuts colour art apart from line art. */
-  MaskCuts cuts = MaskCuts::All;
-  MaskExtend extend = MaskExtend::None;
   /* Shown open in the Masking tab. */
   bool show_expanded = true;
-  /* Not saved: the row Clip to Below makes (layer_mask_rows), which masks with what its base shows. */
+  /* Not saved: the card Clip to Below makes (layer_mask_cards). */
   bool clip = false;
-  /* Not saved: a number of its own for drivers to follow it by when rows move (0 until one does). */
+  /* Not saved: a number of its own for drivers to follow it by when cards move (0 until one does). */
   uint64_t uid = 0;
   bool operator==(const LayerMask &o) const
   {
-    return mode == o.mode && invert == o.invert && layers == o.layers && enabled == o.enabled && render == o.render &&
-           grow == o.grow && fills_only == o.fills_only && strokes_only == o.strokes_only && filled == o.filled &&
-           inside_stroke == o.inside_stroke && end_lines == o.end_lines && end_lines_flat == o.end_lines_flat &&
-           line_reach == o.line_reach && cuts == o.cuts && extend == o.extend;
+    return name == o.name && start_shown == o.start_shown && steps == o.steps && enabled == o.enabled &&
+           render == o.render &&
+           cuts == o.cuts && end_lines == o.end_lines && end_lines_flat == o.end_lines_flat &&
+           line_reach == o.line_reach;
   }
 };
 
@@ -559,7 +584,7 @@ struct Layer {
     return c;
   }();
 
-  /* Its masks (see LayerMask). */
+  /* Its masks, as cards (see LayerMask). */
   std::vector<LayerMask> masks;
   /* Photoshop's and Procreate's clipping: shown only where the layer below it (in its group, as the
    * Layers editor lists them; the first one down that isn't clipped itself, so several can clip to
@@ -636,6 +661,8 @@ struct Layer {
 };
 
 const char *layer_type_name(LayerType type);
+/* Start With from a card's first step: Add starts from nothing, Subtract from everything. */
+void mask_card_start_from_steps(LayerMask &card);
 /* Colour of a label in the Layers editor, 0 alpha for None. */
 Color label_color_value(LabelColor label);
 

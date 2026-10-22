@@ -839,18 +839,20 @@ static void seat_connected_children(Layer &armature)
 bool armature_clear_pose(Layer &armature, bool position, bool angle, bool scale)
 {
   bool any = false;
+  /* Back to the setup pose plus what smart actions add now, so a bone a smart bone moves goes back to
+   * where that puts it (a smart bone's own turn has no smart part: it goes back to its rest). */
   for (Bone &b : armature.bones) {
     if (!bone_picked(b)) {
       continue;
     }
     if (position) {
-      b.position = b.setup_position;
+      b.position = bone_position_from_transform(b, b.position_keys.smart);
     }
     if (angle) {
-      b.angle = b.setup_angle;
+      b.angle = b.setup_angle + b.angle_keys.smart;
     }
     if (scale) {
-      b.scale = setup_value(b.scale_keys, b.scale, false);
+      b.scale = setup_value(b.scale_keys, b.scale, false) + b.scale_keys.smart;
     }
     any = true;
   }
@@ -1105,7 +1107,11 @@ void armature_select_joints_in(Layer &armature, bool setup_frame, const std::fun
       continue;
     }
     Bone &b = armature.bones[i];
-    const bool h = inside(poses[i].head), t = inside(poses[i].tail);
+    bool h = inside(poses[i].head), t = inside(poses[i].tail);
+    /* Posing, as Blender's pose mode: a bone either end of which is inside is picked whole. */
+    if (!setup_frame && (h || t)) {
+      h = t = true;
+    }
     if (h) {
       b.select_head = !deselect;
       if (Bone *parent = b.connected && deselect ? bone_find(armature, b.parent) : nullptr) {

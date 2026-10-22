@@ -292,6 +292,20 @@ b = bones2()
 assert b["c"]["selected"] and not b["p"]["selected"] and not b["p"]["select_head"], b
 rig2.box_select_bones((0.4, 0.9), (0.6, 1.1), whole=True, deselect=True)
 assert not bones2()["c"]["selected"]
+# Posing (away from frame 0), as Blender's pose mode: a bone either end of which is inside is picked
+# whole, never one end alone.
+frame_before = doc.frame_current
+doc.frame_current = 12
+rig2.box_select_bones((-0.1, -0.1), (0.1, 0.5))
+b = bones2()
+assert b["p"]["selected"] and b["p"]["select_head"] and b["p"]["select_tail"], ("p whole, by its head", b["p"])
+assert not b["c"]["selected"] and not b["c"]["select_head"], ("c's head (p's tail) wasn't in the box", b["c"])
+rig2.box_select_bones((0.9, 0.9), (1.1, 1.1))
+b = bones2()
+assert b["c"]["selected"] and b["c"]["select_head"] and b["c"]["select_tail"] and not b["p"]["selected"], b
+rig2.box_select_bones((0.9, 0.9), (1.1, 1.1), deselect=True)
+assert not bones2()["c"]["selected"] and not bones2()["c"]["select_head"]
+doc.frame_current = frame_before
 
 assert oanim.ops.wm.tool_transform_bones() == {'FINISHED'}
 rig2.select_bone("p")

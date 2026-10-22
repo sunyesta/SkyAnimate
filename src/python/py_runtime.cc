@@ -2189,34 +2189,49 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;
-    py::list result;
-    for (const LayerMask &mask : layer_or_raise(id).masks) {
-      py::dict d;
-      d["mode"] = mask_mode_identifier(mask.mode);
-      d["invert"] = mask.invert;
-      d["grow"] = mask.grow;
+    const auto step_dict = [&](const MaskStep &s, py::dict &d) {
+      d["mode"] = mask_mode_identifier(s.mode);
+      d["invert"] = s.invert;
+      d["grow"] = s.grow;
       /* As before rows: Outside was a Subtract, Expand a grow. */
-      d["outside"] = mask.mode == MaskMode::Subtract;
-      d["expand"] = mask.grow > 0.0f;
-      d["enabled"] = mask.enabled;
-      d["render"] = mask.render;
-      d["fills_only"] = mask.fills_only;
-      d["strokes_only"] = mask.strokes_only;
-      d["inside_stroke"] = mask.inside_stroke;
-      d["end_lines"] = mask.end_lines;
-      d["ends"] = mask.end_lines_flat ? "FLAT" : "BRUSH";
-      d["reach"] = mask.line_reach;
-      d["cuts"] = mask_cuts_identifier(mask.cuts);
-      d["lines_only"] = mask.cuts == MaskCuts::Lines;
-      d["shape"] = mask.fills_only ? "FILLS_ONLY" : mask.strokes_only ? "STROKES_ONLY" : "AS_DRAWN";
-      d["filled"] = mask.filled;
-      d["extend"] = mask_extend_identifier(mask.extend);
+      d["outside"] = s.mode == MaskMode::Subtract;
+      d["expand"] = s.grow > 0.0f;
+      d["fills_only"] = s.fills_only;
+      d["strokes_only"] = s.strokes_only;
+      d["inside_stroke"] = s.inside_stroke;
+      d["shape"] = s.fills_only ? "FILLS_ONLY" : s.strokes_only ? "STROKES_ONLY" : "AS_DRAWN";
+      d["filled"] = s.filled;
+      d["extend"] = mask_extend_identifier(s.extend);
       py::list names;
-      for (const uint64_t l : mask.layers) {
+      for (const uint64_t l : s.layers) {
         const Layer *found = layer_find(doc, l);
         names.append(found ? found->name : std::string());
       }
       d["layers"] = names;
+    };
+    py::list result;
+    for (const LayerMask &card : layer_or_raise(id).masks) {
+      py::dict d;
+      d["name"] = card.name;
+      d["start"] = card.start_shown ? "EVERYTHING" : "NOTHING";
+      d["enabled"] = card.enabled;
+      d["render"] = card.render;
+      d["end_lines"] = card.end_lines;
+      d["ends"] = card.end_lines_flat ? "FLAT" : "BRUSH";
+      d["reach"] = card.line_reach;
+      d["cuts"] = mask_cuts_identifier(card.cuts);
+      d["lines_only"] = card.cuts == MaskCuts::Lines;
+      py::list steps;
+      for (const MaskStep &s : card.steps) {
+        py::dict sd;
+        step_dict(s, sd);
+        steps.append(sd);
+      }
+      d["steps"] = steps;
+      /* Its first step's, on the card too (as rows had them). */
+      if (!card.steps.empty()) {
+        step_dict(card.steps.front(), d);
+      }
       result.append(d);
     }
     return result;
@@ -2230,8 +2245,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     layer_or_raise(id);
     py::list names;
     for (const Layer *l : document_layers_flat(doc)) {
-      for (const LayerMask &mask : layer_mask_rows(doc, *l)) {
-        if (std::find(mask.layers.begin(), mask.layers.end(), id) != mask.layers.end()) {
+      for (const LayerMask &mask : layer_mask_cards(doc, *l)) {
+        const std::vector<uint64_t> named = mask_card_layers(mask);
+        if (std::find(named.begin(), named.end(), id) != named.end()) {
           names.append(l->name);
           break;
         }

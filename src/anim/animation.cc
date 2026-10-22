@@ -530,15 +530,19 @@ const Bone *smart_action_bone(const Layer &owner, const std::string &action)
 
 /* A channel's timeline in action `name` with its setup value at frame 0, sampled at a fractional
  * frame (between the whole frames either side). */
-template<typename T> static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t)
+template<typename T>
+static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t, bool constant = false)
 {
   Channel<T> c;
   c.keys = keys;
+  /* A yes/no channel (visibility, Draw Order) holds each key until the next, between frames too: the
+   * bone turning past a key's frame switches it, never a blend of the two. */
+  c.constant = constant;
   c.set_key(0, setup);
   const int f0 = int(std::floor(t));
   const float frac = t - float(f0);
   const T a = c.evaluate(f0);
-  if (frac <= 0.0f) {
+  if (frac <= 0.0f || constant) {
     return a;
   }
   const T b = c.evaluate(f0 + 1);
@@ -649,7 +653,7 @@ static void apply_smart_actions(Document &doc)
         /* Unkeyed, the setup is the value as last recorded, not as it is now: an edit not yet
          * recorded (a bone being dragged) stays on top instead of being taken into the offset. */
         const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.smart;
-        const auto delta = smart_sample(it->second, setup, t) - setup;
+        const auto delta = smart_sample(it->second, setup, t, ch.constant) - setup;
         /* The value and what it was last recorded as both move, so an edit stays an edit. */
         value += delta;
         ch.last += delta;

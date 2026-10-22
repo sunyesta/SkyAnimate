@@ -158,9 +158,9 @@ Layer *layer_parent(Document &doc, uint64_t id);
 /* What a layer with Clip to Below clips to: the first layer below it in its group that isn't clipped
  * itself (null at the bottom). */
 const Layer *layer_clip_base(const Document &doc, const Layer &layer);
-/* A layer's mask rows as they apply: its own, then its Clip to Below as an Intersect with what its
- * base shows (LayerMask::clip). */
-std::vector<LayerMask> layer_mask_rows(const Document &doc, const Layer &layer);
+/* A layer's mask cards as they apply: its own, then its Clip to Below as a card hiding what's outside
+ * what its base shows (LayerMask::clip). */
+std::vector<LayerMask> layer_mask_cards(const Document &doc, const Layer &layer);
 Layer *document_active_layer(Document &doc);
 /* Makes the topmost shape of `layer` running through `point` (or along segment `edge`, when its curve
  * is >= 0) the active shape; nothing changes when no shape does. */

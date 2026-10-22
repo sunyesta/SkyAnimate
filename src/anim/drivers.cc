@@ -326,21 +326,33 @@ Setting setting_find(Document &doc, uint64_t layer_id, const std::string &path)
   size_t i = 0;
   std::string rest;
   if (parse_index(path, "masks[", &i, &rest) && i < layer->masks.size()) {
-    LayerMask &m = layer->masks[i];
+    LayerMask &card = layer->masks[i];
     const std::string row = "Mask " + std::to_string(i + 1) + ": ";
-    if (rest == "invert") return bool_setting(row + "Invert", &m.invert);
-    if (rest == "mode") return enum_setting(row + "Mode", &m.mode, 4);
-    if (rest == "grow") return float_setting(row + "Grow", &m.grow, -64.0f, 64.0f);
-    if (rest == "extend") return enum_setting(row + "Extend", &m.extend, 5);
-    if (rest == "filled") return bool_setting(row + "Fill Every Shape", &m.filled);
-    if (rest == "inside_stroke") return bool_setting(row + "Inside the Stroke", &m.inside_stroke);
-    if (rest == "end_lines") return bool_setting(row + "End Lines at Edge", &m.end_lines);
-    if (rest == "ends") return bool_setting(row + "Ends Flat", &m.end_lines_flat);
-    if (rest == "cuts") return enum_setting(row + "Cuts", &m.cuts, 3);
+    if (rest == "start") return bool_setting(row + "Start With Everything", &card.start_shown);
+    if (rest == "end_lines") return bool_setting(row + "End Lines at Edge", &card.end_lines);
+    if (rest == "ends") return bool_setting(row + "Ends Flat", &card.end_lines_flat);
+    if (rest == "cuts") return enum_setting(row + "Affects", &card.cuts, 3);
+    /* A step's: "steps[1].invert"; on the card itself, its first step's (as before cards). */
+    size_t k = 0;
+    std::string step_rest;
+    if (parse_index(rest, "steps[", &k, &step_rest)) {
+      rest = step_rest;
+    }
+    if (k >= card.steps.size()) {
+      return {};
+    }
+    MaskStep &m = card.steps[k];
+    const std::string step = row + "Step " + std::to_string(k + 1) + " ";
+    if (rest == "invert") return bool_setting(step + "Invert", &m.invert);
+    if (rest == "mode") return enum_setting(step + "Mode", &m.mode, 2);
+    if (rest == "grow") return float_setting(step + "Grow", &m.grow, -64.0f, 64.0f);
+    if (rest == "extend") return enum_setting(step + "Extend", &m.extend, 5);
+    if (rest == "filled") return bool_setting(step + "Fill Every Shape", &m.filled);
+    if (rest == "inside_stroke") return bool_setting(step + "Inside the Stroke", &m.inside_stroke);
     if (rest == "shape") {
       /* As Drawn (0), Fills Only (1), Strokes Only (2). */
-      LayerMask *row_mask = &m;
-      return {1, row + "Shape", [row_mask](int) { return row_mask->fills_only ? 1.0f : row_mask->strokes_only ? 2.0f : 0.0f; },
+      MaskStep *row_mask = &m;
+      return {1, step + "Shape", [row_mask](int) { return row_mask->fills_only ? 1.0f : row_mask->strokes_only ? 2.0f : 0.0f; },
               [row_mask](int, float x) {
                 const int k = std::clamp(int(std::lround(x)), 0, 2);
                 row_mask->fills_only = k == 1;

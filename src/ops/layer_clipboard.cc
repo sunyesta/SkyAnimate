@@ -27,6 +27,9 @@ namespace oanim {
 
 using json = nlohmann::ordered_json;
 
+/* Mask steps set aside by name are found by card * MAX_STEPS + step. */
+static constexpr size_t MAX_STEPS = 1000;
+
 /* What marks clipboard text as copied layers. */
 static const char *CLIPBOARD_KEY = "open_animate_layers";
 
@@ -118,7 +121,7 @@ static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &
         }
       };
       for (const LayerMask &m : l.masks) {
-        for (const uint64_t other : m.layers) {
+        for (const uint64_t other : mask_card_layers(m)) {
           note(other);
         }
       }
@@ -289,8 +292,11 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
   std::map<uint64_t, Outside> outside;
   for (Layer &item : items) {
     tree_walk(item, [&](Layer &l) {
-      for (size_t r = 0; r < l.masks.size(); r++) {
-        std::vector<uint64_t> &ids = l.masks[r].layers;
+      for (size_t r = 0; r < l.masks.size() * MAX_STEPS; r++) {
+        if (r % MAX_STEPS >= l.masks[r / MAX_STEPS].steps.size()) {
+          continue;
+        }
+        std::vector<uint64_t> &ids = l.masks[r / MAX_STEPS].steps[r % MAX_STEPS].layers;
         for (auto it = ids.begin(); it != ids.end();) {
           if (copied.count(*it)) {
             ++it;
@@ -365,8 +371,10 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
     }
     for (const auto &[row, names] : set_aside.rows) {
       for (const std::string &name : names) {
-        if (const uint64_t found = by_name(name); found && row < l->masks.size()) {
-          l->masks[row].layers.push_back(found);
+        if (const uint64_t found = by_name(name);
+            found && row / MAX_STEPS < l->masks.size() && row % MAX_STEPS < l->masks[row / MAX_STEPS].steps.size())
+        {
+          l->masks[row / MAX_STEPS].steps[row % MAX_STEPS].layers.push_back(found);
         }
       }
     }
@@ -375,9 +383,10 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
         l->draw_order = set_aside.order[0] == '-' ? -float(found) : float(found);
       }
     }
-    l->masks.erase(std::remove_if(l->masks.begin(), l->masks.end(),
-                                  [](const LayerMask &m) { return m.layers.empty(); }),
-                   l->masks.end());
+    for (LayerMask &m : l->masks) {
+      std::erase_if(m.steps, [](const MaskStep &s) { return s.layers.empty(); });
+    }
+    std::erase_if(l->masks, [](const LayerMask &m) { return m.steps.empty(); });
   }
   if (const auto it = remap.find(mini.active_layer); it != remap.end()) {
     std::stable_partition(pasted.begin(), pasted.end(), [&](uint64_t id) { return id == it->second; });

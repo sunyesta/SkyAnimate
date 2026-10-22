@@ -51,7 +51,7 @@ assert oanim.ops.mask.set(layer=str(head.id), index="0", cuts="LINES") == {'FINI
 assert head.masks[0]["cuts"] == "LINES" and head.masks[0]["lines_only"] is True
 assert pick(0.75, 0.5) == {'FINISHED'} and layers.active.name == "head", "no hole"
 assert not head.line_shows(0.75, 0.5), "head's lines still end at ear's edge"
-assert head.mask_summary == "Shows: everything but ear (its lines), lines ending at ear's edge", head.mask_summary
+assert head.mask_summary == "Shows: lines: everything but ear, lines ending at the edge", head.mask_summary
 assert oanim.ops.mask.set(layer=str(head.id), index="0", cuts="EARS") == {'CANCELLED'}
 # lines_only= as before.
 assert oanim.ops.mask.set(layer=str(head.id), index="0", lines_only="0") == {'FINISHED'}
@@ -62,7 +62,7 @@ assert oanim.ops.mask.set(layer=str(head.id), index="0", cuts="FILLS") == {'FINI
 layers.active = find("ear")
 assert pick(0.75, 0.5) == {'CANCELLED'}, "head's fill is cut there"
 assert head.line_shows(0.75, 0.5), "its lines aren't ended"
-assert head.mask_summary == "Shows: everything but ear (its fills)", head.mask_summary
+assert head.mask_summary == "Shows: fills: everything but ear", head.mask_summary
 assert oanim.ops.mask.set(layer=str(head.id), index="0", cuts="LINES") == {'FINISHED'}
 
 # Only the rows that cut just lines drop out for fills: other rows of the same layer still cut them.
@@ -118,6 +118,6 @@ assert len(find("cheek").masks) == 1 and len(find("nose").masks) == 1, "rows reu
 
 # The summary says how far a row reaches with Extend.
 assert oanim.ops.mask.set(layer=str(find("cheek").id), index="0", extend="UP") == {'FINISHED'}
-assert find("cheek").mask_summary == "Shows: everything but nose and above (its lines), lines ending at nose's edge",     find("cheek").mask_summary
+assert find("cheek").mask_summary == "Shows: lines: everything but nose and above, lines ending at the edge",     find("cheek").mask_summary
 
 print("mask_cuts: ok")

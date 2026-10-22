@@ -60,6 +60,15 @@ class SceneRenderer {
 
   /* The anti-aliasing samples the last render used. */
   int samples() const { return samples_; }
+  /* A mask card's held View: the next viewport renders show `layer`'s card `upto` (its mask alone)
+   * over the drawing at 90%, white where it shows the layer's fills (`lines`: its lines) and black
+   * where it hides them. 0: off. */
+  void set_mask_preview(uint64_t layer, bool lines, int upto)
+  {
+    mask_preview_layer_ = layer;
+    mask_preview_lines_ = lines;
+    mask_preview_upto_ = upto;
+  }
 
  private:
   struct Target {
@@ -86,14 +95,21 @@ class SceneRenderer {
                    Target *target, float opacity);
   void draw_layer(const Document &doc, const Layer &layer, const Transform2D &transform, Target *target,
                   float opacity);
+  /* The mask preview (set_mask_preview), over the drawing at 90%: black, and white where the mask
+   * shows the layer. */
+  void draw_mask_preview(const Document &doc, const Layer &layer);
   /* Sets the stencil to the masks of `masked` (the layers whose masks apply to what is drawn next)
    * and returns the stencil bits a sample needs. */
   unsigned apply_masks(const Document &doc, const std::vector<const Layer *> &masked);
-  /* One layer's mask rows, in order, into stencil bit `result` (using `scratch` for each row's
-   * shape). `nested`: these are a mask layer's own rows, whose layers don't look at theirs. `free`:
-   * stencil bits nothing holds yet, which a Clip to Below row works out its base's masks in. */
+  /* One card's steps, in order, painted on its start into stencil bit `result` (using `scratch` for
+   * each step's shape). `nested`: inside a clip base's masks, whose own Clip to Below isn't looked at.
+   * `free`: stencil bits nothing holds yet, which a Clip to Below step works out its base's masks in. */
   void evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result, unsigned scratch,
                           bool nested, unsigned free = 0);
+  /* Cards that must all show, into `result`: the first there, each other one in the spare bit and
+   * kept only where both hold (`free` must hold the spare for more than one). */
+  void evaluate_mask_cards(const Document &doc, const std::vector<std::vector<MaskRow>> &cards, unsigned result,
+                           unsigned scratch, unsigned free);
   /* A row's layer (grown or shrunk as the row says, in mask_pass_) into stencil bit `bit`: its
    * shapes as drawn, before any masks of its own. */
   void draw_mask_source(const Document &doc, const Layer &source, unsigned bit, bool nested);
@@ -231,7 +247,7 @@ class SceneRenderer {
   unsigned coverage_test_ = 0;
 
  public:
-  /* One mask row as the stencil uses it (only the layers still there). */
+  /* One step of a mask card as the stencil uses it (only the layers still there). */
   struct MaskRow {
     MaskMode mode = MaskMode::Add;
     bool invert = false;
@@ -241,19 +257,23 @@ class SceneRenderer {
     bool strokes_only = false;
     bool filled = false;
     bool inside_stroke = false;
-    /* End Lines at Edge with Ends: Brush (the lines it ends aren't sliced by it). */
-    bool end_lines_brush = false;
-    int cuts = 0;
     int extend = 0;
     bool clip = false;
+    /* Its card's Start With (everything shown). */
+    bool start_shown = false;
     bool operator==(const MaskRow &) const = default;
   };
-  /* The rows of each masked layer that has any (outermost first). */
-  using MaskLevels = std::vector<std::vector<MaskRow>>;
+  /* Each stencil level's cards (each its steps), which must all show: a masked layer's cards that
+   * mask its fills and slice its lines, those that leave its lines (or end them with a brush), and
+   * those that slice only its lines (outermost layer first). */
+  using MaskLevels = std::vector<std::vector<std::vector<MaskRow>>>;
 
  private:
   /* The masks the stencil holds now (bit k: level k), so neighbours with the same masks reuse it. */
   MaskLevels mask_clauses_;
+  uint64_t mask_preview_layer_ = 0;
+  bool mask_preview_lines_ = false;
+  int mask_preview_upto_ = -1;
   bool initialized_ = false;
   bool failed_ = false;
   unsigned int color_program_ = 0;

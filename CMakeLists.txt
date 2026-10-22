@@ -155,8 +155,12 @@ add_test(NAME flip_name
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_flip_name.py)
 add_test(NAME layer_symmetrize
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_symmetrize.py)
+add_test(NAME transform_panel
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_panel.py)
 add_test(NAME layer_clipboard
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_clipboard.py)
+add_test(NAME mask_cards
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mask_cards.py)
 add_test(NAME mirror
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mirror.py)
 add_test(NAME mask_cuts

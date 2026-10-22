@@ -2042,6 +2042,68 @@ static void modal_mirror(Context &C, const ModalTransform &modal, ModalLayers &l
 }
 
 /* Runs the transform for this frame; returns a line describing it for the header. */
+/* Moves what `modal` gathered: by `delta` (G), turned `angle` radians (R) or scaled by `scale` (S)
+ * about its pivot (each point's own with Individual Origins), proportional editing blending it, then
+ * its mirror images. The drag does this every update, and Move, Rotate and Scale again from where it
+ * began, so the ViewportActionPanel can change the amounts. */
+static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &layers, char kind, float2 delta,
+                        float angle, float2 scale)
+{
+  const ToolSettings &ts = C.wm->tool_settings;
+  for (const ModalTransform::Item &item : modal.items) {
+    const float w = modal_weight(ts, item);
+    if (w <= 0.0f) {
+      modal_rest(layers, item);
+      continue;
+    }
+    const float2 c = modal.about_points ? item.origin : modal.pivot;
+    if (kind == 'G') {
+      modal_place(layers, item, item.start + delta * w);
+    }
+    else if (kind == 'R') {
+      modal_place(layers, item, c + rotate(item.start - c, angle * w));
+    }
+    else {
+      const float2 d = item.start - c;
+      modal_place(layers, item, c + float2(d.x * (1.0f + (scale.x - 1.0f) * w), d.y * (1.0f + (scale.y - 1.0f) * w)));
+    }
+  }
+  modal_mirror(C, modal, layers);
+}
+
+static std::string num_arg(float v)
+{
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.9g", double(v));
+  return buf;
+}
+
+/* A confirmed G, R or S on points: the document as it was, then Move, Rotate or Scale with the
+ * amounts the drag ended on, as one undo step the ViewportActionPanel can adjust. An extrusion or a
+ * handle tweak stays the drag's own step. */
+static void modal_confirm(Context &C, float2 delta, float angle, float2 scale)
+{
+  if (g_modal.extrude || g_modal.tweak) {
+    modal_end(C, true);
+    return;
+  }
+  const char kind = g_modal.kind;
+  *C.document = g_modal.snapshot;
+  g_modal.active = false;
+  g_modal.snapshot = Document();
+  C.wm->modal_running = false;
+  C.wm->modal_keys.clear();
+  if (kind == 'G') {
+    operator_call(C, "mesh.translate", {{"move_x", num_arg(delta.x)}, {"move_y", num_arg(delta.y)}});
+  }
+  else if (kind == 'R') {
+    operator_call(C, "mesh.rotate", {{"angle", num_arg(angle * 180.0f / PI)}});
+  }
+  else {
+    operator_call(C, "mesh.resize", {{"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)}});
+  }
+}
+
 static std::string modal_update(Context &C, const ViewMapping &view)
 {
   ImGuiIO &io = ImGui::GetIO();
@@ -2050,10 +2112,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     modal_end(C, false);
     return {};
   }
-  const auto place = [&](const ModalTransform::Item &item, float2 p) { modal_place(layers, item, p); };
   ToolSettings &ts = C.wm->tool_settings;
-  const auto weight = [&](const ModalTransform::Item &item) { return modal_weight(ts, item); };
-  const auto rest = [&](const ModalTransform::Item &item) { modal_rest(layers, item); };
   /* Page Up and Page Down size proportional editing's reach (the wheel does too). */
   if (g_modal.proportional) {
     while (modal_key_take(C, "PAGE_UP", true)) {
@@ -2099,8 +2158,10 @@ static std::string modal_update(Context &C, const ViewMapping &view)
 
   std::string info;
   char text[128];
+  float2 delta, scale(1.0f, 1.0f);
+  float angle = 0.0f;
   if (g_modal.kind == 'G') {
-    float2 delta = mouse - g_modal.start_mouse;
+    delta = mouse - g_modal.start_mouse;
     if (snap) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
@@ -2114,10 +2175,6 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     }
     else if (g_modal.axis == 2) {
       delta.x = 0.0f;
-    }
-    for (const ModalTransform::Item &item : g_modal.items) {
-      const float w = weight(item);
-      w > 0.0f ? place(item, item.start + delta * w) : rest(item);
     }
     const std::string sx = g_modal.axis == 2 ? "" : num.shown(0, delta.x, "%.3f");
     const std::string sy = g_modal.axis == 1 ? "" : num.shown(g_modal.axis == 2 ? 0 : 1, delta.y, "%.3f");
@@ -2135,12 +2192,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     if (num.any()) {
       degrees = num.value(0, 0.0f);
     }
-    const float angle = degrees * PI / 180.0f;
-    for (const ModalTransform::Item &item : g_modal.items) {
-      const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
-      const float w = weight(item);
-      w > 0.0f ? place(item, c + rotate(item.start - c, angle * w)) : rest(item);
-    }
+    angle = degrees * PI / 180.0f;
     std::snprintf(text, sizeof(text), "Rotate  %s\xC2\xB0", num.shown(0, degrees, "%.1f").c_str());
   }
   else {
@@ -2149,35 +2201,25 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     if (snap) {
       factor = std::round(factor * 10.0f) / 10.0f;
     }
-    float2 f(g_modal.axis == 2 ? 1.0f : factor, g_modal.axis == 1 ? 1.0f : factor);
+    scale = float2(g_modal.axis == 2 ? 1.0f : factor, g_modal.axis == 1 ? 1.0f : factor);
     if (num.any()) {
       /* Typed: one number scales every way (or along the axis); with Y typed too, each its own. */
       const float x = num.value(0, num.has(1) ? 1.0f : 1.0f);
       factor = x;
-      f = g_modal.axis == 1 ? float2(x, 1.0f)
-          : g_modal.axis == 2 ? float2(1.0f, x)
-          : num.has(1) || num.negative[1] ? float2(num.has(0) ? x : 1.0f, num.value(1, 1.0f))
-                                          : float2(x, x);
-    }
-    for (const ModalTransform::Item &item : g_modal.items) {
-      const float2 c = g_modal.about_points ? item.origin : g_modal.pivot;
-      const float2 d = item.start - c;
-      const float w = weight(item);
-      if (w <= 0.0f) {
-        rest(item);
-        continue;
-      }
-      place(item, c + float2(d.x * (1.0f + (f.x - 1.0f) * w), d.y * (1.0f + (f.y - 1.0f) * w)));
+      scale = g_modal.axis == 1 ? float2(x, 1.0f)
+              : g_modal.axis == 2 ? float2(1.0f, x)
+              : num.has(1) || num.negative[1] ? float2(num.has(0) ? x : 1.0f, num.value(1, 1.0f))
+                                              : float2(x, x);
     }
     if (g_modal.axis == 0 && (num.field == 1 || num.has(1))) {
-      std::snprintf(text, sizeof(text), "Scale  X: %s  Y: %s", num.shown(0, f.x, "%.3f").c_str(),
-                    num.shown(1, f.y, "%.3f").c_str());
+      std::snprintf(text, sizeof(text), "Scale  X: %s  Y: %s", num.shown(0, scale.x, "%.3f").c_str(),
+                    num.shown(1, scale.y, "%.3f").c_str());
     }
     else {
       std::snprintf(text, sizeof(text), "Scale  %s%s", num.shown(0, factor, "%.3f").c_str(), axis_label);
     }
   }
-  modal_mirror(C, g_modal, layers);
+  modal_apply(C, g_modal, layers, g_modal.kind, delta, angle, scale);
   info = text;
   if (g_modal.proportional && ts.proportional) {
     char size_text[64];
@@ -2188,7 +2230,7 @@ static std::string modal_update(Context &C, const ViewMapping &view)
     /* Keys that came in with the confirming click (a quick click then E) were meant for after
      * the transform, so they go to the keymap once it has ended. */
     const std::vector<ModalKey> after = std::move(C.wm->modal_keys);
-    modal_end(C, true);
+    modal_confirm(C, delta, angle, scale);
     for (const ModalKey &key : after) {
       wm_handle_key_event(C, KeyEvent{key.type, key.ctrl, key.shift, key.alt});
     }
@@ -3130,6 +3172,124 @@ static constexpr ImU32 COL_BONE_ACTIVE = IM_COL32(0xff, 0xc0, 0x50, 220);
 /* Frame 0 is the setup pose: a red border says so (the timeline is edged red too). */
 static constexpr ImU32 COL_SETUP = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 
+/* Move Only Bones (the ViewportActionPanel's checkbox for moving bones while posing; kept until Open
+ * Animate closes): the drawings the bones bend, and layers following a bone as a whole, are put back
+ * where they showed before the bones moved, by keying the change that undoes the bend on this frame.
+ * Captured before the move; applied after each (from the captured state, so a drag can redo it). */
+static bool g_move_only_bones = false;
+
+struct BoneCounter {
+  struct LayerState {
+    uint64_t id = 0;
+    VectorDrawing drawing;
+    /* Where each point showed (layer space), how it was bent, and its handles as shown. */
+    std::vector<float2> shown;
+    std::vector<Transform2D> skins;
+    std::vector<std::array<float2, 2>> handles;
+    /* Following a bone as a whole: its world transform then, and its own transform. */
+    bool follows = false;
+    Transform2D world;
+    float2 position, scale;
+    float rotation = 0.0f;
+  };
+  std::vector<LayerState> layers;
+};
+
+static bool same_transform(const Transform2D &a, const Transform2D &b)
+{
+  const float eps = 1e-6f;
+  return std::abs(a.a - b.a) < eps && std::abs(a.b - b.b) < eps && std::abs(a.c - b.c) < eps &&
+         std::abs(a.d - b.d) < eps && std::abs(a.tx - b.tx) < eps && std::abs(a.ty - b.ty) < eps;
+}
+
+static BoneCounter bone_counter_capture(Document &doc, uint64_t armature)
+{
+  BoneCounter counter;
+  for (const Layer *l : document_layers_flat(doc)) {
+    const Layer *owner = layer_armature(doc, l->id);
+    if (!owner || owner->id != armature) {
+      continue;
+    }
+    BoneCounter::LayerState st;
+    st.id = l->id;
+    st.follows = l->followed_bone() != 0;
+    st.world = layer_world_transform(doc, l->id);
+    st.position = l->position;
+    st.rotation = l->rotation;
+    st.scale = l->scale;
+    if (l->has_drawing() && !l->is_reference()) {
+      st.drawing = l->drawing;
+      st.skins = layer_point_skins(doc, *l);
+      for (size_t i = 0; i < l->drawing.points.size() && i < st.skins.size(); i++) {
+        st.shown.push_back(st.skins[i].apply(l->drawing.points[i].pos));
+      }
+      for (const Curve &curve : l->drawing.curves) {
+        for (const CurvePoint &cp : curve.points) {
+          const Transform2D &skin = size_t(cp.point) < st.skins.size() ? st.skins[size_t(cp.point)] : Transform2D();
+          st.handles.push_back({skin.apply_vector(cp.handle_in), skin.apply_vector(cp.handle_out)});
+        }
+      }
+    }
+    counter.layers.push_back(std::move(st));
+  }
+  return counter;
+}
+
+static void bone_counter_apply(Document &doc, const BoneCounter &counter)
+{
+  /* Parents before children (the flat order), so a group put back carries what's inside it. */
+  for (const BoneCounter::LayerState &st : counter.layers) {
+    Layer *l = layer_find(doc, st.id);
+    if (!l) {
+      continue;
+    }
+    if (st.follows) {
+      l->position = st.position;
+      l->rotation = st.rotation;
+      l->scale = st.scale;
+      const Transform2D after = layer_world_transform(doc, st.id);
+      if (!same_transform(after, st.world)) {
+        /* world = parents * local: the local that gives the world it had. */
+        const Transform2D local = l->local_transform() * after.inverted() * st.world;
+        const float sx = std::sqrt(local.a * local.a + local.b * local.b);
+        if (sx > 1e-9f) {
+          const float sign = st.scale.x < 0.0f ? -1.0f : 1.0f;
+          l->position = {local.tx, local.ty};
+          l->rotation = std::atan2(local.b * sign, local.a * sign) * 180.0f / PI;
+          l->scale = {sx * sign, (local.a * local.d - local.b * local.c) / (sx * sign)};
+        }
+      }
+    }
+    if (st.skins.empty()) {
+      continue;
+    }
+    l->drawing = st.drawing;
+    const std::vector<Transform2D> skins = layer_point_skins(doc, *l);
+    for (size_t i = 0; i < l->drawing.points.size() && i < skins.size() && i < st.skins.size(); i++) {
+      MeshPoint &p = l->drawing.points[i];
+      /* Detail rides its curve; points the move doesn't bend stay as they are (no keys). */
+      if (p.detail.level > 0 || same_transform(skins[i], st.skins[i])) {
+        continue;
+      }
+      p.pos = skins[i].inverted().apply(st.shown[i]);
+    }
+    size_t h = 0;
+    for (Curve &curve : l->drawing.curves) {
+      for (CurvePoint &cp : curve.points) {
+        const size_t pi = size_t(cp.point);
+        if (cp.handles_set && pi < skins.size() && pi < st.skins.size() && h < st.handles.size() &&
+            l->drawing.points[pi].detail.level == 0 && !same_transform(skins[pi], st.skins[pi]))
+        {
+          const Transform2D undo = skins[pi].inverted();
+          cp.handle_in = undo.apply_vector(st.handles[h][0]);
+          cp.handle_out = undo.apply_vector(st.handles[h][1]);
+        }
+        h++;
+      }
+    }
+  }
+}
+
 struct BoneModal {
   bool active = false;
   int area = 0;
@@ -3153,6 +3313,8 @@ struct BoneModal {
   bool squash = false;
   /* Numbers typed while transforming. */
   NumInput num;
+  /* Move Only Bones: what the bones bent, to put back (empty: off). */
+  BoneCounter counter;
 };
 static BoneModal g_bone_modal;
 
@@ -3273,8 +3435,9 @@ static float bone_joint_radius(const ScreenBone &sb)
 {
   const ImVec2 d = sb.tail - sb.head;
   /* In proportion to the bone, as in Blender, so a small bone looks small; capped for long ones,
-   * with a pixel floor so a tiny bone still shows. */
-  return std::clamp(std::sqrt(d.x * d.x + d.y * d.y) * 0.08f, 1.0f, 6.5f);
+   * with a floor big enough that a short bone's ends still show their colour inside the outline
+   * (selected or not). */
+  return std::clamp(std::sqrt(d.x * d.x + d.y * d.y) * 0.08f, 3.0f, 6.5f);
 }
 
 /* Bones as Blender draws them in 2D: a long diamond from base to tip with a round, separately
@@ -3494,7 +3657,8 @@ struct BoneHit {
 /* Everything a click at `mouse` hits, the best first: heads and tails within reach, pins and custom
  * shapes, nearest first (a tail before a head at the same spot, so a shared joint is the parent's
  * tip); then bodies near the line, nearest first. A connected bone's head is its parent's tail, so
- * it isn't listed again. Clicking again in the same spot goes down this list. */
+ * it isn't listed again. Clicking again in the same spot goes down this list. Posing (away from the
+ * setup frame, as Blender's pose mode) a bone is picked whole: its ends pick the bone. */
 static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &armature, const ViewMapping &view,
                                             ImVec2 mouse)
 {
@@ -3546,13 +3710,14 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
       continue;
     }
     const float reach = bone_joint_radius(sbs[i]) + 3.0f;
+    const bool posing = doc.frame_current != 0;
     const float tail_d = distance(m, float2(sbs[i].tail.x, sbs[i].tail.y));
     if (tail_d <= reach) {
-      found.push_back({{bone.id, BonePart::Tail}, 0, tail_d, 0});
+      found.push_back({{bone.id, posing ? BonePart::Body : BonePart::Tail}, 0, tail_d, 0});
     }
     const float head_d = distance(m, float2(sbs[i].head.x, sbs[i].head.y));
     if (head_d <= reach) {
-      found.push_back({{bone.id, BonePart::Head}, 0, head_d, 1});
+      found.push_back({{bone.id, posing ? BonePart::Body : BonePart::Head}, 0, head_d, 1});
     }
     const float body_d = distance_to_segment(m, {sbs[i].head.x, sbs[i].head.y}, {sbs[i].tail.x, sbs[i].tail.y});
     if (body_d < PICK_PIXELS * 1.5f) {
@@ -3931,6 +4096,21 @@ static std::string radius_modal_update(Context &C, const ViewMapping &view, ImDr
   return text;
 }
 
+/* Puts back what bone_counter_apply changed, as it was captured. */
+static void bone_counter_restore(Document &doc, const BoneCounter &counter)
+{
+  for (const BoneCounter::LayerState &st : counter.layers) {
+    if (Layer *l = layer_find(doc, st.id)) {
+      l->position = st.position;
+      l->rotation = st.rotation;
+      l->scale = st.scale;
+      if (!st.skins.empty()) {
+        l->drawing = st.drawing;
+      }
+    }
+  }
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
@@ -3953,6 +4133,9 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   modal.pivot = sum / float(std::max<size_t>(heads.size(), 1));
   modal.bones = armature->bones;
   modal.snapshot = doc;
+  if (!modal.setup_frame && g_move_only_bones) {
+    modal.counter = bone_counter_capture(doc, armature->id);
+  }
   modal.start_mouse = mouse_document;
   modal.last_mouse = mouse_document;
   modal.active = true;
@@ -3975,8 +4158,42 @@ static void bone_modal_end(Context &C, bool confirm)
   g_bone_modal.active = false;
   g_bone_modal.snapshot = Document();
   g_bone_modal.bones.clear();
+  g_bone_modal.counter = {};
   C.wm->modal_running = false;
   C.wm->modal_keys.clear();
+}
+
+/* A confirmed G, R or S on bones: the document as it was, then Move, Rotate or Scale Bones with the
+ * amounts the drag ended on (and Move Only Bones as last set), as one undo step the
+ * ViewportActionPanel can adjust. */
+static void bone_modal_confirm(Context &C, float2 delta, float degrees, float factor)
+{
+  const BoneModal bm = g_bone_modal;
+  const int frame = C.document->frame_current;
+  *C.document = bm.snapshot;
+  C.document->frame_current = frame;
+  g_bone_modal.active = false;
+  g_bone_modal.snapshot = Document();
+  g_bone_modal.bones.clear();
+  g_bone_modal.counter = {};
+  C.wm->modal_running = false;
+  C.wm->modal_keys.clear();
+  OpArgs args{{"only_bones", g_move_only_bones ? "1" : "0"}, {"posing", bm.setup_frame ? "0" : "1"}};
+  if (bm.kind == 'G') {
+    args["move_x"] = num_arg(delta.x);
+    args["move_y"] = num_arg(delta.y);
+    operator_call(C, "armature.translate", args);
+  }
+  else if (bm.kind == 'R') {
+    args["angle"] = num_arg(degrees);
+    operator_call(C, "armature.rotate", args);
+  }
+  else {
+    args["scale"] = num_arg(factor);
+    args["axis"] = std::to_string(bm.axis);
+    args["squash"] = bm.squash ? "1" : "0";
+    operator_call(C, "armature.resize", args);
+  }
 }
 
 static std::string bone_modal_update(Context &C, const ViewMapping &view)
@@ -4027,8 +4244,10 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   const float2 mouse = view.to_document(io.MousePos);
   const bool snap = io.KeyCtrl;
   char text[160];
+  float2 delta;
+  float degrees = 0.0f, factor = 1.0f;
   if (g_bone_modal.kind == 'G') {
-    float2 delta = mouse - g_bone_modal.start_mouse;
+    delta = mouse - g_bone_modal.start_mouse;
     if (snap) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
@@ -4057,7 +4276,7 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   else if (g_bone_modal.kind == 'R') {
     g_bone_modal.turned += turn_between(g_bone_modal.last_mouse, mouse, g_bone_modal.pivot);
     g_bone_modal.last_mouse = mouse;
-    float degrees = g_bone_modal.turned * 180.0f / PI;
+    degrees = g_bone_modal.turned * 180.0f / PI;
     if (snap) {
       degrees = std::round(degrees / 5.0f) * 5.0f;
     }
@@ -4069,7 +4288,7 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   }
   else {
     const float start = std::max(distance(g_bone_modal.start_mouse, g_bone_modal.pivot), 1e-6f);
-    float factor = distance(mouse, g_bone_modal.pivot) / start;
+    factor = distance(mouse, g_bone_modal.pivot) / start;
     if (snap) {
       factor = std::round(factor * 10.0f) / 10.0f;
     }
@@ -4091,8 +4310,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
    * the bones they drive: play them again from the bones as they are now, so a smart bone being
    * turned moves its bones (and their points) as it turns. */
   animation_refresh_smart(*C.document);
+  if (!g_bone_modal.counter.layers.empty()) {
+    bone_counter_apply(*C.document, g_bone_modal.counter);
+  }
   if (confirm) {
-    bone_modal_end(C, true);
+    bone_modal_confirm(C, delta, degrees, factor);
   }
   else {
     C.wm->modal_keys.clear();
@@ -4171,6 +4393,8 @@ enum class GizmoMode { None, Move, Rotate, Scale, Pivot, Select };
 
 struct BoneGizmo {
   GizmoMode mode = GizmoMode::None;
+  /* Move Only Bones while dragging (empty: off). */
+  BoneCounter counter;
   /* Scale handle: 0-3 corners (bottom-left, top-left, top-right, bottom-right), 4-7 sides (left,
    * right, top, bottom). */
   int handle = 0;
@@ -4231,22 +4455,20 @@ static bool nearest_bone_end(const Layer &armature, bool setup, float2 p, bool s
   return best < 1e30f;
 }
 
-/* Applies a map of bone layer space to the selected bones as one undo step (the header fields). */
-static void bone_gizmo_apply(Context &C, Layer &armature, const Transform2D &map, const char *undo_name)
-{
-  const std::vector<Bone> original = armature.bones;
-  const bool setup = C.document->frame_current == 0;
-  armature_map_selected(armature, original, map, setup);
-  if (C.wm->tool_settings.mirror_x) {
-    armature_mirror_edits(armature, original, setup);
-  }
-  push_undo(C, undo_name);
-}
-
 static Transform2D map_about(float2 pivot, float2 offset, float2 scale, float angle)
 {
   return Transform2D::translate(pivot + offset) * Transform2D::rotate(angle) * Transform2D::scaling(scale) *
          Transform2D::translate(-pivot);
+}
+
+/* The header's fields and buttons: Transform Bones (armature.transform) about `pivot`, one undo step. */
+static void bone_gizmo_apply(Context &C, float2 pivot, float2 offset, float2 scale, float degrees)
+{
+  operator_call(C, "armature.transform",
+                {{"origin_x", num_arg(pivot.x)}, {"origin_y", num_arg(pivot.y)}, {"move_x", num_arg(offset.x)},
+                 {"move_y", num_arg(offset.y)}, {"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)},
+                 {"angle", num_arg(degrees)}, {"only_bones", g_move_only_bones ? "1" : "0"},
+                 {"posing", C.document->frame_current != 0 ? "1" : "0"}});
 }
 
 static void transform_bones_header(Context &C)
@@ -4266,7 +4488,7 @@ static void transform_bones_header(Context &C)
   float pos[2] = {any ? pivot.x : 0.0f, any ? pivot.y : 0.0f};
   ImGui::SetNextItemWidth(w * 2.0f);
   if (ImGui::InputFloat2("##gizmo_pos", pos, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
-    bone_gizmo_apply(C, *armature, Transform2D::translate(float2(pos[0], pos[1]) - pivot), "Move Bones");
+    bone_gizmo_apply(C, pivot, float2(pos[0], pos[1]) - pivot, {1.0f, 1.0f}, 0.0f);
   }
   ImGui::SameLine();
   ImGui::TextUnformatted("Scale");
@@ -4274,7 +4496,7 @@ static void transform_bones_header(Context &C)
   float scale[2] = {1.0f, 1.0f};
   ImGui::SetNextItemWidth(w * 2.0f);
   if (ImGui::InputFloat2("##gizmo_scale", scale, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue) && any) {
-    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {scale[0], scale[1]}, 0.0f), "Scale Bones");
+    bone_gizmo_apply(C, pivot, {}, {scale[0], scale[1]}, 0.0f);
   }
   ImGui::SameLine();
   ImGui::TextUnformatted("Angle");
@@ -4284,15 +4506,15 @@ static void transform_bones_header(Context &C)
   if (ImGui::InputFloat("##gizmo_angle", &angle, 0.0f, 0.0f, "%.1f\xC2\xB0", ImGuiInputTextFlags_EnterReturnsTrue) &&
       any)
   {
-    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {1, 1}, angle * PI / 180.0f), "Rotate Bones");
+    bone_gizmo_apply(C, pivot, {}, {1.0f, 1.0f}, angle);
   }
   ImGui::SameLine();
   if (ImGui::Button("Flip H")) {
-    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {-1, 1}, 0.0f), "Flip Bones");
+    bone_gizmo_apply(C, pivot, {}, {-1.0f, 1.0f}, 0.0f);
   }
   ImGui::SameLine(0, 1);
   if (ImGui::Button("Flip V")) {
-    bone_gizmo_apply(C, *armature, map_about(pivot, {}, {1, -1}, 0.0f), "Flip Bones");
+    bone_gizmo_apply(C, pivot, {}, {1.0f, -1.0f}, 0.0f);
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
@@ -4386,6 +4608,12 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
     g_gizmo.handle = handle;
     g_gizmo.area = area.id;
     g_gizmo.bones = armature.bones;
+    g_gizmo.counter = {};
+    if (C.document->frame_current != 0 && g_move_only_bones &&
+        (mode == GizmoMode::Move || mode == GizmoMode::Rotate || mode == GizmoMode::Scale))
+    {
+      g_gizmo.counter = bone_counter_capture(*C.document, armature.id);
+    }
     g_gizmo.lo = lo;
     g_gizmo.hi = hi;
     g_gizmo.pivot = pivot;
@@ -4457,6 +4685,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
       default: {
         if (cancel) {
           armature.bones = g_gizmo.bones;
+          bone_counter_restore(*C.document, g_gizmo.counter);
           g_gizmo.mode = GizmoMode::None;
           break;
         }
@@ -4515,19 +4744,32 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
         if (C.wm->tool_settings.mirror_x) {
           armature_mirror_edits(armature, g_gizmo.bones, setup);
         }
+        if (!g_gizmo.counter.layers.empty()) {
+          animation_refresh_smart(*C.document);
+          bone_counter_apply(*C.document, g_gizmo.counter);
+        }
         g_gizmo.changed |= dragged;
         if (released) {
+          armature.bones = g_gizmo.bones;
+          bone_counter_restore(*C.document, g_gizmo.counter);
+          const uint64_t armature_id = armature.id;
           if (g_gizmo.changed) {
-            push_undo(C, "Transform Bones");
+            /* As one Transform Bones step the ViewportActionPanel can adjust. */
+            operator_call(C, "armature.transform",
+                          {{"origin_x", num_arg(origin.x)}, {"origin_y", num_arg(origin.y)},
+                           {"move_x", num_arg(offset.x)}, {"move_y", num_arg(offset.y)},
+                           {"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)},
+                           {"angle", num_arg(angle * 180.0f / PI)}, {"only_bones", g_move_only_bones ? "1" : "0"},
+                           {"posing", setup ? "0" : "1"}});
             /* The pivot stays where the drag left it. */
             float2 nlo, nhi;
-            if (armature_picked_bounds(armature, setup, nlo, nhi)) {
+            if (const Layer *moved = layer_find(*C.document, armature_id);
+                moved && armature_picked_bounds(*moved, setup, nlo, nhi))
+            {
               g_gizmo.pivot_offset = g_gizmo.live_pivot - (nlo + nhi) * 0.5f;
             }
           }
-          else {
-            armature.bones = g_gizmo.bones;
-          }
+          g_gizmo.counter = {};
           g_gizmo.mode = GizmoMode::None;
         }
         break;
@@ -4716,8 +4958,158 @@ static void point_gizmo_apply(Context &C, float2 pivot, float2 move, float2 scal
                  {"scale_x", num(scale.x)}, {"scale_y", num(scale.y)}, {"angle", num(degrees)}});
 }
 
+/* An option of the ViewportActionPanel. */
+static OpProperty panel_float(const char *name, const char *label, const char *description, const char *fallback,
+                              float min, float max, float step)
+{
+  OpProperty p;
+  p.name = name;
+  p.label = label;
+  p.description = description;
+  p.kind = OpProperty::Kind::Float;
+  p.fallback = fallback;
+  p.min = min;
+  p.max = max;
+  p.step = step;
+  return p;
+}
+
+/* Move Only Bones: shown for a move made while posing (bones don't bend drawings on frame 0). */
+static OpProperty only_bones_option()
+{
+  OpProperty p;
+  p.name = "only_bones";
+  p.label = "Move Only Bones";
+  p.description = "The drawings stay where they are: the points (and layers following a bone) the bones bend "
+                  "get keyed on this frame to undo the bend. Kept for later moves until Open Animate closes";
+  p.kind = OpProperty::Kind::Bool;
+  p.fallback = "0";
+  p.visible = [](const OpArgs &args) {
+    const auto it = args.find("posing");
+    return it != args.end() && it->second == "1";
+  };
+  return p;
+}
+
+/* Move, Rotate, Scale and Transform Bones on the active bone layer's selected bones, as the drag ends
+ * and again from the ViewportActionPanel: `kind` G, R, S or T (the Transform Bones tool's map). */
+static OpStatus bones_transform_exec(Context &C, char kind)
+{
+  Document &doc = *C.document;
+  Layer *armature = document_active_layer(doc);
+  if (!armature || !armature->is_bone_layer() || !armature_any_picked(*armature)) {
+    return OpStatus::Cancelled;
+  }
+  const bool setup = doc.frame_current == 0;
+  if (op_has_arg(C, "only_bones")) {
+    /* The choice is kept for the moves after this one. */
+    g_move_only_bones = op_arg_bool(C, "only_bones");
+  }
+  BoneCounter counter;
+  if (!setup && op_arg_bool(C, "only_bones")) {
+    counter = bone_counter_capture(doc, armature->id);
+  }
+  const std::vector<Bone> start = armature->bones;
+  const float2 move(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
+  const float degrees = op_arg_float(C, "angle", 0.0f);
+  if (kind == 'G') {
+    const Transform2D to_armature = layer_world_transform(doc, armature->id).inverted();
+    armature_grab_selected(*armature, start, to_armature.apply_vector(move), setup, C.wm->tool_settings.auto_ik);
+  }
+  else if (kind == 'R') {
+    armature_rotate_selected(*armature, start, degrees * PI / 180.0f, setup);
+  }
+  else if (kind == 'S') {
+    const int axis = std::clamp(op_arg_int(C, "axis", 0), 0, 2);
+    const bool squash = op_arg_bool(C, "squash") && !setup;
+    armature_scale_selected(*armature, start, op_arg_float(C, "scale", 1.0f), setup, axis, squash);
+    C.undo_name = setup ? "Resize Bones" : squash ? "Squash & Stretch" : "Scale Bones";
+  }
+  else {
+    const float2 origin(op_arg_float(C, "origin_x", 0.0f), op_arg_float(C, "origin_y", 0.0f));
+    const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
+    armature_map_selected(*armature, start, map_about(origin, move, scale, degrees * PI / 180.0f), setup);
+  }
+  if (C.wm->tool_settings.mirror_x) {
+    armature_mirror_edits(*armature, start, setup);
+  }
+  animation_refresh_smart(doc);
+  if (!counter.layers.empty()) {
+    bone_counter_apply(doc, counter);
+  }
+  return OpStatus::Finished;
+}
+
+/* Move, Rotate and Scale on the selected points (G, R, S), as the drag ends and again from the
+ * ViewportActionPanel: proportional editing, mirror and the pivot as the drag had them. */
+static OpStatus points_transform_exec(Context &C, char kind)
+{
+  static Area area;
+  ModalTransform moving;
+  if (!modal_collect(C, area, kind, {}, moving)) {
+    return OpStatus::Cancelled;
+  }
+  ModalLayers layers;
+  if (!modal_layers(C, moving, layers)) {
+    return OpStatus::Cancelled;
+  }
+  const float2 delta(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
+  const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
+  modal_apply(C, moving, layers, kind, delta, op_arg_float(C, "angle", 0.0f) * PI / 180.0f, scale);
+  return OpStatus::Finished;
+}
+
+static void transform_operators_register()
+{
+  const auto add = [](const char *idname, const char *name, const char *description, std::vector<OpProperty> props,
+                      std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec) {
+    OperatorType ot;
+    ot.idname = idname;
+    ot.name = name;
+    ot.description = description;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.props = std::move(props);
+    ot.poll = std::move(poll);
+    ot.exec = std::move(exec);
+    operators().add(std::move(ot));
+  };
+  const auto points_poll = [](Context &C) { return C.document && C.wm && !editable_layers(C).empty(); };
+  const auto bones_poll = [](Context &C) {
+    const Layer *a = C.document ? document_active_layer(*C.document) : nullptr;
+    return C.wm && a && a->is_bone_layer() && armature_any_picked(*a);
+  };
+  const OpProperty move_x = panel_float("move_x", "Move X", "How far across", "0", -1e6f, 1e6f, 0.01f);
+  const OpProperty move_y = panel_float("move_y", "Move Y", "How far up", "0", -1e6f, 1e6f, 0.01f);
+  const OpProperty angle = panel_float("angle", "Angle", "Degrees, counter-clockwise", "0", -36000.0f, 36000.0f, 0.5f);
+  const OpProperty scale_x = panel_float("scale_x", "Scale X", "Across", "1", -1e4f, 1e4f, 0.01f);
+  const OpProperty scale_y = panel_float("scale_y", "Scale Y", "Up", "1", -1e4f, 1e4f, 0.01f);
+  add("mesh.translate", "Move", "Move the selected points by move_x, move_y (as G does)", {move_x, move_y}, points_poll,
+      [](Context &C) { return points_transform_exec(C, 'G'); });
+  add("mesh.rotate", "Rotate", "Turn the selected points by angle= degrees about the pivot (as R does)", {angle},
+      points_poll, [](Context &C) { return points_transform_exec(C, 'R'); });
+  add("mesh.resize", "Scale", "Scale the selected points by scale_x, scale_y about the pivot (as S does)",
+      {scale_x, scale_y}, points_poll, [](Context &C) { return points_transform_exec(C, 'S'); });
+  add("armature.translate", "Move Bones",
+      "Move the selected bones by move_x, move_y (document space; as G does). Posing, only_bones=1 keeps the "
+      "drawings where they are (posing=1 shows it in the panel)",
+      {move_x, move_y, only_bones_option()}, bones_poll, [](Context &C) { return bones_transform_exec(C, 'G'); });
+  add("armature.rotate", "Rotate Bones", "Turn the selected bones by angle= degrees (as R does); only_bones= as Move Bones",
+      {angle, only_bones_option()}, bones_poll, [](Context &C) { return bones_transform_exec(C, 'R'); });
+  add("armature.resize", "Scale Bones",
+      "Scale the selected bones by scale= (as S does; axis=1 or 2 along the bones' X or Y, squash=1 squash and "
+      "stretch); only_bones= as Move Bones",
+      {panel_float("scale", "Scale", "How much bigger", "1", -1e4f, 1e4f, 0.01f), only_bones_option()}, bones_poll,
+      [](Context &C) { return bones_transform_exec(C, 'S'); });
+  add("armature.transform", "Transform Bones",
+      "The Transform Bones tool's move: the selected bones moved by move_x, move_y, scaled by scale_x, scale_y and "
+      "turned by angle= degrees about origin_x, origin_y (bone layer space); only_bones= as Move Bones",
+      {move_x, move_y, scale_x, scale_y, angle, only_bones_option()}, bones_poll,
+      [](Context &C) { return bones_transform_exec(C, 'T'); });
+}
+
 void viewport_operators_register()
 {
+  transform_operators_register();
   OperatorType ot;
   ot.idname = "mesh.transform_selected";
   ot.name = "Transform Points";
@@ -5656,7 +6048,16 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
     return;
   }
   const OperatorType *ot = operators().find(last->idname);
-  if (!ot || ot->props.empty()) {
+  if (!ot) {
+    return;
+  }
+  std::vector<const OpProperty *> shown_props;
+  for (const OpProperty &prop : ot->props) {
+    if (!prop.visible || prop.visible(last->args)) {
+      shown_props.push_back(&prop);
+    }
+  }
+  if (shown_props.empty()) {
     return;
   }
   const float unit = ImGui::GetFrameHeight();
@@ -5665,7 +6066,7 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
   const float header_h = unit + 4.0f;
   const float folded_w = std::max(unit * 7.5f, ImGui::CalcTextSize(ot->name.c_str()).x + unit * 2.5f);
   const float w = panel_open ? std::max(folded_w, unit * 14.0f) : folded_w;
-  const float body_h = panel_open ? float(ot->props.size()) * (unit + gap) - gap + pad * 2.0f : 0.0f;
+  const float body_h = panel_open ? float(shown_props.size()) * (unit + gap) - gap + pad * 2.0f : 0.0f;
   const ImVec2 min(origin.x + left, origin.y + size.y - header_h - body_h - 8.0f);
   const ImVec2 max(min.x + w, min.y + header_h + body_h);
   if (min.y < origin.y + unit * 2.0f || max.x > origin.x + size.x) {
@@ -5722,7 +6123,8 @@ static void action_panel_draw(Context &C, ImVec2 origin, ImVec2 size, float left
   float y = min.y + header_h + pad - 2.0f;
   OpArgs args = last->args;
   bool changed = false;
-  for (const OpProperty &prop : ot->props) {
+  for (const OpProperty *shown_prop : shown_props) {
+    const OpProperty &prop = *shown_prop;
     ImGui::PushID(prop.name.c_str());
     const std::string value = args[prop.name];
     if (prop.kind != OpProperty::Kind::Bool) {
@@ -5971,6 +6373,14 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* Guides (layers not rendered) are overlays: with them off, the viewport shows what renders. */
   renderer->set_show_guides(doc.overlays.show && doc.overlays.guides);
   renderer->set_local_view(doc, wm.local_view);
+  /* The Masking tab's Fills Mask / Lines Mask, while held. */
+  const Layer *mask_previewed = wm.mask_preview.frame >= ImGui::GetFrameCount() - 1
+                                    ? layer_find(doc, wm.mask_preview.layer)
+                                    : nullptr;
+  const uint64_t mask_preview_key =
+      mask_previewed ? (mask_previewed->id * 2 + (wm.mask_preview.lines ? 1 : 0)) * 1024 + uint64_t(wm.mask_preview.upto + 1)
+                     : 0;
+  renderer->set_mask_preview(mask_previewed ? mask_previewed->id : 0, wm.mask_preview.lines, wm.mask_preview.upto);
   /* While a floating window (Brush Settings, a popup) is dragged nothing else happens, so the last
    * render is reused: a big drawing takes far longer to render than the drag has per frame. */
   struct LastRender {
@@ -5983,6 +6393,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     uint64_t media = 0;
     bool guides = false;
     std::vector<uint64_t> local_view;
+    uint64_t mask_preview = 0;
   };
   static std::map<int, LastRender> last_renders;
   LastRender &last = last_renders[area.id];
@@ -5992,7 +6403,7 @@ static void viewport_draw_contents(Area &area, Context &C)
                     last.frame == doc.frame_current && last.quality == doc.viewport_quality &&
                     last.samples == doc.viewport_samples && last.changes == C.undo->change_count() &&
                     last.media == media_generation() && last.guides == show_guides &&
-                    last.local_view == wm.local_view;
+                    last.local_view == wm.local_view && last.mask_preview == mask_preview_key;
   const bool window_moving = GImGui->MovingWindow != nullptr;
   unsigned int rendered = 0;
   if (same && window_moving && !wm.playing && order_preview.empty()) {
@@ -6000,13 +6411,30 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   else {
     rendered = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality, doc.viewport_samples);
-    last = {rendered, width_px, height_px, document_to_pixels, doc.frame_current, doc.viewport_quality,
-            doc.viewport_samples, C.undo->change_count(), media_generation(), show_guides, wm.local_view};
+    last = {rendered,         width_px,          height_px,          document_to_pixels,
+            doc.frame_current, doc.viewport_quality, doc.viewport_samples, C.undo->change_count(),
+            media_generation(), show_guides,       wm.local_view,      mask_preview_key};
   }
   if (const unsigned int texture = rendered) {
     dl->AddCallback(premultiplied_blend, nullptr);
     dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), origin, origin + size, ImVec2(0, 1), ImVec2(1, 0));
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+  }
+  if (mask_previewed) {
+    /* Says what's shown, over the black and white. */
+    const int upto = wm.mask_preview.upto;
+    std::string row;
+    if (upto >= 0 && upto < int(mask_previewed->masks.size())) {
+      const LayerMask &card = mask_previewed->masks[size_t(upto)];
+      row = " " + (card.name.empty() ? std::to_string(upto + 1) + " (" + mask_label(doc, card) + ")"
+                                     : "\"" + card.name + "\"");
+    }
+    const std::string what = std::string(wm.mask_preview.lines ? "Lines" : "Fills") + " mask" + row + " of " +
+                             mask_previewed->name + ":  white shows, black is hidden";
+    const ImVec2 at = origin + ImVec2(ImGui::GetFrameHeight() * 2.0f, ImGui::GetFrameHeight() * 1.6f);
+    const ImVec2 text = ImGui::CalcTextSize(what.c_str());
+    dl->AddRectFilled(at - ImVec2(6, 3), at + text + ImVec2(6, 3), IM_COL32(0xe0, 0x70, 0x10, 230), 4.0f);
+    dl->AddText(at, IM_COL32_WHITE, what.c_str());
   }
   ui_draw_order_preview_end(order_preview);
   if (pick.mode != 0 && pick.hover != 0) {
@@ -6451,14 +6879,16 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* The active layer's masks, dashed (Mask Outlines); a mask symbol or field under the mouse,
    * stronger, whatever the overlay. */
   if (const Layer *masked = document_active_layer(doc); masked && ov.show && ov.mask_outlines) {
-    for (const LayerMask &m : layer_mask_rows(doc, *masked)) {
+    for (const LayerMask &m : layer_mask_cards(doc, *masked)) {
       if (!m.enabled) {
         continue;
       }
-      for (const uint64_t id : m.layers) {
-        const bool hovered_mask = std::find(wm.mask_hover.begin(), wm.mask_hover.end(), id) != wm.mask_hover.end();
-        if (const Layer *source = layer_find(doc, id); source && !hovered_mask) {
-          draw_mask_outline(dl, doc, *source, view, mask_cuts(m), false);
+      for (const MaskStep &s : m.steps) {
+        for (const uint64_t id : s.layers) {
+          const bool hovered_mask = std::find(wm.mask_hover.begin(), wm.mask_hover.end(), id) != wm.mask_hover.end();
+          if (const Layer *source = layer_find(doc, id); source && !hovered_mask) {
+            draw_mask_outline(dl, doc, *source, view, m.start_shown && mask_step_cuts(s), false);
+          }
         }
       }
     }
@@ -6496,8 +6926,11 @@ static void viewport_draw_contents(Area &area, Context &C)
     if (const Layer *source = layer_find(doc, id)) {
       bool outside = false;
       if (const Layer *masked = document_active_layer(doc)) {
-        for (const LayerMask &m : layer_mask_rows(doc, *masked)) {
-          outside |= mask_cuts(m) && std::find(m.layers.begin(), m.layers.end(), id) != m.layers.end();
+        for (const LayerMask &m : layer_mask_cards(doc, *masked)) {
+          for (const MaskStep &s : m.steps) {
+            outside |= m.start_shown && mask_step_cuts(s) &&
+                       std::find(s.layers.begin(), s.layers.end(), id) != s.layers.end();
+          }
         }
       }
       draw_mask_outline(dl, doc, *source, view, outside, true);

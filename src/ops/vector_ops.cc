@@ -176,14 +176,16 @@ void vector_operators_register()
   }
 
   /* Away from frame 0, Blender's Clear Location (Alt G) and Clear Rotation (Alt R) for points: the
-   * selected points, or their handles (or a handle picked on its own), back to the setup pose, where
-   * their keys hold no change. Picked bones take the keys first. */
+   * selected points, or their handles (or a handle picked on its own), back to where the setup pose
+   * and the smart actions put them, their keys holding no change of their own. Picked bones take the
+   * keys first. */
   for (const bool positions : {true, false}) {
     vector_operator(
         positions ? "mesh.clear_location" : "mesh.clear_handles", positions ? "Clear Location" : "Clear Handles",
-        positions ? "Put the selected points back where they are in the setup pose (Alt G, away from frame 0)"
-                  : "Give the selected points' handles (or a handle picked on its own) back their setup shape (Alt R, "
-                    "away from frame 0)",
+        positions ? "Take the selected points' own change on this frame away: back to the setup pose, as smart "
+                    "actions move it (Alt G, away from frame 0)"
+                  : "Take the selected points' handles' own change on this frame away (or a handle picked on its "
+                    "own): back to their setup shape, as smart actions move it (Alt R, away from frame 0)",
         UNDO,
         [](Context &C) { return C.document && C.document->frame_current != 0 && editable_with_selection_poll(C); },
         [positions](Context &C) {

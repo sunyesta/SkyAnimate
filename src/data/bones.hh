@@ -110,8 +110,9 @@ bool armature_picked_bounds(const Layer &armature, bool setup_frame, float2 &lo,
  * scales instead. */
 void armature_map_selected(Layer &armature, const std::vector<Bone> &original, const Transform2D &map,
                            bool setup_frame);
-/* Box selection. `inside` tests a point in bone layer space. Joints: the ends inside are picked, as
- * Blender's box select does (a bone with both ends inside is selected). Bones: a bone any part of
+/* Box selection. `inside` tests a point in bone layer space. Joints: on the setup frame the ends
+ * inside are picked, as Blender's edit-mode box select does (a bone with both ends inside is
+ * selected); posing, a bone with either end inside is picked whole, as its pose mode does. Bones: a bone any part of
  * which is inside is picked whole, as Moho's gizmo does. `extend` keeps the selection; `deselect`
  * removes instead. */
 void armature_select_joints_in(Layer &armature, bool setup_frame, const std::function<bool(float2)> &inside,

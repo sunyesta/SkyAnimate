@@ -214,4 +214,80 @@ assert abs(chin_y() + 2.5) < 1e-4, ("the action's end", chin_y())
 _oanim.debug_rotate_bones(rig.id, [-30, -150, -170])  # back past the start, the other way
 assert abs(chin_y() + 2.0) < 1e-4, ("clamped at the start, not left at the end", chin_y())
 
+# --- Clear (Alt G / R / S) takes away a bone's own change only ------------------------------------------
+# A bone a smart bone moves goes back to where the smart bone puts it, not to its setup (which would key
+# a change cancelling the smart action); the smart bone itself goes back to its rest.
+
+
+def chin_pos():
+    return next(b for b in rig.bones if b["name"] == "chin")["position"]
+
+
+rig.bone_set("lever", angle=1.0)
+doc.frame_current = doc.frame_current
+assert abs(chin_y() + 2.5) < 1e-4, chin_y()
+rig.bone_set("chin", position=(0.3, -2.8))
+doc.frame_current = doc.frame_current
+oanim.ops.armature.select_none()
+rig.select_bone("chin")
+assert oanim.ops.armature.clear_location() == {'FINISHED'}
+assert all(abs(a - b) < 1e-4 for a, b in zip(chin_pos(), (0.0, -2.5))), ("where the lever puts it", chin_pos())
+doc.frame_current = 41
+doc.frame_current = 40
+assert all(abs(a - b) < 1e-4 for a, b in zip(chin_pos(), (0.0, -2.5))), ("and it stays there", chin_pos())
+oanim.ops.armature.select_none()
+rig.select_bone("lever")
+assert oanim.ops.armature.clear_rotation() == {'FINISHED'}
+doc.frame_current = doc.frame_current
+assert abs(chin_y() + 2.0) < 1e-4, ("the smart bone back at rest plays nothing", chin_y())
+
+# --- Visibility (a yes/no setting) switches where its key is, never a blend ----------------------------
+# A head turn that hides an eye at its last frame: on the mainline the eye shows until the bone turns
+# that far, then hides, with no flicker in between (it was blended, and flipped on and off).
+doc.frame_current = 0
+assert doc.action == ""
+layers.active = rig
+oanim.ops.armature.bone_add(name="turn", head_x="0", head_y="-1", tail_x="1", tail_y="-1", parent="")
+oanim.ops.layer.new()
+eye = layers.active
+oanim.ops.layer.move_to_group(group=str(rig.id))
+eye = next(l for l in layers.all() if l.id == eye.id)
+eye.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
+layers.active = rig
+assert oanim.ops.anim.action_new(name="turn", smart="1") == {'FINISHED'} and doc.action == "turn"
+doc.frame_current = 10
+rig.bone_set("turn", angle=1.0)
+layers.active = eye
+oanim.ops.mesh.select_none()
+eye.select_points([0])
+assert oanim.ops.mesh.transform_selected(move_x="0.5") == {'FINISHED'}
+layers.active = rig
+eye.visible = False
+assert oanim.ops.anim.keyframe_toggle(layer=str(eye.id), paths="visible") == {'FINISHED'}
+doc.frame_current = 0
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
+assert eye.keyframes("visible") == [], "the mainline has no keys of its own"
+doc.frame_current = 30
+shown = []
+for k in range(0, 13):
+    rig.bone_set("turn", angle=k * 0.1)
+    doc.frame_current = doc.frame_current  # a sync
+    shown.append(eye.visible)
+assert shown == [True] * 10 + [False] * 3, shown
+
+# Clear Location (Alt G) takes away a point's own change only: back where the smart action puts it.
+rig.bone_set("turn", angle=1.0)
+doc.frame_current = doc.frame_current
+layers.active = eye
+oanim.ops.mesh.select_none()
+eye.select_points([0])
+smart_pos = eye.points[0][:2]
+assert abs(smart_pos[0] - 0.5) < 1e-4, ("the smart action moves the point", smart_pos)
+assert oanim.ops.mesh.transform_selected(move_x="0.2", move_y="0.1") == {'FINISHED'}
+assert oanim.ops.mesh.clear_location() == {'FINISHED'}
+assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), eye.points[0]
+doc.frame_current = 31
+doc.frame_current = 30
+assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), ("and it stays there", eye.points[0])
+
 print("Smart action tests passed")

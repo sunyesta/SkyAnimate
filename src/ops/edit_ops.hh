@@ -32,12 +32,12 @@ void rig_operators_register();
 
 /* A layer named by its id ("12") or its name. */
 Layer *layer_by_name_or_id(Document &doc, const std::string &text);
-/* "Inside head", "Outside mouth hole, teeth gap": what a mask does, for menus and undo steps. */
+/* "Subtract head", "Add head, Subtract outside neck": a card's steps, for menus and undo steps. */
 std::string mask_label(const Document &doc, const LayerMask &mask);
-/* A layer's mask rows in words, as the Masking tab's header shows them ("Shows: inside head, minus
- * mouth, plus tongue"). */
+/* A layer's mask cards in words, as the Masking tab's header shows them ("Shows: inside head, minus
+ * mouth; lines: everything but ear, lines ending at the edge"). */
 std::string mask_summary(const Document &doc, const Layer &layer);
-/* Each row's part of the summary ("minus mouth"), one per layer_mask_rows (empty for a row that's off). */
+/* Each card's part of the summary, one per layer_mask_cards (empty for a card that's off). */
 std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &layer);
 
 /* The bone layer rigging works on: the active layer if it is one, else the bone layer it is in. */

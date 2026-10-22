@@ -40,7 +40,7 @@ bool mask_cuts_from_identifier(const std::string &identifier, MaskCuts *r_cuts)
   return false;
 }
 
-static constexpr const char *MASK_MODE_IDS[] = {"ADD", "SUBTRACT", "INTERSECT", "DIFFERENCE"};
+static constexpr const char *MASK_MODE_IDS[] = {"ADD", "SUBTRACT"};
 
 const char *mask_mode_identifier(MaskMode mode)
 {
@@ -49,7 +49,7 @@ const char *mask_mode_identifier(MaskMode mode)
 
 bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode)
 {
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 2; i++) {
     if (identifier == MASK_MODE_IDS[i]) {
       *r_mode = MaskMode(i);
       return true;
@@ -58,31 +58,73 @@ bool mask_mode_from_identifier(const std::string &identifier, MaskMode *r_mode)
   return false;
 }
 
-bool mask_row_ends_lines(const LayerMask &m, MaskLineEnding *above, bool *r_flat)
+bool mask_card_ends_lines(const LayerMask &card, bool *r_flat)
 {
-  if (m.cuts == MaskCuts::Fills || m.clip) {
+  if (!card.end_lines || card.cuts == MaskCuts::Fills || card.clip) {
     return false;
   }
-  if (m.end_lines) {
-    *above = {true, m.end_lines_flat};
-    *r_flat = m.end_lines_flat;
-    return true;
-  }
-  if (above->active && m.mode == MaskMode::Add) {
-    *r_flat = above->flat;
-    return true;
-  }
-  return false;
+  *r_flat = card.end_lines_flat;
+  return true;
 }
 
-bool mask_cuts(const LayerMask &mask)
+std::string mask_card_name(const LayerMask &card, int index)
 {
-  return (mask.mode == MaskMode::Subtract && !mask.invert) || (mask.mode == MaskMode::Intersect && mask.invert);
+  return card.name.empty() ? "Mask " + std::to_string(index + 1) : card.name;
 }
 
-MaskMode mask_mode_from_inside_outside(bool outside, bool first)
+std::vector<uint64_t> mask_card_layers(const LayerMask &card)
 {
-  return outside ? MaskMode::Subtract : first ? MaskMode::Add : MaskMode::Intersect;
+  std::vector<uint64_t> ids;
+  for (const MaskStep &s : card.steps) {
+    for (const uint64_t id : s.layers) {
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+        ids.push_back(id);
+      }
+    }
+  }
+  return ids;
+}
+
+bool mask_step_cuts(const MaskStep &step)
+{
+  return step.mode == MaskMode::Subtract && !step.invert;
+}
+
+bool mask_cuts(const LayerMask &card)
+{
+  return card.start_shown && !card.steps.empty() && mask_step_cuts(card.steps.front());
+}
+
+bool mask_step_from_old_mode(const std::string &identifier, bool outside, bool first, MaskStep *s)
+{
+  if (identifier.empty()) {
+    if (outside) {
+      s->mode = MaskMode::Subtract;
+      return true;
+    }
+    if (first) {
+      s->mode = MaskMode::Add;
+      return true;
+    }
+  }
+  else if (identifier != "INTERSECT") {
+    if (identifier == "DIFFERENCE") {
+      s->mode = MaskMode::Add;
+      return true;
+    }
+    return mask_mode_from_identifier(identifier, &s->mode);
+  }
+  /* Keeping only inside is hiding outside. */
+  s->mode = MaskMode::Subtract;
+  s->invert = !s->invert;
+  return true;
+}
+
+void mask_card_start_from_steps(LayerMask &card)
+{
+  if (!card.steps.empty()) {
+    card.start_shown = card.steps.front().mode == MaskMode::Subtract;
+  }
 }
 
 Transform2D Layer::local_transform() const

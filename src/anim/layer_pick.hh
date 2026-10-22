@@ -52,18 +52,20 @@ struct LineCutter {
     bool strokes_only = false;
     bool inside_stroke = false;
     std::vector<Piece> pieces;
+    /* On a level's first row: its card's Start With (the level starts with everything shown). */
+    bool start_shown = false;
   };
-  /* The layer's rows, then its group's, ... (each level must show). */
+  /* The steps of each card that ends lines, the layer's, then its groups' (each level must show). */
   std::vector<std::vector<Row>> levels;
   /* Ends: Flat (cut straight) rather than Brush (the brush's own taper and fade). */
   bool flat = false;
-  /* Brush ends' Reach (LayerMask::line_reach, the first row with Brush ends): line widths past
+  /* Brush ends' Reach (LayerMask::line_reach, the first card with Brush ends): line widths past
    * the edge. */
   float reach = 0.0f;
   bool empty() const { return levels.empty(); }
 };
-/* The cutter for `layer` (empty when no row of it or its groups has End Lines at Edge). `render`:
- * rows on in renders rather than in the viewport. */
+/* The cutter for `layer` (empty when no card of it or its groups has End Lines at Edge). `render`:
+ * cards on in renders rather than in the viewport. */
 LineCutter line_cutter(const Document &doc, const Layer &layer, bool render);
 /* Whether a line shows at `at` (document space) by those rows. */
 bool line_cutter_shows(const LineCutter &cutter, float2 at);

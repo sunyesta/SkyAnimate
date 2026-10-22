@@ -35,6 +35,8 @@ struct OpProperty {
   std::vector<std::pair<std::string, std::string>> items;
   std::string fallback;
   float min = 0.0f, max = 1.0f, step = 0.01f;
+  /* Shown in the panel only when this says so of the run's args (null: always). */
+  std::function<bool(const OpArgs &)> visible;
 };
 
 struct OperatorType {

@@ -1,8 +1,8 @@
 #pragma once
 
 /* Animated channels, following Moho's AnimChannel: keys at whole frames, each with an
- * interpolation mode for the stretch from it to the next key, plus Moho's per-key hold and
- * interval (animating on 2s or 3s).
+ * interpolation mode for the stretch arriving at it from the key before (how the motion gets to
+ * this pose), plus Moho's per-key hold and interval (animating on 2s or 3s) for after it.
  *
  * A channel sits beside the plain value it animates (a layer's position, a point's
  * position). The plain value always holds the value at the frame last evaluated, so drawing
@@ -141,6 +141,10 @@ struct KeySettings {
 
   bool operator==(const KeySettings &) const = default;
 };
+
+/* Keys from files before format 4, whose curves were for the stretch after each key: moved onto the
+ * key after, as they are now for the stretch arriving at a key, so the motion stays the same. */
+template<typename T> void keys_curves_to_arriving(std::vector<Key<T>> &keys);
 
 template<typename T> KeySettings key_settings(const Key<T> &k)
 {

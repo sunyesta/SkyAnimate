@@ -57,9 +57,11 @@ doc.frame_current = 1
 
 
 def mode(interp, **settings):
-    layer.keyframe_set("position", 0, interp=interp, hold=0, interval=1, **settings)
+    """The stretch 0 -> 10 arrives at key 10: its mode is that key's (hold and interval are key 0's)."""
+    layer.keyframe_set("position", 0, hold=0, interval=1)
+    layer.keyframe_set("position", 10, interp=interp, **settings)
     for name, value in settings.items():
-        assert abs(layer.keyframes("position")[0][name] - value) < 1e-6
+        assert abs(layer.keyframes("position")[1][name] - value) < 1e-6
 
 
 mode("LINEAR")

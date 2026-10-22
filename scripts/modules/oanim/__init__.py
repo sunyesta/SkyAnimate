@@ -199,14 +199,17 @@ class _Layer:
 
     @property
     def masks(self):
-        """Its mask rows, top to bottom: [{"mode" (ADD, SUBTRACT, INTERSECT, DIFFERENCE), "invert",
-        "layers" (names; together one shape), "enabled" (in the viewport), "render", "grow" (pixels,
-        negative shrinks), "shape" (AS_DRAWN, FILLS_ONLY, STROKES_ONLY; also as "fills_only" and
-        "strokes_only"), "filled" (Fill Every Shape), "inside_stroke", "end_lines" (End Lines at Edge)
-        and "ends" (BRUSH, FLAT), "extend", and "outside" (mode is SUBTRACT) and
-        "expand" (grow > 0) as before rows}]. Each row combines its shape with the rows above; a first
-        row of Subtract or Intersect starts from everything. Clip to Below is `clip_to_below`. Change
-        them with oanim.ops.mask.add / set / remove / move / clip_to_below."""
+        """Its mask cards; the layer shows only where all of them show it: [{"name" ("" for "Mask 1"
+        by its place), "start" (EVERYTHING or
+        NOTHING), "cuts" (Affects: ALL, FILLS, LINES), "end_lines" (End Lines at Edge), "ends"
+        (BRUSH, FLAT), "reach", "enabled" (in the viewport), "render", "steps"}]. The steps paint on
+        the start in order: [{"mode" (ADD paints white, shows; SUBTRACT black, hides), "invert" (the
+        outside), "layers" (names; together one shape), "grow" (pixels, negative shrinks), "shape"
+        (AS_DRAWN, FILLS_ONLY, STROKES_ONLY; also as "fills_only" and "strokes_only"), "filled" (Fill
+        Every Shape), "inside_stroke", "extend", and "outside" (mode is SUBTRACT) and "expand"
+        (grow > 0) as before rows}]; the first step's keys are on its card too. Clip to Below is
+        `clip_to_below`. Change them with oanim.ops.mask.add (card= adds a step) / set (step=) /
+        remove / move / duplicate / clip_to_below."""
         return [dict(m) for m in _oanim.layer_masks(self._id)]
 
     def line_shows(self, x, y, render=False):

@@ -88,14 +88,15 @@ assert oanim.ops.wm.save_as_mainfile() == {'CANCELLED'}, "without a window there
 
 with zipfile.ZipFile(walk) as archive:
     stored = json.loads(archive.read("document.json"))
-assert stored["format"] == "OpenAnimate" and stored["version"] == 3
+assert stored["format"] == "OpenAnimate" and stored["version"] == 4
 group = stored["document"]["layers"][0]
 assert group["type"] == "GROUP"
 mask = group["children"][0]
 assert "drawing" not in mask, "a reference stores no copy of the drawing"
 masked = group["children"][1]
 m = masked["masks"][0]
-assert (m["mode"], m["layers"], m["enabled"], m["render"], m["grow"], m["fills_only"], m["filled"]) == ("SUBTRACT", [mask["id"]], True, False, 1.0, True, False), m
+s = m["steps"][0]
+assert (m["start"], s["mode"], s["layers"], m["enabled"], m["render"], s["grow"], s["fills_only"], s["filled"]) ==     ("EVERYTHING", "SUBTRACT", [mask["id"]], True, False, 1.0, True, False), m
 
 # Saving without .oanim adds it.
 assert oanim.ops.wm.save_as_mainfile(filepath=path("walk_alt")) == {'FINISHED'}

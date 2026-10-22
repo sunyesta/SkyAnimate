@@ -371,8 +371,10 @@ static void symmetrize_flip_links(Document &doc, const SymmetrizeLog &log)
     if (Layer *copy = layer_find(doc, id)) {
       layer_tree_walk(*copy, [&](Layer &l) {
         for (LayerMask &m : l.masks) {
-          for (uint64_t &mid : m.layers) {
-            mid = other(mid);
+          for (MaskStep &s : m.steps) {
+            for (uint64_t &mid : s.layers) {
+              mid = other(mid);
+            }
           }
         }
         draw_order_map(l.draw_order, other);

@@ -44,17 +44,17 @@ assert oanim.ops.mask.set(index="0", end_lines="1") == {'FINISHED'}
 assert art.masks[0]["end_lines"] is True
 assert not art.line_shows(0.0, 0.0), "inside the cut-away shape: no line"
 assert art.line_shows(2.5, 0.0), "outside it: the line shows"
-assert art.mask_summary == "Shows: everything but head, lines ending at head's edge", art.mask_summary
+assert art.mask_summary == "Shows: everything but head, lines ending at the edge", art.mask_summary
 
-# Invert, and Add / Intersect read as their rows do.
+# Invert, and Add / Subtract of the outside read as their steps do.
 assert oanim.ops.mask.set(index="0", invert="1") == {'FINISHED'}
 assert art.line_shows(0.0, 0.0) and not art.line_shows(2.5, 0.0), "Invert: only inside head"
-assert oanim.ops.mask.set(index="0", invert="0", mode="INTERSECT") == {'FINISHED'}
-assert art.line_shows(0.0, 0.0) and not art.line_shows(2.5, 0.0), "Intersect: only inside head"
+assert oanim.ops.mask.set(index="0", invert="1", mode="SUBTRACT") == {'FINISHED'}
+assert art.line_shows(0.0, 0.0) and not art.line_shows(2.5, 0.0), "Subtract outside: only inside head"
 
 # Strokes Only: just along head's line (its fill doesn't count).
 head.set_shape_style(0, line_width=0.1)
-assert oanim.ops.mask.set(index="0", mode="ADD", shape="STROKES_ONLY") == {'FINISHED'}
+assert oanim.ops.mask.set(index="0", mode="ADD", invert="0", shape="STROKES_ONLY") == {'FINISHED'}
 assert not art.line_shows(0.0, 0.0), "Strokes Only: not inside"
 assert art.line_shows(-1.0, -1.0), "Strokes Only: through the line's corner point"
 
@@ -97,8 +97,8 @@ assert oanim.ops.mask.add(sources="head", mode="SUBTRACT", end_lines="1") == {'F
 inner = find("inner")
 assert not inner.line_shows(0.0, 0.0) and inner.line_shows(2.5, 0.0), "the group's row ends its children's lines"
 
-# An Add row after one that ends lines brings them back where it adds, without End Lines at Edge on
-# itself: it ends them at its edge as that row does.
+# A card's steps make one shape, and its lines end at that shape's edge: - head, + patch brings them
+# back inside patch, ending them where the combined shape's edge is.
 patch = square("patch", -0.5, -0.5, 0.5, 0.5)
 patch.visible = False
 oanim.ops.layer.new()
@@ -107,18 +107,21 @@ lone.name = "lone"
 lone.add_curve([(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)], closed=True, fill=True)
 assert oanim.ops.mask.add(layer=str(lone.id), sources="head", mode="SUBTRACT", end_lines="1") == {'FINISHED'}
 assert not lone.line_shows(0.0, 0.0), "head ends the lines"
-assert oanim.ops.mask.add(layer=str(lone.id), sources="patch", mode="ADD") == {'FINISHED'}
-assert lone.masks[1]["end_lines"] is False
-assert lone.line_shows(0.0, 0.0), "the Add row brings them back"
+assert oanim.ops.mask.add(layer=str(lone.id), card="0", sources="patch", mode="ADD") == {'FINISHED'}
+assert len(lone.masks) == 1 and [s["layers"] for s in lone.masks[0]["steps"]] == [["head"], ["patch"]]
+assert lone.line_shows(0.0, 0.0), "+ patch brings them back"
 assert not lone.line_shows(0.75, 0.0), "only where it adds"
-assert lone.mask_summary == ("Shows: everything but head, lines ending at head's edge, "
-                             "plus patch, lines ending at patch's edge"), lone.mask_summary
-# Not an Add row, or nothing ending lines above: it doesn't end them.
-assert oanim.ops.mask.set(layer=str(lone.id), index="1", mode="DIFFERENCE") == {'FINISHED'}
+assert lone.mask_summary == "Shows: everything but head, plus patch, lines ending at the edge", lone.mask_summary
+# The step as - Shape: hidden there too.
+assert oanim.ops.mask.set(layer=str(lone.id), index="0", step="1", mode="SUBTRACT") == {'FINISHED'}
 assert not lone.line_shows(0.0, 0.0)
-assert oanim.ops.mask.set(layer=str(lone.id), index="1", mode="ADD") == {'FINISHED'}
+assert oanim.ops.mask.set(layer=str(lone.id), index="0", step="1", mode="ADD") == {'FINISHED'}
+# Another card that doesn't end lines slices them by pixels: their ends don't change.
+assert oanim.ops.mask.add(layer=str(lone.id), sources="patch", mode="SUBTRACT") == {'FINISHED'}
+assert lone.line_shows(0.0, 0.0) and not lone.line_shows(0.75, 0.0)
+assert oanim.ops.mask.remove(layer=str(lone.id), index="1") == {'FINISHED'}
 assert oanim.ops.mask.set(layer=str(lone.id), index="0", end_lines="0") == {'FINISHED'}
-assert lone.line_shows(0.0, 0.0) and lone.line_shows(0.75, 0.0), "no row ends lines now"
+assert lone.line_shows(0.0, 0.0) and lone.line_shows(0.75, 0.0), "no card ends lines now"
 assert oanim.ops.mask.remove(layer=str(lone.id)) == {'FINISHED'}
 
 # Saved with the file, and a driver can switch it.

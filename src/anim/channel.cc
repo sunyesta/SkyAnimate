@@ -142,7 +142,7 @@ static float ease_elastic(float t, float amplitude, float period)
   return amplitude * std::pow(2.0f, -10.0f * t) * std::sin((t - s) * (2.0f * PI) / period) + 1.0f;
 }
 
-/* Moho's names: Ease In slows into the next key, Ease Out slows away from this one. */
+/* Moho's names: Ease In slows into this key, Ease Out slows away from the one before. */
 static float ease_shaped(Interp interp, Ease ease, float t)
 {
   switch (interp) {
@@ -299,7 +299,11 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   const float span = float(b.frame - start);
   const float t = span > 0.0f ? float(f - start) / span : 1.0f;
 
-  switch (a.interp) {
+  /* The stretch arriving at a key takes that key's interpolation and its settings (as Moho's: how the
+   * motion gets to this pose); a Cycle key's own interpolation is its loop after it, so the stretch
+   * into one is Smooth. Hold, the interval and Cycle stay the earlier key's: what happens after it. */
+  const Interp interp = b.interp == Interp::Cycle ? Interp::Smooth : b.interp;
+  switch (interp) {
     case Interp::Step:
     case Interp::Pose:
       return a.value;
@@ -308,15 +312,15 @@ template<typename T> T Channel<T>::evaluate(int frame) const
     case Interp::EaseInOut:
     case Interp::EaseIn:
     case Interp::EaseOut:
-      return a.value + (b.value - a.value) * ease_shaped(a.interp, a.ease, t);
+      return a.value + (b.value - a.value) * ease_shaped(interp, b.ease, t);
     case Interp::Back:
-      return a.value + (b.value - a.value) * ease_back(t, a.overshoot);
+      return a.value + (b.value - a.value) * ease_back(t, b.overshoot);
     case Interp::Bounce:
       return a.value + (b.value - a.value) * ease_bounce(t);
     case Interp::Elastic:
-      return a.value + (b.value - a.value) * ease_elastic(t, a.elastic_amplitude, a.elastic_period);
+      return a.value + (b.value - a.value) * ease_elastic(t, b.elastic_amplitude, b.elastic_period);
     case Interp::Noisy:
-      return a.value + (b.value - a.value) * t + noise_of(a.value, a, float(frame));
+      return a.value + (b.value - a.value) * t + noise_of(a.value, b, float(frame));
     case Interp::Smooth:
     case Interp::Bezier:
     case Interp::Cycle:
@@ -382,6 +386,33 @@ template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value)
   }
   return *keys.insert(at, key);
 }
+
+template<typename T> void keys_curves_to_arriving(std::vector<Key<T>> &keys)
+{
+  /* Before, a key's curve was for the stretch after it: each key takes the one before's. A Cycle
+   * key keeps its loop (it was never a stretch's curve), and the stretch after one was its loop. */
+  std::vector<KeySettings> before;
+  for (const Key<T> &k : keys) {
+    before.push_back(key_settings(k));
+  }
+  for (size_t i = 0; i < keys.size(); i++) {
+    if (keys[i].interp == Interp::Cycle) {
+      continue;
+    }
+    KeySettings s = key_settings(keys[i]);
+    const KeySettings from = i > 0 && before[i - 1].interp != Interp::Cycle ? before[i - 1] : KeySettings();
+    s.interp = from.interp;
+    s.ease = from.ease;
+    s.overshoot = from.overshoot;
+    s.elastic_amplitude = from.elastic_amplitude;
+    s.elastic_period = from.elastic_period;
+    s.noise_amplitude = from.noise_amplitude;
+    s.noise_frequency = from.noise_frequency;
+    key_settings_apply(keys[i], s);
+  }
+}
+template void keys_curves_to_arriving(std::vector<Key<float>> &keys);
+template void keys_curves_to_arriving(std::vector<Key<float2>> &keys);
 
 template<typename T> bool Channel<T>::remove_key(int frame)
 {

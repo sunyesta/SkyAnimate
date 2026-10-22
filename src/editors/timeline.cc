@@ -342,21 +342,21 @@ static const char *interp_tooltip(Interp interp)
     case Interp::Linear:
       return "Steady speed, turning sharply at each key";
     case Interp::Step:
-      return "Holds until the next key, then jumps to it";
+      return "Holds the key before, then jumps to this one";
     case Interp::EaseIn:
-      return "Slows down into the next key";
+      return "Slows down into this key";
     case Interp::EaseOut:
-      return "Starts slowly from this key";
+      return "Starts slowly from the key before";
     case Interp::EaseInOut:
-      return "Starts slowly and slows down into the next key";
+      return "Starts slowly and slows down into this key";
     case Interp::Back:
-      return "Goes past the next key, then settles back onto it";
+      return "Goes past this key, then settles back onto it";
     case Interp::Bounce:
-      return "Bounces as it lands on the next key";
+      return "Bounces as it lands on this key";
     case Interp::Elastic:
-      return "Wobbles about the next key like a spring";
+      return "Wobbles about this key like a spring";
     case Interp::Noisy:
-      return "Jitters about the straight path to the next key";
+      return "Jitters about the straight path to this key";
     case Interp::Cycle:
       return "After this key, plays again from an earlier frame, looping until the next key";
     default:
@@ -539,7 +539,7 @@ static void interp_settings_popup(Context &C)
     ImGui::TextDisabled("No keys selected");
   }
 
-  /* The curve: progress (0 at this key, 1 at the next) over the time between them. */
+  /* The curve: progress (0 at the key before, 1 at this one) over the time between them. */
   {
     const ImVec2 a = ImGui::GetCursorScreenPos();
     const ImVec2 size(w, fs * 7.0f);
@@ -547,18 +547,18 @@ static void interp_settings_popup(Context &C)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const ImVec2 b = a + size;
     dl->AddRectFilled(a, b, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
-    /* Tall enough for the whole curve (Elastic and Back swing past the next key). */
+    /* Tall enough for the whole curve (Elastic and Back swing past this key). */
     float lo = -0.15f, hi = 1.15f;
     for (int i = 0; i <= 64; i++) {
       const float v = interp_curve(s, float(i) / 64.0f);
       lo = std::min(lo, v - 0.08f);
       hi = std::max(hi, v + 0.08f);
     }
-    /* The lines of this key's value (0) and the next key's (1), labelled above, at the right. */
+    /* The lines of the key before's value (0) and this key's (1), labelled above, at the right. */
     for (const float v : {0.0f, 1.0f}) {
       const float y = b.y - (v - lo) / (hi - lo) * size.y;
       dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0x44, 0x44, 0x44, 255));
-      const char *label = v == 0.0f ? "this key" : "next key";
+      const char *label = v == 0.0f ? "key before" : "this key";
       const float tw = ImGui::CalcTextSize(label).x;
       dl->AddText(ImVec2(b.x - tw - 4.0f, y - fs - 1.0f), IM_COL32(0x80, 0x80, 0x80, 255),
                   label);
@@ -644,7 +644,7 @@ static void interp_settings_popup(Context &C)
     }
     done();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("How far the first swing goes past the next key (1: as far as the move)");
+      ImGui::SetTooltip("How far the first swing goes past this key (1: as far as the move)");
     }
     row("Period");
     float period = s.elastic_period;
@@ -778,7 +778,7 @@ static void interp_header(Context &C, float width)
                      ImGuiDir_Down, 0.8f);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     if (sel.count > 0) {
-      ImGui::SetTooltip("Interpolation of the selected keys: how each moves on to the next key\nShortcut: T");
+      ImGui::SetTooltip("Interpolation of the selected keys: how the motion arrives at each from the key before\nShortcut: T");
     }
     else {
       ImGui::SetTooltip("Interpolation new keys get (no keys selected)\nShortcut: T");

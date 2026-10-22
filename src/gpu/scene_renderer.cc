@@ -386,6 +386,9 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
       draw_media(doc, *l, layer_world_transform(doc, l->id), layer_opacity_through_parents(doc, *l));
     }
   }
+  if (const Layer *previewed = background ? nullptr : layer_find(doc, mask_preview_layer_)) {
+    draw_mask_preview(doc, *previewed);
+  }
   resolve(output_);
 
   glDisable(GL_STENCIL_TEST);
@@ -579,40 +582,58 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
   draw_layers(doc, layer.children, transform, target, layer_opacity);
 }
 
-/* A layer's mask rows that are on (in renders or the viewport), with the layers still there; rows
- * left with no layer are left out. Clip to Below comes in as a row (layer_mask_rows). */
-static std::vector<SceneRenderer::MaskRow> rows_of(const Document &doc, const Layer &layer, bool render)
+/* A layer's mask cards that are on (in renders or the viewport): each its steps, with the layers
+ * still there (a step left with none is left out, and so is a card left with none). Clip to Below
+ * comes in as a card (layer_mask_cards), first. */
+struct CardRows {
+  std::vector<SceneRenderer::MaskRow> steps;
+  MaskCuts cuts = MaskCuts::All;
+  /* End Lines at Edge with Ends: Brush (the lines it ends aren't sliced by it). */
+  bool brush_ends = false;
+  /* Its place among the layer's cards. */
+  int index = 0;
+};
+static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, bool render)
 {
-  std::vector<SceneRenderer::MaskRow> rows;
-  MaskLineEnding above;
-  for (const LayerMask &m : layer_mask_rows(doc, layer)) {
+  std::vector<CardRows> cards;
+  int index = -1;
+  for (const LayerMask &m : layer_mask_cards(doc, layer)) {
+    index++;
     if (!(render ? m.render : m.enabled)) {
       continue;
     }
+    CardRows card;
+    card.cuts = m.clip ? MaskCuts::All : m.cuts;
     bool flat = false;
-    const bool ends_lines = mask_row_ends_lines(m, &above, &flat);
-    SceneRenderer::MaskRow row;
-    row.mode = m.mode;
-    row.invert = m.invert;
-    row.grow = m.grow;
-    row.fills_only = m.fills_only;
-    row.strokes_only = m.strokes_only;
-    row.inside_stroke = m.fills_only && m.inside_stroke;
-    row.end_lines_brush = ends_lines && !flat;
-    row.cuts = m.clip ? 0 : int(m.cuts);
-    row.filled = m.filled;
-    row.extend = int(m.extend);
-    row.clip = m.clip;
-    for (const uint64_t id : m.layers) {
-      if (id != 0 && id != layer.id && layer_find(doc, id)) {
-        row.layers.push_back(id);
+    card.brush_ends = mask_card_ends_lines(m, &flat) && !flat;
+    card.index = index;
+    for (const MaskStep &s : m.steps) {
+      SceneRenderer::MaskRow row;
+      row.mode = s.mode;
+      row.invert = s.invert;
+      row.grow = s.grow;
+      row.fills_only = s.fills_only;
+      row.strokes_only = s.strokes_only;
+      row.inside_stroke = s.fills_only && s.inside_stroke;
+      row.filled = s.filled;
+      row.extend = int(s.extend);
+      row.clip = s.clip;
+      row.start_shown = m.start_shown;
+      for (const uint64_t id : s.layers) {
+        if (id != 0 && id != layer.id && layer_find(doc, id)) {
+          row.layers.push_back(id);
+        }
+      }
+      if (!row.layers.empty()) {
+        card.steps.push_back(std::move(row));
       }
     }
-    if (!row.layers.empty()) {
-      rows.push_back(std::move(row));
+    if (!card.steps.empty()) {
+      cards.push_back(std::move(card));
     }
   }
-  return rows;
+  std::stable_partition(cards.begin(), cards.end(), [](const CardRows &c) { return c.steps.front().clip; });
+  return cards;
 }
 
 /* Stencil bits: one result per masked level (0 to 3), a spare for combining a clip base's levels (4),
@@ -629,36 +650,27 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   applied_line_free_ = 0;
   applied_fill_free_ = 0;
   for (const Layer *l : masked) {
-    std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
-    if (rows.empty() || int(levels.size()) >= MASK_LEVELS_MAX) {
-      continue;
+    /* Its cards by what they cut: fills and lines (sliced), fills only (lines left alone or ended with
+     * a brush), lines only (sliced); each kind a level its cards must all show in. */
+    std::vector<std::vector<MaskRow>> both, fills, lines;
+    for (CardRows &card : cards_of(doc, *l, final_render_)) {
+      const bool f = card.cuts != MaskCuts::Lines;
+      const bool lp = card.cuts != MaskCuts::Fills && !card.brush_ends;
+      if (f || lp) {
+        (f && lp ? both : f ? fills : lines).push_back(std::move(card.steps));
+      }
     }
-    const auto all_end_lines = [](const std::vector<MaskRow> &level) {
-      return std::all_of(level.begin(), level.end(), [](const MaskRow &r) { return r.end_lines_brush; });
+    const auto push = [&](std::vector<std::vector<MaskRow>> &cards, bool line_free, bool fill_free) {
+      if (cards.empty() || int(levels.size()) >= MASK_LEVELS_MAX) {
+        return;
+      }
+      applied_line_free_ |= line_free ? 1u << levels.size() : 0u;
+      applied_fill_free_ |= fill_free ? 1u << levels.size() : 0u;
+      levels.push_back(std::move(cards));
     };
-    /* Rows that cut only lines or only fills: the lines go by a level of the rows that cut them, the
-     * fills by one of the rows that cut them, each left out by the other. */
-    std::vector<MaskRow> line_rows = rows, fill_rows = rows;
-    std::erase_if(line_rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Fills); });
-    std::erase_if(fill_rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Lines); });
-    if (line_rows.size() == rows.size() && fill_rows.size() == rows.size()) {
-      if (all_end_lines(rows)) {
-        applied_line_free_ |= 1u << levels.size();
-      }
-      levels.push_back(std::move(rows));
-      continue;
-    }
-    if (!line_rows.empty()) {
-      applied_fill_free_ |= 1u << levels.size();
-      if (all_end_lines(line_rows)) {
-        applied_line_free_ |= 1u << levels.size();
-      }
-      levels.push_back(std::move(line_rows));
-    }
-    if (!fill_rows.empty() && int(levels.size()) < MASK_LEVELS_MAX) {
-      applied_line_free_ |= 1u << levels.size();
-      levels.push_back(std::move(fill_rows));
-    }
+    push(both, false, false);
+    push(fills, true, false);
+    push(lines, false, true);
   }
   unsigned required = 0;
   for (size_t k = 0; k < levels.size(); k++) {
@@ -671,10 +683,26 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   for (size_t k = 0; k < levels.size(); k++) {
     /* The levels after this one, and the spare, are free while it is worked out. */
     const unsigned free = (MASK_SPARE | (MASK_SPARE - 1u)) & ~((2u << k) - 1u);
-    evaluate_mask_rows(doc, levels[k], 1u << k, MASK_SCRATCH, false, free);
+    evaluate_mask_cards(doc, levels[k], 1u << k, MASK_SCRATCH, free);
   }
   mask_clauses_ = std::move(levels);
   return required;
+}
+
+void SceneRenderer::evaluate_mask_cards(const Document &doc, const std::vector<std::vector<MaskRow>> &cards,
+                                        unsigned result, unsigned scratch, unsigned free)
+{
+  for (size_t c = 0; c < cards.size(); c++) {
+    if (c == 0) {
+      evaluate_mask_rows(doc, cards[c], result, scratch, false, free);
+      continue;
+    }
+    if (!(free & MASK_SPARE)) {
+      break;
+    }
+    evaluate_mask_rows(doc, cards[c], MASK_SPARE, scratch, false, free & ~MASK_SPARE);
+    stencil_where(MASK_SPARE, 0, result, 0, GL_REPLACE);
+  }
 }
 
 void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref, unsigned op)
@@ -692,10 +720,9 @@ void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write,
 void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result,
                                        unsigned scratch, bool nested, unsigned free)
 {
-  /* Rows read top to bottom. Starting with Subtract or Intersect starts from everything (cutting
-   * from the whole picture); anything else from nothing. */
-  const MaskMode first = rows.front().mode;
-  stencil_fill(result, first == MaskMode::Subtract || first == MaskMode::Intersect);
+  /* The card starts as its Start With says (white: everything shown), and its steps paint on it, top
+   * to bottom. */
+  stencil_fill(result, rows.front().start_shown);
   for (const MaskRow &row : rows) {
     /* The row's shape: the union of its layers, grown or shrunk. Shrinking draws the areas, then
      * clears a band around each area's edge, then draws the lines (thinner). */
@@ -732,13 +759,54 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
       case MaskMode::Subtract:
         stencil_where(scratch, inside, result, 0, GL_REPLACE);
         break;
-      case MaskMode::Intersect:
-        stencil_where(scratch, inside ^ scratch, result, 0, GL_REPLACE);
-        break;
-      case MaskMode::Difference:
-        stencil_where(scratch, inside, result, 0, GL_INVERT);
-        break;
     }
+  }
+}
+
+void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
+{
+  /* The card alone (all of the layer's cards that mask that part without one); lines ended at an
+   * edge count by their card's shape. */
+  const MaskCuts skip = mask_preview_lines_ ? MaskCuts::Fills : MaskCuts::Lines;
+  std::vector<std::vector<MaskRow>> cards;
+  for (CardRows &card : cards_of(doc, layer, false)) {
+    const bool picked = mask_preview_upto_ >= 0 ? card.index == mask_preview_upto_ : card.cuts != skip;
+    if (picked) {
+      cards.push_back(std::move(card.steps));
+    }
+  }
+  unsigned required = 0;
+  if (!cards.empty()) {
+    evaluate_mask_cards(doc, cards, 1u, MASK_SCRATCH, (MASK_SPARE | (MASK_SPARE - 1u)) & ~1u);
+    required = 1u;
+  }
+  mask_clauses_.clear();
+  required_stencil_ = 0;
+  /* Over the drawing at 90%, so it shows faintly through: white where every level shows the layer,
+   * black elsewhere. */
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glStencilMask(0);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+  const Transform2D to_document = document_to_pixels_.inverted();
+  const float2 a = to_document.apply({0.0f, 0.0f}), b = to_document.apply({float(width_), float(height_)});
+  const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x), y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
+  constexpr float alpha = 0.9f;
+  gl::UseProgram(color_program_);
+  for (const bool shows : {true, false}) {
+    if (required == 0) {
+      if (!shows) {
+        continue;
+      }
+      glStencilFunc(GL_ALWAYS, 0, 0);
+    }
+    else {
+      glStencilFunc(shows ? GL_EQUAL : GL_NOTEQUAL, GLint(required), required);
+    }
+    /* Premultiplied. */
+    const float v = shows ? alpha : 0.0f;
+    const std::vector<Vertex> quad = {{x0, y0, v, v, v, alpha}, {x1, y0, v, v, v, alpha}, {x1, y1, v, v, v, alpha},
+                                      {x0, y0, v, v, v, alpha}, {x1, y1, v, v, v, alpha}, {x0, y1, v, v, v, alpha}};
+    draw_vertices(quad, Transform2D());
   }
 }
 
@@ -774,19 +842,19 @@ void SceneRenderer::draw_clip_base(const Document &doc, const Layer &layer, unsi
     if (!nested) {
       const MaskPass pass = mask_pass_;
       for (const Layer *l : chain) {
-        /* The base shows as its fills do: its rows that cut only lines left out. */
-        std::vector<MaskRow> rows = rows_of(doc, *l, final_render_);
-        std::erase_if(rows, [](const MaskRow &r) { return r.cuts == int(MaskCuts::Lines); });
-        if (rows.empty()) {
-          continue;
-        }
-        if (test == 0) {
-          evaluate_mask_rows(doc, rows, result, scratch, !deep);
-          test = result;
-        }
-        else if (more) {
-          evaluate_mask_rows(doc, rows, more, scratch, !deep);
-          stencil_where(more, 0, result, 0, GL_REPLACE);
+        /* The base shows as its fills do: its cards that mask only lines left out. */
+        for (const CardRows &card : cards_of(doc, *l, final_render_)) {
+          if (card.cuts == MaskCuts::Lines) {
+            continue;
+          }
+          if (test == 0) {
+            evaluate_mask_rows(doc, card.steps, result, scratch, !deep);
+            test = result;
+          }
+          else if (more) {
+            evaluate_mask_rows(doc, card.steps, more, scratch, !deep);
+            stencil_where(more, 0, result, 0, GL_REPLACE);
+          }
         }
       }
       mask_pass_ = pass;
