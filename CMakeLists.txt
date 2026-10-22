@@ -19,6 +19,7 @@ set(OANIM_SOURCES
   src/anim/channel.cc
   src/anim/deform.cc
   src/anim/bevel.cc
+  src/anim/keep_poses.cc
   src/anim/merge.cc
   src/anim/draw_order.cc
   src/anim/layer_pick.cc
@@ -170,6 +171,10 @@ add_test(NAME point_groups
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_point_groups.py)
 add_test(NAME bevel_modifier
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bevel_modifier.py)
+add_test(NAME row_keys
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_row_keys.py)
+add_test(NAME keep_poses
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_keep_poses.py)
 add_test(NAME transform_panel
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_panel.py)
 add_test(NAME layer_clipboard

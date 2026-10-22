@@ -24,6 +24,7 @@
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/keep_poses.hh"
 #include "anim/layer_pick.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
@@ -2081,6 +2082,19 @@ static std::string num_arg(float v)
 /* A confirmed G, R or S on points: the document as it was, then Move, Rotate or Scale with the
  * amounts the drag ended on, as one undo step the ViewportActionPanel can adjust. An extrusion or a
  * handle tweak stays the drag's own step. */
+/* Keep Poses (ViewportActionPanel): moves on the setup frame leave the other frames' keyed poses where
+ * they are. Kept for the next moves until the frame changes (keep_poses_on()). */
+static bool g_keep_poses = false;
+static uint64_t g_keep_poses_since = 0;
+
+static bool keep_poses_on()
+{
+  if (g_keep_poses && animation_frame_changes() != g_keep_poses_since) {
+    g_keep_poses = false;
+  }
+  return g_keep_poses;
+}
+
 static void modal_confirm(Context &C, float2 delta, float angle, float2 scale)
 {
   if (g_modal.extrude || g_modal.tweak) {
@@ -2093,14 +2107,20 @@ static void modal_confirm(Context &C, float2 delta, float angle, float2 scale)
   g_modal.snapshot = Document();
   C.wm->modal_running = false;
   C.wm->modal_keys.clear();
+  OpArgs args{{"setup", C.document->frame_current == 0 ? "1" : "0"}, {"keep_poses", keep_poses_on() ? "1" : "0"}};
   if (kind == 'G') {
-    operator_call(C, "mesh.translate", {{"move_x", num_arg(delta.x)}, {"move_y", num_arg(delta.y)}});
+    args["move_x"] = num_arg(delta.x);
+    args["move_y"] = num_arg(delta.y);
+    operator_call(C, "mesh.translate", args);
   }
   else if (kind == 'R') {
-    operator_call(C, "mesh.rotate", {{"angle", num_arg(angle * 180.0f / PI)}});
+    args["angle"] = num_arg(angle * 180.0f / PI);
+    operator_call(C, "mesh.rotate", args);
   }
   else {
-    operator_call(C, "mesh.resize", {{"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)}});
+    args["scale_x"] = num_arg(scale.x);
+    args["scale_y"] = num_arg(scale.y);
+    operator_call(C, "mesh.resize", args);
   }
 }
 
@@ -4178,7 +4198,8 @@ static void bone_modal_confirm(Context &C, float2 delta, float degrees, float fa
   g_bone_modal.counter = {};
   C.wm->modal_running = false;
   C.wm->modal_keys.clear();
-  OpArgs args{{"only_bones", g_move_only_bones ? "1" : "0"}, {"posing", bm.setup_frame ? "0" : "1"}};
+  OpArgs args{{"only_bones", g_move_only_bones ? "1" : "0"}, {"posing", bm.setup_frame ? "0" : "1"},
+              {"keep_poses", keep_poses_on() ? "1" : "0"}};
   if (bm.kind == 'G') {
     args["move_x"] = num_arg(delta.x);
     args["move_y"] = num_arg(delta.y);
@@ -4468,7 +4489,7 @@ static void bone_gizmo_apply(Context &C, float2 pivot, float2 offset, float2 sca
                 {{"origin_x", num_arg(pivot.x)}, {"origin_y", num_arg(pivot.y)}, {"move_x", num_arg(offset.x)},
                  {"move_y", num_arg(offset.y)}, {"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)},
                  {"angle", num_arg(degrees)}, {"only_bones", g_move_only_bones ? "1" : "0"},
-                 {"posing", C.document->frame_current != 0 ? "1" : "0"}});
+                 {"posing", C.document->frame_current != 0 ? "1" : "0"}, {"keep_poses", keep_poses_on() ? "1" : "0"}});
 }
 
 static void transform_bones_header(Context &C)
@@ -4760,7 +4781,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
                            {"move_x", num_arg(offset.x)}, {"move_y", num_arg(offset.y)},
                            {"scale_x", num_arg(scale.x)}, {"scale_y", num_arg(scale.y)},
                            {"angle", num_arg(angle * 180.0f / PI)}, {"only_bones", g_move_only_bones ? "1" : "0"},
-                           {"posing", setup ? "0" : "1"}});
+                           {"posing", setup ? "0" : "1"}, {"keep_poses", keep_poses_on() ? "1" : "0"}});
             /* The pivot stays where the drag left it. */
             float2 nlo, nhi;
             if (const Layer *moved = layer_find(*C.document, armature_id);
@@ -4832,6 +4853,8 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
 
 struct PointGizmo {
   GizmoMode mode = GizmoMode::None;
+  /* Keep Poses while dragging on the setup frame (empty: off). */
+  SetupSnapshot kept;
   int handle = 0;
   int area = 0;
   /* The layer whose space it is in, and the selection it was laid round (a new one resets the pivot). */
@@ -4955,7 +4978,8 @@ static void point_gizmo_apply(Context &C, float2 pivot, float2 move, float2 scal
   };
   operator_call(C, "mesh.transform_selected",
                 {{"pivot_x", num(pivot.x)}, {"pivot_y", num(pivot.y)}, {"move_x", num(move.x)}, {"move_y", num(move.y)},
-                 {"scale_x", num(scale.x)}, {"scale_y", num(scale.y)}, {"angle", num(degrees)}});
+                 {"scale_x", num(scale.x)}, {"scale_y", num(scale.y)}, {"angle", num(degrees)},
+                 {"setup", C.document->frame_current == 0 ? "1" : "0"}, {"keep_poses", keep_poses_on() ? "1" : "0"}});
 }
 
 /* An option of the ViewportActionPanel. */
@@ -4972,6 +4996,58 @@ static OpProperty panel_float(const char *name, const char *label, const char *d
   p.max = max;
   p.step = step;
   return p;
+}
+
+/* Keep Poses: shown for a move made on the setup frame (args[key] == value). */
+static OpProperty keep_poses_option(const char *key, const char *value)
+{
+  OpProperty p;
+  p.name = "keep_poses";
+  p.label = "Keep Poses";
+  p.description = "Other frames' keyed poses stay where they are: the move changes only the setup pose, its change "
+                  "taken off every key on another frame, in every action. Kept for the next moves until the frame "
+                  "changes";
+  p.kind = OpProperty::Kind::Bool;
+  p.fallback = "0";
+  const std::string k = key, v = value;
+  p.visible = [k, v](const OpArgs &args) {
+    const auto it = args.find(k);
+    return it != args.end() && it->second == v;
+  };
+  return p;
+}
+
+/* Keep Poses around a move: the setup of the layers it may change, taken before it when the move is
+ * on the setup frame with the option on (the choice kept for the next moves). */
+static SetupSnapshot keep_poses_begin(Context &C, const std::vector<uint64_t> &layers)
+{
+  if (op_has_arg(C, "keep_poses")) {
+    g_keep_poses = op_arg_bool(C, "keep_poses");
+    g_keep_poses_since = animation_frame_changes();
+  }
+  if (C.document->frame_current != 0 || !op_arg_bool(C, "keep_poses")) {
+    return {};
+  }
+  return setup_snapshot(*C.document, layers);
+}
+
+/* ...and after it: the move recorded as the setup, then taken off the other frames' keys. */
+static void keep_poses_end(Context &C, const SetupSnapshot &before)
+{
+  if (before.empty()) {
+    return;
+  }
+  animation_record(*C.document);
+  keep_poses(*C.document, before);
+}
+
+static std::vector<uint64_t> editable_layer_ids(Context &C)
+{
+  std::vector<uint64_t> ids;
+  for (const Layer *l : editable_layers(C)) {
+    ids.push_back(l->id);
+  }
+  return ids;
 }
 
 /* Move Only Bones: shown for a move made while posing (bones don't bend drawings on frame 0). */
@@ -5009,6 +5085,7 @@ static OpStatus bones_transform_exec(Context &C, char kind)
   if (!setup && op_arg_bool(C, "only_bones")) {
     counter = bone_counter_capture(doc, armature->id);
   }
+  const SetupSnapshot kept = keep_poses_begin(C, {armature->id});
   const std::vector<Bone> start = armature->bones;
   const float2 move(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
   const float degrees = op_arg_float(C, "angle", 0.0f);
@@ -5037,6 +5114,7 @@ static OpStatus bones_transform_exec(Context &C, char kind)
   if (!counter.layers.empty()) {
     bone_counter_apply(doc, counter);
   }
+  keep_poses_end(C, kept);
   return OpStatus::Finished;
 }
 
@@ -5053,9 +5131,11 @@ static OpStatus points_transform_exec(Context &C, char kind)
   if (!modal_layers(C, moving, layers)) {
     return OpStatus::Cancelled;
   }
+  const SetupSnapshot kept = keep_poses_begin(C, editable_layer_ids(C));
   const float2 delta(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
   const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
   modal_apply(C, moving, layers, kind, delta, op_arg_float(C, "angle", 0.0f) * PI / 180.0f, scale);
+  keep_poses_end(C, kept);
   return OpStatus::Finished;
 }
 
@@ -5083,27 +5163,35 @@ static void transform_operators_register()
   const OpProperty angle = panel_float("angle", "Angle", "Degrees, counter-clockwise", "0", -36000.0f, 36000.0f, 0.5f);
   const OpProperty scale_x = panel_float("scale_x", "Scale X", "Across", "1", -1e4f, 1e4f, 0.01f);
   const OpProperty scale_y = panel_float("scale_y", "Scale Y", "Up", "1", -1e4f, 1e4f, 0.01f);
-  add("mesh.translate", "Move", "Move the selected points by move_x, move_y (as G does)", {move_x, move_y}, points_poll,
-      [](Context &C) { return points_transform_exec(C, 'G'); });
-  add("mesh.rotate", "Rotate", "Turn the selected points by angle= degrees about the pivot (as R does)", {angle},
-      points_poll, [](Context &C) { return points_transform_exec(C, 'R'); });
-  add("mesh.resize", "Scale", "Scale the selected points by scale_x, scale_y about the pivot (as S does)",
-      {scale_x, scale_y}, points_poll, [](Context &C) { return points_transform_exec(C, 'S'); });
+  const OpProperty keep_points = keep_poses_option("setup", "1");
+  const OpProperty keep_bones = keep_poses_option("posing", "0");
+  add("mesh.translate", "Move",
+      "Move the selected points by move_x, move_y (as G does). On the setup frame keep_poses=1 leaves the other "
+      "frames' keyed poses where they are (setup=1 shows it in the panel)",
+      {move_x, move_y, keep_points}, points_poll, [](Context &C) { return points_transform_exec(C, 'G'); });
+  add("mesh.rotate", "Rotate",
+      "Turn the selected points by angle= degrees about the pivot (as R does); keep_poses= as Move",
+      {angle, keep_points}, points_poll, [](Context &C) { return points_transform_exec(C, 'R'); });
+  add("mesh.resize", "Scale",
+      "Scale the selected points by scale_x, scale_y about the pivot (as S does); keep_poses= as Move",
+      {scale_x, scale_y, keep_points}, points_poll, [](Context &C) { return points_transform_exec(C, 'S'); });
   add("armature.translate", "Move Bones",
       "Move the selected bones by move_x, move_y (document space; as G does). Posing, only_bones=1 keeps the "
       "drawings where they are (posing=1 shows it in the panel)",
-      {move_x, move_y, only_bones_option()}, bones_poll, [](Context &C) { return bones_transform_exec(C, 'G'); });
+      {move_x, move_y, only_bones_option(), keep_bones}, bones_poll,
+      [](Context &C) { return bones_transform_exec(C, 'G'); });
   add("armature.rotate", "Rotate Bones", "Turn the selected bones by angle= degrees (as R does); only_bones= as Move Bones",
-      {angle, only_bones_option()}, bones_poll, [](Context &C) { return bones_transform_exec(C, 'R'); });
+      {angle, only_bones_option(), keep_bones}, bones_poll, [](Context &C) { return bones_transform_exec(C, 'R'); });
   add("armature.resize", "Scale Bones",
       "Scale the selected bones by scale= (as S does; axis=1 or 2 along the bones' X or Y, squash=1 squash and "
       "stretch); only_bones= as Move Bones",
-      {panel_float("scale", "Scale", "How much bigger", "1", -1e4f, 1e4f, 0.01f), only_bones_option()}, bones_poll,
+      {panel_float("scale", "Scale", "How much bigger", "1", -1e4f, 1e4f, 0.01f), only_bones_option(), keep_bones},
+      bones_poll,
       [](Context &C) { return bones_transform_exec(C, 'S'); });
   add("armature.transform", "Transform Bones",
       "The Transform Bones tool's move: the selected bones moved by move_x, move_y, scaled by scale_x, scale_y and "
       "turned by angle= degrees about origin_x, origin_y (bone layer space); only_bones= as Move Bones",
-      {move_x, move_y, scale_x, scale_y, angle, only_bones_option()}, bones_poll,
+      {move_x, move_y, scale_x, scale_y, angle, only_bones_option(), keep_bones}, bones_poll,
       [](Context &C) { return bones_transform_exec(C, 'T'); });
 }
 
@@ -5117,6 +5205,7 @@ void viewport_operators_register()
                    "active layer's space: move_x/move_y, scale_x/scale_y, angle (degrees), pivot_x/pivot_y (default: "
                    "the middle of the selection), as the Transform Points tool's header does";
   ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+  ot.props = {keep_poses_option("setup", "1")};
   ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr && !editable_layers(C).empty(); };
   ot.exec = [](Context &C) {
     const Transform2D to_document = point_gizmo_space(*C.document);
@@ -5134,7 +5223,9 @@ void viewport_operators_register()
     if (!modal_collect(C, area, 'G', {}, moving)) {
       return OpStatus::Cancelled;
     }
+    const SetupSnapshot kept = keep_poses_begin(C, editable_layer_ids(C));
     point_gizmo_place(C, moving, to_document, map_about(pivot, move, scale, angle));
+    keep_poses_end(C, kept);
     return OpStatus::Finished;
   };
   operators().add(std::move(ot));
@@ -5295,6 +5386,7 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
       if (!modal_collect(C, area, 'G', view.to_document(io.MousePos), g.moving)) {
         mode = GizmoMode::None;
       }
+      g.kept = doc.frame_current == 0 && keep_poses_on() ? setup_snapshot(doc, editable_layer_ids(C)) : SetupSnapshot();
     }
     g.mode = mode;
     g.handle = handle;
@@ -5430,6 +5522,10 @@ static void transform_points_input(Context &C, Area &area, const ViewMapping &vi
         g.changed |= dragged;
         if (released) {
           if (g.changed) {
+            if (!g.kept.empty()) {
+              animation_record(doc);
+              keep_poses(doc, g.kept);
+            }
             push_undo(C, g.mode == GizmoMode::Scale && io.KeyCtrl && g.handle >= 4 ? "Shear Points" : "Transform Points");
             /* The pivot stays where the drag left it. */
             float2 nlo, nhi;

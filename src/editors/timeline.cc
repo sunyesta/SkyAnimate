@@ -1831,7 +1831,22 @@ static void timeline_body(Area &area, Context &C)
       /* The ruler scrubs; below it a click picks keys of a row and a drag boxes them (a Media row's
        * clips are picked and dragged by their own code). */
       g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
-      const int media_row = g_press.scrub ? -1 : row_at(io.MousePos.y);
+      /* A double-click in a row keys its channels on that frame (the playhead goes there). */
+      if (!g_press.scrub && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        const int r = row_at(io.MousePos.y);
+        if (r >= 0 && !rows[size_t(r)].media) {
+          const ChannelRow &row = rows[size_t(r)];
+          operator_call(C, "anim.keys_insert",
+                        {{"frame", std::to_string(std::max(0, int(std::lround(x_frame(io.MousePos.x)))))},
+                         {"layers", layer_ids(row.layers)},
+                         {"kinds", std::to_string(row.filter.kinds)},
+                         {"selected_only", row.filter.selected_only ? "1" : "0"},
+                         {"path", row.filter.path},
+                         {"pinned", row.filter.pinned_only ? "1" : "0"}});
+          g_press = {};
+        }
+      }
+      const int media_row = g_press.scrub || !g_press.active ? -1 : row_at(io.MousePos.y);
       if (media_row >= 0 && rows[media_row].media &&
           timeline_media_row_press(C, media_view, *rows[media_row].layers[0],
                                    row_top(size_t(media_row - rows[media_row].media_part)), row_h * 2.0f))

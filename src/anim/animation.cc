@@ -350,6 +350,8 @@ void animation_strip_smart(Document &doc)
   doc.smart_applied = false;
 }
 
+static uint64_t g_frame_changes = 0;
+
 void animation_sync(Document &doc)
 {
   if (doc.evaluated_frame == doc.frame_current) {
@@ -370,8 +372,14 @@ void animation_sync(Document &doc)
   }
   if (doc.evaluated_frame >= 0) {
     animation_record(doc);
+    g_frame_changes++;
   }
   animation_evaluate(doc, doc.frame_current);
+}
+
+uint64_t animation_frame_changes()
+{
+  return g_frame_changes;
 }
 
 /* --- Actions ----------------------------------------------------------------------------------- */
@@ -840,6 +848,34 @@ int layer_insert_keys(Layer &layer, int frame)
     ch.has_last = true;
     count++;
   });
+  return count;
+}
+
+int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame)
+{
+  int count = 0;
+  const auto key = [&](auto &ch, auto &value) {
+    /* As layer_insert_keys: a setting keyed only by hand (a mask's Reach) waits to be keyed so. */
+    if (ch.keyed_by_hand && !ch.animated()) {
+      return;
+    }
+    const auto base = value - ch.smart;
+    if (!ch.animated() && frame != 0) {
+      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+    }
+    ch.set_key(frame, base);
+    ch.last = value;
+    ch.has_last = true;
+    count++;
+  };
+  for (const ChannelRef &ref : layer_filtered_channels(layer, filter)) {
+    if (ref.scalar) {
+      key(*ref.scalar, *ref.scalar_value);
+    }
+    else if (ref.vector) {
+      key(*ref.vector, *ref.vector_value);
+    }
+  }
   return count;
 }
 

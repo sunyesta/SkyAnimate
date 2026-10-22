@@ -510,6 +510,36 @@ void anim_operators_register()
     };
     operators().add(std::move(ot));
   }
+  anim_operator_add("anim.keys_insert", "Insert Keys in Row",
+                    "Key a timeline row's channels on frame= (double-clicking the row there): the playhead goes to "
+                    "that frame and what it shows is keyed. layers: the row's layers (comma-separated ids); kinds, "
+                    "selected_only, path and pinned: which of their channels, as anim.keys_select takes them",
+                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                      Document &doc = *C.document;
+                      /* Edits not yet recorded belong to the frame they were made at. */
+                      animation_record(doc);
+                      const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));
+                      if (frame != doc.frame_current) {
+                        doc.frame_current = frame;
+                        C.wm->playing = false;
+                        animation_evaluate(doc, frame);
+                      }
+                      KeyFilter filter;
+                      filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
+                      filter.selected_only = op_arg_bool(C, "selected_only");
+                      filter.path = op_arg(C, "path");
+                      filter.pinned_only = op_arg_bool(C, "pinned");
+                      int keys = 0;
+                      for (Layer *layer : op_layers(C)) {
+                        keys += layer_insert_filtered_keys(*layer, filter, frame);
+                      }
+                      if (keys == 0) {
+                        report(ReportType::Info, "Nothing in this row to key");
+                        return OpStatus::Cancelled;
+                      }
+                      animation_evaluate(doc, frame);
+                      return OpStatus::Finished;
+                    });
   anim_operator_add("anim.keys_select", "Select Keys",
                     "Select the keys on frames frame_start..frame_end (extend keeps the others; deselect takes "
                     "them out). layers: only these layers' keys (comma-separated ids); kinds: only these kinds "

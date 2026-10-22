@@ -36,6 +36,9 @@ void animation_evaluate(Document &doc, int frame);
 /* After the current frame changed: records edits at the old frame, then evaluates the new one.
  * Does nothing when the frame is already evaluated. */
 void animation_sync(Document &doc);
+/* How many times the current frame has changed this session (counted by animation_sync; not part of
+ * the document, so undo leaves it alone): what lasts "until the frame changes" checks it. */
+uint64_t animation_frame_changes();
 
 /* --- Actions (Moho's): named alternative timelines of a bone layer and everything inside it.
  * Editing one swaps its keys into the channels, so keying, the timeline and evaluation all work
@@ -158,6 +161,9 @@ struct KeyFilter {
 KeyKind channel_kind(const std::string &path);
 /* A layer's channels that pass the filter. */
 std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &filter);
+/* Keys the layer's channels that pass `filter` at `frame` with their current values (a timeline row's
+ * channels, double-clicked). Returns how many keys were set. */
+int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame);
 
 /* Whether a channel passes the filter's path ('bones["arm"].' covers the bone's channels). */
 bool key_filter_path_matches(const KeyFilter &filter, const std::string &path);
