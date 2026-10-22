@@ -438,6 +438,12 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point);
 void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &points);
 /* Reverses a curve's direction, keeping shapes that use it intact. */
 void drawing_reverse_curve(VectorDrawing &drawing, int curve);
+/* Make Segment (F, as Blender's for curves): a segment from point `a` to point `b`, each the end of
+ * an open curve. Ends of two curves join them into one; the two ends of one curve close it. A shape
+ * whose outline stops at a joined end runs on along the new segment (two such shapes, one each
+ * side, become one, the first's look kept), and one that now goes all the way round is filled.
+ * Returns false (nothing changed) if they aren't two such ends. */
+bool drawing_make_segment(VectorDrawing &drawing, int a, int b);
 /* Removes points no curve uses. */
 void drawing_remove_unused_points(VectorDrawing &drawing);
 /* Deletes curve segments (Edges mode delete): curves split where a segment goes, every point

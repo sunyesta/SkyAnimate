@@ -37,6 +37,7 @@ KEYMAP = (
     ("Text Editor", "text.new", "N", {"alt": True}),
     # Viewport: editing the active vector layer, as in Blender's Grease Pencil edit mode.
     ("Viewport", "view.overlays_toggle", "Z", {"shift": True}),
+    ("Viewport", "mesh.make_segment", "F", {}),
     # Blender's Local View: the picked layers alone, and back.
     ("Viewport", "view.local_view", "SLASH", {}),
     ("Viewport", "view.local_view", "NUMPAD_SLASH", {}),

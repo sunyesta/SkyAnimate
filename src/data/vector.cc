@@ -1162,6 +1162,10 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
     std::swap(cp.offset_in, cp.offset_out);
     std::swap(cp.handle_in, cp.handle_out);
     std::swap(cp.select_in, cp.select_out);
+    /* The setup pose and the animation go with the handles. */
+    std::swap(cp.setup_in, cp.setup_out);
+    std::swap(cp.change_in, cp.change_out);
+    std::swap(cp.handle_in_keys, cp.handle_out_keys);
   }
   if (curve.closed) {
     /* Keep the same first point: [p0, p(n-1), ..., p1]. */
@@ -1178,6 +1182,162 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
       }
     }
   }
+}
+
+/* Where a shape's outline stops, if it does: the points at either end of its run. */
+static bool shape_open_ends(const VectorDrawing &drawing, const Shape &shape, int *r_from, int *r_to)
+{
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  if (shape.edges.empty() || !shape_chain(drawing, shape, chain, &closed) || closed) {
+    return false;
+  }
+  int a, b;
+  curve_segment_points(drawing.curves[chain.front().edge.curve], chain.front().edge.segment, &a, &b);
+  *r_from = chain.front().reversed ? b : a;
+  curve_segment_points(drawing.curves[chain.back().edge.curve], chain.back().edge.segment, &a, &b);
+  *r_to = chain.back().reversed ? a : b;
+  return true;
+}
+
+bool drawing_make_segment(VectorDrawing &drawing, int a, int b)
+{
+  const int n_points = int(drawing.points.size());
+  if (a == b || a < 0 || b < 0 || a >= n_points || b >= n_points) {
+    return false;
+  }
+  /* The open curves each point ends; both ends of one curve close it. */
+  const auto ends_of = [&](int p) {
+    std::vector<CurveEnd> ends;
+    for (int c = 0; c < int(drawing.curves.size()); c++) {
+      const Curve &curve = drawing.curves[c];
+      if (curve.closed || curve.points.size() < 2) {
+        continue;
+      }
+      if (curve.points.front().point == p) {
+        ends.push_back({c, false});
+      }
+      if (curve.points.back().point == p) {
+        ends.push_back({c, true});
+      }
+    }
+    return ends;
+  };
+  const std::vector<CurveEnd> ends_a = ends_of(a), ends_b = ends_of(b);
+  if (ends_a.empty() || ends_b.empty()) {
+    return false;
+  }
+  CurveEnd end_a = ends_a.front(), end_b = ends_b.front();
+  for (const CurveEnd &ea : ends_a) {
+    for (const CurveEnd &eb : ends_b) {
+      if (ea.curve == eb.curve && ea.at_end != eb.at_end) {
+        end_a = ea;
+        end_b = eb;
+      }
+    }
+  }
+  const bool close = end_a.curve == end_b.curve;
+  if (close && drawing.curves[end_a.curve].points.size() < 3) {
+    return false;
+  }
+  if (!close && std::find_if(ends_b.begin(), ends_b.end(), [&](const CurveEnd &e) { return e.curve != end_a.curve; }) ==
+                    ends_b.end())
+  {
+    return false;
+  }
+  if (!close && end_b.curve == end_a.curve) {
+    end_b = *std::find_if(ends_b.begin(), ends_b.end(), [&](const CurveEnd &e) { return e.curve != end_a.curve; });
+  }
+  DetailScope detail_scope(drawing);
+  /* The shapes that stop at either point, before anything moves. */
+  int shape_a = -1, shape_b = -1;
+  for (int s = 0; s < int(drawing.shapes.size()); s++) {
+    int from, to;
+    if (!shape_open_ends(drawing, drawing.shapes[s], &from, &to)) {
+      continue;
+    }
+    if (close) {
+      /* Closing: the one that runs from one end to the other. */
+      if (shape_a < 0 && ((from == a && to == b) || (from == b && to == a))) {
+        shape_a = s;
+      }
+      continue;
+    }
+    if (shape_a < 0 && (from == a || to == a)) {
+      shape_a = s;
+    }
+    if (shape_b < 0 && (from == b || to == b)) {
+      shape_b = s;
+    }
+  }
+
+  /* A handle with nothing to say about the new segment's way leans a third of the way along it. */
+  const auto lean = [&](CurvePoint &cp, bool out, int toward) {
+    float2 &h = out ? cp.handle_out : cp.handle_in;
+    if (cp.handles_set && length(h) < 1e-6f) {
+      h = (drawing.points[toward].pos - drawing.points[cp.point].pos) / 3.0f;
+    }
+  };
+  ShapeEdge added;
+  if (close) {
+    Curve &curve = drawing.curves[end_a.curve];
+    curve.closed = true;
+    curve.points.back().edge_hidden = false;
+    lean(curve.points.back(), true, curve.points.front().point);
+    lean(curve.points.front(), false, curve.points.back().point);
+    added = {end_a.curve, curve.segment_count() - 1};
+  }
+  else {
+    /* `a` last on its curve, `b` first on its own: then one runs on into the other. */
+    if (!end_a.at_end) {
+      drawing_reverse_curve(drawing, end_a.curve);
+    }
+    if (end_b.at_end) {
+      drawing_reverse_curve(drawing, end_b.curve);
+    }
+    const int ca = end_a.curve, cb = end_b.curve;
+    Curve &first = drawing.curves[ca];
+    const int na = int(first.points.size());
+    first.points.back().edge_hidden = false;
+    lean(first.points.back(), true, b);
+    lean(drawing.curves[cb].points.front(), false, a);
+    first.points.insert(first.points.end(), drawing.curves[cb].points.begin(), drawing.curves[cb].points.end());
+    drawing.curves.erase(drawing.curves.begin() + cb);
+    const int joined = ca > cb ? ca - 1 : ca;
+    for (Shape &shape : drawing.shapes) {
+      for (ShapeEdge &e : shape.edges) {
+        if (e.curve == cb) {
+          e = {joined, na + e.segment};
+        }
+        else if (e.curve == ca) {
+          e.curve = joined;
+        }
+        else if (e.curve > cb) {
+          e.curve--;
+        }
+      }
+    }
+    added = {joined, na - 1};
+  }
+  /* The shapes run on along it: one each side become one. */
+  int grown = shape_a >= 0 ? shape_a : shape_b;
+  if (grown >= 0) {
+    drawing.shapes[grown].edges.push_back(added);
+    if (shape_a >= 0 && shape_b >= 0 && shape_a != shape_b) {
+      Shape &into = drawing.shapes[shape_a];
+      const std::vector<ShapeEdge> more = drawing.shapes[shape_b].edges;
+      into.edges.insert(into.edges.end(), more.begin(), more.end());
+      drawing.shapes.erase(drawing.shapes.begin() + shape_b);
+      grown = shape_b < shape_a ? shape_a - 1 : shape_a;
+    }
+    std::vector<OrientedEdge> chain;
+    bool closed = false;
+    if (shape_chain(drawing, drawing.shapes[grown], chain, &closed) && closed) {
+      /* Finished: it goes all the way round. */
+      drawing.shapes[grown].has_fill = true;
+    }
+  }
+  return true;
 }
 
 bool drawing_selection_bounds(const VectorDrawing &drawing, float2 *r_min, float2 *r_max)

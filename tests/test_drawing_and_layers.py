@@ -59,10 +59,11 @@ layer.select_points([5])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (4, 1, 1), counts(layer)
 
-# Shapes come from the Shape tool only: F over the viewport makes none.
+# F over the viewport is Make Segment (tests/test_make_segment.py): with a closed loop's points
+# selected it has no ends to join, and makes no shape.
 oanim.ops.mesh.select_none()
 layer.select_points([0, 1, 2, 3])
-assert not oanim.wm.event_simulate("F", area="Viewport")
+assert oanim.ops.mesh.make_segment() == {'CANCELLED'}
 assert layer.shape_count == 1
 
 # Keys over the viewport: A selects all, Alt A deselects, X deletes.

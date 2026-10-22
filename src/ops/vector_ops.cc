@@ -407,6 +407,23 @@ void vector_operators_register()
                     }
                     return OpStatus::Finished;
                   });
+  vector_operator("mesh.make_segment", "Make Segment",
+                  "Join the two selected points, each the end of an open curve, with a segment (F, as Blender's): "
+                  "two curves become one, the two ends of one curve close it, and the shapes along them run on",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    int made = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      const std::vector<int> picked = drawing_selected_points(layer->drawing);
+                      if (picked.size() == 2 && drawing_make_segment(layer->drawing, picked[0], picked[1])) {
+                        made++;
+                      }
+                    }
+                    if (!made) {
+                      report(ReportType::Warning, "Select two ends of open curves to join (or both ends of one to close it)");
+                      return OpStatus::Cancelled;
+                    }
+                    return OpStatus::Finished;
+                  });
   vector_operator("mesh.delete_edges", "Delete Edges",
                   "Delete the segments between selected points, keeping the points: curves split there",
                   UNDO, editable_with_selection_poll, [](Context &C) {
