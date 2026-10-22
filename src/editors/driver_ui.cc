@@ -53,7 +53,11 @@ std::vector<OpArgs> field_args(const Field &f)
 {
   OpArgs args = {{"layer", std::to_string(f.layer)}, {"path", f.path}, {"component", std::to_string(f.component)}};
   /* A shape colour: every selected shape's, as the Material panel edits them. */
-  if (f.path.rfind("shapes[", 0) == 0) {
+  const auto ends = [&](const char *end) {
+    const size_t n = std::strlen(end);
+    return f.path.size() >= n && f.path.compare(f.path.size() - n, n, end) == 0;
+  };
+  if (f.path.rfind("shapes[", 0) == 0 && (ends(".fill") || ends(".line"))) {
     args["selected_shapes"] = "1";
   }
   return {args};

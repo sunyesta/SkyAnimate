@@ -33,6 +33,11 @@ Driver *driver_find(Document &doc, const DriverRef &target);
 std::vector<DriverRef> driver_field_refs(Document &doc, uint64_t layer, const std::string &path, int component);
 /* A shape's colour as a driver path: "shapes[<id>].fill" or ".line". */
 std::string driver_shape_color_path(uint64_t shape_id, bool fill);
+/* A shape's row of X and Y in the Shape tab as a driver path: "shapes[<id>].position". It is what the
+ * row shows: on frame 0 the middle of its points (Position), on other frames how far that has moved
+ * from the setup pose (Transform, what their keys hold). Driving it moves the points together,
+ * keeping their own motion. */
+std::string driver_shape_position_path(uint64_t shape_id);
 
 /* A driver that copies `source` (Copy As New Driver): its variable reads it, the expression is "var". */
 Driver driver_copying(const DriverRef &source);

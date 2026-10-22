@@ -65,6 +65,7 @@ static void document_tab(Context &C)
     ui_prop_pair(C, ptr, "Resolution", "width", "W", "height", "H", path);
     ui_prop(C, ptr, "fps", path);
     float rgba[4] = {C.document->background.r, C.document->background.g, C.document->background.b, 1.0f};
+    ui_driver_next(0, "background");
     if (ui_color(C, "Background", rgba, "Background Color")) {
       C.document->background = {rgba[0], rgba[1], rgba[2], 1.0f};
     }
@@ -605,19 +606,27 @@ static void bones_panel(Context &C, Layer &armature)
     }
     /* Moho's IK settings of the bone itself. */
     label("IK");
+    const std::string driven_ik_path = std::string("bones[\"" + active->name + "\"].") + "ik_ignore";
+    const int driven_ik = ui_driver_field_begin(C, armature.id, driven_ik_path, -1);
     if (ImGui::Checkbox("Ignored by IK", &active->ik_ignore)) {
       C.undo->push("Ignored by IK", doc);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("IK chains stop below this bone and never turn it");
     }
+    ui_driver_typed(C, armature.id, driven_ik_path, -1);
+    ui_driver_field_end(C, armature.id, driven_ik_path, -1, driven_ik);
     ImGui::SameLine();
+    const std::string driven_arc_path = std::string("bones[\"" + active->name + "\"].") + "arc_ik";
+    const int driven_arc = ui_driver_field_begin(C, armature.id, driven_arc_path, -1);
     if (ImGui::Checkbox("Arc Solver", &active->arc_ik)) {
       C.undo->push("Arc IK Solver", doc);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Moho's Arc IK solver: a chain ending at this bone bends evenly, as an arc");
     }
+    ui_driver_typed(C, armature.id, driven_arc_path, -1);
+    ui_driver_field_end(C, armature.id, driven_arc_path, -1, driven_arc);
     ImGui::BeginDisabled(doc.frame_current != 0);
     label("Strength");
     ImGui::DragFloat("##bone_strength", &active->strength, 0.01f, 0.0f, 100.0f, "%.2f");
@@ -1573,22 +1582,38 @@ static void modifiers_panel(Context &C, Layer &layer)
       else {
         bool changed = false;
         modifier_row_label("Axis", column, "Which way to reflect the drawing: X across a vertical line, Y across a horizontal one");
+        const std::string driven_axis_path = std::string("modifiers[" + std::to_string(i) + "].") + "axis_x";
+        const int driven_axis = ui_driver_field_begin(C, layer.id, driven_axis_path, -1);
         changed |= axis_toggles("##axis", &m.axis_x, &m.axis_y);
+        ui_driver_typed(C, layer.id, driven_axis_path, -1);
+        ui_driver_field_end(C, layer.id, driven_axis_path, -1, driven_axis);
         modifier_row_label("Mirror Center", column, "Where the mirror line runs through");
+        const std::string driven_center_path = std::string("modifiers[" + std::to_string(i) + "].") + "center";
+        const int driven_center = ui_driver_field_begin(C, layer.id, driven_center_path, -1);
         ImGui::DragFloat2("##center", &m.center.x, 0.005f, -1000.0f, 1000.0f, "%.3f");
         changed |= ImGui::IsItemDeactivatedAfterEdit();
+        ui_driver_typed(C, layer.id, driven_center_path, -1);
+        ui_driver_field_end(C, layer.id, driven_center_path, -1, driven_center);
         ImGui::Spacing();
         modifier_row_label("Merge", column,
                            "Share points on the axis, so lines ending there join their reflection.\n"
                            "The number is how close to the axis a point must be to be shared");
+        const std::string driven_merge_path = std::string("modifiers[" + std::to_string(i) + "].") + "merge";
+        const int driven_merge = ui_driver_field_begin(C, layer.id, driven_merge_path, -1);
         changed |= ImGui::Checkbox("##merge", &m.merge);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
           ImGui::SetTooltip("Share points on the axis, so lines ending there join their reflection");
         }
+        ui_driver_typed(C, layer.id, driven_merge_path, -1);
+        ui_driver_field_end(C, layer.id, driven_merge_path, -1, driven_merge);
         ImGui::SameLine();
         ImGui::BeginDisabled(!m.merge);
+        const std::string driven_merge_distance_path = std::string("modifiers[" + std::to_string(i) + "].") + "merge_distance";
+        const int driven_merge_distance = ui_driver_field_begin(C, layer.id, driven_merge_distance_path, -1);
         ImGui::DragFloat("##merge_distance", &m.merge_distance, 0.0005f, 0.0f, 1.0f, "%.4f");
         changed |= ImGui::IsItemDeactivatedAfterEdit();
+        ui_driver_typed(C, layer.id, driven_merge_distance_path, -1);
+        ui_driver_field_end(C, layer.id, driven_merge_distance_path, -1, driven_merge_distance);
         ImGui::EndDisabled();
         ImGui::Spacing();
         /* Blender keeps vertex group mirroring under Data. */
@@ -1599,11 +1624,15 @@ static void modifiers_panel(Context &C, Layer &layer)
         ui_fold_record(data_key, false, data_open);
         if (data_open) {
           modifier_row_label("", column);
+          const std::string driven_mirror_bones_path = std::string("modifiers[" + std::to_string(i) + "].") + "mirror_bones";
+          const int driven_mirror_bones = ui_driver_field_begin(C, layer.id, driven_mirror_bones_path, -1);
           changed |= ImGui::Checkbox("Mirror Bones", &m.mirror_bones);
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip("Reflected points bound (or weighted) to ..._L bones follow ..._R ones, and the "
                               "other way (Blender's Vertex Groups)");
           }
+          ui_driver_typed(C, layer.id, driven_mirror_bones_path, -1);
+          ui_driver_field_end(C, layer.id, driven_mirror_bones_path, -1, driven_mirror_bones);
           ImGui::TreePop();
         }
         ImGui::PopStyleColor();
@@ -1851,9 +1880,13 @@ static void constraints_panel(Context &C, Layer &armature)
       const auto spring_rows = [&](const char *label, BoneSpring &sp) {
         ImGui::PushID(label);
         modifier_row_label("", column);
+        const std::string driven_spring_path = constraint_path + (&sp == &c.angle_spring ? "angle_spring." : &sp == &c.position_spring ? "position_spring." : "scale_spring.") + "enabled";
+        const int driven_spring = ui_driver_field_begin(C, armature.id, driven_spring_path, -1);
         if (ImGui::Checkbox(label, &sp.enabled)) {
           C.undo->push("Dynamics", doc);
         }
+        ui_driver_typed(C, armature.id, driven_spring_path, -1);
+        ui_driver_field_end(C, armature.id, driven_spring_path, -1, driven_spring);
         const bool is_angle = &sp == &c.angle_spring, is_position = &sp == &c.position_spring;
         const std::string spring_path =
             constraint_path + (is_angle ? "angle_spring." : is_position ? "position_spring." : "scale_spring.");
@@ -1901,9 +1934,13 @@ static void constraints_panel(Context &C, Layer &armature)
           const auto limit_row = [&](const char *name, float shown, float speed, float hi, const char *fmt,
                                      const char *tip) {
             modifier_row_label(name, column, tip);
+            const std::string driven_use_limit_path = spring_path + "use_limit";
+            const int driven_use_limit = ui_driver_field_begin(C, armature.id, driven_use_limit_path, -1);
             if (ImGui::Checkbox("##use_limit", &sp.use_limit)) {
               C.undo->push("Dynamics", doc);
             }
+            ui_driver_typed(C, armature.id, driven_use_limit_path, -1);
+            ui_driver_field_end(C, armature.id, driven_use_limit_path, -1, driven_use_limit);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
               ImGui::SetTooltip("%s", tip);
             }
@@ -1957,40 +1994,62 @@ static void constraints_panel(Context &C, Layer &armature)
                              "shorter (keys, IK, Stretch To, Copy Scale, dynamics): at 100% it keeps its\n"
                              "area, in place of its own X scale; 0% leaves the width alone.");
           float percent = c.amount * 100.0f;
+          const std::string driven_amount_path = constraint_path + "amount";
+          const int driven_amount = ui_driver_field_begin(C, armature.id, driven_amount_path, -1);
           if (ImGui::DragFloat("##amount", &percent, 0.5f, 0.0f, 400.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
             c.amount = percent / 100.0f;
           }
           done("Maintain Volume");
+          ui_driver_typed(C, armature.id, driven_amount_path, -1);
+          ui_driver_field_end(C, armature.id, driven_amount_path, -1, driven_amount);
           break;
         }
         case BoneConstraintType::CopyAngle:
         case BoneConstraintType::CopyPosition:
-        case BoneConstraintType::CopyScale:
+        case BoneConstraintType::CopyScale: {
           target_row();
           modifier_row_label("Factor", column,
                              "How much of the target's motion to copy: 0.5 is half, -1 copies it reversed");
+          const std::string driven_factor_path = constraint_path + "factor";
+          const int driven_factor = ui_driver_field_begin(C, armature.id, driven_factor_path, -1);
           ImGui::DragFloat("##factor", &c.factor, 0.01f, -10.0f, 10.0f, "%.2f");
           done("Copy Factor");
+          ui_driver_typed(C, armature.id, driven_factor_path, -1);
+          ui_driver_field_end(C, armature.id, driven_factor_path, -1, driven_factor);
           modifier_row_label("Delay", column, "How many frames behind the target it copies, for follow-through");
+          const std::string driven_delay_path = constraint_path + "delay";
+          const int driven_delay = ui_driver_field_begin(C, armature.id, driven_delay_path, -1);
           ImGui::DragInt("##delay", &c.delay, 0.2f, 0, 1000, "%d fr");
           done("Copy Delay");
+          ui_driver_typed(C, armature.id, driven_delay_path, -1);
+          ui_driver_field_end(C, armature.id, driven_delay_path, -1, driven_delay);
           break;
+        }
         case BoneConstraintType::TrackTo:
         case BoneConstraintType::StretchTo:
           target_row();
           break;
-        case BoneConstraintType::IK:
+        case BoneConstraintType::IK: {
           target_row();
           modifier_row_label("Chain Length", column,
                              "How many bones up from this one the IK may turn.\n"
                              "0 goes up to a bone Ignored by IK, or the root");
+          const std::string driven_chain_path = constraint_path + "chain";
+          const int driven_chain = ui_driver_field_begin(C, armature.id, driven_chain_path, -1);
           ImGui::DragInt("##chain", &c.chain, 0.1f, 0, 64, c.chain == 0 ? "To Ignored / Root" : "%d");
           done("IK Chain");
+          ui_driver_typed(C, armature.id, driven_chain_path, -1);
+          ui_driver_field_end(C, armature.id, driven_chain_path, -1, driven_chain);
           modifier_row_label("Max Stretch", column,
                              "How far the chain may stretch to reach a target out of reach: 1 never stretches, 2 up to twice as long");
+          const std::string driven_stretch_path = constraint_path + "max_stretch";
+          const int driven_stretch = ui_driver_field_begin(C, armature.id, driven_stretch_path, -1);
           ImGui::DragFloat("##stretch", &c.max_stretch, 0.01f, 1.0f, 10.0f, "%.2f");
           done("IK Stretch");
+          ui_driver_typed(C, armature.id, driven_stretch_path, -1);
+          ui_driver_field_end(C, armature.id, driven_stretch_path, -1, driven_stretch);
           break;
+        }
         case BoneConstraintType::Dynamics: {
           /* Between its sections (each channel, the bone's Weight and Wind Catch, its own gravity,
            * its own wind, baking): a gap, a faint line across the box, and a gap. */
@@ -2276,9 +2335,13 @@ static void mask_cards(Context &C, Layer &layer)
   ImGui::SameLine(0, 2);
   const Layer *base = layer_clip_base(doc, layer);
   bool clipped = layer.clip_to_below && base;
+  const std::string driven_clip_path = std::string("clip_to_below");
+  const int driven_clip = ui_driver_field_begin(C, layer.id, driven_clip_path, -1);
   if (ImGui::Checkbox("Clip to Below", &clipped)) {
     operator_call(C, "mask.clip_to_below", {{"layer", id}, {"set", clipped ? "1" : "0"}});
   }
+  ui_driver_typed(C, layer.id, driven_clip_path, -1);
+  ui_driver_field_end(C, layer.id, driven_clip_path, -1, driven_clip);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Show it only where the layer below shows (Ctrl Alt G, or Alt-click the line under it in "
                       "the Layers editor)");
@@ -2286,9 +2349,13 @@ static void mask_cards(Context &C, Layer &layer)
   if (layer.clip_to_below && base) {
     ImGui::Indent(ImGui::GetFrameHeight());
     bool exclude = layer.clip_exclude_strokes;
+    const std::string driven_exclude_path = std::string("clip_exclude_strokes");
+    const int driven_exclude = ui_driver_field_begin(C, layer.id, driven_exclude_path, -1);
     if (ImGui::Checkbox("Exclude Strokes", &exclude)) {
       operator_call(C, "mask.clip_to_below", {{"layer", id}, {"exclude_strokes", exclude ? "1" : "0"}});
     }
+    ui_driver_typed(C, layer.id, driven_exclude_path, -1);
+    ui_driver_field_end(C, layer.id, driven_exclude_path, -1, driven_exclude);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Clip only to %s's fills, not its lines (shading stops inside the outline)",
                         base->name.c_str());
@@ -2333,6 +2400,8 @@ static void mask_cards(Context &C, Layer &layer)
     ImGui::SameLine(0, 2);
     const int mode = int(m.mode);
     ImGui::SetNextItemWidth(h * 4.2f);
+    const std::string driven_mode_path = std::string("masks[" + std::to_string(i) + "].") + "mode";
+    const int driven_mode = ui_driver_field_begin(C, layer.id, driven_mode_path, -1);
     if (ImGui::BeginCombo("##mode", MASK_MODE_NAMES[mode])) {
       for (int k = 0; k < 4; k++) {
         if (ImGui::Selectable(MASK_MODE_NAMES[k], k == mode) && k != mode) {
@@ -2344,6 +2413,8 @@ static void mask_cards(Context &C, Layer &layer)
       }
       ImGui::EndCombo();
     }
+    ui_driver_typed(C, layer.id, driven_mode_path, -1);
+    ui_driver_field_end(C, layer.id, driven_mode_path, -1, driven_mode);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("%s", MASK_MODE_TIPS[mode]);
     }
@@ -2451,21 +2522,29 @@ static void mask_cards(Context &C, Layer &layer)
       }
       modifier_row_label("", column);
       bool invert = m.invert;
+      const std::string driven_invert_path = std::string("masks[" + std::to_string(i) + "].") + "invert";
+      const int driven_invert = ui_driver_field_begin(C, layer.id, driven_invert_path, -1);
       if (ImGui::Checkbox("Invert", &invert)) {
         operator_call(C, "mask.set", with("invert", invert ? "1" : "0"));
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
         ImGui::SetTooltip("Use what's outside the shape instead of what's inside");
       }
+      ui_driver_typed(C, layer.id, driven_invert_path, -1);
+      ui_driver_field_end(C, layer.id, driven_invert_path, -1, driven_invert);
       modifier_row_label("Grow", column,
                          "Grow the shape by pixels (negative shrinks it); a pixel hides thin seams along the edge");
       float grow = m.grow;
+      const std::string driven_grow_path = std::string("masks[" + std::to_string(i) + "].") + "grow";
+      const int driven_grow = ui_driver_field_begin(C, layer.id, driven_grow_path, -1);
       if (ImGui::DragFloat("##grow", &grow, 0.1f, -64.0f, 64.0f, grow < 0.0f ? "Shrink %.1f px" : "Grow %.1f px",
                            ImGuiSliderFlags_AlwaysClamp))
       {
         /* Shown as it changes; one undo step when let go. */
         layer.masks[size_t(i)].grow = grow;
       }
+      ui_driver_typed(C, layer.id, driven_grow_path, -1);
+      ui_driver_field_end(C, layer.id, driven_grow_path, -1, driven_grow);
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         char value[32];
         std::snprintf(value, sizeof(value), "%g", double(layer.masks[size_t(i)].grow));
@@ -2503,6 +2582,8 @@ static void mask_cards(Context &C, Layer &layer)
                          "Stretch the shape to the edge one way (the mask layer's own up, down, left or right, "
                          "turning with it): Subtract the mouth line, extended Up, hides the mouth and everything "
                          "above it");
+      const std::string driven_extend_path = std::string("masks[" + std::to_string(i) + "].") + "extend";
+      const int driven_extend = ui_driver_field_begin(C, layer.id, driven_extend_path, -1);
       if (ImGui::BeginCombo("##extend", EXTEND_NAMES[ext])) {
         for (int e = 0; e < 5; e++) {
           if (ImGui::Selectable(EXTEND_NAMES[e], e == ext) && e != ext) {
@@ -2511,6 +2592,8 @@ static void mask_cards(Context &C, Layer &layer)
         }
         ImGui::EndCombo();
       }
+      ui_driver_typed(C, layer.id, driven_extend_path, -1);
+      ui_driver_field_end(C, layer.id, driven_extend_path, -1, driven_extend);
       ImGui::PopItemWidth();
     }
     ImGui::EndGroup();
@@ -2940,6 +3023,7 @@ static void media_tab(Context &C)
     ui_prop(C, ptr, "opacity", path);
     ui_prop(C, ptr, "media_greyscale", path);
     float rgba[4] = {layer->media.tint.r, layer->media.tint.g, layer->media.tint.b, 1.0f};
+    ui_driver_next(layer->id, "media.tint");
     if (ui_color(C, "Tint Color", rgba, "Change Tint Color")) {
       layer->media.tint = {rgba[0], rgba[1], rgba[2], 1.0f};
     }
@@ -2965,8 +3049,11 @@ static void shared_mark(ImDrawList *dl, ImVec2 corner, float s);
 static void point_panel(Context &C, VectorDrawing &drawing);
 static void edge_panel(Context &C, VectorDrawing &drawing);
 
+/* `driver_layer`, `driver_path`: what drives the row's X and Y (a shape's "shapes[<id>].position"), if
+ * it can be driven. */
 static void mean_position_row(Context &C, const char *label, VectorDrawing &drawing, const std::vector<int> &points,
-                              const char *tooltip, const char *undo_name, bool posed = false);
+                              const char *tooltip, const char *undo_name, bool posed = false,
+                              uint64_t driver_layer = 0, const std::string &driver_path = std::string());
 
 static void drawing_tab(Context &C)
 {
@@ -3290,7 +3377,8 @@ static void handle_change_row(Context &C, VectorDrawing &drawing)
  * (layer space). `posed`: away from frame 0 it is their Transform, the average change from the setup
  * pose (what their keys hold), (0, 0) at rest. */
 static void mean_position_row(Context &C, const char *label, VectorDrawing &drawing, const std::vector<int> &points,
-                              const char *tooltip, const char *undo_name, bool posed)
+                              const char *tooltip, const char *undo_name, bool posed, uint64_t driver_layer,
+                              const std::string &driver_path)
 {
   float2 mean;
   if (!drawing_points_mean(drawing, points, &mean)) {
@@ -3321,6 +3409,7 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
     if (axis > 0) {
       ImGui::SameLine(0.0f, spacing);
     }
+    const int driven = ui_driver_field_begin(C, driver_layer, driver_path, axis);
     ImGui::SetNextItemWidth(axis == 0 ? w : -FLT_MIN);
     float value = axis == 0 ? mean.x : mean.y;
     if (ImGui::DragFloat(axis == 0 ? "##x" : "##y", &value, 0.005f, -100000.0f, 100000.0f,
@@ -3331,6 +3420,8 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
       ImGui::SetTooltip("%s", tooltip);
     }
     done |= ImGui::IsItemDeactivatedAfterEdit();
+    ui_driver_typed(C, driver_layer, driver_path, axis);
+    ui_driver_field_end(C, driver_layer, driver_path, axis, driven);
   }
   ImGui::PopID();
   if (done) {
@@ -3676,7 +3767,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
         "the Reference tab's Points) to move the shape";
     mean_position_row(C, "Position", drawing, shape_points(drawing, shape),
                       points_locked ? LOCKED_TIP : "The middle of the shape's points; changing it moves the whole shape",
-                      "Move Shape", !reference);
+                      "Move Shape", !reference, owner_layer.id, driver_shape_position_path(shape.id));
     ImGui::EndDisabled();
     if (points_locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip("%s", LOCKED_TIP);
@@ -3685,13 +3776,18 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
     bool on = changed_begin(look && (look->has_fill_set || look->has_outline_set));
+    const std::string shape_path = "shapes[" + std::to_string(shape.id) + "].";
+    int driven = ui_driver_field_begin(C, owner_layer.id, shape_path + "has_fill", -1);
     if (ImGui::Checkbox("Fill", &shape.has_fill)) {
       C.undo->push("Shape Fill", doc);
     }
+    ui_driver_field_end(C, owner_layer.id, shape_path + "has_fill", -1, driven);
     ImGui::SameLine();
+    driven = ui_driver_field_begin(C, owner_layer.id, shape_path + "has_outline", -1);
     if (ImGui::Checkbox("Outline", &shape.has_outline)) {
       C.undo->push("Shape Outline", doc);
     }
+    ui_driver_field_end(C, owner_layer.id, shape_path + "has_outline", -1, driven);
     {
       std::vector<OpArgs> both;
       if (look && look->has_fill_set) {
@@ -3730,7 +3826,14 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     float fill[4] = {shape.style.fill.r, shape.style.fill.g, shape.style.fill.b, shape.style.fill.a};
     bool on = changed_begin((look && look->fill_set) || swapped(true) >= 0);
     bool pick = false;
-    ui_driver_next(owner_layer.id, driver_shape_color_path(shape.id, true));
+    /* A linked shape's look is its material's: drivers go on the material, so every shape sharing it
+     * shows them (drivers_onto_materials moves ones made on a shape there). */
+    const uint64_t look_layer = shape.material ? 0 : owner_layer.id;
+    const auto look_path = [&](const char *what) {
+      return shape.material ? "materials[" + std::to_string(shape.material) + "]." + what
+                            : "shapes[" + std::to_string(shape.id) + "]." + what;
+    };
+    ui_driver_next(look_layer, look_path("fill"));
     if (ui_color(C, "Fill Color", fill, "Fill Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("FILL"))) {
       shape.style.fill = {fill[0], fill[1], fill[2], fill[3]};
     }
@@ -3749,7 +3852,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     float line[4] = {shape.style.line.r, shape.style.line.g, shape.style.line.b, shape.style.line.a};
     on = changed_begin((look && look->line_set) || swapped(false) >= 0);
     pick = false;
-    ui_driver_next(owner_layer.id, driver_shape_color_path(shape.id, false));
+    ui_driver_next(look_layer, look_path("line"));
     if (ui_color(C, "Line Color", line, "Line Color", on ? &revert : nullptr, &pick, ui_shape_eyedropper_active("LINE"))) {
       shape.style.line = {line[0], line[1], line[2], line[3]};
     }
@@ -3774,6 +3877,9 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     ImGui::SetNextItemWidth(-(ui_revert_button_space() * (on ? 2.0f : 1.0f)));
     const float units_to_pixels = float(doc.height) * 0.5f;
     float pixels = shape.style.line_width * units_to_pixels;
+    /* Driven in pixels, as shown. */
+    const std::string width_path = look_path("line_width");
+    const int driven_width = ui_driver_field_begin(C, look_layer, width_path, -1);
     if (ImGui::DragFloat("##width", &pixels, 0.1f, 0.0f, 500.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
       shape.style.line_width = pixels / units_to_pixels;
     }
@@ -3781,6 +3887,8 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       C.undo->push("Line Width", doc);
     }
+    ui_driver_typed(C, look_layer, width_path, -1);
+    ui_driver_field_end(C, look_layer, width_path, -1, driven_width);
     if (on) {
       ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
       if (ui_revert_button("##revert_width", "Revert to the original's line width")) {

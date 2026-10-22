@@ -379,6 +379,11 @@ bool expression_compile(const std::string &text, Expression *r_expression, std::
 {
   Expression e;
   Parser p{text, 0, e, {}};
+  /* "#frame/10": the # that types an expression into a number field (Blender's), written here too. */
+  p.space();
+  if (p.at < text.size() && text[p.at] == '#') {
+    p.at++;
+  }
   bool ok = p.ternary();
   p.space();
   if (ok && p.at < text.size()) {

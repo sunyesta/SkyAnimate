@@ -30,8 +30,9 @@ static std::vector<DriverRef> op_refs(Context &C)
   const std::string component_arg = op_arg(C, "component");
   const int component = component_arg.empty() ? -1 : std::atoi(component_arg.c_str());
   std::vector<DriverRef> refs = driver_field_refs(doc, layer, path, component);
-  if (op_arg(C, "selected_shapes") == "1" && path.rfind("shapes[", 0) == 0) {
-    const bool fill = path.size() >= 5 && path.compare(path.size() - 5, 5, ".fill") == 0;
+  const bool fill = path.size() >= 5 && path.compare(path.size() - 5, 5, ".fill") == 0;
+  const bool line = path.size() >= 5 && path.compare(path.size() - 5, 5, ".line") == 0;
+  if (op_arg(C, "selected_shapes") == "1" && path.rfind("shapes[", 0) == 0 && (fill || line)) {
     for (Layer *l : editable_layers(C)) {
       const std::vector<bool> selected = drawing_selected_shapes(l->drawing);
       for (size_t s = 0; s < selected.size(); s++) {
@@ -169,7 +170,7 @@ void driver_operators_register()
                       OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                         const std::vector<DriverRef> refs = op_refs(C);
                         if (refs.empty()) {
-                          report(ReportType::Error, "That can't have a driver (only keyable values and colours can)");
+                          report(ReportType::Error, "That can't have a driver (only numbers, checkboxes, dropdowns and colours of the scene can)");
                           return OpStatus::Cancelled;
                         }
                         Driver d;

@@ -800,8 +800,14 @@ void ui_prop(Context &C, const rna::PointerRNA &ptr, const char *identifier, con
   ui_label(prop->name.c_str());
   ImGui::PushID(identifier);
   const int pushed = g_key_next.pending ? ui_key_tint_push(g_key_next.state) : 0;
-  const uint64_t dl = g_key_next.flash_layer;
-  const std::string dp = g_key_next.flash_path;
+  uint64_t dl = g_key_next.flash_layer;
+  std::string dp = g_key_next.flash_path;
+  /* Not keyed: a layer's own setting may still be driven, as Blender drives any setting
+   * (anim/drivers.cc says which). */
+  if (!g_key_next.pending && ptr.type == &Layer::rna()) {
+    dl = static_cast<const Layer *>(ptr.data)->id;
+    dp = std::string("props.") + identifier;
+  }
   const int driven = ui_driver_field_begin(C, dl, dp, -1);
   prop_field(C, ptr, prop, python_path, nullptr);
   ui_driver_typed(C, dl, dp, -1);
