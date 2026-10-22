@@ -13,6 +13,7 @@
  * Positions are in layer space. Document space has the camera frame 2 units tall, y up. */
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -332,10 +333,22 @@ struct Shape {
    * drawing_selected_shapes), so the viewport and the Properties shape list always agree. */
 };
 
+/* A named set of points with a weight each, 0-1 (Blender's vertex groups): selection sets, and what
+ * modifiers can be limited to. Points are kept by id, so it holds through edits. */
+struct PointGroup {
+  std::string name;
+  std::map<uint64_t, float> weights;
+  /* Locked: Assign and Remove leave it as it is (its lock in the list, as Blender's). */
+  bool locked = false;
+};
+
 struct VectorDrawing {
   std::vector<MeshPoint> points;
   std::vector<Curve> curves;
   std::vector<Shape> shapes;
+  /* Its point groups, and the active one (its index; what Assign and Select work on). */
+  std::vector<PointGroup> groups;
+  int active_group = 0;
   /* The next point or shape id to give out. */
   uint64_t next_id = 1;
 
@@ -384,6 +397,11 @@ bool shape_chain(const VectorDrawing &drawing, const Shape &shape, std::vector<O
 /* Gives every point and shape without an id (or with one already taken, as a copy has) a new
  * one. Returns true if any changed. */
 bool drawing_ensure_ids(VectorDrawing &drawing);
+/* Point groups: a name not taken yet ("Group", "Group.001"); and dropping members whose points are
+ * gone. */
+std::string drawing_group_unique_name(const VectorDrawing &drawing, const std::string &base);
+void drawing_groups_prune(VectorDrawing &drawing);
+
 /* The index of the point or shape with `id`, or -1. */
 int drawing_point_index(const VectorDrawing &drawing, uint64_t id);
 int drawing_shape_index(const VectorDrawing &drawing, uint64_t id);

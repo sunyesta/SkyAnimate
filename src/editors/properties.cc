@@ -1564,6 +1564,12 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
     dl->AddTriangleFilled(ImVec2(c.x + s * 0.15f, c.y - s), ImVec2(c.x + s, c.y + s), ImVec2(c.x + s * 0.15f, c.y + s),
                           COL_MOD_ICON);
   }
+  else if (type == ModifierType::Bevel) {
+    /* A square with its corner cut off. */
+    const ImVec2 pts[5] = {ImVec2(c.x - s, c.y + s), ImVec2(c.x - s, c.y - s), ImVec2(c.x + s * 0.2f, c.y - s),
+                           ImVec2(c.x + s, c.y - s * 0.2f), ImVec2(c.x + s, c.y + s)};
+    dl->AddPolyline(pts, 5, COL_MOD_ICON, ImDrawFlags_Closed, 1.3f);
+  }
   else if (type == ModifierType::Boolean) {
     dl->AddCircle(ImVec2(c.x - s * 0.35f, c.y), s * 0.65f, COL_MOD_ICON, 0, 1.3f);
     dl->AddCircleFilled(ImVec2(c.x + s * 0.35f, c.y), s * 0.65f, COL_MOD_ICON);
@@ -1956,6 +1962,170 @@ static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   }
 }
 
+static bool factor_slider(const char *id, float *value);
+
+/* Blender's Bevel modifier panel, the parts that fit curves: Width Type, Amount (keyable), Limit Method
+ * with its Angle or Point Group, then Profile and Geometry folded. */
+static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+{
+  Document &doc = *C.document;
+  const std::string idx = std::to_string(index);
+  bool changed = false, done = false;
+  const auto combo = [&](const char *id, int value, const char *const *names, int count, const char *const *tips) {
+    int picked = value;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    if (ImGui::BeginCombo(id, names[value])) {
+      for (int k = 0; k < count; k++) {
+        if (ImGui::Selectable(names[k], k == value)) {
+          picked = k;
+        }
+        if (tips && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", tips[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    return picked;
+  };
+
+  static const char *const WIDTH_NAMES[] = {"Offset", "Width", "Depth", "Percent"};
+  static const char *const WIDTH_TIPS[] = {
+      "Amount is how far along each side from the corner the cut starts",
+      "Amount is how long the cut is, from one side to the other",
+      "Amount is how far the cut is from the corner",
+      "Amount is how much of each side the cut takes, in percent"};
+  modifier_row_label("Width Type", column, "What Amount measures");
+  if (const int w = combo("##width_type", int(m.bevel_width), WIDTH_NAMES, 4, WIDTH_TIPS); w != int(m.bevel_width)) {
+    m.bevel_width = BevelWidth(w);
+    done = true;
+  }
+
+  /* Amount: keyable, with its key button, as Blender's. */
+  const std::string path = "modifiers[" + idx + "].amount";
+  const int key_state = layer_key_state(layer, {path}, doc.frame_current);
+  modifier_row_label("Amount", column, "How big the cuts are (Width Type says how it's measured). It can be keyed");
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+  const int tint = ui_key_tint_push(key_state);
+  const int driven = ui_driver_field_begin(C, layer.id, path, -1);
+  const bool percent = m.bevel_width == BevelWidth::Percent;
+  float amount = m.bevel_amount;
+  if (ImGui::DragFloat("##amount", &amount, percent ? 0.2f : 0.001f, 0.0f, percent ? 100.0f : 100.0f,
+                       percent ? "%.1f%%" : "%.3f", ImGuiSliderFlags_AlwaysClamp))
+  {
+    m.bevel_amount = amount;
+  }
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+  ui_driver_typed(C, layer.id, path, -1);
+  ui_driver_field_end(C, layer.id, path, -1, driven);
+  ImGui::PopStyleColor(tint);
+  ImGui::SameLine(0, 4);
+  if (ui_key_button("##amount_key", key_state)) {
+    operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(layer.id)}, {"paths", path}});
+  }
+  ui_flash_row(layer.id, path);
+  ImGui::Spacing();
+
+  static const char *const LIMIT_NAMES[] = {"None", "Angle", "Point Group"};
+  static const char *const LIMIT_TIPS[] = {
+      "Every corner: each point between two segments (not a line's ends, nor points where curves weld)",
+      "Only the corners where the outline turns more than the Angle",
+      "Only the points of a point group, each cut by its weight"};
+  modifier_row_label("Limit Method", column, "Which corners it cuts");
+  if (const int l = combo("##limit", int(m.bevel_limit), LIMIT_NAMES, 3, LIMIT_TIPS); l != int(m.bevel_limit)) {
+    m.bevel_limit = BevelLimit(l);
+    done = true;
+  }
+  if (m.bevel_limit == BevelLimit::Angle) {
+    modifier_row_label("Angle", column, "Corners where the outline turns more than this are cut; smooth points never are");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    float degrees = m.bevel_angle * 180.0f / PI;
+    if (ImGui::DragFloat("##angle", &degrees, 0.5f, 0.0f, 180.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+      m.bevel_angle = degrees * PI / 180.0f;
+    }
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+  else if (m.bevel_limit == BevelLimit::Group) {
+    modifier_row_label("Point Group", column, "The point group whose points are cut (Shape tab > Point Groups)");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const bool known = std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                                   [&](const PointGroup &g) { return g.name == m.bevel_group; });
+    if (ImGui::BeginCombo("##group", m.bevel_group.empty() ? "" : m.bevel_group.c_str(), ImGuiComboFlags_HeightLarge)) {
+      /* A search field on top, as Parent Bone's. */
+      static std::string search;
+      if (ImGui::IsWindowAppearing()) {
+        search.clear();
+        ImGui::SetKeyboardFocusHere();
+      }
+      ImGui::SetNextItemWidth(-1);
+      const bool entered = ImGui::InputTextWithHint("##search", "Search point groups", &search,
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+      std::string needle = search;
+      std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+      const PointGroup *first = nullptr;
+      for (const PointGroup &g : layer.drawing.groups) {
+        if (!search_matches(g.name, needle)) {
+          continue;
+        }
+        first = first ? first : &g;
+        if (ImGui::Selectable(g.name.c_str(), g.name == m.bevel_group)) {
+          m.bevel_group = g.name;
+          done = true;
+        }
+      }
+      if (!first) {
+        ImGui::TextDisabled(layer.drawing.groups.empty() ? "No point groups: add one in the Shape tab"
+                                                         : "No point group named like that");
+      }
+      if (entered && first) {
+        m.bevel_group = first->name;
+        done = true;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndCombo();
+    }
+    if (!m.bevel_group.empty() && !known && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("This layer has no point group \"%s\"", m.bevel_group.c_str());
+    }
+  }
+  ImGui::Spacing();
+
+  /* Profile and Geometry, folded, as Blender's subpanels. */
+  ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
+  const std::string profile_key = ui_fold_scope() + "/Bevel/Profile";
+  ui_fold_next(profile_key, false);
+  const bool profile_open = ImGui::TreeNodeEx("Profile", ImGuiTreeNodeFlags_SpanAvailWidth);
+  ui_fold_record(profile_key, false, profile_open);
+  if (profile_open) {
+    modifier_row_label("Shape", column,
+                       "The cut's shape: 0.5 round (a circle's arc), 0.25 straight, 1 square, below 0.25 scooped inward");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    if (factor_slider("##profile", &m.bevel_profile)) {
+      changed = true;
+    }
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::TreePop();
+  }
+  const std::string geometry_key = ui_fold_scope() + "/Bevel/Geometry";
+  ui_fold_next(geometry_key, false);
+  const bool geometry_open = ImGui::TreeNodeEx("Geometry", ImGuiTreeNodeFlags_SpanAvailWidth);
+  ui_fold_record(geometry_key, false, geometry_open);
+  if (geometry_open) {
+    modifier_row_label("", column);
+    if (ImGui::Checkbox("Clamp Overlap", &m.bevel_clamp)) {
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Keep two cuts on one segment from crossing: each takes at most half of it");
+    }
+    ImGui::TreePop();
+  }
+  ImGui::PopStyleColor();
+  (void)changed;
+  if (done) {
+    C.undo->push("Bevel Settings", doc);
+  }
+}
+
 /* Blender's modifier stack: Add Modifier, then a box per modifier, top first. Drag a box by
  * its handle (the dots on the right) to change the order. */
 static void modifiers_panel(Context &C, Layer &layer)
@@ -1969,6 +2139,12 @@ static void modifiers_panel(Context &C, Layer &layer)
     ImGui::TextDisabled("Generate");
     if (ImGui::MenuItem("Mirror")) {
       operator_call(C, "object.modifier_add", {{"type", "MIRROR"}});
+    }
+    if (ImGui::MenuItem("Bevel")) {
+      operator_call(C, "object.modifier_add", {{"type", "BEVEL"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Cut the drawing's corners off and round them: the sharp ones, or a point group's");
     }
     if (ImGui::MenuItem("Boolean")) {
       operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
@@ -2110,6 +2286,9 @@ static void modifiers_panel(Context &C, Layer &layer)
       }
       else if (m.type == ModifierType::Boolean) {
         merge_modifier_body(C, layer, m, i, column);
+      }
+      else if (m.type == ModifierType::Bevel) {
+        bevel_modifier_body(C, layer, m, i, column);
       }
       else {
         bool changed = false;
@@ -4187,6 +4366,365 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
                               const char *tooltip, const char *undo_name, bool posed = false,
                               uint64_t driver_layer = 0, const std::string &driver_path = std::string());
 
+/* Blender's factor slider: a bar filled as far as its value (0-1), the number in its middle; click or
+ * drag to set it. True while it changes. */
+static bool factor_slider(const char *id, float *value)
+{
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float w = ImGui::CalcItemWidth(), h = ImGui::GetFrameHeight();
+  ImGui::InvisibleButton(id, ImVec2(w, h));
+  bool changed = false;
+  if (ImGui::IsItemActive()) {
+    /* Shift: a tenth as fast, as Blender's precise drag. */
+    const float t = std::clamp((ImGui::GetIO().MousePos.x - at.x) / std::max(w, 1.0f), 0.0f, 1.0f);
+    const float next = ImGui::GetIO().KeyShift && !ImGui::IsItemActivated()
+                           ? std::clamp(*value + ImGui::GetIO().MouseDelta.x / std::max(w, 1.0f) * 0.1f, 0.0f, 1.0f)
+                           : t;
+    if (next != *value) {
+      *value = next;
+      changed = true;
+    }
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 to(at.x + w, at.y + h);
+  dl->AddRectFilled(at, to, ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    ImGui::GetStyle().FrameRounding);
+  if (*value > 0.0f) {
+    dl->AddRectFilled(at, ImVec2(at.x + w * *value, to.y), IM_COL32(0x47, 0x72, 0xb3, 255),
+                      ImGui::GetStyle().FrameRounding, *value >= 0.999f ? ImDrawFlags_RoundCornersAll
+                                                                        : ImDrawFlags_RoundCornersLeft);
+  }
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.3f", double(*value));
+  const ImVec2 size = ImGui::CalcTextSize(text);
+  dl->AddText(ImVec2(at.x + (w - size.x) * 0.5f, at.y + (h - size.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), text);
+  return changed;
+}
+
+/* Blender's vertex group icon: a little grid of points, one corner lit. */
+static void icon_point_group(ImDrawList *dl, ImVec2 c, float s)
+{
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      const bool lit = x == -1 && y == -1;
+      dl->AddRectFilled(ImVec2(c.x + x * s * 0.62f - s * 0.2f, c.y + y * s * 0.62f - s * 0.2f),
+                        ImVec2(c.x + x * s * 0.62f + s * 0.2f, c.y + y * s * 0.62f + s * 0.2f),
+                        lit ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0x9a, 0x9a, 0x9a, 255));
+    }
+  }
+}
+
+/* A padlock, shut when `locked` (the Layers editor's). */
+static void icon_padlock(ImDrawList *dl, ImVec2 c, float s, bool locked)
+{
+  const ImU32 col = locked ? COL_MOD_ICON : IM_COL32(0x8a, 0x8a, 0x8a, 255);
+  dl->AddRectFilled(c + ImVec2(-s * 0.6f, -s * 0.1f), c + ImVec2(s * 0.6f, s * 0.75f), col, 1.0f);
+  const float shift = locked ? 0.0f : s * 0.45f;
+  dl->PathArcTo(c + ImVec2(shift, -s * 0.15f), s * 0.38f, PI, 2.0f * PI, 8);
+  dl->PathStroke(col, 0, 1.3f);
+}
+
+/* Point Groups, laid out as Blender's Vertex Groups: the list (each row the group's icon, its name and
+ * its lock; the active one lit; double-click a name to rename it; under it, the filter's arrow and the
+ * grip that resizes it), beside it + and -, the specials menu and the up and down arrows; then Assign |
+ * Remove and Select | Deselect, and the Weight Assign gives. */
+static void point_groups_panel(Context &C, VectorDrawing &drawing)
+{
+  if (!ui_collapsing_header("Point Groups", true)) {
+    return;
+  }
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float h = ImGui::GetFrameHeight();
+  const int n = int(drawing.groups.size());
+  const int active = n ? std::clamp(drawing.active_group, 0, n - 1) : -1;
+  /* The group being renamed and its name as typed; the list's height (rows) and its filter, kept
+   * while Open Animate runs. */
+  static int renaming = -1;
+  static std::string typed;
+  static float rows = 5.0f;
+  static bool filter_open = false, sort_by_name = false;
+  static std::string filter;
+
+  const float row_h = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
+  const float bar_h = h * 0.75f;
+  const float list_w = ImGui::GetContentRegionAvail().x - h - 6.0f;
+  const ImVec2 box_min = ImGui::GetCursorScreenPos();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->ChannelsSplit(2);
+  dl->ChannelsSetCurrent(1);
+  ImGui::BeginGroup();
+  /* The rows, filtered (any part of the name, any case) and, with the filter's sort, by name. */
+  std::vector<int> order;
+  std::string needle = filter;
+  std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+  for (int i = 0; i < n; i++) {
+    if (needle.empty() || search_matches(drawing.groups[size_t(i)].name, needle)) {
+      order.push_back(i);
+    }
+  }
+  if (sort_by_name) {
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return drawing.groups[size_t(a)].name < drawing.groups[size_t(b)].name; });
+  }
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(0, 0, 0, 0));
+  if (ImGui::BeginChild("##point_groups", ImVec2(list_w, rows * row_h + 4.0f), ImGuiChildFlags_None)) {
+    /* The rows' icons and names go on the list's own drawing, over its highlight. */
+    ImDrawList *list_dl = ImGui::GetWindowDrawList();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(style.ItemSpacing.x, 2.0f));
+    ImGui::SetCursorPos(ImVec2(4.0f, 4.0f));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    for (const int i : order) {
+      const PointGroup &g = drawing.groups[size_t(i)];
+      ImGui::PushID(i);
+      ImGui::SetCursorPosX(4.0f);
+      const ImVec2 r0 = ImGui::GetCursorScreenPos();
+      const float row_w = ImGui::GetContentRegionAvail().x - 4.0f;
+      const float icon = row_h * 0.32f;
+      if (renaming == i) {
+        ImGui::SetCursorScreenPos(ImVec2(r0.x + row_h, r0.y));
+        ImGui::SetNextItemWidth(row_w - row_h * 2.0f);
+        if (!ImGui::IsAnyItemActive()) {
+          ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::InputText("##rename", &typed, ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsItemDeactivated()) {
+          if (!ImGui::IsKeyPressed(ImGuiKey_Escape) && typed != g.name) {
+            operator_call(C, "mesh.point_group_set", {{"index", std::to_string(i)}, {"name", typed}});
+          }
+          renaming = -1;
+        }
+        icon_point_group(list_dl, ImVec2(r0.x + row_h * 0.5f, r0.y + row_h * 0.5f), icon);
+      }
+      else {
+        ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0x47, 0x72, 0xb3, 255));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0x3c, 0x3c, 0x3c, 255));
+        const bool clicked = ImGui::Selectable("##group", i == active,
+                                               ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap,
+                                               ImVec2(row_w, row_h - 2.0f));
+        ImGui::PopStyleColor(2);
+        if (clicked) {
+          if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            renaming = i;
+            typed = g.name;
+          }
+          else if (i != active) {
+            operator_call(C, "mesh.point_group_set", {{"index", std::to_string(i)}, {"active", "1"}});
+          }
+        }
+        const bool row_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
+        icon_point_group(list_dl, ImVec2(r0.x + row_h * 0.5f, r0.y + (row_h - 2.0f) * 0.5f), icon);
+        list_dl->AddText(ImVec2(r0.x + row_h + 2.0f, r0.y + (row_h - 2.0f - ImGui::GetTextLineHeight()) * 0.5f),
+                         ImGui::GetColorU32(ImGuiCol_Text), g.name.c_str());
+        /* The lock, at the row's right: click it to lock or unlock the group. */
+        const ImVec2 lock_at(r0.x + row_w - row_h, r0.y);
+        ImGui::SetCursorScreenPos(lock_at);
+        if (ImGui::InvisibleButton("##lock", ImVec2(row_h, row_h - 2.0f))) {
+          operator_call(C, "mesh.point_group_set", {{"index", std::to_string(i)}, {"lock", g.locked ? "0" : "1"}});
+        }
+        const bool lock_hovered = ImGui::IsItemHovered();
+        icon_padlock(list_dl, ImVec2(lock_at.x + row_h * 0.5f, lock_at.y + (row_h - 2.0f) * 0.5f), row_h * 0.3f,
+                     g.locked);
+        if (lock_hovered) {
+          ImGui::SetTooltip(g.locked ? "Locked: Assign and Remove leave it alone. Click to unlock it"
+                                     : "Lock it, so Assign and Remove leave it alone");
+        }
+        else if (row_hovered) {
+          ImGui::SetTooltip("%s: %d points. Click to make it the active group, double-click to rename it",
+                            g.name.c_str(), int(g.weights.size()));
+        }
+      }
+      ImGui::PopID();
+    }
+    ImGui::PopStyleVar();
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  /* Under the list: the filter's arrow at the left, the grip that resizes the list in the middle. */
+  const ImVec2 bar = ImGui::GetCursorScreenPos();
+  if (ImGui::InvisibleButton("##filter", ImVec2(bar_h, bar_h))) {
+    filter_open = !filter_open;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Filter the list");
+  }
+  ImGui::RenderArrow(dl, ImVec2(bar.x + bar_h * 0.25f, bar.y + bar_h * 0.15f), IM_COL32(0xb0, 0xb0, 0xb0, 255),
+                     filter_open ? ImGuiDir_Down : ImGuiDir_Right, 0.6f);
+  ImGui::SameLine(0, 0);
+  ImGui::SetCursorScreenPos(ImVec2(bar.x + list_w * 0.5f - h * 0.5f, bar.y));
+  ImGui::InvisibleButton("##grip", ImVec2(h, bar_h));
+  const bool grip = ImGui::IsItemHovered() || ImGui::IsItemActive();
+  if (ImGui::IsItemActive()) {
+    rows = std::clamp(rows + ImGui::GetIO().MouseDelta.y / row_h, 2.0f, 30.0f);
+  }
+  if (grip) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+  }
+  for (int k = 0; k < 3; k++) {
+    for (int r = 0; r < 2; r++) {
+      dl->AddCircleFilled(ImVec2(bar.x + list_w * 0.5f - h * 0.18f + k * h * 0.18f, bar.y + bar_h * 0.38f + r * h * 0.16f),
+                          1.1f, grip ? COL_MOD_ICON : IM_COL32(0x80, 0x80, 0x80, 255));
+    }
+  }
+  if (filter_open) {
+    ImGui::SetCursorScreenPos(ImVec2(bar.x + 4.0f, bar.y + bar_h));
+    ImGui::SetNextItemWidth(list_w - h * 2.0f - 12.0f);
+    ImGui::InputTextWithHint("##filter_text", "Filter by name", &filter);
+    ImGui::SameLine(0, 2);
+    if (sort_by_name) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("A-Z", ImVec2(h * 2.0f, 0))) {
+      sort_by_name = !sort_by_name;
+    }
+    if (sort_by_name) {
+      ImGui::PopStyleColor();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show the list in order of names (Sort by Name in the menu puts them in that order)");
+    }
+  }
+  ImGui::EndGroup();
+  const ImVec2 box_max(box_min.x + list_w, ImGui::GetItemRectMax().y + 3.0f);
+  dl->ChannelsSetCurrent(0);
+  dl->AddRectFilled(box_min, box_max, IM_COL32(0x28, 0x28, 0x28, 255), 4.0f);
+  dl->AddRect(box_min, box_max, IM_COL32(0x20, 0x20, 0x20, 255), 4.0f);
+  dl->ChannelsMerge();
+
+  /* Beside it: +, -, the menu, then up and down, as Blender's. */
+  ImGui::SetCursorScreenPos(ImVec2(box_min.x + list_w + 6.0f, box_min.y));
+  ImGui::BeginGroup();
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(style.ItemSpacing.x, 1.0f));
+  if (ImGui::Button("+##add_group", ImVec2(h, h))) {
+    operator_call(C, "mesh.point_group_add");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Add a point group");
+  }
+  ImGui::BeginDisabled(n == 0);
+  if (ImGui::Button("-##remove_group", ImVec2(h, h))) {
+    operator_call(C, "mesh.point_group_remove");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Remove the active point group (its points stay)");
+  }
+  ImGui::Dummy(ImVec2(h, h * 0.3f));
+  const ImVec2 menu_at = ImGui::GetCursorScreenPos();
+  if (ImGui::Button("##group_menu", ImVec2(h, h))) {
+    ImGui::OpenPopup("##point_group_menu");
+  }
+  ImGui::RenderArrow(dl, ImVec2(menu_at.x + h * 0.25f, menu_at.y + h * 0.25f), COL_MOD_ICON, ImGuiDir_Down, 0.75f);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Point group specials");
+  }
+  ImGui::Dummy(ImVec2(h, h * 0.3f));
+  const ImVec2 up_at = ImGui::GetCursorScreenPos();
+  ImGui::BeginDisabled(active <= 0);
+  if (ImGui::Button("##group_up", ImVec2(h, h))) {
+    operator_call(C, "mesh.point_group_move", {{"direction", "-1"}});
+  }
+  ImGui::EndDisabled();
+  ImGui::RenderArrow(dl, ImVec2(up_at.x + h * 0.25f, up_at.y + h * 0.22f), COL_MOD_ICON, ImGuiDir_Up, 0.75f);
+  const ImVec2 down_at = ImGui::GetCursorScreenPos();
+  ImGui::BeginDisabled(active < 0 || active >= n - 1);
+  if (ImGui::Button("##group_down", ImVec2(h, h))) {
+    operator_call(C, "mesh.point_group_move", {{"direction", "1"}});
+  }
+  ImGui::EndDisabled();
+  ImGui::RenderArrow(dl, ImVec2(down_at.x + h * 0.25f, down_at.y + h * 0.28f), COL_MOD_ICON, ImGuiDir_Down, 0.75f);
+  ImGui::EndDisabled();
+  ImGui::PopStyleVar();
+  ImGui::EndGroup();
+  if (ImGui::BeginPopup("##point_group_menu")) {
+    const bool any_selected = std::any_of(drawing.points.begin(), drawing.points.end(),
+                                          [](const MeshPoint &p) { return p.selected; });
+    if (ImGui::MenuItem("Sort by Name")) {
+      operator_call(C, "mesh.point_group_sort");
+    }
+    if (ImGui::MenuItem("Copy Point Group")) {
+      operator_call(C, "mesh.point_group_copy");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Remove from All Groups", nullptr, false, any_selected)) {
+      operator_call(C, "mesh.point_group_unassign_all");
+    }
+    if (ImGui::MenuItem("Delete All Unlocked Groups")) {
+      operator_call(C, "mesh.point_group_remove_all", {{"unlocked", "1"}});
+    }
+    if (ImGui::MenuItem("Delete All Groups")) {
+      operator_call(C, "mesh.point_group_remove_all");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Lock All")) {
+      operator_call(C, "mesh.point_group_lock_all", {{"lock", "1"}});
+    }
+    if (ImGui::MenuItem("Unlock All")) {
+      operator_call(C, "mesh.point_group_lock_all", {{"lock", "0"}});
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::SetCursorScreenPos(ImVec2(box_min.x, std::max(box_max.y, ImGui::GetItemRectMax().y) + style.ItemSpacing.y));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  if (n == 0) {
+    return;
+  }
+
+  /* Assign | Remove, then Select | Deselect: two joined pairs on one row, as Blender's. */
+  static float weight = 1.0f;
+  const bool any_selected = std::any_of(drawing.points.begin(), drawing.points.end(),
+                                        [](const MeshPoint &p) { return p.selected; });
+  const bool locked = drawing.groups[size_t(active)].locked;
+  const float gap = 8.0f;
+  const float w = (ImGui::GetContentRegionAvail().x - gap - 2.0f) * 0.25f;
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, style.ItemSpacing.y));
+  ImGui::BeginDisabled(!any_selected || locked);
+  if (ImGui::Button("Assign", ImVec2(w, 0))) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%g", double(weight));
+    operator_call(C, "mesh.point_group_assign", {{"weight", text}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(locked ? "The active group is locked" : any_selected ? "Put the selected points in the active group, with the Weight below"
+                                                                          : "Select points to put them in the group");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Remove", ImVec2(w, 0))) {
+    operator_call(C, "mesh.point_group_unassign");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(locked ? "The active group is locked" : "Take the selected points out of the active group");
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine(0, gap);
+  if (ImGui::Button("Select", ImVec2(w, 0))) {
+    operator_call(C, "mesh.point_group_select");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Select the active group's points (adding to the selection)");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Deselect", ImVec2(w, 0))) {
+    operator_call(C, "mesh.point_group_deselect");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Deselect the active group's points");
+  }
+  ImGui::PopStyleVar();
+  /* Weight: a label on the left, Blender's filled bar on the right. */
+  ImGui::Spacing();
+  const float column = ImGui::GetContentRegionAvail().x * 0.4f;
+  const float label_w = ImGui::CalcTextSize("Weight").x;
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column - label_w - style.ItemSpacing.x);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Weight");
+  ImGui::SameLine(0, style.ItemSpacing.x);
+  ImGui::SetNextItemWidth(-1);
+  factor_slider("##weight", &weight);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The weight Assign gives the points (0-1): how much a modifier limited to the group does to "
+                      "them. Shift drags finely");
+  }
+}
+
 static void drawing_tab(Context &C)
 {
   Document &doc = *C.document;
@@ -4452,6 +4990,7 @@ static void drawing_tab(Context &C)
     edge_panel(C, *drawing);
     return;
   }
+  point_groups_panel(C, *drawing);
   edge_panel(C, *drawing);
   point_panel(C, *drawing);
 }

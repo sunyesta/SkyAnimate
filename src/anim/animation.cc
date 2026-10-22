@@ -73,6 +73,9 @@ template<typename F> static void layer_for_each_channel(Layer &layer, F &&f)
     if (m.type == ModifierType::Boolean) {
       f(m.merge_smoothing_keys, m.merge_smoothing);
     }
+    if (m.type == ModifierType::Bevel) {
+      f(m.bevel_amount_keys, m.bevel_amount);
+    }
   }
   /* A reference's drawing is built from its original's: its own channels are its offsets. */
   for (auto &[id, o] : layer.reference.points) {
@@ -749,6 +752,10 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
     if (layer.modifiers[i].type == ModifierType::Boolean) {
       add("modifiers[" + std::to_string(i) + "].smoothing", layer.modifiers[i].merge_smoothing_keys,
           layer.modifiers[i].merge_smoothing);
+    }
+    if (layer.modifiers[i].type == ModifierType::Bevel) {
+      add("modifiers[" + std::to_string(i) + "].amount", layer.modifiers[i].bevel_amount_keys,
+          layer.modifiers[i].bevel_amount);
     }
   }
   if (!drawing) {

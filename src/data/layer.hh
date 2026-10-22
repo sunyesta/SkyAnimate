@@ -500,7 +500,14 @@ struct Bone {
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature, Boolean };
+enum class ModifierType { Mirror, Armature, Boolean, Bevel };
+
+/* Bevel: which corners it cuts (Blender's Limit Method): every one, those the outline turns sharply
+ * at, or a point group's; and what its Amount measures (Width Type): how far along each side the cut
+ * starts (Offset), how long the cut is (Width), how far it is from the corner (Depth), or how much of
+ * each side it takes (Percent). */
+enum class BevelLimit { None, Angle, Group };
+enum class BevelWidth { Offset, Width, Depth, Percent };
 
 /* Boolean: how its targets' shapes go with the layer's own. */
 enum class MergeOperation { Union, Subtract, Intersect };
@@ -548,6 +555,18 @@ struct Modifier {
   /* Corners Only: the layer's shapes just grow the rounded corners where they meet the others (a
    * fill layer under an outline layer's merge), taking nothing from them. */
   bool merge_corners_only = false;
+  /* Bevel (anim/bevel.hh): the corners turning more than `bevel_angle` (radians), or the points of
+   * point group `bevel_group` (by name; their weights scale the amount); cut `bevel_amount` from the
+   * corner each way (keyable), the cut's Profile 0.25 straight, 0.5 round, 1 square, below 0.25
+   * inward; Clamp Overlap keeps two cuts on one segment from crossing. */
+  BevelLimit bevel_limit = BevelLimit::Angle;
+  BevelWidth bevel_width = BevelWidth::Offset;
+  float bevel_angle = 0.5235988f;
+  std::string bevel_group;
+  float bevel_amount = 0.02f;
+  Channel<float> bevel_amount_keys = Channel<float>::by_hand();
+  float bevel_profile = 0.5f;
+  bool bevel_clamp = true;
   Channel<float> merge_smoothing_keys = Channel<float>::by_hand();
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */

@@ -307,10 +307,24 @@ static json drawing_to_json(const VectorDrawing &drawing)
       shapes.back()["detail_level"] = shape.detail_level;
     }
   }
-  return {{"points", std::move(points)},
-          {"curves", std::move(curves)},
-          {"shapes", std::move(shapes)},
-          {"next_id", drawing.next_id}};
+  json out = {{"points", std::move(points)},
+              {"curves", std::move(curves)},
+              {"shapes", std::move(shapes)},
+              {"next_id", drawing.next_id}};
+  if (!drawing.groups.empty()) {
+    /* Point groups: each member as [point id, weight]. */
+    json groups = json::array();
+    for (const PointGroup &g : drawing.groups) {
+      json members = json::array();
+      for (const auto &[id, w] : g.weights) {
+        members.push_back({id, num(w)});
+      }
+      groups.push_back({{"name", g.name}, {"points", std::move(members)}, {"locked", g.locked}});
+    }
+    out["groups"] = std::move(groups);
+    out["active_group"] = drawing.active_group;
+  }
+  return out;
 }
 
 /* A reference's own changes on top of its original. */
@@ -493,7 +507,10 @@ static json layer_to_json(const Layer &layer)
   if (!layer.modifiers.empty()) {
     json modifiers = json::array();
     for (const Modifier &m : layer.modifiers) {
-      json mj = {{"type", m.type == ModifierType::Armature ? "ARMATURE" : m.type == ModifierType::Boolean ? "BOOLEAN" : "MIRROR"},
+      json mj = {{"type", m.type == ModifierType::Armature  ? "ARMATURE"
+                          : m.type == ModifierType::Boolean ? "BOOLEAN"
+                          : m.type == ModifierType::Bevel   ? "BEVEL"
+                                                            : "MIRROR"},
                  {"name", m.name},
                  {"show_viewport", m.show_viewport},
                  {"show_render", m.show_render},
@@ -519,6 +536,19 @@ static json layer_to_json(const Layer &layer)
         mj["smoothing"] = num(m.merge_smoothing);
         mj["corners_only"] = m.merge_corners_only;
         put_keys(mj, "smoothing_keys", m.merge_smoothing_keys);
+      }
+      if (m.type == ModifierType::Bevel) {
+        mj["limit"] = m.bevel_limit == BevelLimit::Group ? "GROUP" : m.bevel_limit == BevelLimit::None ? "NONE" : "ANGLE";
+        mj["width_type"] = m.bevel_width == BevelWidth::Width   ? "WIDTH"
+                           : m.bevel_width == BevelWidth::Depth   ? "DEPTH"
+                           : m.bevel_width == BevelWidth::Percent ? "PERCENT"
+                                                                  : "OFFSET";
+        mj["angle"] = num(m.bevel_angle);
+        mj["group"] = m.bevel_group;
+        mj["amount"] = num(m.bevel_amount);
+        put_keys(mj, "amount_keys", m.bevel_amount_keys);
+        mj["profile"] = num(m.bevel_profile);
+        mj["clamp"] = m.bevel_clamp;
       }
       modifiers.push_back(std::move(mj));
     }
@@ -1382,6 +1412,21 @@ static VectorDrawing drawing_from_json(const json &j)
   }
   /* Older files' points and shapes get their ids now. */
   drawing.next_id = std::max<uint64_t>(1, get_id(j, "next_id"));
+  for (const json &gj : get_array(j, "groups")) {
+    if (!gj.is_object()) {
+      continue;
+    }
+    PointGroup g;
+    g.name = get_string(gj, "name", "Group");
+    g.locked = get_bool(gj, "locked", false);
+    for (const json &m : get_array(gj, "points")) {
+      if (m.is_array() && m.size() == 2 && m[0].is_number() && m[1].is_number()) {
+        g.weights[m[0].get<uint64_t>()] = std::clamp(m[1].get<float>(), 0.0f, 1.0f);
+      }
+    }
+    drawing.groups.push_back(std::move(g));
+  }
+  drawing.active_group = std::clamp(get_int(j, "active_group", 0), 0, std::max(0, int(drawing.groups.size()) - 1));
   drawing_ensure_ids(drawing);
   if (g_loading_version < 3) {
     /* Format 2 and before kept points' and handles' own values in their keys, as Moho does: the
@@ -1725,10 +1770,27 @@ static Layer layer_from_json(const json &j, int depth)
     /* The Boolean modifier was called Merge at first: files saying MERGE open as Boolean. */
     m.type = type == "ARMATURE"                       ? ModifierType::Armature
              : type == "BOOLEAN" || type == "MERGE" ? ModifierType::Boolean
+             : type == "BEVEL"                      ? ModifierType::Bevel
                                                     : ModifierType::Mirror;
     m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature"
                                     : m.type == ModifierType::Boolean  ? "Boolean"
+                                    : m.type == ModifierType::Bevel    ? "Bevel"
                                                                      : "Mirror");
+    if (m.type == ModifierType::Bevel) {
+      const std::string limit = get_string(mj, "limit", "ANGLE");
+      m.bevel_limit = limit == "GROUP" ? BevelLimit::Group : limit == "NONE" ? BevelLimit::None : BevelLimit::Angle;
+      const std::string width = get_string(mj, "width_type", "OFFSET");
+      m.bevel_width = width == "WIDTH"     ? BevelWidth::Width
+                      : width == "DEPTH"   ? BevelWidth::Depth
+                      : width == "PERCENT" ? BevelWidth::Percent
+                                           : BevelWidth::Offset;
+      m.bevel_angle = std::clamp(get_float(mj, "angle", m.bevel_angle), 0.0f, 3.1415927f);
+      m.bevel_group = get_string(mj, "group", "");
+      m.bevel_amount = std::max(0.0f, get_float(mj, "amount", m.bevel_amount));
+      get_keys(mj, "amount_keys", m.bevel_amount_keys);
+      m.bevel_profile = std::clamp(get_float(mj, "profile", m.bevel_profile), 0.0f, 1.0f);
+      m.bevel_clamp = get_bool(mj, "clamp", true);
+    }
     /* Its old default name ("Merge", "Merge.001") goes with it. */
     if (type == "MERGE" && m.name.rfind("Merge", 0) == 0 &&
         (m.name.size() == 5 || (m.name.size() == 9 && m.name[5] == '.')))

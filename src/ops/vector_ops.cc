@@ -395,6 +395,212 @@ void vector_operators_register()
                     return OpStatus::Finished;
                   });
 
+  /* --- Point groups (Blender's vertex groups), on the active layer's drawing ------------------- */
+  const auto group_drawing = [](Context &C) -> VectorDrawing * {
+    Layer *layer = nullptr;
+    VectorDrawing *drawing = editable_drawing(C, &layer);
+    return drawing && layer->type == LayerType::Vector && !layer->is_reference() ? drawing : nullptr;
+  };
+  const auto has_group = [group_drawing](Context &C) {
+    const VectorDrawing *d = group_drawing(C);
+    return d && !d->groups.empty();
+  };
+  /* The group named by index= (a number) or name=, or the active one. */
+  const auto group_of = [](Context &C, VectorDrawing &d) -> int {
+    if (op_has_arg(C, "index")) {
+      const int i = op_arg_int(C, "index", -1);
+      return i >= 0 && i < int(d.groups.size()) ? i : -1;
+    }
+    if (op_has_arg(C, "group")) {
+      const std::string name = op_arg(C, "group");
+      for (int i = 0; i < int(d.groups.size()); i++) {
+        if (d.groups[size_t(i)].name == name) {
+          return i;
+        }
+      }
+      return -1;
+    }
+    return d.groups.empty() ? -1 : std::clamp(d.active_group, 0, int(d.groups.size()) - 1);
+  };
+  vector_operator("mesh.point_group_add", "Add Point Group",
+                  "A new point group on the active layer (name=, \"Group\" by default), made the active one",
+                  UNDO, [group_drawing](Context &C) { return group_drawing(C) != nullptr; },
+                  [group_drawing](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    PointGroup g;
+                    g.name = drawing_group_unique_name(d, op_arg(C, "name", "Group"));
+                    d.groups.push_back(std::move(g));
+                    d.active_group = int(d.groups.size()) - 1;
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_remove", "Remove Point Group",
+                  "Remove a point group (the active one, or index= / group=); its points stay",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const int i = group_of(C, d);
+                    if (i < 0) {
+                      return OpStatus::Cancelled;
+                    }
+                    d.groups.erase(d.groups.begin() + i);
+                    d.active_group = std::clamp(d.active_group > i ? d.active_group - 1 : d.active_group, 0,
+                                                std::max(0, int(d.groups.size()) - 1));
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_set", "Point Group Settings",
+                  "Rename a point group (name=), the active one or index= / group=; active=1 makes it the active one; "
+                  "lock=1 or 0 locks it (Assign and Remove leave it alone) or unlocks it",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const int i = group_of(C, d);
+                    if (i < 0) {
+                      return OpStatus::Cancelled;
+                    }
+                    if (op_has_arg(C, "name")) {
+                      const std::string name = op_arg(C, "name");
+                      if (name.empty()) {
+                        report(ReportType::Warning, "A point group needs a name");
+                        return OpStatus::Cancelled;
+                      }
+                      if (name != d.groups[size_t(i)].name) {
+                        d.groups[size_t(i)].name = drawing_group_unique_name(d, name);
+                      }
+                    }
+                    if (op_arg_bool(C, "active")) {
+                      d.active_group = i;
+                    }
+                    if (op_has_arg(C, "lock")) {
+                      d.groups[size_t(i)].locked = op_arg_bool(C, "lock");
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_assign", "Assign to Point Group",
+                  "Put the selected points in the active point group, with weight= (0-1, 1 by default)",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const int i = group_of(C, d);
+                    if (d.groups[size_t(i)].locked) {
+                      report(ReportType::Warning, "\"" + d.groups[size_t(i)].name + "\" is locked");
+                      return OpStatus::Cancelled;
+                    }
+                    drawing_ensure_ids(d);
+                    const float w = std::clamp(op_arg_float(C, "weight", 1.0f), 0.0f, 1.0f);
+                    int n = 0;
+                    for (const MeshPoint &p : d.points) {
+                      if (p.selected) {
+                        d.groups[size_t(i)].weights[p.id] = w;
+                        n++;
+                      }
+                    }
+                    if (n == 0) {
+                      report(ReportType::Warning, "Select the points to put in the group");
+                      return OpStatus::Cancelled;
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_unassign", "Remove from Point Group",
+                  "Take the selected points out of the active point group",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    PointGroup &g = d.groups[size_t(group_of(C, d))];
+                    if (g.locked) {
+                      report(ReportType::Warning, "\"" + g.name + "\" is locked");
+                      return OpStatus::Cancelled;
+                    }
+                    int n = 0;
+                    for (const MeshPoint &p : d.points) {
+                      if (p.selected) {
+                        n += int(g.weights.erase(p.id));
+                      }
+                    }
+                    return n ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
+  vector_operator("mesh.point_group_move", "Move Point Group",
+                  "Move the active point group up (direction=-1) or down (direction=1) the list",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const int i = group_of(C, d);
+                    const int to = i + (op_arg_int(C, "direction", 1) < 0 ? -1 : 1);
+                    if (to < 0 || to >= int(d.groups.size())) {
+                      return OpStatus::Cancelled;
+                    }
+                    std::swap(d.groups[size_t(i)], d.groups[size_t(to)]);
+                    d.active_group = to;
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_copy", "Copy Point Group",
+                  "A copy of the active point group (\"Group_copy\"), its points and weights, made active",
+                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    PointGroup copy = d.groups[size_t(group_of(C, d))];
+                    copy.name = drawing_group_unique_name(d, copy.name + "_copy");
+                    copy.locked = false;
+                    d.groups.insert(d.groups.begin() + group_of(C, d) + 1, std::move(copy));
+                    d.active_group = group_of(C, d) + 1;
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_sort", "Sort Point Groups by Name", "Put the point groups in order of their names",
+                  UNDO, has_group, [group_drawing](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const std::string active = d.groups[size_t(std::clamp(d.active_group, 0, int(d.groups.size()) - 1))].name;
+                    std::stable_sort(d.groups.begin(), d.groups.end(),
+                                     [](const PointGroup &a, const PointGroup &b) { return a.name < b.name; });
+                    for (int i = 0; i < int(d.groups.size()); i++) {
+                      if (d.groups[size_t(i)].name == active) {
+                        d.active_group = i;
+                      }
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_unassign_all", "Remove from All Point Groups",
+                  "Take the selected points out of every point group that isn't locked",
+                  UNDO, has_group, [group_drawing](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    int n = 0;
+                    for (PointGroup &g : d.groups) {
+                      for (const MeshPoint &p : d.points) {
+                        if (p.selected && !g.locked) {
+                          n += int(g.weights.erase(p.id));
+                        }
+                      }
+                    }
+                    return n ? OpStatus::Finished : OpStatus::Cancelled;
+                  });
+  vector_operator("mesh.point_group_remove_all", "Delete All Point Groups",
+                  "Remove every point group of the active layer (unlocked=1: only the ones not locked); the points stay",
+                  UNDO, has_group, [group_drawing](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const bool unlocked = op_arg_bool(C, "unlocked");
+                    std::erase_if(d.groups, [&](const PointGroup &g) { return !unlocked || !g.locked; });
+                    d.active_group = 0;
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.point_group_lock_all", "Lock All Point Groups",
+                  "Lock every point group (lock=1, the default) or unlock them all (lock=0)",
+                  UNDO, has_group, [group_drawing](Context &C) {
+                    VectorDrawing &d = *group_drawing(C);
+                    const bool lock = !op_has_arg(C, "lock") || op_arg_bool(C, "lock");
+                    for (PointGroup &g : d.groups) {
+                      g.locked = lock;
+                    }
+                    return OpStatus::Finished;
+                  });
+  for (const bool select : {true, false}) {
+    vector_operator(select ? "mesh.point_group_select" : "mesh.point_group_deselect",
+                    select ? "Select Point Group" : "Deselect Point Group",
+                    select ? "Select the points in the active point group (adding to the selection)"
+                           : "Deselect the points in the active point group",
+                    UNDO, has_group, [group_drawing, group_of, select](Context &C) {
+                      VectorDrawing &d = *group_drawing(C);
+                      const PointGroup &g = d.groups[size_t(group_of(C, d))];
+                      for (MeshPoint &p : d.points) {
+                        if (g.weights.contains(p.id)) {
+                          p.selected = select;
+                        }
+                      }
+                      return OpStatus::Finished;
+                    });
+  }
+
   /* What the X menu offers, as Blender's Delete menu: each whatever the selection mode is. */
   vector_operator("mesh.delete_points", "Delete Points", "Delete the selected points and the curves left too short",
                   UNDO, editable_with_selection_poll, [](Context &C) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "anim/bevel.hh"
 #include "anim/merge.hh"
 #include "anim/reference.hh"
 #include "data/bones.hh"
@@ -372,7 +373,7 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
     if (m.type == ModifierType::Mirror && (m.axis_x || m.axis_y)) {
       return true;
     }
-    if (m.type == ModifierType::Boolean) {
+    if (m.type == ModifierType::Boolean || (m.type == ModifierType::Bevel && m.bevel_amount > 0.0f)) {
       return true;
     }
     if (m.type == ModifierType::Armature && layer.followed_bone() == 0 && !layer_binding_group(doc, layer.id)) {
@@ -413,6 +414,9 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       if (m.type == ModifierType::Mirror) {
         drawing = drawing_mirror(drawing, m, flip);
       }
+      else if (m.type == ModifierType::Bevel) {
+        drawing = drawing_bevel(drawing, m);
+      }
       else if (m.type == ModifierType::Armature) {
         Deformer d;
         if (deformer_init(doc, *original, d)) {
@@ -440,6 +444,9 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
     }
     if (m.type == ModifierType::Mirror) {
       drawing = drawing_mirror(drawing, m, flip);
+    }
+    else if (m.type == ModifierType::Bevel) {
+      drawing = drawing_bevel(drawing, m);
     }
     else if (m.type == ModifierType::Armature) {
       Deformer d;
@@ -473,6 +480,9 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
         if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
           drawing = drawing_mirror(drawing, m, flip);
         }
+        else if (modifier_on(m, render) && m.type == ModifierType::Bevel) {
+          drawing = drawing_bevel(drawing, m);
+        }
       }
       transform_drawing(drawing, reference_match_transform(doc, layer));
       drawing_detail_final_handles(drawing);
@@ -484,6 +494,9 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
       if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
         drawing = drawing_mirror(drawing, m, flip);
       }
+      else if (modifier_on(m, render) && m.type == ModifierType::Bevel) {
+        drawing = drawing_bevel(drawing, m);
+      }
     }
     drawing_detail_final_handles(drawing);
     return drawing;
@@ -494,6 +507,9 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
   for (const Modifier &m : layer.modifiers) {
     if (modifier_on(m, render) && m.type == ModifierType::Mirror) {
       drawing = drawing_mirror(drawing, m, flip);
+    }
+    else if (modifier_on(m, render) && m.type == ModifierType::Bevel) {
+      drawing = drawing_bevel(drawing, m);
     }
   }
   drawing_detail_final_handles(drawing);

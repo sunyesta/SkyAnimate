@@ -159,6 +159,19 @@ class _Layer:
         _oanim.layer_set_mean_position(self._id, index, tuple(value))
 
     @property
+    def point_groups(self):
+        """[(name, {point index: weight}, locked)], Blender's vertex groups; change them with
+        oanim.ops.mesh.point_group_add / _remove / _set / _assign / _unassign / _select / _deselect /
+        _move / _copy / _sort / _unassign_all / _remove_all / _lock_all."""
+        groups, _ = _oanim.layer_point_groups(self._id)
+        return [(name, dict(members), locked) for name, members, locked in groups]
+
+    @property
+    def active_point_group(self):
+        """The active point group's index (what Assign and Select work on)."""
+        return _oanim.layer_point_groups(self._id)[1]
+
+    @property
     def shapes(self):
         """[(name, [curve indices]), ...] in stacking order, bottom first."""
         return [(name, list(curves)) for name, curves in _oanim.layer_shapes(self._id)]
@@ -428,7 +441,7 @@ class _Layer:
 
     @property
     def modifiers(self):
-        """The modifier stack, top first: dicts with type ("MIRROR" or "ARMATURE") and settings."""
+        """The modifier stack, top first: dicts with type ("MIRROR", "ARMATURE", "BEVEL" or "BOOLEAN") and settings."""
         return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):

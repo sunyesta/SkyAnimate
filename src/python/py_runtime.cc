@@ -1853,12 +1853,43 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return py::make_tuple(q.x, q.y);
   });
 
+  /* Point groups: [(name, {point index: weight}, locked)], and the active one's index. */
+  m.def("layer_point_groups", [layer_or_raise](uint64_t id) {
+    const VectorDrawing &d = layer_or_raise(id).drawing;
+    py::list groups;
+    for (const PointGroup &g : d.groups) {
+      py::dict members;
+      for (int i = 0; i < int(d.points.size()); i++) {
+        if (const auto it = g.weights.find(d.points[size_t(i)].id); it != g.weights.end()) {
+          members[py::int_(i)] = it->second;
+        }
+      }
+      groups.append(py::make_tuple(g.name, members, g.locked));
+    }
+    return py::make_tuple(groups, d.active_group);
+  });
+
   /* --- Modifiers and the evaluated drawing ------------------------------------------------ */
   m.def("layer_modifiers", [layer_or_raise](uint64_t id) {
     py::list result;
     for (const Modifier &mod : layer_or_raise(id).modifiers) {
       py::dict d;
-      d["type"] = mod.type == ModifierType::Armature ? "ARMATURE" : mod.type == ModifierType::Boolean ? "BOOLEAN" : "MIRROR";
+      d["type"] = mod.type == ModifierType::Armature  ? "ARMATURE"
+                  : mod.type == ModifierType::Boolean ? "BOOLEAN"
+                  : mod.type == ModifierType::Bevel   ? "BEVEL"
+                                                      : "MIRROR";
+      if (mod.type == ModifierType::Bevel) {
+        d["limit"] = mod.bevel_limit == BevelLimit::Group ? "GROUP" : mod.bevel_limit == BevelLimit::None ? "NONE" : "ANGLE";
+        d["width_type"] = mod.bevel_width == BevelWidth::Width   ? "WIDTH"
+                          : mod.bevel_width == BevelWidth::Depth   ? "DEPTH"
+                          : mod.bevel_width == BevelWidth::Percent ? "PERCENT"
+                                                                   : "OFFSET";
+        d["angle"] = mod.bevel_angle * 180.0f / 3.1415927f;
+        d["group"] = mod.bevel_group;
+        d["amount"] = mod.bevel_amount;
+        d["profile"] = mod.bevel_profile;
+        d["clamp"] = mod.bevel_clamp;
+      }
       d["name"] = mod.name;
       d["show_viewport"] = mod.show_viewport;
       d["show_render"] = mod.show_render;
@@ -1944,6 +1975,36 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (mod.type == ModifierType::Boolean && key == "smoothing") {
         mod.merge_smoothing = std::max(0.0f, value.cast<float>());
+      }
+      else if (mod.type == ModifierType::Bevel && key == "limit") {
+        const std::string limit = value.cast<std::string>();
+        if (limit != "ANGLE" && limit != "GROUP" && limit != "NONE") {
+          throw py::value_error("limit is NONE, ANGLE or GROUP");
+        }
+        mod.bevel_limit = limit == "GROUP" ? BevelLimit::Group : limit == "NONE" ? BevelLimit::None : BevelLimit::Angle;
+      }
+      else if (mod.type == ModifierType::Bevel && key == "width_type") {
+        const std::string width = value.cast<std::string>();
+        if (width == "OFFSET") mod.bevel_width = BevelWidth::Offset;
+        else if (width == "WIDTH") mod.bevel_width = BevelWidth::Width;
+        else if (width == "DEPTH") mod.bevel_width = BevelWidth::Depth;
+        else if (width == "PERCENT") mod.bevel_width = BevelWidth::Percent;
+        else throw py::value_error("width_type is OFFSET, WIDTH, DEPTH or PERCENT");
+      }
+      else if (mod.type == ModifierType::Bevel && key == "angle") {
+        mod.bevel_angle = std::clamp(value.cast<float>(), 0.0f, 180.0f) * 3.1415927f / 180.0f;
+      }
+      else if (mod.type == ModifierType::Bevel && key == "group") {
+        mod.bevel_group = value.cast<std::string>();
+      }
+      else if (mod.type == ModifierType::Bevel && key == "amount") {
+        mod.bevel_amount = std::max(0.0f, value.cast<float>());
+      }
+      else if (mod.type == ModifierType::Bevel && key == "profile") {
+        mod.bevel_profile = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (mod.type == ModifierType::Bevel && key == "clamp") {
+        mod.bevel_clamp = value.cast<bool>();
       }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");

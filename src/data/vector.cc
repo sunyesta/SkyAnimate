@@ -301,9 +301,16 @@ bool drawing_ensure_ids(VectorDrawing &drawing)
   std::set<uint64_t> seen;
   for (MeshPoint &p : drawing.points) {
     if (p.id == 0 || !seen.insert(p.id).second) {
+      const uint64_t copied = p.id;
       p.id = drawing.next_id++;
       seen.insert(p.id);
       changed = true;
+      /* A copy (Duplicate) is in its original's point groups too, with its weights. */
+      for (PointGroup &g : drawing.groups) {
+        if (const auto it = g.weights.find(copied); copied != 0 && it != g.weights.end()) {
+          g.weights[p.id] = it->second;
+        }
+      }
     }
   }
   seen.clear();
@@ -315,6 +322,37 @@ bool drawing_ensure_ids(VectorDrawing &drawing)
     }
   }
   return changed;
+}
+
+std::string drawing_group_unique_name(const VectorDrawing &drawing, const std::string &base)
+{
+  const auto taken = [&](const std::string &name) {
+    return std::any_of(drawing.groups.begin(), drawing.groups.end(), [&](const PointGroup &g) { return g.name == name; });
+  };
+  if (!taken(base)) {
+    return base;
+  }
+  for (int n = 1;; n++) {
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), ".%03d", n);
+    if (!taken(base + suffix)) {
+      return base + suffix;
+    }
+  }
+}
+
+void drawing_groups_prune(VectorDrawing &drawing)
+{
+  if (drawing.groups.empty()) {
+    return;
+  }
+  std::set<uint64_t> ids;
+  for (const MeshPoint &p : drawing.points) {
+    ids.insert(p.id);
+  }
+  for (PointGroup &g : drawing.groups) {
+    std::erase_if(g.weights, [&](const auto &entry) { return !ids.contains(entry.first); });
+  }
 }
 
 int drawing_point_index(const VectorDrawing &drawing, uint64_t id)
@@ -676,6 +714,8 @@ void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remo
   if (any_orphan) {
     drawing_remove_points(drawing, orphan);
   }
+  /* The points gone leave their groups. */
+  drawing_groups_prune(drawing);
 }
 
 void drawing_remove_curves(VectorDrawing &drawing, const std::vector<bool> &remove)
@@ -811,6 +851,19 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t)
   float2 ctrl[4];
   curve_segment_bezier(drawing, curve, edge.segment, ctrl);
   const int point = drawing_add_point(drawing, bezier_eval(ctrl, t));
+  /* A point added between two of a group's is in it, weighted between theirs (as Blender's
+   * Subdivide does). */
+  if (!drawing.groups.empty()) {
+    drawing_ensure_ids(drawing);
+    const uint64_t a = drawing.points[curve.points[edge.segment].point].id;
+    const uint64_t b = drawing.points[curve.points[(edge.segment + 1) % int(curve.points.size())].point].id;
+    for (PointGroup &g : drawing.groups) {
+      const auto wa = g.weights.find(a), wb = g.weights.find(b);
+      if (wa != g.weights.end() && wb != g.weights.end()) {
+        g.weights[drawing.points[point].id] = wa->second + (wb->second - wa->second) * t;
+      }
+    }
+  }
 
   /* Split the Bezier exactly (de Casteljau), so the line doesn't move: the ends' facing handles
    * shorten, and the new point gets aligned handles along the curve. */

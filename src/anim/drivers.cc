@@ -370,6 +370,13 @@ Setting setting_find(Document &doc, uint64_t layer_id, const std::string &path)
       if (rest == "smoothing") return float_setting(mod + "Smoothing", &m.merge_smoothing, 0.0f, 100.0f);
       return {};
     }
+    if (m.type == ModifierType::Bevel) {
+      if (rest == "amount") return float_setting(mod + "Amount", &m.bevel_amount, 0.0f, 100.0f);
+      if (rest == "profile") return float_setting(mod + "Profile", &m.bevel_profile, 0.0f, 1.0f);
+      if (rest == "angle") return float_setting(mod + "Angle", &m.bevel_angle, 0.0f, 3.1415927f);
+      if (rest == "clamp") return bool_setting(mod + "Clamp Overlap", &m.bevel_clamp);
+      return {};
+    }
     if (m.type != ModifierType::Mirror) return {};
     if (rest == "axis_x") return bool_setting(mod + "Axis X", &m.axis_x);
     if (rest == "axis_y") return bool_setting(mod + "Axis Y", &m.axis_y);

@@ -10,6 +10,7 @@
 
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/bevel.hh"
 #include "anim/dynamics.hh"
 #include "anim/merge.hh"
 #include "core/log.hh"
@@ -1548,7 +1549,7 @@ void rig_operators_register()
     return layer && !layer->is_group() ? layer : nullptr;
   };
   rig_operator("object.modifier_add", "Add Modifier",
-               "Add a modifier to the active layer (type=MIRROR or BOOLEAN; a Boolean takes the settings "
+               "Add a modifier to the active layer (type=MIRROR, BEVEL or BOOLEAN; a Boolean takes the settings "
                "object.modifier_boolean_set does)",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
@@ -1568,6 +1569,21 @@ void rig_operators_register()
                      layer.modifiers.pop_back();
                      return OpStatus::Cancelled;
                    }
+                   return OpStatus::Finished;
+                 }
+                 if (type == "BEVEL") {
+                   Layer &layer = *modifier_layer(C);
+                   if (layer.type != LayerType::Vector) {
+                     report(ReportType::Warning, "Bevel cuts a drawing's corners: pick a drawing layer");
+                     return OpStatus::Cancelled;
+                   }
+                   Modifier m;
+                   m.type = ModifierType::Bevel;
+                   m.name = "Bevel";
+                   /* As Mirror: above the Armature modifier, so the bones bend the bevelled drawing. */
+                   const auto armature = std::find_if(layer.modifiers.begin(), layer.modifiers.end(),
+                                                      [](const Modifier &x) { return x.type == ModifierType::Armature; });
+                   layer.modifiers.insert(armature, m);
                    return OpStatus::Finished;
                  }
                  if (type != "MIRROR") {
@@ -1661,6 +1677,13 @@ void rig_operators_register()
                  }
                  Document &doc = *C.document;
                  const Modifier m = layer.modifiers[index];
+                 if (m.type == ModifierType::Bevel) {
+                   layer.drawing = drawing_bevel(layer.drawing, m);
+                   drawing_ensure_ids(layer.drawing);
+                   layer.modifiers.erase(layer.modifiers.begin() + index);
+                   C.undo_name = "Apply Bevel";
+                   return OpStatus::Finished;
+                 }
                  if (m.type == ModifierType::Mirror) {
                    const Layer *armature = layer_armature(doc, layer.id);
                    const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
