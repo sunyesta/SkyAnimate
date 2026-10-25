@@ -119,7 +119,8 @@ static bool mask_use_set(const std::string &use, MaskStep *m)
   return false;
 }
 
-/* A step's settings every operator that makes or changes steps takes: mode=, invert=, grow=, shape=
+/* A step's settings every operator that makes or changes steps takes: mode=, invert=, combine=
+ * (UNION, DIFFERENCE, INTERSECTION: how its layers make the shape), grow=, shape=
  * (and use=, fills_only=, strokes_only=), filled=, inside_stroke=, extend=, and the older outside=
  * (Subtract; inside is Add for a first step, else Subtract of the outside, as before rows),
  * mode=INTERSECT (Subtract of the outside) and expand= (grow a pixel). `first`: the card's first step
@@ -144,6 +145,10 @@ static bool mask_step_args(Context &C, MaskStep *m, bool first)
       report(ReportType::Error, "mode is ADD or SUBTRACT (invert=1 for the outside)");
       return false;
     }
+  }
+  if (op_has_arg(C, "combine") && !mask_combine_from_identifier(op_arg(C, "combine"), &m->combine)) {
+    report(ReportType::Error, "combine is UNION, DIFFERENCE or INTERSECTION");
+    return false;
   }
   if (op_has_arg(C, "expand")) {
     m->grow = op_arg_bool(C, "expand") ? 1.0f : 0.0f;
@@ -236,12 +241,27 @@ static std::string layer_names(const Document &doc, const std::vector<uint64_t> 
   return names;
 }
 
+/* Between a step's layers' names, by how they make its shape: "head + hat", "head - mouth" (the first
+ * minus the rest), "head & hat" (where both are). */
+static const char *mask_combine_joiner(MaskCombine combine)
+{
+  switch (combine) {
+    case MaskCombine::Difference:
+      return " - ";
+    case MaskCombine::Intersection:
+      return " & ";
+    case MaskCombine::Union:
+      break;
+  }
+  return " + ";
+}
+
 std::string mask_label(const Document &doc, const LayerMask &m)
 {
   static const char *const BEYOND[] = {"", " and above", " and below", " and left of it", " and right of it"};
   std::string text;
   for (const MaskStep &s : m.steps) {
-    const std::string names = layer_names(doc, s.layers, ", ");
+    const std::string names = layer_names(doc, s.layers, s.combine == MaskCombine::Union ? ", " : mask_combine_joiner(s.combine));
     text += std::string(text.empty() ? "" : ", ") + (s.mode == MaskMode::Add ? "Add " : "Subtract ") +
             (s.invert ? "outside " : "") + (names.empty() ? std::string("nothing") : names) + BEYOND[int(s.extend)];
   }
@@ -262,7 +282,7 @@ std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &laye
       std::string names;
       for (const uint64_t id : s.layers) {
         if (const Layer *l = layer_find(doc, id)) {
-          names += (names.empty() ? "" : " + ") + l->name;
+          names += (names.empty() ? "" : mask_combine_joiner(s.combine)) + l->name;
         }
       }
       if (names.empty()) {

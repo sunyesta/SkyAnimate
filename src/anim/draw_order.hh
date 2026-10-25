@@ -72,4 +72,9 @@ const Layer *draw_order_faded_group(const Document &doc, uint64_t layer);
 /* Whether `ancestor` is `layer` or holds it. */
 bool layer_inside(const Document &doc, uint64_t layer, uint64_t ancestor);
 
+/* What a click on drawing `hit` in the viewport picks to go in front of or behind, for `moving`: the
+ * outermost group holding it that holds none of them (what sits beside them in the Layers editor: a
+ * whole Eye group, not its pupil), or `hit` itself when even its own group holds one. */
+uint64_t draw_order_pick_target(const Document &doc, uint64_t hit, const std::vector<uint64_t> &moving);
+
 }  // namespace oanim

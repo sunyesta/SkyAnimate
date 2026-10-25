@@ -34,6 +34,7 @@
 #include "assets/brushes.hh"
 #include "editors/brush_editor.hh"
 #include "editors/ui.hh"
+#include "editors/text_panel.hh"
 #include "ops/edit_ops.hh"
 #include "ops/media_ops.hh"
 #include "ops/operator.hh"
@@ -51,7 +52,10 @@ enum PropertiesTab {
   TAB_REFERENCE = 5,
   TAB_MASKING = 6,
   TAB_CAMERA = 7,
-  TAB_MEDIA = 8
+  TAB_MEDIA = 8,
+  TAB_TEXT = 9,
+  TAB_SHAPE = 10,
+  TAB_BONE = 11
 };
 
 static void key_next(Context &C, Layer &layer, std::vector<std::string> paths);
@@ -467,6 +471,587 @@ static void bone_collections_panel(Context &C, Layer &armature)
   ImGui::Spacing();
 }
 
+/* Relations' Keep Animation: off by default, kept while Open Animate is open (as Parent Bone's). */
+static bool *relations_set_keep_flag()
+{
+  static bool keep = false;
+  return &keep;
+}
+
+/* Blender's bone Relations, for the active bone: its parent (a searchable list and an eyedropper; on the
+ * setup frame), Connected, Local Location, Inherit Rotation and Inherit Scale (with Keep Animation), and
+ * the bone collections it is in. */
+static void bone_relations_panel(Context &C, Layer &armature)
+{
+  Document &doc = *C.document;
+  Bone *active = bone_find(armature, armature.active_bone);
+  if (!active || !ui_panel_begin("Relations")) {
+    return;
+  }
+  const auto label = [](const char *text) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-1);
+  };
+  const bool setup = doc.frame_current == 0;
+  const std::string bone_name = active->name;
+  const auto relations_set = [&](const char *key, const std::string &value) {
+    OpArgs args{{"bone", bone_name}, {key, value}};
+    if (std::string(key) == "inherit_rotation" || std::string(key) == "inherit_scale") {
+      args["keep_animation"] = *relations_set_keep_flag() ? "1" : "0";
+    }
+    operator_call(C, "armature.bone_relations_set", args);
+    return relations_set_keep_flag();
+  };
+
+  /* Parent: hanging it from another bone keeps it where it is. */
+  const Bone *parent = bone_find(armature, active->parent);
+  label("Parent");
+  ImGui::BeginDisabled(!setup);
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
+  if (ImGui::BeginCombo("##bone_parent", parent ? parent->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+    static std::string search;
+    if (ImGui::IsWindowAppearing()) {
+      search.clear();
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-1);
+    const bool entered = ImGui::InputTextWithHint("##search", "Search bones", &search, ImGuiInputTextFlags_EnterReturnsTrue);
+    std::string needle = search;
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+    const auto matches = [&](const std::string &name) {
+      std::string lower = name;
+      std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+      return lower.find(needle) != std::string::npos;
+    };
+    if (needle.empty() && ImGui::Selectable("None", parent == nullptr)) {
+      operator_call(C, "armature.bone_parent_set", {{"bone", bone_name}, {"parent", ""}});
+    }
+    const Bone *first = nullptr;
+    for (const Bone &b : armature.bones) {
+      /* Not itself, nor anything hanging from it. */
+      if (bone_is_descendant(armature, b.id, active->id) || !matches(b.name)) {
+        continue;
+      }
+      first = first ? first : &b;
+      if (ImGui::Selectable(b.name.c_str(), parent && parent->id == b.id)) {
+        operator_call(C, "armature.bone_parent_set", {{"bone", bone_name}, {"parent", b.name}});
+      }
+    }
+    if (!first && !needle.empty()) {
+      ImGui::TextDisabled("No bone named like that");
+    }
+    if (entered && first) {
+      operator_call(C, "armature.bone_parent_set", {{"bone", bone_name}, {"parent", first->name}});
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(setup ? "The bone this one hangs from; it stays where it is"
+                            : "Switch to Setup (frame 0) to change the parent");
+  }
+  ImGui::SameLine(0, 2);
+  const uint64_t rig_id = armature.id, own = active->id;
+  if (ui_pick_button("##pick_parent", "Eyedropper: click the parent bone in the viewport",
+                     ui_bone_eyedropper_armature() == rig_id))
+  {
+    ui_bone_eyedropper_start(
+        rig_id,
+        [rig_id, own](Context &C, uint64_t picked) {
+          Layer *rig = layer_find(*C.document, rig_id);
+          const Bone *b = rig ? bone_find(*rig, own) : nullptr;
+          const Bone *up = rig ? bone_find(*rig, picked) : nullptr;
+          if (!b || !up) {
+            return true;
+          }
+          if (bone_is_descendant(*rig, up->id, b->id)) {
+            return false;
+          }
+          operator_call(C, "armature.bone_parent_set", {{"bone", b->name}, {"parent", up->name}});
+          return true;
+        },
+        [] { return std::string("Click the parent bone  |  Esc cancels"); });
+  }
+  ImGui::EndDisabled();
+  active = bone_find(armature, own);
+  if (!active) {
+    ui_panel_end();
+    return;
+  }
+  parent = bone_find(armature, active->parent);
+
+  label("");
+  ImGui::BeginDisabled(!setup || !parent);
+  bool connected = active->connected;
+  if (ImGui::Checkbox("Connected", &connected)) {
+    relations_set("connected", connected ? "1" : "0");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(!parent  ? "Connected needs a parent"
+                      : !setup ? "Switch to Setup (frame 0) to connect it"
+                               : "Its head sits on the parent's tail and moves with it");
+  }
+  ImGui::EndDisabled();
+
+  active = bone_find(armature, own);
+  label("");
+  bool local_location = active->local_location;
+  if (ImGui::Checkbox("Local Location", &local_location)) {
+    relations_set("local_location", local_location ? "1" : "0");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Its Transform reads along the bone as it rests (X down it); off, along its parent's axes.\n"
+                      "Only the numbers shown change: the keys and the pose stay");
+  }
+
+  active = bone_find(armature, own);
+  label("");
+  ImGui::BeginDisabled(!parent);
+  bool inherit_rotation = active->inherit_rotation;
+  bool *keep = nullptr;
+  if (ImGui::Checkbox("Inherit Rotation", &inherit_rotation)) {
+    keep = relations_set("inherit_rotation", inherit_rotation ? "1" : "0");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Posing, it turns as its parent turns; off, it keeps its own angle in the picture (Moho's\n"
+                      "Independent Angle). Its head still goes where the parent takes it");
+  }
+  active = bone_find(armature, own);
+  label("Inherit Scale");
+  const char *scales[] = {"Full", "Uniform", "None"};
+  const char *scale_ids[] = {"FULL", "UNIFORM", "NONE"};
+  const int scale = int(active->inherit_scale);
+  if (ImGui::BeginCombo("##inherit_scale", scales[scale])) {
+    for (int k = 0; k < 3; k++) {
+      if (ImGui::Selectable(scales[k], k == scale) && k != scale) {
+        keep = relations_set("inherit_scale", scale_ids[k]);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("How much of its parent's change in size it takes, posing: Full (its squash and stretch\n"
+                      "too), Uniform (only its overall size) or None (it keeps its own size)");
+  }
+  ImGui::EndDisabled();
+  (void)keep;
+  /* Keep Animation for the two above: off by default, kept while Open Animate is open. */
+  bool *keep_animation = relations_set_keep_flag();
+  label("");
+  ImGui::BeginDisabled(!parent);
+  ImGui::Checkbox("Keep Animation##relations", keep_animation);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Changing Inherit Rotation or Scale keeps every keyed frame of every action looking as it did:\n"
+                      "the bone's angle and scale are keyed back there");
+  }
+  ImGui::EndDisabled();
+
+  /* The bone collections it is in, with their eye and star (as the Bone Collections list). */
+  active = bone_find(armature, own);
+  label("Collections");
+  bool any = false;
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float h = ImGui::GetFrameHeight();
+  const ImU32 icon = ImGui::GetColorU32(ImGuiCol_Text), dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  for (const BoneCollection &c : armature.bone_collections) {
+    if (std::find(active->collections.begin(), active->collections.end(), c.id) == active->collections.end()) {
+      continue;
+    }
+    if (any) {
+      label("");
+    }
+    any = true;
+    ImGui::PushID(int(c.id));
+    const float w = ImGui::GetContentRegionAvail().x;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(c.name.c_str());
+    ImGui::SameLine(std::max(0.0f, w - h * 2.0f));
+    const ImVec2 eye_at = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##eye", ImVec2(h, h))) {
+      operator_call(C, "armature.collection_set", {{"collection", c.name}, {"visible", c.visible ? "0" : "1"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show or hide its bones, and its drawings' points and wires");
+    }
+    eye_icon(dl, ImVec2(eye_at.x + h * 0.5f, eye_at.y + h * 0.5f), h * 0.32f, c.visible, ImGui::IsItemHovered() ? icon : dim);
+    ImGui::SameLine(0.0f, 0.0f);
+    const ImVec2 star_at = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##solo", ImVec2(h, h))) {
+      operator_call(C, "armature.collection_set", {{"collection", c.name}, {"solo", c.solo ? "0" : "1"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Solo: while any collection is soloed, only soloed ones show");
+    }
+    star_icon(dl, ImVec2(star_at.x + h * 0.5f, star_at.y + h * 0.5f), h * 0.32f, c.solo,
+              c.solo || ImGui::IsItemHovered() ? icon : dim);
+    ImGui::PopID();
+    active = bone_find(armature, own);
+    if (!active) {
+      break;
+    }
+  }
+  if (!any) {
+    ImGui::TextDisabled("None (Assign in Bone Collections, or M)");
+  }
+  ui_panel_end();
+}
+
+/* A two-driver fix's poses as a map (Live2D's linked parameter grid): its first smart action across, its
+ * second up, each from rest (0%) to all of it (100%); a dot per pose (ringed while it's edited), a cross where
+ * the pose is now. Click a dot to edit that pose, right-click it to remove it, click elsewhere to add a pose
+ * there. */
+static void fix_pose_map(Context &C, const Layer &owner, const FixAction &fix, const std::vector<float> &now, int edited)
+{
+  const float font = ImGui::GetFontSize();
+  const float side = std::min(ImGui::GetContentRegionAvail().x, font * 11.0f);
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  const float pad = font * 0.6f;
+  ImGui::InvisibleButton("##pose_map", ImVec2(side, side));
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 a(p0.x + pad, p0.y + pad), b(p0.x + side - pad, p0.y + side - pad);
+  const auto to_screen = [&](float x, float y) { return ImVec2(a.x + (b.x - a.x) * x, b.y - (b.y - a.y) * y); };
+  const auto to_share = [&](ImVec2 m) {
+    return std::pair<float, float>(std::clamp((m.x - a.x) / (b.x - a.x), 0.0f, 1.0f),
+                                   std::clamp((b.y - m.y) / (b.y - a.y), 0.0f, 1.0f));
+  };
+  dl->AddRectFilled(p0, ImVec2(p0.x + side, p0.y + side), ImGui::GetColorU32(ImGuiCol_FrameBg), 4.0f);
+  for (int g = 1; g < 4; g++) {
+    const float t = float(g) * 0.25f;
+    const ImU32 grid = ImGui::GetColorU32(ImGuiCol_Border, g == 2 ? 0.9f : 0.5f);
+    dl->AddLine(to_screen(t, 0.0f), to_screen(t, 1.0f), grid);
+    dl->AddLine(to_screen(0.0f, t), to_screen(1.0f, t), grid);
+  }
+  dl->AddRect(a, b, ImGui::GetColorU32(ImGuiCol_Border));
+  /* Its two smart actions along the edges; rest is the bottom-left corner. */
+  const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  const ImVec2 x_size = ImGui::CalcTextSize(fix.drivers[0].c_str());
+  dl->AddText(ImVec2(b.x - x_size.x - 2.0f, b.y - font - 2.0f), dim, fix.drivers[0].c_str());
+  dl->AddText(ImVec2(a.x + 3.0f, a.y + 2.0f), dim, fix.drivers[1].c_str());
+  dl->AddText(ImVec2(a.x + 3.0f, b.y - font - 2.0f), dim, "rest");
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  int under = -1;
+  float under_d = font * 0.7f;
+  for (size_t k = 0; k < fix.poses.size(); k++) {
+    const std::vector<float> sh = fix_pose_shares(owner, fix, fix.poses[k]);
+    const ImVec2 at = to_screen(sh[0], sh[1]);
+    const float d = std::hypot(at.x - mouse.x, at.y - mouse.y);
+    if (hovered && d < under_d) {
+      under = int(k);
+      under_d = d;
+    }
+  }
+  /* Where it is now. */
+  if (now.size() >= 2) {
+    const ImVec2 at = to_screen(std::clamp(now[0], 0.0f, 1.0f), std::clamp(now[1], 0.0f, 1.0f));
+    const ImU32 col = IM_COL32(0xf0, 0xf0, 0xf0, 230);
+    dl->AddLine(ImVec2(at.x - 6.0f, at.y), ImVec2(at.x + 6.0f, at.y), col, 1.5f);
+    dl->AddLine(ImVec2(at.x, at.y - 6.0f), ImVec2(at.x, at.y + 6.0f), col, 1.5f);
+  }
+  for (size_t k = 0; k < fix.poses.size(); k++) {
+    const std::vector<float> sh = fix_pose_shares(owner, fix, fix.poses[k]);
+    const ImVec2 at = to_screen(sh[0], sh[1]);
+    const float r = font * 0.32f;
+    dl->AddCircleFilled(at, r, int(k) == under ? UI_FIX_COLOR : UI_FIX_ACTIVE_COLOR);
+    dl->AddCircle(at, r, UI_FIX_COLOR, 0, 1.5f);
+    if (int(k) == edited) {
+      dl->AddCircle(at, r + 3.5f, IM_COL32(0xff, 0xff, 0xff, 230), 0, 2.0f);
+    }
+    /* Its number beside it, on the inside near the right edge. */
+    const std::string num = std::to_string(k + 1);
+    const float num_w = ImGui::CalcTextSize(num.c_str()).x;
+    const float num_x = at.x + r + 3.0f + num_w > p0.x + side - 2.0f ? at.x - r - 3.0f - num_w : at.x + r + 3.0f;
+    dl->AddText(ImVec2(num_x, at.y - font * 0.5f), UI_FIX_COLOR, num.c_str());
+  }
+  /* The pose under the mouse, or where a click would add one. */
+  if (hovered) {
+    if (under >= 0) {
+      ImGui::SetTooltip("Pose %d: %s (frame %d)\nClick to edit it  |  right-click to remove it", under + 1,
+                        fix_pose_label(owner, fix, fix.poses[size_t(under)]).c_str(), fix.poses[size_t(under)].frame);
+    }
+    else {
+      const auto [x, y] = to_share(mouse);
+      ImGui::SetTooltip("%s %d%%  \xC2\xB7  %s %d%%\nClick to add a pose here", fix.drivers[0].c_str(),
+                        int(std::lround(std::max(x, FIX_COUNTS_FROM) * 100.0f)), fix.drivers[1].c_str(),
+                        int(std::lround(std::max(y, FIX_COUNTS_FROM) * 100.0f)));
+    }
+  }
+  static int removing = -1;
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    if (under >= 0) {
+      operator_call(C, "anim.action_set", {{"name", fix.name}, {"frame", std::to_string(fix.poses[size_t(under)].frame)}});
+    }
+    else {
+      const auto [x, y] = to_share(mouse);
+      char shares[64];
+      std::snprintf(shares, sizeof(shares), "%.4f,%.4f", std::max(x, FIX_COUNTS_FROM), std::max(y, FIX_COUNTS_FROM));
+      operator_call(C, "anim.fix_pose_add", {{"name", fix.name}, {"shares", shares}});
+    }
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && under >= 0) {
+    removing = under;
+    ImGui::OpenPopup("##pose_map_menu");
+  }
+  if (ui_menu_begin("##pose_map_menu")) {
+    const bool can = fix.poses.size() > 1;
+    if (ui_menu_item(("Remove Pose " + std::to_string(removing + 1)).c_str(), nullptr, false, can)) {
+      operator_call(C, "anim.fix_pose_remove", {{"name", fix.name}, {"pose", std::to_string(removing + 1)}});
+    }
+    if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("It's the fix's only pose: delete the fix instead");
+    }
+    ui_menu_end();
+  }
+}
+
+/* Fix actions (correctives: Maya's combination shapes, Blender's corrective shape keys), for the bone layer
+ * that owns them. While one is edited: what it fixes, its poses (a map for two smart actions), the pose
+ * shown, and how to key it. Otherwise each fix with how strongly it plays now, and fixing the pose now. */
+static void fix_actions_panel(Context &C, Layer &owner)
+{
+  Document &doc = *C.document;
+  const FixAction *editing = doc.action_layer == owner.id && !doc.action.empty() ? fix_action_find(owner, doc.action)
+                                                                                 : nullptr;
+  if (!editing && owner.fix_actions.empty() && smart_actions_counting(owner).size() < 2 &&
+      std::none_of(owner.actions.begin(), owner.actions.end(), [&](const std::string &n) { return smart_action_bone(owner, n); }))
+  {
+    return; /* No smart actions to fix: nothing to show. */
+  }
+  const std::string header = editing ? "Fix Action: editing " + editing->name : "Fix Actions";
+  if (!ui_panel_begin("Fix Actions", header, editing ? UI_FIX_COLOR : 0u)) {
+    return;
+  }
+  const auto label = [](const char *text) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-1);
+  };
+  const auto percent = [](float share) { return std::to_string(int(std::lround(share * 100.0f))) + "%"; };
+  const auto tip = [](const char *text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", text);
+    }
+  };
+  const ImVec4 fix_col = ImGui::ColorConvertU32ToFloat4(UI_FIX_COLOR);
+  const ImVec4 broken_col = ImGui::ColorConvertU32ToFloat4(UI_BROKEN_COLOR);
+  /* Where each of a fix's drivers is now, as shares (0 with one not playing). */
+  const auto shares_now = [&](const FixAction &f, const std::vector<std::pair<std::string, float>> &playing) {
+    FixPose probe;
+    for (const std::string &d : f.drivers) {
+      const auto it = std::find_if(playing.begin(), playing.end(), [&](const auto &pl) { return pl.first == d; });
+      probe.at.push_back(it == playing.end() ? 0.0f : it->second);
+    }
+    return fix_pose_shares(owner, f, probe);
+  };
+  /* Its poses: a map for two smart actions, a list for more. */
+  const auto poses_ui = [&](const FixAction &f, const std::vector<float> &now, int edited) {
+    if (f.drivers.size() == 2) {
+      label("Poses");
+      fix_pose_map(C, owner, f, now, edited);
+      return;
+    }
+    for (size_t k = 0; k < f.poses.size(); k++) {
+      ImGui::PushID(int(k));
+      label(k == 0 ? "Poses" : "");
+      const std::string text = std::to_string(k + 1) + ": " + fix_pose_label(owner, f, f.poses[k]);
+      if (ImGui::Selectable(text.c_str(), int(k) == edited)) {
+        operator_call(C, "anim.action_set", {{"name", f.name}, {"frame", std::to_string(f.poses[k].frame)}});
+      }
+      tip("Edit this pose (its frame in the fix)");
+      ImGui::PopID();
+    }
+  };
+
+  if (editing) {
+    const std::string name = editing->name;
+    const int pose = fix_pose_on_frame(*editing, doc.frame_current);
+    /* How to work in it, first: the one thing to know. */
+    label("");
+    ImGui::PushTextWrapPos(0.0f);
+    if (pose >= 0) {
+      ImGui::TextColored(fix_col, "Pose %d of %d. Its smart bones are held at it: key what should change. Exactly here "
+                         "it plays as keyed; between poses they blend.", pose + 1, int(editing->poses.size()));
+    }
+    else {
+      ImGui::TextColored(broken_col, "Frame %d isn't one of its poses: keys here don't play. Pick a pose below.",
+                         doc.frame_current);
+    }
+    ImGui::PopTextWrapPos();
+
+    label("Fixes");
+    std::string drivers;
+    for (const std::string &d : editing->drivers) {
+      drivers += (drivers.empty() ? "" : " \xC3\x97 ") + d;
+    }
+    ImGui::TextUnformatted(drivers.c_str());
+    tip("The smart actions this fixes playing together. Fixes for fewer of them play under it while you key it");
+
+    const int held = fix_pose_held(*editing, doc.frame_current);
+    const std::vector<float> now = held >= 0 ? fix_pose_shares(owner, *editing, editing->poses[size_t(held)]) : std::vector<float>();
+    poses_ui(*editing, now, pose);
+
+    if (pose >= 0) {
+      label("This Pose");
+      ImGui::TextUnformatted(fix_pose_label(owner, *editing, editing->poses[size_t(pose)]).c_str());
+      label("");
+      ImGui::BeginDisabled(editing->poses.size() < 2);
+      if (ImGui::Button("Remove This Pose", ImVec2(-1, 0))) {
+        operator_call(C, "anim.fix_pose_remove", {{"name", name}, {"pose", std::to_string(pose + 1)}});
+      }
+      ImGui::EndDisabled();
+      tip(editing->poses.size() < 2 ? "It's the fix's only pose: delete the fix instead"
+                                    : "Remove this pose and its keys; the fix blends between the others");
+    }
+    label("");
+    if (ImGui::Button("Back to Mainline", ImVec2(-1, 0))) {
+      operator_call(C, "anim.action_set", {{"name", ""}});
+    }
+    tip("Stop editing the fix. On the mainline it plays by itself whenever its smart bones turn together");
+    ui_panel_end();
+    return;
+  }
+
+  /* Not editing one: each fix, how strongly it plays now, and what to do with it. */
+  const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(owner);
+  const std::vector<std::pair<std::string, float>> counting = smart_actions_counting(owner);
+  const bool in_smart = !doc.action.empty() && doc.action_layer == owner.id && action_adds(owner, doc.action);
+  std::string doomed;
+  for (const FixAction &f : owner.fix_actions) {
+    ImGui::PushID(f.name.c_str());
+    const std::string broken = fix_action_broken(owner, f);
+    const float strength = broken.empty() ? fix_action_strength(owner, f, playing) : 0.0f;
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    if (!broken.empty()) {
+      ImGui::TextColored(broken_col, "%s", f.name.c_str());
+    }
+    else if (strength > 0.0f) {
+      ImGui::TextColored(fix_col, "%s", f.name.c_str());
+    }
+    else {
+      ImGui::TextUnformatted(f.name.c_str());
+    }
+    std::string drivers;
+    for (const std::string &d : f.drivers) {
+      drivers += (drivers.empty() ? "" : " and ") + d;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Fixes %s turning together: %d pose%s", drivers.c_str(), int(f.poses.size()),
+                        f.poses.size() == 1 ? "" : "s");
+    }
+    ImGui::TableSetColumnIndex(1);
+    const float h = ImGui::GetFrameHeight(), spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float edit_w = ImGui::CalcTextSize("Edit").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float bar_w = ImGui::GetContentRegionAvail().x - edit_w - h - spacing * 2.0f;
+    if (!broken.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, UI_BROKEN_COLOR);
+      ImGui::ProgressBar(0.0f, ImVec2(bar_w, 0), "can't play");
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Can't play: %s. Its keys are kept; delete it, or bring the smart action back", broken.c_str());
+      }
+    }
+    else {
+      const std::string text = strength > 0.0f ? percent(strength) + " now" : "not playing";
+      ImGui::PushStyleColor(ImGuiCol_PlotHistogram, UI_FIX_ACTIVE_COLOR);
+      ImGui::ProgressBar(strength, ImVec2(bar_w, 0), text.c_str());
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How much of it plays on this frame: all of it at or past one of its poses, none while any of "
+                          "%s rests", drivers.c_str());
+      }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Edit")) {
+      operator_call(C, "anim.action_set", {{"name", f.name}});
+    }
+    tip("Open it in the timeline on its pose nearest the pose now, its smart bones held there");
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##more", ImGuiDir_Down)) {
+      ImGui::OpenPopup("##fix_more");
+    }
+    tip("More: Delete");
+    if (ui_menu_begin("##fix_more")) {
+      if (ui_menu_item("Delete")) {
+        doomed = f.name;
+      }
+      ui_menu_end();
+    }
+    ImGui::PopID();
+  }
+
+  /* Fixing the pose now: here as in the timeline's Actions menu, under what plays. */
+  const bool can_fix = counting.size() >= 2 && !in_smart && doc.frame_current != 0;
+  const FixAction *for_all = nullptr;
+  if (counting.size() >= 2 && !in_smart) {
+    label("Playing Now");
+    std::string line;
+    std::vector<std::string> names;
+    for (const auto &[n, t] : counting) {
+      const float l = smart_action_length(owner, n);
+      line += (line.empty() ? "" : "   \xC2\xB7   ") + n + " " + percent(l > 0.0f ? std::min(t / l, 1.0f) : 0.0f);
+      names.push_back(n);
+    }
+    std::sort(names.begin(), names.end());
+    for (const FixAction &f : owner.fix_actions) {
+      std::vector<std::string> d = f.drivers;
+      std::sort(d.begin(), d.end());
+      for_all = d == names ? &f : for_all;
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", line.c_str());
+    ImGui::PopTextWrapPos();
+    tip("The smart actions playing on this frame (turned at least 5%), each as far as its bone has turned");
+  }
+  const int near_pose = for_all ? fix_pose_near(owner, *for_all, counting) : -1;
+  label("");
+  ImGui::BeginDisabled(!can_fix);
+  const std::string button = !for_all     ? std::string("New Fix Action for This Pose")
+                             : near_pose >= 0 ? "Edit Pose " + std::to_string(near_pose + 1) + " of " + for_all->name
+                                         : "Add This Pose to " + for_all->name;
+  if (ImGui::Button(button.c_str(), ImVec2(-1, 0))) {
+    operator_call(C, "anim.fix_action_new");
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (can_fix) {
+      ImGui::SetTooltip(!for_all ? "A fix plays by itself whenever these play together. It opens with them held right "
+                                   "here, to key the correction on top"
+                        : near_pose >= 0 ? "The fix has this pose already: open it to change the correction"
+                                    : "Add this pose to the fix, starting from what it plays here now, and key the "
+                                      "correction. Each pose is exact; between them they blend");
+    }
+    else {
+      ImGui::SetTooltip(in_smart ? "Fix a pose from the mainline, not inside a smart action"
+                        : doc.frame_current == 0 ? "Frame 0 is the rest pose: go to another frame"
+                                                 : "Turn two or more smart bones at once (each at least 5%, on the "
+                                                   "mainline) where the result doesn't look right, then fix that pose");
+    }
+  }
+  /* The fix for what plays now: where this pose is among its poses. */
+  if (for_all && can_fix) {
+    poses_ui(*for_all, shares_now(*for_all, counting), near_pose);
+  }
+  if (owner.fix_actions.empty() && !can_fix) {
+    label("");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Turn two smart bones together where they don't look right, then fix that pose.");
+    ImGui::PopTextWrapPos();
+  }
+  ui_panel_end();
+  if (!doomed.empty()) {
+    operator_call(C, "anim.action_delete", {{"name", doomed}});
+  }
+}
+
 /* A bone layer's skeleton (as a tree, active bone highlighted) and the active bone. */
 static void bones_panel(Context &C, Layer &armature)
 {
@@ -506,7 +1091,18 @@ static void bones_panel(Context &C, Layer &armature)
     }
     ImGui::EndChild();
   }
+  ui_panel_end();
+}
+
+/* Blender's Bone tab: the active bone's own settings (its name, where it is on the setup frame or how
+ * it is posed on others, its IK). */
+static void bone_panel(Context &C, Layer &armature)
+{
+  Document &doc = *C.document;
   Bone *active = bone_find(armature, armature.active_bone);
+  if (!active || !ui_panel_begin("Bone")) {
+    return;
+  }
   if (active) {
     const auto label = [](const char *text) {
       ImGui::TableNextRow();
@@ -517,33 +1113,16 @@ static void bones_panel(Context &C, Layer &armature)
       ImGui::SetNextItemWidth(-1);
     };
     label("Name");
+    /* Its smart actions are named after it: they (and the fixes they drive) follow a rename. */
+    static std::string renaming_from;
+    const std::string name_before = active->name;
     ImGui::InputText("##bone_name", &active->name);
+    if (ImGui::IsItemActivated()) {
+      renaming_from = name_before;
+    }
     if (ImGui::IsItemDeactivatedAfterEdit()) {
+      armature_bone_renamed(doc, armature.id, renaming_from, active->name);
       C.undo->push("Rename Bone", doc);
-    }
-    /* Reparenting keeps the bone where it is (Setup frame only, as other rig changes). */
-    const Bone *parent = bone_find(armature, active->parent);
-    label("Parent");
-    ImGui::BeginDisabled(doc.frame_current != 0);
-    if (ImGui::BeginCombo("##bone_parent", parent ? parent->name.c_str() : "None")) {
-      if (ImGui::Selectable("None", parent == nullptr)) {
-        operator_call(C, "armature.bone_parent_set", {{"bone", active->name}, {"parent", ""}});
-      }
-      for (const Bone &b : armature.bones) {
-        /* Not itself, nor anything hanging from it. */
-        if (bone_is_descendant(armature, b.id, active->id)) {
-          continue;
-        }
-        if (ImGui::Selectable(b.name.c_str(), parent && parent->id == b.id)) {
-          operator_call(C, "armature.bone_parent_set", {{"bone", active->name}, {"parent", b.name}});
-        }
-      }
-      ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0) to change the parent"
-                                               : "The bone this one hangs from; it stays where it is");
     }
     active = bone_find(armature, armature.active_bone);
     if (!active) {
@@ -557,7 +1136,7 @@ static void bones_panel(Context &C, Layer &armature)
       const int state = layer_key_state(armature, {bone_path + channel}, doc.frame_current);
       label(name);
       ImGui::SetNextItemWidth(-ui_key_button_width());
-      const int pushed = ui_key_tint_push(state);
+      const int pushed = ui_key_tint_push(state | layer_smart_state(armature, {bone_path + channel}));
       const int driven = ui_driver_field_begin(C, armature.id, bone_path + channel, -1);
       field();
       ui_driver_typed(C, armature.id, bone_path + channel, -1);
@@ -621,14 +1200,29 @@ static void bones_panel(Context &C, Layer &armature)
       /* Any other frame poses it, as Blender's pose mode: Transform and Angle are the change from
        * the setup pose (0 at rest), Scale its scale; the keys keep the bone's own values, as Moho's. */
       const float setup_angle = bone_setup_angle(*active);
+      /* A smart bone of the fix being edited is held at the fix's pose: shown, not changed. */
+      const bool held = bone_held_by_fix(doc, armature, *active);
+      if (held) {
+        label("");
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_FIX_COLOR),
+                           "Held at the fix's pose: pick another pose, or go back to the mainline to turn it.");
+        ImGui::PopTextWrapPos();
+        ImGui::BeginDisabled();
+      }
       keyed_field("Transform", "position", [&] {
-        float2 moved = bone_transform_from_position(*active, active->position);
+        /* Local Location (Relations): along the bone as it rests; off, along its parent. */
+        const bool local = active->local_location;
+        float2 moved = local ? bone_transform_from_position(*active, active->position)
+                             : active->position - active->setup_position;
         if (ImGui::DragFloat2("##bone_position", &moved.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
-          active->position = bone_position_from_transform(*active, moved);
+          active->position = local ? bone_position_from_transform(*active, moved) : active->setup_position + moved;
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("How far its base has moved from the setup pose, along the bone as it rests (X) and "
-                            "across it (Y)");
+          ImGui::SetTooltip(local ? "How far its base has moved from the setup pose, along the bone as it rests (X) and "
+                                    "across it (Y)"
+                                  : "How far its base has moved from the setup pose, along its parent's axes (Local "
+                                    "Location is off)");
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
           C.undo->push("Bone Transform", doc);
@@ -654,6 +1248,32 @@ static void bones_panel(Context &C, Layer &armature)
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
           C.undo->push("Bone Scale", doc);
+        }
+      });
+      if (held) {
+        ImGui::EndDisabled();
+      }
+    }
+    /* A look target's Depth (Look At constraints aim at it): how far in front of the face it stands. */
+    bool look_target = false;
+    for (const Bone &b : armature.bones) {
+      for (const BoneConstraint &bc : b.constraints) {
+        look_target = look_target || (bc.type == BoneConstraintType::LookAt && bc.target == active->id);
+      }
+    }
+    if (look_target) {
+      keyed_field("Depth", "depth", [&] {
+        if (ImGui::DragFloat("##bone_depth", &active->depth, 0.005f, 0.001f, 10000.0f, "%.3f",
+                             ImGuiSliderFlags_AlwaysClamp))
+        {
+          active->depth = std::max(active->depth, 0.001f);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("How far in front of the face this look target stands: close, the eyes looking at it\n"
+                            "cross; far, they look the same way. Keyable");
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          C.undo->push("Look Depth", doc);
         }
       });
     }
@@ -947,13 +1567,14 @@ static void key_next(Context &C, Layer &layer, std::vector<std::string> paths)
 {
   const int state = layer_key_state(layer, paths, C.document->frame_current);
   const int pin = pin_state(layer, paths, state);
+  const int smart = layer_smart_state(layer, paths);
   std::string joined;
   for (const std::string &p : paths) {
     joined += (joined.empty() ? "" : "|") + p;
   }
   const uint64_t id = layer.id;
   ui_key_next(
-      state,
+      state | smart,
       [&C, id, joined]() {
         operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(id)}, {"paths", joined}});
       },
@@ -1383,6 +2004,9 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
    * given Own Bones (the Reference tab). */
   const bool same_as_original = layer.is_reference() && layer.reference.match_original;
   ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original);
+  /* Keep Animation (the checkbox under it): a change of bone keys the layer where it showed. */
+  static bool keep_animation = false;
+  const std::string keep_arg = keep_animation ? "1" : "0";
   /* The eyedropper beside it: click the bone in the viewport. */
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
   if (ImGui::BeginCombo("##parent_bone", parent ? parent->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
@@ -1404,7 +2028,7 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
       return lower.find(needle) != std::string::npos;
     };
     if (needle.empty() && ImGui::Selectable("None", !parent)) {
-      operator_call(C, "layer.parent_bone_set", {{"bone", ""}});
+      operator_call(C, "layer.parent_bone_set", {{"bone", ""}, {"keep_animation", keep_arg}});
     }
     const Bone *first = nullptr;
     for (const Bone &b : armature.bones) {
@@ -1413,14 +2037,14 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
       }
       first = first ? first : &b;
       if (ImGui::Selectable(b.name.c_str(), parent && b.id == parent->id)) {
-        operator_call(C, "layer.parent_bone_set", {{"bone", b.name}});
+        operator_call(C, "layer.parent_bone_set", {{"bone", b.name}, {"keep_animation", keep_arg}});
       }
     }
     if (!first && !needle.empty()) {
       ImGui::TextDisabled("No bone named like that");
     }
     if (entered && first) {
-      operator_call(C, "layer.parent_bone_set", {{"bone", first->name}});
+      operator_call(C, "layer.parent_bone_set", {{"bone", first->name}, {"keep_animation", keep_arg}});
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndCombo();
@@ -1433,12 +2057,12 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     const std::string layer_name = layer.name;
     ui_bone_eyedropper_start(
         armature.id,
-        [layer_id](Context &C, uint64_t bone_id) {
+        [layer_id, keep_arg](Context &C, uint64_t bone_id) {
           const Layer *rig = layer_armature(*C.document, layer_id);
           const Bone *bone = rig ? bone_find(*rig, bone_id) : nullptr;
           if (bone) {
             /* As the dropdown: the active and selected layers. */
-            operator_call(C, "layer.parent_bone_set", {{"bone", bone->name}});
+            operator_call(C, "layer.parent_bone_set", {{"bone", bone->name}, {"keep_animation", keep_arg}});
           }
           return true;
         },
@@ -1457,6 +2081,18 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
       ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0)"
                                                : "The whole layer follows this bone, as parenting to a bone in Blender");
     }
+  }
+  /* Keep Animation: changing the bone leaves the layer where it showed on every keyed frame (Keep
+   * Poses' reverse: the setup frame is left alone, the poses are kept). */
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(1);
+  ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original || layer.points_follow_bone());
+  ImGui::Checkbox("Keep Animation##parent_keep", &keep_animation);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Changing the parent bone keeps the layer where it shows on every keyed frame: its position, "
+                      "rotation and scale are keyed again there against the new bone.\nOff, it follows the new "
+                      "bone's motion from its setup pose (Deform: Layer only)");
   }
   /* Deform: what the bone moves, the layer as a whole or its points. A group moves as a whole. */
   ImGui::TableNextRow();
@@ -1497,6 +2133,23 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     ImGui::PopStyleVar();
     ImGui::EndDisabled();
   }
+  /* Bone Follows Selection: the parent bone keyed onto the selection on each of its keyed frames. */
+  if (layer.has_drawing() || layer.is_group()) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::BeginDisabled(!parent || same_as_original || (doc.frame_current == 0 && doc.action.empty()));
+    if (ImGui::Button("Bone Follows Selection", ImVec2(-1, 0))) {
+      operator_call(C, "layer.bone_follow_selection");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", !parent ? "With a Parent Bone: key it where the selection shows"
+                              : "On every frame the selected points (all, when none are) are keyed in this timeline,\n"
+                                "key the parent bone where they show, keeping the drawings where they are (Move Only\n"
+                                "Bones). For a bone that follows a feature through a smart action, as an eye through a\n"
+                                "head turn. Keep Offset and Fit (Move & Turn, Move, Turn & Scale) in Adjust Last Operation");
+    }
+  }
   if (layer.type == LayerType::Vector) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
@@ -1525,20 +2178,27 @@ static constexpr ImU32 COL_MOD_ICON = IM_COL32(0xd0, 0xd0, 0xd0, 255);
 static constexpr const char *MODIFIER_PAYLOAD = "OANIM_MODIFIER";
 
 /* A small square toggle with a drawn icon, blue when on, as Blender's header toggles. */
-static bool icon_toggle(const char *id, bool on, const char *tooltip, void (*icon)(ImDrawList *, ImVec2, float))
+/* `driven`: wrapped in ui_driver_field_begin / _end and driven, so it takes the driven field's colour
+ * (on dimmed when off) and leaves its tooltip to the driver's, and a click changes nothing: the
+ * driver would put it back. */
+static bool icon_toggle(const char *id, bool on, const char *tooltip, void (*icon)(ImDrawList *, ImVec2, float),
+                        bool driven = false)
 {
   const float h = ImGui::GetFrameHeight();
   const ImVec2 at = ImGui::GetCursorScreenPos();
   const bool pressed = ImGui::InvisibleButton(id, ImVec2(h, h));
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  const ImU32 back = on ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
-                        : ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
+  ImU32 back = on ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                  : ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
+  if (driven) {
+    back = ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg, on ? 1.0f : 0.45f);
+  }
   dl->AddRectFilled(at, ImVec2(at.x + h, at.y + h), back, 3.0f);
   icon(dl, ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.32f);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+  if (!driven && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("%s", tooltip);
   }
-  return pressed;
+  return pressed && !driven;
 }
 
 static void icon_monitor(ImDrawList *dl, ImVec2 c, float s)
@@ -1563,6 +2223,18 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
                     COL_MOD_ICON, 1.3f);
     dl->AddTriangleFilled(ImVec2(c.x + s * 0.15f, c.y - s), ImVec2(c.x + s, c.y + s), ImVec2(c.x + s * 0.15f, c.y + s),
                           COL_MOD_ICON);
+  }
+  else if (type == ModifierType::Subdivide) {
+    /* A curve with points along it. */
+    ImVec2 pts[7];
+    for (int k = 0; k < 7; k++) {
+      const float t = float(k) / 6.0f;
+      pts[k] = ImVec2(c.x - s + 2.0f * s * t, c.y + s * 0.6f * std::sin(t * 6.2831853f));
+    }
+    dl->AddPolyline(pts, 7, COL_MOD_ICON, 0, 1.3f);
+    for (int k = 0; k < 7; k += 2) {
+      dl->AddCircleFilled(pts[k], s * 0.18f, COL_MOD_ICON);
+    }
   }
   else if (type == ModifierType::Bevel) {
     /* A square with its corner cut off. */
@@ -1924,11 +2596,12 @@ static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   /* Smoothing: keyable, with its key button, as a mask's Reach. */
   const std::string path = "modifiers[" + idx + "].smoothing";
   const int key_state = layer_key_state(layer, {path}, doc.frame_current);
+  const int smart_smoothing = layer_smart_state(layer, {path});
   modifier_row_label("Smoothing", column,
                      "Rounds the corners where the outlines meet, as a radius: 0 keeps them sharp. Only there: the "
                      "shapes' own corners stay as drawn. It can be keyed");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-  const int tint = ui_key_tint_push(key_state);
+  const int tint = ui_key_tint_push(key_state | smart_smoothing);
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   float smoothing = m.merge_smoothing;
   if (ImGui::DragFloat("##smoothing", &smoothing, 0.001f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
@@ -2005,7 +2678,7 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   const int key_state = layer_key_state(layer, {path}, doc.frame_current);
   modifier_row_label("Amount", column, "How big the cuts are (Width Type says how it's measured). It can be keyed");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-  const int tint = ui_key_tint_push(key_state);
+  const int tint = ui_key_tint_push(key_state | layer_smart_state(layer, {path}));
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   const bool percent = m.bevel_width == BevelWidth::Percent;
   float amount = m.bevel_amount;
@@ -2126,6 +2799,135 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   }
 }
 
+/* Two or three joined buttons, the picked one blue, as the bone Shape selector (Bone | Pin | Custom).
+ * Returns the one clicked, or -1. */
+static int segmented_choice(const char *id, int picked, const char *const *names, const char *const *tips, int count,
+                            float width)
+{
+  ImGui::PushID(id);
+  const float gap = 1.0f;
+  const float w = (width - float(count - 1) * gap) / float(count);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, ImGui::GetStyle().ItemSpacing.y));
+  int clicked = -1;
+  for (int k = 0; k < count; k++) {
+    if (k > 0) {
+      ImGui::SameLine();
+    }
+    const bool on = picked == k;
+    if (on) {
+      const ImVec4 blue = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+      ImGui::PushStyleColor(ImGuiCol_Button, blue);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(blue.x * 1.15f, blue.y * 1.15f, blue.z * 1.15f, blue.w));
+    }
+    if (ImGui::Button(names[k], ImVec2(w, 0.0f)) && !on) {
+      clicked = k;
+    }
+    if (on) {
+      ImGui::PopStyleColor(2);
+    }
+    if (tips && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", tips[k]);
+    }
+  }
+  ImGui::PopStyleVar();
+  ImGui::PopID();
+  return clicked;
+}
+
+static void subdivide_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+{
+  Document &doc = *C.document;
+  bool done = false;
+  /* The value column's width, from where the row's label left the cursor. */
+  const auto width = []() { return ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f; };
+
+  static const char *const SPLIT_NAMES[] = {"By Length", "By Count"};
+  static const char *const SPLIT_TIPS[] = {
+      "A new point at least every Spacing along each segment: long segments get more, short ones none. Bends are "
+      "equally smooth everywhere",
+      "Each segment split into the same number of pieces"};
+  modifier_row_label("Split", column, "How the segments are split");
+  if (const int k = segmented_choice("##split", m.subdiv_by_length ? 0 : 1, SPLIT_NAMES, SPLIT_TIPS, 2, width()); k >= 0) {
+    m.subdiv_by_length = k == 0;
+    done = true;
+  }
+  if (m.subdiv_by_length) {
+    modifier_row_label("Spacing", column, "The longest a piece may be (measured in the setup pose, so the pieces "
+                                          "stay the same on every frame)");
+    ImGui::SetNextItemWidth(width());
+    ImGui::DragFloat("##spacing", &m.subdiv_spacing, 0.001f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+    modifier_row_label("Render", column, "Spacing for the final render (0: the same as Spacing): finer for smoother "
+                                         "bends there while the viewport stays quick");
+    ImGui::SetNextItemWidth(width());
+    ImGui::DragFloat("##render_spacing", &m.subdiv_render_spacing, 0.001f, 0.0f, 100.0f,
+                     m.subdiv_render_spacing > 0.0f ? "%.3f" : "Same", ImGuiSliderFlags_AlwaysClamp);
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+  else {
+    modifier_row_label("Pieces", column, "How many pieces each segment becomes");
+    ImGui::SetNextItemWidth(width());
+    ImGui::DragInt("##pieces", &m.subdiv_pieces, 0.1f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+
+  static const char *const WEIGHT_NAMES[] = {"Blend", "From Bones"};
+  static const char *const WEIGHT_TIPS[] = {
+      "Each new point mixes its two end points' weights by how far along it is: a smooth, rubber-hose bend",
+      "Each new point weighted from the nearest bones, so a segment can bend at a joint between its points"};
+  modifier_row_label("Weights", column, "How the new points follow the bones");
+  if (const int k = segmented_choice("##weights", m.subdiv_from_bones ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2, width());
+      k >= 0)
+  {
+    m.subdiv_from_bones = k == 1;
+    done = true;
+  }
+
+  modifier_row_label("", column);
+  if (ImGui::Checkbox("Preserve Volume", &m.subdiv_preserve_volume)) {
+    done = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The new points blend the bones' turns as rigid motions, so the line doesn't pinch or curl "
+                      "where bones turn far apart (Blender's Preserve Volume). Your own points move as before");
+  }
+
+  modifier_row_label("Max Pieces", column, "No segment becomes more pieces than this, however long");
+  ImGui::SetNextItemWidth(width());
+  ImGui::DragInt("##max_pieces", &m.subdiv_max_pieces, 0.2f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+
+  modifier_row_label("Point Group", column, "Only the segments touching this point group's points (none: all)");
+  ImGui::SetNextItemWidth(width());
+  if (ImGui::BeginCombo("##subdiv_group", m.subdiv_group.empty() ? "All" : m.subdiv_group.c_str())) {
+    if (ImGui::Selectable("All", m.subdiv_group.empty()) && !m.subdiv_group.empty()) {
+      m.subdiv_group.clear();
+      done = true;
+    }
+    for (const PointGroup &g : layer.drawing.groups) {
+      if (ImGui::Selectable(g.name.c_str(), g.name == m.subdiv_group) && g.name != m.subdiv_group) {
+        m.subdiv_group = g.name;
+        done = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  /* Below the Armature modifier it only splits the bent drawing: say so. */
+  bool below = false, armature_seen = false;
+  for (int k = 0; k < int(layer.modifiers.size()); k++) {
+    armature_seen = armature_seen || layer.modifiers[size_t(k)].type == ModifierType::Armature;
+    below = below || (k == index && armature_seen);
+  }
+  if (below) {
+    modifier_row_label("", column);
+    ImGui::TextDisabled("Drag it above Armature to bend through the bones");
+  }
+  if (done) {
+    C.undo->push("Subdivide Settings", doc);
+  }
+}
+
 /* Blender's modifier stack: Add Modifier, then a box per modifier, top first. Drag a box by
  * its handle (the dots on the right) to change the order. */
 static void modifiers_panel(Context &C, Layer &layer)
@@ -2145,6 +2947,13 @@ static void modifiers_panel(Context &C, Layer &layer)
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Cut the drawing's corners off and round them: the sharp ones, or a point group's");
+    }
+    if (ImGui::MenuItem("Subdivide")) {
+      operator_call(C, "object.modifier_add", {{"type", "SUBDIVIDE"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Split the segments into smaller pieces before the bones bend them, for bendier "
+                        "animation without more points to animate. At rest the drawing looks the same");
     }
     if (ImGui::MenuItem("Boolean")) {
       operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
@@ -2289,6 +3098,9 @@ static void modifiers_panel(Context &C, Layer &layer)
       }
       else if (m.type == ModifierType::Bevel) {
         bevel_modifier_body(C, layer, m, i, column);
+      }
+      else if (m.type == ModifierType::Subdivide) {
+        subdivide_modifier_body(C, layer, m, i, column);
       }
       else {
         bool changed = false;
@@ -2462,8 +3274,11 @@ static void constraints_panel(Context &C, Layer &armature)
         {"Transform",
          {BoneConstraintType::CopyAngle, BoneConstraintType::CopyPosition, BoneConstraintType::CopyScale,
           BoneConstraintType::LimitAngle}},
-        {"Tracking", {BoneConstraintType::TrackTo, BoneConstraintType::StretchTo, BoneConstraintType::IK}},
-        {"Relationship", {BoneConstraintType::IndependentAngle, BoneConstraintType::MaintainVolume}},
+        {"Tracking", {BoneConstraintType::TrackTo, BoneConstraintType::StretchTo, BoneConstraintType::IK,
+                      BoneConstraintType::LookAt}},
+        {"Limit", {BoneConstraintType::LimitShape}},
+        {"Relationship", {BoneConstraintType::ChildOf, BoneConstraintType::IndependentAngle,
+                          BoneConstraintType::MaintainVolume}},
         {"Physics", {BoneConstraintType::Dynamics}},
     };
     for (const auto &[group, types] : groups) {
@@ -2522,9 +3337,15 @@ static void constraints_panel(Context &C, Layer &armature)
       C.undo->push("Rename Constraint", doc);
     }
     ImGui::SameLine(0, 4);
-    if (icon_toggle("##enabled", c.enabled, "Enable or disable the constraint", icon_monitor)) {
-      c.enabled = !c.enabled;
-      C.undo->push("Constraint On/Off", doc);
+    {
+      /* Drivable, as Blender's constraint toggle: purple and naming its driver while driven. */
+      const std::string enabled_path = "bones[\"" + bone_name + "\"].constraints[" + std::to_string(i) + "].enabled";
+      const int driven = ui_driver_field_begin(C, armature.id, enabled_path, -1);
+      if (icon_toggle("##enabled", c.enabled, "Enable or disable the constraint", icon_monitor, driven > 0)) {
+        c.enabled = !c.enabled;
+        C.undo->push("Constraint On/Off", doc);
+      }
+      ui_driver_field_end(C, armature.id, enabled_path, -1, driven);
     }
     ImGui::SameLine(0, 4);
     ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
@@ -2567,29 +3388,91 @@ static void constraints_panel(Context &C, Layer &armature)
           C.undo->push(what, doc);
         }
       };
-      const auto target_row = [&] {
-        modifier_row_label("Target", column, "The bone this constraint follows, copies or reaches for");
-        const Bone *target = bone_find(armature, c.target);
-        if (ImGui::BeginCombo("##target", target ? target->name.c_str() : "None")) {
-          if (ImGui::Selectable("None", !target)) {
-            c.target = 0;
+      /* As Parent Bone's: a search field on top of the list, and an eyedropper to click the bone. */
+      /* A bone the constraint uses (its Target, Look At's Pupil Center): a list with a search field and
+       * an eyedropper, as Parent Bone's. */
+      const auto bone_row = [&](const char *label, const char *tip, uint64_t BoneConstraint::*field, const char *id,
+                                const char *prompt) {
+        modifier_row_label(label, column, tip);
+        ImGui::PushID(id);
+        const Bone *target = bone_find(armature, c.*field);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 4.0f - ImGui::GetFrameHeight() - 2.0f);
+        if (ImGui::BeginCombo("##target", target ? target->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+          static std::string search;
+          if (ImGui::IsWindowAppearing()) {
+            search.clear();
+            ImGui::SetKeyboardFocusHere();
+          }
+          ImGui::SetNextItemWidth(-1);
+          const bool entered = ImGui::InputTextWithHint("##search", "Search bones", &search,
+                                                        ImGuiInputTextFlags_EnterReturnsTrue);
+          std::string needle = search;
+          std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+          const auto matches = [&](const std::string &name) {
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+            return lower.find(needle) != std::string::npos;
+          };
+          if (needle.empty() && ImGui::Selectable("None", !target)) {
+            c.*field = 0;
             C.undo->push("Constraint Target", doc);
           }
+          const Bone *first = nullptr;
           for (const Bone &b : armature.bones) {
-            if (b.id != bone->id && ImGui::Selectable(b.name.c_str(), target && b.id == target->id)) {
-              c.target = b.id;
+            if (b.id == bone->id || !matches(b.name)) {
+              continue;
+            }
+            first = first ? first : &b;
+            if (ImGui::Selectable(b.name.c_str(), target && b.id == target->id)) {
+              c.*field = b.id;
               C.undo->push("Constraint Target", doc);
             }
           }
+          if (!first && !needle.empty()) {
+            ImGui::TextDisabled("No bone named like that");
+          }
+          if (entered && first) {
+            c.*field = first->id;
+            C.undo->push("Constraint Target", doc);
+            ImGui::CloseCurrentPopup();
+          }
           ImGui::EndCombo();
         }
+        ImGui::SameLine(0, 2);
+        const uint64_t rig_id = armature.id, own = bone->id;
+        const size_t at = size_t(i);
+        if (ui_pick_button("##pick_target", "Eyedropper: click the bone in the viewport",
+                           ui_bone_eyedropper_armature() == rig_id))
+        {
+          ui_bone_eyedropper_start(
+              rig_id,
+              [rig_id, own, at, field](Context &C, uint64_t picked) {
+                Layer *rig = layer_find(*C.document, rig_id);
+                Bone *b = rig ? bone_find(*rig, own) : nullptr;
+                if (!b || at >= b->constraints.size()) {
+                  return true;
+                }
+                if (picked == own) {
+                  return false;
+                }
+                b->constraints[at].*field = picked;
+                C.undo->push("Constraint Target", *C.document);
+                return true;
+              },
+              [prompt] { return std::string(prompt); });
+        }
+        ImGui::PopID();
+      };
+      const auto target_row = [&] {
+        bone_row("Target", "The bone this constraint follows, copies or reaches for", &BoneConstraint::target,
+                 "target", "Click the target bone  |  Esc cancels");
       };
       /* A keyable number of this constraint: its field leaves room for the key button after it. */
       const std::string constraint_path = "bones[\"" + bone_name + "\"].constraints[" + std::to_string(i) + "].";
       const auto keyed_begin = [&](const std::string &p) {
         const int state = layer_key_state(armature, {p}, doc.frame_current);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-        const int tint = ui_key_tint_push(state);
+        const int tint = ui_key_tint_push(state | layer_smart_state(armature, {p}));
         /* The driver tint over the key's: pushed last, popped first. */
         return std::pair<int, int>(state, tint | (ui_driver_field_begin(C, armature.id, p, -1) << 8));
       };
@@ -2701,28 +3584,411 @@ static void constraints_panel(Context &C, Layer &armature)
                       "nears. Unticked: no limit.");
           }
           else {
-            limit_row("Max Stretch", 100.0f, 0.5f, 500.0f, "%.0f%%",
-                      "The most its length can change, as a part of its length, slowing softly as it\n"
-                      "nears. Unticked: no limit.");
+            /* Shown as times its length: Max Stretch 1 + limit, Max Squash 1 - squash_limit. */
+            const auto factor_row = [&](const char *name, const char *field_name, bool *use, float *value, float sign,
+                                        float lo, float hi, const char *tip) {
+              const std::string use_name = std::string("use_") + field_name;
+              const std::string value_path = spring_path + field_name;
+              modifier_row_label(name, column, tip);
+              const std::string driven_path = spring_path + use_name;
+              const int driven = ui_driver_field_begin(C, armature.id, driven_path, -1);
+              if (ImGui::Checkbox(("##" + use_name).c_str(), use)) {
+                C.undo->push("Dynamics", doc);
+              }
+              ui_driver_typed(C, armature.id, driven_path, -1);
+              ui_driver_field_end(C, armature.id, driven_path, -1, driven);
+              if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("%s", tip);
+              }
+              ImGui::SameLine(0, 4);
+              ImGui::BeginDisabled(!*use);
+              const auto k = keyed_begin(value_path);
+              float v = 1.0f + sign * *value;
+              if (ImGui::DragFloat(("##" + std::string(field_name)).c_str(), &v, 0.005f, lo, hi, "%.2f\xC3\x97",
+                                   ImGuiSliderFlags_AlwaysClamp))
+              {
+                *value = (v - 1.0f) * sign;
+              }
+              done("Dynamics");
+              ImGui::EndDisabled();
+              keyed_end(value_path, k);
+            };
+            factor_row("Max Stretch", "limit", &sp.use_limit, &sp.limit, 1.0f, 1.01f, 6.0f,
+                       "The longest it can stretch, as times its length (1.5: half again), slowing\n"
+                       "softly as it nears. Unticked: no limit.");
+            factor_row("Max Squash", "squash_limit", &sp.use_squash_limit, &sp.squash_limit, -1.0f, 0.1f, 0.99f,
+                       "The shortest it can squash, as times its length (0.7: down to 70%), slowing\n"
+                       "softly as it nears. Unticked: no limit, though it never goes below 0.1.");
           }
         }
         ImGui::PopID();
       };
+      /* Limit to Shape's rows, which Look At has too (its eye shape): the layer (searchable, with an
+       * eyedropper), which of its shapes, what stays inside, Overlap and Softness. */
+      const auto shape_rows = [&] {
+            /* The layer, as Parent Bone's list (a search field on top), with an eyedropper that takes a shape
+             * clicked in the viewport; then which of its closed shapes. */
+            modifier_row_label("Layer", column, "The layer whose closed shape the bone stays inside, as it is drawn on each\n"
+                                                "frame: a pupil inside its eye white, however the head turns");
+            const Layer *target = layer_find(doc, c.shape_layer);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 4.0f - ImGui::GetFrameHeight() - 2.0f);
+            if (ImGui::BeginCombo("##shape_layer", target ? target->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+              static std::string search;
+              if (ImGui::IsWindowAppearing()) {
+                search.clear();
+                ImGui::SetKeyboardFocusHere();
+              }
+              ImGui::SetNextItemWidth(-1);
+              const bool entered = ImGui::InputTextWithHint("##search", "Search layers", &search,
+                                                            ImGuiInputTextFlags_EnterReturnsTrue);
+              std::string needle = search;
+              std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+              const auto matches = [&](const std::string &name) {
+                std::string lower = name;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+                return lower.find(needle) != std::string::npos;
+              };
+              if (needle.empty() && ImGui::Selectable("None", !target)) {
+                c.shape_layer = 0;
+                c.shape_id = 0;
+                C.undo->push("Limit to Shape", doc);
+              }
+              const Layer *first = nullptr;
+              for (const Layer *l : document_layers_flat(doc)) {
+                if (!l->has_drawing() || l->drawing.shapes.empty() || !matches(l->name)) {
+                  continue;
+                }
+                first = first ? first : l;
+                ImGui::PushID(int(l->id));
+                if (ImGui::Selectable(l->name.c_str(), target && target->id == l->id)) {
+                  c.shape_layer = l->id;
+                  c.shape_id = 0;
+                  C.undo->push("Limit to Shape", doc);
+                }
+                ImGui::PopID();
+              }
+              if (!first && !needle.empty()) {
+                ImGui::TextDisabled("No layer named like that");
+              }
+              if (entered && first) {
+                c.shape_layer = first->id;
+                c.shape_id = 0;
+                C.undo->push("Limit to Shape", doc);
+                ImGui::CloseCurrentPopup();
+              }
+              ImGui::EndCombo();
+            }
+            ImGui::SameLine(0, 2);
+            {
+              const uint64_t rig_id = armature.id, bone_id = bone->id, uid_index = uint64_t(i);
+              const char *tag = "LIMIT_SHAPE";
+              if (ui_pick_button("##pick_limit_shape", "Eyedropper: click the shape in the viewport",
+                                 ui_shape_eyedropper_active(tag)))
+              {
+                ui_shape_eyedropper_start(
+                    [rig_id, bone_id, uid_index](Context &C, uint64_t layer_id, int shape_index) {
+                      Document &d = *C.document;
+                      Layer *rig = layer_find(d, rig_id);
+                      Bone *b = rig ? bone_find(*rig, bone_id) : nullptr;
+                      if (!b || uid_index >= b->constraints.size() ||
+                          b->constraints[uid_index].type != BoneConstraintType::LimitShape)
+                      {
+                        return true;
+                      }
+                      const Layer *clicked = layer_find(d, layer_id);
+                      if (!clicked || !clicked->has_drawing()) {
+                        return false;
+                      }
+                      const VectorDrawing shown = layer_evaluated_drawing(d, *clicked, false);
+                      if (shape_index < 0 || shape_index >= int(shown.shapes.size())) {
+                        return false;
+                      }
+                      BoneConstraint &lc = b->constraints[uid_index];
+                      lc.shape_layer = clicked->id;
+                      lc.shape_id = shown.shapes[size_t(shape_index)].id;
+                      C.undo->push("Limit to Shape", d);
+                      return true;
+                    },
+                    [] { return std::string("Click the shape to stay inside  |  Esc cancels"); }, tag);
+              }
+            }
+            modifier_row_label("Shape", column, "Which of the layer's closed shapes (First Closed: the first one that goes all the way round)");
+            ImGui::BeginDisabled(!target);
+            const Shape *picked = nullptr;
+            if (target) {
+              for (const Shape &s : target->drawing.shapes) {
+                if (s.id == c.shape_id) {
+                  picked = &s;
+                }
+              }
+            }
+            if (ImGui::BeginCombo("##shape_id", picked ? (picked->name.empty() ? "Shape" : picked->name.c_str()) : "First Closed")) {
+              if (ImGui::Selectable("First Closed", !picked)) {
+                c.shape_id = 0;
+                C.undo->push("Limit to Shape", doc);
+              }
+              for (size_t k = 0; target && k < target->drawing.shapes.size(); k++) {
+                const Shape &s = target->drawing.shapes[k];
+                const std::string label = (s.name.empty() ? "Shape " + std::to_string(k + 1) : s.name) + "##" + std::to_string(s.id);
+                if (ImGui::Selectable(label.c_str(), picked == &s)) {
+                  c.shape_id = s.id;
+                  C.undo->push("Limit to Shape", doc);
+                }
+              }
+              ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            if (target && c.shape_region.empty() && c.enabled) {
+              modifier_row_label("", column);
+              ImGui::TextDisabled("No closed shape there");
+            }
+            /* What stays inside: the head, or the drawings the bone carries. */
+            modifier_row_label("Keep Inside", column, "Center: the bone's head stays inside.\n"
+                                                      "Whole Drawing: all of what the bone carries (its pupil) fits inside.");
+            {
+              const float w = (ImGui::GetContentRegionAvail().x - 4.0f - 1.0f) * 0.5f;
+              ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, style.ItemSpacing.y));
+              static const char *const FITS[] = {"Center", "Whole Drawing"};
+              for (int k = 0; k < 2; k++) {
+                if (k > 0) {
+                  ImGui::SameLine();
+                }
+                const bool on = int(c.shape_fit) == k;
+                if (on) {
+                  ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                }
+                if (ImGui::Button(FITS[k], ImVec2(w, 0)) && !on) {
+                  c.shape_fit = ShapeFit(k);
+                  C.undo->push("Limit to Shape", doc);
+                }
+                if (on) {
+                  ImGui::PopStyleColor();
+                }
+              }
+              ImGui::PopStyleVar();
+            }
+            if (c.shape_fit == ShapeFit::Whole) {
+              modifier_row_label("Drawing", column, "What has to fit inside: a layer, or (Auto) the layers that follow this bone");
+              const Layer *fit = layer_find(doc, c.fit_layer);
+              if (ImGui::BeginCombo("##fit_layer", fit ? fit->name.c_str() : "Auto", ImGuiComboFlags_HeightLarge)) {
+                if (ImGui::Selectable("Auto", !fit)) {
+                  c.fit_layer = 0;
+                  C.undo->push("Limit to Shape", doc);
+                }
+                for (const Layer *l : document_layers_flat(doc)) {
+                  if (!l->has_drawing()) {
+                    continue;
+                  }
+                  ImGui::PushID(int(l->id));
+                  if (ImGui::Selectable(l->name.c_str(), fit && fit->id == l->id)) {
+                    c.fit_layer = l->id;
+                    C.undo->push("Limit to Shape", doc);
+                  }
+                  ImGui::PopID();
+                }
+                ImGui::EndCombo();
+              }
+              modifier_row_label("Overlap", column, "How far it may go past the edge, as a part of its size: an eyelid or a\n"
+                                                    "mask can cover that much. 0% keeps all of it inside.");
+              float percent = c.overlap * 100.0f;
+              const std::string overlap_path = constraint_path + "overlap";
+              const int driven_overlap = ui_driver_field_begin(C, armature.id, overlap_path, -1);
+              if (ImGui::DragFloat("##overlap", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+                c.overlap = percent / 100.0f;
+              }
+              done("Limit to Shape");
+              ui_driver_typed(C, armature.id, overlap_path, -1);
+              ui_driver_field_end(C, armature.id, overlap_path, -1, driven_overlap);
+            }
+            modifier_row_label("Softness", column, "How far from the edge it starts slowing down, so it eases to a stop\n"
+                                                   "instead of hitting the edge (0: a hard stop)");
+            const std::string softness_path = constraint_path + "softness";
+            const int driven_softness = ui_driver_field_begin(C, armature.id, softness_path, -1);
+            ImGui::DragFloat("##softness", &c.softness, 0.0005f, 0.0f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+            done("Limit to Shape");
+            ui_driver_typed(C, armature.id, softness_path, -1);
+            ui_driver_field_end(C, armature.id, softness_path, -1, driven_softness);
+      };
       switch (c.type) {
         case BoneConstraintType::LimitAngle: {
-          modifier_row_label("Min / Max", column, "The furthest the bone can turn each way from its rest angle");
-          float range[2] = {c.min_angle * 180.0f / PI, c.max_angle * 180.0f / PI};
-          if (ImGui::DragFloat2("##range", range, 0.5f, -360.0f, 360.0f, "%.1f\xC2\xB0")) {
-            c.min_angle = range[0] * PI / 180.0f;
-            c.max_angle = range[1] * PI / 180.0f;
+          /* Min and Max, each with a button that takes the bone's angle now: pose it to the end you want,
+           * then click. */
+          for (const bool max : {false, true}) {
+            modifier_row_label(max ? "Max" : "Min", column,
+                               max ? "The furthest the bone can turn counter-clockwise from its setup angle, as its Angle "
+                                     "in the Bone panel shows it"
+                                   : "The furthest the bone can turn clockwise from its setup angle, as its Angle in the "
+                                     "Bone panel shows it");
+            const float bh = ImGui::GetFrameHeight();
+            float &value = max ? c.max_angle : c.min_angle;
+            float shown = value * 180.0f / PI;
+            ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - bh - style.ItemInnerSpacing.x));
+            if (ImGui::DragFloat(max ? "##max_angle" : "##min_angle", &shown, 0.5f, -360.0f, 360.0f, "%.1f\xC2\xB0")) {
+              value = shown * PI / 180.0f;
+            }
+            done("Limit Angle");
+            ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            if (ImGui::Button(max ? "##max_current" : "##min_current", ImVec2(bh, bh))) {
+              operator_call(C, "armature.limit_angle_set_current",
+                            {{"bone", bone_name}, {"index", std::to_string(i)}, {"end", max ? "MAX" : "MIN"}});
+            }
+            /* An angle: two arms from a corner, the moving one with a dot at its tip (the bone now). */
+            ImDrawList *idl = ImGui::GetWindowDrawList();
+            const ImU32 icon = IM_COL32(0xe6, 0xe6, 0xe6, 255);
+            const float s = bh * 0.3f;
+            const ImVec2 o(at.x + bh * 0.5f - s * 0.8f, at.y + bh * 0.5f + s * 0.7f);
+            const ImVec2 tip(o.x + s * 1.3f, o.y - s * 1.3f);
+            idl->AddLine(o, ImVec2(o.x + s * 1.8f, o.y), icon, 1.3f);
+            idl->AddLine(o, tip, icon, 1.3f);
+            idl->AddCircleFilled(tip, 1.8f, icon);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+              ImGui::SetTooltip(max ? "Set to Current Angle: the bone's Angle now becomes its Max"
+                                    : "Set to Current Angle: the bone's Angle now becomes its Min");
+            }
           }
-          done("Limit Angle");
           break;
         }
         case BoneConstraintType::IndependentAngle:
           modifier_row_label("", column);
           ImGui::TextDisabled("Keeps its angle when its parent turns.");
           break;
+        case BoneConstraintType::LimitShape: {
+          shape_rows();
+          modifier_row_label("", column);
+          if (ImGui::Checkbox("Affect Transform", &c.affect_transform)) {
+            C.undo->push("Limit to Shape", doc);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Moving the bone past the edge stops its own position there too, so its keys hold where\n"
+                              "it shows (Blender's Affect Transform). Off, only where it shows is held: its position can\n"
+                              "go on past the edge, and has to come all the way back before it moves again");
+          }
+          break;
+        }
+        case BoneConstraintType::ChildOf: {
+          target_row();
+          modifier_row_label("Follow", column, "Which of the target's change it takes: its move, its turn, its size.\n"
+                                               "Key Influence to pick the target up or drop it (a hat lifted off, a look\n"
+                                               "target leaving the head).");
+          bool changed = ImGui::Checkbox("Position", &c.child_position);
+          ImGui::SameLine();
+          changed |= ImGui::Checkbox("Rotation", &c.child_rotation);
+          ImGui::SameLine();
+          changed |= ImGui::Checkbox("Scale", &c.child_scale);
+          if (changed) {
+            C.undo->push("Child Of", doc);
+          }
+          break;
+        }
+        case BoneConstraintType::LookAt: {
+          target_row();
+          bone_row("Eyeball Center",
+                   "A bone at the middle of the eyeball: the ball turns about it, and a pupil drawn off its\n"
+                   "front already points that way at rest (None: the ball's front is the pupil as rigged)",
+                   &BoneConstraint::eyeball_center, "eyeball_center", "Click the bone at the eyeball's middle  |  Esc cancels");
+          /* The eyeball: its size, which way it faces (keyable: a head turn turns it), how far it turns. */
+          modifier_row_label("Eyeball", column, "Half the eyeball's width and height. Auto: half the Eye Shape's, as drawn\n"
+                                                "on frame 0 (a cartoon eye is a stretched ball)");
+          if (ImGui::Checkbox("Auto##eyeball_auto", &c.eyeball_auto)) {
+            C.undo->push("Look At", doc);
+          }
+          ImGui::SameLine();
+          ImGui::BeginDisabled(c.eyeball_auto);
+          float2 size = c.eyeball_auto && c.eyeball_auto_size.x > 0.0f ? c.eyeball_auto_size : c.eyeball_size;
+          ImGui::SetNextItemWidth(-4.0f);
+          if (ImGui::DragFloat2("##eyeball_size", &size.x, 0.001f, 0.0001f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
+            c.eyeball_size = size;
+          }
+          done("Look At");
+          ImGui::EndDisabled();
+          if (c.eyeball_auto && c.eyeball_auto_size.x <= 0.0f) {
+            modifier_row_label("", column);
+            ImGui::TextDisabled("Pick the eye's shape below for Auto");
+          }
+          modifier_row_label("Facing", column, "Which way the front of the eye points (yaw, pitch): 0 at the camera, 90\xC2\xB0 in\n"
+                                               "profile. Key it in a head turn so the pupil sits and foreshortens as the\n"
+                                               "turned eye shows it");
+          {
+            const std::string facing_path = constraint_path + "facing";
+            const auto k = keyed_begin(facing_path);
+            float degrees2[2] = {c.facing.x * 180.0f / PI, c.facing.y * 180.0f / PI};
+            if (ImGui::DragFloat2("##facing", degrees2, 0.5f, -180.0f, 180.0f, "%.1f\xC2\xB0")) {
+              c.facing = {degrees2[0] * PI / 180.0f, degrees2[1] * PI / 180.0f};
+            }
+            done("Look At Facing");
+            keyed_end(facing_path, k);
+          }
+          modifier_row_label("Max Turn", column, "How far the eye turns from where it faces to look: sideways, up and down\n"
+                                                 "(a real eye turns about 45\xC2\xB0 to the side and down, 30\xC2\xB0 up)");
+          {
+            float turns[3] = {c.max_side * 180.0f / PI, c.max_up * 180.0f / PI, c.max_down * 180.0f / PI};
+            if (ImGui::DragFloat3("##max_turn", turns, 0.5f, 0.0f, 90.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+              c.max_side = turns[0] * PI / 180.0f;
+              c.max_up = turns[1] * PI / 180.0f;
+              c.max_down = turns[2] * PI / 180.0f;
+            }
+            done("Look At");
+          }
+          modifier_row_label("Warp", column, "How much the layers following the pupil wrap round the eyeball as it\n"
+                                             "turns, each part foreshortening by where it is on the ball: 100% as a\n"
+                                             "real eyeball, 0% not at all (they only move)");
+          float percent = c.squash * 100.0f;
+          const std::string squash_path = constraint_path + "squash";
+          const int driven_squash = ui_driver_field_begin(C, armature.id, squash_path, -1);
+          if (ImGui::DragFloat("##squash", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+            c.squash = percent / 100.0f;
+          }
+          done("Look At");
+          ui_driver_typed(C, armature.id, squash_path, -1);
+          ui_driver_field_end(C, armature.id, squash_path, -1, driven_squash);
+          modifier_row_label("Divergence", column, "How far each eye turns outward from the target: real eyes don't\n"
+                                                   "quite meet on what they look at, a few degrees apart");
+          float degrees = c.divergence * 180.0f / PI;
+          const std::string divergence_path = constraint_path + "divergence";
+          const int driven_divergence = ui_driver_field_begin(C, armature.id, divergence_path, -1);
+          if (ImGui::DragFloat("##divergence", &degrees, 0.1f, -30.0f, 30.0f, "%.1f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+            c.divergence = degrees * PI / 180.0f;
+          }
+          done("Look At");
+          ui_driver_typed(C, armature.id, divergence_path, -1);
+          ui_driver_field_end(C, armature.id, divergence_path, -1, driven_divergence);
+          if (const Bone *target = bone_find(armature, c.target)) {
+            modifier_row_label("", column);
+            ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
+          }
+          /* The layers following this bone, each warped onto the eyeball (pupil, iris) or left as drawn
+           * (a shine). Unticked ones are the constraint's keep_round. */
+          bool first_warped = true;
+          for (const Layer *l : document_layers_flat(doc)) {
+            if (!(l->has_drawing() || l->is_group()) || l->parent_bone != bone->id) {
+              continue;
+            }
+            modifier_row_label(first_warped ? "Warp Layers" : "", column,
+                               "Layers following this bone that wrap round the eyeball. Untick a shine: it is a\n"
+                               "reflection, it stays as drawn");
+            first_warped = false;
+            bool on = std::find(c.keep_round.begin(), c.keep_round.end(), l->id) == c.keep_round.end();
+            ImGui::PushID(int(l->id));
+            if (ImGui::Checkbox(l->name.c_str(), &on)) {
+              if (!on) {
+                c.keep_round.push_back(l->id);
+              }
+              else {
+                std::erase(c.keep_round, l->id);
+              }
+              C.undo->push("Look At", doc);
+            }
+            ImGui::PopID();
+          }
+          /* The eye: the shape the pupil stays inside, which also tells Range Auto and Squash how far
+           * across the eye it is. */
+          ImGui::Spacing();
+          modifier_row_label("", column);
+          ImGui::TextDisabled("Eye Shape");
+          shape_rows();
+          break;
+        }
         case BoneConstraintType::MaintainVolume: {
           modifier_row_label("Volume", column,
                              "How much the width follows the length, however the bone got longer or\n"
@@ -2743,8 +4009,34 @@ static void constraints_panel(Context &C, Layer &armature)
         case BoneConstraintType::CopyPosition:
         case BoneConstraintType::CopyScale: {
           target_row();
+          const bool go_to = c.type == BoneConstraintType::CopyPosition && !c.follow_move;
+          if (c.type == BoneConstraintType::CopyPosition) {
+            modifier_row_label("Copy", column, "To Target: the bone goes to where the target's base is.\n"
+                                               "Its Move: it copies the target's move from its setup pose (Moho's control bones).");
+            const float w2 = (ImGui::GetContentRegionAvail().x - 4.0f - 1.0f) * 0.5f;
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, style.ItemSpacing.y));
+            static const char *const MODES[] = {"To Target", "Its Move"};
+            for (int k = 0; k < 2; k++) {
+              if (k > 0) {
+                ImGui::SameLine();
+              }
+              const bool on = int(c.follow_move) == k;
+              if (on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+              }
+              if (ImGui::Button(MODES[k], ImVec2(w2, 0)) && !on) {
+                c.follow_move = k == 1;
+                C.undo->push("Copy Position", doc);
+              }
+              if (on) {
+                ImGui::PopStyleColor();
+              }
+            }
+            ImGui::PopStyleVar();
+          }
           modifier_row_label("Factor", column,
-                             "How much of the target's motion to copy: 0.5 is half, -1 copies it reversed");
+                             go_to ? "How far it goes to the target: 1 all the way, 0.5 halfway"
+                                   : "How much of the target's motion to copy: 0.5 is half, -1 copies it reversed");
           const std::string driven_factor_path = constraint_path + "factor";
           const int driven_factor = ui_driver_field_begin(C, armature.id, driven_factor_path, -1);
           ImGui::DragFloat("##factor", &c.factor, 0.01f, -10.0f, 10.0f, "%.2f");
@@ -2880,7 +4172,7 @@ static void constraints_panel(Context &C, Layer &armature)
       const int state = layer_key_state(armature, {path}, doc.frame_current);
       modifier_row_label("Influence", column, "How much of the constraint's effect is used: 0 none, 1 all. It can be keyed");
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-      const int tint = ui_key_tint_push(state);
+      const int tint = ui_key_tint_push(state | layer_smart_state(armature, {path}));
       const int driven = ui_driver_field_begin(C, armature.id, path, -1);
       ImGui::SliderFloat("##influence", &c.influence, 0.0f, 1.0f, "%.3f");
       ui_driver_typed(C, armature.id, path, -1);
@@ -3029,6 +4321,38 @@ static const char *const MASK_MODE_NAMES[] = {"Add", "Subtract"};
 static const char *const MASK_MODE_TIPS[] = {
     "+ Shape: paint the mask white inside this shape, so it shows there\n(with Invert, outside it)",
     "- Shape: paint the mask black inside this shape, so it's hidden there\n(with Invert, outside it)"};
+
+static const char *const MASK_COMBINE_TIPS[] = {
+    "Union: the layers' shapes together make the shape",
+    "Difference: the first layer's shape, with the other layers' shapes cut out of it",
+    "Intersection: only where all the layers' shapes overlap"};
+
+/* Two overlapping rings, the part a Union (0), Difference (1) or Intersection (2) keeps filled. */
+static void mask_combine_icon(ImDrawList *dl, ImVec2 c, float s, int combine, ImU32 col)
+{
+  const float r = s * 0.62f, d = s * 0.38f;
+  const ImVec2 a(c.x - d, c.y), b(c.x + d, c.y);
+  const ImU32 fill = IM_COL32(0xd8, 0xd8, 0xd8, 255);
+  if (combine == 0) {
+    dl->AddCircleFilled(a, r, fill);
+    dl->AddCircleFilled(b, r, fill);
+  }
+  else if (combine == 1) {
+    /* The left ring with the right one bitten out of it. */
+    const float t = std::acos(d / r);
+    dl->PathArcTo(a, r, t, 2.0f * IM_PI - t, 24);
+    dl->PathArcTo(b, r, IM_PI + t, IM_PI - t, 12);
+    dl->PathFillConcave(fill);
+  }
+  else {
+    const float t = std::acos(d / r);
+    dl->PathArcTo(a, r, -t, t, 12);
+    dl->PathArcTo(b, r, IM_PI - t, IM_PI + t, 12);
+    dl->PathFillConvex(fill);
+  }
+  dl->AddCircle(a, r, col, 0, 1.2f);
+  dl->AddCircle(b, r, col, 0, 1.2f);
+}
 
 static constexpr ImU32 COL_MOD_SUBPANEL = IM_COL32(0x33, 0x33, 0x33, 255);
 
@@ -3527,7 +4851,7 @@ static void mask_cards(Context &C, Layer &layer)
                            "puts their last dab's middle on it, below 0 leaves a gap. It can be keyed");
         ImGui::BeginDisabled(!reach_used);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-        const int reach_tint = ui_key_tint_push(reach_state);
+        const int reach_tint = ui_key_tint_push(reach_state | layer_smart_state(layer, {reach_path}));
         const int driven_reach = ui_driver_field_begin(C, layer.id, reach_path, -1);
         float reach = m.line_reach;
         if (ImGui::DragFloat("##reach", &reach, 0.01f, -2.0f, 2.0f, "%.2f line widths",
@@ -3611,6 +4935,23 @@ static void mask_cards(Context &C, Layer &layer)
       }
       ui_driver_typed(C, layer.id, driven_mode_path, -1);
       ui_driver_field_end(C, layer.id, driven_mode_path, -1, driven_mode);
+      /* How the layers make the shape: Union, Difference, Intersection (Blender Boolean's). */
+      ImGui::SameLine(0, 4);
+      ImGui::SetNextItemWidth(h * 3.3f);
+      const std::string driven_combine_path = step_path + "combine";
+      const int driven_combine = ui_driver_field_begin(C, layer.id, driven_combine_path, -1);
+      /* One layer is its own shape: nothing to combine (the choice is kept for when there are more). */
+      ImGui::BeginDisabled(st.layers.size() < 2);
+      const int picked_combine = segmented("##combine", int(st.combine), 3, nullptr, MASK_COMBINE_TIPS,
+                                           [](ImDrawList *d, ImVec2 c, float sz, int k, ImU32) {
+                                             mask_combine_icon(d, c, sz * 0.85f, k, IM_COL32(0x90, 0x90, 0x90, 255));
+                                           });
+      ImGui::EndDisabled();
+      if (picked_combine >= 0 && picked_combine != int(st.combine)) {
+        operator_call(C, "mask.set", with_step("combine", mask_combine_identifier(MaskCombine(picked_combine))));
+      }
+      ui_driver_typed(C, layer.id, driven_combine_path, -1);
+      ui_driver_field_end(C, layer.id, driven_combine_path, -1, driven_combine);
       ImGui::SameLine(0, 4);
       ImGui::BeginGroup();
       const float chips_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - (h + 2.0f) * 3.0f;
@@ -4052,6 +5393,10 @@ static void layer_tab(Context &C)
        * others). */
       ui_prop(C, ptr, "edit_with_bones", path);
     }
+    if (layer->is_group()) {
+      /* Picking the group edits what's inside it. */
+      ui_prop(C, ptr, "edit_descendants", path);
+    }
     ui_prop(C, ptr, "label_color", path);
     ui_panel_end();
   }
@@ -4071,6 +5416,10 @@ static void layer_tab(Context &C)
     key_next(C, *layer, {"scale"});
     ui_prop_pair(C, ptr, "Scale", "scale_x", "X", "scale_y", "Y", path);
     changed_end(C, on, "##changed_scale", channel_args("scale"), channel_args("scale"));
+    on = changed_begin(own("shear"));
+    key_next(C, *layer, {"shear"});
+    ui_prop_pair(C, ptr, "Shear", "shear_x", "X", "shear_y", "Y", path);
+    changed_end(C, on, "##changed_shear", channel_args("shear"), channel_args("shear"));
     ui_panel_end();
   }
   if (ui_panel_begin("Compositing")) {
@@ -4340,6 +5689,7 @@ static void media_tab(Context &C)
     }
     ui_prop(C, ptr, "media_tint_amount", path);
     ui_prop(C, ptr, "media_in_front", path);
+    ui_prop(C, ptr, "media_dont_auto_key", path);
     ui_panel_end();
   }
 
@@ -4725,7 +6075,7 @@ static void point_groups_panel(Context &C, VectorDrawing &drawing)
   }
 }
 
-static void drawing_tab(Context &C)
+static void drawing_tab(Context &C, bool shapes_tab)
 {
   Document &doc = *C.document;
   Layer *active = document_active_layer(doc);
@@ -4736,14 +6086,47 @@ static void drawing_tab(Context &C)
   Layer *layer = nullptr;
   VectorDrawing *drawing = editable_drawing(C, &layer);
   const VectorDrawing &shown = layer_drawing(doc, *active);
-  ImGui::TextDisabled("%d points, %d curves, %d shapes", int(shown.points.size()), int(shown.curves.size()),
-                      int(shown.shapes.size()));
+  if (!shapes_tab) {
+    ImGui::TextDisabled("%d points, %d curves, %d shapes", int(shown.points.size()), int(shown.curves.size()),
+                        int(shown.shapes.size()));
+  }
   if (!drawing) {
     ImGui::TextDisabled("The layer is locked.");
     return;
   }
   /* A reference (a copy): its looks change here as on any layer; changes show teal. */
   const bool reference = active->is_reference();
+  if (!shapes_tab) {
+    if (reference) {
+      /* Only where its points are (with Points: Editable); widths, corners and handle types follow the
+       * original. */
+      std::vector<int> picked;
+      bool moved = false;
+      for (int i = 0; i < int(drawing->points.size()); i++) {
+        if (drawing->points[i].selected) {
+          picked.push_back(i);
+          const uint64_t id = drawing->points[i].id;
+          moved |= active->reference.points.count(id) > 0 ||
+                   std::any_of(active->reference.handles.begin(), active->reference.handles.end(),
+                               [&](const auto &e) { return e.first.point == id; });
+        }
+      }
+      if (active->reference.edit_points && !picked.empty() && ui_panel_begin("Selected Points")) {
+        const bool on = changed_begin(moved);
+        mean_position_row(C, "Mean Position", *drawing, picked, "The middle of the selected points; changing it moves them all",
+                          "Move Points");
+        changed_end(C, on, "##changed_points", {{{"kind", "SELECTED"}}}, {{{"kind", "SELECTED"}}});
+        ui_panel_end();
+      }
+      /* Showing or hiding edges is the reference's own, whatever its points' lock. */
+      edge_panel(C, *drawing);
+      return;
+    }
+    point_groups_panel(C, *drawing);
+    point_panel(C, *drawing);
+    edge_panel(C, *drawing);
+    return;
+  }
 
   /* Shapes of every picked layer being edited (multi-layer editing), each layer's top first like the
    * layer list, under its name when there are several. The highlight follows the viewport: a shape
@@ -4965,34 +6348,6 @@ static void drawing_tab(Context &C)
       shape_panel(C, l, l.drawing, l.drawing.shapes[size_t(shown_shape.shape)]);
     }
   }
-  if (reference) {
-    /* Only where its points are (with Points: Editable); widths, corners and handle types follow the
-     * original. */
-    std::vector<int> picked;
-    bool moved = false;
-    for (int i = 0; i < int(drawing->points.size()); i++) {
-      if (drawing->points[i].selected) {
-        picked.push_back(i);
-        const uint64_t id = drawing->points[i].id;
-        moved |= active->reference.points.count(id) > 0 ||
-                 std::any_of(active->reference.handles.begin(), active->reference.handles.end(),
-                             [&](const auto &e) { return e.first.point == id; });
-      }
-    }
-    if (active->reference.edit_points && !picked.empty() && ui_panel_begin("Point")) {
-      const bool on = changed_begin(moved);
-      mean_position_row(C, "Mean Position", *drawing, picked, "The middle of the selected points; changing it moves them all",
-                        "Move Points");
-      changed_end(C, on, "##changed_points", {{{"kind", "SELECTED"}}}, {{{"kind", "SELECTED"}}});
-      ui_panel_end();
-    }
-    /* Showing or hiding edges is the reference's own, whatever its points' lock. */
-    edge_panel(C, *drawing);
-    return;
-  }
-  point_groups_panel(C, *drawing);
-  edge_panel(C, *drawing);
-  point_panel(C, *drawing);
 }
 
 /* The topmost selected shape's name, fill, outline and line width. */
@@ -5542,6 +6897,33 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
       }
       changed_end(C, on, "##changed_flags", both, both);
     }
+    /* A shape of several loops: how they fill together (Join Fills sets Even-Odd). */
+    if (shape_runs(drawing, shape).size() > 1 || shape.fill_rule != FillRule::Loops) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::TextUnformatted("Fill Rule");
+      ImGui::TableSetColumnIndex(1);
+      static const char *const RULES[] = {"Each Loop", "Even-Odd", "Nonzero"};
+      static const char *const TIPS[] = {"Each loop filled on its own, holes filled over",
+                                         "A loop inside another is a hole, whichever way it was drawn",
+                                         "A loop drawn the other way round is a hole; the same way, it adds to the fill"};
+      int rule = int(shape.fill_rule);
+      ImGui::BeginDisabled(reference);
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::BeginCombo("##fill_rule", RULES[rule])) {
+        for (int k = 0; k < 3; k++) {
+          if (ImGui::Selectable(RULES[k], k == rule)) {
+            shape.fill_rule = FillRule(k);
+            C.undo->push("Fill Rule", doc);
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", TIPS[k]);
+          }
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::EndDisabled();
+    }
 
     ui_panel_end();
   }
@@ -5665,7 +7047,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
 static void edge_panel(Context &C, VectorDrawing &drawing)
 {
   const std::vector<ShapeEdge> edges = drawing_selected_edges(drawing);
-  if (edges.empty() || !ui_panel_begin("Edge")) {
+  if (edges.empty() || !ui_panel_begin("Selected Edges")) {
     return;
   }
   bool visible = true;
@@ -5694,13 +7076,13 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   const float mean = drawing_selected_mean_radius(drawing);
   if (mean < 0.0f) {
     /* Only a handle picked on its own: just its row. */
-    if (!point_panel_handles(drawing).empty() && ui_panel_begin("Point")) {
+    if (!point_panel_handles(drawing).empty() && ui_panel_begin("Selected Points")) {
       handle_rows(C, drawing);
       ui_panel_end();
     }
     return;
   }
-  if (!ui_panel_begin("Point")) {
+  if (!ui_panel_begin("Selected Points")) {
     return;
   }
   mean_position_row(C, "Mean Position", drawing, drawing_selected_points(drawing),
@@ -5801,33 +7183,27 @@ void properties_draw(Area &area, Context &C)
     area.properties_tab = C.wm->properties_tab_request;
     C.wm->properties_tab_request = -1;
   }
-  /* A bone layer has an Armature tab where a drawing has its Shape tab. */
   const Layer *active_layer = document_active_layer(*C.document);
   const bool bones = active_layer && active_layer->is_bone_layer();
-  /* Drawings have a Modifiers tab, left of their Shape tab, as Blender's modifier tab sits
-   * beside the object data tab. */
+  /* Drawings have a Modifiers tab, left of their data tab, as Blender's modifier tab sits beside the
+   * object data tab. */
   const bool modifiers = active_layer && active_layer->has_drawing();
   struct TabEntry {
     const char *label;
     int id;
   };
+  /* One order always, as Blender's (Object, Modifiers, Data, Bone, Bone Constraints, Material): the
+   * layer's own settings, then its kind's data tab (Vector, Armature, Media, Text), then a drawing's
+   * Shape or a bone layer's Bone and Bone Constraints, then a reference's link. */
   std::vector<TabEntry> tabs = {{"Document", TAB_DOCUMENT}};
-  /* The picked camera is what Properties shows, beside Document, as Blender shows the active object's
-   * tabs: it has no layer, masking, modifier or drawing settings. */
   const bool camera = C.document->camera.selected;
-  if (camera && area.properties_tab != TAB_DOCUMENT) {
-    area.properties_tab = TAB_CAMERA;
-  }
-  if (!camera && area.properties_tab == TAB_CAMERA) {
-    area.properties_tab = TAB_LAYER;
-  }
-  /* A drawing has its Shape tab and a bone layer its Armature tab; a group has neither. */
-  const bool drawing = active_layer && (bones || active_layer->has_drawing());
-  /* A reference (a copy of another layer) has its link's tab. */
+  const bool vector = active_layer && active_layer->has_drawing();
   const bool reference = active_layer && active_layer->is_reference();
-  /* A Media layer has its Media tab: the file, the clip on this frame, its look and sound. */
   const bool media = active_layer && active_layer->is_media();
+  const bool text = active_layer && active_layer->is_text();
   if (camera) {
+    /* The picked camera is what Properties shows, beside Document, as Blender shows the active
+     * object's tabs: it has no layer, masking, modifier or drawing settings. */
     tabs.push_back({"Camera", TAB_CAMERA});
   }
   else {
@@ -5838,36 +7214,45 @@ void properties_draw(Area &area, Context &C)
     if (modifiers) {
       tabs.push_back({"Modifiers", TAB_MODIFIERS});
     }
-    if (drawing) {
-      tabs.push_back({bones ? "Armature" : "Shape", TAB_DRAWING});
+    if (vector || bones) {
+      tabs.push_back({bones ? "Armature" : "Vector", TAB_DRAWING});
     }
-    /* Bone layers have a Bone Constraints tab beside Armature. */
+    if (media) {
+      tabs.push_back({"Media", TAB_MEDIA});
+    }
+    if (text) {
+      tabs.push_back({"Text", TAB_TEXT});
+    }
+    if (vector) {
+      tabs.push_back({"Shape", TAB_SHAPE});
+    }
     if (bones) {
+      tabs.push_back({"Bone", TAB_BONE});
       tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
     }
     if (reference) {
       tabs.push_back({"Reference", TAB_REFERENCE});
     }
-    if (media) {
-      tabs.push_back({"Media", TAB_MEDIA});
-    }
-    if ((area.properties_tab == TAB_MASKING && !active_layer) || (area.properties_tab == TAB_REFERENCE && !reference) ||
-        (area.properties_tab == TAB_MODIFIERS && !modifiers) || (area.properties_tab == TAB_DRAWING && !drawing) ||
-        (area.properties_tab == TAB_CONSTRAINTS && !bones) || (area.properties_tab == TAB_MEDIA && !media))
-    {
-      area.properties_tab = TAB_LAYER;
-    }
+  }
+  /* The tab picked shows when it applies; otherwise Layer (the camera's own with the camera picked),
+   * the pick kept for when it applies again. */
+  int shown = area.properties_tab;
+  if (camera && shown != TAB_DOCUMENT) {
+    shown = TAB_CAMERA;
+  }
+  if (std::none_of(tabs.begin(), tabs.end(), [&](const TabEntry &t) { return t.id == shown; })) {
+    shown = TAB_LAYER;
   }
   for (size_t i = 0; i < tabs.size(); i++) {
     if (i > 0) {
       ImGui::SameLine(0, 2);
     }
-    const bool active = area.properties_tab == tabs[i].id;
+    const bool active = shown == tabs[i].id;
     if (active) {
       ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     }
     if (ImGui::Button(tabs[i].label)) {
-      area.properties_tab = tabs[i].id;
+      area.properties_tab = shown = tabs[i].id;
     }
     if (active) {
       ImGui::PopStyleColor();
@@ -5878,12 +7263,12 @@ void properties_draw(Area &area, Context &C)
     /* Each tab's panels in boxes, in the order kept for that tab. */
     std::string tab_name = "Document";
     for (const TabEntry &t : tabs) {
-      if (t.id == area.properties_tab) {
+      if (t.id == shown) {
         tab_name = t.label;
       }
     }
     ui_boxes_begin("Properties/" + tab_name);
-    switch (area.properties_tab) {
+    switch (shown) {
       case TAB_LAYER:
         layer_tab(C);
         break;
@@ -5902,19 +7287,44 @@ void properties_draw(Area &area, Context &C)
       case TAB_MEDIA:
         media_tab(C);
         break;
+      case TAB_TEXT:
+        properties_text_tab(C);
+        break;
       case TAB_CONSTRAINTS:
         constraints_panel(C, *document_active_layer(*C.document));
         break;
       case TAB_DRAWING:
         if (bones) {
+          /* The skeleton as a whole: its collections, every bone, its fixes. */
           bone_collections_panel(C, *document_active_layer(*C.document));
           bones_panel(C, *document_active_layer(*C.document));
-          bone_display_panel(C, *document_active_layer(*C.document));
+          fix_actions_panel(C, *document_active_layer(*C.document));
         }
         else {
-          drawing_tab(C);
+          /* Keying a fix on a drawing: what is being edited, at the top. */
+          if (Layer *fix_owner = C.document->action.empty() ? nullptr : layer_find(*C.document, C.document->action_layer);
+              fix_owner && fix_action_find(*fix_owner, C.document->action))
+          {
+            fix_actions_panel(C, *fix_owner);
+          }
+          drawing_tab(C, false);
         }
         break;
+      case TAB_SHAPE:
+        drawing_tab(C, true);
+        break;
+      case TAB_BONE: {
+        /* The active bone alone; with none, the tab stays and says how to get one. */
+        Layer &armature = *document_active_layer(*C.document);
+        if (!bone_find(armature, armature.active_bone)) {
+          ImGui::TextDisabled("No active bone: click a bone to edit it.");
+          break;
+        }
+        bone_panel(C, armature);
+        bone_relations_panel(C, armature);
+        bone_display_panel(C, armature);
+        break;
+      }
       default:
         document_tab(C);
         break;

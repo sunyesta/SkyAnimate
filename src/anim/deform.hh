@@ -18,19 +18,28 @@
 
 namespace oanim {
 
+struct BonePose;
 struct Document;
 struct Layer;
 struct Modifier;
 
 /* Whether the layer shows anything other than its plain drawing. */
 bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool render);
-VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render);
+/* With `r_rigid`: when the bones carry the whole drawing as one piece (turned and moved, as by a head
+ * bone), their move is left out of the result and put there, to draw it with; otherwise identity. A
+ * drawing kept that way while bones turn is drawn again from what was made of it before. */
+VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render,
+                                      Transform2D *r_rigid = nullptr);
 /* The layer's drawing as drawn on the setup frame, with its Mirror modifiers (bones don't bend
  * it there): what brushed lines lay their dabs out on, so they stick to the artwork. */
 VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool render);
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
+/* The same with the bones posed as `poses` has them (each one's skin), for a change worked out
+ * without posing the bones: Apply Pose as Rest Pose bending the setup drawing to the new rest. */
+std::vector<Transform2D> layer_point_skins_posed(const Document &doc, const Layer &layer,
+                                                 const std::vector<BonePose> &poses);
 
 /* How each of the layer's own points follows `bone`, 0-1 (its share of the point's motion), from
  * its weights. For the weight display. */

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "core/math.hh"
+#include "data/text.hh"
 #include "data/vector.hh"
 #include "rna/rna.hh"
 
@@ -34,6 +35,7 @@ namespace oanim {
 struct ReferencePoint {
   float2 offset;
   Channel<float2> offset_keys;
+  bool operator==(const ReferencePoint &) const = default;
 };
 
 /* A handle turned on a reference (R or S on its points): which one, by its point and the
@@ -43,6 +45,7 @@ struct ReferenceHandleKey {
   uint64_t point = 0, toward = 0;
   bool in = false;
   auto operator<=>(const ReferenceHandleKey &) const = default;
+  bool operator==(const ReferenceHandleKey &) const = default;
 };
 
 /* A shape's look changed on a reference: each setting on its own (the rest follow the original). */
@@ -59,6 +62,7 @@ struct ReferenceLook {
   {
     return !fill_set && !line_set && !width_set && !brush_set && !has_fill_set && !has_outline_set && !hidden;
   }
+  bool operator==(const ReferenceLook &) const = default;
 };
 
 /* A colour swapped on a reference: every shape of the original filled (`fill`) or lined (`line`)
@@ -66,6 +70,7 @@ struct ReferenceLook {
 struct ReferenceSwap {
   Color from, to;
   bool fill = true, line = true;
+  bool operator==(const ReferenceSwap &) const = default;
 };
 
 struct ReferenceSettings {
@@ -101,13 +106,15 @@ struct ReferenceSettings {
   std::vector<std::vector<BoneWeight>> built_weights;
   std::vector<Shape> built_shapes;
   std::vector<Curve> built_curves;
-  float2 built_position, built_scale;
+  float2 built_position, built_scale, built_shear;
   float built_rotation = 0.0f, built_opacity = 1.0f;
+  bool operator==(const ReferenceSettings &) const = default;
 };
 
 /* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). Media: an
- * image, image sequence, video or sound (data/media_layer.hh). */
-enum class LayerType { Vector, Group, Bone, Media };
+ * image, image sequence, video or sound (data/media_layer.hh). Text: text kept as typed, its letters'
+ * outlines its drawing (data/text.hh). */
+enum class LayerType { Vector, Group, Bone, Media, Text };
 
 /* --- Media layers ------------------------------------------------------------------------------
  * A Media layer shows clips along the timeline, as a video editor's track: each clip is a file shown
@@ -145,6 +152,7 @@ struct MediaClip {
   MediaEnd end = MediaEnd::Hold;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
+  bool operator==(const MediaClip &) const = default;
 };
 
 struct MediaSettings {
@@ -159,9 +167,13 @@ struct MediaSettings {
   float tint_amount = 0.0f;
   /* Drawn over everything (and unmasked), rather than at its place in the layer stack. */
   bool in_front = false;
+  /* Don't Auto Key: placing, sizing or fading it never keys it (footage is usually set once for
+   * the whole shot); keying by hand still does. */
+  bool no_auto_key = true;
   /* Sound: how loud (1: as recorded), and silenced. */
   float volume = 1.0f;
   bool muted = false;
+  bool operator==(const MediaSettings &) const = default;
 };
 
 /* A layer's masks are cards, each a mask of its own, painted as Photoshop's layer masks are: it
@@ -206,6 +218,12 @@ bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_ex
 enum class MaskCuts : uint8_t { All, Fills, Lines };
 const char *mask_cuts_identifier(MaskCuts cuts);
 bool mask_cuts_from_identifier(const std::string &identifier, MaskCuts *r_cuts);
+/* How a step's layers make its shape: all of them together (Union), the first with the others cut
+ * out of it (Difference), or only where every one of them is (Intersection), as Blender's Boolean. */
+enum class MaskCombine : uint8_t { Union, Difference, Intersection };
+const char *mask_combine_identifier(MaskCombine combine);
+const char *mask_combine_name(MaskCombine combine);
+bool mask_combine_from_identifier(const std::string &identifier, MaskCombine *r_combine);
 
 /* One step of a card's chain: its layers' shape painted on the card's mask. */
 struct MaskStep {
@@ -213,6 +231,8 @@ struct MaskStep {
   /* The shape inside out: everything but its layers. */
   bool invert = false;
   std::vector<uint64_t> layers;
+  /* How `layers` make the shape (in their order: Difference keeps the first). */
+  MaskCombine combine = MaskCombine::Union;
   /* How the layers' shapes mask: grown by `grow` pixels (on screen; 1 hides thin seams along the
    * edges) or shrunk by a negative one. Shape: As Drawn (fills and strokes), Fills Only
    * (`fills_only`) or Strokes Only (`strokes_only`); and Fill Every Shape (`filled`): every shape as
@@ -233,7 +253,8 @@ struct MaskStep {
   bool clip = false;
   bool operator==(const MaskStep &o) const
   {
-    return mode == o.mode && invert == o.invert && layers == o.layers && grow == o.grow && fills_only == o.fills_only &&
+    return mode == o.mode && invert == o.invert && layers == o.layers && combine == o.combine && grow == o.grow &&
+           fills_only == o.fills_only &&
            strokes_only == o.strokes_only && filled == o.filled && inside_stroke == o.inside_stroke &&
            extend == o.extend && clip == o.clip;
   }
@@ -310,8 +331,21 @@ enum class BoneConstraintType {
   IK,
   /* Moho's bone dynamics: springs per channel, simulated from frame to frame. */
   Dynamics,
+  /* Keeps the bone's head (or the drawings it carries) inside a closed shape of another layer, as
+   * that shape is drawn on the frame: a pupil inside its eye white, at any angle of the head. */
+  LimitShape,
+  /* Blender's Child Of: moves (turns, scales) with the target bone's change from its setup pose, as if
+   * parented to it, each part switchable; keyed Influence lets it pick up or drop the target. */
+  ChildOf,
+  /* Eyes: the bone (a pupil) shifts toward the target bone (a look target), which stands in front of
+   * the face at its Depth: each eye a ball, turning to look at it, the pupil where that turn puts it. */
+  LookAt,
 };
-inline constexpr int BONE_CONSTRAINT_TYPES = 10;
+inline constexpr int BONE_CONSTRAINT_TYPES = 13;
+
+/* LimitShape: what has to stay inside the shape, the bone's head or the whole of the drawings it
+ * carries. */
+enum class ShapeFit { Center, Whole };
 const char *bone_constraint_identifier(BoneConstraintType type);
 const char *bone_constraint_name(BoneConstraintType type);
 bool bone_constraint_from_identifier(const std::string &identifier, BoneConstraintType *r_type);
@@ -337,11 +371,18 @@ struct BoneSpring {
    * radians; Position: bone layer units; Scale: a fraction of its size. Kept while off. */
   bool use_limit = false;
   float limit = 0.5f;
+  /* Squash & Stretch only: `limit` is Max Stretch, and this the furthest it can squash, as a part of
+   * its length (0.3: down to 0.7 of it), neared softly the same way. Kept while off. Squashing never
+   * goes below a tenth of its length, limit or not. */
+  bool use_squash_limit = false;
+  float squash_limit = 0.3f;
   /* Keys for the numbers above: they are animatable (the on/off switches aren't). Settings are
    * keyed by hand: I and auto-keying leave them alone until one is keyed with its key button. */
   Channel<float> settle_speed_keys = Channel<float>::by_hand(), bounce_keys = Channel<float>::by_hand(),
                  inertia_keys = Channel<float>::by_hand(),
-                 stretch_keys = Channel<float>::by_hand(), limit_keys = Channel<float>::by_hand();
+                 stretch_keys = Channel<float>::by_hand(), limit_keys = Channel<float>::by_hand(),
+                 squash_limit_keys = Channel<float>::by_hand();
+  bool operator==(const BoneSpring &) const = default;
 };
 
 struct BoneConstraint {
@@ -354,7 +395,8 @@ struct BoneConstraint {
   /* How much of its effect it has, 0-1; animatable. */
   float influence = 1.0f;
   Channel<float> influence_keys;
-  /* LimitAngle: radians, relative to the parent. */
+  /* LimitAngle: radians, how far the bone may turn each way from its setup angle (as the Bone panel's
+   * Angle shows its turn), so the limits move with the rest. */
   float min_angle = -1.5707964f;
   float max_angle = 1.5707964f;
   /* MaintainVolume: how much the width follows the length (1: keeps its area, in place of its
@@ -366,10 +408,65 @@ struct BoneConstraint {
   float factor = 1.0f;
   /* Copy*: frames behind. */
   int delay = 0;
+  /* CopyPosition: off, the bone goes to where the target's base is (Blender's Copy Location), Factor
+   * the way there; on, it copies the target's move from its setup pose instead (Moho's control bones;
+   * files saved before this keep it on). */
+  bool follow_move = false;
   /* IK: how many bones up it turns (0: up to a bone Ignored by IK, or the root). */
   int chain = 0;
   /* IK: how far the chain may stretch to reach (1: not at all, 1.5: half again). */
   float max_stretch = 1.0f;
+  /* LimitShape: the layer and its shape (ids; shape 0: the layer's first closed shape) to stay
+   * inside; what stays inside, and with Whole the layer whose drawing it is (0: the layers that
+   * follow this bone); how far that may go past the edge (0-1 of its size); and how soft the edge is
+   * (bone layer units: it slows over this much before stopping). */
+  uint64_t shape_layer = 0;
+  uint64_t shape_id = 0;
+  ShapeFit shape_fit = ShapeFit::Whole;
+  uint64_t fit_layer = 0;
+  float overlap = 0.0f;
+  float softness = 0.0f;
+  /* Blender's Affect Transform: moving the bone past the edge stops its own position there too (what
+   * its keys get), not only where it shows. */
+  bool affect_transform = true;
+  /* ChildOf: which of the target's change it takes. */
+  bool child_position = true;
+  bool child_rotation = true;
+  bool child_scale = true;
+  /* LookAt: how far the pupil moves looking fully sideways and up or down (bone layer units: the eye's
+   * radius), worked out from the Limit to Shape below it when `range_auto`; `squash`, shown as Warp: how
+   * much the layers following the bone wrap round the eyeball (0-1, data/bones.hh bone_look_warp); and how far each eye turns outward
+   * from the target (radians), as real eyes don't quite meet on it. */
+  bool range_auto = true;
+  float2 look_range = {0.05f, 0.05f};
+  float squash = 1.0f;
+  float divergence = 0.0f;
+  /* LookAt, the eyeball: its size (half its width and height, bone layer units: a cartoon eye is a
+   * stretched ball), from its Eye Shape at frame 0 when `eyeball_auto`; which way its front faces (yaw
+   * and pitch, radians: 0 at the camera, a quarter turn in profile), keyed in a head turn so the pupil
+   * sits and foreshortens as the turned eye shows it; how far the eye turns from there to look, sideways,
+   * up and down (a real eye turns least upward); and the layers following the bone left unwarped (a shine). */
+  bool eyeball_auto = true;
+  float2 eyeball_size = {0.05f, 0.05f};
+  float2 facing;
+  Channel<float2> facing_keys = Channel<float2>::by_hand();
+  float max_side = 0.7853982f;
+  float max_up = 0.5235988f;
+  float max_down = 0.7853982f;
+  std::vector<uint64_t> keep_round;
+  /* LookAt: a bone whose head (as rigged) is the middle of the eyeball (0: the ball's front is the
+   * pupil as rigged). The pupil drawn off its front already points that way at rest. */
+  uint64_t eyeball_center = 0;
+  /* LookAt with Eyeball Auto, worked out every frame and never saved: from the Eye Shape at frame 0. */
+  float2 eyeball_auto_size;
+  /* LookAt with Range Auto, worked out every frame and never saved (anim/shape_limit.hh): the reach
+   * inside the bone's Limit to Shape (0 when it has none). */
+  float2 look_auto_range;
+  /* LimitShape, worked out every frame and never saved (anim/shape_limit.hh): the shape's outline
+   * and the carried drawing's outline around the head, both in the bone layer's space; empty when
+   * there is nothing to stay inside. */
+  std::vector<float2> shape_region;
+  std::vector<float2> shape_footprint;
   /* Dynamics, per channel. */
   BoneSpring angle_spring{.limit = 0.7853982f}, position_spring{.limit = 0.1f},
       scale_spring{.limit = 0.5f};
@@ -403,6 +500,7 @@ struct BoneConstraint {
   Channel<float> gravity_keys = Channel<float>::by_hand(), wind_keys = Channel<float>::by_hand(),
                  wind_direction_keys = Channel<float>::by_hand(), wind_gusts_keys = Channel<float>::by_hand(),
                  wind_gust_speed_keys = Channel<float>::by_hand(), wind_turbulence_keys = Channel<float>::by_hand();
+  bool operator==(const BoneConstraint &) const = default;
 };
 
 /* Where dynamics put a bone right now, in the bone layer's space (runtime). */
@@ -412,6 +510,7 @@ struct BoneDynamicsState {
   /* The length scale (Y). */
   float scale = 1.0f;
   bool angle_on = false, position_on = false, scale_on = false;
+  bool operator==(const BoneDynamicsState &) const = default;
 };
 
 /* One bone of a bone layer's skeleton, as in Moho's M_Bone. Its frame is the parent bone's
@@ -432,6 +531,7 @@ struct BoneCollection {
   bool visible = true;
   /* Blender's star: while any collection is soloed, only soloed ones show. */
   bool solo = false;
+  bool operator==(const BoneCollection &) const = default;
 };
 
 /* What a bone is drawn as while the viewport shows custom bone shapes: a bone, a pin (Moho's pin
@@ -441,6 +541,10 @@ enum class BoneShape { None, Pin, Custom };
  * BONE_COLOR_CUSTOM the bone's own three shades. */
 inline constexpr int BONE_COLOR_THEME_SETS = 15;
 inline constexpr int BONE_COLOR_CUSTOM = BONE_COLOR_THEME_SETS + 1;
+
+/* Blender's Inherit Scale, cut to what a 2D rig needs: the parent's change in size as it is (its squash
+ * and stretch too), only its overall size (Uniform), or none of it. */
+enum class InheritScale { Full, Uniform, None };
 
 struct Bone {
   uint64_t id = 0;
@@ -462,6 +566,13 @@ struct Bone {
                                         Color{1.0f, 0.75f, 0.31f, 1.0f}};
   /* Connected, as in Blender: the head sits on the parent's tail and moves with it. */
   bool connected = false;
+  /* Relations, as Blender's. Posing (the setup pose always hangs from the parent as it rests): whether
+   * the bone turns as its parent has turned from its setup pose, and how much of its parent's change in
+   * size it takes. Its head goes where the parent takes it either way. Local Location: its Transform
+   * reads along the bone as it rests (X down it), else along its parent; the keys are the same. */
+  bool inherit_rotation = true;
+  InheritScale inherit_scale = InheritScale::Full;
+  bool local_location = true;
   /* Blender's edit-bone selection: the body, and the round joints at either end. A selected body
    * has both ends selected; a connected bone's head is its parent's tail, one joint. */
   bool selected = false;
@@ -481,6 +592,10 @@ struct Bone {
   Channel<float2> position_keys;
   Channel<float> angle_keys;
   Channel<float2> scale_keys;
+  /* A look target's Depth: how far in front of the face it stands (bone layer units), for the Look At
+   * constraints aiming at it: close, the eyes cross; far, they look the same way. Keyable. */
+  float depth = 1.0f;
+  Channel<float> depth_keys;
   /* Top to bottom (see BoneConstraintType). */
   std::vector<BoneConstraint> constraints;
   /* Moho's Ignored by IK: IK chains stop below it and never turn it. */
@@ -494,13 +609,14 @@ struct Bone {
   uint64_t shape_layer = 0;
   /* The bone collections it is in (their ids, in its bone layer). */
   std::vector<uint64_t> collections;
+  bool operator==(const Bone &) const = default;
 };
 
 /* Blender-style modifiers, run on a layer's drawing in stack order. Armature is the bones
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature, Boolean, Bevel };
+enum class ModifierType { Mirror, Armature, Boolean, Bevel, Subdivide };
 
 /* Bevel: which corners it cuts (Blender's Limit Method): every one, those the outline turns sharply
  * at, or a point group's; and what its Amount measures (Width Type): how far along each side the cut
@@ -568,9 +684,25 @@ struct Modifier {
   float bevel_profile = 0.5f;
   bool bevel_clamp = true;
   Channel<float> merge_smoothing_keys = Channel<float>::by_hand();
+  /* Subdivide (anim/subdivide.hh): By Length (a point at least every `subdiv_spacing` along each
+   * segment, in the setup pose; `subdiv_render_spacing` for renders, 0: the same) or By Count
+   * (`subdiv_pieces` per segment), never more than `subdiv_max_pieces`; the new points' weights Blend
+   * their end points' or come From Bones; only the segments touching point group `subdiv_group` when
+   * it names one. */
+  bool subdiv_by_length = true;
+  float subdiv_spacing = 0.05f;
+  float subdiv_render_spacing = 0.0f;
+  int subdiv_pieces = 4;
+  int subdiv_max_pieces = 64;
+  bool subdiv_from_bones = false;
+  /* The new points blend the bones' turns as rigid motions, so they don't curl when bones turn far apart
+   * (Blender's Preserve Volume); off, they blend the bones' matrices as other points do. */
+  bool subdiv_preserve_volume = true;
+  std::string subdiv_group;
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;
+  bool operator==(const Modifier &) const = default;
 };
 
 /* An animatable number known by its path, for things that aren't a layer's own (the document's
@@ -583,10 +715,40 @@ struct CustomChannel {
   float synced = 0.0f;
   /* Settings are keyed by hand (see Channel::keyed_by_hand). */
   Channel<float> keys = Channel<float>::by_hand();
+  bool operator==(const CustomChannel &) const = default;
+};
+
+/* One pose a fix action corrects: where each of its drivers is (that smart action's frame), and the fix's
+ * frame holding the correction for it (its keys there). */
+struct FixPose {
+  std::vector<float> at;
+  int frame = 10;
+  /* It has had keys: once they are all deleted, the pose goes (fix_actions_tidy). */
+  bool keyed = false;
+  bool operator==(const FixPose &) const = default;
+};
+/* A fix action (a corrective, Maya's combination shapes): an action of a bone layer that plays by itself
+ * when the smart actions it names (its drivers) play together. It corrects one or more poses of theirs, each
+ * on a frame of its own (10, 20, ...): exactly at a pose its keys there play, between poses they blend by
+ * how close the pose is to each, and it fades out toward rest as its drivers do (anim/animation.hh). */
+struct FixAction {
+  std::string name;
+  std::vector<std::string> drivers;
+  std::vector<FixPose> poses;
+  bool operator==(const FixAction &) const = default;
+};
+
+/* A number that changes whenever what it is on may have changed (see document_touch_all): caches of what
+ * is drawn of a layer (the renderer's, the overlays') keep it while the number stays. Not saved, and never
+ * part of comparing (two layers alike are alike whatever their numbers). */
+struct Revision {
+  uint64_t value = 0;
+  bool operator==(const Revision &) const { return true; }
 };
 
 struct Layer {
   uint64_t id = 0;
+  Revision revision;
   std::string name;
   /* Extra animatable numbers (see CustomChannel). */
   std::vector<CustomChannel> custom_channels;
@@ -607,11 +769,15 @@ struct Layer {
   /* Degrees, counter-clockwise. */
   float rotation = 0.0f;
   float2 scale = {1.0f, 1.0f};
+  /* Shear, degrees (as Moho's layer shear, Flash's skew, Spine's bone shear): how far its X axis (x) and its
+   * Y axis (y) tilt from square, counter-clockwise, between turning and scaling (see local_transform). */
+  float2 shear;
   float opacity = 1.0f;
   /* Keys for the transform and opacity (see anim/channel.hh). */
   Channel<float2> position_keys;
   Channel<float> rotation_keys;
   Channel<float2> scale_keys;
+  Channel<float2> shear_keys;
   Channel<float> opacity_keys;
   /* Visibility as an animated channel (stepped): 1 shown, 0 hidden, mirrored into `visible`. */
   Channel<float> visible_keys = [] {
@@ -649,6 +815,10 @@ struct Layer {
   VectorDrawing drawing;
   /* Media layers: their clips and how they show. */
   MediaSettings media;
+  /* Text layers: the text; and what it was when `drawing` was last made from it (runtime: a text no
+   * longer matching has its letters made again, see text/text_layer.hh). */
+  TextSettings text;
+  TextSettings text_built;
   /* Group children, top of the stack first, as the Layers editor lists them. */
   std::vector<Layer> children;
 
@@ -660,9 +830,9 @@ struct Layer {
   uint64_t parent_bone = 0;
   /* What Parent Bone moves (Deform): false, the layer as a whole (Layer: a bone's squash and
    * stretch squashes its lines and brush stamps too); true, its points, as if each were weighted
-   * all to that bone (Points: lines keep their width and stamps their shape). Groups move as a
-   * whole. */
-  bool parent_bone_points = false;
+   * all to that bone (Points: lines keep their width and stamps their shape). Points for new
+   * drawings; groups move as a whole. */
+  bool parent_bone_points = true;
   /* Bone layers: their bone collections, in list order, and the active one (its id; 0: All). */
   std::vector<BoneCollection> bone_collections;
   uint64_t next_collection_id = 1;
@@ -673,6 +843,10 @@ struct Layer {
   /* Inside a bone layer: its points can be picked and moved along with the bones while the bone
    * layer is the active one (it is in All, and can be put in other collections too). */
   bool edit_with_bones = false;
+  /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
+   * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
+   * with their bone collections instead). */
+  bool edit_descendants = true;
   /* A drawing that is: the bone collections it is in besides All (their ids). */
   std::vector<uint64_t> collections;
   /* Run on the drawing in order (see ModifierType). */
@@ -680,6 +854,8 @@ struct Layer {
   /* Bone layers: the names of their actions, alternative timelines for the layer and everything
    * inside it (see anim/animation.hh). */
   std::vector<std::string> actions;
+  /* Bone layers: which of those actions are fix actions, and what drives them. */
+  std::vector<FixAction> fix_actions;
   /* Bone layers, runtime: the frame the bones show (for constraints' delays) and where dynamics put
    * them on it, by bone id. */
   int pose_frame = 0;
@@ -688,8 +864,14 @@ struct Layer {
   bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
   bool is_bone_layer() const { return type == LayerType::Bone; }
   bool is_media() const { return type == LayerType::Media; }
+  bool is_text() const { return type == LayerType::Text; }
+  /* Field by field, children too (undo steps compare a layer with its last copy). */
+  bool operator==(const Layer &) const = default;
   /* Has a drawing of its own to show and edit (vector layers and references of them). */
   bool has_drawing() const { return type == LayerType::Vector; }
+  /* Has shapes to draw, pick and mask with: a drawing of its own, or a text's letters (which only
+   * change with its text). */
+  bool has_shapes() const { return type == LayerType::Vector || type == LayerType::Text; }
   bool is_reference() const { return reference_source != 0; }
   /* The bone it follows as a whole (0 for none): a copy posed Same as Original moves with its
    * original's bones, so its own Parent Bone waits until it is given Own Bones. */
@@ -702,7 +884,12 @@ struct Layer {
   {
     return parent_bone != 0 && parent_bone_points && !is_group() && !(is_reference() && reference.match_original);
   }
+  /* Translate * Rotate * Shear * Scale: the X axis turned by its rotation plus shear.x, the Y axis by its
+   * rotation plus shear.y, each then scaled. */
   Transform2D local_transform() const;
+  /* Sets position, rotation, shear and scale to make `t` exactly (shear.x 0: the X axis by the rotation
+   * alone), its scale's x negative when `negative_x` (a flip kept as one). */
+  void set_local_transform(const Transform2D &t, bool negative_x = false);
 
   static const rna::StructRNA &rna();
 };

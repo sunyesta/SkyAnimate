@@ -1,3 +1,4 @@
+#include "editors/screen_eyedropper.hh"
 #include "editors/editors.hh"
 
 #include <algorithm>
@@ -13,8 +14,11 @@
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
+#include "anim/animation.hh"
 #include "anim/draw_order.hh"
+#include "assets/asset_library.hh"
 #include "core/log.hh"
+#include "editors/statistics.hh"
 #include "editors/ui.hh"
 #include "ui/theme.hh"
 #include "data/bones.hh"
@@ -630,6 +634,16 @@ void ui_pinned_row()
 
 int ui_key_tint_push(int state)
 {
+  if (state & KEY_STATE_SMART) {
+    /* A smart bone is moving it now: pink, whatever its own keys (the value shown has the action in). */
+    const ImVec4 c(0.62f, 0.27f, 0.47f, 1.0f), hover(0.71f, 0.31f, 0.54f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, c);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, hover);
+    ImGui::PushStyleColor(ImGuiCol_CheckboxSelectedBg, ImVec4(0.90f, 0.45f, 0.72f, 1.0f));
+    return 4;
+  }
+  state &= 3;
   if (state <= 0) {
     return 0;
   }
@@ -647,6 +661,7 @@ int ui_key_tint_push(int state)
 
 bool ui_key_button(const char *id, int state)
 {
+  state &= 3;
   const float h = ImGui::GetFrameHeight();
   ImGui::SameLine(0.0f, 2.0f);
   const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -933,7 +948,7 @@ static void report_icon(ImDrawList *dl, ImVec2 c, float size, ReportType type, I
   dl->AddLine(ImVec2(c.x, c.y - r * 0.15f), ImVec2(c.x, c.y + r * 0.6f), cut, 1.8f);
 }
 
-void ui_status_bar_draw()
+void ui_status_bar_draw(Context &C, const char *version)
 {
   /* As tall as Blender's (a button and a margin), so the banner's boxes fit with room round them. */
   const float h = ImGui::GetFrameHeight() + 6.0f;
@@ -961,7 +976,10 @@ void ui_status_bar_draw()
   const double stay = r.type == ReportType::Info ? 4.0 : 8.0, fade = 1.0;
   const float alpha = age < stay ? 1.0f : age < stay + fade ? float(1.0 - (age - stay) / fade) : 0.0f;
   const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float bar_right = at.x + ImGui::GetContentRegionAvail().x;
   ImDrawList *dl = ImGui::GetWindowDrawList();
+  /* Where the banner ends: the statistics keep to the right of it. */
+  float banner_right = at.x;
   if (r.serial != 0 && alpha > 0.0f) {
     std::string text = r.message;
     if (!r.title.empty()) {
@@ -977,6 +995,7 @@ void ui_status_bar_draw()
     const float box_w = icon_w + text_w + unit * 0.75f;
     const float left = at.x + std::max(0.0f, (ImGui::GetContentRegionAvail().x - box_w) * 0.5f);
     const ImVec2 min(left, at.y + 2.0f), max(left + box_w, at.y + h - 2.0f);
+    banner_right = max.x;
     const auto a = [&](int v) { return int(float(v) * alpha); };
     /* Blender's colours: the icon's box in the report's colour, the message's the same at a quarter
      * over the bar, a grey outline round both; a new report brightens the icon's box briefly. */
@@ -1022,6 +1041,51 @@ void ui_status_bar_draw()
       ImGui::SetTooltip("%s%s%s\n\nClick: recent reports", r.title.empty() ? "" : (r.title + "\n").c_str(),
                         r.message.c_str(), r.hint.empty() ? "" : ("\n" + r.hint).c_str());
     }
+  }
+  /* At the right, as Blender's: "Head_fr | Points:12/529 | ... | 0.1.0", the separators fainter. */
+  Preferences &prefs = preferences();
+  const Statistics stats = document_statistics(C);
+  const std::vector<std::string> parts =
+      statistics_parts(stats, prefs.status_statistics, prefs.status_frame, prefs.status_version ? version : nullptr);
+  if (!parts.empty()) {
+    const char *separator = " | ";
+    const float separator_w = ImGui::CalcTextSize(separator).x;
+    float width = 0.0f;
+    for (size_t i = 0; i < parts.size(); i++) {
+      width += ImGui::CalcTextSize(parts[i].c_str()).x + (i > 0 ? separator_w : 0.0f);
+    }
+    const float right = bar_right - 4.0f;
+    float x = right - width;
+    const float y = at.y + (h - ImGui::GetFontSize()) * 0.5f;
+    /* Too long to fit beside the banner: cut off on the left. */
+    dl->PushClipRect(ImVec2(std::max(at.x, banner_right + 12.0f), at.y), ImVec2(bar_right, at.y + h), true);
+    for (size_t i = 0; i < parts.size(); i++) {
+      if (i > 0) {
+        dl->AddText(ImVec2(x, y), IM_COL32(0x80, 0x80, 0x80, 255), separator);
+        x += separator_w;
+      }
+      dl->AddText(ImVec2(x, y), IM_COL32(0xb4, 0xb4, 0xb4, 255), parts[i].c_str());
+      x += ImGui::CalcTextSize(parts[i].c_str()).x;
+    }
+    dl->PopClipRect();
+  }
+  /* Right-click: what shows at the right (Blender's status bar menu), kept in the preferences. */
+  if (ImGui::BeginPopupContextWindow("##status_bar_menu", ImGuiPopupFlags_MouseButtonRight)) {
+    bool changed = false;
+    changed |= ImGui::MenuItem("Statistics", nullptr, &prefs.status_statistics);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("What is being worked in and how much of it is selected: points, curves, segments and "
+                        "shapes of the drawings being edited, a bone layer's bones, the layers");
+    }
+    changed |= ImGui::MenuItem("Frame", nullptr, &prefs.status_frame);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("The current frame and the last frame of the range");
+    }
+    changed |= ImGui::MenuItem("Open Animate Version", nullptr, &prefs.status_version);
+    if (changed) {
+      preferences_save();
+    }
+    ImGui::EndPopup();
   }
   /* The recent reports, newest first, as the Info editor lists them. */
   if (ImGui::BeginPopup("##recent_reports")) {
@@ -1084,6 +1148,8 @@ struct Eyedropper {
   ImVec2 sample_pos;
   bool has_result = false;
   float rgb[3] = {0, 0, 0};
+  /* Picking over the whole screen (any window), not just this one (editors/screen_eyedropper.hh). */
+  bool screen = false;
 };
 Eyedropper g_eyedropper;
 
@@ -1098,6 +1164,185 @@ void eyedropper_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
 }
 
 }  // namespace
+
+/* The ViewportActionPanel, Blender's Adjust Last Operation: the last operator run in an editor `area`,
+ * while it can be adjusted, floats in the bottom-left corner folded to its name (as Blender's
+ * starts); open, its options show under it (labels on the left, values on the right), and changing
+ * one runs it again with it. Open or folded stays as last left, as Blender's panel does. Colours and
+ * sizes are Blender's: the menu background (#181818, outlined #242424), fields #282828 outlined
+ * #3D3D3D. */
+void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, ImVec2 origin, ImVec2 size, float left)
+{
+  const LastOperation *last = operator_last_redo(C);
+  /* F9 folds or opens the panel of the editor the last operation was done in. */
+  if (C.wm->action_panel_toggle_request && (!last || last->area == area)) {
+    ui_fold_record(fold_key, false, !ui_fold_state(fold_key, false));
+    C.wm->action_panel_toggle_request = false;
+    /* Folding it is kept with the project, but leaves what it adjusts adjustable. */
+    if (last) {
+      operator_last_redo_keep(C);
+    }
+  }
+  const bool panel_open = ui_fold_state(fold_key, false);
+  if (!last || last->area != area) {
+    return;
+  }
+  const OperatorType *ot = operators().find(last->idname);
+  if (!ot) {
+    return;
+  }
+  std::vector<const OpProperty *> shown_props;
+  for (const OpProperty &prop : ot->props) {
+    if (!prop.visible || prop.visible(last->args)) {
+      shown_props.push_back(&prop);
+    }
+  }
+  if (shown_props.empty()) {
+    return;
+  }
+  const float unit = ImGui::GetFrameHeight();
+  const float fs = ImGui::GetFontSize();
+  const float pad = 6.0f, gap = 3.0f;
+  const float header_h = unit + 4.0f;
+  const float folded_w = std::max(unit * 7.5f, ImGui::CalcTextSize(ot->name.c_str()).x + unit * 2.5f);
+  const float w = panel_open ? std::max(folded_w, unit * 14.0f) : folded_w;
+  const float body_h = panel_open ? float(shown_props.size()) * (unit + gap) - gap + pad * 2.0f : 0.0f;
+  const ImVec2 min(origin.x + left, origin.y + size.y - header_h - body_h - 8.0f);
+  const ImVec2 max(min.x + w, min.y + header_h + body_h);
+  if (min.y < origin.y + unit * 2.0f || max.x > origin.x + size.x) {
+    return;
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float round = 4.0f;
+  dl->AddRectFilled(min, max, IM_COL32(0x18, 0x18, 0x18, 255), round);
+  dl->AddRect(min, max, IM_COL32(0x24, 0x24, 0x24, 255), round, 0, 1.0f);
+  /* The panel takes the clicks over it, not the viewport beneath. */
+  ImGui::SetCursorScreenPos(min);
+  ImGui::SetNextItemAllowOverlap();
+  ImGui::InvisibleButton("##action_panel", max - min);
+
+  /* The header: open arrow and the operator's name; clicking anywhere on it folds or opens. */
+  ImGui::SetCursorScreenPos(min);
+  ImGui::SetNextItemAllowOverlap();
+  if (ImGui::InvisibleButton("##action_panel_header", ImVec2(w, header_h))) {
+    /* Shown the new way from the next frame. */
+    ui_fold_record(fold_key, false, !panel_open);
+    operator_last_redo_keep(C);
+  }
+  const ImU32 text = IM_COL32(0xd9, 0xd9, 0xd9, 255);
+  /* Blender's chevrons: > folded, v open. */
+  const ImVec2 arrow(min.x + pad + fs * 0.45f, min.y + header_h * 0.5f);
+  const float s = fs * 0.22f;
+  if (panel_open) {
+    const ImVec2 v[3] = {arrow + ImVec2(-s, -s * 0.5f), arrow + ImVec2(0, s * 0.5f), arrow + ImVec2(s, -s * 0.5f)};
+    dl->AddPolyline(v, 3, text, 0, 1.5f);
+  }
+  else {
+    const ImVec2 v[3] = {arrow + ImVec2(-s * 0.5f, -s), arrow + ImVec2(s * 0.5f, 0), arrow + ImVec2(-s * 0.5f, s)};
+    dl->AddPolyline(v, 3, text, 0, 1.5f);
+  }
+  dl->AddText(ImVec2(min.x + pad + fs * 1.25f, min.y + (header_h - fs) * 0.5f), text, ot->name.c_str());
+  if (!panel_open) {
+    return;
+  }
+
+  /* The options, as Blender lays them out (labels split off to the left). */
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0x28, 0x28, 0x28, 255));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(0x30, 0x30, 0x30, 255));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0x22, 0x22, 0x22, 255));
+  ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0x28, 0x28, 0x28, 255));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(0x30, 0x30, 0x30, 255));
+  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0x3d, 0x3d, 0x3d, 255));
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(0x18, 0x18, 0x18, 255));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, round);
+  const float inner = w - pad * 2.0f;
+  const float label_w = inner * 0.4f;
+  const float value_x = min.x + pad + label_w + 6.0f;
+  const float value_w = max.x - pad - value_x;
+  float y = min.y + header_h + pad - 2.0f;
+  OpArgs args = last->args;
+  bool changed = false;
+  for (const OpProperty *shown_prop : shown_props) {
+    const OpProperty &prop = *shown_prop;
+    ImGui::PushID(prop.name.c_str());
+    const bool enabled = !prop.enabled || prop.enabled(C);
+    ImGui::BeginDisabled(!enabled);
+    const std::string value = args[prop.name];
+    if (prop.kind != OpProperty::Kind::Bool) {
+      const float tw = ImGui::CalcTextSize(prop.label.c_str()).x;
+      dl->AddText(ImVec2(value_x - 6.0f - tw, y + (unit - fs) * 0.5f), text, prop.label.c_str());
+    }
+    ImGui::SetCursorScreenPos(ImVec2(value_x, y));
+    if (prop.kind == OpProperty::Kind::Enum) {
+      std::string shown = value;
+      for (const auto &[id, label] : prop.items) {
+        if (id == value) {
+          shown = label;
+        }
+      }
+      ImGui::SetNextItemWidth(value_w);
+      const bool open = ImGui::BeginCombo("##value", shown.c_str(), ImGuiComboFlags_NoArrowButton);
+      {
+        /* Blender's dropdown chevron, at the right end of the field. */
+        const ImVec2 b = ImGui::GetItemRectMax(), a = ImGui::GetItemRectMin();
+        const ImVec2 c(b.x - unit * 0.5f, (a.y + b.y) * 0.5f);
+        const float k = fs * 0.2f;
+        const ImVec2 v[3] = {c + ImVec2(-k, -k * 0.5f), c + ImVec2(0, k * 0.5f), c + ImVec2(k, -k * 0.5f)};
+        dl->AddPolyline(v, 3, text, 0, 1.5f);
+      }
+      if (open) {
+        for (const auto &[id, label] : prop.items) {
+          if (ImGui::Selectable(label.c_str(), id == value) && id != value) {
+            args[prop.name] = id;
+            changed = true;
+          }
+        }
+        ImGui::EndCombo();
+      }
+    }
+    else if (prop.kind == OpProperty::Kind::Float) {
+      float v = std::strtof(value.c_str(), nullptr);
+      ImGui::SetNextItemWidth(value_w);
+      if (ImGui::DragFloat("##value", &v, prop.step, prop.min, prop.max, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%g", v);
+        args[prop.name] = buf;
+        changed = true;
+      }
+    }
+    else if (prop.kind == OpProperty::Kind::Int) {
+      int v = std::atoi(value.c_str());
+      ImGui::SetNextItemWidth(value_w);
+      if (ImGui::DragInt("##value", &v, 0.25f, int(prop.min), int(prop.max), "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        args[prop.name] = std::to_string(v);
+        changed = true;
+      }
+    }
+    else {
+      bool on = value == "1" || value == "true" || value == "True";
+      if (ImGui::Checkbox(prop.label.c_str(), &on)) {
+        args[prop.name] = on ? "1" : "0";
+        changed = true;
+      }
+    }
+    ImGui::EndDisabled();
+    if (!prop.description.empty() &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+      const std::string tip = enabled || prop.disabled_why.empty() ? prop.description
+                                                                   : prop.description + "\n" + prop.disabled_why;
+      ImGui::SetTooltip("%s", tip.c_str());
+    }
+    ImGui::PopID();
+    y += unit + gap;
+  }
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor(7);
+  if (changed) {
+    operator_redo_last(C, args);
+  }
+}
 
 bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished, float right_space, float swatch_width)
 {
@@ -1137,6 +1382,7 @@ bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished, fl
       g_eyedropper = {};
       g_eyedropper.active = true;
       g_eyedropper.owner = owner;
+      g_eyedropper.screen = screen_eyedropper_begin();
       ImGui::CloseCurrentPopup();
     }
     eyedropper_icon(ImGui::GetWindowDrawList(), ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.32f,
@@ -1394,6 +1640,7 @@ void ui_draw_order_pick_update(Context &C)
       [wm]() {
         const WindowManager::DrawOrderPick &p = wm->draw_order_pick;
         std::string text = p.mode > 0 ? "Click the layer to go in front of" : "Click the layer to go behind";
+        text += " (its group; Ctrl: the drawing itself)";
         if (p.hover && g_doc_for_cue) {
           if (const Layer *l = layer_find(*g_doc_for_cue, p.hover)) {
             text = std::string(p.mode > 0 ? "In front of " : "Behind ") + l->name + " (click)";
@@ -1668,6 +1915,19 @@ void ui_layer_eyedropper_overlay()
 void ui_eyedropper_overlay()
 {
   if (!g_eyedropper.active) {
+    return;
+  }
+  if (g_eyedropper.screen) {
+    bool picked = false;
+    float rgb[3];
+    if (screen_eyedropper_update(&picked, rgb)) {
+      g_eyedropper.active = false;
+      g_eyedropper.screen = false;
+      if (picked) {
+        std::copy(rgb, rgb + 3, g_eyedropper.rgb);
+        g_eyedropper.has_result = true;
+      }
+    }
     return;
   }
   /* A clear window over everything catches the click, so nothing underneath reacts to it. */

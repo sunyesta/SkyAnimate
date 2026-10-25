@@ -10,8 +10,11 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <optional>
+#include <set>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -22,6 +25,8 @@
 #include "assets/brushes.hh"
 #include "core/crash.hh"
 #include "core/log.hh"
+#include "data/layer_mirror.hh"
+#include "wm/clipboard_image.hh"
 #include "data/camera.hh"
 #include "data/media_layer.hh"
 #include "assets/brush_presets.hh"
@@ -33,8 +38,10 @@
 #include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
 #include "ops/media_ops.hh"
+#include "ops/text_ops.hh"
 #include "ops/operator.hh"
 #include "python/py_runtime.hh"
+#include "text/text_layer.hh"
 #include "ui/theme.hh"
 #include "wm/event_system.hh"
 #include "wm/file_dialog.hh"
@@ -69,6 +76,7 @@ static std::string key_type_from_sdl(SDL_Keycode key)
       {"]", "RIGHT_BRACKET"},   {"[", "LEFT_BRACKET"},      {"}", "RIGHT_BRACKET"},    {"{", "LEFT_BRACKET"},
       {"/", "SLASH"},           {"?", "SLASH"},             {"Keypad /", "NUMPAD_SLASH"},
       {".", "PERIOD"},          {"Keypad .", "NUMPAD_PERIOD"},
+      {"`", "ACCENT_GRAVE"},    {"~", "ACCENT_GRAVE"},      {"=", "EQUAL"},            {"+", "EQUAL"},
   };
   std::string name = SDL_GetKeyName(key);
   for (const auto &[sdl_name, blender_name] : renames) {
@@ -97,6 +105,17 @@ int App::run(const LaunchOptions &options)
   ctx_.document = &doc_;
   ctx_.undo = &undo_;
   ctx_.wm = &wm_;
+  /* X mirror editing: new geometry, and a shape's look, are mirrored too, whatever made them. */
+  undo_.before_push_data = &wm_;
+  undo_.before_push = [](Document &doc, const std::function<const Document &()> &previous_state, void *data) {
+    if (static_cast<WindowManager *>(data)->tool_settings.mirror_x) {
+      const Document &previous = previous_state();
+      document_mirror_layer_names(doc, previous);
+      document_mirror_new_geometry(doc, previous);
+      document_mirror_looks(doc, previous);
+      document_mirror_layer_order(doc, previous);
+    }
+  };
   /* A new document starts with one vector layer to draw on, as in Moho. */
   document_add_layer(doc_, LayerType::Vector, "Layer 1");
   animation_evaluate(doc_, doc_.frame_current);
@@ -113,10 +132,13 @@ int App::run(const LaunchOptions &options)
   draw_order_operators_register();
   mask_operators_register();
   material_operators_register();
+  annotation_operators_register();
   driver_operators_register();
   rig_operators_register();
+  sculpt_operators_register();
   file_operators_register();
   media_operators_register();
+  text_operators_register();
 
   /* The file opens first, so scripts given with it work on it, as in Blender. */
   bool ok = options.open_file.empty() || document_open(ctx_, options.open_file);
@@ -206,6 +228,9 @@ bool App::window_init()
   io.ConfigDragClickToInputText = true;
   /* The default layout is rebuilt on every launch until workspaces are saved in files. */
   io.IniFilename = nullptr;
+  /* Ctrl Tab is the keymap's (the Sculpt toggle), not ImGui's window switcher. */
+  GImGui->ConfigNavWindowingKeyNext = 0;
+  GImGui->ConfigNavWindowingKeyPrev = 0;
 
   /* Start at the display's scale (150% on many Windows laptops). */
   wm_.ui_scale = std::clamp(SDL_GetWindowDisplayScale(window_), 0.5f, 3.0f);
@@ -251,6 +276,9 @@ void App::main_loop()
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       ImGui_ImplSDL3_ProcessEvent(&event);
+      if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        wm_.mouse_simulating = false;
+      }
       handle_event(event);
     }
     /* Remote control's requests run here, between frames (screenshots after drawing). */
@@ -260,9 +288,26 @@ void App::main_loop()
       continue;
     }
 
+    const int frame_before = doc_.frame_current;
     playback_update();
+    /* Mid-drag, bone dynamics keep their simulated frames until the mouse comes up. */
+    dynamics_hold_cache(wm_.modal_running || ImGui::IsAnyMouseDown());
+    /* Something dragged while playing: the frame left is keyed with where the drag has it (auto-key
+     * on), as Blender records, and the drag goes on from the new frame. */
+    const bool recording = doc_.frame_current != frame_before && viewport_drag_active();
+    if (!viewport_drag_active()) {
+      viewport_drag_follow_forget();
+    }
+    Document dragged;
+    if (recording) {
+      dragged = doc_;
+    }
     /* The frame may have moved (playback, scrubbing): show its animation. */
     animation_sync(doc_);
+    revisions_check_frame(false);
+    if (recording) {
+      viewport_drag_follow_playback(dragged, doc_);
+    }
     /* Bone dynamics follow a pose being changed in real time (the frame's own result once still). */
     {
       static uint64_t last_ns = SDL_GetTicksNS();
@@ -293,6 +338,7 @@ void App::main_loop()
       ImGui::GetIO().AddKeyEvent(ImGuiMod_Alt, m.alt);
       ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, m.shift);
       ImGui::GetIO().AddMousePosEvent(m.x, m.y);
+      wm_.mouse_simulating = true;
       if (m.button >= 0) {
         ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
       }
@@ -300,17 +346,25 @@ void App::main_loop()
         ImGui::GetIO().AddMouseWheelEvent(0.0f, m.wheel);
       }
     }
-    /* Over the viewport Tab is the keymap's (the setup frame and back), never ImGui's hop to the
-     * next text field of whichever panel was clicked last. */
-    GImGui->ConfigNavEnableTabbing = ctx_.area_type != "Viewport";
+    /* The window system reports the real mouse (outside the window, say): a simulated one is over it. */
+    if (wm_.mouse_simulating && (ImGui::GetIO().BackendFlags & ImGuiBackendFlags_HasMouseHoveredViewport)) {
+      ImGui::GetIO().AddMouseViewportEvent(ImGui::GetMainViewport()->ID);
+    }
+    /* Tab is the keymap's (the setup frame) wherever the mouse is; only while a field is being typed
+     * in do Tab and Shift Tab hop to the next or previous field, as in Blender. Never ImGui's jump into
+     * a text field of whichever panel was clicked last. */
+    GImGui->ConfigNavEnableTabbing = ImGui::GetIO().WantTextInput && ctx_.area_type != "Viewport";
     ImGui::NewFrame();
     wm_.timeline_drop_areas.clear();
     draw_ui();
+    revisions_check_frame(true);
     brush_window_draw(ctx_);
     ui_driver_window_draw(ctx_);
     /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
-     * its material from the next frame. */
+     * its material from the next frame; a text changed (from Python, a driver) has its letters made
+     * again. */
     document_sync_materials(doc_);
+    document_sync_text(doc_);
     brush_presets_register_shapes(doc_);
     brush_editor_frame_end(ctx_);
     record_selection();
@@ -477,6 +531,10 @@ void App::handle_event(const SDL_Event &event)
         break;
       }
       if (ImGui::GetTopMostPopupModal()) {
+        break;
+      }
+      /* Typing on the canvas: every key is the text's (Ctrl B is bold, not a shortcut), save aside. */
+      if (wm_.text_editing && !(key.ctrl && key.type == "S")) {
         break;
       }
       /* Tab with the mouse over the viewport toggles the setup frame even while a text field
@@ -1106,7 +1164,38 @@ static void render_save_png(SceneRenderer &renderer, const std::string &path)
          saved ? "Saved render to " + path : "Could not save " + path + ": " + SDL_GetError());
 }
 
-/* Blender's render window: the last render, fitted to the window, with Save As. */
+void App::render_save_as()
+{
+  char name[64];
+  std::snprintf(name, sizeof(name), "_%04d.png", render_frame_);
+  SceneRenderer *renderer = render_renderer_.get();
+  file_dialog_save("PNG images", "png", doc_.name + name, [renderer](const std::string &path) {
+    std::string file = path;
+    if (file.size() < 4 || file.compare(file.size() - 4, 4, ".png") != 0) {
+      file += ".png";
+    }
+    render_save_png(*renderer, file);
+  });
+}
+
+void App::render_copy()
+{
+  std::vector<uint8_t> pixels;
+  int width = 0, height = 0;
+  std::string error;
+  if (!render_renderer_ || !render_renderer_->read_pixels(pixels, &width, &height) ||
+      !clipboard_set_image(pixels.data(), width, height, &error))
+  {
+    report(ReportType::Error, "Could not copy the render: " + (error.empty() ? std::string("there is none") : error));
+    return;
+  }
+  char text[96];
+  std::snprintf(text, sizeof(text), "Copied the render (%d x %d) to the clipboard", width, height);
+  report(ReportType::Info, text);
+}
+
+/* Blender's render window: the last render, fitted to the window, with Save As; right-click (or Ctrl C)
+ * copies it. */
 void App::draw_render_result()
 {
   if (!show_render_ || !render_texture_) {
@@ -1120,16 +1209,7 @@ void App::draw_render_result()
     return;
   }
   if (ImGui::Button("Save As...")) {
-    char name[64];
-    std::snprintf(name, sizeof(name), "_%04d.png", render_frame_);
-    SceneRenderer *renderer = render_renderer_.get();
-    file_dialog_save("PNG images", "png", doc_.name + name, [renderer](const std::string &path) {
-      std::string file = path;
-      if (file.size() < 4 || file.compare(file.size() - 4, 4, ".png") != 0) {
-        file += ".png";
-      }
-      render_save_png(*renderer, file);
-    });
+    render_save_as();
   }
   ImGui::SameLine();
   ImGui::TextDisabled("Frame %d  |  %d x %d  |  %d samples  |  %.2f s", render_frame_, render_width_, render_height_,
@@ -1144,11 +1224,92 @@ void App::draw_render_result()
   dl->AddImage(ImTextureRef(ImTextureID(intptr_t(render_texture_))), at, ImVec2(at.x + size.x, at.y + size.y),
                ImVec2(0, 1), ImVec2(1, 0));
   ImGui::Dummy(avail);
+  if (ImGui::BeginPopupContextItem("##render_menu")) {
+    if (ImGui::MenuItem("Copy Image", "Ctrl C")) {
+      render_copy();
+    }
+    if (ImGui::MenuItem("Save As...")) {
+      render_save_as();
+    }
+    ImGui::EndPopup();
+  }
+  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
+      ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C))
+  {
+    render_copy();
+  }
   ImGui::End();
+}
+
+/* What is drawn of each layer is kept while its revision stays (see Revision). A frame that may have changed
+ * things nobody said which gives every layer a new one: the frame moved or plays, a script ran, a change was
+ * marked without an undo step, a field is being dragged, or the mouse is down (or a tool runs) for anything
+ * but a point move, which says which layers it moves. Undo steps say which layers changed. */
+void App::revisions_check_frame(bool after_ui)
+{
+  bool unknown = python::python_runs() != revision_python_runs_ ||
+                 undo_.unknown_changes() != revision_unknown_changes_;
+  if (!after_ui) {
+    unknown = unknown || doc_.frame_current != revision_frame_ || wm_.playing;
+  }
+  else {
+    const bool precise = viewport_precise_edit();
+    unknown = unknown || ImGui::IsAnyItemActive() || (wm_.modal_running && !precise) ||
+              (ImGui::IsAnyMouseDown() && !precise);
+    /* A Boolean modifier makes a layer from others: a move of theirs changes it too. */
+    if (precise && !unknown) {
+      for (const Layer *l : document_layers_flat(doc_)) {
+        for (const Modifier &m : l->modifiers) {
+          unknown = unknown || m.type == ModifierType::Boolean;
+        }
+      }
+    }
+  }
+  if (unknown) {
+    document_touch_all(doc_);
+  }
+  revision_frame_ = doc_.frame_current;
+  revision_python_runs_ = python::python_runs();
+  revision_unknown_changes_ = undo_.unknown_changes();
+  if (after_ui) {
+    revisions_verify();
+  }
+}
+
+/* OANIM_CHECK_REVISIONS: every layer compared with how it was last frame; one that changed while its revision
+ * stayed is reported (its drawing would show out of date). For finding edits that forget to say so. */
+void App::revisions_verify()
+{
+#pragma warning(suppress : 4996)
+  static const bool on = std::getenv("OANIM_CHECK_REVISIONS") != nullptr;
+  if (!on) {
+    return;
+  }
+  static std::map<uint64_t, Layer> seen;
+  static std::set<uint64_t> reported;
+  for (const Layer *flat : document_layers_flat(doc_)) {
+    Layer &l = *layer_find(doc_, flat->id);
+    std::vector<Layer> children;
+    std::swap(children, l.children);
+    const auto it = seen.find(l.id);
+    if (it != seen.end() && it->second.revision.value == l.revision.value && !(it->second == l) &&
+        reported.insert(l.id).second)
+    {
+      report(ReportType::Warning, "Revision check: layer \"" + l.name + "\" changed without a new revision", false);
+      std::fprintf(stderr, "Revision check: layer \"%s\" changed without a new revision\n", l.name.c_str());
+    }
+    seen[l.id] = l;
+    std::swap(children, l.children);
+  }
 }
 
 void App::record_selection()
 {
+  /* No revision given since the last look and no step: the selection is as it was. */
+  if (revision_latest() == selection_seen_revision_ && undo_.change_count() == selection_seen_changes_) {
+    return;
+  }
+  selection_seen_revision_ = revision_latest();
   const uint64_t selection = document_selection_hash(doc_);
   if (undo_.change_count() != selection_seen_changes_) {
     /* Something was recorded (or undone) since: that is the selection the history has. */
@@ -1164,15 +1325,45 @@ void App::record_selection()
   selection_seen_ = selection;
 }
 
+void App::render_to_file()
+{
+  WindowManager::RenderFile request = wm_.render_file;
+  wm_.render_file.pending = false;
+  if (!file_renderer_) {
+    file_renderer_ = std::make_unique<SceneRenderer>();
+  }
+  const int width = request.width > 0 ? request.width : std::max(doc_.width, 1);
+  const int height = request.height > 0 ? request.height : std::max(doc_.height, 1);
+  /* As Render Frame: the camera's frame, 2 units tall, fills the picture. */
+  const float scale = float(height) * 0.5f;
+  const Transform2D document_to_pixels = Transform2D{scale, 0, 0, scale, float(width) * 0.5f, float(height) * 0.5f} *
+                                         camera_to_frame(doc_);
+  file_renderer_->set_show_guides(request.guides);
+  file_renderer_->set_wait_for_media(true);
+  /* A render with a background is a final one, which leaves guides out: with guides it is clear. */
+  const bool clear = request.transparent || request.guides;
+  if (file_renderer_->render(doc_, width, height, document_to_pixels, doc_.render_quality, doc_.render_samples,
+                             clear ? nullptr : &doc_.background) == 0)
+  {
+    report(ReportType::Error, "Could not render " + request.path);
+    return;
+  }
+  glFinish();
+  render_save_png(*file_renderer_, request.path);
+}
+
 void App::draw_ui()
 {
   if (wm_.render_requested) {
     render_frame();
   }
+  if (wm_.render_file.pending) {
+    render_to_file();
+  }
   /* Panels open or folded as the project keeps them. */
   ui_bind_project(&doc_, &undo_);
   draw_top_bar();
-  ui_status_bar_draw();
+  ui_status_bar_draw(ctx_, OANIM_VERSION);
 
   wm_.workspace_index = std::clamp(wm_.workspace_index, 0, int(workspaces_.size()) - 1);
   Workspace &workspace = workspaces_[wm_.workspace_index];

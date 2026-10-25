@@ -8,6 +8,7 @@
 #include <map>
 
 #include "core/log.hh"
+#include "data/layer_mirror.hh"
 #include "data/bones.hh"
 #include "data/detail.hh"
 #include "data/document.hh"
@@ -33,19 +34,53 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
 
 std::vector<Layer *> editable_layers(Context &C)
 {
-  std::vector<Layer *> layers;
-  if (!C.document) {
-    return layers;
+  return C.document ? document_editable_layers(*C.document) : std::vector<Layer *>();
+}
+
+std::shared_ptr<const std::set<uint64_t>> editable_layer_ids(Document &doc)
+{
+  auto ids = std::make_shared<std::set<uint64_t>>();
+  for (const Layer *l : document_editable_layers(doc)) {
+    ids->insert(l->id);
   }
-  Document &doc = *C.document;
-  Layer *active = nullptr;
-  if (editable_drawing(C, &active)) {
+  return ids;
+}
+
+std::vector<Layer *> document_editable_layers(Document &doc)
+{
+  std::vector<Layer *> layers;
+  /* The active layer, when its drawing can be edited (a reference's too; see editable_drawing). */
+  Layer *active = document_active_layer(doc);
+  if (active && (!active->has_drawing() || active->locked)) {
+    active = nullptr;
+  }
+  if (active) {
     layers.push_back(active);
   }
   for (const Layer *layer : document_layers_flat(doc)) {
     if (layer->selected && layer != active && layer->visible && layer->has_drawing() && !layer->locked)
     {
       layers.push_back(layer_find(doc, layer->id));
+    }
+  }
+  /* A group picked or active with Edit Descendants brings every drawing inside it, as if each were
+   * picked (a hidden or locked one, or one inside a hidden group, stays out). */
+  const auto take_descendants = [&](auto &&self, Layer &group) -> void {
+    for (Layer &child : group.children) {
+      if (!child.visible) {
+        continue;
+      }
+      if (child.has_drawing() && !child.locked && std::find(layers.begin(), layers.end(), &child) == layers.end()) {
+        layers.push_back(&child);
+      }
+      self(self, child);
+    }
+  };
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if ((flat->selected || flat->id == doc.active_layer) && flat->is_group() && flat->edit_descendants &&
+        flat->visible)
+    {
+      take_descendants(take_descendants, *layer_find(doc, flat->id));
     }
   }
   /* A bone layer being worked in brings the drawings in its shown bone collections. */
@@ -61,6 +96,92 @@ std::vector<Layer *> editable_layers(Context &C)
     }
   }
   return layers;
+}
+
+MirrorSelection mirror_selection_begin(Context &C)
+{
+  MirrorSelection m;
+  if (!C.document || !C.wm || !C.wm->tool_settings.mirror_x) {
+    return m;
+  }
+  Document &doc = *C.document;
+  std::vector<uint64_t> ids;
+  for (Layer *layer : editable_layers(C)) {
+    ids.push_back(layer->id);
+  }
+  const auto add = [&](Layer &layer, int point) {
+    MeshPoint &p = layer.drawing.points[point];
+    if (!p.selected && !p.detail.hidden) {
+      p.selected = true;
+      m.added[layer.id].push_back(p.id);
+    }
+  };
+  for (const uint64_t id : ids) {
+    Layer *layer = layer_find(doc, id);
+    if (!layer || layer->type != LayerType::Vector) {
+      continue;
+    }
+    drawing_ensure_ids(layer->drawing);
+    const std::vector<int> selected = drawing_selected_points(layer->drawing);
+    if (selected.empty()) {
+      continue;
+    }
+    Layer *partner = layer_mirror_partner(doc, id);
+    if (!partner) {
+      for (const int i : selected) {
+        const int image = drawing_find_mirror_point(layer->drawing, i, true, false);
+        if (image >= 0) {
+          add(*layer, image);
+        }
+      }
+      continue;
+    }
+    if (!partner->visible || partner->locked || partner->type != LayerType::Vector ||
+        (partner->is_reference() && !partner->reference.edit_points))
+    {
+      continue;
+    }
+    drawing_ensure_ids(partner->drawing);
+    bool any = false;
+    for (const int image : layer_mirror_images(doc, *layer, *partner, selected)) {
+      if (image >= 0) {
+        add(*partner, image);
+        any = true;
+      }
+    }
+    /* Picked, it is edited along with this one. */
+    if (any && !partner->selected && std::find(ids.begin(), ids.end(), partner->id) == ids.end()) {
+      partner->selected = true;
+      m.picked.push_back(partner->id);
+    }
+  }
+  return m;
+}
+
+void mirror_selection_end(Context &C, const MirrorSelection &mirror)
+{
+  if (!C.document) {
+    return;
+  }
+  for (const auto &[id, points] : mirror.added) {
+    Layer *layer = layer_find(*C.document, id);
+    if (!layer) {
+      continue;
+    }
+    /* Copies (Duplicate) still carrying their original's id get their own first, so they keep their
+     * selection. */
+    drawing_ensure_ids(layer->drawing);
+    for (MeshPoint &p : layer->drawing.points) {
+      if (p.selected && std::find(points.begin(), points.end(), p.id) != points.end()) {
+        p.selected = false;
+      }
+    }
+  }
+  for (const uint64_t id : mirror.picked) {
+    if (Layer *layer = layer_find(*C.document, id)) {
+      layer->selected = false;
+    }
+  }
 }
 
 static bool editable_poll(Context &C)
@@ -142,9 +263,11 @@ void drawing_expand_selection_by_mode(Context &C, VectorDrawing &drawing)
 }
 
 static void vector_operator(const char *idname, const char *name, const char *description, unsigned flag,
-                            std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec)
+                            std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec,
+                            std::vector<OpProperty> props = {})
 {
   OperatorType ot;
+  ot.props = std::move(props);
   ot.idname = idname;
   ot.name = name;
   ot.description = description;
@@ -155,6 +278,8 @@ static void vector_operator(const char *idname, const char *name, const char *de
 }
 
 static constexpr unsigned UNDO = OPTYPE_REGISTER | OPTYPE_UNDO;
+/* Done on the selected points' mirror images too while X mirror editing is on. */
+static constexpr unsigned MIRRORED = UNDO | OPTYPE_MIRROR;
 
 void vector_operators_register()
 {
@@ -166,11 +291,18 @@ void vector_operators_register()
                           : "Let the selected points' handles move separately again",
                     UNDO, editable_with_selection_poll, [align](Context &C) {
                       int changed = 0;
+                      const ToolSettings &ts = C.wm->tool_settings;
+                      std::vector<uint64_t> ids;
+                      for (const Layer *layer : editable_layers(C)) {
+                        ids.push_back(layer->id);
+                      }
+                      const PartnerMirror partners = layer_mirror_partners_begin(*C.document, ids, ts.mirror_x);
                       for (Layer *layer : editable_layers(C)) {
                         changed += drawing_align_selected_handles(layer->drawing, align);
-                        drawing_mirror_selected_handles(layer->drawing, C.wm->tool_settings.mirror_x,
-                                                        C.wm->tool_settings.mirror_y);
+                        drawing_mirror_selected_handles(
+                            layer->drawing, layer_mirror_x_self(*C.document, layer->id, ts.mirror_x), ts.mirror_y);
                       }
+                      layer_mirror_partners_end(*C.document, partners);
                       return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                     });
   }
@@ -186,18 +318,48 @@ void vector_operators_register()
                     "actions move it (Alt G, away from frame 0)"
                   : "Take the selected points' handles' own change on this frame away (or a handle picked on its "
                     "own): back to their setup shape, as smart actions move it (Alt R, away from frame 0)",
-        UNDO,
+        MIRRORED,
         [](Context &C) { return C.document && C.document->frame_current != 0 && editable_with_selection_poll(C); },
         [positions](Context &C) {
+          /* Amount: part of the way back; X and Y (Clear Location): only along those. */
+          const float amount = std::clamp(op_arg_float(C, "amount", 1.0f), 0.0f, 1.0f);
+          const bool along_x = op_arg(C, "x", "1") == "1", along_y = op_arg(C, "y", "1") == "1";
+          const auto blend = [&](float2 from, float2 to, bool axes) {
+            return float2(!axes || along_x ? from.x + (to.x - from.x) * amount : from.x,
+                          !axes || along_y ? from.y + (to.y - from.y) * amount : from.y);
+          };
           int changed = 0;
           for (Layer *layer : editable_layers(C)) {
             /* A copy's points are its original's: its own changes go with Reset to Original. */
             if (!layer->is_reference()) {
+              const VectorDrawing was = layer->drawing;
               changed += drawing_clear_selected_pose(layer->drawing, positions, !positions);
+              VectorDrawing &d = layer->drawing;
+              for (size_t i = 0; i < d.points.size() && i < was.points.size(); i++) {
+                d.points[i].pos = blend(was.points[i].pos, d.points[i].pos, true);
+              }
+              for (size_t c = 0; c < d.curves.size() && c < was.curves.size(); c++) {
+                for (size_t i = 0; i < d.curves[c].points.size() && i < was.curves[c].points.size(); i++) {
+                  CurvePoint &cp = d.curves[c].points[i];
+                  const CurvePoint &old = was.curves[c].points[i];
+                  cp.handle_in = blend(old.handle_in, cp.handle_in, false);
+                  cp.handle_out = blend(old.handle_out, cp.handle_out, false);
+                }
+              }
             }
           }
           return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-        });
+        },
+        positions ? std::vector<OpProperty>{op_float_property("amount", "Amount",
+                                                              "How much of the change from the setup pose goes: 1 all "
+                                                              "of it",
+                                                              "1", 0.0f, 1.0f, 0.01f),
+                                            op_bool_property("x", "X", "Clear across (x)", "1"),
+                                            op_bool_property("y", "Y", "Clear up (y)", "1")}
+                  : std::vector<OpProperty>{op_float_property("amount", "Amount",
+                                                              "How much of the change from the setup shape goes: 1 "
+                                                              "all of it",
+                                                              "1", 0.0f, 1.0f, 0.01f)});
   }
 
   /* Symmetrize (right-click on points): one side's points copied onto their partners on the other,
@@ -244,7 +406,44 @@ void vector_operators_register()
           layers.push_back(layer);
         }
       }
+      /* A sided layer (Ear_L) symmetrizes with its partner (Ear_R) across the pair's axis; a pair
+       * once, whichever of them is edited. */
+      std::map<uint64_t, Layer *> partner_of;
+      for (auto it = layers.begin(); it != layers.end();) {
+        Layer *partner = layer_mirror_partner(doc, (*it)->id);
+        if (partner && partner->type == LayerType::Vector &&
+            !(partner->is_reference() && !partner->reference.edit_points))
+        {
+          if (!partner_of.count(partner->id)) {
+            partner_of[(*it)->id] = partner;
+          }
+          it = layers.erase(it);
+          continue;
+        }
+        ++it;
+      }
       /* Each layer has to pair up before any changes. */
+      for (auto &[id, partner] : partner_of) {
+        Layer trial = *layer_find(doc, id), trial_partner = *partner;
+        std::vector<int> unmatched;
+        const SymmetrizeResult r = layer_symmetrize_with_partner(doc, trial, trial_partner, right_to_left, threshold,
+                                                                 setup, nullptr, &unmatched);
+        if (!r.done) {
+          Layer *layer = layer_find(doc, id);
+          for (MeshPoint &p : layer->drawing.points) {
+            p.selected = false;
+          }
+          for (const int i : unmatched) {
+            layer->drawing.points[i].selected = true;
+          }
+          C.undo->mark_changed();
+          report_banner(ReportType::Warning,
+                        "Symmetrize: \"" + layer->name + "\" has more selected points than \"" + partner->name +
+                            "\" has points to pair them with",
+                        "Select as many points as its partner layer has on the other side", "Uneven sides");
+          return OpStatus::Cancelled;
+        }
+      }
       for (Layer *layer : layers) {
         VectorDrawing trial = layer->drawing;
         const SymmetrizeResult r = drawing_symmetrize(trial, right_to_left, threshold, setup, nullptr);
@@ -279,7 +478,21 @@ void vector_operators_register()
         }
         drawing_symmetrize(layer->drawing, right_to_left, threshold, setup, weights ? &flip : nullptr);
       }
-      return layers.empty() ? OpStatus::Cancelled : OpStatus::Finished;
+      for (auto &[id, partner] : partner_of) {
+        Layer *layer = layer_find(doc, id);
+        std::map<uint64_t, uint64_t> flip;
+        if (weights) {
+          if (const Layer *armature = layer_armature(doc, layer->id)) {
+            for (const Bone &b : armature->bones) {
+              const Bone *other = bone_find_by_name(*armature, bone_mirror_name(b.name));
+              flip[b.id] = other ? other->id : b.id;
+            }
+          }
+        }
+        layer_symmetrize_with_partner(doc, *layer, *partner, right_to_left, threshold, setup,
+                                      weights ? &flip : nullptr, nullptr);
+      }
+      return layers.empty() && partner_of.empty() ? OpStatus::Cancelled : OpStatus::Finished;
     };
     operators().add(std::move(ot));
   }
@@ -378,7 +591,7 @@ void vector_operators_register()
   vector_operator("mesh.delete", "Delete Points",
                   "Delete the selected points and the curves left too short; in Edges mode, delete the selected "
                   "edges and keep their points",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     const bool edges = C.wm->tool_settings.select_mode == SelectMode::Edge;
                     for (Layer *layer : editable_layers(C)) {
                       VectorDrawing &drawing = layer->drawing;
@@ -475,7 +688,7 @@ void vector_operators_register()
                   });
   vector_operator("mesh.point_group_assign", "Assign to Point Group",
                   "Put the selected points in the active point group, with weight= (0-1, 1 by default)",
-                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                  MIRRORED, has_group, [group_drawing, group_of](Context &C) {
                     VectorDrawing &d = *group_drawing(C);
                     const int i = group_of(C, d);
                     if (d.groups[size_t(i)].locked) {
@@ -499,7 +712,7 @@ void vector_operators_register()
                   });
   vector_operator("mesh.point_group_unassign", "Remove from Point Group",
                   "Take the selected points out of the active point group",
-                  UNDO, has_group, [group_drawing, group_of](Context &C) {
+                  MIRRORED, has_group, [group_drawing, group_of](Context &C) {
                     VectorDrawing &d = *group_drawing(C);
                     PointGroup &g = d.groups[size_t(group_of(C, d))];
                     if (g.locked) {
@@ -603,7 +816,7 @@ void vector_operators_register()
 
   /* What the X menu offers, as Blender's Delete menu: each whatever the selection mode is. */
   vector_operator("mesh.delete_points", "Delete Points", "Delete the selected points and the curves left too short",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
                       std::vector<bool> remove(layer->drawing.points.size());
                       for (size_t i = 0; i < layer->drawing.points.size(); i++) {
@@ -615,7 +828,8 @@ void vector_operators_register()
                   });
   vector_operator("mesh.make_segment", "Make Segment",
                   "Join the two selected points, each the end of an open curve, with a segment (F, as Blender's): "
-                  "two curves become one, the two ends of one curve close it, and the shapes along them run on",
+                  "two curves become one, the two ends of one curve close it, and the shapes along them run on. "
+                  "With whole loops selected instead, F joins their fills (mesh.join_fills)",
                   UNDO, editable_with_selection_poll, [](Context &C) {
                     int made = 0;
                     for (Layer *layer : editable_layers(C)) {
@@ -625,14 +839,50 @@ void vector_operators_register()
                       }
                     }
                     if (!made) {
-                      report(ReportType::Warning, "Select two ends of open curves to join (or both ends of one to close it)");
+                      /* Whole loops picked: one fill of them, as Blender's F makes a face of a loop. */
+                      for (Layer *layer : editable_layers(C)) {
+                        made += drawing_join_fills(layer->drawing) > 0;
+                      }
+                      if (made) {
+                        C.undo_name = "Join Fills";
+                        return OpStatus::Finished;
+                      }
+                      report(ReportType::Warning, "Select two ends of open curves to join (or both ends of one to close "
+                                                  "it), or two or more loops to fill together");
+                      return OpStatus::Cancelled;
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.join_fills", "Join Fills",
+                  "Make one shape of the selected shapes that go round (every point of each selected): their loops "
+                  "fill together, a loop inside another cutting a hole (Even-Odd), with the first one's look",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    int joined = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      joined += drawing_join_fills(layer->drawing) > 0;
+                    }
+                    if (!joined) {
+                      report(ReportType::Warning, "Select two or more whole loops to fill together");
+                      return OpStatus::Cancelled;
+                    }
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.separate_fills", "Separate Fills",
+                  "Split each selected shape of several loops into a shape per loop, each with its look",
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    int made = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      made += drawing_separate_fills(layer->drawing);
+                    }
+                    if (!made) {
+                      report(ReportType::Warning, "Select a shape of several loops to separate");
                       return OpStatus::Cancelled;
                     }
                     return OpStatus::Finished;
                   });
   vector_operator("mesh.delete_edges", "Delete Edges",
                   "Delete the segments between selected points, keeping the points: curves split there",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     int deleted = 0;
                     for (Layer *layer : editable_layers(C)) {
                       deleted += drawing_delete_edges(layer->drawing, drawing_selected_edges(layer->drawing));
@@ -641,7 +891,7 @@ void vector_operators_register()
                   });
   vector_operator("mesh.dissolve_points", "Dissolve Points",
                   "Remove the selected points, joining the curve across each gap so lines and shapes stay whole",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
                       VectorDrawing &drawing = layer->drawing;
                       /* All at once, so a run of neighbouring points is fitted as one span. */
@@ -657,6 +907,26 @@ void vector_operators_register()
                   });
   {
     /* X opens the Delete menu at the mouse, as in Blender. */
+    OperatorType ot;
+    ot.idname = "wm.link_data_menu";
+    ot.name = "Link/Transfer Data";
+    ot.description = "Blender's Link/Transfer Data menu (Ctrl L): with points selected, Link Materials; on a bone "
+                     "layer, Copy Constraints; with layers picked, Copy Masks";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) {
+      if (!C.document || !C.wm) {
+        return false;
+      }
+      const Layer *active = document_active_layer(*C.document);
+      return (active && active->is_bone_layer()) || !editable_layers(C).empty();
+    };
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "link_data";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
     OperatorType ot;
     ot.idname = "mesh.delete_menu";
     ot.name = "Delete";
@@ -712,15 +982,71 @@ void vector_operators_register()
                         VectorDrawing &drawing = layer->drawing;
                         /* Peak: handles straight toward the neighbours; Smooth: smooth, aligned handles. Once. */
                         drawing_set_selected_handles_shape(drawing, peak);
-                        drawing_mirror_selected_handles(drawing, C.wm->tool_settings.mirror_x,
+                        drawing_mirror_selected_handles(drawing,
+                                                        layer_mirror_x_self(*C.document, layer->id,
+                                                                            C.wm->tool_settings.mirror_x),
                                                         C.wm->tool_settings.mirror_y);
                       }
                       return OpStatus::Finished;
                     });
   }
 
+  /* P: Blender's Separate > Selection. What Duplicate would copy (the runs of selected points and the
+   * shapes they fully cover) goes to a new layer above, in the same group, with the layer's settings,
+   * bones and keys; the original loses those segments (points other shapes still use stay). */
+  vector_operator(
+      "mesh.separate", "Separate",
+      "Move the selected points, the curve pieces between them and the shapes they cover into a new layer of their "
+      "own, above this one (P, as Blender's Separate > Selection)",
+      MIRRORED, editable_with_selection_poll, [](Context &C) {
+        Document &doc = *C.document;
+        std::vector<uint64_t> ids;
+        for (Layer *layer : editable_layers(C)) {
+          if (layer->type == LayerType::Vector && !layer->is_reference()) {
+            ids.push_back(layer->id);
+          }
+        }
+        std::vector<std::string> made;
+        for (const uint64_t id : ids) {
+          Layer *layer = layer_find(doc, id);
+          VectorDrawing piece = layer->drawing;
+          if (!drawing_duplicate_selected(piece)) {
+            continue;
+          }
+          /* Only the copy is selected now: everything else goes. */
+          std::vector<bool> others(piece.points.size());
+          for (size_t i = 0; i < piece.points.size(); i++) {
+            others[i] = !piece.points[i].selected;
+          }
+          drawing_remove_points(piece, others);
+          for (MeshPoint &p : piece.points) {
+            p.selected = false;
+          }
+          drawing_delete_edges(layer->drawing, drawing_selected_edges(layer->drawing));
+          drawing_remove_unused_points(layer->drawing);
+          for (MeshPoint &p : layer->drawing.points) {
+            p.selected = false;
+          }
+          Layer copy = layer_copy_with_new_ids(doc, *layer);
+          copy.drawing = std::move(piece);
+          copy.name = document_layer_unique_name(doc, layer->name);
+          copy.selected = false;
+          int index = 0;
+          std::vector<Layer> *container = layer_container(doc, id, &index);
+          made.push_back(copy.name);
+          container->insert(container->begin() + index, std::move(copy));
+        }
+        if (made.empty()) {
+          report(ReportType::Warning, "Select at least two connected points (a shape, or a piece of a line) to separate");
+          return OpStatus::Cancelled;
+        }
+        report(ReportType::Info, "Separated into " + made.front() +
+                                     (made.size() > 1 ? " and " + std::to_string(made.size() - 1) + " more" : ""));
+        return OpStatus::Finished;
+      });
+
   vector_operator("mesh.delete_shape", "Delete Shape", "Delete the fills and outlines that use selected points",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     bool deleted = false;
                     for (Layer *layer : editable_layers(C)) {
                       VectorDrawing &drawing = layer->drawing;
@@ -748,7 +1074,7 @@ void vector_operators_register()
     ot.name = "Delete Shapes";
     ot.description = "Delete shapes by name or id (shapes=, | between them) from a layer (layer=, else the active "
                      "one), keeping their curves and points for any other shape on them";
-    ot.flag = UNDO;
+    ot.flag = MIRRORED;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -803,13 +1129,16 @@ void vector_operators_register()
     ot.name = name;
     ot.description = description;
     /* Points (and handles) of the edited layers, or the bone layer's selected bones. */
-    ot.poll = [](Context &C) {
+    ot.poll = [kind](Context &C) {
       if (!C.wm->mouse_in_viewport) {
         return false;
       }
       const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
-      /* A Media layer moves, turns and scales as a whole. */
-      if (active && active->is_media()) {
+      /* A Media or text layer moves, turns and scales as a whole, and so does any layer with the
+       * Transform Layer tool. */
+      if (active && (active->is_media() || active->is_text() ||
+                     (kind != 'E' && C.wm->tool_settings.tool == Tool::TransformLayer)))
+      {
         return !active->locked;
       }
       if (active && active->is_bone_layer()) {
@@ -831,12 +1160,12 @@ void vector_operators_register()
     ot.idname = idname;
     ot.name = name;
     ot.description = "Switch the viewport tool";
-    if (tool_setup_only(tool)) {
-      ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
-    }
     ot.exec = [tool](Context &C) {
+      if (tool_setup_only(tool) && C.document && C.document->frame_current != 0) {
+        report_banner(ReportType::Warning, "Setup frame only: press Tab to go to frame 0");
+        return OpStatus::Cancelled;
+      }
       C.wm->tool_settings.tool = tool;
-      C.wm->tool_settings.tool_switched_for_posing = false;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -847,8 +1176,13 @@ void vector_operators_register()
     ot.idname = "wm.tool_split_curve_temporary";
     ot.name = "Split Curve (Once)";
     ot.description = "Split a line once with the Split Curve tool, then go back to the current tool";
-    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
+    ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
+      /* A setup-only tool: away from frame 0 it says what makes it work. */
+      if (C.document->frame_current != 0) {
+        report_banner(ReportType::Warning, "Setup frame only: press Tab to go to frame 0");
+        return OpStatus::Cancelled;
+      }
       ToolSettings &ts = C.wm->tool_settings;
       if (!ts.tool_temporary) {
         ts.tool_return = ts.tool;
@@ -868,8 +1202,13 @@ void vector_operators_register()
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
     ot.description = "Switch to the Draw tool: freehand strokes, or the pen (mode=\"PEN\")";
-    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
+    ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
+      /* A setup-only tool: away from frame 0 it says what makes it work. */
+      if (C.document->frame_current != 0) {
+        report_banner(ReportType::Warning, "Setup frame only: press Tab to go to frame 0");
+        return OpStatus::Cancelled;
+      }
       const std::string mode = op_arg(C, "mode");
       if (mode == "PEN") {
         C.wm->tool_settings.draw_mode = DrawMode::Pen;
@@ -889,22 +1228,78 @@ void vector_operators_register()
   tool_op("wm.tool_split_curve", "Split Curve Tool", Tool::SplitCurve);
   tool_op("wm.tool_weight_select", "Weight Select Tool", Tool::WeightSelect);
   tool_op("wm.tool_weight_paint", "Weight Paint Tool", Tool::WeightPaint);
+  tool_op("wm.tool_sculpt", "Sculpt Tool", Tool::Sculpt);
+  {
+    /* Ctrl Tab: into Sculpt, and back to the tool it came from, as Blender toggles sculpt mode. */
+    OperatorType ot;
+    ot.idname = "wm.tool_sculpt_toggle";
+    ot.name = "Toggle Sculpt";
+    ot.description = "Switch to the Sculpt tool, or from it back to the tool used before";
+    ot.exec = [](Context &C) {
+      ToolSettings &ts = C.wm->tool_settings;
+      if (ts.tool == Tool::Sculpt) {
+        ts.tool = ts.tool_before_sculpt == Tool::Sculpt ? Tool::Select : ts.tool_before_sculpt;
+      }
+      else {
+        ts.tool_before_sculpt = ts.tool_temporary ? ts.tool_return : ts.tool;
+        ts.tool = Tool::Sculpt;
+        ts.tool_temporary = false;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   tool_op("wm.tool_transform_bones", "Transform Bones Tool", Tool::TransformBones);
   tool_op("wm.tool_transform_points", "Transform Points Tool", Tool::TransformPoints);
+  tool_op("wm.tool_transform_layer", "Transform Layer Tool", Tool::TransformLayer);
+  tool_op("wm.tool_edit_text", "Edit Text Tool", Tool::EditText);
   {
     /* oanim.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
     OperatorType ot;
     ot.idname = "wm.tool_shape";
     ot.name = "Shape Tool";
     ot.description = "Switch to the Shape tool: box or circle";
-    ot.poll = [](Context &C) { return C.document && C.document->frame_current == 0; };
+    ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
+      /* A setup-only tool: away from frame 0 it says what makes it work. */
+      if (C.document->frame_current != 0) {
+        report_banner(ReportType::Warning, "Setup frame only: press Tab to go to frame 0");
+        return OpStatus::Cancelled;
+      }
       const std::string shape = op_arg(C, "shape");
       if (!shape.empty() && !primitive_from_identifier(shape, &C.wm->tool_settings.shape)) {
         report(ReportType::Error, "Unknown shape '" + shape + "': use BOX or CIRCLE");
         return OpStatus::Cancelled;
       }
       C.wm->tool_settings.tool = Tool::Shape;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* oanim.ops.wm.tool_annotate(mode="GUIDE_LINE"): the Annotate tool, optionally picking its variant. */
+    OperatorType ot;
+    ot.idname = "wm.tool_annotate";
+    ot.name = "Annotate Tool";
+    ot.description = "Switch to the Annotate tool: notes and drawing guides over the drawing; mode= DRAW, LINE, "
+                     "ERASER, GUIDE_LINE, GUIDE_PERSPECTIVE or GUIDE_GRID";
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      static const std::pair<const char *, AnnotateMode> MODES[] = {
+          {"DRAW", AnnotateMode::Draw},           {"LINE", AnnotateMode::Line},
+          {"ERASER", AnnotateMode::Eraser},       {"GUIDE_LINE", AnnotateMode::GuideLine},
+          {"GUIDE_PERSPECTIVE", AnnotateMode::GuidePerspective}, {"GUIDE_GRID", AnnotateMode::GuideGrid}};
+      const std::string mode = op_arg(C, "mode");
+      if (!mode.empty()) {
+        const auto it = std::find_if(std::begin(MODES), std::end(MODES), [&](const auto &m) { return mode == m.first; });
+        if (it == std::end(MODES)) {
+          report(ReportType::Error, "Unknown annotate mode '" + mode +
+                                        "': use DRAW, LINE, ERASER, GUIDE_LINE, GUIDE_PERSPECTIVE or GUIDE_GRID");
+          return OpStatus::Cancelled;
+        }
+        C.wm->tool_settings.annotate_mode = it->second;
+      }
+      C.wm->tool_settings.tool = Tool::Annotate;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -987,7 +1382,7 @@ void vector_operators_register()
 
   /* Blender's Arrange (Page Up/Down) for shapes, Moho's Raise and Lower Shape. */
   const auto arrange_op = [](const char *idname, const char *name, const char *description, ShapeArrange arrange) {
-    vector_operator(idname, name, description, UNDO, editable_with_selection_poll, [arrange](Context &C) {
+    vector_operator(idname, name, description, MIRRORED, editable_with_selection_poll, [arrange](Context &C) {
       /* Shapes move within their own layer's stacking order. */
       bool any_selected = false, moved = false;
       for (Layer *layer : editable_layers(C)) {
@@ -1064,7 +1459,7 @@ void vector_operators_register()
                     });
   }
   vector_operator("mesh.detail_delete_higher", "Delete Higher",
-                  "Remove the selected shapes' detail above the level they are edited at", UNDO, editable_poll,
+                  "Remove the selected shapes' detail above the level they are edited at", MIRRORED, editable_poll,
                   [](Context &C) {
                     int removed = 0;
                     const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
@@ -1089,7 +1484,7 @@ void vector_operators_register()
     ot.name = "Smooth to Lower Level";
     ot.description = "Move the selected detail points (and handles of detail points picked on their own) onto the "
                      "curve of the level below, so they keep none of their own offset (influence 1: all the way)";
-    ot.flag = UNDO;
+    ot.flag = MIRRORED;
     ot.poll = editable_with_selection_poll;
     OpProperty influence;
     influence.name = "influence";
@@ -1128,7 +1523,7 @@ void vector_operators_register()
   vector_operator("mesh.detail_raise", "Move to Higher Level",
                   "Move the selected points one detail level up, keeping the curve's look: they then ride along "
                   "the coarser points around them and show from that level (setup frame)",
-                  UNDO, editable_with_selection_poll, [setup_frame](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [setup_frame](Context &C) {
                     if (!setup_frame(C, "Move to Higher Level")) {
                       return OpStatus::Cancelled;
                     }
@@ -1162,8 +1557,43 @@ void vector_operators_register()
                     report(dropped || skipped > 0 ? ReportType::Warning : ReportType::Info, text);
                     return OpStatus::Finished;
                   });
+  vector_operator("mesh.detail_lower", "Move to Lower Level",
+                  "Move the selected detail points one detail level down (from level 1 they become base points), "
+                  "keeping the curve's look: the finer detail around them then rides them (setup frame)",
+                  MIRRORED, editable_with_selection_poll, [setup_frame](Context &C) {
+                    if (!setup_frame(C, "Move to Lower Level")) {
+                      return OpStatus::Cancelled;
+                    }
+                    int lowered = 0, skipped = 0;
+                    bool dropped = false;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (layer->is_reference()) {
+                        continue;
+                      }
+                      int s = 0;
+                      bool keys = false;
+                      lowered += drawing_detail_lower_selected(layer->drawing, &s, &keys);
+                      skipped += s;
+                      dropped |= keys;
+                    }
+                    if (lowered == 0) {
+                      report(ReportType::Warning, skipped > 0 ? "These are base points (level 0): they can't go lower"
+                                                              : "Select detail points to move down a level");
+                      return OpStatus::Cancelled;
+                    }
+                    std::string text = "Moved " + std::to_string(lowered) + (lowered == 1 ? " point" : " points") +
+                                       " down a detail level";
+                    if (skipped > 0) {
+                      text += "; " + std::to_string(skipped) + (skipped == 1 ? " is a base point" : " are base points");
+                    }
+                    if (dropped) {
+                      text += " (their keys were removed)";
+                    }
+                    report(dropped ? ReportType::Warning : ReportType::Info, text);
+                    return OpStatus::Finished;
+                  });
   vector_operator("mesh.detail_apply", "Apply Detail",
-                  "Make the selected shapes' detail points ordinary points, as they show (setup frame)", UNDO,
+                  "Make the selected shapes' detail points ordinary points, as they show (setup frame)", MIRRORED,
                   editable_poll, [setup_frame](Context &C) {
                     if (!setup_frame(C, "Apply Detail")) {
                       return OpStatus::Cancelled;
@@ -1221,7 +1651,7 @@ void vector_operators_register()
   /* Blender's Duplicate (Shift D): copy, then move the copy. Cancelling the move leaves the
    * copy where it was made, as in Blender. */
   vector_operator("mesh.duplicate_move", "Duplicate", "Copy the selected points, curves and shapes, then move the copy",
-                  UNDO, editable_with_selection_poll, [](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     bool copied = false;
                     for (Layer *layer : editable_layers(C)) {
                       if (has_selection(layer->drawing)) {

@@ -319,7 +319,7 @@ void driver_operators_register()
 
   driver_operator_add("anim.driver_paste", "Paste Driver",
                       "Drive a field with the copied driver: one copied number onto each part of it, or as many "
-                      "as it has, part by part",
+                      "as it has, part by part; `part` picks one of several copied (Scale's Y onto a single number)",
                       OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                         const std::vector<Driver> &clip = driver_clipboard();
                         if (clip.empty()) {
@@ -328,14 +328,19 @@ void driver_operators_register()
                         }
                         const std::vector<DriverRef> refs = op_refs(C);
                         const size_t size = std::max<size_t>(field_size(C), 1);
-                        if (refs.empty() || (clip.size() != 1 && clip.size() != size)) {
+                        const int part = op_arg_int(C, "part", -1);
+                        if (part >= int(clip.size())) {
+                          report(ReportType::Warning, "The copied driver has " + std::to_string(clip.size()) + " numbers");
+                          return OpStatus::Cancelled;
+                        }
+                        if (refs.empty() || (part < 0 && clip.size() != 1 && clip.size() != size)) {
                           report(ReportType::Warning, "The copied driver has " + std::to_string(clip.size()) +
                                                           " numbers; this field has " + std::to_string(size));
                           return OpStatus::Cancelled;
                         }
                         int pasted = 0;
                         for (size_t i = 0; i < refs.size(); i++) {
-                          const Driver &d = clip.size() == 1 ? clip[0] : clip[i % size];
+                          const Driver &d = part >= 0 ? clip[size_t(part)] : clip.size() == 1 ? clip[0] : clip[i % size];
                           const bool reads_itself = std::any_of(d.vars.begin(), d.vars.end(), [&](const DriverVar &v) {
                             return v.source == refs[i];
                           });

@@ -75,6 +75,27 @@ assert abs(direction(bones()["arm"]) - 0.85) < 1e-3, "influence: part of the way
 rig.bone_constraint_set("arm", 0, influence=1.0)
 rig.bone_set("arm", angle=0.0)
 
+# Its Min and Max are turns from the setup angle, as the Bone panel's Angle shows them, and Set to
+# Current Angle takes the bone's turn now.
+doc.frame_current = 0
+perp_rest = next(b for b in rig.bones if b["name"] == "perp")["angle"]
+assert abs(perp_rest) > 0.5, "perp rests turned from its parent"
+perp = constrain("perp", "LIMIT_ANGLE", min_angle=-0.4, max_angle=0.4)
+doc.frame_current = 10
+rig.bone_set("perp", angle=perp_rest + 0.3)
+assert oanim.ops.armature.limit_angle_set_current(bone="perp", index=str(perp), end="MAX") == {'FINISHED'}
+rig.bone_set("perp", angle=perp_rest - 0.2)
+assert oanim.ops.armature.limit_angle_set_current(bone="perp", index=str(perp), end="MIN") == {'FINISHED'}
+c = rig.bone_constraints("perp")[perp]
+assert abs(c["max_angle"] - 0.3) < 1e-5 and abs(c["min_angle"] + 0.2) < 1e-5, c
+rig.bone_set("perp", angle=perp_rest + 1.0)
+held = next(b for b in rig.bones if b["name"] == "perp")
+assert abs(direction(held) - direction(next(b for b in rig.bones if b["name"] == "squash")) - perp_rest - 0.3) < 1e-3,     "held at Max, a turn from its rest"
+rig.bone_set("perp", angle=perp_rest)
+doc.frame_current = 0
+assert oanim.ops.armature.constraint_remove(index=str(perp), bone="perp") == {'FINISHED'}
+doc.frame_current = 10
+
 # --- Independent Angle: keeps its angle when the parent turns -----------------------------------
 constrain("arm", "INDEPENDENT_ANGLE")
 rig.bone_set("root", angle=0.8)
@@ -454,10 +475,11 @@ assert max(flung) > 0.1, ("unticked: no limit, the value kept", max(flung))
 assert abs(rig.bone_constraints("hair")[0]["angle_spring"]["limit"] - 0.1) < 1e-6
 # A Limit Angle above Dynamics limits what it aims at, not its swing (Dynamics is later in the stack).
 doc.frame_current = 0
-limit = constrain("hair", "LIMIT_ANGLE", min_angle=DOWN - 0.01, max_angle=DOWN + 0.01)
+# Limit Angle holds turns from the setup angle (the Bone panel's Angle); the hair rests pointing down.
+limit = constrain("hair", "LIMIT_ANGLE", min_angle=-0.01, max_angle=0.01)
 swung = [abs(d - DOWN) for d in over("hair", range(1, 20), direction)]
 assert max(swung) > 0.1, ("swings past the limit", max(swung))
-rig.bone_constraint_set("hair", limit, min_angle=-1.0, max_angle=-0.9)
+rig.bone_constraint_set("hair", limit, min_angle=-1.0 - DOWN, max_angle=-0.9 - DOWN)
 assert abs(over("hair", [40], direction)[0] + 1.0) < 0.02, "settles where the limit holds its aim"
 doc.frame_current = 0
 assert oanim.ops.armature.constraint_remove(index=str(limit), bone="hair") == {'FINISHED'}
@@ -581,6 +603,8 @@ assert oanim.ops.armature.constraint_remove(index="0", bone="tail") == {'FINISHE
 assert [c["type"] for c in rig.bone_constraints("tail")] == ["DYNAMICS"]
 
 # --- Saved ---------------------------------------------------------------------------------------------
+doc.frame_current = 0
+constrain("perp", "LIMIT_ANGLE", min_angle=-0.2, max_angle=0.3)  # perp rests turned: old files convert
 saved = {name: rig.bone_constraints(name) for name in ("arm", "follower", "hand", "tail", "hair")}
 path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_constraints_")) / "constraints.oanim")
 doc.wind_gusts, doc.wind_gust_speed, doc.wind_turbulence = 0.3, 1.5, 0.2
@@ -651,6 +675,23 @@ def old_scale(value):
 
 
 old_scale(data)
+
+
+def old_limits(value):
+    # Limit Angle saved as angles in the parent's space, before turns from the setup angle.
+    if isinstance(value, dict):
+        for c in value.get("constraints", []) if "setup_angle" in value else []:
+            if "min_turn" in c:
+                c["min_angle"] = c.pop("min_turn") + value["setup_angle"]
+                c["max_angle"] = c.pop("max_turn") + value["setup_angle"]
+        for v in value.values():
+            old_limits(v)
+    elif isinstance(value, list):
+        for v in value:
+            old_limits(v)
+
+
+old_limits(data)
 old = path.replace("constraints.oanim", "torque.oanim")
 with zipfile.ZipFile(old, "w") as z:
     z.writestr("document.json", json.dumps(data))
@@ -658,5 +699,7 @@ assert oanim.ops.wm.open_mainfile(filepath=old, confirmed="1") == {'FINISHED'}
 rig = next(l for l in oanim.data.layers if l.type == "BONE")
 assert abs(rig.bone_constraints("tail")[-1]["weight"] - 2.0) < 1e-6, "Angle's Weight becomes the bone's"
 assert close(next(b for b in rig.bones if b["name"] == "tail")["scale"], (1.5, 1.5)), "one number: both ways"
+limit = next(c for c in rig.bone_constraints("perp") if c["type"] == "LIMIT_ANGLE")
+assert abs(limit["min_angle"] + 0.2) < 1e-5 and abs(limit["max_angle"] - 0.3) < 1e-5,     ("old angles become the same turns", limit)
 
 print("Bone constraint tests passed")

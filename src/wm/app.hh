@@ -56,6 +56,16 @@ class App {
   void record_selection();
   uint64_t selection_seen_changes_ = ~uint64_t(0);
   uint64_t selection_seen_ = 0;
+  /* The newest revision when the selection was last looked at: none since, nothing could have changed. */
+  uint64_t selection_seen_revision_ = 0;
+  /* Revisions (see Revision): what was seen last frame, to tell whether this one may have changed anything
+   * nobody said; and, with OANIM_CHECK_REVISIONS set, every layer as it was, to catch changes made
+   * without a new revision. */
+  int revision_frame_ = 0;
+  uint64_t revision_python_runs_ = 0;
+  uint64_t revision_unknown_changes_ = 0;
+  void revisions_check_frame(bool after_ui);
+  void revisions_verify();
   void draw_top_bar();
   void build_default_layout(Workspace &workspace, unsigned int dockspace_id);
   Workspace workspace_new(const std::string &name, WorkspaceKind kind);
@@ -66,6 +76,9 @@ class App {
   void draw_file_menu();
   void render_frame();
   void draw_render_result();
+  /* The last render: Save As (a file dialog) and Copy Image (to the clipboard). */
+  void render_save_as();
+  void render_copy();
   void draw_unsaved_changes_prompt();
   void draw_asset_library_prompts();
   void draw_preferences();
@@ -82,6 +95,9 @@ class App {
   /* The asset library was set up while the app ran: offer Moho's brushes if it has none. */
   /* The last render (Render Frame), shown in the Render Result window. */
   std::unique_ptr<SceneRenderer> render_renderer_;
+  /* oanim.wm.render_png's: a renderer of its own, so the Render Result window keeps its picture. */
+  std::unique_ptr<SceneRenderer> file_renderer_;
+  void render_to_file();
   unsigned int render_texture_ = 0;
   bool show_render_ = false;
   int render_frame_ = 0;

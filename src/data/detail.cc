@@ -161,7 +161,10 @@ static SegmentFrame segment_frame(const float2 ctrl[4], float t)
   return f;
 }
 
-static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture)
+/* `keep_level`: capturing, detail points up to this level (the ones shown at the curve's edit level)
+ * that didn't move themselves keep their place when their segment moved, instead of riding it: what
+ * is edited on a level stays as it is there (-1: every detail point rides). */
+static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture, int keep_level = -1)
 {
   normalize_levels(drawing, curve);
   const std::vector<Run> runs = curve_runs(drawing, curve);
@@ -191,13 +194,19 @@ static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture)
       MeshPoint &p = drawing.points[cp.point];
       PointDetail &dt = p.detail;
       if (capture) {
-        if (!dt.built || p.pos != dt.built_pos) {
+        /* A shown point whose segment moved under it (its offsets now place it elsewhere) stays. */
+        const bool keep = dt.built && dt.level <= keep_level;
+        if (!dt.built || p.pos != dt.built_pos || (keep && at + frame.world(dt.pos) != dt.built_pos)) {
           dt.pos = frame.local(p.pos - at);
         }
-        if (!dt.built || cp.handle_in != dt.built_in) {
+        if (!dt.built || cp.handle_in != dt.built_in ||
+            (keep && split_in + frame.world(dt.in) != dt.built_in))
+        {
           dt.in = frame.local(cp.handle_in - split_in);
         }
-        if (!dt.built || cp.handle_out != dt.built_out) {
+        if (!dt.built || cp.handle_out != dt.built_out ||
+            (keep && split_out + frame.world(dt.out) != dt.built_out))
+        {
           dt.out = frame.local(cp.handle_out - split_out);
         }
       }
@@ -274,9 +283,11 @@ void drawing_detail_update_shown(VectorDrawing &drawing)
 void drawing_detail_sync(VectorDrawing &drawing, bool capture)
 {
   if (drawing_has_detail(drawing)) {
-    for (Curve &curve : drawing.curves) {
+    const std::vector<int> levels = capture ? drawing_curve_detail_levels(drawing) : std::vector<int>();
+    for (size_t c = 0; c < drawing.curves.size(); c++) {
+      Curve &curve = drawing.curves[c];
       if (curve_detail_max_level(drawing, curve) > 0) {
-        curve_sync(drawing, curve, capture);
+        curve_sync(drawing, curve, capture, capture ? levels[c] : -1);
       }
     }
   }
@@ -302,6 +313,28 @@ static void curve_final_handles(VectorDrawing &drawing, Curve &curve)
   for (size_t i = 0; i < curve.points.size(); i++) {
     curve.points[i].handle_in = curve.points[i].handle_in * in[i];
     curve.points[i].handle_out = curve.points[i].handle_out * out[i];
+  }
+}
+
+void drawing_detail_shown_handle_factors(const VectorDrawing &drawing, std::vector<std::vector<float>> &r_in,
+                                         std::vector<std::vector<float>> &r_out)
+{
+  r_in.assign(drawing.curves.size(), {});
+  r_out.assign(drawing.curves.size(), {});
+  const bool detail = drawing_has_detail(drawing);
+  const std::vector<int> levels = detail ? drawing_curve_detail_levels(drawing) : std::vector<int>();
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    Curve shown = drawing.curves[c];
+    if (detail) {
+      std::erase_if(shown.points, [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
+    }
+    if (detail && curve_detail_max_level(drawing, shown) > 0) {
+      curve_handle_factors(drawing, shown, r_in[c], r_out[c]);
+    }
+    else {
+      r_in[c].assign(shown.points.size(), 1.0f);
+      r_out[c].assign(shown.points.size(), 1.0f);
+    }
   }
 }
 
@@ -729,6 +762,97 @@ int drawing_detail_raise_selected(VectorDrawing &drawing, int *r_skipped, bool *
   }
   drawing_detail_update_shown(drawing);
   return raised;
+}
+
+int drawing_detail_lower_selected(VectorDrawing &drawing, int *r_skipped, bool *r_keys_dropped)
+{
+  *r_skipped = 0;
+  *r_keys_dropped = false;
+  RawEdit raw;
+  drawing_detail_sync(drawing, true);
+  int lowered = 0;
+  for (Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    std::vector<int> level(n);
+    for (int i = 0; i < n; i++) {
+      level[i] = drawing.points[curve.points[i].point].detail.level;
+    }
+    std::vector<bool> down(n, false);
+    for (int i = 0; i < n; i++) {
+      const MeshPoint &p = drawing.points[curve.points[i].point];
+      if (!p.selected || p.detail.hidden) {
+        continue;
+      }
+      if (level[i] == 0) {
+        (*r_skipped)++;
+        continue;
+      }
+      level[i]--;
+      down[i] = true;
+    }
+    if (std::none_of(down.begin(), down.end(), [](bool b) { return b; })) {
+      continue;
+    }
+    /* What changes place: the lowered points (and so the whole run of their new level they now sit
+     * in), and the finer detail either side that now has them for a parent, up to the nearest point
+     * at their new level or coarser. */
+    std::vector<bool> retime(n, false);
+    for (int i = 0; i < n; i++) {
+      if (!down[i]) {
+        continue;
+      }
+      retime[i] = true;
+      for (const int dir : {-1, 1}) {
+        for (int k = 1; k < n; k++) {
+          int j = i + dir * k;
+          if (curve.closed) {
+            j = ((j % n) + n) % n;
+          }
+          else if (j < 0 || j >= n) {
+            break;
+          }
+          if (level[j] <= level[i]) {
+            break;
+          }
+          retime[j] = true;
+        }
+      }
+    }
+    curve_final_handles(drawing, curve);
+    for (int i = 0; i < n; i++) {
+      if (!down[i]) {
+        continue;
+      }
+      CurvePoint &cp = curve.points[i];
+      MeshPoint &p = drawing.points[cp.point];
+      if (p.pos_keys.animated() || cp.handle_in_keys.animated() || cp.handle_out_keys.animated() ||
+          !p.pos_keys.actions.empty() || !cp.handle_in_keys.actions.empty() || !cp.handle_out_keys.actions.empty())
+      {
+        *r_keys_dropped = true;
+      }
+      p.pos_keys = {};
+      cp.handle_in_keys = {};
+      cp.handle_out_keys = {};
+      p.detail = {};
+      p.detail.level = level[i];
+      lowered++;
+    }
+    curve_from_final(drawing, curve, retime);
+    /* A point down to level 0 is a base point: its setup is where it now is. */
+    for (int i = 0; i < n; i++) {
+      if (down[i] && level[i] == 0) {
+        CurvePoint &cp = curve.points[i];
+        MeshPoint &p = drawing.points[cp.point];
+        p.setup_pos = p.pos;
+        p.transform = float2();
+        cp.setup_in = cp.handle_in;
+        cp.setup_out = cp.handle_out;
+        cp.change_in = cp.change_out = float2();
+      }
+    }
+  }
+  drawing_detail_update_shown(drawing);
+  return lowered;
 }
 
 int drawing_detail_delete_higher(VectorDrawing &drawing, const std::vector<bool> &shapes)

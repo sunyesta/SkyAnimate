@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,77 @@ template<typename T> struct Key {
   int color = 0;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
+  bool operator==(const Key &) const = default;
+};
+
+/* A std::map that holds nothing until something goes in. A rig has a channel for each point and
+ * handle, hundreds of thousands, and nearly all have no action keys; an empty std::map still allocates
+ * (MSVC's keeps a node), so copying a document for an undo step allocated once for every channel. */
+template<typename K, typename V> class LazyMap {
+ public:
+  using Map = std::map<K, V>;
+  using iterator = typename Map::iterator;
+  using const_iterator = typename Map::const_iterator;
+  using value_type = typename Map::value_type;
+
+  LazyMap() = default;
+  LazyMap(const LazyMap &other) : map_(other.map_ && !other.map_->empty() ? std::make_unique<Map>(*other.map_) : nullptr) {}
+  LazyMap(LazyMap &&) noexcept = default;
+  LazyMap &operator=(const LazyMap &other)
+  {
+    if (this != &other) {
+      map_ = other.map_ && !other.map_->empty() ? std::make_unique<Map>(*other.map_) : nullptr;
+    }
+    return *this;
+  }
+  LazyMap &operator=(LazyMap &&) noexcept = default;
+
+  bool empty() const { return !map_ || map_->empty(); }
+  size_t size() const { return map_ ? map_->size() : 0; }
+  size_t count(const K &key) const { return map_ ? map_->count(key) : 0; }
+  bool contains(const K &key) const { return map_ && map_->count(key) > 0; }
+  void clear() { map_.reset(); }
+
+  /* With nothing held, iterators come from one shared empty map, so find() == end() holds. */
+  iterator begin() { return map_ ? map_->begin() : none().begin(); }
+  iterator end() { return map_ ? map_->end() : none().end(); }
+  const_iterator begin() const { return map_ ? map_->cbegin() : none().cbegin(); }
+  const_iterator end() const { return map_ ? map_->cend() : none().cend(); }
+  iterator find(const K &key) { return map_ ? map_->find(key) : none().end(); }
+  const_iterator find(const K &key) const { return map_ ? map_->find(key) : none().cend(); }
+
+  V &operator[](const K &key) { return own()[key]; }
+  V &at(const K &key) { return own().at(key); }
+  const V &at(const K &key) const { return map_ ? map_->at(key) : none().at(key); }
+  template<typename... A> std::pair<iterator, bool> emplace(A &&...args) { return own().emplace(std::forward<A>(args)...); }
+  template<typename... A> std::pair<iterator, bool> try_emplace(const K &key, A &&...args)
+  {
+    return own().try_emplace(key, std::forward<A>(args)...);
+  }
+  std::pair<iterator, bool> insert(const value_type &v) { return own().insert(v); }
+  size_t erase(const K &key) { return map_ ? map_->erase(key) : 0; }
+  iterator erase(iterator it) { return map_->erase(it); }
+  iterator erase(const_iterator it) { return map_->erase(it); }
+
+  bool operator==(const LazyMap &other) const
+  {
+    return empty() ? other.empty() : (!other.empty() && *map_ == *other.map_);
+  }
+
+ private:
+  static Map &none()
+  {
+    static Map empty_map;
+    return empty_map;
+  }
+  Map &own()
+  {
+    if (!map_) {
+      map_ = std::make_unique<Map>();
+    }
+    return *map_;
+  }
+  std::unique_ptr<Map> map_;
 };
 
 template<typename T> struct Channel {
@@ -89,10 +161,13 @@ template<typename T> struct Channel {
   /* Keys of the timelines not being edited, by action name, as Moho keeps actions inside each
    * channel. The timeline being edited is always `keys`; while an action is edited the mainline's
    * keys wait here under "". Action keys start after frame 0, which is the shared setup pose. */
-  std::map<std::string, std::vector<Key<T>>> actions;
+  LazyMap<std::string, std::vector<Key<T>>> actions;
   /* What smart actions add to the value right now (it is in the plain value too). Edits and saving
    * take it off, so it never becomes part of the data. */
   T smart{};
+  /* A smart action is playing into it now (its bone turned into it, the offset maybe 0 at this turn):
+   * its field shows pink. Worked out with `smart`, never saved. */
+  bool smart_live = false;
   /* Auto-keying leaves it alone until it is animated (keyed by hand first): a layer's visibility,
    * so hiding a layer while working doesn't key it. */
   bool keyed_by_hand = false;
@@ -119,6 +194,7 @@ template<typename T> struct Channel {
    * defaults. */
   Key<T> &set_key(int frame, const T &value);
   bool remove_key(int frame);
+  bool operator==(const Channel &) const = default;
 };
 
 extern template struct Channel<float>;
@@ -186,6 +262,7 @@ template<typename T> void key_settings_apply(Key<T> &k, const KeySettings &s)
 struct NewKeySettings {
   KeySettings settings;
   bool copy_previous = false;
+  bool operator==(const NewKeySettings &) const = default;
 };
 NewKeySettings &new_key_settings();
 

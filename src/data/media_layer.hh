@@ -5,6 +5,7 @@
  * the layers make together. Decoding is media/media.hh's. */
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,8 @@ std::string media_pack_file(const std::string &path, std::string *r_error);
 void media_packed_add(const std::string &id, const std::string &name, std::string bytes);
 bool media_packed_has(const std::string &id);
 const std::string *media_packed_bytes(const std::string &id);
+/* The same bytes, kept alive for whoever holds them (a save on another thread). */
+std::shared_ptr<const std::string> media_packed_shared(const std::string &id);
 std::string media_packed_name(const std::string &id);
 /* A file holding the packed copy (written once, in the temp folder), for the decoders. */
 std::string media_packed_path(const std::string &id);

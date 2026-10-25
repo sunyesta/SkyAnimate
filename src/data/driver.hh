@@ -64,6 +64,7 @@ struct Driver {
            from_min == o.from_min && from_max == o.from_max && to_min == o.to_min && to_max == o.to_max &&
            clamp == o.clamp;
   }
+  bool operator==(const Driver &) const = default;
 };
 
 }  // namespace oanim

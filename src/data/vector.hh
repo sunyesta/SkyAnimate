@@ -53,6 +53,7 @@ struct PointDetail {
   bool built = false;
   /* Above its curve's edit level: not shown, picked or selected. Not saved. */
   bool hidden = false;
+  bool operator==(const PointDetail &) const = default;
 };
 
 struct MeshPoint {
@@ -77,8 +78,14 @@ struct MeshPoint {
   Channel<float> radius_keys;
   /* Its own number in the drawing, kept for good (0: not given one yet; see drawing_ensure_ids):
    * what a reference's overrides find it by, whatever happens to the points around it. */
-  uint64_t id = 0;  /* Detail levels: a detail point's level and offsets. */
+  uint64_t id = 0;
+  /* Evaluated drawings only, never saved: a point the Subdivide modifier made with Preserve Volume, which
+   * the bones move by blending their turns and moves as rigid motions (dual complex numbers, Blender's
+   * Preserve Volume) instead of their matrices, so it doesn't pinch or curl when they turn far apart. */
+  bool preserve_volume = false;
+  /* Detail levels: a detail point's level and offsets. */
   PointDetail detail;
+  bool operator==(const MeshPoint &) const = default;
 };
 
 struct CurvePoint {
@@ -101,6 +108,11 @@ struct CurvePoint {
   /* False until the point first gets its handles (drawing_init_handles). Until then they are
    * worked out from the neighbours: smooth, or straight toward them where curvature is 0. */
   bool handles_set = false;
+  /* Evaluated drawings only, never saved: handles the Subdivide modifier stored for points whose
+   * handles the curve works out (and for its new points). The bones turn and stretch them with the
+   * curve around the point, as handles worked out from where the points went would, rather than
+   * rigidly with the point. */
+  bool handles_follow_curve = false;
   /* Handles picked on their own (clicking one). A selected point's handles move with it. */
   bool select_in = false;
   bool select_out = false;
@@ -116,6 +128,7 @@ struct CurvePoint {
   Channel<float> curvature_keys;
   Channel<float2> handle_in_keys;
   Channel<float2> handle_out_keys;
+  bool operator==(const CurvePoint &) const = default;
 };
 
 struct Curve {
@@ -123,6 +136,7 @@ struct Curve {
   bool closed = false;
 
   int segment_count() const;
+  bool operator==(const Curve &) const = default;
 };
 
 /* How a line is painted with a brush: Moho's style brush settings (fBrush*). Picking a brush
@@ -296,6 +310,13 @@ struct Style {
   bool operator==(const Style &) const = default;
 };
 
+/* How a shape of several loops fills (Moho's holes, SVG's fill-rule). Loops: each loop filled on its own,
+ * as shapes were before holes (and what files from then keep). Even-Odd: a loop inside another is a hole
+ * (and one inside that filled again), whichever way it was drawn. Nonzero: each loop's direction counts,
+ * so one drawn the other way round cuts a hole and one the same way adds to the fill (how fonts are made,
+ * their overlapping strokes staying filled). */
+enum class FillRule { Loops, EvenOdd, NonZero };
+
 /* One curve segment: from curve point `segment` to the next one. */
 struct ShapeEdge {
   int curve = 0;
@@ -309,6 +330,8 @@ struct Shape {
   std::vector<ShapeEdge> edges;
   bool has_fill = true;
   bool has_outline = true;
+  /* How its loops fill together (a shape of one loop fills the same whatever it is). */
+  FillRule fill_rule = FillRule::Loops;
   Style style;
   /* Not drawn (a reference hiding one of its original's shapes). */
   bool hidden = false;
@@ -331,6 +354,7 @@ struct Shape {
   uint64_t id = 0;
   /* No selection flag of its own: a shape counts as selected when all its points are (see
    * drawing_selected_shapes), so the viewport and the Properties shape list always agree. */
+  bool operator==(const Shape &) const = default;
 };
 
 /* A named set of points with a weight each, 0-1 (Blender's vertex groups): selection sets, and what
@@ -340,6 +364,7 @@ struct PointGroup {
   std::map<uint64_t, float> weights;
   /* Locked: Assign and Remove leave it as it is (its lock in the list, as Blender's). */
   bool locked = false;
+  bool operator==(const PointGroup &) const = default;
 };
 
 struct VectorDrawing {
@@ -353,6 +378,7 @@ struct VectorDrawing {
   uint64_t next_id = 1;
 
   bool empty() const { return points.empty(); }
+  bool operator==(const VectorDrawing &) const = default;
 };
 
 /* ---------------------------------------------------------------------------------
@@ -383,6 +409,27 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
                           std::vector<float2> &r_points, float tolerance = 0.0f);
 /* The point indices at either end of a segment. */
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to);
+/* Slide (G G): moves `points` along their curve, `factor` of the way to the next point (negative:
+ * toward the one before), refitting the segments beside them to the line as it was so the curve
+ * keeps its shape. A point on two curves slides along the first. Returns how many moved. */
+int drawing_slide_points(VectorDrawing &drawing, const std::vector<int> &points, float factor);
+/* Smooth Points (right-click on points; Blender's Smooth Vertices, for curves): the selected points go
+ * half of `factor` of the way to their neighbours' middle along their curves, `repeat` times, their handles
+ * as far toward smooth ones (in line, a third of each side long). Unselected points hold the ends;
+ * an open curve's ends stay unless `ends`. `keep_shape` adds Taubin's inflating step so shapes don't
+ * shrink; `position`, `handles` and `radius` say what is smoothed. Works in the drawing's own space
+ * (a posed copy, for what shows). Returns how many points it smoothed. */
+struct SmoothPointsSettings {
+  float factor = 0.5f;
+  int repeat = 1;
+  bool position = true;
+  bool handles = true;
+  bool radius = false;
+  bool keep_shape = false;
+  bool ends = false;
+  bool operator==(const SmoothPointsSettings &) const = default;
+};
+int drawing_smooth_points(VectorDrawing &drawing, const SmoothPointsSettings &settings);
 
 /* A shape's edges in the order its outline runs, each with the way it is run (`reversed`: from
  * its segment's end to its start). Returns false if they don't all join into one run;
@@ -390,6 +437,7 @@ void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_t
 struct OrientedEdge {
   ShapeEdge edge;
   bool reversed = false;
+  bool operator==(const OrientedEdge &) const = default;
 };
 bool shape_chain(const VectorDrawing &drawing, const Shape &shape, std::vector<OrientedEdge> &r_chain,
                  bool *r_closed);
@@ -441,6 +489,7 @@ void drawing_remove_curves(VectorDrawing &drawing, const std::vector<bool> &remo
 struct CurveEnd {
   int curve = -1;
   bool at_end = false;
+  bool operator==(const CurveEnd &) const = default;
 };
 CurveEnd drawing_curve_end_at(const VectorDrawing &drawing, int point);
 /* Every curve and segment that touches a point. */
@@ -517,6 +566,16 @@ void drawing_set_selected_mean_radius(VectorDrawing &drawing, float mean);
 /* Shapes with any selected point: the ones arranging and the Properties shape list act on. */
 std::vector<bool> drawing_selected_shapes(const VectorDrawing &drawing);
 
+/* Join Fills (F with whole loops selected, as Moho's Create Shape and Grease Pencil's Join Fills): the shapes
+ * all of whose points are selected and that go round become one shape, its loops filling together (a loop
+ * inside another a hole, Even-Odd unless it had a rule already), with the look and place of the first of
+ * them. Returns how many shapes went into it (0 with fewer than two). */
+int drawing_join_fills(VectorDrawing &drawing);
+/* Separate Fills: each shape all of whose points are selected and that has several runs of edges becomes
+ * a shape per run, each with its look, the first keeping its place and number. Returns how many shapes
+ * were made. */
+int drawing_separate_fills(VectorDrawing &drawing);
+
 /* The selected points, and the points a shape runs through (each once). */
 std::vector<int> drawing_selected_points(const VectorDrawing &drawing);
 std::vector<int> shape_points(const VectorDrawing &drawing, const Shape &shape);
@@ -583,6 +642,7 @@ void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bo
 struct MirrorPair {
   int src = -1, dst = -1;
   bool x = false, y = false;
+  bool operator==(const MirrorPair &) const = default;
 };
 /* The mirror images of the `moving` points, paired in the setup pose; selected points move by
  * themselves, so they are no one's image. */
@@ -609,7 +669,15 @@ struct SymmetrizeResult {
   int right = 0, left = 0, centre = 0;
   /* Uneven: the points left without a partner. */
   std::vector<int> unmatched;
+  /* Done: each point copied (source) onto its partner (destination), and the points on the axis. */
+  std::vector<std::pair<int, int>> copied;
+  std::vector<int> centre_points;
+  bool operator==(const SymmetrizeResult &) const = default;
 };
+/* Symmetrize's looks: each shape of `from` whose points all have an image in `image` (point -> point
+ * of `to`) gives its look (Fill and Outline, colours, width, brush, material) to the shape of `to` made
+ * of those images (not itself). Returns how many shapes changed. */
+int drawing_copy_shape_looks(const VectorDrawing &from, VectorDrawing &to, const std::map<int, int> &image);
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
                                     const std::map<uint64_t, uint64_t> *weight_flip);
 

@@ -8,6 +8,8 @@ import oanim
 
 KEYMAP = (
     ("Window", "ed.undo", "Z", {"ctrl": True}),
+    # Up the layer tree: the group holding the active layer.
+    ("Window", "layer.select_parent", "EQUAL", {}),
     ("Window", "ed.redo", "Z", {"ctrl": True, "shift": True}),
     ("Window", "wm.quit", "Q", {"ctrl": True}),
     ("Window", "render.render", "R", {"ctrl": True}),
@@ -26,6 +28,8 @@ KEYMAP = (
     ("Window", "screen.frame_offset_forward", "RIGHT_ARROW", {}),
     ("Window", "screen.frame_jump_start", "LEFT_ARROW", {"shift": True}),
     ("Window", "screen.frame_setup_toggle", "TAB", {}),
+    # Into Sculpt, and back to the tool before (beside Tab, anywhere).
+    ("Window", "wm.tool_sculpt_toggle", "TAB", {"ctrl": True}),
     ("Window", "screen.frame_jump_end", "RIGHT_ARROW", {"shift": True}),
     ("Window", "screen.keyframe_jump_prev", "DOWN_ARROW", {}),
     ("Window", "screen.keyframe_jump_next", "UP_ARROW", {}),
@@ -41,6 +45,7 @@ KEYMAP = (
     # Blender's Local View: the picked layers alone, and back.
     ("Viewport", "view.local_view", "SLASH", {}),
     ("Viewport", "view.local_view", "NUMPAD_SLASH", {}),
+    ("Viewport", "view.media_view", "ACCENT_GRAVE", {}),
     ("Viewport", "screen.redo_last", "F9", {}),
     ("Viewport", "transform.translate", "G", {}),
     # Draw order, as Photoshop and Figma arrange: Ctrl ] / Ctrl [ one step, with Shift all the way.
@@ -52,6 +57,8 @@ KEYMAP = (
     ("Window", "mask.clip_to_below", "G", {"ctrl": True, "alt": True}),
     ("Viewport", "transform.rotate", "R", {}),
     ("Viewport", "transform.resize", "S", {}),
+    # Blender's Snap pie: the 2D cursor and the selection to each other, the grid and the active one.
+    ("Viewport", "view.snap_pie", "S", {"shift": True}),
     ("Viewport", "transform.proportional_toggle", "O", {}),
     ("Viewport", "transform.proportional_falloff_cycle", "O", {"shift": True}),
     ("Viewport", "transform.proportional_connected_toggle", "O", {"alt": True}),
@@ -60,6 +67,7 @@ KEYMAP = (
     ("Viewport", "armature.duplicate_move", "D", {"shift": True}),
     ("Viewport", "armature.bone_primitive_add", "A", {"shift": True}),
     ("Viewport", "armature.parent_set_menu", "P", {"ctrl": True}),
+    ("Viewport", "armature.apply_menu", "A", {"ctrl": True}),
     ("Viewport", "armature.parent_clear_menu", "P", {"alt": True}),
     ("Viewport", "armature.move_to_collection_menu", "M", {}),
     ("Viewport", "armature.assign_to_collection_menu", "M", {"shift": True}),
@@ -77,10 +85,16 @@ KEYMAP = (
     ("Viewport", "transform.radius", "S", {"alt": True}),
     ("Viewport", "mesh.extrude", "E", {}),
     ("Viewport", "mesh.duplicate_move", "D", {"shift": True}),
+    # Blender's Separate > Selection: the selected pieces into a layer of their own.
+    ("Viewport", "mesh.separate", "P", {}),
     ("Viewport", "anim.keyframe_insert", "I", {}),
+    # A guide tool's picked guide goes first.
+    ("Viewport", "guide.delete_picked", "X", {}),
+    ("Viewport", "guide.delete_picked", "DEL", {}),
     ("Viewport", "armature.bone_delete", "X", {}),
     ("Viewport", "armature.select_all", "A", {}),
     ("Viewport", "armature.select_none", "A", {"alt": True}),
+    ("Viewport", "armature.select_invert", "I", {"ctrl": True}),
     ("Viewport", "armature.bone_delete", "DEL", {}),
     ("Viewport", "anim.keyframe_delete", "I", {"alt": True}),
     # Shape stacking order, as Blender's Arrange for Grease Pencil strokes.
@@ -92,6 +106,8 @@ KEYMAP = (
     ("Viewport", "mesh.select_none", "A", {"alt": True}),
     ("Viewport", "mesh.select_invert", "I", {"ctrl": True}),
     ("Viewport", "mesh.select_linked_pick", "L", {}),
+    # Blender's Link/Transfer Data.
+    ("Viewport", "wm.link_data_menu", "L", {"ctrl": True}),
     ("Viewport", "mesh.deselect_linked_pick", "L", {"shift": True}),
     ("Viewport", "mesh.select_mode_point", "1", {}),
     ("Viewport", "mesh.select_mode_edge", "2", {}),
@@ -99,6 +115,8 @@ KEYMAP = (
     ("Viewport", "mesh.delete_menu", "X", {}),
     ("Viewport", "mesh.delete", "DEL", {}),
     ("Viewport", "wm.tool_split_curve_temporary", "K", {}),
+    # Back to the Select Box tool from any other.
+    ("Viewport", "wm.tool_select", "T", {}),
     # Detail levels of the selected shapes, as Blender's multiresolution levels.
     ("Viewport", "mesh.detail_level_0", "0", {"ctrl": True}),
     ("Viewport", "mesh.detail_level_1", "1", {"ctrl": True}),
@@ -134,6 +152,15 @@ KEYMAP = (
     ("Layers", "layer.make_reference", "D", {"alt": True}),
     ("Layers", "armature.move_to_collection_menu", "M", {}),
     ("Layers", "armature.assign_to_collection_menu", "M", {"shift": True}),
+    # The Sculpt tool, over the viewport: its brushes, and sizing the brush (Blender's F and Shift F).
+    ("Sculpt", "sculpt.brush_grab", "G", {}),
+    ("Sculpt", "sculpt.brush_push", "P", {}),
+    ("Sculpt", "sculpt.brush_smooth", "S", {}),
+    ("Sculpt", "sculpt.brush_thickness", "T", {}),
+    ("Sculpt", "sculpt.brush_pinch", "I", {}),
+    ("Sculpt", "sculpt.brush_twist", "W", {}),
+    ("Sculpt", "sculpt.radius_adjust", "F", {}),
+    ("Sculpt", "sculpt.strength_adjust", "F", {"shift": True}),
 )
 
 

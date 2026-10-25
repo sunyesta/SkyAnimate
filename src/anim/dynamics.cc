@@ -69,6 +69,8 @@ float g_live_clock = 0.0f;
 
 /* By bone layer id. */
 std::map<uint64_t, Simulation> g_simulations;
+/* Something is being dragged (see dynamics_hold_cache). */
+bool g_hold_cache = false;
 
 const BoneConstraint *dynamics_of(const Bone &bone)
 {
@@ -133,6 +135,16 @@ struct Hash {
     if (!ch.animated()) {
       const T base = plain - ch.smart;
       value(base);
+    }
+    /* Its smart actions' keys: they move the bones on every frame the smart bone turns. */
+    for (const auto &[name, keys] : ch.actions) {
+      bytes(name.data(), name.size());
+      value(keys.size());
+      for (const Key<T> &k : keys) {
+        value(k.frame);
+        value(k.value);
+        value(int(k.interp));
+      }
     }
   }
 };
@@ -203,8 +215,10 @@ uint64_t signature(const Document &doc, const Layer &armature)
         h.value(s->stretch);
         h.value(s->use_limit);
         h.value(s->limit);
+        h.value(s->use_squash_limit);
+        h.value(s->squash_limit);
         for (const Channel<float> *k : {&s->settle_speed_keys, &s->bounce_keys, &s->inertia_keys,
-                                        &s->stretch_keys, &s->limit_keys})
+                                        &s->stretch_keys, &s->limit_keys, &s->squash_limit_keys})
         {
           h.channel(*k, 0.0f);
         }
@@ -250,9 +264,13 @@ Layer keyed_layer(const Layer &armature, int frame, bool live)
         s->inertia = at_frame(s->inertia_keys, s->inertia, frame);
         s->stretch = at_frame(s->stretch_keys, s->stretch, frame);
         s->limit = at_frame(s->limit_keys, s->limit, frame);
+        s->squash_limit = at_frame(s->squash_limit_keys, s->squash_limit, frame);
       }
     }
   }
+  /* And what smart actions add there, as the frame shown has it (a head turned by a smart bone turns
+   * the hair hanging from it on every frame it is simulated through). */
+  smart_actions_add_at(armature, frame, at.bones);
   return at;
 }
 
@@ -324,6 +342,12 @@ float wrap_pi(float a)
 float limit_of(const BoneSpring &k)
 {
   return k.use_limit ? std::max(k.limit, 1e-4f) : 0.0f;
+}
+
+/* Squash & Stretch's Max Squash, 0 when it has none. */
+float squash_limit_of(const BoneSpring &k)
+{
+  return k.use_squash_limit ? std::clamp(k.squash_limit, 1e-4f, 0.9f) : 0.0f;
 }
 
 /* A limit approached softly: the nearer it gets, the slower (0: none). */
@@ -666,8 +690,9 @@ void step(const Document &doc, const BoneConstraint &c, Motion &m, const Target 
                   dt;
       m.scale += m.growth * dt;
       const float ratio = t.scale > 1e-6f ? m.scale / t.scale : 1.0f;
+      const float lsq = squash_limit_of(ks);
       const float hi = ls > 0.0f ? 1.0f + 3.0f * ls : 10.0f;
-      const float lo = ls > 0.0f ? std::max(0.1f, 1.0f - 3.0f * ls) : 0.1f;
+      const float lo = lsq > 0.0f ? std::max(0.1f, 1.0f - 3.0f * lsq) : 0.1f;
       if (ratio > hi || ratio < lo) {
         m.scale = t.scale * std::clamp(ratio, lo, hi);
         m.growth = 0.0f;
@@ -700,7 +725,10 @@ BoneDynamicsState state_of(const BoneConstraint &c, const Motion &m, const Targe
   d.angle = t.angle + soft(wrap_pi(m.angle - t.angle), limit_of(c.angle_spring)) * w;
   d.head = t.head + soft(m.offset, limit_of(c.position_spring)) * w;
   const float ratio = t.scale > 1e-6f ? m.scale / t.scale : 1.0f;
-  d.scale = t.local_scale * (1.0f + soft(ratio - 1.0f, limit_of(c.scale_spring)) * w);
+  /* Max Stretch and Max Squash each their own way, and never shorter than a tenth. */
+  const float change = ratio - 1.0f;
+  const float limit = change > 0.0f ? limit_of(c.scale_spring) : squash_limit_of(c.scale_spring);
+  d.scale = t.local_scale * std::max(1.0f + soft(change, limit) * w, 0.1f);
   return d;
 }
 
@@ -818,7 +846,12 @@ bool simulate(const Document &doc, const Layer &armature, int frame,
   }
   Simulation &sim = g_simulations[armature.id];
   const uint64_t sig = signature(doc, armature);
-  if (sim.signature != sig || sim.start != start) {
+  /* While a drag goes on, the frames before keep what they were simulated from: each update would
+   * otherwise simulate them all again (a bone without keys changes every frame as it is dragged, and
+   * while playing, recording keys it on every frame). Frames played on to are added from there. The
+   * signature stays the old one, so they are all simulated again once it ends. */
+  const bool held = g_hold_cache && sim.signature != 0 && sim.start == start;
+  if ((sim.signature != sig || sim.start != start) && !held) {
     sim = {};
     sim.signature = sig;
     sim.start = start;
@@ -921,6 +954,21 @@ void dynamics_live_tick(Document &doc, double seconds, bool allowed)
   }
 }
 
+void dynamics_live_quiet(Document &doc, uint64_t armature_id)
+{
+  Layer *armature = layer_find(doc, armature_id);
+  if (!armature) {
+    return;
+  }
+  Live &live = g_live[armature_id];
+  live = Live();
+  live.frame = doc.frame_current;
+  live.aim = aim_signature(doc, *armature);
+  if (const auto sim = g_simulations.find(armature_id); sim != g_simulations.end()) {
+    live.motion = sim->second.shown;
+  }
+}
+
 bool dynamics_live_running()
 {
   for (const auto &[id, live] : g_live) {
@@ -951,6 +999,11 @@ void dynamics_use_own_wind(const Document &doc, BoneConstraint &c, bool on)
     c.own_wind_set = true;
   }
   c.own_wind = on;
+}
+
+void dynamics_hold_cache(bool hold)
+{
+  g_hold_cache = hold;
 }
 
 void dynamics_clear_cache()
@@ -1015,6 +1068,7 @@ int dynamics_bake(Document &doc, Layer *only)
         b.angle = bone_angle_at(b, f, true);
         b.scale = at_frame(b.scale_keys, b.scale, f);
       }
+      smart_actions_add_at(armature, f, at.bones);
       const std::vector<BonePose> poses = armature_pose(at, false);
       for (size_t i = 0; i < at.bones.size(); i++) {
         const Bone &b = at.bones[i];

@@ -57,7 +57,10 @@ layers.active = art
 half = [(0.0, 0.2), (0.4, 0.45), (0.4, 0.55), (0.0, 0.8)]
 art.add_curve(half, closed=False, fill=True)
 assert oanim.ops.object.modifier_add(type="MIRROR") == {'FINISHED'}
-assert [m["type"] for m in art.modifiers] == ["MIRROR", "ARMATURE"], "new modifiers go above Armature"
+assert [m["type"] for m in art.modifiers] == ["ARMATURE", "MIRROR"], "new modifiers go at the bottom"
+# Above the Armature modifier, it mirrors the setup drawing and each half follows its own side's bones.
+assert oanim.ops.object.modifier_move_to(index="1", to="0") == {'FINISHED'}
+assert [m["type"] for m in art.modifiers] == ["MIRROR", "ARMATURE"]
 points, curves, shapes = art.evaluated()
 assert len(points) == 6, "the two axis points are shared, the two others reflected"
 assert curves == 1 and len(shapes) == 1 and shapes[0][1] and shapes[0][2], \
@@ -234,7 +237,7 @@ grp = oanim.data.layers.active
 oanim.ops.layer.move_to_group(group=str(grig.id))
 assert grp.parent == grig and inner.parent == grp
 oanim.data.layers.active = inner
-assert oanim.ops.layer.parent_bone_set(bone="other") == {'FINISHED'}  # its own, to be overridden
+assert oanim.ops.layer.parent_bone_set(bone="other", deform="LAYER") == {'FINISHED'}  # its own, to be overridden
 oanim.data.layers.active = grp
 assert oanim.ops.layer.parent_bone_set(bone="arm") == {'FINISHED'}
 assert inner.parent_bone_group == grp.name and grp.parent_bone_group == ""
@@ -255,5 +258,19 @@ doc.frame_current = 10
 shown = inner.to_document((0.5, 0.5))
 assert abs(shown[0] - 5.5) < 1e-3, ("follows its own bone again", shown)
 doc.frame_current = 0
+
+# Ctrl I inverts the bone selection, over the viewport (Select > Invert).
+rig_layer = next(l for l in oanim.data.layers.all() if l.type == "BONE")
+oanim.data.layers.active = rig_layer
+names = [b["name"] for b in rig_layer.bones]
+assert len(names) >= 2, names
+oanim.ops.armature.select_none()
+rig_layer.select_bone(names[0])
+assert oanim.wm.event_simulate("I", ctrl=True, area="Viewport")
+picked = {b["name"]: b["selected"] for b in rig_layer.bones}
+assert not picked[names[0]] and all(picked[n] for n in names[1:]), picked
+assert oanim.ops.armature.select_invert() == {'FINISHED'}
+picked = {b["name"]: b["selected"] for b in rig_layer.bones}
+assert picked[names[0]] and not any(picked[n] for n in names[1:]), picked
 
 print("Rigging tests passed")

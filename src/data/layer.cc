@@ -27,6 +27,30 @@ bool mask_extend_from_identifier(const std::string &identifier, MaskExtend *r_ex
   return false;
 }
 
+static constexpr const char *MASK_COMBINE_IDS[] = {"UNION", "DIFFERENCE", "INTERSECTION"};
+static constexpr const char *MASK_COMBINE_NAMES[] = {"Union", "Difference", "Intersection"};
+
+const char *mask_combine_identifier(MaskCombine combine)
+{
+  return MASK_COMBINE_IDS[int(combine)];
+}
+
+const char *mask_combine_name(MaskCombine combine)
+{
+  return MASK_COMBINE_NAMES[int(combine)];
+}
+
+bool mask_combine_from_identifier(const std::string &identifier, MaskCombine *r_combine)
+{
+  for (int i = 0; i < 3; i++) {
+    if (identifier == MASK_COMBINE_IDS[i]) {
+      *r_combine = MaskCombine(i);
+      return true;
+    }
+  }
+  return false;
+}
+
 static constexpr const char *MASK_CUTS_IDS[] = {"ALL", "FILLS", "LINES"};
 
 const char *mask_cuts_identifier(MaskCuts cuts)
@@ -134,8 +158,44 @@ void mask_card_start_from_steps(LayerMask &card)
 
 Transform2D Layer::local_transform() const
 {
-  return Transform2D::translate(position) * Transform2D::rotate(rotation * PI / 180.0f) *
-         Transform2D::scaling(scale);
+  Transform2D t = Transform2D::translate(position) * Transform2D::rotate(rotation * PI / 180.0f);
+  if (shear.x != 0.0f || shear.y != 0.0f) {
+    const float sx = std::clamp(shear.x, -89.0f, 89.0f) * PI / 180.0f;
+    const float sy = std::clamp(shear.y, -89.0f, 89.0f) * PI / 180.0f;
+    Transform2D k;
+    k.a = std::cos(sx);
+    k.b = std::sin(sx);
+    k.c = -std::sin(sy);
+    k.d = std::cos(sy);
+    t = t * k;
+  }
+  return t * Transform2D::scaling(scale);
+}
+
+void Layer::set_local_transform(const Transform2D &t, bool negative_x)
+{
+  float2 x_axis(t.a, t.b);
+  float sx = length(x_axis);
+  if (sx < 1e-12f) {
+    return;
+  }
+  if (negative_x) {
+    x_axis = -x_axis;
+    sx = -sx;
+  }
+  position = {t.tx, t.ty};
+  const float turn = std::atan2(x_axis.y, x_axis.x);
+  rotation = turn * 180.0f / PI;
+  /* The Y axis, unturned: its length is the scale's y and its tilt from up the shear's. */
+  const float co = std::cos(-turn), si = std::sin(-turn);
+  float2 y_axis(co * t.c - si * t.d, si * t.c + co * t.d);
+  float sy = length(y_axis);
+  if (y_axis.y < 0.0f) {
+    y_axis = -y_axis;
+    sy = -sy;
+  }
+  scale = {sx, sy};
+  shear = {0.0f, std::fabs(sy) > 1e-12f ? std::atan2(-y_axis.x, y_axis.y) * 180.0f / PI : 0.0f};
 }
 
 const char *layer_type_name(LayerType type)
@@ -143,6 +203,7 @@ const char *layer_type_name(LayerType type)
   return type == LayerType::Bone    ? "Bone"
          : type == LayerType::Group ? "Group"
          : type == LayerType::Media ? "Media"
+         : type == LayerType::Text  ? "Text"
                                     : "Vector";
 }
 
@@ -178,7 +239,7 @@ const rna::StructRNA &Layer::rna()
     s.name = "Layer";
     PropertyRNA type_prop = def_enum<Layer, LayerType>("type", "Type", "Kind of layer", &Layer::type,
                                                        {{"VECTOR", "Vector"}, {"GROUP", "Group"}, {"BONE", "Bone"},
-                                                        {"MEDIA", "Media"}});
+                                                        {"MEDIA", "Media"}, {"TEXT", "Text"}});
     type_prop.set = nullptr;
     s.properties = {
         def_string<Layer>("name", "Name", "Name shown in the Layers editor", &Layer::name),
@@ -194,6 +255,10 @@ const rna::StructRNA &Layer::rna()
                         "group is the active layer. It is then in the bone group's All collection; Assign or M put "
                         "it in others",
                         &Layer::edit_with_bones),
+        def_bool<Layer>("edit_descendants", "Edit Descendants",
+                        "While this group is picked or active, the drawings inside it (however deep) are edited "
+                        "with it, as if picked too",
+                        &Layer::edit_descendants),
         def_enum<Layer, LabelColor>("label_color", "Label Color", "Colour tag in the Layers editor",
                                     &Layer::label_color,
                                     {{"NONE", "None"},
@@ -218,6 +283,12 @@ const rna::StructRNA &Layer::rna()
         def_float_fn<Layer>(
             "scale_y", "Scale Y", "Vertical scale", -1000.0f, 1000.0f, [](const Layer &l) { return l.scale.y; },
             [](Layer &l, float v) { l.scale.y = v; }),
+        def_float_fn<Layer>(
+            "shear_x", "Shear X", "How far the layer's X axis tilts from square, degrees (counter-clockwise)",
+            -89.0f, 89.0f, [](const Layer &l) { return l.shear.x; }, [](Layer &l, float v) { l.shear.x = v; }),
+        def_float_fn<Layer>(
+            "shear_y", "Shear Y", "How far the layer's Y axis tilts from square, degrees (counter-clockwise)",
+            -89.0f, 89.0f, [](const Layer &l) { return l.shear.y; }, [](Layer &l, float v) { l.shear.y = v; }),
         def_float<Layer>("opacity", "Opacity", "How opaque the layer is", &Layer::opacity, 0.0f, 1.0f),
         def_bool<Layer>("select", "Select", "Picked in the Layers editor, for Group With Selection",
                         &Layer::selected),
@@ -251,12 +322,50 @@ const rna::StructRNA &Layer::rna()
         def_bool_fn<Layer>(
             "media_in_front", "In Front", "Draw it over everything (unmasked) rather than at its place in the stack",
             [](const Layer &l) { return l.media.in_front; }, [](Layer &l, bool v) { l.media.in_front = v; }),
+        def_bool_fn<Layer>(
+            "media_dont_auto_key", "Don't Auto Key",
+            "Moving, turning, scaling or fading it never sets keys, whatever the record button says (it changes it "
+            "on every frame while it isn't animated); keying it by hand still does",
+            [](const Layer &l) { return l.media.no_auto_key; }, [](Layer &l, bool v) { l.media.no_auto_key = v; }),
         def_float_fn<Layer>(
             "media_volume", "Volume", "How loud its sound plays (1: as recorded)", 0.0f, 4.0f,
             [](const Layer &l) { return l.media.volume; }, [](Layer &l, float v) { l.media.volume = v; }),
         def_bool_fn<Layer>(
             "media_muted", "Mute", "Silence its sound", [](const Layer &l) { return l.media.muted; },
             [](Layer &l, bool v) { l.media.muted = v; }),
+        /* Text layers (data/text.hh): the layout; the runs' fonts and looks through layer.text_runs. */
+        def_enum_fn<Layer>(
+            "text_align", "Align", "How the lines line up: on the origin (point text) or in the box",
+            {{"LEFT", "Left"}, {"CENTER", "Center"}, {"RIGHT", "Right"}, {"JUSTIFY", "Justify"}},
+            [](const Layer &l) { return int(l.text.align); },
+            [](Layer &l, int v) { l.text.align = TextAlign(std::clamp(v, 0, 3)); }),
+        def_float_fn<Layer>(
+            "text_line_spacing", "Line Spacing", "How far apart the lines are, a multiple of the font's own", 0.1f,
+            10.0f, [](const Layer &l) { return l.text.line_spacing; },
+            [](Layer &l, float v) { l.text.line_spacing = v; }),
+        def_float_fn<Layer>(
+            "text_letter_spacing", "Letter Spacing", "Space added after every letter, in ems", -1.0f, 10.0f,
+            [](const Layer &l) { return l.text.letter_spacing; },
+            [](Layer &l, float v) { l.text.letter_spacing = v; }),
+        def_float_fn<Layer>(
+            "text_word_spacing", "Word Spacing", "Space added at every space, in ems", -1.0f, 10.0f,
+            [](const Layer &l) { return l.text.word_spacing; }, [](Layer &l, float v) { l.text.word_spacing = v; }),
+        def_float_fn<Layer>(
+            "text_shear", "Shear", "Slant: each point moves across by this much of its height above the baseline",
+            -4.0f, 4.0f, [](const Layer &l) { return l.text.shear; }, [](Layer &l, float v) { l.text.shear = v; }),
+        def_float_fn<Layer>(
+            "text_box_width", "Box Width",
+            "Lines wrap at this width (a text box); 0: point text, lines breaking only at new lines", 0.0f, 100000.0f,
+            [](const Layer &l) { return l.text.box_width; }, [](Layer &l, float v) { l.text.box_width = v; }),
+        def_bool_fn<Layer>(
+            "text_dont_auto_key", "Don't Auto Key",
+            "Moving, turning, scaling or fading it never sets keys, whatever the record button says (it changes it "
+            "on every frame while it isn't animated); keying it by hand still does",
+            [](const Layer &l) { return l.text.no_auto_key; }, [](Layer &l, bool v) { l.text.no_auto_key = v; }),
+        def_string_fn<Layer>(
+            "text_body", "Text", "The whole text (new lines as \\n); set, it keeps the runs' styles where unchanged",
+            [](const Layer &l) { return text_string(l.text); },
+            [](Layer &l, const std::string &v) { text_set_string(l.text, v); }),
     };
     return s;
   }();

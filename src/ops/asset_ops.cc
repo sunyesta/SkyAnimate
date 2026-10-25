@@ -215,7 +215,7 @@ void asset_operators_register()
   asset_operator_add("mesh.brush_set", "Set Brush Shape",
                      "Paint the selected shapes' lines with a brush shape (`brush`; an empty name gives plain "
                      "lines); their other brush settings stay as they are",
-                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                     OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_MIRROR, [](Context &C) {
                        const std::string name = op_arg(C, "brush");
                        if (!name.empty() && !brush_find(name)) {
                          report(ReportType::Error, "No brush shape named '" + name + "' in the asset library");

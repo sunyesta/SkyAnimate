@@ -245,4 +245,43 @@ assert oanim.ops.object.modifier_add(type="BOOLEAN", targets="right") == {'FINIS
 assert [round(s[4], 3) for s in left.evaluated()[2]] == [8.0], ("one shape, 4 + 6 - the 2 they share",
                                                                    left.evaluated()[2])
 
+# The merged shape looks as its shape does now: a new colour shows at once, though the outlines
+# haven't changed (what was worked out for them is kept).
+left.set_shape_style(0, fill=(0.2, 0.4, 0.6, 1.0))
+fill = left.evaluated()[2][0][5]
+assert all(abs(a - b) < 1e-4 for a, b in zip(fill, (0.2, 0.4, 0.6, 1.0))), fill
+left.set_shape_style(0, fill=(0.9, 0.1, 0.1, 1.0))
+fill = left.evaluated()[2][0][5]
+assert all(abs(a - b) < 1e-4 for a, b in zip(fill, (0.9, 0.1, 0.1, 1.0))), fill
+assert [round(s[4], 3) for s in left.evaluated()[2]] == [8.0]
+
+# --- The stack runs top to bottom, the Boolean at its place in it ----------------------------------
+oanim.ops.wm.read_homefile(confirmed="1")
+layers = oanim.data.layers
+own = layers.active
+own.add_curve([(0, 0), (2, 0), (2, 2), (0, 2)], closed=True, fill=True)
+own.select_points(range(4))
+oanim.ops.mesh.peak()
+oanim.ops.layer.new()
+other = layers.active
+other.name = "other"
+other.add_curve([(1, 1), (3, 1), (3, 3), (1, 3)], closed=True, fill=True)
+other.select_points(range(4))
+oanim.ops.mesh.peak()
+layers.active = own
+assert oanim.ops.object.modifier_add(type="BOOLEAN", targets="other") == {'FINISHED'}
+assert oanim.ops.object.modifier_add(type="BEVEL") == {'FINISHED'}
+assert [m["type"] for m in own.modifiers] == ["BOOLEAN", "BEVEL"], "new modifiers go at the bottom"
+own.modifier_set(1, amount=0.1, limit="NONE", show_viewport=False)
+joined = len(own.evaluated()[0])
+own.modifier_set(1, show_viewport=True)
+# Bevel below: every point of the joined outline is cut in two.
+points, _, shapes = own.evaluated()
+assert len(points) == 2 * joined, (len(points), joined)
+below = shapes[0][4]
+# Bevel above: only the layer's own square is cut, then joined: a different outline.
+assert oanim.ops.object.modifier_move_to(index="1", to="0") == {'FINISHED'}
+points, _, shapes = own.evaluated()
+assert len(points) != 2 * joined and abs(shapes[0][4] - below) > 1e-3, (len(points), shapes[0][4], below)
+
 print("boolean_modifier: ok")

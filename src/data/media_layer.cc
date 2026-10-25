@@ -426,6 +426,12 @@ const std::string *media_packed_bytes(const std::string &id)
   return it == packed().end() ? nullptr : it->second.bytes.get();
 }
 
+std::shared_ptr<const std::string> media_packed_shared(const std::string &id)
+{
+  auto it = packed().find(id);
+  return it == packed().end() ? nullptr : it->second.bytes;
+}
+
 std::string media_packed_name(const std::string &id)
 {
   auto it = packed().find(id);

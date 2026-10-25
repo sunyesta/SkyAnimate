@@ -9,6 +9,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <process.h>
 
@@ -18,6 +19,7 @@
 #include "io/oanim_file.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
+#include "python/py_runtime.hh"
 #include "wm/context.hh"
 #include "wm/file_dialog.hh"
 
@@ -28,7 +30,7 @@ namespace fs = std::filesystem;
 static constexpr const char *FILTER_NAME = "Open Animate files";
 static constexpr const char *FILTER_PATTERN = "oanim";
 /* Opening also takes files saved before Open Animate was renamed from SkyAnimate (.sky). */
-static constexpr const char *OPEN_PATTERN = "oanim;sky";
+static constexpr const char *OPEN_PATTERN = "oanim;sky;fla;xfl";
 /* Blender's default autosave interval. */
 static constexpr uint64_t AUTOSAVE_INTERVAL_NS = 2ull * 60 * 1000000000;
 static constexpr size_t RECENT_FILES_MAX = 10;
@@ -182,9 +184,18 @@ bool document_is_dirty(const Context &C)
 }
 
 /* Replaces the document and starts a fresh undo history. */
+/* Mirror editing goes with the file: the header's X and Y as they are, into what is written. */
+static void mirror_settings_to_document(Context &C)
+{
+  C.document->mirror_x = C.wm->tool_settings.mirror_x;
+  C.document->mirror_y = C.wm->tool_settings.mirror_y;
+}
+
 static void document_replace(Context &C, Document &&doc, const std::string &filepath, bool saved)
 {
   *C.document = std::move(doc);
+  C.wm->tool_settings.mirror_x = C.document->mirror_x;
+  C.wm->tool_settings.mirror_y = C.document->mirror_y;
   C.wm->filepath = filepath;
   C.wm->playing = false;
   C.undo->reset(*C.document);
@@ -211,9 +222,55 @@ static bool document_read(const std::string &path, Document &r_doc)
   return true;
 }
 
+/* A Flash .fla (Flash 5 to CS6's binary format, or Flash CS5 on and Animate's XFL: a zip of XML, or an unzipped
+ * .xfl project): converted by scripts/modules/oanim/io_fla.py (io_xfl.py for XFL) into an .oanim
+ * in the temp folder and opened from there, untitled and unsaved (named after the .fla), so saving asks
+ * where to keep it and the .fla is never written. What didn't come across is listed in the Info editor. */
+static bool document_import_fla(Context &C, const std::string &path)
+{
+  const fs::path temp = fs::temp_directory_path() / ("oanim_fla_" + std::to_string(_getpid()) + ".oanim");
+  std::error_code ec;
+  fs::remove(temp, ec);
+  /* Paths as Python string literals: forward slashes, quotes escaped. */
+  const auto literal = [](std::string text) {
+    std::replace(text.begin(), text.end(), '\\', '/');
+    std::string out = "'";
+    for (const char ch : text) {
+      out += ch == '\'' ? std::string("\\'") : std::string(1, ch);
+    }
+    return out + "'";
+  };
+  const std::string code = "import oanim, oanim.io_fla\n"
+                           "_r = oanim.io_fla.convert(" + literal(path) + ", " + literal(path_to_utf8(temp)) +
+                           ", compress=False)\n"
+                           "for _n in _r['notes']:\n"
+                           "    oanim.wm.report('From the .fla: ' + _n, 'WARNING')\n";
+  if (!python::run_string(code) || !fs::exists(temp, ec)) {
+    report(ReportType::Error, "Could not open \"" + file_name(path) + "\" (see the Info editor)");
+    return false;
+  }
+  Document doc;
+  const bool read = document_read(path_to_utf8(temp), doc);
+  fs::remove(temp, ec);
+  if (!read) {
+    return false;
+  }
+  doc.name = path_to_utf8(path_from_utf8(path).stem());
+  document_replace(C, std::move(doc), "", false);
+  report(ReportType::Info, "Opened \"" + file_name(path) + "\" from Flash: save it as an .oanim to keep it");
+  return true;
+}
+
 bool document_open(Context &C, const std::string &given_path)
 {
   const std::string path = path_normalize(given_path);
+  {
+    std::string ext = path_to_utf8(path_from_utf8(path).extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+    if (ext == ".fla" || ext == ".xfl") {
+      return document_import_fla(C, path);
+    }
+  }
   Document doc;
   if (!document_read(path, doc)) {
     return false;
@@ -239,6 +296,7 @@ static bool document_write(Context &C, const std::string &given_path, bool remem
   const std::string path = path_normalize(given_path);
   std::string error;
   animation_record(*C.document);
+  mirror_settings_to_document(C);
   if (!oanim_file_write(*C.document, path, &error)) {
     report(ReportType::Error, error);
     return false;
@@ -371,7 +429,7 @@ void file_operators_register()
     return OpStatus::Finished;
   });
 
-  file_operator_add("wm.open_mainfile", "Open", "Open a .oanim file", [](Context &C) {
+  file_operator_add("wm.open_mainfile", "Open", "Open a .oanim file, or a Flash or Animate .fla (or .xfl) as a new one", [](Context &C) {
     const std::string path = op_arg(C, "filepath");
     if (path.empty()) {
       return ask_for_path(C, "wm.open_mainfile", false);
@@ -486,6 +544,40 @@ void file_operators_register()
 static fs::path g_autosave_path;
 static uint64_t g_autosave_last_ns = 0;
 
+/* An autosave being written on its own thread: making the file of a big document takes seconds, which
+ * froze the window every few minutes. Only the copy it writes from is made on the main thread. */
+struct AutosaveJob {
+  std::future<bool> done;
+  std::string error;
+  fs::path path;
+  uint64_t change = 0;
+};
+static AutosaveJob g_autosave_job;
+
+/* Takes a finished autosave's result (or waits for it with `wait`). False while one is still writing. */
+static bool autosave_job_finish(Context &C, bool wait)
+{
+  AutosaveJob &job = g_autosave_job;
+  if (!job.done.valid()) {
+    return true;
+  }
+  if (!wait && job.done.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return false;
+  }
+  if (!job.done.get()) {
+    report(ReportType::Warning, "Autosave failed: " + job.error);
+    return true;
+  }
+  /* Saving under a new name leaves one autosave per session, not one per name. */
+  std::error_code ec;
+  if (!g_autosave_path.empty() && g_autosave_path != job.path) {
+    fs::remove(g_autosave_path, ec);
+  }
+  g_autosave_path = job.path;
+  C.wm->autosaved_change = job.change;
+  return true;
+}
+
 /* walk_12345_autosave.oanim: the process id keeps two running copies apart. */
 static fs::path autosave_path_for(const Context &C)
 {
@@ -495,6 +587,9 @@ static fs::path autosave_path_for(const Context &C)
 
 void autosave_update(Context &C, uint64_t now_ns)
 {
+  if (!autosave_job_finish(C, false)) {
+    return;
+  }
   if (g_autosave_last_ns == 0) {
     g_autosave_last_ns = now_ns;
   }
@@ -505,23 +600,18 @@ void autosave_update(Context &C, uint64_t now_ns)
   if (C.undo->change_count() == C.wm->autosaved_change || !document_is_dirty(C)) {
     return;
   }
-  const fs::path path = autosave_path_for(C);
-  std::string error;
-  if (!oanim_file_write(*C.document, path_to_utf8(path), &error)) {
-    report(ReportType::Warning, "Autosave failed: " + error);
-    return;
-  }
-  /* Saving under a new name leaves one autosave per session, not one per name. */
-  std::error_code ec;
-  if (!g_autosave_path.empty() && g_autosave_path != path) {
-    fs::remove(g_autosave_path, ec);
-  }
-  g_autosave_path = path;
-  C.wm->autosaved_change = C.undo->change_count();
+  AutosaveJob &job = g_autosave_job;
+  job.path = autosave_path_for(C);
+  job.change = C.undo->change_count();
+  job.error.clear();
+  mirror_settings_to_document(C);
+  std::function<bool(std::string *)> write = oanim_file_writer(*C.document, path_to_utf8(job.path));
+  job.done = std::async(std::launch::async, [write = std::move(write)]() { return write(&g_autosave_job.error); });
 }
 
 void autosave_quit(Context &C)
 {
+  autosave_job_finish(C, true);
   {
     /* The next start reopens this file, as last saved (unsaved changes at quitting were turned
      * down; File > Recover > Last Session still has them). */
@@ -529,6 +619,7 @@ void autosave_quit(Context &C)
     out << C.wm->filepath;
   }
   std::string error;
+  mirror_settings_to_document(C);
   if (!oanim_file_write(*C.document, quit_file_path(), &error)) {
     report(ReportType::Warning, "Could not write quit.oanim: " + error);
   }

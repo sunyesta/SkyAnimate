@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <unordered_map>
 
 #include "data/document.hh"
 
@@ -23,6 +24,105 @@ template<typename LayerT, typename ListT> static LayerT *find_in(ListT &list, ui
   return nullptr;
 }
 
+/* The index of a LayerIndexScope: the document it is for and its layers by id. */
+struct LayerIndex {
+  const Document *doc = nullptr;
+  std::unordered_map<uint64_t, const Layer *> layers;
+  /* Each layer's group (null at the top). */
+  std::unordered_map<uint64_t, const Layer *> parents;
+  /* Whether any layer has a Boolean modifier (what merge_takes_from looks for). */
+  bool any_boolean = false;
+};
+static thread_local LayerIndex *g_layer_index = nullptr;
+
+static void index_layers(const std::vector<Layer> &list, const Layer *parent, LayerIndex &index)
+{
+  for (const Layer &layer : list) {
+    index.layers.emplace(layer.id, &layer);
+    index.parents.emplace(layer.id, parent);
+    for (const Modifier &m : layer.modifiers) {
+      index.any_boolean = index.any_boolean || m.type == ModifierType::Boolean;
+    }
+    index_layers(layer.children, &layer, index);
+  }
+}
+
+static LayerIndex *index_for(const Document &doc)
+{
+  return g_layer_index && g_layer_index->doc == &doc ? g_layer_index : nullptr;
+}
+
+static uint64_t g_revision_next = 1;
+
+uint64_t revision_next()
+{
+  return g_revision_next++;
+}
+
+uint64_t revision_latest()
+{
+  return g_revision_next - 1;
+}
+
+void layer_touch(Layer &layer)
+{
+  layer.revision.value = revision_next();
+}
+
+void document_touch_all(Document &doc)
+{
+  const auto touch = [](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      layer_touch(layer);
+      self(self, layer.children);
+    }
+  };
+  touch(touch, doc.layers);
+  layer_touch(doc.simulation);
+  layer_touch(doc.camera);
+  doc.tree_revision.value = revision_next();
+}
+
+bool layer_index_active(const Document &doc)
+{
+  return index_for(doc) != nullptr;
+}
+
+bool layer_index_no_booleans(const Document &doc)
+{
+  const LayerIndex *index = index_for(doc);
+  return index && !index->any_boolean;
+}
+
+LayerIndexScope::LayerIndexScope(const Document &doc)
+{
+  if (g_layer_index) {
+    return;
+  }
+  g_layer_index = new LayerIndex;
+  g_layer_index->doc = &doc;
+  index_layers(doc.layers, nullptr, *g_layer_index);
+  owner_ = true;
+}
+
+LayerIndexScope::~LayerIndexScope()
+{
+  if (owner_) {
+    delete g_layer_index;
+    g_layer_index = nullptr;
+  }
+}
+
+static const Layer *indexed(const Document &doc, uint64_t id, bool *r_used)
+{
+  *r_used = g_layer_index && g_layer_index->doc == &doc;
+  if (!*r_used) {
+    return nullptr;
+  }
+  const auto it = g_layer_index->layers.find(id);
+  return it == g_layer_index->layers.end() ? nullptr : it->second;
+}
+
 Layer *layer_find(Document &doc, uint64_t id)
 {
   if (id == SIMULATION_LAYER_ID) {
@@ -31,7 +131,14 @@ Layer *layer_find(Document &doc, uint64_t id)
   if (id == CAMERA_LAYER_ID) {
     return &document_camera(doc);
   }
-  return id ? find_in<Layer>(doc.layers, id) : nullptr;
+  if (!id) {
+    return nullptr;
+  }
+  bool used = false;
+  if (const Layer *found = indexed(doc, id, &used); used) {
+    return const_cast<Layer *>(found);
+  }
+  return find_in<Layer>(doc.layers, id);
 }
 
 const Layer *layer_find(const Document &doc, uint64_t id)
@@ -42,7 +149,14 @@ const Layer *layer_find(const Document &doc, uint64_t id)
   if (id == CAMERA_LAYER_ID) {
     return &doc.camera;
   }
-  return id ? find_in<const Layer>(doc.layers, id) : nullptr;
+  if (!id) {
+    return nullptr;
+  }
+  bool used = false;
+  if (const Layer *found = indexed(doc, id, &used); used) {
+    return found;
+  }
+  return find_in<const Layer>(doc.layers, id);
 }
 
 static std::vector<Layer> *container_in(std::vector<Layer> &list, uint64_t id, int *r_index)
@@ -79,6 +193,10 @@ static Layer *parent_in(std::vector<Layer> &list, Layer *parent, uint64_t id)
 
 Layer *layer_parent(Document &doc, uint64_t id)
 {
+  if (const LayerIndex *index = index_for(doc)) {
+    const auto it = index->parents.find(id);
+    return it == index->parents.end() ? nullptr : const_cast<Layer *>(it->second);
+  }
   return parent_in(doc.layers, nullptr, id);
 }
 
@@ -114,7 +232,8 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
     if (binds) {
       const std::vector<BonePose> poses = armature_pose(*armature, setup_frame);
       if (const BonePose *bone = bone_pose_find(poses, layer.followed_bone())) {
-        transform = armature_world * bone->skin * armature_world.inverted() * transform;
+        transform = armature_world * bone->skin * armature_world.inverted() *
+                    transform;
       }
     }
     if (layer.id == id) {
@@ -131,9 +250,56 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
   return false;
 }
 
+/* world_transform_in by the index: down the layer's own groups, as found from it upward. */
+static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, uint64_t id, Transform2D *r_transform)
+{
+  std::vector<const Layer *> chain;
+  for (auto it = index.layers.find(id); it != index.layers.end();) {
+    chain.push_back(it->second);
+    const auto up = index.parents.find(it->second->id);
+    if (up == index.parents.end() || !up->second) {
+      break;
+    }
+    it = index.layers.find(up->second->id);
+  }
+  if (chain.empty()) {
+    return false;
+  }
+  Transform2D parent, armature_world;
+  const Layer *armature = nullptr;
+  bool bound = false;
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    const Layer &layer = **it;
+    Transform2D transform = parent * layer.local_transform();
+    const bool binds = armature && !bound && layer.followed_bone() != 0;
+    if (binds) {
+      const std::vector<BonePose> poses = armature_pose(*armature, setup_frame);
+      if (const BonePose *bone = bone_pose_find(poses, layer.followed_bone())) {
+        transform = armature_world * bone->skin * armature_world.inverted() * transform;
+      }
+    }
+    if (layer.id == id) {
+      *r_transform = transform;
+      return true;
+    }
+    const bool bones = layer.is_bone_layer();
+    bound = !bones && (bound || (binds && layer.is_group()));
+    if (bones) {
+      armature = &layer;
+      armature_world = transform;
+    }
+    parent = transform;
+  }
+  return false;
+}
+
 Transform2D layer_setup_world_transform(const Document &doc, uint64_t id)
 {
   Transform2D transform;
+  if (const LayerIndex *index = index_for(doc)) {
+    world_transform_indexed(*index, true, id, &transform);
+    return transform;
+  }
   world_transform_in(doc.layers, Transform2D(), nullptr, Transform2D(), true, id, &transform);
   return transform;
 }
@@ -141,6 +307,10 @@ Transform2D layer_setup_world_transform(const Document &doc, uint64_t id)
 Transform2D layer_world_transform(const Document &doc, uint64_t id)
 {
   Transform2D transform;
+  if (const LayerIndex *index = index_for(doc)) {
+    world_transform_indexed(*index, doc.frame_current == 0, id, &transform);
+    return transform;
+  }
   world_transform_in(doc.layers, Transform2D(), nullptr, Transform2D(), doc.frame_current == 0, id, &transform);
   return transform;
 }
@@ -285,6 +455,7 @@ Layer &document_add_layer(Document &doc, LayerType type, const std::string &name
   Layer layer;
   layer.id = doc.next_layer_id++;
   layer.type = type;
+  layer.edit_descendants = type != LayerType::Bone;
   layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Bone ? "Bones" : type == LayerType::Group ? "Group" : "Layer")
                             : name;
 

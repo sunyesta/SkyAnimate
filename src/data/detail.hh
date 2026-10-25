@@ -44,6 +44,10 @@ void drawing_detail_final_handles(VectorDrawing &drawing);
  * that level (the wires drawn over a drawing, and the segments Edges and Strokes picking finds). Points
  * keep their indices; shapes don't match its curves, so a copy for drawing and picking only. */
 VectorDrawing drawing_detail_shown_curves(const VectorDrawing &drawing);
+/* How much drawing_detail_shown_curves shortens each of its points' handles, per curve (indexed as the
+ * shown curve's points; 1 where it doesn't): a handle stored from one as shown is divided by it. */
+void drawing_detail_shown_handle_factors(const VectorDrawing &drawing, std::vector<std::vector<float>> &r_in,
+                                         std::vector<std::vector<float>> &r_out);
 /* Each curve's edit level: the highest detail level of the shapes using it (a curve no shape uses
  * shows every level). */
 std::vector<int> drawing_curve_detail_levels(const VectorDrawing &drawing);
@@ -94,6 +98,11 @@ int drawing_detail_smooth_selected(VectorDrawing &drawing, float influence);
  * DETAIL_LEVEL_MAX, and any that would leave a closed curve too few coarser points to sit between.
  * Their keys held places in their old frames, so they go (`r_keys_dropped`). Returns how many moved. */
 int drawing_detail_raise_selected(VectorDrawing &drawing, int *r_skipped, bool *r_keys_dropped);
+/* Move to Lower Level: the selected detail points go one detail level down (from level 1, base
+ * points), as the curve shows (it keeps its look): the finer detail around them takes them for a
+ * parent, its places worked out anew. Base points can't (`r_skipped`); the lowered points' keys go
+ * (`r_keys_dropped`). Returns how many moved. */
+int drawing_detail_lower_selected(VectorDrawing &drawing, int *r_skipped, bool *r_keys_dropped);
 /* Whether any selected point (or handle picked on its own) is detail. */
 bool drawing_detail_selected(const VectorDrawing &drawing);
 

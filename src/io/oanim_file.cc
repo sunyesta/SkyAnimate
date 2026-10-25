@@ -7,10 +7,14 @@
 #include <functional>
 #include <iterator>
 #include <cstdlib>
+#include <atomic>
 #include <map>
+#include <memory>
 
 #include "assets/brush_presets.hh"
 #include <set>
+#include <thread>
+#include <unordered_map>
 
 #include <miniz.h>
 #include <nlohmann/json.hpp>
@@ -116,6 +120,8 @@ static json brush_to_json(const BrushSettings &b)
 static json materials_to_json(const Document &doc);
 static json brush_presets_to_json(const Document &doc);
 static json drivers_to_json(const Document &doc);
+static json annotations_to_json(const Document &doc);
+static json guides_to_json(const Document &doc);
 static json style_to_json(const Style &style)
 {
   json j = {{"fill", color_to_json(style.fill)}, {"line", color_to_json(style.line)}, {"line_width", num(style.line_width)}};
@@ -306,6 +312,10 @@ static json drawing_to_json(const VectorDrawing &drawing)
     if (shape.detail_level > 0) {
       shapes.back()["detail_level"] = shape.detail_level;
     }
+    /* Left out for Loops: each loop filled on its own, as every shape was before holes. */
+    if (shape.fill_rule != FillRule::Loops) {
+      shapes.back()["fill_rule"] = shape.fill_rule == FillRule::EvenOdd ? "EVEN_ODD" : "NONZERO";
+    }
   }
   json out = {{"points", std::move(points)},
               {"curves", std::move(curves)},
@@ -399,11 +409,43 @@ static json reference_to_json(const ReferenceSettings &rs)
 
 /* The folder of the .oanim being written or read: media files are saved relative to it as well as
  * absolute, and found from either (the project folder moved, or the drive letter changed). */
-static std::filesystem::path g_file_folder;
+/* Per thread: an autosave writes on its own thread while the main one may save or open. */
+static thread_local std::filesystem::path g_file_folder;
 
 static const char *const MEDIA_FIT_IDS[] = {"FIT", "FILL", "STRETCH", "ORIGINAL"};
 static const char *const MEDIA_TIMING_IDS[] = {"REAL_TIME", "FRAME_BY_FRAME"};
 static const char *const MEDIA_END_IDS[] = {"HOLD", "LOOP", "HIDE"};
+
+static json text_to_json(const TextSettings &t)
+{
+  static const char *const ALIGN[] = {"LEFT", "CENTER", "RIGHT", "JUSTIFY"};
+  json runs = json::array();
+  for (const TextRun &run : t.runs) {
+    json r = {{"text", run.text},
+              {"font", run.font},
+              {"weight", run.weight},
+              {"italic", run.italic},
+              {"size", run.size},
+              {"fill", run.has_fill},
+              {"outline", run.has_outline},
+              {"style", style_to_json(run.style)}};
+    if (run.material != 0) {
+      r["material"] = run.material;
+    }
+    if (!run.material_last.empty()) {
+      r["material_last"] = run.material_last;
+    }
+    runs.push_back(std::move(r));
+  }
+  return {{"runs", std::move(runs)},
+          {"align", ALIGN[std::clamp(int(t.align), 0, 3)]},
+          {"line_spacing", t.line_spacing},
+          {"letter_spacing", t.letter_spacing},
+          {"word_spacing", t.word_spacing},
+          {"shear", t.shear},
+          {"box_width", t.box_width},
+          {"dont_auto_key", t.no_auto_key}};
+}
 
 static json media_to_json(const MediaSettings &m)
 {
@@ -437,6 +479,7 @@ static json media_to_json(const MediaSettings &m)
           {"tint", color_to_json(m.tint)},
           {"tint_amount", num(m.tint_amount)},
           {"in_front", m.in_front},
+          {"dont_auto_key", m.no_auto_key},
           {"volume", num(m.volume)},
           {"muted", m.muted},
           {"next_clip_id", m.next_clip_id},
@@ -453,6 +496,7 @@ static json layer_to_json(const Layer &layer)
       {"render_visible", layer.render_visible},
       {"locked", layer.locked},
       {"edit_with_bones", layer.edit_with_bones},
+      {"edit_descendants", layer.edit_descendants},
       {"expanded", layer.expanded},
       {"selected", layer.selected},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
@@ -461,12 +505,14 @@ static json layer_to_json(const Layer &layer)
       {"scale", float2_to_json(layer.scale)},
       {"opacity", num(layer.opacity)},
   };
+  if (layer.shear.x != 0.0f || layer.shear.y != 0.0f) {
+    j["shear"] = float2_to_json(layer.shear);
+  }
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
   }
-  if (layer.parent_bone_points) {
-    j["parent_bone_deform"] = "POINTS";
-  }
+  /* Always written: Points is the default now, and a file without it was saved when Layer was. */
+  j["parent_bone_deform"] = layer.parent_bone_points ? "POINTS" : "LAYER";
   if (layer.clip_to_below) {
     j["clip_to_below"] = true;
   }
@@ -481,6 +527,7 @@ static json layer_to_json(const Layer &layer)
         steps.push_back({{"mode", mask_mode_identifier(m.mode)},
                          {"invert", m.invert},
                          {"layers", m.layers},
+                         {"combine", mask_combine_identifier(m.combine)},
                          {"grow", num(m.grow)},
                          {"fills_only", m.fills_only},
                          {"strokes_only", m.strokes_only},
@@ -507,10 +554,11 @@ static json layer_to_json(const Layer &layer)
   if (!layer.modifiers.empty()) {
     json modifiers = json::array();
     for (const Modifier &m : layer.modifiers) {
-      json mj = {{"type", m.type == ModifierType::Armature  ? "ARMATURE"
-                          : m.type == ModifierType::Boolean ? "BOOLEAN"
-                          : m.type == ModifierType::Bevel   ? "BEVEL"
-                                                            : "MIRROR"},
+      json mj = {{"type", m.type == ModifierType::Armature    ? "ARMATURE"
+                          : m.type == ModifierType::Boolean   ? "BOOLEAN"
+                          : m.type == ModifierType::Bevel     ? "BEVEL"
+                          : m.type == ModifierType::Subdivide ? "SUBDIVIDE"
+                                                              : "MIRROR"},
                  {"name", m.name},
                  {"show_viewport", m.show_viewport},
                  {"show_render", m.show_render},
@@ -550,6 +598,16 @@ static json layer_to_json(const Layer &layer)
         mj["profile"] = num(m.bevel_profile);
         mj["clamp"] = m.bevel_clamp;
       }
+      if (m.type == ModifierType::Subdivide) {
+        mj["split"] = m.subdiv_by_length ? "LENGTH" : "COUNT";
+        mj["spacing"] = num(m.subdiv_spacing);
+        mj["render_spacing"] = num(m.subdiv_render_spacing);
+        mj["pieces"] = m.subdiv_pieces;
+        mj["max_pieces"] = m.subdiv_max_pieces;
+        mj["weights"] = m.subdiv_from_bones ? "BONES" : "BLEND";
+        mj["preserve_volume"] = m.subdiv_preserve_volume;
+        mj["group"] = m.subdiv_group;
+      }
       modifiers.push_back(std::move(mj));
     }
     j["modifiers"] = std::move(modifiers);
@@ -580,6 +638,15 @@ static json layer_to_json(const Layer &layer)
       if (b.connected) {
         bj["connected"] = true;
       }
+      if (!b.inherit_rotation) {
+        bj["inherit_rotation"] = false;
+      }
+      if (b.inherit_scale != InheritScale::Full) {
+        bj["inherit_scale"] = b.inherit_scale == InheritScale::Uniform ? "UNIFORM" : "NONE";
+      }
+      if (!b.local_location) {
+        bj["local_location"] = false;
+      }
       if (b.selected || b.select_head || b.select_tail) {
         bj["selected"] = b.selected;
         bj["select_head"] = b.select_head;
@@ -588,6 +655,10 @@ static json layer_to_json(const Layer &layer)
       put_keys(bj, "position_keys", b.position_keys);
       put_keys(bj, "angle_keys", b.angle_keys);
       put_keys(bj, "scale_keys", b.scale_keys);
+      if (b.depth != 1.0f || b.depth_keys.animated()) {
+        bj["depth"] = num(b.depth);
+        put_keys(bj, "depth_keys", b.depth_keys);
+      }
       if (b.ik_ignore) {
         bj["ik_ignore"] = true;
       }
@@ -613,12 +684,14 @@ static json layer_to_json(const Layer &layer)
             json sj{{"enabled", s.enabled}, {"settle_speed", num(s.settle_speed)},
                     {"bounce", num(s.bounce)},        {"inertia", num(s.inertia)},
                     {"stretch", num(s.stretch)},
-                    {"use_limit", s.use_limit},       {"limit", num(s.limit)}};
+                    {"use_limit", s.use_limit},       {"limit", num(s.limit)},
+                    {"use_squash_limit", s.use_squash_limit}, {"squash_limit", num(s.squash_limit)}};
             put_keys(sj, "settle_speed_keys", s.settle_speed_keys);
             put_keys(sj, "bounce_keys", s.bounce_keys);
             put_keys(sj, "inertia_keys", s.inertia_keys);
             put_keys(sj, "stretch_keys", s.stretch_keys);
             put_keys(sj, "limit_keys", s.limit_keys);
+            put_keys(sj, "squash_limit_keys", s.squash_limit_keys);
             return sj;
           };
           json cj = {{"type", bone_constraint_identifier(c.type)},
@@ -626,14 +699,35 @@ static json layer_to_json(const Layer &layer)
                      {"enabled", c.enabled},
                      {"expanded", c.expanded},
                      {"influence", num(c.influence)},
-                     {"min_angle", num(c.min_angle)},
-                     {"max_angle", num(c.max_angle)},
+                     {"min_turn", num(c.min_angle)},
+                     {"max_turn", num(c.max_angle)},
                      {"amount", num(c.amount)},
                      {"target", c.target},
                      {"factor", num(c.factor)},
                      {"delay", c.delay},
+                     {"follow_move", c.follow_move},
                      {"chain", c.chain},
                      {"max_stretch", num(c.max_stretch)},
+                     {"shape_layer", c.shape_layer},
+                     {"shape", c.shape_id},
+                     {"fit", c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER"},
+                     {"fit_layer", c.fit_layer},
+                     {"overlap", num(c.overlap)},
+                     {"softness", num(c.softness)},
+                     {"affect_transform", c.affect_transform},
+                     {"child_position", c.child_position},
+                     {"child_rotation", c.child_rotation},
+                     {"child_scale", c.child_scale},
+                     {"range_auto", c.range_auto},
+                     {"look_range", {num(c.look_range.x), num(c.look_range.y)}},
+                     {"squash", num(c.squash)},
+                     {"eyeball_auto", c.eyeball_auto},
+                     {"eyeball_center", c.eyeball_center},
+                     {"eyeball_size", {num(c.eyeball_size.x), num(c.eyeball_size.y)}},
+                     {"facing", {num(c.facing.x), num(c.facing.y)}},
+                     {"look_max_turn", json::array({num(c.max_side), num(c.max_up), num(c.max_down)})},
+                     {"keep_round", c.keep_round},
+                     {"divergence", num(c.divergence)},
                      {"weight", num(c.weight)},
                      {"wind_catch", num(c.wind_catch)},
                      {"own_gravity", c.own_gravity},
@@ -650,6 +744,7 @@ static json layer_to_json(const Layer &layer)
                      {"position_spring", spring(c.position_spring)},
                      {"scale_spring", spring(c.scale_spring)}};
           put_keys(cj, "influence_keys", c.influence_keys);
+          put_keys(cj, "facing_keys", c.facing_keys);
           put_keys(cj, "weight_keys", c.weight_keys);
           put_keys(cj, "wind_catch_keys", c.wind_catch_keys);
           put_keys(cj, "gravity_keys", c.gravity_keys);
@@ -667,6 +762,21 @@ static json layer_to_json(const Layer &layer)
     j["bones"] = std::move(bones);
     if (!layer.actions.empty()) {
       j["actions"] = layer.actions;
+    }
+    if (!layer.fix_actions.empty()) {
+      json fixes = json::array();
+      for (const FixAction &f : layer.fix_actions) {
+        json poses = json::array();
+        for (const FixPose &pose : f.poses) {
+          json at = json::array();
+          for (const float v : pose.at) {
+            at.push_back(num(v));
+          }
+          poses.push_back({{"frame", pose.frame}, {"at", at}, {"keyed", pose.keyed}});
+        }
+        fixes.push_back({{"name", f.name}, {"drivers", f.drivers}, {"poses", poses}});
+      }
+      j["fix_actions"] = std::move(fixes);
     }
     j["next_bone_id"] = layer.next_bone_id;
     j["active_bone"] = layer.active_bone;
@@ -689,6 +799,7 @@ static json layer_to_json(const Layer &layer)
   put_keys(j, "position_keys", layer.position_keys);
   put_keys(j, "rotation_keys", layer.rotation_keys);
   put_keys(j, "scale_keys", layer.scale_keys);
+  put_keys(j, "shear_keys", layer.shear_keys);
   put_keys(j, "opacity_keys", layer.opacity_keys);
   put_keys(j, "visible_keys", layer.visible_keys);
   if (layer.draw_order != 0.0f) {
@@ -702,6 +813,11 @@ static json layer_to_json(const Layer &layer)
   }
   else if (layer.is_media()) {
     j["media"] = media_to_json(layer.media);
+  }
+  else if (layer.is_text()) {
+    /* The text, and its letters as they were made (so it shows where the font isn't installed). */
+    j["text"] = text_to_json(layer.text);
+    j["drawing"] = drawing_to_json(layer.drawing);
   }
   else if (!layer.is_group()) {
     j["drawing"] = drawing_to_json(layer.drawing);
@@ -756,6 +872,17 @@ std::string oanim_document_to_json(const Document &doc)
            {"frame_end", doc.frame_end},
            {"frame_current", doc.frame_current},
            {"auto_key", doc.auto_key},
+           {"auto_key_mode", Document::rna().find("auto_key_mode")->items[size_t(doc.auto_key_mode)].identifier},
+           {"auto_freeze_keys", doc.auto_freeze_keys},
+           {"onion_skin", doc.onion_skin},
+           {"onion_mode", Document::rna().find("onion_mode")->items[size_t(doc.onion_mode)].identifier},
+           {"onion_before", doc.onion_before},
+           {"onion_after", doc.onion_after},
+           {"onion_step", doc.onion_step},
+           {"onion_fade", doc.onion_fade},
+           {"onion_all_layers", doc.onion_all_layers},
+           {"onion_color_before", color_to_json(doc.onion_color_before)},
+           {"onion_color_after", color_to_json(doc.onion_color_after)},
            {"sync_mode", Document::rna().find("sync_mode")->items[size_t(doc.sync)].identifier},
            {"play_audio", doc.play_audio},
            {"use_audio_scrub", doc.audio_scrub},
@@ -769,6 +896,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"viewport_samples", doc.viewport_samples},
            {"render_samples", doc.render_samples},
            {"viewport_overlays", overlays_to_json(doc.overlays)},
+           {"mirror_editing", {{"x", doc.mirror_x}, {"y", doc.mirror_y}}},
            {"ui_open", doc.ui_open},
            {"ui_panel_order", doc.ui_panel_order},
            {"viewport_view", {{"center", {num(doc.view.center_x), num(doc.view.center_y)}}, {"zoom", num(doc.view.zoom)}}},
@@ -791,6 +919,10 @@ std::string oanim_document_to_json(const Document &doc)
            {"materials", materials_to_json(doc)},
            {"brush_presets", brush_presets_to_json(doc)},
            {"drivers", drivers_to_json(doc)},
+           {"annotations", annotations_to_json(doc)},
+           {"active_annotation", doc.active_annotation},
+           {"guides", guides_to_json(doc)},
+           {"active_guide", doc.active_guide},
            /* Mask rows take their layers' shapes before those layers' own masks (before this, a mask
             * layer's own masks cut its shape first, one level deep). */
            {"mask_sources", "shapes"},
@@ -807,66 +939,79 @@ static bool file_write_bytes(const std::filesystem::path &path, const void *data
   return bool(out);
 }
 
-bool oanim_file_write(const Document &doc, const std::string &path, std::string *r_error)
+std::function<bool(std::string *r_error)> oanim_file_writer(const Document &doc, const std::string &path)
 {
   /* What smart actions add isn't data: it is worked out again on opening. */
-  Document data = doc;
-  animation_strip_smart(data);
-  g_file_folder = path_from_utf8(path).parent_path();
-  const std::string text = oanim_document_to_json(data);
-  g_file_folder.clear();
+  auto data = std::make_shared<Document>(doc);
+  animation_strip_smart(*data);
+  /* Packed media beside it, as media/<id>/<name>: the bytes are shared, not copied. */
+  std::vector<std::pair<std::string, std::shared_ptr<const std::string>>> media;
+  for (const std::string &id : media_packed_used(*data)) {
+    if (std::shared_ptr<const std::string> bytes = media_packed_shared(id)) {
+      media.push_back({std::string(MEDIA_ENTRY_PREFIX) + id + "/" + media_packed_name(id), std::move(bytes)});
+    }
+  }
+  return [data, media = std::move(media), path](std::string *r_error) {
+    g_file_folder = path_from_utf8(path).parent_path();
+    const std::string text = oanim_document_to_json(*data);
+    g_file_folder.clear();
 
-  /* Build the archive in memory: miniz's file functions can't open non-ASCII Windows paths. */
-  mz_zip_archive zip{};
-  if (!mz_zip_writer_init_heap(&zip, 0, 0)) {
-    *r_error = "Could not start the archive";
-    return false;
-  }
-  void *buffer = nullptr;
-  size_t size = 0;
-  bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_DEFAULT_LEVEL);
-  /* Packed media beside it, as media/<id>/<name> (video and sound are compressed already: stored). */
-  for (const std::string &id : media_packed_used(data)) {
-    if (const std::string *bytes = media_packed_bytes(id); bytes && built) {
-      const std::string entry = std::string(MEDIA_ENTRY_PREFIX) + id + "/" + media_packed_name(id);
-      built = mz_zip_writer_add_mem(&zip, entry.c_str(), bytes->data(), bytes->size(), MZ_NO_COMPRESSION);
+    /* Build the archive in memory: miniz's file functions can't open non-ASCII Windows paths. */
+    mz_zip_archive zip{};
+    if (!mz_zip_writer_init_heap(&zip, 0, 0)) {
+      *r_error = "Could not start the archive";
+      return false;
     }
-  }
-  /* The shape images file presets carry, as brush_shapes/<preset>/<file> (PNGs: stored). */
-  for (size_t p = 0; p < data.brush_presets.size() && built; p++) {
-    const BrushPreset &preset = data.brush_presets[p];
-    for (size_t f = 0; f < preset.shape_files.size() && f < preset.shape_data.size() && built; f++) {
-      const std::string entry = "brush_shapes/" + std::to_string(p) + "/" + preset.shape_files[f];
-      built = mz_zip_writer_add_mem(&zip, entry.c_str(), preset.shape_data[f].data(), preset.shape_data[f].size(),
-                                    MZ_NO_COMPRESSION);
+    void *buffer = nullptr;
+    size_t size = 0;
+    bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_DEFAULT_LEVEL);
+    /* Video and sound are compressed already: stored. */
+    for (const auto &[entry, bytes] : media) {
+      if (built) {
+        built = mz_zip_writer_add_mem(&zip, entry.c_str(), bytes->data(), bytes->size(), MZ_NO_COMPRESSION);
+      }
     }
-  }
-  built = built && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-  mz_zip_writer_end(&zip);
-  if (!built) {
+    /* The shape images file presets carry, as brush_shapes/<preset>/<file> (PNGs: stored). */
+    for (size_t p = 0; p < data->brush_presets.size() && built; p++) {
+      const BrushPreset &preset = data->brush_presets[p];
+      for (size_t f = 0; f < preset.shape_files.size() && f < preset.shape_data.size() && built; f++) {
+        const std::string entry = "brush_shapes/" + std::to_string(p) + "/" + preset.shape_files[f];
+        built = mz_zip_writer_add_mem(&zip, entry.c_str(), preset.shape_data[f].data(), preset.shape_data[f].size(),
+                                      MZ_NO_COMPRESSION);
+      }
+    }
+    built = built && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
+    mz_zip_writer_end(&zip);
+    if (!built) {
+      mz_free(buffer);
+      *r_error = "Could not compress the document";
+      return false;
+    }
+
+    const std::filesystem::path target = path_from_utf8(path);
+    std::filesystem::path temp = target;
+    temp += u8"@";
+    const bool written = file_write_bytes(temp, buffer, size);
     mz_free(buffer);
-    *r_error = "Could not compress the document";
-    return false;
-  }
+    std::error_code ec;
+    if (!written) {
+      std::filesystem::remove(temp, ec);
+      *r_error = "Could not write " + path;
+      return false;
+    }
+    std::filesystem::rename(temp, target, ec);
+    if (ec) {
+      std::filesystem::remove(temp, ec);
+      *r_error = "Could not replace " + path + ": " + ec.message();
+      return false;
+    }
+    return true;
+  };
+}
 
-  const std::filesystem::path target = path_from_utf8(path);
-  std::filesystem::path temp = target;
-  temp += u8"@";
-  const bool written = file_write_bytes(temp, buffer, size);
-  mz_free(buffer);
-  std::error_code ec;
-  if (!written) {
-    std::filesystem::remove(temp, ec);
-    *r_error = "Could not write " + path;
-    return false;
-  }
-  std::filesystem::rename(temp, target, ec);
-  if (ec) {
-    std::filesystem::remove(temp, ec);
-    *r_error = "Could not replace " + path + ": " + ec.message();
-    return false;
-  }
-  return true;
+bool oanim_file_write(const Document &doc, const std::string &path, std::string *r_error)
+{
+  return oanim_file_writer(doc, path)(r_error);
 }
 
 /* ---------------------------------------------------------------------------------
@@ -1047,6 +1192,65 @@ static void report_mask_sources_changed(const Document &doc)
                               "different: " + list + ". Add the rows to the masked layer to get the old look");
 }
 
+/* A polyline as [x, y, x, y, ...]. */
+static json points_to_json(const std::vector<float2> &points)
+{
+  json flat = json::array();
+  for (const float2 &p : points) {
+    flat.push_back(num(p.x));
+    flat.push_back(num(p.y));
+  }
+  return flat;
+}
+
+static std::vector<float2> points_from_json(const json &j, const char *key)
+{
+  std::vector<float2> points;
+  const json flat = j.value(key, json::array());
+  if (!flat.is_array()) {
+    return points;
+  }
+  for (size_t i = 0; i + 1 < flat.size(); i += 2) {
+    if (flat[i].is_number() && flat[i + 1].is_number()) {
+      points.push_back({flat[i].get<float>(), flat[i + 1].get<float>()});
+    }
+  }
+  return points;
+}
+
+static json annotations_to_json(const Document &doc)
+{
+  json list = json::array();
+  for (const AnnotationLayer &l : doc.annotations) {
+    json strokes = json::array();
+    for (const AnnotationStroke &s : l.strokes) {
+      strokes.push_back({{"points", points_to_json(s.points)},
+                         {"start", annotation_end_identifier(s.start)},
+                         {"end", annotation_end_identifier(s.end)}});
+    }
+    list.push_back({{"name", l.name},
+                    {"color", color_to_json(l.color)},
+                    {"thickness", num(l.thickness)},
+                    {"hidden", l.hidden},
+                    {"locked", l.locked},
+                    {"strokes", std::move(strokes)}});
+  }
+  return list;
+}
+
+static json guides_to_json(const Document &doc)
+{
+  json list = json::array();
+  for (const DrawingGuide &g : doc.guides) {
+    list.push_back({{"type", guide_type_identifier(g.type)},
+                    {"points", points_to_json(g.points)},
+                    {"lines", g.lines},
+                    {"hidden", g.hidden},
+                    {"locked", g.locked}});
+  }
+  return list;
+}
+
 static json drivers_to_json(const Document &doc)
 {
   const auto ref_json = [](const DriverRef &r) {
@@ -1189,6 +1393,7 @@ static constexpr std::pair<const char *, bool ViewportOverlays::*> OVERLAY_SWITC
     {"live_physics", &ViewportOverlays::live_physics},
     {"bone_shapes", &ViewportOverlays::bone_shapes},
     {"guides", &ViewportOverlays::guides},
+    {"annotations", &ViewportOverlays::annotations},
 };
 static constexpr const char *HANDLE_DISPLAYS[] = {"NONE", "SELECTED", "SHAPE", "ALL"};
 static constexpr const char *ARMATURE_DISPLAYS[] = {"OFF", "SELECTED", "ON"};
@@ -1396,6 +1601,12 @@ static VectorDrawing drawing_from_json(const json &j)
     shape.material = get_id(s, "material");
     shape.material_last = get_string(s, "material_last");
     shape.detail_level = std::clamp(get_int(s, "detail_level", 0), 0, DETAIL_LEVEL_MAX);
+    if (const std::string rule = get_string(s, "fill_rule"); rule == "EVEN_ODD") {
+      shape.fill_rule = FillRule::EvenOdd;
+    }
+    else if (rule == "NONZERO") {
+      shape.fill_rule = FillRule::NonZero;
+    }
     for (const json &e : get_array(s, "edges")) {
       if (!e.is_array() || e.size() != 2 || !e[0].is_number_integer() || !e[1].is_number_integer()) {
         continue;
@@ -1690,6 +1901,45 @@ template<size_t N> static int id_index(const char *const (&ids)[N], const std::s
   return fallback;
 }
 
+static TextSettings text_from_json(const json &j)
+{
+  TextSettings t;
+  for (const json &r : get_array(j, "runs")) {
+    if (!r.is_object()) {
+      continue;
+    }
+    TextRun run;
+    run.text = get_string(r, "text");
+    run.font = get_string(r, "font", run.font);
+    run.weight = std::clamp(get_int(r, "weight", 400), 1, 999);
+    run.italic = get_bool(r, "italic", false);
+    run.size = std::max(get_float(r, "size", run.size), 1e-4f);
+    run.has_fill = get_bool(r, "fill", true);
+    run.has_outline = get_bool(r, "outline", false);
+    if (auto it = r.find("style"); it != r.end()) {
+      run.style = style_from_json(*it);
+    }
+    run.material = get_id(r, "material");
+    run.material_last = get_string(r, "material_last");
+    t.runs.push_back(std::move(run));
+  }
+  if (t.runs.empty()) {
+    t.runs.emplace_back();
+  }
+  const std::string align = get_string(j, "align", "LEFT");
+  t.align = align == "CENTER" ? TextAlign::Center
+            : align == "RIGHT" ? TextAlign::Right
+            : align == "JUSTIFY" ? TextAlign::Justify
+                                 : TextAlign::Left;
+  t.line_spacing = get_float(j, "line_spacing", 1.0f);
+  t.letter_spacing = get_float(j, "letter_spacing", 0.0f);
+  t.word_spacing = get_float(j, "word_spacing", 0.0f);
+  t.shear = get_float(j, "shear", 0.0f);
+  t.box_width = std::max(get_float(j, "box_width", 0.0f), 0.0f);
+  t.no_auto_key = get_bool(j, "dont_auto_key", true);
+  return t;
+}
+
 static MediaSettings media_from_json(const json &j)
 {
   MediaSettings m;
@@ -1698,6 +1948,7 @@ static MediaSettings media_from_json(const json &j)
   m.tint = get_color(j, "tint", m.tint);
   m.tint_amount = std::clamp(get_float(j, "tint_amount", 0.0f), 0.0f, 1.0f);
   m.in_front = get_bool(j, "in_front", false);
+  m.no_auto_key = get_bool(j, "dont_auto_key", true);
   m.volume = std::clamp(get_float(j, "volume", 1.0f), 0.0f, 4.0f);
   m.muted = get_bool(j, "muted", false);
   m.next_clip_id = std::max<uint64_t>(get_id(j, "next_clip_id"), 1);
@@ -1737,6 +1988,10 @@ static MediaSettings media_from_json(const json &j)
   return m;
 }
 
+/* Drawings made ahead, on every core, from their JSON (see oanim_document_from_json): layer_from_json takes
+ * its drawing from here when it's there. */
+static std::unordered_map<const json *, VectorDrawing> g_ready_drawings;
+
 static Layer layer_from_json(const json &j, int depth)
 {
   Layer layer;
@@ -1747,18 +2002,64 @@ static Layer layer_from_json(const json &j, int depth)
   layer.render_visible = get_bool(j, "render_visible", true);
   layer.locked = get_bool(j, "locked", false);
   layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
+  layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
   layer.expanded = get_bool(j, "expanded", true);
   layer.selected = get_bool(j, "selected", false);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
   layer.position = get_float2(j, "position", {});
   layer.rotation = get_float(j, "rotation", 0.0f);
   layer.scale = get_float2(j, "scale", {1.0f, 1.0f});
+  layer.shear = get_float2(j, "shear", {});
   layer.opacity = std::clamp(get_float(j, "opacity", 1.0f), 0.0f, 1.0f);
   layer.parent_bone = get_id(j, "parent_bone");
-  layer.parent_bone_points = get_string(j, "parent_bone_deform", "LAYER") == "POINTS";
+  /* Older files left it out when it was Layer (then the default): a layer bound to a bone there stays
+   * Layer, and one that wasn't takes today's default (Points). */
+  layer.parent_bone_points = j.contains("parent_bone_deform") ? get_string(j, "parent_bone_deform", "") == "POINTS"
+                                                              : !j.contains("parent_bone");
   for (const json &a : get_array(j, "actions")) {
     if (a.is_string() && !a.get<std::string>().empty()) {
       layer.actions.push_back(a.get<std::string>());
+    }
+  }
+  for (const json &fj : get_array(j, "fix_actions")) {
+    if (!fj.is_object()) {
+      continue;
+    }
+    FixAction f;
+    f.name = get_string(fj, "name");
+    for (const json &d : get_array(fj, "drivers")) {
+      if (d.is_string()) {
+        f.drivers.push_back(d.get<std::string>());
+      }
+    }
+    const auto read_at = [&](const json &arr) {
+      std::vector<float> at;
+      for (const json &v : arr) {
+        if (v.is_number()) {
+          at.push_back(v.get<float>());
+        }
+      }
+      at.resize(f.drivers.size(), 0.0f);
+      return at;
+    };
+    for (const json &pj : get_array(fj, "poses")) {
+      if (pj.is_object()) {
+        FixPose pose;
+        pose.frame = std::max(1, get_int(pj, "frame", 10));
+        pose.keyed = get_bool(pj, "keyed", false);
+        pose.at = read_at(get_array(pj, "at"));
+        f.poses.push_back(std::move(pose));
+      }
+    }
+    /* Saved before fixes had poses: one, where it was made ("full"), on its last frame ("length"). */
+    if (!fj.contains("poses")) {
+      FixPose pose;
+      pose.frame = std::max(1, get_int(fj, "length", 24));
+      pose.at = read_at(get_array(fj, "full"));
+      f.poses.push_back(std::move(pose));
+    }
+    if (!f.name.empty() && std::find(layer.actions.begin(), layer.actions.end(), f.name) != layer.actions.end()) {
+      layer.fix_actions.push_back(std::move(f));
     }
   }
   for (const json &mj : get_array(j, "modifiers")) {
@@ -1771,11 +2072,23 @@ static Layer layer_from_json(const json &j, int depth)
     m.type = type == "ARMATURE"                       ? ModifierType::Armature
              : type == "BOOLEAN" || type == "MERGE" ? ModifierType::Boolean
              : type == "BEVEL"                      ? ModifierType::Bevel
+             : type == "SUBDIVIDE"                  ? ModifierType::Subdivide
                                                     : ModifierType::Mirror;
     m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature"
                                     : m.type == ModifierType::Boolean  ? "Boolean"
                                     : m.type == ModifierType::Bevel    ? "Bevel"
+                                    : m.type == ModifierType::Subdivide ? "Subdivide"
                                                                      : "Mirror");
+    if (m.type == ModifierType::Subdivide) {
+      m.subdiv_by_length = get_string(mj, "split", "LENGTH") != "COUNT";
+      m.subdiv_spacing = std::max(1e-4f, get_float(mj, "spacing", m.subdiv_spacing));
+      m.subdiv_render_spacing = std::max(0.0f, get_float(mj, "render_spacing", 0.0f));
+      m.subdiv_pieces = std::clamp(get_int(mj, "pieces", m.subdiv_pieces), 1, 256);
+      m.subdiv_max_pieces = std::clamp(get_int(mj, "max_pieces", m.subdiv_max_pieces), 1, 256);
+      m.subdiv_from_bones = get_string(mj, "weights", "BLEND") == "BONES";
+      m.subdiv_preserve_volume = get_bool(mj, "preserve_volume", true);
+      m.subdiv_group = get_string(mj, "group", "");
+    }
     if (m.type == ModifierType::Bevel) {
       const std::string limit = get_string(mj, "limit", "ANGLE");
       m.bevel_limit = limit == "GROUP" ? BevelLimit::Group : limit == "NONE" ? BevelLimit::None : BevelLimit::Angle;
@@ -1863,12 +2176,20 @@ static Layer layer_from_json(const json &j, int depth)
       }
     }
     b.connected = bj.contains("connected") && bj["connected"].is_boolean() && bj["connected"].get<bool>();
+    b.inherit_rotation = get_bool(bj, "inherit_rotation", true);
+    b.local_location = get_bool(bj, "local_location", true);
+    if (const auto it = bj.find("inherit_scale"); it != bj.end() && it->is_string()) {
+      const std::string s = it->get<std::string>();
+      b.inherit_scale = s == "UNIFORM" ? InheritScale::Uniform : s == "NONE" ? InheritScale::None : InheritScale::Full;
+    }
     b.selected = get_bool(bj, "selected", false);
     b.select_head = get_bool(bj, "select_head", false);
     b.select_tail = get_bool(bj, "select_tail", false);
     get_keys(bj, "position_keys", b.position_keys);
     get_keys(bj, "angle_keys", b.angle_keys);
     get_keys(bj, "scale_keys", b.scale_keys);
+    b.depth = std::max(1e-4f, get_float(bj, "depth", 1.0f));
+    get_keys(bj, "depth_keys", b.depth_keys);
     b.ik_ignore = get_bool(bj, "ik_ignore", false);
     b.arc_ik = get_bool(bj, "arc_ik", false);
     const std::string shape = bj.value("shape", std::string());
@@ -1935,19 +2256,77 @@ static Layer layer_from_json(const json &j, int depth)
         if (limit > 0.0f) {
           s.limit = limit;
         }
+        if (it->contains("use_squash_limit")) {
+          s.use_squash_limit = get_bool(*it, "use_squash_limit", false);
+          s.squash_limit = std::clamp(get_float(*it, "squash_limit", s.squash_limit), 1e-4f, 0.9f);
+          get_keys(*it, "squash_limit_keys", s.squash_limit_keys);
+        }
+        else {
+          /* Saved before Max Squash: the one limit held both ways. */
+          s.use_squash_limit = s.use_limit;
+          s.squash_limit = std::min(s.limit, 0.9f);
+          s.squash_limit_keys = s.limit_keys;
+        }
       };
       c.name = get_string(cj, "name", bone_constraint_name(c.type));
       c.enabled = get_bool(cj, "enabled", true);
       c.expanded = get_bool(cj, "expanded", true);
       c.influence = std::clamp(get_float(cj, "influence", 1.0f), 0.0f, 1.0f);
-      c.min_angle = get_float(cj, "min_angle", c.min_angle);
-      c.max_angle = get_float(cj, "max_angle", c.max_angle);
+      if (cj.contains("min_turn") || cj.contains("max_turn")) {
+        c.min_angle = get_float(cj, "min_turn", c.min_angle);
+        c.max_angle = get_float(cj, "max_turn", c.max_angle);
+      }
+      else if (cj.contains("min_angle") || cj.contains("max_angle")) {
+        /* Saved as angles in the parent's space: now turns from the setup angle. */
+        c.min_angle = get_float(cj, "min_angle", c.min_angle + b.setup_angle) - b.setup_angle;
+        c.max_angle = get_float(cj, "max_angle", c.max_angle + b.setup_angle) - b.setup_angle;
+      }
       c.amount = get_float(cj, "amount", c.amount);
       c.target = get_id(cj, "target");
       c.factor = get_float(cj, "factor", c.factor);
+      /* Saved before Copy Position could go to its target: it copied the target's move. */
+      c.follow_move = get_bool(cj, "follow_move", true);
       c.delay = std::max(0, get_int(cj, "delay", 0));
       c.chain = std::max(0, get_int(cj, "chain", 0));
       c.max_stretch = std::max(1.0f, get_float(cj, "max_stretch", 1.0f));
+      c.shape_layer = get_id(cj, "shape_layer");
+      c.shape_id = get_id(cj, "shape");
+      c.shape_fit = get_string(cj, "fit", "WHOLE") == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
+      c.fit_layer = get_id(cj, "fit_layer");
+      c.overlap = std::clamp(get_float(cj, "overlap", 0.0f), 0.0f, 1.0f);
+      c.softness = std::max(0.0f, get_float(cj, "softness", 0.0f));
+      c.affect_transform = get_bool(cj, "affect_transform", true);
+      c.child_position = get_bool(cj, "child_position", true);
+      c.child_rotation = get_bool(cj, "child_rotation", true);
+      c.child_scale = get_bool(cj, "child_scale", true);
+      c.range_auto = get_bool(cj, "range_auto", true);
+      if (const auto it = cj.find("look_range"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.look_range = {std::max(0.0f, (*it)[0].get<float>()), std::max(0.0f, (*it)[1].get<float>())};
+      }
+      c.squash = std::clamp(get_float(cj, "squash", 1.0f), 0.0f, 1.0f);
+      c.eyeball_auto = get_bool(cj, "eyeball_auto", true);
+      /* Saved for a day as "pupil_center", picked as the eyeball's middle. */
+      c.eyeball_center = cj.contains("eyeball_center") ? get_id(cj, "eyeball_center") : get_id(cj, "pupil_center");
+      if (const auto it = cj.find("eyeball_size"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.eyeball_size = {std::max(1e-4f, (*it)[0].get<float>()), std::max(1e-4f, (*it)[1].get<float>())};
+      }
+      if (const auto it = cj.find("facing"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.facing = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      /* "max_turn" is Limit Angle's (its Max as a turn): Look At's Max Turn has its own key. */
+      if (const auto it = cj.find("look_max_turn"); it != cj.end() && it->is_array() && it->size() == 3) {
+        c.max_side = (*it)[0].get<float>();
+        c.max_up = (*it)[1].get<float>();
+        c.max_down = (*it)[2].get<float>();
+      }
+      c.keep_round.clear();
+      for (const json &id : get_array(cj, "keep_round")) {
+        if (id.is_number_unsigned()) {
+          c.keep_round.push_back(id.get<uint64_t>());
+        }
+      }
+      get_keys(cj, "facing_keys", c.facing_keys);
+      c.divergence = get_float(cj, "divergence", 0.0f);
       /* Saved with one Own Gravity & Wind for both. */
       const bool own_forces = get_bool(cj, "own_forces", false);
       c.own_gravity = get_bool(cj, "own_gravity", own_forces);
@@ -2029,6 +2408,7 @@ static Layer layer_from_json(const json &j, int depth)
   get_keys(j, "position_keys", layer.position_keys);
   get_keys(j, "rotation_keys", layer.rotation_keys);
   get_keys(j, "scale_keys", layer.scale_keys);
+  get_keys(j, "shear_keys", layer.shear_keys);
   get_keys(j, "opacity_keys", layer.opacity_keys);
   get_keys(j, "visible_keys", layer.visible_keys);
   layer.draw_order = float(get_int(j, "draw_order", 0));
@@ -2043,6 +2423,10 @@ static Layer layer_from_json(const json &j, int depth)
     m.filled = get_bool(sj, "filled", false);
     if (!mask_extend_from_identifier(get_string(sj, "extend", "NONE"), &m.extend)) {
       m.extend = MaskExtend::None;
+    }
+    /* Files from before it: Union, which every step was. */
+    if (!mask_combine_from_identifier(get_string(sj, "combine", "UNION"), &m.combine)) {
+      m.combine = MaskCombine::Union;
     }
     for (const json &id : get_array(sj, "layers")) {
       if (id.is_number_unsigned() || id.is_number_integer()) {
@@ -2126,8 +2510,21 @@ static Layer layer_from_json(const json &j, int depth)
   if (auto it = j.find("reference"); it != j.end() && layer.reference_source != 0) {
     layer.reference = reference_from_json(*it);
   }
-  if (auto it = j.find("drawing"); it != j.end() && layer.has_drawing()) {
-    layer.drawing = drawing_from_json(*it);
+  if (auto it = j.find("drawing"); it != j.end() && layer.has_shapes()) {
+    if (auto ready = g_ready_drawings.find(&*it); ready != g_ready_drawings.end()) {
+      layer.drawing = std::move(ready->second);
+    }
+    else {
+      layer.drawing = drawing_from_json(*it);
+    }
+  }
+  if (auto it = j.find("text"); it != j.end() && it->is_object() && layer.is_text()) {
+    layer.text = text_from_json(*it);
+    /* Its letters as saved stand (they show without the font); none saved (a converter's file), they
+     * are made when it opens. */
+    if (!layer.drawing.shapes.empty()) {
+      layer.text_built = layer.text;
+    }
   }
   if (auto it = j.find("media"); it != j.end() && it->is_object() && layer.is_media()) {
     layer.media = media_from_json(*it);
@@ -2253,9 +2650,222 @@ static void migrate_bone_keys(std::vector<Layer> &layers, const std::string &act
   }
 }
 
+/* Parsing a big document: its drawings are most of it, so they are found by one quick scan (keeping to what
+ * is inside strings and what isn't), parsed on every core, and put back where they were in the rest, parsed
+ * with each of them a null. A big drawing's points, curves and shapes go in pieces of a few hundred
+ * kilobytes, so one huge drawing doesn't keep the others waiting. Small documents, or text the scan can't
+ * follow, are parsed whole. */
+static json parse_document(const std::string &text)
+{
+  /* A drawing's list (points, curves, shapes): where it is and where each of its items starts. */
+  struct List {
+    std::string key;
+    size_t start = 0, end = 0;
+    std::vector<size_t> commas;
+  };
+  struct Found {
+    size_t start = 0, end = 0;
+    std::string pointer;
+    std::vector<List> lists;
+  };
+  std::vector<Found> drawings;
+  if (text.size() > (size_t(4) << 20)) {
+    struct Level {
+      bool object = false;
+      std::string key;
+      int index = 0;
+      /* A drawing being found (its place in `drawings`), or one of its lists (`list`), -1 otherwise. */
+      int drawing = -1;
+      int list = -1;
+    };
+    std::vector<Level> stack;
+    std::string last_string;
+    bool ok = true;
+    bool inside = false;
+    for (size_t i = 0; i < text.size() && ok; i++) {
+      const char c = text[i];
+      if (c == '"') {
+        const size_t from = i + 1;
+        for (i = from; i < text.size() && text[i] != '"'; i++) {
+          i += text[i] == '\\' ? 1 : 0;
+        }
+        last_string.assign(text, from, i - from);
+        continue;
+      }
+      if (c == '{' || c == '[') {
+        Level level;
+        level.object = c == '{';
+        if (level.object && !inside && !stack.empty() && stack.back().object && stack.back().key == "drawing") {
+          std::string pointer;
+          for (const Level &l : stack) {
+            pointer += "/" + (l.object ? l.key : std::to_string(l.index));
+          }
+          level.drawing = int(drawings.size());
+          drawings.push_back({i, 0, pointer, {}});
+          inside = true;
+        }
+        else if (!level.object && !stack.empty() && stack.back().drawing >= 0) {
+          const std::string &key = stack.back().key;
+          if (key == "points" || key == "curves" || key == "shapes") {
+            Found &d = drawings[size_t(stack.back().drawing)];
+            level.list = int(d.lists.size());
+            level.drawing = -1;
+            d.lists.push_back({key, i, 0, {}});
+          }
+        }
+        stack.push_back(std::move(level));
+      }
+      else if (c == '}' || c == ']') {
+        if (stack.empty()) {
+          ok = false;
+          break;
+        }
+        const Level &top = stack.back();
+        if (top.drawing >= 0) {
+          drawings[size_t(top.drawing)].end = i + 1;
+          inside = false;
+        }
+        if (top.list >= 0) {
+          drawings.back().lists[size_t(top.list)].end = i + 1;
+        }
+        stack.pop_back();
+      }
+      else if (c == ':' && !stack.empty() && stack.back().object) {
+        stack.back().key = last_string;
+      }
+      else if (c == ',' && !stack.empty()) {
+        Level &top = stack.back();
+        if (top.object) {
+          top.key.clear();
+        }
+        else {
+          top.index++;
+          if (top.list >= 0) {
+            drawings.back().lists[size_t(top.list)].commas.push_back(i);
+          }
+        }
+      }
+    }
+    if (!ok || !stack.empty() || drawings.size() < 8 ||
+        std::any_of(drawings.begin(), drawings.end(), [](const Found &d) { return d.end == 0; }))
+    {
+      drawings.clear();
+    }
+  }
+  if (drawings.empty()) {
+    return json::parse(text, nullptr, false);
+  }
+
+  /* The jobs: a small drawing whole; a big one's rest (its lists empty) and its lists in pieces. */
+  constexpr size_t BIG = size_t(1) << 20, PIECE = size_t(256) << 10;
+  struct Job {
+    std::string text;
+    size_t start = 0, end = 0;
+  };
+  struct Piece {
+    size_t drawing = 0, list = 0, job = 0;
+  };
+  std::vector<Job> jobs;
+  std::vector<size_t> drawing_job(drawings.size());
+  std::vector<Piece> pieces;
+  for (size_t k = 0; k < drawings.size(); k++) {
+    const Found &d = drawings[k];
+    if (d.end - d.start < BIG || d.lists.empty()) {
+      drawing_job[k] = jobs.size();
+      jobs.push_back({{}, d.start, d.end});
+      continue;
+    }
+    std::string rest;
+    size_t at = d.start;
+    for (const List &l : d.lists) {
+      rest.append(text, at, l.start - at);
+      rest += "[]";
+      at = l.end;
+    }
+    rest.append(text, at, d.end - at);
+    drawing_job[k] = jobs.size();
+    jobs.push_back({std::move(rest), 0, 0});
+    for (size_t li = 0; li < d.lists.size(); li++) {
+      const List &l = d.lists[li];
+      /* Items run from just after '[' (or a comma) to the next comma kept (or ']'). */
+      size_t from = l.start + 1;
+      size_t ci = 0;
+      while (from < l.end - 1) {
+        size_t to = l.end - 1;
+        while (ci < l.commas.size() && l.commas[ci] < from) {
+          ci++;
+        }
+        size_t cj = ci;
+        while (cj < l.commas.size() && l.commas[cj] - from < PIECE) {
+          cj++;
+        }
+        if (cj < l.commas.size()) {
+          to = l.commas[cj];
+        }
+        pieces.push_back({k, li, jobs.size()});
+        jobs.push_back({"[" + text.substr(from, to - from) + "]", 0, 0});
+        from = to + 1;
+        ci = cj + 1;
+      }
+    }
+  }
+  /* The rest of the document, each drawing a null. */
+  std::string rest;
+  rest.reserve(text.size() / 8);
+  size_t at = 0;
+  for (const Found &d : drawings) {
+    rest.append(text, at, d.start - at);
+    rest += "null";
+    at = d.end;
+  }
+  rest.append(text, at, std::string::npos);
+
+  std::vector<json> parsed(jobs.size());
+  std::atomic<size_t> next = 0;
+  const auto work = [&]() {
+    for (size_t k = next++; k < jobs.size(); k = next++) {
+      const Job &job = jobs[k];
+      parsed[k] = job.text.empty() ? json::parse(text.begin() + std::ptrdiff_t(job.start),
+                                                 text.begin() + std::ptrdiff_t(job.end), nullptr, false)
+                                   : json::parse(job.text, nullptr, false);
+    }
+  };
+  std::vector<std::thread> threads;
+  const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+  for (unsigned t = 1; t < count; t++) {
+    threads.emplace_back(work);
+  }
+  json root = json::parse(rest, nullptr, false);
+  work();
+  for (std::thread &t : threads) {
+    t.join();
+  }
+  if (root.is_discarded() ||
+      std::any_of(parsed.begin(), parsed.end(), [](const json &j) { return j.is_discarded(); }))
+  {
+    return json::parse(text, nullptr, false);
+  }
+  /* The pieces back into their lists, in order. */
+  for (const Piece &piece : pieces) {
+    json &drawing = parsed[drawing_job[piece.drawing]];
+    json &list = drawing[drawings[piece.drawing].lists[piece.list].key];
+    for (json &item : parsed[piece.job]) {
+      list.push_back(std::move(item));
+    }
+  }
+  for (size_t k = 0; k < drawings.size(); k++) {
+    const json::json_pointer pointer(drawings[k].pointer);
+    if (!root.contains(pointer) || !root[pointer].is_null()) {
+      return json::parse(text, nullptr, false);
+    }
+    root[pointer] = std::move(parsed[drawing_job[k]]);
+  }
+  return root;
+}
+
 bool oanim_document_from_json(const std::string &text, Document &r_doc, std::string *r_error)
 {
-  const json root = json::parse(text, nullptr, false);
+  const json root = parse_document(text);
   if (root.is_discarded() || !root.is_object()) {
     *r_error = "The document is damaged (not valid JSON)";
     return false;
@@ -2288,6 +2898,21 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.frame_end = std::max(doc.frame_start, get_int(j, "frame_end", doc.frame_end));
   doc.frame_current = std::max(0, get_int(j, "frame_current", doc.frame_current));
   doc.auto_key = get_bool(j, "auto_key", true);
+  if (const int mode = Document::rna().find("auto_key_mode")->enum_index(get_string(j, "auto_key_mode", "")); mode >= 0) {
+    doc.auto_key_mode = AutoKeyMode(mode);
+  }
+  doc.auto_freeze_keys = get_bool(j, "auto_freeze_keys", false);
+  doc.onion_skin = get_bool(j, "onion_skin", false);
+  if (const int mode = Document::rna().find("onion_mode")->enum_index(get_string(j, "onion_mode", "")); mode >= 0) {
+    doc.onion_mode = OnionMode(mode);
+  }
+  doc.onion_before = std::clamp(get_int(j, "onion_before", 2), 0, 20);
+  doc.onion_after = std::clamp(get_int(j, "onion_after", 0), 0, 20);
+  doc.onion_step = std::clamp(get_int(j, "onion_step", 1), 1, 100);
+  doc.onion_fade = get_bool(j, "onion_fade", true);
+  doc.onion_all_layers = get_bool(j, "onion_all_layers", false);
+  doc.onion_color_before = get_color(j, "onion_color_before", doc.onion_color_before);
+  doc.onion_color_after = get_color(j, "onion_color_after", doc.onion_color_after);
   if (const int sync = Document::rna().find("sync_mode")->enum_index(get_string(j, "sync_mode", "")); sync >= 0) {
     doc.sync = PlaybackSync(sync);
   }
@@ -2307,6 +2932,10 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
   doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
   overlays_from_json(j.value("viewport_overlays", json::object()), doc.overlays);
+  if (const auto it = j.find("mirror_editing"); it != j.end() && it->is_object()) {
+    doc.mirror_x = get_bool(*it, "x", false);
+    doc.mirror_y = get_bool(*it, "y", false);
+  }
   if (const auto it = j.find("viewport_view"); it != j.end() && it->is_object()) {
     const float2 center = get_float2(*it, "center", {});
     doc.view.center_x = center.x;
@@ -2373,6 +3002,50 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   g_old_masks.clear();
   g_old_mask_options.clear();
   g_old_rows.clear();
+  /* Drawings are most of the work: made on every core first. */
+  {
+    std::vector<const json *> found;
+    const auto collect = [&](auto &&self, const json &layers) -> void {
+      if (!layers.is_array()) {
+        return;
+      }
+      for (const json &l : layers) {
+        if (!l.is_object()) {
+          continue;
+        }
+        if (auto it = l.find("drawing"); it != l.end() && it->is_object()) {
+          found.push_back(&*it);
+        }
+        if (auto it = l.find("children"); it != l.end()) {
+          self(self, *it);
+        }
+      }
+    };
+    if (auto it = j.find("layers"); it != j.end()) {
+      collect(collect, *it);
+    }
+    if (found.size() >= 8) {
+      std::vector<VectorDrawing> made(found.size());
+      std::atomic<size_t> next = 0;
+      const auto work = [&]() {
+        for (size_t k = next++; k < found.size(); k = next++) {
+          made[k] = drawing_from_json(*found[k]);
+        }
+      };
+      std::vector<std::thread> threads;
+      const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+      for (unsigned t = 1; t < count; t++) {
+        threads.emplace_back(work);
+      }
+      work();
+      for (std::thread &t : threads) {
+        t.join();
+      }
+      for (size_t k = 0; k < found.size(); k++) {
+        g_ready_drawings.emplace(found[k], std::move(made[k]));
+      }
+    }
+  }
   for (const json &layer : get_array(j, "layers")) {
     if (layer.is_object()) {
       doc.layers.push_back(layer_from_json(layer, 0));
@@ -2389,6 +3062,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   if (get_string(j, "mask_sources") != "shapes") {
     report_mask_sources_changed(doc);
   }
+  g_ready_drawings.clear();
   for (const json &t : get_array(j, "texts")) {
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});
@@ -2462,6 +3136,51 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
       doc.materials.push_back(std::move(m));
     }
   }
+  for (const json &aj : get_array(j, "annotations")) {
+    if (!aj.is_object()) {
+      continue;
+    }
+    AnnotationLayer l;
+    l.name = get_string(aj, "name", "Note");
+    l.color = get_color(aj, "color", l.color);
+    l.thickness = std::clamp(get_float(aj, "thickness", 3.0f), ANNOTATION_THICKNESS_MIN, ANNOTATION_THICKNESS_MAX);
+    l.hidden = get_bool(aj, "hidden", false);
+    l.locked = get_bool(aj, "locked", false);
+    for (const json &sj : get_array(aj, "strokes")) {
+      if (!sj.is_object()) {
+        continue;
+      }
+      AnnotationStroke s;
+      s.points = points_from_json(sj, "points");
+      if (!annotation_end_from_identifier(get_string(sj, "start", "NONE"), &s.start)) {
+        s.start = AnnotationEnd::None;
+      }
+      if (!annotation_end_from_identifier(get_string(sj, "end", "NONE"), &s.end)) {
+        s.end = AnnotationEnd::None;
+      }
+      if (s.points.size() >= 2) {
+        l.strokes.push_back(std::move(s));
+      }
+    }
+    doc.annotations.push_back(std::move(l));
+  }
+  doc.active_annotation = std::clamp(get_int(j, "active_annotation", 0), 0, std::max(0, int(doc.annotations.size()) - 1));
+  for (const json &gj : get_array(j, "guides")) {
+    if (!gj.is_object()) {
+      continue;
+    }
+    DrawingGuide g;
+    if (!guide_type_from_identifier(get_string(gj, "type", "LINE"), &g.type)) {
+      continue;
+    }
+    g.points = points_from_json(gj, "points");
+    g.lines = get_int(gj, "lines", 24);
+    g.hidden = get_bool(gj, "hidden", false);
+    g.locked = get_bool(gj, "locked", false);
+    guide_validate(g);
+    doc.guides.push_back(std::move(g));
+  }
+  doc.active_guide = std::clamp(get_int(j, "active_guide", -1), -1, int(doc.guides.size()) - 1);
   layers_validate(doc);
   /* Older files' flexi-binding becomes the same weights, kept. */
   document_weight_new_points(doc, true);

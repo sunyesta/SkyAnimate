@@ -3,6 +3,23 @@
 import _oanim
 
 
+def tool():
+    """The viewport tool: "SELECT", "SELECT_LAYER", "CURSOR", "ANNOTATE", "DRAW", "SHAPE", "SPLIT_CURVE",
+    "WEIGHT_SELECT", "WEIGHT_PAINT", "TRANSFORM_BONES", "TRANSFORM_POINTS" or "SCULPT"."""
+    return _oanim.tool()
+
+
+def draw_order_pick_target(hit, moving):
+    """The layer a viewport click on drawing `hit` picks with the Draw Order eyedropper (In Front
+    Of... / Behind...) for the layers `moving`: the outermost group holding it that holds none of
+    them, or `hit` itself (Ctrl-click always picks the drawing). Layers or ids; returns the name."""
+    import oanim
+
+    doc_layers = {l.id: l for l in oanim.data.layers.all()}
+    as_id = lambda l: l if isinstance(l, int) else l.id
+    return doc_layers[_oanim.draw_order_pick_target(as_id(hit), [as_id(m) for m in moving])].name
+
+
 def event_simulate(type, *, ctrl=False, shift=False, alt=False, area="", typing=False):
     """Send a key press through the keymaps as if typed. Returns True if an operator ran.
 
@@ -20,6 +37,39 @@ def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=Fa
     release."""
     _oanim.mouse_simulate(float(x), float(y), -1 if button is None else int(button), bool(down), bool(ctrl),
                           bool(alt), bool(shift), float(wheel))
+
+
+def layer_grid_lines(on=None):
+    """Transform Layer's Show Grid Lines (the active layer's own grid across the viewport): whether it is
+    on, after setting it to `on` when given."""
+    if on is not None:
+        _oanim.layer_grid_lines_set(bool(on))
+    return _oanim.layer_grid_lines()
+
+
+GIZMO_MODES = ('TRANSFORM', 'DISTORT', 'WARP')
+
+
+def gizmo_mode(mode=None, cells=None):
+    """The Transform Points and Transform Bones box's mode, TRANSFORM, DISTORT or WARP (and Warp's grid, `cells`
+    each way, 1 to 8), after setting them when given. Returns (mode, cells)."""
+    if mode is not None or cells is not None:
+        current = GIZMO_MODES[_oanim.gizmo_mode()] if mode is None else str(mode).upper()
+        _oanim.gizmo_mode_set(GIZMO_MODES.index(current), 0 if cells is None else int(cells))
+    return GIZMO_MODES[_oanim.gizmo_mode()], _oanim.warp_cells()
+
+
+def text_simulate(text):
+    """Type `text` (letters, not keys: for a text field or the Text tool) as the keyboard's text input
+    would, handled on the next frame. Needs the window."""
+    _oanim.text_simulate(str(text))
+
+
+def key_press_simulate(key, ctrl=False, shift=False, alt=False):
+    """Press and let go of `key` (SDL's name: "Tab", "A", "F9") as the keyboard sends it, with the
+    modifiers held: through ImGui and the keymaps alike, handled on the next frames. Needs the
+    window."""
+    _oanim.key_press_simulate(key, bool(ctrl), bool(shift), bool(alt))
 
 
 def drop_simulate(filepath, x, y):
@@ -56,15 +106,23 @@ def brush_settings_open(target="SHAPES"):
 
 
 def properties_tab(tab):
-    """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "SHAPE"
-    (the shapes and their looks; Armature for a bone layer; "DRAWING" still works), "MODIFIERS",
-    "CONSTRAINTS" (Bone Constraints), "REFERENCE" (a reference's), "MASKING", "CAMERA" (the picked
-    camera's) or "MEDIA" (a Media layer's)."""
+    """Show a Properties tab (in the next Properties editor drawn): "DOCUMENT", "LAYER", "MASKING",
+    "MODIFIERS", "VECTOR" (a drawing's data: point groups, the selected points and edges) or
+    "ARMATURE" (a bone layer's collections, bones and fixes; "DRAWING" is either), "SHAPE" (a drawing's
+    shapes and their looks), "BONE" (the active bone), "CONSTRAINTS" (Bone Constraints), "REFERENCE"
+    (a reference's), "CAMERA" (the picked camera's), "MEDIA" (a Media layer's) or "TEXT" (a text
+    layer's). A tab the active layer doesn't have is kept, and shows when a layer that has it is."""
     name = tab.upper()
-    if name == "SHAPE":
+    if name in ("VECTOR", "ARMATURE"):
         name = "DRAWING"
     _oanim.properties_tab(["DOCUMENT", "LAYER", "DRAWING", "MODIFIERS", "CONSTRAINTS", "REFERENCE",
-                         "MASKING", "CAMERA", "MEDIA"].index(name))
+                         "MASKING", "CAMERA", "MEDIA", "TEXT", "SHAPE", "BONE"].index(name))
+
+
+def media_view():
+    """Whether Media View is on (`, oanim.ops.view.media_view()): every media layer at full
+    opacity, guides too, with the viewport's overlays hidden. A view only: nothing changes or is keyed."""
+    return _oanim.media_view()
 
 
 def local_view():
@@ -72,10 +130,18 @@ def local_view():
     return list(_oanim.local_view())
 
 
+def move_options():
+    """The ViewportActionPanel's checkboxes for moves, as the next move will take them: "keep_poses"
+    (Keep Poses), "only_bones" (Move Only Bones) and "without_children" (Move Without Children). Each
+    stays as last set for the moves after it until the frame or the action being edited changes, then
+    it's off again."""
+    return dict(_oanim.move_options())
+
+
 def overlays():
     """The project's Viewport Overlays (saved with it): a dict of its switches ("show", "grid",
     "cursor", "camera_frame", "info", "wireframe", "points", "mask_outlines", "relationship_lines",
-    "physics_ghosts", "live_physics", "bone_shapes") and "handles" ("NONE",
+    "physics_ghosts", "live_physics", "bone_shapes", "guides", "annotations") and "handles" ("NONE",
     "SELECTED", "SHAPE", "ALL"), "armature" ("OFF", "SELECTED", "ON"), "point_size" and "handle_size"
     (pixels across, 2 to 24)."""
     return dict(_oanim.overlays())
@@ -138,6 +204,48 @@ def set_proportional_editing(on=True, falloff="SMOOTH", connected=False, size=0.
     _oanim.set_proportional_editing(on, falloff.upper(), connected, size)
 
 
+def onion_frames():
+    """The frames onion skins show ghosts on for the layers being edited (none with onion skins off):
+    dicts with frame, after (else before) and distance (1 for the nearest on its side). The settings are
+    the document's: onion_skin, onion_mode (KEYFRAMES or FRAMES), onion_before, onion_after, onion_step,
+    onion_fade, onion_all_layers."""
+    return _oanim.onion_frames()
+
+
+def onion_wires():
+    """The ghosts as they would be drawn: dicts with frame, after and lines (each a list of (x, y) in
+    document space, one per curve)."""
+    return _oanim.onion_wires()
+
+
+def onion_colors():
+    """The onion skins' colours: a dict with before and after, each (r, g, b, a) 0-1."""
+    return _oanim.onion_colors()
+
+
+def set_onion_colors(before=None, after=None):
+    """Set the onion skins' before and/or after colour: (r, g, b) or (r, g, b, a), 0-1."""
+    _oanim.set_onion_colors(before, after)
+
+
+def sculpt_settings():
+    """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST),
+    preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1), falloff
+    (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength and selected_only."""
+    return _oanim.sculpt_settings()
+
+
+def set_sculpt(**values):
+    """Change the Sculpt tool's settings by name (see sculpt_settings), as its header does."""
+    _oanim.set_sculpt(values)
+
+
+def sculpt_presets():
+    """The sculpt brush presets on the shelf: dicts with name, brush, radius, strength, falloff,
+    category (Move, Shape or Mine) and builtin. Pick one with oanim.ops.sculpt.preset_load(name=...)."""
+    return list(_oanim.sculpt_presets())
+
+
 def timeline_rows(group_by="KIND", changed=False):
     """The timeline's channel rows, every one open: (depth, name, red, pinned) for each, red for the
     Pinned and Selected sections, pinned for a pinned property's row; with changed=True a fifth,
@@ -162,6 +270,31 @@ def banner_report():
 def report(message, type="INFO"):
     """Show a message in the Info editor. type is "INFO", "WARNING" or "ERROR"."""
     _oanim.report(type, message)
+
+
+def clipboard_set_image(rgba, width, height):
+    """Put an image on the system clipboard (as the Render Result's Copy Image does): `rgba` is bytes,
+    width * height * 4 of them, rows from the top. It goes as a PNG (keeping transparency) and a bitmap."""
+    _oanim.clipboard_set_image(bytes(rgba), int(width), int(height))
+
+
+def render_png(filepath, width=0, height=0, guides=False, transparent=False):
+    """Render the current frame through the camera to a PNG, as Render Frame does: `width` x `height`
+    (0: the document's size), with guide layers (a reference) too if `guides`, and a clear background if
+    `transparent` (always with guides: a render with a background is a final one, which leaves guides out). The window renders it on its next frame, so the file appears just after this returns
+    (wait for it). The camera's frame fills the picture: a document point shows at pixel
+    (w/2 + s*fx, h/2 - s*fy), s = h/2, where (fx, fy) = oanim.data.camera.to_frame(point)."""
+    _oanim.render_png(str(filepath), int(width), int(height), bool(guides), bool(transparent))
+
+
+def cursor():
+    """The 2D cursor's place (document space), as Shift S and the Cursor tool set it."""
+    return tuple(_oanim.cursor_get())
+
+
+def set_cursor(position):
+    """Put the 2D cursor at `position` (x, y), document space."""
+    _oanim.cursor_set(float(position[0]), float(position[1]))
 
 
 def mirror_editing():

@@ -68,6 +68,8 @@ struct Color {
 struct Transform2D {
   float a = 1.0f, b = 0.0f, c = 0.0f, d = 1.0f, tx = 0.0f, ty = 0.0f;
 
+  constexpr bool operator==(const Transform2D &) const = default;
+
   float2 apply(float2 p) const { return {a * p.x + c * p.y + tx, b * p.x + d * p.y + ty}; }
   /* Applies the linear part only, for directions. */
   float2 apply_vector(float2 v) const { return {a * v.x + c * v.y, b * v.x + d * v.y}; }

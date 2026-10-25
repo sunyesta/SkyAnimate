@@ -115,4 +115,110 @@ assert oanim.ops.armature.rotate(angle="15", posing="0", keep_poses="0") == {'FI
 doc.frame_current = 10
 assert abs(arm()[2] - (posed_arm[2] + math.radians(15))) < 1e-4, (arm(), posed_arm)
 
+# --- Smart actions: their keys are offsets added as the bone turns, left as they are ----------------
+oanim.ops.wm.read_homefile(confirmed="1")
+layers = oanim.data.layers
+doc = oanim.data.document
+doc.frame_current = 0
+oanim.ops.layer.new_bone()
+rig = layers.active
+# The face hangs on root; the dial, far off, only plays its smart action.
+oanim.ops.armature.bone_add(name="root", head_x="0", head_y="0", tail_x="1", tail_y="0.5", parent="")
+oanim.ops.armature.bone_add(name="dial", head_x="9", head_y="9", tail_x="10", tail_y="9", parent="")
+oanim.ops.layer.new()
+face = layers.active
+face.add_curve([(0, 0), (1, 0), (1, 1)])
+oanim.ops.layer.move_to_group(group=str(rig.id))
+face = next(l for l in layers.all() if l.id == face.id)
+doc.frame_current = 1
+doc.frame_current = 0
+# Turned to 1, the dial lifts point 1 by 1.
+layers.active = rig
+rig.select_bone("dial")
+assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'}
+doc.frame_current = 10
+rig.bone_set("dial", angle=1.0)
+layers.active = face
+face.select_points(range(3), False)
+face.select_points([1])
+oanim.ops.mesh.translate(move_x="0", move_y="1")
+doc.frame_current = 0
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
+# Frame 20: the dial turned, and point 1 keyed there too.
+doc.frame_current = 20
+layers.active = rig
+rig.bone_set("dial", angle=1.0)
+rig.select_bone("dial")
+oanim.ops.anim.keyframe_insert()
+layers.active = face
+face.select_points(range(3), False)
+face.select_points([1])
+oanim.ops.mesh.translate(move_x="0.5", move_y="0")
+face.select_points(range(3))
+oanim.ops.anim.keyframe_insert()
+
+
+def played(frame=20):
+    doc.frame_current = frame
+    return face.evaluated()[0][1]
+
+
+was = played()
+doc.frame_current = 0
+layers.active = face
+face.select_points(range(3), False)
+face.select_points([1])
+assert oanim.ops.mesh.translate(move_x="0", move_y="-0.4", setup="1", keep_poses="1") == {'FINISHED'}
+assert close(played(), was), ("frame 20 plays as it did: the move comes off its key once", played(), was)
+# The smart bone turned on the setup frame: what it plays at frame 20 stays.
+doc.frame_current = 0
+layers.active = rig
+rig.select_bone("dial")
+assert oanim.ops.armature.rotate(angle="20", posing="0", keep_poses="1") == {'FINISHED'}
+assert close(played(), was, 1e-3), ("its action still plays as far", played(), was)
+
+# --- Keys pasted onto the setup frame: the pose becomes the setup, the other frames keep theirs --------
+oanim.ops.wm.read_homefile(confirmed="1")
+layers = oanim.data.layers
+doc = oanim.data.document
+doc.frame_current = 0
+oanim.ops.layer.new_bone()
+rig = layers.active
+oanim.ops.armature.bone_add(name="arm", head_x="5", head_y="0", tail_x="6", tail_y="0", parent="")
+oanim.ops.layer.new()
+loose = layers.active
+loose.add_curve([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)])
+for frame, dy, angle in ((10, 0.4, 0.5), (20, 0.9, 1.1)):
+    doc.frame_current = frame
+    layers.active = loose
+    loose.select_points(range(3), False)
+    loose.select_points([1])
+    oanim.ops.mesh.translate(move_x="0.1", move_y=str(dy))
+    layers.active = rig
+    rig.select_bone("arm")
+    rig.bone_set("arm", angle=angle)
+    oanim.ops.anim.keyframe_insert()
+
+
+def pose(frame):
+    doc.frame_current = frame
+    return tuple(loose.points[1][:2]), next(b for b in rig.bones if b["name"] == "arm")["angle"]
+
+
+poses = {f: pose(f) for f in (10, 20)}
+doc.frame_current = 10
+loose.selected = True
+rig.selected = True
+layers.active = loose
+assert oanim.ops.anim.keys_select(frame_start="10", frame_end="10", layers="%d,%d" % (loose.id, rig.id)) == {'FINISHED'}
+assert oanim.ops.anim.keys_copy() == {'FINISHED'}
+doc.frame_current = 0
+assert oanim.ops.anim.keys_paste() == {'FINISHED'}
+assert oanim.wm.undo_history()[0][-1] == "Paste Keys as the Setup Pose"
+setup = pose(0)
+assert close(setup[0], poses[10][0]) and abs(setup[1] - poses[10][1]) < 1e-5, ("frame 10's pose is the setup", setup)
+for f in (10, 20):
+    now = pose(f)
+    assert close(now[0], poses[f][0]) and abs(now[1] - poses[f][1]) < 1e-5, ("frame %d keeps its pose" % f, now, poses[f])
+
 print("keep_poses: ok")

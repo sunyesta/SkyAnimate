@@ -32,6 +32,32 @@ void main()
 }
 )";
 
+/* Batched steps (see flush_batch): each vertex's slot picks its step's place (clip space) and opacity. */
+static const char *BATCH_VERTEX_SHADER = R"(#version 330 core
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec4 a_color;
+layout(location = 2) in float a_slot;
+uniform vec4 u_slots[64];
+out vec4 v_color;
+void main()
+{
+  int s = int(a_slot + 0.5) * 2;
+  vec4 m = u_slots[s];
+  vec4 t = u_slots[s + 1];
+  gl_Position = vec4(m.x * a_pos.x + m.z * a_pos.y + t.x, m.y * a_pos.x + m.w * a_pos.y + t.y, 0.0, 1.0);
+  v_color = a_color * t.z;
+}
+)";
+
+static const char *BATCH_FRAGMENT_SHADER = R"(#version 330 core
+in vec4 v_color;
+out vec4 frag_color;
+void main()
+{
+  frag_color = v_color;
+}
+)";
+
 static const char *COLOR_FRAGMENT_SHADER = R"(#version 330 core
 in vec4 v_color;
 uniform float u_opacity;
@@ -217,6 +243,7 @@ bool SceneRenderer::init()
     return false;
   }
   color_program_ = link(COLOR_VERTEX_SHADER, COLOR_FRAGMENT_SHADER);
+  batch_program_ = link(BATCH_VERTEX_SHADER, BATCH_FRAGMENT_SHADER);
   composite_program_ = link(COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER);
   stencil_program_ = link(COMPOSITE_VERTEX_SHADER, STENCIL_FRAGMENT_SHADER);
   brush_program_ = link(BRUSH_VERTEX_SHADER, BRUSH_FRAGMENT_SHADER);
@@ -251,6 +278,7 @@ bool SceneRenderer::init()
 
 SceneRenderer::Target *SceneRenderer::acquire_target()
 {
+  flush_batch();
   for (Target *target : targets_) {
     if (!target->in_use) {
       target->in_use = true;
@@ -313,6 +341,7 @@ void SceneRenderer::free_targets()
 
 void SceneRenderer::bind_target(const Target *target)
 {
+  flush_batch();
   gl::BindFramebuffer(GL_FRAMEBUFFER, target->draw_framebuffer);
   glViewport(0, 0, width_, height_);
   bound_ = target;
@@ -320,6 +349,7 @@ void SceneRenderer::bind_target(const Target *target)
 
 void SceneRenderer::resolve(const Target *target)
 {
+  flush_batch();
   /* Average each pixel's samples into the target's image. */
   gl::BindFramebuffer(GL_READ_FRAMEBUFFER, target->draw_framebuffer);
   gl::BindFramebuffer(GL_DRAW_FRAMEBUFFER, target->resolve_framebuffer);
@@ -328,6 +358,7 @@ void SceneRenderer::resolve(const Target *target)
 
 void SceneRenderer::clear(const Color &color)
 {
+  flush_batch();
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glStencilMask(0xFF);
   glClearColor(color.r * color.a, color.g * color.a, color.b * color.a, color.a);
@@ -340,6 +371,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
 {
   /* Every layer a rig moves asks for its pose: worked out once for the whole render. */
   const ArmaturePoseCacheScope pose_cache;
+  /* Every layer drawn looks up its parents, masks and bones: by an index, not a search of the tree. */
+  const LayerIndexScope layer_index(doc);
   quality_ = std::clamp(quality, 1, 64);
   if (!init() || width <= 0 || height <= 0) {
     return 0;
@@ -378,6 +411,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
 
   evaluated_.clear();
   render_serial_++;
+  render_start_ = std::chrono::steady_clock::now();
   output_ = acquire_target();
   bind_target(output_);
   clear(background ? Color{background->r, background->g, background->b, 1.0f} : Color{0, 0, 0, 0});
@@ -387,7 +421,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   for (const Layer *l : document_layers_flat(doc)) {
     if (l->is_media() && l->media.in_front && layer_shown_through_parents(doc, *l)) {
       use_color_stencil();
-      draw_media(doc, *l, layer_world_transform(doc, l->id), layer_opacity_through_parents(doc, *l));
+      draw_media(doc, *l, layer_world_transform(doc, l->id),
+                 full_opacity(*l) ? 1.0f : layer_opacity_through_parents(doc, *l));
     }
   }
   if (const Layer *previewed = background ? nullptr : layer_find(doc, mask_preview_layer_)) {
@@ -403,6 +438,14 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   gl::UseProgram(0);
   /* Drawings no render has used for a while (another zoom, a drawing since changed) go, with their
    * buffers. */
+  std::erase_if(chunks_, [this](auto &item) {
+    if (item.second.used + 120 >= render_serial_) {
+      return false;
+    }
+    gl::DeleteVertexArrays(1, &item.second.vao);
+    gl::DeleteBuffers(1, &item.second.vbo);
+    return true;
+  });
   std::erase_if(tessellated_, [this](auto &item) {
     if (item.second.used + 120 >= render_serial_) {
       return false;
@@ -417,6 +460,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
 
 bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height)
 {
+  flush_batch();
   if (!output_) {
     return false;
   }
@@ -442,6 +486,7 @@ void SceneRenderer::use_color_stencil(Paint paint)
   glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
   const unsigned required = paint == Paint::Line ? required_stencil_ & ~line_free_stencil_
                                                  : required_stencil_ & ~fill_free_stencil_;
+  color_required_ = required;
   if (required == 0) {
     glStencilFunc(GL_ALWAYS, 0, 0);
   }
@@ -452,6 +497,7 @@ void SceneRenderer::use_color_stencil(Paint paint)
 
 void SceneRenderer::stencil_fill(unsigned bit, bool set)
 {
+  flush_batch();
   glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
   glStencilMask(bit);
   glStencilFunc(GL_ALWAYS, set ? GLint(bit) : 0, bit);
@@ -493,14 +539,21 @@ bool SceneRenderer::shown(const Layer &layer) const
   if (!final_render_ && !local_view_.empty() && !local_view_.contains(layer.id)) {
     return false;
   }
-  /* A layer not rendered is a guide: in the viewport only while it shows guides (its overlays). */
-  return layer.visible && (layer.render_visible || (!final_render_ && show_guides_));
+  /* A layer not rendered is a guide: in the viewport only while it shows guides (its overlays), or a
+   * media one in Media View. */
+  const bool media_view = media_view_ && !final_render_ && layer.is_media();
+  return layer.visible && (layer.render_visible || (!final_render_ && show_guides_) || media_view);
+}
+
+bool SceneRenderer::full_opacity(const Layer &layer) const
+{
+  return media_view_ && !final_render_ && layer.is_media();
 }
 
 bool SceneRenderer::layer_shown_through_parents(const Document &doc, const Layer &layer) const
 {
   for (const Layer *l = &layer; l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
-    if (!shown(*l) || l->opacity <= 0.0f) {
+    if (!shown(*l) || (l->opacity <= 0.0f && !full_opacity(*l))) {
       return false;
     }
   }
@@ -537,7 +590,7 @@ void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &l
 void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, Target *target,
                                float opacity)
 {
-  if (!shown(layer) || layer.opacity <= 0.0f) {
+  if (!shown(layer) || (layer.opacity <= 0.0f && !full_opacity(layer))) {
     return;
   }
   /* Where the layer is, bones included: a Parent Bone (its own, or a group's above it) moves it,
@@ -548,7 +601,7 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
   if (layer.is_media()) {
     if (!layer.media.in_front) {
       use_color_stencil();
-      draw_media(doc, layer, transform, layer_opacity);
+      draw_media(doc, layer, transform, full_opacity(layer) ? 1.0f : layer_opacity);
     }
     return;
   }
@@ -615,6 +668,7 @@ static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, b
       SceneRenderer::MaskRow row;
       row.mode = s.mode;
       row.invert = s.invert;
+      row.combine = s.combine;
       row.grow = s.grow;
       row.fills_only = s.fills_only;
       row.strokes_only = s.strokes_only;
@@ -640,6 +694,25 @@ static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, b
   return cards;
 }
 
+/* A layer's cards (cards_of), worked out again only once a revision has been given since (see Revision): they
+ * depend on other layers too (Clip to Below, the layers rows name), so any change at all may change them. */
+static const std::vector<CardRows> &kept_cards(const Document &doc, const Layer &layer, bool render)
+{
+  struct Kept {
+    uint64_t latest = ~uint64_t(0);
+    const Document *doc = nullptr;
+    std::vector<CardRows> cards;
+  };
+  static std::unordered_map<uint64_t, Kept> kept;
+  Kept &k = kept[layer.id << 1 | (render ? 1 : 0)];
+  if (k.latest != revision_latest() || k.doc != &doc) {
+    k.cards = cards_of(doc, layer, render);
+    k.latest = revision_latest();
+    k.doc = &doc;
+  }
+  return k.cards;
+}
+
 /* Stencil bits: one result per masked level (0 to 3), a spare for combining a clip base's levels (4),
  * the scratch a row's shape goes in (5), and the same two for a mask layer's own rows (6, 7). */
 static constexpr int MASK_LEVELS_MAX = 4;
@@ -650,6 +723,7 @@ static constexpr unsigned MASK_NESTED_SCRATCH = 1u << 7;
 
 unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const Layer *> &masked)
 {
+  flush_batch();
   MaskLevels levels;
   applied_line_free_ = 0;
   applied_fill_free_ = 0;
@@ -657,11 +731,11 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
     /* Its cards by what they cut: fills and lines (sliced), fills only (lines left alone or ended with
      * a brush), lines only (sliced); each kind a level its cards must all show in. */
     std::vector<std::vector<MaskRow>> both, fills, lines;
-    for (CardRows &card : cards_of(doc, *l, final_render_)) {
+    for (const CardRows &card : kept_cards(doc, *l, final_render_)) {
       const bool f = card.cuts != MaskCuts::Lines;
       const bool lp = card.cuts != MaskCuts::Fills && !card.brush_ends;
       if (f || lp) {
-        (f && lp ? both : f ? fills : lines).push_back(std::move(card.steps));
+        (f && lp ? both : f ? fills : lines).push_back(card.steps);
       }
     }
     const auto push = [&](std::vector<std::vector<MaskRow>> &cards, bool line_free, bool fill_free) {
@@ -711,6 +785,7 @@ void SceneRenderer::evaluate_mask_cards(const Document &doc, const std::vector<s
 
 void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref, unsigned op)
 {
+  flush_batch();
   glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
   glStencilMask(write);
   /* The reference holds both the value tested (under `test`) and the one written (under `write`). */
@@ -728,8 +803,9 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
    * to bottom. */
   stencil_fill(result, rows.front().start_shown);
   for (const MaskRow &row : rows) {
-    /* The row's shape: the union of its layers, grown or shrunk. Shrinking draws the areas, then
-     * clears a band around each area's edge, then draws the lines (thinner). */
+    /* The row's shape: its layers combined (as one, or the first minus the others, or where they all
+     * are), grown or shrunk. Shrinking draws the areas, then clears a band around each area's edge,
+     * then draws the lines (thinner). */
     stencil_fill(scratch, false);
     static const MaskPass::Stage SHRINK[] = {MaskPass::Areas, MaskPass::Bands, MaskPass::Lines};
     static const MaskPass::Stage GROW[] = {MaskPass::All};
@@ -739,7 +815,18 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
      * added, so a group's inner lines (strands drawn over another layer's fill) don't cut the
      * fills of the layers around them. */
     const unsigned own = !nested ? MASK_NESTED_SCRATCH : 0u;
-    if (row.inside_stroke && !row.clip && own) {
+    const bool per_leaf = row.inside_stroke && !row.clip && own;
+    /* One of the row's layers (a group: its layers together) into `bit`, a layer at a time with
+     * Inside the Stroke. */
+    const auto draw_one = [&](const Layer &source, unsigned bit) {
+      if (!per_leaf) {
+        for (int s = 0; s < (shrink ? 3 : 1); s++) {
+          mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend,
+                        row.strokes_only, row.inside_stroke};
+          draw_mask_source(doc, source, bit, nested);
+        }
+        return;
+      }
       stencil_fill(own, false);
       std::function<void(const Layer &)> each_layer = [&](const Layer &layer) {
         if (layer.is_group()) {
@@ -752,17 +839,48 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
           mask_pass_ = {row.grow, stage, row.fills_only, row.filled, row.extend, row.strokes_only, row.inside_stroke};
           draw_mask_source(doc, layer, own, nested);
         }
-        /* Into the row's shape, and the bit cleared for the next. */
-        stencil_where(own, own, scratch, scratch, GL_REPLACE);
+        /* Into the shape, and the bit cleared for the next. */
+        stencil_where(own, own, bit, bit, GL_REPLACE);
         stencil_fill(own, false);
       };
+      each_layer(source);
+    };
+    /* Difference and Intersection: each layer's shape on a bit of its own, then into the row's (a
+     * Clip to Below step has one layer). Short of a bit (deep in a clip base's masks), as one. */
+    unsigned operand = 0;
+    if (row.combine != MaskCombine::Union && !row.clip && row.layers.size() > 1) {
+      operand = !nested ? MASK_NESTED : (free & (~free + 1u));
+    }
+    if (operand) {
+      bool first = true;
+      for (const uint64_t id : row.layers) {
+        const Layer *source = layer_find(doc, id);
+        if (!source) {
+          continue;
+        }
+        stencil_fill(operand, false);
+        draw_one(*source, operand);
+        if (first) {
+          stencil_where(operand, operand, scratch, scratch, GL_REPLACE);
+        }
+        else if (row.combine == MaskCombine::Difference) {
+          stencil_where(operand, operand, scratch, 0, GL_REPLACE);
+        }
+        else {
+          stencil_where(operand, 0, scratch, 0, GL_REPLACE);
+        }
+        first = false;
+      }
+      stencil_fill(operand, false);
+    }
+    else if (per_leaf) {
       for (const uint64_t id : row.layers) {
         if (const Layer *source = layer_find(doc, id)) {
-          each_layer(*source);
+          draw_one(*source, scratch);
         }
       }
     }
-    for (int s = 0; s < (shrink ? 3 : 1) && !(row.inside_stroke && !row.clip && own); s++) {
+    for (int s = 0; s < (shrink ? 3 : 1) && !per_leaf && !operand; s++) {
       for (const uint64_t id : row.layers) {
         if (const Layer *source = layer_find(doc, id)) {
           mask_pass_ = {row.grow, shrink ? SHRINK[s] : GROW[0], row.fills_only, row.filled, row.extend,
@@ -796,6 +914,7 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
 
 void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
 {
+  flush_batch();
   /* The card alone (all of the layer's cards that mask that part without one); lines ended at an
    * edge count by their card's shape. */
   const MaskCuts skip = mask_preview_lines_ ? MaskCuts::Fills : MaskCuts::Lines;
@@ -908,6 +1027,7 @@ void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, u
 void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, unsigned bit,
                                   bool set)
 {
+  flush_batch();
   /* Hidden layers still mask: a mask shape is often kept hidden. */
   if (layer.is_group()) {
     for (const Layer &child : layer.children) {
@@ -946,12 +1066,21 @@ static uint64_t hash_color(uint64_t h, const Color &c)
 }
 
 /* Everything a drawing's outlines and triangles are made from (shape_outline, shape_runs and the
- * tessellators), and nothing they aren't (selection, keys, weights, names). */
-static uint64_t drawing_geometry_hash(const VectorDrawing &d)
+ * tessellators), and nothing they aren't (selection, keys, weights, names). With `unit`, the points are
+ * taken relative to the first, to that size (the same for the drawing moved whole). */
+static uint64_t drawing_geometry_hash(const VectorDrawing &d, float unit = 0.0f)
 {
   uint64_t h = hash_mix(0, d.points.size());
+  const float2 origin = unit > 0.0f && !d.points.empty() ? d.points[0].pos : float2();
   for (const MeshPoint &p : d.points) {
-    h = hash_float(hash_float(hash_float(h, p.pos.x), p.pos.y), p.radius);
+    if (unit > 0.0f) {
+      h = hash_mix(hash_mix(h, uint64_t(std::llround((p.pos.x - origin.x) / unit))),
+                   uint64_t(std::llround((p.pos.y - origin.y) / unit)));
+      h = hash_float(h, p.radius);
+    }
+    else {
+      h = hash_float(hash_float(hash_float(h, p.pos.x), p.pos.y), p.radius);
+    }
     h = hash_mix(hash_mix(h, uint64_t(p.corner)), uint64_t(p.detail.level));
   }
   h = hash_mix(h, d.curves.size());
@@ -961,8 +1090,16 @@ static uint64_t drawing_geometry_hash(const VectorDrawing &d)
       h = hash_mix(h, uint64_t(cp.point));
       h = hash_float(hash_float(hash_float(h, cp.curvature), cp.weight_in), cp.weight_out);
       h = hash_float(hash_float(h, cp.offset_in), cp.offset_out);
-      h = hash_float(hash_float(hash_float(hash_float(h, cp.handle_in.x), cp.handle_in.y), cp.handle_out.x),
-                     cp.handle_out.y);
+      if (unit > 0.0f) {
+        /* Handles are worked out again as their points move: a hair apart is the same. */
+        for (const float v : {cp.handle_in.x, cp.handle_in.y, cp.handle_out.x, cp.handle_out.y}) {
+          h = hash_mix(h, uint64_t(std::llround(v / unit)));
+        }
+      }
+      else {
+        h = hash_float(hash_float(hash_float(hash_float(h, cp.handle_in.x), cp.handle_in.y), cp.handle_out.x),
+                       cp.handle_out.y);
+      }
       h = hash_mix(h, uint64_t(cp.edge_hidden) | uint64_t(cp.handles_set) << 1 | uint64_t(cp.aligned) << 2);
     }
   }
@@ -1011,8 +1148,45 @@ static uint64_t setup_hash(const VectorDrawing &d)
 
 static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, size_t bytes, bool brush);
 
-void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity)
+void SceneRenderer::draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity)
 {
+  /* The brush's images (a brush reloaded since gets its textures again). */
+  if (const Brush *brush = brush_find(step.brush)) {
+    coverage_alpha_ = step.coverage_alpha;
+    draw_dabs(step.dabs, brush_tip_images(*brush, step.settings), step.own_colors, step.merged_alpha, transform,
+              opacity, &step.dab_vaos, &step.dab_vbos);
+    coverage_alpha_ = 0.5f;
+  }
+}
+
+void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity,
+                               uint64_t key)
+{
+  if (key != 0 && !coverage_pass_ && batch_program_) {
+    const Transform2D to_clip = Transform2D::translate({-1.0f, -1.0f}) *
+                                Transform2D::scaling({2.0f / float(width_), 2.0f / float(height_)}) *
+                                document_to_pixels_ * transform;
+    for (size_t i = 0; i < steps.size(); i++) {
+      PaintStep &step = steps[i];
+      if (step.is_dabs) {
+        /* Stamps draw at once (draw_dabs flushes what waits before them), under the masks lines are. */
+        if ((line_free_stencil_ | fill_free_stencil_) != 0) {
+          use_color_stencil(step.is_line ? Paint::Line : Paint::Fill);
+        }
+        draw_dabs_step(step, transform, opacity);
+        continue;
+      }
+      if (step.vertices.empty()) {
+        continue;
+      }
+      const unsigned required = step.is_line ? required_stencil_ & ~line_free_stencil_
+                                             : required_stencil_ & ~fill_free_stencil_;
+      batch_.push_back({&step, (key ^ (uint64_t(i) + 1) * 0x9e3779b97f4a7c15ull) * 1099511628211ull, to_clip, opacity,
+                        required});
+    }
+    return;
+  }
+  flush_batch();
   /* In colour, a layer's lines leave out the masks that end them (End Lines at Edge, Brush), and its
    * fills the Lines Only ones. */
   const bool lines_apart = !coverage_pass_ && (line_free_stencil_ | fill_free_stencil_) != 0;
@@ -1033,29 +1207,44 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
       }
       continue;
     }
-    /* The brush's images (a brush reloaded since gets its textures again). */
-    if (const Brush *brush = brush_find(step.brush)) {
-      coverage_alpha_ = step.coverage_alpha;
-      draw_dabs(step.dabs, brush_tip_images(*brush, step.settings), step.own_colors, step.merged_alpha, transform,
-                opacity, &step.dab_vaos, &step.dab_vbos);
-      coverage_alpha_ = 0.5f;
-    }
+    draw_dabs_step(step, transform, opacity);
   }
 }
 
-void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
+uint64_t SceneRenderer::geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified)
+{
+  /* A drawing that is its layer's own (no modifiers, not a reference built from another) changes only with the
+   * layer: its hash holds while the layer's revision does. */
+  if (modified || layer.is_reference() || &drawing != &layer.drawing) {
+    return drawing_geometry_hash(drawing);
+  }
+  const auto [it, added] = geometry_hashes_.try_emplace(layer.id);
+  if (added || it->second.revision != layer.revision.value) {
+    it->second = {layer.revision.value, drawing_geometry_hash(drawing)};
+  }
+  return it->second.hash;
+}
+
+void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &layer_transform,
+                                 float opacity)
 {
   /* Modifiers (Mirror, the bones) draw from an evaluated copy, made once per render; otherwise the
-   * drawing itself. */
+   * drawing itself. A drawing the bones carry as one piece is drawn moved instead, so turning a bone
+   * draws again what was made of it before rather than making it anew. */
   const bool modified = layer_has_modifier_effect(doc, layer, final_render_);
   const VectorDrawing *source = &layer_drawing(doc, layer);
+  Transform2D rigid;
   if (modified) {
     auto it = evaluated_.find(layer.id);
     if (it == evaluated_.end()) {
-      it = evaluated_.emplace(layer.id, layer_evaluated_drawing(doc, layer, final_render_)).first;
+      Evaluated e;
+      e.drawing = layer_evaluated_drawing(doc, layer, final_render_, &e.rigid);
+      it = evaluated_.emplace(layer.id, std::move(e)).first;
     }
-    source = &it->second;
+    source = &it->second.drawing;
+    rigid = it->second.rigid;
   }
+  const Transform2D transform = layer_transform * rigid;
   const VectorDrawing &drawing = *source;
   if (drawing.shapes.empty()) {
     return;
@@ -1063,13 +1252,15 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   const Transform2D to_pixels = document_to_pixels_ * transform;
   /* One pixel in layer space. Edges are hard: multisampling smooths them, and a soft edge
    * strip would bring back seams where edges meet. */
-  const float pixel = 1.0f / std::max(to_pixels.scale(), 1e-6f);
+  /* Zooming reuses what was drawn: the pixel size goes in steps of 2^(1/8) (9%), so a zoom redoes a
+   * drawing's triangles and stamps only every few wheel notches, not on each. */
+  const float pixel = std::exp2(std::round(std::log2(1.0f / std::max(to_pixels.scale(), 1e-6f)) * 8.0f) / 8.0f);
   constexpr float feather = 0.0f;
 
   /* What it's drawn as is kept, and drawn again while what makes it stays the same. Brushed lines
    * add their brushes (a brush that isn't there draws a solid line, so it counts once it's found),
    * the setup shape their stamps are laid out on, and with line boil the frame. */
-  uint64_t key = hash_mix(drawing_geometry_hash(drawing), layer.id);
+  uint64_t key = hash_mix(0x9e3779b97f4a7c15ull, layer.id);
   bool brushed = false, boils = false;
   for (const Shape &s : drawing.shapes) {
     const bool has_brush = s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name);
@@ -1087,7 +1278,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
       key = hash_mix(key, uint64_t(uint32_t(doc.frame_current)));
     }
   }
-  key = hash_float(hash_mix(key, uint64_t(quality_)), pixel);
+  key = hash_mix(key, uint64_t(quality_));
   key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
                           uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
                           uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
@@ -1095,15 +1286,20 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
   /* End Lines at Edge: where the masks' rows with it on let the lines show (in the colour pass; a
    * layer lends its shapes to masks as drawn). Its shapes and where this layer is go in the key. */
-  const LineCutter cutter = coverage_pass_ ? LineCutter() : line_cutter(doc, layer, final_render_);
+  LineCutter cutter;
+  if (!coverage_pass_) {
+    cutter = line_cutter(doc, layer, final_render_);
+  }
   if (!cutter.empty()) {
     key = hash_float(hash_mix(key, cutter.flat ? 0x5eedu : 0xf1a7u), cutter.reach);
     for (const auto &rows : cutter.levels) {
       for (const LineCutter::Row &row : rows) {
         key = hash_mix(key, uint64_t(row.mode) | uint64_t(row.invert) << 4 | uint64_t(row.fills_only) << 5 |
-                                uint64_t(row.strokes_only) << 6 | uint64_t(row.inside_stroke) << 7);
+                                uint64_t(row.strokes_only) << 6 | uint64_t(row.inside_stroke) << 7 |
+                                uint64_t(row.combine) << 8);
         for (const LineCutter::Piece &piece : row.pieces) {
-          key = hash_mix(key, uint64_t(piece.area) | uint64_t(piece.line) << 1 | uint64_t(piece.closed) << 2);
+          key = hash_mix(key, uint64_t(piece.area) | uint64_t(piece.line) << 1 | uint64_t(piece.closed) << 2 |
+                                  uint64_t(piece.source) << 3);
           key = hash_float(key, piece.half);
           for (const float2 &p : piece.outline) {
             key = hash_float(hash_float(key, p.x), p.y);
@@ -1124,10 +1320,45 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   brush_cut.shows = line_shows;
   brush_cut.taper = !cutter.flat;
   brush_cut.reach = cutter.reach;
+  /* Everything but the drawing's shape and place, then those. */
+  const uint64_t settings = key;
+  key = hash_mix(key, geometry_hash(layer, drawing, modified));
+  const uint64_t any_zoom = key;
+  key = hash_float(key, pixel);
   if (auto it = tessellated_.find(key); it != tessellated_.end()) {
     it->second.used = render_serial_;
-    draw_steps(it->second.steps, transform, opacity);
+    tessellated_any_zoom_[any_zoom] = key;
+    draw_steps(it->second.steps, transform, opacity, key);
     return;
+  }
+  /* Moved whole (every point the same way, as when all of it is dragged): what was made of it before,
+   * moved. Not with lines ended at masks' edges or brushed ones, which depend on where it is. A 16th of a
+   * pixel apart is the same. */
+  const bool movable = cutter.empty() && !brushed && !drawing.points.empty();
+  const uint64_t anywhere = movable ? hash_mix(hash_float(settings, pixel), drawing_geometry_hash(drawing, pixel / 16.0f)) : 0;
+  if (movable) {
+    if (auto placed = tessellated_anywhere_.find(anywhere); placed != tessellated_anywhere_.end()) {
+      if (auto it = tessellated_.find(placed->second.key); it != tessellated_.end()) {
+        it->second.used = render_serial_;
+        draw_steps(it->second.steps, transform * Transform2D::translate(drawing.points[0].pos - placed->second.origin),
+                   opacity, placed->second.key);
+        return;
+      }
+    }
+  }
+  /* Zooming: once this frame's time is used, what was made for another zoom stands in (the same
+   * shapes, edges a little finer or coarser). */
+  constexpr double budget_ms = 6.0;
+  if (interactive_ && !final_render_ &&
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start_).count() > budget_ms)
+  {
+    if (auto other = tessellated_any_zoom_.find(any_zoom); other != tessellated_any_zoom_.end()) {
+      if (auto it = tessellated_.find(other->second); it != tessellated_.end()) {
+        it->second.used = render_serial_;
+        draw_steps(it->second.steps, transform, opacity, other->second);
+        return;
+      }
+    }
   }
   std::vector<PaintStep> steps;
 
@@ -1194,6 +1425,11 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   for (int shape_index = 0; shape_index < int(drawing.shapes.size()); shape_index++) {
     /* Each connected run of the shape's edges draws on its own (see shape_runs). */
     const std::vector<Shape> runs = shape_runs(drawing, drawing.shapes[shape_index]);
+    /* With a fill rule its closed runs fill together, holes and all (once, at the first run that fills);
+     * the lines still go round each run. */
+    const Shape &whole = drawing.shapes[shape_index];
+    const bool fills_together = whole.fill_rule != FillRule::Loops && runs.size() > 1;
+    bool filled_together = false;
     for (size_t run_index = 0; run_index < runs.size(); run_index++) {
       Shape shape = runs[run_index];
       /* Merged: another layer's Boolean draws its fill or line (or both), as part of its outline, and
@@ -1261,7 +1497,15 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
       /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
       if (is_area && stage != MaskPass::Lines && !line_as_drawn) {
         batch(false);
-        tessellate_fill(outline, shape.style.fill, feather, vertices);
+        if (!fills_together) {
+          tessellate_fill(outline, shape.style.fill, feather, vertices);
+        }
+        else if (!filled_together) {
+          filled_together = true;
+          tessellate_fill_pieces(
+              fill_area(shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_)), whole.fill_rule),
+              shape.style.fill, feather, vertices);
+        }
         if (grow > 0.0f && !inside_stroke) {
           /* A mask's Grow: a rim that wide around the area. */
           tessellate_stroke(outline, std::vector<float>(outline.size(), grow), true, shape.style.fill, feather,
@@ -1286,6 +1530,8 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
           for (auto &list : dabs.per_image) {
             list.clear();
           }
+          dabs.centers.clear();
+          dabs.alphas.clear();
           dabs.count = 0;
           seed = brush_seed(shape.style.brush, layer.id, shape_index, doc.frame_current);
           /* Dabs stick to the artwork: laid out on the line as on the setup frame, put on it as it
@@ -1309,7 +1555,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
             flush();
             PaintStep step;
             step.is_dabs = true;
-            step.dabs = dabs;
+            /* Handed over, not copied: a long line has thousands of dabs. */
+            step.dabs = std::move(dabs);
+            dabs = BrushDabs();
             step.brush = shape.style.brush.name;
             step.settings = shape.style.brush;
             step.own_colors = brush->is_color && !shape.style.brush.tint;
@@ -1452,8 +1700,104 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     }
   }
   flush();
-  draw_steps(steps, transform, opacity);
+  /* Made here, kept in tessellated_ (the steps keep their place in memory as the vector moves there). */
+  draw_steps(steps, transform, opacity, key);
   tessellated_[key] = {std::move(steps), render_serial_};
+  tessellated_any_zoom_[any_zoom] = key;
+  if (tessellated_any_zoom_.size() > 4 * tessellated_.size() + 256) {
+    tessellated_any_zoom_.clear();
+  }
+  if (movable) {
+    tessellated_anywhere_[anywhere] = {key, drawing.points[0].pos};
+    if (tessellated_anywhere_.size() > 4 * tessellated_.size() + 256) {
+      tessellated_anywhere_.clear();
+    }
+  }
+}
+
+/* A batched vertex: a tessellated one and its step's slot in the chunk. */
+struct BatchVertex {
+  float x, y;
+  float r, g, b, a;
+  float slot;
+};
+
+void SceneRenderer::flush_batch()
+{
+  if (batch_.empty()) {
+    return;
+  }
+  constexpr size_t SLOTS = 32;
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glStencilMask(0);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+  gl::UseProgram(batch_program_);
+  const GLint slots_at = gl::GetUniformLocation(batch_program_, "u_slots");
+  std::vector<BatchVertex> vertices;
+  float slots[SLOTS * 8];
+  for (size_t i = 0; i < batch_.size();) {
+    const unsigned required = batch_[i].required;
+    size_t j = i;
+    uint64_t chunk_key = 1469598103934665603ull;
+    while (j < batch_.size() && j - i < SLOTS && batch_[j].required == required) {
+      chunk_key = (chunk_key ^ batch_[j].id) * 1099511628211ull;
+      j++;
+    }
+    Chunk &chunk = chunks_[chunk_key];
+    chunk.used = render_serial_;
+    if (!chunk.vao) {
+      vertices.clear();
+      for (size_t k = i; k < j; k++) {
+        for (const Vertex &v : batch_[k].step->vertices) {
+          vertices.push_back({v.x, v.y, v.r, v.g, v.b, v.a, float(k - i)});
+        }
+      }
+      gl::GenVertexArrays(1, &chunk.vao);
+      gl::GenBuffers(1, &chunk.vbo);
+      gl::BindVertexArray(chunk.vao);
+      gl::BindBuffer(GL_ARRAY_BUFFER, chunk.vbo);
+      gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(vertices.size() * sizeof(BatchVertex)), vertices.data(),
+                     GL_STATIC_DRAW);
+      const GLsizei stride = sizeof(BatchVertex);
+      gl::EnableVertexAttribArray(0);
+      gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, x)));
+      gl::EnableVertexAttribArray(1);
+      gl::VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, r)));
+      gl::EnableVertexAttribArray(2);
+      gl::VertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, slot)));
+      chunk.vertices = int(vertices.size());
+    }
+    for (size_t k = i; k < j; k++) {
+      const Batched &b = batch_[k];
+      float *slot = slots + (k - i) * 8;
+      slot[0] = b.to_clip.a;
+      slot[1] = b.to_clip.b;
+      slot[2] = b.to_clip.c;
+      slot[3] = b.to_clip.d;
+      slot[4] = b.to_clip.tx;
+      slot[5] = b.to_clip.ty;
+      slot[6] = b.opacity;
+      slot[7] = 0.0f;
+    }
+    gl::Uniform4fv(slots_at, GLsizei((j - i) * 2), slots);
+    if (required == 0) {
+      glStencilFunc(GL_ALWAYS, 0, 0);
+    }
+    else {
+      glStencilFunc(GL_EQUAL, GLint(required), required);
+    }
+    gl::BindVertexArray(chunk.vao);
+    glDrawArrays(GL_TRIANGLES, 0, chunk.vertices);
+    i = j;
+  }
+  batch_.clear();
+  /* As use_color_stencil last left it, for what draws next. */
+  if (color_required_ == 0) {
+    glStencilFunc(GL_ALWAYS, 0, 0);
+  }
+  else {
+    glStencilFunc(GL_EQUAL, GLint(color_required_), color_required_);
+  }
 }
 
 void SceneRenderer::set_matrix(unsigned int program, const Transform2D &transform)
@@ -1532,6 +1876,7 @@ void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImag
                               bool merged, const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos,
                               std::vector<unsigned int> *vbos)
 {
+  flush_batch();
   const Target *outer = bound_;
   Target *own = nullptr;
   /* Merged alpha: the dabs go into an image of their own, keeping the strongest one where
@@ -1588,6 +1933,7 @@ void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImag
 
 void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity)
 {
+  flush_batch();
   const MediaShown shown_now = media_shown_at(doc, layer, doc.frame_current);
   if (!shown_now.clip || opacity <= 0.0f) {
     return;
@@ -1595,7 +1941,7 @@ void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Tr
   const MediaClip &clip = *shown_now.clip;
   const std::string file = media_clip_file(clip);
   /* A render waits for the exact frame; the viewport shows the nearest one until it comes. */
-  const MediaFramePtr frame = media_frame(file, clip.sequence, shown_now.seconds, final_render_);
+  const MediaFramePtr frame = media_frame(file, clip.sequence, shown_now.seconds, final_render_ || wait_for_media_);
   if (!frame || frame->rgba.empty()) {
     return;
   }
@@ -1648,6 +1994,7 @@ void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Tr
 
 void SceneRenderer::draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform)
 {
+  flush_batch();
   set_matrix(color_program_, transform);
   gl::BindVertexArray(vao_);
   gl::BindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -1657,6 +2004,7 @@ void SceneRenderer::draw_vertices(const std::vector<Vertex> &vertices, const Tra
 
 void SceneRenderer::composite(const Target *source, float opacity)
 {
+  flush_batch();
   gl::UseProgram(composite_program_);
   gl::ActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, source->texture);

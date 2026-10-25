@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 /* Bone dynamics: bones with a Dynamics constraint hang like weighted strands. When what they hang
  * from moves or turns, a strand's tip stays behind (Angle), a head lags behind (Position) and a
  * bone stretches or squashes along its length (Squash & Stretch; Maintain Volume thins it);
@@ -28,6 +30,10 @@ void dynamics_use_own_wind(const Document &doc, BoneConstraint &c, bool on);
 void dynamics_update(Document &doc);
 /* Forgets every simulated frame (they are worked out again when shown). */
 void dynamics_clear_cache();
+/* While something is being dragged (bones, a value), the frames before the shown one are kept as
+ * they were simulated rather than simulated again on every update; the shown frame still follows at
+ * once. Once the drag ends they are simulated again from what it changed. */
+void dynamics_hold_cache(bool hold);
 /* Live dynamics, for the app's main loop each frame (after the frame is worked out): while the
  * bones' aim changes on a frame (a bone dragged or turned), the dynamic bones simulate in real
  * time, `seconds` since the last call, so they trail, swing and settle as you work, and stay as
@@ -35,6 +41,10 @@ void dynamics_clear_cache();
  * own results again). Only what is shown: keys and the cache stay as they are, so playback and
  * baking don't change. Off (`allowed` false) while playing. */
 void dynamics_live_tick(Document &doc, double seconds, bool allowed);
+/* A change to the bones of `armature` made to keep the drawing where it showed (Move Only Bones): the
+ * frame's own result is what shows, and the change doesn't start a live simulation (which would swing
+ * the drawing away again). */
+void dynamics_live_quiet(Document &doc, uint64_t armature);
 /* Whether a live simulation is running (the window keeps drawing for it). */
 bool dynamics_live_running();
 /* Bakes the simulation of `armature` (or every bone layer, when null) into keys, from the start

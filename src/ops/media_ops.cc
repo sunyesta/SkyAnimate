@@ -13,6 +13,7 @@
 
 #include "anim/animation.hh"
 #include "core/log.hh"
+#include "data/camera.hh"
 #include "data/document.hh"
 #include "data/media_layer.hh"
 #include "media/media.hh"
@@ -251,6 +252,42 @@ void media_operators_register()
        OpProperty{"opacity", "Opacity", "How opaque the picture is (half, to draw over it)", OpProperty::Kind::Float,
                   {}, "0.5", 0.0f, 1.0f, 0.01f},
        OpProperty{"guide", "Guide", "Show it while you work, never in renders", OpProperty::Kind::Bool, {}, "1"}});
+
+  /* Fit to Camera Frame (right-click on a Media layer in the viewport): the picture laid over the camera's
+   * frame as it is now, wherever the camera has gone, zoomed or turned: the layer's position, rotation
+   * and scale set so it lands there (through the groups and bones above it), sized by fit=. */
+  add_operator(
+      "media.fit_to_camera", "Fit to Camera Frame",
+      "Place the active Media layer over the camera's frame as it is now (its position, rotation and scale set "
+      "for it), sized by fit= (FIT, FILL, STRETCH)",
+      [](Context &C) {
+        const Layer *l = media_target_layer(C);
+        return l && !l->locked;
+      },
+      [](Context &C) {
+        Document &doc = *C.document;
+        Layer &layer = *media_target_layer(C);
+        const std::string fit = op_arg(C, "fit", "FIT");
+        layer.media.fit = fit == "FILL" ? MediaFit::Fill : fit == "STRETCH" ? MediaFit::Stretch : MediaFit::Fit;
+        /* The picture is laid out in the camera's frame at zoom 1 (media_quad), in the layer's space: the
+         * layer's own transform takes it to the camera's frame now. */
+        const Transform2D frame = camera_to_frame(doc).inverted();
+        const Transform2D parent = layer_world_transform(doc, layer.id) * layer.local_transform().inverted();
+        const Transform2D local = parent.inverted() * frame;
+        const float sx = std::sqrt(local.a * local.a + local.b * local.b);
+        float rotation = std::atan2(local.b, local.a) * 180.0f / PI;
+        rotation += 360.0f * std::round((layer.rotation - rotation) / 360.0f);
+        layer.position = {local.tx, local.ty};
+        layer.rotation = rotation;
+        layer.scale = {sx, sx > 1e-9f ? (local.a * local.d - local.b * local.c) / sx : 1.0f};
+        return OpStatus::Finished;
+      },
+      {OpProperty{"fit",
+                  "Fit",
+                  "How the picture fills the camera's frame",
+                  OpProperty::Kind::Enum,
+                  {{"FIT", "Fit"}, {"FILL", "Fill"}, {"STRETCH", "Stretch"}},
+                  "FIT"}});
 
   /* Replace: the clip's file swapped for another, its timing kept (After Effects' Replace Footage). */
   add_operator(
@@ -533,20 +570,31 @@ void media_operators_register()
         [kind](Context &C) {
           Layer &l = *media_target_layer(C);
           const Layer before = l;
+          /* Amount: part of the way; X and Y: only along those. */
+          const float a = std::clamp(op_arg_float(C, "amount", 1.0f), 0.0f, 1.0f);
+          const bool along_x = op_arg(C, "x", "1") == "1", along_y = op_arg(C, "y", "1") == "1";
           if (kind == 0) {
-            l.position = {0.0f, 0.0f};
+            l.position = {along_x ? l.position.x * (1.0f - a) : l.position.x,
+                          along_y ? l.position.y * (1.0f - a) : l.position.y};
           }
           else if (kind == 1) {
-            l.rotation = 0.0f;
+            l.rotation *= 1.0f - a;
           }
           else {
-            l.scale = {1.0f, 1.0f};
+            l.scale = {along_x ? l.scale.x + (1.0f - l.scale.x) * a : l.scale.x,
+                       along_y ? l.scale.y + (1.0f - l.scale.y) * a : l.scale.y};
           }
           const bool changed = l.position.x != before.position.x || l.position.y != before.position.y ||
                                l.rotation != before.rotation || l.scale.x != before.scale.x ||
                                l.scale.y != before.scale.y;
           return changed ? OpStatus::Finished : OpStatus::Cancelled;
-        });
+        },
+        kind == 1 ? std::vector<OpProperty>{op_float_property("amount", "Amount", "How much of it goes: 1 all of it",
+                                                              "1", 0.0f, 1.0f, 0.01f)}
+                  : std::vector<OpProperty>{op_float_property("amount", "Amount", "How much of it goes: 1 all of it",
+                                                              "1", 0.0f, 1.0f, 0.01f),
+                                            op_bool_property("x", "X", "Along x", "1"),
+                                            op_bool_property("y", "Y", "Along y", "1")});
   }
 
   /* X or Delete over the timeline while clips are picked there (before the keys' Delete, which takes

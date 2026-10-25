@@ -12,15 +12,23 @@
 #include <optional>
 #include <stdexcept>
 
+#include "anim/keep_poses.hh"
+#include "anim/onion.hh"
+#include "anim/sculpt.hh"
+#include "assets/sculpt_presets.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
+#include "wm/clipboard_image.hh"
+#include "data/layer_mirror.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
 #include "data/media_layer.hh"
+#include "text/text_layer.hh"
+#include "text/text_outline.hh"
 #include "media/media.hh"
 #include "assets/asset_library.hh"
 #include "anim/drivers.hh"
@@ -43,10 +51,14 @@
 #include "wm/remote.hh"
 #include "editors/brush_editor.hh"
 #include "editors/editors.hh"
+#include "editors/statistics.hh"
 
 namespace py = pybind11;
 
 namespace oanim::python {
+
+/* See python_runs. */
+static uint64_t g_python_runs = 0;
 
 static Context *g_context = nullptr;
 static bool g_initialized = false;
@@ -190,6 +202,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                throw py::attribute_error("'" + ptr.type->identifier + "." + name + "' is read-only");
              }
              prop->set(ptr.data, rna::clamp(*prop, value_from_py(*prop, value)));
+             /* A text layer's text or layout changed: its letters made again now, for what reads them next. */
+             document_sync_text(*current_context().document);
              current_context().undo->mark_changed();
            })
       .def("__dir__",
@@ -207,7 +221,30 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                              [](Context &C) { return rna::PointerRNA{C.document, &Document::rna()}; })
       .def_property_readonly("area_type", [](const Context &C) { return C.area_type; })
       .def_property_readonly("is_background", [](const Context &C) { return C.wm && C.wm->background; })
-      .def_property_readonly("is_playing", [](const Context &C) { return C.wm && C.wm->playing; });
+      .def_property_readonly("is_playing", [](const Context &C) { return C.wm && C.wm->playing; })
+      /* The status bar's statistics: what is being worked in, counts and the text shown. */
+      .def_property_readonly("statistics", [](Context &C) {
+        const Statistics s = document_statistics(C, true);
+        const char *mode = s.mode == Statistics::Mode::Drawings ? "DRAWINGS"
+                           : s.mode == Statistics::Mode::Bones  ? "BONES"
+                                                                : "DOCUMENT";
+        std::string text;
+        for (const std::string &part : statistics_parts(s, true, false, nullptr)) {
+          text += (text.empty() ? "" : " | ") + part;
+        }
+        py::dict d;
+        d["mode"] = mode;
+        d["name"] = s.name;
+        d["drawings"] = s.drawings;
+        d["points"] = py::make_tuple(s.points_selected, s.points);
+        d["curves"] = py::make_tuple(s.curves_selected, s.curves);
+        d["segments"] = py::make_tuple(s.segments_selected, s.segments);
+        d["shapes"] = py::make_tuple(s.shapes_selected, s.shapes);
+        d["bones"] = py::make_tuple(s.bones_selected, s.bones);
+        d["layers"] = py::make_tuple(s.layers_selected, s.layers);
+        d["text"] = text;
+        return d;
+      });
 
   m.def("context", []() -> Context & { return current_context(); }, py::return_value_policy::reference);
 
@@ -347,6 +384,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           };
         }
         ot.exec = [execute, idname](Context &C) {
+          g_python_runs++;
           try {
             const std::string status =
                 execute(py::cast(&C, py::return_value_policy::reference)).cast<std::string>();
@@ -421,6 +459,41 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     e.drop.data = paths.back()->c_str();
     return SDL_PushEvent(&e);
   });
+  /* A key pressed and let go as the keyboard sends it (oanim.wm.key_press_simulate): SDL events, so
+   * ImGui sees them too, handled on the next frames. `name` is SDL's key name ("Tab", "A"). */
+  m.def("key_press_simulate", [](const std::string &name, bool ctrl, bool shift, bool alt) {
+    const SDL_Keycode key = SDL_GetKeyFromName(name.c_str());
+    if (key == SDLK_UNKNOWN) {
+      throw py::value_error("no key named '" + name + "'");
+    }
+    SDL_Keymod mod = SDL_KMOD_NONE;
+    if (ctrl) {
+      mod |= SDL_KMOD_LCTRL;
+    }
+    if (shift) {
+      mod |= SDL_KMOD_LSHIFT;
+    }
+    if (alt) {
+      mod |= SDL_KMOD_LALT;
+    }
+    /* For the main window, as the keyboard's are: ImGui takes only keys for a window of its. */
+    int count = 0;
+    SDL_Window **windows = SDL_GetWindows(&count);
+    const SDL_WindowID window = windows && count > 0 ? SDL_GetWindowID(windows[0]) : 0;
+    SDL_free(windows);
+    for (const bool down : {true, false}) {
+      SDL_Event e{};
+      e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+      e.key.windowID = window;
+      e.key.key = key;
+      e.key.scancode = SDL_GetScancodeFromKey(key, nullptr);
+      e.key.mod = mod;
+      e.key.down = down;
+      SDL_PushEvent(&e);
+    }
+  });
+  /* Characters typed (oanim.wm.text_simulate), as the keyboard's text input sends them. */
+  m.def("text_simulate", [](const std::string &text) { ImGui::GetIO().AddInputCharactersUTF8(text.c_str()); });
   /* Files being dragged over the window at (x, y) (oanim.wm.file_drag_simulate): the previews show
    * them as for a drag from Explorer. No files: the drag ends. */
   m.def("file_drag_simulate", [](const std::vector<std::string> &files, float x, float y) {
@@ -430,6 +503,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("mouse_simulate", [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift, float wheel) {
     current_context().wm->mouse_simulated.push_back({x, y, button, down, ctrl, alt, shift, wheel});
   });
+  m.def("media_view", []() { return current_context().wm->media_view; });
   m.def("local_view", []() {
     Context &C = current_context();
     py::list names;
@@ -440,7 +514,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return names;
   });
-  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 8); });
+  m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 11); });
   /* How long frames take (ms, ImGui's running average), for checking the app's speed. */
   /* The left/right name rule bone Symmetrize and mirror editing pair by (bone_mirror_name). */
   m.def("flip_name", [](const std::string &name) { return bone_mirror_name(name); });
@@ -461,6 +535,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       {"live_physics", &ViewportOverlays::live_physics},
       {"bone_shapes", &ViewportOverlays::bone_shapes},
       {"guides", &ViewportOverlays::guides},
+      {"annotations", &ViewportOverlays::annotations},
   };
   /* Panels and folding rows open or folded, as the project keeps them ("<editor>/<panel>": open). */
   m.def("ui_open", []() { return current_context().document->ui_open; });
@@ -560,6 +635,55 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::arg("type"), py::arg("ctrl") = false, py::arg("shift") = false, py::arg("alt") = false,
       py::arg("area") = "", py::arg("typing") = false);
 
+  /* An image (RGBA bytes, rows from the top) onto the system clipboard, as Copy Image does a render. */
+  m.def("clipboard_set_image", [](py::bytes rgba, int width, int height) {
+    const std::string data = rgba;
+    if (width <= 0 || height <= 0 || data.size() != size_t(width) * size_t(height) * 4) {
+      throw py::value_error("rgba must hold width * height * 4 bytes");
+    }
+    std::string error;
+    if (!clipboard_set_image(reinterpret_cast<const uint8_t *>(data.data()), width, height, &error)) {
+      throw std::runtime_error("Could not copy the image: " + error);
+    }
+  });
+
+  /* A render of the current frame to a PNG, done by the window on its next frame (none in background
+   * runs). */
+  m.def("render_png", [](const std::string &path, int width, int height, bool guides, bool transparent) {
+    WindowManager &wm = *current_context().wm;
+    if (wm.background) {
+      throw std::runtime_error("No window to render with in a background run");
+    }
+    wm.render_file = {true, path, width, height, guides, transparent};
+  });
+
+  /* The 2D cursor (document space). */
+  m.def("cursor_get", []() {
+    const float2 c = current_context().wm->tool_settings.cursor;
+    return py::make_tuple(c.x, c.y);
+  });
+  m.def("cursor_set", [](float x, float y) { current_context().wm->tool_settings.cursor = {x, y}; });
+  /* Transform Layer's Show Grid Lines. */
+  m.def("layer_grid_lines", []() { return current_context().wm->tool_settings.layer_grid; });
+  m.def("layer_grid_lines_set", [](bool on) { current_context().wm->tool_settings.layer_grid = on; });
+  m.def("gizmo_mode", []() { return current_context().wm->tool_settings.gizmo_mode; });
+  m.def("gizmo_mode_set", [](int mode, int cells) {
+    ToolSettings &ts = current_context().wm->tool_settings;
+    ts.gizmo_mode = std::clamp(mode, 0, 2);
+    if (cells > 0) {
+      ts.warp_cells = std::clamp(cells, 1, 8);
+    }
+  });
+  m.def("warp_cells", []() { return current_context().wm->tool_settings.warp_cells; });
+  /* The viewport tool, by its Tool order. */
+  m.def("tool", []() {
+    static const char *const names[] = {"SELECT", "SELECT_LAYER", "CURSOR", "ANNOTATE", "DRAW", "SHAPE",
+                                        "SPLIT_CURVE", "WEIGHT_SELECT", "WEIGHT_PAINT", "TRANSFORM_BONES",
+                                        "TRANSFORM_POINTS", "SCULPT", "TRANSFORM_LAYER", "EDIT_TEXT"};
+    static_assert(std::size(names) == size_t(Tool::EditText) + 1);
+    return std::string(names[int(current_context().wm->tool_settings.tool)]);
+  });
+
   /* Mirror editing (the viewport header's butterfly X / Y). */
   m.def("mirror_editing", []() {
     const ToolSettings &ts = current_context().wm->tool_settings;
@@ -567,6 +691,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("set_mirror_editing", [](bool x, bool y) {
     ToolSettings &ts = current_context().wm->tool_settings;
+    if (ts.mirror_x != x || ts.mirror_y != y) {
+      current_context().undo->mark_changed(); /* Saved with the file. */
+    }
     ts.mirror_x = x;
     ts.mirror_y = y;
   });
@@ -585,6 +712,131 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     ts.proportional = on;
     ts.proportional_connected = connected;
     ts.proportional_size = std::max(size, 1e-6f);
+  });
+  /* Onion skins (anim/onion.hh): the frames ghosts show on and their wires, for the layers being edited. */
+  m.def("onion_frames", []() {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    py::list out;
+    for (const OnionGhost &g : onion_ghosts(doc, onion_layers(doc, editable_layers(C)))) {
+      py::dict d;
+      d["frame"] = g.frame;
+      d["after"] = g.after;
+      d["distance"] = g.distance;
+      out.append(d);
+    }
+    return out;
+  });
+  m.def("onion_wires", []() {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    const std::vector<uint64_t> layers = onion_layers(doc, editable_layers(C));
+    py::list out;
+    for (const OnionWires &w : onion_wires(doc, layers, onion_ghosts(doc, layers))) {
+      py::list lines;
+      for (const std::vector<float2> &line : w.lines) {
+        py::list pts;
+        for (const float2 p : line) {
+          pts.append(py::make_tuple(p.x, p.y));
+        }
+        lines.append(pts);
+      }
+      py::dict d;
+      d["frame"] = w.ghost.frame;
+      d["after"] = w.ghost.after;
+      d["lines"] = lines;
+      out.append(d);
+    }
+    return out;
+  });
+  m.def("onion_colors", []() {
+    const Document &doc = *current_context().document;
+    const auto rgba = [](const Color &c) { return py::make_tuple(c.r, c.g, c.b, c.a); };
+    py::dict d;
+    d["before"] = rgba(doc.onion_color_before);
+    d["after"] = rgba(doc.onion_color_after);
+    return d;
+  });
+  m.def("set_onion_colors", [](py::object before, py::object after) {
+    Context &C = current_context();
+    const auto set = [](Color &c, py::object v) {
+      if (v.is_none()) {
+        return;
+      }
+      const std::vector<float> f = v.cast<std::vector<float>>();
+      if (f.size() < 3) {
+        throw std::runtime_error("A colour is (r, g, b) or (r, g, b, a), 0-1");
+      }
+      c = {f[0], f[1], f[2], f.size() > 3 ? f[3] : 1.0f};
+    };
+    set(C.document->onion_color_before, before);
+    set(C.document->onion_color_after, after);
+    if (C.undo) {
+      C.undo->mark_changed();
+    }
+  });
+  /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */
+  m.def("sculpt_settings", []() {
+    const ToolSettings &ts = current_context().wm->tool_settings;
+    py::dict d;
+    d["brush"] = sculpt_brush_id(ts.sculpt_brush);
+    d["preset"] = ts.sculpt_preset;
+    d["radius"] = ts.sculpt_radius;
+    d["strength"] = ts.sculpt_strength;
+    d["falloff"] = sculpt_falloff_id(ts.sculpt_falloff);
+    d["pressure_radius"] = ts.sculpt_pressure_radius;
+    d["pressure_strength"] = ts.sculpt_pressure_strength;
+    d["selected_only"] = ts.sculpt_selected_only;
+    return d;
+  });
+  m.def("set_sculpt", [](const py::dict &values) {
+    ToolSettings &ts = current_context().wm->tool_settings;
+    for (const auto &[key_obj, value] : values) {
+      const std::string key = py::str(key_obj);
+      if (key == "brush") {
+        if (!sculpt_brush_from_id(py::str(value), &ts.sculpt_brush)) {
+          throw py::value_error("brush is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST");
+        }
+      }
+      else if (key == "falloff") {
+        if (!sculpt_falloff_from_id(py::str(value), &ts.sculpt_falloff)) {
+          throw py::value_error("falloff is one of SMOOTH, SPHERE, CONSTANT");
+        }
+      }
+      else if (key == "radius") {
+        ts.sculpt_radius = std::clamp(value.cast<float>(), 2.0f, 1000.0f);
+      }
+      else if (key == "strength") {
+        ts.sculpt_strength = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (key == "pressure_radius") {
+        ts.sculpt_pressure_radius = value.cast<bool>();
+      }
+      else if (key == "pressure_strength") {
+        ts.sculpt_pressure_strength = value.cast<bool>();
+      }
+      else if (key == "selected_only") {
+        ts.sculpt_selected_only = value.cast<bool>();
+      }
+      else {
+        throw py::value_error("no sculpt setting '" + key + "'");
+      }
+    }
+  });
+  m.def("sculpt_presets", []() {
+    py::list list;
+    for (const SculptPreset &p : sculpt_presets()) {
+      py::dict d;
+      d["name"] = p.name;
+      d["brush"] = sculpt_brush_id(p.brush);
+      d["radius"] = p.radius;
+      d["strength"] = p.strength;
+      d["falloff"] = sculpt_falloff_id(p.falloff);
+      d["category"] = p.category;
+      d["builtin"] = p.builtin;
+      list.append(d);
+    }
+    return list;
   });
   /* How much of a move each point of a layer would get with the proportional settings now (by
    * its stored place). */
@@ -783,6 +1035,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return ids;
   });
   /* A shape's look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden}. */
+  /* The active shape (what clicking a shape makes it): the one Link Materials passes on. */
+  m.def("layer_set_active_shape", [layer_or_raise](uint64_t id, int index) {
+    Layer &layer = layer_or_raise(id);
+    if (index < 0 || index >= int(layer.drawing.shapes.size())) {
+      throw py::index_error("no shape " + std::to_string(index));
+    }
+    Document &doc = *current_context().document;
+    doc.active_shape_layer = layer.id;
+    doc.active_shape = layer.drawing.shapes[size_t(index)].id;
+  });
   m.def("layer_shape_style", [layer_or_raise](uint64_t id, int index) {
     const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));
     if (index < 0 || index >= int(drawing.shapes.size())) {
@@ -796,12 +1058,70 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["has_fill"] = s.has_fill;
     d["has_outline"] = s.has_outline;
     d["hidden"] = s.hidden;
+    d["fill_rule"] = s.fill_rule == FillRule::EvenOdd ? "EVEN_ODD" : s.fill_rule == FillRule::NonZero ? "NONZERO" : "LOOPS";
     d["brush"] = s.style.brush.name;
     const Material *material = material_find(*current_context().document, s.material);
     d["material"] = material ? material->name : std::string();
     return d;
   });
   /* The document's materials: [{"name", "users", "fill", "line", "line_width", "brush"}]. */
+  /* The annotation layers (data/annotations.hh): [{"name", "color", "thickness", "hidden", "locked",
+   * "strokes": [{"points": [(x, y)], "start", "end"}]}], and the active one's index. */
+  m.def("annotations", []() {
+    const Document &doc = *current_context().document;
+    py::list list;
+    for (const AnnotationLayer &l : doc.annotations) {
+      py::dict d;
+      d["name"] = l.name;
+      d["color"] = py::make_tuple(l.color.r, l.color.g, l.color.b, l.color.a);
+      d["thickness"] = l.thickness;
+      d["hidden"] = l.hidden;
+      d["locked"] = l.locked;
+      py::list strokes;
+      for (const AnnotationStroke &s : l.strokes) {
+        py::dict sd;
+        py::list points;
+        for (const float2 &p : s.points) {
+          points.append(py::make_tuple(p.x, p.y));
+        }
+        sd["points"] = points;
+        sd["start"] = annotation_end_identifier(s.start);
+        sd["end"] = annotation_end_identifier(s.end);
+        strokes.append(sd);
+      }
+      d["strokes"] = strokes;
+      list.append(d);
+    }
+    return py::make_tuple(list, doc.annotations.empty() ? -1 : doc.active_annotation);
+  });
+  /* The drawing guides: [{"type", "points": [(x, y)], "lines", "hidden", "locked"}], and the picked one's
+   * index (-1: none). */
+  m.def("guides", []() {
+    const Document &doc = *current_context().document;
+    py::list list;
+    for (const DrawingGuide &g : doc.guides) {
+      py::dict d;
+      d["type"] = guide_type_identifier(g.type);
+      py::list points;
+      for (const float2 &p : g.points) {
+        points.append(py::make_tuple(p.x, p.y));
+      }
+      d["points"] = points;
+      d["lines"] = g.lines;
+      d["hidden"] = g.hidden;
+      d["locked"] = g.locked;
+      list.append(d);
+    }
+    return py::make_tuple(list, doc.active_guide);
+  });
+  m.def("move_options", []() {
+    const MoveOptions o = viewport_move_options(*current_context().document);
+    py::dict d;
+    d["keep_poses"] = o.keep_poses;
+    d["only_bones"] = o.only_bones;
+    d["without_children"] = o.without_children;
+    return d;
+  });
   m.def("materials", []() {
     const Document &doc = *current_context().document;
     py::list list;
@@ -816,6 +1136,127 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       list.append(d);
     }
     return list;
+  });
+  /* A text layer's runs: [{text, font, weight, italic, size, has_fill, has_outline, fill, line, line_width,
+   * brush, material}]. */
+  m.def("layer_text_runs", [layer_or_raise](uint64_t id) {
+    const Layer &layer = layer_or_raise(id);
+    const Document &doc = *current_context().document;
+    py::list list;
+    for (const TextRun &run : layer.text.runs) {
+      py::dict d;
+      d["text"] = run.text;
+      d["font"] = run.font;
+      d["weight"] = run.weight;
+      d["italic"] = run.italic;
+      d["size"] = run.size;
+      d["has_fill"] = run.has_fill;
+      d["has_outline"] = run.has_outline;
+      d["fill"] = py::make_tuple(run.style.fill.r, run.style.fill.g, run.style.fill.b, run.style.fill.a);
+      d["line"] = py::make_tuple(run.style.line.r, run.style.line.g, run.style.line.b, run.style.line.a);
+      d["line_width"] = run.style.line_width;
+      d["brush"] = run.style.brush.name;
+      const Material *material = material_find(doc, run.material);
+      d["material"] = material ? material->name : std::string();
+      list.append(d);
+    }
+    return list;
+  });
+  /* Replaces a text layer's runs with dicts as layer_text_runs gives (keys left out keep their defaults;
+   * material by name, "" for its own look). */
+  m.def("layer_set_text_runs", [layer_or_raise](uint64_t id, py::list runs) {
+    Layer &layer = layer_or_raise(id);
+    if (!layer.is_text()) {
+      throw py::value_error("'" + layer.name + "' is not a text layer");
+    }
+    Document &doc = *current_context().document;
+    const auto color = [](py::handle v) {
+      const auto t = v.cast<std::vector<float>>();
+      return Color{t.at(0), t.at(1), t.at(2), t.size() > 3 ? t[3] : 1.0f};
+    };
+    std::vector<TextRun> out;
+    for (py::handle item : runs) {
+      const py::dict d = py::reinterpret_borrow<py::dict>(item);
+      TextRun run;
+      for (const auto &[k, v] : d) {
+        const std::string key = py::str(k);
+        if (key == "text") {
+          run.text = v.cast<std::string>();
+        }
+        else if (key == "font") {
+          run.font = v.cast<std::string>();
+        }
+        else if (key == "weight") {
+          run.weight = std::clamp(v.cast<int>(), 1, 999);
+        }
+        else if (key == "italic") {
+          run.italic = v.cast<bool>();
+        }
+        else if (key == "size") {
+          run.size = std::max(v.cast<float>(), 1e-4f);
+        }
+        else if (key == "has_fill") {
+          run.has_fill = v.cast<bool>();
+        }
+        else if (key == "has_outline") {
+          run.has_outline = v.cast<bool>();
+        }
+        else if (key == "fill") {
+          run.style.fill = color(v);
+        }
+        else if (key == "line") {
+          run.style.line = color(v);
+        }
+        else if (key == "line_width") {
+          run.style.line_width = std::max(v.cast<float>(), 0.0f);
+        }
+        else if (key == "brush") {
+          run.style.brush.name = v.cast<std::string>();
+        }
+        else if (key == "material") {
+          const std::string name = v.cast<std::string>();
+          run.material = 0;
+          for (const Material &mat : doc.materials) {
+            if (mat.name == name) {
+              run.material = mat.id;
+            }
+          }
+          if (!name.empty() && run.material == 0) {
+            throw py::value_error("no material '" + name + "'");
+          }
+        }
+        else {
+          throw py::key_error("unknown text run setting '" + key + "'");
+        }
+      }
+      out.push_back(std::move(run));
+    }
+    layer.text.runs = std::move(out);
+    text_tidy(layer.text);
+    document_sync_text(doc);
+    current_context().undo->mark_changed();
+  });
+  /* The layers drawn at (x, y) (document space), top first, as Select Layer finds them: a fill's hole
+   * shows what is under it. */
+  m.def("layers_at", [](float x, float y) {
+    return layers_at(*current_context().document, {x, y}, LayerPickOptions());
+  });
+  /* The installed font families; whether one is; a PostScript name's (family, weight, italic) or None. */
+  m.def("text_fonts", []() { return text_font_families(); });
+  m.def("text_font_installed", [](const std::string &family) { return text_font_installed(family); });
+  m.def("text_font_from_postscript", [](const std::string &name) -> py::object {
+    std::string family;
+    int weight = 400;
+    bool italic = false;
+    if (!text_font_from_postscript(name, &family, &weight, &italic)) {
+      return py::none();
+    }
+    return py::make_tuple(family, weight, italic);
+  });
+  /* A text layer's bounds (layer space): ((min x, min y), (max x, max y)). */
+  m.def("layer_text_bounds", [layer_or_raise](uint64_t id) {
+    const TextBox box = text_bounds(layer_or_raise(id).text);
+    return py::make_tuple(py::make_tuple(box.min.x, box.min.y), py::make_tuple(box.max.x, box.max.y));
   });
   /* Changes a shape's look, as the Shape panel does (on a reference, it becomes its override). */
   m.def("layer_set_shape_style", [layer_or_raise](uint64_t id, int index, py::dict values) {
@@ -844,6 +1285,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "has_outline") {
         s.has_outline = v.cast<bool>();
+      }
+      else if (key == "fill_rule") {
+        const std::string rule = v.cast<std::string>();
+        if (rule == "LOOPS") {
+          s.fill_rule = FillRule::Loops;
+        }
+        else if (rule == "EVEN_ODD") {
+          s.fill_rule = FillRule::EvenOdd;
+        }
+        else if (rule == "NONZERO") {
+          s.fill_rule = FillRule::NonZero;
+        }
+        else {
+          throw py::value_error("fill_rule is LOOPS, EVEN_ODD or NONZERO, not '" + rule + "'");
+        }
       }
       else {
         throw py::key_error("unknown shape setting '" + key + "'");
@@ -930,11 +1386,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (moving.empty()) {
       return false;
     }
-    const std::vector<MirrorPair> pairs = drawing_mirror_pairs(drawing, moving, ts.mirror_x, ts.mirror_y);
+    Document &doc = *current_context().document;
+    const bool self_x = layer_mirror_x_self(doc, layer.id, ts.mirror_x);
+    const PartnerMirror partners = layer_mirror_partners_begin(doc, {layer.id}, ts.mirror_x);
+    const std::vector<MirrorPair> pairs = drawing_mirror_pairs(drawing, moving, self_x, ts.mirror_y);
     for (const int i : moving) {
       drawing.points[i].pos += float2(dx, dy);
     }
     drawing_apply_mirror(drawing, pairs);
+    layer_mirror_partners_end(doc, partners);
     current_context().undo->mark_changed();
     return true;
   });
@@ -1205,7 +1665,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     animation_sync(doc);
     animation_record(doc);
     const ChannelRef ref = channel_or_raise(id, path);
-    const bool removed = ref.scalar ? ref.scalar->remove_key(frame) : ref.vector->remove_key(frame);
+    /* Frame 0's key (the rest) goes only with the last of the keys, as Alt I and the timeline do. */
+    const bool removed = ref.scalar ? channel_delete_key(*ref.scalar, *ref.scalar_value, frame)
+                                    : channel_delete_key(*ref.vector, *ref.vector_value, frame);
+    Layer *layer = layer_find(doc, id);
+    for (Bone &bone : layer->bones) {
+      bone_values_from_changes(bone);
+    }
+    if (!layer->is_reference()) {
+      drawing_values_from_changes(layer->drawing);
+    }
     animation_evaluate(doc, doc.frame_current);
     current_context().undo->mark_changed();
     return removed;
@@ -1316,11 +1785,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["setup_angle"] = b.setup_angle;
       d["length"] = b.length;
       d["scale"] = py::make_tuple(b.scale.x, b.scale.y);
+      d["depth"] = b.depth;
       d["strength"] = b.strength;
       d["selected"] = b.selected;
       d["select_head"] = bone_head_selected(layer, b);
       d["select_tail"] = bone_tail_selected(layer, b);
       d["connected"] = b.connected;
+      d["inherit_rotation"] = b.inherit_rotation;
+      d["inherit_scale"] = b.inherit_scale == InheritScale::Full      ? "FULL"
+                           : b.inherit_scale == InheritScale::Uniform ? "UNIFORM"
+                                                                      : "NONE";
+      d["local_location"] = b.local_location;
       d["shape"] = b.shape == BoneShape::Pin ? "PIN" : b.shape == BoneShape::Custom ? "CUSTOM" : "BONE";
       d["pin_size"] = b.pin_size;
       const Layer *shape_layer = b.shape_layer ? layer_find(*current_context().document, b.shape_layer) : nullptr;
@@ -1357,6 +1832,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "angle") {
         bone.angle = value.cast<float>();
       }
+      else if (key == "depth") {
+        bone.depth = std::max(1e-4f, value.cast<float>());
+      }
       else if (key == "scale") {
         /* (x, y), or one number for both. */
         if (py::isinstance<py::float_>(value) || py::isinstance<py::int_>(value)) {
@@ -1375,7 +1853,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         bone.strength = std::max(0.0f, value.cast<float>());
       }
       else if (key == "name") {
+        const std::string before = bone.name;
         bone.name = value.cast<std::string>();
+        armature_bone_renamed(*current_context().document, id, before, bone.name);
       }
       else if (key == "ik_ignore") {
         bone.ik_ignore = value.cast<bool>();
@@ -1511,6 +1991,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["stretch"] = s.stretch;
         d["use_limit"] = s.use_limit;
         d["limit"] = s.limit;
+        d["use_squash_limit"] = s.use_squash_limit;
+        d["squash_limit"] = s.squash_limit;
         return d;
       };
       py::dict d;
@@ -1524,8 +2006,45 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["target"] = target ? target->name : std::string();
       d["factor"] = c.factor;
       d["delay"] = c.delay;
+      d["follow_move"] = c.follow_move;
       d["chain"] = c.chain;
       d["max_stretch"] = c.max_stretch;
+      d["shape_layer"] = c.shape_layer;
+      d["shape"] = c.shape_id;
+      d["fit"] = c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER";
+      d["fit_layer"] = c.fit_layer;
+      d["overlap"] = c.overlap;
+      d["softness"] = c.softness;
+      d["affect_transform"] = c.affect_transform;
+      d["child_position"] = c.child_position;
+      d["child_rotation"] = c.child_rotation;
+      d["child_scale"] = c.child_scale;
+      d["range_auto"] = c.range_auto;
+      d["look_range"] = py::make_tuple(c.look_range.x, c.look_range.y);
+      d["look_auto_range"] = py::make_tuple(c.look_auto_range.x, c.look_auto_range.y);
+      d["squash"] = c.squash;
+      d["eyeball_auto"] = c.eyeball_auto;
+      {
+        const Bone *middle = bone_find(layer, c.eyeball_center);
+        d["eyeball_center"] = middle ? middle->name : std::string();
+      }
+      d["eyeball_size"] = py::make_tuple(c.eyeball_size.x, c.eyeball_size.y);
+      d["eyeball_auto_size"] = py::make_tuple(c.eyeball_auto_size.x, c.eyeball_auto_size.y);
+      d["facing"] = py::make_tuple(c.facing.x, c.facing.y);
+      d["max_side"] = c.max_side;
+      d["max_up"] = c.max_up;
+      d["max_down"] = c.max_down;
+      {
+        py::list round;
+        for (const uint64_t kept : c.keep_round) {
+          if (const Layer *l = layer_find(*current_context().document, kept)) {
+            round.append(l->name);
+          }
+        }
+        d["keep_round"] = round;
+      }
+      d["divergence"] = c.divergence;
+      d["shape_region"] = c.shape_region.size();
       d["weight"] = c.weight;
       d["wind_catch"] = c.wind_catch;
       d["own_gravity"] = c.own_gravity;
@@ -1568,6 +2087,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         else if (key == "limit") {
           s.limit = std::max(0.0f, v.cast<float>());
         }
+        else if (key == "use_squash_limit") {
+          s.use_squash_limit = v.cast<bool>();
+        }
+        else if (key == "squash_limit") {
+          s.squash_limit = std::clamp(v.cast<float>(), 1e-4f, 0.9f);
+        }
         else if (key == "settle_speed") {
           s.settle_speed = std::clamp(v.cast<float>(), 0.05f, 20.0f);
         }
@@ -1607,6 +2132,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "factor") {
         c.factor = value.cast<float>();
       }
+      else if (key == "follow_move") {
+        c.follow_move = value.cast<bool>();
+      }
       else if (key == "delay") {
         c.delay = std::max(0, value.cast<int>());
       }
@@ -1615,6 +2143,120 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "max_stretch") {
         c.max_stretch = std::max(1.0f, value.cast<float>());
+      }
+      else if (key == "shape_layer" || key == "fit_layer") {
+        /* A layer by id or name ("" or 0: none). */
+        uint64_t found = 0;
+        if (py::isinstance<py::str>(value)) {
+          const std::string wanted = value.cast<std::string>();
+          for (const Layer *l : document_layers_flat(*current_context().document)) {
+            if (!wanted.empty() && l->name == wanted) {
+              found = l->id;
+              break;
+            }
+          }
+          if (!wanted.empty() && !found) {
+            throw py::key_error("no layer named '" + wanted + "'");
+          }
+        }
+        else {
+          found = value.cast<uint64_t>();
+        }
+        (key == "shape_layer" ? c.shape_layer : c.fit_layer) = found;
+      }
+      else if (key == "shape") {
+        c.shape_id = value.cast<uint64_t>();
+      }
+      else if (key == "fit") {
+        const std::string fit = value.cast<std::string>();
+        if (fit != "CENTER" && fit != "WHOLE") {
+          throw py::value_error("fit is CENTER or WHOLE");
+        }
+        c.shape_fit = fit == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
+      }
+      else if (key == "overlap") {
+        c.overlap = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (key == "softness") {
+        c.softness = std::max(0.0f, value.cast<float>());
+      }
+      else if (key == "affect_transform") {
+        c.affect_transform = value.cast<bool>();
+      }
+      else if (key == "child_position" || key == "child_rotation" || key == "child_scale") {
+        (key == "child_position" ? c.child_position : key == "child_rotation" ? c.child_rotation : c.child_scale) =
+            value.cast<bool>();
+      }
+      else if (key == "range_auto") {
+        c.range_auto = value.cast<bool>();
+      }
+      else if (key == "look_range") {
+        if (py::isinstance<py::float_>(value) || py::isinstance<py::int_>(value)) {
+          const float v = std::max(0.0f, value.cast<float>());
+          c.look_range = {v, v};
+        }
+        else {
+          const auto r = value.cast<std::pair<float, float>>();
+          c.look_range = {std::max(0.0f, r.first), std::max(0.0f, r.second)};
+        }
+      }
+      else if (key == "squash") {
+        c.squash = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (key == "eyeball_auto") {
+        c.eyeball_auto = value.cast<bool>();
+      }
+      else if (key == "eyeball_center") {
+        const std::string t = value.cast<std::string>();
+        const Bone *middle = t.empty() ? nullptr : bone_find_by_name(layer, t);
+        if (!t.empty() && !middle) {
+          throw py::key_error("no bone named '" + t + "'");
+        }
+        c.eyeball_center = middle ? middle->id : 0;
+      }
+      else if (key == "eyeball_size") {
+        if (py::isinstance<py::float_>(value) || py::isinstance<py::int_>(value)) {
+          const float v = std::max(1e-4f, value.cast<float>());
+          c.eyeball_size = {v, v};
+        }
+        else {
+          const auto r = value.cast<std::pair<float, float>>();
+          c.eyeball_size = {std::max(1e-4f, r.first), std::max(1e-4f, r.second)};
+        }
+      }
+      else if (key == "facing") {
+        const auto r = value.cast<std::pair<float, float>>();
+        c.facing = {r.first, r.second};
+      }
+      else if (key == "max_side" || key == "max_up" || key == "max_down") {
+        (key == "max_side" ? c.max_side : key == "max_up" ? c.max_up : c.max_down) =
+            std::clamp(value.cast<float>(), 0.0f, 3.1415927f);
+      }
+      else if (key == "keep_round") {
+        /* Layers by name or id. */
+        c.keep_round.clear();
+        for (const py::handle item : value) {
+          uint64_t found = 0;
+          if (py::isinstance<py::str>(item)) {
+            const std::string wanted = item.cast<std::string>();
+            for (const Layer *l : document_layers_flat(*current_context().document)) {
+              if (l->name == wanted) {
+                found = l->id;
+                break;
+              }
+            }
+            if (!found) {
+              throw py::key_error("no layer named '" + wanted + "'");
+            }
+          }
+          else {
+            found = item.cast<uint64_t>();
+          }
+          c.keep_round.push_back(found);
+        }
+      }
+      else if (key == "divergence") {
+        c.divergence = value.cast<float>();
       }
       else if (key == "own_gravity" || key == "own_wind" || key == "own_forces") {
         /* own_forces: both. */
@@ -1848,6 +2490,122 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return group ? group->name : std::string();
   });
   /* Where a point of the layer (layer space) shows in the document, bones included. */
+  /* Where the layer's points and handles show, bones and parents included (document space): the
+   * points, and each curve's [(point, handle in, handle out, aligned, hidden, level, index)] and whether
+   * it closes. `level` < 0: the curves as drawn (every point, detail's handles final); else as they are
+   * at that detail level (data/detail.hh): only the points up to it, the handles as that level's curve
+   * has them. `index` is the point's place in the whole curve (what place_handle takes). */
+  m.def("layer_shown", [layer_or_raise](uint64_t id, int level) {
+    const Document &doc = *current_context().document;
+    const Layer &layer = layer_or_raise(id);
+    const VectorDrawing &stored = layer_drawing(doc, layer);
+    VectorDrawing drawing = stored;
+    if (level < 0) {
+      drawing_detail_final_handles(drawing);
+    }
+    else if (drawing_has_detail(drawing)) {
+      for (Shape &shape : drawing.shapes) {
+        shape.detail_level = level;
+      }
+      /* A curve no shape uses shows every level: take its points above `level` out too. */
+      for (Curve &curve : drawing.curves) {
+        std::erase_if(curve.points, [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > level; });
+      }
+      drawing_detail_final_handles(drawing);
+    }
+    std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+    skins.resize(drawing.points.size());
+    const Transform2D world = layer_world_transform(doc, layer.id);
+    const auto shown = [&](int point, float2 p) { return world.apply(skins[size_t(point)].apply(p)); };
+    py::list points;
+    for (int i = 0; i < int(drawing.points.size()); i++) {
+      const float2 q = shown(i, drawing.points[size_t(i)].pos);
+      points.append(py::make_tuple(q.x, q.y));
+    }
+    py::list curves;
+    for (size_t c = 0; c < drawing.curves.size(); c++) {
+      const Curve &curve = drawing.curves[c];
+      const Curve &whole = stored.curves[c];
+      py::list cps;
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        const CurvePoint &cp = curve.points[size_t(i)];
+        const float2 in = shown(cp.point, curve_handle(drawing, curve, i, true));
+        const float2 out = shown(cp.point, curve_handle(drawing, curve, i, false));
+        const PointDetail &dt = drawing.points[size_t(cp.point)].detail;
+        int index = i;
+        for (int k = 0; k < int(whole.points.size()); k++) {
+          if (whole.points[size_t(k)].point == cp.point) {
+            index = k;
+            break;
+          }
+        }
+        cps.append(py::make_tuple(cp.point, py::make_tuple(in.x, in.y), py::make_tuple(out.x, out.y), cp.aligned,
+                                  dt.hidden, dt.level, index));
+      }
+      curves.append(py::make_tuple(cps, curve.closed));
+    }
+    return py::make_tuple(points, curves);
+  }, py::arg("id"), py::arg("level") = -1);
+  /* Sets shapes' detail edit level (all of them, or the ones listed), as Detail Level does for the
+   * selected shapes, clamped to how high each can go; then places the detail as that level edits it. */
+  m.def("layer_detail_level_set", [layer_or_raise](uint64_t id, int level, std::vector<int> shapes) {
+    Layer &layer = layer_or_raise(id);
+    VectorDrawing &drawing = layer.drawing;
+    for (size_t s = 0; s < drawing.shapes.size(); s++) {
+      if (!shapes.empty() && std::find(shapes.begin(), shapes.end(), int(s)) == shapes.end()) {
+        continue;
+      }
+      Shape &shape = drawing.shapes[s];
+      shape.detail_level = std::clamp(level, 0, shape_detail_level_limit(drawing, shape));
+    }
+    drawing_detail_update_shown(drawing);
+    current_context().undo->mark_changed();
+  }, py::arg("id"), py::arg("level"), py::arg("shapes") = std::vector<int>());
+  /* Places the layer's detail points on their curves now (as the viewport does each frame): an edited
+   * one keeps where it is, the rest ride their coarser curve, by each curve's edit level. */
+  m.def("layer_detail_sync", [layer_or_raise](uint64_t id) {
+    drawing_detail_sync(layer_or_raise(id).drawing, true);
+  });
+  /* Moves a point (or one handle) so it shows at a document-space place: the bones' bend undone, as
+   * a G drag places it. */
+  const auto stored_at = [](const Document &doc, const Layer &layer, int point, std::pair<float, float> at) {
+    std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+    skins.resize(layer.drawing.points.size());
+    const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+    return skins[size_t(point)].inverted().apply(in_layer);
+  };
+  m.def("layer_place_point", [layer_or_raise, stored_at](uint64_t id, int index, std::pair<float, float> at) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference() && !layer.reference.edit_points) {
+      throw py::value_error("This copy's points are locked (reference_set edit_points=1 unlocks them)");
+    }
+    if (index < 0 || index >= int(layer.drawing.points.size())) {
+      throw py::index_error("no point " + std::to_string(index));
+    }
+    layer.drawing.points[size_t(index)].pos = stored_at(*current_context().document, layer, index, at);
+    current_context().undo->mark_changed();
+  });
+  m.def("layer_place_handle", [layer_or_raise, stored_at](uint64_t id, int curve_index, int index, const std::string &side,
+                                                         std::pair<float, float> at, bool keep_other) {
+    Layer &layer = layer_or_raise(id);
+    if (layer.is_reference() && !layer.reference.edit_points) {
+      throw py::value_error("This copy's points are locked (reference_set edit_points=1 unlocks them)");
+    }
+    VectorDrawing &drawing = layer.drawing;
+    if (curve_index < 0 || curve_index >= int(drawing.curves.size()) || index < 0 ||
+        index >= int(drawing.curves[size_t(curve_index)].points.size()))
+    {
+      throw py::index_error("no such curve point");
+    }
+    if (side != "IN" && side != "OUT") {
+      throw py::value_error("side must be 'IN' or 'OUT'");
+    }
+    Curve &curve = drawing.curves[size_t(curve_index)];
+    const float2 stored = stored_at(*current_context().document, layer, curve.points[size_t(index)].point, at);
+    curve_point_move_handle(drawing, curve, index, side == "IN", stored, keep_other);
+    current_context().undo->mark_changed();
+  });
+
   m.def("layer_to_document", [layer_or_raise](uint64_t id, std::pair<float, float> p) {
     const float2 q = layer_world_transform(*current_context().document, layer_or_raise(id).id).apply({p.first, p.second});
     return py::make_tuple(q.x, q.y);
@@ -1874,10 +2632,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     py::list result;
     for (const Modifier &mod : layer_or_raise(id).modifiers) {
       py::dict d;
-      d["type"] = mod.type == ModifierType::Armature  ? "ARMATURE"
-                  : mod.type == ModifierType::Boolean ? "BOOLEAN"
-                  : mod.type == ModifierType::Bevel   ? "BEVEL"
-                                                      : "MIRROR";
+      d["type"] = mod.type == ModifierType::Armature    ? "ARMATURE"
+                  : mod.type == ModifierType::Boolean   ? "BOOLEAN"
+                  : mod.type == ModifierType::Bevel     ? "BEVEL"
+                  : mod.type == ModifierType::Subdivide ? "SUBDIVIDE"
+                                                        : "MIRROR";
+      if (mod.type == ModifierType::Subdivide) {
+        d["split"] = mod.subdiv_by_length ? "LENGTH" : "COUNT";
+        d["spacing"] = mod.subdiv_spacing;
+        d["render_spacing"] = mod.subdiv_render_spacing;
+        d["pieces"] = mod.subdiv_pieces;
+        d["max_pieces"] = mod.subdiv_max_pieces;
+        d["weights"] = mod.subdiv_from_bones ? "BONES" : "BLEND";
+        d["preserve_volume"] = mod.subdiv_preserve_volume;
+        d["group"] = mod.subdiv_group;
+      }
       if (mod.type == ModifierType::Bevel) {
         d["limit"] = mod.bevel_limit == BevelLimit::Group ? "GROUP" : mod.bevel_limit == BevelLimit::None ? "NONE" : "ANGLE";
         d["width_type"] = mod.bevel_width == BevelWidth::Width   ? "WIDTH"
@@ -2006,13 +2775,46 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (mod.type == ModifierType::Bevel && key == "clamp") {
         mod.bevel_clamp = value.cast<bool>();
       }
+      else if (mod.type == ModifierType::Subdivide && key == "split") {
+        const std::string split = value.cast<std::string>();
+        if (split != "LENGTH" && split != "COUNT") {
+          throw py::value_error("split is LENGTH or COUNT");
+        }
+        mod.subdiv_by_length = split == "LENGTH";
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "spacing") {
+        mod.subdiv_spacing = std::max(1e-4f, value.cast<float>());
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "render_spacing") {
+        mod.subdiv_render_spacing = std::max(0.0f, value.cast<float>());
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "pieces") {
+        mod.subdiv_pieces = std::clamp(value.cast<int>(), 1, 256);
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "max_pieces") {
+        mod.subdiv_max_pieces = std::clamp(value.cast<int>(), 1, 256);
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "weights") {
+        const std::string w = value.cast<std::string>();
+        if (w != "BLEND" && w != "BONES") {
+          throw py::value_error("weights is BLEND or BONES");
+        }
+        mod.subdiv_from_bones = w == "BONES";
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "preserve_volume") {
+        mod.subdiv_preserve_volume = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::Subdivide && key == "group") {
+        mod.subdiv_group = value.cast<std::string>();
+      }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
       }
     }
     current_context().undo->mark_changed();
   });
-  /* The drawing as it shows: (points [(x, y)], curve count, shapes [(name, closed)]). */
+  /* The drawing as it shows: (points [(x, y)], curve count, shapes [(name, closed, connected, merged,
+   * area, fill)]). */
   m.def(
       "layer_evaluated",
       [layer_or_raise](uint64_t id, bool render) {
@@ -2038,7 +2840,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                                : shape.merged_fill                     ? "FILL"
                                : shape.merged_line                     ? "LINE"
                                                                        : "";
-          shapes.append(py::make_tuple(shape.name, closed, connected, merged, std::fabs(area) * 0.5));
+          shapes.append(py::make_tuple(shape.name, closed, connected, merged, std::fabs(area) * 0.5,
+                                       py::make_tuple(shape.style.fill.r, shape.style.fill.g, shape.style.fill.b,
+                                                      shape.style.fill.a)));
         }
         return py::make_tuple(points, int(d.curves.size()), shapes);
       },
@@ -2074,7 +2878,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("layer_weight_paint", [layer_or_raise](uint64_t id, std::pair<float, float> center, float radius,
                                                const std::string &bone_name, float weight, float strength,
-                                               const std::string &mode, bool normalize, bool selected_only) {
+                                               const std::string &mode, bool normalize, bool selected_only,
+                                               bool keep_animation) {
     Document &doc = *current_context().document;
     animation_sync(doc);
     Layer &layer = layer_or_raise(id);
@@ -2092,7 +2897,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     brush.mode = mode == "ADD" ? WeightPaintMode::Add : mode == "SUBTRACT" ? WeightPaintMode::Subtract : WeightPaintMode::Draw;
     brush.normalize = normalize;
     brush.selected_only = selected_only;
+    /* Keep Animation, as the brush in the viewport: every action's keyed frames show it where they did. */
+    const DrawingsShownAll kept = keep_animation ? drawings_shown_capture_all(doc, {layer.id}) : DrawingsShownAll();
     const int changed = layer_weight_paint(doc, layer, brush);
+    if (changed > 0 && keep_animation) {
+      drawings_shown_keep_all(doc, kept);
+    }
     current_context().undo->mark_changed();
     return changed;
   });
@@ -2234,6 +3044,71 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return clips;
   });
   /* What a Media layer shows on a frame: (clip id, seconds into its file), or None. */
+  /* How a property's field shows now (oanim layer.field_state): its key state and whether a smart
+   * action plays into it. */
+  m.def("layer_field_state", [layer_or_raise](uint64_t id, const std::string &path) {
+    Layer &layer = layer_or_raise(id);
+    const int key = layer_key_state(layer, {path}, current_context().document->frame_current);
+    static const char *const keys[] = {"NONE", "ANIMATED", "KEYED"};
+    return py::make_tuple(std::string(keys[std::clamp(key, 0, 2)]), layer_smart_state(layer, {path}) != 0);
+  });
+  /* A bone layer's actions, and what of them plays now. */
+  m.def("layer_actions", [layer_or_raise](uint64_t id) {
+    Layer &layer = layer_or_raise(id);
+    py::list out;
+    for (const std::string &name : layer.actions) {
+      py::dict d;
+      d["name"] = name;
+      d["kind"] = smart_action_bone(layer, name) ? "SMART" : fix_action_find(layer, name) ? "FIX" : "ACTION";
+      out.append(d);
+    }
+    return out;
+  });
+  m.def("layer_smart_actions_playing", [layer_or_raise](uint64_t id) {
+    Layer &layer = layer_or_raise(id);
+    py::list out;
+    for (const auto &[name, t] : smart_actions_playing(layer)) {
+      const float length = smart_action_length(layer, name);
+      out.append(py::make_tuple(name, t, length > 0.0f ? std::min(t / length, 1.0f) : 0.0f));
+    }
+    return out;
+  });
+  m.def("layer_fix_actions", [layer_or_raise](uint64_t id) {
+    Layer &layer = layer_or_raise(id);
+    const auto playing = smart_actions_playing(layer);
+    py::list out;
+    for (const FixAction &f : layer.fix_actions) {
+      py::dict d;
+      d["name"] = f.name;
+      py::list drivers, poses;
+      for (const std::string &n : f.drivers) {
+        drivers.append(n);
+      }
+      for (const FixPose &pose : f.poses) {
+        py::dict pd;
+        py::list at, shares;
+        for (const float v : pose.at) {
+          at.append(v);
+        }
+        for (const float v : fix_pose_shares(layer, f, pose)) {
+          shares.append(v);
+        }
+        pd["frame"] = pose.frame;
+        pd["at"] = at;
+        pd["shares"] = shares;
+        pd["label"] = fix_pose_label(layer, f, pose);
+        poses.append(pd);
+      }
+      const FixMix mix = fix_action_mix(layer, f, playing);
+      d["drivers"] = drivers;
+      d["poses"] = poses;
+      d["strength"] = mix.strength;
+      d["nearest_pose"] = mix.nearest;
+      d["broken"] = fix_action_broken(layer, f);
+      out.append(d);
+    }
+    return out;
+  });
   m.def("layer_media_shown", [layer_or_raise](uint64_t id, int frame) -> py::object {
     const MediaShown shown = media_shown_at(*current_context().document, layer_or_raise(id), frame);
     if (!shown.clip) {
@@ -2298,6 +3173,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const auto step_dict = [&](const MaskStep &s, py::dict &d) {
       d["mode"] = mask_mode_identifier(s.mode);
       d["invert"] = s.invert;
+      d["combine"] = mask_combine_identifier(s.combine);
       d["grow"] = s.grow;
       /* As before rows: Outside was a Subtract, Expand a grow. */
       d["outside"] = s.mode == MaskMode::Subtract;
@@ -2370,6 +3246,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return py::make_tuple(draw_order_mode_identifier(rule.mode), target ? target->name : std::string());
   });
   /* The drawing layers as drawn now (rules applied), bottom first, by name; hidden ones left out. */
+  /* What a viewport click on `hit` picks for the Draw Order eyedropper moving `moving` (ids). */
+  m.def("draw_order_pick_target", [](uint64_t hit, const std::vector<uint64_t> &moving) {
+    return draw_order_pick_target(*current_context().document, hit, moving);
+  });
   m.def("draw_order", []() {
     Document &doc = *current_context().document;
     animation_sync(doc);
@@ -2535,8 +3415,14 @@ static bool handle_script_error(py::error_already_set &error, const std::string 
   return false;
 }
 
+uint64_t python_runs()
+{
+  return g_python_runs;
+}
+
 bool run_file(const std::filesystem::path &path)
 {
+  g_python_runs++;
   const std::string path_utf8 = path_to_utf8(path);
   try {
     py::dict globals;
@@ -2628,6 +3514,7 @@ std::vector<std::string> console_history()
 
 void console_push(const std::string &line)
 {
+  g_python_runs++;
   console_call("push", line);
 }
 
@@ -2644,12 +3531,14 @@ void console_clear()
 
 bool text_run(const std::string &name, const std::string &source)
 {
+  g_python_runs++;
   const std::optional<py::object> result = console_call("run_text", name, source);
   return result && result->cast<bool>();
 }
 
 std::string remote_run(const std::string &code)
 {
+  g_python_runs++;
   try {
     const py::object result = py::module_::import("oanim._remote").attr("run")(code);
     return py::module_::import("json").attr("dumps")(result).cast<std::string>();
@@ -2662,6 +3551,7 @@ std::string remote_run(const std::string &code)
 
 bool run_string(const std::string &code)
 {
+  g_python_runs++;
   try {
     py::dict globals;
     globals["__name__"] = "__main__";

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "data/annotations.hh"
 #include "data/driver.hh"
 #include "data/layer.hh"
 #include "data/material.hh"
@@ -23,12 +24,18 @@ struct Text {
   std::string body;
   /* File the text was opened from or saved to; empty for a text that only lives in the document. */
   std::string filepath;
+  bool operator==(const Text &) const = default;
 };
 
 /* How playback keeps time (Blender's Sync): every frame drawn even if that plays slower than the
  * frame rate, frames skipped to keep the true speed, or kept to the sound (which drops frames the
  * same way until the document has sound). Ordered as the RNA items. */
 enum class PlaybackSync { EveryFrame, FrameDropping, Audio };
+/* Blender's auto-keying modes: Add & Replace keys whatever changes (adding keys where there are none),
+ * Replace only overwrites keys already on the frame. */
+enum class AutoKeyMode { AddReplace, Replace };
+/* Onion skins step back and forward by keys (of the layers being edited) or by frames. */
+enum class OnionMode { Keyframes, Frames };
 
 struct Document {
   /* The viewports' overlays (kept as they are through undo, as Blender's are). */
@@ -37,6 +44,10 @@ struct Document {
    * a file brings its own, so the viewports take it. */
   ViewportView view;
   uint64_t view_serial = 0;
+  /* Mirror editing (the viewport header's X and Y) as saved with the file: the switches themselves are
+   * the tool settings', copied in when a file opens and out when it is written. */
+  bool mirror_x = false;
+  bool mirror_y = false;
   /* Which panels and folding rows are open, by "<editor>/<panel>" ("Properties/Transform",
    * "Timeline/<row>"), where one differs from its default: saved with the project, kept through
    * undo (see ui_fold_state). */
@@ -52,8 +63,25 @@ struct Document {
   /* The frame the plain values (layer transforms, point positions) were last evaluated at;
    * -1 before the first evaluation. Not saved. */
   int evaluated_frame = -1;
-  /* Edits at frames other than 0 add keys (Blender's record button, on by default). */
+  /* Edits at frames other than 0 add keys (Blender's record button, on by default), as `auto_key_mode`
+   * says (its dropdown). Auto-Freeze Keys (Moho's): a bone keyed by an edit keys every other bone of
+   * its bone layer shown there on that frame too, and a point keyed every point of its drawing, so the whole
+   * pose and shape hold there. */
   bool auto_key = true;
+  AutoKeyMode auto_key_mode = AutoKeyMode::AddReplace;
+  bool auto_freeze_keys = false;
+  /* Onion skins (the timeline's toggle beside the record button, and its popover): the drawings being
+   * edited as they are on frames before and after this one, wireframes only in a colour per side,
+   * fading with distance. Never rendered. `onion_step` is for Frames: every so many frames. */
+  bool onion_skin = false;
+  OnionMode onion_mode = OnionMode::Keyframes;
+  int onion_before = 2;
+  int onion_after = 0;
+  int onion_step = 1;
+  bool onion_fade = true;
+  bool onion_all_layers = false;
+  Color onion_color_before = {0.88f, 0.29f, 0.25f, 1.0f};
+  Color onion_color_after = {0.25f, 0.72f, 0.36f, 1.0f};
   /* The timeline's Playback popover (Blender's scene settings). The audio ones are kept for when the
    * document has sound: playing it with the animation, and short bits of it while scrubbing. */
   PlaybackSync sync = PlaybackSync::FrameDropping;
@@ -116,6 +144,12 @@ struct Document {
   uint64_t next_material_id = 1;
   /* Text blocks for the text editor. Typing in them is not part of the undo history. */
   std::vector<Text> texts;
+  /* Notes and drawing guides over the drawing (data/annotations.hh), with the active annotation layer
+   * and the picked guide (-1: none). */
+  std::vector<AnnotationLayer> annotations;
+  int active_annotation = 0;
+  std::vector<DrawingGuide> guides;
+  int active_guide = -1;
 
   /* The active shape (Blender's active element): the shape last clicked, in the viewport or the
    * Shape tab's list, by its layer and its id. The Shape and Material panels show it while it's
@@ -126,10 +160,23 @@ struct Document {
   std::vector<Layer> layers;
   uint64_t active_layer = 0;
   uint64_t next_layer_id = 1;
+  /* Changes whenever layers may have been added, removed or moved (see Revision). */
+  Revision tree_revision;
+
+  /* Field by field (undo steps share settings that are the same). */
+  bool operator==(const Document &) const = default;
 
   static const rna::StructRNA &rna();
 };
 
+
+/* Revisions (see Revision): a new one, never given before; one for a layer (it may have changed); one for
+ * every layer, the Simulation and the camera and the layer tree (anything may have changed). */
+uint64_t revision_next();
+/* The newest revision given (none given since a look: no layer changed that anyone said). */
+uint64_t revision_latest();
+void layer_touch(Layer &layer);
+void document_touch_all(Document &doc);
 
 Text *document_text_find(Document &doc, const std::string &name);
 /* "Text", then "Text.001", "Text.002", ... as Blender names data-blocks. */
@@ -151,6 +198,24 @@ inline constexpr uint64_t CAMERA_LAYER_ID = ~uint64_t(0) - 2;
 uint64_t document_selection_hash(const Document &doc);
 Layer *layer_find(Document &doc, uint64_t id);
 const Layer *layer_find(const Document &doc, uint64_t id);
+/* While one lives, layer_find in `doc` looks layers up in an index made when it began instead of
+ * searching the tree (thousands of layers: thousands of lookups a frame each walking all of them). Only for
+ * work that doesn't add, remove or move layers in it meanwhile (drawing the scene, building the timeline's
+ * rows); nested ones share the outer index. */
+class LayerIndexScope {
+ public:
+  explicit LayerIndexScope(const Document &doc);
+  ~LayerIndexScope();
+  LayerIndexScope(const LayerIndexScope &) = delete;
+  LayerIndexScope &operator=(const LayerIndexScope &) = delete;
+
+ private:
+  bool owner_ = false;
+};
+/* Within a LayerIndexScope of `doc`: whether no layer has a Boolean modifier (false outside one). */
+bool layer_index_no_booleans(const Document &doc);
+/* Whether a LayerIndexScope of `doc` is in effect. */
+bool layer_index_active(const Document &doc);
 /* The list holding a layer (the document's or a group's children), and its index there. */
 std::vector<Layer> *layer_container(Document &doc, uint64_t id, int *r_index);
 /* The group containing a layer, or null at the top level. */

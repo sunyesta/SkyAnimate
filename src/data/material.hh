@@ -27,6 +27,7 @@ struct Material {
   uint64_t id = 0;
   std::string name;
   Style style;
+  bool operator==(const Material &) const = default;
 };
 
 Material *material_find(Document &doc, uint64_t id);

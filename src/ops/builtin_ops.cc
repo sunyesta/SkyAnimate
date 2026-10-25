@@ -319,6 +319,19 @@ void builtin_operators_register()
     operators().add(std::move(ot));
   }
   {
+    OperatorType ot;
+    ot.idname = "view.media_view";
+    ot.name = "Media View";
+    ot.description = "Show every media layer at full opacity (guides too) with the viewport's overlays hidden, "
+                     "to see the footage clearly; again to go back (`). Changes no layer and keys nothing";
+    ot.poll = [](Context &C) { return C.wm != nullptr && C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      C.wm->media_view = !C.wm->media_view;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
     /* F9: Blender's Adjust Last Operation, opening (or folding) the ViewportActionPanel. */
     OperatorType ot;
     ot.idname = "screen.redo_last";

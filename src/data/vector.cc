@@ -1,8 +1,10 @@
 #include "data/vector.hh"
 
 #include "data/detail.hh"
+#include "data/fill_area.hh"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -291,6 +293,31 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
 
 bool drawing_ensure_ids(VectorDrawing &drawing)
 {
+  /* Nearly always every id is there and its own (this runs before each undo step, over every drawing):
+   * seen with a sorted list, without a set's allocation per point. */
+  {
+    std::vector<uint64_t> point_ids, shape_ids;
+    point_ids.reserve(drawing.points.size());
+    shape_ids.reserve(drawing.shapes.size());
+    bool fine = true;
+    for (const MeshPoint &p : drawing.points) {
+      fine = fine && p.id != 0 && p.id < drawing.next_id;
+      point_ids.push_back(p.id);
+    }
+    for (const Shape &sh : drawing.shapes) {
+      fine = fine && sh.id != 0 && sh.id < drawing.next_id;
+      shape_ids.push_back(sh.id);
+    }
+    if (fine) {
+      std::sort(point_ids.begin(), point_ids.end());
+      std::sort(shape_ids.begin(), shape_ids.end());
+      if (std::adjacent_find(point_ids.begin(), point_ids.end()) == point_ids.end() &&
+          std::adjacent_find(shape_ids.begin(), shape_ids.end()) == shape_ids.end())
+      {
+        return false;
+      }
+    }
+  }
   for (const MeshPoint &p : drawing.points) {
     drawing.next_id = std::max(drawing.next_id, p.id + 1);
   }
@@ -810,35 +837,23 @@ bool drawing_pick_segment(const VectorDrawing &drawing, float2 pos, float radius
   return found;
 }
 
-static bool polygon_contains(const std::vector<float2> &poly, float2 p)
-{
-  bool inside = false;
-  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
-    const float2 a = poly[i], b = poly[j];
-    if ((a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
 int drawing_pick_shape(const VectorDrawing &drawing, float2 pos, float radius)
 {
   std::vector<float2> outline;
   for (int s = int(drawing.shapes.size()) - 1; s >= 0; s--) {
     const Shape &shape = drawing.shapes[s];
-    bool closed;
-    shape_outline(drawing, shape, 12, outline, nullptr, &closed);
-    if (outline.size() < 2) {
-      continue;
-    }
-    if (shape.has_fill && closed && polygon_contains(outline, pos)) {
+    /* Inside its fill (not in a hole), or on a line round any of its runs. */
+    if (shape.has_fill && shape_fill_contains(drawing, shape, pos)) {
       return s;
     }
-    const size_t n = outline.size();
-    for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
-      if (distance_to_segment(pos, outline[i], outline[(i + 1) % n]) <= radius) {
-        return s;
+    for (const Shape &run : shape_runs(drawing, shape)) {
+      bool closed;
+      shape_outline(drawing, run, 12, outline, nullptr, &closed);
+      const size_t n = outline.size();
+      for (size_t i = 0; n >= 2 && i + 1 < n + (closed ? 1 : 0); i++) {
+        if (distance_to_segment(pos, outline[i], outline[(i + 1) % n]) <= radius) {
+          return s;
+        }
       }
     }
   }
@@ -1524,6 +1539,83 @@ std::vector<bool> drawing_selected_shapes(const VectorDrawing &drawing)
     }
   }
   return selected;
+}
+
+/* Whether every point along the shape's edges is selected. */
+static bool shape_all_selected(const VectorDrawing &drawing, const Shape &shape)
+{
+  for (const ShapeEdge &edge : shape.edges) {
+    int a, b;
+    curve_segment_points(drawing.curves[edge.curve], edge.segment, &a, &b);
+    if (!drawing.points[a].selected || !drawing.points[b].selected) {
+      return false;
+    }
+  }
+  return !shape.edges.empty();
+}
+
+int drawing_join_fills(VectorDrawing &drawing)
+{
+  std::vector<int> picked;
+  std::vector<float2> outline;
+  for (int s = 0; s < int(drawing.shapes.size()); s++) {
+    const Shape &shape = drawing.shapes[s];
+    if (!shape_all_selected(drawing, shape)) {
+      continue;
+    }
+    bool goes_round = false;
+    for (const Shape &run : shape_runs(drawing, shape)) {
+      bool closed = false;
+      shape_outline(drawing, run, 1, outline, nullptr, &closed);
+      goes_round |= closed;
+    }
+    if (goes_round) {
+      picked.push_back(s);
+    }
+  }
+  if (picked.size() < 2) {
+    return 0;
+  }
+  Shape &joined = drawing.shapes[picked.front()];
+  for (size_t k = 1; k < picked.size(); k++) {
+    for (const ShapeEdge &edge : drawing.shapes[picked[k]].edges) {
+      if (std::find(joined.edges.begin(), joined.edges.end(), edge) == joined.edges.end()) {
+        joined.edges.push_back(edge);
+      }
+    }
+  }
+  joined.has_fill = true;
+  if (joined.fill_rule == FillRule::Loops) {
+    joined.fill_rule = FillRule::EvenOdd;
+  }
+  for (size_t k = picked.size() - 1; k >= 1; k--) {
+    drawing.shapes.erase(drawing.shapes.begin() + picked[k]);
+  }
+  return int(picked.size());
+}
+
+int drawing_separate_fills(VectorDrawing &drawing)
+{
+  int made = 0;
+  for (int s = int(drawing.shapes.size()) - 1; s >= 0; s--) {
+    if (!shape_all_selected(drawing, drawing.shapes[s])) {
+      continue;
+    }
+    std::vector<Shape> runs = shape_runs(drawing, drawing.shapes[s]);
+    if (runs.size() < 2) {
+      continue;
+    }
+    const std::string name = drawing.shapes[s].name;
+    drawing.shapes[s] = std::move(runs.front());
+    for (size_t k = 1; k < runs.size(); k++) {
+      Shape &piece = runs[k];
+      piece.id = drawing.next_id++;
+      piece.name = name + " " + std::to_string(k + 1);
+      drawing.shapes.insert(drawing.shapes.begin() + s + int(k), std::move(piece));
+      made++;
+    }
+  }
+  return made;
 }
 
 bool drawing_arrange_shapes(VectorDrawing &drawing, ShapeArrange arrange)
@@ -2664,6 +2756,7 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
 
   for (const auto &[r, l] : pairs) {
     const int src = right_to_left ? r : l, dst = right_to_left ? l : r;
+    result.copied.push_back({src, dst});
     /* The handles first, while the neighbours are where they were: the copy runs the same way
      * along its curve when the source's previous point reflects nearer its previous one. */
     Curve *src_curve = nullptr;
@@ -2746,8 +2839,61 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
       }
     }
   }
+  result.centre_points = centre;
+  /* The shapes on the copied side give their looks to their images. */
+  std::map<int, int> image;
+  for (const auto &[src, dst] : result.copied) {
+    image[src] = dst;
+  }
+  for (const int c : centre) {
+    image[c] = c;
+  }
+  drawing_copy_shape_looks(drawing, drawing, image);
   result.done = true;
   return result;
+}
+
+int drawing_copy_shape_looks(const VectorDrawing &from, VectorDrawing &to, const std::map<int, int> &image)
+{
+  const auto point_set = [](const VectorDrawing &d, const Shape &shape) {
+    std::vector<int> points = shape_points(d, shape);
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end()), points.end());
+    return points;
+  };
+  /* Worked out first, then set, as `from` and `to` may be the same drawing. */
+  std::vector<std::pair<int, Shape>> looks;
+  for (int s = 0; s < int(from.shapes.size()); s++) {
+    std::vector<int> mapped;
+    bool all = true;
+    for (const int p : point_set(from, from.shapes[s])) {
+      const auto it = image.find(p);
+      all = all && it != image.end();
+      if (all) {
+        mapped.push_back(it->second);
+      }
+    }
+    if (!all || mapped.empty()) {
+      continue;
+    }
+    std::sort(mapped.begin(), mapped.end());
+    mapped.erase(std::unique(mapped.begin(), mapped.end()), mapped.end());
+    for (int t = 0; t < int(to.shapes.size()); t++) {
+      if ((&from == &to && t == s) || point_set(to, to.shapes[t]) != mapped) {
+        continue;
+      }
+      looks.push_back({t, from.shapes[s]});
+    }
+  }
+  for (const auto &[t, look] : looks) {
+    Shape &shape = to.shapes[t];
+    shape.has_fill = look.has_fill;
+    shape.has_outline = look.has_outline;
+    shape.style = look.style;
+    shape.material = look.material;
+    shape.material_last = look.material_last;
+  }
+  return int(looks.size());
 }
 
 }  // namespace oanim
@@ -2795,6 +2941,396 @@ void drawing_mirror_setup_x(VectorDrawing &drawing)
       cp.select_in = cp.select_out = false;
     }
   }
+}
+
+/* ---------------------------------------------------------------------------------
+ * Slide (G G)
+ */
+
+namespace {
+
+/* A curve's line as it was before the slide: segment k runs from u = k to u = k + 1. */
+struct SlidePath {
+  std::vector<std::array<float2, 4>> segments;
+  bool closed = false;
+
+  int count() const { return int(segments.size()); }
+  /* The segment u falls in and how far along it. `end`: a whole u is the end of the segment
+   * before it rather than the start of the next. */
+  int locate(float u, bool end, float *r_t) const
+  {
+    const int n = count();
+    if (closed) {
+      u = std::fmod(u, float(n));
+      if (u < 0.0f) {
+        u += float(n);
+      }
+    }
+    int k = int(std::floor(u));
+    if (end && float(k) == u) {
+      k -= 1;
+    }
+    if (closed) {
+      k = (k % n + n) % n;
+      float t = u - std::floor(u);
+      if (end && t == 0.0f) {
+        t = 1.0f;
+      }
+      *r_t = t;
+      return k;
+    }
+    k = std::clamp(k, 0, n - 1);
+    *r_t = std::clamp(u - float(k), 0.0f, 1.0f);
+    return k;
+  }
+  float2 eval(float u) const
+  {
+    float t;
+    const int k = locate(u, false, &t);
+    return bezier_eval(segments[k].data(), t);
+  }
+  /* Which way the line runs at u, coming in (`end`) or going out. */
+  float2 tangent(float u, bool end) const
+  {
+    float t;
+    const std::array<float2, 4> &c = segments[locate(u, end, &t)];
+    const float s = 1.0f - t;
+    float2 d = (c[1] - c[0]) * (3.0f * s * s) + (c[2] - c[1]) * (6.0f * s * t) + (c[3] - c[2]) * (3.0f * t * t);
+    if (dot(d, d) < 1e-14f) {
+      /* A handle of no length: the line leaves toward the far handle. */
+      d = t < 0.5f ? (c[2] - c[0]) : (c[3] - c[1]);
+      if (dot(d, d) < 1e-14f) {
+        d = c[3] - c[0];
+      }
+    }
+    return normalize(d);
+  }
+};
+
+/* The Bezier that best follows the old line from ua to ub (ua < ub): exactly the piece of it where
+ * both lie in one old segment, else a least-squares fit with the line's own directions at the
+ * ends (Schneider's curve fitting, as Blender's curve fit does). */
+void slide_fit(const SlidePath &path, float ua, float ub, float2 r_ctrl[4])
+{
+  const float2 a = path.eval(ua), b = path.eval(ub);
+  float ta, tb;
+  const int ka = path.locate(ua, false, &ta);
+  const int kb = path.locate(ub, true, &tb);
+  r_ctrl[0] = a;
+  r_ctrl[3] = b;
+  if (ka == kb && ta <= tb) {
+    /* A piece of one cubic is a cubic: its handles are a third of its span of the derivative. */
+    const std::array<float2, 4> &c = path.segments[ka];
+    const auto deriv = [&](float t) {
+      const float s = 1.0f - t;
+      return (c[1] - c[0]) * (3.0f * s * s) + (c[2] - c[1]) * (6.0f * s * t) + (c[3] - c[2]) * (3.0f * t * t);
+    };
+    const float span = (tb - ta) / 3.0f;
+    r_ctrl[1] = a + deriv(ta) * span;
+    r_ctrl[2] = b - deriv(tb) * span;
+    return;
+  }
+  const float2 out = path.tangent(ua, false);
+  const float2 in = path.tangent(ub, true) * -1.0f;
+  /* Samples of the old line, given parameters by how far along it they are. */
+  std::vector<float2> samples;
+  const int steps = std::max(8, int(std::ceil((ub - ua) * 16.0f)));
+  for (int i = 0; i <= steps; i++) {
+    samples.push_back(path.eval(ua + (ub - ua) * float(i) / float(steps)));
+  }
+  std::vector<float> along(samples.size(), 0.0f);
+  for (size_t i = 1; i < samples.size(); i++) {
+    along[i] = along[i - 1] + distance(samples[i], samples[i - 1]);
+  }
+  const float total = along.back();
+  const float chord = distance(a, b);
+  float alpha_a = chord / 3.0f, alpha_b = chord / 3.0f;
+  std::vector<float> params(samples.size());
+  for (size_t i = 0; i < samples.size(); i++) {
+    params[i] = total > 1e-9f ? along[i] / total : 0.0f;
+  }
+  /* Fit, then move each sample's parameter to its nearest place on the fit (one Newton step) and
+   * fit again: chord lengths alone leave the handles a little off on a long bend. */
+  for (int pass = 0; pass < 5 && total > 1e-9f; pass++) {
+    double c00 = 0.0, c01 = 0.0, c11 = 0.0, x0 = 0.0, x1 = 0.0;
+    for (size_t i = 0; i < samples.size(); i++) {
+      const float t = params[i], s = 1.0f - t;
+      const float b0 = s * s * s, b1 = 3.0f * s * s * t, b2 = 3.0f * s * t * t, b3 = t * t * t;
+      const float2 A1 = out * b1, A2 = in * b2;
+      const float2 rest = samples[i] - (a * (b0 + b1) + b * (b2 + b3));
+      c00 += dot(A1, A1);
+      c01 += dot(A1, A2);
+      c11 += dot(A2, A2);
+      x0 += dot(rest, A1);
+      x1 += dot(rest, A2);
+    }
+    const double det = c00 * c11 - c01 * c01;
+    if (std::abs(det) > 1e-18) {
+      const double fa = (x0 * c11 - c01 * x1) / det, fb = (c00 * x1 - c01 * x0) / det;
+      /* A handle backwards or nearly none is no fit; the plain third of the chord is safer. */
+      if (fa > 1e-4 * chord && fb > 1e-4 * chord) {
+        alpha_a = float(fa);
+        alpha_b = float(fb);
+      }
+      else {
+        break;
+      }
+    }
+    const float2 c[4] = {a, a + out * alpha_a, b + in * alpha_b, b};
+    for (size_t i = 1; i + 1 < samples.size(); i++) {
+      const float t = params[i], s = 1.0f - t;
+      const float2 q = bezier_eval(c, t) - samples[i];
+      const float2 d1 = (c[1] - c[0]) * (3.0f * s * s) + (c[2] - c[1]) * (6.0f * s * t) + (c[3] - c[2]) * (3.0f * t * t);
+      const float2 d2 = (c[2] - c[1] * 2.0f + c[0]) * (6.0f * s) + (c[3] - c[2] * 2.0f + c[1]) * (6.0f * t);
+      const float den = dot(d1, d1) + dot(q, d2);
+      if (std::abs(den) > 1e-12f) {
+        params[i] = std::clamp(t - dot(q, d1) / den, 0.0f, 1.0f);
+      }
+    }
+  }
+  r_ctrl[1] = a + out * alpha_a;
+  r_ctrl[2] = b + in * alpha_b;
+}
+
+}  // namespace
+
+int drawing_slide_points(VectorDrawing &drawing, const std::vector<int> &points, float factor)
+{
+  factor = std::clamp(factor, -0.999f, 0.999f);
+  std::vector<bool> sliding(drawing.points.size(), false);
+  for (const int p : points) {
+    if (p >= 0 && p < int(drawing.points.size())) {
+      sliding[p] = true;
+    }
+  }
+  /* A point on two curves slides along the first. */
+  std::vector<bool> taken(drawing.points.size(), false);
+  int moved = 0;
+  for (Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    const int segs = curve.segment_count();
+    if (segs < 1) {
+      continue;
+    }
+    std::vector<int> here;
+    for (int i = 0; i < n; i++) {
+      const int p = curve.points[i].point;
+      if (sliding[p] && !taken[p]) {
+        here.push_back(i);
+      }
+    }
+    if (here.empty()) {
+      continue;
+    }
+    for (int i = 0; i < n; i++) {
+      own_handles(drawing, curve, i);
+    }
+    SlidePath path;
+    path.closed = curve.closed;
+    for (int k = 0; k < segs; k++) {
+      std::array<float2, 4> c;
+      curve_segment_bezier(drawing, curve, k, c.data());
+      path.segments.push_back(c);
+    }
+    std::vector<float> u(n);
+    std::vector<bool> slides(n, false);
+    for (int i = 0; i < n; i++) {
+      u[i] = float(i);
+    }
+    for (const int i : here) {
+      taken[curve.points[i].point] = true;
+      /* An open curve's end can only slide inward. */
+      const float to = curve.closed ? float(i) + factor : std::clamp(float(i) + factor, 0.0f, float(n - 1));
+      if (to != u[i]) {
+        u[i] = to;
+        slides[i] = true;
+      }
+    }
+    /* Refit every segment next to a sliding point to the old line, then move the points. */
+    std::vector<std::array<float2, 4>> fits(segs);
+    std::vector<bool> refit(segs, false);
+    for (int k = 0; k < segs; k++) {
+      const int j = (k + 1) % n;
+      if (!slides[k] && !slides[j]) {
+        continue;
+      }
+      float ua = u[k], ub = u[j];
+      if (curve.closed) {
+        while (ub <= ua) {
+          ub += float(n);
+        }
+        while (ub - ua > float(n)) {
+          ub -= float(n);
+        }
+      }
+      if (ub - ua < 1e-5f) {
+        continue;
+      }
+      slide_fit(path, ua, ub, fits[k].data());
+      refit[k] = true;
+    }
+    for (int i = 0; i < n; i++) {
+      if (slides[i]) {
+        drawing.points[curve.points[i].point].pos = path.eval(u[i]);
+        moved++;
+      }
+    }
+    for (int k = 0; k < segs; k++) {
+      if (!refit[k]) {
+        continue;
+      }
+      CurvePoint &from = curve.points[k];
+      CurvePoint &to = curve.points[(k + 1) % n];
+      from.handle_out = fits[k][1] - drawing.points[from.point].pos;
+      to.handle_in = fits[k][2] - drawing.points[to.point].pos;
+    }
+  }
+  return moved;
+}
+
+/* ---------------------------------------------------------------------------------
+ * Smooth Points
+ */
+
+namespace {
+
+/* Where a point is on a curve, skipping detail hidden above the curve's edit level: the shown
+ * points before and after it (-1 at an open end). */
+struct SmoothSlot {
+  int curve, index, prev, next;
+};
+
+std::vector<SmoothSlot> smooth_slots(const VectorDrawing &drawing)
+{
+  std::vector<SmoothSlot> slots;
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    const Curve &curve = drawing.curves[c];
+    std::vector<int> shown;
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      if (!drawing.points[curve.points[i].point].detail.hidden) {
+        shown.push_back(i);
+      }
+    }
+    const int n = int(shown.size());
+    if (n < 2) {
+      continue;
+    }
+    for (int k = 0; k < n; k++) {
+      int prev = k > 0 ? shown[k - 1] : (curve.closed ? shown[n - 1] : -1);
+      int next = k + 1 < n ? shown[k + 1] : (curve.closed ? shown[0] : -1);
+      slots.push_back({c, shown[k], prev, next});
+    }
+  }
+  return slots;
+}
+
+}  // namespace
+
+int drawing_smooth_points(VectorDrawing &drawing, const SmoothPointsSettings &s)
+{
+  const float factor = std::clamp(s.factor, 0.0f, 1.0f);
+  const int repeat = std::clamp(s.repeat, 1, 1000);
+  const int np = int(drawing.points.size());
+  for (Curve &curve : drawing.curves) {
+    for (int i = 0; i < int(curve.points.size()); i++) {
+      own_handles(drawing, curve, i);
+    }
+  }
+  const std::vector<SmoothSlot> slots = smooth_slots(drawing);
+  /* Each point's neighbours along every curve it is on (a welded point averages them all, as a mesh
+   * vertex does), and whether it ends an open curve. */
+  std::vector<std::vector<int>> around(np);
+  std::vector<bool> end(np, false);
+  for (const SmoothSlot &slot : slots) {
+    const Curve &curve = drawing.curves[slot.curve];
+    const int p = curve.points[slot.index].point;
+    for (const int j : {slot.prev, slot.next}) {
+      if (j >= 0) {
+        around[p].push_back(curve.points[j].point);
+      }
+      else {
+        end[p] = true;
+      }
+    }
+  }
+  std::vector<bool> moves(np, false);
+  int count = 0;
+  for (int p = 0; p < np; p++) {
+    const MeshPoint &mp = drawing.points[p];
+    moves[p] = mp.selected && !mp.detail.hidden && !around[p].empty() && (s.ends || !end[p]);
+    count += moves[p];
+  }
+  if (count == 0) {
+    return 0;
+  }
+  /* One Laplacian step: each point `amount` of the way to its neighbours' middle (negative: away,
+   * Taubin's inflating step, so Keep Shape doesn't shrink a shape). */
+  const auto step = [&](float amount) {
+    const std::vector<MeshPoint> was = drawing.points;
+    for (int p = 0; p < np; p++) {
+      if (!moves[p]) {
+        continue;
+      }
+      float2 mid;
+      float radius = 0.0f;
+      for (const int q : around[p]) {
+        mid += was[q].pos;
+        radius += was[q].radius;
+      }
+      mid = mid / float(around[p].size());
+      radius /= float(around[p].size());
+      if (s.position) {
+        drawing.points[p].pos = was[p].pos + (mid - was[p].pos) * amount;
+      }
+      if (s.radius) {
+        drawing.points[p].radius = std::clamp(was[p].radius + (radius - was[p].radius) * amount, 0.0f,
+                                              POINT_RADIUS_MAX);
+      }
+    }
+  };
+  /* The handles toward smooth ones: in line along the way from the point before to the one after,
+   * each a third of its side's length. */
+  const auto smooth_handles = [&]() {
+    for (const SmoothSlot &slot : slots) {
+      Curve &curve = drawing.curves[slot.curve];
+      CurvePoint &cp = curve.points[slot.index];
+      if (!moves[cp.point]) {
+        continue;
+      }
+      const float2 here = drawing.points[cp.point].pos;
+      const float2 before = slot.prev >= 0 ? drawing.points[curve.points[slot.prev].point].pos : here;
+      const float2 after = slot.next >= 0 ? drawing.points[curve.points[slot.next].point].pos : here;
+      const float2 dir = normalize(after - before);
+      if (dot(dir, dir) < 0.5f) {
+        continue;
+      }
+      if (slot.prev >= 0) {
+        cp.handle_in = cp.handle_in + (dir * (-distance(here, before) / 3.0f) - cp.handle_in) * factor;
+      }
+      if (slot.next >= 0) {
+        cp.handle_out = cp.handle_out + (dir * (distance(here, after) / 3.0f) - cp.handle_out) * factor;
+      }
+      cp.handles_set = true;
+      /* All the way smooth, they stay in line from now on. */
+      if (factor >= 0.999f) {
+        cp.aligned = true;
+      }
+    }
+  };
+  /* A point goes half its Smoothing toward the middle, so 1 takes a zigzag flat in one go: a whole
+   * step would flip it over instead (each point onto the other side). */
+  const float lambda = factor * 0.5f;
+  for (int r = 0; r < repeat; r++) {
+    step(lambda);
+    if (s.keep_shape && s.position) {
+      /* Taubin: lambda then mu, mu just beyond -lambda (pass-band 0.1). */
+      step(-lambda / (1.0f - 0.1f * lambda));
+    }
+    if (s.handles) {
+      smooth_handles();
+    }
+  }
+  return count;
 }
 
 }  // namespace oanim

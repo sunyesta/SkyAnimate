@@ -10,9 +10,15 @@
 #include <string>
 #include <vector>
 
+#include "anim/sculpt.hh"
+
+struct ImDrawList;
+struct ImVec2;
+
 namespace oanim {
 
 struct Context;
+struct Document;
 
 enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info };
 
@@ -71,6 +77,15 @@ struct Area {
    * dragging, instead of the tree. */
   bool layers_draw_order_view = false;
 
+  /* Viewport: the Sculpt tool's brush shelf along the bottom (Blender's asset shelf): open or folded
+   * to its tabs, its height when open (0: one row of tiles), the tab (0 All, 1 Move, 2 Shape, 3 Mine),
+   * the search text and the tiles' size in pixels (0: the default). */
+  bool sculpt_shelf_open = true;
+  float sculpt_shelf_height = 0.0f;
+  int sculpt_shelf_tab = 0;
+  std::string sculpt_shelf_search;
+  float sculpt_shelf_tile = 0.0f;
+
   /* Text editor. */
   bool show_line_numbers = true;
 
@@ -88,6 +103,13 @@ struct Area {
 bool area_draw(Area &area, Context &C);
 /* The viewport's own operators (mesh.transform_selected). */
 void viewport_operators_register();
+/* The ViewportActionPanel checkboxes kept for the next moves until the frame or action changes. */
+struct MoveOptions {
+  bool keep_poses = false;
+  bool only_bones = false;
+  bool without_children = false;
+};
+MoveOptions viewport_move_options(const Document &doc);
 
 /* Starts every area header: a grip to drag the area elsewhere (right-click for the area
  * menu), then the editor-type dropdown. */
@@ -95,6 +117,24 @@ void area_editor_type_menu(Area &area);
 
 /* Viewport, in viewport.cc. */
 void viewport_draw(Area &area, Context &C);
+/* The Sculpt tool's brush shelf (sculpt_shelf.cc): how much of the viewport's height it takes (0 unless
+ * Sculpt is the tool), drawn into the strip below the view. */
+float sculpt_shelf_height(const Context &C, const Area &area);
+void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
+/* A sculpt brush's picture: a line before and after it (the shelf's tiles, the tool bar). */
+void sculpt_brush_icon(ImDrawList *dl, SculptBrush brush, ImVec2 center, float size, unsigned int col,
+                       unsigned int before);
+/* Whether something is being moved in a viewport (G, R, S, W, a Transform tool's box). */
+bool viewport_drag_active();
+/* Whether the edit going on (a point move: G, R, S, Extrude, a handle tweak) says which layers it changes,
+ * each update (see Revision); any other edit with the mouse down may change anything. */
+bool viewport_precise_edit();
+/* The frame moved on while playing during that drag: what it began from takes the keys just recorded
+ * and, where it isn't holding anything, the new frame (animation_follow_playback). `dragged` is the
+ * document as the drag had it before the frame changed. */
+void viewport_drag_follow_playback(Document &dragged, Document &now);
+/* Called every frame no drag is going on: forgets what the last one held. */
+void viewport_drag_follow_forget();
 /* Properties editor, in properties.cc. */
 void properties_draw(Area &area, Context &C);
 /* Layers editor, in layers_editor.cc. */

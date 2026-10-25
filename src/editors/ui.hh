@@ -51,6 +51,11 @@ void ui_subpanel_end();
 /* Drag-and-drop reordering, as the Layers editor shows it: no yellow box, a blue line where the
  * dragged item will go. */
 inline constexpr unsigned int UI_DROP_LINE_COLOR = 0xFFFFB86Fu; /* IM_COL32(0x6f, 0xb8, 0xff, 255) */
+/* Fix actions: violet, apart from an action's amber and the pink of what smart bones move. The text
+ * colour, the strong fill (the timeline while one is edited), and red for one that can't play. */
+inline constexpr unsigned int UI_FIX_COLOR = 0xFFF0A4B9u;        /* IM_COL32(0xb9, 0xa4, 0xf0, 255) */
+inline constexpr unsigned int UI_FIX_ACTIVE_COLOR = 0xFF96485Eu; /* IM_COL32(0x5e, 0x48, 0x96, 255) */
+inline constexpr unsigned int UI_BROKEN_COLOR = 0xFF5A5AE8u;     /* IM_COL32(0xe8, 0x5a, 0x5a, 255) */
 void ui_panel_end();
 
 /* One property row inside a panel. Edits push an undo step when the widget is released.
@@ -105,8 +110,9 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
 /* A colour row inside a panel; returns true when the colour changed. */
 /* The status bar along the bottom of the window (Blender's), with its reports banner: the latest
  * report, coloured by type, for a few seconds; hovering shows all of it, clicking lists the recent
- * ones. Drawn before the docking space, which then sits above it. */
-void ui_status_bar_draw();
+ * ones. At its right the statistics, the frame and `version` (editors/statistics.hh), chosen from its
+ * right-click menu. Drawn before the docking space, which then sits above it. */
+void ui_status_bar_draw(Context &C, const char *version);
 /* A square revert button (a curved arrow turning back), `tooltip` on hover. True when clicked. */
 bool ui_revert_button(const char *id, const char *tooltip);
 /* How much room a revert button takes after a field (its width and the gap before it). */
@@ -122,6 +128,10 @@ bool ui_color(Context &C, const char *label, float rgba[4], const char *undo_nam
  * changes; `r_finished` (optional) is set when an edit ends, for an undo step. */
 /* `right_space`: room left free at the right of the hex field (for a button after it). */
 /* `swatch_width`: the swatch's width (0: the usual). */
+/* Blender's Adjust Last Operation panel in the bottom-left of an editor's region (`origin`, `size`),
+ * `left` in from its edge: the last operation done in the editor named `area` ("Viewport", "Timeline"),
+ * its options to change and run it again with; folded or open as `fold_key` keeps it. */
+void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, ImVec2 origin, ImVec2 size, float left);
 bool ui_color_edit(const char *id, float rgba[4], bool hex, bool *r_finished = nullptr, float right_space = 0.0f,
                    float swatch_width = 0.0f);
 

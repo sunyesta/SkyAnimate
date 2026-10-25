@@ -11,10 +11,12 @@ namespace oanim {
 
 static const char *const CONSTRAINT_IDS[BONE_CONSTRAINT_TYPES] = {
     "LIMIT_ANGLE", "INDEPENDENT_ANGLE", "MAINTAIN_VOLUME", "COPY_ANGLE", "COPY_POSITION",
-    "COPY_SCALE",  "TRACK_TO",          "STRETCH_TO",     "IK",         "DYNAMICS"};
+    "COPY_SCALE",  "TRACK_TO",          "STRETCH_TO",     "IK",         "DYNAMICS", "LIMIT_SHAPE",
+    "CHILD_OF",    "LOOK_AT"};
 static const char *const CONSTRAINT_NAMES[BONE_CONSTRAINT_TYPES] = {
     "Limit Angle", "Independent Angle", "Maintain Volume", "Copy Angle", "Copy Position",
-    "Copy Scale",  "Track To",          "Stretch To",       "IK",         "Dynamics"};
+    "Copy Scale",  "Track To",          "Stretch To",       "IK",         "Dynamics", "Limit to Shape",
+    "Child Of",    "Look At"};
 
 const char *bone_constraint_identifier(BoneConstraintType type)
 {
@@ -136,6 +138,210 @@ static bool bone_is_descendant_in(const std::vector<Bone> &bones, const std::map
   return false;
 }
 
+/* --- Limit to Shape ------------------------------------------------------------------------------ */
+
+static bool polygon_inside(const std::vector<float2> &poly, float2 p)
+{
+  bool in = false;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const float2 a = poly[i], b = poly[j];
+    if ((a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) {
+      in = !in;
+    }
+  }
+  return in;
+}
+
+static float2 polygon_nearest(const std::vector<float2> &poly, float2 p)
+{
+  float2 best = poly.front();
+  float best_d = 1e30f;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const float2 a = poly[j], ab = poly[i] - a;
+    const float len2 = dot(ab, ab);
+    const float t = len2 > 1e-20f ? std::clamp(dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+    const float2 q = a + ab * t;
+    const float d = dot(q - p, q - p);
+    if (d < best_d) {
+      best_d = d;
+      best = q;
+    }
+  }
+  return best;
+}
+
+/* Where the head can go nearest `head` with every point of the footprint around it inside the shape:
+ * pushed back in by the point furthest out, a few times (a collision's way out), then, if that didn't
+ * get there, the furthest along the way from the shape's middle that fits. */
+static float2 shape_fit_head(const std::vector<float2> &region, const std::vector<float2> &footprint, float2 head)
+{
+  const auto fits = [&](float2 p) {
+    for (const float2 o : footprint) {
+      if (!polygon_inside(region, p + o)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (fits(head)) {
+    return head;
+  }
+  float2 p = head;
+  for (int step = 0; step < 24; step++) {
+    float2 push;
+    float worst = 0.0f;
+    for (const float2 o : footprint) {
+      const float2 q = p + o;
+      if (!polygon_inside(region, q)) {
+        const float2 in = polygon_nearest(region, q) - q;
+        if (dot(in, in) > worst) {
+          worst = dot(in, in);
+          push = in;
+        }
+      }
+    }
+    if (worst == 0.0f) {
+      return p;
+    }
+    p += push * 1.001f;
+  }
+  if (fits(p)) {
+    return p;
+  }
+  float2 middle;
+  for (const float2 q : region) {
+    middle += q;
+  }
+  middle = middle / float(region.size());
+  if (!fits(middle)) {
+    return middle;
+  }
+  float lo = 0.0f, hi = 1.0f;
+  for (int step = 0; step < 24; step++) {
+    const float t = (lo + hi) * 0.5f;
+    (fits(middle + (head - middle) * t) ? lo : hi) = t;
+  }
+  return middle + (head - middle) * lo;
+}
+
+float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 target, float2 target_rest,
+                      float target_depth)
+{
+  /* Along the face's axes (the bone layer's, turned as the head has turned in the picture), the target
+   * stands `target_depth` in front; outward is away from where it rests, between the eyes. */
+  const float2 d = rotate(target - eye, -face);
+  const float z = std::max(target_depth, 1e-4f);
+  const float out = rotate(eye - target_rest, -face).x >= 0.0f ? 1.0f : -1.0f;
+  return {std::atan2(d.x, z) + out * c.divergence, std::atan2(d.y, std::sqrt(d.x * d.x + z * z))};
+}
+
+bool bone_look_warps(const Layer &armature, const BonePose &p, uint64_t layer, uint64_t group)
+{
+  if (!p.look) {
+    return false;
+  }
+  if (const Bone *b = bone_find(armature, p.id)) {
+    for (const BoneConstraint &c : b->constraints) {
+      if (c.type == BoneConstraintType::LookAt && c.enabled) {
+        const auto kept = [&](uint64_t id) {
+          return id != 0 && std::find(c.keep_round.begin(), c.keep_round.end(), id) != c.keep_round.end();
+        };
+        return !kept(layer) && !kept(group);
+      }
+    }
+  }
+  return false;
+}
+
+float2 bone_look_warp(const BonePose &p, float2 point)
+{
+  /* The iris is a flat disc on the ball (behind the cornea), so it foreshortens evenly: the pupil stays
+   * in the middle of the iris. Where the pupil points, the ball's front F(way) = size * (sin yaw cos
+   * pitch, sin pitch) turns a step across it (yaw) or up it (pitch) by F's derivative there; at the
+   * camera that is the step itself, so the eye at rest is as drawn.
+   *
+   * A cartoon pupil is painted on its eye: it foreshortens as the turned eye does (its Facing) in full,
+   * as the drawn eye white does, and looking further round from the camera than that adds Warp's share
+   * of the rest. Looking back toward the camera it never gets rounder than its eye. */
+  const float2 size = {std::max(p.look_size.x, 1e-6f), std::max(p.look_size.y, 1e-6f)};
+  const auto on_disc = [&](float2 way, float2 o) {
+    const float cy = std::cos(way.x), sy = std::sin(way.x), cp = std::cos(way.y), sp = std::sin(way.y);
+    return float2{cy * cp * o.x - sy * sp * (size.x / size.y) * o.y, cp * o.y};
+  };
+  /* As drawn, the pupil already points its rest way (off the front of the ball, with an Eyeball
+   * Center): taken back to the front first, so the eye at rest is as drawn. */
+  float2 o = rotate(point - p.look_center, -p.look_face);
+  {
+    const float cy = std::cos(p.look_rest.x), sy = std::sin(p.look_rest.x), cp = std::cos(p.look_rest.y),
+                sp = std::sin(p.look_rest.y);
+    const float a = std::max(cy * cp, 0.05f), b = -sy * sp * (size.x / size.y), d = std::max(cp, 0.05f);
+    const float y = o.y / d;
+    o = {(o.x - b * y) / a, y};
+  }
+  /* How much each way faces the camera: the pupil counts as looking further round once it faces it
+   * less than its eye does, fading in over a short way so its shape never jumps. */
+  const auto toward = [](float2 way) { return std::cos(way.x) * std::cos(way.y); };
+  const float further = std::clamp((toward(p.look_facing) - toward(p.look_dir)) / 0.1f, 0.0f, 1.0f);
+  const float2 painted = on_disc(p.look_facing, o);
+  const float2 shown = painted + (on_disc(p.look_dir, o) - painted) * (further * p.look_warp);
+  return p.look_center + rotate(shown, p.look_face);
+}
+
+float2 bone_shape_limit(const BoneConstraint &c, float2 head)
+{
+  if (c.shape_region.size() < 3) {
+    return head;
+  }
+  /* What may go past the edge: the footprint shrunk by Overlap. Softness keeps it that much further in,
+   * and lets it run on past there ever slower, never reaching the edge. */
+  const float keep = 1.0f - std::clamp(c.overlap, 0.0f, 1.0f);
+  const float soft = std::max(c.softness, 0.0f);
+  std::vector<float2> footprint;
+  for (const float2 o : c.shape_footprint) {
+    footprint.push_back(o * keep);
+  }
+  if (footprint.empty()) {
+    footprint.push_back(float2());
+  }
+  if (soft > 0.0f) {
+    const std::vector<float2> base = footprint;
+    footprint.clear();
+    for (const float2 o : base) {
+      for (int k = 0; k < 8; k++) {
+        const float a = float(k) * PI / 4.0f;
+        footprint.push_back(o + float2{std::cos(a), std::sin(a)} * soft);
+      }
+    }
+  }
+  const float2 held = shape_fit_head(c.shape_region, footprint, head);
+  if (soft <= 0.0f) {
+    return held;
+  }
+  const float2 past = head - held;
+  const float d = length(past);
+  return d > 1e-9f ? held + past * (soft * std::tanh(d / soft) / d) : held;
+}
+
+void bone_shape_limit_affect(const Layer &armature, Bone &bone)
+{
+  if (armature.pose_frame == 0 || bone.position == bone_position_from_transform(bone, bone.transform)) {
+    return;
+  }
+  for (const BoneConstraint &c : bone.constraints) {
+    const float w = std::clamp(c.influence, 0.0f, 1.0f);
+    if (c.type != BoneConstraintType::LimitShape || !c.enabled || !c.affect_transform || w <= 0.0f ||
+        c.shape_region.size() < 3)
+    {
+      continue;
+    }
+    const std::vector<BonePose> poses = armature_keyed_pose(armature, false);
+    const BonePose *parent = bone_pose_find(poses, bone.parent);
+    const Transform2D up = parent ? parent->pose : Transform2D();
+    const float2 head = up.apply(bone.position);
+    bone.position = up.inverted().apply(head + (bone_shape_limit(c, head) - head) * w);
+  }
+}
+
 namespace {
 
 /* What a pose takes besides the bones' own values. */
@@ -177,6 +383,54 @@ static Transform2D bone_local_xy(float2 position, float angle, float sx, float s
   return Transform2D::translate(position) * Transform2D::rotate(angle) * Transform2D::scaling({sx, sy});
 }
 
+/* Where a bone's own axes hang from its parent (Relations, linear part): the parent's axes now, or, for
+ * a bone that doesn't take all of its parent's change from the setup pose (its turn, its size), the
+ * parent's setup axes changed by what it takes. The setup frame always hangs from the parent as it is. */
+static Transform2D bone_parent_axes(const Bone &b, const Transform2D &parent_now, const Transform2D &parent_setup,
+                                    bool setup_frame)
+{
+  const Transform2D now{parent_now.a, parent_now.b, parent_now.c, parent_now.d, 0.0f, 0.0f};
+  if (setup_frame || (b.inherit_rotation && b.inherit_scale == InheritScale::Full)) {
+    return now;
+  }
+  const Transform2D rest{parent_setup.a, parent_setup.b, parent_setup.c, parent_setup.d, 0.0f, 0.0f};
+  const Transform2D change = now * rest.inverted();
+  const float turn = transform_angle(change);
+  Transform2D taken = change;
+  if (b.inherit_scale == InheritScale::Uniform) {
+    const float s = std::sqrt(std::abs(change.a * change.d - change.b * change.c));
+    taken = Transform2D::rotate(turn) * Transform2D::scaling({s, s});
+  }
+  else if (b.inherit_scale == InheritScale::None) {
+    taken = Transform2D::rotate(turn);
+  }
+  if (!b.inherit_rotation) {
+    taken = Transform2D::rotate(-turn) * taken;
+  }
+  return taken * rest;
+}
+
+float bone_parent_axes_angle(const Bone &bone, const BonePose *parent, bool setup_frame)
+{
+  if (!parent) {
+    return 0.0f;
+  }
+  return transform_angle(bone_parent_axes(bone, parent->pose, parent->setup, setup_frame));
+}
+
+/* The bone's frame from its own values (`local`, in its parent's space): its head where the parent takes
+ * it, its axes as bone_parent_axes hangs them. */
+static Transform2D bone_on_parent(const Bone &b, const Transform2D &parent_now, const Transform2D &parent_setup,
+                                  const Transform2D &local, bool setup_frame)
+{
+  const Transform2D axes = bone_parent_axes(b, parent_now, parent_setup, setup_frame);
+  Transform2D out = axes * Transform2D{local.a, local.b, local.c, local.d, 0.0f, 0.0f};
+  const float2 head = parent_now.apply({local.tx, local.ty});
+  out.tx = head.x;
+  out.ty = head.y;
+  return out;
+}
+
 static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool setup_frame, const PoseExtras &extras)
 {
   const size_t n = bones.size();
@@ -214,6 +468,10 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float angle = bone.angle;
     float2 scale = bone.scale;
     float sx = 1.0f, sy = 1.0f;
+    /* Look At's eyeball, for the warp of what follows the bone (BonePose::look_warp). */
+    bool looks = false;
+    float look_warp = 0.0f, look_face = 0.0f;
+    float2 look_eye, look_size, look_rest, look_facing, look_dir;
     if (!setup_frame) {
       if (extras.ik_angle) {
         angle += (*extras.ik_angle)[i];
@@ -229,7 +487,8 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
         switch (c.type) {
           case BoneConstraintType::LimitAngle: {
             const float lo = std::min(c.min_angle, c.max_angle), hi = std::max(c.min_angle, c.max_angle);
-            angle += (std::clamp(angle, lo, hi) - angle) * w;
+            const float turn = angle - setup_angle;
+            angle += (std::clamp(turn, lo, hi) - turn) * w;
             break;
           }
           case BoneConstraintType::IndependentAngle:
@@ -242,9 +501,113 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
             }
             break;
           case BoneConstraintType::CopyPosition:
-            if (t) {
+            if (t && c.follow_move) {
               const float2 now = c.delay > 0 ? bone_position_at(*t, then, false) : t->position;
               position += (now - t->setup_position) * (c.factor * w);
+            }
+            else if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
+              /* To where the target's base is now (or `delay` frames ago, its parent as it is now). */
+              self(self, ti, depth + 1);
+              if (state[ti] == 2) {
+                float2 goal = poses[ti].head;
+                if (c.delay > 0) {
+                  const int tp = find(t->parent);
+                  const Transform2D up = tp >= 0 && state[tp] == 2 ? poses[tp].pose : Transform2D();
+                  goal = up.apply(bone_position_at(*t, then, false));
+                }
+                position += (parent_pose.inverted().apply(goal) - position) * (c.factor * w);
+              }
+            }
+            break;
+          case BoneConstraintType::ChildOf:
+            if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
+              /* The target's change from its setup, carrying the bone as a parent would. */
+              self(self, ti, depth + 1);
+              if (state[ti] == 2) {
+                const Transform2D &skin = poses[ti].skin;
+                if (c.child_position) {
+                  const float2 head = parent_pose.apply(position);
+                  position += (parent_pose.inverted().apply(skin.apply(head)) - position) * w;
+                }
+                if (c.child_rotation) {
+                  angle += transform_angle(skin) * w;
+                }
+                if (c.child_scale) {
+                  const float s = std::sqrt(std::abs(skin.a * skin.d - skin.b * skin.c));
+                  scale = scale * (1.0f + (s - 1.0f) * w);
+                }
+              }
+            }
+            break;
+          case BoneConstraintType::LookAt:
+            if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
+              self(self, ti, depth + 1);
+              if (state[ti] == 2) {
+                /* The eye a (stretched) ball facing `facing`, turning from there to look: by how much
+                 * the look at the target has turned from its rest (target where it rests, at its setup
+                 * Depth: the eye looks as drawn), no further than Max Turn. The pupil a disc on the ball
+                 * where it points, seen from the front: shifted across, flattened along that way as it
+                 * turns from the camera. */
+                const float face = transform_angle(parent_pose) - transform_angle(parent_setup);
+                const float2 size = c.eyeball_auto && c.eyeball_auto_size.x > 0.0f ? c.eyeball_auto_size : c.eyeball_size;
+                /* The pupil where it is rigged, carried by the eye's parent, and its own keys' move on top:
+                 * they move the pupil on the ball, not the ball. */
+                const float2 rigged = parent_pose.apply(bone.setup_position);
+                const float2 keyed = parent_pose.apply_vector(position - bone.setup_position);
+                /* The ball's middle. Eyeball Center: that bone's head as rigged, carried as the eye's
+                 * parent has moved, the pupil drawn off its front already pointing that way at rest (so
+                 * the eye at rest is as drawn). None: the ball's front is the pupil as rigged. */
+                float2 eye = rigged, rest_eye = parent_setup.apply(bone.setup_position), rest;
+                if (const int ci = find(c.eyeball_center); ci >= 0 && ci != i) {
+                  const auto setup_of = [&](auto &&me, int k, int guard) -> Transform2D {
+                    const Bone &bk = bones[k];
+                    const int pk = find(bk.parent);
+                    const Transform2D up = pk >= 0 && pk != k && guard < 256 ? me(me, pk, guard + 1) : Transform2D();
+                    return up * bone_local(bk.setup_position, bk.setup_angle, setup_value(bk.scale_keys, bk.scale, false));
+                  };
+                  const float2 middle = setup_of(setup_of, ci, 0).apply({0, 0});
+                  const float2 off = rest_eye - middle;
+                  rest.y = std::asin(std::clamp(off.y / std::max(size.y, 1e-6f), -1.0f, 1.0f));
+                  rest.x = std::asin(std::clamp(off.x / std::max(size.x * std::cos(rest.y), 1e-6f), -1.0f, 1.0f));
+                  eye = rigged - (parent_pose * parent_setup.inverted()).apply_vector(off);
+                  rest_eye = middle;
+                }
+                const float2 gaze = bone_look_gaze(c, face, eye, poses[ti].head, poses[ti].setup_head, t->depth);
+                const float2 rest_gaze = bone_look_gaze(c, 0.0f, rest_eye, poses[ti].setup_head, poses[ti].setup_head,
+                                                        value_at(t->depth_keys, t->depth, 0));
+                /* Where it looks, from the camera (the eye drawn at rest looks as drawn), turned from where
+                 * the eye faces no further than Max Turn, and never past the side of the ball. */
+                const float2 look = gaze - rest_gaze;
+                const float half_turn = 1.5707964f;
+                const float2 base = rest + c.facing;
+                const float2 turn = {
+                    std::clamp(std::clamp(look.x - c.facing.x, -c.max_side, c.max_side), -half_turn - base.x,
+                               half_turn - base.x),
+                    std::clamp(std::clamp(look.y - c.facing.y, -c.max_down, c.max_up), -half_turn - base.y,
+                               half_turn - base.y)};
+                /* Where a disc pointing `way` sits on the ball, seen from the front. */
+                const auto front = [&](float2 way) {
+                  return float2{size.x * std::sin(way.x) * std::cos(way.y), size.y * std::sin(way.y)};
+                };
+                float2 shift = eye + rotate(front(base + turn), face) - rigged;
+                if (c.shape_region.size() >= 3) {
+                  /* Where the pupil is (its own keys too) stays inside: Center its head, Whole Drawing what
+                   * it carries about its head. */
+                  const float2 tested = rigged + keyed;
+                  shift = bone_shape_limit(c, tested + shift) - tested;
+                }
+                position += parent_pose.inverted().apply_vector(shift) * w;
+                /* The bone only moves: the drawings following it are laid on the ball where the pupil
+                 * points (bone_look_warp). */
+                looks = w > 0.0f;
+                look_warp = std::clamp(c.squash, 0.0f, 1.0f);
+                look_eye = eye;
+                look_size = size;
+                look_rest = rest;
+                look_facing = rest + c.facing * w;
+                look_dir = rest + (c.facing + turn) * w;
+                look_face = face;
+              }
             }
             break;
           case BoneConstraintType::CopyScale:
@@ -280,11 +643,21 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
           }
         }
       }
+      /* Limit to Shape, after Dynamics too: wherever the keys, constraints or a jiggle put the head, it
+       * stays inside its shape. */
+      for (const BoneConstraint &c : bone.constraints) {
+        const float w = std::clamp(c.influence, 0.0f, 1.0f);
+        if (c.type != BoneConstraintType::LimitShape || !c.enabled || w <= 0.0f || c.shape_region.size() < 3) {
+          continue;
+        }
+        const float2 head = parent_pose.apply(position);
+        position = parent_pose.inverted().apply(head + (bone_shape_limit(c, head) - head) * w);
+      }
       if (extras.ik_stretch) {
         sx *= (*extras.ik_stretch)[i];
       }
     }
-    p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+    p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
     if (!setup_frame) {
       /* Pointing at another bone: after the rest, from where this bone has ended up. */
       for (const BoneConstraint &c : bone.constraints) {
@@ -303,12 +676,12 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
           continue;
         }
         angle += wrap_pi(direction_angle(goal - head) - transform_angle(p.pose)) * w;
-        p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+        p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
         if (c.type == BoneConstraintType::StretchTo) {
           const float reach = distance(p.pose.apply({bone.length, 0}), head);
           if (reach > 1e-7f) {
             sx *= 1.0f + (distance(goal, head) / reach - 1.0f) * w;
-            p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+            p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
           }
         }
       }
@@ -324,7 +697,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
         if (along > 1e-6f && across > 1e-6f) {
           const float a = std::max(c.amount, 0.0f) * w;
           sy *= std::pow(across, -a) * std::pow(along, -a);
-          p.pose = parent_pose * bone_local_xy(position, angle, scale.y * sx, scale.x * sy);
+          p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
         }
       }
     }
@@ -336,6 +709,15 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
+    p.look = looks;
+    p.look_warp = look_warp;
+    p.look_facing = look_facing;
+    p.look_eye = look_eye;
+    p.look_center = p.head;
+    p.look_rest = look_rest;
+    p.look_size = look_size;
+    p.look_dir = look_dir;
+    p.look_face = look_face;
     state[i] = 2;
   };
   for (int i = 0; i < int(n); i++) {
@@ -549,7 +931,8 @@ bool armature_reach(Layer &armature, uint64_t bone_id, float2 goal)
   const auto clamp_limits = [&](Bone &b) {
     for (const BoneConstraint &c : b.constraints) {
       if (c.type == BoneConstraintType::LimitAngle && c.enabled && c.influence >= 1.0f) {
-        b.angle = std::clamp(b.angle, std::min(c.min_angle, c.max_angle), std::max(c.min_angle, c.max_angle));
+        b.angle = b.setup_angle + std::clamp(b.angle - b.setup_angle, std::min(c.min_angle, c.max_angle),
+                                             std::max(c.min_angle, c.max_angle));
       }
     }
   };
@@ -1053,8 +1436,34 @@ bool armature_picked_bounds(const Layer &armature, bool setup_frame, float2 &lo,
   return any;
 }
 
+/* `map` sends places, `stretch_along(p, v)` what it does to a short step `v` from `p`. */
+static void armature_map_selected_by(Layer &armature, const std::vector<Bone> &original,
+                                     const std::function<float2(float2)> &map,
+                                     const std::function<float2(float2, float2)> &stretch_along, bool setup_frame);
+
 void armature_map_selected(Layer &armature, const std::vector<Bone> &original, const Transform2D &map,
                            bool setup_frame)
+{
+  armature_map_selected_by(
+      armature, original, [&](float2 p) { return map.apply(p); },
+      [&](float2, float2 v) { return map.apply_vector(v); }, setup_frame);
+}
+
+void armature_map_selected(Layer &armature, const std::vector<Bone> &original,
+                           const std::function<float2(float2)> &map, bool setup_frame)
+{
+  armature_map_selected_by(
+      armature, original, map,
+      [&](float2 p, float2 v) {
+        const float e = 1e-3f;
+        return (map(p + v * e) - map(p - v * e)) / (2.0f * e);
+      },
+      setup_frame);
+}
+
+static void armature_map_selected_by(Layer &armature, const std::vector<Bone> &original,
+                                     const std::function<float2(float2)> &map,
+                                     const std::function<float2(float2, float2)> &stretch_along, bool setup_frame)
 {
   const std::vector<float> was_turned = turned_angles(armature, original);
   armature.bones = original;
@@ -1064,14 +1473,20 @@ void armature_map_selected(Layer &armature, const std::vector<Bone> &original, c
   for (int i = 0; i < int(n); i++) {
     index[armature.bones[i].id] = i;
   }
-  /* The map's average stretch, for bones with no length to measure. */
-  const float stretch = (length(map.apply_vector({1, 0})) + length(map.apply_vector({0, 1}))) * 0.5f;
-  std::vector<Transform2D> frame(n);
+  /* The map's average stretch at `p`, for bones with no length to measure. */
+  const auto stretch = [&](float2 p) {
+    return (length(stretch_along(p, {1, 0})) + length(stretch_along(p, {0, 1}))) * 0.5f;
+  };
+  /* Each bone's frame now and as it rests: a bone that doesn't take all of its parent's change hangs its
+   * axes from the parent's rest (Relations). */
+  std::vector<Transform2D> frame(n), rest(n);
   for (const int i : bones_parents_first(armature)) {
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
     const bool has_parent = parent != index.end() && parent->second != i;
     const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     const bool picked = bone_picked(original[i]);
     const bool child_of_picked = has_parent && bone_picked(original[parent->second]);
     if (picked || child_of_picked) {
@@ -1080,12 +1495,14 @@ void armature_map_selected(Layer &armature, const std::vector<Bone> &original, c
       const float reach = b.length > 1e-4f ? b.length : 1.0f;
       const Transform2D &was = poses[i].pose;
       float2 head = was.apply({0, 0}), tip = was.apply({reach, 0});
+      const float2 was_head = head;
       if (picked) {
-        head = map.apply(head);
-        tip = map.apply(tip);
+        head = map(head);
+        tip = map(tip);
       }
       const Transform2D to_parent = parent_frame.inverted();
-      const float2 h = to_parent.apply(head), t = to_parent.apply(tip);
+      const Transform2D to_axes = bone_parent_axes(b, parent_frame, parent_rest, setup_frame).inverted();
+      const float2 h = to_parent.apply(head), t = h + to_axes.apply_vector(tip - head);
       b.position = h;
       const float dist = distance(h, t);
       if (dist > 1e-9f) {
@@ -1103,19 +1520,71 @@ void armature_map_selected(Layer &armature, const std::vector<Bone> &original, c
           if (picked) {
             /* Across the bone: how much the map stretches that way. */
             const float2 across = normalize(was.apply_vector({0.0f, 1.0f}));
-            b.scale.x = original[i].scale.x * length(map.apply_vector(across));
+            b.scale.x = original[i].scale.x * length(stretch_along(was_head, across));
           }
         }
       }
       else if (!setup_frame) {
-        b.scale = picked ? original[i].scale * stretch : original[i].scale;
+        b.scale = picked ? original[i].scale * stretch(was_head) : original[i].scale;
       }
     }
-    frame[i] = parent_frame * bone_local(b.position, b.angle, b.scale);
+    frame[i] = bone_on_parent(b, parent_frame, parent_rest, bone_local(b.position, b.angle, b.scale), setup_frame);
   }
   if (setup_frame) {
     seat_connected_children(armature);
     hold_still_joints(armature, original, picked_joints(armature));
+  }
+}
+
+void armature_keep_children(Layer &armature, const std::vector<Bone> &original, bool setup_frame)
+{
+  const size_t n = armature.bones.size();
+  if (original.size() != n) {
+    return;
+  }
+  const std::vector<BonePose> was = bones_full_pose(original, setup_frame, armature.pose_frame, nullptr);
+  std::map<uint64_t, int> index;
+  for (int i = 0; i < int(n); i++) {
+    index[armature.bones[i].id] = i;
+  }
+  /* Picked to move: a connected bone's base is its parent's tip, so that alone doesn't pick it. */
+  const auto moved = [](const Bone &b) { return b.selected || b.select_tail || (b.select_head && !b.connected); };
+  std::vector<Transform2D> frame(n), rest(n);
+  for (const int i : bones_parents_first(armature)) {
+    Bone &b = armature.bones[i];
+    const auto parent = index.find(b.parent);
+    const bool has_parent = parent != index.end() && parent->second != i;
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
+    if (has_parent && !moved(original[i]) && moved(original[parent->second])) {
+      const float reach = b.length > 1e-4f ? b.length : 1.0f;
+      const float2 head = was[i].pose.apply({0, 0}), tip = was[i].pose.apply({reach, 0});
+      const Transform2D to_parent = parent_frame.inverted();
+      const Transform2D to_axes = bone_parent_axes(b, parent_frame, parent_rest, setup_frame).inverted();
+      float2 h = to_parent.apply(head);
+      if (b.connected) {
+        /* On the parent's tip as it is now, pointing the way it did, as long as it was. */
+        h = b.position;
+      }
+      const float2 t = h + to_axes.apply_vector(tip - head);
+      b.position = h;
+      const float dist = distance(h, t);
+      if (dist > 1e-9f) {
+        float angle = std::atan2(t.y - h.y, t.x - h.x);
+        angle += 2.0f * PI * std::round((original[i].angle - angle) / (2.0f * PI));
+        b.angle = angle;
+      }
+      if (b.length > 1e-4f && dist > 1e-9f) {
+        if (setup_frame) {
+          b.length = dist / std::max(std::abs(b.scale.y), 1e-6f);
+        }
+        else {
+          b.scale.y = dist / b.length;
+        }
+      }
+    }
+    frame[i] = bone_on_parent(b, parent_frame, parent_rest, bone_local(b.position, b.angle, b.scale), setup_frame);
   }
 }
 
@@ -1224,17 +1693,20 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
     }
   }
   const auto reflect = [](float2 p) { return float2(-p.x, p.y); };
-  std::vector<Transform2D> frame(n);
+  std::vector<Transform2D> frame(n), rest(n);
   for (const int i : bones_parents_first(armature)) {
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
-    const Transform2D parent_frame = parent != index.end() && parent->second != i ? frame[parent->second]
-                                                                                 : Transform2D();
+    const bool has_parent = parent != index.end() && parent->second != i;
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     if (source[i] >= 0) {
       const Bone &src = armature.bones[source[i]];
       const Transform2D to_parent = parent_frame.inverted();
+      const Transform2D to_axes = bone_parent_axes(b, parent_frame, parent_rest, setup_frame).inverted();
       const float2 h = to_parent.apply(reflect(after[source[i]].head));
-      const float2 t = to_parent.apply(reflect(after[source[i]].tail));
+      const float2 t = h + to_axes.apply_vector(reflect(after[source[i]].tail) - reflect(after[source[i]].head));
       b.position = h;
       if (distance(h, t) > 1e-7f) {
         float angle = std::atan2(t.y - h.y, t.x - h.x);
@@ -1247,7 +1719,7 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
         b.length = src.length;
       }
     }
-    frame[i] = parent_frame * bone_local(b.position, b.angle, b.scale);
+    frame[i] = bone_on_parent(b, parent_frame, parent_rest, bone_local(b.position, b.angle, b.scale), setup_frame);
   }
   if (setup_frame) {
     /* The other side's bones that followed move whole; what hangs from them stays, as on this side. */
@@ -1596,6 +2068,19 @@ void armature_deselect_hidden(Layer &armature)
 
 const Layer *layer_armature(const Document &doc, uint64_t layer_id)
 {
+  /* By the index: the nearest bone layer above it. */
+  if (layer_index_active(doc)) {
+    Document &d = const_cast<Document &>(doc);
+    if (!layer_find(d, layer_id)) {
+      return nullptr;
+    }
+    for (const Layer *p = layer_parent(d, layer_id); p; p = layer_parent(d, p->id)) {
+      if (p->is_bone_layer()) {
+        return p;
+      }
+    }
+    return nullptr;
+  }
   return armature_in(doc.layers, nullptr, layer_id);
 }
 
@@ -1618,6 +2103,21 @@ static const Layer *binding_group_in(const std::vector<Layer> &list, const Layer
 
 const Layer *layer_binding_group(const Document &doc, uint64_t layer_id)
 {
+  /* By the index: the layer's groups, from the top down, as binding_group_in passes them. */
+  if (layer_index_active(doc)) {
+    std::vector<const Layer *> above;
+    for (const Layer *p = layer_parent(const_cast<Document &>(doc), layer_id); p;
+         p = layer_parent(const_cast<Document &>(doc), p->id))
+    {
+      above.push_back(p);
+    }
+    const Layer *group = nullptr;
+    for (auto it = above.rbegin(); it != above.rend(); ++it) {
+      const Layer &layer = **it;
+      group = layer.is_bone_layer() ? nullptr : !group && layer.is_group() && layer.parent_bone != 0 ? &layer : group;
+    }
+    return group;
+  }
   return binding_group_in(doc.layers, nullptr, layer_id);
 }
 

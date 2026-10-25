@@ -6,6 +6,7 @@
 #include "anim/deform.hh"
 #include "anim/draw_order.hh"
 #include "data/document.hh"
+#include "data/fill_area.hh"
 #include "data/vector.hh"
 
 namespace oanim {
@@ -35,13 +36,19 @@ static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, 
     if (whole.hidden) {
       continue;
     }
-    for (const Shape &shape : shape_runs(drawing, whole)) {
+    /* With a fill rule its loops fill together: inside means inside that fill, not in a hole. */
+    const std::vector<Shape> runs = shape_runs(drawing, whole);
+    const bool together = whole.fill_rule != FillRule::Loops && runs.size() > 1;
+    const std::vector<std::vector<float2>> loops = together ? shape_fill_loops(drawing, whole, 12)
+                                                           : std::vector<std::vector<float2>>();
+    for (const Shape &shape : runs) {
       bool closed = false;
       shape_outline(drawing, shape, 12, outline, nullptr, &closed);
       if (outline.size() < 2) {
         continue;
       }
-      if (!strokes_only && ((shape.has_fill && closed) || filled) && outline.size() >= 3 && inside_polygon(outline, p)) {
+      if (!strokes_only && ((shape.has_fill && closed) || filled) && outline.size() >= 3 &&
+          (together ? fill_contains(loops, whole.fill_rule, p) : inside_polygon(outline, p))) {
         /* Inside the Stroke: not within the line's inner half. */
         bool in_line = false;
         if (inside_stroke && shape.has_outline) {
@@ -89,7 +96,7 @@ static bool layer_covers(const Document &doc, const Layer &layer, float2 at, flo
     }
     return false;
   }
-  if (layer.type != LayerType::Vector) {
+  if (!layer.has_shapes()) {
     return false;
   }
   const VectorDrawing drawing = layer_has_modifier_effect(doc, layer, false) ? layer_evaluated_drawing(doc, layer, false)
@@ -153,20 +160,37 @@ static bool rows_show_at(const Document &doc, const Layer & /*owner*/, const std
   for (const LayerMask &card : cards) {
     bool shows = card.start_shown;
     for (const MaskStep &step : card.steps) {
+      /* Its layers combined: any of them, the first and none of the others, or all of them. */
       bool inside = false;
+      bool first = true;
       for (const uint64_t id : step.layers) {
         const Layer *source = layer_find(doc, id);
         if (!source) {
           continue;
         }
+        bool here = false;
         if (step.clip) {
-          inside = clip_base_shows(doc, *source, at, step.fills_only, depth);
+          here = clip_base_shows(doc, *source, at, step.fills_only, depth);
         }
         else {
-          inside = layer_covers(doc, *source, at, 0.0f, step.fills_only, step.filled, false, step.strokes_only,
-                                step.fills_only && step.inside_stroke);
+          here = layer_covers(doc, *source, at, 0.0f, step.fills_only, step.filled, false, step.strokes_only,
+                              step.fills_only && step.inside_stroke);
         }
-        if (inside) {
+        const MaskCombine combine = step.clip || first ? MaskCombine::Union : step.combine;
+        first = false;
+        if (combine == MaskCombine::Union) {
+          inside = inside || here;
+          if (inside && step.combine == MaskCombine::Union) {
+            break;
+          }
+        }
+        else if (combine == MaskCombine::Difference) {
+          inside = inside && !here;
+        }
+        else {
+          inside = inside && here;
+        }
+        if (!inside && step.combine != MaskCombine::Union) {
           break;
         }
       }
@@ -204,6 +228,7 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
         row.fills_only = m.fills_only;
         row.strokes_only = m.strokes_only;
         row.inside_stroke = m.fills_only && m.inside_stroke;
+        row.combine = m.combine;
         const auto add = [&](auto &&self, const Layer &source) -> void {
           if (source.is_group()) {
             for (const Layer &child : source.children) {
@@ -211,7 +236,7 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
             }
             return;
           }
-          if (source.type != LayerType::Vector) {
+          if (!source.has_shapes()) {
             return;
           }
           const VectorDrawing drawing = layer_has_modifier_effect(doc, source, render)
@@ -223,8 +248,20 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
             if (whole.hidden) {
               continue;
             }
-            for (const Shape &shape : shape_runs(drawing, whole)) {
+            const std::vector<Shape> runs = shape_runs(drawing, whole);
+            std::vector<std::vector<float2>> loops;
+            if (whole.fill_rule != FillRule::Loops && runs.size() > 1) {
+              loops = shape_fill_loops(drawing, whole, 12);
+              for (std::vector<float2> &loop : loops) {
+                for (float2 &q : loop) {
+                  q = to_document.apply(q);
+                }
+              }
+            }
+            for (const Shape &shape : runs) {
               LineCutter::Piece piece;
+              piece.fill_loops = loops;
+              piece.fill_rule = whole.fill_rule;
               shape_outline(drawing, shape, 12, piece.outline, nullptr, &piece.closed);
               if (piece.outline.size() < 2) {
                 continue;
@@ -235,6 +272,7 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
               piece.area = ((shape.has_fill && piece.closed) || m.filled) && piece.outline.size() >= 3;
               piece.line = shape.has_outline && shape.style.line_width > 0.0f;
               piece.half = shape.style.line_width * 0.5f * scale;
+              piece.source = row.sources;
               row.pieces.push_back(std::move(piece));
             }
           }
@@ -242,6 +280,7 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
         for (const uint64_t id : m.layers) {
           if (const Layer *source = layer_find(const_cast<Document &>(doc), id); source && id != l->id) {
             add(add, *source);
+            row.sources++;
           }
         }
         rows.push_back(std::move(row));
@@ -261,9 +300,13 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
   return cutter;
 }
 
-static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
+/* Whether the pieces of the row's layer `source` (or of all its layers, -1) cover `p`. */
+static bool cutter_pieces_cover(const LineCutter::Row &row, float2 p, int source)
 {
   for (const LineCutter::Piece &piece : row.pieces) {
+    if (source >= 0 && piece.source != source) {
+      continue;
+    }
     const size_t n = piece.outline.size();
     const auto near_line = [&](float reach) {
       for (size_t i = 0; i + 1 < n + (piece.closed ? 1 : 0); i++) {
@@ -273,7 +316,9 @@ static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
       }
       return false;
     };
-    if (!row.strokes_only && piece.area && inside_polygon(piece.outline, p) &&
+    if (!row.strokes_only && piece.area &&
+        (piece.fill_loops.empty() ? inside_polygon(piece.outline, p)
+                                  : fill_contains(piece.fill_loops, piece.fill_rule, p)) &&
         !(row.inside_stroke && piece.line && near_line(piece.half)))
     {
       return true;
@@ -283,6 +328,23 @@ static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
     }
   }
   return false;
+}
+
+static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
+{
+  if (row.combine == MaskCombine::Union || row.sources < 2) {
+    return cutter_pieces_cover(row, p, -1);
+  }
+  /* The first layer's shape, the others cut out of it or kept only where they all are. */
+  if (!cutter_pieces_cover(row, p, 0)) {
+    return false;
+  }
+  for (int k = 1; k < row.sources; k++) {
+    if (cutter_pieces_cover(row, p, k) == (row.combine == MaskCombine::Difference)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool line_cutter_shows(const LineCutter &cutter, float2 at)
@@ -341,7 +403,7 @@ std::vector<uint64_t> layers_at(const Document &doc, float2 at, const LayerPickO
   std::vector<uint64_t> hits;
   for (auto it = order.rbegin(); it != order.rend(); ++it) {
     const Layer &layer = **it;
-    if (layer.type != LayerType::Vector) {
+    if (!layer.has_shapes()) {
       continue;
     }
     if (layer_covers(doc, layer, at, options.tolerance, false, false, true) && layer_masks_show_at(doc, layer, at)) {

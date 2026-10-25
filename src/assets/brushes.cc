@@ -1,4 +1,5 @@
 #include "assets/brushes.hh"
+#include "assets/sculpt_presets.hh"
 
 #include <SDL3/SDL.h>
 
@@ -551,6 +552,7 @@ void brushes_reload()
               found.end());
   library() = std::move(found);
   library_brush_presets_reload();
+  sculpt_presets_reload();
 }
 
 /* Reads one image: ink brushes become white with coverage as alpha (dark ink on white, times

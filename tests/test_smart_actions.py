@@ -66,6 +66,15 @@ rig.bone_set("dial", angle=0.75)
 doc.frame_current = doc.frame_current
 assert abs(face.location_x - 1.5) < 1e-3, face.location_x
 
+# Its fields show the live value, pink while the smart action plays into them.
+assert face.field_state("position")[1], face.field_state("position")
+assert not face.field_state("opacity")[1], "the action doesn't touch its opacity"
+rig.bone_set("dial", angle=0.0)
+doc.frame_current = doc.frame_current
+assert not face.field_state("position")[1], "the dial at rest plays nothing"
+rig.bone_set("dial", angle=0.75)
+doc.frame_current = doc.frame_current
+
 # The added amount isn't data: the face's own position is still 0.
 dial(0.5)
 assert face.keyframes("position") == [], "no keys from smart actions"
@@ -289,5 +298,44 @@ assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), eye
 doc.frame_current = 31
 doc.frame_current = 30
 assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), ("and it stays there", eye.points[0])
+
+# --- A dynamic bone hanging from bones a smart action moves follows them on every frame --------------
+# (the simulation works each frame's pose out with the smart actions playing, not from keys alone).
+oanim.ops.wm.read_homefile(confirmed="1")
+layers = oanim.data.layers
+doc = oanim.data.document
+doc.frame_current = 0
+oanim.ops.layer.new_bone()
+rig = layers.active
+oanim.ops.armature.bone_add(name="head", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+oanim.ops.armature.bone_add(name="strand", head_x="0", head_y="1", tail_x="0", tail_y="2", parent="head")
+oanim.ops.armature.bone_add(name="turn", head_x="3", head_y="0", tail_x="4", tail_y="0", parent="")
+rig.select_bone("strand")
+assert oanim.ops.armature.constraint_add(type="DYNAMICS") == {'FINISHED'}
+# The smart action: turning "turn" by 1 turns the head by 1.2 (frame 10 of the action).
+rig.select_bone("turn")
+assert oanim.ops.anim.action_new(name="turn", smart="1") == {'FINISHED'}
+doc.frame_current = 10
+rig.bone_set("turn", angle=1.0)
+rig.bone_set("head", angle=1.2)
+doc.frame_current = 0
+assert oanim.ops.anim.action_set(name="") == {'FINISHED'}
+# The mainline: the turn bone turned on frame 8 (turning the head over frames 0 to 8), then held.
+doc.frame_current = 8
+rig.select_bone("turn")
+assert oanim.ops.armature.rotate(angle=str(math.degrees(1.0)), posing="1") == {'FINISHED'}
+
+
+def strand_off(frame):
+    """How far dynamics put the strand's tip from where its keys (and the smart action) put it."""
+    doc.frame_current = frame
+    live = next(b for b in rig.bones if b["name"] == "strand")["tail"]
+    keyed = next(b for b in rig.bones_keyed if b["name"] == "strand")["tail"]
+    return abs(live[0] - keyed[0]) + abs(live[1] - keyed[1])
+
+
+swing = [strand_off(f) for f in range(1, 61)]
+assert max(swing[:12]) > 0.05, ("it swings as the head turns", swing[:12])
+assert swing[-1] < 0.02, ("and settles back onto the turned head once it stops", swing[-10:])
 
 print("Smart action tests passed")

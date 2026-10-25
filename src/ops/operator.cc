@@ -4,11 +4,13 @@
 
 #include "anim/animation.hh"
 #include "data/bones.hh"
+#include "text/text_layer.hh"
 
 #include <algorithm>
 
 #include "core/log.hh"
 #include "data/document.hh"
+#include "ops/edit_ops.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
 
@@ -176,6 +178,39 @@ OpStatus operator_redo_last(Context &C, const OpArgs &args)
  * that step (Blender's macros, a Python operator calling others), so only the outermost pushes. */
 static int g_undo_depth = 0;
 
+void op_arg_used(Context &C, const std::string &name, const std::string &value)
+{
+  if (C.op_args_used) {
+    (*C.op_args_used)[name] = value;
+  }
+}
+
+OpProperty op_float_property(const char *name, const char *label, const char *description, const char *fallback,
+                             float min, float max, float step)
+{
+  OpProperty p;
+  p.name = name;
+  p.label = label;
+  p.description = description;
+  p.kind = OpProperty::Kind::Float;
+  p.fallback = fallback;
+  p.min = min;
+  p.max = max;
+  p.step = step;
+  return p;
+}
+
+OpProperty op_bool_property(const char *name, const char *label, const char *description, const char *fallback)
+{
+  OpProperty p;
+  p.name = name;
+  p.label = label;
+  p.description = description;
+  p.kind = OpProperty::Kind::Bool;
+  p.fallback = fallback;
+  return p;
+}
+
 OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
 {
   const OperatorType *found = operators().find(idname);
@@ -186,13 +221,24 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   /* Copy: a Python operator may re-register operators while it runs. */
   const OperatorType ot = *found;
 
-  if (!operator_poll(C, ot)) {
-    return OpStatus::Cancelled;
+  /* The poll sees the arguments too: an operator told which layer to work on (layer=) can run whatever
+   * layer is active. */
+  {
+    const OpArgs *outer = C.op_args;
+    C.op_args = &args;
+    const bool can_run = operator_poll(C, ot);
+    C.op_args = outer;
+    if (!can_run) {
+      return OpStatus::Cancelled;
+    }
   }
 
   /* Arguments are visible to the operator while it runs; restore for nested calls. */
   const OpArgs *outer_args = C.op_args;
   C.op_args = &args;
+  OpArgs *outer_used = C.op_args_used;
+  OpArgs used;
+  C.op_args_used = &used;
   const std::string outer_undo = C.undo_name;
   C.undo_name.clear();
   const bool undo_step = (ot.flag & OPTYPE_UNDO) && g_undo_depth == 0;
@@ -204,16 +250,25 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   OpStatus status;
   {
     const UndoDepth depth((ot.flag & OPTYPE_UNDO) != 0);
+    /* Mirror editing: the mirror images join the selection for the run (an outer run did it already). */
+    const bool mirror = (ot.flag & OPTYPE_MIRROR) && !outer_args;
+    const MirrorSelection mirrored = mirror ? mirror_selection_begin(C) : MirrorSelection();
     status = ot.exec(C);
+    if (mirror) {
+      mirror_selection_end(C, mirrored);
+    }
   }
   const std::string undo_name = C.undo_name.empty() ? ot.name : C.undo_name;
   C.undo_name = outer_undo;
   C.op_args = outer_args;
+  C.op_args_used = outer_used;
   /* An operator that changed the frame (a frame jump, undo) shows the new frame's values. */
   if (C.document) {
     animation_sync(*C.document);
     /* Layers moved into or out of a bone layer gain or lose their Armature modifier. */
     document_sync_armature_modifiers(*C.document);
+    /* A text changed has its letters made again. */
+    document_sync_text(*C.document);
   }
   if (status != OpStatus::Finished) {
     return status;
@@ -230,6 +285,9 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     if (!ot.props.empty() && !outer_args) {
       g_last_redo.idname = ot.idname;
       g_last_redo.args = args;
+      for (const auto &[name, value] : used) {
+        g_last_redo.args.try_emplace(name, value);
+      }
       for (const OpProperty &prop : ot.props) {
         g_last_redo.args.try_emplace(prop.name, prop.fallback);
       }

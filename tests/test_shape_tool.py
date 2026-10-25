@@ -57,4 +57,10 @@ except ValueError:
     pass
 
 assert layer.shape_count == 3, "one box and two circles"
+# T goes back to the Select Box tool from any other (over the viewport); over the timeline it is still
+# the Interpolation menu.
+assert oanim.ops.wm.tool_draw(mode="FREEHAND") == {'FINISHED'}
+assert oanim.wm.event_simulate("T", area="Viewport"), "T runs wm.tool_select"
+assert oanim.wm.event_simulate("T", area="Timeline")
+
 print("Shape tool tests passed")

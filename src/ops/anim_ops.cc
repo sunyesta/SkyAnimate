@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <map>
+#include <memory>
 #include <set>
 
 #include "anim/animation.hh"
+#include "anim/keep_poses.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
@@ -13,6 +16,7 @@
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
+#include "ops/undo.hh"
 #include "wm/context.hh"
 
 namespace oanim {
@@ -27,6 +31,61 @@ std::vector<Layer *> keyed_layers(Context &C)
   for (const Layer *layer : document_layers_flat(doc)) {
     if ((layer->id == doc.active_layer || layer->selected) && !layer->locked) {
       layers.push_back(layer_find(doc, layer->id));
+    }
+  }
+  return layers;
+}
+
+/* The layers inside `group` keyed with it while it has Edit Descendants on: every one, however deep,
+ * that shows and isn't locked (nor inside a hidden group). */
+/* "a, b,c" as its parts, trimmed, empty ones left out. */
+static std::vector<std::string> split_list(const std::string &text)
+{
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= text.size()) {
+    const size_t end = std::min(text.find(',', start), text.size());
+    std::string part = text.substr(start, end - start);
+    part.erase(0, part.find_first_not_of(" \t"));
+    part.erase(part.find_last_not_of(" \t") + 1);
+    if (!part.empty()) {
+      parts.push_back(part);
+    }
+    start = end + 1;
+  }
+  return parts;
+}
+
+static std::vector<Layer *> group_descendants(Layer &group)
+{
+  std::vector<Layer *> found;
+  if (!group.is_group() || !group.edit_descendants) {
+    return found;
+  }
+  const auto walk = [&](auto &&self, Layer &parent) -> void {
+    for (Layer &child : parent.children) {
+      if (!child.visible) {
+        continue;
+      }
+      if (!child.locked) {
+        found.push_back(&child);
+      }
+      self(self, child);
+    }
+  };
+  walk(walk, group);
+  return found;
+}
+
+/* What I and Alt I key: the picked layers and what picked groups with Edit Descendants hold. */
+static std::vector<Layer *> keying_layers(Context &C)
+{
+  std::vector<Layer *> layers = keyed_layers(C);
+  for (size_t i = 0, n = layers.size(); i < n; i++) {
+    for (Layer *inside : group_descendants(*layers[i])) {
+      if (std::find(layers.begin(), layers.end(), inside) == layers.end()) {
+        layers.push_back(inside);
+      }
     }
   }
   return layers;
@@ -55,6 +114,33 @@ static std::vector<Layer *> op_layers(Context &C)
   return all;
 }
 
+const std::vector<uint64_t> &timeline_pinned_layer_ids(Context &C)
+{
+  /* Looking for pins visits every channel of every layer, tens of milliseconds on a big rig, and the timeline
+   * asks every frame; pins only change through operators, which push undo, so the answer is kept until the
+   * next change. */
+  static const Document *pinned_doc = nullptr;
+  static uint64_t pinned_changes = 0;
+  static std::vector<uint64_t> pinned_ids;
+  if (!C.document) {
+    pinned_ids.clear();
+    pinned_doc = nullptr;
+    return pinned_ids;
+  }
+  if (!C.undo || pinned_doc != C.document || pinned_changes != C.undo->change_count()) {
+    const KeyFilter pins{KEY_ALL, false, "", true};
+    pinned_ids.clear();
+    for (const Layer *flat : document_layers_flat(*C.document)) {
+      if (!layer_filtered_channels(*const_cast<Layer *>(flat), pins).empty()) {
+        pinned_ids.push_back(flat->id);
+      }
+    }
+    pinned_doc = C.document;
+    pinned_changes = C.undo ? C.undo->change_count() : 0;
+  }
+  return pinned_ids;
+}
+
 std::vector<Layer *> timeline_layers(Context &C)
 {
   /* What the rows show, and the layers of pinned channels (listed under Pinned, whatever layer is
@@ -62,9 +148,9 @@ std::vector<Layer *> timeline_layers(Context &C)
   std::vector<Layer *> layers = timeline_shown_layers(C);
   const auto pins = [](Layer &l) { return !layer_filtered_channels(l, KeyFilter{KEY_ALL, false, "", true}).empty(); };
   if (C.document) {
-    for (const Layer *flat : document_layers_flat(*C.document)) {
-      Layer *l = layer_find(*C.document, flat->id);
-      if (!l->locked && pins(*l) && std::find(layers.begin(), layers.end(), l) == layers.end()) {
+    for (const uint64_t id : timeline_pinned_layer_ids(C)) {
+      Layer *l = layer_find(*C.document, id);
+      if (l && !l->locked && std::find(layers.begin(), layers.end(), l) == layers.end()) {
         layers.push_back(l);
       }
     }
@@ -86,11 +172,35 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
       layers.push_back(l);
     }
   };
-  /* A selected bone layer brings the animated layers inside it, listed right after it, as
-   * Blender's summary shows an armature's children. */
+  /* A selected bone layer, or a group with Edit Descendants (whose drawings are edited with it), brings
+   * the animated layers inside it, listed right after it, as Blender's summary shows an armature's
+   * children. */
+  /* Whether a layer has keys, asked of every layer in a big group each frame (twice): kept until the next
+   * change, frame or action, since keys come from recording edits, which those bring. */
+  static const Document *keys_doc = nullptr;
+  static uint64_t keys_changes = 0;
+  static int keys_frame = 0;
+  static std::string keys_action;
+  static std::map<uint64_t, bool> has_keys;
+  if (C.document && (!C.undo || keys_doc != C.document || keys_changes != C.undo->change_count() ||
+                     keys_frame != C.document->frame_current || keys_action != C.document->action))
+  {
+    has_keys.clear();
+    keys_doc = C.document;
+    keys_changes = C.undo ? C.undo->change_count() : 0;
+    keys_frame = C.document->frame_current;
+    keys_action = C.document->action;
+  }
+  const auto keyed = [&](const Layer &l) {
+    const auto [it, added] = has_keys.try_emplace(l.id, false);
+    if (added) {
+      it->second = layer_has_keys(l);
+    }
+    return it->second;
+  };
   const auto add_inside = [&](auto &&self, Layer &group) -> void {
     for (Layer &child : group.children) {
-      if (!child.locked && !layer_key_frames(child).empty()) {
+      if (!child.locked && keyed(child)) {
         add(&child);
       }
       self(self, child);
@@ -98,18 +208,18 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
   };
   for (Layer *l : picked) {
     add(l);
-    if (l->is_bone_layer()) {
+    if (l->is_bone_layer() || (l->is_group() && l->edit_descendants)) {
       add_inside(add_inside, *l);
     }
   }
   /* The document's animated gravity and wind (a Simulation row). */
-  if (C.document && !layer_key_frames(document_simulation(*C.document)).empty()) {
+  if (C.document && layer_has_keys(document_simulation(*C.document))) {
     add(&C.document->simulation);
   }
   /* The camera's keys, while it is picked or once it has any (a Camera row). */
   if (C.document) {
     Layer &camera = document_camera(*C.document);
-    if (camera.selected || !layer_key_frames(camera).empty()) {
+    if (camera.selected || layer_has_keys(camera)) {
       add(&camera);
     }
   }
@@ -136,7 +246,7 @@ static int path_index(const std::string &path, size_t from, size_t *r_end = null
 }
 
 static void anim_operator_add(const char *idname, const char *name, const char *description, unsigned flag,
-                              std::function<OpStatus(Context &C)> exec)
+                              std::function<OpStatus(Context &C)> exec, std::vector<OpProperty> props = {})
 {
   OperatorType ot;
   ot.idname = idname;
@@ -145,7 +255,58 @@ static void anim_operator_add(const char *idname, const char *name, const char *
   ot.flag = flag;
   ot.poll = [](Context &C) { return !keyed_layers(C).empty(); };
   ot.exec = std::move(exec);
+  ot.props = std::move(props);
   operators().add(std::move(ot));
+}
+
+/* Ignore Bones, for Duplicate and Paste Keys: kept from the last time it was set, as Blender keeps an
+ * operator's options. */
+static bool g_ignore_bones = false;
+
+static bool ignore_bones_arg(Context &C)
+{
+  if (op_has_arg(C, "ignore_bones")) {
+    g_ignore_bones = op_arg_bool(C, "ignore_bones");
+  }
+  op_arg_used(C, "ignore_bones", g_ignore_bones ? "1" : "0");
+  return g_ignore_bones;
+}
+
+/* Keep Place, for Duplicate and Paste Keys: kept as Ignore Bones is. */
+static bool g_keep_place = false;
+
+static bool keep_place_arg(Context &C)
+{
+  if (op_has_arg(C, "keep_place")) {
+    g_keep_place = op_arg_bool(C, "keep_place");
+  }
+  op_arg_used(C, "keep_place", g_keep_place ? "1" : "0");
+  return g_keep_place;
+}
+
+static OpProperty keep_place_property()
+{
+  return op_bool_property("keep_place", "Keep Place",
+                          "Copy the shape only: the copied points keep the place their centre has on the new frame",
+                          "0");
+}
+
+static OpProperty ignore_bones_property()
+{
+  OpProperty p = op_bool_property(
+      "ignore_bones", "Ignore Bones",
+      "Keep each point where it shows on the frame it was copied from, whatever the bones do on the new frame",
+      "0");
+  p.enabled = [](Context &C) {
+    for (const Layer *l : timeline_layers(C)) {
+      if (layer_bones_move_points(*C.document, *l)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  p.disabled_why = "No bones move these layers' points";
+  return p;
 }
 
 /* The next (dir > 0) or previous key frame of the layers being animated, or -1. */
@@ -424,41 +585,198 @@ void anim_operators_register()
   }
   {
     OperatorType ot;
-    ot.idname = "anim.action_set";
-    ot.name = "Edit Action";
-    ot.description = "Edit action `name` in the timeline (\"\" for the mainline)";
+    ot.idname = "anim.fix_action_new";
+    ot.name = "Fix This Pose";
+    ot.description = "Fix the pose of the smart actions playing now (two or more, each turned at least 5%): the fix "
+                     "action for them (made if there is none) opens at this pose (added if it has none this close), to "
+                     "key the correction. It plays by itself whenever they play together. drivers=\"a,b\": fix only "
+                     "these of them";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
-    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
-      const std::string name = op_arg(C, "name");
-      if (name == C.document->action) {
+      Document &doc = *C.document;
+      Layer *owner = !doc.action.empty() ? layer_find(doc, doc.action_layer) : action_owner(doc, doc.active_layer);
+      if (!owner) {
+        owner = action_owner(doc, doc.active_layer);
+      }
+      if (!doc.action.empty() && action_adds(*owner, doc.action)) {
+        report(ReportType::Warning, "Fix a pose from the mainline (or an ordinary action), with its smart bones turned");
         return OpStatus::Cancelled;
       }
-      if (!document_set_action_by_name(*C.document, name)) {
-        report(ReportType::Warning, "No action named " + name);
+      std::vector<std::string> drivers;
+      for (const std::string &part : split_list(op_arg(C, "drivers"))) {
+        drivers.push_back(part);
+      }
+      const FixOpened opened = document_fix_pose_here(doc, owner->id, drivers);
+      if (!opened.error.empty()) {
+        report(ReportType::Warning, opened.error);
+        return OpStatus::Cancelled;
+      }
+      const std::string pose = "pose " + std::to_string(opened.pose + 1) + " (frame " + std::to_string(doc.frame_current) + ")";
+      report(ReportType::Info, opened.new_fix    ? "New fix \"" + opened.name + "\": key the correction on " + pose
+                               : opened.new_pose ? "Added " + pose + " to \"" + opened.name + "\": key the correction"
+                                                 : "\"" + opened.name + "\" " + pose + " fixes this pose: editing it");
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.fix_pose_add";
+    ot.name = "Add Fix Pose";
+    ot.description = "Add a pose to fix action `name`, its smart actions at `shares` (\"0.5,0.3\": each one's share of "
+                     "its length, in the fix's order), starting from what the fix plays there now, and edit it";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_has_arg(C, "name") ? op_arg(C, "name") : doc.action;
+      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
+                                                                 : action_owner(doc, doc.active_layer);
+      const FixAction *fix = owner ? fix_action_find(*owner, name) : nullptr;
+      if (!fix) {
+        report(ReportType::Warning, "No fix action named " + name);
+        return OpStatus::Cancelled;
+      }
+      std::vector<float> shares;
+      for (const std::string &part : split_list(op_arg(C, "shares"))) {
+        shares.push_back(std::strtof(part.c_str(), nullptr));
+      }
+      if (shares.size() != fix->drivers.size() ||
+          std::any_of(shares.begin(), shares.end(), [](float v) { return v < FIX_COUNTS_FROM - 1e-6f; }))
+      {
+        report(ReportType::Warning, "Give a share for each of its smart actions, each at least 0.05");
+        return OpStatus::Cancelled;
+      }
+      const int pose = document_fix_pose_add(doc, owner->id, name, shares);
+      if (pose < 0) {
+        return OpStatus::Cancelled;
+      }
+      report(ReportType::Info, "Added pose " + std::to_string(pose + 1) + " (frame " + std::to_string(doc.frame_current) +
+                                   "): key the correction");
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.fix_pose_remove";
+    ot.name = "Remove Fix Pose";
+    ot.description = "Remove pose `pose` (1 is the first) of fix action `name` and its keys; a fix keeps at least one "
+                     "(delete the fix instead)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_has_arg(C, "name") ? op_arg(C, "name") : doc.action;
+      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
+                                                                 : action_owner(doc, doc.active_layer);
+      const FixAction *fix = owner ? fix_action_find(*owner, name) : nullptr;
+      if (!fix) {
+        report(ReportType::Warning, "No fix action named " + name);
+        return OpStatus::Cancelled;
+      }
+      const int pose = op_arg_int(C, "pose", 0) - 1;
+      if (pose < 0 || size_t(pose) >= fix->poses.size()) {
+        report(ReportType::Warning, "It has poses 1 to " + std::to_string(fix->poses.size()));
+        return OpStatus::Cancelled;
+      }
+      if (fix->poses.size() < 2) {
+        report(ReportType::Warning, "It's the fix's only pose: delete the fix instead");
+        return OpStatus::Cancelled;
+      }
+      return document_fix_pose_remove(doc, owner->id, name, size_t(pose)) ? OpStatus::Finished : OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_rename";
+    ot.name = "Rename Action";
+    ot.description = "Rename action `name` of the bone layer the active layer is in (or is) to `to`; fixes it drives "
+                     "follow (a smart action is named after its bone: rename the bone instead)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_arg(C, "name"), to = op_arg(C, "to");
+      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
+                                                                 : action_owner(doc, doc.active_layer);
+      if (!owner) {
+        return OpStatus::Cancelled;
+      }
+      if (smart_action_bone(*owner, name)) {
+        report(ReportType::Warning, "A smart action is named after its bone: rename the bone");
+        return OpStatus::Cancelled;
+      }
+      if (to.empty() || smart_action_bone(*owner, to)) {
+        report(ReportType::Warning, to.empty() ? "Give it a name" : "That name is a bone's: it would make a smart action");
+        return OpStatus::Cancelled;
+      }
+      if (!document_action_rename(doc, owner->id, name, to)) {
+        report(ReportType::Warning, "Can't rename it to " + to + " (taken?)");
         return OpStatus::Cancelled;
       }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_set";
+    ot.name = "Edit Action";
+    ot.description = "Edit action `name` in the timeline (\"\" for the mainline); frame=N: on that frame. A fix "
+                     "opens on its pose nearest the pose now";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_arg(C, "name");
+      const bool frame_given = op_has_arg(C, "frame");
+      if (name == doc.action && !(frame_given && !name.empty())) {
+        return OpStatus::Cancelled;
+      }
+      /* A fix opens on the pose nearest the one now (its first, with none near), worked out before leaving it. */
+      int frame = frame_given ? op_arg_int(C, "frame", doc.frame_current) : -1;
+      if (!frame_given && !name.empty()) {
+        for (const Layer *flat : document_layers_flat(doc)) {
+          if (const FixAction *f = flat->is_bone_layer() ? fix_action_find(*flat, name) : nullptr; f && !f->poses.empty()) {
+            const int nearest = fix_action_mix(*flat, *f, smart_actions_playing(*flat)).nearest;
+            frame = f->poses[size_t(std::max(nearest, 0))].frame;
+          }
+        }
+      }
+      if (name != doc.action && !document_set_action_by_name(doc, name)) {
+        report(ReportType::Warning, "No action named " + name);
+        return OpStatus::Cancelled;
+      }
+      if (frame >= 0) {
+        doc.frame_current = frame;
+        animation_evaluate(doc, doc.frame_current);
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   anim_operator_add("anim.keyframe_insert", "Insert Keyframe",
-                    "Key the active and selected layers at the current frame: transform, opacity and every point",
+                    "Key the active and selected layers at the current frame: transform, opacity and every point (a picked "
+                    "group with Edit Descendants keys the layers inside it too)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       /* Edits not yet recorded belong to the frame they were made at. */
                       animation_record(*C.document);
                       int keys = 0;
-                      for (Layer *layer : keyed_layers(C)) {
+                      for (Layer *layer : keying_layers(C)) {
                         keys += layer_insert_keys(*layer, C.document->frame_current);
                       }
                       return keys > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                     });
   anim_operator_add("anim.keyframe_delete", "Delete Keyframe",
-                    "Remove the active and selected layers' keys at the current frame",
+                    "Remove the active and selected layers' keys at the current frame (and those of the layers inside a "
+                    "picked group with Edit Descendants)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       animation_record(*C.document);
                       int removed = 0;
-                      for (Layer *layer : keyed_layers(C)) {
+                      for (Layer *layer : keying_layers(C)) {
                         removed += layer_delete_keys(*layer, C.document->frame_current);
                       }
                       if (removed == 0) {
@@ -476,7 +794,8 @@ void anim_operators_register()
     ot.idname = "anim.keyframe_toggle";
     ot.name = "Toggle Keyframe";
     ot.description = "Key properties of a layer at the current frame, or take their keys away when keyed there "
-                     "(Blender's keyframe button). layer: the layer's id; paths: channel paths separated by |";
+                     "(Blender's keyframe button); a group with Edit Descendants does the same to the layers inside it. "
+                     "layer: the layer's id; paths: channel paths separated by |";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -498,7 +817,13 @@ void anim_operators_register()
         at = bar + 1;
       }
       animation_record(doc);
-      const int changed = layer_toggle_keys(*layer, paths, doc.frame_current);
+      /* A group with Edit Descendants keys (or unkeys) the same properties of the layers inside it,
+       * all the way the group's own button goes. */
+      const bool adding = layer_key_state(*layer, paths, doc.frame_current) != 2;
+      int changed = layer_toggle_keys(*layer, paths, doc.frame_current);
+      for (Layer *inside : group_descendants(*layer)) {
+        changed += std::abs(layer_toggle_keys(*inside, paths, doc.frame_current, adding ? 1 : -1));
+      }
       if (changed == 0) {
         if (doc.frame_current == 0) {
           report(ReportType::Warning, "Frame 0 is the setup key: delete the later keys first");
@@ -527,6 +852,7 @@ void anim_operators_register()
                       KeyFilter filter;
                       filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
                       filter.selected_only = op_arg_bool(C, "selected_only");
+                      filter.point_layers = editable_layer_ids(doc);
                       filter.path = op_arg(C, "path");
                       filter.pinned_only = op_arg_bool(C, "pinned");
                       int keys = 0;
@@ -556,6 +882,7 @@ void anim_operators_register()
                       KeyFilter filter;
                       filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
                       filter.selected_only = op_arg_bool(C, "selected_only");
+                      filter.point_layers = editable_layer_ids(*C.document);
                       filter.path = op_arg(C, "path");
                       filter.pinned_only = op_arg_bool(C, "pinned");
                       layers_select_keys(layers, std::min(first, last), std::max(first, last), !deselect, filter);
@@ -657,18 +984,63 @@ void anim_operators_register()
                       animation_evaluate(*C.document, C.document->frame_current);
                       return OpStatus::Finished;
                     });
-  anim_operator_add("anim.keys_duplicate", "Duplicate Keys",
-                    "Copy the selected keys `frames` later; the copies become the selection",
-                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
-                      const std::vector<Layer *> layers = timeline_layers(C);
-                      if (!layers_any_key_selected(layers)) {
-                        return OpStatus::Cancelled;
-                      }
-                      animation_record(*C.document);
-                      layers_duplicate_selected_keys(layers, op_arg_int(C, "frames", 1));
-                      animation_evaluate(*C.document, C.document->frame_current);
-                      return OpStatus::Finished;
-                    });
+  {
+    OpProperty offset;
+    offset.name = "frames";
+    offset.label = "Offset";
+    offset.description = "How many frames later the copies go (earlier when negative)";
+    offset.kind = OpProperty::Kind::Int;
+    offset.fallback = "1";
+    offset.min = -100000.0f;
+    offset.max = 100000.0f;
+    anim_operator_add(
+        "anim.keys_duplicate", "Duplicate Keys",
+        "Copy the selected keys `frames` later; the copies become the selection. ignore_bones=1: each copied point "
+        "shows where it did on the frame it was copied from, whatever the bones do on the new frame. keep_place=1: "
+        "the shape only, the copied points' centre staying where it is on the new frame",
+        OPTYPE_REGISTER | OPTYPE_UNDO,
+        [](Context &C) {
+          Document &doc = *C.document;
+          const std::vector<Layer *> layers = timeline_layers(C);
+          if (!layers_any_key_selected(layers)) {
+            return OpStatus::Cancelled;
+          }
+          animation_record(doc);
+          const int offset = op_arg_int(C, "frames", 1);
+          const bool ignore = ignore_bones_arg(C);
+          const bool keep_place = keep_place_arg(C);
+          /* What the copies come from, for Ignore Bones and Keep Place: the frames and the document as
+           * they were. */
+          std::vector<std::pair<int, int>> frames;
+          std::vector<std::pair<uint64_t, uint64_t>> ids;
+          std::unique_ptr<Document> before;
+          if (ignore || keep_place) {
+            for (const auto &[frame, s] : layers_key_summary(layers)) {
+              if (s.selected > 0) {
+                frames.push_back({frame, std::max(1, frame + offset)});
+              }
+            }
+            for (const Layer *l : layers) {
+              ids.push_back({l->id, l->id});
+            }
+            before = std::make_unique<Document>(doc);
+          }
+          layers_duplicate_selected_keys(layers, offset);
+          if (ignore) {
+            keys_ignore_bones(doc, *before, ids, frames);
+          }
+          if (keep_place) {
+            std::vector<uint64_t> placed;
+            for (const auto &[id, source] : ids) {
+              placed.push_back(id);
+            }
+            keys_keep_place(doc, *before, placed, frames);
+          }
+          animation_evaluate(doc, doc.frame_current);
+          return OpStatus::Finished;
+        },
+        {offset, ignore_bones_property(), keep_place_property()});
+  }
   /* A property picked from the timeline's Keyed Here list. */
   anim_operator_add(
       "anim.keyed_go", "Go to Keyed Property",
@@ -795,7 +1167,7 @@ void anim_operators_register()
         doc.active_layer = layer->id;
         show(1, path == "visible"                                               ? "Layer"
                 : path == "opacity"                                             ? "Compositing"
-                : path == "position" || path == "rotation" || path == "scale" ? "Transform"
+                : path == "position" || path == "rotation" || path == "scale" || path == "shear" ? "Transform"
                                                                                 : "");
         return OpStatus::Finished;
       });
@@ -808,12 +1180,15 @@ void anim_operators_register()
                         report(ReportType::Warning, "Select keys to copy");
                         return OpStatus::Cancelled;
                       }
+                      key_clipboard_set_source(*C.document);
                       report(ReportType::Info, "Copied " + std::to_string(copied) + (copied == 1 ? " key" : " keys"));
                       return OpStatus::Finished;
                     });
   anim_operator_add("anim.keys_paste", "Paste Keys",
                     "Paste the copied keys at the current frame (Ctrl V in the timeline), onto the same layers' "
-                    "channels, in whichever action is being edited; pasted on frame 0, they become the setup pose",
+                    "channels, in whichever action is being edited; pasted on frame 0, they become the setup pose. "
+                    "ignore_bones=1: each pasted point shows where it did on the frame it was copied from, whatever "
+                    "the bones do here. keep_place=1: the shape only, its centre staying where it is here",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       if (key_clipboard_empty()) {
                         report(ReportType::Warning, "Copy keys first (Ctrl C in the timeline)");
@@ -821,15 +1196,48 @@ void anim_operators_register()
                       }
                       Document &doc = *C.document;
                       animation_record(doc);
-                      /* On frame 0 the first copied key becomes the setup pose. */
-                      const int pasted = layers_paste_keys(timeline_layers(C), doc.frame_current);
+                      /* On frame 0 the first copied key becomes the setup pose, as a move there with
+                       * Keep Poses: every other frame keeps the pose it had. */
+                      SetupSnapshot before;
+                      if (doc.frame_current == 0) {
+                        std::vector<uint64_t> ids;
+                        for (const Layer *l : timeline_layers(C)) {
+                          ids.push_back(l->id);
+                        }
+                        before = setup_snapshot(doc, ids);
+                      }
+                      const bool ignore = ignore_bones_arg(C);
+                      const bool keep_place = keep_place_arg(C);
+                      std::vector<std::pair<uint64_t, uint64_t>> ids;
+                      std::vector<std::pair<int, int>> frames;
+                      std::unique_ptr<Document> was;
+                      if (keep_place) {
+                        was = std::make_unique<Document>(doc);
+                      }
+                      const int pasted = layers_paste_keys(timeline_layers(C), doc.frame_current, &ids, &frames);
                       if (pasted == 0) {
                         report(ReportType::Warning, "The copied keys' layers aren't selected");
                         return OpStatus::Cancelled;
                       }
+                      if (ignore && key_clipboard_source()) {
+                        keys_ignore_bones(doc, *key_clipboard_source(), ids, frames);
+                      }
+                      if (keep_place) {
+                        std::vector<uint64_t> placed;
+                        for (const auto &[id, source] : ids) {
+                          placed.push_back(id);
+                        }
+                        keys_keep_place(doc, *was, placed, frames);
+                      }
+                      if (doc.frame_current == 0) {
+                        animation_record(doc);
+                        keep_poses(doc, before);
+                        C.undo_name = "Paste Keys as the Setup Pose";
+                      }
                       animation_evaluate(doc, doc.frame_current);
                       return OpStatus::Finished;
-                    });
+                    },
+                    {ignore_bones_property(), keep_place_property()});
   /* G, S and Shift D over the timeline: ask the timeline to move, scale or duplicate-and-move the
    * selected keys by mouse. */
   for (const char kind : {'G', 'S', 'D'}) {

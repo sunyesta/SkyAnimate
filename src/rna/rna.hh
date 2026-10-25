@@ -163,4 +163,17 @@ PropertyRNA def_string(const char *id, const char *name, const char *desc, std::
   return prop;
 }
 
+/* A string computed or stored somewhere other than a plain member. */
+template<typename T>
+PropertyRNA def_string_fn(const char *id, const char *name, const char *desc,
+                          std::function<std::string(const T &)> get, std::function<void(T &, const std::string &)> set)
+{
+  PropertyRNA prop{id, name, desc, PropType::String};
+  prop.get = [get](const void *data) -> Value { return get(*static_cast<const T *>(data)); };
+  if (set) {
+    prop.set = [set](void *data, const Value &v) { set(*static_cast<T *>(data), std::get<std::string>(v)); };
+  }
+  return prop;
+}
+
 }  // namespace oanim::rna

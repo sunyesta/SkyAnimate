@@ -52,6 +52,33 @@ const rna::StructRNA &Document::rna()
         def_bool<Document>("auto_key", "Auto Keying",
                            "Editing at a frame other than 0 keys what changes there (the record button)",
                            &Document::auto_key),
+        def_enum<Document, AutoKeyMode>(
+            "auto_key_mode", "Auto Keying Mode",
+            "Add & Replace keys whatever changes, adding keys where there are none; Replace only changes keys "
+            "already on the frame",
+            &Document::auto_key_mode, {{"ADD_REPLACE", "Add & Replace"}, {"REPLACE", "Replace"}}),
+        def_bool<Document>("auto_freeze_keys", "Auto-Freeze Keys",
+                           "Keying a bone keys every other bone of its bone layer shown there on that frame too, "
+                           "and keying a point every point of its drawing, so the whole pose and shape hold there "
+                           "(Moho's)",
+                           &Document::auto_freeze_keys),
+        def_bool<Document>("onion_skin", "Onion Skins",
+                           "Show the drawings being edited as they are on the frames before (and after) this one, "
+                           "as coloured wireframes. Never rendered",
+                           &Document::onion_skin),
+        def_enum<Document, OnionMode>("onion_mode", "Onion Skin Mode",
+                                      "Step back and forward by the keys of the layers being edited, or by frames",
+                                      &Document::onion_mode, {{"KEYFRAMES", "Keyframes"}, {"FRAMES", "Frames"}}),
+        def_int<Document>("onion_before", "Before", "How many keys (or frames) back to show", &Document::onion_before,
+                          0, 20),
+        def_int<Document>("onion_after", "After", "How many keys (or frames) ahead to show", &Document::onion_after,
+                          0, 20),
+        def_int<Document>("onion_step", "Step", "Frames mode: show every so many frames (2 for animating on twos)",
+                          &Document::onion_step, 1, 100),
+        def_bool<Document>("onion_fade", "Fade", "Ghosts further from this frame show fainter",
+                           &Document::onion_fade),
+        def_bool<Document>("onion_all_layers", "All Layers",
+                           "Ghost every shown drawing, not just the ones being edited", &Document::onion_all_layers),
         def_enum<Document, PlaybackSync>(
             "sync_mode", "Sync",
             "How playback keeps time: every frame (slower than the frame rate if drawing can't keep up), "

@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <string>
+#include <map>
+#include <memory>
+#include <set>
 #include <vector>
 
 #include "core/math.hh"
@@ -29,6 +32,15 @@ void mask_operators_register();
 void material_operators_register();
 void driver_operators_register();
 void rig_operators_register();
+/* sculpt.* (ops/sculpt_ops.cc). */
+void sculpt_operators_register();
+/* annotation.* and guide.* (ops/annotation_ops.cc). */
+void annotation_operators_register();
+/* Where Ctrl puts handle `point` of guide `guide` (an index into the document's guides, or -1 for a
+ * guide being made) dragged to `p` (document space): the nearest point of the drawing or another guide's
+ * handle within `radius`, else the nearest point on another guide's straight line within it, else (for
+ * a two-handle guide) the line's turn in 15 degree steps. `r_snapped`: whether it moved. */
+float2 guide_snap(const Document &doc, int guide, int point, float2 p, float radius, bool *r_snapped);
 
 /* A layer named by its id ("12") or its name. */
 Layer *layer_by_name_or_id(Document &doc, const std::string &text);
@@ -55,6 +67,8 @@ std::vector<Layer *> timeline_shown_layers(Context &C);
 /* What the timeline edits keys of: those, plus the layers of pinned channels (listed under
  * Pinned whatever is picked). */
 std::vector<Layer *> timeline_layers(Context &C);
+/* The layers with pinned channels, flat order (kept between frames until the next change). */
+const std::vector<uint64_t> &timeline_pinned_layer_ids(Context &C);
 
 /* Gives the selected shapes on every edited layer these brush settings. Returns how many shapes
  * changed (no undo step: the caller pushes one). */
@@ -76,6 +90,21 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer = nullptr);
  * delete and the other point operators act on all of them at once; drawing tools still draw on
  * the active layer. */
 std::vector<Layer *> editable_layers(Context &C);
+std::vector<Layer *> document_editable_layers(Document &doc);
+/* Their ids, for KeyFilter::point_layers: the points whose selection counts now. */
+std::shared_ptr<const std::set<uint64_t>> editable_layer_ids(Document &doc);
+
+/* For an operator flagged OPTYPE_MIRROR while X mirror editing is on: the selected points' mirror
+ * images are selected too, in the same layer (across its axis) or in a sided layer's partner (Ear_R
+ * for Ear_L, picked for the run so it is edited too), so the operator does the same on both sides.
+ * _end deselects what was added and puts the partners' picking back. */
+struct MirrorSelection {
+  /* By layer id: the point ids selected only for the run. */
+  std::map<uint64_t, std::vector<uint64_t>> added;
+  std::vector<uint64_t> picked;
+};
+MirrorSelection mirror_selection_begin(Context &C);
+void mirror_selection_end(Context &C, const MirrorSelection &mirror);
 
 /* In Stroke mode, selects every point of the curves that already have a selected point, so
  * the whole stroke moves together. Does nothing in Point and Edge mode. */

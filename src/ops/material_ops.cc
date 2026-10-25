@@ -53,8 +53,114 @@ static Material *material_arg(Context &C)
   return m;
 }
 
+/* Whether any of the points along the shape's edges is selected. */
+static bool shape_touches_selection(const VectorDrawing &drawing, const Shape &shape)
+{
+  for (const ShapeEdge &e : shape.edges) {
+    if (e.curve < 0 || e.curve >= int(drawing.curves.size())) {
+      continue;
+    }
+    const Curve &curve = drawing.curves[size_t(e.curve)];
+    const int n = int(curve.points.size());
+    if (n == 0 || e.segment < 0 || e.segment >= n) {
+      continue;
+    }
+    for (const int k : {e.segment, (e.segment + 1) % n}) {
+      const int p = curve.points[size_t(k)].point;
+      if (p >= 0 && p < int(drawing.points.size()) && drawing.points[size_t(p)].selected) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* Link Materials' source: the active shape (the last clicked) on a layer being edited, else the shape the
+ * Shape panel shows. */
+static Shape *link_source(Context &C, uint64_t *r_layer)
+{
+  Document &doc = *C.document;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->id == doc.active_shape_layer && !layer->is_reference()) {
+      const int s = drawing_shape_index(layer->drawing, doc.active_shape);
+      if (s >= 0) {
+        *r_layer = layer->id;
+        return &layer->drawing.shapes[size_t(s)];
+      }
+    }
+  }
+  if (Shape *shown = shown_shape(C)) {
+    for (Layer *layer : editable_layers(C)) {
+      for (const Shape &s : layer->drawing.shapes) {
+        if (&s == shown) {
+          *r_layer = layer->id;
+        }
+      }
+    }
+    return shown;
+  }
+  return nullptr;
+}
+
 void material_operators_register()
 {
+  {
+    /* Ctrl L > Link Materials, as Blender's Link/Transfer Data: the active shape's material (or its own
+     * look) to every shape with a point selected. */
+    OperatorType ot;
+    ot.idname = "material.link_selected";
+    ot.name = "Link Materials";
+    ot.description = "Give every shape with at least one point selected the active shape's material (the shape "
+                     "last clicked), on the layers being edited; a shape with a look of its own passes on that "
+                     "look instead";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && !editable_layers(C).empty(); };
+    ot.exec = [](Context &C) {
+      uint64_t source_layer = 0;
+      const Shape *source_ptr = link_source(C, &source_layer);
+      if (!source_ptr) {
+        report(ReportType::Warning, "Click a shape to make it the active one, then select the shapes to give its "
+                                    "material");
+        return OpStatus::Cancelled;
+      }
+      const Shape source = *source_ptr;
+      int count = 0;
+      for (Layer *layer : editable_layers(C)) {
+        if (layer->is_reference()) {
+          continue;
+        }
+        VectorDrawing &drawing = layer->drawing;
+        for (Shape &shape : drawing.shapes) {
+          if ((layer->id == source_layer && shape.id == source.id) || !shape_touches_selection(drawing, shape)) {
+            continue;
+          }
+          if (shape.material == source.material && shape.style == source.style) {
+            continue;
+          }
+          if (source.material == 0 && shape.material != 0) {
+            const Material *was = material_find(*C.document, shape.material);
+            shape.material_last = was ? was->name : shape.material_last;
+          }
+          shape.material = source.material;
+          if (source.material != 0) {
+            shape.material_last.clear();
+          }
+          shape.style = source.style;
+          count++;
+        }
+      }
+      if (count == 0) {
+        report(ReportType::Info, "Select points of the shapes to give the active shape's material");
+        return OpStatus::Cancelled;
+      }
+      const Material *m = material_find(*C.document, source.material);
+      C.undo_name = m ? "Link " + m->name : std::string("Link Look");
+      report(ReportType::Info, std::string(m ? "Linked " + m->name + " to " : "Gave its look to ") +
+                                   std::to_string(count) + (count == 1 ? " shape" : " shapes"));
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   {
     OperatorType ot;
     ot.idname = "material.new";
@@ -94,7 +200,7 @@ void material_operators_register()
     ot.idname = "material.assign";
     ot.name = "Link Material";
     ot.description = "Link the selected shapes to a material (material=, a name or id): they take its look";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_MIRROR;
     ot.poll = [](Context &C) { return any_material(C) && have_targets(C); };
     ot.exec = [](Context &C) {
       Material *m = material_arg(C);

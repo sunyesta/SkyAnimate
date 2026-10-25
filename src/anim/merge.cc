@@ -12,6 +12,7 @@
 
 #include "anim/deform.hh"
 #include "data/document.hh"
+#include "data/fill_area.hh"
 
 namespace oanim {
 
@@ -45,6 +46,28 @@ void add_shape_polygons(const VectorDrawing &drawing, const Shape &shape, const 
   const float scale = to_layer.scale();
   std::vector<float2> points;
   std::vector<float> radii;
+  /* With a fill rule its loops fill together: their pieces go in as they fill, outer rings one way round
+   * and holes the other, so the holes stay holes. */
+  if (shape_fills_together(drawing, shape)) {
+    const float width = shape.style.line_width * scale;
+    for (const FillPiece &piece : fill_area(shape_fill_loops(drawing, shape, 12, 0.0002f), shape.fill_rule)) {
+      for (const std::vector<float2> &ring : piece.rings) {
+        Polygon poly;
+        poly.owner = owner;
+        for (const float2 &q : ring) {
+          const float2 p = to_layer.apply(q);
+          poly.path.push_back({double(p.x), double(p.y)});
+          poly.widths.push_back(width);
+        }
+        /* A flip (a mirrored source) turns every ring: turn them back. */
+        if ((c2::Area(poly.path) < 0.0) != (&ring != &piece.rings.front())) {
+          std::reverse(poly.path.begin(), poly.path.end());
+        }
+        r_polygons.push_back(std::move(poly));
+      }
+    }
+    return;
+  }
   for (const Shape &run : shape_runs(drawing, shape)) {
     bool closed = false;
     points.clear();
@@ -253,22 +276,67 @@ const c2::PathsD &merge_paths_cached(const std::vector<Polygon> &polygons, Merge
   return cache.emplace(key, merge_paths(polygons, operation, smoothing, corners_only)).first->second;
 }
 
+/* Everything of a drawing a merge reads: its points, curves and shapes. */
+uint64_t drawing_merge_hash(const VectorDrawing &d)
+{
+  uint64_t h = mix(d.points.size(), d.curves.size() * 31 + d.shapes.size());
+  for (const MeshPoint &p : d.points) {
+    h = mix_double(mix_double(mix_double(h, p.pos.x), p.pos.y), p.radius);
+    h = mix(h, p.id);
+  }
+  for (const Curve &c : d.curves) {
+    h = mix(h, c.points.size() * 2 + (c.closed ? 1 : 0));
+    for (const CurvePoint &cp : c.points) {
+      h = mix(h, uint64_t(cp.point) * 4 + uint64_t(cp.handles_set) * 2 + uint64_t(cp.edge_hidden));
+      for (const float v : {cp.handle_in.x, cp.handle_in.y, cp.handle_out.x, cp.handle_out.y, cp.curvature,
+                            cp.weight_in, cp.weight_out, cp.offset_in, cp.offset_out})
+      {
+        h = mix_double(h, v);
+      }
+    }
+  }
+  for (const Shape &s : d.shapes) {
+    h = mix(h, s.id * 8 + uint64_t(s.has_fill) * 4 + uint64_t(s.has_outline) * 2 + uint64_t(s.hidden));
+    h = mix_double(h, s.style.line_width);
+    for (const ShapeEdge &e : s.edges) {
+      h = mix(h, uint64_t(e.curve) << 32 | uint64_t(uint32_t(e.segment)));
+    }
+  }
+  return h;
+}
+
 }  // namespace
 
-bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, const std::vector<MergeSource> &sources,
-                   MergeOperation operation, float smoothing, bool corners_only)
-{
-  std::vector<Polygon> polygons;
+/* What a merge makes, apart from the drawing it goes in: the shapes it takes (by place) and each
+ * outline's corners. Kept by what goes in, so a merge asked for again (drawing, picking and masks ask
+ * each frame; zooming every frame) is only put into the drawing as it is now (its looks, ids). */
+struct MergeOutline {
+  struct Corner {
+    float2 pos;
+    float radius = 1.0f;
+    float2 handle_in, handle_out;
+  };
   std::vector<int> taken;
+  std::vector<std::vector<Corner>> pieces;
+  /* Whether each piece is a hole (it runs the other way round). */
+  std::vector<bool> holes;
+};
+
+static MergeOutline merge_outline(const VectorDrawing &drawing, const std::vector<uint64_t> &own,
+                                  const std::vector<MergeSource> &sources, MergeOperation operation, float smoothing,
+                                  bool corners_only)
+{
+  MergeOutline out;
+  std::vector<Polygon> polygons;
   for (int s = 0; s < int(drawing.shapes.size()); s++) {
     const Shape &shape = drawing.shapes[s];
     if (!shape.hidden && merge_takes_shape(drawing, shape, own)) {
-      taken.push_back(s);
+      out.taken.push_back(s);
       add_shape_polygons(drawing, shape, Transform2D(), 0, polygons);
     }
   }
-  if (taken.empty()) {
-    return false;
+  if (out.taken.empty()) {
+    return out;
   }
   for (const MergeSource &source : sources) {
     for (const Shape &shape : source.drawing->shapes) {
@@ -277,24 +345,24 @@ bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, con
       }
     }
   }
-  const Shape look = drawing.shapes[taken.front()];
+  const Shape &look = drawing.shapes[out.taken.front()];
   const c2::PathsD &paths = merge_paths_cached(polygons, operation, std::max(smoothing, 0.0f), corners_only);
   if (corners_only && paths.empty()) {
-    return false;
+    out.taken.clear();
+    return out;
   }
 
   /* Each outline a closed curve through its corners: smooth where it bends gently, sharp where it
    * turns hard (the shapes' own corners, and where they met with no Smoothing). */
-  std::vector<Shape> made;
   const float line_width = std::max(look.style.line_width, 1e-9f);
   double largest = 0.0;
   for (const c2::PathD &raw : paths) {
     largest = std::max(largest, c2::Area(raw));
   }
   for (const c2::PathD &raw : paths) {
-    /* A hole (a shape draws one outline, so it is left filled), or a sliver the booleans leave where
-     * outlines run together. */
-    if (c2::Area(raw) <= std::max(1e-12, largest * 1e-5)) {
+    /* A sliver the booleans leave where outlines run together. Holes (running the other way) are kept:
+     * the result fills with them cut out. */
+    if (std::fabs(c2::Area(raw)) <= std::max(1e-12, largest * 1e-5)) {
       continue;
     }
     const c2::PathD path = c2::SimplifyPath(raw, 0.00002, true);
@@ -302,8 +370,7 @@ bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, con
     if (n < 3) {
       continue;
     }
-    Curve curve;
-    curve.closed = true;
+    std::vector<MergeOutline::Corner> piece;
     for (int i = 0; i < n; i++) {
       const float2 p(float(path[i].x), float(path[i].y));
       const float2 prev(float(path[(i + n - 1) % n].x), float(path[(i + n - 1) % n].y));
@@ -320,34 +387,97 @@ bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, con
           }
         }
       }
-      MeshPoint point;
-      point.pos = p;
-      point.setup_pos = p;
-      point.radius = std::clamp(width / line_width, 0.0f, POINT_RADIUS_MAX);
-      point.id = drawing.next_id++;
-      drawing.points.push_back(point);
-      CurvePoint cp;
-      cp.point = int(drawing.points.size()) - 1;
-      cp.handles_set = true;
+      MergeOutline::Corner corner;
+      corner.pos = p;
+      corner.radius = std::clamp(width / line_width, 0.0f, POINT_RADIUS_MAX);
       const float2 in_dir = p - prev, out_dir = next - p;
       const float lin = length(in_dir), lout = length(out_dir);
       const float turn = (lin > 1e-9f && lout > 1e-9f) ? std::acos(std::clamp(dot(in_dir, out_dir) / (lin * lout), -1.0f, 1.0f))
                                                      : PI;
       if (turn < 40.0f * PI / 180.0f) {
         const float2 t = normalize(next - prev);
-        cp.handle_in = t * (-lin / 3.0f);
-        cp.handle_out = t * (lout / 3.0f);
+        corner.handle_in = t * (-lin / 3.0f);
+        corner.handle_out = t * (lout / 3.0f);
       }
+      piece.push_back(corner);
+    }
+    out.pieces.push_back(std::move(piece));
+    out.holes.push_back(c2::Area(raw) < 0.0);
+  }
+  return out;
+}
+
+bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, const std::vector<MergeSource> &sources,
+                   MergeOperation operation, float smoothing, bool corners_only)
+{
+  uint64_t key = mix(drawing_merge_hash(drawing), uint64_t(operation) | uint64_t(corners_only) << 4);
+  key = mix_double(key, smoothing);
+  for (const uint64_t id : own) {
+    key = mix(key, id);
+  }
+  for (const MergeSource &source : sources) {
+    key = mix(key, drawing_merge_hash(*source.drawing));
+    for (const float v : {source.to_layer.a, source.to_layer.b, source.to_layer.c, source.to_layer.d,
+                          source.to_layer.tx, source.to_layer.ty})
+    {
+      key = mix_double(key, v);
+    }
+    key = mix(key, source.shapes.size());
+    for (const uint64_t id : source.shapes) {
+      key = mix(key, id);
+    }
+  }
+  static std::map<uint64_t, MergeOutline> cache;
+  auto it = cache.find(key);
+  if (it == cache.end()) {
+    if (cache.size() > 64) {
+      cache.clear();
+    }
+    it = cache.emplace(key, merge_outline(drawing, own, sources, operation, smoothing, corners_only)).first;
+  }
+  const MergeOutline &out = it->second;
+  if (out.taken.empty()) {
+    return false;
+  }
+
+  std::vector<Shape> made;
+  const Shape look = drawing.shapes[out.taken.front()];
+  /* With holes, the pieces are one shape filling even-odd (the holes inside the pieces round them). */
+  const bool any_hole = std::find(out.holes.begin(), out.holes.end(), true) != out.holes.end();
+  for (const std::vector<MergeOutline::Corner> &piece : out.pieces) {
+    Curve curve;
+    curve.closed = true;
+    for (const MergeOutline::Corner &corner : piece) {
+      MeshPoint point;
+      point.pos = corner.pos;
+      point.setup_pos = corner.pos;
+      point.radius = corner.radius;
+      point.id = drawing.next_id++;
+      drawing.points.push_back(point);
+      CurvePoint cp;
+      cp.point = int(drawing.points.size()) - 1;
+      cp.handles_set = true;
+      cp.handle_in = corner.handle_in;
+      cp.handle_out = corner.handle_out;
       cp.setup_in = cp.handle_in;
       cp.setup_out = cp.handle_out;
       curve.points.push_back(cp);
     }
     drawing.curves.push_back(std::move(curve));
+    const int c = int(drawing.curves.size()) - 1;
+    if (any_hole && !made.empty()) {
+      for (int s = 0; s < int(piece.size()); s++) {
+        made.front().edges.push_back({c, s});
+      }
+      continue;
+    }
     Shape shape = look;
     shape.merge_made = true;
     shape.edges.clear();
-    const int c = int(drawing.curves.size()) - 1;
-    for (int s = 0; s < n; s++) {
+    if (any_hole) {
+      shape.fill_rule = FillRule::EvenOdd;
+    }
+    for (int s = 0; s < int(piece.size()); s++) {
       shape.edges.push_back({c, s});
     }
     if (!made.empty()) {
@@ -356,9 +486,9 @@ bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, con
     }
     made.push_back(std::move(shape));
   }
-  const int at = taken.front();
-  for (auto it = taken.rbegin(); it != taken.rend(); ++it) {
-    drawing.shapes.erase(drawing.shapes.begin() + *it);
+  const int at = out.taken.front();
+  for (auto t = out.taken.rbegin(); t != out.taken.rend(); ++t) {
+    drawing.shapes.erase(drawing.shapes.begin() + *t);
   }
   drawing.shapes.insert(drawing.shapes.begin() + std::min(at, int(drawing.shapes.size())), made.begin(), made.end());
   return true;
@@ -452,6 +582,9 @@ template<typename F> static void each_merge_into(const Document &doc, const std:
 
 bool merge_takes_from(const Document &doc, const Layer &layer, bool render)
 {
+  if (layer_index_no_booleans(doc)) {
+    return false;
+  }
   bool any = false;
   each_merge_into(doc, doc.layers, layer, render, [&](const Layer &, const Modifier &, const MergeTarget &) {
     any = true;

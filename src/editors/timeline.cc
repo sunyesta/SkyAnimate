@@ -4,16 +4,19 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "imgui_stdlib.h"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
 #include "anim/animation.hh"
 #include "anim/draw_order.hh"
+#include "anim/onion.hh"
 #include "assets/asset_library.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -31,7 +34,6 @@ namespace oanim {
 
 /* Colours from Blender's default timeline (dope sheet) theme. */
 static constexpr ImU32 COL_ICON = IM_COL32(0xe6, 0xe6, 0xe6, 255);
-static constexpr ImU32 COL_BUTTON_HOVER = IM_COL32(0x54, 0x54, 0x54, 255);
 static constexpr ImU32 COL_REGION = IM_COL32(0x2b, 0x2b, 0x2b, 255);
 static constexpr ImU32 COL_OUTSIDE_RANGE = IM_COL32(0x00, 0x00, 0x00, 0x33);
 static constexpr ImU32 COL_GRID = IM_COL32(0x3a, 0x3a, 0x3a, 255);
@@ -42,11 +44,27 @@ static constexpr ImU32 COL_PLAYHEAD = IM_COL32(0x47, 0x72, 0xb3, 255);
 static constexpr ImU32 COL_KEY = IM_COL32(0xdd, 0xdd, 0xdd, 255);
 static constexpr ImU32 COL_KEY_SELECTED = IM_COL32(0xff, 0xbe, 0x33, 255);
 static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
+/* Blender's header buttons (the default theme's Regular widgets): grey, lighter under the mouse, blue
+ * when on; a menu's arrow half darker; outlined, with a darker line under each group. */
+static constexpr ImU32 COL_WIDGET = IM_COL32(0x54, 0x54, 0x54, 255);
+static constexpr ImU32 COL_WIDGET_HOVER = IM_COL32(0x65, 0x65, 0x65, 255);
+static constexpr ImU32 COL_WIDGET_PRESS = IM_COL32(0x47, 0x72, 0xb3, 255);
+static constexpr ImU32 COL_WIDGET_MENU = IM_COL32(0x28, 0x28, 0x28, 255);
+static constexpr ImU32 COL_WIDGET_MENU_HOVER = IM_COL32(0x33, 0x33, 0x33, 255);
+static constexpr ImU32 COL_WIDGET_OUTLINE = IM_COL32(0x3d, 0x3d, 0x3d, 255);
+static constexpr ImU32 COL_WIDGET_SHADOW = IM_COL32(0x29, 0x29, 0x29, 255);
 /* Editing an action instead of the mainline: Blender's orange for "not the main data". */
 static constexpr ImU32 COL_ACTION_ACTIVE = IM_COL32(0x8a, 0x5a, 0x1e, 255);
+static constexpr ImU32 COL_FIX_ACTIVE = UI_FIX_ACTIVE_COLOR;
+static constexpr ImU32 COL_FIX_TEXT = UI_FIX_COLOR;
+static constexpr ImU32 COL_BROKEN = UI_BROKEN_COLOR;
 static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
-enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped };
+enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion };
+
+/* Where a button sits in a row of joined buttons (Blender's aligned buttons): only the row's outer
+ * corners are round. */
+enum class Joined { Alone, First, Middle, Last };
 
 /* Triangles are wound clockwise (screen y points down) so ImGui anti-aliases their edges. */
 static void tri_right(ImDrawList *dl, float x0, float x1, float cy, float half_h, ImU32 col)
@@ -69,13 +87,18 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
   const ImU32 col = COL_ICON;
   switch (icon) {
     case Icon::Record:
-      if (on) {
-        dl->AddCircleFilled(c, s * 0.8f, COL_RECORD);
-      }
-      else {
-        dl->AddCircle(c, s * 0.75f, col, 0, 1.5f);
-      }
+      /* Blender's: a red dot in a light ring, on or off (the button turns blue when on). */
+      (void)on;
+      dl->AddCircleFilled(c, s * 0.78f, IM_COL32(0xd8, 0xdc, 0xe4, 255));
+      dl->AddCircleFilled(c, s * 0.58f, COL_RECORD);
       break;
+    case Icon::Menu: {
+      /* The small down arrow of a menu button. */
+      const float w = s * 0.55f;
+      const ImVec2 pts[3] = {c + ImVec2(-w, -w * 0.45f), c + ImVec2(0.0f, w * 0.55f), c + ImVec2(w, -w * 0.45f)};
+      dl->AddPolyline(pts, 3, col, 0, std::max(1.2f, s * 0.22f));
+      break;
+    }
     case Icon::Play:
       tri_right(dl, c.x - s * 0.7f, c.x + s * 0.9f, c.y, s, col);
       break;
@@ -102,12 +125,16 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
       tri_right(dl, c.x + s * 0.15f, c.x + s, c.y, s * 0.7f, col);
       diamond(dl, ImVec2(c.x - s * 0.45f, c.y), s * 0.6f, col);
       break;
+    case Icon::Onion: {
+      /* Two drawings, the one behind faint: a frame seen through the one before it. */
+      (void)on;
+      dl->AddCircle(c + ImVec2(-s * 0.38f, 0.0f), s * 0.62f, (col & 0x00ffffffu) | 0x80000000u, 0, 1.4f);
+      dl->AddCircleFilled(c + ImVec2(s * 0.32f, 0.0f), s * 0.62f, col);
+      break;
+    }
     case Icon::Stepped: {
       /* Stairs: the motion held from key to key. */
-      if (on) {
-        dl->AddRectFilled(c - ImVec2(s * 1.5f, s * 1.5f), c + ImVec2(s * 1.5f, s * 1.5f), COL_PLAYHEAD,
-                          ImGui::GetStyle().FrameRounding);
-      }
+      (void)on;
       const ImVec2 pts[7] = {c + ImVec2(-s, s),         c + ImVec2(-s * 0.33f, s),  c + ImVec2(-s * 0.33f, 0.0f),
                              c + ImVec2(s * 0.33f, 0.0f), c + ImVec2(s * 0.33f, -s), c + ImVec2(s, -s),
                              c + ImVec2(s, -s)};
@@ -117,16 +144,39 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
   }
 }
 
-static bool icon_button(const char *id, Icon icon, bool on, const char *tooltip, const std::string &shortcut)
+/* A Blender header button: its fill (grey, blue when on; a menu's arrow half darker), its outline, and
+ * the darker line under it, round only at the outer ends of the row it is `joined` in. */
+static void widget_draw(ImDrawList *dl, ImVec2 a, ImVec2 b, Joined joined, bool on, bool hovered, bool held,
+                        bool menu = false)
+{
+  const float r = ImGui::GetStyle().FrameRounding;
+  const ImDrawFlags corners = joined == Joined::Alone   ? ImDrawFlags_RoundCornersAll
+                              : joined == Joined::First ? ImDrawFlags_RoundCornersLeft
+                              : joined == Joined::Last  ? ImDrawFlags_RoundCornersRight
+                                                        : ImDrawFlags_RoundCornersNone;
+  ImU32 fill = menu ? COL_WIDGET_MENU : COL_WIDGET;
+  if (on || held) {
+    fill = COL_WIDGET_PRESS;
+  }
+  else if (hovered) {
+    fill = menu ? COL_WIDGET_MENU_HOVER : COL_WIDGET_HOVER;
+  }
+  dl->AddRectFilled(a + ImVec2(0.0f, 1.0f), b + ImVec2(0.0f, 1.0f), COL_WIDGET_SHADOW, r, corners);
+  dl->AddRectFilled(a, b, fill, r, corners);
+  dl->AddRect(a, b, COL_WIDGET_OUTLINE, r, corners, 1.0f);
+}
+
+static bool icon_button(const char *id, Icon icon, bool on, const char *tooltip, const std::string &shortcut,
+                        Joined joined = Joined::Alone, float width = 0.0f)
 {
   const float h = ImGui::GetFrameHeight();
+  const float w = width > 0.0f ? width : h;
   const ImVec2 p = ImGui::GetCursorScreenPos();
-  const bool pressed = ImGui::InvisibleButton(id, ImVec2(h, h));
+  const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h));
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  if (ImGui::IsItemHovered()) {
-    dl->AddRectFilled(p, p + ImVec2(h, h), COL_BUTTON_HOVER, ImGui::GetStyle().FrameRounding);
-  }
-  icon_draw(dl, icon, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.3f, on);
+  widget_draw(dl, p, p + ImVec2(w, h), joined, on && icon != Icon::Menu, ImGui::IsItemHovered(),
+              ImGui::IsItemActive(), icon == Icon::Menu);
+  icon_draw(dl, icon, p + ImVec2(w * 0.5f, h * 0.5f), h * 0.3f, on);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     if (shortcut.empty()) {
       ImGui::SetTooltip("%s", tooltip);
@@ -139,13 +189,14 @@ static bool icon_button(const char *id, Icon icon, bool on, const char *tooltip,
 }
 
 /* A button that runs an operator, with its name and shortcut as the tooltip. */
-static void operator_icon_button(Context &C, const char *id, Icon icon, const char *idname)
+static void operator_icon_button(Context &C, const char *id, Icon icon, const char *idname,
+                                 Joined joined = Joined::Alone)
 {
   const OperatorType *ot = operators().find(idname);
   if (!ot) {
     return;
   }
-  if (icon_button(id, icon, false, ot->name.c_str(), keymaps().shortcut_for(idname))) {
+  if (icon_button(id, icon, false, ot->name.c_str(), keymaps().shortcut_for(idname), joined)) {
     operator_call(C, idname);
   }
 }
@@ -177,42 +228,85 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
 }
 
 /* Which timeline is edited: the mainline, or an action of the bone layer the active layer is in,
- * like Moho's switch between the mainline and an action. The + next to it adds an action. */
+ * like Moho's switch between the mainline and an action. The + next to it adds an action.
+ *
+ * The list, top to bottom: what the moment calls for first (the selected bone's smart actions; the smart
+ * actions playing together now, with the fix for them or a new one), then Mainline, Actions, Smart
+ * Actions and Fix Actions. Right-click an action to rename or delete it. */
 static void action_menu(Context &C, float width)
 {
   Document &doc = *C.document;
   const bool in_action = !doc.action.empty();
-  const std::string preview = in_action ? doc.action : "Mainline";
   Layer *owner = in_action ? layer_find(doc, doc.action_layer) : action_owner(doc, doc.active_layer);
   if (in_action && !owner) {
     owner = action_owner(doc, doc.active_layer);
   }
+  const FixAction *editing_fix = in_action && owner ? fix_action_find(*owner, doc.action) : nullptr;
+  const std::string preview = !in_action ? "Mainline" : editing_fix ? "Fix: " + doc.action : doc.action;
 
   if (in_action) {
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, COL_ACTION_ACTIVE);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, editing_fix ? COL_FIX_ACTIVE : COL_ACTION_ACTIVE);
+  }
+  /* A fix's name is its drivers': wider, to read whole. */
+  if (editing_fix) {
+    const float h = ImGui::GetFrameHeight();
+    width = std::max(width, std::min(ImGui::CalcTextSize(preview.c_str()).x + h * 2.5f, h * 14.0f));
   }
   const float plus_w = owner ? ImGui::GetFrameHeight() : 0.0f;
   ImGui::SetNextItemWidth(width - plus_w - (owner ? 2.0f : 0.0f));
-  const bool open = ImGui::BeginCombo("##action", preview.c_str());
+  const bool open = ImGui::BeginCombo("##action", preview.c_str(), ImGuiComboFlags_HeightLarge);
   if (in_action) {
     ImGui::PopStyleColor();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in (a separate "
-                      "animation for it and everything inside)\n\nPython: oanim.data.document.action");
+    if (editing_fix) {
+      std::string drivers;
+      for (const std::string &d : editing_fix->drivers) {
+        drivers += (drivers.empty() ? "" : ", ") + d;
+      }
+      const int held = fix_pose_on_frame(*editing_fix, doc.frame_current);
+      const std::string where = held >= 0 ? "Pose " + std::to_string(held + 1) + ": " +
+                                                fix_pose_label(*owner, *editing_fix, editing_fix->poses[size_t(held)]) +
+                                                ". They're held there: key what should change"
+                                          : "This frame isn't one of its poses: keys here don't play. Its poses are "
+                                            "marked on the ruler";
+      ImGui::SetTooltip("Editing the fix for %s.\n%s.\n\nPython: oanim.data.document.action", drivers.c_str(),
+                        where.c_str());
+    }
+    else {
+      ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in (a separate "
+                        "animation for it and everything inside)\n\nPython: oanim.data.document.action");
+    }
   }
+  /* Right-click Rename: the action, and the name being typed. */
+  static std::string renaming, rename_to;
   if (open) {
     std::string doomed;
-    const auto action_item = [&](const std::string &name) {
-      if (ImGui::Selectable(name.c_str(), in_action && doc.action == name && owner && doc.action_layer == owner->id)) {
+    const auto action_item = [&](const std::string &name, const std::string &label, const std::string &right,
+                                 ImU32 right_col) {
+      ImGui::PushID(name.c_str());
+      const bool here = in_action && doc.action == name && owner && doc.action_layer == owner->id;
+      if (ImGui::Selectable(label.c_str(), here)) {
         operator_call(C, "anim.action_set", {{"name", name}});
       }
+      if (!right.empty()) {
+        const float rw = ImGui::CalcTextSize(right.c_str()).x;
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - rw));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(right_col), "%s", right.c_str());
+      }
       /* Right-click: the action's own menu. */
-      ImGui::PushID(name.c_str());
       if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
         ImGui::OpenPopup("##action_menu");
       }
       if (ui_menu_begin("##action_menu")) {
+        const bool smart = owner && smart_action_bone(*owner, name);
+        if (ui_menu_item("Rename...", nullptr, false, !smart)) {
+          renaming = name;
+          rename_to = name;
+        }
+        if (smart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip("A smart action is named after its bone: rename the bone (its fixes follow)");
+        }
         if (ui_menu_item("Delete")) {
           doomed = name;
         }
@@ -220,6 +314,9 @@ static void action_menu(Context &C, float width)
       }
       ImGui::PopID();
     };
+    const auto percent = [](float share) { return std::to_string(int(std::lround(share * 100.0f))) + "%"; };
+    const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+
     /* At the top, with one bone selected: its smart actions, and a new one while it has fewer
      * than two (the second turns the other way). */
     const Bone *single = nullptr;
@@ -241,7 +338,7 @@ static void action_menu(Context &C, float width)
       int count = 0;
       for (const std::string &name : owner->actions) {
         if (smart_action_bone(*owner, name) == single) {
-          action_item(name);
+          action_item(name, name, "", 0);
           count++;
         }
       }
@@ -256,29 +353,132 @@ static void action_menu(Context &C, float width)
         }
       }
       ImGui::PopID();
-      ImGui::Separator();
     }
+
+    /* Smart actions playing together now (each turned at least 5%): fixing this pose, in the fix for all of
+     * them or one for some of them. Not while one is edited (a smart action shows alone; a fix holds its
+     * drivers). */
+    if (owner && (!in_action || !action_adds(*owner, doc.action)) && doc.frame_current != 0) {
+      const std::vector<std::pair<std::string, float>> counting = smart_actions_counting(*owner);
+      if (counting.size() >= 2) {
+        ImGui::PushID("playing");
+        ImGui::SeparatorText("Playing now");
+        std::string line;
+        for (const auto &[name, t] : counting) {
+          const float length = smart_action_length(*owner, name);
+          line += (line.empty() ? "" : "   \xC2\xB7   ") + name + " " + percent(length > 0.0f ? std::min(t / length, 1.0f) : 0.0f);
+        }
+        ImGui::Indent();
+        ImGui::TextDisabled("%s", line.c_str());
+        ImGui::Unindent();
+        std::vector<std::string> names;
+        for (const auto &[name, t] : counting) {
+          names.push_back(name);
+        }
+        std::sort(names.begin(), names.end());
+        /* One item per fix: for all of them first, then those for some of them. */
+        const auto fix_item = [&](const FixAction *fix, const std::vector<std::string> &drivers, bool all) {
+          std::string joined;
+          for (const std::string &d : drivers) {
+            joined += (joined.empty() ? "" : ",") + d;
+          }
+          const int near_pose = fix ? fix_pose_near(*owner, *fix, counting) : -1;
+          const std::string only = all ? "" : "Only " + fix->name + ": ";
+          const std::string label = !fix       ? "+ New Fix Action for This Pose"
+                                    : near_pose >= 0 ? only + (all ? "Edit Fix: " + fix->name + "  \xC2\xB7  " : "edit ") + "pose " + std::to_string(near_pose + 1)
+                                                : (all ? "+ Add This Pose to Fix: " + fix->name : "+ " + only + "add this pose");
+          ImGui::PushID(joined.c_str());
+          if (ImGui::Selectable(label.c_str())) {
+            operator_call(C, "anim.fix_action_new", {{"drivers", joined}});
+          }
+          if (fix) {
+            const float strength = fix_action_strength(*owner, *fix, counting);
+            const std::string right = percent(strength) + " now";
+            const float rw = ImGui::CalcTextSize(right.c_str()).x;
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - rw));
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(COL_FIX_TEXT), "%s", right.c_str());
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (!fix) {
+              ImGui::SetTooltip("These smart actions together don't look right? Make a fix for them: it opens with them "
+                                "held right here, to key the correction, and then plays by itself whenever they play "
+                                "together. Fix more poses of theirs in the same fix later");
+            }
+            else if (near_pose >= 0) {
+              ImGui::SetTooltip("The fix has this pose already (pose %d): open it to change the correction", near_pose + 1);
+            }
+            else {
+              ImGui::SetTooltip(all ? "Add this pose to the fix, starting from what it plays here now, and key the "
+                                      "correction. Each pose is exact; between them they blend"
+                                    : "Fix this pose in the fix for these smart actions only, leaving the others out "
+                                      "(when they aren't what looks wrong)");
+            }
+          }
+          ImGui::PopID();
+        };
+        const FixAction *for_all = nullptr;
+        for (const FixAction &f : owner->fix_actions) {
+          std::vector<std::string> d = f.drivers;
+          std::sort(d.begin(), d.end());
+          for_all = d == names ? &f : for_all;
+        }
+        fix_item(for_all, names, true);
+        for (const FixAction &f : owner->fix_actions) {
+          const bool inside = &f != for_all && f.drivers.size() >= 2 && fix_action_broken(*owner, f).empty() &&
+                              std::all_of(f.drivers.begin(), f.drivers.end(), [&](const std::string &d) {
+                                return std::find(names.begin(), names.end(), d) != names.end();
+                              });
+          if (inside) {
+            fix_item(&f, f.drivers, false);
+          }
+        }
+        ImGui::PopID();
+      }
+    }
+
+    ImGui::Separator();
     if (ImGui::Selectable("Mainline", !in_action)) {
       operator_call(C, "anim.action_set", {{"name", ""}});
     }
     if (owner && !owner->actions.empty()) {
-      for (const bool smart : {false, true}) {
+      const auto section = [&](const char *title, auto &&wanted, auto &&item) {
         bool any = false;
         for (const std::string &name : owner->actions) {
-          if ((smart_action_bone(*owner, name) != nullptr) != smart) {
+          if (!wanted(name)) {
             continue;
           }
           if (!any) {
-            ImGui::SeparatorText(smart ? "Smart Actions" : "Actions");
+            ImGui::SeparatorText(title);
             any = true;
           }
-          action_item(name);
+          item(name);
         }
-      }
+      };
+      const auto plain = [&](const std::string &name) { action_item(name, name, "", 0); };
+      section("Actions", [&](const std::string &n) { return !action_adds(*owner, n); }, plain);
+      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*owner, n) != nullptr; }, plain);
+      const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(*owner);
+      section("Fix Actions", [&](const std::string &n) { return fix_action_find(*owner, n) != nullptr; },
+              [&](const std::string &name) {
+                const FixAction &f = *fix_action_find(*owner, name);
+                const std::string broken = fix_action_broken(*owner, f);
+                const float strength = broken.empty() ? fix_action_strength(*owner, f, playing) : 0.0f;
+                action_item(name, name, !broken.empty() ? "broken" : strength > 0.0f ? percent(strength) : "",
+                            !broken.empty() ? COL_BROKEN : strength > 0.0f ? COL_FIX_TEXT : dim);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                  std::string drivers;
+                  for (const std::string &d : f.drivers) {
+                    drivers += (drivers.empty() ? "" : " and ") + d;
+                  }
+                  ImGui::SetTooltip(broken.empty() ? "Fixes %s playing together (%s now)"
+                                                   : "Can't play: %s. Its keys are kept",
+                                    broken.empty() ? drivers.c_str() : broken.c_str(), percent(strength).c_str());
+                }
+              });
     }
-    if (owner && !single) {
+    if (owner && !single && (in_action || smart_actions_playing(*owner).size() < 2)) {
       ImGui::Separator();
-      ImGui::TextDisabled("Select one bone for its smart actions");
+      ImGui::TextDisabled("Select one bone for its smart actions.\nTurn two smart bones together to fix them.");
     }
     else if (!owner) {
       ImGui::Separator();
@@ -289,6 +489,27 @@ static void action_menu(Context &C, float width)
       operator_call(C, "anim.action_delete", {{"name", doomed}});
     }
     ImGui::EndCombo();
+  }
+  if (!renaming.empty()) {
+    ImGui::OpenPopup("##rename_action");
+  }
+  if (ImGui::BeginPopup("##rename_action")) {
+    ImGui::TextUnformatted("Rename Action");
+    if (ImGui::IsWindowAppearing()) {
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    const bool entered = ImGui::InputText("##rename_to", &rename_to,
+                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if ((entered || ImGui::Button("Rename")) && !rename_to.empty()) {
+      operator_call(C, "anim.action_rename", {{"name", renaming}, {"to", rename_to}});
+      renaming.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+  else {
+    renaming.clear();
   }
   if (!owner) {
     return;
@@ -749,7 +970,27 @@ static void interp_settings_popup(Context &C)
 /* The header's mode dropdown and settings button. */
 static void interp_header(Context &C, float width)
 {
-  const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
+  /* Visiting every channel of a big rig each frame costs tens of milliseconds, so the summary is kept until an
+   * edit (key selection goes through operators, which push undo), a click or the shown layers change. */
+  static SelectedKeys sel;
+  static uint64_t sel_changes = ~uint64_t(0);
+  static std::vector<uint64_t> sel_layers;
+  const std::vector<Layer *> layers = timeline_layers(C);
+  std::vector<uint64_t> ids;
+  ids.reserve(layers.size());
+  for (const Layer *layer : layers) {
+    ids.push_back(layer->id);
+  }
+  const uint64_t changes = C.undo ? C.undo->change_count() : 0;
+  bool clicked = false;
+  for (int b = 0; b < ImGuiMouseButton_COUNT; b++) {
+    clicked |= ImGui::IsMouseReleased(b);
+  }
+  if (!C.undo || changes != sel_changes || ids != sel_layers || clicked) {
+    sel = layers_selected_keys(layers);
+    sel_changes = changes;
+    sel_layers = std::move(ids);
+  }
   const KeySettings s = interp_shown(sel);
   const char *name = sel.count > 0 && sel.mixed ? "Mixed" : interp_name(s.interp);
   const float h = ImGui::GetFrameHeight();
@@ -962,28 +1203,155 @@ static void timeline_header(Area &area, Context &C)
   /* Centre: auto-keying, then the playback buttons. */
   const float spacing = std::max(1.0f, style.ItemSpacing.x * 0.35f);
   const float record_gap = h * 0.6f;
-  const float transport_w = 8.0f * h + 5.0f * spacing + 2.0f * record_gap;
+  const float keying_arrow_w = h * 0.75f;
+  const float onion_gap = h * 0.25f;
+  const float transport_w = 9.0f * h + 2.0f * record_gap + 2.0f * keying_arrow_w + onion_gap;
   const float transport_x = std::max(menus_end + pad * 2.0f, origin.x + (width - transport_w) * 0.5f);
   ImGui::SetCursorScreenPos(ImVec2(transport_x, origin.y + top));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, style.ItemSpacing.y));
+  (void)spacing;
+  /* Buttons in a group touch, as Blender's aligned rows. */
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, style.ItemSpacing.y));
   if (icon_button("##auto_key", Icon::Record, doc.auto_key,
-                  "Auto Keying\nEditing at a frame other than 0 keys what you change there", "")) {
+                  "Auto Keying\nEditing at a frame other than 0 keys what you change there", "", Joined::First)) {
     doc.auto_key = !doc.auto_key;
+    C.undo->mark_changed();
+  }
+  /* Blender's auto-keying popover beside the record button: the mode, and Moho's Auto-Freeze Keys. */
+  ImGui::SameLine(0.0f, 0.0f);
+  const ImVec2 arrow_at = ImGui::GetCursorScreenPos();
+  if (icon_button("##auto_key_options", Icon::Menu, false, "Auto Keying options", "", Joined::Last, keying_arrow_w)) {
+    ImGui::OpenPopup("##auto_key_popover");
+  }
+  /* Opens above the timeline's header. */
+  ImGui::SetNextWindowPos(ImVec2(arrow_at.x - h * 2.0f, arrow_at.y - 4.0f), ImGuiCond_Appearing, ImVec2(0.0f, 1.0f));
+  if (ImGui::BeginPopup("##auto_key_popover")) {
+    const float seg_w = h * 4.2f;
+    for (const auto &[mode, label, tip] :
+         {std::tuple{AutoKeyMode::AddReplace, "Add & Replace", "Key whatever changes, adding keys where there are none"},
+          std::tuple{AutoKeyMode::Replace, "Replace", "Only change keys already on the frame: a change where there "
+                                                       "is no key isn't keyed"}})
+    {
+      if (mode == AutoKeyMode::Replace) {
+        ImGui::SameLine(0.0f, 0.0f);
+      }
+      const bool on = doc.auto_key_mode == mode;
+      if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      if (ImGui::Button(label, ImVec2(seg_w, 0.0f)) && !on) {
+        doc.auto_key_mode = mode;
+        C.undo->mark_changed();
+      }
+      if (on) {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", tip);
+      }
+    }
+    ImGui::BeginDisabled(doc.auto_key_mode == AutoKeyMode::Replace);
+    if (ImGui::Checkbox("Auto-Freeze Keys", &doc.auto_freeze_keys)) {
+      C.undo->mark_changed();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Keying a bone keys every other bone of its bone layer shown there on that frame too, and "
+                        "keying a point every point of its drawing, so the whole pose and shape hold there (Moho's). "
+                        "Not with Replace, which adds no keys");
+    }
+    ImGui::EndPopup();
+  }
+  /* Onion skins beside it, the same way: the toggle and its popover. */
+  ImGui::SameLine(0.0f, onion_gap);
+  if (icon_button("##onion_skin", Icon::Onion, doc.onion_skin,
+                  "Onion Skins\nShow the drawings being edited as they are on the keys (or frames) before this "
+                  "one, as coloured wireframes. Never rendered",
+                  "", Joined::First)) {
+    doc.onion_skin = !doc.onion_skin;
+    C.undo->mark_changed();
+  }
+  ImGui::SameLine(0.0f, 0.0f);
+  const ImVec2 onion_arrow_at = ImGui::GetCursorScreenPos();
+  if (icon_button("##onion_options", Icon::Menu, false, "Onion Skin options", "", Joined::Last, keying_arrow_w)) {
+    ImGui::OpenPopup("##onion_popover");
+  }
+  ImGui::SetNextWindowPos(ImVec2(onion_arrow_at.x - h * 3.0f, onion_arrow_at.y - 4.0f), ImGuiCond_Appearing,
+                          ImVec2(0.0f, 1.0f));
+  if (ImGui::BeginPopup("##onion_popover")) {
+    ImGui::TextDisabled("Onion Skins");
+    const float seg_w = h * 4.2f;
+    for (const auto &[mode, label, tip] :
+         {std::tuple{OnionMode::Keyframes, "Keyframes", "Step back and forward by the keys of the layers being edited "
+                                                         "(and of the bones and groups moving them)"},
+          std::tuple{OnionMode::Frames, "Frames", "Step back and forward by frames"}})
+    {
+      if (mode == OnionMode::Frames) {
+        ImGui::SameLine(0.0f, 0.0f);
+      }
+      const bool on = doc.onion_mode == mode;
+      if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      if (ImGui::Button(label, ImVec2(seg_w, 0.0f)) && !on) {
+        doc.onion_mode = mode;
+        C.undo->mark_changed();
+      }
+      if (on) {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", tip);
+      }
+    }
+    if (ImGui::BeginTable("##onion", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(seg_w * 2.0f, 0.0f))) {
+      ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+      const rna::PointerRNA ptr{&doc, &Document::rna()};
+      const char *path = "oanim.data.document";
+      /* Each side's count with its colour. */
+      for (const bool after : {false, true}) {
+        Color &color = after ? doc.onion_color_after : doc.onion_color_before;
+        ui_row(after ? "After" : "Before", [&](float width) {
+          const float swatch = h * 1.3f;
+          ImGui::SetNextItemWidth(std::max(h, width - swatch - ImGui::GetStyle().ItemInnerSpacing.x));
+          int &count = after ? doc.onion_after : doc.onion_before;
+          if (ImGui::DragInt(after ? "##onion_after" : "##onion_before", &count, 0.1f, 0, 20,
+                             doc.onion_mode == OnionMode::Frames ? "%d frames" : "%d keys")) {
+            count = std::clamp(count, 0, 20);
+            C.undo->mark_changed();
+          }
+          ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+          float rgba[4] = {color.r, color.g, color.b, color.a};
+          if (ui_color_edit(after ? "##onion_color_after" : "##onion_color_before", rgba, false, nullptr, 0.0f,
+                            swatch)) {
+            color = {rgba[0], rgba[1], rgba[2], rgba[3]};
+            C.undo->mark_changed();
+          }
+        });
+      }
+      ImGui::BeginDisabled(doc.onion_mode != OnionMode::Frames);
+      ui_prop(C, ptr, "onion_step", path);
+      ImGui::EndDisabled();
+      ui_prop_check(C, ptr, "onion_fade", path, "Display");
+      ui_prop_check(C, ptr, "onion_all_layers", path);
+      ImGui::EndTable();
+    }
+    ImGui::EndPopup();
   }
   ImGui::SameLine(0.0f, record_gap);
-  operator_icon_button(C, "##jump_start", Icon::JumpStart, "screen.frame_jump_start");
+  operator_icon_button(C, "##jump_start", Icon::JumpStart, "screen.frame_jump_start", Joined::First);
   ImGui::SameLine();
-  operator_icon_button(C, "##key_prev", Icon::KeyPrev, "screen.keyframe_jump_prev");
+  operator_icon_button(C, "##key_prev", Icon::KeyPrev, "screen.keyframe_jump_prev", Joined::Middle);
   ImGui::SameLine();
   operator_icon_button(C, "##play_reverse", (wm.playing && wm.play_reverse) ? Icon::Pause : Icon::PlayReverse,
-                       "screen.animation_play_reverse");
+                       "screen.animation_play_reverse", Joined::Middle);
   ImGui::SameLine();
   operator_icon_button(C, "##play", (wm.playing && !wm.play_reverse) ? Icon::Pause : Icon::Play,
-                       "screen.animation_play");
+                       "screen.animation_play", Joined::Middle);
   ImGui::SameLine();
-  operator_icon_button(C, "##key_next", Icon::KeyNext, "screen.keyframe_jump_next");
+  operator_icon_button(C, "##key_next", Icon::KeyNext, "screen.keyframe_jump_next", Joined::Middle);
   ImGui::SameLine();
-  operator_icon_button(C, "##jump_end", Icon::JumpEnd, "screen.frame_jump_end");
+  operator_icon_button(C, "##jump_end", Icon::JumpEnd, "screen.frame_jump_end", Joined::Last);
   ImGui::SameLine(0.0f, record_gap);
   if (icon_button("##stepped_preview", Icon::Stepped, stepped_preview(),
                   "Stepped Preview\nPlay everything as Step, holding each key until the next, to judge the timing "
@@ -999,13 +1367,14 @@ static void timeline_header(Area &area, Context &C)
   const float current_w = h * 2.6f;
   const float range_w = h * 4.0f;
   const float group_gap = h * 0.6f;
-  const float fields_w = current_w + group_gap + range_w * 2.0f + style.ItemSpacing.x;
+  const float fields_w = current_w + group_gap + range_w * 2.0f;
   const float fields_x = std::max(transport_end + pad * 2.0f, origin.x + width - fields_w - pad);
   ImGui::SetCursorScreenPos(ImVec2(fields_x, origin.y + top));
   frame_field(C, "##frame_current", &doc.frame_current, "%d", current_w, nullptr);
   ImGui::SameLine(0.0f, group_gap);
+  /* Start and End side by side as one row, as Blender's. */
   frame_field(C, "##frame_start", &doc.frame_start, "Start %d", range_w, "Change Start");
-  ImGui::SameLine();
+  ImGui::SameLine(0.0f, 0.0f);
   frame_field(C, "##frame_end", &doc.frame_end, "End %d", range_w, "Change End");
   doc.frame_end = std::max(doc.frame_end, doc.frame_start);
 
@@ -1206,6 +1575,8 @@ struct KeyTransform {
   char kind = 'G';
   float start_x = 0.0f;
   Document snapshot;
+  /* Shift D: how far the copies are from the keys now. */
+  int offset = 0;
 };
 static KeyTransform g_key_transform;
 
@@ -1269,14 +1640,14 @@ static bool row_open(const Area &area, const std::string &key, bool fallback)
 }
 
 /* Something selected for the Selected section: a point, or a bone (by body or ball). */
-static bool anything_selected(const std::vector<Layer *> &layers)
+static bool anything_selected(const std::vector<Layer *> &layers, const std::set<uint64_t> &edited)
 {
   for (const Layer *l : layers) {
     if (l->id == CAMERA_LAYER_ID && l->selected) {
       return true;
     }
     for (const MeshPoint &p : l->drawing.points) {
-      if (p.selected) {
+      if (p.selected && edited.contains(l->id)) {
         return true;
       }
     }
@@ -1296,16 +1667,29 @@ static bool bone_picked_any(const Bone &b)
 
 /* `layers`: what the timeline shows. `open_all`: every folding row open (for listing them). */
 static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers, Document &doc,
-                                            bool open_all = false)
+                                            const std::vector<uint64_t> &pinned_layers, bool open_all = false)
 {
+  /* Lookups by an index while the rows are worked out (they change no layers). */
+  const LayerIndexScope layer_index(doc);
   std::vector<ChannelRow> rows;
-  const auto keyed = [](const std::vector<Layer *> &ls, const KeyFilter &f) { return !layers_key_summary(ls, f).empty(); };
+  /* Selected counts the points selected in the layers being edited: a selection left in another layer
+   * isn't one now. */
+  const std::shared_ptr<const std::set<uint64_t>> edited = editable_layer_ids(doc);
+  const auto now = [&](KeyFilter f) {
+    if (f.selected_only) {
+      f.point_layers = edited;
+    }
+    return f;
+  };
+  const auto keyed = [&](const std::vector<Layer *> &ls, const KeyFilter &f) {
+    return !layers_key_summary(ls, now(f)).empty();
+  };
   const auto add = [&](std::string name, std::vector<Layer *> ls, KeyFilter f, int depth, std::string fold,
                        bool fold_default, bool red, uint64_t layer) -> bool {
     ChannelRow row;
     row.name = std::move(name);
     row.layers = std::move(ls);
-    row.filter = std::move(f);
+    row.filter = now(std::move(f));
     row.depth = depth;
     row.fold = fold;
     row.open = !fold.empty() && (open_all || row_open(area, fold, fold_default));
@@ -1317,7 +1701,10 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   };
   /* A row per animated property of `l` that passes `base`, named with its owner or not. */
   const auto property_rows = [&](Layer *l, const KeyFilter &base, int depth, bool owner, bool red) {
-    for (const ChannelRef &ref : layer_filtered_channels(*l, base)) {
+    /* Points get no row of their own: not listing them spares working out every point's channel. */
+    KeyFilter listed = base;
+    listed.kinds &= ~uint32_t(KEY_POINTS);
+    for (const ChannelRef &ref : layer_filtered_channels(*l, listed)) {
       const bool animated = ref.scalar ? ref.scalar->animated() : ref.vector->animated();
       if (!animated || channel_kind(ref.path) == KEY_POINTS) {
         continue;
@@ -1339,8 +1726,11 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   /* Pinned: every pinned property in the document, keys or not. */
   std::vector<std::pair<Layer *, std::string>> pinned;
   const KeyFilter pins{KEY_ALL, false, "", true};
-  for (const Layer *flat : document_layers_flat(doc)) {
-    Layer *l = layer_find(doc, flat->id);
+  for (const uint64_t id : pinned_layers) {
+    Layer *l = layer_find(doc, id);
+    if (!l) {
+      continue;
+    }
     for (const ChannelRef &ref : layer_filtered_channels(*l, pins)) {
       pinned.push_back({l, ref.path});
     }
@@ -1471,7 +1861,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
       }
     }
-    if ((anything_selected(owned) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+    if ((anything_selected(owned, *edited) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
       media_rows(1);
       camera_rows(1);
       for (Layer *l : owned) {
@@ -1551,7 +1941,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
     bones_and_points(false, 1, "");
   }
-  if ((anything_selected(owned) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
+  if ((anything_selected(owned, *edited) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
     media_rows(1);
     camera_rows(1);
     bones_and_points(true, 1, "sel_");
@@ -1564,7 +1954,7 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool by_kind)
   Area area;
   area.timeline_by_kind = by_kind;
   std::vector<TimelineRowInfo> list;
-  for (const ChannelRow &row : channel_rows(area, timeline_shown_layers(C), *C.document, true)) {
+  for (const ChannelRow &row : channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), true)) {
     list.push_back({row.depth, row.name, row.selected, !row.pin_path.empty(), row.changed});
   }
   return list;
@@ -1596,6 +1986,8 @@ static void timeline_body(Area &area, Context &C)
   }
 
   g_timeline_doc = &doc;
+  /* The Adjust Last Operation panel, drawn over it later, takes the clicks over it. */
+  ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("##timeline_region", size,
                          ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
   const bool hovered = ImGui::IsItemHovered();
@@ -1606,7 +1998,7 @@ static void timeline_body(Area &area, Context &C)
 
   /* Channel rows: Pinned, All, then each animated (active or selected) layer, as Blender's Dope
    * Sheet lists the selected objects. The names sit in a column on the left. */
-  std::vector<ChannelRow> rows = channel_rows(area, timeline_shown_layers(C), doc);
+  std::vector<ChannelRow> rows = channel_rows(area, timeline_shown_layers(C), doc, timeline_pinned_layer_ids(C));
   const float font_size = ImGui::GetFontSize();
   /* Wide enough for a property's name ("arm: Dynamics: Angle Bounce"); its edge drags. */
   const float names_w = std::clamp(area.timeline_names_w > 0.0f ? area.timeline_names_w : font_size * 13.0f,
@@ -1688,13 +2080,60 @@ static void timeline_body(Area &area, Context &C)
   const bool media_dragging = timeline_media_drag_update(C, media_view);
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const float key_r = std::max(4.0f, std::min(font_size * 0.36f, row_h * 0.4f));
-  std::vector<std::map<int, KeyFrameSummary>> summaries(rows.size());
+  /* Each row's keys are kept between frames: with every point of a big rig keyed, working them out is
+   * tens of milliseconds a frame. They are worked out again after a change (an edit, undo, keys picked or
+   * moved: all push undo), while keys are dragged here (they move without one), or for other rows. */
+  struct KeptRows {
+    uint64_t signature = 0;
+    std::vector<std::map<int, KeyFrameSummary>> summaries;
+    std::vector<std::optional<std::vector<std::pair<int, int>>>> holds;
+  };
+  static std::map<int, KeptRows> kept_rows;
+  const auto rows_signature = [&]() {
+    uint64_t h = std::hash<const void *>()(&doc) ^ (C.undo ? C.undo->change_count() * 0x9e3779b97f4a7c15ull : 0);
+    const auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    mix(std::hash<std::string>()(doc.action));
+    mix(doc.action_layer);
+    mix(rows.size());
+    for (const ChannelRow &row : rows) {
+      mix(row.layers.size());
+      for (const Layer *l : row.layers) {
+        mix(l->id);
+      }
+      mix(row.filter.kinds | uint64_t(row.filter.selected_only) << 32 | uint64_t(row.filter.pinned_only) << 33);
+      mix(std::hash<std::string>()(row.filter.path));
+      if (row.filter.point_layers) {
+        for (const uint64_t id : *row.filter.point_layers) {
+          mix(id);
+        }
+      }
+    }
+    return h;
+  };
+  KeptRows &kept = kept_rows[area.id];
+  std::vector<std::map<int, KeyFrameSummary>> &summaries = kept.summaries;
   const auto summarize = [&]() {
+    summaries.assign(rows.size(), {});
     for (size_t r = 0; r < rows.size(); r++) {
       summaries[r] = layers_key_summary(rows[r].layers, rows[r].filter);
     }
+    kept.holds.assign(rows.size(), std::nullopt);
+    kept.signature = C.undo && !g_key_transform.active ? rows_signature() : 0;
   };
-  summarize();
+  const auto hold_spans = [&](size_t r) -> const std::vector<std::pair<int, int>> & {
+    if (kept.holds.size() != rows.size()) {
+      kept.holds.assign(rows.size(), std::nullopt);
+    }
+    if (!kept.holds[r]) {
+      kept.holds[r] = layers_hold_spans(rows[r].layers, rows[r].filter);
+    }
+    return *kept.holds[r];
+  };
+  if (kept.signature == 0 || g_key_transform.active || kept.signature != rows_signature() ||
+      summaries.size() != rows.size())
+  {
+    summarize();
+  }
   /* The key under `m` (its frame, -1 for none), and its row. */
   const auto key_under = [&](ImVec2 m, int *r_row) -> int {
     const int r = m.x >= k0.x ? row_at(m.y) : -1;
@@ -1744,6 +2183,7 @@ static void timeline_body(Area &area, Context &C)
         /* Shift D: copies of the selected keys follow the mouse; the originals stay. */
         const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
         layers_duplicate_selected_keys(timeline_layers(C), offset);
+        g_key_transform.offset = offset;
         transform_info = "Duplicate Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
       }
       else if (g_key_transform.kind == 'G') {
@@ -1766,19 +2206,25 @@ static void timeline_body(Area &area, Context &C)
       animation_evaluate(doc, frame);
       if (modal_key_take(C, "RET") || modal_key_take(C, "SPACE") || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         g_key_transform.active = false;
-        g_key_transform.snapshot = Document();
         C.wm->modal_running = false;
-        C.undo->push(g_key_transform.kind == 'G'   ? "Move Keys"
-                     : g_key_transform.kind == 'S' ? "Scale Keys"
-                                                   : "Duplicate Keys",
-                     doc);
+        if (g_key_transform.kind == 'D') {
+          /* Done again as Duplicate Keys by the offset the mouse gave (Ignore Bones as last set): its
+           * options then show in the timeline's Adjust Last Operation panel. */
+          doc = g_key_transform.snapshot;
+          doc.frame_current = frame;
+          operator_call(C, "anim.keys_duplicate", {{"frames", std::to_string(g_key_transform.offset)}});
+        }
+        else {
+          C.undo->push(g_key_transform.kind == 'G' ? "Move Keys" : "Scale Keys", doc);
+        }
+        g_key_transform.snapshot = Document();
         /* The confirming click shouldn't also pick keys. */
         g_press = {};
       }
       C.wm->modal_keys.clear();
     }
     /* The document was replaced: look the layers up again. */
-    rows = channel_rows(area, timeline_shown_layers(C), doc);
+    rows = channel_rows(area, timeline_shown_layers(C), doc, timeline_pinned_layer_ids(C));
     summaries.resize(rows.size());
     summarize();
   }
@@ -2099,6 +2545,34 @@ static void timeline_body(Area &area, Context &C)
     const float tw = ImGui::CalcTextSize(label.c_str()).x;
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), COL_RULER_TEXT, label.c_str());
   }
+  /* Editing a fix: each pose's frame marked (a line, its number on the ruler's foot, at the bottom the pose),
+   * the one shown brighter. Keys on other frames don't play. */
+  if (const Layer *fix_owner = doc.action.empty() ? nullptr : layer_find(doc, doc.action_layer)) {
+    if (const FixAction *fix = fix_action_find(*fix_owner, doc.action)) {
+      const int shown = fix_pose_on_frame(*fix, doc.frame_current);
+      const float label_y = p1.y - font_size - 4.0f;
+      for (size_t k = 0; k < fix->poses.size(); k++) {
+        const float x = frame_x(float(fix->poses[k].frame));
+        const bool here = int(k) == shown;
+        const ImU32 col = here ? COL_FIX_TEXT : (COL_FIX_TEXT & 0x90ffffff);
+        dl->AddLine(ImVec2(x, p0.y + ruler_h), ImVec2(x, p1.y), col, here ? 2.0f : 1.5f);
+        dl->AddRectFilled(ImVec2(x - 1.0f, p0.y + ruler_h - 4.0f), ImVec2(x + 1.0f, p0.y + ruler_h), col);
+        /* The pose shown named in full; each label kept short of the next pose's line. */
+        std::string label = "Pose " + std::to_string(k + 1);
+        if (here) {
+          label += ": " + fix_pose_label(*fix_owner, *fix, fix->poses[k]);
+        }
+        float next_x = p1.x;
+        for (const FixPose &other : fix->poses) {
+          const float ox = frame_x(float(other.frame));
+          next_x = ox > x + 1.0f ? std::min(next_x, ox - 3.0f) : next_x;
+        }
+        dl->PushClipRect(ImVec2(x, p0.y), ImVec2(std::max(x, next_x), p1.y), true);
+        dl->AddText(ImVec2(x + 4.0f, label_y), col, label.c_str());
+        dl->PopClipRect();
+      }
+    }
+  }
   dl->PopClipRect();
 
   /* The rows: hold bars between neighbouring keys where nothing changes, and a diamond per keyed
@@ -2189,7 +2663,7 @@ static void timeline_body(Area &area, Context &C)
         }
       }
     }
-    for (const auto &[a, b] : order_row ? std::vector<std::pair<int, int>>() : layers_hold_spans(rows[r].layers, rows[r].filter)) {
+    for (const auto &[a, b] : order_row ? std::vector<std::pair<int, int>>() : hold_spans(r)) {
       const float xa = frame_x(float(a)), xb = frame_x(float(b));
       if (xb < k0.x || xa > p1.x) {
         continue;
@@ -2303,6 +2777,19 @@ static void timeline_body(Area &area, Context &C)
     }
   }
 
+  /* The frames onion skins show, tinted faintly in their side's colour. */
+  if (doc.onion_skin && !C.wm->playing) {
+    const float half = std::max(2.0f, (frame_x(1.0f) - frame_x(0.0f)) * 0.5f);
+    dl->PushClipRect(ImVec2(k0.x, p0.y + ruler_h), p1, true);
+    for (const OnionGhost &g : onion_ghosts(doc, onion_layers(doc, editable_layers(C)))) {
+      const Color &c = g.after ? doc.onion_color_after : doc.onion_color_before;
+      const float fx = frame_x(float(g.frame));
+      dl->AddRectFilled(ImVec2(fx - half, p0.y + ruler_h), ImVec2(fx + half, p1.y),
+                        ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.22f * onion_ghost_alpha(doc, g))));
+    }
+    dl->PopClipRect();
+  }
+
   /* Playhead: a blue line with the frame number in a box on the ruler; red on the setup frame (0),
    * where the timeline is edged red as the viewport is. */
   const bool setup = doc.frame_current == 0;
@@ -2323,6 +2810,10 @@ static void timeline_body(Area &area, Context &C)
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), IM_COL32_WHITE, label.c_str());
     dl->PopClipRect();
   }
+
+  /* Blender's Adjust Last Operation, over the keys' bottom-left corner (as in the viewport). */
+  ui_action_panel_draw(C, "Timeline", "Timeline/Adjust Last Operation", ImVec2(k0.x, p0.y), p1 - ImVec2(k0.x, p0.y),
+                       4.0f);
 }
 
 void timeline_draw(Area &area, Context &C)

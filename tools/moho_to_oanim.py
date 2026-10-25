@@ -175,7 +175,9 @@ def drawing_of(mesh, bone_ids, flexi_moves, doc_styles):
         next_id = max(next_id, sid + 1)
         shapes.append({"id": sid, "name": s.get("name", ""), "fill": bool(s.get("has_fill", True)),
                        "outline": bool(s.get("has_outline", True)), "style": style_of(s, doc_styles),
-                       "edges": edges})
+                       "edges": edges,
+                       # Moho cuts a loop inside another out of the shape: a hole.
+                       "fill_rule": "EVEN_ODD"})
     if mesh.get("groups"):
         skipped.add("point groups")
     return {"points": points, "curves": curves, "shapes": shapes, "next_id": next_id}

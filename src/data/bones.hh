@@ -17,6 +17,7 @@ namespace oanim {
 
 struct Bone;
 struct BoneCollection;
+struct BoneConstraint;
 struct Document;
 struct Layer;
 
@@ -27,6 +28,13 @@ struct BonePose {
   Transform2D pose;
   /* Setup to now, in bone layer space. */
   Transform2D skin;
+  /* Look At's eyeball, for warping the layers following the bone onto it (when `look`). Bone layer
+   * space: Warp, the pupil's middle, the ball's middle and half size, which way the pupil points as
+   * drawn, as the eye faces and now (yaw, pitch) and how far the face has turned. */
+  bool look = false;
+  float look_warp = 0.0f;
+  float2 look_center, look_eye, look_size, look_rest, look_facing, look_dir;
+  float look_face = 0.0f;
   /* Where the bone runs in the setup pose and now (bone layer space). */
   float2 setup_head, setup_tail;
   float2 head, tail;
@@ -36,6 +44,10 @@ struct BonePose {
  * frame 0, where moving a bone changes the setup pose itself. Elsewhere an edit not yet keyed
  * is a pose: the setup stays where the bone was before it. */
 std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame = true);
+/* Which way the axes `bone`'s angle is measured in point now (bone layer space): its parent's as posed,
+ * or, for a bone that doesn't inherit its parent's turn (Relations), its parent's as they rest. 0 for a
+ * root. For drawing what is measured from them (Limit Angle's lines). */
+float bone_parent_axes_angle(const Bone &bone, const BonePose *parent, bool setup_frame);
 /* While one is alive, armature_pose works each bone layer's pose out once and hands back the same
  * one after: for a render, where nothing changes and every layer a rig moves asks for its pose.
  * Scopes nest; the poses are forgotten when the outermost ends. */
@@ -53,6 +65,25 @@ std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_fram
  * Returns false when the bone has no parent to turn with. */
 bool armature_reach(Layer &armature, uint64_t bone, float2 goal);
 const BonePose *bone_pose_find(const std::vector<BonePose> &poses, uint64_t id);
+/* Limit to Shape: where a head (bone layer space) is kept, inside the constraint's shape as last worked
+ * out (anim/shape_limit.hh); `head` itself when it fits or there is no shape. */
+float2 bone_shape_limit(const BoneConstraint &c, float2 head);
+/* Affect Transform: a bone just moved (its position differs from what its keys give) past its Limit to
+ * Shape edge is put back where the limit holds it, on a posed frame, before the move is recorded. */
+void bone_shape_limit_affect(const Layer &armature, Bone &bone);
+/* Look At: the way an eye at `eye` looks at `target` standing `target_depth` in front of the face (yaw
+ * and pitch, radians, from the camera), the face turned `face` in the picture; `target_rest` is where the
+ * target stands at rest (between the eyes), which way is outward for Divergence. */
+float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 target, float2 target_rest,
+                      float target_depth);
+/* The skin a layer is moved by from bone pose `p` of `armature`: without Look At's foreshortening when
+ * the bone's Look At keeps that layer round. */
+/* Whether `layer` (or the group it follows the bone with) is warped onto the eyeball of the Look At
+ * on `p`'s bone: unless that Look At leaves it as drawn (a shine, a reflection). */
+bool bone_look_warps(const Layer &armature, const BonePose &p, uint64_t layer, uint64_t group = 0);
+/* Where `point` (bone layer space) of a drawing following the pupil shows: laid on the eyeball
+ * around where the pupil points and seen from the front, so it foreshortens as the ball turns it. */
+float2 bone_look_warp(const BonePose &p, float2 point);
 Bone *bone_find(Layer &armature, uint64_t id);
 const Bone *bone_find(const Layer &armature, uint64_t id);
 const Bone *bone_find_by_name(const Layer &armature, const std::string &name);
@@ -119,6 +150,15 @@ bool armature_picked_bounds(const Layer &armature, bool setup_frame, float2 &lo,
  * scales instead. */
 void armature_map_selected(Layer &armature, const std::vector<Bone> &original, const Transform2D &map,
                            bool setup_frame);
+/* The same through any map (a Distort or Warp cage's): each bone's width follows how the map stretches
+ * across it at its base. */
+void armature_map_selected(Layer &armature, const std::vector<Bone> &original,
+                           const std::function<float2(float2)> &map, bool setup_frame);
+/* Move Without Children (posing), after a G, R or S from `original`: every unpicked child of a picked bone put
+ * back where it showed before (its base and its tip), so only the picked bones move. A connected child's
+ * base stays on its parent's tip: it keeps its direction and length instead. The setup pose takes new
+ * lengths; a pose takes scales instead. */
+void armature_keep_children(Layer &armature, const std::vector<Bone> &original, bool setup_frame);
 /* Box selection. `inside` tests a point in bone layer space. Joints: on the setup frame the ends
  * inside are picked, as Blender's edit-mode box select does (a bone with both ends inside is
  * selected); posing, a bone with either end inside is picked whole, as its pose mode does. Bones: a bone any part of

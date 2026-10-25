@@ -174,6 +174,13 @@ arm.opacity = 1.0
 o = order()
 assert o.index("Sleeve") < o.index("Chest") < o.index("Paw"), o
 
+# The eyedropper in the viewport: a click lands on a drawing, and picks the group beside what moves (Arm
+# for Chest, Rig A from Rig B's side), or the drawing itself when its own group holds what moves.
+assert oanim.wm.draw_order_pick_target(paw, [chest]) == "Rig A"
+assert oanim.wm.draw_order_pick_target(paw, [arm]) == "Paw", "inside the same bone layer and group as Arm"
+assert oanim.wm.draw_order_pick_target(chest, [arm]) == "Rig B"
+assert oanim.wm.draw_order_pick_target(paw, [sleeve]) == "Paw", "Sleeve's own group holds Paw"
+
 # A layer can't go in front of its own group, or a group in front of what it holds.
 layers.active = paw
 assert oanim.ops.layer.draw_order_set(mode="FRONT", target="Arm") == {'CANCELLED'}

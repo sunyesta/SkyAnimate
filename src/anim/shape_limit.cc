@@ -1,0 +1,190 @@
+#include "anim/shape_limit.hh"
+
+#include <algorithm>
+#include <cmath>
+
+#include "anim/deform.hh"
+#include "data/bones.hh"
+#include "data/document.hh"
+
+namespace oanim {
+
+/* A shape's outline as drawn (layer space): `id`, or the first closed one when 0. */
+static std::vector<float2> drawn_outline(const VectorDrawing &drawing, uint64_t id)
+{
+  for (const Shape &shape : drawing.shapes) {
+    if (id != 0 && shape.id != id) {
+      continue;
+    }
+    std::vector<float2> points;
+    bool closed = false;
+    if (shape_outline(drawing, shape, 12, points, nullptr, &closed) && closed && points.size() >= 3) {
+      return points;
+    }
+    if (id != 0) {
+      break;
+    }
+  }
+  return {};
+}
+
+/* The convex hull (Andrew's monotone chain): a footprint keeps its outline, fewer points to test. */
+static std::vector<float2> convex_hull(std::vector<float2> p)
+{
+  if (p.size() < 3) {
+    return p;
+  }
+  std::sort(p.begin(), p.end(), [](float2 a, float2 b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+  const auto cross = [](float2 o, float2 a, float2 b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); };
+  std::vector<float2> h(2 * p.size());
+  size_t k = 0;
+  for (size_t i = 0; i < p.size(); i++) {
+    while (k >= 2 && cross(h[k - 2], h[k - 1], p[i]) <= 0.0f) {
+      k--;
+    }
+    h[k++] = p[i];
+  }
+  for (size_t i = p.size() - 1, t = k + 1; i > 0; i--) {
+    while (k >= t && cross(h[k - 2], h[k - 1], p[i - 1]) <= 0.0f) {
+      k--;
+    }
+    h[k++] = p[i - 1];
+  }
+  h.resize(k > 1 ? k - 1 : k);
+  return h;
+}
+
+/* Look At's Range Auto: from a Limit to Shape on the same bone, the pupil's reach across and up its
+ * shape (half its size along the face's axes, less half the pupil's). */
+static void look_ranges_update(Layer &rig)
+{
+  std::vector<BonePose> poses;
+  for (Bone &b : rig.bones) {
+    const BoneConstraint *below = nullptr;
+    for (const BoneConstraint &c : b.constraints) {
+      if (c.type == BoneConstraintType::LimitShape && c.enabled && c.shape_region.size() >= 3) {
+        below = &c;
+      }
+    }
+    for (BoneConstraint &c : b.constraints) {
+      if (c.type != BoneConstraintType::LookAt) {
+        continue;
+      }
+      c.look_auto_range = {};
+      /* Its own eye shape first, else a Limit to Shape on the bone. */
+      const BoneConstraint *limit = c.shape_region.size() >= 3 ? &c : below;
+      if (!limit) {
+        continue;
+      }
+      if (poses.empty()) {
+        poses = armature_keyed_pose(rig, false);
+      }
+      const BonePose *parent = bone_pose_find(poses, b.parent);
+      const float face = parent ? std::atan2(parent->pose.b, parent->pose.a) - std::atan2(parent->setup.b, parent->setup.a)
+                                : 0.0f;
+      const auto extent = [&](const std::vector<float2> &points) {
+        float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+        for (const float2 p : points) {
+          const float2 q = rotate(p, -face);
+          lo = {std::min(lo.x, q.x), std::min(lo.y, q.y)};
+          hi = {std::max(hi.x, q.x), std::max(hi.y, q.y)};
+        }
+        return points.empty() ? float2() : hi - lo;
+      };
+      const float keep = limit->shape_fit == ShapeFit::Whole ? 1.0f - std::clamp(limit->overlap, 0.0f, 1.0f) : 0.0f;
+      const float2 room = extent(limit->shape_region) - extent(limit->shape_footprint) * keep;
+      c.look_auto_range = {std::max(room.x * 0.5f, 1e-4f), std::max(room.y * 0.5f, 1e-4f)};
+    }
+  }
+}
+
+void shape_limits_update(Document &doc)
+{
+  for (const Layer *rig_c : document_layers_flat(doc)) {
+    if (!rig_c->is_bone_layer()) {
+      continue;
+    }
+    Layer &rig = *layer_find(doc, rig_c->id);
+    bool any = false;
+    for (const Bone &b : rig.bones) {
+      for (const BoneConstraint &c : b.constraints) {
+        any = any || c.type == BoneConstraintType::LimitShape || c.type == BoneConstraintType::LookAt;
+      }
+    }
+    if (!any) {
+      continue;
+    }
+    const Transform2D to_rig = layer_world_transform(doc, rig.id).inverted();
+    for (Bone &b : rig.bones) {
+      for (BoneConstraint &c : b.constraints) {
+        /* Limit to Shape, and Look At with its own eye shape. */
+        if (c.type != BoneConstraintType::LimitShape && !(c.type == BoneConstraintType::LookAt && c.shape_layer != 0)) {
+          if (c.type == BoneConstraintType::LookAt) {
+            c.shape_region.clear();
+            c.shape_footprint.clear();
+          }
+          continue;
+        }
+        const Layer *target = layer_find(doc, c.shape_layer);
+        if (!target || !target->has_drawing() || !c.enabled) {
+          c.shape_region.clear();
+          c.shape_footprint.clear();
+          continue;
+        }
+        const Transform2D to = to_rig * layer_world_transform(doc, target->id);
+        std::vector<float2> region;
+        for (const float2 p : drawn_outline(layer_evaluated_drawing(doc, *target, false), c.shape_id)) {
+          region.push_back(to.apply(p));
+        }
+        if (c.type == BoneConstraintType::LookAt) {
+          /* Eyeball Auto: half the eye shape's width and height at frame 0, as drawn there. */
+          const Transform2D rest = layer_setup_world_transform(doc, rig.id).inverted() *
+                                   layer_setup_world_transform(doc, target->id);
+          float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+          for (const float2 p : drawn_outline(layer_setup_drawing(doc, *target, false), c.shape_id)) {
+            const float2 q = rest.apply(p);
+            lo = {std::min(lo.x, q.x), std::min(lo.y, q.y)};
+            hi = {std::max(hi.x, q.x), std::max(hi.y, q.y)};
+          }
+          c.eyeball_auto_size = hi.x > lo.x ? (hi - lo) * 0.5f : float2();
+        }
+        if (c.shape_fit != ShapeFit::Whole) {
+          c.shape_region = std::move(region);
+          c.shape_footprint.clear();
+          continue;
+        }
+        /* What the bone carries (the fit layer, or the drawings following this bone) around its head,
+         * worked out with the pose those drawings are drawn with: the limits as they were until now. */
+        const std::vector<BonePose> now = armature_pose(rig, doc.frame_current == 0);
+        const BonePose *pose = bone_pose_find(now, b.id);
+        if (!pose) {
+          continue;
+        }
+        std::vector<float2> carried;
+        for (const Layer *l : document_layers_flat(doc)) {
+          const bool picked = c.fit_layer != 0 ? l->id == c.fit_layer : l->parent_bone == b.id;
+          if (!picked || !l->has_drawing() || !l->visible || layer_armature(doc, l->id) != &rig) {
+            continue;
+          }
+          const VectorDrawing drawn = layer_evaluated_drawing(doc, *l, false);
+          const Transform2D lt = to_rig * layer_world_transform(doc, l->id);
+          for (const Shape &shape : drawn.shapes) {
+            std::vector<float2> points;
+            bool closed = false;
+            if (shape.hidden || !shape_outline(drawn, shape, 8, points, nullptr, &closed)) {
+              continue;
+            }
+            for (const float2 p : points) {
+              carried.push_back(lt.apply(p) - pose->head);
+            }
+          }
+        }
+        c.shape_region = std::move(region);
+        c.shape_footprint = convex_hull(carried);
+      }
+    }
+    look_ranges_update(rig);
+  }
+}
+
+}  // namespace oanim

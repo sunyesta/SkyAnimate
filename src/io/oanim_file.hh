@@ -8,6 +8,7 @@
  *
  * Paths are UTF-8. */
 
+#include <functional>
 #include <string>
 
 #include "data/document.hh"
@@ -24,6 +25,9 @@ inline constexpr int OANIM_FILE_VERSION = 4;
 /* Writes through a temporary file and renames it into place, so a failed save never damages
  * the existing file. Returns false and sets r_error on failure. */
 bool oanim_file_write(const Document &doc, const std::string &path, std::string *r_error);
+/* Writing in two parts: this copies what the file needs (the document, the packed media), and the job it
+ * returns makes the file from that alone, so it can run on another thread (autosave does). */
+std::function<bool(std::string *r_error)> oanim_file_writer(const Document &doc, const std::string &path);
 
 /* Reads a file into r_doc, which is left untouched on failure. Damaged parts (a curve
  * pointing at a missing point, a reference to a missing layer) are dropped, not trusted. */

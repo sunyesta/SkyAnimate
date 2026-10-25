@@ -272,6 +272,18 @@ bool layer_inside(const Document &doc, uint64_t layer, uint64_t ancestor)
   return false;
 }
 
+uint64_t draw_order_pick_target(const Document &doc, uint64_t hit, const std::vector<uint64_t> &moving)
+{
+  uint64_t picked = hit;
+  for (const Layer *p = layer_parent(const_cast<Document &>(doc), hit); p; p = layer_parent(const_cast<Document &>(doc), p->id)) {
+    if (std::any_of(moving.begin(), moving.end(), [&](uint64_t id) { return layer_inside(doc, id, p->id); })) {
+      break;
+    }
+    picked = p->id;
+  }
+  return picked;
+}
+
 const Layer *draw_order_faded_group(const Document &doc, uint64_t layer)
 {
   const Layer *outer = nullptr;

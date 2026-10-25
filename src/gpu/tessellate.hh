@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/math.hh"
+#include "data/fill_area.hh"
 
 namespace oanim {
 
@@ -17,6 +18,10 @@ struct Vertex {
 
 /* Fills a closed polygon (even if concave). `aa` is the soft edge width in the polygon's units. */
 void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, std::vector<Vertex> &r_out);
+
+/* Fills pieces with holes (data/fill_area.hh): each piece's outer ring and holes cut into triangles
+ * together, the soft edge on every ring's outside (outward of the fill, into its holes). */
+void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, float aa, std::vector<Vertex> &r_out);
 
 /* Strokes a polyline. `half_widths` has one entry per point. `joins` (optional, one per point)
  * says how the stroke turns there: Smooth (the default) mitres gently, Round adds a round join

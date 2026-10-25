@@ -16,6 +16,7 @@
 #include "anim/layer_pick.hh"
 #include "anim/reference.hh"
 #include "core/log.hh"
+#include "data/layer_mirror.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
@@ -107,22 +108,14 @@ static void clear_transform_keys(Layer &l)
   l.position_keys = {};
   l.rotation_keys = {};
   l.scale_keys = {};
+  l.shear_keys = {};
 }
 
 /* Sets a layer's position, rotation and scale from `t` (no shear), its scale's x keeping the sign
  * `negative_x` gives. */
 static void layer_set_local_transform(Layer &l, const Transform2D &t, bool negative_x)
 {
-  float sx = std::sqrt(t.a * t.a + t.b * t.b);
-  if (sx < 1e-12f) {
-    return;
-  }
-  if (negative_x) {
-    sx = -sx;
-  }
-  l.position = {t.tx, t.ty};
-  l.rotation = std::atan2(t.b / sx, t.a / sx) * 180.0f / PI;
-  l.scale = {sx, (t.a * t.d - t.b * t.c) / sx};
+  l.set_local_transform(t, negative_x);
 }
 
 /* The bones of the bone layer `id` is in, each to its other side's (_L to _R), or to itself. */
@@ -159,6 +152,8 @@ static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bo
   if (!top) {
     l.position.x = -l.position.x;
     l.rotation = -l.rotation;
+    /* Mirrored, each axis tilts the other way. */
+    l.shear = -l.shear;
     clear_transform_keys(l);
   }
   l.selected = false;
@@ -467,14 +462,42 @@ void layer_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    /* = : up the layer tree, as Blender's Select Parent. */
+    OperatorType ot;
+    ot.idname = "layer.select_parent";
+    ot.name = "Select Parent";
+    ot.description = "Select the group holding the active layer (=), alone, as clicking it in the Layers editor does";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) {
+      return C.document && document_active_layer(*C.document) &&
+             layer_parent(*C.document, C.document->active_layer) != nullptr;
+    };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const Layer *parent = layer_parent(doc, doc.active_layer);
+      if (!parent || !layer_pick_apply(doc, parent->id, LayerPickMode::Set)) {
+        return OpStatus::Cancelled;
+      }
+      C.undo_name = "Select " + parent->name;
+      if (C.wm) {
+        /* The Layers editor scrolls to it. */
+        C.wm->layers_show_active = parent->id;
+        C.wm->layers_show_active_serial++;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  /* With X mirror editing on, inside a sided group (Arm_L) its partner (Arm_R) gets one too. */
   layer_operator("layer.new", "New Layer", "Add a vector layer above the active layer", nullptr, [](Context &C) {
-    document_add_layer(*C.document, LayerType::Vector, "");
+    document_add_layer_mirrored(*C.document, LayerType::Vector, C.wm && C.wm->tool_settings.mirror_x);
     return OpStatus::Finished;
   });
 
   layer_operator("layer.new_group", "New Group", "Add a group layer above the active layer", nullptr,
                  [](Context &C) {
-                   document_add_layer(*C.document, LayerType::Group, "");
+                   document_add_layer_mirrored(*C.document, LayerType::Group, C.wm && C.wm->tool_settings.mirror_x);
                    return OpStatus::Finished;
                  });
 
@@ -876,6 +899,50 @@ void layer_operators_register()
                    references_build(*C.document);
                    return OpStatus::Finished;
                  });
+
+  /* Ctrl L > Copy Masks: the active layer's mask cards (and Clip to Below) replace the other picked
+   * layers', as Copy Constraints replaces bones'. A copied step naming the layer it lands on leaves that
+   * layer out (nothing masks itself); a step left naming none goes. */
+  layer_operator(
+      "layer.masks_copy", "Copy Masks",
+      "Give the other picked layers the active layer's masks (and Clip to Below), replacing theirs (Ctrl L)",
+      [](Context &C) {
+        if (!C.document || !document_active_layer(*C.document)) {
+          return false;
+        }
+        for (const Layer *l : document_layers_flat(*C.document)) {
+          if (l->selected && l->id != C.document->active_layer) {
+            return true;
+          }
+        }
+        return false;
+      },
+      [](Context &C) {
+        Document &doc = *C.document;
+        const Layer source = *document_active_layer(doc);
+        std::vector<uint64_t> targets;
+        for (const Layer *l : document_layers_flat(doc)) {
+          if (l->selected && l->id != source.id) {
+            targets.push_back(l->id);
+          }
+        }
+        for (const uint64_t id : targets) {
+          Layer *target = layer_find(doc, id);
+          std::vector<LayerMask> masks = source.masks;
+          for (LayerMask &card : masks) {
+            for (MaskStep &step : card.steps) {
+              std::erase(step.layers, id);
+            }
+            std::erase_if(card.steps, [](const MaskStep &step) { return step.layers.empty(); });
+          }
+          target->masks = std::move(masks);
+          target->clip_to_below = source.clip_to_below;
+        }
+        report(ReportType::Info, "Copied " + std::to_string(source.masks.size()) +
+                                     (source.masks.size() == 1 ? " mask to " : " masks to ") +
+                                     std::to_string(targets.size()) + (targets.size() == 1 ? " layer" : " layers"));
+        return OpStatus::Finished;
+      });
 
   layer_operator("layer.move_up", "Raise Layer", "Move the active layer up the stack", active_layer_poll,
                  [](Context &C) {

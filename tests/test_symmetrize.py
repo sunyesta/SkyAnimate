@@ -116,4 +116,16 @@ assert [f for f, v in k] == [0, 10] and close(k[1][1], (-0.2, 0.3)), ("keyed as 
 doc.frame_current = 0
 assert close(where(2), (-1.0, 0.0)), "its setup stays"
 
+# Looks: the copied side's shapes give their look to their images (a shape on both sides keeps its own).
+oanim.ops.layer.new()
+eyes = oanim.data.layers.active
+eyes.add_curve([(0.5, 0.0), (1.0, 0.0), (1.0, 0.5), (0.5, 0.5)], closed=True, fill=True)
+eyes.add_curve([(-1.0, 0.0), (-0.5, 0.0), (-0.5, 0.5), (-1.0, 0.5)], closed=True, fill=True)
+eyes.set_shape_style(0, fill=(1.0, 0.0, 0.0, 1.0), line_width=0.03, has_outline=False)
+eyes.select_points(range(eyes.point_count))
+assert oanim.ops.mesh.symmetrize(direction="RIGHT_TO_LEFT") == {'FINISHED'}
+left = eyes.shape_style(1)
+assert all(abs(a - b) < 1e-6 for a, b in zip(left["fill"], (1.0, 0.0, 0.0, 1.0))), left
+assert abs(left["line_width"] - 0.03) < 1e-6 and not left["has_outline"], left
+
 print("Symmetrize tests passed")

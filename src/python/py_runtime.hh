@@ -23,6 +23,9 @@ void shutdown();
  * traceback; returns false on an uncaught exception. */
 bool run_file(const std::filesystem::path &path);
 bool run_string(const std::string &code);
+/* Grows each time Python code runs (a script, the console, remote control, a Python operator): what it
+ * changed isn't known, so what is drawn is made anew (see Revision). */
+uint64_t python_runs();
 
 /* The scripts folder Python was started with. */
 const std::filesystem::path &scripts_dir();

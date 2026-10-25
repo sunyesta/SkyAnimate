@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "anim/sculpt.hh"
 #include "core/math.hh"
+#include "data/annotations.hh"
 #include "data/vector.hh"
 
 namespace oanim {
@@ -20,9 +22,34 @@ class UndoStack;
 using OpArgs = std::map<std::string, std::string>;
 
 /* Viewport tools, as on the toolbar. */
-enum class Tool { Select, SelectLayer, Cursor, Draw, Shape, SplitCurve, WeightSelect, WeightPaint, TransformBones, TransformPoints };
+enum class Tool {
+  Select,
+  SelectLayer,
+  Cursor,
+  Annotate,
+  Draw,
+  Shape,
+  SplitCurve,
+  WeightSelect,
+  WeightPaint,
+  TransformBones,
+  TransformPoints,
+  Sculpt,
+  /* Any layer: the box gizmo round it moves, turns and scales the layer itself (Moho's Transform Layer). */
+  TransformLayer,
+  /* A text layer's: typing in it, and where its lines wrap. */
+  EditText
+};
 /* Tools that only work on the setup frame (0): drawing and rigging. */
 bool tool_setup_only(Tool tool);
+
+/* The Annotate tool's variants, picked from its flyout: notes (freehand, a straight line, the eraser) and
+ * the drawing guides it makes and edits (data/annotations.hh). */
+enum class AnnotateMode { Draw, Line, Eraser, GuideLine, GuidePerspective, GuideGrid };
+inline bool annotate_mode_is_guide(AnnotateMode mode)
+{
+  return mode == AnnotateMode::GuideLine || mode == AnnotateMode::GuidePerspective || mode == AnnotateMode::GuideGrid;
+}
 
 /* The Draw tool draws freehand strokes, or with the pen: click to add points along a curve. */
 enum class DrawMode { Freehand, Pen };
@@ -39,10 +66,13 @@ struct ToolSettings {
   /* K switches to Split Curve for a single split; afterwards (or on Esc or right-click) the
    * tool it came from returns. */
   bool tool_temporary = false;
-  /* A setup-only tool (Draw, Weight Paint...) gives way to Select away from frame 0; this is the
-   * tool to go back to on frame 0. */
-  Tool tool_before_posing = Tool::Select;
-  bool tool_switched_for_posing = false;
+  /* The tool last used with each kind of active layer (drawings, bone layers, groups, Media, text,
+   * none), as
+   * Blender remembers each mode's: making that kind of layer active again picks it again. */
+  Tool tool_for_layer_kind[6] = {Tool::Select, Tool::Select, Tool::Select, Tool::Select, Tool::Select, Tool::Select};
+  int tool_layer_kind = -1;
+  /* Ctrl Tab: the tool to go back to from Sculpt (as Blender toggles sculpt mode). */
+  Tool tool_before_sculpt = Tool::Select;
   /* Posing a bone by its tip turns its parents too (Moho's IK). */
   bool auto_ik = true;
   Tool tool_return = Tool::Select;
@@ -58,8 +88,22 @@ struct ToolSettings {
   /* What the Draw and Shape tools draw, picked from their flyouts on the tool bar. */
   DrawMode draw_mode = DrawMode::Freehand;
   PrimitiveKind shape = PrimitiveKind::Box;
+  /* The Annotate tool: which variant, Annotate Line's end styles, the eraser's radius (screen pixels),
+   * and new perspective guides' vanishing points and lines. */
+  AnnotateMode annotate_mode = AnnotateMode::Draw;
+  AnnotationEnd annotate_start = AnnotationEnd::None;
+  AnnotationEnd annotate_end = AnnotationEnd::Arrow;
+  float annotate_eraser_radius = 20.0f;
+  int guide_points = 2;
+  int guide_lines = 24;
   /* Fill closed freehand strokes and closed shapes, Moho's "auto fill". */
   bool draw_fill = false;
+  /* Transform Layer shows the active layer's own grid across the viewport (Show Grid Lines). */
+  bool layer_grid = true;
+  /* The Transform Points and Transform Bones box: 0 Transform (move, turn, scale, shear), 1 Distort (each
+   * corner on its own), 2 Warp (a grid of `warp_cells` each way bending what's inside). */
+  int gizmo_mode = 0;
+  int warp_cells = 3;
   /* Tablet pressure sets line width while drawing. */
   bool use_pressure = true;
   /* The 2D cursor in document space. */
@@ -84,6 +128,18 @@ struct ToolSettings {
   bool weight_normalize = true;
   /* Selection Mask: paint only the selected points. */
   bool weight_mask = false;
+  /* Sculpt tool (anim/sculpt.hh), as Blender's Grease Pencil sculpt brushes: the brush and its
+   * settings, set by picking a preset on the shelf (assets/sculpt_presets.hh; `sculpt_preset` names
+   * it), then changed in the header. Radius in screen pixels. Pen pressure can scale the radius and
+   * the strength; Selected Only is Blender's selection mask. */
+  SculptBrush sculpt_brush = SculptBrush::Grab;
+  std::string sculpt_preset = "Grab";
+  float sculpt_radius = 60.0f;
+  float sculpt_strength = 1.0f;
+  SculptFalloff sculpt_falloff = SculptFalloff::Smooth;
+  bool sculpt_pressure_radius = false;
+  bool sculpt_pressure_strength = true;
+  bool sculpt_selected_only = false;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
@@ -103,6 +159,15 @@ struct WindowManager {
   bool ui_scale_changed = true;
   /* Set by render.render; the window renders the frame (it owns the OpenGL context). */
   bool render_requested = false;
+  /* A render of the current frame to a PNG (oanim.wm.render_png): through the camera, `width` x
+   * `height` (0: the document's), with guide layers too, and a clear background if asked. Done by the
+   * window on its next frame. */
+  struct RenderFile {
+    bool pending = false;
+    std::string path;
+    int width = 0, height = 0;
+    bool guides = false, transparent = false;
+  } render_file;
   /* G or S over the timeline: it starts moving or scaling the selected keys. */
   char timeline_transform_request = 0;
 
@@ -142,6 +207,9 @@ struct WindowManager {
     float wheel = 0.0f;
   };
   std::vector<SimulatedMouse> mouse_simulated;
+  /* The mouse is where the last simulated event put it, until the real one moves: it counts as over
+   * the window then, though the real one may be outside it. */
+  bool mouse_simulating = false;
 
   /* Active workspace tab, and how many there are. */
   int workspace_index = 0;
@@ -157,6 +225,10 @@ struct WindowManager {
   /* Local View (Blender's, / or Numpad /): the layers the viewports show alone, or empty for all.
    * The view stays where it is. Not saved and not undone, as a view. */
   std::vector<uint64_t> local_view;
+  /* Media View (`): the viewports show every media layer at full opacity, guides too, with the
+   * overlays hidden, to see the footage clearly. A view: no layer's opacity changes, nothing is
+   * keyed, saved or undone. */
+  bool media_view = false;
   /* Set by screen.redo_last (F9): the ViewportActionPanel opens, or folds if open. */
   bool action_panel_toggle_request = false;
   /* A Properties tab to show (oanim.wm.properties_tab), taken by the next Properties editor drawn
@@ -237,6 +309,8 @@ struct WindowManager {
   bool mouse_in_viewport = false;
   /* A viewport is running a modal transform; key presses go to it instead of the keymaps. */
   bool modal_running = false;
+  /* Text is being typed on the canvas (editors/text_tool.hh): the keys are its, not shortcuts. */
+  bool text_editing = false;
   /* Keys pressed while it runs, in the order they arrived. The transform reads these rather
    * than ImGui's key state: ImGui spreads a click and a key that land in the same frame over
    * two frames, so a quick click then E would end the transform before ImGui showed it the E,
@@ -244,6 +318,9 @@ struct WindowManager {
   std::vector<ModalKey> modal_keys;
   /* Latest pen pressure, 0-1 (1 for a mouse). */
   float pen_pressure = 1.0f;
+  /* F or Shift F with the Sculpt tool: the viewport sizes the brush's radius ('R') or strength ('S')
+   * with the mouse until a click. */
+  char sculpt_adjust_request = 0;
 
   /* The .oanim file the document was opened from or saved to; empty for a new document. */
   std::string filepath;
@@ -269,6 +346,8 @@ struct Context {
   std::string text_name;
   /* Arguments of the operator running now. */
   const OpArgs *op_args = nullptr;
+  /* Values the running operator chose for options it wasn't given (see op_arg_used). */
+  OpArgs *op_args_used = nullptr;
   /* The undo step's name, set by an operator that says what it did ("Hand In Front Of Torso");
    * empty: the operator's name. */
   std::string undo_name;

@@ -10,6 +10,7 @@
  * Colours are premultiplied throughout. A group with less than full opacity is drawn into its
  * own image and faded as a whole. */
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -55,6 +56,15 @@ class SceneRenderer {
   /* Whether the next viewport renders draw guides, the layers not rendered (off: overlays off, so the
    * viewport shows what renders). */
   void set_show_guides(bool show) { show_guides_ = show; }
+  /* Media View: media layers at full opacity, shown even as guides. */
+  void set_media_view(bool on) { media_view_ = on; }
+  /* Whether `layer` draws at full opacity whatever its own (a media layer in Media View). */
+  bool full_opacity(const Layer &layer) const;
+  /* Wait for media frames to be decoded, as a final render does (a render to a file of a reference). */
+  void set_wait_for_media(bool wait) { wait_for_media_ = wait; }
+  /* The viewport's renders, one a frame: a drawing seen at a new zoom may be drawn as made for the
+   * nearest zoom there is while the render has used its time, and is made over the next frames. */
+  void set_interactive(bool interactive) { interactive_ = interactive; }
   /* Local View: draw only these layers, what's inside them and the groups holding them (empty: all). */
   void set_local_view(const Document &doc, const std::vector<uint64_t> &ids);
 
@@ -166,6 +176,8 @@ class SceneRenderer {
   bool final_render_ = false;
   /* The viewport shows guides (layers not rendered): its overlays are on, Guides among them. */
   bool show_guides_ = true;
+  bool media_view_ = false;
+  bool wait_for_media_ = false;
   /* Local View's layers with everything inside them and every group holding them; empty: all. */
   std::set<uint64_t> local_view_;
   /* Drawing a mask's coverage into the stencil (no colour): brush dabs count where they're
@@ -181,7 +193,12 @@ class SceneRenderer {
   int quality_ = 12;
   /* Within one render: each layer's evaluated drawing (bones, modifiers), worked out once though
    * masks draw a layer again for each of their passes. */
-  std::unordered_map<uint64_t, VectorDrawing> evaluated_;
+  struct Evaluated {
+    VectorDrawing drawing;
+    /* Where the bones carry it as one piece (see layer_evaluated_drawing). */
+    Transform2D rigid;
+  };
+  std::unordered_map<uint64_t, Evaluated> evaluated_;
   /* Across renders: a drawing as drawn, by a hash of everything that makes it (its points, curves
    * and shapes, their brushes, the setup shape brushed lines lay their stamps on, the pixel size,
    * quality and mask pass; see draw_drawing), so a drawing that didn't change isn't tessellated or
@@ -210,9 +227,55 @@ class SceneRenderer {
     std::vector<PaintStep> steps;
     uint64_t used = 0;
   };
-  void draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity);
+  /* `key`: the drawing's tessellation key, so its plain colour steps can be batched (0: drawn at once). */
+  void draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity, uint64_t key = 0);
+  /* Batching: plain colour steps (not a mask's coverage, not brushed stamps) wait in batch_ and go out
+   * together, in their order, before anything else draws or changes what they draw with (every other
+   * drawing call, a mask, a target, a clear, the end of the render flushes them first). Runs of up to 32
+   * steps under the same stencil test are drawn as one: their triangles copied once into a chunk's buffer
+   * (kept by which steps it holds, so only a changed drawing remakes its chunk), each vertex knowing its
+   * step's slot, and the steps' places and opacities given per draw, so moving layers remakes nothing. A big
+   * rig's hundreds of drawings go out in a few dozen draws instead of thousands. */
+  struct Batched {
+    const PaintStep *step = nullptr;
+    uint64_t id = 0;
+    Transform2D to_clip;
+    float opacity = 1.0f;
+    unsigned required = 0;
+  };
+  struct Chunk {
+    unsigned int vao = 0, vbo = 0;
+    int vertices = 0;
+    uint64_t used = 0;
+  };
+  std::vector<Batched> batch_;
+  /* A plain drawing's geometry hash, kept while its layer's revision stays (see Revision). */
+  struct KeptHash {
+    uint64_t revision = 0;
+    uint64_t hash = 0;
+  };
+  std::unordered_map<uint64_t, KeptHash> geometry_hashes_;
+  uint64_t geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified);
+  std::unordered_map<uint64_t, Chunk> chunks_;
+  unsigned int batch_program_ = 0;
+  /* The stencil test use_color_stencil last set (put back after a flush). */
+  unsigned color_required_ = 0;
+  void flush_batch();
+  /* A step of brushed stamps, drawn at once. */
+  void draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity);
   static void free_step(PaintStep &step);
   std::unordered_map<uint64_t, Tessellated> tessellated_;
+  /* By everything but the zoom: the key of the last one made or drawn (see set_interactive). */
+  std::unordered_map<uint64_t, uint64_t> tessellated_any_zoom_;
+  /* By everything but where the drawing is (its points relative to its first): the key of one made with
+   * the same shape and where its first point was, so a drawing moved whole is drawn from it, moved. */
+  struct Placed {
+    uint64_t key = 0;
+    float2 origin;
+  };
+  std::unordered_map<uint64_t, Placed> tessellated_anywhere_;
+  bool interactive_ = false;
+  std::chrono::steady_clock::time_point render_start_;
   uint64_t render_serial_ = 0;
   int samples_ = 1;
   /* Set while a layer draws its part of a group's mask: its masking options apply then. */
@@ -252,6 +315,7 @@ class SceneRenderer {
     MaskMode mode = MaskMode::Add;
     bool invert = false;
     std::vector<uint64_t> layers;
+    MaskCombine combine = MaskCombine::Union;
     float grow = 0.0f;
     bool fills_only = false;
     bool strokes_only = false;

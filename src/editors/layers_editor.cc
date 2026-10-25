@@ -167,6 +167,15 @@ static void icon_layer_type(ImDrawList *dl, ImVec2 c, float s, const Layer &laye
     }
     return;
   }
+  if (layer.is_text()) {
+    /* A serif T, as Blender's text object icon. */
+    dl->AddLine(c + ImVec2(-s * 0.7f, -s * 0.65f), c + ImVec2(s * 0.7f, -s * 0.65f), col, 1.8f);
+    dl->AddLine(c + ImVec2(-s * 0.7f, -s * 0.75f), c + ImVec2(-s * 0.7f, -s * 0.4f), col, 1.3f);
+    dl->AddLine(c + ImVec2(s * 0.7f, -s * 0.75f), c + ImVec2(s * 0.7f, -s * 0.4f), col, 1.3f);
+    dl->AddLine(c + ImVec2(0.0f, -s * 0.65f), c + ImVec2(0.0f, s * 0.7f), col, 1.8f);
+    dl->AddLine(c + ImVec2(-s * 0.35f, s * 0.7f), c + ImVec2(s * 0.35f, s * 0.7f), col, 1.3f);
+    return;
+  }
   if (layer.is_group()) {
     /* A folder. */
     dl->AddRectFilled(c + ImVec2(-s * 0.8f, -s * 0.55f), c + ImVec2(-s * 0.1f, -s * 0.3f), col, 1.0f);
@@ -391,6 +400,24 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     area.show_active_layer = layer.id;
     area.show_active_time = ImGui::GetTime();
     ImGui::SetScrollHereY(0.5f);
+  }
+
+  /* Scrolled out of sight: only its place is kept (a long list otherwise costs every frame), unless
+   * it is being dragged, renamed or has its menu open. */
+  const ImGuiPayload *carried = ImGui::GetDragDropPayload();
+  const bool carrying_this = carried && carried->IsDataType(LAYER_PAYLOAD) &&
+                             std::memcmp(carried->Data, &layer.id, sizeof(layer.id)) == 0;
+  if (!ImGui::IsRectVisible(row_min, row_min + ImVec2(row_w, h)) && !carrying_this && area.renaming_layer != layer.id &&
+      g_narrow_on_release != layer.id && !ImGui::IsPopupOpen("##layer_menu"))
+  {
+    ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + h));
+    ImGui::PopID();
+    if (layer.is_group() && layer.expanded) {
+      for (Layer &child : layer.children) {
+        layer_row(C, area, child, depth + 1, drop, r_context_open);
+      }
+    }
+    return;
   }
 
   /* The row itself: click to make active, drag to move, double-click to rename. */
@@ -919,6 +946,7 @@ void layers_draw(Area &area, Context &C)
     menu_op(C, "Vector Layer", "layer.new");
     menu_op(C, "Group", "layer.new_group");
     menu_op(C, "Bone Layer", "layer.new_bone");
+    menu_op(C, "Text", "layer.new_text");
     menu_op(C, "Media...", "media.import");
     ImGui::Separator();
     menu_op(C, "Reference of Active Layer", "layer.make_reference");

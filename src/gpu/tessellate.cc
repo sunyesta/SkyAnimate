@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 
 #include <mapbox/earcut.hpp>
@@ -71,32 +72,11 @@ static float signed_area(const std::vector<float2> &poly)
   return area * 0.5f;
 }
 
-void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, std::vector<Vertex> &r_out)
+/* A soft edge: a strip from the ring outwards (`outward` +1: its right-hand side), fading to
+ * transparent. */
+static void soft_edge(const std::vector<float2> &poly, float outward, Color color, float aa, std::vector<Vertex> &r_out)
 {
-  std::vector<float2> poly = polygon;
-  dedupe(poly, nullptr, true, aa * 0.01f);
   const size_t n = poly.size();
-  if (n < 3) {
-    return;
-  }
-
-  using EarPoint = std::array<float, 2>;
-  std::vector<std::vector<EarPoint>> rings(1);
-  rings[0].reserve(n);
-  for (const float2 &p : poly) {
-    rings[0].push_back({p.x, p.y});
-  }
-  const std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(rings);
-  for (const uint32_t i : indices) {
-    r_out.push_back(make_vertex(poly[i], color, 1.0f));
-  }
-
-  /* Soft edge: a strip from the outline outwards, fading to transparent. None when the caller
-   * smooths edges by multisampling instead. */
-  if (aa <= 0.0f) {
-    return;
-  }
-  const float outward = signed_area(poly) > 0.0f ? 1.0f : -1.0f;
   std::vector<float2> outer(n);
   for (size_t i = 0; i < n; i++) {
     const float2 prev = poly[(i + n - 1) % n], cur = poly[i], next = poly[(i + 1) % n];
@@ -110,6 +90,104 @@ void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, 
     const size_t j = (i + 1) % n;
     quad(r_out, make_vertex(poly[i], color, 1.0f), make_vertex(poly[j], color, 1.0f),
          make_vertex(outer[j], color, 0.0f), make_vertex(outer[i], color, 0.0f));
+  }
+}
+
+void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, std::vector<Vertex> &r_out)
+{
+  std::vector<float2> poly = polygon;
+  dedupe(poly, nullptr, true, aa * 0.01f);
+  const size_t n = poly.size();
+  if (n < 3) {
+    return;
+  }
+
+  /* The same outline is often filled again soon: by each mask pass over a layer, and by every layer
+   * still drawn while another one moves. Cutting it into triangles is most of the work, so the cut
+   * is kept for a while, by the outline's exact points. */
+  uint64_t key = 1469598103934665603ull;
+  {
+    const auto *bytes = reinterpret_cast<const unsigned char *>(poly.data());
+    for (size_t i = 0; i < n * sizeof(float2); i++) {
+      key = (key ^ bytes[i]) * 1099511628211ull;
+    }
+    key = (key ^ n) * 1099511628211ull;
+  }
+  thread_local std::unordered_map<uint64_t, std::vector<uint32_t>> cuts;
+  auto found = cuts.find(key);
+  if (found == cuts.end()) {
+    if (cuts.size() > 4096) {
+      cuts.clear();
+    }
+    using EarPoint = std::array<float, 2>;
+    std::vector<std::vector<EarPoint>> rings(1);
+    rings[0].reserve(n);
+    for (const float2 &p : poly) {
+      rings[0].push_back({p.x, p.y});
+    }
+    found = cuts.emplace(key, mapbox::earcut<uint32_t>(rings)).first;
+  }
+  const std::vector<uint32_t> &indices = found->second;
+  r_out.reserve(r_out.size() + indices.size());
+  for (const uint32_t i : indices) {
+    r_out.push_back(make_vertex(poly[i], color, 1.0f));
+  }
+
+  /* Soft edge: a strip from the outline outwards, fading to transparent. None when the caller
+   * smooths edges by multisampling instead. */
+  if (aa <= 0.0f) {
+    return;
+  }
+  soft_edge(poly, signed_area(poly) > 0.0f ? 1.0f : -1.0f, color, aa, r_out);
+}
+
+void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, float aa, std::vector<Vertex> &r_out)
+{
+  using EarPoint = std::array<float, 2>;
+  for (const FillPiece &piece : pieces) {
+    std::vector<std::vector<EarPoint>> rings;
+    std::vector<float2> points;
+    for (const std::vector<float2> &ring : piece.rings) {
+      if (ring.size() < 3) {
+        continue;
+      }
+      rings.emplace_back();
+      for (const float2 &p : ring) {
+        rings.back().push_back({p.x, p.y});
+        points.push_back(p);
+      }
+    }
+    if (rings.empty()) {
+      continue;
+    }
+    /* Kept for a while, as tessellate_fill keeps its cuts. */
+    uint64_t key = 0x9e3779b97f4a7c15ull;
+    for (const std::vector<EarPoint> &ring : rings) {
+      const auto *bytes = reinterpret_cast<const unsigned char *>(ring.data());
+      for (size_t i = 0; i < ring.size() * sizeof(EarPoint); i++) {
+        key = (key ^ bytes[i]) * 1099511628211ull;
+      }
+      key = (key ^ ring.size()) * 1099511628211ull;
+    }
+    thread_local std::unordered_map<uint64_t, std::vector<uint32_t>> cuts;
+    auto found = cuts.find(key);
+    if (found == cuts.end()) {
+      if (cuts.size() > 4096) {
+        cuts.clear();
+      }
+      found = cuts.emplace(key, mapbox::earcut<uint32_t>(rings)).first;
+    }
+    for (const uint32_t i : found->second) {
+      r_out.push_back(make_vertex(points[i], color, 1.0f));
+    }
+    /* Outer rings run counter-clockwise and holes clockwise: outside the fill is always to the right. */
+    if (aa > 0.0f) {
+      for (const std::vector<float2> &ring : piece.rings) {
+        if (ring.size() >= 3) {
+          soft_edge(ring, 1.0f, color, aa, r_out);
+        }
+      }
+    }
   }
 }
 
@@ -292,12 +370,14 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
                                  make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha),
                                  make_vertex(p, color, alpha), make_vertex(ck1, color, alpha),
                                  make_vertex(c1, color, alpha)});
-      quad(r_out, make_vertex(c0, color, alpha), make_vertex(ck0, color, alpha), make_vertex(qk0, color, 0.0f),
-           make_vertex(q0, color, 0.0f));
-      quad(r_out, make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha), make_vertex(qk1, color, 0.0f),
-           make_vertex(qk0, color, 0.0f));
-      quad(r_out, make_vertex(ck1, color, alpha), make_vertex(c1, color, alpha), make_vertex(q1, color, 0.0f),
-           make_vertex(qk1, color, 0.0f));
+      if (aa > 0.0f) {
+        quad(r_out, make_vertex(c0, color, alpha), make_vertex(ck0, color, alpha), make_vertex(qk0, color, 0.0f),
+             make_vertex(q0, color, 0.0f));
+        quad(r_out, make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha), make_vertex(qk1, color, 0.0f),
+             make_vertex(qk0, color, 0.0f));
+        quad(r_out, make_vertex(ck1, color, alpha), make_vertex(c1, color, alpha), make_vertex(q1, color, 0.0f),
+             make_vertex(qk1, color, 0.0f));
+      }
     }
     else {
       /* Bevel: a flat edge across the corner, its soft edge joined to the strips' by two slivers. */
@@ -308,6 +388,9 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
       const float2 b0 = c0 + bevel_normal * aa, b1 = c1 + bevel_normal * aa;
       r_out.insert(r_out.end(),
                    {make_vertex(p, color, alpha), make_vertex(c0, color, alpha), make_vertex(c1, color, alpha)});
+      if (aa <= 0.0f) {
+        continue;
+      }
       quad(r_out, make_vertex(c0, color, alpha), make_vertex(c1, color, alpha), make_vertex(b1, color, 0.0f),
            make_vertex(b0, color, 0.0f));
       r_out.insert(r_out.end(), {make_vertex(c0, color, alpha), make_vertex(q0, color, 0.0f),
@@ -316,15 +399,22 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
     }
   }
 
+  /* With no soft edge (multisampling smooths the edges instead) the strips either side of the core
+   * have no width: only the core is drawn. */
+  r_out.reserve(r_out.size() + segments * (aa > 0.0f ? 18 : 6));
   for (size_t i = 0; i < segments; i++) {
     const Side &a = seg_start[i];
     const Side &b = seg_end[i];
-    quad(r_out, make_vertex(a.outer_left, color, 0.0f), make_vertex(a.core_left, color, a.core_alpha),
-         make_vertex(b.core_left, color, b.core_alpha), make_vertex(b.outer_left, color, 0.0f));
+    if (aa > 0.0f) {
+      quad(r_out, make_vertex(a.outer_left, color, 0.0f), make_vertex(a.core_left, color, a.core_alpha),
+           make_vertex(b.core_left, color, b.core_alpha), make_vertex(b.outer_left, color, 0.0f));
+    }
     quad(r_out, make_vertex(a.core_left, color, a.core_alpha), make_vertex(a.core_right, color, a.core_alpha),
          make_vertex(b.core_right, color, b.core_alpha), make_vertex(b.core_left, color, b.core_alpha));
-    quad(r_out, make_vertex(a.core_right, color, a.core_alpha), make_vertex(a.outer_right, color, 0.0f),
-         make_vertex(b.outer_right, color, 0.0f), make_vertex(b.core_right, color, b.core_alpha));
+    if (aa > 0.0f) {
+      quad(r_out, make_vertex(a.core_right, color, a.core_alpha), make_vertex(a.outer_right, color, 0.0f),
+           make_vertex(b.outer_right, color, 0.0f), make_vertex(b.core_right, color, b.core_alpha));
+    }
   }
 
   if (closed) {
@@ -335,6 +425,9 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
   const auto cap = [&](size_t i, const Side &side, float2 outward) {
     if (joins[i] != StrokeJoin::Sharp) {
       stroke_disc(points[i], half_widths[i], color, aa, r_out);
+      return;
+    }
+    if (aa <= 0.0f) {
       return;
     }
     const float2 step = outward * aa;

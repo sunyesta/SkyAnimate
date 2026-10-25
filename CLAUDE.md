@@ -65,7 +65,8 @@ with a format version), File menu, unsaved-changes prompt, autosave, File > Reco
 Incremental, pen pressure, stamp brushes (`src/assets`: the asset library set in Preferences, brush
 shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brushes as presets in
 `brush_presets.cc`; dabs in `src/gpu/brush_stroke.cc`; the Brush Settings window in
-`src/editors/brush_editor.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
+`src/editors/brush_editor.cc`). The Annotate tool: notes and drawing guides over the drawing, never rendered
+(`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
 the style library.
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels

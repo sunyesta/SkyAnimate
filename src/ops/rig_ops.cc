@@ -6,12 +6,16 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <tuple>
 
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/bevel.hh"
+#include "anim/subdivide.hh"
+#include "anim/drivers.hh"
 #include "anim/dynamics.hh"
+#include "anim/keep_poses.hh"
 #include "anim/merge.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
@@ -21,6 +25,17 @@
 #include "wm/context.hh"
 
 namespace oanim {
+
+/* How a Parent Bone moving a layer's points (Deform: Points) moves them now: the same for each point
+ * (each is weighted all to it), identity when it doesn't. */
+static Transform2D points_bone_move(const Document &doc, const Layer &layer)
+{
+  if (!layer.points_follow_bone()) {
+    return Transform2D();
+  }
+  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+  return skins.empty() ? Transform2D() : skins.front();
+}
 
 Layer *active_armature(Context &C)
 {
@@ -49,7 +64,8 @@ static bool on_setup_frame(Context &C)
 }
 
 static void rig_operator(const char *idname, const char *name, const char *description,
-                         std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec)
+                         std::function<bool(Context &)> poll, std::function<OpStatus(Context &)> exec,
+                         std::vector<OpProperty> props = {})
 {
   OperatorType ot;
   ot.idname = idname;
@@ -58,6 +74,7 @@ static void rig_operator(const char *idname, const char *name, const char *descr
   ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
   ot.poll = std::move(poll);
   ot.exec = std::move(exec);
+  ot.props = std::move(props);
   operators().add(std::move(ot));
 }
 
@@ -283,6 +300,30 @@ static std::vector<Layer *> weight_layers(Context &C)
   return r;
 }
 
+/* Keep Animation (keep_animation=1) around a weight change: the drawings stay where they show on every
+ * keyed frame of every action they play in, their points keyed back there (anim/keep_poses.hh). From
+ * whatever frame and action it is done on. */
+static DrawingsShownAll weight_keep_begin(Context &C)
+{
+  if (!op_arg_bool(C, "keep_animation")) {
+    return {};
+  }
+  std::vector<uint64_t> ids;
+  for (Layer *layer : weight_layers(C)) {
+    ids.push_back(layer->id);
+  }
+  return drawings_shown_capture_all(*C.document, ids);
+}
+
+static OpStatus weight_keep_end(Context &C, const DrawingsShownAll &kept, bool changed)
+{
+  if (!changed) {
+    return OpStatus::Cancelled;
+  }
+  drawings_shown_keep_all(*C.document, kept);
+  return OpStatus::Finished;
+}
+
 static bool weight_poll(Context &C)
 {
   return C.document && !weight_layers(C).empty();
@@ -315,6 +356,94 @@ static bool in_collection(const std::vector<uint64_t> &ids, uint64_t id)
   return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
+/* The settings of a constraint of `type` worth keeping in step with another's (Copy Constraints with
+ * Drivers): Enabled and Influence, and those its type uses (the bone it aims at can't be driven). */
+static std::vector<std::string> bone_constraint_driven_fields(BoneConstraintType type)
+{
+  std::vector<std::string> fields = {"enabled", "influence"};
+  switch (type) {
+    case BoneConstraintType::LimitAngle:
+      fields.insert(fields.end(), {"min_angle", "max_angle"});
+      break;
+    case BoneConstraintType::MaintainVolume:
+      fields.push_back("amount");
+      break;
+    case BoneConstraintType::CopyAngle:
+    case BoneConstraintType::CopyPosition:
+    case BoneConstraintType::CopyScale:
+      fields.insert(fields.end(), {"factor", "delay"});
+      break;
+    case BoneConstraintType::IK:
+      fields.insert(fields.end(), {"chain", "max_stretch"});
+      break;
+    case BoneConstraintType::LimitShape:
+      fields.insert(fields.end(), {"overlap", "softness"});
+      break;
+    case BoneConstraintType::LookAt:
+      fields.insert(fields.end(), {"squash", "divergence"});
+      break;
+    case BoneConstraintType::Dynamics:
+      fields.insert(fields.end(), {"weight", "wind_catch", "own_gravity", "own_wind", "gravity", "wind",
+                                   "wind_direction", "wind_gusts", "wind_gust_speed", "wind_turbulence"});
+      for (const char *spring : {"angle_spring.", "position_spring.", "scale_spring."}) {
+        for (const char *f : {"enabled", "use_limit", "settle_speed", "bounce", "inertia", "stretch", "limit"}) {
+          fields.push_back(std::string(spring) + f);
+        }
+      }
+      for (const char *f : {"use_squash_limit", "squash_limit"}) {
+        fields.push_back(std::string("scale_spring.") + f);
+      }
+      break;
+    case BoneConstraintType::IndependentAngle:
+    case BoneConstraintType::TrackTo:
+    case BoneConstraintType::StretchTo:
+      break;
+  }
+  return fields;
+}
+
+/* Parent Bone's Keep Animation: the frames worth keying when a layer's bone changes, so it shows where
+ * it did. Every keyed frame (bar the setup) of what places it: its own and its groups' transforms, the
+ * bone layer's and its groups', and every bone of the bone layer (they pose the old and the new bone). */
+static std::vector<int> parent_change_frames(Document &doc, const Layer &layer, const Layer &armature)
+{
+  std::set<int> frames;
+  const auto add = [&](const auto &ch) {
+    for (const auto &k : ch.keys) {
+      if (k.frame != 0) {
+        frames.insert(k.frame);
+      }
+    }
+  };
+  for (const uint64_t id : {layer.id, armature.id}) {
+    for (const Layer *l = layer_find(doc, id); l; l = layer_parent(doc, l->id)) {
+      add(l->position_keys);
+      add(l->rotation_keys);
+      add(l->scale_keys);
+    }
+  }
+  for (const Bone &b : armature.bones) {
+    add(b.position_keys);
+    add(b.angle_keys);
+    add(b.scale_keys);
+  }
+  return {frames.begin(), frames.end()};
+}
+
+/* A layer's position, rotation (degrees, the turn nearest `near`) and scale from its local transform
+ * (translate * rotate * scale; a negative X scale kept as it was). */
+static void local_from_transform(const Transform2D &local, float2 old_scale, float near, float2 *r_position,
+                                 float *r_rotation, float2 *r_scale)
+{
+  const float sign = old_scale.x < 0.0f ? -1.0f : 1.0f;
+  const float sx = std::sqrt(local.a * local.a + local.b * local.b) * sign;
+  *r_position = {local.tx, local.ty};
+  float rotation = std::atan2(local.b * sign, local.a * sign) * 180.0f / PI;
+  rotation += 360.0f * std::round((near - rotation) / 360.0f);
+  *r_rotation = rotation;
+  *r_scale = {sx, std::abs(sx) > 1e-9f ? (local.a * local.d - local.b * local.c) / sx : old_scale.y};
+}
+
 void rig_operators_register()
 {
   rig_operator("layer.new_bone", "New Bone Layer",
@@ -331,6 +460,7 @@ void rig_operators_register()
                },
                [](Context &C) {
                  document_active_layer(*C.document)->type = LayerType::Bone;
+                 document_active_layer(*C.document)->edit_descendants = false;
                  return OpStatus::Finished;
                });
   rig_operator("layer.convert_to_group", "Convert to Group",
@@ -343,6 +473,7 @@ void rig_operators_register()
                [](Context &C) {
                  Layer &layer = *document_active_layer(*C.document);
                  layer.type = LayerType::Group;
+                 layer.edit_descendants = true;
                  layer.bones.clear();
                  layer.active_bone = 0;
                  return OpStatus::Finished;
@@ -360,6 +491,27 @@ void rig_operators_register()
                  }
                  if (!bone_find(armature, armature.active_bone) && !armature.bones.empty()) {
                    armature.active_bone = armature.bones.front().id;
+                 }
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.select_invert", "Invert Bone Selection",
+               "Select the bones that aren't selected and deselect those that are (Ctrl I), as Blender's Invert; "
+               "hidden bones stay unselected",
+               bone_layer_active, [](Context &C) {
+                 Layer &armature = *document_active_layer(*C.document);
+                 for (Bone &b : armature.bones) {
+                   /* A bone with only one end picked counts as picked, as it shows. */
+                   const bool picked = b.selected || b.select_head || b.select_tail;
+                   bone_select(b, !picked && bone_shown(armature, b));
+                 }
+                 const Bone *active = bone_find(armature, armature.active_bone);
+                 if (!active || !active->selected) {
+                   for (const Bone &b : armature.bones) {
+                     if (b.selected) {
+                       armature.active_bone = b.id;
+                       break;
+                     }
+                   }
                  }
                  return OpStatus::Finished;
                });
@@ -510,11 +662,17 @@ void rig_operators_register()
                });
 
   /* --- Weights (Blender's vertex groups) and Parent to Bone -------------------------------- */
+  const OpProperty keep_animation_property = op_bool_property(
+      "keep_animation", "Keep Animation", "The drawings show where they did on every keyed frame (their points keyed back)",
+      "0");
+  const OpProperty weight_property = op_float_property("weight", "Weight", "The active bone's weight on the selected points",
+                                                       "1", 0.0f, 1.0f, 0.01f);
   rig_operator("weight.automatic", "Automatic Weights",
                "Give the selected points (all points when none are selected) of the layers being edited "
                "weights from every bone: nearer bones pull harder, as Blender's Automatic Weights. "
                "bones=SELECTED uses only the selected bones",
                weight_poll, [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
                  /* Every bone by default: the weight tools keep the bone being painted selected, so going
                   * by the selection would hand that one bone everything. */
                  const bool selected_bones = op_arg(C, "bones", "ALL") == "SELECTED";
@@ -537,15 +695,19 @@ void rig_operators_register()
                    }
                    changed += layer_automatic_weights(*C.document, *layer, bones, any_point_selected(*layer));
                  }
-                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {keep_animation_property});
 
   rig_operator("weight.assign", "Assign",
                "Set the active bone's weight on the selected points to `weight` (default: the tool's Weight), as "
                "Blender's Assign; with Normalize the other bones share what is left",
                weight_poll, [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
                  const ToolSettings &ts = C.wm->tool_settings;
                  const float value = std::clamp(op_arg_float(C, "weight", ts.weight_value), 0.0f, 1.0f);
+                 /* The panel shows the weight it used (the tool's, when none was given). */
+                 op_arg_used(C, "weight", std::to_string(value));
                  int changed = 0;
                  for (Layer *layer : weight_layers(C)) {
                    const uint64_t bone = layer_armature(*C.document, layer->id)->active_bone;
@@ -589,13 +751,15 @@ void rig_operators_register()
                    report(ReportType::Warning, "Select points and a bone to assign");
                    return OpStatus::Cancelled;
                  }
-                 return OpStatus::Finished;
-               });
+                 return weight_keep_end(C, kept, true);
+               },
+               {weight_property, keep_animation_property});
 
   rig_operator("weight.remove", "Remove",
                "Take the selected points out of the active bone (as Blender's Remove); a point left with no bones "
                "stays where it is",
                weight_poll, [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
                  int changed = 0;
                  for (Layer *layer : weight_layers(C)) {
                    const uint64_t bone = layer_armature(*C.document, layer->id)->active_bone;
@@ -613,12 +777,14 @@ void rig_operators_register()
                      }
                    }
                  }
-                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {keep_animation_property});
 
   rig_operator("weight.normalize", "Normalize",
                "Make each selected point's weights (all points' when none are selected) add up to 1",
                weight_poll, [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
                  int changed = 0;
                  for (Layer *layer : weight_layers(C)) {
                    const bool selected_only = any_point_selected(*layer);
@@ -638,14 +804,93 @@ void rig_operators_register()
                      }
                    }
                  }
-                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {keep_animation_property});
+
+  rig_operator("weight.remove_all", "Remove All Weights",
+               "Take the selected points out of every bone: they follow no bone and stay where they are (with "
+               "Keep Animation, where they show on every keyed frame too)",
+               weight_poll,
+               [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
+                 int changed = 0;
+                 bool any = false;
+                 for (Layer *layer : weight_layers(C)) {
+                   for (MeshPoint &p : layer->drawing.points) {
+                     if (!p.selected) {
+                       continue;
+                     }
+                     any = true;
+                     const bool weighted = std::any_of(p.weights.begin(), p.weights.end(),
+                                                       [](const BoneWeight &w) { return w.weight > 0.0f; });
+                     /* An empty entry: weighted to nothing (new points aren't given automatic weights). */
+                     p.weights = {{0, 0.0f}};
+                     changed += weighted ? 1 : 0;
+                   }
+                 }
+                 if (!any) {
+                   report(ReportType::Warning, "Select points first");
+                   return OpStatus::Cancelled;
+                 }
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {keep_animation_property});
+
+  rig_operator("weight.clean", "Clean",
+               "Take the selected points (all points when none are selected) out of the bones that move them less "
+               "than `threshold` (0.02: 2%), as Blender's Clean; the bones left share what the removed ones had, "
+               "and a point moved only that weakly keeps its strongest bone",
+               weight_poll,
+               [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
+                 const float threshold = std::clamp(op_arg_float(C, "threshold", 0.02f), 0.0f, 1.0f);
+                 int changed = 0;
+                 for (Layer *layer : weight_layers(C)) {
+                   const bool selected_only = any_point_selected(*layer);
+                   for (MeshPoint &p : layer->drawing.points) {
+                     if (selected_only && !p.selected) {
+                       continue;
+                     }
+                     float total = 0.0f, strongest = 0.0f;
+                     for (const BoneWeight &w : p.weights) {
+                       total += w.weight;
+                       strongest = std::max(strongest, w.weight);
+                     }
+                     const auto weak = [&](const BoneWeight &w) {
+                       return w.weight > 0.0f && w.weight < threshold && w.weight < strongest;
+                     };
+                     if (std::none_of(p.weights.begin(), p.weights.end(), weak)) {
+                       continue;
+                     }
+                     std::erase_if(p.weights, weak);
+                     float left = 0.0f;
+                     for (const BoneWeight &w : p.weights) {
+                       left += w.weight;
+                     }
+                     if (left > 1e-6f) {
+                       for (BoneWeight &w : p.weights) {
+                         w.weight *= total / left;
+                       }
+                     }
+                     changed++;
+                   }
+                 }
+                 if (changed > 0) {
+                   report(ReportType::Info, "Cleaned " + std::to_string(changed) + (changed == 1 ? " point" : " points"));
+                 }
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {op_float_property("threshold", "Limit", "Bones moving a point less than this let go of it", "0.02",
+                                  0.0f, 1.0f, 0.005f),
+                keep_animation_property});
 
   rig_operator("layer.parent_bone_set", "Parent to Bone",
                "Make the active and selected layers inside a bone layer follow bone `bone` as a whole, as "
                "parenting to a bone in Blender (\"\" frees them); `deform`=LAYER moves the layer (a bone's "
                "squash and stretch squashes its lines too), POINTS its points (lines keep their width). "
-               "Either alone, or both. Setup frame only",
+               "Either alone, or both. keep_animation=1: the layer shows where it did on every keyed frame "
+               "(its transform keyed again there), as Keep Poses does for setup moves. Setup frame only",
                [](Context &C) {
                  const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
                  return l && !l->is_bone_layer() && layer_armature(*C.document, l->id);
@@ -662,6 +907,78 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  int changed = 0, same_as_original = 0;
+                 /* Keep Animation: where each layer showed on the frames that matter, before its bone
+                  * changes (worked out frame by frame, then the frame put back). */
+                 Document &doc = *C.document;
+                 const bool keep = op_arg_bool(C, "keep_animation") && set_bone;
+                 struct Kept {
+                   uint64_t layer = 0;
+                   std::vector<int> frames;
+                   std::vector<Transform2D> world, local;
+                 };
+                 /* Every action the layers play in (the mainline and their bone layers' actions), each
+                  * with its own keyed frames. */
+                 struct ActionKept {
+                   uint64_t owner = 0;
+                   std::string name;
+                   std::vector<Kept> kept;
+                 };
+                 std::vector<ActionKept> actions;
+                 const auto use_action = [&doc](uint64_t owner, const std::string &action) {
+                   if (doc.action != action) {
+                     document_set_action(doc, action.empty() ? 0 : owner, action);
+                   }
+                 };
+                 const std::string was_action = doc.action;
+                 uint64_t was_owner = 0;
+                 if (keep) {
+                   animation_record(doc);
+                   actions.push_back({0, "", {}});
+                   for (Layer *layer : keyed_layers(C)) {
+                     if (const Layer *owner = action_owner(doc, layer->id)) {
+                       for (const std::string &action : owner->actions) {
+                         if (std::none_of(actions.begin(), actions.end(), [&](const ActionKept &a) {
+                               return a.owner == owner->id && a.name == action;
+                             }))
+                         {
+                           actions.push_back({owner->id, action, {}});
+                         }
+                       }
+                     }
+                   }
+                   std::vector<uint64_t> ids;
+                   for (Layer *layer : keyed_layers(C)) {
+                     const Layer *armature = layer_armature(doc, layer->id);
+                     if (!armature || layer->is_bone_layer() || (layer->points_follow_bone() && !set_bone) ||
+                         (layer->is_reference() && layer->reference.match_original))
+                     {
+                       continue;
+                     }
+                     ids.push_back(layer->id);
+                   }
+                   for (ActionKept &a : actions) {
+                     if (a.name == was_action) {
+                       was_owner = a.owner;
+                     }
+                     use_action(a.owner, a.name);
+                     for (const uint64_t id : ids) {
+                       const Layer *layer = layer_find(doc, id);
+                       a.kept.push_back({id, parent_change_frames(doc, *layer, *layer_armature(doc, id)), {}, {}});
+                     }
+                     for (Kept &k : a.kept) {
+                       for (const int f : k.frames) {
+                         doc.frame_current = f;
+                         animation_sync(doc);
+                         const Layer *l = layer_find(doc, k.layer);
+                         k.world.push_back(layer_world_transform(doc, k.layer) * points_bone_move(doc, *l));
+                         k.local.push_back(l->local_transform());
+                       }
+                     }
+                     doc.frame_current = 0;
+                     animation_sync(doc);
+                   }
+                   use_action(was_owner, was_action);
+                 }
                  for (Layer *layer : keyed_layers(C)) {
                    const Layer *armature = layer_armature(*C.document, layer->id);
                    if (!armature || layer->is_bone_layer()) {
@@ -686,6 +1003,55 @@ void rig_operators_register()
                      layer->parent_bone_points = deform == "POINTS";
                      changed++;
                    }
+                 }
+                 /* The actions first, the mainline last: a smart action's keys add to the mainline, so the
+                  * mainline is put right with them already in place. */
+                 for (auto action = actions.rbegin(); keep && changed > 0 && action != actions.rend(); ++action) {
+                   use_action(action->owner, action->name);
+                   /* The new bone's: what places the layer on each frame, before its own transform; the
+                    * transform that puts it where it was, keyed there. */
+                   std::vector<std::tuple<uint64_t, int, Transform2D>> keys;
+                   for (const Kept &k : action->kept) {
+                     for (size_t i = 0; i < k.frames.size(); i++) {
+                       doc.frame_current = k.frames[i];
+                       animation_sync(doc);
+                       const Layer *l = layer_find(doc, k.layer);
+                       const Transform2D world = layer_world_transform(doc, k.layer);
+                       const Transform2D above = world * k.local[i].inverted();
+                       /* Points that follow the bone are moved by it after the layer places them (its
+                        * move in document space, the same whatever the layer's own transform): the
+                        * layer's transform is what takes them back to where they showed. */
+                       const Transform2D bone = world * points_bone_move(doc, *l) * world.inverted();
+                       keys.push_back({k.layer, k.frames[i], above.inverted() * bone.inverted() * k.world[i]});
+                     }
+                   }
+                   doc.frame_current = 0;
+                   animation_sync(doc);
+                   for (const auto &[id, frame, local] : keys) {
+                     Layer *l = layer_find(doc, id);
+                     float2 position, scale;
+                     float rotation = 0.0f;
+                     local_from_transform(local, l->scale, l->rotation_keys.animated() ? l->rotation_keys.evaluate(frame) : l->rotation,
+                                          &position, &rotation, &scale);
+                     /* Unkeyed channels get their setup key too, so the other frames stay as they were. */
+                     if (!l->position_keys.animated()) {
+                       l->position_keys.set_key(0, l->position);
+                     }
+                     if (!l->rotation_keys.animated()) {
+                       l->rotation_keys.set_key(0, l->rotation);
+                     }
+                     if (!l->scale_keys.animated()) {
+                       l->scale_keys.set_key(0, l->scale);
+                     }
+                     l->position_keys.set_key(frame, position);
+                     l->rotation_keys.set_key(frame, rotation);
+                     l->scale_keys.set_key(frame, scale);
+                   }
+                   animation_sync(doc);
+                   C.undo_name = "Parent to Bone, Keeping Animation";
+                 }
+                 if (keep) {
+                   use_action(was_owner, was_action);
                  }
                  if (changed == 0 && same_as_original > 0) {
                    report(ReportType::Warning, "Its pose is Same as Original: choose Own Bones in the Reference tab "
@@ -766,6 +1132,112 @@ void rig_operators_register()
                  }
                  return OpStatus::Finished;
                });
+  rig_operator("armature.constraints_copy", "Copy Constraints to Selected Bones",
+               "Ctrl L > Copy Constraints: every other selected bone's constraints (and their drivers) replaced "
+               "by the active bone's (a constraint aimed at the bone it would go on is left out). drivers=1 "
+               "(Copy Constraints with Drivers): each copy's settings are driven by the original's, so changing "
+               "the original changes the copies",
+               bone_layer_active, [](Context &C) {
+                 const bool drive = op_arg_bool(C, "drivers");
+                 Layer &armature = *document_active_layer(*C.document);
+                 const Bone *active = bone_find(armature, armature.active_bone);
+                 if (!active) {
+                   report(ReportType::Warning, "Click a bone to make it the active one, then select the bones to "
+                                               "give its constraints");
+                   return OpStatus::Cancelled;
+                 }
+                 if (active->constraints.empty()) {
+                   report(ReportType::Info, "The active bone \"" + active->name + "\" has no constraints");
+                   return OpStatus::Cancelled;
+                 }
+                 const std::vector<BoneConstraint> copied = active->constraints;
+                 const uint64_t from = active->id;
+                 const std::string from_name = active->name;
+                 /* Where each copy went, for its drivers: the bone, the original's place and the copy's. */
+                 struct Placed {
+                   std::string bone;
+                   size_t from_index = 0;
+                 };
+                 constexpr uint64_t COPY_MARK = uint64_t(1) << 63;
+                 std::vector<Placed> placed;
+                 int bones = 0;
+                 for (Bone &b : armature.bones) {
+                   if (b.id == from || !(b.selected || b.select_head || b.select_tail)) {
+                     continue;
+                   }
+                   /* Its own constraints go first, with the drivers on them: the copy is the active bone's
+                    * stack, nothing mixed in (Dynamics stays last as it is there). */
+                   b.constraints.clear();
+                   const std::string own = "bones[\"" + b.name + "\"].constraints[";
+                   std::erase_if(C.document->drivers, [&](const Driver &d) {
+                     return d.target.layer == armature.id && d.target.path.rfind(own, 0) == 0;
+                   });
+                   for (size_t j = 0; j < copied.size(); j++) {
+                     BoneConstraint c = copied[j];
+                     if (c.target == b.id) {
+                       continue;
+                     }
+                     /* A marker for finding the copy once all are in (cleared after). */
+                     c.uid = COPY_MARK | uint64_t(placed.size());
+                     b.constraints.push_back(c);
+                     placed.push_back({b.name, j});
+                   }
+                   bones++;
+                 }
+                 if (bones == 0) {
+                   report(ReportType::Info, "Select the bones to give the active bone's constraints");
+                   return OpStatus::Cancelled;
+                 }
+                 int driven = 0;
+                 if (drive) {
+                   /* Each copy's settings read the original's: the copy's place in its stack found again
+                    * once every copy is in (a later insert may have moved an earlier one along). */
+                   Document &doc = *C.document;
+                   for (size_t n = 0; n < placed.size(); n++) {
+                     const Placed &p = placed[n];
+                     const Bone *to = bone_find_by_name(armature, p.bone);
+                     const BoneConstraint &original = copied[p.from_index];
+                     int k = -1;
+                     for (int i = 0; to && i < int(to->constraints.size()); i++) {
+                       if (to->constraints[size_t(i)].uid == (COPY_MARK | uint64_t(n))) {
+                         k = i;
+                       }
+                     }
+                     if (k < 0) {
+                       continue;
+                     }
+                     const std::string src = "bones[\"" + from_name + "\"].constraints[" + std::to_string(p.from_index) + "].";
+                     const std::string dst = "bones[\"" + p.bone + "\"].constraints[" + std::to_string(k) + "].";
+                     for (const std::string &field : bone_constraint_driven_fields(original.type)) {
+                       if (driver_ref_size(doc, armature.id, dst + field) == 0) {
+                         continue;
+                       }
+                       Driver d = driver_copying(DriverRef{armature.id, src + field, -1});
+                       d.target = DriverRef{armature.id, dst + field, -1};
+                       std::erase_if(doc.drivers, [&](const Driver &x) { return x.target == d.target; });
+                       doc.drivers.push_back(std::move(d));
+                       driven++;
+                     }
+                   }
+                   C.undo_name = "Copy Constraints with Drivers";
+                 }
+                 for (Bone &b : armature.bones) {
+                   for (BoneConstraint &c : b.constraints) {
+                     if (c.uid & COPY_MARK) {
+                       c.uid = 0;
+                     }
+                   }
+                 }
+                 if (drive) {
+                   drivers_evaluate(*C.document);
+                 }
+                 report(ReportType::Info, "Copied " + from_name + "'s constraints to " + std::to_string(bones) +
+                                              (bones == 1 ? " bone" : " bones") +
+                                              (drive ? ", each setting driven by the original's (" +
+                                                           std::to_string(driven) + " drivers)"
+                                                     : std::string()));
+                 return OpStatus::Finished;
+               });
   rig_operator("armature.constraint_remove", "Remove Bone Constraint",
                "Remove constraint `index` of the bone `bone` (default: the active bone)", bone_layer_active,
                [constraint_bone](Context &C) {
@@ -775,6 +1247,106 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  bone->constraints.erase(bone->constraints.begin() + index);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.bone_relations_set", "Bone Relations",
+               "Set how bone `bone` (default: the active bone) hangs from its parent: connected (1 or 0, setup frame "
+               "only: its head onto the parent's tail), inherit_rotation (1 or 0), "
+               "inherit_scale (FULL, UNIFORM or NONE), local_location (1 or 0: its Transform reads along it as it rests, "
+               "or along its parent). keep_animation=1: every keyed frame of every action still shows the bone as it "
+               "did (its angle and scale keyed back) after an Inherit change",
+               bone_layer_active, [](Context &C) {
+                 Document &doc = *C.document;
+                 Layer &rig = *document_active_layer(doc);
+                 const std::string bone_name = op_arg(C, "bone");
+                 Bone *bone = bone_name.empty() ? bone_find(rig, rig.active_bone)
+                                                : const_cast<Bone *>(bone_find_by_name(rig, bone_name));
+                 if (!bone) {
+                   report(ReportType::Warning, "No such bone");
+                   return OpStatus::Cancelled;
+                 }
+                 if (op_has_arg(C, "connected")) {
+                   /* A rig change, as Blender's edit mode: on the setup frame. Its head goes onto the
+                    * parent's tail; its tail stays. */
+                   const bool connect = op_arg_bool(C, "connected");
+                   if (connect != bone->connected) {
+                     if (!on_setup_frame(C)) {
+                       return OpStatus::Cancelled;
+                     }
+                     if (connect && !bone_find(rig, bone->parent)) {
+                       report(ReportType::Warning, "A bone needs a parent to connect to");
+                       return OpStatus::Cancelled;
+                     }
+                     if (connect) {
+                       const std::vector<BonePose> poses = armature_pose(rig);
+                       const BonePose *self = bone_pose_find(poses, bone->id);
+                       const BonePose *up = bone_pose_find(poses, bone->parent);
+                       bone->connected = true;
+                       armature_set_joints(rig, {{bone->id, {up->tail, self->tail}}});
+                       bone = bone_find(rig, self->id);
+                     }
+                     else {
+                       bone->connected = false;
+                     }
+                     if (!op_has_arg(C, "inherit_rotation") && !op_has_arg(C, "inherit_scale") &&
+                         !op_has_arg(C, "local_location"))
+                     {
+                       return OpStatus::Finished;
+                     }
+                   }
+                 }
+                 bool inherit_rotation = bone->inherit_rotation, local_location = bone->local_location;
+                 InheritScale inherit_scale = bone->inherit_scale;
+                 if (op_has_arg(C, "inherit_rotation")) {
+                   inherit_rotation = op_arg_bool(C, "inherit_rotation");
+                 }
+                 if (op_has_arg(C, "local_location")) {
+                   local_location = op_arg_bool(C, "local_location");
+                 }
+                 if (op_has_arg(C, "inherit_scale")) {
+                   const std::string s = op_arg(C, "inherit_scale");
+                   if (s != "FULL" && s != "UNIFORM" && s != "NONE") {
+                     report(ReportType::Warning, "inherit_scale is FULL, UNIFORM or NONE");
+                     return OpStatus::Cancelled;
+                   }
+                   inherit_scale = s == "UNIFORM" ? InheritScale::Uniform : s == "NONE" ? InheritScale::None : InheritScale::Full;
+                 }
+                 const bool inherits = inherit_rotation != bone->inherit_rotation || inherit_scale != bone->inherit_scale;
+                 if (!inherits && local_location == bone->local_location) {
+                   return OpStatus::Cancelled;
+                 }
+                 const uint64_t rig_id = rig.id, bone_id = bone->id;
+                 BonesShownAll kept;
+                 if (inherits && op_arg_bool(C, "keep_animation")) {
+                   kept = bones_shown_capture_all(doc, rig_id, {bone_id});
+                 }
+                 bone = bone_find(*layer_find(doc, rig_id), bone_id);
+                 bone->inherit_rotation = inherit_rotation;
+                 bone->inherit_scale = inherit_scale;
+                 bone->local_location = local_location;
+                 if (!kept.actions.empty()) {
+                   const int keys = bones_shown_keep_all(doc, kept);
+                   if (keys > 0) {
+                     report(ReportType::Info, "Kept the animation: " + std::to_string(keys) + (keys == 1 ? " key" : " keys"));
+                   }
+                 }
+                 animation_evaluate(doc, doc.frame_current);
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.limit_angle_set_current", "Set to Current Angle",
+               "Set the Min (end=MIN) or Max (end=MAX) of Limit Angle constraint `index` of the bone `bone` "
+               "(default: the active bone) to the bone's turn now, as posed (before its constraints): its Angle "
+               "in the Bone panel",
+               bone_layer_active, [constraint_bone](Context &C) {
+                 Bone *bone = constraint_bone(C);
+                 const int index = op_arg_int(C, "index", -1);
+                 if (!bone || index < 0 || index >= int(bone->constraints.size()) ||
+                     bone->constraints[index].type != BoneConstraintType::LimitAngle)
+                 {
+                   return OpStatus::Cancelled;
+                 }
+                 BoneConstraint &c = bone->constraints[index];
+                 (op_arg(C, "end", "MIN") == "MAX" ? c.max_angle : c.min_angle) = bone->angle - bone->setup_angle;
                  return OpStatus::Finished;
                });
   rig_operator("armature.constraint_move", "Move Bone Constraint",
@@ -1143,6 +1715,726 @@ void rig_operators_register()
     operators().add(std::move(ot));
   }
 
+  /* Blender's Apply Pose as Rest Pose and Apply Selected as Rest Pose (Ctrl A): the bones' pose on
+   * the frame shown, in the action shown, becomes the setup pose (frame 0). Their position and angle
+   * do (a scale stays a pose: the setup has none); what smart actions add stays out, as they still
+   * add it. Unlike Blender's, the drawings come along (the setup drawing is bent to the new rest),
+   * and every keyed pose, in the mainline and every action, shows as it did: the bones' keys are
+   * worked out again against the new rest (keep_poses), and with Keep Animation the points the new
+   * rest bends differently are keyed back where they showed. A smart bone keeps its rest, so its
+   * actions play from the same turns; other bones left out keep where they rest. */
+  const OpProperty keep_rest_property = op_bool_property(
+      "keep_animation", "Keep Animation",
+      "Every keyed frame of every action shows as it did: points the new rest bends differently are keyed back", "1");
+  for (const auto &[idname, name, selected_only] :
+       {std::tuple{"armature.apply_pose_as_rest", "Apply Pose as Rest Pose", false},
+        std::tuple{"armature.apply_selected_as_rest", "Apply Selected as Rest Pose", true}})
+  {
+    const bool only_selected = selected_only;
+    rig_operator(
+        idname, name,
+        only_selected ? "Make the selected bones' pose on this frame their setup pose (frame 0), keeping the drawings "
+                        "and every action's animation as they show"
+                      : "Make the bones' pose on this frame the setup pose (frame 0), keeping the drawings and every "
+                        "action's animation as they show",
+        bone_layer_active,
+        [only_selected](Context &C) {
+          Document &doc = *C.document;
+          Layer *armature = document_active_layer(doc);
+          if (doc.frame_current == 0 && doc.action.empty()) {
+            report(ReportType::Warning, "Frame 0 is the rest pose already: pose the bones on another frame");
+            return OpStatus::Cancelled;
+          }
+          animation_record(doc);
+          std::set<uint64_t> smart;
+          for (const std::string &action : armature->actions) {
+            if (const Bone *b = smart_action_bone(*armature, action)) {
+              smart.insert(b->id);
+            }
+          }
+          /* The new rest of the bones applied (in their parents' space): the pose shown, less what smart
+           * actions add. */
+          std::map<uint64_t, std::pair<float2, float>> rest;
+          int left_smart = 0;
+          for (const Bone &b : armature->bones) {
+            if (only_selected && !b.selected) {
+              continue;
+            }
+            if (smart.count(b.id)) {
+              left_smart++;
+              continue;
+            }
+            const float2 position = b.position - rotate(b.position_keys.smart, b.setup_angle);
+            const float angle = b.angle - b.angle_keys.smart;
+            if (length(position - b.setup_position) > 1e-7f || std::fabs(angle - b.setup_angle) > 1e-7f) {
+              rest[b.id] = {position, angle};
+            }
+          }
+          if (left_smart > 0) {
+            report(ReportType::Info, std::to_string(left_smart) + (left_smart == 1 ? " smart bone keeps" : " smart bones keep") +
+                                         " its rest, so its actions play from the same turns");
+          }
+          if (rest.empty()) {
+            report(ReportType::Warning, only_selected ? "The selected bones are at rest already" : "The bones are at rest already");
+            return OpStatus::Cancelled;
+          }
+          const uint64_t armature_id = armature->id;
+          std::vector<uint64_t> drawings;
+          for (const Layer *l : document_layers_flat(doc)) {
+            const Layer *above = layer_armature(doc, l->id);
+            if (above && above->id == armature_id && !l->is_bone_layer() && !l->is_reference()) {
+              drawings.push_back(l->id);
+            }
+          }
+          /* On unless turned off (the property's default). */
+          const std::string keep_arg = op_arg(C, "keep_animation", "1");
+          const bool keep = keep_arg == "1" || keep_arg == "True" || keep_arg == "true";
+          const DrawingsShownAll kept = keep ? drawings_shown_capture_all(doc, drawings) : DrawingsShownAll();
+          const SetupSnapshot before = setup_snapshot(doc, {armature_id});
+          /* Rig changes are made on the setup frame of the mainline. */
+          const std::string was_action = doc.action;
+          const uint64_t was_owner = was_action.empty() ? 0 : action_owner(doc, armature_id) ? action_owner(doc, armature_id)->id : 0;
+          const int was_frame = doc.frame_current;
+          if (!was_action.empty()) {
+            document_set_action(doc, 0, "");
+          }
+          doc.frame_current = 0;
+          animation_sync(doc);
+          armature = layer_find(doc, armature_id);
+          const std::vector<BonePose> old_poses = armature_pose(*armature, false);
+          std::map<uint64_t, std::pair<float2, float>> old_rest;
+          for (const Bone &b : armature->bones) {
+            old_rest[b.id] = {b.setup_position, b.setup_angle};
+          }
+          const auto depth_of = [&](const Bone &b) {
+            int depth = 0;
+            for (const Bone *p = bone_find(*armature, b.parent); p; p = bone_find(*armature, p->parent)) {
+              depth++;
+            }
+            return depth;
+          };
+          int deepest = 0;
+          for (const Bone &b : armature->bones) {
+            deepest = std::max(deepest, depth_of(b));
+          }
+          /* Parents first: an applied bone takes its new rest; a bone left out (not a smart one) whose
+           * parent's rest moved keeps where it rests, its rest worked out again in its parent's space. */
+          std::set<uint64_t> moved;
+          for (int depth = 0; depth <= deepest; depth++) {
+            const std::vector<BonePose> now = armature_pose(*armature, false);
+            for (Bone &b : armature->bones) {
+              if (depth_of(b) != depth) {
+                continue;
+              }
+              const auto it = rest.find(b.id);
+              if (it != rest.end()) {
+                b.setup_position = it->second.first;
+                b.setup_angle = it->second.second;
+              }
+              else if (moved.count(b.parent) && !smart.count(b.id)) {
+                const Transform2D local = bone_pose_find(now, b.parent)->setup.inverted() *
+                                          bone_pose_find(old_poses, b.id)->setup;
+                b.setup_position = {local.tx, local.ty};
+                b.setup_angle = std::atan2(local.b, local.a);
+              }
+              else if (!moved.count(b.parent)) {
+                continue;
+              }
+              moved.insert(b.id);
+              /* Limit Angle holds turns from the rest: they keep the same angles in the parent's space. */
+              for (BoneConstraint &c : b.constraints) {
+                if (c.type == BoneConstraintType::LimitAngle) {
+                  c.min_angle += old_rest[b.id].second - b.setup_angle;
+                  c.max_angle += old_rest[b.id].second - b.setup_angle;
+                }
+              }
+              b.position = b.setup_position;
+              b.angle = b.setup_angle;
+              bone_changes_from_values(b);
+            }
+          }
+          /* Each bone's move from its old rest to its new one, to bend the setup drawings with. */
+          std::vector<BonePose> change = armature_pose(*armature, false);
+          for (BonePose &p : change) {
+            p.pose = p.setup;
+            p.setup = bone_pose_find(old_poses, p.id)->setup;
+            p.skin = p.pose * p.setup.inverted();
+          }
+          const Transform2D armature_world = layer_world_transform(doc, armature_id);
+          for (const uint64_t id : drawings) {
+            Layer *layer = layer_find(doc, id);
+            if (const uint64_t bone = layer->followed_bone()) {
+              /* Moved by its bone as a whole: its transform takes the bone's move, on every key. */
+              const BonePose *p = bone_pose_find(change, bone);
+              if (!p) {
+                continue;
+              }
+              const Transform2D above = layer_world_transform(doc, id) * layer->local_transform().inverted();
+              const Transform2D m = above.inverted() * armature_world * p->skin * armature_world.inverted() * above;
+              const float turn = std::atan2(m.b, m.a) * 180.0f / PI;
+              layer->position = m.apply(layer->position);
+              layer->rotation += turn;
+              const auto each = [](auto &ch, auto &&f) {
+                for (auto &k : ch.keys) {
+                  f(k.value);
+                }
+                for (auto &[action, keys] : ch.actions) {
+                  for (auto &k : keys) {
+                    f(k.value);
+                  }
+                }
+              };
+              each(layer->position_keys, [&](float2 &v) { v = m.apply(v); });
+              each(layer->rotation_keys, [&](float &v) { v += turn; });
+              continue;
+            }
+            const std::vector<Transform2D> skins = layer_point_skins_posed(doc, *layer, change);
+            VectorDrawing &d = layer->drawing;
+            for (size_t i = 0; i < d.points.size() && i < skins.size(); i++) {
+              /* Detail points sit along the level below and follow it. */
+              if (d.points[i].detail.level == 0) {
+                d.points[i].pos = skins[i].apply(d.points[i].pos);
+              }
+            }
+            for (Curve &curve : d.curves) {
+              for (CurvePoint &cp : curve.points) {
+                if (cp.handles_set && size_t(cp.point) < skins.size()) {
+                  cp.handle_in = skins[size_t(cp.point)].apply_vector(cp.handle_in);
+                  cp.handle_out = skins[size_t(cp.point)].apply_vector(cp.handle_out);
+                }
+              }
+            }
+          }
+          animation_record(doc);
+          keep_poses(doc, before);
+          /* A timeline without keys for a bone shows it at rest: where the rest moved, it gets one key
+           * (frame 1 on) holding the old rest, so it shows as it did. */
+          for (Bone &b : armature->bones) {
+            if (!moved.count(b.id)) {
+              continue;
+            }
+            const auto &[was_position, was_angle] = old_rest[b.id];
+            const float turn = was_angle - b.setup_angle;
+            const float2 transform = rotate(was_position - b.setup_position, -b.setup_angle);
+            const auto posed = [](const auto &keys) {
+              return std::any_of(keys.begin(), keys.end(), [](const auto &k) { return k.frame != 0; });
+            };
+            const auto hold = [&](auto &ch, auto value, bool needed) {
+              if (!needed) {
+                return;
+              }
+              if (!posed(ch.keys)) {
+                ch.set_key(0, decltype(value){});
+                ch.set_key(1, value);
+              }
+              for (const std::string &action : armature->actions) {
+                if (action_adds(*armature, action)) {
+                  continue;
+                }
+                auto &keys = ch.actions[action];
+                if (!posed(keys)) {
+                  keys.clear();
+                  keys.emplace_back();
+                  keys.back().frame = 1;
+                  keys.back().value = value;
+                }
+              }
+            };
+            hold(b.angle_keys, turn, std::fabs(turn) > 1e-7f);
+            hold(b.position_keys, transform, length(transform) > 1e-7f);
+          }
+          animation_sync(doc);
+          if (!was_action.empty() && was_owner) {
+            document_set_action(doc, was_owner, was_action);
+          }
+          doc.frame_current = was_frame;
+          animation_sync(doc);
+          if (keep) {
+            drawings_shown_keep_all(doc, kept);
+          }
+          return OpStatus::Finished;
+        },
+        {keep_rest_property});
+  }
+  /* Bone Follows Selection (the Layer tab's Bones panel): on every frame the selected points (all of
+   * the layer's when none are) are keyed in the timeline being edited, the layer's parent bone is
+   * keyed where the selection shows, with Move Only Bones (the drawings it bends are keyed back where
+   * they showed). For a bone that follows a feature through a smart action, as an eye through a head
+   * turn. Keep Offset moves it by the selection's move from frame 0 (off: its head onto the
+   * selection's middle); Fit also keys the selection's turn, or its turn and size (a best fit). */
+  const OpProperty follow_offset_property = op_bool_property(
+      "keep_offset", "Keep Offset", "Move the bone by the selection's move from frame 0 (off: its head onto the selection's middle)",
+      "1");
+  OpProperty follow_fit_property;
+  follow_fit_property.name = "fit";
+  follow_fit_property.label = "Fit";
+  follow_fit_property.description = "What of the selection's motion the bone takes: its move, its move and turn, or its move, "
+                                    "turn and size";
+  follow_fit_property.kind = OpProperty::Kind::Enum;
+  follow_fit_property.items = {{"MOVE", "Move"}, {"TURN", "Move & Turn"}, {"SCALE", "Move, Turn & Scale"}};
+  follow_fit_property.fallback = "MOVE";
+  const OpProperty follow_children_property = op_bool_property(
+      "move_children", "Move Children",
+      "The bone's children come along (their drawings kept where they showed); off, they are keyed to stay where they "
+      "were, so their keys hold their move from it",
+      "1");
+  rig_operator(
+      "layer.bone_follow_selection", "Bone Follows Selection",
+      "Key the active layer's parent bone (a group's: the bone it follows) where its selected points (a group's: "
+      "those of the layers inside it; all, when none are) show, on every frame they are keyed in this timeline, "
+      "keeping the drawings where they are (Move Only Bones)",
+      [](Context &C) {
+        const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+        return l && (l->has_drawing() || l->is_group()) && !l->is_bone_layer() && layer_armature(*C.document, l->id);
+      },
+      [](Context &C) {
+        Document &doc = *C.document;
+        Layer *layer = document_active_layer(doc);
+        const uint64_t layer_id = layer->id;
+        const Layer *binding = layer_binding_group(doc, layer_id);
+        const uint64_t bone_id = binding ? binding->parent_bone : layer->parent_bone;
+        Layer *armature = const_cast<Layer *>(layer_armature(doc, layer_id));
+        if (!bone_find(*armature, bone_id)) {
+          report(ReportType::Warning, std::string("Give the ") + (layer->is_group() ? "group" : "layer") +
+                                          " a Parent Bone first");
+          return OpStatus::Cancelled;
+        }
+        if (doc.frame_current == 0 && doc.action.empty()) {
+          report(ReportType::Warning, "Frame 0 is the setup pose: use it in an action or on a posed frame");
+          return OpStatus::Cancelled;
+        }
+        animation_record(doc);
+        /* The selection: the layer's selected points, or a group's, those of the drawings inside it; all of
+         * them when none are selected. */
+        std::vector<uint64_t> sources;
+        const auto inside = [&](uint64_t id) {
+          for (const Layer *up = layer_parent(doc, id); up; up = layer_parent(doc, up->id)) {
+            if (up->id == layer_id) {
+              return true;
+            }
+          }
+          return false;
+        };
+        if (layer->is_group()) {
+          for (const Layer *l : document_layers_flat(doc)) {
+            if (l->has_drawing() && !l->is_reference() && inside(l->id)) {
+              sources.push_back(l->id);
+            }
+          }
+        }
+        else {
+          sources.push_back(layer_id);
+        }
+        std::vector<std::pair<uint64_t, std::vector<size_t>>> picked;
+        bool any_selected = false;
+        for (const uint64_t id : sources) {
+          const VectorDrawing &d = layer_find(doc, id)->drawing;
+          for (const MeshPoint &p : d.points) {
+            any_selected = any_selected || p.selected;
+          }
+        }
+        size_t count = 0;
+        for (const uint64_t id : sources) {
+          const VectorDrawing &d = layer_find(doc, id)->drawing;
+          std::vector<size_t> points;
+          for (size_t i = 0; i < d.points.size(); i++) {
+            if (d.points[i].selected || !any_selected) {
+              points.push_back(i);
+            }
+          }
+          if (!points.empty()) {
+            count += points.size();
+            picked.push_back({id, std::move(points)});
+          }
+        }
+        /* The frames the selection is keyed on here, and how its keys move on from each. */
+        std::map<int, Interp> frames;
+        const auto add = [&](const auto &ch) {
+          for (const auto &k : ch.keys) {
+            if (k.frame != 0 && !frames.count(k.frame)) {
+              frames[k.frame] = k.interp;
+            }
+          }
+        };
+        for (const auto &[id, points] : picked) {
+          const VectorDrawing &d = layer_find(doc, id)->drawing;
+          std::set<int> picked_points;
+          for (const size_t i : points) {
+            add(d.points[i].pos_keys);
+            picked_points.insert(int(i));
+          }
+          for (const Curve &curve : d.curves) {
+            for (const CurvePoint &cp : curve.points) {
+              if (picked_points.count(cp.point)) {
+                add(cp.handle_in_keys);
+                add(cp.handle_out_keys);
+              }
+            }
+          }
+        }
+        if (frames.empty() || count == 0) {
+          report(ReportType::Warning, "The selection has no keys in this timeline");
+          return OpStatus::Cancelled;
+        }
+        /* The selection's own frames: a key added on another frame moves as the selection does there. */
+        const std::map<int, Interp> selection_frames = frames;
+        const std::string fit = op_arg(C, "fit", "MOVE");
+        const bool turn = fit == "TURN" || fit == "SCALE", grow = fit == "SCALE";
+        /* The bone's own keys here too: it follows the selection from now on, so a key it had on
+         * another frame (an Auto-Freeze key from before it moved, say) would pull it away there. */
+        {
+          const Bone &b = *bone_find(*armature, bone_id);
+          add(b.position_keys);
+          if (turn) {
+            add(b.angle_keys);
+          }
+          if (grow) {
+            add(b.scale_keys);
+          }
+        }
+        const std::string offset_arg = op_arg(C, "keep_offset", "1");
+        const bool keep_offset = offset_arg == "1" || offset_arg == "True" || offset_arg == "true";
+        const uint64_t armature_id = armature->id;
+        /* What the bone moves: drawings it bends point by point, and layers (groups) it moves as a whole. */
+        std::vector<uint64_t> drawings, wholes;
+        for (const Layer *l : document_layers_flat(doc)) {
+          const Layer *above = layer_armature(doc, l->id);
+          if (!above || above->id != armature_id || l->is_bone_layer() || l->is_reference()) {
+            continue;
+          }
+          drawings.push_back(l->id);
+          if (l->followed_bone() != 0 && !layer_binding_group(doc, l->id)) {
+            wholes.push_back(l->id);
+          }
+        }
+        const std::string children_arg = op_arg(C, "move_children", "1");
+        const bool move_children = children_arg == "1" || children_arg == "True" || children_arg == "true";
+        std::vector<uint64_t> children;
+        if (!move_children) {
+          for (const Bone &c : armature->bones) {
+            if (c.parent == bone_id) {
+              children.push_back(c.id);
+            }
+          }
+        }
+        /* A layer moved as a whole that holds the selection (a group the bone follows): the bone takes
+         * its motion, so its drawings' points are keyed back where they showed, their keys left with
+         * what the bone doesn't do; its own transform is left alone. */
+        const auto under = [&](uint64_t id, uint64_t ancestor) {
+          for (const Layer *up = layer_find(doc, id); up; up = layer_parent(doc, up->id)) {
+            if (up->id == ancestor) {
+              return true;
+            }
+          }
+          return false;
+        };
+        /* Only where the layers between turn and size the same on every frame: the points sit inside
+         * their transforms, so under a keyed turn or size the bone's straight move would bend there
+         * between keys. Otherwise the layer's transform is keyed back instead, which is exact. */
+        const auto steady = [](const auto &ch) {
+          return std::all_of(ch.keys.begin(), ch.keys.end(), [&](const auto &k) { return k.value == ch.keys.front().value; });
+        };
+        const auto rigid_inside = [&](uint64_t w) {
+          for (const Layer *l : document_layers_flat(doc)) {
+            if ((l->id == w || under(l->id, w)) && (!steady(l->rotation_keys) || !steady(l->scale_keys))) {
+              return false;
+            }
+          }
+          return true;
+        };
+        std::vector<uint64_t> repoint;
+        std::erase_if(wholes, [&](uint64_t w) {
+          const bool holds = std::any_of(sources.begin(), sources.end(), [&](uint64_t s) { return under(s, w); }) &&
+                             rigid_inside(w);
+          if (holds) {
+            for (const uint64_t id : drawings) {
+              if (under(id, w) && layer_find(doc, id)->has_drawing()) {
+                repoint.push_back(id);
+              }
+            }
+          }
+          return holds;
+        });
+        /* The frames what it moves is keyed on too: a key there left as it was would pull it away for a
+         * frame. */
+        std::set<uint64_t> moving{bone_id};
+        if (move_children) {
+          for (const Bone &c : armature->bones) {
+            if (bone_is_descendant(*armature, c.id, bone_id)) {
+              moving.insert(c.id);
+            }
+          }
+        }
+        const auto add_drawing = [&](const Layer &l) {
+          for (const MeshPoint &p : l.drawing.points) {
+            add(p.pos_keys);
+          }
+          for (const Curve &curve : l.drawing.curves) {
+            for (const CurvePoint &cp : curve.points) {
+              add(cp.handle_in_keys);
+              add(cp.handle_out_keys);
+            }
+          }
+        };
+        for (const uint64_t w : wholes) {
+          const Layer *l = layer_find(doc, w);
+          if (moving.count(l->followed_bone())) {
+            add(l->position_keys);
+            add(l->rotation_keys);
+            add(l->scale_keys);
+          }
+        }
+        for (const uint64_t id : repoint) {
+          add_drawing(*layer_find(doc, id));
+        }
+        for (const uint64_t id : drawings) {
+          const Layer *l = layer_find(doc, id);
+          if (l->followed_bone() != 0 || layer_binding_group(doc, id)) {
+            continue;
+          }
+          bool bent = l->points_follow_bone() && moving.count(l->parent_bone);
+          for (size_t i = 0; i < l->drawing.points.size() && !bent; i++) {
+            for (const BoneWeight &w : l->drawing.points[i].weights) {
+              bent = bent || (w.weight > 0.0f && moving.count(w.bone));
+            }
+          }
+          if (bent) {
+            add_drawing(*l);
+          }
+        }
+        std::vector<int> frame_list;
+        for (auto &[f, interp] : frames) {
+          frame_list.push_back(f);
+          if (!selection_frames.count(f)) {
+            auto at = selection_frames.upper_bound(f);
+            interp = at == selection_frames.begin() ? at->second : std::prev(at)->second;
+          }
+        }
+        const int was_frame = doc.frame_current;
+        /* Where the selection rests (frame 0) and shows on each frame, in the bone layer's space. */
+        std::vector<float2> rest;
+        for (const auto &[id, points] : picked) {
+          const Transform2D to_armature0 =
+              layer_setup_world_transform(doc, armature_id).inverted() * layer_setup_world_transform(doc, id);
+          for (const size_t i : points) {
+            rest.push_back(to_armature0.apply(point_setup_pos(layer_find(doc, id)->drawing.points[i])));
+          }
+        }
+        const DrawingsShown before = drawings_shown_capture_frames(doc, drawings, frame_list);
+        struct Target {
+          float2 head;
+          float angle = 0.0f, size = 1.0f;
+          /* The layers moved as a whole, where they show (document space). */
+          std::vector<Transform2D> wholes;
+          /* The children kept in place, where they are (bone layer space). */
+          std::vector<Transform2D> children;
+          /* The repointed drawings' points and handles as they show (document space). */
+          std::vector<std::vector<float2>> points;
+          std::vector<std::vector<std::pair<float2, float2>>> handles;
+        };
+        std::vector<Target> targets;
+        float2 rest_middle;
+        for (const float2 p : rest) {
+          rest_middle += p;
+        }
+        rest_middle = rest_middle / float(rest.size());
+        const BonePose setup = *bone_pose_find(armature_keyed_pose(*armature, false), bone_id);
+        for (const int f : frame_list) {
+          doc.frame_current = f;
+          animation_sync(doc);
+          std::vector<float2> now;
+          float2 middle;
+          for (const auto &[id, points] : picked) {
+            const Layer *l = layer_find(doc, id);
+            const std::vector<Transform2D> skins = layer_point_skins(doc, *l);
+            const Transform2D to_armature =
+                layer_world_transform(doc, armature_id).inverted() * layer_world_transform(doc, id);
+            for (const size_t i : points) {
+              now.push_back(to_armature.apply(skins[i].apply(l->drawing.points[i].pos)));
+              middle += now.back();
+            }
+          }
+          middle = middle / float(now.size());
+          /* The best turn and size taking the resting selection to this one, about their middles. */
+          float dots = 0.0f, crosses = 0.0f, was_spread = 0.0f, now_spread = 0.0f;
+          for (size_t k = 0; k < now.size(); k++) {
+            const float2 a = rest[k] - rest_middle, b = now[k] - middle;
+            dots += dot(a, b);
+            crosses += a.x * b.y - a.y * b.x;
+            was_spread += dot(a, a);
+            now_spread += dot(b, b);
+          }
+          Target t;
+          t.angle = turn && (dots != 0.0f || crosses != 0.0f) ? std::atan2(crosses, dots) : 0.0f;
+          t.size = grow && was_spread > 1e-12f ? std::sqrt(now_spread / was_spread) : 1.0f;
+          t.head = keep_offset ? middle + rotate(setup.setup_head - rest_middle, t.angle) * t.size : middle;
+          for (const uint64_t id : wholes) {
+            t.wholes.push_back(layer_world_transform(doc, id));
+          }
+          const std::vector<BonePose> posed = armature_keyed_pose(*layer_find(doc, armature_id), false);
+          for (const uint64_t id : children) {
+            t.children.push_back(bone_pose_find(posed, id)->pose);
+          }
+          for (const uint64_t id : repoint) {
+            const Layer *l = layer_find(doc, id);
+            const std::vector<Transform2D> skins = layer_point_skins(doc, *l);
+            const Transform2D world = layer_world_transform(doc, id);
+            std::vector<float2> pts;
+            for (size_t i = 0; i < l->drawing.points.size() && i < skins.size(); i++) {
+              pts.push_back((world * skins[i]).apply(l->drawing.points[i].pos));
+            }
+            std::vector<std::pair<float2, float2>> hs;
+            for (const Curve &curve : l->drawing.curves) {
+              for (const CurvePoint &cp : curve.points) {
+                const Transform2D m = world * (size_t(cp.point) < skins.size() ? skins[size_t(cp.point)] : Transform2D());
+                hs.push_back({m.apply_vector(cp.handle_in), m.apply_vector(cp.handle_out)});
+              }
+            }
+            t.points.push_back(std::move(pts));
+            t.handles.push_back(std::move(hs));
+          }
+          targets.push_back(std::move(t));
+        }
+        /* The bone keyed there (its parent as posed on that frame), every key moving on as the
+         * selection's do; a layer it moves as a whole keyed back where it showed. */
+        const bool auto_key = doc.auto_key, auto_freeze = doc.auto_freeze_keys;
+        doc.auto_key = true;
+        /* Only this bone is keyed: Auto-Freeze would key every other bone on these frames too. */
+        doc.auto_freeze_keys = false;
+        const float setup_angle = std::atan2(setup.setup.b, setup.setup.a);
+        for (size_t fi = 0; fi < frame_list.size(); fi++) {
+          const int f = frame_list[fi];
+          const Interp interp = frames[f];
+          doc.frame_current = f;
+          animation_sync(doc);
+          armature = layer_find(doc, armature_id);
+          Bone &b = *bone_find(*armature, bone_id);
+          const BonePose *parent = bone_pose_find(armature_keyed_pose(*armature, false), b.parent);
+          const Transform2D up = parent ? parent->pose : Transform2D();
+          b.position = up.inverted().apply(targets[fi].head);
+          if (turn) {
+            b.angle = setup_angle + targets[fi].angle - std::atan2(up.b, up.a);
+          }
+          if (grow) {
+            b.scale = float2{targets[fi].size, targets[fi].size};
+          }
+          /* Children kept in place: worked out again in the bone's new pose. */
+          if (!children.empty()) {
+            const Transform2D moved = bone_pose_find(armature_keyed_pose(*armature, false), bone_id)->pose;
+            for (size_t ci = 0; ci < children.size(); ci++) {
+              Bone &c = *bone_find(*armature, children[ci]);
+              const Transform2D local = moved.inverted() * targets[fi].children[ci];
+              c.position = {local.tx, local.ty};
+              c.angle = std::atan2(local.b, local.a);
+              if (grow && targets[fi].size > 1e-6f) {
+                c.scale = c.scale * (1.0f / targets[fi].size);
+              }
+            }
+          }
+          animation_record(doc);
+          for (const uint64_t id : children) {
+            Bone &c = *bone_find(*armature, id);
+            for (auto *k : {c.position_keys.key_at(f), c.scale_keys.key_at(f)}) {
+              if (k) {
+                k->interp = interp;
+              }
+            }
+            if (auto *k = c.angle_keys.key_at(f)) {
+              k->interp = interp;
+            }
+          }
+          if (auto *k = b.position_keys.key_at(f)) {
+            k->interp = interp;
+          }
+          if (auto *k = b.angle_keys.key_at(f); k && turn) {
+            k->interp = interp;
+          }
+          if (auto *k = b.scale_keys.key_at(f); k && grow) {
+            k->interp = interp;
+          }
+          for (size_t wi = 0; wi < wholes.size(); wi++) {
+            Layer *l = layer_find(doc, wholes[wi]);
+            const Transform2D above = layer_world_transform(doc, l->id) * l->local_transform().inverted();
+            float2 position, scale;
+            float rotation = 0.0f;
+            local_from_transform(above.inverted() * targets[fi].wholes[wi], l->scale, l->rotation, &position,
+                                 &rotation, &scale);
+            if (length(position - l->position) < 1e-7f && std::fabs(rotation - l->rotation) < 1e-5f &&
+                length(scale - l->scale) < 1e-7f)
+            {
+              continue;
+            }
+            /* Unkeyed channels get their setup key too, so the other frames stay as they were. */
+            if (!l->position_keys.animated()) {
+              l->position_keys.set_key(0, l->position);
+            }
+            if (!l->rotation_keys.animated()) {
+              l->rotation_keys.set_key(0, l->rotation);
+            }
+            if (!l->scale_keys.animated()) {
+              l->scale_keys.set_key(0, l->scale);
+            }
+            l->position_keys.set_key(f, position);
+            l->rotation_keys.set_key(f, rotation);
+            l->scale_keys.set_key(f, scale);
+            l->position_keys.key_at(f)->interp = interp;
+            l->rotation_keys.key_at(f)->interp = interp;
+            l->scale_keys.key_at(f)->interp = interp;
+            l->position = position;
+            l->rotation = rotation;
+            l->scale = scale;
+          }
+          /* The drawings of a group the bone follows, keyed back where they showed. */
+          for (size_t ri = 0; ri < repoint.size(); ri++) {
+            Layer *l = layer_find(doc, repoint[ri]);
+            const std::vector<Transform2D> skins = layer_point_skins(doc, *l);
+            const Transform2D world = layer_world_transform(doc, l->id);
+            VectorDrawing &d = l->drawing;
+            const std::vector<float2> &pts = targets[fi].points[ri];
+            for (size_t i = 0; i < d.points.size() && i < skins.size() && i < pts.size(); i++) {
+              const float2 at = (world * skins[i]).inverted().apply(pts[i]);
+              if (length(at - d.points[i].pos) > 1e-7f) {
+                d.points[i].pos = at;
+              }
+            }
+            size_t h = 0;
+            for (Curve &curve : d.curves) {
+              for (CurvePoint &cp : curve.points) {
+                if (cp.handles_set && h < targets[fi].handles[ri].size() && size_t(cp.point) < skins.size()) {
+                  const Transform2D undo = (world * skins[size_t(cp.point)]).inverted();
+                  cp.handle_in = undo.apply_vector(targets[fi].handles[ri][h].first);
+                  cp.handle_out = undo.apply_vector(targets[fi].handles[ri][h].second);
+                }
+                h++;
+              }
+            }
+          }
+          animation_record(doc);
+        }
+        doc.auto_key = auto_key;
+        doc.auto_freeze_keys = auto_freeze;
+        doc.frame_current = was_frame;
+        animation_sync(doc);
+        /* Move Only Bones: what the bone bends goes back where it showed. */
+        drawings_shown_keep(doc, before);
+        return OpStatus::Finished;
+      },
+      {follow_offset_property, follow_fit_property, follow_children_property});
+  /* Ctrl A: the Apply menu, as Blender's in pose mode. */
+  {
+    OperatorType ot;
+    ot.idname = "armature.apply_menu";
+    ot.name = "Apply";
+    ot.description = "Choose what to apply to the bones' rest pose";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = bone_layer_active;
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "bone_apply";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
   /* --- Bone collections, as Blender's ------------------------------------------------------- */
   rig_operator("armature.collection_add", "Add Bone Collection",
                "Add a bone collection after the active one (`name`, default \"Collection\") and make it active",
@@ -1407,7 +2699,12 @@ void rig_operators_register()
     ot.description = "Choose a bone collection for the selected bones, or for the active and picked drawings inside a "
                      "bone layer, as Blender's M and Shift M";
     ot.flag = OPTYPE_REGISTER;
-    ot.poll = [](Context &C) { return C.document && collection_armature(*C.document); };
+    ot.poll = [](Context &C) {
+      /* In the viewport only for bones: M there on a drawing is left to the drawing's own tools (its
+       * bone collections stay in the Layers editor and its Layer tab). */
+      const Layer *armature = C.document ? collection_armature(*C.document) : nullptr;
+      return armature && (C.area_type != "Viewport" || document_active_layer(*C.document) == armature);
+    };
     const std::string menu_name = menu;
     ot.exec = [menu_name](Context &C) {
       C.wm->menu_request = menu_name;
@@ -1451,27 +2748,8 @@ void rig_operators_register()
     operators().add(std::move(ot));
   }
 
-  /* Alt G / Alt R / Alt S: clear the pose of the selected bones (any frame but the setup one). */
-  for (const auto &[idname, name, what] :
-       {std::tuple{"armature.clear_location", "Clear Location", 0}, std::tuple{"armature.clear_rotation", "Clear Rotation", 1},
-        std::tuple{"armature.clear_scale", "Clear Scale", 2}})
-  {
-    const int kind = what;
-    rig_operator(
-        idname, name,
-        kind == 0   ? "Put the selected bones back where they are in the setup pose (Alt G, away from frame 0)"
-        : kind == 1 ? "Turn the selected bones back to their setup angle (Alt R, away from frame 0)"
-                    : "Give the selected bones back their setup scale (Alt S, away from frame 0)",
-        [](Context &C) {
-          const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
-          return l && l->is_bone_layer() && C.document->frame_current != 0 && armature_any_picked(*l);
-        },
-        [kind](Context &C) {
-          Layer &armature = *document_active_layer(*C.document);
-          return armature_clear_pose(armature, kind == 0, kind == 1, kind == 2) ? OpStatus::Finished
-                                                                                : OpStatus::Cancelled;
-        });
-  }
+  /* Alt G / Alt R / Alt S on bones (armature.clear_location, ...) are with the bone moves in the
+   * viewport, sharing their options. */
 
   rig_operator("armature.symmetrize", "Symmetrize",
                "Make the other side of the selected bones (all bones when none are selected) by their _L and _R "
@@ -1563,12 +2841,28 @@ void rig_operators_register()
                    Modifier m;
                    m.type = ModifierType::Boolean;
                    m.name = "Boolean";
-                   /* It works on the drawing as posed, so it goes last (it runs last wherever it is). */
+                   /* At the bottom, as every new modifier: the stack runs top to bottom. */
                    layer.modifiers.push_back(m);
                    if (!merge_settings(C, layer, layer.modifiers.back())) {
                      layer.modifiers.pop_back();
                      return OpStatus::Cancelled;
                    }
+                   return OpStatus::Finished;
+                 }
+                 if (type == "SUBDIVIDE") {
+                   Layer &layer = *modifier_layer(C);
+                   if (layer.type != LayerType::Vector) {
+                     report(ReportType::Warning, "Subdivide splits a drawing's segments: pick a drawing layer");
+                     return OpStatus::Cancelled;
+                   }
+                   Modifier m;
+                   m.type = ModifierType::Subdivide;
+                   m.name = "Subdivide";
+                   /* Above the Armature modifier: the bones then bend the split curve (below it, it would
+                    * only split the bent one). */
+                   auto at = std::find_if(layer.modifiers.begin(), layer.modifiers.end(),
+                                          [](const Modifier &x) { return x.type == ModifierType::Armature; });
+                   layer.modifiers.insert(at, m);
                    return OpStatus::Finished;
                  }
                  if (type == "BEVEL") {
@@ -1580,10 +2874,9 @@ void rig_operators_register()
                    Modifier m;
                    m.type = ModifierType::Bevel;
                    m.name = "Bevel";
-                   /* As Mirror: above the Armature modifier, so the bones bend the bevelled drawing. */
-                   const auto armature = std::find_if(layer.modifiers.begin(), layer.modifiers.end(),
-                                                      [](const Modifier &x) { return x.type == ModifierType::Armature; });
-                   layer.modifiers.insert(armature, m);
+                   /* At the bottom, as in Blender: drag it above the Armature modifier to bevel the
+                    * drawing before the bones bend it. */
+                   layer.modifiers.push_back(m);
                    return OpStatus::Finished;
                  }
                  if (type != "MIRROR") {
@@ -1593,11 +2886,8 @@ void rig_operators_register()
                  }
                  Layer &layer = *modifier_layer(C);
                  Modifier m;
-                 /* Like Blender: a new modifier goes above the Armature one, so it works on the setup
-                  * drawing and the bones move the result. */
-                 const auto armature = std::find_if(layer.modifiers.begin(), layer.modifiers.end(),
-                                                    [](const Modifier &x) { return x.type == ModifierType::Armature; });
-                 layer.modifiers.insert(armature, m);
+                 /* At the bottom, as in Blender: the stack runs top to bottom. */
+                 layer.modifiers.push_back(m);
                  return OpStatus::Finished;
                });
   rig_operator("object.modifier_remove", "Remove Modifier", "Remove modifier `index` from the active layer",
@@ -1677,6 +2967,41 @@ void rig_operators_register()
                  }
                  Document &doc = *C.document;
                  const Modifier m = layer.modifiers[index];
+                 if (m.type == ModifierType::Subdivide) {
+                   /* The new points would have no keys: on an animated drawing they'd stay put while
+                    * their neighbours move. */
+                   bool animated = false;
+                   for (const MeshPoint &p : layer.drawing.points) {
+                     animated = animated || p.pos_keys.animated();
+                   }
+                   for (const Curve &curve : layer.drawing.curves) {
+                     for (const CurvePoint &cp : curve.points) {
+                       animated = animated || cp.handle_in_keys.animated() || cp.handle_out_keys.animated();
+                     }
+                   }
+                   if (animated) {
+                     report(ReportType::Warning, "Subdivide can't be applied to a drawing whose points are animated");
+                     return OpStatus::Cancelled;
+                   }
+                   std::vector<int> fresh;
+                   layer.drawing = drawing_subdivide(layer.drawing, m, false, &fresh);
+                   drawing_ensure_ids(layer.drawing);
+                   if (m.subdiv_from_bones && !fresh.empty()) {
+                     for (MeshPoint &p : layer.drawing.points) {
+                       p.selected = false;
+                     }
+                     for (const int i : fresh) {
+                       layer.drawing.points[size_t(i)].selected = true;
+                     }
+                     layer_automatic_weights(doc, layer, {}, true);
+                     for (const int i : fresh) {
+                       layer.drawing.points[size_t(i)].selected = false;
+                     }
+                   }
+                   layer.modifiers.erase(layer.modifiers.begin() + index);
+                   C.undo_name = "Apply Subdivide";
+                   return OpStatus::Finished;
+                 }
                  if (m.type == ModifierType::Bevel) {
                    layer.drawing = drawing_bevel(layer.drawing, m);
                    drawing_ensure_ids(layer.drawing);

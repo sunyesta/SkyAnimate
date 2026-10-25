@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/math.hh"
+#include "data/layer.hh"
 
 namespace oanim {
 
@@ -44,6 +45,12 @@ struct LineCutter {
     bool area = false;
     bool line = false;
     float half = 0.0f;
+    /* A shape whose loops fill together: all its closed loops (document space) and its fill rule, which
+     * then say what is inside rather than the outline alone. */
+    std::vector<std::vector<float2>> fill_loops;
+    FillRule fill_rule = FillRule::Loops;
+    /* Which of the row's layers it is of (their order in the step). */
+    int source = 0;
   };
   struct Row {
     int mode = 0;
@@ -51,6 +58,9 @@ struct LineCutter {
     bool fills_only = false;
     bool strokes_only = false;
     bool inside_stroke = false;
+    MaskCombine combine = MaskCombine::Union;
+    /* How many layers the pieces are of. */
+    int sources = 0;
     std::vector<Piece> pieces;
     /* On a level's first row: its card's Start With (the level starts with everything shown). */
     bool start_shown = false;

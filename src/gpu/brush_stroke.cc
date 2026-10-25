@@ -426,6 +426,12 @@ void brush_stroke(const BrushPath &shown, const BrushPath &rest_path, const Brus
   };
   const int count = int(marks.size());
   places = count;
+  /* Room for a dab at each place (more come only where segments stretch). */
+  r_dabs.centers.reserve(r_dabs.centers.size() + size_t(count));
+  r_dabs.alphas.reserve(r_dabs.alphas.size() + size_t(count));
+  for (std::vector<BrushVertex> &list : r_dabs.per_image) {
+    list.reserve(list.size() + size_t(count / images + 1) * 6);
+  }
   if (cut && cut->shows) {
     /* Which places the cut takes away, and from that how far each is from a cut on either side
      * (a closed line wraps round). */

@@ -177,7 +177,8 @@ layers.active = rig
 rig.select_bone("chin")  # a selected bone: left alone while a drawing is active
 layers.active = teeth
 lips.select = True  # picked as well
-assert oanim.wm.event_simulate("M", area="Viewport") and oanim.wm.event_simulate("M", area="Layers"), "the menus open"
+assert not oanim.wm.event_simulate("M", area="Viewport"), "M in the viewport is for bones, not the active drawing"
+assert oanim.wm.event_simulate("M", area="Layers"), "the Layers editor's menu opens"
 assert ops.move_to_collection(collection="Mouth") == {'FINISHED'}
 assert teeth.collections == ["Mouth"] and lips.collections == ["Mouth"], "M: only Mouth now"
 assert bone("chin")["collections"] == ["Main"], "the bones aren't touched"

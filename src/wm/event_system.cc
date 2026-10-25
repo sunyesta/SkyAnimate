@@ -45,6 +45,10 @@ bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only)
   if (area_only && !text_area && key_used_by_text_editing(event)) {
     return false;
   }
+  /* The Sculpt tool's keys (its brushes, F and Shift F) come before the viewport's own. */
+  if (C.area_type == "Viewport" && C.wm->tool_settings.tool == Tool::Sculpt && try_keymap(C, "Sculpt", event)) {
+    return true;
+  }
   if (C.area_type != "Window" && try_keymap(C, C.area_type, event)) {
     return true;
   }

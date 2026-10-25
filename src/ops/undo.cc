@@ -1,32 +1,146 @@
 #include "ops/undo.hh"
 
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
 #include "anim/animation.hh"
 #include "assets/brush_presets.hh"
+#include "text/text_layer.hh"
 
 namespace oanim {
 
+/* Freeing a big document takes as long as copying it: what is let go of is freed on another thread. */
+template<typename T> static void free_later(std::vector<T> &&gone)
+{
+  if (!gone.empty()) {
+    std::thread([gone = std::move(gone)]() {}).detach();
+  }
+}
+
+UndoStack::Step UndoStack::store(const std::string &name, Document &doc, const Step *previous)
+{
+  Step step;
+  step.name = name;
+  /* The previous step's layers by id, to share those that are the same. */
+  std::unordered_map<uint64_t, std::shared_ptr<const Layer>> before;
+  if (previous) {
+    const auto index = [&](auto &&self, const std::vector<Node> &nodes) -> void {
+      for (const Node &node : nodes) {
+        before.emplace(node.layer->id, node.layer);
+        self(self, node.children);
+      }
+    };
+    index(index, previous->layers);
+  }
+  /* Each layer compared and copied without its children (they are stored as nodes of their own): taken out
+   * for the while and put back. */
+  const auto take = [&](auto &&self, std::vector<Layer> &layers) -> std::vector<Node> {
+    std::vector<Node> nodes;
+    nodes.reserve(layers.size());
+    for (Layer &layer : layers) {
+      Node node;
+      std::vector<Layer> children;
+      std::swap(children, layer.children);
+      const auto it = before.find(layer.id);
+      if (it != before.end() && *it->second == layer) {
+        node.layer = it->second;
+      }
+      else {
+        /* Changed (or new): what was drawn of it is out of date. */
+        layer_touch(layer);
+        node.layer = std::make_shared<const Layer>(layer);
+      }
+      step.tree_shape = (step.tree_shape ^ layer.id) * 1099511628211ull;
+      std::swap(children, layer.children);
+      step.tree_shape = (step.tree_shape ^ 0x5bd1e995u) * 1099511628211ull;
+      node.children = self(self, layer.children);
+      step.tree_shape = (step.tree_shape ^ 0x27d4eb2fu) * 1099511628211ull;
+      nodes.push_back(std::move(node));
+    }
+    return nodes;
+  };
+  step.layers = take(take, doc.layers);
+  if (!previous || previous->tree_shape != step.tree_shape) {
+    doc.tree_revision.value = revision_next();
+  }
+  /* The settings, without the layers; the previous step's when nothing in them changed. */
+  std::vector<Layer> layers;
+  std::swap(layers, doc.layers);
+  if (previous && *previous->settings == doc) {
+    step.settings = previous->settings;
+  }
+  else {
+    step.settings = std::make_shared<const Document>(doc);
+  }
+  std::swap(layers, doc.layers);
+  return step;
+}
+
+Document UndoStack::rebuild(const Step &step)
+{
+  Document doc = *step.settings;
+  const auto put = [&](auto &&self, const std::vector<Node> &nodes) -> std::vector<Layer> {
+    std::vector<Layer> layers;
+    layers.reserve(nodes.size());
+    for (const Node &node : nodes) {
+      layers.push_back(*node.layer);
+      layers.back().children = self(self, node.children);
+    }
+    return layers;
+  };
+  doc.layers = put(put, step.layers);
+  return doc;
+}
+
 void UndoStack::reset(const Document &doc)
 {
+  std::vector<Step> gone(std::make_move_iterator(steps_.begin()), std::make_move_iterator(steps_.end()));
+  free_later(std::move(gone));
   steps_.clear();
-  steps_.push_back({"Original", doc});
+  unknown_changes_++;
+  Document copy = doc;
+  steps_.push_back(store("Original", copy, nullptr));
   active_ = 0;
   changes_++;
 }
 
 void UndoStack::push(const std::string &name, Document &doc)
 {
+  /* A text changed has its letters made again, before the step holds them. */
+  document_sync_text(doc);
   /* A linked shape's look changed changes its material, and the step holds every shape using it. */
   document_sync_materials(doc);
+  if (before_push && !steps_.empty()) {
+    std::unique_ptr<Document> previous;
+    const Step &step = steps_[active_];
+    before_push(
+        doc,
+        [&]() -> const Document & {
+          if (!previous) {
+            previous = std::make_unique<Document>(rebuild(step));
+          }
+          return *previous;
+        },
+        before_push_data);
+  }
   animation_record(doc);
+  fix_actions_tidy(doc);
   if (steps_.empty()) {
     reset(doc);
   }
   /* A new action discards everything that was undone. */
-  steps_.resize(active_ + 1);
-  steps_.push_back({name, doc});
-  if (steps_.size() > STEPS_MAX) {
-    steps_.erase(steps_.begin());
+  std::vector<Step> gone;
+  while (steps_.size() > active_ + 1) {
+    gone.push_back(std::move(steps_.back()));
+    steps_.pop_back();
   }
+  steps_.push_back(store(name, doc, &steps_.back()));
+  if (steps_.size() > STEPS_MAX) {
+    gone.push_back(std::move(steps_.front()));
+    steps_.pop_front();
+  }
+  free_later(std::move(gone));
   active_ = steps_.size() - 1;
   changes_++;
 }
@@ -37,7 +151,12 @@ bool UndoStack::undo(Document &doc)
     return false;
   }
   active_--;
-  doc = steps_[active_].state;
+  std::vector<Document> gone;
+  gone.push_back(std::move(doc));
+  free_later(std::move(gone));
+  doc = rebuild(steps_[active_]);
+  /* What it was drawn as may be from any time: everything is drawn anew. */
+  document_touch_all(doc);
   brush_presets_register_shapes(doc);
   changes_++;
   return true;
@@ -49,7 +168,12 @@ bool UndoStack::redo(Document &doc)
     return false;
   }
   active_++;
-  doc = steps_[active_].state;
+  std::vector<Document> gone;
+  gone.push_back(std::move(doc));
+  free_later(std::move(gone));
+  doc = rebuild(steps_[active_]);
+  /* What it was drawn as may be from any time: everything is drawn anew. */
+  document_touch_all(doc);
   brush_presets_register_shapes(doc);
   changes_++;
   return true;

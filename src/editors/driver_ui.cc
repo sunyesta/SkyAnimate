@@ -199,14 +199,29 @@ void ui_driver_field_end(Context &C, uint64_t layer, const std::string &path, in
     }
     const size_t copied = driver_clipboard().size();
     const size_t size = driver_field_refs(doc, layer, path, component).size();
-    ImGui::BeginDisabled(copied == 0 || (copied != 1 && copied != size));
-    if (ui_menu_item("Paste Driver")) {
-      operator_call(C, "anim.driver_paste", args[0]);
+    if (copied > 1 && copied != size) {
+      /* Several numbers copied (a Scale's X and Y) onto a field with another count (one number): one of
+       * them, picked by what it reads. */
+      for (size_t k = 0; k < copied; k++) {
+        const Driver &d = driver_clipboard()[k];
+        const std::string what = d.vars.empty() ? "Part " + std::to_string(k + 1) : driver_ref_label(doc, d.vars.front().source);
+        if (ui_menu_item(("Paste Driver: " + what + "##paste" + std::to_string(k)).c_str())) {
+          OpArgs paste = args[0];
+          paste["part"] = std::to_string(k);
+          operator_call(C, "anim.driver_paste", paste);
+        }
+      }
     }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip(copied == 0 ? "Nothing copied yet: right-click a field > Copy As New Driver"
-                                    : "Drive this with the copied driver");
+    else {
+      ImGui::BeginDisabled(copied == 0);
+      if (ui_menu_item("Paste Driver")) {
+        operator_call(C, "anim.driver_paste", args[0]);
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(copied == 0 ? "Nothing copied yet: right-click a field > Copy As New Driver"
+                                      : "Drive this with the copied driver");
+      }
     }
     if (driven) {
       ImGui::Separator();

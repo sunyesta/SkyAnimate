@@ -174,6 +174,7 @@ template<typename F> static void for_each_layer_channel(Layer &ref, const Layer 
   f("position", ref.position_keys, ref.position, source.position, rs.built_position);
   f("rotation", ref.rotation_keys, ref.rotation, source.rotation, rs.built_rotation);
   f("scale", ref.scale_keys, ref.scale, source.scale, rs.built_scale);
+  f("shear", ref.shear_keys, ref.shear, source.shear, rs.built_shear);
   f("opacity", ref.opacity_keys, ref.opacity, source.opacity, rs.built_opacity);
 }
 
@@ -855,6 +856,11 @@ int reference_apply(Document &doc, Layer &ref, ReferenceKind kind, uint64_t whic
         source->rotation_keys.keys = ref.rotation_keys.keys;
         source->rotation_keys.last = source->rotation;
       }
+      else if (n == "shear") {
+        source->shear = ref.shear;
+        source->shear_keys.keys = ref.shear_keys.keys;
+        source->shear_keys.last = source->shear;
+      }
       else if (n == "scale") {
         source->scale = ref.scale;
         source->scale_keys.keys = ref.scale_keys.keys;
@@ -985,6 +991,9 @@ void reference_sync_channel(Layer &ref, const std::string &name)
   }
   else if (name == "scale") {
     ref.scale_keys.keys.clear();
+  }
+  else if (name == "shear") {
+    ref.shear_keys.keys.clear();
   }
   else if (name == "opacity") {
     ref.opacity_keys.keys.clear();

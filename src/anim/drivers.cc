@@ -259,6 +259,10 @@ Setting constraint_setting(BoneConstraint &c, const std::string &rest)
   if (rest == "delay") return int_setting(named("Delay"), &c.delay, 0, 1000);
   if (rest == "chain") return int_setting(named("Chain"), &c.chain, 0, 64);
   if (rest == "max_stretch") return float_setting(named("Max Stretch"), &c.max_stretch, 1.0f, 10.0f);
+  if (rest == "overlap") return float_setting(named("Overlap"), &c.overlap, 0.0f, 1.0f);
+  if (rest == "squash") return float_setting(named("Squash"), &c.squash, 0.0f, 1.0f);
+  if (rest == "divergence") return float_setting(named("Divergence"), &c.divergence, -1.0f, 1.0f);
+  if (rest == "softness") return float_setting(named("Softness"), &c.softness, 0.0f, 1000.0f);
   if (rest == "own_gravity") return bool_setting(named("Own Gravity"), &c.own_gravity);
   if (rest == "own_wind") return bool_setting(named("Own Wind"), &c.own_wind);
   for (const auto &[prefix, label, s] : {std::tuple<const char *, const char *, BoneSpring *>{"angle_spring.", "Angle", &c.angle_spring},
@@ -267,6 +271,9 @@ Setting constraint_setting(BoneConstraint &c, const std::string &rest)
   {
     if (rest == std::string(prefix) + "enabled") return bool_setting(named(label), &s->enabled);
     if (rest == std::string(prefix) + "use_limit") return bool_setting(named(label) + " Limit", &s->use_limit);
+    if (s == &c.scale_spring && rest == std::string(prefix) + "use_squash_limit") {
+      return bool_setting(named("Max Squash"), &s->use_squash_limit);
+    }
   }
   return {};
 }
@@ -345,6 +352,7 @@ Setting setting_find(Document &doc, uint64_t layer_id, const std::string &path)
     const std::string step = row + "Step " + std::to_string(k + 1) + " ";
     if (rest == "invert") return bool_setting(step + "Invert", &m.invert);
     if (rest == "mode") return enum_setting(step + "Mode", &m.mode, 2);
+    if (rest == "combine") return enum_setting(step + "Combine", &m.combine, 3);
     if (rest == "grow") return float_setting(step + "Grow", &m.grow, -64.0f, 64.0f);
     if (rest == "extend") return enum_setting(step + "Extend", &m.extend, 5);
     if (rest == "filled") return bool_setting(step + "Fill Every Shape", &m.filled);

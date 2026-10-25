@@ -217,7 +217,8 @@ class _Layer:
         NOTHING), "cuts" (Affects: ALL, FILLS, LINES), "end_lines" (End Lines at Edge), "ends"
         (BRUSH, FLAT), "reach", "enabled" (in the viewport), "render", "steps"}]. The steps paint on
         the start in order: [{"mode" (ADD paints white, shows; SUBTRACT black, hides), "invert" (the
-        outside), "layers" (names; together one shape), "grow" (pixels, negative shrinks), "shape"
+        outside), "layers" (names; together one shape), "combine" (how they make it: UNION, DIFFERENCE
+        the first minus the rest, INTERSECTION where all are), "grow" (pixels, negative shrinks), "shape"
         (AS_DRAWN, FILLS_ONLY, STROKES_ONLY; also as "fills_only" and "strokes_only"), "filled" (Fill
         Every Shape), "inside_stroke", "extend", and "outside" (mode is SUBTRACT) and "expand"
         (grow > 0) as before rows}]; the first step's keys are on its card too. Clip to Below is
@@ -266,6 +267,23 @@ class _Layer:
         _oanim.layer_set_selected_corner(self._id, corner)
 
     @property
+    def text_runs(self):
+        """A text layer's runs, in order: dicts with text, font (family), weight (100-900: 400 regular, 700 bold),
+        italic, size (document units: the frame is 2 tall), has_fill, has_outline, fill and line (r, g, b, a),
+        line_width, brush and material (a shared material's name, "" for its own look). Set it to a list of
+        such dicts (keys left out keep their defaults) to restyle the text; layer.text_body is the whole text."""
+        return [dict(r) for r in _oanim.layer_text_runs(self._id)]
+
+    @text_runs.setter
+    def text_runs(self, runs):
+        _oanim.layer_set_text_runs(self._id, [dict(r) for r in runs])
+
+    @property
+    def text_bounds(self):
+        """A text layer's lines' bounds, layer space: ((min x, min y), (max x, max y))."""
+        return _oanim.layer_text_bounds(self._id)
+
+    @property
     def media_clips(self):
         """A Media layer's clips, in time order: dicts with id, filepath, sequence (a numbered image
         sequence), packed (kept inside the .oanim), start (its first frame), length (frames), in_point
@@ -273,6 +291,33 @@ class _Layer:
         timing ("REAL_TIME" or "FRAME_BY_FRAME"), missing and selected. Change them with
         oanim.ops.media.clip_set(clip=..., start=..., length=..., in_point=...)."""
         return [dict(c) for c in _oanim.layer_media_clips(self._id)]
+
+    @property
+    def actions(self):
+        """A bone layer's actions: [{"name", "kind": "ACTION", "SMART" or "FIX"}]. Make them with
+        oanim.ops.anim.action_new / fix_action_new, edit one with action_set, rename with action_rename."""
+        return [dict(a) for a in _oanim.layer_actions(self._id)]
+
+    @property
+    def smart_actions_playing(self):
+        """The smart actions playing now, their bones turned: [(name, frame, share of its length 0-1)]."""
+        return [tuple(p) for p in _oanim.layer_smart_actions_playing(self._id)]
+
+    @property
+    def fix_actions(self):
+        """A bone layer's fix actions (correctives): [{"name", "drivers" (smart action names), "poses" (the
+        poses it fixes: [{"frame" (its frame in the fix, keyed with the correction), "at" (each driver's frame
+        in its smart action), "shares" (the same as shares of their lengths, 0-1), "label"}]), "strength" (how
+        much of it plays now, 0-1), "nearest_pose" (index of the pose nearest now, -1), "broken" (why it can't
+        play, or "")}]. Fix a pose with oanim.ops.anim.fix_action_new (it adds a pose, or opens the one here),
+        fix_pose_add(name=, shares="0.5,0.3") and fix_pose_remove(name=, pose=N)."""
+        return [dict(f) for f in _oanim.layer_fix_actions(self._id)]
+
+    def field_state(self, path):
+        """How the field of channel `path` ("location", 'bones["arm"].angle') shows now: (key state:
+        "NONE", "ANIMATED" or "KEYED" on this frame, smart: True while a smart action plays into it,
+        drawn pink, its value shown with the action in)."""
+        return tuple(_oanim.layer_field_state(self._id, path))
 
     def media_shown(self, frame=None):
         """What a Media layer shows on `frame` (the current one by default): (clip id, seconds into
@@ -432,12 +477,13 @@ class _Layer:
     painted_weights = weights
 
     def weight_paint(self, center, radius, bone, weight=1.0, strength=1.0, mode="DRAW", normalize=True,
-                     selected_only=False):
+                     selected_only=False, keep_animation=False):
         """One dab of the Weight Paint brush at `center` (layer space): mode "DRAW", "ADD" or
-        "SUBTRACT"; selected_only paints only selected points (Selection Mask). Returns how many
-        points changed."""
+        "SUBTRACT"; selected_only paints only selected points (Selection Mask); keep_animation keeps
+        the drawing where it shows on every keyed frame of every action. Returns how many points
+        changed."""
         return _oanim.layer_weight_paint(self._id, tuple(center), radius, bone, weight, strength, mode, normalize,
-                                       selected_only)
+                                       selected_only, keep_animation)
 
     @property
     def modifiers(self):
@@ -449,8 +495,9 @@ class _Layer:
 
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
-        shapes [(name, closed, connected, merged, area)]): merged, what another layer's Boolean
-        modifier draws of it instead ("ALL", "FILL", "LINE" or ""); area, what a closed one fills."""
+        shapes [(name, closed, connected, merged, area, fill)]): merged, what another layer's Boolean
+        modifier draws of it instead ("ALL", "FILL", "LINE" or ""); area, what a closed one fills;
+        fill, its fill colour (r, g, b, a)."""
         points, curves, shapes = _oanim.layer_evaluated(self._id, render)
         return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
 
@@ -508,16 +555,22 @@ class _Layer:
         for a plain line."""
         return _oanim.layer_shape_brush(self._id, index)
 
+    def set_active_shape(self, index):
+        """Make shape `index` the active shape, as clicking it does (the one Link Materials passes on)."""
+        _oanim.layer_set_active_shape(self._id, int(index))
+
     def shape_material(self, index):
         """The name of the material shape `index` is linked to, or "" when its look is its own."""
         return self.shape_style(index)["material"]
 
     def shape_style(self, index):
-        """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden}."""
+        """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden,
+        fill_rule ("LOOPS": each loop filled on its own; "EVEN_ODD": a loop inside another a hole; "NONZERO":
+        a loop drawn the other way round a hole), brush, material}."""
         return dict(_oanim.layer_shape_style(self._id, index))
 
     def set_shape_style(self, index, **values):
-        """Change shape `index`'s look (fill, line, line_width, has_fill, has_outline), as the Shape
+        """Change shape `index`'s look (fill, line, line_width, has_fill, has_outline, fill_rule), as the Shape
         panel does. On a reference this becomes its own look for that setting."""
         _oanim.layer_set_shape_style(self._id, index, values)
 
@@ -545,6 +598,37 @@ class _Layer:
         return {"points": dict(d["points"]), "looks": {k: dict(v) for k, v in d["looks"].items()},
                 "swaps": list(d["swaps"]), "weights": list(d["weights"]), "handles": dict(d["handles"]),
                 "channels": list(d["channels"])}
+
+    def shown(self, level=None):
+        """Where the points and handles show, bones and parents included, in document space (where a
+        guide or reference over the drawing is): (points [(x, y)], curves [([(point, (in_x, in_y),
+        (out_x, out_y), aligned, hidden, detail_level, index), ...], closed)]). Handles are where their
+        ends show. As drawn (level None), or the curves as they are at detail `level`: only the points up
+        to it, with that level's handles. `index` is the point's place in the whole curve, what
+        place_handle takes."""
+        points, curves = _oanim.layer_shown(self._id, -1 if level is None else int(level))
+        return [tuple(p) for p in points], [([(c[0], tuple(c[1]), tuple(c[2]), c[3], c[4], c[5], c[6]) for c in cps], closed)
+                                            for cps, closed in curves]
+
+    def set_detail_level(self, level, shapes=None):
+        """Set shapes' detail edit level (all, or those indices), as Detail Level does for the selected
+        ones: edits then move that level's points, and finer detail rides along."""
+        _oanim.layer_detail_level_set(self._id, int(level), list(shapes or []))
+
+    def detail_sync(self):
+        """Place the detail points now, as the viewport does each frame: an edited one keeps where it is,
+        the rest ride their coarser curve (by each shape's edit level)."""
+        _oanim.layer_detail_sync(self._id)
+
+    def place_point(self, index, pos):
+        """Move point `index` so it shows at `pos` (document space), the bones' bend undone, as a G drag
+        places it; its handles come along. Keyed (with auto-key) when the next undo step records it."""
+        _oanim.layer_place_point(self._id, index, (float(pos[0]), float(pos[1])))
+
+    def place_handle(self, curve, index, side, pos, keep_other=False):
+        """Move one handle ("IN" or "OUT") of point `index` of curve `curve` so its end shows at `pos`
+        (document space). An aligned point's other handle turns to stay in line unless `keep_other`."""
+        _oanim.layer_place_handle(self._id, curve, index, side, (float(pos[0]), float(pos[1])), bool(keep_other))
 
     def set_point(self, index, pos):
         """Move point `index` to `pos` (layer space), as dragging it in the viewport does."""
@@ -720,6 +804,34 @@ class _Data:
         return [dict(d) for d in _oanim.drivers()]
 
     @property
+    def annotations(self):
+        """Notes over the drawing (Blender's annotation layers; never rendered, on every frame):
+        [{"name", "color" (r, g, b, a), "thickness" (screen pixels), "hidden", "locked", "strokes":
+        [{"points": [(x, y)] in document space, "start", "end" (NONE, ARROW, ARROW_OPEN, SEGMENT,
+        DOT)}]}]. Change them with oanim.ops.annotation.draw / erase / layer_add / layer_remove /
+        layer_set."""
+        return [dict(a) for a in _oanim.annotations()[0]]
+
+    @property
+    def active_annotation(self):
+        """The index of the annotation layer new strokes go on (-1 with none)."""
+        return _oanim.annotations()[1]
+
+    @property
+    def guides(self):
+        """Drawing guides, visual aids over the drawing (never rendered; drawing ignores them):
+        [{"type" (LINE, PERSPECTIVE, GRID), "points" (its handles, document space: a line's two, a
+        perspective's vanishing points, a grid's origin and cell corner), "lines" (perspective: how
+        many round each point), "hidden", "locked"}]. Change them with oanim.ops.guide.add / set /
+        move_point / delete."""
+        return [dict(g) for g in _oanim.guides()[0]]
+
+    @property
+    def active_guide(self):
+        """The index of the picked guide (-1 with none)."""
+        return _oanim.guides()[1]
+
+    @property
     def filepath(self):
         """The .oanim file the document was opened from or saved to; "" for a new document."""
         return _oanim.file_state()[0]
@@ -767,6 +879,27 @@ class _Assets:
 
 
 assets = _Assets()
+
+
+def layers_at(point):
+    """The layers drawn at `point` (document space), top first, as Select Layer finds them (a fill's
+    hole shows what is under it)."""
+    return [_Layer(i) for i in _oanim.layers_at(float(point[0]), float(point[1]))]
+
+
+def text_fonts():
+    """The installed font families (what a text run's font can be), sorted."""
+    return list(_oanim.text_fonts())
+
+
+def text_font_installed(family):
+    return _oanim.text_font_installed(family)
+
+
+def text_font_from_postscript(name):
+    """A font by its PostScript name ("Arial-Black", as Flash files name them): (family, weight, italic),
+    or None when no installed font has it."""
+    return _oanim.text_font_from_postscript(name)
 
 
 def __getattr__(name):

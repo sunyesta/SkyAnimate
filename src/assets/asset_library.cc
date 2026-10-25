@@ -74,6 +74,14 @@ void preferences_load()
   if (auto it = j.find("remote_port"); it != j.end() && it->is_number_integer()) {
     preferences().remote_port = std::clamp(it->get<int>(), 1024, 65535);
   }
+  for (const auto &[key, flag] : {std::pair{"status_statistics", &Preferences::status_statistics},
+                                 std::pair{"status_frame", &Preferences::status_frame},
+                                 std::pair{"status_version", &Preferences::status_version}})
+  {
+    if (auto it = j.find(key); it != j.end() && it->is_boolean()) {
+      preferences().*flag = it->get<bool>();
+    }
+  }
   /* What new keys get (the timeline's Interpolation menu with no keys selected). */
   if (auto it = j.find("new_keys"); it != j.end() && it->is_object()) {
     NewKeySettings &keys = new_key_settings();
@@ -130,6 +138,9 @@ void preferences_save()
                   {"asset_library", preferences().asset_library},
                   {"remote_control", preferences().remote_control},
                   {"remote_port", preferences().remote_port},
+                  {"status_statistics", preferences().status_statistics},
+                  {"status_frame", preferences().status_frame},
+                  {"status_version", preferences().status_version},
                   {"new_keys", new_keys}};
   std::ofstream out(preferences_path(), std::ios::trunc);
   out << j.dump(2) << "\n";

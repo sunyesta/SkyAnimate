@@ -51,6 +51,8 @@ struct ViewportOverlays {
   /* Guides: layers with Show in Renders off (references, Media layers by default). With them and the
    * overlays off, the viewport shows what renders. */
   bool guides = true;
+  /* Notes drawn with the Annotate tool (data/annotations.hh); the drawing guides go with `guides`. */
+  bool annotations = true;
 
   bool operator==(const ViewportOverlays &) const = default;
 };
@@ -61,6 +63,7 @@ struct ViewportView {
   float center_x = 0.0f;
   float center_y = 0.0f;
   float zoom = 0.0f;
+  bool operator==(const ViewportView &) const = default;
 };
 
 }  // namespace oanim
