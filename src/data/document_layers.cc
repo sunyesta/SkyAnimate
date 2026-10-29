@@ -293,6 +293,82 @@ static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, u
   return false;
 }
 
+/* The layer's groups and itself, the top first (empty when there's no such layer). */
+static std::vector<const Layer *> layer_chain(const Document &doc, uint64_t id)
+{
+  std::vector<const Layer *> chain;
+  for (const Layer *layer = layer_find(doc, id); layer;
+       layer = layer_parent(const_cast<Document &>(doc), layer->id))
+  {
+    chain.push_back(layer);
+  }
+  std::reverse(chain.begin(), chain.end());
+  return chain;
+}
+
+/* The end of `chain`'s transform in chain[from]'s space (`from` -1: the document's), as world_transform_indexed works
+ * it out: the bone binding below as it would be from the top (which bone layer is the armature, whether a group above
+ * already binds), with the armature's transform, where it is above chain[from], as the way from it down to there. */
+static Transform2D chain_transform_below(const std::vector<const Layer *> &chain, int from, bool setup_frame)
+{
+  const Layer *armature = nullptr;
+  bool bound = false;
+  /* From below the armature down to chain[from]; no group between binds while a layer below still can. */
+  Transform2D since_armature;
+  for (int k = 0; k <= from; k++) {
+    const Layer &layer = *chain[size_t(k)];
+    const bool binds = armature && !bound && layer.followed_bone() != 0;
+    since_armature = since_armature * layer.local_transform();
+    const bool bones = layer.is_bone_layer();
+    bound = !bones && (bound || (binds && layer.is_group()));
+    if (bones) {
+      armature = &layer;
+      since_armature = Transform2D();
+    }
+  }
+  Transform2D parent, armature_world = since_armature.inverted();
+  for (size_t k = size_t(from + 1); k < chain.size(); k++) {
+    const Layer &layer = *chain[k];
+    Transform2D transform = parent * layer.local_transform();
+    const bool binds = armature && !bound && layer.followed_bone() != 0;
+    if (binds) {
+      const std::vector<BonePose> poses = armature_pose(*armature, setup_frame);
+      if (const BonePose *bone = bone_pose_find(poses, layer.followed_bone())) {
+        transform = armature_world * bone->skin * armature_world.inverted() * transform;
+      }
+    }
+    const bool bones = layer.is_bone_layer();
+    bound = !bones && (bound || (binds && layer.is_group()));
+    if (bones) {
+      armature = &layer;
+      armature_world = transform;
+    }
+    parent = transform;
+  }
+  return parent;
+}
+
+static Transform2D relative_transform(const Document &doc, uint64_t from, uint64_t to, bool setup_frame)
+{
+  const std::vector<const Layer *> a = layer_chain(doc, from), b = layer_chain(doc, to);
+  int shared = -1;
+  while (size_t(shared + 1) < a.size() && size_t(shared + 1) < b.size() && a[size_t(shared + 1)] == b[size_t(shared + 1)])
+  {
+    shared++;
+  }
+  return chain_transform_below(a, shared, setup_frame).inverted() * chain_transform_below(b, shared, setup_frame);
+}
+
+Transform2D layer_relative_transform(const Document &doc, uint64_t from, uint64_t to)
+{
+  return relative_transform(doc, from, to, doc.frame_current == 0);
+}
+
+Transform2D layer_setup_relative_transform(const Document &doc, uint64_t from, uint64_t to)
+{
+  return relative_transform(doc, from, to, true);
+}
+
 Transform2D layer_setup_world_transform(const Document &doc, uint64_t id)
 {
   Transform2D transform;

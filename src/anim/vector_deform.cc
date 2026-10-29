@@ -539,8 +539,8 @@ static bool shape_rest(const Document &doc, const Layer &layer, const Modifier &
     return false;
   }
   r_rest = layer_setup_drawing(doc, *target, render);
-  transform_drawing(r_rest, layer_setup_world_transform(doc, layer.id).inverted() *
-                                layer_setup_world_transform(doc, target->id));
+  /* From the groups the two share down (layer_relative_transform), as the shape now is. */
+  transform_drawing(r_rest, layer_setup_relative_transform(doc, layer.id, target->id));
   *r_target = target;
   return drawing_shape_index(r_rest, m.deform_shape) >= 0;
 }
@@ -635,7 +635,9 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
     g_deforming.push_back(layer.id);
     r_bent = layer_evaluated_drawing(doc, *target, render);
     g_deforming.pop_back();
-    transform_drawing(r_bent, layer_world_transform(doc, layer.id).inverted() * layer_world_transform(doc, target->id));
+    /* From the groups the two share down: a shared group moving (the character walked, its top group scaled) doesn't
+     * change the shape bent by, so its build is kept. */
+    transform_drawing(r_bent, layer_relative_transform(doc, layer.id, target->id));
     if (drawing_shape_index(r_bent, m.deform_shape) < 0) {
       return false;
     }

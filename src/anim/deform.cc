@@ -226,7 +226,9 @@ static bool deformer_init(const Document &doc, const Layer &layer, Deformer &r)
     return false;
   }
   r.poses = armature_pose(*r.armature, doc.frame_current == 0);
-  r.to_armature = layer_world_transform(doc, r.armature->id).inverted() * layer_world_transform(doc, layer.id);
+  /* From the groups the two share down, so a shared group moving (the character walked, its top group scaled) leaves
+   * the bent drawing exactly as it was, and what is kept of it (a deform's build, the drawing's triangles) stays. */
+  r.to_armature = layer_relative_transform(doc, r.armature->id, layer.id);
   r.from_armature = r.to_armature.inverted();
   r.whole_bone = layer.points_follow_bone() ? layer.parent_bone : 0;
   return true;
@@ -533,7 +535,7 @@ static bool look_warp_find(const Document &doc, const Layer &layer, BonePose *r_
   }
   *r_carried = !bone_look_warps(*armature, *p, layer.id, group ? group->id : 0);
   *r_pose = *p;
-  *r_to_armature = layer_world_transform(doc, armature->id).inverted() * layer_world_transform(doc, layer.id);
+  *r_to_armature = layer_relative_transform(doc, armature->id, layer.id);
   return true;
 }
 

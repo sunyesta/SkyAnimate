@@ -233,6 +233,12 @@ Layer *document_active_layer(Document &doc);
 void document_set_active_shape(Document &doc, const Layer &layer, int point, ShapeEdge edge = {-1, 0});
 /* Layer to document transform, including every parent group. */
 Transform2D layer_world_transform(const Document &doc, uint64_t id);
+/* Layer `to`'s space to layer `from`'s: layer_world_transform(from).inverted() * layer_world_transform(to), but worked
+ * out from the groups they share down, so it stays exactly the same while only those groups move (a character's root
+ * walked across, its top group scaled). */
+Transform2D layer_relative_transform(const Document &doc, uint64_t from, uint64_t to);
+/* The same with the bones at rest (layer_setup_world_transform's). */
+Transform2D layer_setup_relative_transform(const Document &doc, uint64_t from, uint64_t to);
 /* The same with the bones at rest (as on the setup frame): where a layer is before any Parent Bone
  * moves it. */
 Transform2D layer_setup_world_transform(const Document &doc, uint64_t id);
