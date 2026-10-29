@@ -1,4 +1,4 @@
-/* The Subdivide modifier: splits a drawing's segments into smaller pieces before the bones bend it, so
+/* The Resample modifier (called Subdivide at first): splits a drawing's segments into smaller pieces before the bones bend it, so
  * a long segment bends along the bone chain instead of only at its two points (Blender's Grease Pencil
  * Subdivide, for curves). The split is exact (de Casteljau): at rest the drawing looks the same. By
  * Length puts a point at least every Spacing along each segment, measured in the setup pose so the
@@ -19,8 +19,15 @@ namespace oanim {
 int subdivide_pieces(const VectorDrawing &drawing, const Curve &curve, int segment, const Modifier &m, bool render);
 
 /* `drawing` with modifier `m`'s splits. Its own points keep their indices; `r_new_points` gets the new
- * ones' (all at the end). Detail is made final first (the new curve has no detail of its own). */
+ * ones' (all at the end). Detail is made final first (the new curve has no detail of its own). `pieces`
+ * (optional): how many pieces each segment becomes, by curve then segment, in place of `m`'s. */
 VectorDrawing drawing_subdivide(const VectorDrawing &drawing, const Modifier &m, bool render,
-                                std::vector<int> *r_new_points = nullptr);
+                                std::vector<int> *r_new_points = nullptr,
+                                const std::vector<std::vector<int>> *pieces = nullptr);
+
+/* Where a segment is cut into `k` pieces (k + 1 parameters, 0 to 1): evenly along cubic `c`, which is the segment
+ * as subdivide_setup_shape has it, so the cuts stay put from frame to frame. */
+std::vector<float> subdivide_even_cuts(const float2 c[4], int k);
+VectorDrawing subdivide_setup_shape(const VectorDrawing &drawing);
 
 }  // namespace oanim

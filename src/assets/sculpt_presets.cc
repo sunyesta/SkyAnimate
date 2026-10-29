@@ -65,6 +65,7 @@ static std::vector<SculptPreset> builtin_presets()
       make("Twist", B::Twist, 70.0f, 0.5f, F::Smooth, SCULPT_CATEGORY_MOVE),
       make("Smooth", B::Smooth, 60.0f, 0.5f, F::Smooth, SCULPT_CATEGORY_SHAPE),
       make("Smooth Strong", B::Smooth, 80.0f, 1.0f, F::Sphere, SCULPT_CATEGORY_SHAPE),
+      make("Surface Smooth", B::SurfaceSmooth, 60.0f, 1.0f, F::Smooth, SCULPT_CATEGORY_SHAPE),
       make("Thickness", B::Thickness, 40.0f, 0.5f, F::Smooth, SCULPT_CATEGORY_SHAPE),
   };
 }
@@ -117,7 +118,7 @@ void sculpt_presets_reload()
       }
       sculpt_falloff_from_id(j.value("falloff", "SMOOTH"), &p.falloff);
       p.radius = std::clamp(j.value("radius", 50.0f), 2.0f, 1000.0f);
-      p.strength = std::clamp(j.value("strength", 0.5f), 0.0f, 1.0f);
+      p.strength = std::max(j.value("strength", 0.5f), 0.0f);
       p.category = SCULPT_CATEGORY_MINE;
       saved.push_back(p);
     }

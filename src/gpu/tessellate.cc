@@ -23,6 +23,16 @@ static void quad(std::vector<Vertex> &out, const Vertex &a, const Vertex &b, con
 
 /* Drops points closer than `epsilon` to the previous one, keeping the paired widths and joins in
  * step. A dropped point's corner join passes to the point it duplicates. */
+/* Room for `extra` more vertices. Many strokes, discs and fills append to one batch: reserving just what each
+ * needs would copy the whole batch every time (a grid's lines, each cap a disc), so it grows by doubling. */
+static void reserve_more(std::vector<Vertex> &out, size_t extra)
+{
+  const size_t need = out.size() + extra;
+  if (need > out.capacity()) {
+    out.reserve(std::max(need, out.capacity() * 2));
+  }
+}
+
 static void dedupe(std::vector<float2> &points, std::vector<float> *widths, bool closed, float epsilon,
                    std::vector<StrokeJoin> *joins = nullptr)
 {
@@ -128,7 +138,7 @@ void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, 
     found = cuts.emplace(key, mapbox::earcut<uint32_t>(rings)).first;
   }
   const std::vector<uint32_t> &indices = found->second;
-  r_out.reserve(r_out.size() + indices.size());
+  reserve_more(r_out, indices.size());
   for (const uint32_t i : indices) {
     r_out.push_back(make_vertex(poly[i], color, 1.0f));
   }
@@ -401,7 +411,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
 
   /* With no soft edge (multisampling smooths the edges instead) the strips either side of the core
    * have no width: only the core is drawn. */
-  r_out.reserve(r_out.size() + segments * (aa > 0.0f ? 18 : 6));
+  reserve_more(r_out, segments * (aa > 0.0f ? 18 : 6));
   for (size_t i = 0; i < segments; i++) {
     const Side &a = seg_start[i];
     const Side &b = seg_end[i];
@@ -439,3 +449,4 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
 }
 
 }  // namespace oanim
+

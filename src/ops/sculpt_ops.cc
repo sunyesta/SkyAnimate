@@ -17,14 +17,23 @@
 
 namespace oanim {
 
-/* Copies a preset into the tool, as picking it on the shelf does. */
+/* Picks a preset, as clicking it on the shelf does: the brush going keeps what it was changed to (for coming
+ * back to), and the one coming takes what it was last changed to, else its saved settings. */
 static void preset_apply(ToolSettings &ts, const SculptPreset &p)
 {
+  if (!ts.sculpt_preset.empty()) {
+    ts.sculpt_changes[ts.sculpt_preset] = {ts.sculpt_radius, ts.sculpt_strength, ts.sculpt_falloff};
+  }
   ts.sculpt_preset = p.name;
   ts.sculpt_brush = p.brush;
   ts.sculpt_radius = p.radius;
   ts.sculpt_strength = p.strength;
   ts.sculpt_falloff = p.falloff;
+  if (const auto it = ts.sculpt_changes.find(p.name); it != ts.sculpt_changes.end()) {
+    ts.sculpt_radius = it->second.radius;
+    ts.sculpt_strength = it->second.strength;
+    ts.sculpt_falloff = it->second.falloff;
+  }
 }
 
 /* "x,y;x,y;...": the stroke's path in document space. */
@@ -51,7 +60,7 @@ static OpStatus stroke_exec(Context &C)
   SculptDab dab;
   dab.brush = ts.sculpt_brush;
   if (op_has_arg(C, "brush") && !sculpt_brush_from_id(op_arg(C, "brush"), &dab.brush)) {
-    report(ReportType::Error, "brush= is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST");
+    report(ReportType::Error, "brush= is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST, SURFACE_SMOOTH");
     return OpStatus::Cancelled;
   }
   dab.falloff = ts.sculpt_falloff;
@@ -65,6 +74,8 @@ static OpStatus stroke_exec(Context &C)
   dab.invert = op_arg_bool(C, "invert");
   dab.selected_only = op_has_arg(C, "selected_only") ? op_arg_bool(C, "selected_only") : ts.sculpt_selected_only;
   dab.mirror_x = op_has_arg(C, "mirror") ? op_arg_bool(C, "mirror") : ts.mirror_x;
+  dab.surface_sensitivity = op_has_arg(C, "sensitivity") ? op_arg_float(C, "sensitivity", 0.25f)
+                                                         : ts.sculpt_surface_sensitivity;
   const std::vector<float2> path = parse_path(op_arg(C, "path"));
   if (path.empty()) {
     report(ReportType::Error, "path= gives the stroke's points: \"x,y;x,y;...\" (document space)");
@@ -113,17 +124,18 @@ void sculpt_operators_register()
 
   add("sculpt.stroke", "Sculpt",
       "A sculpt stroke along path=\"x,y;x,y;...\" (document space) over the drawings being edited, as the Sculpt "
-      "tool makes one: brush= GRAB, PUSH, SMOOTH, THICKNESS, PINCH or TWIST (default: the tool's), radius= in "
+      "tool makes one: brush= GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST or SURFACE_SMOOTH (default: the tool's), radius= in "
       "document units, strength=, falloff= SMOOTH, SPHERE or CONSTANT, invert=1 (Ctrl), selected_only=1, "
       "mirror=1 (X mirror), amount= how much of a full step each point of the path is for the brushes that work "
-      "on while held (1), keep_poses=1 on frame 0",
+      "on while held (1), sensitivity= Surface Smooth's Lump Sensitivity, 0-1 (default: the tool's), "
+      "keep_poses=1 on frame 0",
       OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing, stroke_exec);
 
   add("sculpt.brush_set", "Set Sculpt Brush",
-      "Pick brush= (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST): its built-in preset", 0, nullptr, [](Context &C) {
+      "Pick brush= (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST, SURFACE_SMOOTH): its built-in preset", 0, nullptr, [](Context &C) {
         SculptBrush brush;
         if (!sculpt_brush_from_id(op_arg(C, "brush"), &brush)) {
-          report(ReportType::Error, "brush= is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST");
+          report(ReportType::Error, "brush= is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST, SURFACE_SMOOTH");
           return OpStatus::Cancelled;
         }
         preset_apply(C.wm->tool_settings, sculpt_preset_default(brush));
@@ -177,6 +189,8 @@ void sculpt_operators_register()
           return OpStatus::Cancelled;
         }
         ts.sculpt_preset = saved;
+        /* Saved as it is: nothing changed from that. */
+        ts.sculpt_changes.erase(saved);
         report(ReportType::Info, "Saved sculpt brush \"" + saved + "\"");
         return OpStatus::Finished;
       });
@@ -187,6 +201,7 @@ void sculpt_operators_register()
           report(ReportType::Error, error);
           return OpStatus::Cancelled;
         }
+        C.wm->tool_settings.sculpt_changes.erase(op_arg(C, "name"));
         return OpStatus::Finished;
       });
   add("sculpt.radius_adjust", "Adjust Sculpt Radius", "Size the sculpt brush with the mouse (F); click to keep it",

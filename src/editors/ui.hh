@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,69 @@ struct Document;
 class UndoStack;
 struct Layer;
 struct WindowManager;
+
+/* Number fields, as Blender's: `soft_min`..`soft_max` is how far a drag goes (from a value already past them it
+ * can come back but goes no further out), `hard_min`..`hard_max` how far a typed value may go. Left out, the hard
+ * limits are unlimited, but for what can't make sense past its range: a size or count can't go below its least
+ * (a soft minimum of 0 or more), and a 0-1 fraction or a 0-100% amount can't go past its top. Soft limits both 0:
+ * none (a drag goes anywhere). `flags` are ImGui's slider flags; its Always Clamp is left to the hard limits. */
+/* Left out: worked out (see above). Not a number, so no limit given (FLT_MAX: none) is taken for it. */
+inline constexpr float UI_LIMIT_AUTO = std::numeric_limits<float>::quiet_NaN();
+bool ui_drag_float(const char *id, float *v, float speed = 1.0f, float soft_min = 0.0f, float soft_max = 0.0f,
+                   const char *format = "%.3f", int flags = 0, float hard_min = UI_LIMIT_AUTO,
+                   float hard_max = UI_LIMIT_AUTO);
+bool ui_drag_float2(const char *id, float v[2], float speed = 1.0f, float soft_min = 0.0f, float soft_max = 0.0f,
+                    const char *format = "%.3f", int flags = 0, float hard_min = UI_LIMIT_AUTO,
+                    float hard_max = UI_LIMIT_AUTO);
+bool ui_drag_float3(const char *id, float v[3], float speed = 1.0f, float soft_min = 0.0f, float soft_max = 0.0f,
+                    const char *format = "%.3f", int flags = 0, float hard_min = UI_LIMIT_AUTO,
+                    float hard_max = UI_LIMIT_AUTO);
+bool ui_drag_int(const char *id, int *v, float speed = 1.0f, int soft_min = 0, int soft_max = 0, const char *format = "%d",
+                 int flags = 0, float hard_min = UI_LIMIT_AUTO, float hard_max = UI_LIMIT_AUTO);
+/* Sliders (the whole range across the field): the same, their range the soft limits. */
+bool ui_slider_float(const char *id, float *v, float soft_min, float soft_max, const char *format = "%.3f",
+                     int flags = 0, float hard_min = UI_LIMIT_AUTO, float hard_max = UI_LIMIT_AUTO);
+bool ui_slider_int(const char *id, int *v, int soft_min, int soft_max, const char *format = "%d", int flags = 0,
+                   float hard_min = UI_LIMIT_AUTO, float hard_max = UI_LIMIT_AUTO);
+/* The hard limits those work out when they are left out (see above). */
+void ui_number_hard_limits(float soft_min, float soft_max, const char *format, float *r_hard_min, float *r_hard_max);
+
+/* The number field under all of those (editors/number_field.cc), as Blender's: label left and value right,
+ * arrows at its ends while hovered, a factor filled to its share of the soft range; dragged with the cursor
+ * hidden (Shift precise, Ctrl snapping, Esc putting it back); a click to type (sums, Tab to the next field);
+ * hovered: arrows and Ctrl wheel step it, minus flips it, Ctrl C and Ctrl V copy and paste, Backspace its
+ * default; dragged up or down over others first, they change together; a pen pressure toggle at its end. */
+struct NumberField {
+  bool is_int = false;
+  /* A 0-1 kind of value: a bar filled to its share of the soft range, dragged a bar's width for the range. */
+  bool factor = false;
+  /* Both 0: no soft limits. */
+  double soft_min = 0.0, soft_max = 0.0;
+  double hard_min = -1.0e300, hard_max = 1.0e300;
+  /* How much a pixel of drag changes it (whole numbers with soft limits go by Blender's pixels per step). */
+  double speed = 0.01;
+  /* An arrow's (and Ctrl wheel's) step; 0: a tenth. */
+  double step = 0.0;
+  /* "Label %.3f suffix": the label drawn on the left, the rest on the right. */
+  const char *format = "%.3f";
+  /* Pen pressure toggle joined to its right end (null: none), and its tooltip. */
+  bool *pressure = nullptr;
+  const char *pressure_tip = nullptr;
+  /* What Backspace puts back (NaN: nothing). */
+  double default_value = std::numeric_limits<double>::quiet_NaN();
+};
+bool ui_number(const char *id, double *value, const NumberField &field);
+/* A typed sum ("2*3", "90/4", "1.5 px"): its value, false if it isn't one. */
+bool ui_number_evaluate(const char *text, double *r_value);
+/* Whether the mouse is over a number field (this frame or the last): its keys (Ctrl C, Ctrl V, minus, Backspace)
+ * are the field's, not shortcuts. */
+bool ui_number_field_hovered();
+/* A number field being scrubbed grabs the mouse: true while one wants it; `r_x`/`r_y` say where the cursor
+ * goes back to when let go. The app turns the window's relative mouse mode on and off to match
+ * (`ui_number_grab_set_active`) and gives it the motion (`ui_number_grab_motion`). */
+bool ui_number_grab_wanted(float *r_x, float *r_y);
+void ui_number_grab_set_active(bool active);
+void ui_number_grab_motion(float dx, float dy);
 
 /* A collapsible panel with a two-column (label, value) table. Call ui_panel_end() only when
  * this returns true. */
@@ -165,9 +229,10 @@ void ui_draw_order_menu_items(Context &C, uint64_t layer);
 void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
 /* The shape eyedropper: the same, for a shape clicked in the viewport (the brush eyedropper): `pick`
  * gets its layer and its index in the drawing as shown, and returns true when it's done. Clicks in
- * the Layers editor don't count. */
+ * the Layers editor count only with `pick_row`, which gets the layer clicked there. */
 void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
-                               const char *tag = "", uint64_t skip = 0);
+                               const char *tag = "", uint64_t skip = 0,
+                               std::function<bool(Context &, uint64_t)> pick_row = {});
 /* The layer it looks past (`skip`), or 0. */
 uint64_t ui_shape_eyedropper_skip();
 /* The shape under the mouse this frame: the cue at the mouse says "Layer | Shape". */

@@ -18,6 +18,7 @@
 #include "assets/sculpt_presets.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
@@ -38,6 +39,7 @@
 #include "core/crash.hh"
 #include "core/log.hh"
 #include "gpu/brush_stroke.hh"
+#include "gpu/scene_renderer.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
@@ -492,6 +494,28 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       SDL_PushEvent(&e);
     }
   });
+  /* The project's Viewport Shading (oanim.wm.shading / set_shading). */
+  m.def("shading", []() {
+    const ViewportShading &sh = current_context().document->shading;
+    py::dict d;
+    d["layer_caching"] = sh.layer_caching;
+    d["zoom_preview"] = sh.zoom_preview;
+    return d;
+  });
+  m.def("set_shading", [](const std::string &name, bool on) {
+    Context &C = current_context();
+    ViewportShading &sh = C.document->shading;
+    if (name == "layer_caching") {
+      sh.layer_caching = on;
+    }
+    else if (name == "zoom_preview") {
+      sh.zoom_preview = on;
+    }
+    else {
+      throw py::value_error("no Viewport Shading setting '" + name + "' (layer_caching, zoom_preview)");
+    }
+    C.undo->mark_changed();
+  });
   /* Characters typed (oanim.wm.text_simulate), as the keyboard's text input sends them. */
   m.def("text_simulate", [](const std::string &text) { ImGui::GetIO().AddInputCharactersUTF8(text.c_str()); });
   /* Files being dragged over the window at (x, y) (oanim.wm.file_drag_simulate): the previews show
@@ -519,7 +543,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* The left/right name rule bone Symmetrize and mirror editing pair by (bone_mirror_name). */
   m.def("flip_name", [](const std::string &name) { return bone_mirror_name(name); });
   m.def("frame_ms", []() { return 1000.0f / std::max(ImGui::GetIO().Framerate, 1e-3f); });
-  m.def("brush_settings_open", [](bool tool) { brush_window_open(tool ? BrushTarget::Tool : BrushTarget::Shapes); });
+  m.def(
+      "brush_settings_open",
+      [](bool tool, bool presets) { brush_window_open(tool ? BrushTarget::Tool : BrushTarget::Shapes, presets); },
+      py::arg("tool"), py::arg("presets") = false);
   /* The project's viewport overlays: their switches by name, and setting one (unsaved, as in the popover). */
   static const std::pair<const char *, bool ViewportOverlays::*> overlay_switches[] = {
       {"show", &ViewportOverlays::show},
@@ -787,6 +814,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["pressure_radius"] = ts.sculpt_pressure_radius;
     d["pressure_strength"] = ts.sculpt_pressure_strength;
     d["selected_only"] = ts.sculpt_selected_only;
+    d["surface_sensitivity"] = ts.sculpt_surface_sensitivity;
     return d;
   });
   m.def("set_sculpt", [](const py::dict &values) {
@@ -795,7 +823,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       const std::string key = py::str(key_obj);
       if (key == "brush") {
         if (!sculpt_brush_from_id(py::str(value), &ts.sculpt_brush)) {
-          throw py::value_error("brush is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST");
+          throw py::value_error("brush is one of GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST, SURFACE_SMOOTH");
         }
       }
       else if (key == "falloff") {
@@ -807,7 +835,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         ts.sculpt_radius = std::clamp(value.cast<float>(), 2.0f, 1000.0f);
       }
       else if (key == "strength") {
-        ts.sculpt_strength = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+        ts.sculpt_strength = std::max(value.cast<float>(), 0.0f);
       }
       else if (key == "pressure_radius") {
         ts.sculpt_pressure_radius = value.cast<bool>();
@@ -817,6 +845,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "selected_only") {
         ts.sculpt_selected_only = value.cast<bool>();
+      }
+      else if (key == "surface_sensitivity") {
+        ts.sculpt_surface_sensitivity = std::max(value.cast<float>(), 0.0f);
       }
       else {
         throw py::value_error("no sculpt setting '" + key + "'");
@@ -1549,6 +1580,31 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return result;
   });
+  /* A curve's handles after the modifiers (layer space), as layer_curve_handles: `shown`, as the viewport shows
+   * them while editing (a deform's segments each as one Bezier, without the points Precision adds). */
+  m.def(
+      "layer_evaluated_handles",
+      [layer_or_raise](uint64_t id, int curve_index, bool shown) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        std::optional<VectorDeformWireScope> wire;
+        if (shown) {
+          wire.emplace();
+        }
+        const VectorDrawing drawing = layer_evaluated_drawing(doc, layer_or_raise(id), false);
+        if (curve_index < 0 || curve_index >= int(drawing.curves.size())) {
+          throw py::index_error("no curve " + std::to_string(curve_index));
+        }
+        const Curve &curve = drawing.curves[curve_index];
+        py::list result;
+        for (int i = 0; i < int(curve.points.size()); i++) {
+          const float2 in = curve_handle(drawing, curve, i, true), out = curve_handle(drawing, curve, i, false);
+          result.append(py::make_tuple(curve.points[i].aligned ? "ALIGNED" : "FREE", py::make_tuple(in.x, in.y),
+                                       py::make_tuple(out.x, out.y)));
+        }
+        return result;
+      },
+      py::arg("id"), py::arg("curve"), py::arg("shown") = false);
   /* Drags one handle to a layer-space position, as in the viewport. */
   m.def("layer_move_handle", [layer_or_raise](uint64_t id, int curve_index, int index, const std::string &side,
                                               std::pair<float, float> pos) {
@@ -2627,6 +2683,60 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return py::make_tuple(groups, d.active_group);
   });
 
+  /* Extrude's first step (E before the move): new points past the selected open ends, or branching from other
+   * selected points; they become the selection. Returns their indices. */
+  m.def("layer_extrude_selected", [layer_or_raise](uint64_t id) {
+    Context &C = current_context();
+    Layer &layer = layer_or_raise(id);
+    if (!layer.has_drawing() || layer.is_reference()) {
+      throw py::value_error("Only a vector layer's own points extrude");
+    }
+    const std::vector<int> added = drawing_extrude_selected(layer.drawing, C.wm->tool_settings.style);
+    C.undo->mark_changed();
+    return added;
+  });
+  /* A shape's runs (its connected pieces, each drawn as a line of its own): [[(curve, segment), ...], ...]. */
+  m.def("layer_shape_runs", [layer_or_raise](uint64_t id, int shape) {
+    const VectorDrawing &d = layer_or_raise(id).drawing;
+    if (shape < 0 || shape >= int(d.shapes.size())) {
+      throw py::index_error("Shape index out of range");
+    }
+    py::list runs;
+    for (const Shape &run : shape_runs(d, d.shapes[size_t(shape)])) {
+      py::list edges;
+      for (const ShapeEdge &e : run.edges) {
+        edges.append(py::make_tuple(e.curve, e.segment));
+      }
+      runs.append(edges);
+    }
+    return runs;
+  });
+  /* Grids: [(name, columns, rows, [node point index, row by row from the bottom])]. */
+  m.def("layer_grids", [layer_or_raise](uint64_t id) {
+    const VectorDrawing &d = layer_or_raise(id).drawing;
+    py::list grids;
+    for (const DrawingGrid &g : d.grids) {
+      py::list nodes;
+      for (const uint64_t node : g.nodes) {
+        nodes.append(drawing_point_index(d, node));
+      }
+      grids.append(py::make_tuple(g.name, g.columns, g.rows, nodes));
+    }
+    return grids;
+  });
+  /* Where a grid takes a place: from where its setup (frame 0) has it to where the grid shows now. */
+  m.def("layer_grid_map", [layer_or_raise](uint64_t id, int grid, float x, float y) {
+    const Document &doc = *current_context().document;
+    const Layer &layer = layer_or_raise(id);
+    if (grid < 0 || grid >= int(layer.drawing.grids.size())) {
+      throw py::index_error("Grid index out of range");
+    }
+    const VectorDrawing rest = layer_setup_drawing(doc, layer, false);
+    const VectorDrawing bent = layer_evaluated_drawing(doc, layer, false);
+    const float2 q = grid_map(rest, bent, layer.drawing.grids[size_t(grid)], {x, y});
+    return py::make_tuple(q.x, q.y);
+  });
+
   /* --- Modifiers and the evaluated drawing ------------------------------------------------ */
   m.def("layer_modifiers", [layer_or_raise](uint64_t id) {
     py::list result;
@@ -2635,9 +2745,32 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["type"] = mod.type == ModifierType::Armature    ? "ARMATURE"
                   : mod.type == ModifierType::Boolean   ? "BOOLEAN"
                   : mod.type == ModifierType::Bevel     ? "BEVEL"
-                  : mod.type == ModifierType::Subdivide ? "SUBDIVIDE"
+                  : mod.type == ModifierType::Resample ? "RESAMPLE"
+                  : modifier_is_deform(mod.type) ? deform_type_id(mod.type)
                                                         : "MIRROR";
-      if (mod.type == ModifierType::Subdivide) {
+      if (modifier_is_deform(mod.type)) {
+        const Document &doc = *current_context().document;
+        const Layer *target = layer_find(doc, mod.deform_layer);
+        d["layer"] = target ? target->name : std::string();
+        std::string shape;
+        if (target) {
+          if (const int k = drawing_shape_index(target->drawing, mod.deform_shape); k >= 0) {
+            shape = target->drawing.shapes[size_t(k)].name;
+          }
+        }
+        d["shape"] = shape;
+        d["kind"] = deform_kind_name(vector_deform_kind(doc, layer_or_raise(id), mod));
+        d["fits"] = deform_type_id(vector_deform_fitting_type(doc, layer_or_raise(id), mod));
+        d["weights"] = mod.deform_custom ? "CUSTOM" : "AUTOMATIC";
+        d["group"] = mod.deform_group;
+        d["strength"] = mod.deform_strength;
+        d["precision"] = mod.deform_precision;
+        d["stretch"] = mod.deform_stretch;
+        d["resample_self"] = mod.deform_resample_self;
+        d["cage_method"] = cage_method_id(mod.deform_cage_method);
+        d["blend"] = mod.deform_blend;
+      }
+      if (mod.type == ModifierType::Resample) {
         d["split"] = mod.subdiv_by_length ? "LENGTH" : "COUNT";
         d["spacing"] = mod.subdiv_spacing;
         d["render_spacing"] = mod.subdiv_render_spacing;
@@ -2662,6 +2795,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["name"] = mod.name;
       d["show_viewport"] = mod.show_viewport;
       d["show_render"] = mod.show_render;
+      if (modifier_makes_points(mod)) {
+        d["show_points"] = mod.show_points;
+      }
       if (mod.type == ModifierType::Mirror) {
         d["axis_x"] = mod.axis_x;
         d["axis_y"] = mod.axis_y;
@@ -2706,6 +2842,25 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return result;
   });
+  /* A deform modifier's weight for each of the layer's own points (Custom, else automatic), before Strength;
+   * `reset`: fill its Custom group with the automatic weights first (Reset to Automatic). */
+  m.def(
+      "layer_deform_weights",
+      [layer_or_raise](uint64_t id, int index, bool reset) {
+        Layer &layer = layer_or_raise(id);
+        if (index < 0 || index >= int(layer.modifiers.size()) ||
+            !modifier_is_deform(layer.modifiers[size_t(index)].type))
+        {
+          throw py::index_error("no deform modifier (Curve, Cage or Mesh Deform) " + std::to_string(index));
+        }
+        Document &doc = *current_context().document;
+        if (reset) {
+          vector_deform_fill_group(doc, layer, layer.modifiers[size_t(index)]);
+          current_context().undo->mark_changed();
+        }
+        return vector_deform_weights(doc, layer, layer.modifiers[size_t(index)]);
+      },
+      py::arg("id"), py::arg("index"), py::arg("reset") = false);
   m.def("layer_modifier_set", [layer_or_raise](uint64_t id, int index, py::dict values) {
     Layer &layer = layer_or_raise(id);
     if (index < 0 || index >= int(layer.modifiers.size())) {
@@ -2719,6 +2874,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "show_render") {
         mod.show_render = value.cast<bool>();
+      }
+      else if (key == "show_points" && modifier_makes_points(mod)) {
+        mod.show_points = value.cast<bool>();
       }
       else if (key == "name") {
         mod.name = value.cast<std::string>();
@@ -2775,37 +2933,111 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (mod.type == ModifierType::Bevel && key == "clamp") {
         mod.bevel_clamp = value.cast<bool>();
       }
-      else if (mod.type == ModifierType::Subdivide && key == "split") {
+      else if (mod.type == ModifierType::Resample && key == "split") {
         const std::string split = value.cast<std::string>();
         if (split != "LENGTH" && split != "COUNT") {
           throw py::value_error("split is LENGTH or COUNT");
         }
         mod.subdiv_by_length = split == "LENGTH";
       }
-      else if (mod.type == ModifierType::Subdivide && key == "spacing") {
+      else if (mod.type == ModifierType::Resample && key == "spacing") {
         mod.subdiv_spacing = std::max(1e-4f, value.cast<float>());
       }
-      else if (mod.type == ModifierType::Subdivide && key == "render_spacing") {
+      else if (mod.type == ModifierType::Resample && key == "render_spacing") {
         mod.subdiv_render_spacing = std::max(0.0f, value.cast<float>());
       }
-      else if (mod.type == ModifierType::Subdivide && key == "pieces") {
+      else if (mod.type == ModifierType::Resample && key == "pieces") {
         mod.subdiv_pieces = std::clamp(value.cast<int>(), 1, 256);
       }
-      else if (mod.type == ModifierType::Subdivide && key == "max_pieces") {
+      else if (mod.type == ModifierType::Resample && key == "max_pieces") {
         mod.subdiv_max_pieces = std::clamp(value.cast<int>(), 1, 256);
       }
-      else if (mod.type == ModifierType::Subdivide && key == "weights") {
+      else if (mod.type == ModifierType::Resample && key == "weights") {
         const std::string w = value.cast<std::string>();
         if (w != "BLEND" && w != "BONES") {
           throw py::value_error("weights is BLEND or BONES");
         }
         mod.subdiv_from_bones = w == "BONES";
       }
-      else if (mod.type == ModifierType::Subdivide && key == "preserve_volume") {
+      else if (mod.type == ModifierType::Resample && key == "preserve_volume") {
         mod.subdiv_preserve_volume = value.cast<bool>();
       }
-      else if (mod.type == ModifierType::Subdivide && key == "group") {
+      else if (mod.type == ModifierType::Resample && key == "group") {
         mod.subdiv_group = value.cast<std::string>();
+      }
+      else if (modifier_is_deform(mod.type) && key == "type") {
+        /* Change Type: another deform, keeping its settings and painted weights. */
+        const std::string type = value.cast<std::string>();
+        const ModifierType to = type == "CURVE_DEFORM"  ? ModifierType::CurveDeform
+                                : type == "CAGE_DEFORM" ? ModifierType::CageDeform
+                                : type == "MESH_DEFORM" ? ModifierType::MeshDeform
+                                                        : ModifierType::Mirror;
+        if (to == ModifierType::Mirror) {
+          throw py::value_error("a deform's type is CURVE_DEFORM, CAGE_DEFORM or MESH_DEFORM");
+        }
+        if (mod.name.rfind(deform_type_name(mod.type), 0) == 0) {
+          mod.name = deform_type_name(to) + mod.name.substr(std::string(deform_type_name(mod.type)).size());
+        }
+        mod.type = to;
+      }
+      else if (modifier_is_deform(mod.type) && key == "layer") {
+        const std::string name = value.cast<std::string>();
+        const Layer *target = nullptr;
+        for (const Layer *l : document_layers_flat(*current_context().document)) {
+          target = !target && l->name == name ? l : target;
+        }
+        if (!name.empty() && (!target || !target->has_drawing() || target->id == layer.id)) {
+          throw py::value_error("A deform's shape is on another drawing layer: no layer '" + name + "'");
+        }
+        mod.deform_layer = target ? target->id : 0;
+        mod.deform_shape = 0;
+      }
+      else if (modifier_is_deform(mod.type) && key == "shape") {
+        const std::string name = value.cast<std::string>();
+        const Layer *target = layer_find(*current_context().document, mod.deform_layer);
+        uint64_t found = 0;
+        for (const Shape &s : target ? target->drawing.shapes : std::vector<Shape>()) {
+          found = !found && s.name == name ? s.id : found;
+        }
+        if (!found && !name.empty()) {
+          throw py::value_error("no shape '" + name + "' on the deform's layer (set layer first)");
+        }
+        mod.deform_shape = found;
+      }
+      else if (modifier_is_deform(mod.type) && key == "weights") {
+        const std::string w = value.cast<std::string>();
+        if (w != "AUTOMATIC" && w != "CUSTOM") {
+          throw py::value_error("weights is AUTOMATIC or CUSTOM");
+        }
+        const bool was = mod.deform_custom;
+        mod.deform_custom = w == "CUSTOM";
+        /* Custom starts from the automatic weights, unless its group is already there. */
+        if (mod.deform_custom && !was &&
+            std::none_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                         [&](const PointGroup &g) { return !mod.deform_group.empty() && g.name == mod.deform_group; }))
+        {
+          vector_deform_fill_group(*current_context().document, layer, mod);
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "strength") {
+        mod.deform_strength = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "precision") {
+        mod.deform_precision = std::max(0.0f, value.cast<float>());
+      }
+      else if (modifier_is_deform(mod.type) && key == "stretch") {
+        mod.deform_stretch = value.cast<bool>();
+      }
+      else if (modifier_is_deform(mod.type) && key == "resample_self") {
+        mod.deform_resample_self = value.cast<bool>();
+      }
+      else if (modifier_is_deform(mod.type) && key == "cage_method") {
+        if (!cage_method_from_id(value.cast<std::string>(), mod.deform_cage_method)) {
+          throw py::value_error("cage_method is MEAN_VALUE, RIGID or ENVELOPE");
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "blend") {
+        mod.deform_blend = std::clamp(value.cast<float>(), 0.0f, 1.0f);
       }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
@@ -2847,6 +3079,26 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         return py::make_tuple(points, int(d.curves.size()), shapes);
       },
       py::arg("id"), py::arg("render") = false);
+  /* A shape's outline as the evaluated drawing draws it: `steps` samples per curve segment (at least). */
+  m.def(
+      "layer_evaluated_outline",
+      [layer_or_raise](uint64_t id, int shape, int steps, bool render) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        const VectorDrawing d = layer_evaluated_drawing(doc, layer_or_raise(id), render);
+        if (shape < 0 || shape >= int(d.shapes.size())) {
+          throw py::index_error("Shape index out of range");
+        }
+        std::vector<float2> outline;
+        bool closed = false;
+        shape_outline(d, d.shapes[size_t(shape)], std::clamp(steps, 1, 256), outline, nullptr, &closed);
+        py::list result;
+        for (const float2 &q : outline) {
+          result.append(py::make_tuple(q.x, q.y));
+        }
+        return py::make_tuple(result, closed);
+      },
+      py::arg("id"), py::arg("shape"), py::arg("steps") = 16, py::arg("render") = false);
   /* Weights: how the active bone (or a named one) moves each point, and painting them. */
   m.def("layer_bone_weights", [layer_or_raise](uint64_t id, const std::string &bone_name) {
     Document &doc = *current_context().document;
@@ -2950,7 +3202,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def(
       "layer_add_primitive",
       [layer_or_raise](uint64_t id, const std::string &kind_name, const std::vector<std::pair<float, float>> &points,
-                       bool fill) {
+                       bool fill, int columns, int rows) {
         Context &C = current_context();
         Layer &layer = layer_or_raise(id);
         if (!layer.has_drawing() || layer.is_reference()) {
@@ -2958,13 +3210,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         PrimitiveKind kind;
         if (!primitive_from_identifier(kind_name, &kind)) {
-          throw py::value_error("add_primitive draws BOX or CIRCLE; use add_curve for curves");
+          throw py::value_error("add_primitive draws BOX, CIRCLE or GRID; use add_curve for curves");
         }
         std::vector<float2> pts;
         for (const auto &[x, y] : points) {
           pts.push_back({x, y});
         }
-        const VectorDrawing shape = primitive_drawing(kind, pts, C.wm->tool_settings.style, fill);
+        const VectorDrawing shape = primitive_drawing(kind, pts, C.wm->tool_settings.style, fill, columns, rows);
         if (shape.curves.empty()) {
           return false;
         }
@@ -2972,7 +3224,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         C.undo->mark_changed();
         return true;
       },
-      py::arg("id"), py::arg("kind"), py::arg("points"), py::arg("fill") = false);
+      py::arg("id"), py::arg("kind"), py::arg("points"), py::arg("fill") = false, py::arg("columns") = 3,
+      py::arg("rows") = 3);
   m.def("layer_shape_outline", [layer_or_raise](uint64_t id, int shape, int steps) {
     /* A shape's outline as drawn: steps samples per curve segment. */
     /* As drawn: detail's handles final. */
@@ -3281,24 +3534,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     current_context().undo->mark_changed();
     return int(edges.size());
   });
-  m.def("layer_corners", [layer_or_raise](uint64_t id) {
-    py::list result;
-    for (const MeshPoint &p : layer_drawing(*current_context().document, layer_or_raise(id)).points) {
-      result.append(p.corner == CornerType::Sharp ? "SHARP" : "ROUND");
-    }
-    return result;
-  });
-  m.def("layer_set_selected_corner", [layer_or_raise](uint64_t id, const std::string &corner) {
-    Layer &layer = layer_or_raise(id);
-    if (layer.is_reference()) {
-      throw py::value_error("A reference's points are edited through its original");
-    }
-    if (corner != "ROUND" && corner != "SHARP") {
-      throw py::value_error("corner must be 'ROUND' or 'SHARP'");
-    }
-    drawing_set_selected_corner(layer.drawing, corner == "SHARP" ? CornerType::Sharp : CornerType::Round);
-    current_context().undo->mark_changed();
-  });
   m.def("layer_radii", [layer_or_raise](uint64_t id) {
     py::list result;
     for (const MeshPoint &p : layer_drawing(*current_context().document, layer_or_raise(id)).points) {
@@ -3551,6 +3786,10 @@ std::string remote_run(const std::string &code)
 
 bool run_string(const std::string &code)
 {
+  if (!g_initialized) {
+    report(ReportType::Error, "Python isn't running, so this can't be done");
+    return false;
+  }
   g_python_runs++;
   try {
     py::dict globals;
@@ -3565,3 +3804,4 @@ bool run_string(const std::string &code)
 }
 
 }  // namespace oanim::python
+

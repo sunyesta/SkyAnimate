@@ -6,9 +6,11 @@ same size and rate, a layer for each Flash layer, fills rebuilt from Flash's edg
 Run with:  OpenAnimate --background --python tests/test_fla_import.py
 """
 
+import ctypes
 import math
 import pathlib
 import struct
+import subprocess
 import tempfile
 
 import oanim
@@ -151,5 +153,20 @@ assert box.type == 'GROUP'
 px, py = to_doc(400, 100)
 assert abs(box.location_x - px) < 1e-4 and abs(box.location_y - py) < 1e-4, (box.location_x, box.location_y)
 assert abs(box.scale_x - 2.0) < 1e-4 and abs(box.scale_y - 2.0) < 1e-4 and abs(box.rotation) < 1e-3
+
+# The byte before the stage's rect differs from file to file: the stage is read whatever it is.
+from oanim import io_fla
+stage_13 = contents.replace(b'\x14\x00\x05\x00\x00' + s32(0), b'\x13\x00\x05\x00\x00' + s32(0), 1)
+assert stage_13 != contents
+info = io_fla.read_contents(stage_13)
+assert (info['width'], info['height']) == (W, H), info
+
+# Given on the command line, it opens too: the importer is Python, which starts before the file opens.
+exe = ctypes.create_unicode_buffer(32768)
+ctypes.windll.kernel32.GetModuleFileNameW(None, exe, len(exe))
+p = subprocess.run([exe.value, '--background', str(path), '--python-expr',
+                    "import oanim; assert oanim.data.document.name == 'boxes', oanim.data.document.name"],
+                   capture_output=True, timeout=120)
+assert p.returncode == 0, (p.returncode, p.stdout, p.stderr)
 
 print("fla import: ok")

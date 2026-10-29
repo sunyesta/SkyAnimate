@@ -620,7 +620,12 @@ void autosave_quit(Context &C)
   }
   std::string error;
   mirror_settings_to_document(C);
-  if (!oanim_file_write(*C.document, quit_file_path(), &error)) {
+  /* Saved as it is: the snapshot is that file, copied (writing a large document again took seconds). */
+  std::error_code copy_ec;
+  const bool copied = !C.wm->filepath.empty() && !document_is_dirty(C) &&
+                      fs::copy_file(path_from_utf8(C.wm->filepath), path_from_utf8(quit_file_path()),
+                                    fs::copy_options::overwrite_existing, copy_ec);
+  if (!copied && !oanim_file_write(*C.document, quit_file_path(), &error)) {
     report(ReportType::Warning, "Could not write quit.oanim: " + error);
   }
   std::error_code ec;

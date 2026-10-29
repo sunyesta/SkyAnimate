@@ -1,5 +1,7 @@
 #include "io/oanim_file.hh"
 
+#include <numeric>
+#include <execution>
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -20,8 +22,10 @@
 #include <nlohmann/json.hpp>
 
 #include "anim/animation.hh"
+#include "data/material.hh"
 #include "core/log.hh"
 #include "anim/deform.hh"
+#include "anim/vector_deform.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/detail.hh"
@@ -212,16 +216,51 @@ template<typename T> static void put_keys(json &j, const char *name, const Chann
   }
 }
 
+static json drawing_to_json(const VectorDrawing &drawing);
+
+/* Drawings written ahead of their layers (oanim_document_to_json, in parallel): each layer takes its own. */
+static std::unordered_map<const VectorDrawing *, json> *g_drawings_ahead = nullptr;
+
+static json layer_drawing_json(const VectorDrawing &drawing)
+{
+  if (g_drawings_ahead) {
+    if (auto it = g_drawings_ahead->find(&drawing); it != g_drawings_ahead->end()) {
+      return std::move(it->second);
+    }
+  }
+  return drawing_to_json(drawing);
+}
+
+/* `count` items written by `item` into a JSON array, on all the cores when there are many (a large drawing's points
+ * and curves). */
+template<typename F> static json json_array_of(size_t count, F &&item)
+{
+  std::vector<json> items(count);
+  if (count >= 2048) {
+    std::vector<size_t> order(count);
+    std::iota(order.begin(), order.end(), size_t(0));
+    std::for_each(std::execution::par, order.begin(), order.end(), [&](size_t i) { items[i] = item(i); });
+  }
+  else {
+    for (size_t i = 0; i < count; i++) {
+      items[i] = item(i);
+    }
+  }
+  json out = json::array();
+  out.get_ref<json::array_t &>().reserve(count);
+  for (json &j : items) {
+    out.push_back(std::move(j));
+  }
+  return out;
+}
+
 static json drawing_to_json(const VectorDrawing &drawing)
 {
-  json points = json::array();
-  for (const MeshPoint &p : drawing.points) {
+  json points = json_array_of(drawing.points.size(), [&](size_t index) {
+    const MeshPoint &p = drawing.points[index];
     json point = {{"id", p.id}, {"pos", float2_to_json(p.pos)}};
     if (p.radius != 1.0f) {
       point["radius"] = num(p.radius);
-    }
-    if (p.corner == CornerType::Sharp) {
-      point["corner"] = "SHARP";
     }
     if (p.selected) {
       point["selected"] = true;
@@ -250,18 +289,29 @@ static json drawing_to_json(const VectorDrawing &drawing)
                          {"setup_in", float2_to_json(dt.setup_in)},
                          {"setup_out", float2_to_json(dt.setup_out)}};
     }
-    points.push_back(std::move(point));
-  }
-  json curves = json::array();
-  for (const Curve &curve : drawing.curves) {
-    json curve_points = json::array();
-    for (const CurvePoint &cp : curve.points) {
-      json point = {{"point", cp.point},
-                    {"curvature", num(cp.curvature)},
-                    {"weight_in", num(cp.weight_in)},
-                    {"weight_out", num(cp.weight_out)},
-                    {"offset_in", num(cp.offset_in)},
-                    {"offset_out", num(cp.offset_out)}};
+    return point;
+  });
+  json curves = json_array_of(drawing.curves.size(), [&](size_t index) {
+    const Curve &curve = drawing.curves[index];
+    json curve_points = json_array_of(curve.points.size(), [&](size_t k) {
+      const CurvePoint &cp = curve.points[k];
+      /* Only what isn't the reader's default: most points have none of these, and a large file has many. */
+      json point = {{"point", cp.point}};
+      if (cp.curvature != CURVATURE_SMOOTH) {
+        point["curvature"] = num(cp.curvature);
+      }
+      if (cp.weight_in != 1.0f) {
+        point["weight_in"] = num(cp.weight_in);
+      }
+      if (cp.weight_out != 1.0f) {
+        point["weight_out"] = num(cp.weight_out);
+      }
+      if (cp.offset_in != 0.0f) {
+        point["offset_in"] = num(cp.offset_in);
+      }
+      if (cp.offset_out != 0.0f) {
+        point["offset_out"] = num(cp.offset_out);
+      }
       if (cp.select_in) {
         point["select_in"] = true;
       }
@@ -287,10 +337,10 @@ static json drawing_to_json(const VectorDrawing &drawing)
       put_keys(point, "curvature_keys", cp.curvature_keys);
       put_keys(point, "handle_in_keys", cp.handle_in_keys);
       put_keys(point, "handle_out_keys", cp.handle_out_keys);
-      curve_points.push_back(std::move(point));
-    }
-    curves.push_back({{"closed", curve.closed}, {"points", std::move(curve_points)}});
-  }
+      return point;
+    });
+    return json{{"closed", curve.closed}, {"points", std::move(curve_points)}};
+  });
   json shapes = json::array();
   for (const Shape &shape : drawing.shapes) {
     json edges = json::array();
@@ -333,6 +383,14 @@ static json drawing_to_json(const VectorDrawing &drawing)
     }
     out["groups"] = std::move(groups);
     out["active_group"] = drawing.active_group;
+  }
+  if (!drawing.grids.empty()) {
+    /* Grids: their cells and their nodes' point ids, row by row from the bottom. */
+    json grids = json::array();
+    for (const DrawingGrid &g : drawing.grids) {
+      grids.push_back({{"name", g.name}, {"columns", g.columns}, {"rows", g.rows}, {"nodes", g.nodes}});
+    }
+    out["grids"] = std::move(grids);
   }
   return out;
 }
@@ -557,11 +615,13 @@ static json layer_to_json(const Layer &layer)
       json mj = {{"type", m.type == ModifierType::Armature    ? "ARMATURE"
                           : m.type == ModifierType::Boolean   ? "BOOLEAN"
                           : m.type == ModifierType::Bevel     ? "BEVEL"
-                          : m.type == ModifierType::Subdivide ? "SUBDIVIDE"
+                          : m.type == ModifierType::Resample ? "RESAMPLE"
+                          : modifier_is_deform(m.type) ? deform_type_id(m.type)
                                                               : "MIRROR"},
                  {"name", m.name},
                  {"show_viewport", m.show_viewport},
                  {"show_render", m.show_render},
+                 {"show_points", m.show_points},
                  {"show_expanded", m.show_expanded}};
       if (m.type == ModifierType::Mirror) {
         mj["axis_x"] = m.axis_x;
@@ -598,7 +658,7 @@ static json layer_to_json(const Layer &layer)
         mj["profile"] = num(m.bevel_profile);
         mj["clamp"] = m.bevel_clamp;
       }
-      if (m.type == ModifierType::Subdivide) {
+      if (m.type == ModifierType::Resample) {
         mj["split"] = m.subdiv_by_length ? "LENGTH" : "COUNT";
         mj["spacing"] = num(m.subdiv_spacing);
         mj["render_spacing"] = num(m.subdiv_render_spacing);
@@ -607,6 +667,21 @@ static json layer_to_json(const Layer &layer)
         mj["weights"] = m.subdiv_from_bones ? "BONES" : "BLEND";
         mj["preserve_volume"] = m.subdiv_preserve_volume;
         mj["group"] = m.subdiv_group;
+      }
+      if (modifier_is_deform(m.type)) {
+        mj["layer"] = m.deform_layer;
+        mj["shape"] = m.deform_shape;
+        mj["weights"] = m.deform_custom ? "CUSTOM" : "AUTOMATIC";
+        mj["group"] = m.deform_group;
+        mj["strength"] = num(m.deform_strength);
+        put_keys(mj, "strength_keys", m.deform_strength_keys);
+        mj["tolerance"] = num(m.deform_precision);
+        mj["stretch"] = m.deform_stretch;
+        mj["resample_self"] = m.deform_resample_self;
+        if (m.type == ModifierType::CageDeform) {
+          mj["cage_method"] = cage_method_id(m.deform_cage_method);
+          mj["blend"] = num(m.deform_blend);
+        }
       }
       modifiers.push_back(std::move(mj));
     }
@@ -817,10 +892,10 @@ static json layer_to_json(const Layer &layer)
   else if (layer.is_text()) {
     /* The text, and its letters as they were made (so it shows where the font isn't installed). */
     j["text"] = text_to_json(layer.text);
-    j["drawing"] = drawing_to_json(layer.drawing);
+    j["drawing"] = layer_drawing_json(layer.drawing);
   }
   else if (!layer.is_group()) {
-    j["drawing"] = drawing_to_json(layer.drawing);
+    j["drawing"] = layer_drawing_json(layer.drawing);
   }
   if (layer.is_group()) {
     json children = json::array();
@@ -840,10 +915,37 @@ std::string oanim_document_to_json(const Document &doc)
   for (const Text &text : doc.texts) {
     texts.push_back({{"name", text.name}, {"body", text.body}, {"filepath", text.filepath}});
   }
+  /* Every drawing written first, on all the cores at once (they are most of a large file's work, and each
+   * stands alone), then the layers in order, each taking its own. */
+  std::vector<const VectorDrawing *> drawings;
+  const auto gather = [&](auto &&self, const std::vector<Layer> &list) -> void {
+    for (const Layer &layer : list) {
+      if (layer.is_group()) {
+        self(self, layer.children);
+      }
+      else if (!layer.is_media()) {
+        drawings.push_back(&layer.drawing);
+      }
+    }
+  };
+  gather(gather, doc.layers);
+  std::vector<json> written(drawings.size());
+  Layer::rna();
+  std::vector<size_t> order(drawings.size());
+  std::iota(order.begin(), order.end(), size_t(0));
+  std::for_each(std::execution::par, order.begin(), order.end(),
+                [&](size_t i) { written[i] = drawing_to_json(*drawings[i]); });
+  std::unordered_map<const VectorDrawing *, json> ahead;
+  ahead.reserve(drawings.size());
+  for (size_t i = 0; i < drawings.size(); i++) {
+    ahead.emplace(drawings[i], std::move(written[i]));
+  }
+  g_drawings_ahead = &ahead;
   json layers = json::array();
   for (const Layer &layer : doc.layers) {
     layers.push_back(layer_to_json(layer));
   }
+  g_drawings_ahead = nullptr;
   /* Keys of the animated gravity and wind, by setting. */
   json simulation_keys = json::object();
   for (const CustomChannel &c : doc.simulation.custom_channels) {
@@ -896,6 +998,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"viewport_samples", doc.viewport_samples},
            {"render_samples", doc.render_samples},
            {"viewport_overlays", overlays_to_json(doc.overlays)},
+           {"viewport_shading", {{"layer_caching", doc.shading.layer_caching}, {"zoom_preview", doc.shading.zoom_preview}}},
            {"mirror_editing", {{"x", doc.mirror_x}, {"y", doc.mirror_y}}},
            {"ui_open", doc.ui_open},
            {"ui_panel_order", doc.ui_panel_order},
@@ -928,7 +1031,8 @@ std::string oanim_document_to_json(const Document &doc)
            {"mask_sources", "shapes"},
        }},
   };
-  return root.dump(1, '\t');
+  /* Compact: a large file's indentation and line breaks were two thirds of its text. */
+  return root.dump();
 }
 
 static bool file_write_bytes(const std::filesystem::path &path, const void *data, size_t size)
@@ -964,7 +1068,8 @@ std::function<bool(std::string *r_error)> oanim_file_writer(const Document &doc,
     }
     void *buffer = nullptr;
     size_t size = 0;
-    bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_DEFAULT_LEVEL);
+    /* Fast compression: on a large file the default level took several times as long for a few per cent. */
+    bool built = mz_zip_writer_add_mem(&zip, DOCUMENT_ENTRY, text.data(), text.size(), MZ_BEST_SPEED);
     /* Video and sound are compressed already: stored. */
     for (const auto &[entry, bytes] : media) {
       if (built) {
@@ -1159,6 +1264,7 @@ static Style style_from_json(const json &j)
   }
   return style;
 }
+
 
 /* Drivers: [{"target": {"layer", "path", "component"}, "type", "expression", "vars": [{"name",
  * "source"}], "remap": {...} when on}]. */
@@ -1513,8 +1619,7 @@ static VectorDrawing drawing_from_json(const json &j)
   for (const json &p : get_array(j, "points")) {
     if (p.is_object()) {
       drawing.points.push_back({get_float2(p, "pos", {}), std::clamp(get_float(p, "radius", 1.0f), 0.0f, POINT_RADIUS_MAX),
-                                get_bool(p, "selected", false),
-                                get_string(p, "corner") == "SHARP" ? CornerType::Sharp : CornerType::Round});
+                                get_bool(p, "selected", false)});
       drawing.points.back().id = get_id(p, "id");
       for (const json &w : get_array(p, "weights")) {
         if (w.is_array() && w.size() == 2 && w[0].is_number_unsigned() && w[1].is_number()) {
@@ -1638,6 +1743,23 @@ static VectorDrawing drawing_from_json(const json &j)
     drawing.groups.push_back(std::move(g));
   }
   drawing.active_group = std::clamp(get_int(j, "active_group", 0), 0, std::max(0, int(drawing.groups.size()) - 1));
+  for (const json &gj : get_array(j, "grids")) {
+    if (!gj.is_object()) {
+      continue;
+    }
+    DrawingGrid g;
+    g.name = get_string(gj, "name", "Grid");
+    g.columns = get_int(gj, "columns", 0);
+    g.rows = get_int(gj, "rows", 0);
+    for (const json &n : get_array(gj, "nodes")) {
+      if (n.is_number_unsigned() || n.is_number_integer()) {
+        g.nodes.push_back(n.get<uint64_t>());
+      }
+    }
+    if (grid_valid(drawing, g)) {
+      drawing.grids.push_back(std::move(g));
+    }
+  }
   drawing_ensure_ids(drawing);
   if (g_loading_version < 3) {
     /* Format 2 and before kept points' and handles' own values in their keys, as Moho does: the
@@ -2072,14 +2194,43 @@ static Layer layer_from_json(const json &j, int depth)
     m.type = type == "ARMATURE"                       ? ModifierType::Armature
              : type == "BOOLEAN" || type == "MERGE" ? ModifierType::Boolean
              : type == "BEVEL"                      ? ModifierType::Bevel
-             : type == "SUBDIVIDE"                  ? ModifierType::Subdivide
+             : type == "RESAMPLE" || type == "SUBDIVIDE" ? ModifierType::Resample
+             : type == "CURVE_DEFORM"               ? ModifierType::CurveDeform
+             : type == "CAGE_DEFORM"                ? ModifierType::CageDeform
+             : type == "MESH_DEFORM" || type == "VECTOR_DEFORM" ? ModifierType::MeshDeform
                                                     : ModifierType::Mirror;
     m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature"
                                     : m.type == ModifierType::Boolean  ? "Boolean"
                                     : m.type == ModifierType::Bevel    ? "Bevel"
-                                    : m.type == ModifierType::Subdivide ? "Subdivide"
+                                    : m.type == ModifierType::Resample ? "Resample"
+                                    : modifier_is_deform(m.type) ? deform_type_name(m.type)
                                                                      : "Mirror");
-    if (m.type == ModifierType::Subdivide) {
+    /* Resample was called Subdivide: a name it was given by default ("Subdivide", "Subdivide.001") follows. */
+    if (m.type == ModifierType::Resample && m.name.rfind("Subdivide", 0) == 0 &&
+        (m.name.size() == 9 || (m.name[9] == '.' && m.name.find_first_not_of("0123456789", 10) == std::string::npos)))
+    {
+      m.name = "Resample" + m.name.substr(9);
+    }
+    if (modifier_is_deform(m.type)) {
+      /* The single Vector Deform of before: Curve, Cage or Mesh Deform by its shape, once all is read. */
+      m.deform_legacy = type == "VECTOR_DEFORM";
+      m.deform_layer = get_id(mj, "layer");
+      m.deform_shape = get_id(mj, "shape");
+      m.deform_custom = get_string(mj, "weights", "AUTOMATIC") == "CUSTOM";
+      m.deform_group = get_string(mj, "group", "");
+      m.deform_strength = std::clamp(get_float(mj, "strength", 1.0f), 0.0f, 1.0f);
+      get_keys(mj, "strength_keys", m.deform_strength_keys);
+      /* Precision is how far a bent line may stray ("tolerance"); files from when it was a spacing
+       * ("precision") take the default. */
+      m.deform_precision = std::max(0.0f, get_float(mj, "tolerance", m.deform_precision));
+      m.deform_stretch = get_bool(mj, "stretch", true);
+      m.deform_resample_self = get_bool(mj, "resample_self", false);
+      if (!cage_method_from_id(get_string(mj, "cage_method", "MEAN_VALUE"), m.deform_cage_method)) {
+        m.deform_cage_method = CageMethod::MeanValue;
+      }
+      m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
+    }
+    if (m.type == ModifierType::Resample) {
       m.subdiv_by_length = get_string(mj, "split", "LENGTH") != "COUNT";
       m.subdiv_spacing = std::max(1e-4f, get_float(mj, "spacing", m.subdiv_spacing));
       m.subdiv_render_spacing = std::max(0.0f, get_float(mj, "render_spacing", 0.0f));
@@ -2112,6 +2263,7 @@ static Layer layer_from_json(const json &j, int depth)
     }
     m.show_viewport = get_bool(mj, "show_viewport", true);
     m.show_render = get_bool(mj, "show_render", true);
+    m.show_points = get_bool(mj, "show_points", false);
     m.show_expanded = get_bool(mj, "show_expanded", true);
     m.axis_x = get_bool(mj, "axis_x", true);
     m.axis_y = get_bool(mj, "axis_y", false);
@@ -2932,6 +3084,10 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.viewport_samples = std::clamp(get_int(j, "viewport_samples", doc.viewport_samples), 1, 16);
   doc.render_samples = std::clamp(get_int(j, "render_samples", doc.render_samples), 1, 16);
   overlays_from_json(j.value("viewport_overlays", json::object()), doc.overlays);
+  if (const auto it = j.find("viewport_shading"); it != j.end() && it->is_object()) {
+    doc.shading.layer_caching = get_bool(*it, "layer_caching", true);
+    doc.shading.zoom_preview = get_bool(*it, "zoom_preview", true);
+  }
   if (const auto it = j.find("mirror_editing"); it != j.end() && it->is_object()) {
     doc.mirror_x = get_bool(*it, "x", false);
     doc.mirror_y = get_bool(*it, "y", false);
@@ -3184,6 +3340,8 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   layers_validate(doc);
   /* Older files' flexi-binding becomes the same weights, kept. */
   document_weight_new_points(doc, true);
+  /* Older files' Vector Deforms become the deform their shape fits. */
+  vector_deform_resolve_legacy(doc);
 
   r_doc = std::move(doc);
   return true;

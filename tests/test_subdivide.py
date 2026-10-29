@@ -1,4 +1,4 @@
-"""The Subdivide modifier: splits segments before the bones bend them, so one long segment bends along a
+"""The Resample modifier (called Subdivide at first): splits segments before the bones bend them, so one long segment bends along a
 bone chain. Placed above Armature; at rest the drawing looks the same; By Length (default) or By Count;
 the new points' weights Blend (default) or come From Bones; saved; Apply makes the points real.
 
@@ -64,13 +64,18 @@ doc.frame_current = 10
 assert len(evaluated()) == 2
 doc.frame_current = 0
 
-# Added: above the Armature modifier, By Length and Blend by default.
-assert ops.object.modifier_add(type="SUBDIVIDE") == {'FINISHED'}
+# Added: above the Armature modifier, named Resample, 4 pieces per segment and Blend by default.
+assert ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
 mods = arm.modifiers
 types = [m["type"] for m in mods]
-assert types.index("SUBDIVIDE") < types.index("ARMATURE"), types
-sub = types.index("SUBDIVIDE")
-assert mods[sub]["split"] == "LENGTH" and mods[sub]["weights"] == "BLEND" and abs(mods[sub]["spacing"] - 0.05) < 1e-6
+assert types.index("RESAMPLE") < types.index("ARMATURE"), types
+sub = types.index("RESAMPLE")
+assert mods[sub]["name"] == "Resample", mods[sub]
+assert mods[sub]["split"] == "COUNT" and mods[sub]["pieces"] == 4 and mods[sub]["weights"] == "BLEND", mods[sub]
+assert len(evaluated()) == 2 + 3, "4 pieces: 3 points added"
+# By Length: a point at least every Spacing (0.05 to start with).
+arm.modifier_set(sub, split="LENGTH")
+assert abs(arm.modifiers[sub]["spacing"] - 0.05) < 1e-6
 
 # At rest the drawing looks the same: the new points lie on the old line, one at least every 0.05.
 points = evaluated()
@@ -138,7 +143,8 @@ ops.layer.new()
 corner = layers.active
 corner.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
 layers.active = corner
-assert ops.object.modifier_add(type="SUBDIVIDE") == {'FINISHED'}
+assert ops.object.modifier_add(type="SUBDIVIDE") == {'FINISHED'}, "scripts from before the rename still work"
+assert "RESAMPLE" in [x["type"] for x in corner.modifiers], corner.modifiers
 cpts = corner.evaluated()[0]
 assert (1.0, 0.0) in [(round(p[0], 5), round(p[1], 5)) for p in cpts], "the corner point stays"
 assert len(cpts) > 3
@@ -150,8 +156,8 @@ layers.active = arm
 arm.modifier_set(sub, spacing=0.1, render_spacing=0.02, max_pieces=12, group="")
 assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
-arm = next(l for l in oanim.data.layers.all() if l.point_count == 2 and "SUBDIVIDE" in [m["type"] for m in l.modifiers])
-m = [x for x in arm.modifiers if x["type"] == "SUBDIVIDE"][0]
+arm = next(l for l in oanim.data.layers.all() if l.point_count == 2 and "RESAMPLE" in [m["type"] for m in l.modifiers])
+m = [x for x in arm.modifiers if x["type"] == "RESAMPLE"][0]
 assert abs(m["spacing"] - 0.1) < 1e-6 and abs(m["render_spacing"] - 0.02) < 1e-6 and m["max_pieces"] == 12, m
 assert len(arm.evaluated()[0]) == 2 + 12 - 1, "max pieces caps it"
 assert len(arm.evaluated(render=True)[0]) == 2 + 12 - 1
@@ -161,8 +167,27 @@ shutil.rmtree(folder, ignore_errors=True)
 oanim.data.document.frame_current = 0
 layers = oanim.data.layers
 layers.active = arm
-sub = [x["type"] for x in arm.modifiers].index("SUBDIVIDE")
+sub = [x["type"] for x in arm.modifiers].index("RESAMPLE")
 assert ops.object.modifier_apply(index=str(sub)) == {'FINISHED'}
-assert arm.point_count == 2 + 11 and "SUBDIVIDE" not in [x["type"] for x in arm.modifiers]
+assert arm.point_count == 2 + 11 and "RESAMPLE" not in [x["type"] for x in arm.modifiers]
+
+# A file from before the rename (type SUBDIVIDE, named Subdivide) opens as Resample, its default name with it.
+import zipfile
+layers.active = arm
+assert ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
+arm.modifier_set([x["type"] for x in arm.modifiers].index("RESAMPLE"), name="Resample.001")
+folder = tempfile.mkdtemp(prefix="oanim_resample_")
+path, old = os.path.join(folder, "new.oanim"), os.path.join(folder, "old.oanim")
+assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+with zipfile.ZipFile(path) as src, zipfile.ZipFile(old, "w", zipfile.ZIP_DEFLATED) as dst:
+    for item in src.infolist():
+        data = src.read(item.filename)
+        if item.filename.endswith(".json"):
+            data = data.decode("utf-8").replace('"RESAMPLE"', '"SUBDIVIDE"').replace('"Resample', '"Subdivide').encode("utf-8")
+        dst.writestr(item, data)
+assert ops.wm.open_mainfile(filepath=old, confirmed="1") == {'FINISHED'}
+found = [(m["type"], m["name"]) for l in oanim.data.layers.all() for m in l.modifiers if m["type"] == "RESAMPLE"]
+assert ("RESAMPLE", "Resample.001") in found, found
+shutil.rmtree(folder, ignore_errors=True)
 
 print("subdivide: ok")

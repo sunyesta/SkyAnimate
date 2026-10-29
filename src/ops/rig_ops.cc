@@ -2827,8 +2827,8 @@ void rig_operators_register()
     return layer && !layer->is_group() ? layer : nullptr;
   };
   rig_operator("object.modifier_add", "Add Modifier",
-               "Add a modifier to the active layer (type=MIRROR, BEVEL or BOOLEAN; a Boolean takes the settings "
-               "object.modifier_boolean_set does)",
+               "Add a modifier to the active layer (type=MIRROR, BEVEL, SUBDIVIDE, CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM "
+               "or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does)",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
                  const std::string type = op_arg(C, "type", "MIRROR");
@@ -2849,20 +2849,48 @@ void rig_operators_register()
                    }
                    return OpStatus::Finished;
                  }
-                 if (type == "SUBDIVIDE") {
+                 /* Resample was called Subdivide: scripts saying SUBDIVIDE still add it. */
+                 if (type == "RESAMPLE" || type == "SUBDIVIDE") {
                    Layer &layer = *modifier_layer(C);
                    if (layer.type != LayerType::Vector) {
-                     report(ReportType::Warning, "Subdivide splits a drawing's segments: pick a drawing layer");
+                     report(ReportType::Warning, "Resample adds points to a drawing's segments: pick a drawing layer");
                      return OpStatus::Cancelled;
                    }
                    Modifier m;
-                   m.type = ModifierType::Subdivide;
-                   m.name = "Subdivide";
+                   m.type = ModifierType::Resample;
+                   m.name = "Resample";
+                   /* Points per segment to start with: it always adds some, and how many is easy to tell. */
+                   m.subdiv_by_length = false;
                    /* Above the Armature modifier: the bones then bend the split curve (below it, it would
                     * only split the bent one). */
                    auto at = std::find_if(layer.modifiers.begin(), layer.modifiers.end(),
                                           [](const Modifier &x) { return x.type == ModifierType::Armature; });
                    layer.modifiers.insert(at, m);
+                   return OpStatus::Finished;
+                 }
+                 if (type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM") {
+                   Layer &layer = *modifier_layer(C);
+                   Modifier m;
+                   m.type = type == "CURVE_DEFORM" ? ModifierType::CurveDeform
+                            : type == "CAGE_DEFORM" ? ModifierType::CageDeform
+                                                    : ModifierType::MeshDeform;
+                   if (layer.type != LayerType::Vector) {
+                     report(ReportType::Warning, std::string(deform_type_name(m.type)) + " bends a drawing: pick a drawing layer");
+                     return OpStatus::Cancelled;
+                   }
+                   m.name = deform_type_name(m.type);
+                   /* A free name: its Custom point group is named after it. */
+                   for (int k = 1; std::any_of(layer.modifiers.begin(), layer.modifiers.end(),
+                                               [&](const Modifier &x) { return x.name == m.name; });
+                        k++)
+                   {
+                     char name[48];
+                     std::snprintf(name, sizeof(name), "%s.%03d", deform_type_name(m.type), k);
+                     m.name = name;
+                   }
+                   /* At the bottom, below Armature: it measures from the drawing before the bones and shares
+                    * each point between them by its weight. */
+                   layer.modifiers.push_back(m);
                    return OpStatus::Finished;
                  }
                  if (type == "BEVEL") {
@@ -2959,7 +2987,9 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  if (!modifier_can_apply(layer.modifiers[index])) {
-                   report(ReportType::Warning, "The Armature modifier can't be applied: it comes with the bone layer");
+                   report(ReportType::Warning, modifier_is_deform(layer.modifiers[index].type)
+                                                   ? "A deform modifier can't be applied: on the setup frame it changes nothing"
+                                                   : "The Armature modifier can't be applied: it comes with the bone layer");
                    return OpStatus::Cancelled;
                  }
                  if (!on_setup_frame(C)) {
@@ -2967,7 +2997,7 @@ void rig_operators_register()
                  }
                  Document &doc = *C.document;
                  const Modifier m = layer.modifiers[index];
-                 if (m.type == ModifierType::Subdivide) {
+                 if (m.type == ModifierType::Resample) {
                    /* The new points would have no keys: on an animated drawing they'd stay put while
                     * their neighbours move. */
                    bool animated = false;
@@ -2980,7 +3010,7 @@ void rig_operators_register()
                      }
                    }
                    if (animated) {
-                     report(ReportType::Warning, "Subdivide can't be applied to a drawing whose points are animated");
+                     report(ReportType::Warning, "Resample can't be applied to a drawing whose points are animated");
                      return OpStatus::Cancelled;
                    }
                    std::vector<int> fresh;
@@ -2999,7 +3029,7 @@ void rig_operators_register()
                      }
                    }
                    layer.modifiers.erase(layer.modifiers.begin() + index);
-                   C.undo_name = "Apply Subdivide";
+                   C.undo_name = "Apply Resample";
                    return OpStatus::Finished;
                  }
                  if (m.type == ModifierType::Bevel) {

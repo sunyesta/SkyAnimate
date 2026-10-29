@@ -9,6 +9,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <queue>
 #include <set>
 
@@ -370,6 +371,8 @@ std::string drawing_group_unique_name(const VectorDrawing &drawing, const std::s
 
 void drawing_groups_prune(VectorDrawing &drawing)
 {
+  /* A grid with a node gone is ordinary drawing from then on. */
+  std::erase_if(drawing.grids, [&](const DrawingGrid &g) { return !grid_valid(drawing, g); });
   if (drawing.groups.empty()) {
     return;
   }
@@ -493,9 +496,7 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
   if (r_joins) {
     r_joins->clear();
   }
-  const auto join_at = [&](int point) {
-    return drawing.points[point].corner == CornerType::Sharp ? StrokeJoin::Sharp : StrokeJoin::Round;
-  };
+
   r_points.clear();
   if (r_radii) {
     r_radii->clear();
@@ -538,14 +539,15 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
     const float total = along.back();
     for (int i = 0; i < steps_per_segment; i++) {
       r_points.push_back(samples[i]);
+      const float blend = total > 1e-9f ? along[i] / total : float(i) / float(steps_per_segment);
       if (r_radii) {
-        r_radii->push_back(r0 + (r1 - r0) * (total > 1e-9f ? along[i] / total : float(i) / float(steps_per_segment)));
+        r_radii->push_back(r0 + (r1 - r0) * blend);
       }
       if (r_visible) {
         r_visible->push_back(visible);
       }
       if (r_joins) {
-        r_joins->push_back(i == 0 ? join_at(from) : StrokeJoin::Smooth);
+        r_joins->push_back(i != 0 ? StrokeJoin::Smooth : StrokeJoin::Round);
       }
     }
   }
@@ -566,14 +568,124 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
       r_visible->push_back(false);
     }
     if (r_joins) {
-      r_joins->push_back(join_at(last_to));
+      r_joins->push_back(StrokeJoin::Round);
     }
   }
   return connected;
 }
 
+/* An outline-only shape's runs where its lines meet three or more at a point (a grid's crossings, a branch):
+ * each curve's run of segments on its own, joined to another only where just those two meet. Walking edges
+ * into chains could turn back on itself there, and a stroke folded on itself draws as a hairline. Empty when
+ * no point has three edges (the shape is chained as before). */
+static std::vector<Shape> shape_line_runs(const VectorDrawing &drawing, const Shape &shape)
+{
+  std::map<int, int> degree;
+  const auto ends = [&](const ShapeEdge &e, int *a, int *b) {
+    curve_segment_points(drawing.curves[size_t(e.curve)], e.segment, a, b);
+  };
+  bool junction = false;
+  for (const ShapeEdge &e : shape.edges) {
+    int a, b;
+    ends(e, &a, &b);
+    junction |= ++degree[a] >= 3;
+    junction |= ++degree[b] >= 3;
+  }
+  if (!junction) {
+    return {};
+  }
+  /* Each curve's segments in the shape, in runs of neighbours along it (round the end of a closed curve). */
+  struct Run {
+    std::vector<ShapeEdge> edges;
+    int first, last;
+  };
+  std::vector<Run> runs;
+  std::vector<int> order;
+  for (const ShapeEdge &e : shape.edges) {
+    if (std::find(order.begin(), order.end(), e.curve) == order.end()) {
+      order.push_back(e.curve);
+    }
+  }
+  for (const int c : order) {
+    const Curve &curve = drawing.curves[size_t(c)];
+    std::vector<int> segs;
+    for (const ShapeEdge &e : shape.edges) {
+      if (e.curve == c) {
+        segs.push_back(e.segment);
+      }
+    }
+    std::sort(segs.begin(), segs.end());
+    segs.erase(std::unique(segs.begin(), segs.end()), segs.end());
+    std::vector<std::vector<int>> pieces;
+    for (const int s : segs) {
+      if (pieces.empty() || pieces.back().back() != s - 1) {
+        pieces.push_back({});
+      }
+      pieces.back().push_back(s);
+    }
+    if (curve.closed && pieces.size() > 1 && pieces.front().front() == 0 &&
+        pieces.back().back() == curve.segment_count() - 1)
+    {
+      pieces.back().insert(pieces.back().end(), pieces.front().begin(), pieces.front().end());
+      pieces.erase(pieces.begin());
+    }
+    for (const std::vector<int> &piece : pieces) {
+      Run run;
+      for (const int s : piece) {
+        run.edges.push_back({c, s});
+      }
+      int a, b;
+      ends(run.edges.front(), &a, &b);
+      run.first = a;
+      ends(run.edges.back(), &a, &b);
+      run.last = b;
+      runs.push_back(std::move(run));
+    }
+  }
+  /* Runs meeting at a point only the two of them reach join into one (the order of a run's edges doesn't
+   * matter: drawing chains them by their points). */
+  bool joined = true;
+  while (joined) {
+    joined = false;
+    for (size_t i = 0; i < runs.size() && !joined; i++) {
+      for (size_t j = i + 1; j < runs.size() && !joined; j++) {
+        Run &r = runs[i];
+        const Run &q = runs[j];
+        if (r.first == r.last || q.first == q.last) {
+          continue;
+        }
+        for (const int p : {r.first, r.last}) {
+          if (degree[p] != 2 || (q.first != p && q.last != p)) {
+            continue;
+          }
+          const int r_other = p == r.first ? r.last : r.first, q_other = p == q.first ? q.last : q.first;
+          r.edges.insert(r.edges.end(), q.edges.begin(), q.edges.end());
+          r.first = r_other;
+          r.last = q_other;
+          runs.erase(runs.begin() + std::ptrdiff_t(j));
+          joined = true;
+          break;
+        }
+      }
+    }
+  }
+  std::vector<Shape> out;
+  for (const Run &run : runs) {
+    Shape s = shape;
+    s.edges = run.edges;
+    out.push_back(std::move(s));
+  }
+  return out;
+}
+
 std::vector<Shape> shape_runs(const VectorDrawing &drawing, const Shape &shape)
 {
+  if (!shape.has_fill && shape.edges.size() > 2) {
+    std::vector<Shape> lines = shape_line_runs(drawing, shape);
+    if (!lines.empty()) {
+      return lines;
+    }
+  }
   std::vector<OrientedEdge> chain;
   bool closed = false;
   if (shape.edges.empty() || shape_chain(drawing, shape, chain, &closed)) {
@@ -605,8 +717,9 @@ int drawing_add_point(VectorDrawing &drawing, float2 pos)
 }
 
 /* Renumbers the shapes' curves and, where `segment_remap` has an entry for a curve (empty: it kept
- * its segments), their segments: segments that joined into one become one edge. A shape whose
- * outline lost a piece (a curve gone, or a segment, -1) is removed: it no longer goes round. */
+ * its segments), their segments: segments that joined into one become one edge. A filled shape whose
+ * outline lost a piece (a curve gone, or a segment, -1) is removed: it no longer goes round. A line
+ * (outline only) keeps the segments it has left, and goes only with the last of them. */
 static void shapes_remap_curves(VectorDrawing &drawing, const std::vector<int> &curve_remap,
                                 const std::vector<std::vector<int>> &segment_remap)
 {
@@ -614,13 +727,19 @@ static void shapes_remap_curves(VectorDrawing &drawing, const std::vector<int> &
     const std::vector<int> &map = segment_remap[e.curve];
     return map.empty() ? e.segment : (e.segment >= 0 && e.segment < int(map.size()) ? map[e.segment] : -1);
   };
+  const auto lost = [&](const ShapeEdge &e) { return curve_remap[e.curve] < 0 || new_segment(e) < 0; };
   std::erase_if(drawing.shapes, [&](const Shape &shape) {
-    return std::any_of(shape.edges.begin(), shape.edges.end(),
-                       [&](const ShapeEdge &e) { return curve_remap[e.curve] < 0 || new_segment(e) < 0; });
+    if (shape.has_fill) {
+      return std::any_of(shape.edges.begin(), shape.edges.end(), lost);
+    }
+    return std::all_of(shape.edges.begin(), shape.edges.end(), lost);
   });
   for (Shape &shape : drawing.shapes) {
     std::vector<ShapeEdge> edges;
     for (const ShapeEdge &e : shape.edges) {
+      if (lost(e)) {
+        continue;
+      }
       const ShapeEdge moved{curve_remap[e.curve], new_segment(e)};
       if (edges.empty() || !(edges.back() == moved)) {
         edges.push_back(moved);
@@ -745,6 +864,195 @@ void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remo
   drawing_groups_prune(drawing);
 }
 
+int drawing_merge_points(VectorDrawing &drawing, const std::vector<std::vector<int>> &groups)
+{
+  DetailScope detail_scope(drawing);
+  drawing_ensure_ids(drawing);
+  const int n_points = int(drawing.points.size());
+  /* Where each point goes: the first of its group. */
+  std::vector<int> into(static_cast<size_t>(n_points));
+  std::iota(into.begin(), into.end(), 0);
+  int merged = 0;
+  for (const std::vector<int> &group : groups) {
+    if (group.size() < 2) {
+      continue;
+    }
+    const int keep = group.front();
+    float2 middle(0.0f, 0.0f);
+    for (const int p : group) {
+      middle = middle + drawing.points[size_t(p)].pos;
+      into[size_t(p)] = keep;
+    }
+    drawing.points[size_t(keep)].pos = middle / float(group.size());
+    drawing.points[size_t(keep)].selected = true;
+    merged += int(group.size()) - 1;
+  }
+  if (merged == 0) {
+    return 0;
+  }
+
+  /* The shapes each merged point was on, by id, to put together the ones that met only at some of them. */
+  std::vector<std::vector<uint64_t>> on_shapes(static_cast<size_t>(n_points));
+  for (const Shape &shape : drawing.shapes) {
+    for (const ShapeEdge &e : shape.edges) {
+      int a, b;
+      curve_segment_points(drawing.curves[size_t(e.curve)], e.segment, &a, &b);
+      for (const int p : {a, b}) {
+        if (std::find(on_shapes[size_t(p)].begin(), on_shapes[size_t(p)].end(), shape.id) == on_shapes[size_t(p)].end()) {
+          on_shapes[size_t(p)].push_back(shape.id);
+        }
+      }
+    }
+  }
+
+  /* Curves run through the kept point; where two of a group came one after the other, the one after goes, the
+   * curve going on from the kept one (its handle out the one that went's). */
+  std::vector<int> curve_remap(drawing.curves.size(), -1);
+  std::vector<std::vector<int>> segment_remap(drawing.curves.size());
+  std::vector<Curve> curves;
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    Curve curve = drawing.curves[c];
+    const bool closed_before = curve.closed;
+    for (CurvePoint &cp : curve.points) {
+      cp.point = into[size_t(cp.point)];
+    }
+    const int n = int(curve.points.size());
+    std::vector<bool> removed(size_t(n), false);
+    for (int k = 1; k < n; k++) {
+      int before = k - 1;
+      while (before > 0 && removed[size_t(before)]) {
+        before--;
+      }
+      if (curve.points[size_t(k)].point == curve.points[size_t(before)].point) {
+        removed[size_t(k)] = true;
+        curve.points[size_t(before)].handle_out = curve.points[size_t(k)].handle_out;
+        curve.points[size_t(before)].handles_set = curve.points[size_t(before)].handles_set ||
+                                                   curve.points[size_t(k)].handles_set;
+      }
+    }
+    /* A loop's last point on its first. */
+    if (curve.closed && n > 1 && !removed[0]) {
+      int last = n - 1;
+      while (last > 0 && removed[size_t(last)]) {
+        last--;
+      }
+      if (last > 0 && curve.points[size_t(last)].point == curve.points[0].point) {
+        removed[size_t(last)] = true;
+        curve.points[0].handle_in = curve.points[size_t(last)].handle_in;
+      }
+    }
+    std::vector<CurvePoint> kept;
+    for (int k = 0; k < n; k++) {
+      if (!removed[size_t(k)]) {
+        kept.push_back(curve.points[size_t(k)]);
+      }
+    }
+    curve.points = std::move(kept);
+    if (curve.closed && curve.points.size() < 3) {
+      curve.closed = false;
+    }
+    if (int(curve.points.size()) != n) {
+      segment_remap[c] = curve_segment_remap(removed, closed_before, curve.closed);
+    }
+    if (curve.points.size() >= 2) {
+      curve_remap[c] = int(curves.size());
+      curves.push_back(std::move(curve));
+    }
+  }
+  shapes_remap_curves(drawing, curve_remap, segment_remap);
+  drawing.curves = std::move(curves);
+
+  /* Shapes that met only at some of a group's points become one: a line with a line, a fill with a fill (a shape
+   * on all of them, as a fill and its outline on one curve, stays as it is). */
+  for (const std::vector<int> &group : groups) {
+    if (group.size() < 2) {
+      continue;
+    }
+    std::vector<uint64_t> all;
+    for (const int p : group) {
+      for (const uint64_t id : on_shapes[size_t(p)]) {
+        if (std::find(all.begin(), all.end(), id) == all.end()) {
+          all.push_back(id);
+        }
+      }
+    }
+    const auto on_every = [&](uint64_t id) {
+      return std::all_of(group.begin(), group.end(), [&](int p) {
+        return std::find(on_shapes[size_t(p)].begin(), on_shapes[size_t(p)].end(), id) != on_shapes[size_t(p)].end();
+      });
+    };
+    for (const bool fill : {true, false}) {
+      std::vector<size_t> together;
+      for (size_t s = 0; s < drawing.shapes.size(); s++) {
+        const Shape &shape = drawing.shapes[s];
+        if (shape.has_fill == fill && std::find(all.begin(), all.end(), shape.id) != all.end() && !on_every(shape.id)) {
+          together.push_back(s);
+        }
+      }
+      if (together.size() < 2) {
+        continue;
+      }
+      Shape &first = drawing.shapes[together.front()];
+      for (size_t k = 1; k < together.size(); k++) {
+        for (const ShapeEdge &e : drawing.shapes[together[k]].edges) {
+          if (std::find(first.edges.begin(), first.edges.end(), e) == first.edges.end()) {
+            first.edges.push_back(e);
+          }
+        }
+      }
+      for (size_t k = together.size() - 1; k >= 1; k--) {
+        drawing.shapes.erase(drawing.shapes.begin() + std::ptrdiff_t(together[k]));
+      }
+    }
+  }
+
+  /* The points that went (no curve uses them now). */
+  std::vector<bool> gone(drawing.points.size(), false);
+  for (int p = 0; p < n_points; p++) {
+    gone[size_t(p)] = into[size_t(p)] != p;
+  }
+  drawing_remove_points(drawing, gone);
+  return merged;
+}
+
+std::vector<std::vector<int>> drawing_points_within(const VectorDrawing &drawing, float distance)
+{
+  std::vector<int> selected;
+  for (int p = 0; p < int(drawing.points.size()); p++) {
+    if (drawing.points[size_t(p)].selected) {
+      selected.push_back(p);
+    }
+  }
+  /* Those within reach of one another, by way of each other (union-find). */
+  std::vector<int> parent(selected.size());
+  std::iota(parent.begin(), parent.end(), 0);
+  const auto root = [&](int i) {
+    while (parent[size_t(i)] != i) {
+      parent[size_t(i)] = parent[size_t(parent[size_t(i)])];
+      i = parent[size_t(i)];
+    }
+    return i;
+  };
+  for (size_t i = 0; i < selected.size(); i++) {
+    for (size_t j = i + 1; j < selected.size(); j++) {
+      if (length(drawing.points[size_t(selected[i])].pos - drawing.points[size_t(selected[j])].pos) <= distance) {
+        parent[size_t(root(int(j)))] = root(int(i));
+      }
+    }
+  }
+  std::map<int, std::vector<int>> by_root;
+  for (size_t i = 0; i < selected.size(); i++) {
+    by_root[root(int(i))].push_back(selected[i]);
+  }
+  std::vector<std::vector<int>> groups;
+  for (auto &[r, group] : by_root) {
+    if (group.size() > 1) {
+      groups.push_back(std::move(group));
+    }
+  }
+  return groups;
+}
+
 void drawing_remove_curves(VectorDrawing &drawing, const std::vector<bool> &remove)
 {
   std::vector<int> curve_remap(drawing.curves.size(), -1);
@@ -774,6 +1082,91 @@ CurveEnd drawing_curve_end_at(const VectorDrawing &drawing, int point)
     }
   }
   return {};
+}
+
+int drawing_extrude_branch(VectorDrawing &drawing, int point, const Style &style)
+{
+  const std::vector<ShapeEdge> touching = drawing_segments_at_point(drawing, point);
+  const auto through = [&](const Shape &shape) {
+    for (const ShapeEdge &e : shape.edges) {
+      if (std::find(touching.begin(), touching.end(), e) != touching.end()) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const int added = drawing_add_point(drawing, drawing.points[size_t(point)].pos);
+  Curve curve;
+  curve.closed = false;
+  curve.points.push_back({point});
+  curve.points.push_back({added});
+  drawing.curves.push_back(std::move(curve));
+  const ShapeEdge edge{int(drawing.curves.size()) - 1, 0};
+  for (Shape &shape : drawing.shapes) {
+    if (shape.has_outline && !shape.has_fill && through(shape)) {
+      shape.edges.push_back(edge);
+      return added;
+    }
+  }
+  Shape line;
+  line.name = "Line";
+  line.style = style;
+  for (const Shape &shape : drawing.shapes) {
+    if (through(shape)) {
+      line.name = shape.name;
+      line.style = shape.style;
+      line.material = shape.material;
+      line.detail_level = shape.detail_level;
+      break;
+    }
+  }
+  line.has_outline = true;
+  line.has_fill = false;
+  line.edges.push_back(edge);
+  drawing.shapes.push_back(std::move(line));
+  return added;
+}
+
+std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &style)
+{
+  std::vector<int> new_points;
+  const int count = int(drawing.points.size());
+  for (int i = 0; i < count; i++) {
+    if (!drawing.points[size_t(i)].selected) {
+      continue;
+    }
+    const CurveEnd end = drawing_curve_end_at(drawing, i);
+    if (end.curve < 0) {
+      new_points.push_back(drawing_extrude_branch(drawing, i, style));
+      continue;
+    }
+    if (!end.at_end) {
+      drawing_reverse_curve(drawing, end.curve);
+    }
+    const int added = drawing_add_point(drawing, drawing.points[size_t(i)].pos);
+    Curve &curve = drawing.curves[size_t(end.curve)];
+    curve.points.push_back({added});
+    /* Shapes that cover the whole curve grow with it. */
+    const int new_segment = curve.segment_count() - 1;
+    for (Shape &shape : drawing.shapes) {
+      int on_curve = 0;
+      for (const ShapeEdge &e : shape.edges) {
+        on_curve += e.curve == end.curve;
+      }
+      if (on_curve == new_segment && !shape.has_fill) {
+        shape.edges.push_back({end.curve, new_segment});
+      }
+    }
+    new_points.push_back(added);
+  }
+  for (MeshPoint &p : drawing.points) {
+    p.selected = false;
+  }
+  drawing_deselect_handles(drawing);
+  for (const int p : new_points) {
+    drawing.points[size_t(p)].selected = true;
+  }
+  return new_points;
 }
 
 std::vector<ShapeEdge> drawing_segments_at_point(const VectorDrawing &drawing, int point)
@@ -1025,8 +1418,65 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point)
 /* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of
  * p3, back along the curve), to the samples `d`: the two handle lengths, by least squares, with the
  * samples' places along the curve refined by Newton steps. */
-static void fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const std::vector<float2> &d,
-                               float *r_a1, float *r_a2)
+/* The handles (as offsets: `r_h1` from p0, `r_h2` from p3) of the cubic from p0 to p3 nearest the samples
+ * `pts` (least squares). The samples were made evenly spaced in the segment's own parameter, and keep it as
+ * they move: fitted at those parameters, samples nobody moved give back the curve they came from exactly
+ * (guessing the parameters from distances along them bends sharply curved segments out of shape). A
+ * handle given (`fix1`, `fix2`) stays as it is; `was` is the longest the segment's handles were. */
+void bezier_fit_handles(const std::vector<float2> &pts, const std::vector<float> &params, float2 p0, float2 p3,
+                        const float2 *fix1, const float2 *fix2, float was, float2 *r_h1, float2 *r_h2)
+{
+  const size_t m = pts.size();
+  float total = 0.0f;
+  for (size_t k = 1; k < m; k++) {
+    total += distance(pts[k], pts[k - 1]);
+  }
+  const float2 chord = p3 - p0;
+  float2 h1 = fix1 ? *fix1 : chord / 3.0f, h2 = fix2 ? *fix2 : -chord / 3.0f;
+  if (m > 2) {
+    float s11 = 0.0f, s12 = 0.0f, s22 = 0.0f;
+    float2 r1, r2;
+    for (size_t k = 0; k < m; k++) {
+      const float t = params[k], s = 1.0f - t;
+      const float b0 = s * s * s, b1 = 3.0f * s * s * t, b2 = 3.0f * s * t * t, b3 = t * t * t;
+      const float2 rest = pts[k] - (p0 * (b0 + b1) + p3 * (b2 + b3));
+      s11 += b1 * b1;
+      s12 += b1 * b2;
+      s22 += b2 * b2;
+      r1 += rest * b1;
+      r2 += rest * b2;
+    }
+    if (fix1 && fix2) {
+      /* Both kept. */
+    }
+    else if (fix1) {
+      h2 = s22 > 1e-12f ? (r2 - h1 * s12) / s22 : h2;
+    }
+    else if (fix2) {
+      h1 = s11 > 1e-12f ? (r1 - h2 * s12) / s11 : h1;
+    }
+    else {
+      const float det = s11 * s22 - s12 * s12;
+      if (det > 1e-12f * s11 * s22) {
+        h1 = (r1 * s22 - r2 * s12) / det;
+        h2 = (r2 * s11 - r1 * s12) / det;
+      }
+    }
+  }
+  /* A handle reaching far past the segment is a fit gone wrong: a third of the way along. */
+  const float most = std::max({length(chord), total, was}) * 1.5f;
+  if (!fix1 && length(h1) > most) {
+    h1 = chord / 3.0f;
+  }
+  if (!fix2 && length(h2) > most) {
+    h2 = -chord / 3.0f;
+  }
+  *r_h1 = h1;
+  *r_h2 = h2;
+}
+
+void bezier_fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const std::vector<float2> &d,
+                               float *r_a1, float *r_a2, bool steady)
 {
   const float chord = distance(p0, p3);
   *r_a1 = *r_a2 = chord / 3.0f;
@@ -1062,8 +1512,13 @@ static void fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const
     }
     a1 = float((x0 * c11 - x1 * c01) / det);
     a2 = float((c00 * x1 - c01 * x0) / det);
-    /* A handle turned back or vanishing means no good fit this way: thirds of the chord. */
-    if (a1 < chord * 1e-3f || a2 < chord * 1e-3f) {
+    /* A handle turned back or vanishing means no good fit this way: thirds of the chord (steady: held short, and on). */
+    if (steady) {
+      /* And never longer than the chord: longer, the segment loops on itself. */
+      a1 = std::clamp(a1, chord * 1e-3f, chord);
+      a2 = std::clamp(a2, chord * 1e-3f, chord);
+    }
+    else if (a1 < chord * 1e-3f || a2 < chord * 1e-3f) {
       a1 = a2 = chord / 3.0f;
       break;
     }
@@ -1169,7 +1624,7 @@ void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &poi
       t1 = normalize(t1);
       t2 = normalize(t2);
       float a1 = 0.0f, a2 = 0.0f;
-      fit_handle_lengths(samples.front(), samples.back(), t1, t2, samples, &a1, &a2);
+      bezier_fit_handle_lengths(samples.front(), samples.back(), t1, t2, samples, &a1, &a2);
       fits.push_back({drawing.points[curve.points[a].point].id, drawing.points[curve.points[b].point].id, t1 * a1, t2 * a2});
     }
   }
@@ -1252,19 +1707,74 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve_index)
   }
 }
 
-/* Where a shape's outline stops, if it does: the points at either end of its run. */
-static bool shape_open_ends(const VectorDrawing &drawing, const Shape &shape, int *r_from, int *r_to)
+/* How many of `shape`'s edges run to or from point `p`: 1 where one of its runs stops there (a shape can be
+ * several runs, as a Moho stroke shape of loose lines). */
+static int shape_edges_at(const VectorDrawing &drawing, const Shape &shape, int p)
 {
-  std::vector<OrientedEdge> chain;
-  bool closed = false;
-  if (shape.edges.empty() || !shape_chain(drawing, shape, chain, &closed) || closed) {
-    return false;
+  int count = 0;
+  for (const ShapeEdge &e : shape.edges) {
+    if (e.curve < 0 || e.curve >= int(drawing.curves.size())) {
+      continue;
+    }
+    int from, to;
+    curve_segment_points(drawing.curves[size_t(e.curve)], e.segment, &from, &to);
+    count += (from == p ? 1 : 0) + (to == p ? 1 : 0);
   }
-  int a, b;
-  curve_segment_points(drawing.curves[chain.front().edge.curve], chain.front().edge.segment, &a, &b);
-  *r_from = chain.front().reversed ? b : a;
-  curve_segment_points(drawing.curves[chain.back().edge.curve], chain.back().edge.segment, &a, &b);
-  *r_to = chain.back().reversed ? a : b;
+  return count;
+}
+
+/* Two points that aren't both curve ends (Blender's F between any two vertices): a new segment of their own, welded
+ * to both, drawn as the line through either draws (a line's shape takes it as another run; a filled shape lends a
+ * line-only copy of its look, so its fill keeps going round). */
+static bool make_segment_between(VectorDrawing &drawing, int a, int b)
+{
+  for (const Curve &curve : drawing.curves) {
+    for (int s = 0; s < curve.segment_count(); s++) {
+      int from, to;
+      curve_segment_points(curve, s, &from, &to);
+      if ((from == a && to == b) || (from == b && to == a)) {
+        return false;
+      }
+    }
+  }
+  DetailScope detail_scope(drawing);
+  Curve curve;
+  CurvePoint ca, cb;
+  ca.point = a;
+  cb.point = b;
+  curve.points = {ca, cb};
+  drawing.curves.push_back(std::move(curve));
+  const ShapeEdge added{int(drawing.curves.size()) - 1, 0};
+  int line = -1, look = -1;
+  for (int s = int(drawing.shapes.size()) - 1; s >= 0; s--) {
+    const Shape &shape = drawing.shapes[size_t(s)];
+    if (shape_edges_at(drawing, shape, a) == 0 && shape_edges_at(drawing, shape, b) == 0) {
+      continue;
+    }
+    look = look < 0 ? s : look;
+    if (!shape.has_fill && line < 0) {
+      line = s;
+    }
+  }
+  if (line >= 0) {
+    drawing.shapes[size_t(line)].edges.push_back(added);
+    return true;
+  }
+  Shape shape;
+  if (look >= 0) {
+    shape.style = drawing.shapes[size_t(look)].style;
+    shape.material = drawing.shapes[size_t(look)].material;
+  }
+  shape.name = "Line";
+  shape.has_fill = false;
+  shape.has_outline = true;
+  /* A fill with no outline has no width to show the line with: the default one. */
+  if (shape.style.line_width <= 0.0f) {
+    shape.style.line_width = Style().line_width;
+  }
+  shape.edges.push_back(added);
+  drawing.shapes.push_back(std::move(shape));
+  drawing_ensure_ids(drawing);
   return true;
 }
 
@@ -1293,7 +1803,7 @@ bool drawing_make_segment(VectorDrawing &drawing, int a, int b)
   };
   const std::vector<CurveEnd> ends_a = ends_of(a), ends_b = ends_of(b);
   if (ends_a.empty() || ends_b.empty()) {
-    return false;
+    return make_segment_between(drawing, a, b);
   }
   CurveEnd end_a = ends_a.front(), end_b = ends_b.front();
   for (const CurveEnd &ea : ends_a) {
@@ -1306,35 +1816,34 @@ bool drawing_make_segment(VectorDrawing &drawing, int a, int b)
   }
   const bool close = end_a.curve == end_b.curve;
   if (close && drawing.curves[end_a.curve].points.size() < 3) {
-    return false;
+    return make_segment_between(drawing, a, b);
   }
   if (!close && std::find_if(ends_b.begin(), ends_b.end(), [&](const CurveEnd &e) { return e.curve != end_a.curve; }) ==
                     ends_b.end())
   {
-    return false;
+    return make_segment_between(drawing, a, b);
   }
   if (!close && end_b.curve == end_a.curve) {
     end_b = *std::find_if(ends_b.begin(), ends_b.end(), [&](const CurveEnd &e) { return e.curve != end_a.curve; });
   }
   DetailScope detail_scope(drawing);
-  /* The shapes that stop at either point, before anything moves. */
+  /* The shapes that stop at either point, before anything moves: one of their runs ends there (a shape of
+   * several runs too). */
   int shape_a = -1, shape_b = -1;
   for (int s = 0; s < int(drawing.shapes.size()); s++) {
-    int from, to;
-    if (!shape_open_ends(drawing, drawing.shapes[s], &from, &to)) {
-      continue;
-    }
+    const bool at_a = shape_edges_at(drawing, drawing.shapes[s], a) == 1;
+    const bool at_b = shape_edges_at(drawing, drawing.shapes[s], b) == 1;
     if (close) {
       /* Closing: the one that runs from one end to the other. */
-      if (shape_a < 0 && ((from == a && to == b) || (from == b && to == a))) {
+      if (shape_a < 0 && at_a && at_b) {
         shape_a = s;
       }
       continue;
     }
-    if (shape_a < 0 && (from == a || to == a)) {
+    if (shape_a < 0 && at_a) {
       shape_a = s;
     }
-    if (shape_b < 0 && (from == b || to == b)) {
+    if (shape_b < 0 && at_b) {
       shape_b = s;
     }
   }
@@ -1502,25 +2011,50 @@ bool drawing_duplicate_selected(VectorDrawing &drawing)
     return false;
   }
 
+  /* A shape the copied pieces wholly cover is copied as it is. One they cover only part of gives the copy a
+   * shape of its own in the same look, once however many shapes drew those pieces: a piece of a stroke keeps
+   * its line (without the fill it can't close); a piece of a fill with no line stays a fill with no line (it
+   * shows once closed), never gaining a stroke the original didn't have. */
   const int old_shape_count = int(drawing.shapes.size());
+  std::vector<std::vector<ShapeEdge>> lines;
   for (int s = 0; s < old_shape_count; s++) {
     Shape copy = drawing.shapes[s];
-    bool covered = !copy.edges.empty();
-    for (ShapeEdge &edge : copy.edges) {
-      auto it = segment_copy.find({edge.curve, edge.segment});
-      if (it == segment_copy.end()) {
-        covered = false;
-        break;
+    std::vector<ShapeEdge> edges;
+    for (const ShapeEdge &edge : copy.edges) {
+      if (auto it = segment_copy.find({edge.curve, edge.segment}); it != segment_copy.end()) {
+        edges.push_back(it->second);
       }
-      edge = it->second;
     }
-    if (covered) {
-      drawing.shapes.push_back(std::move(copy));
+    if (edges.empty()) {
+      continue;
     }
+    const bool covered = edges.size() == copy.edges.size();
+    if (!covered) {
+      std::vector<ShapeEdge> sorted = edges;
+      std::sort(sorted.begin(), sorted.end(), [](const ShapeEdge &x, const ShapeEdge &y) {
+        return x.curve != y.curve ? x.curve < y.curve : x.segment < y.segment;
+      });
+      if (std::find(lines.begin(), lines.end(), sorted) != lines.end()) {
+        continue;
+      }
+      lines.push_back(std::move(sorted));
+      if (copy.has_outline) {
+        copy.has_fill = false;
+      }
+    }
+    copy.edges = std::move(edges);
+    drawing.shapes.push_back(std::move(copy));
   }
 
   for (int p = 0; p < int(drawing.points.size()); p++) {
     drawing.points[p].selected = p >= old_point_count;
+  }
+  /* The selection is the copy now: handles picked on their own stay behind no more (moving the copy would
+   * swing them over with it, the original's points staying put). */
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.select_in = cp.select_out = false;
+    }
   }
   return true;
 }
@@ -1703,6 +2237,8 @@ const char *primitive_name(PrimitiveKind kind)
       return "Box";
     case PrimitiveKind::Circle:
       return "Circle";
+    case PrimitiveKind::Grid:
+      return "Grid";
   }
   return "Shape";
 }
@@ -1714,6 +2250,8 @@ const char *primitive_identifier(PrimitiveKind kind)
       return "BOX";
     case PrimitiveKind::Circle:
       return "CIRCLE";
+    case PrimitiveKind::Grid:
+      return "GRID";
   }
   return "BOX";
 }
@@ -1730,9 +2268,12 @@ bool primitive_from_identifier(const std::string &identifier, PrimitiveKind *r_k
 }
 
 VectorDrawing primitive_drawing(PrimitiveKind kind, const std::vector<float2> &points, const Style &style,
-                                bool fill)
+                                bool fill, int columns, int rows)
 {
   VectorDrawing drawing;
+  if (kind == PrimitiveKind::Grid) {
+    return points.size() < 2 ? drawing : grid_drawing(points.front(), points.back(), columns, rows, style);
+  }
   constexpr float EPS = 1e-5f;
   /* Moho's circle curvature: four smooth points make a circle when each handle is 0.5523 of
    * the radius (the usual Bezier circle), and Moho measures handles from the neighbour. */
@@ -1754,6 +2295,8 @@ VectorDrawing primitive_drawing(PrimitiveKind kind, const std::vector<float2> &p
       is_closed = true;
       break;
     }
+    case PrimitiveKind::Grid:
+      break;
     case PrimitiveKind::Circle: {
       const float rx = std::abs(b.x - a.x) * 0.5f, ry = std::abs(b.y - a.y) * 0.5f;
       if (points.size() < 2 || rx < EPS || ry < EPS) {
@@ -1802,7 +2345,17 @@ void drawing_append_selected(VectorDrawing &dst, const VectorDrawing &src)
   const int curve_offset = int(dst.curves.size());
   for (MeshPoint p : src.points) {
     p.selected = true;
+    /* A new id here (a grid's nodes are named by their ids in `src`, found again below). */
+    p.id = 0;
     dst.points.push_back(p);
+  }
+  drawing_ensure_ids(dst);
+  for (DrawingGrid grid : src.grids) {
+    for (uint64_t &node : grid.nodes) {
+      const int k = drawing_point_index(src, node);
+      node = k >= 0 ? dst.points[size_t(point_offset + k)].id : 0;
+    }
+    dst.grids.push_back(std::move(grid));
   }
   for (Curve curve : src.curves) {
     for (CurvePoint &cp : curve.points) {
@@ -1838,15 +2391,6 @@ void drawing_set_edges_hidden(VectorDrawing &drawing, const std::vector<ShapeEdg
 {
   for (const ShapeEdge &e : edges) {
     drawing.curves[e.curve].points[e.segment].edge_hidden = hidden;
-  }
-}
-
-void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner)
-{
-  for (MeshPoint &p : drawing.points) {
-    if (p.selected) {
-      p.corner = corner;
-    }
   }
 }
 
@@ -2013,7 +2557,7 @@ void drawing_repair_stale_handle_keys(VectorDrawing &drawing)
   }
 }
 
-int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
+static int delete_edges_keep_points(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
 {
   DetailScope detail_scope(drawing);
   const auto doomed = [&](int c, int seg) {
@@ -2101,7 +2645,35 @@ int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &e
   }
   drawing.curves = std::move(curves);
   drawing.shapes = std::move(shapes);
-  /* Points always stay, even one left on no curve (Moho keeps such points too). */
+  return deleted;
+}
+
+int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
+{
+  /* The deleted edges' points: those left on no curve go too, as Blender's Delete Edges takes the vertices it
+   * leaves loose. A point loose before stays. */
+  std::vector<bool> ends(drawing.points.size(), false);
+  for (const ShapeEdge &e : edges) {
+    if (e.curve >= 0 && e.curve < int(drawing.curves.size()) && e.segment >= 0 &&
+        e.segment < drawing.curves[size_t(e.curve)].segment_count())
+    {
+      int a, b;
+      curve_segment_points(drawing.curves[size_t(e.curve)], e.segment, &a, &b);
+      ends[size_t(a)] = ends[size_t(b)] = true;
+    }
+  }
+  const int deleted = delete_edges_keep_points(drawing, edges);
+  if (deleted > 0) {
+    std::vector<bool> loose = ends;
+    for (const Curve &curve : drawing.curves) {
+      for (const CurvePoint &cp : curve.points) {
+        loose[size_t(cp.point)] = false;
+      }
+    }
+    if (std::find(loose.begin(), loose.end(), true) != loose.end()) {
+      drawing_remove_points(drawing, loose);
+    }
+  }
   return deleted;
 }
 
@@ -2797,7 +3369,6 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
       to.pos = point_setup_pos(to) + reflect2(from.pos - point_setup_pos(from), true, false);
     }
     to.radius = from.radius;
-    to.corner = from.corner;
     if (weight_flip) {
       to.weights = from.weights;
       for (BoneWeight &w : to.weights) {

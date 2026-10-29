@@ -616,7 +616,24 @@ struct Bone {
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature, Boolean, Bevel, Subdivide };
+enum class ModifierType { Mirror, Armature, Boolean, Bevel, Resample, CurveDeform, CageDeform, MeshDeform };
+
+/* The deform modifiers (anim/vector_deform.hh): a shape on another layer bends this one. Curve Deform follows an
+ * open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh of cells drawn by hand. They share their
+ * settings (the deform_* fields). */
+inline bool modifier_is_deform(ModifierType type)
+{
+  return type == ModifierType::CurveDeform || type == ModifierType::CageDeform || type == ModifierType::MeshDeform;
+}
+/* "Curve Deform", "Cage Deform", "Mesh Deform"; and as files and Python name them, "CURVE_DEFORM"... */
+inline const char *deform_type_name(ModifierType type)
+{
+  return type == ModifierType::CurveDeform ? "Curve Deform" : type == ModifierType::CageDeform ? "Cage Deform" : "Mesh Deform";
+}
+inline const char *deform_type_id(ModifierType type)
+{
+  return type == ModifierType::CurveDeform ? "CURVE_DEFORM" : type == ModifierType::CageDeform ? "CAGE_DEFORM" : "MESH_DEFORM";
+}
 
 /* Bevel: which corners it cuts (Blender's Limit Method): every one, those the outline turns sharply
  * at, or a point group's; and what its Amount measures (Width Type): how far along each side the cut
@@ -639,12 +656,29 @@ struct MergeTarget {
 struct Modifier;
 /* Whether Apply can make it part of the drawing (all but Armature, which comes with the bone layer). */
 bool modifier_can_apply(const Modifier &m);
+/* Whether it can add points to the drawing (Mirror, Bevel, Resample, Boolean, and the deforms' Precision): the
+ * ones with a Show Points button. */
+bool modifier_makes_points(const Modifier &m);
+
+/* How Cage Deform bends what is in its cage: Mean Value (mean value coordinates: smooth, the outline exact, but the
+ * inside squashes where a side bulges or stretches), Rigid (as rigid as possible: the inside keeps its shape as far as
+ * it can, the outline still exact) or Envelope (Toon Boom Harmony's: each side of the cage carries what lies near it,
+ * at its distance from it, so lines along the outline keep their width; the sides blended by nearness, as much as
+ * Blend says). */
+enum class CageMethod { MeanValue, Rigid, Envelope };
+
+/* A Cage Method's name in files and Python ("MEAN_VALUE", "RIGID", "ENVELOPE"), and back (false for none: a file's
+ * "GREEN", a method since removed, opens as Mean Value). */
+const char *cage_method_id(CageMethod method);
+bool cage_method_from_id(const std::string &id, CageMethod &r_method);
 
 struct Modifier {
   ModifierType type = ModifierType::Mirror;
   std::string name = "Mirror";
   bool show_viewport = true;
   bool show_render = true;
+  /* Show Points: the points it adds marked in the viewport (hollow teal dots, where they end up; never picked). */
+  bool show_points = false;
   /* Shown open in the Modifiers tab. */
   bool show_expanded = true;
   /* Mirror: across the layer's vertical axis (x flips) and/or its horizontal one, through
@@ -684,7 +718,7 @@ struct Modifier {
   float bevel_profile = 0.5f;
   bool bevel_clamp = true;
   Channel<float> merge_smoothing_keys = Channel<float>::by_hand();
-  /* Subdivide (anim/subdivide.hh): By Length (a point at least every `subdiv_spacing` along each
+  /* Resample (anim/subdivide.hh; it was called Subdivide): By Length (a point at least every `subdiv_spacing` along each
    * segment, in the setup pose; `subdiv_render_spacing` for renders, 0: the same) or By Count
    * (`subdiv_pieces` per segment), never more than `subdiv_max_pieces`; the new points' weights Blend
    * their end points' or come From Bones; only the segments touching point group `subdiv_group` when
@@ -699,6 +733,34 @@ struct Modifier {
    * (Blender's Preserve Volume); off, they blend the bones' matrices as other points do. */
   bool subdiv_preserve_volume = true;
   std::string subdiv_group;
+  /* Curve, Cage and Mesh Deform (anim/vector_deform.hh): shape `deform_shape` (its id) of layer `deform_layer` bends this
+   * layer as it moves from where it is on the setup frame: a grid by its cells, a closed shape as a cage
+   * round what is in it, an open line by what lies along it. How much each point follows it: Automatic
+   * (every point of the layer fully, past the shape too), or Custom, point group `deform_group`'s weights
+   * (points it has no weight for take the automatic one). A point's weight is also how much it follows the deform rather than the
+   * bones. `deform_strength` (keyable) scales every weight. `deform_precision` > 0 first adds points where
+   * the deform would bend a segment further than that from what its points and handles can follow
+   * (Illustrator's Fidelity), so straight lines bend too. A line: what lies along it keeps its distance along
+   * it, spread as the line grows when `deform_stretch`; */
+  uint64_t deform_layer = 0;
+  uint64_t deform_shape = 0;
+  bool deform_custom = false;
+  std::string deform_group;
+  float deform_strength = 1.0f;
+  Channel<float> deform_strength_keys = Channel<float>::by_hand();
+  float deform_precision = 0.002f;
+  /* Resample Self: each segment of the bent drawing is sampled evenly along it, the samples are bent, and the
+   * drawing's own points go where theirs went, each segment's handles fitted to its bent samples (as a sculpt
+   * stroke fits a line back): the drawing bends truer with only its own points (Precision adds none). */
+  bool deform_resample_self = false;
+  /* Not saved: read from a file of the single Vector Deform modifier, its type still to be told by its shape. */
+  bool deform_legacy = false;
+  bool deform_stretch = true;
+  /* Cage Deform's Method: how what is in the cage follows it. */
+  CageMethod deform_cage_method = CageMethod::MeanValue;
+  /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how
+   * near it is); 1, gently (as how near it is). */
+  float deform_blend = 0.5f;
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;

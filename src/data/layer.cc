@@ -4,9 +4,34 @@
 
 namespace oanim {
 
+bool modifier_makes_points(const Modifier &m)
+{
+  return m.type == ModifierType::Mirror || m.type == ModifierType::Bevel || m.type == ModifierType::Resample ||
+         m.type == ModifierType::Boolean || modifier_is_deform(m.type);
+}
+
+static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "ENVELOPE"};
+
+const char *cage_method_id(CageMethod method)
+{
+  return CAGE_METHOD_IDS[int(method)];
+}
+
+bool cage_method_from_id(const std::string &id, CageMethod &r_method)
+{
+  for (int k = 0; k < 3; k++) {
+    if (id == CAGE_METHOD_IDS[k]) {
+      r_method = CageMethod(k);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool modifier_can_apply(const Modifier &m)
 {
-  return m.type != ModifierType::Armature;
+  /* A deform modifier does nothing on the setup frame, where Apply works. */
+  return m.type != ModifierType::Armature && !modifier_is_deform(m.type);
 }
 
 static constexpr const char *MASK_EXTEND_IDS[] = {"NONE", "UP", "DOWN", "LEFT", "RIGHT"};

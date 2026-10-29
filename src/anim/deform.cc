@@ -6,6 +6,7 @@
 #include "anim/bevel.hh"
 #include "anim/merge.hh"
 #include "anim/subdivide.hh"
+#include "anim/vector_deform.hh"
 #include "anim/reference.hh"
 #include "data/bones.hh"
 #include "data/detail.hh"
@@ -422,7 +423,7 @@ static void deform(const Deformer &d, VectorDrawing &drawing, Transform2D *r_rig
     for (int k = 0; k < n; k++) {
       CurvePoint &cp = curve.points[size_t(k)];
       if (cp.handles_follow_curve && n > 1) {
-        /* Turned and stretched as the line through its neighbours is (Subdivide's handles for points
+        /* Turned and stretched as the line through its neighbours is (Resample's handles for points
          * whose handles the curve works out). */
         const int prev = curve.closed ? (k - 1 + n) % n : std::max(k - 1, 0);
         const int next = curve.closed ? (k + 1) % n : std::min(k + 1, n - 1);
@@ -490,7 +491,7 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
       return true;
     }
     if (m.type == ModifierType::Boolean || (m.type == ModifierType::Bevel && m.bevel_amount > 0.0f) ||
-        m.type == ModifierType::Subdivide)
+        m.type == ModifierType::Resample || (modifier_is_deform(m.type) && m.deform_layer != 0))
     {
       return true;
     }
@@ -665,7 +666,7 @@ static void transform_drawing(VectorDrawing &drawing, const Transform2D &t)
   }
 }
 
-/* Subdivide, with From Bones: the new points weighted from the nearest bones of `layer`'s bone layer. */
+/* Resample, with From Bones: the new points weighted from the nearest bones of `layer`'s bone layer. */
 static VectorDrawing subdivided(const Document &doc, const Layer &layer, const VectorDrawing &drawing,
                                 const Modifier &m, bool render)
 {
@@ -700,7 +701,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       else if (m.type == ModifierType::Bevel) {
         drawing = drawing_bevel(drawing, m);
       }
-      else if (m.type == ModifierType::Subdivide) {
+      else if (m.type == ModifierType::Resample) {
         drawing = subdivided(doc, *original, drawing, m, render);
       }
       else if (m.type == ModifierType::Armature) {
@@ -734,24 +735,46 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
   const bool only_bones = !on_eye && std::all_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &m) {
     return !modifier_on(m, render) || m.type == ModifierType::Armature;
   });
-  for (const Modifier &m : layer.modifiers) {
+  /* The drawing as it was before the bones moved it: what a deform modifier below them measures from (each
+   * point's weight shares it between the deform and the bones). Kept only while a deform modifier follows. */
+  VectorDrawing before_bones;
+  bool bones_moved = false;
+  const bool deforms = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &m) {
+    return modifier_on(m, render) && modifier_is_deform(m.type);
+  });
+  for (size_t index = 0; index < layer.modifiers.size(); index++) {
+    const Modifier &m = layer.modifiers[index];
     if (!modifier_on(m, render)) {
       continue;
     }
+    /* A modifier's new points come after the drawing's (Show Points marks them by it). */
+    const size_t had = drawing.points.size();
+    const auto mark_new = [&]() {
+      for (size_t k = had; k < drawing.points.size(); k++) {
+        drawing.points[k].made_by = int(index);
+      }
+    };
     if (m.type == ModifierType::Mirror) {
       drawing = drawing_mirror(drawing, m, flip);
     }
     else if (m.type == ModifierType::Bevel) {
       drawing = drawing_bevel(drawing, m);
     }
-    else if (m.type == ModifierType::Subdivide) {
+    else if (m.type == ModifierType::Resample) {
       drawing = subdivided(doc, layer, drawing, m, render);
     }
     else if (m.type == ModifierType::Armature) {
       Deformer d;
       if (deformer_init(doc, layer, d)) {
+        if (deforms) {
+          before_bones = drawing;
+          bones_moved = true;
+        }
         deform(d, drawing, only_bones ? r_rigid : nullptr);
       }
+    }
+    else if (modifier_is_deform(m.type)) {
+      vector_deform_apply(doc, layer, m, drawing, bones_moved ? before_bones : drawing, render);
     }
     else if (m.type == ModifierType::Boolean) {
       /* At its place in the stack, top to bottom: it joins the drawing as the modifiers above leave it
@@ -759,6 +782,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       drawing_detail_final_handles(drawing);
       merge_modifier_apply(doc, layer, m, drawing, render);
     }
+    mark_new();
   }
   /* A pupil's drawings on its eyeball, as the Look At turns it (after the stack: on what it shows). */
   if (on_eye) {
@@ -814,7 +838,7 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
     else if (modifier_on(m, render) && m.type == ModifierType::Bevel) {
       drawing = drawing_bevel(drawing, m);
     }
-    else if (modifier_on(m, render) && m.type == ModifierType::Subdivide) {
+    else if (modifier_on(m, render) && m.type == ModifierType::Resample) {
       drawing = drawing_subdivide(drawing, m, render);
     }
   }
@@ -848,6 +872,22 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
       for (size_t i = 0; i < drawing.points.size(); i++) {
         skins[i] = look_warp_skin(eye, to_armature, skins[i].apply(drawing.points[i].pos)) * skins[i];
       }
+    }
+  }
+  /* Bent by a deform modifier: on to where it shows. Only where the stack keeps the points' indices (no Bevel or
+   * Boolean, which make the outline anew). */
+  bool deformed = false, renumbered = false;
+  for (const Modifier &m : layer.modifiers) {
+    if (!m.show_viewport) {
+      continue;
+    }
+    deformed = deformed || (modifier_is_deform(m.type) && m.deform_layer != 0);
+    renumbered = renumbered || m.type == ModifierType::Bevel || m.type == ModifierType::Boolean;
+  }
+  if (deformed && !renumbered && layer.type == LayerType::Vector) {
+    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    for (size_t i = 0; i < drawing.points.size() && i < shown.points.size(); i++) {
+      skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(drawing.points[i].pos)) * skins[i];
     }
   }
   return skins;

@@ -33,8 +33,9 @@ enum class BrushTarget { Shapes, Tool };
  * line colour. `revert_tip` adds a revert button (a reference's changed brush); returns true when
  * it's clicked. */
 bool brush_row(Context &C, const BrushSettings &brush, const Style &style, const char *revert_tip = nullptr);
-/* Opens the Brush Settings window on the selected shapes' brush or the Draw tool's. */
-void brush_window_open(BrushTarget target);
+/* Opens the Brush Settings window on the selected shapes' brush or the Draw tool's (on its Brushes tab
+ * when `presets`). */
+void brush_window_open(BrushTarget target, bool presets = false);
 /* Draws the window while it's open. Call once per frame. */
 void brush_window_draw(Context &C);
 /* Shows or takes back the hovered preset (call once per frame, after the UI is drawn). */

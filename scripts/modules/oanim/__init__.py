@@ -192,10 +192,32 @@ class _Layer:
         """Add a curve through points [(x, y), ...] with an outline shape (and a fill if closed and fill)."""
         return _oanim.layer_add_curve(self._id, points, closed, fill)
 
-    def add_primitive(self, kind, points, fill=False):
-        """Add a box or circle as the Shape tool draws them: kind "BOX" or "CIRCLE", points = the
-        drag's two corners. The new points become the selection. False if too small to draw."""
-        return _oanim.layer_add_primitive(self._id, kind, points, fill)
+    def add_primitive(self, kind, points, fill=False, columns=3, rows=3):
+        """Add a box, circle or grid as the Shape tool draws them: kind "BOX", "CIRCLE" or "GRID" (`columns` x
+        `rows` cells), points = the drag's two corners. The new points become the selection. False if too
+        small to draw."""
+        return _oanim.layer_add_primitive(self._id, kind, points, fill, columns, rows)
+
+    def extrude_selected(self):
+        """Extrude's first step (E, before the move): a new point past each selected open end, its curve growing;
+        any other selected point starts a new curve welded to it. The new points become the selection; returns
+        their indices."""
+        return list(_oanim.layer_extrude_selected(self._id))
+
+    def shape_runs(self, shape):
+        """Shape `shape`'s runs, its connected pieces each drawn as a line of its own: [[(curve, segment)]]."""
+        return [list(run) for run in _oanim.layer_shape_runs(self._id, shape)]
+
+    @property
+    def grids(self):
+        """The drawing's grids (the Shape tool's Grid), [(name, columns, rows, [node point index, row by row
+        from the bottom, each row left to right])]."""
+        return [(name, columns, rows, list(nodes)) for name, columns, rows, nodes in _oanim.layer_grids(self._id)]
+
+    def grid_map(self, point, grid=0):
+        """Where grid `grid` takes `point` (layer space): from where its setup pose (frame 0) has it to where the
+        grid shows now, each cell bending as the Coons patch of the four curve segments round it."""
+        return _oanim.layer_grid_map(self._id, grid, float(point[0]), float(point[1]))
 
     @property
     def detail(self):
@@ -256,15 +278,6 @@ class _Layer:
         """Show or hide the outline along the selected edges (both points selected), like the
         Shape tab's Edge > Visible. Returns how many edges changed."""
         return _oanim.layer_set_selected_edges_visible(self._id, visible)
-
-    @property
-    def corners(self):
-        """Each point's corner type, "ROUND" or "SHARP": how strokes turn and end there."""
-        return _oanim.layer_corners(self._id)
-
-    def set_selected_corner(self, corner):
-        """Set the selected points' corner type to "ROUND" or "SHARP", like the Point panel."""
-        _oanim.layer_set_selected_corner(self._id, corner)
 
     @property
     def text_runs(self):
@@ -487,11 +500,26 @@ class _Layer:
 
     @property
     def modifiers(self):
-        """The modifier stack, top first: dicts with type ("MIRROR", "ARMATURE", "BEVEL" or "BOOLEAN") and settings."""
+        """The modifier stack, top first: dicts with type ("MIRROR", "ARMATURE", "BEVEL", "BOOLEAN", "RESAMPLE",
+        "CURVE_DEFORM", "CAGE_DEFORM" or "MESH_DEFORM") and settings. A deform's: layer and shape (names), kind ("GRID", "CAGE",
+        "LINE" as "Grid"..., "" when it has none), weights ("AUTOMATIC": every point fully, or "CUSTOM"), group, strength,
+        fits (the deform type that takes its shape: its own, or the one to switch to), precision (how far a bent segment may stray from the true bend before points are added; 0 off), stretch
+        (a line: what lies along it spreads as it grows), resample_self (the drawing sampled evenly, bent, and its own points and handles fitted
+        to that; no points added), cage_method (a cage: "MEAN_VALUE", "RIGID": the inside as rigid as possible, or
+        "ENVELOPE": Toon Boom Harmony's, each side keeping what lies near it at its distance from it),
+        blend (Envelope: 0 the nearest side leads sharply, 1 gently)."""
         return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):
+        """Change modifier `index`'s settings by name, as modifiers lists them. A deform modifier takes layer then
+        shape by name (one it takes: an open line for Curve Deform, a closed shape for Cage Deform, a grid or mesh of
+        cells for Mesh Deform); type= changes a deform's type, keeping its settings and weights; weights="CUSTOM" starts its point group from the automatic weights."""
         _oanim.layer_modifier_set(self._id, index, values)
+
+    def deform_weights(self, index, reset=False):
+        """Deform modifier `index`'s weight for each point (Custom, else automatic), before Strength.
+        reset=True first fills its Custom group with the automatic weights (Reset to Automatic)."""
+        return _oanim.layer_deform_weights(self._id, index, reset)
 
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
@@ -500,6 +528,12 @@ class _Layer:
         fill, its fill colour (r, g, b, a)."""
         points, curves, shapes = _oanim.layer_evaluated(self._id, render)
         return [tuple(p) for p in points], curves, [tuple(s) for s in shapes]
+
+    def evaluated_outline(self, shape, steps=16, render=False):
+        """(points, closed): shape `shape`'s outline as the drawing shows after its modifiers, `steps` samples per
+        curve segment."""
+        points, closed = _oanim.layer_evaluated_outline(self._id, shape, steps, render)
+        return [tuple(p) for p in points], closed
 
     def channel_pinned(self, path):
         """Whether channel `path` is pinned to the timeline (its pin button)."""
@@ -541,6 +575,11 @@ class _Layer:
         """[(alignment, (in_x, in_y), (out_x, out_y)), ...] for each point of curve `curve`:
         "ALIGNED" (its handles stay in line) or "FREE", and its handle positions in layer space."""
         return [(t, tuple(i), tuple(o)) for t, i, o in _oanim.layer_curve_handles(self._id, curve)]
+
+    def evaluated_handles(self, curve, shown=False):
+        """As curve_handles, after the modifiers: shown=True as the viewport shows them while editing (a deform's
+        segments each as one Bezier, without the points Precision adds)."""
+        return [(t, tuple(i), tuple(o)) for t, i, o in _oanim.layer_evaluated_handles(self._id, curve, shown)]
 
     def move_handle(self, curve, index, side, pos):
         """Drag one handle ("IN" or "OUT") of a curve point to `pos`, as in the viewport: an
@@ -662,7 +701,8 @@ class _Layer:
     def __dir__(self):
         return sorted(set(dir(_oanim.layer_pointer(self._id))) | {"id", "children", "parent", "reference_source",
                                                                  "points", "radii", "mean_radius", "shapes", "point_count", "curve_count", "shape_count",
-                                                                 "add_curve", "add_primitive", "shape_outline", "select_points"})
+                                                                 "add_curve", "add_primitive", "shape_outline", "select_points", "grids", "extrude_selected", "shape_runs",
+                                                                 "grid_map"})
 
     def __eq__(self, other):
         return isinstance(other, _Layer) and other._id == self._id

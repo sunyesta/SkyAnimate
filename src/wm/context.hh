@@ -98,6 +98,9 @@ struct ToolSettings {
   int guide_lines = 24;
   /* Fill closed freehand strokes and closed shapes, Moho's "auto fill". */
   bool draw_fill = false;
+  /* The Shape tool's Grid: how many cells across and up. */
+  int grid_columns = 3;
+  int grid_rows = 3;
   /* Transform Layer shows the active layer's own grid across the viewport (Show Grid Lines). */
   bool layer_grid = true;
   /* The Transform Points and Transform Bones box: 0 Transform (move, turn, scale, shear), 1 Distort (each
@@ -122,8 +125,14 @@ struct ToolSettings {
   bool proportional_connected = false;
   float proportional_size = 0.2f;
   float weight_radius = 50.0f;
+  /* What Weight Paint paints: the bones (empty), or the active layer's deform modifier of this name. */
+  std::string weight_target;
   float weight_value = 1.0f;
   float weight_strength = 0.5f;
+  /* Pen pressure scales Weight Paint's radius, strength and weight (the toggles joined to them). */
+  bool weight_pressure_radius = false;
+  bool weight_pressure_strength = true;
+  bool weight_pressure_weight = false;
   int weight_mode = 0;
   bool weight_normalize = true;
   /* Selection Mask: paint only the selected points. */
@@ -134,12 +143,22 @@ struct ToolSettings {
    * the strength; Selected Only is Blender's selection mask. */
   SculptBrush sculpt_brush = SculptBrush::Grab;
   std::string sculpt_preset = "Grab";
+  /* What each brush on the shelf was changed to (by its name), kept while Open Animate runs, as a Blender brush
+   * keeps its settings: going back to it brings them back rather than its saved ones. */
+  struct SculptBrushChanges {
+    float radius = 60.0f;
+    float strength = 1.0f;
+    SculptFalloff falloff = SculptFalloff::Smooth;
+  };
+  std::map<std::string, SculptBrushChanges> sculpt_changes;
   float sculpt_radius = 60.0f;
   float sculpt_strength = 1.0f;
   SculptFalloff sculpt_falloff = SculptFalloff::Smooth;
   bool sculpt_pressure_radius = false;
   bool sculpt_pressure_strength = true;
   bool sculpt_selected_only = false;
+  /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
+  float sculpt_surface_sensitivity = 0.25f;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
@@ -210,6 +229,10 @@ struct WindowManager {
   /* The mouse is where the last simulated event put it, until the real one moves: it counts as over
    * the window then, though the real one may be outside it. */
   bool mouse_simulating = false;
+  /* Where the last simulated event put the mouse, and whether it left a button down: a simulated drag
+   * keeps the mouse there each frame, whatever the real one does, and never warps the real cursor. */
+  float mouse_simulated_x = 0.0f, mouse_simulated_y = 0.0f;
+  bool mouse_simulated_held = false;
 
   /* Active workspace tab, and how many there are. */
   int workspace_index = 0;

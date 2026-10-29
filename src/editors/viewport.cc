@@ -27,6 +27,7 @@
 #include "core/log.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/dynamics.hh"
 #include "anim/keep_poses.hh"
@@ -297,16 +298,22 @@ static bool num_input_keys(Context &C, NumInput &num, int fields)
 }
 
 /* The mouse as G, R and S follow it: held Shift, it moves a tenth as far (Blender's precision), from
- * wherever it was when Shift went down, so nothing jumps as Shift is pressed or let go. */
+ * wherever it was when Shift went down, so nothing jumps as Shift is pressed or let go. A Shift still held
+ * from the key that started it (Shift D, Shift E) counts only once let go and pressed again, as in Blender:
+ * otherwise the copy would crawl until the key came up. */
 struct PreciseMouse {
   float2 raw, at;
+  bool armed = true;
   void reset(float2 mouse)
   {
     raw = at = mouse;
+    /* No UI in background runs (tests): nothing held. */
+    armed = !ImGui::GetCurrentContext() || !ImGui::GetIO().KeyShift;
   }
   float2 update(float2 mouse, bool shift)
   {
-    at += (mouse - raw) * (shift ? 0.1f : 1.0f);
+    armed |= !shift;
+    at += (mouse - raw) * (shift && armed ? 0.1f : 1.0f);
     raw = mouse;
     return at;
   }
@@ -431,7 +438,10 @@ static Posed posed(const Document &doc, const Layer &layer)
   const bool armature = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
     return m.type == ModifierType::Armature && m.show_viewport;
   });
-  if (!armature && !layer.is_reference() && layer.followed_bone() == 0 && !layer.points_follow_bone() &&
+  const bool deformed = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+    return modifier_is_deform(m.type) && m.show_viewport && m.deform_layer != 0;
+  });
+  if (!armature && !deformed && !layer.is_reference() && layer.followed_bone() == 0 && !layer.points_follow_bone() &&
       !layer_binding_group(doc, layer.id))
   {
     r.skins.assign(layer.drawing.points.size(), Transform2D());
@@ -455,6 +465,21 @@ static Posed posed(const Document &doc, const Layer &layer)
     for (CurvePoint &cp : curve.points) {
       cp.handle_in = r.skins[cp.point].apply_vector(cp.handle_in);
       cp.handle_out = r.skins[cp.point].apply_vector(cp.handle_out);
+    }
+  }
+  if (deformed) {
+    /* A deform modifier bends the segments between the points too: each as one Bezier bent as near as it can be
+     * (the wire leaves out the points Precision adds), its handles stored for drawing (same curves, the points'
+     * moves in the skins). */
+    VectorDeformWireScope wire;
+    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    for (size_t c = 0; c < r.storage.curves.size() && c < shown.curves.size(); c++) {
+      Curve &curve = r.storage.curves[c];
+      for (size_t k = 0; k < curve.points.size() && k < shown.curves[c].points.size(); k++) {
+        curve.points[k].handle_in = shown.curves[c].points[k].handle_in;
+        curve.points[k].handle_out = shown.curves[c].points[k].handle_out;
+        curve.points[k].handles_set = true;
+      }
     }
   }
   r.drawing = &r.storage;
@@ -847,6 +872,14 @@ static void primitive_icon(ImDrawList *dl, PrimitiveKind kind, ImVec2 c, float s
     case PrimitiveKind::Circle:
       dl->AddCircle(c, s * 0.75f, col, 24, t);
       break;
+    case PrimitiveKind::Grid:
+      /* A box split in three each way. */
+      dl->AddRect(at(-0.75f, -0.75f), at(0.75f, 0.75f), col, 0.0f, 0, t);
+      for (const float k : {-0.25f, 0.25f}) {
+        dl->AddLine(at(k, -0.75f), at(k, 0.75f), col, t * 0.8f);
+        dl->AddLine(at(-0.75f, k), at(0.75f, k), col, t * 0.8f);
+      }
+      break;
   }
 }
 
@@ -907,7 +940,7 @@ static const ToolInfo TOOLS[] = {
      "wm.tool_transform_points"},
     {Tool::Sculpt, "Sculpt",
      "Sculpt the drawing with a brush, as Blender's Grease Pencil sculpt brushes: pick one on the shelf along the "
-     "bottom (Grab, Push, Pinch, Twist, Smooth, Thickness, and brushes you saved). Drag over the lines; Ctrl "
+     "bottom (Grab, Push, Pinch, Twist, Smooth, Surface Smooth, Thickness, and brushes you saved). Drag over the lines; Ctrl "
      "inverts (Thickness thins, Pinch inflates, Twist turns back); hold Shift to smooth instead. F sizes the brush, "
      "Shift F sets its strength; "
      "G, P, S, T, I, W pick a brush. Away from frame 0 it poses the drawing (auto-key keys it)",
@@ -1015,8 +1048,14 @@ static ToolState tool_state(Context &C, Tool tool)
       break;
     /* Weights: a drawing's points, for the bones of the bone layer it is in. */
     case Tool::WeightSelect:
-    case Tool::WeightPaint:
       state.shown = drawing && in_bone_layer;
+      break;
+    /* Weight Paint also paints a drawing's deform modifiers' weights. */
+    case Tool::WeightPaint:
+      state.shown = drawing && (in_bone_layer || std::any_of(active->modifiers.begin(), active->modifiers.end(),
+                                                             [](const Modifier &m) {
+                                                               return modifier_is_deform(m.type);
+                                                             }));
       break;
   }
   if (state.shown && tool_setup_only(tool) && doc.frame_current != 0) {
@@ -1481,7 +1520,7 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
       ImGui::SetTooltip("Show the notes drawn with the Annotate tool (never rendered)");
     }
     ImGui::SetNextItemWidth(column * 2.0f - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::DragFloat("##grid_scale", &ts.grid_size, 0.005f, 0.01f, 1.0f, "Scale  %.3f", ImGuiSliderFlags_AlwaysClamp);
+    ui_drag_float("##grid_scale", &ts.grid_size, 0.005f, 0.01f, 1.0f, "Scale  %.3f", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Grid spacing in document units, also used when snapping to the grid");
     }
@@ -1510,7 +1549,7 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
       ImGui::TextUnformatted(label);
       ImGui::SameLine(column);
       ImGui::SetNextItemWidth(column - ImGui::GetStyle().ItemSpacing.x);
-      ImGui::DragFloat(id, value, 0.1f, OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
+      ui_drag_float(id, value, 0.1f, OVERLAY_SIZE_MIN, OVERLAY_SIZE_MAX, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
         ImGui::SetTooltip("%s", tip);
       }
@@ -1570,6 +1609,61 @@ static void overlays_buttons(ViewportOverlays &ov, ToolSettings &ts, float h, fl
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Draw bones with a custom shape (Bone > Shape) as that shape, such as a pin.\n"
                         "Off: every bone is drawn as a bone.");
+    }
+  }
+  ImGui::EndPopup();
+}
+
+/* Blender's shading icon: a sphere, lit from the top left. */
+static void shading_icon(ImDrawList *dl, ImVec2 center, float size, ImU32 color)
+{
+  const float r = size * 0.3f;
+  dl->AddCircle(center, r, color, 0, 1.4f);
+  dl->AddCircleFilled(center - ImVec2(r * 0.35f, r * 0.35f), r * 0.32f, color);
+}
+
+/* The Viewport Shading dropdown, beside the overlays' as in Blender: how the viewports draw. */
+static void shading_buttons(Context &C, ViewportShading &sh, float h, float arrow_w)
+{
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetStyle().FrameRounding);
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const bool open = ImGui::Button("##shading", ImVec2(h, h));
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Viewport Shading");
+  }
+  shading_icon(ImGui::GetWindowDrawList(), at + ImVec2(h * 0.5f, h * 0.5f), h, IM_COL32(0xe6, 0xe6, 0xe6, 255));
+  ImGui::SameLine(0.0f, 1.0f);
+  if (ImGui::ArrowButtonEx("##shading_menu", ImGuiDir_Down, ImVec2(arrow_w, h)) || open) {
+    ImGui::OpenPopup("##shading_popover");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Viewport Shading");
+  }
+  ImGui::PopStyleVar();
+
+  ImGui::SetNextWindowPos(ImVec2(at.x + h + arrow_w, at.y + h + 2.0f), ImGuiCond_Appearing, ImVec2(1.0f, 0.0f));
+  if (!ImGui::BeginPopup("##shading_popover")) {
+    return;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::TextUnformatted("Viewport Shading");
+  if (overlay_section("Performance")) {
+    if (ImGui::Checkbox("Layer Caching", &sh.layer_caching)) {
+      C.undo->mark_changed(); /* Saved with the file. */
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Draw anew only the layers that changed, and those depending on them (masks, deforms);\n"
+                        "the rest come from images kept of them, and a pan shows the same image moved.\n"
+                        "Looks the same either way; off, every change draws every layer.");
+    }
+    if (ImGui::Checkbox("Zoom Preview", &sh.zoom_preview)) {
+      C.undo->mark_changed();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("While a zoom moves, show the last image scaled over a blurry wider backdrop,\n"
+                        "drawn sharp once the zoom rests. Off: each step of a zoom is drawn sharp.");
     }
   }
   ImGui::EndPopup();
@@ -1644,7 +1738,7 @@ static void detail_header(Context &C)
   ImGui::SameLine(0, 2);
   int value = std::max(level, 0);
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 1.6f);
-  if (ImGui::DragInt("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, level < 0 ? "-" : "%d",
+  if (ui_drag_int("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, level < 0 ? "-" : "%d",
                      ImGuiSliderFlags_AlwaysClamp) &&
       value != level)
   {
@@ -1672,12 +1766,41 @@ static bool color_swatch(const char *id, Color &color, const char *tooltip)
 }
 
 /* Line width field in pixels of the document's height, which is easier to judge than units. */
-static void width_field(const Document &doc, ToolSettings &ts)
+/* A header value pen pressure can scale: its number field with the pressure toggle joined to its end, as
+ * Blender's brush settings have. `factor`: a 0-1 bar. */
+static bool pressure_field(const char *id, float *v, float speed, float soft_min, float soft_max, const char *format,
+                           bool *pressure, const char *pressure_tip, bool factor = false,
+                           float hard_min = UI_LIMIT_AUTO, float hard_max = UI_LIMIT_AUTO)
+{
+  ui_number_hard_limits(soft_min, soft_max, format, &hard_min, &hard_max);
+  NumberField f;
+  f.factor = factor;
+  f.soft_min = soft_min;
+  f.soft_max = soft_max;
+  f.hard_min = hard_min;
+  f.hard_max = hard_max;
+  f.speed = speed;
+  f.step = double(speed) * 10.0;
+  f.format = format;
+  f.pressure = pressure;
+  f.pressure_tip = pressure_tip;
+  double d = double(*v);
+  if (!ui_number(id, &d, f)) {
+    return false;
+  }
+  *v = float(d);
+  return true;
+}
+
+static void width_field(const Document &doc, ToolSettings &ts, bool pressure)
 {
   const float units_to_pixels = float(doc.height) * 0.5f;
   float pixels = ts.style.line_width * units_to_pixels;
-  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 4.0f);
-  if (ImGui::DragFloat("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px", ImGuiSliderFlags_AlwaysClamp)) {
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * (pressure ? 6.0f : 4.5f));
+  if (pressure ? pressure_field("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px", &ts.use_pressure,
+                                "Pen pressure sets the line's width")
+               : ui_drag_float("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px"))
+  {
     ts.style.line_width = pixels / units_to_pixels;
   }
 }
@@ -2226,7 +2349,7 @@ static void annotate_header(Context &C)
     ImGui::SameLine();
     float thickness = layer ? layer->thickness : AnnotationLayer().thickness;
     ImGui::SetNextItemWidth(h * 5.0f);
-    if (ImGui::DragFloat("##annotation_thickness", &thickness, 0.1f, ANNOTATION_THICKNESS_MIN, ANNOTATION_THICKNESS_MAX,
+    if (ui_drag_float("##annotation_thickness", &thickness, 0.1f, ANNOTATION_THICKNESS_MIN, ANNOTATION_THICKNESS_MAX,
                          "Thickness %.0f px", ImGuiSliderFlags_AlwaysClamp))
     {
       annotation_layer_ensure(doc).thickness = thickness;
@@ -2253,7 +2376,7 @@ static void annotate_header(Context &C)
     else if (mode == AnnotateMode::Eraser) {
       ImGui::SameLine();
       ImGui::SetNextItemWidth(h * 5.0f);
-      ImGui::DragFloat("##eraser_radius", &ts.annotate_eraser_radius, 0.5f, 2.0f, 200.0f, "Radius %.0f px",
+      ui_drag_float("##eraser_radius", &ts.annotate_eraser_radius, 0.5f, 2.0f, 200.0f, "Radius %.0f px",
                        ImGuiSliderFlags_AlwaysClamp);
     }
     ImGui::SameLine();
@@ -2285,7 +2408,7 @@ static void annotate_header(Context &C)
       ImGui::SameLine();
       int lines = picked_perspective ? picked->lines : ts.guide_lines;
       ImGui::SetNextItemWidth(h * 4.5f);
-      if (ImGui::DragInt("##guide_lines", &lines, 0.2f, GUIDE_LINES_MIN, GUIDE_LINES_MAX, "Lines %d",
+      if (ui_drag_int("##guide_lines", &lines, 0.2f, GUIDE_LINES_MIN, GUIDE_LINES_MAX, "Lines %d",
                          ImGuiSliderFlags_AlwaysClamp))
       {
         if (picked_perspective) {
@@ -2338,6 +2461,74 @@ static bool menu_operator(Context &C, const char *label, const char *idname, con
     return true;
   }
   return false;
+}
+
+/* The Add menu's items (Shift A), each with its icon drawn in the room the label leaves: Blender's dots on
+ * the points. They go at the 2D cursor, in the active layer's space, the size of a quarter of the frame. */
+enum class AddIcon { Point, Line, Square, Circle };
+
+static void add_menu_icon(ImDrawList *dl, ImVec2 min, float s, AddIcon icon, ImU32 col)
+{
+  const ImVec2 c = min + ImVec2(s * 0.5f, s * 0.5f);
+  const float r = s * 0.32f, dot = std::max(1.5f, s * 0.09f);
+  switch (icon) {
+    case AddIcon::Point:
+      dl->AddCircle(c, dot * 2.0f, col, 0, 1.2f);
+      dl->AddCircleFilled(c, dot, col);
+      break;
+    case AddIcon::Line: {
+      const ImVec2 a = c + ImVec2(-r, r), b = c + ImVec2(r, -r);
+      dl->AddLine(a, b, col, 1.4f);
+      dl->AddCircleFilled(a, dot, col);
+      dl->AddCircleFilled(b, dot, col);
+      break;
+    }
+    case AddIcon::Square: {
+      const ImVec2 a = c - ImVec2(r, r), b = c + ImVec2(r, r);
+      dl->AddRect(a, b, col, 0.0f, 0, 1.4f);
+      for (const ImVec2 &p : {a, b, ImVec2(a.x, b.y), ImVec2(b.x, a.y)}) {
+        dl->AddCircleFilled(p, dot, col);
+      }
+      break;
+    }
+    case AddIcon::Circle:
+      dl->AddCircle(c, r, col, 0, 1.4f);
+      for (const ImVec2 &d : {ImVec2(r, 0), ImVec2(-r, 0), ImVec2(0, r), ImVec2(0, -r)}) {
+        dl->AddCircleFilled(c + d, dot, col);
+      }
+      break;
+  }
+}
+
+static std::string num_arg(float v);
+
+static void add_menu_items(Context &C)
+{
+  Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  const Layer *layer = document_active_layer(doc);
+  const float2 at = layer ? layer_world_transform(doc, layer->id).inverted().apply(ts.cursor) : ts.cursor;
+  const std::string x = num_arg(at.x), y = num_arg(at.y), size = num_arg(0.5f);
+  const std::string fill = ts.draw_fill ? "1" : "0";
+  ImGui::TextDisabled("Add");
+  ImGui::Separator();
+  const auto item = [&](const char *label, AddIcon icon, const char *idname, const OpArgs &args) {
+    const ImVec2 row = ImGui::GetCursorScreenPos();
+    const float h = ImGui::GetTextLineHeight();
+    const OperatorType *ot = operators().find(idname);
+    const ImU32 ink = ImGui::GetColorU32(ot && operator_poll(C, *ot) ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    menu_operator(C, label, idname, args);
+    add_menu_icon(ImGui::GetWindowDrawList(), row, h, icon, ink);
+  };
+  item("      Point", AddIcon::Point, "mesh.primitive_point_add", {{"x", x}, {"y", y}});
+  item("      Line", AddIcon::Line, "mesh.primitive_line_add", {{"x", x}, {"y", y}, {"length", size}});
+  item("      Square", AddIcon::Square, "mesh.primitive_box_add",
+       {{"x", x}, {"y", y}, {"width", size}, {"height", size}, {"fill", fill}});
+  item("      Circle", AddIcon::Circle, "mesh.primitive_circle_add",
+       {{"x", x}, {"y", y}, {"width", size}, {"height", size}, {"fill", fill}});
+  if (doc.frame_current != 0 && ImGui::IsWindowHovered()) {
+    ImGui::SetTooltip("Drawings are added on frame 0 (the setup frame)");
+  }
 }
 
 /* The Apply menu's items (Ctrl A, and the Armature menu's Apply), as Blender's in pose mode. */
@@ -2437,7 +2628,7 @@ static void proportional_buttons(ToolSettings &ts, float h, float arrow_w)
   }
   ImGui::Spacing();
   ImGui::SetNextItemWidth(row_w);
-  ImGui::DragFloat("##proportional_size", &ts.proportional_size, 0.01f, 1e-4f, 1e6f, "Proportional Size  %.3f",
+  ui_drag_float("##proportional_size", &ts.proportional_size, 0.01f, 1e-4f, 1e6f, "Proportional Size  %.3f",
                    ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("How far from the selection points are dragged along (document units)");
@@ -2642,7 +2833,7 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       ImGui::SameLine();
       color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
       ImGui::SameLine();
-      width_field(doc, ts);
+      width_field(doc, ts, ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand);
       ImGui::SameLine();
       color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
       ImGui::SameLine();
@@ -2660,7 +2851,26 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
         }
       }
       ImGui::SameLine();
-      if (ts.tool == Tool::Shape) {
+      if (ts.tool == Tool::Shape && ts.shape == PrimitiveKind::Grid) {
+        /* A grid's cells: its lines are outlines only. */
+        const float w = ImGui::GetFrameHeight() * 3.4f;
+        ImGui::SetNextItemWidth(w);
+        ui_drag_int("##grid_columns", &ts.grid_columns, 0.1f, 1, GRID_CELLS_MAX, "Columns %d");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("How many cells across a new grid has");
+        }
+        ImGui::SameLine(0, 1);
+        ImGui::SetNextItemWidth(w);
+        ui_drag_int("##grid_rows", &ts.grid_rows, 0.1f, 1, GRID_CELLS_MAX, "Rows %d");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("How many cells up a new grid has");
+        }
+        ts.grid_columns = std::clamp(ts.grid_columns, 1, GRID_CELLS_MAX);
+        ts.grid_rows = std::clamp(ts.grid_rows, 1, GRID_CELLS_MAX);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Drag to draw  |  Shift: square  |  Alt: from centre  |  Ctrl: snap");
+      }
+      else if (ts.tool == Tool::Shape) {
         if (header_toggle("Fill", ts.draw_fill, "Fill boxes and circles")) {
           ts.draw_fill = !ts.draw_fill;
         }
@@ -2677,10 +2887,6 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       else {
         if (header_toggle("Auto Fill", ts.draw_fill, "Fill strokes that end where they started")) {
           ts.draw_fill = !ts.draw_fill;
-        }
-        ImGui::SameLine();
-        if (header_toggle("Pressure", ts.use_pressure, "Tablet pressure sets the line width")) {
-          ts.use_pressure = !ts.use_pressure;
         }
       }
       break;
@@ -2715,7 +2921,7 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     detail_header(C);
   }
 
-  /* On the right, as in Blender: snapping, then the overlays toggle and its dropdown. */
+  /* On the right, as in Blender: snapping, then the overlays toggle and its dropdown, then Viewport Shading's. */
   const ImGuiStyle &style = ImGui::GetStyle();
   const float snap_w = ImGui::CalcTextSize("Snap").x + style.FramePadding.x * 2.0f;
   const float arrow_w = h * 0.75f;
@@ -2723,7 +2929,8 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   const float mirror_w = h + 2.0f + axis_w * 2.0f + 1.0f + h * 0.6f;
   /* Proportional editing, with points to edit. */
   const float proportional_w = editable_points ? h + 1.0f + h + arrow_w * 0.6f + h * 0.6f : 0.0f;
-  const float right_w = mirror_w + snap_w + proportional_w + h * 0.6f + h + 1.0f + arrow_w;
+  const float shading_w = h * 0.3f + h + 1.0f + arrow_w;
+  const float right_w = mirror_w + snap_w + proportional_w + h * 0.6f + h + 1.0f + arrow_w + shading_w;
   ImGui::SameLine();
   const float right = origin.x + width - right_w - 6.0f;
   if (ImGui::GetCursorScreenPos().x < right) {
@@ -2777,6 +2984,8 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   }
   ImGui::SameLine(0.0f, h * 0.6f);
   overlays_buttons(C.document->overlays, ts, h, arrow_w);
+  ImGui::SameLine(0.0f, h * 0.3f);
+  shading_buttons(C, C.document->shading, h, arrow_w);
 }
 
 /* ---------------------------------------------------------------------------------
@@ -2869,44 +3078,11 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
     /* A new point beyond each selected curve end; they become the selection. */
     bool any = false;
     for (Layer *layer : layers) {
-      VectorDrawing &drawing = layer->drawing;
-      std::vector<int> new_points;
-      for (int i = 0; i < int(drawing.points.size()); i++) {
-        if (!drawing.points[i].selected) {
-          continue;
-        }
-        CurveEnd end = drawing_curve_end_at(drawing, i);
-        if (end.curve < 0) {
-          continue;
-        }
-        if (!end.at_end) {
-          drawing_reverse_curve(drawing, end.curve);
-        }
-        const int added = drawing_add_point(drawing, drawing.points[i].pos);
-        Curve &curve = drawing.curves[end.curve];
-        curve.points.push_back({added});
-        /* Shapes that cover the whole curve grow with it. */
-        const int new_segment = curve.segment_count() - 1;
-        for (Shape &shape : drawing.shapes) {
-          int on_curve = 0;
-          for (const ShapeEdge &e : shape.edges) {
-            on_curve += e.curve == end.curve;
-          }
-          if (on_curve == new_segment && !shape.has_fill) {
-            shape.edges.push_back({end.curve, new_segment});
-          }
-        }
-        new_points.push_back(added);
-      }
-      deselect_all(drawing);
-      for (int p : new_points) {
-        drawing.points[p].selected = true;
-      }
-      any |= !new_points.empty();
+      any |= !drawing_extrude_selected(layer->drawing, C.wm->tool_settings.style).empty();
     }
     if (!any) {
       *C.document = modal.snapshot;
-      report_banner(ReportType::Warning, "Extrude works from the ends of open curves");
+      report_banner(ReportType::Warning, "Select points to extrude");
       return false;
     }
   }
@@ -3023,6 +3199,8 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
         modal.proportional = true;
       }
     }
+    /* A point's place (document space), as proportional editing measures it. */
+    const auto places_of = [&](int point) { return to_document.apply(shown.drawing->points[size_t(point)].pos); };
     const auto dragged_along = [&](int point) {
       return !reach.empty() && !drawing.points[point].selected && !drawing.points[point].detail.hidden &&
              std::isfinite(reach[point]);
@@ -3050,9 +3228,32 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
           item.direct = direct;
           item.origin = to_document.apply(shown.drawing->points[cp.point].pos);
           if (along) {
+            /* Its own reach, as Blender's proportional editing takes each Bezier handle as a point of its own:
+             * a handle nearer the selection comes further than its point, so the curve bends into the falloff
+             * instead of its handles riding along stiffly. Straight across, the nearest selected point; along
+             * the curves (Connected Only), on from its own point or from the neighbour on its side. */
             item.proportional = true;
-            item.reach = reach[cp.point];
             item.rest = pre ? cp.handle_in : cp.handle_out;
+            float own = std::numeric_limits<float>::infinity();
+            if (!ts.proportional_connected) {
+              for (int s = 0; s < int(drawing.points.size()); s++) {
+                if (drawing.points[s].selected) {
+                  own = std::min(own, distance(h, places_of(s)));
+                }
+              }
+            }
+            else {
+              own = reach[cp.point] + distance(h, item.origin);
+              const int m = int(curve.points.size());
+              const int k = pre ? (i > 0 ? i - 1 : (curve.closed ? m - 1 : -1)) : (i + 1 < m ? i + 1 : (curve.closed ? 0 : -1));
+              if (k >= 0 && k != i) {
+                const int neighbour = curve.points[k].point;
+                if (std::isfinite(reach[neighbour])) {
+                  own = std::min(own, reach[neighbour] + distance(h, places_of(neighbour)));
+                }
+              }
+            }
+            item.reach = std::isfinite(own) ? own : reach[cp.point];
           }
           modal.items.push_back(item);
           if (direct) {
@@ -3640,7 +3841,7 @@ static float2 shape_snap(Context &C, float2 p)
 static std::vector<float2> shape_drag_points(PrimitiveKind kind, float2 start, float2 end)
 {
   const ImGuiIO &io = ImGui::GetIO();
-  const bool boxlike = kind == PrimitiveKind::Box || kind == PrimitiveKind::Circle;
+  const bool boxlike = kind == PrimitiveKind::Box || kind == PrimitiveKind::Circle || kind == PrimitiveKind::Grid;
   float2 d = end - start;
   if (io.KeyShift && boxlike) {
     const float m = std::max(std::abs(d.x), std::abs(d.y));
@@ -3678,15 +3879,31 @@ static void shape_preview(ImDrawList *dl, const VectorDrawing &shape, const Tran
   }
 }
 
+/* The Shape tool's drag ends as mesh.primitive_box_add, _circle_add or _grid_add, so the ViewportActionPanel
+ * can change it (its place, size, cells or fill) until anything else is done, as Blender's Add Mesh does. */
 static void shape_commit(Context &C, VectorDrawing &drawing, PrimitiveKind kind, const std::vector<float2> &points)
 {
-  const ToolSettings &ts = C.wm->tool_settings;
-  const VectorDrawing shape = primitive_drawing(kind, points, ts.style, ts.draw_fill);
-  if (shape.curves.empty()) {
+  (void)drawing;
+  if (points.size() < 2) {
     return;
   }
-  drawing_append_selected(drawing, shape);
-  push_undo(C, primitive_name(kind));
+  const ToolSettings &ts = C.wm->tool_settings;
+  const float2 a = points.front(), b = points.back();
+  OpArgs args = {{"x", num_arg((a.x + b.x) * 0.5f)},
+                 {"y", num_arg((a.y + b.y) * 0.5f)},
+                 {"width", num_arg(std::abs(b.x - a.x))},
+                 {"height", num_arg(std::abs(b.y - a.y))}};
+  if (kind == PrimitiveKind::Grid) {
+    args["columns"] = std::to_string(ts.grid_columns);
+    args["rows"] = std::to_string(ts.grid_rows);
+  }
+  else {
+    args["fill"] = ts.draw_fill ? "1" : "0";
+  }
+  operator_call(C, kind == PrimitiveKind::Grid     ? "mesh.primitive_grid_add"
+                   : kind == PrimitiveKind::Circle ? "mesh.primitive_circle_add"
+                                                   : "mesh.primitive_box_add",
+                args);
 }
 
 /* What the Split Curve tool would cut: the nearest curve (or, with `point`, the nearest point)
@@ -4290,6 +4507,35 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Tran
   return g;
 }
 
+/* Show Points: the points `layer`'s modifiers add, for each modifier showing them, as hollow teal dots where they
+ * end up after the whole stack (on the line as it shows). Drawn only: nothing picks them. */
+static void draw_modifier_points(ImDrawList *dl, const Document &doc, const Layer &layer,
+                                 const Transform2D &to_document, const ViewMapping &view, float point_size)
+{
+  const bool any = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+    return m.show_points && m.show_viewport && modifier_makes_points(m);
+  });
+  if (!any) {
+    return;
+  }
+  const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+  const ImU32 teal = IM_COL32(0x2e, 0xc4, 0xb6, 255);
+  const float r = std::max(point_size * 0.5f, 2.5f);
+  for (const MeshPoint &p : shown.points) {
+    if (p.made_by < 0 || size_t(p.made_by) >= layer.modifiers.size()) {
+      continue;
+    }
+    const Modifier &m = layer.modifiers[size_t(p.made_by)];
+    if (!m.show_points || !m.show_viewport) {
+      continue;
+    }
+    const ImVec2 at = view.to_screen(to_document.apply(p.pos));
+    /* A dark ring under the teal one, so it shows on light and dark alike. */
+    dl->AddCircle(at, r, IM_COL32(0, 0, 0, 120), 0, 3.2f);
+    dl->AddCircle(at, r, teal, 0, 1.6f);
+  }
+}
+
 /* The wires, handles and points of a drawing being edited, drawn by the GPU (gpu/overlay_renderer.hh) at the
  * next overlay_flush: made again only when what they show changes, kept per `slot` (the layer, in its
  * viewport). `cutter` (optional, End Lines at Edge): the stretches of the wires whose line it cuts away draw
@@ -4427,6 +4673,62 @@ static Layer *weight_armature(Context &C)
   return armature ? layer_find(*C.document, armature->id) : nullptr;
 }
 
+/* The deform modifier Weight Paint paints on the active layer: the one the tool settings name, or with
+ * no bones to paint, the first. Null: the bones. */
+static Modifier *weight_deform(Context &C)
+{
+  Layer *layer = document_active_layer(*C.document);
+  if (!layer) {
+    return nullptr;
+  }
+  Modifier *first = nullptr;
+  for (Modifier &m : layer->modifiers) {
+    if (!modifier_is_deform(m.type)) {
+      continue;
+    }
+    if (m.name == C.wm->tool_settings.weight_target) {
+      return &m;
+    }
+    first = first ? first : &m;
+  }
+  return layer_armature(*C.document, layer->id) ? nullptr : first;
+}
+
+/* Weight Paint's dropdown at the top of the viewport: the bones (Armature), or one of the layer's Vector
+ * Deform modifiers. */
+static void weight_target_combo(Context &C)
+{
+  Layer *layer = document_active_layer(*C.document);
+  if (!layer) {
+    return;
+  }
+  const bool bones = layer_armature(*C.document, layer->id) != nullptr;
+  const Modifier *picked = weight_deform(C);
+  int deforms = 0;
+  for (const Modifier &m : layer->modifiers) {
+    deforms += modifier_is_deform(m.type) ? 1 : 0;
+  }
+  if (deforms == 0) {
+    return;
+  }
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 6.0f);
+  if (ImGui::BeginCombo("##weight_target", picked ? picked->name.c_str() : "Armature")) {
+    if (bones && ImGui::Selectable("Armature", picked == nullptr)) {
+      C.wm->tool_settings.weight_target.clear();
+    }
+    for (const Modifier &m : layer->modifiers) {
+      if (modifier_is_deform(m.type) && ImGui::Selectable(m.name.c_str(), &m == picked)) {
+        C.wm->tool_settings.weight_target = m.name;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("What to paint: the bones' weights, or a deform modifier's (Curve, Cage or Mesh Deform)");
+  }
+  ImGui::SameLine();
+}
+
 /* The active bone, which the weight tools work on. */
 static void weight_bone_combo(Layer *armature)
 {
@@ -4485,7 +4787,7 @@ static void weight_select_header(Context &C)
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 4.0f);
-  ImGui::SliderFloat("##assign_weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
+  ui_slider_float("##assign_weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
   ImGui::SameLine();
   if (ImGui::Button("Assign")) {
     operator_call(C, "weight.assign", weight_args());
@@ -4510,12 +4812,12 @@ static void weight_select_header(Context &C)
 }
 
 /* The Sculpt tool's header: the brush (its preset's name), Radius and Strength (each with pen
- * pressure), Falloff and Selected Only. */
+ * pressure), Falloff and Selected Only; Surface Smooth's Lump Sensitivity while it is the brush. */
 static void sculpt_header(Context &C)
 {
   ToolSettings &ts = C.wm->tool_settings;
   const float h = ImGui::GetFrameHeight();
-  ImGui::SetNextItemWidth(h * 4.2f);
+  ImGui::SetNextItemWidth(h * 5.6f);
   if (ImGui::BeginCombo("##sculpt_brush", ts.sculpt_preset.empty() ? sculpt_brush_name(ts.sculpt_brush)
                                                                    : ts.sculpt_preset.c_str()))
   {
@@ -4531,25 +4833,19 @@ static void sculpt_header(Context &C)
     ImGui::SetTooltip("The brush (the shelf below has its presets)");
   }
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(h * 4.0f);
-  ImGui::DragFloat("##sculpt_radius", &ts.sculpt_radius, 0.5f, 2.0f, 1000.0f, "Radius %.0f px",
-                   ImGuiSliderFlags_AlwaysClamp);
+  ImGui::SetNextItemWidth(h * 6.0f);
+  pressure_field("##sculpt_radius", &ts.sculpt_radius, 0.5f, 2.0f, 1000.0f, "Radius %.0f px", &ts.sculpt_pressure_radius,
+                 "Pen pressure sets the radius");
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("How big the brush is, in screen pixels (F)");
   }
-  ImGui::SameLine(0, 2.0f);
-  if (header_toggle("P##radius_pressure", ts.sculpt_pressure_radius, "Pen pressure sets the radius")) {
-    ts.sculpt_pressure_radius = !ts.sculpt_pressure_radius;
-  }
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(h * 4.0f);
-  ImGui::SliderFloat("##sculpt_strength", &ts.sculpt_strength, 0.0f, 1.0f, "Strength %.2f");
+  ImGui::SetNextItemWidth(h * 6.0f);
+  /* Blender's sculpt Strength: a bar filled across 0-1, dragged within it, typed as high as wanted. */
+  pressure_field("##sculpt_strength", &ts.sculpt_strength, 0.005f, 0.0f, 1.0f, "Strength %.3f",
+                 &ts.sculpt_pressure_strength, "Pen pressure sets the strength", true, 0.0f, FLT_MAX);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("How hard the brush works (Shift F)");
-  }
-  ImGui::SameLine(0, 2.0f);
-  if (header_toggle("P##strength_pressure", ts.sculpt_pressure_strength, "Pen pressure sets the strength")) {
-    ts.sculpt_pressure_strength = !ts.sculpt_pressure_strength;
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(h * 3.6f);
@@ -4567,6 +4863,84 @@ static void sculpt_header(Context &C)
                     "Sculpt only the selected points, as Blender's selection mask")) {
     ts.sculpt_selected_only = !ts.sculpt_selected_only;
   }
+  if (ts.sculpt_brush == SculptBrush::SurfaceSmooth) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(h * 7.0f);
+    /* A bar filled across 0.001-1, dragged within it, typed as high as wanted or down to 0 (none). */
+    ui_slider_float("##surface_sensitivity", &ts.sculpt_surface_sensitivity, 0.001f, 1.0f, "Lump Sensitivity %.3f", 0,
+                    0.0f, FLT_MAX);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How big a lump Surface Smooth takes out: 0 none, higher bigger ones (the ghost shows the "
+                        "result). The same on any canvas, whatever its resolution, the brush's size or the zoom");
+    }
+  }
+}
+
+/* Surface Smooth's ghost: the fit its next stroke would move the line toward. Worked out again only when the
+ * drawing is edited (a stroke, another edit, undo or redo: the undo history moves), or the frame, the layers or
+ * the tolerance change, and then (the tolerance the same) only for the curves that changed; never for moving the
+ * view (the app counts everything as maybe changed while a mouse button is down). A stroke starts from it. */
+struct SurfaceGhost {
+  size_t undo_size = 0, undo_active = 0;
+  bool valid = false;
+  /* A curve scrolled into view has no fit yet: fit the ones on view (the others keep theirs). */
+  bool missing = false;
+  /* Fitted on view only (while a value was being scrubbed): every curve is fitted once it stops. */
+  bool partial = false;
+  int frame = 0;
+  float tolerance = -1.0f;
+  std::vector<uint64_t> ids;
+  SculptStroke stroke;
+};
+static SurfaceGhost g_surface_ghost;
+
+/* What the view shows, in document space, with a margin (so a curve just scrolling in has its fit already). */
+static SculptBox view_box(const ViewMapping &view)
+{
+  const float2 a = view.to_document(view.origin), b = view.to_document(view.origin + view.size);
+  const float2 margin{(std::fabs(b.x - a.x)) * 0.15f, (std::fabs(b.y - a.y)) * 0.15f};
+  return {float2{std::min(a.x, b.x), std::min(a.y, b.y)} - margin, float2{std::max(a.x, b.x), std::max(a.y, b.y)} + margin};
+}
+
+/* Draws where Surface Smooth takes the line: each segment whose fit differs from the line, as a pale curve. Returns
+ * whether a curve the view shows has no fit yet (it was off the view when the fit was worked out). */
+static bool draw_surface_ghost(ImDrawList *dl, const ViewMapping &view, const SculptStroke &stroke)
+{
+  const ImU32 col = IM_COL32(0x7f, 0xe6, 0xff, 170);
+  const SculptBox shown = view_box(view);
+  bool missing = false;
+  for (const SculptStroke::Layer &sl : stroke.layers) {
+    for (const SculptStroke::Curve &c : sl.curves) {
+      const int n = int(c.points.size());
+      if (c.target_pos.size() != size_t(n)) {
+        if (!missing) {
+          for (const int k : c.anchor) {
+            const float2 p = c.pos[size_t(k)];
+            missing |= p.x >= shown.lo.x && p.x <= shown.hi.x && p.y >= shown.lo.y && p.y <= shown.hi.y;
+          }
+        }
+        continue;
+      }
+      for (int s = 0; s < (c.closed ? n : n - 1); s++) {
+        const int a = s, b = (s + 1) % n;
+        const float2 pa = c.pos[size_t(c.anchor[size_t(a)])], pb = c.pos[size_t(c.anchor[size_t(b)])];
+        const float2 now[4] = {pa, pa + c.handle_out[size_t(a)], pb + c.handle_in[size_t(b)], pb};
+        const float2 fit[4] = {c.target_pos[size_t(a)], c.target_pos[size_t(a)] + c.target_out[size_t(a)],
+                               c.target_pos[size_t(b)] + c.target_in[size_t(b)], c.target_pos[size_t(b)]};
+        float apart = 0.0f;
+        for (int k = 0; k < 4; k++) {
+          apart = std::max(apart, distance(now[k], fit[k]) * view.zoom);
+        }
+        /* Not where the fit is the line to within a pixel and a half (a circle nudged by a hair). */
+        if (apart < 1.5f) {
+          continue;
+        }
+        dl->AddBezierCubic(view.to_screen(fit[0]), view.to_screen(fit[1]), view.to_screen(fit[2]),
+                           view.to_screen(fit[3]), col, 1.5f);
+      }
+    }
+  }
+  return missing;
 }
 
 /* A sculpt stroke while the left button is down, or F / Shift F sizing the brush. */
@@ -4666,6 +5040,7 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   dab.invert = io.KeyCtrl && !smoothing;
   dab.selected_only = ts.sculpt_selected_only;
   dab.mirror_x = ts.mirror_x;
+  dab.surface_sensitivity = ts.sculpt_surface_sensitivity;
   const std::vector<uint64_t> ids = editable_layer_ids(C);
 
   if (hovered || g_sculpt.active) {
@@ -4677,6 +5052,49 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
                   "Smooth");
     }
   }
+  /* Surface Smooth shows the fit it moves the line toward: during a stroke the stroke's own, else the fit a
+   * stroke would start with now. Whether or not the mouse is over the view, so it follows Lump Sensitivity as it
+   * is scrubbed in the header. */
+  /* By the brush picked, not the one Shift lends for the moment (Shift also scrubs a field finely). */
+  if (ts.sculpt_brush == SculptBrush::SurfaceSmooth) {
+    SculptDab ghost_dab = dab;
+    ghost_dab.brush = SculptBrush::SurfaceSmooth;
+    if (g_sculpt.active && g_sculpt.area == area.id && !g_sculpt.smoothing) {
+      draw_surface_ghost(dl, view, g_sculpt.stroke);
+    }
+    else {
+      SurfaceGhost &ghost = g_surface_ghost;
+      const float tolerance = sculpt_surface_tolerance(ghost_dab);
+      const size_t undo_size = C.undo ? C.undo->size() : 0, undo_active = C.undo ? C.undo->active() : 0;
+      /* A field being dragged or typed in (Lump Sensitivity scrubbed): fit only what the view shows, so it keeps
+       * up; once it stops, every editable curve, so moving or zooming the view later finds them all fitted. */
+      const bool scrubbing = ImGui::IsAnyItemActive();
+      if (!ghost.valid || ghost.missing || (ghost.partial && !scrubbing) || ghost.undo_size != undo_size ||
+          ghost.undo_active != undo_active || ghost.frame != doc.frame_current || ghost.ids != ids ||
+          ghost.tolerance != tolerance)
+      {
+        /* Curves just as they were keep their fit (the same tolerance): only the changed ones are fitted. */
+        const SculptBox shown = view_box(view);
+        SculptStroke refreshed = sculpt_stroke_begin(
+            doc, ids, ghost_dab, ghost.valid && ghost.tolerance == tolerance ? &ghost.stroke : nullptr,
+            scrubbing ? &shown : nullptr);
+        ghost.partial = false;
+        for (const SculptStroke::Layer &sl : refreshed.layers) {
+          for (const SculptStroke::Curve &c : sl.curves) {
+            ghost.partial |= c.target_pos.size() != c.points.size();
+          }
+        }
+        ghost.stroke = std::move(refreshed);
+        ghost.valid = true;
+        ghost.undo_size = undo_size;
+        ghost.undo_active = undo_active;
+        ghost.frame = doc.frame_current;
+        ghost.ids = ids;
+        ghost.tolerance = tolerance;
+      }
+      ghost.missing = draw_surface_ghost(dl, view, ghost.stroke);
+    }
+  }
 
   if (hovered && !g_sculpt.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyAlt) {
     g_sculpt.active = true;
@@ -4685,7 +5103,13 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
     g_sculpt.changed = false;
     g_sculpt.smoothing = smoothing;
     g_sculpt.kept = doc.frame_current == 0 && keep_poses_on(doc) ? setup_snapshot(doc, ids) : SetupSnapshot();
-    g_sculpt.stroke = sculpt_stroke_begin(doc, ids, dab);
+    /* Surface Smooth starts from the ghost's fit when it is of the drawing as it is (no fitting again). */
+    const SurfaceGhost &ghost = g_surface_ghost;
+    const bool ghost_fresh = dab.brush == SculptBrush::SurfaceSmooth && ghost.valid && C.undo &&
+                             ghost.undo_size == C.undo->size() && ghost.undo_active == C.undo->active() &&
+                             ghost.frame == doc.frame_current && ghost.ids == ids &&
+                             ghost.tolerance == sculpt_surface_tolerance(dab);
+    g_sculpt.stroke = sculpt_stroke_begin(doc, ids, dab, ghost_fresh ? &ghost.stroke : nullptr);
   }
   if (!g_sculpt.active || g_sculpt.area != area.id) {
     return;
@@ -4698,6 +5122,21 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
       }
       const std::string name = std::string("Sculpt ") + sculpt_brush_name(dab.brush);
       push_undo(C, name.c_str());
+      /* A Surface Smooth stroke moves the line toward where it is going, not where that is (smoothing the line
+       * again lands in the same place, the smoother being linear): the ghost keeps the stroke's targets, the line
+       * as the stroke left it with them, instead of working them out again. */
+      if (dab.brush == SculptBrush::SurfaceSmooth && C.undo) {
+        SurfaceGhost &ghost = g_surface_ghost;
+        ghost.stroke = std::move(g_sculpt.stroke);
+        ghost.valid = true;
+        ghost.missing = false;
+        ghost.partial = false;
+        ghost.undo_size = C.undo->size();
+        ghost.undo_active = C.undo->active();
+        ghost.frame = doc.frame_current;
+        ghost.ids = ids;
+        ghost.tolerance = sculpt_surface_tolerance(dab);
+      }
     }
     g_sculpt = SculptState();
     return;
@@ -4715,29 +5154,56 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
 static void weight_paint_header(Context &C)
 {
   ToolSettings &ts = C.wm->tool_settings;
+  weight_target_combo(C);
   Layer *armature = weight_armature(C);
-  if (!armature) {
+  Modifier *deform = weight_deform(C);
+  if (deform && !deform->deform_custom) {
+    /* Automatic weights aren't painted: shown, with the way to paint them. */
+    ImGui::TextDisabled("Automatic weights (shown):");
+    ImGui::SameLine();
+    if (ImGui::Button("Switch to Custom")) {
+      Layer &layer = *document_active_layer(*C.document);
+      deform->deform_custom = true;
+      vector_deform_fill_group(*C.document, layer, *deform);
+      push_undo(C, "Deform Weights: Custom");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Paint this modifier's weights: they start from the automatic ones, in a point group of "
+                        "their own");
+    }
     return;
   }
-  weight_bone_combo(armature);
+  if (!deform && !armature) {
+    return;
+  }
+  if (!deform) {
+    weight_bone_combo(armature);
+  }
   const float w = ImGui::GetFrameHeight() * 4.0f;
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(w);
-  ImGui::SliderFloat("##weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
+  const float wp = ImGui::GetFrameHeight() * 6.0f;
+  ImGui::SetNextItemWidth(wp);
+  pressure_field("##weight", &ts.weight_value, 0.005f, 0.0f, 1.0f, "Weight %.2f", &ts.weight_pressure_weight,
+                 "Pen pressure sets the weight", true);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(w);
-  ImGui::DragFloat("##radius", &ts.weight_radius, 0.5f, 2.0f, 500.0f, "Radius %.0f px", ImGuiSliderFlags_AlwaysClamp);
+  ImGui::SetNextItemWidth(wp);
+  pressure_field("##radius", &ts.weight_radius, 0.5f, 2.0f, 500.0f, "Radius %.0f px", &ts.weight_pressure_radius,
+                 "Pen pressure sets the radius");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(w);
-  ImGui::SliderFloat("##strength", &ts.weight_strength, 0.0f, 1.0f, "Strength %.2f");
+  ImGui::SetNextItemWidth(wp);
+  pressure_field("##strength", &ts.weight_strength, 0.005f, 0.0f, 1.0f, "Strength %.2f", &ts.weight_pressure_strength,
+                 "Pen pressure sets the strength", true);
+  (void)w;
   ImGui::SameLine();
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 3.5f);
   static const char *const modes[] = {"Draw", "Add", "Subtract"};
   ImGui::Combo("##weight_mode", &ts.weight_mode, modes, 3);
-  ImGui::SameLine();
-  ImGui::Checkbox("Normalize", &ts.weight_normalize);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Keep each point's weights adding up to 1, as Blender's Auto Normalize");
+  if (!deform) {
+    ImGui::SameLine();
+    ImGui::Checkbox("Normalize", &ts.weight_normalize);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Keep each point's weights adding up to 1, as Blender's Auto Normalize");
+    }
   }
   ImGui::SameLine();
   ImGui::Checkbox("Selection Mask", &ts.weight_mask);
@@ -4748,16 +5214,18 @@ static void weight_paint_header(Context &C)
   weight_keep_checkbox();
 }
 
-/* The active drawing coloured by how strongly the active bone moves it. */
+/* The active drawing coloured by how strongly the active bone (or the deform modifier being painted) moves it. */
 static void draw_weight_overlay(ImDrawList *dl, Context &C, const Layer &layer, const ViewMapping &view, int quality)
 {
   const Document &doc = *C.document;
   const Layer *armature = layer_armature(doc, layer.id);
-  if (!armature) {
+  const Modifier *deform = C.wm->tool_settings.tool == Tool::WeightPaint ? weight_deform(C) : nullptr;
+  if (!armature && !deform) {
     return;
   }
   const VectorDrawing &drawing = layer_drawing(doc, layer);
-  const std::vector<float> weights = layer_point_bone_weights(doc, layer, armature->active_bone);
+  const std::vector<float> weights = deform ? vector_deform_weights(doc, layer, *deform)
+                                            : layer_point_bone_weights(doc, layer, armature->active_bone);
   const Transform2D to_document = layer_world_transform(doc, layer.id);
   /* Where the stroke shows: points and their handles moved by the bones. */
   const Posed posed_drawing = posed(doc, layer);
@@ -4798,13 +5266,20 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
   const ToolSettings &ts = C.wm->tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   Layer *armature = weight_armature(C);
-  if (!armature) {
+  const Modifier *deform = weight_deform(C);
+  if (!armature && !deform) {
     return;
   }
   if (hovered) {
     dl->AddCircle(io.MousePos, ts.weight_radius, IM_COL32(0xff, 0xff, 0xff, 200), 48, 1.5f);
   }
-  if (hovered && io.KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  if (deform && !deform->deform_custom) {
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      report_banner(ReportType::Warning, "These weights are Automatic: Switch to Custom (at the top) to paint them");
+    }
+    return;
+  }
+  if (armature && !deform && hovered && io.KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (const uint64_t bone = pick_bone(doc, *armature, view, io.MousePos)) {
       armature->active_bone = bone;
       for (Bone &b : armature->bones) {
@@ -4827,7 +5302,7 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
     push_undo(C, "Weight Paint");
     return;
   }
-  if (!bone_find(*armature, armature->active_bone)) {
+  if (!deform && !bone_find(*armature, armature->active_bone)) {
     report_banner(ReportType::Warning, "Pick a bone to paint its weights (Ctrl-click a bone)");
     g_weight_painting = false;
     return;
@@ -4839,10 +5314,12 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
   const float2 mouse = to_layer.apply(view.to_document(io.MousePos));
   const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
   WeightPaintBrush brush;
-  brush.radius = ts.weight_radius * pixel;
-  brush.bone = armature->active_bone;
-  brush.weight = ts.weight_value;
-  brush.strength = ts.weight_strength * std::min(1.0f, io.DeltaTime * 10.0f);
+  /* Pen pressure scales what its toggles say (a mouse presses fully). */
+  const float pen = std::clamp(C.wm->pen_pressure, 0.0f, 1.0f);
+  brush.radius = ts.weight_radius * (ts.weight_pressure_radius ? pen : 1.0f) * pixel;
+  brush.bone = armature ? armature->active_bone : 0;
+  brush.weight = ts.weight_value * (ts.weight_pressure_weight ? pen : 1.0f);
+  brush.strength = ts.weight_strength * (ts.weight_pressure_strength ? pen : 1.0f) * std::min(1.0f, io.DeltaTime * 10.0f);
   brush.mode = io.KeyCtrl ? WeightPaintMode::Subtract : WeightPaintMode(std::clamp(ts.weight_mode, 0, 2));
   brush.normalize = ts.weight_normalize;
   brush.selected_only = ts.weight_mask;
@@ -4853,7 +5330,12 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
     shown[i] = skins[i].apply(layer.drawing.points[i].pos);
   }
   brush.positions = &shown;
-  layer_weight_paint(doc, layer, brush);
+  if (deform) {
+    vector_deform_paint(doc, layer, *deform, brush);
+  }
+  else {
+    layer_weight_paint(doc, layer, brush);
+  }
 }
 
 /* Weight Select: a click picks points, a drag box-selects them (Shift adds, Ctrl removes), and
@@ -6767,7 +7249,7 @@ static void gizmo_mode_buttons(Context &C, const char *id)
   if (ts.gizmo_mode == 2) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 3.0f);
-    ImGui::SliderInt("##cells", &ts.warp_cells, 1, 8, "Grid %d");
+    ui_slider_int("##cells", &ts.warp_cells, 1, 8, "Grid %d");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("How many cells the Warp grid has each way");
     }
@@ -7418,7 +7900,7 @@ static bool gizmo_context_menu(Context &C, const char *id, bool open, bool pivot
     }
     if (ts.gizmo_mode == 2) {
       ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 5.0f);
-      ImGui::SliderInt("Grid", &ts.warp_cells, 1, 8);
+      ui_slider_int("Grid", &ts.warp_cells, 1, 8);
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Reset Pivot and Box", nullptr, false, pivot_moved)) {
@@ -8947,10 +9429,182 @@ static void transform_operators_register()
   }
 }
 
+/* Add Box, Add Circle and Add Grid: what the Shape tool's drag makes, as operators the ViewportActionPanel can
+ * run again with other options (Blender's Add Mesh panel). */
+/* The Add menu's (Shift A) can be added on frame 0 to a vector layer that isn't a reference. */
+static bool primitive_add_poll(Context &C)
+{
+  Layer *layer = nullptr;
+  return C.document && C.wm && editable_drawing(C, &layer) && layer && !layer->is_reference() &&
+         C.document->frame_current == 0;
+}
+
+static void primitive_operators_register()
+{
+  {
+    OperatorType ot;
+    ot.idname = "mesh.primitive_point_add";
+    ot.name = "Add Point";
+    ot.description = "Add a single point to the active vector layer at x, y (the layer's space), to draw on from "
+                     "with Extrude; it becomes the selection";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.props = {panel_float("x", "Location X", "Where, across (the layer's space)", "0", -1e4f, 1e4f, 0.01f),
+                panel_float("y", "Y", "Where, up (the layer's space)", "0", -1e4f, 1e4f, 0.01f)};
+    ot.poll = primitive_add_poll;
+    ot.exec = [](Context &C) {
+      VectorDrawing *drawing = editable_drawing(C);
+      if (!drawing) {
+        return OpStatus::Cancelled;
+      }
+      VectorDrawing point;
+      point.points.push_back({float2(op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f))});
+      drawing_append_selected(*drawing, point);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mesh.primitive_line_add";
+    ot.name = "Add Line";
+    ot.description = "Add a straight line to the active vector layer: two points, its middle at x, y and `length` "
+                     "long, turned by `angle` degrees (the layer's space), drawn in the Draw tool's look; it becomes "
+                     "the selection";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.props = {panel_float("x", "Location X", "Its middle, across (the layer's space)", "0", -1e4f, 1e4f, 0.01f),
+                panel_float("y", "Y", "Its middle, up (the layer's space)", "0", -1e4f, 1e4f, 0.01f),
+                panel_float("length", "Length", "How long", "1", 1e-4f, 1e4f, 0.01f),
+                panel_float("angle", "Angle", "Turned this many degrees from level", "0", -360.0f, 360.0f, 1.0f)};
+    ot.poll = primitive_add_poll;
+    ot.exec = [](Context &C) {
+      VectorDrawing *drawing = editable_drawing(C);
+      if (!drawing) {
+        return OpStatus::Cancelled;
+      }
+      const float2 middle(op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f));
+      const float half = std::abs(op_arg_float(C, "length", 1.0f)) * 0.5f;
+      const float angle = op_arg_float(C, "angle", 0.0f) * PI / 180.0f;
+      if (half < 1e-5f) {
+        report(ReportType::Warning, "Too small to draw");
+        return OpStatus::Cancelled;
+      }
+      const float2 along(std::cos(angle) * half, std::sin(angle) * half);
+      VectorDrawing line;
+      line.points.push_back({middle - along});
+      line.points.push_back({middle + along});
+      Curve curve;
+      curve.points.push_back({0});
+      curve.points.push_back({1});
+      line.curves.push_back(std::move(curve));
+      Shape shape;
+      shape.name = "Line";
+      shape.style = C.wm->tool_settings.style;
+      shape.has_fill = false;
+      shape.edges.push_back({0, 0});
+      line.shapes.push_back(std::move(shape));
+      drawing_append_selected(*drawing, line);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* Shift A: Blender's Add menu, at the mouse; what it adds goes at the 2D cursor. */
+    OperatorType ot;
+    ot.idname = "mesh.add_menu";
+    ot.name = "Add";
+    ot.description = "Blender's Add menu (Shift A): a Point, Line, Square or Circle at the 2D cursor";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) {
+      Layer *layer = nullptr;
+      return C.document && C.wm && editable_drawing(C, &layer) && layer && !layer->is_reference();
+    };
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "mesh_add";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  for (const PrimitiveKind kind : PRIMITIVE_KINDS) {
+    OperatorType ot;
+    const std::string name = primitive_name(kind);
+    ot.idname = kind == PrimitiveKind::Grid     ? "mesh.primitive_grid_add"
+                : kind == PrimitiveKind::Circle ? "mesh.primitive_circle_add"
+                                                : "mesh.primitive_box_add";
+    ot.name = "Add " + name;
+    ot.description = "Add a " + name + " to the active vector layer as the Shape tool draws one: its middle at x, y "
+                     "and its width and height (the layer's space)" +
+                     (kind == PrimitiveKind::Grid ? std::string(", columns= by rows= cells (1 to 32)")
+                                                  : std::string(", fill=1 to fill it")) +
+                     "; the new points become the selection";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    OpProperty columns, rows;
+    for (OpProperty *p : {&columns, &rows}) {
+      p->kind = OpProperty::Kind::Int;
+      p->fallback = "3";
+      p->min = 1.0f;
+      p->max = float(GRID_CELLS_MAX);
+      p->step = 1.0f;
+    }
+    columns.name = "columns";
+    columns.label = "Columns";
+    columns.description = "How many cells across";
+    rows.name = "rows";
+    rows.label = "Rows";
+    rows.description = "How many cells up";
+    std::vector<OpProperty> props;
+    if (kind == PrimitiveKind::Grid) {
+      props = {columns, rows};
+    }
+    props.push_back(panel_float("x", "Location X", "Its middle, across (the layer's space)", "0", -1e4f, 1e4f, 0.01f));
+    props.push_back(panel_float("y", "Y", "Its middle, up (the layer's space)", "0", -1e4f, 1e4f, 0.01f));
+    props.push_back(panel_float("width", "Width", "How wide", "1", 1e-4f, 1e4f, 0.01f));
+    props.push_back(panel_float("height", "Height", "How tall", "1", 1e-4f, 1e4f, 0.01f));
+    if (kind != PrimitiveKind::Grid) {
+      props.push_back(op_bool_property("fill", "Fill", "Fill it as well as outlining it", "0"));
+    }
+    ot.props = std::move(props);
+    ot.poll = [](Context &C) {
+      Layer *layer = nullptr;
+      return C.document && C.wm && editable_drawing(C, &layer) && layer && !layer->is_reference() &&
+             C.document->frame_current == 0;
+    };
+    ot.exec = [kind](Context &C) {
+      Layer *layer = nullptr;
+      VectorDrawing *drawing = editable_drawing(C, &layer);
+      if (!drawing) {
+        return OpStatus::Cancelled;
+      }
+      ToolSettings &ts = C.wm->tool_settings;
+      const float2 middle(op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f));
+      const float2 half(std::abs(op_arg_float(C, "width", 1.0f)) * 0.5f, std::abs(op_arg_float(C, "height", 1.0f)) * 0.5f);
+      const int columns = std::clamp(op_arg_int(C, "columns", ts.grid_columns), 1, GRID_CELLS_MAX);
+      const int rows = std::clamp(op_arg_int(C, "rows", ts.grid_rows), 1, GRID_CELLS_MAX);
+      const bool fill = op_arg_bool(C, "fill");
+      const VectorDrawing shape = primitive_drawing(kind, {middle - half, middle + half}, ts.style, fill, columns, rows);
+      if (shape.curves.empty()) {
+        report(ReportType::Warning, "Too small to draw");
+        return OpStatus::Cancelled;
+      }
+      drawing_append_selected(*drawing, shape);
+      /* The next one starts from these, as Blender's Add Mesh options are kept. */
+      if (kind == PrimitiveKind::Grid) {
+        ts.grid_columns = columns;
+        ts.grid_rows = rows;
+      }
+      else if (op_has_arg(C, "fill")) {
+        ts.draw_fill = fill;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+}
+
 void viewport_operators_register()
 {
   transform_operators_register();
   snap_operators_register();
+  primitive_operators_register();
   OperatorType ot;
   ot.idname = "mesh.transform_selected";
   ot.name = "Transform Points";
@@ -10424,6 +11078,14 @@ bool viewport_precise_edit()
   return g_modal.active;
 }
 
+/* Set by the viewport being middle-dragged, each frame (viewport_navigating). */
+static bool g_navigating = false;
+
+bool viewport_navigating()
+{
+  return g_navigating;
+}
+
 bool viewport_drag_active()
 {
   return g_modal.active || g_bone_modal.active || g_layer_modal.active || g_radius_modal.active ||
@@ -10507,11 +11169,23 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* Detail rides its curves as they are edited (data/detail.hh). It changes drawings, never which layers
    * there are: found by an index. */
   {
-    const LayerIndexScope layer_index(doc);
-    for (const Layer *flat : document_layers_flat(doc)) {
-      Layer *l = layer_find(doc, flat->id);
-      if (l && l->type == LayerType::Vector && !l->is_reference() && drawing_has_detail(l->drawing)) {
-        drawing_detail_sync(l->drawing, true);
+    /* A layer whose revision is the one looked at last frame hasn't changed since: nothing to sync (a big document
+     * has thousands, and looking through every drawing each frame costs milliseconds). */
+    static std::unordered_map<uint64_t, uint64_t> synced;
+    static uint64_t synced_latest = 0;
+    if (revision_latest() != synced_latest) {
+      synced_latest = revision_latest();
+      const LayerIndexScope layer_index(doc);
+      for (const Layer *flat : document_layers_flat(doc)) {
+        uint64_t &seen = synced[flat->id];
+        if (seen == flat->revision.value && seen != 0) {
+          continue;
+        }
+        Layer *l = layer_find(doc, flat->id);
+        if (l && l->type == LayerType::Vector && !l->is_reference() && drawing_has_detail(l->drawing)) {
+          drawing_detail_sync(l->drawing, true);
+        }
+        seen = l ? l->revision.value : 0;
       }
     }
   }
@@ -10623,6 +11297,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     area.view_navigated = true;
     navigated = true;
   }
+  g_navigating = region_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !through_camera;
   if (region_active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f) &&
       (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f))
   {
@@ -10692,6 +11367,8 @@ static void viewport_draw_contents(Area &area, Context &C)
   renderer->set_show_guides(doc.overlays.show && doc.overlays.guides);
   renderer->set_media_view(wm.media_view);
   renderer->set_interactive(true);
+  renderer->set_overscan(doc.shading.layer_caching);
+  renderer->set_layer_runs(doc.shading.layer_caching);
   renderer->set_local_view(doc, wm.local_view);
   /* The Masking tab's Fills Mask / Lines Mask, while held. */
   const Layer *mask_previewed = wm.mask_preview.frame >= ImGui::GetFrameCount() - 1
@@ -10701,8 +11378,11 @@ static void viewport_draw_contents(Area &area, Context &C)
       mask_previewed ? (mask_previewed->id * 2 + (wm.mask_preview.lines ? 1 : 0)) * 1024 + uint64_t(wm.mask_preview.upto + 1)
                      : 0;
   renderer->set_mask_preview(mask_previewed ? mask_previewed->id : 0, wm.mask_preview.lines, wm.mask_preview.upto);
-  /* While a floating window (Brush Settings, a popup) is dragged nothing else happens, so the last
-   * render is reused: a big drawing takes far longer to render than the drag has per frame. */
+  /* The last render is used again while nothing it shows has changed: no layer (each change gives a new revision,
+   * and anything not sure to have said so, a Python run, a widget being used, a drag, touches every layer), no undo
+   * step, no frame, view, size or setting below, no video frame decoded, and it drew everything (a zoom's drawings
+   * still being made don't count). A big drawing takes far longer to render than an idle frame or a panel's click
+   * has. */
   struct LastRender {
     unsigned int texture = 0;
     int width = 0, height = 0;
@@ -10714,30 +11394,201 @@ static void viewport_draw_contents(Area &area, Context &C)
     bool guides = false;
     std::vector<uint64_t> local_view;
     uint64_t mask_preview = 0;
+    uint64_t revision = 0;
+    bool media_view = false;
+    bool complete = false;
   };
   static std::map<int, LastRender> last_renders;
   LastRender &last = last_renders[area.id];
   const bool show_guides = doc.overlays.show && doc.overlays.guides;
-  const bool same = last.texture != 0 && last.width == width_px && last.height == height_px &&
-                    std::memcmp(&last.to_pixels, &document_to_pixels, sizeof(Transform2D)) == 0 &&
+  const bool same_view = std::memcmp(&last.to_pixels, &document_to_pixels, sizeof(Transform2D)) == 0;
+  /* Everything but the view as it was. */
+  const bool same_content = last.texture != 0 && last.width == width_px && last.height == height_px &&
                     last.frame == doc.frame_current && last.quality == doc.viewport_quality &&
                     last.samples == doc.viewport_samples && last.changes == C.undo->change_count() &&
                     last.media == media_generation() && last.guides == show_guides &&
-                    last.local_view == wm.local_view && last.mask_preview == mask_preview_key;
-  const bool window_moving = GImGui->MovingWindow != nullptr;
+                    last.local_view == wm.local_view && last.mask_preview == mask_preview_key &&
+                    last.revision == revision_latest() && last.media_view == wm.media_view && last.complete;
+  /* Live bone physics moves bones without new revisions; a text typed on the canvas is safest drawn anew. */
+  const bool still = same_content && !wm.playing && order_preview.empty() && !dynamics_live_running() &&
+                     !wm.text_editing;
+  /* Zooming: while the zoom keeps changing (a wheel turning, a pinch), the last image is shown scaled to where it
+   * now goes, and drawn anew, sharp, once it has stopped for a moment. */
+  struct Zooming {
+    float zoom = 0.0f;
+    double moved = -10.0;
+  };
+  static std::map<int, Zooming> zooming;
+  Zooming &zoom_state = zooming[area.id];
+  const float zoom_now = std::hypot(document_to_pixels.a, document_to_pixels.b);
+  if (zoom_state.zoom != 0.0f && zoom_now != zoom_state.zoom) {
+    zoom_state.moved = ImGui::GetTime();
+  }
+  zoom_state.zoom = zoom_now;
+  constexpr double ZOOM_SETTLE = 0.15;
+  const bool zoom_preview = doc.shading.zoom_preview && last.texture != 0 &&
+                            ImGui::GetTime() - zoom_state.moved < ZOOM_SETTLE && !wm.playing &&
+                            std::fabs(std::hypot(last.to_pixels.a, last.to_pixels.b) - zoom_now) > 1e-6f * zoom_now;
+  /* Backdrops for zooming out (as browsers' and maps' lower-resolution levels): the scene around the view at less
+   * detail, drawn on a frame with nothing else to do and kept while nothing it shows changes. While a zoom is shown
+   * scaled they fill what the scaled image no longer covers, blurry, under it (never over anything sharper), until
+   * the view is drawn sharp. Level 0, the overview: four times as wide and tall as the view at an eighth of its
+   * resolution, there before any zoom shows. Level 1: twice as wide and tall at half the resolution, sharper for a
+   * zoom out of up to two times; shown only while up to date. */
+  struct Backdrop {
+    std::unique_ptr<SceneRenderer> renderer;
+    unsigned int texture = 0;
+    Transform2D to_pixels;
+    int width = 0, height = 0, frame = 0;
+    uint64_t revision = ~uint64_t(0), changes = 0, media = 0;
+    float zoom = 0.0f, scale = 0.0f;
+    float2 center;
+    bool complete = false, guides = false, media_view = false;
+    std::vector<uint64_t> local_view;
+  };
+  /* Each level's resolution (a fraction of the view's) and how much more than the view it covers. */
+  static constexpr int BACKDROP_LEVELS = 2;
+  static constexpr int BACKDROP_DIVIDE[BACKDROP_LEVELS] = {8, 2};
+  static constexpr float BACKDROP_COVER[BACKDROP_LEVELS] = {4.0f, 2.0f};
+  static std::map<int, std::array<Backdrop, BACKDROP_LEVELS>> backdrops;
+  std::array<Backdrop, BACKDROP_LEVELS> &levels = backdrops[area.id];
+  const auto level_size = [&](int k) {
+    return std::pair{std::max(width_px / BACKDROP_DIVIDE[k], 1), std::max(height_px / BACKDROP_DIVIDE[k], 1)};
+  };
+  /* A level's scale for the view at `at_zoom`: `cover` times the view's width in its pixels, rounded to a power of
+   * two (as browsers' lower-resolution tilings snap to a few scales), so its drawings, worked out for that scale, are
+   * drawn again as they were when it's drawn anew after a change or a small zoom. */
+  const auto level_scale = [&](int k, float at_zoom) {
+    const float ideal = at_zoom * float(level_size(k).first) / (BACKDROP_COVER[k] * float(width_px));
+    return std::exp2(std::round(std::log2(std::max(ideal, 1e-12f))));
+  };
+  /* Up to date: what it shows is what the view shows now, about here and at about this zoom. */
+  const auto level_fresh = [&](int k) {
+    const Backdrop &b = levels[size_t(k)];
+    const auto [bw, bh] = level_size(k);
+    return b.texture != 0 && b.complete && b.revision == revision_latest() && b.changes == C.undo->change_count() &&
+           b.media == media_generation() && b.frame == doc.frame_current && b.width == bw && b.height == bh &&
+           b.scale == level_scale(k, zoom_now) &&
+           length(view.center - b.center) * zoom_now < 0.25f * float(std::min(width_px, height_px)) &&
+           b.guides == show_guides && b.media_view == wm.media_view && b.local_view == wm.local_view;
+  };
+  /* Drawn where the last sharp image was drawn (its zoom and place, not the zoom being moved to). */
+  const float drawn_zoom = std::hypot(last.to_pixels.a, last.to_pixels.b);
+  const float2 drawn_center = drawn_zoom > 0.0f
+                                  ? float2((float(width_px) * 0.5f - last.to_pixels.tx) / drawn_zoom,
+                                           (float(height_px) * 0.5f - last.to_pixels.ty) / drawn_zoom)
+                                  : view.center;
+  const auto draw_level = [&](int k, float at_zoom, float2 at_center) {
+    Backdrop &b = levels[size_t(k)];
+    if (!b.renderer) {
+      b.renderer = std::make_unique<SceneRenderer>();
+    }
+    SceneRenderer &br = *b.renderer;
+    br.set_show_guides(show_guides);
+    br.set_media_view(wm.media_view);
+    br.set_interactive(true);
+    br.set_local_view(doc, wm.local_view);
+    const auto [bw, bh] = level_size(k);
+    const float bz = level_scale(k, at_zoom);
+    const Transform2D to{bz, 0, 0, bz, float(bw) * 0.5f - at_center.x * bz, float(bh) * 0.5f - at_center.y * bz};
+    b.texture = br.render(doc, bw, bh, to, std::max(doc.viewport_quality / (k == 0 ? 3 : 2), 2), k == 0 ? 2 : 4);
+    b.to_pixels = to;
+    b.width = bw;
+    b.height = bh;
+    b.frame = doc.frame_current;
+    b.revision = revision_latest();
+    b.changes = C.undo->change_count();
+    b.media = media_generation();
+    b.zoom = at_zoom;
+    b.scale = bz;
+    b.center = at_center;
+    b.complete = br.complete();
+    b.guides = show_guides;
+    b.media_view = wm.media_view;
+    b.local_view = wm.local_view;
+  };
   unsigned int rendered = 0;
-  if (same && window_moving && !wm.playing && order_preview.empty()) {
+  bool zoom_scaled = false;
+  if (still && same_view) {
     rendered = last.texture;
+    /* Nothing else to do this frame, and nothing has changed for a moment (a burst of edits draws them once,
+     * after): one stale level drawn anew (the overview first). */
+    static uint64_t seen_revision = 0;
+    static double seen_at = 0.0;
+    if (revision_latest() != seen_revision) {
+      seen_revision = revision_latest();
+      seen_at = ImGui::GetTime();
+    }
+    if (doc.shading.zoom_preview && !wm.playing && ImGui::GetTime() - seen_at > 0.3) {
+      for (int k = 0; k < BACKDROP_LEVELS; k++) {
+        if (!level_fresh(k)) {
+          draw_level(k, zoom_now, view.center);
+          break;
+        }
+      }
+    }
+  }
+  else if (still && renderer->pan_to(width_px, height_px, document_to_pixels)) {
+    /* Panned within the last image's margin: the same image, another part of it shown. */
+    rendered = last.texture;
+    last.to_pixels = document_to_pixels;
+  }
+  else if (zoom_preview) {
+    rendered = last.texture;
+    zoom_scaled = true;
+    /* An overview there before the zoom shows: one a little out of date (an edit just before) stands in, as only its
+     * edges show; none (or another frame's) is drawn first. */
+    const Backdrop &overview = levels[0];
+    if (overview.texture == 0 || overview.frame != doc.frame_current || overview.width != level_size(0).first) {
+      draw_level(0, drawn_zoom, drawn_center);
+    }
   }
   else {
+    renderer->set_zooming(!doc.shading.zoom_preview && ImGui::GetTime() - zoom_state.moved < ZOOM_SETTLE);
     rendered = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality, doc.viewport_samples);
     last = {rendered,         width_px,          height_px,          document_to_pixels,
             doc.frame_current, doc.viewport_quality, doc.viewport_samples, C.undo->change_count(),
-            media_generation(), show_guides,       wm.local_view,      mask_preview_key};
+            media_generation(), show_guides,       wm.local_view,      mask_preview_key,
+            revision_latest(), wm.media_view,     renderer->complete()};
   }
   if (const unsigned int texture = rendered) {
     dl->AddCallback(premultiplied_blend, nullptr);
-    dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), origin, origin + size, ImVec2(0, 1), ImVec2(1, 0));
+    if (zoom_scaled) {
+      /* The last image's corners where they go in the view now. */
+      const Transform2D image_to_now = document_to_pixels * renderer->image_to_document();
+      const float w = float(renderer->image_width()), h = float(renderer->image_height());
+      const auto at = [&](float x, float y) {
+        const float2 p = image_to_now.apply({x, y});
+        return origin + ImVec2(p.x / fb_scale, size.y - p.y / fb_scale);
+      };
+      dl->PushClipRect(origin, origin + size, true);
+      /* The backdrops first, blurriest at the bottom, where the scaled image doesn't reach (zooming out). The
+       * middle level only while it shows what the view does now. */
+      for (int k = 0; k < BACKDROP_LEVELS; k++) {
+        const Backdrop &b = levels[size_t(k)];
+        const bool current = b.revision == revision_latest() && b.changes == C.undo->change_count();
+        if (b.texture == 0 || b.frame != doc.frame_current || (k > 0 && !current)) {
+          continue;
+        }
+        const Transform2D level_to_now = document_to_pixels * b.to_pixels.inverted();
+        const float bw = float(b.width), bh = float(b.height);
+        const auto bat = [&](float x, float y) {
+          const float2 q = level_to_now.apply({x, y});
+          return origin + ImVec2(q.x / fb_scale, size.y - q.y / fb_scale);
+        };
+        dl->AddImageQuad(ImTextureRef(ImTextureID(intptr_t(b.texture))), bat(0, bh), bat(bw, bh), bat(bw, 0),
+                         bat(0, 0), ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0));
+      }
+      dl->AddImageQuad(ImTextureRef(ImTextureID(intptr_t(texture))), at(0, h), at(w, h), at(w, 0), at(0, 0),
+                       ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0));
+      dl->PopClipRect();
+    }
+    else {
+      float uv[4];
+      renderer->shown_uv(uv);
+      dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), origin, origin + size, ImVec2(uv[0], uv[3]),
+                   ImVec2(uv[2], uv[1]));
+    }
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
   }
   if (mask_previewed) {
@@ -11101,7 +11952,7 @@ static void viewport_draw_contents(Area &area, Context &C)
         if (dragging) {
           const VectorDrawing preview = primitive_drawing(
               ts.shape, shape_drag_points(ts.shape, g_drag.shape_start, shape_snap(C, mouse_layer)), ts.style,
-              ts.draw_fill);
+              ts.draw_fill, ts.grid_columns, ts.grid_rows);
           shape_preview(dl, preview, to_document, view, ts.style.line_width * view.zoom * to_document.scale(),
                         std::clamp(doc.viewport_quality, 1, 64));
         }
@@ -11202,6 +12053,9 @@ static void viewport_draw_contents(Area &area, Context &C)
                            points_overlay_shown(ov, ts), std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
                            ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
       overlay_flush(dl);
+      if (points_overlay_shown(ov, ts)) {
+        draw_modifier_points(dl, doc, *layer, to_document, view, ov.point_size);
+      }
     }
     overlay_index.reset();
     if (hovered && ts.tool == Tool::SplitCurve && !io.KeyCtrl) {
@@ -11394,6 +12248,27 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Copy Masks", "layer.masks_copy");
     ui_menu_end();
   }
+  /* Shift A on a drawing: Blender's Add menu. */
+  if (hovered && wm.menu_request == "mesh_add") {
+    ImGui::OpenPopup("##mesh_add");
+    wm.menu_request.clear();
+  }
+  if (ui_menu_begin("##mesh_add")) {
+    add_menu_items(C);
+    ui_menu_end();
+  }
+  /* M on points: Blender's Merge menu. */
+  if (hovered && wm.menu_request == "mesh_merge") {
+    ImGui::OpenPopup("##mesh_merge");
+    wm.menu_request.clear();
+  }
+  if (ui_menu_begin("##mesh_merge")) {
+    ImGui::TextDisabled("Merge");
+    ImGui::Separator();
+    menu_operator(C, "Merge", "mesh.merge");
+    menu_operator(C, "Merge by Distance", "mesh.merge_by_distance");
+    ui_menu_end();
+  }
   /* X on points: Blender's Delete menu. */
   if (hovered && wm.menu_request == "mesh_delete") {
     ImGui::OpenPopup("##mesh_delete");
@@ -11545,3 +12420,4 @@ static void viewport_draw_contents(Area &area, Context &C)
 }
 
 }  // namespace oanim
+

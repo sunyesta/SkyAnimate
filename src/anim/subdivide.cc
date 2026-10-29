@@ -150,6 +150,16 @@ std::vector<BoneWeight> blend(const std::vector<BoneWeight> &a, const std::vecto
 
 }  // namespace
 
+std::vector<float> subdivide_even_cuts(const float2 c[4], int k)
+{
+  return even_cuts(c, k);
+}
+
+VectorDrawing subdivide_setup_shape(const VectorDrawing &drawing)
+{
+  return setup_shape(drawing);
+}
+
 int subdivide_pieces(const VectorDrawing &drawing, const Curve &curve, int segment, const Modifier &m, bool render)
 {
   const VectorDrawing setup = setup_shape(drawing);
@@ -166,7 +176,7 @@ int subdivide_pieces(const VectorDrawing &drawing, const Curve &curve, int segme
 }
 
 VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, bool render,
-                                std::vector<int> *r_new_points)
+                                std::vector<int> *r_new_points, const std::vector<std::vector<int>> *given)
 {
   VectorDrawing drawing = source;
   /* Detail final, then none: the split curve is the whole curve. */
@@ -188,7 +198,10 @@ VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, 
     std::vector<int> pieces(static_cast<size_t>(segments), 1);
     bool any = false;
     for (int s = 0; s < segments; s++) {
-      pieces[size_t(s)] = pieces_for(drawing, &setup, drawing.curves[size_t(c)], c, s, m, render, group);
+      pieces[size_t(s)] = given ? (size_t(c) < given->size() && size_t(s) < (*given)[size_t(c)].size()
+                                       ? std::max((*given)[size_t(c)][size_t(s)], 1)
+                                       : 1)
+                                : pieces_for(drawing, &setup, drawing.curves[size_t(c)], c, s, m, render, group);
       any = any || pieces[size_t(s)] > 1;
     }
     if (!any) {

@@ -1,0 +1,2916 @@
+#include "anim/vector_deform.hh"
+
+#include <algorithm>
+#include <array>
+#include <cfloat>
+#include <cmath>
+#include <map>
+#include <memory>
+#include <mutex>
+
+#include "anim/deform.hh"
+#include "anim/subdivide.hh"
+#include "core/parallel.hh"
+#include "data/document.hh"
+#include "data/grid.hh"
+
+namespace oanim {
+
+const char *deform_kind_name(DeformKind kind)
+{
+  switch (kind) {
+    case DeformKind::Grid:
+      return "Grid";
+    case DeformKind::Cage:
+      return "Cage";
+    case DeformKind::Line:
+      return "Line";
+    case DeformKind::Mesh:
+      return "Mesh";
+    case DeformKind::Wire:
+      return "Wire";
+    case DeformKind::None:
+      break;
+  }
+  return "";
+}
+
+/* How finely a cage's or line's outline is followed: pieces per segment (a Curve Deform's line, LINE_STEPS). */
+static constexpr int OUTLINE_STEPS = 16;
+static constexpr int LINE_STEPS = 64;
+
+/* The layers whose deform modifiers are being worked out, innermost last: a shape bent (through others) by
+ * the layer it bends is a loop, left alone. */
+thread_local std::vector<uint64_t> g_deforming;
+
+/* VectorDeformWireScope: how many are alive on this thread. */
+thread_local int g_wire = 0;
+
+VectorDeformWireScope::VectorDeformWireScope()
+{
+  g_wire++;
+}
+
+VectorDeformWireScope::~VectorDeformWireScope()
+{
+  g_wire--;
+}
+
+/* Every curve point's handles as the curve draws them, stored, so they bend with the deform too. */
+static void handles_explicit(VectorDrawing &drawing)
+{
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    Curve &curve = drawing.curves[c];
+    std::vector<std::array<float2, 4>> ctrl(size_t(std::max(curve.segment_count(), 0)));
+    for (int s = 0; s < curve.segment_count(); s++) {
+      curve_segment_bezier(drawing, curve, s, ctrl[size_t(s)].data());
+    }
+    const int n = int(curve.points.size());
+    for (int s = 0; s < curve.segment_count(); s++) {
+      CurvePoint &from = curve.points[size_t(s)], &to = curve.points[size_t((s + 1) % n)];
+      from.handle_out = ctrl[size_t(s)][1] - ctrl[size_t(s)][0];
+      to.handle_in = ctrl[size_t(s)][2] - ctrl[size_t(s)][3];
+      from.handles_set = to.handles_set = true;
+    }
+  }
+}
+
+static float smooth01(float x)
+{
+  x = std::clamp(x, 0.0f, 1.0f);
+  return x * x * (3.0f - 2.0f * x);
+}
+
+static void transform_drawing(VectorDrawing &drawing, const Transform2D &t)
+{
+  for (MeshPoint &p : drawing.points) {
+    p.pos = t.apply(p.pos);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.handle_in = t.apply_vector(cp.handle_in);
+      cp.handle_out = t.apply_vector(cp.handle_out);
+    }
+  }
+}
+
+/* The grid of `drawing` whose nodes `shape` runs through, or null. */
+static const DrawingGrid *shape_grid(const VectorDrawing &drawing, const Shape &shape)
+{
+  if (shape.edges.empty() || shape.edges[0].curve >= int(drawing.curves.size())) {
+    return nullptr;
+  }
+  int a, b;
+  curve_segment_points(drawing.curves[size_t(shape.edges[0].curve)], shape.edges[0].segment, &a, &b);
+  const uint64_t id = drawing.points[size_t(a)].id;
+  for (const DrawingGrid &grid : drawing.grids) {
+    if (std::find(grid.nodes.begin(), grid.nodes.end(), id) != grid.nodes.end()) {
+      return &grid;
+    }
+  }
+  return nullptr;
+}
+
+/* A modifier's shape at rest and as it is now, both in the bent layer's space. */
+struct DeformShape {
+  DeformKind kind = DeformKind::None;
+  GridSurface rest_grid, now_grid;
+  /* A cage's outline (closed) or a line (open), sample for sample. */
+  std::vector<float2> rest, now;
+  /* Where Automatic weights measure from: the rest outline (a grid's: its border), closed unless a line. */
+  std::vector<float2> border;
+  /* A line's: how far along it each sample is, at rest and now. */
+  std::vector<float> rest_at, now_at;
+  /* Stretch: what lies along a line spreads along it as it grows (else it keeps its length). */
+  bool stretch = true;
+  /* A network's cells (Grid without a DrawingGrid, or Mesh). */
+  struct Cell {
+    /* Four-sided: its sides as Beziers, around it (corner k to k + 1), at rest and now. */
+    bool quad = false;
+    std::array<std::array<float2, 4>, 4> rest_sides{}, now_sides{};
+    /* Its outline, sample for sample, at rest and now. */
+    std::vector<float2> rest, now;
+    float size = 1.0f;
+  };
+  std::vector<Cell> cells;
+  /* A grid's or four-sided cells' outline as its sides (the cells' sides no other cell shares), each a Bezier at
+   * rest and now: what points outside follow, each the side's way near it. */
+  std::vector<std::array<std::array<float2, 4>, 2>> edge_sides;
+  /* A grid's or network's outline (and its holes' outlines), sample for sample at rest and now: what the points
+   * outside it follow. */
+  std::vector<std::vector<float2>> outline_rest, outline_now;
+  /* A Mesh Deform's lines (an open line, or a mesh's dangling lines): each line its segments in order, each a Bezier
+   * at rest and now (a line runs on through points where only two of its segments meet). */
+  struct WireEdge {
+    std::array<float2, 4> rest{}, now{};
+    int from = 0, to = 0;
+  };
+  /* Each line also as dense samples of it now, on past both ends straight along the way each end runs (as far again
+   * as the line is long), and how far along them each is: what the points far from it follow it smoothed by. */
+  struct WireLine {
+    std::vector<WireEdge> edges;
+    std::vector<float2> dense;
+    std::vector<float> at;
+    /* The same at rest (as many samples, the same way), for the far points' smoothing to be measured from. */
+    std::vector<float2> dense_rest;
+    std::vector<float> at_rest;
+    /* How many samples come before the line's start, and how far apart they are on average. */
+    int before = 0;
+    float spacing = 1.0f;
+  };
+  std::vector<WireLine> wires;
+  /* A cage's Method (Cage Deform): how what is in it follows. */
+  CageMethod cage_method = CageMethod::MeanValue;
+  /* Envelope: each side (the outline from one of its points to the next), sample for sample at rest and now, how far
+   * along it each sample is, and the way it runs at each sample (rest and now). */
+  struct EnvelopeSide {
+    std::vector<float2> rest, now, rest_way, now_way;
+    std::vector<float> rest_at, now_at;
+  };
+  std::vector<EnvelopeSide> envelope_sides;
+  /* How sharply the nearest side leads (the power its nearness is raised to), from Blend; and how far from the
+   * outline a side's say is down to half, the cage as a whole (Rigid's) taking the rest. */
+  float envelope_power = 8.0f;
+  float envelope_reach = 1.0f;
+  /* Mean Value and Rigid: how each corner of the outline turns (a complex number of length 1), for what lies past it,
+   * which keeps its distance from the outline. */
+  std::vector<float2> cage_turn;
+  float cage_band = 0.0f;
+  /* Rigid: how far the inside moves from where mean value coordinates put it, on a lattice over the cage (`step`
+   * apart from `origin`, `nx` by `ny`), fading out past the outline. */
+  std::vector<float2> lattice;
+  float2 lattice_origin = float2(0.0f, 0.0f);
+  float lattice_step = 1.0f;
+  int lattice_nx = 0, lattice_ny = 0;
+};
+
+/* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
+ * runs corner 0 to 1, the right 1 to 2, the top 3 to 2, the left 0 to 3. */
+static float2 cell_patch(const std::array<std::array<float2, 4>, 4> &sides, float2 st)
+{
+  const auto at = [](const std::array<float2, 4> &c, float t) {
+    const float u = 1.0f - t;
+    return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+  };
+  /* Each side fading out smoothly toward the one opposite (as GridSurface's patch). */
+  const float s = st.x, t = st.y;
+  const float fs = s * s * (3.0f - 2.0f * s), ft = t * t * (3.0f - 2.0f * t);
+  const float2 bottom = at(sides[0], s), right = at(sides[1], t), top = at(sides[2], 1.0f - s),
+               left = at(sides[3], 1.0f - t);
+  const float2 c0 = sides[0][0], c1 = sides[1][0], c2 = sides[2][0], c3 = sides[3][0];
+  return bottom * (1.0f - ft) + top * ft + left * (1.0f - fs) + right * fs -
+         (c0 * ((1.0f - fs) * (1.0f - ft)) + c1 * (fs * (1.0f - ft)) + c3 * ((1.0f - fs) * ft) + c2 * (fs * ft));
+}
+
+/* The patch at `st`; outside 0..1, on straight from its edge (as GridSurface::eval). */
+/* The patch's derivatives along s and t at `st` (exact: it is cubic along its sides and blends them linearly). */
+static void cell_patch_partials(const std::array<std::array<float2, 4>, 4> &sides, float2 st, float2 &r_s, float2 &r_t)
+{
+  const auto at = [](const std::array<float2, 4> &c, float t) {
+    const float u = 1.0f - t;
+    return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+  };
+  const auto way = [](const std::array<float2, 4> &c, float t) {
+    const float u = 1.0f - t;
+    return (c[1] - c[0]) * (3.0f * u * u) + (c[2] - c[1]) * (6.0f * u * t) + (c[3] - c[2]) * (3.0f * t * t);
+  };
+  const float s = st.x, t = st.y;
+  const float fs = s * s * (3.0f - 2.0f * s), ft = t * t * (3.0f - 2.0f * t);
+  const float dfs = 6.0f * s * (1.0f - s), dft = 6.0f * t * (1.0f - t);
+  const float2 c0 = sides[0][0], c1 = sides[1][0], c2 = sides[2][0], c3 = sides[3][0];
+  r_s = way(sides[0], s) * (1.0f - ft) - way(sides[2], 1.0f - s) * ft +
+        (at(sides[1], t) - at(sides[3], 1.0f - t) - (c1 - c0) * (1.0f - ft) - (c2 - c3) * ft) * dfs;
+  r_t = way(sides[1], t) * fs - way(sides[3], 1.0f - t) * (1.0f - fs) +
+        (at(sides[2], 1.0f - s) - at(sides[0], s) - (c3 - c0) * (1.0f - fs) - (c2 - c1) * fs) * dft;
+}
+
+static float2 cell_eval(const std::array<std::array<float2, 4>, 4> &sides, float2 st)
+{
+  const float2 in(std::clamp(st.x, 0.0f, 1.0f), std::clamp(st.y, 0.0f, 1.0f));
+  const float2 at = cell_patch(sides, in);
+  if (in == st) {
+    return at;
+  }
+  const float h = 1e-3f;
+  const float sx = in.x > 0.5f ? -h : h, sy = in.y > 0.5f ? -h : h;
+  const float2 ds = (cell_patch(sides, {in.x + sx, in.y}) - at) / sx;
+  const float2 dt = (cell_patch(sides, {in.x, in.y + sy}) - at) / sy;
+  return at + ds * (st.x - in.x) + dt * (st.y - in.y);
+}
+
+/* Where `p` is in a four-sided cell (Newton's method on its patch, as GridSurface::locate). */
+static bool cell_locate(const std::array<std::array<float2, 4>, 4> &sides, float size, float2 p, float2 &r_st)
+{
+  float2 st(0.5f, 0.5f);
+  for (int it = 0; it < 40; it++) {
+    const float2 f = cell_eval(sides, st) - p;
+    if (length(f) < size * 1e-6f) {
+      r_st = st;
+      return true;
+    }
+    const float h = 1e-3f;
+    const float2 ds = (cell_eval(sides, {st.x + h, st.y}) - cell_eval(sides, {st.x - h, st.y})) / (2.0f * h);
+    const float2 dt = (cell_eval(sides, {st.x, st.y + h}) - cell_eval(sides, {st.x, st.y - h})) / (2.0f * h);
+    const float det = ds.x * dt.y - dt.x * ds.y;
+    if (std::fabs(det) < 1e-12f) {
+      return false;
+    }
+    float2 step((dt.y * f.x - dt.x * f.y) / det, (-ds.y * f.x + ds.x * f.y) / det);
+    const float reach = length(step);
+    if (reach > 2.0f) {
+      step = step * (2.0f / reach);
+    }
+    st = st - step;
+  }
+  return false;
+}
+
+/* Samples per segment of a wire's dense samples. */
+static constexpr int WIRE_STEPS = 64;
+
+static DeformShape::WireLine wire_line(std::vector<DeformShape::WireEdge> edges)
+{
+  /* Segments with next to no length at rest (points stacked on one another) are left out: they have no way to
+   * turn what lies by them with (it fell back to an arbitrary one, so a drawing beside them buckled once the
+   * points came apart), and nothing lies nearer them than the segments either side. */
+  const auto extent = [](const std::array<float2, 4> &c) {
+    return std::max({length(c[1] - c[0]), length(c[2] - c[0]), length(c[3] - c[0])});
+  };
+  float span = 0.0f;
+  for (const DeformShape::WireEdge &e : edges) {
+    span += extent(e.rest);
+  }
+  if (edges.size() > 1) {
+    std::vector<DeformShape::WireEdge> kept;
+    for (const DeformShape::WireEdge &e : edges) {
+      if (extent(e.rest) > span * 1e-3f) {
+        kept.push_back(e);
+      }
+    }
+    if (!kept.empty()) {
+      edges = std::move(kept);
+    }
+  }
+  const auto at3 = [](const std::array<float2, 4> &c, float t) {
+    const float u = 1.0f - t;
+    return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+  };
+  const auto way3 = [&](const std::array<float2, 4> &c, float t) {
+    float2 d = at3(c, std::min(t + 1e-3f, 1.0f)) - at3(c, std::max(t - 1e-3f, 0.0f));
+    const float len = length(d);
+    return len > 1e-12f ? d / len : float2(1.0f, 0.0f);
+  };
+  DeformShape::WireLine line;
+  /* The line now or at rest, densely, carried on straight past both ends (`before` samples, `spacing` apart). */
+  const auto densely = [&](bool now, int before, std::vector<float2> &r_dense, std::vector<float> &r_at) {
+    std::vector<float2> middle;
+    for (const DeformShape::WireEdge &e : edges) {
+      for (int k = 0; k < WIRE_STEPS; k++) {
+        middle.push_back(at3(now ? e.now : e.rest, float(k) / float(WIRE_STEPS)));
+      }
+    }
+    middle.push_back(now ? edges.back().now[3] : edges.back().rest[3]);
+    float total = 0.0f;
+    for (size_t i = 1; i < middle.size(); i++) {
+      total += length(middle[i] - middle[i - 1]);
+    }
+    const float spacing = std::max(total / float(middle.size() - 1), 1e-6f);
+    if (before < 0) {
+      line.spacing = spacing;
+      line.before = before = std::min(int(total / spacing) + 2, 4096);
+    }
+    const float2 start_way = way3(now ? edges.front().now : edges.front().rest, 0.0f);
+    const float2 end_way = way3(now ? edges.back().now : edges.back().rest, 1.0f);
+    for (int k = before; k >= 1; k--) {
+      r_dense.push_back(middle.front() - start_way * (spacing * float(k)));
+    }
+    r_dense.insert(r_dense.end(), middle.begin(), middle.end());
+    for (int k = 1; k <= before; k++) {
+      r_dense.push_back(middle.back() + end_way * (spacing * float(k)));
+    }
+    r_at.assign(r_dense.size(), 0.0f);
+    for (size_t i = 1; i < r_dense.size(); i++) {
+      r_at[i] = r_at[i - 1] + length(r_dense[i] - r_dense[i - 1]);
+    }
+  };
+  densely(true, -1, line.dense, line.at);
+  densely(false, line.before, line.dense_rest, line.at_rest);
+  line.edges = std::move(edges);
+  return line;
+}
+
+/* The cells a network of segments encloses: each face of it, found by walking round with the face on the left
+ * (at each point, on along the next segment clockwise from the one arrived by), those going round
+ * anticlockwise; the outside, going round the other way, is left out. False when it encloses none. */
+static bool network_cells(const VectorDrawing &rest, const Shape &rest_shape, const VectorDrawing *bent,
+                          std::vector<DeformShape::Cell> &r_cells, DeformShape &r_outlines)
+{
+  struct Half {
+    int from = 0, to = 0;
+    std::array<float2, 4> rest_ctrl{}, now_ctrl{};
+  };
+  std::vector<Half> halves;
+  for (const ShapeEdge &e : rest_shape.edges) {
+    if (e.curve < 0 || e.curve >= int(rest.curves.size()) || (bent && e.curve >= int(bent->curves.size()))) {
+      return false;
+    }
+    Half h;
+    curve_segment_points(rest.curves[size_t(e.curve)], e.segment, &h.from, &h.to);
+    if (h.from == h.to) {
+      continue;
+    }
+    curve_segment_bezier(rest, rest.curves[size_t(e.curve)], e.segment, h.rest_ctrl.data());
+    if (bent) {
+      curve_segment_bezier(*bent, bent->curves[size_t(e.curve)], e.segment, h.now_ctrl.data());
+    }
+    Half back = h;
+    std::swap(back.from, back.to);
+    back.rest_ctrl = {h.rest_ctrl[3], h.rest_ctrl[2], h.rest_ctrl[1], h.rest_ctrl[0]};
+    back.now_ctrl = {h.now_ctrl[3], h.now_ctrl[2], h.now_ctrl[1], h.now_ctrl[0]};
+    halves.push_back(h);
+    halves.push_back(back);
+  }
+  if (halves.empty()) {
+    return false;
+  }
+  /* Which way each half leaves its point. */
+  const auto leaving = [](const std::array<float2, 4> &c) {
+    for (int k = 1; k < 4; k++) {
+      if (length(c[size_t(k)] - c[0]) > 1e-9f) {
+        return std::atan2(c[size_t(k)].y - c[0].y, c[size_t(k)].x - c[0].x);
+      }
+    }
+    return 0.0f;
+  };
+  std::map<int, std::vector<int>> out;
+  for (int i = 0; i < int(halves.size()); i++) {
+    out[halves[size_t(i)].from].push_back(i);
+  }
+  for (auto &[point, list] : out) {
+    std::sort(list.begin(), list.end(), [&](int x, int y) {
+      return leaving(halves[size_t(x)].rest_ctrl) < leaving(halves[size_t(y)].rest_ctrl);
+    });
+  }
+  const auto next = [&](int h) {
+    const std::vector<int> &list = out[halves[size_t(h)].to];
+    const int twin = h ^ 1;
+    const auto it = std::find(list.begin(), list.end(), twin);
+    const int k = int(it - list.begin());
+    return list[size_t((k - 1 + int(list.size())) % int(list.size()))];
+  };
+  std::vector<bool> used(halves.size(), false);
+  /* Which walk each half was on: a segment walked both ways in one walk has the same face on both sides, a line
+   * left dangling (a wire), not a side between cells. */
+  std::vector<int> walk_of(halves.size(), -1);
+  for (int start = 0; start < int(halves.size()); start++) {
+    if (used[size_t(start)]) {
+      continue;
+    }
+    std::vector<int> loop;
+    int h = start;
+    while (!used[size_t(h)] && loop.size() <= halves.size()) {
+      used[size_t(h)] = true;
+      walk_of[size_t(h)] = start;
+      loop.push_back(h);
+      h = next(h);
+    }
+    if (h != start || loop.size() < 2) {
+      continue;
+    }
+    DeformShape::Cell cell;
+    for (const int k : loop) {
+      for (int j = 0; j < OUTLINE_STEPS; j++) {
+        const float t = float(j) / float(OUTLINE_STEPS);
+        const auto at = [t](const std::array<float2, 4> &c) {
+          const float u = 1.0f - t;
+          return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+        };
+        cell.rest.push_back(at(halves[size_t(k)].rest_ctrl));
+        cell.now.push_back(at(bent ? halves[size_t(k)].now_ctrl : halves[size_t(k)].rest_ctrl));
+      }
+    }
+    float area = 0.0f;
+    float2 lo = cell.rest[0], hi = cell.rest[0];
+    for (size_t i = 0; i < cell.rest.size(); i++) {
+      area += cross(cell.rest[i], cell.rest[(i + 1) % cell.rest.size()]);
+      lo = float2(std::min(lo.x, cell.rest[i].x), std::min(lo.y, cell.rest[i].y));
+      hi = float2(std::max(hi.x, cell.rest[i].x), std::max(hi.y, cell.rest[i].y));
+    }
+    /* A walk out along loose lines and back encloses nothing (whatever rounding leaves of its area): every segment
+     * of it walked both ways. Neither a cell nor an outline; its segments are wires. */
+    if (std::all_of(loop.begin(), loop.end(), [&](int k) { return walk_of[size_t(k ^ 1)] == start; })) {
+      continue;
+    }
+    const float least = 1e-6f * std::max((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y), 1e-12f);
+    if (area < -least) {
+      /* Round the outside (or a hole) the other way: an outline. */
+      r_outlines.outline_rest.push_back(cell.rest);
+      r_outlines.outline_now.push_back(cell.now);
+      continue;
+    }
+    if (area <= least) {
+      continue;
+    }
+    cell.size = std::max(std::max(hi.x - lo.x, hi.y - lo.y), 1e-6f);
+    if (loop.size() == 4) {
+      cell.quad = true;
+      for (int k = 0; k < 4; k++) {
+        cell.rest_sides[size_t(k)] = halves[size_t(loop[size_t(k)])].rest_ctrl;
+        cell.now_sides[size_t(k)] = bent ? halves[size_t(loop[size_t(k)])].now_ctrl : cell.rest_sides[size_t(k)];
+      }
+    }
+    r_cells.push_back(std::move(cell));
+  }
+  std::vector<DeformShape::WireEdge> loose;
+  for (size_t h = 0; h + 1 < halves.size(); h += 2) {
+    if (walk_of[h] == walk_of[h + 1]) {
+      loose.push_back({halves[h].rest_ctrl, bent ? halves[h].now_ctrl : halves[h].rest_ctrl, halves[h].from,
+                       halves[h].to});
+    }
+  }
+  /* The loose segments joined into lines: on through each point where just two of them meet. */
+  std::map<int, std::vector<int>> at_point;
+  for (int i = 0; i < int(loose.size()); i++) {
+    at_point[loose[size_t(i)].from].push_back(i);
+    at_point[loose[size_t(i)].to].push_back(i);
+  }
+  std::vector<bool> taken(loose.size(), false);
+  const auto reversed = [](DeformShape::WireEdge e) {
+    std::swap(e.from, e.to);
+    e.rest = {e.rest[3], e.rest[2], e.rest[1], e.rest[0]};
+    e.now = {e.now[3], e.now[2], e.now[1], e.now[0]};
+    return e;
+  };
+  /* Lines start at a point that isn't a two-way joint (an end or a branch); loops of loose segments anywhere. */
+  for (const int pass : {0, 1}) {
+    for (int i = 0; i < int(loose.size()); i++) {
+      if (taken[size_t(i)]) {
+        continue;
+      }
+      DeformShape::WireEdge e = loose[size_t(i)];
+      if (pass == 0) {
+        const bool from_joint = at_point[e.from].size() == 2, to_joint = at_point[e.to].size() == 2;
+        if (from_joint && to_joint) {
+          continue;
+        }
+        if (from_joint) {
+          e = reversed(e);
+        }
+      }
+      std::vector<DeformShape::WireEdge> line = {e};
+      taken[size_t(i)] = true;
+      for (;;) {
+        const std::vector<int> &here = at_point[line.back().to];
+        if (here.size() != 2) {
+          break;
+        }
+        const int k = here[0] == i ? here[1] : here[0];
+        if (taken[size_t(k)]) {
+          break;
+        }
+        taken[size_t(k)] = true;
+        DeformShape::WireEdge f = loose[size_t(k)];
+        if (f.from != line.back().to) {
+          f = reversed(f);
+        }
+        line.push_back(f);
+        i = k;
+      }
+      r_outlines.wires.push_back(wire_line(std::move(line)));
+    }
+  }
+  return !r_cells.empty() || !r_outlines.wires.empty();
+}
+
+static std::vector<float> lengths_along(const std::vector<float2> &v)
+{
+  std::vector<float> at(v.size(), 0.0f);
+  for (size_t i = 1; i < v.size(); i++) {
+    at[i] = at[i - 1] + length(v[i] - v[i - 1]);
+  }
+  return at;
+}
+
+static bool shape_rest(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &r_rest,
+                       const Layer **r_target, bool render)
+{
+  const Layer *target = layer_find(doc, m.deform_layer);
+  if (!target || target->id == layer.id || !target->has_drawing() || m.deform_shape == 0) {
+    return false;
+  }
+  r_rest = layer_setup_drawing(doc, *target, render);
+  transform_drawing(r_rest, layer_setup_world_transform(doc, layer.id).inverted() *
+                                layer_setup_world_transform(doc, target->id));
+  *r_target = target;
+  return drawing_shape_index(r_rest, m.deform_shape) >= 0;
+}
+
+static bool border_of_grid(const GridSurface &g, std::vector<float2> &r)
+{
+  r.clear();
+  const int steps = 8;
+  for (int i = 0; i < g.columns; i++) {
+    for (int k = 0; k < steps; k++) {
+      r.push_back(g.eval(i, 0, {float(k) / float(steps), 0.0f}));
+    }
+  }
+  for (int j = 0; j < g.rows; j++) {
+    for (int k = 0; k < steps; k++) {
+      r.push_back(g.eval(g.columns - 1, j, {1.0f, float(k) / float(steps)}));
+    }
+  }
+  for (int i = g.columns - 1; i >= 0; i--) {
+    for (int k = 0; k < steps; k++) {
+      r.push_back(g.eval(i, g.rows - 1, {1.0f - float(k) / float(steps), 1.0f}));
+    }
+  }
+  for (int j = g.rows - 1; j >= 0; j--) {
+    for (int k = 0; k < steps; k++) {
+      r.push_back(g.eval(0, j, {0.0f, 1.0f - float(k) / float(steps)}));
+    }
+  }
+  return r.size() >= 3;
+}
+
+/* `now` false: the rest alone (enough for kinds and Automatic weights). */
+/* The outline's sides of a grid (its border segments) or of four-sided cells (the sides no other cell shares), at
+ * rest and now: what the points outside follow (DeformShape::edge_sides). */
+static void gather_edge_sides(DeformShape &r)
+{
+  r.edge_sides.clear();
+  if (r.cells.empty()) {
+    const GridSurface &a = r.rest_grid, &b = r.now_grid.across.empty() ? r.rest_grid : r.now_grid;
+    const int cols = a.columns, rows = a.rows;
+    if (cols <= 0 || rows <= 0 || b.columns != cols || b.rows != rows) {
+      return;
+    }
+    for (int c = 0; c < cols; c++) {
+      r.edge_sides.push_back({a.across[size_t(c)], b.across[size_t(c)]});
+      r.edge_sides.push_back({a.across[size_t(rows * cols + c)], b.across[size_t(rows * cols + c)]});
+    }
+    for (int row = 0; row < rows; row++) {
+      r.edge_sides.push_back({a.up[size_t(row)], b.up[size_t(row)]});
+      r.edge_sides.push_back({a.up[size_t(cols * rows + row)], b.up[size_t(cols * rows + row)]});
+    }
+    return;
+  }
+  if (!std::all_of(r.cells.begin(), r.cells.end(), [](const DeformShape::Cell &c) { return c.quad; })) {
+    return;
+  }
+  const auto same_ends = [](const std::array<float2, 4> &x, const std::array<float2, 4> &y, float tol) {
+    return (length(x[0] - y[0]) < tol && length(x[3] - y[3]) < tol) ||
+           (length(x[0] - y[3]) < tol && length(x[3] - y[0]) < tol);
+  };
+  for (size_t i = 0; i < r.cells.size(); i++) {
+    const DeformShape::Cell &c = r.cells[i];
+    for (int k = 0; k < 4; k++) {
+      const std::array<float2, 4> &side = c.rest_sides[size_t(k)];
+      bool shared = false;
+      for (size_t j = 0; j < r.cells.size() && !shared; j++) {
+        for (int m = 0; m < 4 && j != i && !shared; m++) {
+          shared = same_ends(side, r.cells[j].rest_sides[size_t(m)], c.size * 1e-5f);
+        }
+      }
+      if (!shared) {
+        r.edge_sides.push_back({side, c.now_sides[size_t(k)]});
+      }
+    }
+  }
+}
+
+static void cage_method_build(DeformShape &r);
+
+/* The shape at rest and (`now`) as it is, in the layer's space: what a deform is built from. */
+static bool deform_shape_inputs(const Document &doc, const Layer &layer, const Modifier &m, bool now, bool render,
+                                VectorDrawing &r_rest, VectorDrawing &r_bent)
+{
+  const Layer *target = nullptr;
+  if (!shape_rest(doc, layer, m, r_rest, &target, render)) {
+    return false;
+  }
+  if (now) {
+    if (std::find(g_deforming.begin(), g_deforming.end(), target->id) != g_deforming.end()) {
+      return false;
+    }
+    g_deforming.push_back(layer.id);
+    r_bent = layer_evaluated_drawing(doc, *target, render);
+    g_deforming.pop_back();
+    transform_drawing(r_bent, layer_world_transform(doc, layer.id).inverted() * layer_world_transform(doc, target->id));
+    if (drawing_shape_index(r_bent, m.deform_shape) < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &rest, const VectorDrawing &bent,
+                              DeformShape &r)
+{
+  const Shape &rest_shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
+  const Shape *bent_shape = now ? &bent.shapes[size_t(drawing_shape_index(bent, m.deform_shape))] : nullptr;
+  /* Each deform takes its own shapes: Mesh Deform a grid or a network of cells (or a closed four-sided shape, as
+   * one cell), Cage Deform one closed shape, Curve Deform one open line. */
+  const bool mesh = m.type == ModifierType::MeshDeform;
+  if (const DrawingGrid *grid = shape_grid(rest, rest_shape)) {
+    if (!mesh || !r.rest_grid.build(rest, *grid) || (now && !r.now_grid.build(bent, *grid))) {
+      return false;
+    }
+    r.kind = DeformKind::Grid;
+    std::vector<float2> outline_now;
+    if (!border_of_grid(r.rest_grid, r.border) || !border_of_grid(now ? r.now_grid : r.rest_grid, outline_now)) {
+      return false;
+    }
+    r.outline_rest = {r.border};
+    r.outline_now = {outline_now};
+    gather_edge_sides(r);
+    return true;
+  }
+  /* Branching (more than two of its segments meeting at a point): a network, never one line or loop. */
+  std::map<int, int> meeting;
+  bool branches = false;
+  for (const ShapeEdge &e : rest_shape.edges) {
+    if (e.curve >= 0 && e.curve < int(rest.curves.size())) {
+      int from, to;
+      curve_segment_points(rest.curves[size_t(e.curve)], e.segment, &from, &to);
+      branches = ++meeting[from] > 2 || branches;
+      branches = ++meeting[to] > 2 || branches;
+    }
+  }
+  bool closed = false;
+  const bool one_run = !branches && shape_outline(rest, rest_shape, OUTLINE_STEPS, r.rest, nullptr, &closed);
+  if (!one_run || (mesh && closed && rest_shape.edges.size() == 4) || (mesh && !closed)) {
+    /* A network drawn by hand (or a closed four-sided shape, one cell): its cells; a Grid when every one has four
+     * sides. */
+    r.rest.clear();
+    if (!mesh || !network_cells(rest, rest_shape, now ? &bent : nullptr, r.cells, r)) {
+      return false;
+    }
+    r.kind = r.cells.empty() ? DeformKind::Wire
+             : std::all_of(r.cells.begin(), r.cells.end(), [](const DeformShape::Cell &c) { return c.quad; })
+                 ? DeformKind::Grid
+                 : DeformKind::Mesh;
+    gather_edge_sides(r);
+    return true;
+  }
+  if (m.type != (closed ? ModifierType::CageDeform : ModifierType::CurveDeform)) {
+    return false;
+  }
+  /* A line is followed more finely than a cage (its way turns what lies far off it, which a coarse one would turn by
+   * small corners as it moved). */
+  const int steps = closed ? OUTLINE_STEPS : LINE_STEPS;
+  if (!closed) {
+    shape_outline(rest, rest_shape, steps, r.rest, nullptr, &closed);
+  }
+  /* A closed outline ends where it starts: one sample is enough. */
+  if (closed && r.rest.size() > 1 && length(r.rest.back() - r.rest.front()) < 1e-6f) {
+    r.rest.pop_back();
+  }
+  if (now) {
+    bool bent_closed = false;
+    if (!shape_outline(bent, *bent_shape, steps, r.now, nullptr, &bent_closed)) {
+      return false;
+    }
+    if (closed && r.now.size() > r.rest.size()) {
+      r.now.pop_back();
+    }
+    if (r.now.size() != r.rest.size() || bent_closed != closed) {
+      return false;
+    }
+  }
+  if (r.rest.size() < (closed ? 3u : 2u)) {
+    return false;
+  }
+  r.kind = closed ? DeformKind::Cage : DeformKind::Line;
+  r.border = r.rest;
+  r.stretch = m.deform_stretch;
+  if (closed && now) {
+    r.cage_method = m.deform_cage_method;
+    /* Blend 0 to 1: the nearest side leading as the cube of nearness to as nearness itself (past the cube, two sides
+     * setting a point's distance from each at a closing corner pull it apart faster than the corner gives room, and
+     * it folds). */
+    r.envelope_power = 3.0f * std::pow(1.0f / 3.0f, std::clamp(m.deform_blend, 0.0f, 1.0f));
+    cage_method_build(r);
+  }
+  if (!closed) {
+    r.rest_at = lengths_along(r.rest);
+    r.now_at = lengths_along(now ? r.now : r.rest);
+    if (r.rest_at.back() < 1e-6f || r.now_at.back() < 1e-6f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool deform_shape_build(const Document &doc, const Layer &layer, const Modifier &m, bool now, bool render,
+                               DeformShape &r)
+{
+  VectorDrawing rest, bent;
+  return deform_shape_inputs(doc, layer, m, now, render, rest, bent) && deform_shape_make(m, now, rest, bent, r);
+}
+
+/* Builds kept: a deform's shape built again only when the shape (at rest or now) or the modifier has changed. A
+ * Cage's Rigid and Envelope solve their lattice in the build, which takes several milliseconds, every frame drawn
+ * otherwise (a frame held, the view panned, another layer edited). Each build has a serial: what was bent with it
+ * can be kept too (vector_deform_apply). */
+struct KeptBuild {
+  Modifier m;
+  VectorDrawing rest, bent;
+  std::shared_ptr<const DeformShape> shape;
+  uint64_t serial = 0;
+};
+/* A bent drawing kept: the drawing before, as it was before the bones, the weights and settings it was bent with,
+ * and the build; and the drawing after. */
+struct KeptBend {
+  Modifier m;
+  uint64_t build = 0;
+  bool render = false;
+  int wire = 0;
+  VectorDrawing drawing, before_bones;
+  PointGroup group;
+  bool grouped = false;
+  VectorDrawing result;
+};
+static std::mutex g_kept_mutex;
+static std::map<std::tuple<uint64_t, std::string, bool>, KeptBuild> g_kept_builds;
+static std::map<std::tuple<uint64_t, std::string, bool>, KeptBend> g_kept_bends;
+static uint64_t g_kept_serial = 0;
+
+static std::shared_ptr<const DeformShape> deform_shape_kept(const Document &doc, const Layer &layer, const Modifier &m,
+                                                            bool render, uint64_t &r_serial)
+{
+  VectorDrawing rest, bent;
+  if (!deform_shape_inputs(doc, layer, m, true, render, rest, bent)) {
+    return nullptr;
+  }
+  const auto key = std::make_tuple(layer.id, m.name, render);
+  {
+    std::lock_guard lock(g_kept_mutex);
+    auto it = g_kept_builds.find(key);
+    if (it != g_kept_builds.end() && it->second.m == m && it->second.rest == rest && it->second.bent == bent) {
+      r_serial = it->second.serial;
+      return it->second.shape;
+    }
+  }
+  auto shape = std::make_shared<DeformShape>();
+  if (!deform_shape_make(m, true, rest, bent, *shape)) {
+    return nullptr;
+  }
+  std::lock_guard lock(g_kept_mutex);
+  if (g_kept_builds.size() > 512) {
+    g_kept_builds.clear();
+  }
+  KeptBuild &kept = g_kept_builds[key];
+  kept.m = m;
+  kept.rest = std::move(rest);
+  kept.bent = std::move(bent);
+  kept.shape = shape;
+  kept.serial = r_serial = ++g_kept_serial;
+  return shape;
+}
+
+/* Mean value coordinates of `p` against polygon `v` (Floater; Hormann's signed form, so a point outside or
+ * in a dent gets them too). A point on the outline gets its edge's two ends. */
+static bool mean_value(const std::vector<float2> &v, float2 p, std::vector<float> &r_w)
+{
+  /* In double: far from the outline the angles are tiny and the weights nearly cancel, so float lost a thousandth of
+   * the way there (a point far off moved a little with an outline that hadn't). */
+  const size_t n = v.size();
+  r_w.assign(n, 0.0f);
+  std::vector<double> sx(n), sy(n), r(n), t(n);
+  double scale = 0.0;
+  for (size_t i = 0; i < n; i++) {
+    sx[i] = double(v[i].x) - p.x;
+    sy[i] = double(v[i].y) - p.y;
+    r[i] = std::sqrt(sx[i] * sx[i] + sy[i] * sy[i]);
+    scale = std::max(scale, r[i]);
+  }
+  const double eps = std::max(scale, 1e-6) * 1e-6;
+  for (size_t i = 0; i < n; i++) {
+    if (r[i] < eps) {
+      r_w[i] = 1.0f;
+      return true;
+    }
+  }
+  for (size_t i = 0; i < n; i++) {
+    const size_t j = (i + 1) % n;
+    const double a = sx[i] * sy[j] - sy[i] * sx[j], d = sx[i] * sx[j] + sy[i] * sy[j];
+    if (std::fabs(a) <= eps * (r[i] + r[j]) && d < 0.0) {
+      const double u = r[i] / (r[i] + r[j]);
+      r_w[i] = float(1.0 - u);
+      r_w[j] = float(u);
+      return true;
+    }
+    /* tan of half the angle the edge spans at p, signed. */
+    t[i] = std::fabs(a) > 1e-300 ? (r[i] * r[j] - d) / a : 0.0;
+  }
+  std::vector<double> w(n);
+  double sum = 0.0;
+  for (size_t i = 0; i < n; i++) {
+    w[i] = (t[(i + n - 1) % n] + t[i]) / r[i];
+    sum += w[i];
+  }
+  if (std::fabs(sum) < 1e-300) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    r_w[i] = float(w[i] / sum);
+  }
+  return true;
+}
+
+/* Where `p` is against a line: how far along it (measured along the line; below 0 or past its length beyond
+ * its ends, on along the end pieces) and how far across it (left of the way it runs). */
+struct LinePlace {
+  float along = 0.0f, across = 0.0f;
+};
+
+static float2 line_normal(const std::vector<float2> &v, int i)
+{
+  const int n = int(v.size());
+  float2 d(0.0f, 0.0f);
+  if (i > 0) {
+    d = d + normalize(v[size_t(i)] - v[size_t(i - 1)]);
+  }
+  if (i < n - 1) {
+    d = d + normalize(v[size_t(i + 1)] - v[size_t(i)]);
+  }
+  const float len = length(d);
+  d = len > 1e-9f ? d / len : float2(1.0f, 0.0f);
+  return {-d.y, d.x};
+}
+
+/* The line's place and frame `s` along it (past an end, on along the end piece). */
+static void line_frame_at(const std::vector<float2> &v, const std::vector<float> &at, float s, float2 &r_at,
+                          float2 &r_tangent, float2 &r_normal)
+{
+  const int pieces = int(v.size()) - 1;
+  int piece = int(std::upper_bound(at.begin(), at.end(), s) - at.begin()) - 1;
+  piece = std::clamp(piece, 0, pieces - 1);
+  const float len = at[size_t(piece + 1)] - at[size_t(piece)];
+  const float t = len > 1e-12f ? (s - at[size_t(piece)]) / len : 0.0f;
+  const float2 a = v[size_t(piece)], b = v[size_t(piece + 1)];
+  r_at = a + (b - a) * t;
+  const float tc = std::clamp(t, 0.0f, 1.0f);
+  const float2 n = line_normal(v, piece) * (1.0f - tc) + line_normal(v, piece + 1) * tc;
+  const float nl = length(n);
+  r_normal = nl > 1e-9f ? n / nl : float2(0.0f, 1.0f);
+  r_tangent = {r_normal.y, -r_normal.x};
+}
+
+static LinePlace line_locate(const std::vector<float2> &v, const std::vector<float> &at, float2 p)
+{
+  float best_dist = FLT_MAX, best_s = 0.0f;
+  const int pieces = int(v.size()) - 1;
+  for (int i = 0; i < pieces; i++) {
+    const float2 a = v[size_t(i)], d = v[size_t(i + 1)] - a;
+    const float dd = dot(d, d);
+    float t = dd > 1e-20f ? dot(p - a, d) / dd : 0.0f;
+    /* Past an end, on along its piece. */
+    t = std::clamp(t, i == 0 ? -FLT_MAX : 0.0f, i == pieces - 1 ? FLT_MAX : 1.0f);
+    const float dist = length(a + d * t - p);
+    if (dist < best_dist) {
+      best_dist = dist;
+      best_s = at[size_t(i)] + t * std::sqrt(dd);
+    }
+  }
+  float2 on, tangent, normal;
+  line_frame_at(v, at, best_s, on, tangent, normal);
+  return {best_s + dot(p - on, tangent), dot(p - on, normal)};
+}
+
+/* The point's near places on a line: on each part of it nearer the point than the parts either side (past an end, on
+ * along the end piece), each as line_locate gives it, and how far the point is from each (`r_dists`). */
+static std::vector<LinePlace> line_places(const std::vector<float2> &v, const std::vector<float> &at, float2 p,
+                                          std::vector<float> &r_dists)
+{
+  const int pieces = int(v.size()) - 1;
+  std::vector<float> dist(static_cast<size_t>(pieces)), ts(static_cast<size_t>(pieces));
+  for (int i = 0; i < pieces; i++) {
+    const float2 a = v[size_t(i)], d = v[size_t(i + 1)] - a;
+    const float dd = dot(d, d);
+    float t = dd > 1e-20f ? dot(p - a, d) / dd : 0.0f;
+    t = std::clamp(t, i == 0 ? -FLT_MAX : 0.0f, i == pieces - 1 ? FLT_MAX : 1.0f);
+    ts[size_t(i)] = t;
+    dist[size_t(i)] = length(a + d * t - p);
+  }
+  std::vector<LinePlace> places;
+  r_dists.clear();
+  for (int i = 0; i < pieces; i++) {
+    const bool below_prev = i == 0 || dist[size_t(i)] < dist[size_t(i - 1)];
+    const bool below_next = i == pieces - 1 || dist[size_t(i)] <= dist[size_t(i + 1)];
+    if (!below_prev || !below_next) {
+      continue;
+    }
+    const float len = at[size_t(i + 1)] - at[size_t(i)];
+    const float s = at[size_t(i)] + ts[size_t(i)] * len;
+    float2 on, tangent, normal;
+    line_frame_at(v, at, s, on, tangent, normal);
+    places.push_back({s + dot(p - on, tangent), dot(p - on, normal)});
+    r_dists.push_back(dist[size_t(i)]);
+  }
+  if (places.empty()) {
+    places.push_back(line_locate(v, at, p));
+    r_dists.push_back(0.0f);
+  }
+  return places;
+}
+
+/* A line's place and way `here` along it, averaged over a stretch `reach` either side (the nearer the more, a smooth
+ * bump): the line as a point that far from it should follow it, its sharp bends rounded. False when the stretch
+ * holds none of it. */
+static bool line_smoothed(const std::vector<float2> &v, const std::vector<float> &at, float here, float reach,
+                          float2 &r_at, float2 &r_way)
+{
+  if (reach <= 0.0f || v.size() < 2) {
+    return false;
+  }
+  /* The samples within reach: from where `here` is, outward (the lengths only grow). */
+  const size_t mid = size_t(std::max<ptrdiff_t>(
+      0, std::upper_bound(at.begin(), at.end(), here) - at.begin() - 1));
+  size_t lo = mid, hi = std::min(mid + 1, v.size() - 1);
+  while (lo > 0 && at[lo] > here - reach) {
+    lo--;
+  }
+  while (hi < v.size() - 1 && at[hi] < here + reach) {
+    hi++;
+  }
+  float2 sum_at(0.0f, 0.0f), sum_way(0.0f, 0.0f);
+  float weight = 0.0f;
+  for (size_t k = lo; k < hi; k++) {
+    const float m = (at[k] + at[k + 1]) * 0.5f;
+    const float x = (m - here) / reach;
+    if (std::fabs(x) >= 1.0f) {
+      continue;
+    }
+    const float wk = (1.0f - x * x) * (1.0f - x * x) * (at[k + 1] - at[k]);
+    sum_at = sum_at + (v[k] + v[k + 1]) * (0.5f * wk);
+    sum_way = sum_way + (v[k + 1] - v[k]) * wk;
+    weight += wk;
+  }
+  if (weight <= 1e-12f || length(sum_way) <= 1e-12f) {
+    return false;
+  }
+  r_at = sum_at / weight;
+  r_way = normalize(sum_way);
+  return true;
+}
+
+/* How far across a line a point may sit on the inside of its bend there: no further than the bend's radius,
+ * past which it would fold over to the far side. Up to half the radius it keeps its distance; beyond, it eases
+ * toward the radius, keeping its order. */
+static float across_in_bend(const std::vector<float2> &v, const std::vector<float> &at, float s, float across)
+{
+  const float total = at.back();
+  const float h = std::clamp(std::fabs(across) * 0.5f, total * 1e-3f, total * 0.25f);
+  float2 p0, t0, n0, p1, t1, n1;
+  line_frame_at(v, at, s - h, p0, t0, n0);
+  line_frame_at(v, at, s + h, p1, t1, n1);
+  const float turn = std::atan2(cross(t0, t1), dot(t0, t1));
+  const float bend = turn / (2.0f * h);
+  /* Turning left, the inside is on the left (positive across). */
+  if (bend * across <= 0.0f || std::fabs(bend) < 1e-6f) {
+    return across;
+  }
+  const float radius = 1.0f / std::fabs(bend), half = radius * 0.5f, d = std::fabs(across);
+  if (d <= half) {
+    return across;
+  }
+  return std::copysign(half + half * std::tanh((d - half) / half), across);
+}
+
+static float polyline_distance(const std::vector<float2> &v, bool closed, float2 p);
+static bool inside(const std::vector<float2> &v, float2 p);
+static bool mean_value(const std::vector<float2> &v, float2 p, std::vector<float> &r_w);
+
+/* Whether `p` is outside a grid's or network's cells (in none of them). */
+/* A four-sided cell's place for `p` (its patch's s and t) when `p` is in it or on its sides: judged by the side
+ * curves themselves, not by the polygon of their samples, which a bulging side passes outside of (so a point
+ * drawn on a side follows the patch, exactly onto the bent side, not the outline around the cells). */
+static bool quad_cell_at(const DeformShape::Cell &c, float2 p, float2 &r_st)
+{
+  constexpr float edge = 1e-3f;
+  if (!inside(c.rest, p) && polyline_distance(c.rest, true, p) > c.size * 0.05f) {
+    return false;
+  }
+  float2 st;
+  if (!cell_locate(c.rest_sides, c.size, p, st) || st.x < -edge || st.x > 1.0f + edge || st.y < -edge ||
+      st.y > 1.0f + edge)
+  {
+    return false;
+  }
+  r_st = st;
+  return true;
+}
+
+/* Whether `p` lies on side `k` of a four-sided cell, and where along it (`r_t`, the side's own parameter): the
+ * nearest place on the side curve (Newton's method from a few starts), within a hair of the cell's size. On a side
+ * a point and a handle along the side follow the bent side itself, which is exact, also at a corner where two
+ * sides run on in line (there the patch's own directions are parallel and solving through them breaks down). */
+/* The nearest place on Bezier `b` to `p` (`r_t`, Newton's method from a few starts) and how far it is. */
+static float bezier_nearest(const std::array<float2, 4> &b, float2 p, float &r_t)
+{
+  const auto at = [&](float t) {
+    const float u = 1.0f - t;
+    return b[0] * (u * u * u) + b[1] * (3.0f * u * u * t) + b[2] * (3.0f * u * t * t) + b[3] * (t * t * t);
+  };
+  const auto way = [&](float t) {
+    const float u = 1.0f - t;
+    return (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
+  };
+  const auto bend = [&](float t) {
+    return (b[2] - b[1] * 2.0f + b[0]) * (6.0f * (1.0f - t)) + (b[3] - b[2] * 2.0f + b[1]) * (6.0f * t);
+  };
+  float best = FLT_MAX, best_t = 0.0f;
+  for (const float start : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f}) {
+    float t = start;
+    for (int it = 0; it < 12; it++) {
+      const float2 off = at(t) - p, d1 = way(t);
+      const float f = dot(off, d1), df = dot(d1, d1) + dot(off, bend(t));
+      if (std::fabs(df) < 1e-20f) {
+        break;
+      }
+      t = std::clamp(t - f / df, 0.0f, 1.0f);
+    }
+    const float dist = length(at(t) - p);
+    if (dist < best) {
+      best = dist;
+      best_t = t;
+    }
+  }
+  r_t = best_t;
+  return best;
+}
+
+static bool cell_side_at(const DeformShape::Cell &c, int k, float2 p, float &r_t)
+{
+  return bezier_nearest(c.rest_sides[size_t(k)], p, r_t) <= c.size * 1e-5f;
+}
+
+/* A point outside a grid or four-sided cells: carried by each side of the outline as that side is at the place on
+ * it nearest the point (where it went, turned as the side runs there, its distance kept; just past the side, leaving
+ * it as the inside does), the sides blended by the
+ * inverse eighth power of distance (as a line's branches are), so the nearest lead and a side far away doesn't
+ * count (it carries a point far from it over a long lever, so even a little would swing it): moving one side moves
+ * only what lies beyond it, and on the outline it is exact. */
+static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch);
+
+static float2 sides_follow(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  const auto way = [](const std::array<float2, 4> &b, float t) {
+    const float u = 1.0f - t;
+    return (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
+  };
+  const auto at = [](const std::array<float2, 4> &b, float t) {
+    const float u = 1.0f - t;
+    return b[0] * (u * u * u) + b[1] * (3.0f * u * u * t) + b[2] * (3.0f * u * t * t) + b[3] * (t * t * t);
+  };
+  double sum_x = 0.0, sum_y = 0.0, weight = 0.0;
+  for (const std::array<std::array<float2, 4>, 2> &side : d.edge_sides) {
+    float t;
+    const float dist = bezier_nearest(side[0], p, t);
+    const float2 rest_way = way(side[0], t), now_way = way(side[1], t);
+    const float rest_len = length(rest_way), now_len = length(now_way);
+    if (rest_len < 1e-10f || now_len < 1e-10f) {
+      continue;
+    }
+    /* The offset from the side, along its way and across it, then the same now: turned with the side, never
+     * stretched (a side growing longer would otherwise push what lies past it out as much, and the drawing
+     * would swell as the deformer moves). */
+    const float2 off = p - at(side[0], t), rest_dir = rest_way / rest_len, now_dir = now_way / now_len;
+    const float along = dot(off, rest_dir), across = cross(rest_dir, off);
+    float2 q = at(side[1], t) + now_dir * along + float2(-now_dir.y, now_dir.x) * across;
+    if (dist < 1e-7f) {
+      return q;
+    }
+    /* Just past the side it slides along it as the inside does there (from two points just inside), easing over
+     * to not at all as it gets further out: no crease where a line crosses the outline, and no swelling. */
+    const float chord = std::max(length(side[0][3] - side[0][0]), 1e-6f);
+    const float ease = chord * 0.25f, out = std::fabs(across);
+    if (out < ease * 6.0f) {
+      const float outward = across >= 0.0f ? 1.0f : -1.0f;
+      const float2 normal = float2(-rest_dir.y, rest_dir.x) * outward;
+      const float step = chord * 2e-3f;
+      const float2 base = at(side[0], t);
+      const float2 in1 = mesh_inside_map(d, base - normal * step, scratch);
+      const float2 in2 = mesh_inside_map(d, base - normal * (2.0f * step), scratch);
+      const float2 leaving = (in1 - in2) / step;
+      const float2 kept = float2(-now_dir.y, now_dir.x) * outward;
+      /* Toward the side's ends it fades out: at a corner the inside's bend is ill-shaped (see mesh_inside_map),
+       * and the sides on either side would each make something else of it. */
+      const float mid = smooth01(std::min(t, 1.0f - t) / 0.2f);
+      /* Only how the inside slides along the side (its shear): across it the point keeps its distance, so a
+       * thin band drawn hugging the outline stays thin however the inside stretches across that side. */
+      float2 slide = leaving - kept;
+      slide = slide - kept * dot(slide, kept);
+      q = q + slide * (out * std::exp(-out / ease) * mid);
+    }
+    const double d2 = double(dist) * dist, d4 = d2 * d2;
+    const double w = 1.0 / (d4 * d4);
+    sum_x += q.x * w;
+    sum_y += q.y * w;
+    weight += w;
+  }
+  return weight > 0.0 ? float2(float(sum_x / weight), float(sum_y / weight)) : p;
+}
+
+/* The way side `k` of a cell runs at `t` (its parameter's derivative). */
+static float2 cell_side_way(const std::array<std::array<float2, 4>, 4> &sides, int k, float t)
+{
+  const std::array<float2, 4> &b = sides[size_t(k)];
+  const float u = 1.0f - t;
+  return (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
+}
+
+static float2 cell_side_point(const std::array<std::array<float2, 4>, 4> &sides, int k, float t)
+{
+  const std::array<float2, 4> &b = sides[size_t(k)];
+  const float u = 1.0f - t;
+  return b[0] * (u * u * u) + b[1] * (3.0f * u * u * t) + b[2] * (3.0f * u * t * t) + b[3] * (t * t * t);
+}
+
+static bool outside_mesh(const DeformShape &d, float2 p)
+{
+  if (d.outline_rest.empty()) {
+    return false;
+  }
+  if (d.cells.empty()) {
+    return !inside(d.border, p);
+  }
+  return std::none_of(d.cells.begin(), d.cells.end(), [&](const DeformShape::Cell &c) {
+    float2 st;
+    return c.quad ? quad_cell_at(c, p, st) : inside(c.rest, p);
+  });
+}
+
+/* A point outside a grid or network follows its outline as a cage, from outside (mean value coordinates against
+ * it, as Cage Deform's inside): smooth everywhere, exact on the outline (where the cells put it, so nothing jumps
+ * at the edge), and far away it moves as the outline does as a whole. In a hole of the network, that hole's
+ * outline; anywhere else, the outline round the outside. */
+static float2 outline_follow(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  int loop = -1;
+  float biggest = -1.0f;
+  for (int l = 0; l < int(d.outline_rest.size()); l++) {
+    const std::vector<float2> &v = d.outline_rest[size_t(l)];
+    if (v.size() < 3 || d.outline_now[size_t(l)].size() != v.size()) {
+      continue;
+    }
+    float area = 0.0f;
+    for (size_t i = 0; i < v.size(); i++) {
+      area += cross(v[i], v[(i + 1) % v.size()]);
+    }
+    area = std::fabs(area);
+    if (inside(v, p) && d.outline_rest.size() > 1) {
+      /* A hole holding it (the outside outline holds everything, so take the smallest that does). */
+      if (loop < 0 || biggest < 0.0f || area < biggest) {
+        loop = l;
+        biggest = area;
+      }
+      continue;
+    }
+    if (biggest < 0.0f && (loop < 0 || area > -biggest)) {
+      loop = l;
+      biggest = -area;
+    }
+  }
+  if (loop < 0 || !mean_value(d.outline_rest[size_t(loop)], p, scratch)) {
+    return p;
+  }
+  float2 q(0.0f, 0.0f);
+  for (size_t i = 0; i < d.outline_now[size_t(loop)].size(); i++) {
+    q = q + d.outline_now[size_t(loop)][i] * scratch[i];
+  }
+  return q;
+}
+
+static float2 bezier3(const std::array<float2, 4> &c, float t)
+{
+  const float u = 1.0f - t;
+  return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+}
+
+/* Which way a Bezier runs at `t` (unit; from nearby points where its handle has no length). */
+static float2 bezier3_way(const std::array<float2, 4> &c, float t)
+{
+  const float u = 1.0f - t;
+  float2 d = (c[1] - c[0]) * (3.0f * u * u) + (c[2] - c[1]) * (6.0f * u * t) + (c[3] - c[2]) * (3.0f * t * t);
+  if (length(d) < 1e-9f) {
+    d = bezier3(c, std::min(t + 0.01f, 1.0f)) - bezier3(c, std::max(t - 0.01f, 0.0f));
+  }
+  const float len = length(d);
+  return len > 1e-12f ? d / len : float2(1.0f, 0.0f);
+}
+
+/* Where a point pinned to a wire (a line of a Mesh Deform) goes: from its nearest place on the line at rest, the same
+ * offset along and across the way the line runs there, now turned as it turns there. Past an end it rides that end.
+ * A point far from the line follows the line smoothed over a stretch as long as it is far (its place and way averaged
+ * there), so a sharp bend is a gentle one to it and offsets on the inside never cross; on the line it follows the
+ * line exactly; past the ends the line carries on straight for it. `r_dist`: how far the point is from its place,
+ * at rest. */
+static float2 wire_pin_at(const DeformShape::WireLine &line, size_t best, float t, float2 p, float *r_dist)
+{
+  const DeformShape::WireEdge &w = line.edges[best];
+  const float2 at = bezier3(w.rest, t), way = bezier3_way(w.rest, t), side(-way.y, way.x);
+  const float2 off = p - at;
+  const float along = dot(off, way);
+  const float across = dot(off, side);
+  *r_dist = length(off);
+  float2 now_at = bezier3(w.now, t), now_way = bezier3_way(w.now, t);
+  float2 rest_at = at, rest_way = way;
+  const float extension = line.spacing * float(line.before);
+  const float reach = std::min(std::fabs(across) * 1.5f, extension);
+  if (reach > line.spacing * 0.1f && line.dense.size() >= 2 && line.dense_rest.size() == line.dense.size()) {
+    const float place = float(line.before) + float(best * WIRE_STEPS) + t * float(WIRE_STEPS);
+    const size_t i = std::min(size_t(place), line.dense.size() - 2);
+    const float f = smooth01(reach / (3.0f * line.spacing));
+    /* The line rounded over the stretch, now and at rest alike (the stretch as long, the samples the same ones), so
+     * a far point moves by how the rounded line moved: a wire that hasn't moved moves nothing. */
+    const auto round = [&](const std::vector<float2> &dense, const std::vector<float> &at_of, float2 &r_at,
+                           float2 &r_way) {
+      const float here = at_of[i] + (at_of[i + 1] - at_of[i]) * (place - float(i));
+      const float stretch = at_of.back() / std::max(line.at.back(), 1e-12f);
+      float2 round_at, round_way;
+      if (line_smoothed(dense, at_of, here, reach * stretch, round_at, round_way)) {
+        /* From the exact place to the rounded one as the stretch grows past a few samples (shorter, the samples
+         * are too coarse to average). */
+        r_at = r_at + (round_at - r_at) * f;
+        r_way = normalize(r_way + (round_way - r_way) * f);
+      }
+    };
+    round(line.dense, line.at, now_at, now_way);
+    round(line.dense_rest, line.at_rest, rest_at, rest_way);
+  }
+  /* How far the point is from where the rounded line puts it at rest, carried in the line's frame: a wire that hasn't
+   * moved moves nothing, one moved or turned whole carries everything exactly with it. */
+  const float2 now_side(-now_way.y, now_way.x), rest_side(-rest_way.y, rest_way.x);
+  const float2 left = p - (rest_at + rest_way * along + rest_side * across);
+  return now_at + now_way * (along + dot(left, rest_way)) + now_side * (across + dot(left, rest_side));
+}
+
+/* A point pinned to a wire: at its nearest place on the line, or, where the line folds back or winds so that it has
+ * more than one near place (a nearest place on each branch), the pins at each blended, the nearer the more (by the
+ * eighth power of nearness), so a point between two branches follows both and nothing jumps from one to the other.
+ * `r_dist`: how far it is from the nearest. */
+static float2 wire_pin(const DeformShape::WireLine &wire, float2 p, float *r_dist)
+{
+  const std::vector<DeformShape::WireEdge> &line = wire.edges;
+  /* The places along the line (samples, segment by segment) nearer than the samples either side of them. */
+  struct Place {
+    size_t edge;
+    float t, dist;
+  };
+  std::vector<Place> samples;
+  for (size_t k = 0; k < line.size(); k++) {
+    for (int j = 0; j <= OUTLINE_STEPS; j++) {
+      if (k > 0 && j == 0) {
+        continue;
+      }
+      const float t = float(j) / float(OUTLINE_STEPS);
+      samples.push_back({k, t, length(bezier3(line[k].rest, t) - p)});
+    }
+  }
+  std::vector<Place> places;
+  for (size_t i = 0; i < samples.size(); i++) {
+    const bool below_prev = i == 0 || samples[i].dist < samples[i - 1].dist;
+    const bool below_next = i + 1 == samples.size() || samples[i].dist <= samples[i + 1].dist;
+    if (!below_prev || !below_next) {
+      continue;
+    }
+    /* Refined on its segment (from either side of the sample), its distance with it. */
+    Place best = samples[i];
+    const auto refine = [&](size_t edge, float t0) {
+      float t = t0;
+      const std::array<float2, 4> &c = line[edge].rest;
+      for (int it = 0; it < 6; it++) {
+        const float u = 1.0f - t;
+        const float2 b = bezier3(c, t) - p;
+        const float2 d1 = (c[1] - c[0]) * (3.0f * u * u) + (c[2] - c[1]) * (6.0f * u * t) +
+                          (c[3] - c[2]) * (3.0f * t * t);
+        const float2 d2 = (c[2] - c[1] * 2.0f + c[0]) * (6.0f * u) + (c[3] - c[2] * 2.0f + c[1]) * (6.0f * t);
+        const float f = dot(b, d1), df = dot(d1, d1) + dot(b, d2);
+        if (std::fabs(df) < 1e-12f) {
+          break;
+        }
+        t = std::clamp(t - f / df, 0.0f, 1.0f);
+      }
+      const float dist = length(bezier3(c, t) - p);
+      if (dist < best.dist) {
+        best = {edge, t, dist};
+      }
+    };
+    refine(samples[i].edge, samples[i].t);
+    if (samples[i].t >= 1.0f && samples[i].edge + 1 < line.size()) {
+      refine(samples[i].edge + 1, 0.0f);
+    }
+    places.push_back(best);
+  }
+  if (places.empty()) {
+    places.push_back(samples.front());
+  }
+  float nearest = FLT_MAX;
+  for (const Place &place : places) {
+    nearest = std::min(nearest, place.dist);
+  }
+  *r_dist = nearest;
+  float2 sum(0.0f, 0.0f);
+  float weight = 0.0f;
+  for (const Place &place : places) {
+    float dist = 0.0f;
+    const float2 q = wire_pin_at(wire, place.edge, place.t, p, &dist);
+    if (places.size() == 1) {
+      return q;
+    }
+    if (dist < 1e-7f) {
+      return q;
+    }
+    const float x = nearest / dist;
+    const float w = x * x * x * x * x * x * x * x;
+    sum = sum + q * w;
+    weight += w;
+  }
+  return weight > 0.0f ? sum / weight : p;
+}
+
+/* A point outside a Mesh Deform's cells (or with no cells, anywhere) pinned to its wires, and following its outline
+ * if it has one: each wire segment's pin and the outline's place, the nearer the more (by the fourth power of
+ * nearness, so the nearest leads), exact on a wire and on the outline. */
+static float2 wires_follow(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  float2 sum(0.0f, 0.0f);
+  float weight = 0.0f;
+  const auto add = [&](float2 q, float dist) {
+    if (dist < 1e-7f) {
+      sum = q * 1e30f;
+      weight = 1e30f;
+      return true;
+    }
+    const float w = 1.0f / (dist * dist * dist * dist);
+    sum = sum + q * w;
+    weight += w;
+    return false;
+  };
+  for (const DeformShape::WireLine &line : d.wires) {
+    float dist = 0.0f;
+    const float2 q = wire_pin(line, p, &dist);
+    if (add(q, dist)) {
+      return q;
+    }
+  }
+  if (!d.outline_rest.empty()) {
+    float dist = FLT_MAX;
+    for (const std::vector<float2> &v : d.outline_rest) {
+      dist = std::min(dist, polyline_distance(v, true, p));
+    }
+    const float2 q = outline_follow(d, p, scratch);
+    if (add(q, dist)) {
+      return q;
+    }
+  }
+  return weight > 0.0f ? sum / weight : p;
+}
+
+/* Where `p` (rest) goes as the shape is now. */
+/* Where a point in a grid or in cells goes (or, past them, on from the nearest cell): each cell's patch, or its
+ * outline as a cage where a cell isn't four-sided or its patch is badly shaped. */
+static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  if (d.cells.empty()) {
+    GridPlace place;
+    return d.rest_grid.locate(p, place) ? d.now_grid.eval(place.column, place.row, place.st) : p;
+  }
+  /* The cell holding it, else the nearest (how far outside: a four-sided cell by its patch's place, any
+   * other by distance, both as a share of the cell's size). */
+  int best = -1;
+  float best_out = FLT_MAX;
+  float2 best_st(0.0f, 0.0f);
+  for (int i = 0; i < int(d.cells.size()); i++) {
+    const DeformShape::Cell &c = d.cells[size_t(i)];
+    float out = FLT_MAX;
+    float2 st(0.0f, 0.0f);
+    if (c.quad) {
+      if (cell_locate(c.rest_sides, c.size, p, st)) {
+        out = std::max({0.0f, -st.x, st.x - 1.0f, -st.y, st.y - 1.0f});
+      }
+    }
+    else {
+      out = inside(c.rest, p) ? 0.0f : polyline_distance(c.rest, true, p) / c.size;
+    }
+    if (out < best_out) {
+      best_out = out;
+      best = i;
+      best_st = st;
+    }
+  }
+  if (best < 0) {
+    return p;
+  }
+  const DeformShape::Cell &c = d.cells[size_t(best)];
+  /* A cell as a small cage (mean value coordinates on its outline): smooth everywhere, exact on its outline. */
+  const auto caged = [&](float2 &r_q) {
+    if (!mean_value(c.rest, p, scratch)) {
+      return false;
+    }
+    r_q = float2(0.0f, 0.0f);
+    for (size_t i = 0; i < c.now.size(); i++) {
+      r_q = r_q + c.now[i] * scratch[i];
+    }
+    return true;
+  };
+  if (c.quad) {
+    const float2 patched = cell_eval(c.now_sides, best_st);
+    /* At a corner where the two sides run on in line (a smooth shape cut into four sides), the patch's own
+     * directions are nearly parallel: a sliver of the shape holds a large share of the patch, and bending it
+     * there would blow small differences up into kinks. There it eases over to the cell as a cage, by how
+     * square the patch's directions are (the sine of the angle between them). */
+    float2 ds, dt;
+    cell_patch_partials(c.rest_sides, {std::clamp(best_st.x, 0.0f, 1.0f), std::clamp(best_st.y, 0.0f, 1.0f)},
+                        ds, dt);
+    const float spread = length(ds) * length(dt);
+    const float square = spread > 1e-20f ? std::fabs(cross(ds, dt)) / spread : 0.0f;
+    const float patch_share = smooth01((square - 0.4f) / 0.55f);
+    float2 cage;
+    if (patch_share >= 1.0f || !caged(cage)) {
+      return patched;
+    }
+    return cage + (patched - cage) * patch_share;
+  }
+  float2 q;
+  return caged(q) ? q : p;
+}
+
+static float polyline_distance(const std::vector<float2> &v, bool closed, float2 p);
+static bool inside(const std::vector<float2> &v, float2 p);
+
+/* Past a cage's outline (rest outline `v`): each side carries the point from where its place on the side goes (`at`
+ * at each corner, in between along the side), turned as the side is there (`turn`, a complex number at each corner), the nearer sides leading (inverse fourth power of distance), so it joins the inside
+ * smoothly; `near` is the point's distance from the outline. */
+static float2 outline_carry(const std::vector<float2> &v, const std::vector<float2> &at_corner,
+                            const std::vector<float2> &turn, float2 p, float near, float band)
+{
+  const size_t n = v.size();
+  const double floor = std::max(double(near), double(band) * 1e-3);
+  double sx = 0.0, sy = 0.0, ws = 0.0;
+  for (size_t j = 0; j < n; j++) {
+    const size_t k = (j + 1) % n;
+    const float2 e = v[k] - v[j];
+    const float ee = dot(e, e);
+    if (ee < 1e-20f) {
+      continue;
+    }
+    const float t = std::clamp(dot(p - v[j], e) / ee, 0.0f, 1.0f);
+    const float2 off = p - (v[j] + e * t);
+    const float2 at = at_corner[j] * (1.0f - t) + at_corner[k] * t;
+    /* The turn there, from its corners' (so it changes smoothly from side to side). */
+    const float2 z = turn[j] * (1.0f - t) + turn[k] * t;
+    const float2 q = at + float2(z.x * off.x - z.y * off.y, z.y * off.x + z.x * off.y);
+    const double w = std::pow(floor / std::max(double(length(off)), floor), 4.0);
+    sx += w * q.x;
+    sy += w * q.y;
+    ws += w;
+  }
+  return ws > 0.0 ? float2(float(sx / ws), float(sy / ws)) : p;
+}
+
+/* Envelope (Toon Boom Harmony's, without its tearing): every point goes where the cage as a whole puts it (Rigid's
+ * way, which squashes least), then each side near it sets its distance from that side back to what it was at rest, so a line along the
+ * outline keeps its width and art hugs the cage however a side bends or stretches. Each side's say goes by nearness
+ * (each as the nearest side's distance over its own, raised to envelope_power, from Blend), and is full at the
+ * side, less further off (reach / (reach + distance)), so deep inside the cage as a whole leads. Sides only set distances, never where a point slides
+ * along them, so two sides meeting at a corner never pull a point two ways (which in Harmony's own, where each side
+ * has the part of the drawing nearest it, tears the art there). */
+static float2 rigid_offset(const DeformShape &d, float2 p);
+
+/* A side's nearest place to `p` and the way it runs there; where two parts of a curved side are nearly as near
+ * (within a fiftieth of its length), the places on each blended by how much nearer each is. */
+static void side_place(const std::vector<float2> &v, const std::vector<float2> &ways, float length_of, float2 p,
+                       float2 &r_on, float2 &r_way)
+{
+  const float soft = std::max(length_of * 0.02f, 1e-9f);
+  const size_t pieces = v.size() - 1;
+  float closest = FLT_MAX;
+  for (size_t k = 0; k < pieces; k++) {
+    const float2 e = v[k + 1] - v[k];
+    const float ee = dot(e, e);
+    const float t = ee > 1e-20f ? std::clamp(dot(p - v[k], e) / ee, 0.0f, 1.0f) : 0.0f;
+    closest = std::min(closest, length(v[k] + e * t - p));
+  }
+  float2 on(0.0f, 0.0f), way(0.0f, 0.0f);
+  float total = 0.0f;
+  for (size_t k = 0; k < pieces; k++) {
+    const float2 e = v[k + 1] - v[k];
+    const float ee = dot(e, e);
+    const float t = ee > 1e-20f ? std::clamp(dot(p - v[k], e) / ee, 0.0f, 1.0f) : 0.0f;
+    const float2 at = v[k] + e * t;
+    const float x = (length(at - p) - closest) / soft;
+    if (x >= 1.0f) {
+      continue;
+    }
+    const float w = (1.0f - x) * (1.0f - x);
+    on = on + at * w;
+    way = way + (ways[k] * (1.0f - t) + ways[k + 1] * t) * w;
+    total += w;
+  }
+  r_on = total > 0.0f ? on / total : v[0];
+  r_way = length(way) > 1e-12f ? normalize(way) : float2(1.0f, 0.0f);
+}
+
+static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  float2 q = p;
+  if (mean_value(d.rest, p, scratch)) {
+    q = float2(0.0f, 0.0f);
+    for (size_t i = 0; i < d.now.size(); i++) {
+      q = q + d.now[i] * scratch[i];
+    }
+  }
+  if (!d.lattice.empty()) {
+    q = q + rigid_offset(d, p);
+  }
+  const size_t n = d.envelope_sides.size();
+  float near = FLT_MAX;
+  std::vector<float> dist(n);
+  std::vector<float2> fix(n);
+  for (size_t s = 0; s < n; s++) {
+    const DeformShape::EnvelopeSide &side = d.envelope_sides[s];
+    dist[s] = polyline_distance(side.rest, false, p);
+    near = std::min(near, dist[s]);
+    /* Its distance from the side at rest and where the cage put it from the side now, each measured from the side's
+     * nearest place (where two parts of a curved side are nearly as near, within a fiftieth of the side's length,
+     * the places on each blended by how much nearer each is: so the place never jumps from one to the other as the
+     * side moves, and the point with it), at rest and now alike, so a side that hasn't moved sets nothing. */
+    float2 rest_on, rest_way, now_on, now_way;
+    side_place(side.rest, side.rest_way, side.rest_at.back(), p, rest_on, rest_way);
+    side_place(side.now, side.now_way, side.now_at.back(), q, now_on, now_way);
+    const float across = cross(rest_way, p - rest_on);
+    /* Set back to it in full at the side and less further off, as reach / (reach + distance): the distance it ends
+     * at then always grows with the distance it had, however hard the cage squeezes there, so nothing folds. */
+    const float now_across = cross(now_way, q - now_on);
+    const float keep = d.envelope_reach / (d.envelope_reach + dist[s]);
+    fix[s] = float2(-now_way.y, now_way.x) * ((across - now_across) * keep);
+  }
+  const double floor = std::max(double(near), double(d.cage_band) * 1e-3);
+  double fx = 0.0, fy = 0.0, ws = 0.0;
+  for (size_t s = 0; s < n; s++) {
+    const double w = std::pow(floor / std::max(double(dist[s]), floor), double(d.envelope_power));
+    fx += w * fix[s].x;
+    fy += w * fix[s].y;
+    ws += w;
+  }
+  return ws > 0.0 ? q + float2(float(fx / ws), float(fy / ws)) : q;
+}
+
+/* Rigid: how far the inside moves from mean value coordinates there (a cubic B-spline over the lattice). */
+static float2 rigid_offset(const DeformShape &d, float2 p)
+{
+  const float2 u = (p - d.lattice_origin) / d.lattice_step;
+  const int i0 = int(std::floor(u.x)), j0 = int(std::floor(u.y));
+  const float fx = u.x - float(i0), fy = u.y - float(j0);
+  const auto basis = [](float t, float r_w[4]) {
+    const float s = 1.0f - t;
+    r_w[0] = s * s * s / 6.0f;
+    r_w[1] = (3.0f * t * t * t - 6.0f * t * t + 4.0f) / 6.0f;
+    r_w[2] = (-3.0f * t * t * t + 3.0f * t * t + 3.0f * t + 1.0f) / 6.0f;
+    r_w[3] = t * t * t / 6.0f;
+  };
+  float wx[4], wy[4];
+  basis(fx, wx);
+  basis(fy, wy);
+  float2 sum(0.0f, 0.0f);
+  for (int b = 0; b < 4; b++) {
+    const int j = j0 - 1 + b;
+    if (j < 0 || j >= d.lattice_ny) {
+      continue;
+    }
+    for (int a = 0; a < 4; a++) {
+      const int i = i0 - 1 + a;
+      if (i >= 0 && i < d.lattice_nx) {
+        sum = sum + d.lattice[size_t(j * d.lattice_nx + i)] * (wx[a] * wy[b]);
+      }
+    }
+  }
+  return sum;
+}
+
+/* What a Cage Deform's Method needs, worked out once per frame from the outline at rest and now. */
+/* Rigid's lattice over a cage at rest, and all of the solve that depends only on the rest: which cells are used, the
+ * nodes and their links, where the outline's samples sit among the nodes, the system's diagonal, and each node's mean
+ * value coordinates. Kept by the outline at rest (the same cage drawn on many frames, or several layers bent by it), so
+ * a frame only starts from where the cage is now and solves. */
+struct RigidLattice {
+  static constexpr float FIRM = 200.0f, HOLD = 1e-4f;
+  struct Link {
+    int to;
+    float weight;
+  };
+  struct Hold {
+    std::array<int, 4> node{};
+    std::array<float, 4> weight{};
+    size_t sample = 0;
+  };
+  float step = 1.0f, fade = 0.0f;
+  float2 origin = float2(0.0f, 0.0f);
+  int nx = 0, ny = 0;
+  std::vector<int> cell;
+  std::vector<float2> rest;
+  std::vector<std::vector<Link>> links;
+  std::vector<Hold> holds;
+  std::vector<float> stiff;
+  /* Empty where it has none. */
+  std::vector<std::vector<float>> mean_value;
+};
+
+static std::shared_ptr<const RigidLattice> rigid_lattice(const std::vector<float2> &outline, float2 lo, float2 hi,
+                                                         float size)
+{
+  static std::mutex mutex;
+  static std::vector<std::pair<std::vector<float2>, std::shared_ptr<const RigidLattice>>> kept;
+  {
+    std::lock_guard lock(mutex);
+    for (const auto &[at_rest, lattice] : kept) {
+      if (at_rest == outline) {
+        return lattice;
+      }
+    }
+  }
+  auto made = std::make_shared<RigidLattice>();
+  RigidLattice &L = *made;
+  const size_t n = outline.size();
+  const float h = size / 32.0f;
+  const float fade = 14.0f * h;
+  L.step = h;
+  L.fade = fade;
+  L.origin = lo - float2(fade + 2.0f * h, fade + 2.0f * h);
+  L.nx = int((hi.x - lo.x + 2.0f * fade) / h) + 5;
+  L.ny = int((hi.y - lo.y + 2.0f * fade) / h) + 5;
+  const int nx = L.nx, ny = L.ny;
+  const auto lattice_at = [&](int i, int j) { return L.origin + float2(float(i), float(j)) * h; };
+  std::vector<char> used(static_cast<size_t>((nx - 1) * (ny - 1)), 0);
+  for (int j = 0; j + 1 < ny; j++) {
+    for (int i = 0; i + 1 < nx; i++) {
+      const float2 c = lattice_at(i, j) + float2(0.5f * h, 0.5f * h);
+      used[size_t(j * (nx - 1) + i)] = inside(outline, c) || polyline_distance(outline, true, c) < 0.75f * h;
+    }
+  }
+  const auto cell_used = [&](int i, int j) {
+    return i >= 0 && i + 1 < nx && j >= 0 && j + 1 < ny && used[size_t(j * (nx - 1) + i)];
+  };
+  std::vector<int> node_of(static_cast<size_t>(nx * ny), -1);
+  for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) {
+      if (cell_used(i - 1, j - 1) || cell_used(i, j - 1) || cell_used(i - 1, j) || cell_used(i, j)) {
+        node_of[size_t(j * nx + i)] = int(L.rest.size());
+        L.rest.push_back(lattice_at(i, j));
+        L.cell.push_back(j * nx + i);
+      }
+    }
+  }
+  const int count = int(L.rest.size());
+  /* Each side of a cell weighs a half for each cell in use it is a side of. */
+  L.links.resize(static_cast<size_t>(count));
+  const auto link = [&](int a, int b, float weight) {
+    if (weight > 0.0f) {
+      L.links[size_t(a)].push_back({b, weight});
+      L.links[size_t(b)].push_back({a, weight});
+    }
+  };
+  for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) {
+      const int k = node_of[size_t(j * nx + i)];
+      if (k < 0) {
+        continue;
+      }
+      if (i + 1 < nx && node_of[size_t(j * nx + i + 1)] >= 0) {
+        link(k, node_of[size_t(j * nx + i + 1)], 0.5f * float(int(cell_used(i, j - 1)) + int(cell_used(i, j))));
+      }
+      if (j + 1 < ny && node_of[size_t((j + 1) * nx + i)] >= 0) {
+        link(k, node_of[size_t((j + 1) * nx + i)], 0.5f * float(int(cell_used(i - 1, j)) + int(cell_used(i, j))));
+      }
+    }
+  }
+  /* The outline's samples, each between the four nodes round it. */
+  for (size_t k = 0; k < n; k++) {
+    const float2 u = (outline[k] - L.origin) / h;
+    const int i = int(std::floor(u.x)), j = int(std::floor(u.y));
+    const float fx = u.x - float(i), fy = u.y - float(j);
+    RigidLattice::Hold hold;
+    hold.sample = k;
+    bool all = true;
+    for (int c = 0; c < 4; c++) {
+      const int a = i + (c & 1), b = j + (c >> 1);
+      const int node = a >= 0 && a < nx && b >= 0 && b < ny ? node_of[size_t(b * nx + a)] : -1;
+      all = all && node >= 0;
+      hold.node[size_t(c)] = node;
+      hold.weight[size_t(c)] = ((c & 1) ? fx : 1.0f - fx) * ((c >> 1) ? fy : 1.0f - fy);
+    }
+    if (all) {
+      L.holds.push_back(hold);
+    }
+  }
+  /* Each node's own stiffness (the system's diagonal), to precondition by. */
+  L.stiff.assign(static_cast<size_t>(count), RigidLattice::HOLD);
+  for (int k = 0; k < count; k++) {
+    for (const RigidLattice::Link &l : L.links[size_t(k)]) {
+      L.stiff[size_t(k)] += l.weight;
+    }
+  }
+  for (const RigidLattice::Hold &hold : L.holds) {
+    for (int c = 0; c < 4; c++) {
+      L.stiff[size_t(hold.node[size_t(c)])] += RigidLattice::FIRM * hold.weight[size_t(c)] * hold.weight[size_t(c)];
+    }
+  }
+  L.mean_value.resize(static_cast<size_t>(count));
+  parallel_for(size_t(count), 32, [&](size_t begin, size_t end) {
+    for (size_t k = begin; k < end; k++) {
+      std::vector<float> w;
+      if (mean_value(outline, L.rest[k], w)) {
+        L.mean_value[k] = std::move(w);
+      }
+    }
+  });
+  std::lock_guard lock(mutex);
+  if (kept.size() >= 16) {
+    kept.erase(kept.begin());
+  }
+  kept.emplace_back(outline, made);
+  return made;
+}
+
+static void cage_method_build(DeformShape &r)
+{
+  const size_t n = r.rest.size();
+  if (n < 3 || r.now.size() != n) {
+    return;
+  }
+  float2 lo = r.rest[0], hi = r.rest[0];
+  for (const float2 &q : r.rest) {
+    lo = float2(std::min(lo.x, q.x), std::min(lo.y, q.y));
+    hi = float2(std::max(hi.x, q.x), std::max(hi.y, q.y));
+  }
+  const float size = std::max(hi.x - lo.x, hi.y - lo.y);
+  if (size < 1e-6f) {
+    return;
+  }
+  if (r.cage_method == CageMethod::Envelope) {
+    /* The sides: the outline cut at its points (OUTLINE_STEPS samples to a segment). */
+    const size_t steps = n % size_t(OUTLINE_STEPS) == 0 ? size_t(OUTLINE_STEPS) : n;
+    for (size_t first = 0; first < n; first += steps) {
+      DeformShape::EnvelopeSide side;
+      for (size_t k = 0; k <= steps; k++) {
+        side.rest.push_back(r.rest[(first + k) % n]);
+        side.now.push_back(r.now[(first + k) % n]);
+      }
+      side.rest_at = lengths_along(side.rest);
+      side.now_at = lengths_along(side.now);
+      if (side.rest_at.back() < size * 1e-6f) {
+        continue;
+      }
+      /* The way it runs at each sample: its two pieces' ways together (the end ones, their piece's). */
+      const auto ways = [](const std::vector<float2> &v, std::vector<float2> &r_way) {
+        const size_t m = v.size();
+        r_way.assign(m, float2(1.0f, 0.0f));
+        for (size_t k = 0; k < m; k++) {
+          float2 w(0.0f, 0.0f);
+          if (k > 0 && length(v[k] - v[k - 1]) > 1e-12f) {
+            w = w + normalize(v[k] - v[k - 1]);
+          }
+          if (k + 1 < m && length(v[k + 1] - v[k]) > 1e-12f) {
+            w = w + normalize(v[k + 1] - v[k]);
+          }
+          if (length(w) > 1e-12f) {
+            r_way[k] = normalize(w);
+          }
+          else if (k > 0) {
+            r_way[k] = r_way[k - 1];
+          }
+        }
+      };
+      ways(side.rest, side.rest_way);
+      ways(side.now, side.now_way);
+      r.envelope_sides.push_back(std::move(side));
+    }
+    /* As far as the cage is big: a band along a side keeps nearly all its width (one a tenth as wide as the cage, 90%
+     * or more), and what is deep inside still mostly follows the cage as a whole. */
+    r.envelope_reach = size;
+    /* On to the rest: the cage as a whole, under the sides, is Rigid's. */
+  }
+  /* Past the outline: how each corner turns (its two sides' turns, as lengths of 1: a band along the outline keeps its
+   * width however the side stretches). */
+  std::vector<float2> side_turn(n);
+  for (size_t j = 0; j < n; j++) {
+    const float2 e = r.rest[(j + 1) % n] - r.rest[j], en = r.now[(j + 1) % n] - r.now[j];
+    const float2 z(dot(en, e), cross(e, en));
+    side_turn[j] = length(z) > 1e-20f ? normalize(z) : float2(1.0f, 0.0f);
+  }
+  r.cage_turn.resize(n);
+  for (size_t j = 0; j < n; j++) {
+    const float2 z = side_turn[(j + n - 1) % n] + side_turn[j];
+    r.cage_turn[j] = length(z) > 1e-12f ? normalize(z) : side_turn[j];
+  }
+  r.cage_band = size * 1e-3f;
+  if (r.cage_method == CageMethod::MeanValue) {
+    return;
+  }
+  /* Rigid (as rigid as possible, Sorkine and Alexa 2007): a lattice of square cells over the cage (those in it or
+   * crossing its outline), each node keeping how it sits with its four neighbours (the square cells' own weights),
+   * turned as they turn together, and the outline's samples held firmly (between the nodes round them) where the
+   * outline goes now. */
+  const std::shared_ptr<const RigidLattice> lattice = rigid_lattice(r.rest, lo, hi, size);
+  const RigidLattice &L = *lattice;
+  const float h = L.step;
+  const float fade = L.fade;
+  r.lattice_step = h;
+  r.lattice_origin = L.origin;
+  r.lattice_nx = L.nx;
+  r.lattice_ny = L.ny;
+  const int nx = L.nx, ny = L.ny;
+  const int count = int(L.rest.size());
+  if (count == 0) {
+    return;
+  }
+  const std::vector<int> &cell = L.cell;
+  const std::vector<float2> &rest = L.rest;
+  const std::vector<std::vector<RigidLattice::Link>> &links = L.links;
+  const std::vector<RigidLattice::Hold> &holds = L.holds;
+  const std::vector<float> &stiff = L.stiff;
+  /* Starting from mean value coordinates (what the offsets are measured from). */
+  std::vector<float2> start(static_cast<size_t>(count)), pos(static_cast<size_t>(count));
+  for (int k = 0; k < count; k++) {
+    float2 q = rest[size_t(k)];
+    const std::vector<float> &w = L.mean_value[size_t(k)];
+    if (!w.empty()) {
+      q = float2(0.0f, 0.0f);
+      for (size_t i = 0; i < n; i++) {
+        q = q + r.now[i] * w[i];
+      }
+    }
+    start[size_t(k)] = q;
+    pos[size_t(k)] = q;
+  }
+  constexpr float FIRM = RigidLattice::FIRM, HOLD = RigidLattice::HOLD;
+  const auto apply = [&](const std::vector<float2> &x, std::vector<float2> &r_out) {
+    for (int k = 0; k < count; k++) {
+      float2 s = x[size_t(k)] * HOLD;
+      for (const RigidLattice::Link &l : links[size_t(k)]) {
+        s = s + (x[size_t(k)] - x[size_t(l.to)]) * l.weight;
+      }
+      r_out[size_t(k)] = s;
+    }
+    for (const RigidLattice::Hold &hold : holds) {
+      float2 at(0.0f, 0.0f);
+      for (int c = 0; c < 4; c++) {
+        at = at + x[size_t(hold.node[size_t(c)])] * hold.weight[size_t(c)];
+      }
+      for (int c = 0; c < 4; c++) {
+        float2 &out = r_out[size_t(hold.node[size_t(c)])];
+        out = out + at * (FIRM * hold.weight[size_t(c)]);
+      }
+    }
+  };
+  std::vector<float2> turn(static_cast<size_t>(count)), rhs(static_cast<size_t>(count));
+  std::vector<float2> res(static_cast<size_t>(count)), dir(static_cast<size_t>(count)), ad(static_cast<size_t>(count));
+  std::vector<float2> pre(static_cast<size_t>(count));
+  constexpr int CG_STEPS = 40;
+  const auto dot2 = [&](const std::vector<float2> &a, const std::vector<float2> &b) {
+    double s = 0.0;
+    for (int k = 0; k < count; k++) {
+      s += double(dot(a[size_t(k)], b[size_t(k)]));
+    }
+    return s;
+  };
+  const auto rotate = [](float2 t, float2 e) { return float2(t.x * e.x - t.y * e.y, t.y * e.x + t.x * e.y); };
+  for (int iteration = 0; iteration < 20; iteration++) {
+    /* Each node's best turn of how its neighbours sit around it. */
+    for (int k = 0; k < count; k++) {
+      float c = 0.0f, s = 0.0f;
+      for (const RigidLattice::Link &l : links[size_t(k)]) {
+        const float2 e = rest[size_t(k)] - rest[size_t(l.to)], f = pos[size_t(k)] - pos[size_t(l.to)];
+        c += l.weight * dot(e, f);
+        s += l.weight * cross(e, f);
+      }
+      const float len = std::sqrt(c * c + s * s);
+      turn[size_t(k)] = len > 1e-20f ? float2(c, s) / len : float2(1.0f, 0.0f);
+    }
+    /* Then where the nodes go to sit so (conjugate gradients from where they are). */
+    for (int k = 0; k < count; k++) {
+      float2 b = start[size_t(k)] * HOLD;
+      for (const RigidLattice::Link &l : links[size_t(k)]) {
+        const float2 e = rest[size_t(k)] - rest[size_t(l.to)];
+        b = b + (rotate(turn[size_t(k)], e) + rotate(turn[size_t(l.to)], e)) * (0.5f * l.weight);
+      }
+      rhs[size_t(k)] = b;
+    }
+    for (const RigidLattice::Hold &hold : holds) {
+      for (int c = 0; c < 4; c++) {
+        float2 &out = rhs[size_t(hold.node[size_t(c)])];
+        out = out + r.now[hold.sample] * (FIRM * hold.weight[size_t(c)]);
+      }
+    }
+    /* Always the same number of steps (Jacobi-preconditioned, from where the nodes are): stopping once close enough
+     * stopped after more or fewer of them as the cage moved, and the inside wobbled with it. */
+    apply(pos, ad);
+    for (int k = 0; k < count; k++) {
+      res[size_t(k)] = rhs[size_t(k)] - ad[size_t(k)];
+      pre[size_t(k)] = res[size_t(k)] / stiff[size_t(k)];
+      dir[size_t(k)] = pre[size_t(k)];
+    }
+    double rz = dot2(res, pre);
+    for (int cg = 0; cg < CG_STEPS && rz > 1e-300; cg++) {
+      apply(dir, ad);
+      const double alpha = rz / std::max(dot2(dir, ad), 1e-300);
+      for (int k = 0; k < count; k++) {
+        pos[size_t(k)] = pos[size_t(k)] + dir[size_t(k)] * float(alpha);
+        res[size_t(k)] = res[size_t(k)] - ad[size_t(k)] * float(alpha);
+        pre[size_t(k)] = res[size_t(k)] / stiff[size_t(k)];
+      }
+      const double next = dot2(res, pre);
+      for (int k = 0; k < count; k++) {
+        dir[size_t(k)] = pre[size_t(k)] + dir[size_t(k)] * float(next / rz);
+      }
+      rz = next;
+    }
+  }
+  /* The offsets onto the lattice; past the nodes, carried on outward as they were at the edge of them, fading out
+   * over a few steps, so the B-spline over the lattice joins them to nothing smoothly. */
+  r.lattice.assign(static_cast<size_t>(nx * ny), float2(0.0f, 0.0f));
+  std::vector<char> known(static_cast<size_t>(nx * ny), 0);
+  for (int k = 0; k < count; k++) {
+    r.lattice[size_t(cell[size_t(k)])] = pos[size_t(k)] - start[size_t(k)];
+    known[size_t(cell[size_t(k)])] = 1;
+  }
+  for (int ring = 0; ring < int(fade / h); ring++) {
+    const std::vector<char> was = known;
+    for (int j = 0; j < ny; j++) {
+      for (int i = 0; i < nx; i++) {
+        if (was[size_t(j * nx + i)]) {
+          continue;
+        }
+        float2 sum(0.0f, 0.0f);
+        int around = 0;
+        for (int b = std::max(j - 1, 0); b <= std::min(j + 1, ny - 1); b++) {
+          for (int a = std::max(i - 1, 0); a <= std::min(i + 1, nx - 1); a++) {
+            if (was[size_t(b * nx + a)]) {
+              sum = sum + r.lattice[size_t(b * nx + a)];
+              around++;
+            }
+          }
+        }
+        if (around > 0) {
+          r.lattice[size_t(j * nx + i)] = sum * (0.92f / float(around));
+          known[size_t(j * nx + i)] = 1;
+        }
+      }
+    }
+  }
+}
+
+static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  switch (d.kind) {
+    case DeformKind::Grid:
+    case DeformKind::Mesh:
+    case DeformKind::Wire: {
+      if (!d.wires.empty() && (d.cells.empty() || outside_mesh(d, p))) {
+        return wires_follow(d, p, scratch);
+      }
+      /* On a four-sided cell's side: onto the bent side, at the same place along it. */
+      for (const DeformShape::Cell &c : d.cells) {
+        float2 st;
+        if (c.quad && quad_cell_at(c, p, st)) {
+          for (int k = 0; k < 4; k++) {
+            float t;
+            if (cell_side_at(c, k, p, t)) {
+              return cell_side_point(c.now_sides, k, t);
+            }
+          }
+        }
+      }
+      if (outside_mesh(d, p)) {
+        return d.edge_sides.empty() ? outline_follow(d, p, scratch) : sides_follow(d, p, scratch);
+      }
+      return mesh_inside_map(d, p, scratch);
+    }
+    case DeformKind::Cage: {
+      if (d.cage_method == CageMethod::Envelope && !d.envelope_sides.empty()) {
+        return envelope_map(d, p, scratch);
+      }
+      if (!d.cage_turn.empty() && !inside(d.rest, p)) {
+        return outline_carry(d.rest, d.now, d.cage_turn, p, polyline_distance(d.rest, true, p), d.cage_band);
+      }
+      if (!mean_value(d.rest, p, scratch)) {
+        return p;
+      }
+      float2 q(0.0f, 0.0f);
+      for (size_t i = 0; i < d.now.size(); i++) {
+        q = q + d.now[i] * scratch[i];
+      }
+      if (d.cage_method == CageMethod::Rigid && !d.lattice.empty()) {
+        q = q + rigid_offset(d, p);
+      }
+      return q;
+    }
+    case DeformKind::Line: {
+      /* Carried from one place on the line: its place along and across the line, worked out on the line at rest and
+       * now alike (the same frame and bend easing), and how far the point is from where that puts it at rest carried
+       * along in the line's frame, so a line that hasn't moved moves nothing and one moved or turned whole carries
+       * everything exactly with it. */
+      const auto carry = [&](const LinePlace &place) {
+        const float s = d.stretch ? place.along * d.now_at.back() / d.rest_at.back() : place.along;
+        /* The way it runs, for a point far from it, taken over a stretch about as long as the point is far (the chord
+         * across it): the line's samples turn by small corners, and turning a far point by each one at once made it
+         * hitch as the line moved. Near the line, exactly the way it runs there. */
+        const float reach = std::min(std::fabs(place.across) * 0.5f, d.rest_at.back() * 0.25f);
+        const auto frame = [reach](const std::vector<float2> &v, const std::vector<float> &at, float here, float scale,
+                                   float2 &r_on, float2 &r_tangent, float2 &r_normal) {
+          line_frame_at(v, at, here, r_on, r_tangent, r_normal);
+          const float spacing = at.back() / float(std::max<size_t>(v.size() - 1, 1));
+          const float h = reach * scale;
+          if (h > spacing * 0.5f) {
+            float2 a, b, ta, na, tb, nb;
+            line_frame_at(v, at, here - h, a, ta, na);
+            line_frame_at(v, at, here + h, b, tb, nb);
+            if (length(b - a) > 1e-12f) {
+              const float f = smooth01(h / (4.0f * spacing));
+              r_tangent = normalize(r_tangent + (normalize(b - a) - r_tangent) * f);
+              r_normal = float2(-r_tangent.y, r_tangent.x);
+            }
+          }
+        };
+        float2 on, tangent, normal, rest_on, rest_tangent, rest_normal;
+        frame(d.now, d.now_at, s, d.stretch ? d.now_at.back() / d.rest_at.back() : 1.0f, on, tangent, normal);
+        frame(d.rest, d.rest_at, place.along, 1.0f, rest_on, rest_tangent, rest_normal);
+        const float2 now_place = on + normal * across_in_bend(d.now, d.now_at, s, place.across);
+        const float2 rest_place = rest_on + rest_normal * across_in_bend(d.rest, d.rest_at, place.along, place.across);
+        const float2 left = p - rest_place;
+        return now_place + tangent * dot(left, rest_tangent) + normal * dot(left, rest_normal);
+      };
+      /* Where the line winds so that the point has a near place on more than one part of it, carried from each and
+       * blended by nearness (the eighth power), as a wire's points are: a point about as near two parts of the line
+       * eases from one to the other rather than tearing the drawing apart where the nearest one changes. */
+      std::vector<float> dists;
+      const std::vector<LinePlace> places = line_places(d.rest, d.rest_at, p, dists);
+      if (places.size() == 1) {
+        return carry(places[0]);
+      }
+      const float nearest = *std::min_element(dists.begin(), dists.end());
+      float2 sum(0.0f, 0.0f);
+      double weight = 0.0;
+      for (size_t i = 0; i < places.size(); i++) {
+        if (dists[i] <= nearest * (1.0f + 1e-6f) && nearest < 1e-9f) {
+          return carry(places[i]);
+        }
+        const double w = std::pow(double(nearest) / std::max(double(dists[i]), 1e-30), 8.0);
+        sum = sum + carry(places[i]) * float(w);
+        weight += w;
+      }
+      return weight > 0.0 ? sum / float(weight) : carry(places[0]);
+    }
+    case DeformKind::None:
+      break;
+  }
+  return p;
+}
+
+static float polyline_distance(const std::vector<float2> &v, bool closed, float2 p)
+{
+  float best = FLT_MAX;
+  const size_t n = v.size();
+  for (size_t i = 0; i + (closed ? 0 : 1) < n; i++) {
+    const float2 a = v[i], d = v[(i + 1) % n] - a;
+    const float dd = dot(d, d);
+    const float t = dd > 1e-20f ? std::clamp(dot(p - a, d) / dd, 0.0f, 1.0f) : 0.0f;
+    best = std::min(best, length(a + d * t - p));
+  }
+  return best;
+}
+
+static bool inside(const std::vector<float2> &v, float2 p)
+{
+  int winding = 0;
+  const size_t n = v.size();
+  for (size_t i = 0; i < n; i++) {
+    const float2 a = v[i], b = v[(i + 1) % n];
+    if (a.y <= p.y) {
+      winding += b.y > p.y && cross(b - a, p - a) > 0.0f ? 1 : 0;
+    }
+    else {
+      winding -= b.y <= p.y && cross(b - a, p - a) < 0.0f ? 1 : 0;
+    }
+  }
+  return winding != 0;
+}
+
+static const PointGroup *deform_group(const Layer &layer, const Modifier &m)
+{
+  if (!m.deform_custom || m.deform_group.empty()) {
+    return nullptr;
+  }
+  for (const PointGroup &g : layer.drawing.groups) {
+    if (g.name == m.deform_group) {
+      return &g;
+    }
+  }
+  return nullptr;
+}
+
+/* A point's weight: its Custom one, else the automatic one, which is full for every point of the layer (the
+ * whole drawing follows the shape, past it too, as Blender's deform modifiers bend the whole object). */
+static float point_weight(const PointGroup *group, const MeshPoint &p)
+{
+  if (group && p.id != 0) {
+    if (auto it = group->weights.find(p.id); it != group->weights.end()) {
+      return std::clamp(it->second, 0.0f, 1.0f);
+    }
+  }
+  return 1.0f;
+}
+
+ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  Modifier test = m;
+  for (const ModifierType type :
+       {m.type, ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})
+  {
+    test.type = type;
+    DeformShape d;
+    if (deform_shape_build(doc, layer, test, false, false, d)) {
+      return type;
+    }
+  }
+  return m.type;
+}
+
+void vector_deform_resolve_legacy(Document &doc)
+{
+  const auto visit = [&](auto &&self, std::vector<Layer> &list) -> void {
+    for (Layer &layer : list) {
+      for (Modifier &m : layer.modifiers) {
+        if (!modifier_is_deform(m.type) || !m.deform_legacy) {
+          continue;
+        }
+        m.deform_legacy = false;
+        const bool default_name = m.name.rfind("Vector Deform", 0) == 0;
+        /* As the single Vector Deform took them: a line, else a single closed shape as a cage, else cells. */
+        for (const ModifierType type :
+             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})
+        {
+          m.type = type;
+          if (vector_deform_kind(doc, layer, m) != DeformKind::None) {
+            break;
+          }
+        }
+        if (default_name) {
+          m.name = deform_type_name(m.type) + m.name.substr(13);
+        }
+      }
+      self(self, layer.children);
+    }
+  };
+  visit(visit, doc.layers);
+}
+
+DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  DeformShape d;
+  return deform_shape_build(doc, layer, m, false, false, d) ? d.kind : DeformKind::None;
+}
+
+bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  /* Follow the shapes' layers' own deform modifiers back; reaching `layer` is a loop. */
+  std::vector<uint64_t> seen;
+  std::vector<uint64_t> todo = {m.deform_layer};
+  while (!todo.empty()) {
+    const uint64_t id = todo.back();
+    todo.pop_back();
+    if (id == layer.id) {
+      return true;
+    }
+    if (std::find(seen.begin(), seen.end(), id) != seen.end()) {
+      continue;
+    }
+    seen.push_back(id);
+    if (const Layer *l = layer_find(doc, id)) {
+      for (const Modifier &other : l->modifiers) {
+        if (modifier_is_deform(other.type) && other.deform_layer != 0) {
+          todo.push_back(other.deform_layer);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/* A handle bent by the deform as it bends right at its point (its way and stretch there: a tiny step along the
+ * handle and back, taken through the deform and scaled back up), so the pieces either side of a point leave it the
+ * same way and a bent line has no jogs where its pieces meet. `q0`: where the point went. */
+static float2 bent_handle(const DeformShape &d, float2 p0, float2 q0, float2 handle, std::vector<float> &scratch)
+{
+  const float len = length(handle);
+  if (len < 1e-9f) {
+    return handle;
+  }
+  /* At a point in a four-sided cell or on its sides: turned and stretched as the cell's patch does there, from its
+   * own derivatives (a step either way would leave the cell at its sides and corners), so a line drawn on a side
+   * leaves its points exactly as the bent side does. */
+  for (const DeformShape::Cell &c : d.cells) {
+    float2 st;
+    if (!c.quad || !quad_cell_at(c, p0, st)) {
+      continue;
+    }
+    /* Along a side it sits on: as the bent side runs there (the handle's share of the side's own way, kept). */
+    for (int k = 0; k < 4; k++) {
+      float t;
+      if (!cell_side_at(c, k, p0, t)) {
+        continue;
+      }
+      const float2 rest_way = cell_side_way(c.rest_sides, k, t);
+      const float way_len = length(rest_way);
+      if (way_len < 1e-12f || std::fabs(cross(handle, rest_way)) > len * way_len * 1e-4f) {
+        continue;
+      }
+      return cell_side_way(c.now_sides, k, t) * (dot(handle, rest_way) / (way_len * way_len));
+    }
+    float2 rest_s, rest_t, now_s, now_t;
+    cell_patch_partials(c.rest_sides, st, rest_s, rest_t);
+    cell_patch_partials(c.now_sides, st, now_s, now_t);
+    const float det = cross(rest_s, rest_t);
+    /* Where the patch's two directions are (nearly) parallel, solving through them breaks down. */
+    if (std::fabs(det) < 1e-3f * length(rest_s) * length(rest_t)) {
+      break;
+    }
+    /* The handle in the patch's own directions, then those directions as they are now. */
+    const float a = cross(handle, rest_t) / det, b = cross(rest_s, handle) / det;
+    return now_s * a + now_t * b;
+  }
+  const float step = std::min(5e-3f, len) / len;
+  (void)q0;
+  return (deform_map(d, p0 + handle * step, scratch) - deform_map(d, p0 - handle * step, scratch)) / (2.0f * step);
+}
+
+static float2 bezier_point(const float2 c[4], float t)
+{
+  const float u = 1.0f - t;
+  return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
+}
+
+/* The part of Bezier `c` from t0 to t1 (de Casteljau). */
+static void bezier_part(const float2 c[4], float t0, float t1, float2 r[4])
+{
+  /* `out`: the part of `in` after t. */
+  const auto after = [](const float2 in[4], float t, float2 out[4]) {
+    const float2 a = in[0] + (in[1] - in[0]) * t, b = in[1] + (in[2] - in[1]) * t, e = in[2] + (in[3] - in[2]) * t;
+    const float2 ab = a + (b - a) * t, be = b + (e - b) * t;
+    out[0] = ab + (be - ab) * t;
+    out[1] = be;
+    out[2] = e;
+    out[3] = in[3];
+  };
+  float2 tail[4];
+  after(c, t0, tail);
+  const float keep = t0 < 1.0f ? (t1 - t0) / (1.0f - t0) : 1.0f;
+  /* The tail's front, up to `keep` of it: the tail reversed, its part after 1 - keep, reversed back. */
+  const float2 back[4] = {tail[3], tail[2], tail[1], tail[0]};
+  float2 front[4];
+  after(back, 1.0f - keep, front);
+  r[0] = front[3];
+  r[1] = front[2];
+  r[2] = front[1];
+  r[3] = front[0];
+}
+
+/* Precision: how many pieces each segment of `base` needs so that, bent by moving its points and handles, it
+ * strays no further than `tolerance` from where the deform takes the segment itself (Illustrator's Fidelity):
+ * one where the deform barely bends it, more where it bends hard. `weights`: each point's share of the
+ * deform; a segment counts by its ends' larger. */
+/* r_blend: for each segment cut, how far its last halving has come in (0 to 1): from just past Precision (the
+ * pieces before it strayed only a little more than it) to twice it, so a cut fades in as the bend grows rather than
+ * popping in (precision_fade). */
+static std::vector<std::vector<int>> precision_pieces(const DeformShape &d, const VectorDrawing &base,
+                                                      const std::vector<float> &weights, float tolerance,
+                                                      std::vector<float> &scratch, bool *r_any,
+                                                      std::vector<std::vector<float>> &r_blend)
+{
+  constexpr int MAX_PIECES = 64;
+  std::vector<std::vector<int>> pieces(base.curves.size());
+  *r_any = false;
+  /* Every segment on its own: shared over the cores. */
+  std::vector<std::pair<size_t, int>> segments;
+  for (size_t c = 0; c < base.curves.size(); c++) {
+    const Curve &curve = base.curves[c];
+    pieces[c].assign(size_t(std::max(curve.segment_count(), 0)), 1);
+    r_blend.emplace_back(size_t(std::max(curve.segment_count(), 0)), 1.0f);
+    for (int seg = 0; seg < curve.segment_count(); seg++) {
+      segments.emplace_back(c, seg);
+    }
+  }
+  (void)scratch;
+  parallel_for(segments.size(), 1, [&](size_t begin, size_t end) {
+    std::vector<float> own;
+    for (size_t i = begin; i < end; i++) {
+      const auto [c, seg] = segments[i];
+      const Curve &curve = base.curves[c];
+      int a, b;
+      curve_segment_points(curve, seg, &a, &b);
+      const float w = std::max(weights[size_t(a)], weights[size_t(b)]);
+      if (w <= 0.0f) {
+        continue;
+      }
+      float2 ctrl[4];
+      curve_segment_bezier(base, curve, seg, ctrl);
+      int n = 1;
+      float coarser = 0.0f;
+      for (; n < MAX_PIECES; n *= 2) {
+        float error = 0.0f;
+        for (int k = 0; k < n && error <= tolerance; k++) {
+          float2 part[4], bent[4];
+          bezier_part(ctrl, float(k) / float(n), float(k + 1) / float(n), part);
+          bent[0] = deform_map(d, part[0], own);
+          bent[3] = deform_map(d, part[3], own);
+          bent[1] = bent[0] + bent_handle(d, part[0], bent[0], part[1] - part[0], own);
+          bent[2] = bent[3] + bent_handle(d, part[3], bent[3], part[2] - part[3], own);
+          for (const float u : {0.25f, 0.5f, 0.75f}) {
+            const float2 truly = deform_map(d, bezier_point(part, u), own);
+            error = std::max(error, length(bezier_point(bent, u) - truly) * w);
+          }
+        }
+        if (error <= tolerance) {
+          break;
+        }
+        coarser = error;
+      }
+      pieces[c][size_t(seg)] = n;
+      /* Eased in and out, so it starts and finishes coming in without a jolt. */
+      r_blend[c][size_t(seg)] = n > 1 ? smooth01(std::clamp((coarser - tolerance) / tolerance, 0.0f, 1.0f)) : 1.0f;
+    }
+  });
+  for (const auto &[c, seg] : segments) {
+    *r_any = *r_any || pieces[c][size_t(seg)] > 1;
+  }
+  return pieces;
+}
+
+/* Precision's cuts fading in: a segment's last halving, just past Precision, leaves each pair of pieces exactly as
+ * the one piece they were (`coarse`: the drawing bent with that halving left out; the point between them where that
+ * piece has it, its handles and the pair's outer ones as that piece split there), easing over to the pieces bent
+ * each on its own (`drawing`) as the bend grows to twice Precision. So a cut coming or going as the shape moves
+ * changes nothing at that moment (a thin band doesn't jump thicker and back). Handles are eased as they draw, and
+ * kept so. `whole`: the drawing before any cut. */
+static void precision_fade(const VectorDrawing &whole, const std::vector<std::vector<int>> &pieces,
+                           const std::vector<std::vector<int>> &coarse_pieces,
+                           const std::vector<std::vector<float>> &blend, const VectorDrawing &coarse,
+                           VectorDrawing &drawing)
+{
+  const VectorDrawing setup = subdivide_setup_shape(whole);
+  for (size_t c = 0; c < whole.curves.size() && c < drawing.curves.size() && c < coarse.curves.size(); c++) {
+    const Curve &was = whole.curves[c], &rough = coarse.curves[c];
+    Curve &curve = drawing.curves[c];
+    const int fine_count = int(curve.points.size()), rough_count = int(rough.points.size());
+    /* Every handle as it draws (a cut's points work theirs out from their neighbours), before any is eased. */
+    std::vector<float2> drawn_in(static_cast<size_t>(fine_count)), drawn_out(static_cast<size_t>(fine_count));
+    for (int i = 0; i < fine_count; i++) {
+      const float2 at = drawing.points[size_t(curve.points[size_t(i)].point)].pos;
+      drawn_in[size_t(i)] = curve_handle(drawing, curve, i, true) - at;
+      drawn_out[size_t(i)] = curve_handle(drawing, curve, i, false) - at;
+    }
+    int first = 0, rough_first = 0;
+    for (int seg = 0; seg < was.segment_count(); seg++) {
+      const int n = pieces[c][size_t(seg)], half = coarse_pieces[c][size_t(seg)];
+      const float k = blend[c][size_t(seg)];
+      const int start = first, rough_start = rough_first;
+      first += n;
+      rough_first += half;
+      if (n < 2 || half * 2 != n || k >= 1.0f) {
+        continue;
+      }
+      float2 rest[4];
+      curve_segment_bezier(setup, setup.curves[c], seg, rest);
+      const std::vector<float> cuts = subdivide_even_cuts(rest, n);
+      for (int j = 0; j < half; j++) {
+        const int ia = (start + 2 * j) % fine_count, im = (start + 2 * j + 1) % fine_count,
+                  ib = (start + 2 * j + 2) % fine_count;
+        /* The one piece the pair was, as it draws, split where the pair meets. */
+        float2 one[4];
+        curve_segment_bezier(coarse, rough, (rough_start + j) % std::max(rough_count, 1), one);
+        const float span = cuts[size_t(2 * j + 2)] - cuts[size_t(2 * j)];
+        const float u = span > 1e-12f ? (cuts[size_t(2 * j + 1)] - cuts[size_t(2 * j)]) / span : 0.5f;
+        float2 left[4], right[4];
+        bezier_part(one, 0.0f, u, left);
+        bezier_part(one, u, 1.0f, right);
+        CurvePoint &a = curve.points[size_t(ia)], &mid = curve.points[size_t(im)], &b = curve.points[size_t(ib)];
+        for (CurvePoint *cp : {&a, &mid, &b}) {
+          const size_t i = size_t(cp - curve.points.data());
+          cp->handle_in = drawn_in[i];
+          cp->handle_out = drawn_out[i];
+          cp->handles_set = true;
+          cp->handles_follow_curve = false;
+        }
+        const auto ease = [k](float2 whole_piece, float2 own) { return whole_piece + (own - whole_piece) * k; };
+        float2 &mid_pos = drawing.points[size_t(mid.point)].pos;
+        a.handle_out = ease(left[1] - left[0], a.handle_out);
+        mid.handle_in = ease(left[2] - left[3], mid.handle_in);
+        mid.handle_out = ease(right[1] - right[0], mid.handle_out);
+        b.handle_in = ease(right[2] - right[3], b.handle_in);
+        mid_pos = ease(left[3], mid_pos);
+      }
+    }
+  }
+}
+
+/* How far the samples `pts` stray from the cubic q0, q0 + h1, q3 + h2, q3 (to a fine polyline of it), as the root
+ * mean square: which of two fits to a bent segment follows it closer. Not the farthest one alone, which changes
+ * abruptly as another sample becomes the farthest (and the blend of the fits by it with it). */
+static float bezier_stray(float2 q0, float2 h1, float2 h2, float2 q3, const std::vector<float2> &pts)
+{
+  const float2 c[4] = {q0, q0 + h1, q3 + h2, q3};
+  std::vector<float2> line(129);
+  for (int k = 0; k <= 128; k++) {
+    line[size_t(k)] = bezier_point(c, float(k) / 128.0f);
+  }
+  double sum = 0.0;
+  for (const float2 &q : pts) {
+    const double dist = polyline_distance(line, false, q);
+    sum += dist * dist;
+  }
+  return pts.empty() ? 0.0f : float(std::sqrt(sum / double(pts.size())));
+}
+
+/* Resample Self (as a sculpt stroke fits a line back to its samples): each segment sampled evenly in its own
+ * parameter (on the drawing as it was, `base`, and as it is), each sample bent by the deform as far as its share
+ * (its ends' weights, eased between), then each segment's handles fitted to its bent samples, the points where theirs
+ * went (`mapped`). A handle keeps the way the deform turns it at its point (bent_handle; as far as the point's
+ * weight), so the two handles of a smooth point stay in line and a bent line has no kinks at its points; only how
+ * long each is is fitted (least squares, the samples' places along the curve refined: Schneider's fit). A point the
+ * deform doesn't move keeps its handles. Only the handles are set here; the points move after. Not `always` (without
+ * Resample Self): a segment whose handles as bent already follow the bend (within a thousandth of its chord, or a
+ * quarter of Precision `tolerance`, checked at three places along it) keeps them, the fit easing in only as they stray
+ * further (to fully at four times that), so it costs little where the bend is gentle and never switches on with a
+ * jolt. */
+static void resample_fit(const DeformShape &d, const VectorDrawing &base, const std::vector<float> &weights,
+                         const std::vector<float2> &mapped, VectorDrawing &drawing, std::vector<float> &scratch,
+                         bool always, float tolerance)
+{
+  /* Samples per segment. */
+  constexpr int steps = 16;
+  std::vector<float2> inner;
+  for (size_t c = 0; c < drawing.curves.size() && c < base.curves.size(); c++) {
+    Curve &curve = drawing.curves[c];
+    const Curve &was = base.curves[c];
+    const int n = int(curve.points.size());
+    const int segments = std::min(curve.segment_count(), was.segment_count());
+    for (int s = 0; s < segments; s++) {
+      const int a = s, b = (s + 1) % n;
+      CurvePoint &from = curve.points[size_t(a)], &to = curve.points[size_t(b)];
+      const float wa = weights[size_t(from.point)], wb = weights[size_t(to.point)];
+      if (wa <= 0.0f && wb <= 0.0f) {
+        continue;
+      }
+      float2 rest[4], now[4];
+      curve_segment_bezier(base, was, s, rest);
+      curve_segment_bezier(drawing, curve, s, now);
+      /* Where each end goes. */
+      const float2 q0 = now[0] + ((wa > 0.0f ? mapped[size_t(from.point)] : now[0]) - now[0]) * wa;
+      const float2 q3 = now[3] + ((wb > 0.0f ? mapped[size_t(to.point)] : now[3]) - now[3]) * wb;
+      /* Each handle as the deform bends it at its point, as far as the point's weight (none for a handle of no
+       * length). */
+      const auto bent = [&](float2 p, float2 rest_handle, float2 now_handle, float w) {
+        return length(rest_handle) > 1e-9f ? now_handle + (bent_handle(d, p, p, rest_handle, scratch) - now_handle) * w
+                                           : now_handle;
+      };
+      const float2 b1 = bent(rest[0], rest[1] - rest[0], now[1] - now[0], wa);
+      const float2 b2 = bent(rest[3], rest[2] - rest[3], now[2] - now[3], wb);
+      /* Where it is bent truly, at `t`. */
+      const auto truly = [&](float t) {
+        const float w = wa + (wb - wa) * smooth01(t);
+        const float2 here = bezier_point(now, t);
+        const float2 moved = w > 0.0f ? deform_map(d, bezier_point(rest, t), scratch) : here;
+        return here + (moved - here) * w;
+      };
+      float ease = 1.0f;
+      if (!always) {
+        const float2 as_bent[4] = {q0, q0 + b1, q3 + b2, q3};
+        float off = 0.0f;
+        for (const float t : {0.25f, 0.5f, 0.75f}) {
+          off = std::max(off, length(bezier_point(as_bent, t) - truly(t)));
+        }
+        const float within = std::max({length(q3 - q0) * 1e-3f, tolerance * 0.25f, 1e-9f});
+        ease = smooth01((off - within) / (3.0f * within));
+        if (ease <= 0.0f) {
+          if (wa > 0.0f) {
+            from.handle_out = b1;
+          }
+          if (wb > 0.0f) {
+            to.handle_in = b2;
+          }
+          continue;
+        }
+      }
+      /* The bent samples, end to end. */
+      inner.clear();
+      inner.push_back(q0);
+      for (int k = 1; k < steps; k++) {
+        inner.push_back(truly(float(k) / float(steps)));
+      }
+      inner.push_back(q3);
+      /* Their ways (a handle of no length: the way the bent segment leaves its point), and how long each is fitted. */
+      const float2 t1 = normalize(length(b1) > 1e-12f ? b1 : inner[1] - q0);
+      const float2 t2 = normalize(length(b2) > 1e-12f ? b2 : inner[inner.size() - 2] - q3);
+      float a1 = length(b1), a2 = length(b2);
+      bezier_fit_handle_lengths(q0, q3, t1, t2, inner, &a1, &a2, true);
+      /* The fitted lengths and the handles as bent, each the more the closer it follows the samples (the fit's
+       * places along the curve are refined, not exact, and either can be the closer): blended by how far each strays
+       * (by the fourth power: the clearly closer one all but alone), not one picked, so a small move never flips the segment from one to the other. */
+      const float2 f1 = t1 * std::max(a1, 0.0f), f2 = t2 * std::max(a2, 0.0f);
+      const float fit_stray = bezier_stray(q0, f1, f2, q3, inner), bent_stray = bezier_stray(q0, b1, b2, q3, inner);
+      const double fit4 = std::pow(double(fit_stray), 4.0), bent4 = std::pow(double(bent_stray), 4.0),
+                   both = fit4 + bent4;
+      const float fitted = (both > 1e-300 ? float(bent4 / both) : 0.5f) * ease;
+      const float2 h1 = b1 + (f1 - b1) * fitted, h2 = b2 + (f2 - b2) * fitted;
+      if (wa > 0.0f) {
+        from.handle_out = h1;
+      }
+      if (wb > 0.0f) {
+        to.handle_in = h2;
+      }
+    }
+  }
+}
+
+/* The drawing bent (base: as it was before the bones, the same points): each point where the deform puts it, each
+ * handle turned and stretched as the deform bends it there (or fitted, with Resample Self or for the wire), each as
+ * far as its weight. */
+static void bend_drawing(const DeformShape &d, const PointGroup *group, float strength, bool resample,
+                         const VectorDrawing &base, VectorDrawing &drawing, std::vector<float> &scratch,
+                         bool always_fit = true, float tolerance = 0.0f)
+{
+  std::vector<float> weights(drawing.points.size());
+  std::vector<float2> mapped(drawing.points.size());
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    weights[i] = point_weight(group, drawing.points[i]) * strength;
+  }
+  /* Each point on its own: shared over the cores. */
+  parallel_for(drawing.points.size(), 16, [&](size_t begin, size_t end) {
+    std::vector<float> own;
+    for (size_t i = begin; i < end; i++) {
+      if (weights[i] > 0.0f) {
+        mapped[i] = deform_map(d, base.points[i].pos, own);
+      }
+    }
+  });
+  if (resample) {
+    resample_fit(d, base, weights, mapped, drawing, scratch, always_fit, tolerance);
+  }
+  /* Every curve point's handles, each on its own: shared over the cores. */
+  std::vector<std::pair<size_t, size_t>> handle_points;
+  for (size_t c = 0; c < drawing.curves.size() && !resample; c++) {
+    for (size_t k = 0; k < drawing.curves[c].points.size() && k < base.curves[c].points.size(); k++) {
+      handle_points.emplace_back(c, k);
+    }
+  }
+  parallel_for(handle_points.size(), 16, [&](size_t begin, size_t end) {
+    std::vector<float> own;
+    for (size_t i = begin; i < end; i++) {
+      const auto [c, k] = handle_points[i];
+      CurvePoint &cp = drawing.curves[c].points[k];
+      const float w = weights[size_t(cp.point)];
+      /* Handles still worked out from the neighbours follow the points by themselves. */
+      if (w <= 0.0f || !(cp.handles_set || cp.handles_follow_curve)) {
+        continue;
+      }
+      const CurvePoint &was = base.curves[c].points[k];
+      const float2 p0 = base.points[size_t(cp.point)].pos, q0 = mapped[size_t(cp.point)];
+      const float2 in = bent_handle(d, p0, q0, was.handle_in, own);
+      const float2 out = bent_handle(d, p0, q0, was.handle_out, own);
+      cp.handle_in = cp.handle_in + (in - cp.handle_in) * w;
+      cp.handle_out = cp.handle_out + (out - cp.handle_out) * w;
+    }
+  });
+  if (g_wire > 0 && !resample) {
+    /* The wire: each deformed segment's handles fitted to the bent segment itself (their directions as
+     * the deform turned them, their lengths by least squares), the nearest one Bezier comes to it, unless the
+     * handles as bent already follow it closer (on a cell's sides they are exact). */
+    for (size_t c = 0; c < drawing.curves.size(); c++) {
+      Curve &curve = drawing.curves[c];
+      const Curve &was = base.curves[c];
+      const int n = int(curve.points.size());
+      for (int s = 0; s < curve.segment_count() && s < was.segment_count(); s++) {
+        CurvePoint &from = curve.points[size_t(s)], &to = curve.points[size_t((s + 1) % n)];
+        const float w = std::min(weights[size_t(from.point)], weights[size_t(to.point)]);
+        if (w <= 0.0f) {
+          continue;
+        }
+        const float out_len = length(from.handle_out), in_len = length(to.handle_in);
+        if (out_len < 1e-9f || in_len < 1e-9f) {
+          continue;
+        }
+        float2 ctrl[4];
+        curve_segment_bezier(base, was, s, ctrl);
+        std::vector<float2> samples;
+        for (int k = 1; k < 12; k++) {
+          samples.push_back(deform_map(d, bezier_point(ctrl, float(k) / 12.0f), scratch));
+        }
+        /* The bent segment's own directions at its ends (a long handle's mapped end lies inside a bend). */
+        const float2 q0 = deform_map(d, ctrl[0], scratch), q3 = deform_map(d, ctrl[3], scratch);
+        const float2 d1 = deform_map(d, bezier_point(ctrl, 1e-3f), scratch) - q0;
+        const float2 d2 = deform_map(d, bezier_point(ctrl, 1.0f - 1e-3f), scratch) - q3;
+        if (length(d1) < 1e-12f || length(d2) < 1e-12f) {
+          continue;
+        }
+        const float2 t1 = normalize(d1), t2 = normalize(d2);
+        float a1 = out_len, a2 = in_len;
+        bezier_fit_handle_lengths(mapped[size_t(from.point)], mapped[size_t(to.point)], t1, t2, samples, &a1, &a2,
+                                  true);
+        const float2 q3_now = mapped[size_t(to.point)], q0_now = mapped[size_t(from.point)];
+        /* Fitted and as bent, each the more the closer it follows (as Resample Self's, by the fourth power). */
+        const float2 f1 = t1 * std::max(a1, 0.0f), f2 = t2 * std::max(a2, 0.0f);
+        const float fit_stray = bezier_stray(q0_now, f1, f2, q3_now, samples);
+        const float bent_stray = bezier_stray(q0_now, from.handle_out, to.handle_in, q3_now, samples);
+        const double fit4 = std::pow(double(fit_stray), 4.0), bent4 = std::pow(double(bent_stray), 4.0),
+                   both = fit4 + bent4;
+        const float fitted = (both > 1e-300 ? float(bent4 / both) : 0.5f) * w;
+        from.handle_out = from.handle_out + (f1 - from.handle_out) * fitted;
+        to.handle_in = to.handle_in + (f2 - to.handle_in) * fitted;
+      }
+    }
+  }
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    if (weights[i] > 0.0f) {
+      drawing.points[i].pos = drawing.points[i].pos + (mapped[i] - drawing.points[i].pos) * weights[i];
+    }
+  }
+}
+
+void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
+                         const VectorDrawing &before_bones, bool render)
+{
+  /* Frame 0 is the rest: nothing bends there. (While the shape is being edited there its frame-0 keys still
+   * hold where it was until the edit is recorded, so measuring would bend the drawing by the edit.) */
+  if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {
+    return;
+  }
+  uint64_t build = 0;
+  const std::shared_ptr<const DeformShape> built = deform_shape_kept(doc, layer, m, render, build);
+  if (!built) {
+    return;
+  }
+  const DeformShape &d = *built;
+  const PointGroup *group = deform_group(layer, m);
+  /* The same drawing bent by the same build as before: what it made then. */
+  const auto bend_key = std::make_tuple(layer.id, m.name, render);
+  const auto same_bend = [&](const KeptBend &k) {
+    return k.build == build && k.render == render && k.wire == g_wire && k.m == m && k.drawing == drawing &&
+           k.before_bones == before_bones && k.grouped == (group != nullptr) && (!group || k.group == *group);
+  };
+  {
+    std::lock_guard lock(g_kept_mutex);
+    auto it = g_kept_bends.find(bend_key);
+    if (it != g_kept_bends.end() && same_bend(it->second)) {
+      drawing = it->second.result;
+      return;
+    }
+  }
+  KeptBend kept;
+  kept.m = m;
+  kept.build = build;
+  kept.render = render;
+  kept.wire = g_wire;
+  kept.drawing = drawing;
+  kept.before_bones = before_bones;
+  kept.grouped = group != nullptr;
+  if (group) {
+    kept.group = *group;
+  }
+  /* Kept when done (every way out below). */
+  struct Keep {
+    KeptBend &kept;
+    VectorDrawing &drawing;
+    std::tuple<uint64_t, std::string, bool> key;
+    ~Keep()
+    {
+      kept.result = drawing;
+      std::lock_guard lock(g_kept_mutex);
+      if (g_kept_bends.size() > 512) {
+        g_kept_bends.clear();
+      }
+      g_kept_bends[key] = std::move(kept);
+    }
+  } keep{kept, drawing, bend_key};
+  const bool same = before_bones.points.size() == drawing.points.size() &&
+                    before_bones.curves.size() == drawing.curves.size();
+  VectorDrawing base = same ? before_bones : drawing;
+  const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
+  std::vector<float> scratch;
+  /* Resample Self: only the drawing's own points, fitted to it bent finely (below). */
+  const bool resample = m.deform_resample_self;
+  /* Precision's cuts, how far each has faded in, and the drawing before them (precision_fade). */
+  std::vector<std::vector<int>> pieces;
+  std::vector<std::vector<float>> fade;
+  VectorDrawing whole, whole_drawing;
+  if (g_wire > 0 || resample) {
+    handles_explicit(base);
+    handles_explicit(drawing);
+  }
+  else if (m.deform_precision > 0.0f) {
+    /* Points where the deform would bend a segment more than its points and handles can follow, on the
+     * drawing as it was and as it is alike (the same cuts). */
+    std::vector<float> share(base.points.size());
+    for (size_t i = 0; i < base.points.size(); i++) {
+      share[i] = point_weight(group, base.points[i]) * strength;
+    }
+    bool any = false;
+    pieces = precision_pieces(d, base, share, m.deform_precision, scratch, &any, fade);
+    if (any) {
+      whole = base;
+      whole_drawing = drawing;
+      Modifier split;
+      split.type = ModifierType::Resample;
+      base = drawing_subdivide(base, split, render, nullptr, &pieces);
+      drawing = drawing_subdivide(drawing, split, render, nullptr, &pieces);
+      if (base.points.size() != drawing.points.size()) {
+        base = drawing;
+      }
+    }
+  }
+  /* With Precision off too, each segment's handles fitted to it bent where the handles as bent stray from it (each
+   * handle the way the deform turns it at its point, its length fitted, blended with the length as bent by how
+   * closely each follows the bend), not only with Resample Self: the handles as bent come from how the deform
+   * stretches right at their point, and where it changes quickly along the segment they overshoot, so the pieces a
+   * Resample modifier cut were bent less truly than Resample Self bends whole segments. (With Precision on, it has cut
+   * every segment till the handles as bent follow the bend within it.) The wire, as shown while editing, fits its
+   * own (below). */
+  const bool fit = resample || (g_wire == 0 && m.deform_precision <= 0.0f);
+  if (fit && !resample) {
+    handles_explicit(base);
+    handles_explicit(drawing);
+  }
+  bend_drawing(d, group, strength, fit, base, drawing, scratch, resample, m.deform_precision);
+  /* A cut fading in: the drawing also bent without it, and the two eased between (precision_fade). */
+  if (!whole.points.empty() && base.points.size() == drawing.points.size()) {
+    std::vector<std::vector<int>> coarse_pieces = pieces;
+    bool fading = false;
+    for (size_t c = 0; c < pieces.size(); c++) {
+      for (size_t seg = 0; seg < pieces[c].size(); seg++) {
+        if (pieces[c][seg] > 1 && fade[c][seg] < 1.0f) {
+          coarse_pieces[c][seg] = pieces[c][seg] / 2;
+          fading = true;
+        }
+      }
+    }
+    if (fading) {
+      VectorDrawing coarse_base = whole, coarse = whole_drawing;
+      Modifier split;
+      split.type = ModifierType::Resample;
+      coarse_base = drawing_subdivide(coarse_base, split, render, nullptr, &coarse_pieces);
+      coarse = drawing_subdivide(coarse, split, render, nullptr, &coarse_pieces);
+      if (coarse_base.points.size() == coarse.points.size()) {
+        if (fit && !resample) {
+          handles_explicit(coarse_base);
+          handles_explicit(coarse);
+        }
+        bend_drawing(d, group, strength, fit, coarse_base, coarse, scratch, resample, m.deform_precision);
+        precision_fade(whole, pieces, coarse_pieces, fade, coarse, drawing);
+      }
+    }
+  }
+}
+
+std::vector<float> vector_deform_auto_weights(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  std::vector<float> weights(drawing.points.size(), 0.0f);
+  DeformShape d;
+  if (!deform_shape_build(doc, layer, m, false, false, d)) {
+    return weights;
+  }
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    weights[i] = 1.0f;
+  }
+  return weights;
+}
+
+std::vector<float> vector_deform_weights(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  std::vector<float> weights(drawing.points.size(), 0.0f);
+  DeformShape d;
+  if (!deform_shape_build(doc, layer, m, false, false, d)) {
+    return weights;
+  }
+  const PointGroup *group = deform_group(layer, m);
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    weights[i] = point_weight(group, drawing.points[i]);
+  }
+  return weights;
+}
+
+static PointGroup &group_for(Layer &layer, Modifier &m)
+{
+  if (m.deform_group.empty()) {
+    m.deform_group = m.name;
+  }
+  for (PointGroup &g : layer.drawing.groups) {
+    if (g.name == m.deform_group) {
+      return g;
+    }
+  }
+  PointGroup g;
+  g.name = m.deform_group;
+  layer.drawing.groups.push_back(std::move(g));
+  return layer.drawing.groups.back();
+}
+
+void vector_deform_fill_group(const Document &doc, Layer &layer, Modifier &m)
+{
+  const std::vector<float> weights = vector_deform_auto_weights(doc, layer, m);
+  PointGroup &group = group_for(layer, m);
+  group.weights.clear();
+  for (size_t i = 0; i < layer.drawing.points.size() && i < weights.size(); i++) {
+    if (layer.drawing.points[i].id != 0) {
+      group.weights[layer.drawing.points[i].id] = weights[i];
+    }
+  }
+}
+
+int vector_deform_paint(const Document &doc, Layer &layer, const Modifier &m, const WeightPaintBrush &brush)
+{
+  if (brush.radius <= 0.0f || !m.deform_custom) {
+    return 0;
+  }
+  const std::vector<float> start = vector_deform_weights(doc, layer, m);
+  Modifier &own = const_cast<Modifier &>(m);
+  PointGroup &group = group_for(layer, own);
+  int changed = 0;
+  for (size_t index = 0; index < layer.drawing.points.size(); index++) {
+    const MeshPoint &p = layer.drawing.points[index];
+    if (p.id == 0 || (brush.selected_only && !p.selected)) {
+      continue;
+    }
+    const bool shown = brush.positions && index < brush.positions->size();
+    const float dist = distance(shown ? (*brush.positions)[index] : p.pos, brush.center);
+    if (dist > brush.radius) {
+      continue;
+    }
+    /* Blender's smooth falloff, as the bones' brush. */
+    const float amount = std::clamp(brush.strength, 0.0f, 1.0f) * smooth01(1.0f - dist / brush.radius);
+    const auto it = group.weights.find(p.id);
+    const float before = it != group.weights.end() ? it->second : start[index];
+    float after = before;
+    switch (brush.mode) {
+      case WeightPaintMode::Draw:
+        after = before + (std::clamp(brush.weight, 0.0f, 1.0f) - before) * amount;
+        break;
+      case WeightPaintMode::Add:
+        after = std::min(1.0f, before + brush.weight * amount);
+        break;
+      case WeightPaintMode::Subtract:
+        after = std::max(0.0f, before - brush.weight * amount);
+        break;
+    }
+    group.weights[p.id] = after;
+    changed += after != before || it == group.weights.end() ? 1 : 0;
+  }
+  return changed;
+}
+
+}  // namespace oanim
+
+

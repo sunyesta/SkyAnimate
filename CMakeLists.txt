@@ -20,6 +20,7 @@ set(OANIM_SOURCES
   src/anim/deform.cc
   src/anim/bevel.cc
   src/anim/subdivide.cc
+  src/anim/vector_deform.cc
   src/anim/shape_limit.cc
   src/anim/keep_poses.cc
   src/anim/merge.cc
@@ -35,6 +36,7 @@ set(OANIM_SOURCES
   src/assets/sculpt_presets.cc
   src/core/crash.cc
   src/core/log.cc
+  src/core/parallel.cc
   src/data/bones.cc
   src/data/camera.cc
   src/data/detail.cc
@@ -53,10 +55,12 @@ set(OANIM_SOURCES
   src/text/text_layer.cc
   src/text/text_outline.cc
   src/data/vector.cc
+  src/data/grid.cc
   src/editors/brush_editor.cc
   src/editors/console.cc
   src/editors/driver_ui.cc
   src/editors/editors.cc
+  src/editors/number_field.cc
   src/editors/screen_eyedropper.cc
   src/editors/sculpt_shelf.cc
   src/wm/clipboard_image.cc
@@ -146,6 +150,14 @@ add_test(NAME text_and_console
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_text_and_console.py)
 add_test(NAME drawing_and_layers
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_drawing_and_layers.py)
+add_test(NAME add_menu
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_add_menu.py)
+add_test(NAME modifier_show_points
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_modifier_show_points.py)
+add_test(NAME make_segment
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_make_segment.py)
+add_test(NAME merge
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_merge.py)
 add_test(NAME save_and_open
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_save_and_open.py)
 add_test(NAME shape_tool
@@ -182,8 +194,8 @@ add_test(NAME flip_name
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_flip_name.py)
 add_test(NAME layer_symmetrize
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_symmetrize.py)
-add_test(NAME make_segment
-  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_make_segment.py)
+add_test(NAME make_segment_points
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_make_segment_points.py)
 add_test(NAME boolean_modifier
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_boolean_modifier.py)
 add_test(NAME modifier_apply
@@ -313,6 +325,10 @@ add_test(NAME layer_shear
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_shear.py)
 add_test(NAME cage_transform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_cage_transform.py)
+add_test(NAME grid
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_grid.py)
+add_test(NAME extrude_branch
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_extrude_branch.py)
 add_test(NAME statistics
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_statistics.py)
 add_test(NAME undo_sharing
@@ -327,6 +343,16 @@ add_test(NAME onion_skins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_onion_skins.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
+add_test(NAME resample_deform
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_resample_deform.py)
+add_test(NAME deform_kept
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_kept.py)
+add_test(NAME viewport_shading
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_viewport_shading.py)
+add_test(NAME deform_stress
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_stress.py)
+add_test(NAME vector_deform
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_vector_deform.py)
 add_test(NAME weights_keep_actions
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_weights_keep_actions.py)
 add_test(NAME weights_menu

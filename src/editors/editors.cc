@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <climits>
+#include <cstring>
 #include <cmath>
 #include <map>
 #include <string>
@@ -754,17 +756,37 @@ static void prop_field(Context &C, const rna::PointerRNA &ptr, const rna::Proper
 
   rna::Value value = prop->get(ptr.data);
   bool changed = false;
+  /* Dragging stays within its soft range (its range when it has none), typing within its range (none: unlimited). */
+  const bool ranged = prop->has_range(), soft = prop->soft_min <= prop->soft_max;
+  const double soft_min = soft ? prop->soft_min : ranged ? prop->min : 0.0;
+  const double soft_max = soft ? prop->soft_max : ranged ? prop->max : 0.0;
+  const float hard_min = ranged ? float(prop->min) : -FLT_MAX, hard_max = ranged ? float(prop->max) : FLT_MAX;
   switch (prop->type) {
     case rna::PropType::Bool:
       changed = ImGui::Checkbox("##value", &std::get<bool>(value));
       break;
     case rna::PropType::Int:
-      changed = ImGui::DragInt("##value", &std::get<int>(value), 0.25f, int(prop->min), int(prop->max),
-                               int_format.c_str(), ImGuiSliderFlags_AlwaysClamp);
+      changed = ui_drag_int("##value", &std::get<int>(value), 0.25f, int(soft_min), int(soft_max), int_format.c_str(), 0,
+                            hard_min, hard_max);
       break;
     case rna::PropType::Float:
-      changed = ImGui::DragFloat("##value", &std::get<float>(value), 0.01f, float(prop->min), float(prop->max),
-                                 float_format.c_str(), ImGuiSliderFlags_AlwaysClamp);
+    {
+      /* A 0-1 setting (opacity, a strength) is a filled bar, as Blender's factors. */
+      NumberField field;
+      field.factor = soft_min == 0.0 && soft_max == 1.0;
+      field.soft_min = soft_min;
+      field.soft_max = soft_max;
+      field.hard_min = hard_min;
+      field.hard_max = hard_max;
+      field.format = float_format.c_str();
+      field.speed = 0.01;
+      field.step = 0.1;
+      double d = std::get<float>(value);
+      changed = ui_number("##value", &d, field);
+      if (changed) {
+        std::get<float>(value) = float(d);
+      }
+    }
       break;
     case rna::PropType::String:
       changed = ImGui::InputText("##value", &std::get<std::string>(value));
@@ -1304,7 +1326,21 @@ void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, Im
     else if (prop.kind == OpProperty::Kind::Float) {
       float v = std::strtof(value.c_str(), nullptr);
       ImGui::SetNextItemWidth(value_w);
-      if (ImGui::DragFloat("##value", &v, prop.step, prop.min, prop.max, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+      /* Backspace puts back the option's default. */
+      NumberField field;
+      field.soft_min = prop.min;
+      field.soft_max = prop.max;
+      float hard_min = UI_LIMIT_AUTO, hard_max = UI_LIMIT_AUTO;
+      ui_number_hard_limits(prop.min, prop.max, "%.3f", &hard_min, &hard_max);
+      field.hard_min = hard_min;
+      field.hard_max = hard_max;
+      field.factor = prop.min == 0.0f && prop.max == 1.0f;
+      field.speed = prop.step;
+      field.step = double(prop.step) * 10.0;
+      field.default_value = prop.fallback.empty() ? std::numeric_limits<double>::quiet_NaN() : std::atof(prop.fallback.c_str());
+      double d = v;
+      if (ui_number("##value", &d, field)) {
+        v = float(d);
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%g", v);
         args[prop.name] = buf;
@@ -1314,7 +1350,19 @@ void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, Im
     else if (prop.kind == OpProperty::Kind::Int) {
       int v = std::atoi(value.c_str());
       ImGui::SetNextItemWidth(value_w);
-      if (ImGui::DragInt("##value", &v, 0.25f, int(prop.min), int(prop.max), "%d", ImGuiSliderFlags_AlwaysClamp)) {
+      NumberField field;
+      field.is_int = true;
+      field.soft_min = prop.min;
+      field.soft_max = prop.max;
+      float hard_min = UI_LIMIT_AUTO, hard_max = UI_LIMIT_AUTO;
+      ui_number_hard_limits(prop.min, prop.max, "%d", &hard_min, &hard_max);
+      field.hard_min = hard_min;
+      field.hard_max = hard_max;
+      field.format = "%d";
+      field.default_value = prop.fallback.empty() ? std::numeric_limits<double>::quiet_NaN() : std::atof(prop.fallback.c_str());
+      double d = v;
+      if (ui_number("##value", &d, field)) {
+        v = int(std::lround(d));
         args[prop.name] = std::to_string(v);
         changed = true;
       }
@@ -1445,6 +1493,8 @@ struct LayerEyedropper {
   uint64_t skip = 0;
   /* The shape under the mouse this frame, "Layer | Shape", said at the mouse as it is. */
   std::string hover_shape;
+  /* A shape eyedropper that also takes a row clicked in the Layers editor (the layer, its shape left to it). */
+  std::function<bool(Context &, uint64_t)> pick_shape_row;
 };
 LayerEyedropper g_layer_eyedropper;
 /* The document the eyedropper's cue names layers from. */
@@ -1506,9 +1556,10 @@ void ui_layer_eyedropper_start_with(std::function<bool(Context &, uint64_t)> pic
 }
 
 void ui_shape_eyedropper_start(std::function<bool(Context &, uint64_t, int)> pick, std::function<std::string()> cue,
-                               const char *tag, uint64_t skip)
+                               const char *tag, uint64_t skip, std::function<bool(Context &, uint64_t)> pick_row)
 {
-  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), {}, {}, std::move(cue), tag ? tag : "", false, skip};
+  g_layer_eyedropper = {true, 0, 0, {}, std::move(pick), {}, {}, std::move(cue), tag ? tag : "", false, skip, {},
+                        std::move(pick_row)};
 }
 
 uint64_t ui_shape_eyedropper_skip()
@@ -1856,6 +1907,13 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
     return;
   }
   g_layer_eyedropper.took_click = true;
+  /* A shape eyedropper that takes rows: the layer clicked. */
+  if (layer_id != 0 && g_layer_eyedropper.pick_shape && g_layer_eyedropper.pick_shape_row) {
+    if (g_layer_eyedropper.pick_shape_row(C, layer_id)) {
+      g_layer_eyedropper.active = false;
+    }
+    return;
+  }
   /* A shape or bone is picked in the viewport: a layer row says nothing about which. */
   if (layer_id == 0 || g_layer_eyedropper.pick_shape || g_layer_eyedropper.pick_bone) {
     return;
@@ -2128,7 +2186,13 @@ bool area_draw(Area &area, Context &C)
   if (full_bleed) {
     ImGui::PopStyleVar();
   }
-  const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+  /* Which keymap the keys go to. An item of this area's own being pressed (a click in the viewport, its last frame
+   * the one the button comes up in) doesn't take the mouse away from it: G pressed right after clicking a point is
+   * the viewport's, not lost to the window's keymap. */
+  const ImGuiWindow *active_in = GImGui->ActiveIdWindow;
+  const bool own_active = active_in && active_in->RootWindow == ImGui::GetCurrentWindow()->RootWindow;
+  const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows |
+                                              (own_active ? ImGuiHoveredFlags_AllowWhenBlockedByActiveItem : 0));
 
   C.drawing_area = editor_keymap_name(area.type);
   if (visible) {

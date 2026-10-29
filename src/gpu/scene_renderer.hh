@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "anim/layer_pick.hh"
 #include "core/math.hh"
 #include "data/layer.hh"
 #include "gpu/brush_stroke.hh"
@@ -30,6 +31,7 @@ struct Layer;
 struct Vertex;
 struct BrushDabs;
 struct BrushImage;
+struct DrawStep;
 
 /* Local View's layers (WindowManager::local_view) with everything inside them and every group holding
  * them: the layers it shows. Empty when none of them is still there (everything shows). */
@@ -65,8 +67,34 @@ class SceneRenderer {
   /* The viewport's renders, one a frame: a drawing seen at a new zoom may be drawn as made for the
    * nearest zoom there is while the render has used its time, and is made over the next frames. */
   void set_interactive(bool interactive) { interactive_ = interactive; }
+  /* A zoom moving with each step drawn (Zoom Preview off): drawings are drawn as made for the nearest zoom they
+   * were made for, nothing made, so each step is quick; the render after it rests makes them all, at once. */
+  void set_zooming(bool on) { zooming_ = on; }
+  /* Whether the last render drew everything as it is (not some drawings from another zoom, to be made over the next
+   * frames): only then can it stand for the next frame when nothing has changed. */
+  bool complete() const { return complete_; }
   /* Local View: draw only these layers, what's inside them and the groups holding them (empty: all). */
   void set_local_view(const Document &doc, const std::vector<uint64_t> &ids);
+
+  /* The viewport's renders draw a margin around what was asked for (an eighth of its longer side), so a pan that
+   * keeps within it shows the same image moved (shown_uv) with nothing drawn. */
+  void set_overscan(bool on) { overscan_ = on; }
+  /* Whether the last render, moved by whole pixels, shows `document_to_pixels` (a pan within its margin, the same
+   * size and zoom): then the part shown becomes that (shown_uv) and the image can be shown as it is. */
+  bool pan_to(int width, int height, const Transform2D &document_to_pixels);
+  /* The part of the last render's image that shows what was asked for: u0, v0, u1, v1 (v up). */
+  void shown_uv(float r_uv[4]) const
+  {
+    for (int i = 0; i < 4; i++) {
+      r_uv[i] = uv_[i];
+    }
+  }
+  /* What the last render's image covers: its pixels to document space, and its size. */
+  Transform2D image_to_document() const { return document_to_pixels_.inverted(); }
+  int image_width() const { return width_; }
+  int image_height() const { return height_; }
+  /* Off: every render draws every layer (Viewport Shading > Layer Caching). */
+  void set_layer_runs(bool on) { layer_runs_ = on; }
 
   /* The anti-aliasing samples the last render used. */
   int samples() const { return samples_; }
@@ -82,10 +110,13 @@ class SceneRenderer {
 
  private:
   struct Target {
-    /* Drawn into: multisampled colour and depth-stencil. */
+    /* Drawn into: multisampled colour and depth-stencil. The colour is a multisample texture (with the
+     * standard sample places) when there are samples, so layer runs' images line up with it sample for sample. */
     unsigned int draw_framebuffer = 0;
     unsigned int color = 0;
+    bool color_texture = false;
     unsigned int depth_stencil = 0;
+    bool own_depth_stencil = true;
     /* The resolved image, averaged from the samples. */
     unsigned int resolve_framebuffer = 0;
     unsigned int texture = 0;
@@ -99,6 +130,62 @@ class SceneRenderer {
   void bind_target(const Target *target);
   void resolve(const Target *target);
   void clear(const Color &color);
+
+  /* Layer runs (the viewport): the layers drawn, bottom first, each with a signature of all it draws from (its
+   * drawing as drawn, where, how opaque, its masks and the layers they take, theirs, and so on); those whose
+   * signature changed since the last render are drawn as they are ("live"), and each stretch of others between
+   * them comes from an image of that stretch kept from when it was drawn, laid over what is below sample for
+   * sample. Editing one layer draws it and what depends on it, not the whole document. */
+  struct LayerRun {
+    size_t begin = 0, end = 0;
+    std::vector<uint64_t> signatures;
+    Target *image = nullptr;
+  };
+  std::vector<LayerRun> runs_;
+  /* The steps the runs were made for (their layers) and the view they were drawn in. */
+  std::vector<uint64_t> run_layers_;
+  uint64_t run_view_ = 0;
+  /* The last render's steps and signatures, to see which changed. */
+  std::vector<uint64_t> last_layers_, last_signatures_;
+  uint64_t last_view_ = 0;
+  unsigned int run_depth_stencil_ = 0;
+  unsigned int run_program_ = 0;
+  unsigned int shift_program_ = 0;
+  bool sample_shading_ = false;
+  /* This render's drawings as drawn: each layer's tessellation key with where it is drawn. */
+  std::unordered_map<uint64_t, uint64_t> drawn_signature_;
+  std::unordered_map<uint64_t, uint64_t> signature_memo_;
+  std::vector<uint64_t> signature_busy_;
+  uint64_t layer_signature(const Document &doc, const Layer &layer);
+  uint64_t masks_signature(const Document &doc, const Layer &layer);
+  uint64_t step_signature(const Document &doc, const DrawStep &step);
+  void draw_step(const Document &doc, const DrawStep &step, Target *target);
+  void draw_layers_in_runs(const Document &doc, const std::vector<DrawStep> &steps, const std::vector<char> &clean);
+  /* Which steps are clean this render (pushed, as Blender's depsgraph tags and Chromium's invalidation flags rather
+   * than worked out): their signature is last render's without looking, and they aren't prepared. Clean: in a kept
+   * run, a plain drawing (no masks on it or its groups, no modifiers but the bones', not a reference) none of whose
+   * groups or own self has a new revision, while only a few layers have one. Every so often none is, so anything
+   * changed without a new revision is caught. */
+  std::vector<char> clean_steps(const Document &doc, const std::vector<DrawStep> &steps, uint64_t view);
+  uint64_t runs_view() const;
+  std::unordered_map<uint64_t, uint64_t> seen_revisions_;
+  int clean_renders_ = 0;
+  /* The steps that changed in the last render that drew everything: runs are made only once the same ones change
+   * again (as Flutter caches a picture only once it has been drawn unchanged for some frames), so a one-off change
+   * doesn't pay for images. */
+  std::vector<size_t> last_live_;
+  std::set<uint64_t> skip_prepare_;
+  Target *make_run_image();
+  void free_run_image(Target *target);
+  void free_runs();
+  /* Lays a run's image over the bound target, each sample over its own. */
+  void composite_run(const Target *run);
+  bool overscan_ = false;
+  bool layer_runs_ = true;
+  float uv_[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+  /* The size and mapping asked for by the last render (before its margin). */
+  int asked_width_ = 0, asked_height_ = 0;
+  int margin_ = 0;
 
   /* Draws a list of layers (top first) into the bound target, bottom first. */
   void draw_layers(const Document &doc, const std::vector<Layer> &layers, const Transform2D &parent,
@@ -265,6 +352,49 @@ class SceneRenderer {
   void draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity);
   static void free_step(PaintStep &step);
   std::unordered_map<uint64_t, Tessellated> tessellated_;
+  /* Each shape's steps as last made for a drawing (by everything but its geometry and with the zoom), and what they
+   * were made from: the shape, the curves it runs along and their points. A drawing changed in a few shapes (a point
+   * dragged) makes only those again, the rest taken as they were. */
+  struct ShapeKept {
+    Shape shape;
+    std::vector<std::pair<int, Curve>> curves;
+    std::vector<std::pair<int, MeshPoint>> points;
+    std::vector<PaintStep> steps;
+  };
+  struct ShapesKept {
+    std::vector<ShapeKept> shapes;
+    uint64_t used = 0;
+  };
+  std::unordered_map<uint64_t, ShapesKept> shapes_kept_;
+  /* What a drawing's steps are made from (make_steps). */
+  struct MakeArgs {
+    const Document *doc = nullptr;
+    const Layer *layer = nullptr;
+    const VectorDrawing *drawing = nullptr;
+    Transform2D transform;
+    float pixel = 1.0f;
+    LineCutter cutter;
+    ShapesKept *kept = nullptr;
+  };
+  /* A drawing's steps: its shapes' triangles and stamps (those of shapes as they were taken from `kept`). Safe on
+   * several threads at once for different drawings in the colour pass, unless brushed or ended at masks' edges. */
+  std::vector<PaintStep> make_steps(const MakeArgs &args);
+  /* Before a render draws: every drawing it will draw whose steps aren't made yet (and that isn't brushed or ended at
+   * masks' edges) is found, and all of them made at once on the CPU's cores; the render then finds them made. */
+  struct Job {
+    MakeArgs args;
+    uint64_t key = 0, any_zoom = 0, anywhere = 0;
+    bool movable = false;
+    /* Could be drawn as made for another zoom instead, this render. */
+    bool optional = false;
+    float2 origin;
+    std::vector<PaintStep> steps;
+  };
+  /* Drawings left to be made by later renders (prepare_drawings): drawn as made for another zoom in this one. */
+  std::set<uint64_t> deferred_;
+  bool preparing_ = false;
+  std::vector<Job> jobs_;
+  void prepare_drawings(const Document &doc);
   /* By everything but the zoom: the key of the last one made or drawn (see set_interactive). */
   std::unordered_map<uint64_t, uint64_t> tessellated_any_zoom_;
   /* By everything but where the drawing is (its points relative to its first): the key of one made with
@@ -275,7 +405,11 @@ class SceneRenderer {
   };
   std::unordered_map<uint64_t, Placed> tessellated_anywhere_;
   bool interactive_ = false;
+  bool zooming_ = false;
+  bool complete_ = true;
   std::chrono::steady_clock::time_point render_start_;
+  /* Time this render has spent making drawings one at a time (the zoom's budget, see draw_drawing). */
+  double made_ms_ = 0.0;
   uint64_t render_serial_ = 0;
   int samples_ = 1;
   /* Set while a layer draws its part of a group's mask: its masking options apply then. */

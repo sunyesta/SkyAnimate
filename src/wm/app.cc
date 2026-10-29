@@ -140,15 +140,16 @@ int App::run(const LaunchOptions &options)
   media_operators_register();
   text_operators_register();
 
-  /* The file opens first, so scripts given with it work on it, as in Blender. */
-  bool ok = options.open_file.empty() || document_open(ctx_, options.open_file);
+  /* Python starts before any file opens: the Flash importers are Python.
+   * Background mode needs no video, but SDL_GetBasePath works either way. */
+  bool ok = python::init(scripts_dir_find(), &ctx_);
+  /* The file opens before the scripts given with it, so they work on it, as in Blender. */
+  ok = (options.open_file.empty() || document_open(ctx_, options.open_file)) && ok;
   /* Started without a file: carry on where the last session left off. */
   if (options.open_file.empty() && !options.background) {
     session_reopen(ctx_);
   }
 
-  /* Background mode needs no video, but SDL_GetBasePath works either way. */
-  ok = python::init(scripts_dir_find(), &ctx_) && ok;
   for (const std::string &file : options.python_files) {
     ok = python::run_file(std::filesystem::path(reinterpret_cast<const char8_t *>(file.c_str()))) && ok;
   }
@@ -270,14 +271,70 @@ void App::window_exit()
   SDL_Quit();
 }
 
+/* A number field being scrubbed grabs the mouse, as Blender's do: the cursor hidden, only its motion
+ * read (no screen edge to run into), then shown again where the drag began. A script's simulated mouse
+ * drives the field directly instead. */
+void App::update_number_grab()
+{
+  float back_x = 0.0f, back_y = 0.0f;
+  const bool want = ui_number_grab_wanted(&back_x, &back_y) && !wm_.mouse_simulating;
+  if (want == number_grab_) {
+    return;
+  }
+  if (want) {
+    /* The pointer's own speed and acceleration, so a scrub feels like moving the cursor. */
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
+    number_grab_ = SDL_SetWindowRelativeMouseMode(window_, true);
+    ui_number_grab_set_active(number_grab_);
+    return;
+  }
+  SDL_SetWindowRelativeMouseMode(window_, false);
+  SDL_WarpMouseInWindow(window_, back_x, back_y);
+  ImGui::GetIO().AddMousePosEvent(back_x, back_y);
+  number_grab_ = false;
+  ui_number_grab_set_active(false);
+}
+
+bool App::click_arriving() const
+{
+  for (const ImGuiInputEvent &e : GImGui->InputEventsQueue) {
+    if (e.Type == ImGuiInputEventType_MouseButton) {
+      return true;
+    }
+  }
+  for (const WindowManager::SimulatedMouse &m : wm_.mouse_simulated) {
+    if (m.button >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void App::main_loop()
 {
   while (!wm_.quit_requested) {
     SDL_Event event;
+    /* Keys held for a click that has now reached the tools, in the order they came. */
+    if (!held_keys_.empty() && !click_arriving()) {
+      const std::vector<SDL_Event> keys = std::move(held_keys_);
+      held_keys_.clear();
+      for (const SDL_Event &key : keys) {
+        handle_event(key);
+      }
+    }
     while (SDL_PollEvent(&event)) {
+      if (number_grab_ && event.type == SDL_EVENT_MOUSE_MOTION) {
+        /* A scrub reads how far the mouse goes; the hidden cursor stays where it was for ImGui. */
+        ui_number_grab_motion(event.motion.xrel, event.motion.yrel);
+        continue;
+      }
       ImGui_ImplSDL3_ProcessEvent(&event);
-      if (event.type == SDL_EVENT_MOUSE_MOTION) {
+      if (event.type == SDL_EVENT_MOUSE_MOTION && !wm_.mouse_simulated_held && wm_.mouse_simulated.empty()) {
         wm_.mouse_simulating = false;
+      }
+      if (event.type == SDL_EVENT_KEY_DOWN && (!held_keys_.empty() || click_arriving())) {
+        held_keys_.push_back(event);
+        continue;
       }
       handle_event(event);
     }
@@ -331,6 +388,9 @@ void App::main_loop()
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    if (wm_.mouse_simulating && wm_.mouse_simulated.empty()) {
+      ImGui::GetIO().AddMousePosEvent(wm_.mouse_simulated_x, wm_.mouse_simulated_y);
+    }
     if (!wm_.mouse_simulated.empty()) {
       const WindowManager::SimulatedMouse m = wm_.mouse_simulated.front();
       wm_.mouse_simulated.erase(wm_.mouse_simulated.begin());
@@ -339,7 +399,10 @@ void App::main_loop()
       ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, m.shift);
       ImGui::GetIO().AddMousePosEvent(m.x, m.y);
       wm_.mouse_simulating = true;
+      wm_.mouse_simulated_x = m.x;
+      wm_.mouse_simulated_y = m.y;
       if (m.button >= 0) {
+        wm_.mouse_simulated_held = m.down;
         ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
       }
       if (m.wheel != 0.0f) {
@@ -368,6 +431,7 @@ void App::main_loop()
     brush_presets_register_shapes(doc_);
     brush_editor_frame_end(ctx_);
     record_selection();
+    update_number_grab();
     ImGui::Render();
 
     int width = 0, height = 0;
@@ -544,6 +608,13 @@ void App::handle_event(const SDL_Event &event)
           ImGui::ClearActiveID();
         }
         typing = false;
+      }
+      /* Over a number field, its keys are its own (copy and paste its value, flip it, its default). */
+      if (!typing && ui_number_field_hovered() &&
+          (((key.type == "C" || key.type == "V") && key.ctrl) || key.type == "-" || key.type == "KEYPAD_-" ||
+           key.type == "BACK_SPACE"))
+      {
+        break;
       }
       if (!key.type.empty()) {
         wm_handle_key_event(ctx_, key, typing);
@@ -1254,8 +1325,12 @@ void App::revisions_check_frame(bool after_ui)
   }
   else {
     const bool precise = viewport_precise_edit();
-    unknown = unknown || ImGui::IsAnyItemActive() || (wm_.modal_running && !precise) ||
-              (ImGui::IsAnyMouseDown() && !precise);
+    /* Panning or zooming the view with the middle button changes nothing (and the viewport's last image, moved,
+     * stands for it). */
+    const bool navigating = viewport_navigating() && !ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                            !ImGui::IsMouseDown(ImGuiMouseButton_Right);
+    unknown = unknown || (ImGui::IsAnyItemActive() && !navigating) || (wm_.modal_running && !precise) ||
+              (ImGui::IsAnyMouseDown() && !precise && !navigating);
     /* A Boolean modifier makes a layer from others: a move of theirs changes it too. */
     if (precise && !unknown) {
       for (const Layer *l : document_layers_flat(doc_)) {
@@ -1307,6 +1382,11 @@ void App::record_selection()
 {
   /* No revision given since the last look and no step: the selection is as it was. */
   if (revision_latest() == selection_seen_revision_ && undo_.change_count() == selection_seen_changes_) {
+    return;
+  }
+  /* Mid-drag nothing is recorded: looked at once it's over (hashing every point's selection each frame of a drag
+   * costs a big document milliseconds). */
+  if (wm_.modal_running || ImGui::IsAnyMouseDown()) {
     return;
   }
   selection_seen_revision_ = revision_latest();
@@ -1411,3 +1491,4 @@ void App::draw_ui()
 }
 
 }  // namespace oanim
+

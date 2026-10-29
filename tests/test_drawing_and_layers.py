@@ -53,9 +53,24 @@ layer.select_points([6, 7])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (6, 2, 2), counts(layer)
 
-# Deleting a line's end leaves its shape short of where it went: the shape goes.
+# A line down to one point is gone, and its shape with it.
 oanim.ops.mesh.select_none()
 layer.select_points([5])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (4, 1, 1), counts(layer)
+
+# Deleting points at a longer line's end (or both ends) keeps its stroke on what is left; only a filled
+# shape that no longer goes round is removed.
+layer.add_curve([(1.0, 0.0), (1.5, 0.2), (2.0, 0.0), (2.5, 0.2), (3.0, 0.0)])
+assert counts(layer) == (9, 2, 2), counts(layer)
+oanim.ops.mesh.select_none()
+layer.select_points([4, 8])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (7, 2, 2), ("the stroke stays", counts(layer))
+assert layer.shapes[1][1] == [1], layer.shapes
+assert len(layer.shown()[1][1][0]) == 3
+oanim.ops.mesh.select_none()
+layer.select_points([4, 5, 6])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (4, 1, 1), counts(layer)
 
@@ -98,6 +113,64 @@ oanim.ops.mesh.select_none()
 layer.select_points([0])
 assert oanim.ops.mesh.duplicate_move() == {'CANCELLED'}, "one point has no curve piece to copy"
 
+# Part of a stroke: the copy gets its own line, in the same look, without the fill it can't close.
+before = counts(layer)
+shapes_before = layer.shape_count
+oanim.ops.mesh.select_none()
+layer.select_points([0, 1, 2])
+assert oanim.ops.mesh.duplicate_move() in ({'FINISHED'}, {'RUNNING_MODAL'})
+assert counts(layer) == (before[0] + 3, before[1] + 1, before[2] + 1), counts(layer)
+new = layer.shape_style(layer.shape_count - 1)
+old = layer.shape_style(0)
+assert new["has_outline"] and not new["has_fill"], new
+assert new["line"] == old["line"] and new["line_width"] == old["line_width"] and new["material"] == old["material"]
+oanim.ops.ed.undo()
+assert counts(layer) == before and layer.shape_count == shapes_before
+oanim.ops.mesh.select_none()
+
+# Part of a fill with no outline: the copy gets a shape in the same look (a fill, no line: it never gains a
+# stroke the original didn't have).
+oanim.ops.layer.new()
+fill_only = layers.active
+fill_only.add_curve([(0, 0), (1, 0), (1, 1), (0, 1)], closed=True, fill=True)
+fill_only.set_shape_style(0, has_outline=False, line_width=0.0)
+assert not fill_only.shape_style(0)["has_outline"]
+oanim.ops.mesh.select_none()
+fill_only.select_points([0, 1, 2])
+assert oanim.ops.mesh.duplicate_move() in ({'FINISHED'}, {'RUNNING_MODAL'})
+assert fill_only.shape_count == 2, fill_only.shapes
+copy_style = fill_only.shape_style(1)
+assert copy_style["has_fill"] and not copy_style["has_outline"], copy_style
+oanim.ops.ed.undo()
+# Separate (P) takes the same piece to a layer of its own, the same look.
+oanim.ops.mesh.select_none()
+fill_only.select_points([0, 1, 2])
+assert oanim.ops.mesh.separate() == {'FINISHED'}
+piece = next(l for l in layers.all() if l.name.startswith(fill_only.name) and l.id != fill_only.id)
+assert piece.shape_count == 1 and not piece.shape_style(0)["has_outline"], piece.shapes
+oanim.ops.ed.undo()
+oanim.ops.mesh.select_none()
+
+# Handles picked on their own stay behind: duplicating and moving the copy (on frame 1, as the move ends) leaves
+# the original's handles where they were (they used to swing over with the copy, keyed there).
+oanim.ops.layer.new()
+picked = layers.active
+picked.add_curve([(0, 0), (1, 0.5), (2, 0)])
+for frame in (0, 1):
+    oanim.data.document.frame_current = frame
+    oanim.ops.mesh.select_none()
+    picked.select_points([0, 1, 2])
+    picked.select_handle(0, 1, "IN")
+    handles_before = picked.curve_handles(0)
+    assert oanim.ops.mesh.duplicate_move() in ({'FINISHED'}, {'RUNNING_MODAL'})
+    assert oanim.ops.mesh.translate(keep_poses="0", move_x="0.5", move_y="0.5", setup="0") == {'FINISHED'}
+    assert picked.curve_handles(0) == handles_before, ("the original's handles stay", frame, picked.curve_handles(0))
+    oanim.ops.ed.undo()
+    oanim.ops.ed.undo()
+oanim.data.document.frame_current = 0
+oanim.ops.mesh.select_none()
+layers.active = layer
+
 # Point radius: 1 by default; Mean Radius moves every selected point by the same amount.
 oanim.ops.mesh.select_none()
 assert layer.mean_radius is None and all(r == 1.0 for r in layer.radii)
@@ -113,19 +186,6 @@ assert [round(r, 4) for r in layer.radii[:3]] == [0.0, 0.0, 0.3333], "each point
 layer.mean_radius = 1.0
 oanim.ops.mesh.select_none()
 
-# Corner type: Round by default; Sharp for the selected points only.
-oanim.ops.mesh.select_none()
-assert all(c == "ROUND" for c in layer.corners)
-layer.select_points([1, 2])
-layer.set_selected_corner("SHARP")
-assert layer.corners[1:3] == ["SHARP", "SHARP"] and layer.corners[0] == "ROUND"
-try:
-    layer.set_selected_corner("BEVEL")
-    raise AssertionError("only ROUND and SHARP")
-except ValueError:
-    pass
-layer.set_selected_corner("ROUND")
-oanim.ops.mesh.select_none()
 
 # Hide Edge: the outline skips a hidden segment, the fill keeps its boundary.
 oanim.ops.layer.new()
@@ -264,7 +324,7 @@ oanim.data.document.frame_current = 12
 assert pos_layer.shape_position(1) == (0.0, 3.0)
 oanim.data.document.frame_current = 0
 
-# --- Delete Edges (X > Edges) deletes the selected edges, not their points ----------------------
+# --- Delete Edges (X > Edges) deletes the selected edges; points left on no curve go too ----------------------
 oanim.data.document.frame_current = 0
 oanim.ops.layer.new()
 edge_layer = oanim.data.layers.active
@@ -285,11 +345,19 @@ oanim.ops.mesh.select_none()
 edge_layer.select_points([5, 6])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert edge_layer.point_count == 8 and edge_layer.curve_count == 3, (edge_layer.point_count, edge_layer.curve_count)
-# A line that was a single edge goes, but its points stay.
+# A line that was a single edge goes, and its points with it: left on no curve, they'd be loose (as Blender's
+# Delete Edges takes the vertices it leaves loose). Points still on another curve stay.
 oanim.ops.mesh.select_none()
 edge_layer.select_points([6, 7])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
-assert edge_layer.point_count == 8 and edge_layer.curve_count == 2
+assert edge_layer.point_count == 6 and edge_layer.curve_count == 2, (edge_layer.point_count, edge_layer.curve_count)
+# The end edge of a line: its end point goes, the line one point shorter.
+edge_layer.add_curve([(3.0, 2.0), (4.0, 2.0), (5.0, 2.0)])
+oanim.ops.mesh.select_none()
+edge_layer.select_points([7, 8])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert edge_layer.point_count == 8 and edge_layer.curve_count == 3, (edge_layer.point_count, edge_layer.curve_count)
+assert [tuple(p[:2]) for p in edge_layer.points[6:]] == [(3.0, 2.0), (4.0, 2.0)], edge_layer.points[6:]
 assert oanim.ops.mesh.select_mode_point() == {'FINISHED'}
 
 # --- X's Delete menu: Points, Edges, Dissolve Points -----------------------------------------------

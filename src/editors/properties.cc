@@ -19,6 +19,7 @@
 
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/vector_deform.hh"
 #include "anim/drivers.hh"
 #include "anim/draw_order.hh"
 #include "anim/merge.hh"
@@ -1165,7 +1166,7 @@ static void bone_panel(Context &C, Layer &armature)
       const Bone *above = active->connected ? bone_find(armature, active->parent) : nullptr;
       const BonePose *above_pose = above ? bone_pose_find(poses, above->id) : nullptr;
       label("Head");
-      if (ImGui::DragFloat2("##bone_head", &head.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
+      if (ui_drag_float2("##bone_head", &head.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
         std::map<uint64_t, std::pair<float2, float2>> targets{{active->id, {head, tail}}};
         if (above_pose) {
           targets[above->id] = {above_pose->head, head};
@@ -1180,7 +1181,7 @@ static void bone_panel(Context &C, Layer &armature)
         C.undo->push("Bone Head", doc);
       }
       label("Tail");
-      if (ImGui::DragFloat2("##bone_tail", &tail.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
+      if (ui_drag_float2("##bone_tail", &tail.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
         armature_set_joints(armature, {{active->id, {head, tail}}});
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -1191,7 +1192,7 @@ static void bone_panel(Context &C, Layer &armature)
       }
       active = bone_find(armature, armature.active_bone);
       label("Length");
-      ImGui::DragFloat("##bone_length", &active->length, 0.005f, 0.0f, 1000.0f, "%.3f");
+      ui_drag_float("##bone_length", &active->length, 0.005f, 0.0f, 1000.0f, "%.3f");
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         C.undo->push("Bone Length", doc);
       }
@@ -1215,7 +1216,7 @@ static void bone_panel(Context &C, Layer &armature)
         const bool local = active->local_location;
         float2 moved = local ? bone_transform_from_position(*active, active->position)
                              : active->position - active->setup_position;
-        if (ImGui::DragFloat2("##bone_position", &moved.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
+        if (ui_drag_float2("##bone_position", &moved.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
           active->position = local ? bone_position_from_transform(*active, moved) : active->setup_position + moved;
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -1230,7 +1231,7 @@ static void bone_panel(Context &C, Layer &armature)
       });
       keyed_field("Angle", "angle", [&] {
         degrees = (active->angle - setup_angle) * 180.0f / PI;
-        if (ImGui::DragFloat("##bone_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "%.1f\xC2\xB0")) {
+        if (ui_drag_float("##bone_angle", &degrees, 0.5f, -36000.0f, 36000.0f, "%.1f\xC2\xB0")) {
           active->angle = setup_angle + degrees * PI / 180.0f;
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -1242,7 +1243,7 @@ static void bone_panel(Context &C, Layer &armature)
       });
       keyed_field("Scale", "scale", [&] {
         /* X across the bone, Y along it, as Blender's bone axes. */
-        ImGui::DragFloat2("##bone_scale", &active->scale.x, 0.01f, -100.0f, 100.0f, "%.3f");
+        ui_drag_float2("##bone_scale", &active->scale.x, 0.01f, -100.0f, 100.0f, "%.3f");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
           ImGui::SetTooltip("X: across the bone (its thickness). Y: along it (its length)");
         }
@@ -1263,7 +1264,7 @@ static void bone_panel(Context &C, Layer &armature)
     }
     if (look_target) {
       keyed_field("Depth", "depth", [&] {
-        if (ImGui::DragFloat("##bone_depth", &active->depth, 0.005f, 0.001f, 10000.0f, "%.3f",
+        if (ui_drag_float("##bone_depth", &active->depth, 0.005f, 0.001f, 10000.0f, "%.3f",
                              ImGuiSliderFlags_AlwaysClamp))
         {
           active->depth = std::max(active->depth, 0.001f);
@@ -1302,7 +1303,7 @@ static void bone_panel(Context &C, Layer &armature)
     ui_driver_field_end(C, armature.id, driven_arc_path, -1, driven_arc);
     ImGui::BeginDisabled(doc.frame_current != 0);
     label("Strength");
-    ImGui::DragFloat("##bone_strength", &active->strength, 0.01f, 0.0f, 100.0f, "%.2f");
+    ui_drag_float("##bone_strength", &active->strength, 0.01f, 0.0f, 100.0f, "%.2f");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip("How far the bone reaches when points get automatic weights (Setup frame only)");
     }
@@ -1381,7 +1382,7 @@ static void bone_display_panel(Context &C, Layer &armature)
   }
   if (active->shape == BoneShape::Pin) {
     props_label("Size");
-    ImGui::DragFloat("##pin_size", &active->pin_size, 0.01f, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ui_drag_float("##pin_size", &active->pin_size, 0.01f, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Against the standard pin; it keeps its size on screen, whatever the zoom");
     }
@@ -2215,6 +2216,21 @@ static void icon_camera(ImDrawList *dl, ImVec2 c, float s)
   dl->AddRectFilled(ImVec2(c.x - s * 0.5f, c.y - s * 0.9f), ImVec2(c.x + s * 0.1f, c.y - s * 0.6f), COL_MOD_ICON);
 }
 
+/* Show Points: a line with hollow points on it, in the teal the viewport marks them with. */
+static void icon_points(ImDrawList *dl, ImVec2 c, float s)
+{
+  const ImU32 teal = IM_COL32(0x2e, 0xc4, 0xb6, 255);
+  dl->AddBezierCubic(ImVec2(c.x - s, c.y + s * 0.6f), ImVec2(c.x - s * 0.4f, c.y - s * 0.9f),
+                     ImVec2(c.x + s * 0.4f, c.y + s * 0.9f), ImVec2(c.x + s, c.y - s * 0.6f), COL_MOD_ICON, 1.0f);
+  for (const float t : {0.0f, 0.5f, 1.0f}) {
+    const float u = 1.0f - t;
+    const ImVec2 p(c.x - s * u * u * u - s * 0.4f * 3.0f * u * u * t + s * 0.4f * 3.0f * u * t * t + s * t * t * t,
+                   c.y + s * 0.6f * u * u * u - s * 0.9f * 3.0f * u * u * t + s * 0.9f * 3.0f * u * t * t -
+                       s * 0.6f * t * t * t);
+    dl->AddCircle(p, s * 0.32f, teal, 0, 1.4f);
+  }
+}
+
 /* The modifier's type icon: two mirrored halves, or a bone. */
 static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType type)
 {
@@ -2224,7 +2240,48 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
     dl->AddTriangleFilled(ImVec2(c.x + s * 0.15f, c.y - s), ImVec2(c.x + s, c.y + s), ImVec2(c.x + s * 0.15f, c.y + s),
                           COL_MOD_ICON);
   }
-  else if (type == ModifierType::Subdivide) {
+  else if (type == ModifierType::CurveDeform) {
+    /* A line bent along a curve, its points on it. */
+    ImVec2 pts[9];
+    for (int k = 0; k < 9; k++) {
+      const float t = float(k) / 8.0f;
+      pts[k] = ImVec2(c.x - s + 2.0f * s * t, c.y + s * 0.7f - std::sin(t * 3.1415927f) * s * 1.2f);
+    }
+    dl->AddPolyline(pts, 9, COL_MOD_ICON, 0, 1.3f);
+    for (const int k : {0, 4, 8}) {
+      dl->AddCircleFilled(pts[k], s * 0.2f, COL_MOD_ICON);
+    }
+  }
+  else if (type == ModifierType::CageDeform) {
+    /* A closed, pulled outline, its points on it. */
+    ImVec2 pts[16];
+    for (int k = 0; k < 16; k++) {
+      const float a = float(k) / 16.0f * 6.2831853f;
+      const float r = s * (0.8f + 0.2f * std::cos(a * 2.0f));
+      pts[k] = ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r * 0.8f);
+    }
+    dl->AddPolyline(pts, 16, COL_MOD_ICON, ImDrawFlags_Closed, 1.3f);
+    for (const int k : {0, 4, 8, 12}) {
+      dl->AddCircleFilled(pts[k], s * 0.2f, COL_MOD_ICON);
+    }
+  }
+  else if (modifier_is_deform(type)) {
+    /* A grid bowed upward in the middle, as a pull bends it. */
+    const auto at = [&](float x, float y) { return ImVec2(c.x + x * s, c.y + y * s - (1.0f - x * x) * 0.3f * s); };
+    for (int k = 0; k < 3; k++) {
+      const float y = float(k - 1) * 0.75f;
+      ImVec2 row[7];
+      for (int q = 0; q < 7; q++) {
+        row[q] = at(float(q - 3) / 3.0f, y);
+      }
+      dl->AddPolyline(row, 7, COL_MOD_ICON, 0, 1.2f);
+    }
+    for (int k = 0; k < 3; k++) {
+      const float x = float(k - 1) * 0.75f;
+      dl->AddLine(at(x, -0.75f), at(x, 0.75f), COL_MOD_ICON, 1.2f);
+    }
+  }
+  else if (type == ModifierType::Resample) {
     /* A curve with points along it. */
     ImVec2 pts[7];
     for (int k = 0; k < 7; k++) {
@@ -2604,7 +2661,7 @@ static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   const int tint = ui_key_tint_push(key_state | smart_smoothing);
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   float smoothing = m.merge_smoothing;
-  if (ImGui::DragFloat("##smoothing", &smoothing, 0.001f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+  if (ui_drag_float("##smoothing", &smoothing, 0.001f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
     /* Shown as it changes; one undo step when let go. */
     m.merge_smoothing = smoothing;
   }
@@ -2682,7 +2739,7 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   const bool percent = m.bevel_width == BevelWidth::Percent;
   float amount = m.bevel_amount;
-  if (ImGui::DragFloat("##amount", &amount, percent ? 0.2f : 0.001f, 0.0f, percent ? 100.0f : 100.0f,
+  if (ui_drag_float("##amount", &amount, percent ? 0.2f : 0.001f, 0.0f, percent ? 100.0f : 100.0f,
                        percent ? "%.1f%%" : "%.3f", ImGuiSliderFlags_AlwaysClamp))
   {
     m.bevel_amount = amount;
@@ -2712,7 +2769,7 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
     modifier_row_label("Angle", column, "Corners where the outline turns more than this are cut; smooth points never are");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
     float degrees = m.bevel_angle * 180.0f / PI;
-    if (ImGui::DragFloat("##angle", &degrees, 0.5f, 0.0f, 180.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+    if (ui_drag_float("##angle", &degrees, 0.5f, 0.0f, 180.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
       m.bevel_angle = degrees * PI / 180.0f;
     }
     done |= ImGui::IsItemDeactivatedAfterEdit();
@@ -2834,86 +2891,154 @@ static int segmented_choice(const char *id, int picked, const char *const *names
   return clicked;
 }
 
-static void subdivide_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+/* How many points modifier `index` of `layer` adds: counted in the drawing as the whole stack leaves it, worked out
+ * once a frame per layer. -1 while it is hidden in the viewport. */
+static int modifier_added_points(const Document &doc, const Layer &layer, size_t index)
+{
+  static int frame = -1;
+  static std::map<uint64_t, std::vector<int>> counts;
+  if (frame != ImGui::GetFrameCount()) {
+    frame = ImGui::GetFrameCount();
+    counts.clear();
+  }
+  auto it = counts.find(layer.id);
+  if (it == counts.end()) {
+    std::vector<int> made(layer.modifiers.size(), 0);
+    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    for (const MeshPoint &p : shown.points) {
+      if (p.made_by >= 0 && size_t(p.made_by) < made.size()) {
+        made[size_t(p.made_by)]++;
+      }
+    }
+    it = counts.emplace(layer.id, std::move(made)).first;
+  }
+  if (index >= it->second.size() || index >= layer.modifiers.size()) {
+    return 0;
+  }
+  return layer.modifiers[index].show_viewport ? it->second[index] : -1;
+}
+
+/* Resample: how many points go between yours (Per Segment or By Length), how many that makes, and the rest folded
+ * under More. */
+static void resample_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
 {
   Document &doc = *C.document;
   bool done = false;
   /* The value column's width, from where the row's label left the cursor. */
   const auto width = []() { return ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f; };
 
-  static const char *const SPLIT_NAMES[] = {"By Length", "By Count"};
-  static const char *const SPLIT_TIPS[] = {
-      "A new point at least every Spacing along each segment: long segments get more, short ones none. Bends are "
-      "equally smooth everywhere",
-      "Each segment split into the same number of pieces"};
-  modifier_row_label("Split", column, "How the segments are split");
-  if (const int k = segmented_choice("##split", m.subdiv_by_length ? 0 : 1, SPLIT_NAMES, SPLIT_TIPS, 2, width()); k >= 0) {
-    m.subdiv_by_length = k == 0;
+  static const char *const MODE_NAMES[] = {"Per Segment", "By Length"};
+  static const char *const MODE_TIPS[] = {
+      "Each segment between your points split into the same number of pieces: it always adds points, and how many "
+      "is easy to tell",
+      "A point at least every Spacing along each segment (measured in the setup pose): long segments get more, short "
+      "ones none, so bends are equally smooth everywhere"};
+  modifier_row_label("Mode", column, "How the points it adds between yours are spaced (yours stay as they are)");
+  if (const int k = segmented_choice("##mode", m.subdiv_by_length ? 1 : 0, MODE_NAMES, MODE_TIPS, 2, width()); k >= 0)
+  {
+    m.subdiv_by_length = k == 1;
     done = true;
   }
   if (m.subdiv_by_length) {
     modifier_row_label("Spacing", column, "The longest a piece may be (measured in the setup pose, so the pieces "
                                           "stay the same on every frame)");
     ImGui::SetNextItemWidth(width());
-    ImGui::DragFloat("##spacing", &m.subdiv_spacing, 0.001f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    done |= ImGui::IsItemDeactivatedAfterEdit();
-    modifier_row_label("Render", column, "Spacing for the final render (0: the same as Spacing): finer for smoother "
-                                         "bends there while the viewport stays quick");
-    ImGui::SetNextItemWidth(width());
-    ImGui::DragFloat("##render_spacing", &m.subdiv_render_spacing, 0.001f, 0.0f, 100.0f,
-                     m.subdiv_render_spacing > 0.0f ? "%.3f" : "Same", ImGuiSliderFlags_AlwaysClamp);
+    ui_drag_float("##spacing", &m.subdiv_spacing, 0.001f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     done |= ImGui::IsItemDeactivatedAfterEdit();
   }
   else {
-    modifier_row_label("Pieces", column, "How many pieces each segment becomes");
+    modifier_row_label("Pieces", column, "How many pieces each segment becomes (2: one point added in the middle)");
     ImGui::SetNextItemWidth(width());
-    ImGui::DragInt("##pieces", &m.subdiv_pieces, 0.1f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
+    ui_drag_int("##pieces", &m.subdiv_pieces, 0.1f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
     done |= ImGui::IsItemDeactivatedAfterEdit();
   }
 
-  static const char *const WEIGHT_NAMES[] = {"Blend", "From Bones"};
-  static const char *const WEIGHT_TIPS[] = {
-      "Each new point mixes its two end points' weights by how far along it is: a smooth, rubber-hose bend",
-      "Each new point weighted from the nearest bones, so a segment can bend at a joint between its points"};
-  modifier_row_label("Weights", column, "How the new points follow the bones");
-  if (const int k = segmented_choice("##weights", m.subdiv_from_bones ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2, width());
-      k >= 0)
-  {
-    m.subdiv_from_bones = k == 1;
-    done = true;
-  }
-
+  /* What it adds, and why when it adds none. */
   modifier_row_label("", column);
-  if (ImGui::Checkbox("Preserve Volume", &m.subdiv_preserve_volume)) {
-    done = true;
+  const int added = modifier_added_points(doc, layer, size_t(index));
+  const ImVec4 warn(1.0f, 0.6f, 0.3f, 1.0f);
+  if (added < 0) {
+    ImGui::TextDisabled("Hidden in the viewport");
   }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("The new points blend the bones' turns as rigid motions, so the line doesn't pinch or curl "
-                      "where bones turn far apart (Blender's Preserve Volume). Your own points move as before");
+  else if (added > 0) {
+    ImGui::TextDisabled("Adds %d point%s", added, added == 1 ? "" : "s");
+  }
+  else if (!m.subdiv_by_length && m.subdiv_pieces <= 1) {
+    ImGui::TextColored(warn, "Adds no points: Pieces is 1");
+  }
+  else if (m.subdiv_by_length) {
+    ImGui::TextColored(warn, "Adds no points: every segment is shorter than Spacing");
+  }
+  else if (!m.subdiv_group.empty()) {
+    ImGui::TextColored(warn, "Adds no points: no segment touches %s", m.subdiv_group.c_str());
+  }
+  else {
+    ImGui::TextColored(warn, "Adds no points");
   }
 
-  modifier_row_label("Max Pieces", column, "No segment becomes more pieces than this, however long");
-  ImGui::SetNextItemWidth(width());
-  ImGui::DragInt("##max_pieces", &m.subdiv_max_pieces, 0.2f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
-  done |= ImGui::IsItemDeactivatedAfterEdit();
-
-  modifier_row_label("Point Group", column, "Only the segments touching this point group's points (none: all)");
-  ImGui::SetNextItemWidth(width());
-  if (ImGui::BeginCombo("##subdiv_group", m.subdiv_group.empty() ? "All" : m.subdiv_group.c_str())) {
-    if (ImGui::Selectable("All", m.subdiv_group.empty()) && !m.subdiv_group.empty()) {
-      m.subdiv_group.clear();
+  /* The rest, folded as Blender's subpanels. */
+  ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
+  const std::string more_key = ui_fold_scope() + "/Resample/More";
+  ui_fold_next(more_key, false);
+  const bool more_open = ImGui::TreeNodeEx("More", ImGuiTreeNodeFlags_SpanAvailWidth);
+  ui_fold_record(more_key, false, more_open);
+  if (more_open) {
+    static const char *const WEIGHT_NAMES[] = {"Blend", "From Bones"};
+    static const char *const WEIGHT_TIPS[] = {
+        "Each new point mixes its two end points' weights by how far along it is: a smooth, rubber-hose bend",
+        "Each new point weighted from the nearest bones, so a segment can bend at a joint between its points"};
+    modifier_row_label("Weights", column, "How the new points follow the bones");
+    if (const int k = segmented_choice("##weights", m.subdiv_from_bones ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2,
+                                       width());
+        k >= 0)
+    {
+      m.subdiv_from_bones = k == 1;
       done = true;
     }
-    for (const PointGroup &g : layer.drawing.groups) {
-      if (ImGui::Selectable(g.name.c_str(), g.name == m.subdiv_group) && g.name != m.subdiv_group) {
-        m.subdiv_group = g.name;
+
+    modifier_row_label("", column);
+    if (ImGui::Checkbox("Preserve Volume", &m.subdiv_preserve_volume)) {
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("The new points blend the bones' turns as rigid motions, so the line doesn't pinch or curl "
+                        "where bones turn far apart (Blender's Preserve Volume). Your own points move as before");
+    }
+
+    if (m.subdiv_by_length) {
+      modifier_row_label("Render", column, "Spacing for the final render (0: the same as Spacing): finer for "
+                                           "smoother bends there while the viewport stays quick");
+      ImGui::SetNextItemWidth(width());
+      ui_drag_float("##render_spacing", &m.subdiv_render_spacing, 0.001f, 0.0f, 100.0f,
+                    m.subdiv_render_spacing > 0.0f ? "%.3f" : "Same", ImGuiSliderFlags_AlwaysClamp);
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+
+    modifier_row_label("Max Pieces", column, "No segment becomes more pieces than this, however long");
+    ImGui::SetNextItemWidth(width());
+    ui_drag_int("##max_pieces", &m.subdiv_max_pieces, 0.2f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
+    done |= ImGui::IsItemDeactivatedAfterEdit();
+
+    modifier_row_label("Point Group", column, "Only the segments touching this point group's points (none: all)");
+    ImGui::SetNextItemWidth(width());
+    if (ImGui::BeginCombo("##subdiv_group", m.subdiv_group.empty() ? "All" : m.subdiv_group.c_str())) {
+      if (ImGui::Selectable("All", m.subdiv_group.empty()) && !m.subdiv_group.empty()) {
+        m.subdiv_group.clear();
         done = true;
       }
+      for (const PointGroup &g : layer.drawing.groups) {
+        if (ImGui::Selectable(g.name.c_str(), g.name == m.subdiv_group) && g.name != m.subdiv_group) {
+          m.subdiv_group = g.name;
+          done = true;
+        }
+      }
+      ImGui::EndCombo();
     }
-    ImGui::EndCombo();
+    ImGui::TreePop();
   }
+  ImGui::PopStyleColor();
 
-  /* Below the Armature modifier it only splits the bent drawing: say so. */
+  /* Below the Armature modifier it only adds points to the bent drawing: say so. */
   bool below = false, armature_seen = false;
   for (int k = 0; k < int(layer.modifiers.size()); k++) {
     armature_seen = armature_seen || layer.modifiers[size_t(k)].type == ModifierType::Armature;
@@ -2924,7 +3049,302 @@ static void subdivide_modifier_body(Context &C, Layer &layer, Modifier &m, int i
     ImGui::TextDisabled("Drag it above Armature to bend through the bones");
   }
   if (done) {
-    C.undo->push("Subdivide Settings", doc);
+    C.undo->push("Resample Settings", doc);
+  }
+}
+
+/* A deform modifier's body (Curve, Cage or Mesh Deform): the shape that bends the layer (a layer, then one of its shapes), what kind
+ * of deform that makes, the weights (Automatic: every point; or Custom, painted in Weight Paint), Strength
+ * (keyable) and Precision. */
+/* The deform eyedropper: a shape clicked in the viewport, and its layer, become what deform modifier `index` of
+ * layer `owner` bends it by. It looks past the owner (drawn over the shape it follows); a click on no drawing's
+ * shape waits for another. A shape this deform doesn't take still goes in, and the modifier says which does. A
+ * layer clicked in the Layers editor goes in with the first of its shapes this deform takes (else its only one). */
+static void deform_eyedropper_start(uint64_t owner, int index, const std::string &tag)
+{
+  ui_shape_eyedropper_start(
+      [owner, index](Context &C, uint64_t layer_id, int shape_index) {
+        Document &doc = *C.document;
+        Layer *own = layer_find(doc, owner);
+        if (!own || index >= int(own->modifiers.size()) || !modifier_is_deform(own->modifiers[size_t(index)].type)) {
+          return true;
+        }
+        const Layer *clicked = layer_find(doc, layer_id);
+        if (!clicked || clicked->id == owner || clicked->type != LayerType::Vector) {
+          return false;
+        }
+        const VectorDrawing shown = layer_evaluated_drawing(doc, *clicked, false);
+        if (shape_index < 0 || shape_index >= int(shown.shapes.size()) ||
+            drawing_shape_index(clicked->drawing, shown.shapes[size_t(shape_index)].id) < 0)
+        {
+          return false;
+        }
+        Modifier &m = own->modifiers[size_t(index)];
+        m.deform_layer = clicked->id;
+        m.deform_shape = shown.shapes[size_t(shape_index)].id;
+        C.undo->push(std::string(deform_type_name(m.type)) + " Shape", doc);
+        return true;
+      },
+      [] { return std::string("Click the shape that bends this layer, or its layer  |  Esc cancels"); }, tag.c_str(),
+      owner,
+      [owner, index](Context &C, uint64_t layer_id) {
+        Document &doc = *C.document;
+        Layer *own = layer_find(doc, owner);
+        if (!own || index >= int(own->modifiers.size()) || !modifier_is_deform(own->modifiers[size_t(index)].type)) {
+          return true;
+        }
+        const Layer *clicked = layer_find(doc, layer_id);
+        if (!clicked || clicked->id == owner || clicked->type != LayerType::Vector) {
+          return false;
+        }
+        Modifier &m = own->modifiers[size_t(index)];
+        Modifier test = m;
+        test.deform_layer = clicked->id;
+        uint64_t shape = clicked->drawing.shapes.size() == 1 ? clicked->drawing.shapes[0].id : 0;
+        for (const Shape &s : clicked->drawing.shapes) {
+          test.deform_shape = s.id;
+          if (vector_deform_kind(doc, *own, test) != DeformKind::None) {
+            shape = s.id;
+            break;
+          }
+        }
+        m.deform_layer = clicked->id;
+        m.deform_shape = shape;
+        C.undo->push(std::string(deform_type_name(m.type)) + " Shape", doc);
+        return true;
+      });
+}
+
+static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+{
+  Document &doc = *C.document;
+  bool done = false;
+  const auto width = []() { return ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f; };
+
+  /* The layer: any other drawing layer. */
+  std::vector<const Layer *> drawings;
+  merge_drawing_layers(doc.layers, drawings);
+  std::erase_if(drawings, [&](const Layer *l) { return l->id == layer.id; });
+  const Layer *target = layer_find(doc, m.deform_layer);
+  modifier_row_label("Layer", column, "The layer whose shape bends this one");
+  ImGui::SetNextItemWidth(width());
+  if (const uint64_t picked = layer_search_combo("##deform_layer", target ? target->name.c_str() : "Pick a layer",
+                                                 drawings, m.deform_layer))
+  {
+    m.deform_layer = picked;
+    target = layer_find(doc, picked);
+    /* Its only shape, or its first grid's, picked for you. */
+    m.deform_shape = target && target->drawing.shapes.size() == 1 ? target->drawing.shapes[0].id : 0;
+    done = true;
+  }
+
+  /* The shape: one of that layer's. */
+  modifier_row_label("Shape", column, m.type == ModifierType::CurveDeform  ? "The open line that bends it"
+                                       : m.type == ModifierType::CageDeform ? "The closed shape (a cage) that bends it"
+                                                                             : "The grid, mesh of cells drawn by hand, or "
+                                                                               "line (each point pinned to it, as a bendy "
+                                                                               "bone holds what it carries) that bends it");
+  const float pick_w = ImGui::GetFrameHeight();
+  ImGui::SetNextItemWidth(width() - pick_w - 2.0f);
+  const int shape_index = target ? drawing_shape_index(target->drawing, m.deform_shape) : -1;
+  ImGui::BeginDisabled(!target);
+  if (ImGui::BeginCombo("##deform_shape",
+                        shape_index >= 0 ? target->drawing.shapes[size_t(shape_index)].name.c_str() : "Pick a shape"))
+  {
+    for (const Shape &s : target->drawing.shapes) {
+      /* Only the shapes this deform takes; the others say which one does. */
+      Modifier test = m;
+      test.deform_shape = s.id;
+      const bool fits = vector_deform_kind(doc, layer, test) != DeformKind::None;
+      const ModifierType other = fits ? m.type : vector_deform_fitting_type(doc, layer, test);
+      const std::string label = fits || other == m.type ? s.name
+                                                        : s.name + "  (" + deform_type_name(other) + ")";
+      ImGui::PushID(int(s.id));
+      ImGui::BeginDisabled(!fits);
+      if (ImGui::Selectable(label.c_str(), s.id == m.deform_shape) && s.id != m.deform_shape) {
+        m.deform_shape = s.id;
+        done = true;
+      }
+      ImGui::EndDisabled();
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  /* Or click it in the viewport (its layer comes with it), as Boolean's eyedropper. */
+  ImGui::SameLine(0, 2);
+  const std::string pick_tag = "DEFORM:" + std::to_string(layer.id) + ":" + std::to_string(index);
+  if (ui_pick_button("##deform_pick", "Eyedropper: click the shape that bends this layer (its layer comes with it)",
+                     ui_shape_eyedropper_active(pick_tag.c_str())))
+  {
+    deform_eyedropper_start(layer.id, index, pick_tag);
+  }
+
+  /* What it makes of the shape. */
+  const DeformKind kind = vector_deform_kind(doc, layer, m);
+  modifier_row_label("", column);
+  if (vector_deform_loops(doc, layer, m)) {
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "A loop: this layer bends that shape, so neither bends");
+  }
+  else if (kind == DeformKind::Grid) {
+    ImGui::TextDisabled("Grid: each cell bends what is in it");
+  }
+  else if (kind == DeformKind::Cage) {
+    ImGui::TextDisabled("Cage: what is in the shape bends with it");
+    static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Envelope"};
+    static const char *const METHOD_TIPS[] = {
+        "Smooth, and your drawing's outline stays exactly on the cage, but the inside squashes where a side bulges "
+        "out or stretches (mean value coordinates)",
+        "The inside keeps its shape as far as it can (as rigid as possible, as Photoshop's Puppet Warp) and the "
+        "outline still stays exactly on the cage: for art drawn along the cage's edge. A little slower",
+        "Each side of the cage carries what lies near it, at the same distance from it, as Toon Boom Harmony's "
+        "envelopes do: lines along the outline keep their width and edges hug the cage, and the middle follows the "
+        "sides around it (Blend says how evenly)"};
+    modifier_row_label("Method", column, "How what is in the cage follows it");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const int method = int(m.deform_cage_method);
+    if (ImGui::BeginCombo("##cage_method", METHOD_NAMES[method])) {
+      for (int k = 0; k < 3; k++) {
+        if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
+          m.deform_cage_method = CageMethod(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", METHOD_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (m.deform_cage_method == CageMethod::Envelope) {
+      modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
+                                          "corner: low, the nearest side leads sharply (edges hug their own side "
+                                          "most); high, the sides blend gently");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      factor_slider("##deform_blend", &m.deform_blend);
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+  }
+  else if (kind == DeformKind::Mesh) {
+    ImGui::TextDisabled("Mesh: each cell bends what is in it");
+  }
+  else if (kind == DeformKind::Wire) {
+    ImGui::TextDisabled("Wire: everything moves with the line, pinned to it (a bendy bone)");
+  }
+  else if (kind == DeformKind::Line) {
+    ImGui::TextDisabled("Line: what lies along it bends with it");
+    modifier_row_label("", column);
+    if (ImGui::Checkbox("Stretch", &m.deform_stretch)) {
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("As the line grows or shrinks, what lies along it spreads or bunches to fit, end to end "
+                        "(Illustrator's Art Brush). Off, it keeps its length and slides along the line, as "
+                        "Blender's Curve modifier does");
+    }
+  }
+  else if (target && drawing_shape_index(target->drawing, m.deform_shape) >= 0 &&
+           vector_deform_fitting_type(doc, layer, m) != m.type)
+  {
+    /* The shape no longer fits (joined into cells, closed, opened): say which deform takes it, and switch. */
+    const ModifierType fit = vector_deform_fitting_type(doc, layer, m);
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "This shape needs %s", deform_type_name(fit));
+    modifier_row_label("", column);
+    if (ImGui::Button((std::string("Switch to ") + deform_type_name(fit)).c_str())) {
+      if (m.name.rfind(deform_type_name(m.type), 0) == 0) {
+        m.name = deform_type_name(fit) + m.name.substr(std::string(deform_type_name(m.type)).size());
+      }
+      m.type = fit;
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make this modifier a %s, keeping its settings and painted weights", deform_type_name(fit));
+    }
+  }
+  else {
+    ImGui::TextDisabled(target ? "Pick the shape that bends it" : "Pick a layer, then its shape");
+  }
+
+  /* Weights. */
+  static const char *const WEIGHT_NAMES[] = {"Automatic", "Custom"};
+  static const char *const WEIGHT_TIPS[] = {
+      "Every point of the drawing follows it fully, past the shape too (as Blender's deform modifiers bend the "
+      "whole object). Paint Custom weights to hold parts back",
+      "A point group of their own, painted in Weight Paint (pick this modifier at the top of the viewport). It "
+      "starts from the automatic weights; points added later take theirs"};
+  modifier_row_label("Weights", column, "How much each point follows the deform (and so, inside a bone layer, "
+                                        "how much less it follows the bones)");
+  if (const int k = segmented_choice("##deform_weights", m.deform_custom ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2, width());
+      k >= 0 && (k == 1) != m.deform_custom)
+  {
+    m.deform_custom = k == 1;
+    const bool has_group = !m.deform_group.empty() &&
+                           std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                                       [&](const PointGroup &g) { return g.name == m.deform_group; });
+    if (m.deform_custom && !has_group) {
+      vector_deform_fill_group(doc, layer, m);
+    }
+    done = true;
+  }
+  if (m.deform_custom) {
+    modifier_row_label("Point Group", column, "Where the weights are kept");
+    ImGui::TextUnformatted(m.deform_group.c_str());
+    modifier_row_label("", column);
+    if (ImGui::Button("Reset to Automatic")) {
+      vector_deform_fill_group(doc, layer, m);
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Fill the point group with the automatic weights again, as a fresh start");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Paint them in Weight Paint");
+  }
+
+  /* Strength: keyable, with its key button. */
+  const std::string path = "modifiers[" + std::to_string(index) + "].strength";
+  const int key_state = layer_key_state(layer, {path}, doc.frame_current);
+  modifier_row_label("Strength", column, "How much of the deform shows: 0 none, 1 all of it. It can be keyed, to fade "
+                                         "a deform in or out");
+  ImGui::SetNextItemWidth(width());
+  const int tint = ui_key_tint_push(key_state | layer_smart_state(layer, {path}));
+  const int driven = ui_driver_field_begin(C, layer.id, path, -1);
+  float strength = m.deform_strength;
+  if (ui_slider_float("##deform_strength", &strength, 0.0f, 1.0f, "%.3f")) {
+    m.deform_strength = strength;
+  }
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+  ui_driver_typed(C, layer.id, path, -1);
+  ui_driver_field_end(C, layer.id, path, -1, driven);
+  ImGui::PopStyleColor(tint);
+  ImGui::SameLine(0, 4);
+  if (ui_key_button("##deform_strength_key", key_state)) {
+    operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(layer.id)}, {"paths", path}});
+  }
+  ui_flash_row(layer.id, path);
+
+  modifier_row_label("Precision", column, "How far a bent line may stray from the true bend: where the deform bends "
+                                          "a segment more than its points and handles can follow, points are added "
+                                          "there (Illustrator's Fidelity). Smaller is truer. Off: only the points "
+                                          "you drew move");
+  ImGui::SetNextItemWidth(width());
+  /* Resample Self adds no points, so Precision has nothing to do with it on. */
+  ImGui::BeginDisabled(m.deform_resample_self);
+  ui_drag_float("##deform_precision", &m.deform_precision, 0.0002f, 0.0f, 1.0f,
+                m.deform_precision > 0.0f && !m.deform_resample_self ? "%.4f" : "Off", ImGuiSliderFlags_AlwaysClamp);
+  done |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::EndDisabled();
+  modifier_row_label("", column);
+  if (ImGui::Checkbox("Resample Self", &m.deform_resample_self)) {
+    done = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Bends a finely resampled copy of this drawing, then snaps your own points to where theirs went "
+                      "and fits each segment's handles to the bent copy (as Sculpt mode does). Truer bends with only "
+                      "your points: none are added");
+  }
+
+  if (done) {
+    C.undo->push(std::string(deform_type_name(m.type)) + " Settings", doc);
   }
 }
 
@@ -2948,8 +3368,8 @@ static void modifiers_panel(Context &C, Layer &layer)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Cut the drawing's corners off and round them: the sharp ones, or a point group's");
     }
-    if (ImGui::MenuItem("Subdivide")) {
-      operator_call(C, "object.modifier_add", {{"type", "SUBDIVIDE"}});
+    if (ImGui::MenuItem("Resample")) {
+      operator_call(C, "object.modifier_add", {{"type", "RESAMPLE"}});
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Split the segments into smaller pieces before the bones bend them, for bendier "
@@ -2957,6 +3377,30 @@ static void modifiers_panel(Context &C, Layer &layer)
     }
     if (ImGui::MenuItem("Boolean")) {
       operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Deform");
+    if (ImGui::MenuItem("Curve Deform")) {
+      operator_call(C, "object.modifier_add", {{"type", "CURVE_DEFORM"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Bend the drawing along an open line on another layer (a tail, a strand of hair, a sleeve), "
+                        "as Blender's Curve modifier. Animate the line and the drawing follows");
+    }
+    if (ImGui::MenuItem("Cage Deform")) {
+      operator_call(C, "object.modifier_add", {{"type", "CAGE_DEFORM"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Bend what is in a closed shape on another layer with it (a cheek, a belly), as Blender's "
+                        "Mesh Deform. Animate the shape and the drawing follows");
+    }
+    if (ImGui::MenuItem("Mesh Deform")) {
+      operator_call(C, "object.modifier_add", {{"type", "MESH_DEFORM"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Bend the drawing with a grid, or a mesh of cells you drew, on another layer: each cell "
+                        "bends what is in it, as Blender's Lattice and Moho's Smart Warp. Animate it and the "
+                        "drawing follows");
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Join this layer's shapes with other layers' into one outline, the corners where they "
@@ -2994,7 +3438,7 @@ static void modifiers_panel(Context &C, Layer &layer)
     ImGui::Dummy(ImVec2(h, h));
     modifier_type_icon(dl, ImVec2(icon_at.x + h * 0.5f, icon_at.y + h * 0.5f), h * 0.3f, m.type);
     ImGui::SameLine(0, 2);
-    const float right_w = h * 4.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 8.0f;
+    const float right_w = h * 5.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 9.0f;
     ImGui::SetNextItemWidth(std::max(40.0f, inner_w - (ImGui::GetCursorScreenPos().x - box_min.x) - right_w));
     ImGui::InputText("##name", &m.name);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -3009,6 +3453,25 @@ static void modifiers_panel(Context &C, Layer &layer)
     if (icon_toggle("##render", m.show_render, "Use modifier during render", icon_camera)) {
       m.show_render = !m.show_render;
       C.undo->push("Modifier in Renders", doc);
+    }
+    /* Show Points, on the modifiers that add points; the others keep its place, so the buttons line up. */
+    ImGui::SameLine(0, 1);
+    if (modifier_makes_points(m)) {
+      ImGui::BeginDisabled(!m.show_viewport);
+      const int added = modifier_added_points(doc, layer, size_t(i));
+      const std::string tip = "Show the points this modifier adds, as hollow teal dots where they end up (they "
+                              "can't be picked): " +
+                              (added > 0 ? std::to_string(added) + (added == 1 ? " point" : " points") + " now"
+                                         : std::string("it adds none now"));
+      if (icon_toggle("##points", m.show_points && m.show_viewport, tip.c_str(), icon_points))
+      {
+        m.show_points = !m.show_points;
+        C.undo->push("Modifier Show Points", doc);
+      }
+      ImGui::EndDisabled();
+    }
+    else {
+      ImGui::Dummy(ImVec2(h, h));
     }
     /* Blender's header menu: Apply, Duplicate, Move to First / Last. */
     ImGui::SameLine(0, 4);
@@ -3034,6 +3497,21 @@ static void modifiers_panel(Context &C, Layer &layer)
       }
       if (ImGui::MenuItem("Duplicate", "Shift D", false, !armature)) {
         duplicate = i;
+      }
+      if (modifier_is_deform(m.type) && ImGui::BeginMenu("Change Type")) {
+        /* Another deform, keeping its settings and painted weights. */
+        for (const ModifierType type :
+             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})
+        {
+          if (ImGui::MenuItem(deform_type_name(type), nullptr, type == m.type) && type != m.type) {
+            if (m.name.rfind(deform_type_name(m.type), 0) == 0) {
+              m.name = deform_type_name(type) + m.name.substr(std::string(deform_type_name(m.type)).size());
+            }
+            m.type = type;
+            C.undo->push("Change Modifier Type", doc);
+          }
+        }
+        ImGui::EndMenu();
       }
       ImGui::Separator();
       if (ImGui::MenuItem("Move to First", nullptr, false, i > 0)) {
@@ -3099,8 +3577,11 @@ static void modifiers_panel(Context &C, Layer &layer)
       else if (m.type == ModifierType::Bevel) {
         bevel_modifier_body(C, layer, m, i, column);
       }
-      else if (m.type == ModifierType::Subdivide) {
-        subdivide_modifier_body(C, layer, m, i, column);
+      else if (m.type == ModifierType::Resample) {
+        resample_modifier_body(C, layer, m, i, column);
+      }
+      else if (modifier_is_deform(m.type)) {
+        vector_deform_modifier_body(C, layer, m, i, column);
       }
       else {
         bool changed = false;
@@ -3113,7 +3594,7 @@ static void modifiers_panel(Context &C, Layer &layer)
         modifier_row_label("Mirror Center", column, "Where the mirror line runs through");
         const std::string driven_center_path = std::string("modifiers[" + std::to_string(i) + "].") + "center";
         const int driven_center = ui_driver_field_begin(C, layer.id, driven_center_path, -1);
-        ImGui::DragFloat2("##center", &m.center.x, 0.005f, -1000.0f, 1000.0f, "%.3f");
+        ui_drag_float2("##center", &m.center.x, 0.005f, -1000.0f, 1000.0f, "%.3f");
         changed |= ImGui::IsItemDeactivatedAfterEdit();
         ui_driver_typed(C, layer.id, driven_center_path, -1);
         ui_driver_field_end(C, layer.id, driven_center_path, -1, driven_center);
@@ -3133,7 +3614,7 @@ static void modifiers_panel(Context &C, Layer &layer)
         ImGui::BeginDisabled(!m.merge);
         const std::string driven_merge_distance_path = std::string("modifiers[" + std::to_string(i) + "].") + "merge_distance";
         const int driven_merge_distance = ui_driver_field_begin(C, layer.id, driven_merge_distance_path, -1);
-        ImGui::DragFloat("##merge_distance", &m.merge_distance, 0.0005f, 0.0f, 1.0f, "%.4f");
+        ui_drag_float("##merge_distance", &m.merge_distance, 0.0005f, 0.0f, 1.0f, "%.4f");
         changed |= ImGui::IsItemDeactivatedAfterEdit();
         ui_driver_typed(C, layer.id, driven_merge_distance_path, -1);
         ui_driver_field_end(C, layer.id, driven_merge_distance_path, -1, driven_merge_distance);
@@ -3523,7 +4004,7 @@ static void constraints_panel(Context &C, Layer &armature)
             const std::string p = spring_path + (std::string(id) == "##settle" ? "settle_speed" : std::string(id + 2));
             const auto k = keyed_begin(p);
             float v = *value * shown;
-            if (ImGui::DragFloat(id, &v, speed, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp)) {
+            if (ui_drag_float(id, &v, speed, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp)) {
               *value = v / shown;
             }
             done("Dynamics");
@@ -3566,7 +4047,7 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::BeginDisabled(!sp.use_limit);
             const auto k = keyed_begin(spring_path + "limit");
             float v = sp.limit * shown;
-            if (ImGui::DragFloat("##limit", &v, speed, speed, hi, fmt, ImGuiSliderFlags_AlwaysClamp)) {
+            if (ui_drag_float("##limit", &v, speed, speed, hi, fmt, ImGuiSliderFlags_AlwaysClamp)) {
               sp.limit = v / shown;
             }
             done("Dynamics");
@@ -3604,7 +4085,7 @@ static void constraints_panel(Context &C, Layer &armature)
               ImGui::BeginDisabled(!*use);
               const auto k = keyed_begin(value_path);
               float v = 1.0f + sign * *value;
-              if (ImGui::DragFloat(("##" + std::string(field_name)).c_str(), &v, 0.005f, lo, hi, "%.2f\xC3\x97",
+              if (ui_drag_float(("##" + std::string(field_name)).c_str(), &v, 0.005f, lo, hi, "%.2f\xC3\x97",
                                    ImGuiSliderFlags_AlwaysClamp))
               {
                 *value = (v - 1.0f) * sign;
@@ -3793,7 +4274,7 @@ static void constraints_panel(Context &C, Layer &armature)
               float percent = c.overlap * 100.0f;
               const std::string overlap_path = constraint_path + "overlap";
               const int driven_overlap = ui_driver_field_begin(C, armature.id, overlap_path, -1);
-              if (ImGui::DragFloat("##overlap", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+              if (ui_drag_float("##overlap", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
                 c.overlap = percent / 100.0f;
               }
               done("Limit to Shape");
@@ -3804,7 +4285,7 @@ static void constraints_panel(Context &C, Layer &armature)
                                                    "instead of hitting the edge (0: a hard stop)");
             const std::string softness_path = constraint_path + "softness";
             const int driven_softness = ui_driver_field_begin(C, armature.id, softness_path, -1);
-            ImGui::DragFloat("##softness", &c.softness, 0.0005f, 0.0f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+            ui_drag_float("##softness", &c.softness, 0.0005f, 0.0f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
             done("Limit to Shape");
             ui_driver_typed(C, armature.id, softness_path, -1);
             ui_driver_field_end(C, armature.id, softness_path, -1, driven_softness);
@@ -3823,7 +4304,7 @@ static void constraints_panel(Context &C, Layer &armature)
             float &value = max ? c.max_angle : c.min_angle;
             float shown = value * 180.0f / PI;
             ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - bh - style.ItemInnerSpacing.x));
-            if (ImGui::DragFloat(max ? "##max_angle" : "##min_angle", &shown, 0.5f, -360.0f, 360.0f, "%.1f\xC2\xB0")) {
+            if (ui_drag_float(max ? "##max_angle" : "##min_angle", &shown, 0.5f, -360.0f, 360.0f, "%.1f\xC2\xB0")) {
               value = shown * PI / 180.0f;
             }
             done("Limit Angle");
@@ -3897,7 +4378,7 @@ static void constraints_panel(Context &C, Layer &armature)
           ImGui::BeginDisabled(c.eyeball_auto);
           float2 size = c.eyeball_auto && c.eyeball_auto_size.x > 0.0f ? c.eyeball_auto_size : c.eyeball_size;
           ImGui::SetNextItemWidth(-4.0f);
-          if (ImGui::DragFloat2("##eyeball_size", &size.x, 0.001f, 0.0001f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
+          if (ui_drag_float2("##eyeball_size", &size.x, 0.001f, 0.0001f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
             c.eyeball_size = size;
           }
           done("Look At");
@@ -3913,7 +4394,7 @@ static void constraints_panel(Context &C, Layer &armature)
             const std::string facing_path = constraint_path + "facing";
             const auto k = keyed_begin(facing_path);
             float degrees2[2] = {c.facing.x * 180.0f / PI, c.facing.y * 180.0f / PI};
-            if (ImGui::DragFloat2("##facing", degrees2, 0.5f, -180.0f, 180.0f, "%.1f\xC2\xB0")) {
+            if (ui_drag_float2("##facing", degrees2, 0.5f, -180.0f, 180.0f, "%.1f\xC2\xB0")) {
               c.facing = {degrees2[0] * PI / 180.0f, degrees2[1] * PI / 180.0f};
             }
             done("Look At Facing");
@@ -3923,7 +4404,7 @@ static void constraints_panel(Context &C, Layer &armature)
                                                  "(a real eye turns about 45\xC2\xB0 to the side and down, 30\xC2\xB0 up)");
           {
             float turns[3] = {c.max_side * 180.0f / PI, c.max_up * 180.0f / PI, c.max_down * 180.0f / PI};
-            if (ImGui::DragFloat3("##max_turn", turns, 0.5f, 0.0f, 90.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+            if (ui_drag_float3("##max_turn", turns, 0.5f, 0.0f, 90.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
               c.max_side = turns[0] * PI / 180.0f;
               c.max_up = turns[1] * PI / 180.0f;
               c.max_down = turns[2] * PI / 180.0f;
@@ -3936,7 +4417,7 @@ static void constraints_panel(Context &C, Layer &armature)
           float percent = c.squash * 100.0f;
           const std::string squash_path = constraint_path + "squash";
           const int driven_squash = ui_driver_field_begin(C, armature.id, squash_path, -1);
-          if (ImGui::DragFloat("##squash", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+          if (ui_drag_float("##squash", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
             c.squash = percent / 100.0f;
           }
           done("Look At");
@@ -3947,7 +4428,7 @@ static void constraints_panel(Context &C, Layer &armature)
           float degrees = c.divergence * 180.0f / PI;
           const std::string divergence_path = constraint_path + "divergence";
           const int driven_divergence = ui_driver_field_begin(C, armature.id, divergence_path, -1);
-          if (ImGui::DragFloat("##divergence", &degrees, 0.1f, -30.0f, 30.0f, "%.1f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
+          if (ui_drag_float("##divergence", &degrees, 0.1f, -30.0f, 30.0f, "%.1f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
             c.divergence = degrees * PI / 180.0f;
           }
           done("Look At");
@@ -3997,7 +4478,7 @@ static void constraints_panel(Context &C, Layer &armature)
           float percent = c.amount * 100.0f;
           const std::string driven_amount_path = constraint_path + "amount";
           const int driven_amount = ui_driver_field_begin(C, armature.id, driven_amount_path, -1);
-          if (ImGui::DragFloat("##amount", &percent, 0.5f, 0.0f, 400.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+          if (ui_drag_float("##amount", &percent, 0.5f, 0.0f, 400.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
             c.amount = percent / 100.0f;
           }
           done("Maintain Volume");
@@ -4039,14 +4520,14 @@ static void constraints_panel(Context &C, Layer &armature)
                                    : "How much of the target's motion to copy: 0.5 is half, -1 copies it reversed");
           const std::string driven_factor_path = constraint_path + "factor";
           const int driven_factor = ui_driver_field_begin(C, armature.id, driven_factor_path, -1);
-          ImGui::DragFloat("##factor", &c.factor, 0.01f, -10.0f, 10.0f, "%.2f");
+          ui_drag_float("##factor", &c.factor, 0.01f, -10.0f, 10.0f, "%.2f");
           done("Copy Factor");
           ui_driver_typed(C, armature.id, driven_factor_path, -1);
           ui_driver_field_end(C, armature.id, driven_factor_path, -1, driven_factor);
           modifier_row_label("Delay", column, "How many frames behind the target it copies, for follow-through");
           const std::string driven_delay_path = constraint_path + "delay";
           const int driven_delay = ui_driver_field_begin(C, armature.id, driven_delay_path, -1);
-          ImGui::DragInt("##delay", &c.delay, 0.2f, 0, 1000, "%d fr");
+          ui_drag_int("##delay", &c.delay, 0.2f, 0, 1000, "%d fr");
           done("Copy Delay");
           ui_driver_typed(C, armature.id, driven_delay_path, -1);
           ui_driver_field_end(C, armature.id, driven_delay_path, -1, driven_delay);
@@ -4063,7 +4544,7 @@ static void constraints_panel(Context &C, Layer &armature)
                              "0 goes up to a bone Ignored by IK, or the root");
           const std::string driven_chain_path = constraint_path + "chain";
           const int driven_chain = ui_driver_field_begin(C, armature.id, driven_chain_path, -1);
-          ImGui::DragInt("##chain", &c.chain, 0.1f, 0, 64, c.chain == 0 ? "To Ignored / Root" : "%d");
+          ui_drag_int("##chain", &c.chain, 0.1f, 0, 64, c.chain == 0 ? "To Ignored / Root" : "%d");
           done("IK Chain");
           ui_driver_typed(C, armature.id, driven_chain_path, -1);
           ui_driver_field_end(C, armature.id, driven_chain_path, -1, driven_chain);
@@ -4071,7 +4552,7 @@ static void constraints_panel(Context &C, Layer &armature)
                              "How far the chain may stretch to reach a target out of reach: 1 never stretches, 2 up to twice as long");
           const std::string driven_stretch_path = constraint_path + "max_stretch";
           const int driven_stretch = ui_driver_field_begin(C, armature.id, driven_stretch_path, -1);
-          ImGui::DragFloat("##stretch", &c.max_stretch, 0.01f, 1.0f, 10.0f, "%.2f");
+          ui_drag_float("##stretch", &c.max_stretch, 0.01f, 1.0f, 10.0f, "%.2f");
           done("IK Stretch");
           ui_driver_typed(C, armature.id, driven_stretch_path, -1);
           ui_driver_field_end(C, armature.id, driven_stretch_path, -1, driven_stretch);
@@ -4101,7 +4582,7 @@ static void constraints_panel(Context &C, Layer &armature)
               const std::string p = constraint_path + id;
               const auto k = keyed_begin(p);
               float v = *value * shown;
-              if (ImGui::DragFloat((std::string("##") + id).c_str(), &v, speed, lo, hi, fmt,
+              if (ui_drag_float((std::string("##") + id).c_str(), &v, speed, lo, hi, fmt,
                                    ImGuiSliderFlags_AlwaysClamp))
               {
                 *value = v / shown;
@@ -4174,7 +4655,7 @@ static void constraints_panel(Context &C, Layer &armature)
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       const int tint = ui_key_tint_push(state | layer_smart_state(armature, {path}));
       const int driven = ui_driver_field_begin(C, armature.id, path, -1);
-      ImGui::SliderFloat("##influence", &c.influence, 0.0f, 1.0f, "%.3f");
+      ui_slider_float("##influence", &c.influence, 0.0f, 1.0f, "%.3f");
       ui_driver_typed(C, armature.id, path, -1);
       ui_driver_field_end(C, armature.id, path, -1, driven);
       ImGui::PopStyleColor(tint);
@@ -4854,7 +5335,7 @@ static void mask_cards(Context &C, Layer &layer)
         const int reach_tint = ui_key_tint_push(reach_state | layer_smart_state(layer, {reach_path}));
         const int driven_reach = ui_driver_field_begin(C, layer.id, reach_path, -1);
         float reach = m.line_reach;
-        if (ImGui::DragFloat("##reach", &reach, 0.01f, -2.0f, 2.0f, "%.2f line widths",
+        if (ui_drag_float("##reach", &reach, 0.01f, -2.0f, 2.0f, "%.2f line widths",
                              ImGuiSliderFlags_AlwaysClamp))
         {
           /* Shown as it changes; one undo step when let go. */
@@ -5159,7 +5640,7 @@ static void mask_cards(Context &C, Layer &layer)
         float grow = st.grow;
         const std::string driven_grow_path = step_path + "grow";
         const int driven_grow = ui_driver_field_begin(C, layer.id, driven_grow_path, -1);
-        if (ImGui::DragFloat("##grow", &grow, 0.1f, -64.0f, 64.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
+        if (ui_drag_float("##grow", &grow, 0.1f, -64.0f, 64.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
           /* Shown as it changes; one undo step when let go. */
           layer.masks[size_t(i)].steps[si].grow = grow;
         }
@@ -5608,14 +6089,14 @@ static void media_tab(Context &C)
     const MediaInfo info = media_clip_info(*clip);
     ui_row("Start", [&](float w) {
       ImGui::SetNextItemWidth(w);
-      ImGui::DragInt("##start", &clip->start, 0.25f, 1, 1048574, "%d", ImGuiSliderFlags_AlwaysClamp);
+      ui_drag_int("##start", &clip->start, 0.25f, 1, 1048574, "%d", ImGuiSliderFlags_AlwaysClamp);
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         media_clip_changed(C, *layer, *clip, "Move Clip");
       }
     });
     ui_row("Length", [&](float w) {
       ImGui::SetNextItemWidth(w);
-      ImGui::DragInt("##length", &clip->length, 0.25f, 1, 1048574, "%d frames", ImGuiSliderFlags_AlwaysClamp);
+      ui_drag_int("##length", &clip->length, 0.25f, 1, 1048574, "%d frames", ImGuiSliderFlags_AlwaysClamp);
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         media_clip_changed(C, *layer, *clip, "Trim Clip");
       }
@@ -5625,7 +6106,7 @@ static void media_tab(Context &C)
         ImGui::SetNextItemWidth(w);
         float in = float(clip->in);
         const double limit = std::max(info.duration, 0.0);
-        if (ImGui::DragFloat("##in", &in, 0.01f, 0.0f, float(limit), "%.2f s into the file",
+        if (ui_drag_float("##in", &in, 0.01f, 0.0f, float(limit), "%.2f s into the file",
                              ImGuiSliderFlags_AlwaysClamp))
         {
           clip->in = double(in);
@@ -5720,35 +6201,7 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
  * drag to set it. True while it changes. */
 static bool factor_slider(const char *id, float *value)
 {
-  const ImVec2 at = ImGui::GetCursorScreenPos();
-  const float w = ImGui::CalcItemWidth(), h = ImGui::GetFrameHeight();
-  ImGui::InvisibleButton(id, ImVec2(w, h));
-  bool changed = false;
-  if (ImGui::IsItemActive()) {
-    /* Shift: a tenth as fast, as Blender's precise drag. */
-    const float t = std::clamp((ImGui::GetIO().MousePos.x - at.x) / std::max(w, 1.0f), 0.0f, 1.0f);
-    const float next = ImGui::GetIO().KeyShift && !ImGui::IsItemActivated()
-                           ? std::clamp(*value + ImGui::GetIO().MouseDelta.x / std::max(w, 1.0f) * 0.1f, 0.0f, 1.0f)
-                           : t;
-    if (next != *value) {
-      *value = next;
-      changed = true;
-    }
-  }
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  const ImVec2 to(at.x + w, at.y + h);
-  dl->AddRectFilled(at, to, ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
-                    ImGui::GetStyle().FrameRounding);
-  if (*value > 0.0f) {
-    dl->AddRectFilled(at, ImVec2(at.x + w * *value, to.y), IM_COL32(0x47, 0x72, 0xb3, 255),
-                      ImGui::GetStyle().FrameRounding, *value >= 0.999f ? ImDrawFlags_RoundCornersAll
-                                                                        : ImDrawFlags_RoundCornersLeft);
-  }
-  char text[32];
-  std::snprintf(text, sizeof(text), "%.3f", double(*value));
-  const ImVec2 size = ImGui::CalcTextSize(text);
-  dl->AddText(ImVec2(at.x + (w - size.x) * 0.5f, at.y + (h - size.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), text);
-  return changed;
+  return ui_slider_float(id, value, 0.0f, 1.0f, "%.3f");
 }
 
 /* Blender's vertex group icon: a little grid of points, one corner lit. */
@@ -6420,7 +6873,7 @@ static void handle_row(Context &C, const HandleRow &row, const char *suffix)
   float degrees = value.x * 180.0f / PI;
   bool edited = false, done = false;
   ImGui::SetNextItemWidth(w);
-  if (ImGui::DragFloat("##angle", &degrees, 0.5f, -36000.0f, 36000.0f, "Angle  %.1f\xC2\xB0")) {
+  if (ui_drag_float("##angle", &degrees, 0.5f, -36000.0f, 36000.0f, "Angle  %.1f\xC2\xB0")) {
     value.x = degrees * PI / 180.0f;
     edited = true;
   }
@@ -6431,8 +6884,8 @@ static void handle_row(Context &C, const HandleRow &row, const char *suffix)
   done |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SameLine(0.0f, 2.0f);
   ImGui::SetNextItemWidth(-FLT_MIN);
-  if (posed ? ImGui::DragFloat("##length", &value.y, 0.002f, -10000.0f, 10000.0f, "Length  %+.3f") :
-              ImGui::DragFloat("##length", &value.y, 0.002f, 0.0f, 10000.0f, "Length  %.3f",
+  if (posed ? ui_drag_float("##length", &value.y, 0.002f, -10000.0f, 10000.0f, "Length  %+.3f") :
+              ui_drag_float("##length", &value.y, 0.002f, 0.0f, 10000.0f, "Length  %.3f",
                                ImGuiSliderFlags_AlwaysClamp))
   {
     edited = true;
@@ -6511,7 +6964,7 @@ static void mean_position_row(Context &C, const char *label, VectorDrawing &draw
     const int driven = ui_driver_field_begin(C, driver_layer, driver_path, axis);
     ImGui::SetNextItemWidth(axis == 0 ? w : -FLT_MIN);
     float value = axis == 0 ? mean.x : mean.y;
-    if (ImGui::DragFloat(axis == 0 ? "##x" : "##y", &value, 0.005f, -100000.0f, 100000.0f,
+    if (ui_drag_float(axis == 0 ? "##x" : "##y", &value, 0.005f, -100000.0f, 100000.0f,
                          axis == 0 ? "X  %.3f" : "Y  %.3f")) {
       drawing_points_move(drawing, points, axis == 0 ? float2(value - mean.x, 0.0f) : float2(0.0f, value - mean.y));
     }
@@ -6552,7 +7005,7 @@ static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
   ImGui::SameLine(0, 2);
   int value = shape.detail_level;
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 2.0f);
-  if (ImGui::DragInt("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, "%d", ImGuiSliderFlags_AlwaysClamp) &&
+  if (ui_drag_int("##detail_level", &value, 0.05f, 0, DETAIL_LEVEL_MAX, "%d", ImGuiSliderFlags_AlwaysClamp) &&
       value != shape.detail_level)
   {
     operator_call(C, "mesh.detail_level_set", {{"level", std::to_string(value)}});
@@ -6597,7 +7050,7 @@ static void detail_panel(Context &C, VectorDrawing &drawing, Shape &shape)
   row("");
   static float tolerance = 0.02f;
   ImGui::SetNextItemWidth(half);
-  ImGui::DragFloat("##rebuild_tolerance", &tolerance, 0.001f, 0.0f, 1.0f, "Tolerance %.3f",
+  ui_drag_float("##rebuild_tolerance", &tolerance, 0.001f, 0.0f, 1.0f, "Tolerance %.3f",
                    ImGuiSliderFlags_AlwaysClamp);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("How far a point can stray from the line through the kept ones and still become detail");
@@ -7006,7 +7459,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
     /* Driven in pixels, as shown. */
     const std::string width_path = look_path("line_width");
     const int driven_width = ui_driver_field_begin(C, look_layer, width_path, -1);
-    if (ImGui::DragFloat("##width", &pixels, 0.1f, 0.0f, 500.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
+    if (ui_drag_float("##width", &pixels, 0.1f, 0.0f, 500.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) {
       shape.style.line_width = pixels / units_to_pixels;
     }
     material_field_reach(C, shared);
@@ -7037,6 +7490,7 @@ static void shape_panel(Context &C, Layer &owner_layer, VectorDrawing &drawing, 
       operator_call(C, "layer.reference_revert", setting("brush")[0]);
     }
     changed_end(C, on, "##changed_brush", setting("brush"), setting("brush"));
+
     ui_panel_end();
   }
   detail_panel(C, drawing, shape);
@@ -7094,7 +7548,7 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   ImGui::TableSetColumnIndex(1);
   ImGui::SetNextItemWidth(-1);
   float value = mean;
-  if (ImGui::DragFloat("##mean_radius", &value, 0.005f, 0.0f, POINT_RADIUS_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+  if (ui_drag_float("##mean_radius", &value, 0.005f, 0.0f, POINT_RADIUS_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
     drawing_set_selected_mean_radius(drawing, value);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -7105,46 +7559,6 @@ static void point_panel(Context &C, VectorDrawing &drawing)
     C.undo->push("Point Radius", *C.document);
   }
 
-  /* Corner: how strokes turn here and end here. Neither button lights up for a mix. */
-  bool all_round = true, all_sharp = true;
-  for (const MeshPoint &p : drawing.points) {
-    if (p.selected) {
-      all_round = all_round && p.corner == CornerType::Round;
-      all_sharp = all_sharp && p.corner == CornerType::Sharp;
-    }
-  }
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(0);
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Corner");
-  ImGui::TableSetColumnIndex(1);
-  const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-  const struct {
-    const char *label;
-    CornerType type;
-    bool on;
-    const char *tooltip;
-  } choices[] = {{"Round", CornerType::Round, all_round, "Round joins at corners and round caps at stroke ends"},
-                 {"Sharp", CornerType::Sharp, all_sharp, "Mitred corners (bevelled when very tight) and flat stroke ends"}};
-  for (int i = 0; i < 2; i++) {
-    if (i > 0) {
-      ImGui::SameLine();
-    }
-    if (choices[i].on) {
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    }
-    const bool pressed = ImGui::Button(choices[i].label, ImVec2(half, 0));
-    if (choices[i].on) {
-      ImGui::PopStyleColor();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("%s", choices[i].tooltip);
-    }
-    if (pressed && !choices[i].on) {
-      drawing_set_selected_corner(drawing, choices[i].type);
-      C.undo->push(i == 0 ? "Round Corner" : "Sharp Corner", *C.document);
-    }
-  }
 
   /* Align: the handles stay in line (moving one turns the other); a mix shows a dash. */
   ImGui::TableNextRow();

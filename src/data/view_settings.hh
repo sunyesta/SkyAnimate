@@ -57,6 +57,20 @@ struct ViewportOverlays {
   bool operator==(const ViewportOverlays &) const = default;
 };
 
+/* How the viewports draw, as Blender's Viewport Shading: saved with the project, not part of undo. Its Performance
+ * options change how fast, never what (Zoom Preview: only while a zoom moves). */
+struct ViewportShading {
+  /* Layer Caching: only the layers that changed, and those depending on them, drawn anew; the rest from images kept
+   * of them, and a pan within a margin drawn around the view showing the same image moved. Off, every change draws
+   * every layer. */
+  bool layer_caching = true;
+  /* Zoom Preview: while a zoom moves, the last image shown scaled over a blurry wider backdrop, drawn sharp once it
+   * rests. Off, each step of a zoom is drawn sharp. */
+  bool zoom_preview = true;
+
+  bool operator==(const ViewportShading &) const = default;
+};
+
 /* Where the viewport looks: the document point at its middle and pixels per document unit (0: not
  * set, so the viewport frames the camera). Saved with the project; moving the view isn't an edit. */
 struct ViewportView {

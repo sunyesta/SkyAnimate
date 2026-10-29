@@ -114,6 +114,19 @@ void sculpt_brush_icon(ImDrawList *dl, SculptBrush brush, ImVec2 c, float s, ImU
       dl->AddPolyline(smooth.data(), int(smooth.size()), col, 0, t * 1.2f);
       break;
     }
+    case SculptBrush::SurfaceSmooth: {
+      /* A lumpy arch and the same arch with its lumps gone. */
+      std::vector<ImVec2> lumpy, even;
+      for (int i = 0; i <= 32; i++) {
+        const float x = -0.8f + 1.6f * float(i) / 32.0f;
+        const float arch = 0.3f - 0.6f * (1.0f - x * x / 0.64f);
+        lumpy.push_back(c + ImVec2(x * s, (arch + 0.07f * std::sin(x * 22.0f)) * s));
+        even.push_back(c + ImVec2(x * s, (arch + 0.22f) * s));
+      }
+      dl->AddPolyline(lumpy.data(), int(lumpy.size()), before, 0, t);
+      dl->AddPolyline(even.data(), int(even.size()), col, 0, t * 1.2f);
+      break;
+    }
     case SculptBrush::Thickness: {
       /* A line swelling to its middle. */
       std::vector<ImVec2> top, bottom;
@@ -199,6 +212,8 @@ static const char *brush_key(SculptBrush brush)
       return "I";
     case SculptBrush::Twist:
       return "W";
+    case SculptBrush::SurfaceSmooth:
+      return "";
   }
   return "";
 }
@@ -378,8 +393,21 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
                    active ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255), name.c_str());
       if (hovered) {
         static const char *const FALLOFFS[] = {"Smooth", "Sphere", "Constant"};
+        /* As it is now: the active one as the header has it, another as it was last changed to. */
+        float radius = p.radius, strength = p.strength;
+        SculptFalloff falloff = p.falloff;
+        if (active) {
+          radius = ts.sculpt_radius;
+          strength = ts.sculpt_strength;
+          falloff = ts.sculpt_falloff;
+        }
+        else if (const auto it = ts.sculpt_changes.find(p.name); it != ts.sculpt_changes.end()) {
+          radius = it->second.radius;
+          strength = it->second.strength;
+          falloff = it->second.falloff;
+        }
         ImGui::SetTooltip("%s\n%s brush, radius %.0f px, strength %.2f, %s falloff%s%s", p.name.c_str(),
-                          sculpt_brush_name(p.brush), double(p.radius), double(p.strength), FALLOFFS[int(p.falloff)],
+                          sculpt_brush_name(p.brush), double(radius), double(strength), FALLOFFS[int(falloff)],
                           p.builtin && &sculpt_preset_default(p.brush) == &p ? "\nShortcut: " : "",
                           p.builtin && &sculpt_preset_default(p.brush) == &p ? brush_key(p.brush) : "");
       }

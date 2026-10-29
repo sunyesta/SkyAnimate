@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "anim/animation.hh"
+#include "core/parallel.hh"
 #include "assets/brush_presets.hh"
 #include "text/text_layer.hh"
 
@@ -33,8 +34,37 @@ UndoStack::Step UndoStack::store(const std::string &name, Document &doc, const S
     };
     index(index, previous->layers);
   }
-  /* Each layer compared and copied without its children (they are stored as nodes of their own): taken out
-   * for the while and put back. */
+  /* Which layers are as the previous step has them: each compared without its children (they are stored as nodes
+   * of their own, taken out for the while and put back), every layer on its own, over the CPU's cores (a big
+   * document's comparing is most of a step's time). */
+  std::vector<Layer *> flat;
+  const auto gather = [&](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      flat.push_back(&layer);
+      self(self, layer.children);
+    }
+  };
+  gather(gather, doc.layers);
+  std::vector<std::vector<Layer>> kids(flat.size());
+  for (size_t i = 0; i < flat.size(); i++) {
+    std::swap(kids[i], flat[i]->children);
+  }
+  std::vector<char> unchanged(flat.size(), 0);
+  parallel_for(flat.size(), 8, [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++) {
+      const auto it = before.find(flat[i]->id);
+      unchanged[i] = it != before.end() && *it->second == *flat[i];
+    }
+  });
+  for (size_t i = flat.size(); i-- > 0;) {
+    std::swap(kids[i], flat[i]->children);
+  }
+  std::unordered_map<const Layer *, bool> same;
+  same.reserve(flat.size());
+  for (size_t i = 0; i < flat.size(); i++) {
+    same.emplace(flat[i], unchanged[i] != 0);
+  }
+  /* Each layer copied without its children (stored as nodes of their own): taken out for the while and put back. */
   const auto take = [&](auto &&self, std::vector<Layer> &layers) -> std::vector<Node> {
     std::vector<Node> nodes;
     nodes.reserve(layers.size());
@@ -43,7 +73,7 @@ UndoStack::Step UndoStack::store(const std::string &name, Document &doc, const S
       std::vector<Layer> children;
       std::swap(children, layer.children);
       const auto it = before.find(layer.id);
-      if (it != before.end() && *it->second == layer) {
+      if (same.at(&layer)) {
         node.layer = it->second;
       }
       else {

@@ -568,13 +568,15 @@ def read_timeline(data, notes):
 def read_contents(data):
     """The stage size, frame rate and background, and the library's names ("Symbol N" -> name)."""
     out = {'width': 550, 'height': 400, 'fps': 24.0, 'background': (255, 255, 255, 255), 'names': {}}
-    # The stage: a rect (0, right, 0, bottom) in twips just after "14 00 05 00 00 00 00 00".
-    for i in range(len(data) - 24):
-        if data[i:i + 8] == b'\x14\x00\x05\x00\x00\x00\x00\x00':
-            l, r, t, b = struct.unpack_from('<iiii', data, i + 5)
-            if l == 0 and t == 0 and 0 < r < 200000 and 0 < b < 200000:
-                out['width'], out['height'] = round(r / 20), round(b / 20)
-                break
+    # The stage: a rect (0, right, 0, bottom) in twips just after "?? 00 05 00 00", the first byte
+    # differing from file to file (04 to 20 seen); the rect's own check keeps out other matches.
+    i = data.find(b'\x00\x05\x00\x00\x00\x00\x00', 1)
+    while 0 < i and i + 20 <= len(data):
+        l, r, t, b = struct.unpack_from('<iiii', data, i + 4)
+        if l == 0 and t == 0 and 0 < r < 200000 and 0 < b < 200000:
+            out['width'], out['height'] = round(r / 20), round(b / 20)
+            break
+        i = data.find(b'\x00\x05\x00\x00\x00\x00\x00', i + 1)
     # Background and grid colours (RGBA), a zero byte, then the frame rate (8.8 fixed).
     for i in range(len(data) - 12):
         if data[i + 3] == 0xFF and data[i + 7] == 0xFF and data[i + 8] == 0:
@@ -1323,11 +1325,17 @@ class Converter:
                     content = self.elements(f, m, depth, at - starts[i])
             if not content:
                 return None
+            # Flash's eye icon hides a layer only while drawing: published, every layer but the guides
+            # shows (Include Hidden Layers, on by default). Sheets keep the art hidden under visible
+            # guide copies of it, so a hidden layer comes in shown and only a hidden guide stays hidden.
+            # Guides show on Flash's stage, inside symbols too, and are left out only when published:
+            # some sheets draw a part only on one (the front jaw's Line Reserve), so a guide comes in
+            # shown in the viewport but not rendered.
             extra = {}
             if layer.mode == 1:
                 extra['render_visible'] = False
-            if layer.hidden:
-                extra['visible'] = False
+                if layer.hidden:
+                    extra['visible'] = False
             if len(content) == 1 and not main:
                 j = content[0]
                 j['name'] = layer.name or j['name']

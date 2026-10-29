@@ -1,7 +1,7 @@
 """Make Segment (F over the viewport, as Blender's for curves): two selected curve ends get a segment
 between them. Ends of two curves join them into one; the two ends of one curve close it. Shapes
 stopping at the joined ends run on along it (one each side become one); one that goes all the way
-round is filled.
+round is filled. Two points that aren't both ends get a segment of their own (test_make_segment_points.py).
 
 Run with:  OpenAnimate --background --python tests/test_make_segment.py
 """
@@ -30,9 +30,13 @@ oanim.ops.mesh.select_all()  # an undo step to come back to
 assert counts() == (8, 2, 2)
 assert [art.shape_style(i)["has_fill"] for i in range(2)] == [False, False]
 
-# Not two ends: nothing, and the status bar says why.
+# Not two ends (Blender's F between any two vertices): a segment of their own, welded to both.
 pick(1, 5)
-assert oanim.ops.mesh.make_segment() == {'CANCELLED'}
+assert oanim.ops.mesh.make_segment() == {'FINISHED'}
+assert counts() == (8, 3, 2), counts()
+oanim.ops.ed.undo()
+assert counts() == (8, 2, 2), counts()
+# One point: nothing, and the status bar says why.
 pick(3)
 assert oanim.ops.mesh.make_segment() == {'CANCELLED'}
 assert counts() == (8, 2, 2)
@@ -52,7 +56,7 @@ assert wm.event_simulate("F", area="Viewport")
 assert counts() == (8, 1, 1)
 assert art.shape_style(0)["has_fill"] is True
 assert art.shape_count == 1 and art.shapes[0][1] == [0]
-# Closed now, so no ends are left to join.
+# Closed now, and already joined by a segment: nothing to make.
 pick(0, 4)
 assert oanim.ops.mesh.make_segment() == {'CANCELLED'}
 

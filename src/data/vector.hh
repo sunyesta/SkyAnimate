@@ -19,6 +19,7 @@
 
 #include "anim/channel.hh"
 #include "core/math.hh"
+#include "data/grid.hh"
 
 namespace oanim {
 
@@ -26,9 +27,6 @@ namespace oanim {
 inline constexpr float CURVATURE_SMOOTH = 0.3f;
 inline constexpr float CURVATURE_PEAKED = 0.0f;
 
-/* How strokes turn at a point and end there: Round (a round join or cap) or Sharp (a mitred
- * corner, bevelled when very tight, and a flat end). */
-enum class CornerType : uint8_t { Round, Sharp };
 
 /* How strongly one bone moves a point (Blender's vertex group weight), 0-1. */
 struct BoneWeight {
@@ -62,7 +60,6 @@ struct MeshPoint {
    * like a Grease Pencil point's radius. The draw tool sets it from pen pressure. */
   float radius = 1.0f;
   bool selected = false;
-  CornerType corner = CornerType::Round;
   /* How the bones of the bone layer it sits in move the point, blended by weight (Blender's vertex
    * groups). Empty: not weighted yet; it gets automatic weights once it is inside a bone layer
    * with bones. Weights that are all 0 (or only for bones that are gone) leave it where it is. */
@@ -79,10 +76,13 @@ struct MeshPoint {
   /* Its own number in the drawing, kept for good (0: not given one yet; see drawing_ensure_ids):
    * what a reference's overrides find it by, whatever happens to the points around it. */
   uint64_t id = 0;
-  /* Evaluated drawings only, never saved: a point the Subdivide modifier made with Preserve Volume, which
+  /* Evaluated drawings only, never saved: a point the Resample modifier made with Preserve Volume, which
    * the bones move by blending their turns and moves as rigid motions (dual complex numbers, Blender's
    * Preserve Volume) instead of their matrices, so it doesn't pinch or curl when they turn far apart. */
   bool preserve_volume = false;
+  /* Evaluated drawings only, never saved: the modifier that made the point (its place in the layer's stack), -1
+   * for the layer's own points. What Show Points marks. */
+  int made_by = -1;
   /* Detail levels: a detail point's level and offsets. */
   PointDetail detail;
   bool operator==(const MeshPoint &) const = default;
@@ -108,7 +108,7 @@ struct CurvePoint {
   /* False until the point first gets its handles (drawing_init_handles). Until then they are
    * worked out from the neighbours: smooth, or straight toward them where curvature is 0. */
   bool handles_set = false;
-  /* Evaluated drawings only, never saved: handles the Subdivide modifier stored for points whose
+  /* Evaluated drawings only, never saved: handles the Resample modifier stored for points whose
    * handles the curve works out (and for its new points). The bones turn and stretch them with the
    * curve around the point, as handles worked out from where the points went would, rather than
    * rigidly with the point. */
@@ -374,6 +374,8 @@ struct VectorDrawing {
   /* Its point groups, and the active one (its index; what Assign and Select work on). */
   std::vector<PointGroup> groups;
   int active_group = 0;
+  /* Its points laid out as grids (the Shape tool's Grid; see data/grid.hh). */
+  std::vector<DrawingGrid> grids;
   /* The next point or shape id to give out. */
   uint64_t next_id = 1;
 
@@ -400,6 +402,19 @@ void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_ou
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);
+/* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of p3,
+ * back along the curve), to the samples `d` in order from p0 to p3: the two handle lengths, by least
+ * squares, the samples' places along the curve refined by Newton steps (Graphics Gems 1990). A handle
+ * that comes out turned back or vanishing gives thirds of the chord; `steady` instead holds each between
+ * a thousandth of the chord and the chord (longer, the segment loops) and refines on as many steps, so the
+ * lengths change smoothly as the samples move (for what is fitted again every frame, as a deform). */
+void bezier_fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const std::vector<float2> &d,
+                               float *r_a1, float *r_a2, bool steady = false);
+/* The handles (offsets: `r_h1` from p0, `r_h2` from p3) of the cubic from p0 to p3 nearest the samples `pts` taken
+ * at the segment's own parameters `params` (least squares). A handle given (`fix1`, `fix2`) stays as it is; `was`
+ * is the longest the segment's handles were (a fit reaching far past it falls back to a third of the chord). */
+void bezier_fit_handles(const std::vector<float2> &pts, const std::vector<float> &params, float2 p0, float2 p3,
+                        const float2 *fix1, const float2 *fix2, float was, float2 *r_h1, float2 *r_h2);
 /* How many pieces a Bezier segment needs: at least `min_steps`, and with `tolerance` > 0 enough
  * that the pieces stray no further than that from the curve, however long its handles are. */
 int bezier_steps(const float2 ctrl[4], int min_steps, float tolerance);
@@ -461,8 +476,8 @@ VectorDrawing drawing_setup_pose(const VectorDrawing &drawing);
 /* The outline of a shape as a polyline in drawing space, edges joined end to end.
  * `r_radii` (optional) gets the point radius (0-1) at each sample, blended between points.
  * `r_visible` (optional) says for each sample whether the outline runs on from it to the next
- * sample: false along hidden edges. `r_joins` (optional) gives each sample's join: the point's
- * corner type at the curve's points, Smooth between them. Returns false if the edges don't
+ * sample: false along hidden edges. `r_joins` (optional) gives each sample's join: Round at the curve's points
+ * (round corners and ends), Smooth between them. Returns false if the edges don't
  * form a connected run. `r_closed` reports whether the run returns to its start. `tolerance`
  * (drawing units, 0 = off) adds samples where long handles bend a segment hard. */
 bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int steps_per_segment,
@@ -483,6 +498,14 @@ int drawing_add_point(VectorDrawing &drawing, float2 pos);
 /* Removes points and everything that depended on them (curve points, emptied curves, shapes
  * that lost an edge). */
 void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remove);
+/* Merge (M): each group of points becomes one, at their middle (the first of them is kept, the others go). Curves
+ * through them run through it; a segment between two of them goes (shapes along it carry on across). Shapes that
+ * met only at some of them become one shape, a line with a line and a fill with a fill, in the first one's look.
+ * Returns how many points went. */
+int drawing_merge_points(VectorDrawing &drawing, const std::vector<std::vector<int>> &groups);
+/* The selected points in groups of those within `distance` of one another (by way of each other): what Merge by
+ * Distance merges. Groups of one are left out. */
+std::vector<std::vector<int>> drawing_points_within(const VectorDrawing &drawing, float distance);
 /* Removes curves and the shapes that use them. Points stay. */
 void drawing_remove_curves(VectorDrawing &drawing, const std::vector<bool> &remove);
 /* Curves that end (not just pass through) at a point: their index and which end (true = last). */
@@ -492,6 +515,15 @@ struct CurveEnd {
   bool operator==(const CurveEnd &) const = default;
 };
 CurveEnd drawing_curve_end_at(const VectorDrawing &drawing, int point);
+/* Extrude from a point that isn't an open end: a new open curve from it (welded: it is that curve's first
+ * point) to a new point at the same place, returned for the move to take. The new segment shows as part of an
+ * outline-only shape through the point (a grid's), else as a new outline shape in the look of a shape through
+ * the point (`style` when none goes through it). */
+int drawing_extrude_branch(VectorDrawing &drawing, int point, const Style &style);
+/* Extrude (E) on the selected points: an open end's curve grows a new point past it (shapes covering the whole
+ * curve growing with it); any other point branches (drawing_extrude_branch). The new points, at their points'
+ * places, become the selection; returned. */
+std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &style);
 /* Every curve and segment that touches a point. */
 std::vector<ShapeEdge> drawing_segments_at_point(const VectorDrawing &drawing, int point);
 /* Closest point within `radius`, or -1. */
@@ -521,21 +553,21 @@ void drawing_reverse_curve(VectorDrawing &drawing, int curve);
 bool drawing_make_segment(VectorDrawing &drawing, int a, int b);
 /* Removes points no curve uses. */
 void drawing_remove_unused_points(VectorDrawing &drawing);
-/* Deletes curve segments (Edges mode delete): curves split where a segment goes, every point
- * stays, and shapes keep the outline of what is left, losing their fill when it no longer
- * closes. Returns how many went. */
+/* Deletes curve segments (Edges mode delete): curves split where a segment goes, the points they leave on
+ * no curve go too (as Blender's Delete Edges), and shapes keep the outline of what is left, losing their
+ * fill when it no longer closes. Returns how many went. */
 int drawing_delete_edges(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges);
 /* Bounding box of selected points; false if none. */
 bool drawing_selection_bounds(const VectorDrawing &drawing, float2 *r_min, float2 *r_max);
 /* Copies the selected points with the curve pieces between them (runs of two or more selected
- * points; a fully selected closed curve stays closed) and the shapes those pieces fully cover,
- * then selects the copy instead. Points welded in the original stay welded in the copy.
+ * points; a fully selected closed curve stays closed) and the shapes those pieces fully cover (a shape
+ * they cover part of gives its line to the copy, as a line-only shape), then selects the copy instead. Points welded in the original stay welded in the copy.
  * Returns false if nothing could be copied. */
 bool drawing_duplicate_selected(VectorDrawing &drawing);
 
 /* What the Shape tool draws, dragged out corner to corner. */
-enum class PrimitiveKind { Box, Circle };
-inline constexpr PrimitiveKind PRIMITIVE_KINDS[] = {PrimitiveKind::Box, PrimitiveKind::Circle};
+enum class PrimitiveKind { Box, Circle, Grid };
+inline constexpr PrimitiveKind PRIMITIVE_KINDS[] = {PrimitiveKind::Box, PrimitiveKind::Circle, PrimitiveKind::Grid};
 /* "Box", and the Python name "BOX". */
 const char *primitive_name(PrimitiveKind kind);
 const char *primitive_identifier(PrimitiveKind kind);
@@ -545,8 +577,8 @@ bool primitive_from_identifier(const std::string &identifier, PrimitiveKind *r_k
  * if the drag is too small. `points`: the drag's two corners, opposite corners of the bounds.
  * Circles are four points with Moho's circle curvature. */
 VectorDrawing primitive_drawing(PrimitiveKind kind, const std::vector<float2> &points, const Style &style,
-                                bool fill);
-/* Adds `src` to `dst` (its points, curves and shapes) and selects only the added points. */
+                                bool fill, int columns = 3, int rows = 3);
+/* Adds `src` to `dst` (its points, curves, shapes and grids) and selects only the added points. */
 void drawing_append_selected(VectorDrawing &dst, const VectorDrawing &src);
 
 /* Edges (curve segments) whose two points are both selected. */
@@ -555,7 +587,6 @@ std::vector<ShapeEdge> drawing_selected_edges(const VectorDrawing &drawing);
 void drawing_set_edges_hidden(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges, bool hidden);
 
 /* Sets the corner type of the selected points. */
-void drawing_set_selected_corner(VectorDrawing &drawing, CornerType corner);
 
 /* Mean radius of the selected points, or -1 if none are selected. */
 float drawing_selected_mean_radius(const VectorDrawing &drawing);

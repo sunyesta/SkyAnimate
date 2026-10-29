@@ -29,6 +29,19 @@ def event_simulate(type, *, ctrl=False, shift=False, alt=False, area="", typing=
     return _oanim.event_simulate(type, ctrl, shift, alt, area, typing)
 
 
+def shading():
+    """The project's Viewport Shading (saved with it): "layer_caching" (only the layers that changed, and those
+    depending on them, drawn anew; the rest from images kept of them, and pans within a margin shown moved) and
+    "zoom_preview" (while a zoom moves, the last image scaled over a blurry wider backdrop, drawn sharp once it
+    rests)."""
+    return dict(_oanim.shading())
+
+
+def set_shading(name, on=True):
+    """Set a Viewport Shading option of the project by name ("layer_caching", "zoom_preview")."""
+    _oanim.set_shading(name, bool(on))
+
+
 def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False, wheel=0.0):
     """Move the mouse to (x, y) in the window's UI units (as a remote screenshot of the whole
     window shows them), and press (down=True) or release a button: 0 left, 1 right, 2 middle; None
@@ -99,10 +112,10 @@ def debug_crash():
     _oanim.debug_crash()
 
 
-def brush_settings_open(target="SHAPES"):
+def brush_settings_open(target="SHAPES", tab="SETTINGS"):
     """Open the Brush Settings window on the selected shapes' brush, or with target "TOOL" the Draw
-    tool's."""
-    _oanim.brush_settings_open(target.upper() == "TOOL")
+    tool's; tab "BRUSHES" opens it on its Brushes tab (the presets)."""
+    _oanim.brush_settings_open(target.upper() == "TOOL", tab.upper() == "BRUSHES")
 
 
 def properties_tab(tab):
@@ -229,9 +242,11 @@ def set_onion_colors(before=None, after=None):
 
 
 def sculpt_settings():
-    """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST),
-    preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1), falloff
-    (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength and selected_only."""
+    """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST,
+    SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),
+    falloff (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength, selected_only and
+    surface_sensitivity (Surface Smooth's Lump Sensitivity: 0-1 with no top, how big a lump it takes out; 1 is a
+    tenth of the canvas's height, whatever its resolution)."""
     return _oanim.sculpt_settings()
 
 

@@ -59,6 +59,30 @@ assert w[10] == 0.0, ("5 along the curve, beyond the size, though 1 across", w[7
 oanim.wm.set_proportional_editing(True, "LINEAR", connected=False, size=2.5)
 assert close(weights()[10], 0.6), "straight across: 1 away"
 
+# Handles come along by their own distance, as Blender's (each Bezier handle a point of its own): a pulled
+# point's handle nearer the selection moves further than the point, the one beyond it less, so the curve
+# bends into the falloff.
+oanim.wm.set_proportional_editing(True, "LINEAR", connected=False, size=2.5)
+oanim.ops.mesh.select_none()
+layer.select_points([0])
+before = layer.curve_handles(line)[1]
+assert oanim.ops.mesh.translate(move_x="0", move_y="1") == {'FINISHED'}
+after = layer.curve_handles(line)[1]
+point_up = layer.points[1][1]
+in_up, out_up = after[1][1] - before[1][1], after[2][1] - before[2][1]
+assert close(point_up, 0.6), point_up
+assert close(in_up, 1.0 - abs(before[1][0]) / 2.5, 1e-3) and in_up > point_up > out_up, (in_up, point_up, out_up)
+oanim.ops.ed.undo()
+# Connected Only: along the curve, the handle on the selection's side from the neighbour that way.
+oanim.wm.set_proportional_editing(True, "LINEAR", connected=True, size=2.5)
+oanim.ops.mesh.select_none()
+layer.select_points([0])
+assert oanim.ops.mesh.translate(move_x="0", move_y="1") == {'FINISHED'}
+after = layer.curve_handles(line)[1]
+in_up, out_up = after[1][1] - before[1][1], after[2][1] - before[2][1]
+assert in_up > layer.points[1][1] > out_up, (in_up, layer.points[1][1], out_up)
+oanim.ops.ed.undo()
+
 # O turns it on and off over the viewport, with points to edit.
 oanim.wm.set_proportional_editing(False)
 assert oanim.wm.event_simulate("O", area="Viewport")

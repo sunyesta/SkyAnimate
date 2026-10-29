@@ -100,8 +100,9 @@ struct Transform2D {
 
 inline constexpr float PI = 3.14159265358979323846f;
 
-/* How a stroke turns at an outline sample: Smooth along a curve, Round or Sharp at the curve's own
- * points (their corner type). At a stroke's end, Round draws a round cap and Sharp a flat one. */
+/* How a stroke turns at an outline sample: Smooth along a curve, Round at the curve's own points (lines have
+ * round corners and round ends). At a stroke's end, Round draws a round cap and Sharp a flat one (where a mask's
+ * End Lines at Edge cuts it Flat). */
 enum class StrokeJoin : uint8_t { Smooth, Round, Sharp };
 
 }  // namespace oanim

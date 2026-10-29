@@ -40,6 +40,7 @@ enum class OnionMode { Keyframes, Frames };
 struct Document {
   /* The viewports' overlays (kept as they are through undo, as Blender's are). */
   ViewportOverlays overlays;
+  ViewportShading shading;
   /* The viewport's zoom and pan as last left (kept through undo too), and a number that changes when
    * a file brings its own, so the viewports take it. */
   ViewportView view;

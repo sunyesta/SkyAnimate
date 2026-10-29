@@ -66,6 +66,8 @@ KEYMAP = (
     ("Viewport", "armature.extrude", "E", {}),
     ("Viewport", "armature.duplicate_move", "D", {"shift": True}),
     ("Viewport", "armature.bone_primitive_add", "A", {"shift": True}),
+    # Blender's Add menu on a drawing: a point, line, square or circle at the 2D cursor.
+    ("Viewport", "mesh.add_menu", "A", {"shift": True}),
     ("Viewport", "armature.parent_set_menu", "P", {"ctrl": True}),
     ("Viewport", "armature.apply_menu", "A", {"ctrl": True}),
     ("Viewport", "armature.parent_clear_menu", "P", {"alt": True}),
@@ -113,6 +115,8 @@ KEYMAP = (
     ("Viewport", "mesh.select_mode_edge", "2", {}),
     ("Viewport", "mesh.select_mode_stroke", "3", {}),
     ("Viewport", "mesh.delete_menu", "X", {}),
+    # Blender's Merge menu (M), for points; on a bone layer, Move to Bone Collection takes it first.
+    ("Viewport", "mesh.merge_menu", "M", {}),
     ("Viewport", "mesh.delete", "DEL", {}),
     ("Viewport", "wm.tool_split_curve_temporary", "K", {}),
     # Back to the Select Box tool from any other.

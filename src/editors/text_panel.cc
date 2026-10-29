@@ -151,7 +151,7 @@ void properties_text_tab(Context &C)
     ui_row("Size", [&](float width) {
       float size = shown.size;
       ImGui::SetNextItemWidth(width);
-      if (ImGui::DragFloat("##size", &size, 0.001f, 0.001f, 100.0f, "%.3f")) {
+      if (ui_drag_float("##size", &size, 0.001f, 0.001f, 100.0f, "%.3f")) {
         restyle("Text Size", false, [&](TextRun &r) { r.size = std::max(size, 1e-4f); });
       }
       if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -231,7 +231,7 @@ void properties_text_tab(Context &C)
     ui_row("Line Width", [&](float width) {
       float w = shown.style.line_width;
       ImGui::SetNextItemWidth(width);
-      if (ImGui::DragFloat("##line_width", &w, 0.0002f, 0.0f, 1.0f, "%.4f")) {
+      if (ui_drag_float("##line_width", &w, 0.0002f, 0.0f, 1.0f, "%.4f")) {
         set_look("Text Line Width", false, [&](Style &s) { s.line_width = std::max(w, 0.0f); });
       }
       if (ImGui::IsItemDeactivatedAfterEdit()) {

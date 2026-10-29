@@ -559,11 +559,11 @@ void ui_driver_window_draw(Context &C)
       ImGui::SameLine(60.0f);
       ImGui::PushID(label);
       ImGui::SetNextItemWidth(half);
-      ImGui::DragFloat("##a", a, 0.01f, 0.0f, 0.0f, "%.3g");
+      ui_drag_float("##a", a, 0.01f, 0.0f, 0.0f, "%.3g");
       done = done || ImGui::IsItemDeactivatedAfterEdit();
       ImGui::SameLine();
       ImGui::SetNextItemWidth(half);
-      ImGui::DragFloat("##b", b, 0.01f, 0.0f, 0.0f, "%.3g");
+      ui_drag_float("##b", b, 0.01f, 0.0f, 0.0f, "%.3g");
       done = done || ImGui::IsItemDeactivatedAfterEdit();
       ImGui::PopID();
     };

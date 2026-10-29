@@ -399,6 +399,10 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     area.show_active_seen = C.wm->layers_show_active_serial;
     area.show_active_layer = layer.id;
     area.show_active_time = ImGui::GetTime();
+    area.show_active_frames = 4;
+  }
+  if (area.show_active_layer == layer.id && area.show_active_frames > 0) {
+    area.show_active_frames--;
     ImGui::SetScrollHereY(0.5f);
   }
 

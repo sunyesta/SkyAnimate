@@ -26,7 +26,7 @@ def snapshot():
         source = l.reference_source
         return (l.name, l.type, l.visible, l.render_visible, l.locked, l.label_color, round(l.location_x, 5), round(l.rotation, 5),
                 round(l.opacity, 5), l.masks, source.name if source else None,
-                [(round(x, 5), round(y, 5)) for x, y, _ in l.points], [round(r, 5) for r in l.radii], l.hidden_edges, l.corners,
+                [(round(x, 5), round(y, 5)) for x, y, _ in l.points], [round(r, 5) for r in l.radii], l.hidden_edges,
                 l.curve_count, l.shape_count,
                 [layer_info(c) for c in l.children])
     return (doc.name, doc.frame_start, doc.frame_end, doc.fps, doc.width, doc.height,
@@ -50,7 +50,6 @@ art.mean_radius = 0.25
 oanim.ops.mesh.select_none()
 art.select_points([1, 2])
 art.set_selected_edges_visible(False)
-art.set_selected_corner("SHARP")
 oanim.ops.mesh.select_none()
 oanim.ops.layer.group()
 holder = art.parent

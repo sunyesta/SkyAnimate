@@ -37,8 +37,9 @@ namespace oanim {
 
 struct Document;
 
-enum class SculptBrush { Grab, Push, Smooth, Thickness, Pinch, Twist };
-inline constexpr int SCULPT_BRUSH_COUNT = 6;
+/* Surface Smooth: takes a line's lumps out hard while its overall curve stays. */
+enum class SculptBrush { Grab, Push, Smooth, Thickness, Pinch, Twist, SurfaceSmooth };
+inline constexpr int SCULPT_BRUSH_COUNT = 7;
 /* Blender's brush falloffs: Smooth eases out, Sphere stays strong almost to the edge, Constant is
  * the same all over. */
 enum class SculptFalloff { Smooth, Sphere, Constant };
@@ -75,6 +76,9 @@ struct SculptDab {
   bool selected_only = false;
   /* X mirror editing: a moved point's mirror image across the layer's vertical axis follows. */
   bool mirror_x = false;
+  /* Surface Smooth's Lump Sensitivity: 0-1 (no top; 0 takes out nothing), how long a lump it takes out, the same
+   * on any canvas whatever its resolution, the brush's size or the zoom (see sculpt_surface_tolerance). */
+  float surface_sensitivity = 0.25f;
 };
 
 /* The stroke's samples of the curves being sculpted (see above), made when it starts. */
@@ -89,6 +93,8 @@ struct SculptStroke {
      * whose handles were bent stays free, as a corner). */
     std::vector<int> anchor;
     std::vector<bool> in_line;
+    /* Each point a corner Surface Smooth keeps: not set smooth (aligned), and peaked or its handles bent. */
+    std::vector<bool> corner;
     /* Each point's handles as they show now (document space offsets): a handle the curve works out for
      * itself is worked out where the bones put the points, so it can't be found again from the stored
      * drawing. */
@@ -98,10 +104,16 @@ struct SculptStroke {
     /* The samples, in order along the curve (document space), the line's width there, how much the
      * brush may move each (Selected Only), and where each was when the stroke started. */
     std::vector<float2> pos;
+    /* Each sample's place in its segment's own parameter (0 at the segment's first point): the samples lie at even
+     * steps along the line, and the fitting gives a segment back exactly from them. */
+    std::vector<float> param;
     std::vector<float> width, width_start, select;
     /* Grab: how much of the move each sample takes, from where the stroke started (and, mirrored within
      * the layer, from where its mirror image started). */
     std::vector<float> grab, grab_mirror;
+    /* Surface Smooth: where each point and its handles go, the line fitted when the stroke started
+     * (sculpt_surface_target; document space, handles as offsets). */
+    std::vector<float2> target_pos, target_in, target_out;
   };
   struct Layer {
     uint64_t id = 0;
@@ -119,8 +131,28 @@ struct SculptStroke {
 };
 
 /* Samples the curves of `layers` (references only with their points unlocked) for a stroke whose first
- * dab is `dab`: spaced by its radius; Grab takes the line under it. */
-SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t> &layers, const SculptDab &dab);
+ * dab is `dab`: spaced by its radius; Grab takes the line under it. Surface Smooth fits each curve, or takes the fit
+ * from `fitted` (an earlier stroke with the same tolerance: the viewport's ghost) for each curve still just as it
+ * was then, so only curves changed since are fitted again. With `fit_within` (a document-space box: what the view
+ * shows), a curve wholly outside it that has no such fit is left unfitted (its targets empty) for later. */
+struct SculptBox {
+  float2 lo, hi;
+};
+SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t> &layers, const SculptDab &dab,
+                                 const SculptStroke *fitted = nullptr, const SculptBox *fit_within = nullptr);
+/* Surface Smooth's target for a stroke's curve (`target_pos`, `target_in`, `target_out`): the line resampled at even
+ * steps along it and noise-reduced (the Whittaker-Eilers smoother of the third order: wiggles shorter than about
+ * `lump` along the line go, while an arc or a bend keeps its shape; corners and open ends stay), then each of its
+ * own points put where its place along the line went and each segment's handles fitted to the smoothed line between
+ * its two points, so the line with all its points traces the smoothed one. A lump of 0: the line as it is. */
+void sculpt_surface_target(SculptStroke::Curve &c, float lump);
+/* The lump length Surface Smooth takes out (document units) from its Lump Sensitivity: wiggles up to that long along
+ * the line go; 1 is a quarter of the canvas's height (document space spans the canvas as 2 units tall, whatever its
+ * resolution), so 0.25 is a sixteenth of it. */
+inline float sculpt_surface_tolerance(const SculptDab &dab)
+{
+  return (dab.surface_sensitivity > 0.0f ? dab.surface_sensitivity : 0.0f) * 0.5f;
+}
 /* Applies one dab to the stroke's samples and fits the curves to them. Returns how many points changed
  * (moved, or their handles or width did). */
 int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab);

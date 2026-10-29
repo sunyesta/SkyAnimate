@@ -1,6 +1,6 @@
 """Opening an XFL .fla (Flash CS5 on, Animate): a zip of XML. A small one is built here: a stage, a layer whose
 keyframe has a red square (edges with a hex coordinate) and an instance (scaled 2x) of a library symbol holding
-a blue square, and a hidden layer. Opened as a zip, as a zip whose central directory is wrong (as Animate leaves
+a blue square, a hidden layer (shown: Flash publishes it), a guide and a hidden guide. Opened as a zip, as a zip whose central directory is wrong (as Animate leaves
 some), and unzipped as an .xfl project, it makes the same document each time.
 
 Run with:  OpenAnimate --background --python tests/test_xfl_import.py
@@ -33,6 +33,10 @@ def square(x, y, size, color, twips_hex=False):
 document = ('<DOMDocument %s width="%d" height="%d" frameRate="%g" backgroundColor="#C0C0C0">'
             '<symbols><Include href="Blue Box.xml"/></symbols>'
             '<timelines><DOMTimeline name="Scene 1"><layers>'
+            '<DOMLayer name="Notes" layerType="guide" visible="false"><frames><DOMFrame index="0"><elements>%s'
+            '</elements></DOMFrame></frames></DOMLayer>'
+            '<DOMLayer name="Guide" layerType="guide"><frames><DOMFrame index="0"><elements>%s</elements>'
+            '</DOMFrame></frames></DOMLayer>'
             '<DOMLayer name="Hidden" visible="false"><frames><DOMFrame index="0"><elements>%s</elements></DOMFrame>'
             '</frames></DOMLayer>'
             '<DOMLayer name="Art"><frames><DOMFrame index="0"><elements>%s'
@@ -46,10 +50,14 @@ document = ('<DOMDocument %s width="%d" height="%d" frameRate="%g" backgroundCol
             '</DOMTextRun></textRuns></DOMStaticText>'
             '</elements></DOMFrame></frames></DOMLayer>'
             '</layers></DOMTimeline></timelines></DOMDocument>'
-            % (NS, W, H, FPS, square(0, 0, 20, '#00FF00'), square(100, 100, 50, '#FF0000', twips_hex=True)))
+            % (NS, W, H, FPS, square(0, 0, 20, '#00FF00'), square(0, 0, 20, '#00FF00'), square(0, 0, 20, '#00FF00'),
+               square(100, 100, 50, '#FF0000', twips_hex=True)))
 symbol = ('<DOMSymbolItem %s name="Blue Box" symbolType="graphic"><timeline><DOMTimeline name="Blue Box"><layers>'
+          '<DOMLayer name="Box Guide" layerType="guide"><frames><DOMFrame index="0"><elements>%s</elements>'
+          '</DOMFrame></frames></DOMLayer>'
           '<DOMLayer name="Layer 1"><frames><DOMFrame index="0"><elements>%s</elements></DOMFrame></frames>'
-          '</DOMLayer></layers></DOMTimeline></timeline></DOMSymbolItem>' % (NS, square(0, 0, 10, '#0000FF')))
+          '</DOMLayer></layers></DOMTimeline></timeline></DOMSymbolItem>'
+          % (NS, square(0, 0, 10, '#FFFFFF'), square(0, 0, 10, '#0000FF')))
 files = {'DOMDocument.xml': document, 'LIBRARY/Blue Box.xml': symbol, 'mimetype': 'application/vnd.adobe.xfl'}
 
 folder = pathlib.Path(tempfile.mkdtemp())
@@ -84,8 +92,17 @@ def check(path, name):
     assert doc.name == name, doc.name
     layers = oanim.data.layers
     art = next(l for l in layers.all() if l.name == 'Art')
+    # Flash publishes hidden layers and leaves guides out; a guide hidden too stays hidden.
     hidden = next(l for l in layers.all() if l.name == 'Hidden')
-    assert not hidden.visible
+    assert hidden.visible and hidden.render_visible
+    guide = next(l for l in layers.all() if l.name == 'Guide')
+    assert guide.visible and not guide.render_visible
+    notes = next(l for l in layers.all() if l.name == 'Notes')
+    assert not notes.visible and not notes.render_visible
+    # A symbol's guide shows on Flash's stage where the symbol is placed too (some sheets draw a part only on
+    # one), and is left out when published.
+    box_guides = [l for l in layers.all() if l.name == 'Box Guide']
+    assert box_guides and all(l.visible and not l.render_visible for l in box_guides), box_guides
     square_layer = next(l for l in layers.all() if l.type == 'VECTOR' and l.parent and l.parent.id == art.id)
     outline, closed = square_layer.shape_outline(0, 1)
     assert closed

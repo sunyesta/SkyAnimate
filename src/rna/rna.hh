@@ -31,9 +31,14 @@ struct PropertyRNA {
   std::string name;
   std::string description;
   PropType type = PropType::Int;
-  /* Range for Int and Float properties. Ignored when min > max. */
+  /* Range for Int and Float properties: what a value may be (Blender's hard range; typing stops there).
+   * Ignored when min > max. */
   double min = 1.0;
   double max = 0.0;
+  /* How far a drag goes in the UI (Blender's soft range), within min..max; ignored when soft_min > soft_max,
+   * the range then being min..max. */
+  double soft_min = 1.0;
+  double soft_max = 0.0;
   std::function<Value(const void *data)> get;
   /* Null for read-only properties. */
   std::function<void(void *data, const Value &value)> set;

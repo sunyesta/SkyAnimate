@@ -2,6 +2,7 @@
 #include "editors/brush_editor.hh"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -43,6 +44,25 @@ static constexpr unsigned int MISSING_TEXT = IM_COL32(0xff, 0x99, 0x4d, 255);
  * brush. Each has a renderer of its own (the Brushes tab shows many at once) and is drawn again
  * only when what it shows changes. */
 
+/* Reading a library's shapes from disk and drawing a preview with each take a while (a second or more for
+ * a few hundred), so the tip grid and the Brushes tab do a few at a time: about this many milliseconds of
+ * a frame, the rest on later frames. */
+static constexpr double LOAD_MS_PER_FRAME = 8.0;
+
+static bool load_allowed()
+{
+  static int frame = -1;
+  static std::chrono::steady_clock::time_point start;
+  const int now_frame = ImGui::GetFrameCount();
+  if (now_frame != frame) {
+    frame = now_frame;
+    start = std::chrono::steady_clock::now();
+    return true;
+  }
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() <
+         LOAD_MS_PER_FRAME;
+}
+
 namespace {
 
 struct Preview {
@@ -60,8 +80,10 @@ std::map<std::string, Preview> &previews()
 
 }  // namespace
 
+/* `can_wait`: when this frame has done its share (load_allowed), keep showing what it showed (nothing, the
+ * first time) and draw it on a later frame. */
 static unsigned int preview_texture(const std::string &key, const BrushSettings &settings, const Style &style,
-                                    int width, int height, unsigned int background_rgb)
+                                    int width, int height, unsigned int background_rgb, bool can_wait)
 {
   Preview &p = previews()[key];
   p.used_frame = ImGui::GetFrameCount();
@@ -69,7 +91,7 @@ static unsigned int preview_texture(const std::string &key, const BrushSettings 
   std::snprintf(extra, sizeof(extra), "|%dx%d|%.3f,%.3f,%.3f|%d|%x", width, height, style.line.r, style.line.g,
                 style.line.b, brush_find(settings.name) ? 1 : 0, background_rgb);
   const std::string signature = brush_settings_to_json(settings) + extra;
-  if (p.texture && p.signature == signature) {
+  if ((p.texture && p.signature == signature) || (can_wait && !load_allowed())) {
     return p.texture;
   }
   Document doc;
@@ -113,13 +135,13 @@ static unsigned int preview_texture(const std::string &key, const BrushSettings 
   return p.texture;
 }
 
-/* A preview drawn into a..b (no item). */
+/* A preview drawn into a..b (no item); see preview_texture for `can_wait`. */
 static void preview_draw(ImDrawList *dl, const std::string &key, const BrushSettings &settings, const Style &style,
-                         ImVec2 a, ImVec2 b, unsigned int background_rgb, float alpha = 1.0f)
+                         ImVec2 a, ImVec2 b, unsigned int background_rgb, float alpha = 1.0f, bool can_wait = false)
 {
   const ImVec2 size = b - a;
   const unsigned int texture = preview_texture(key, settings, style, std::max(int(size.x), 1), std::max(int(size.y), 1),
-                                               background_rgb);
+                                               background_rgb, can_wait);
   if (texture) {
     /* The render is bottom-up. */
     dl->AddImage(ImTextureRef(ImTextureID(intptr_t(texture))), a, b, ImVec2(0, 1), ImVec2(1, 0),
@@ -162,9 +184,12 @@ static GLuint thumbnail(const BrushImage &image)
 }
 
 /* A shape's stamp drawn in the box a..b, in `tint` (white on the dark grid, as Photoshop shows tips;
- * colour brushes in their colours). */
+ * colour brushes in their colours). Nothing yet while its images wait to be read. */
 static void stamp_image(ImDrawList *dl, const Brush &brush, const BrushSettings &settings, ImVec2 a, ImVec2 b)
 {
+  if (!brush.loaded && !brush.round_tip && !load_allowed()) {
+    return;
+  }
   const std::vector<BrushImage> &images = brush_tip_images(brush, settings);
   if (images.empty()) {
     return;
@@ -194,8 +219,10 @@ static bool stamp_cell(const char *id, const Brush *brush, bool picked, float si
                 IM_COL32(0xe6, 0xe6, 0xe6, 255), std::max(2.0f, size * 0.07f));
   }
   else {
-    BrushSettings shown = brush->defaults;
-    stamp_image(dl, *brush, shown, a, b);
+    /* Only the cells in view read their images. */
+    if (ImGui::IsItemVisible()) {
+      stamp_image(dl, *brush, brush->defaults, a, b);
+    }
     if (brush->files.size() > 1 || brush->data.size() > 1) {
       /* Moho marks multi-brushes with dots in the corner. */
       for (int i = 0; i < 3; i++) {
@@ -411,8 +438,11 @@ WindowState g_window;
 
 }  // namespace
 
-void brush_window_open(BrushTarget target)
+void brush_window_open(BrushTarget target, bool presets)
 {
+  if (presets) {
+    g_window.tab_request = 1;
+  }
   g_window.open = true;
   g_window.raise = true;
   g_window.target = target;
@@ -456,7 +486,7 @@ static void drag_scaled(Edit &r, const char *label, const char *id, float &value
 {
   label_cell(label);
   float shown = value * factor;
-  if (ImGui::DragFloat(id, &shown, speed, min, max, format, ImGuiSliderFlags_AlwaysClamp)) {
+  if (ui_drag_float(id, &shown, speed, min, max, format, ImGuiSliderFlags_AlwaysClamp)) {
     value = shown / factor;
     r.changed = true;
   }
@@ -468,7 +498,7 @@ static void drag_int(Edit &r, const char *label, const char *id, int &value, int
                      const char *tip)
 {
   label_cell(label);
-  if (ImGui::DragInt(id, &value, 0.2f, min, max, format, ImGuiSliderFlags_AlwaysClamp)) {
+  if (ui_drag_int(id, &value, 0.2f, min, max, format, ImGuiSliderFlags_AlwaysClamp)) {
     r.changed = true;
   }
   r.done |= ImGui::IsItemDeactivatedAfterEdit();
@@ -667,7 +697,7 @@ static void tip_section(Context &C, Edit &r, BrushSettings &b)
     ImGui::BeginGroup();
     float deg = b.tip_angle / DEG;
     ImGui::SetNextItemWidth(fields_w);
-    if (ImGui::DragFloat("##angle", &deg, 1.0f, -180.0f, 180.0f, "Angle  %.0f deg", ImGuiSliderFlags_AlwaysClamp)) {
+    if (ui_drag_float("##angle", &deg, 1.0f, -180.0f, 180.0f, "Angle  %.0f deg", ImGuiSliderFlags_AlwaysClamp)) {
       b.tip_angle = deg * DEG;
       r.changed = true;
     }
@@ -675,7 +705,7 @@ static void tip_section(Context &C, Edit &r, BrushSettings &b)
     tooltip("The tip turned this much");
     float round_pct = b.roundness * 100.0f;
     ImGui::SetNextItemWidth(fields_w);
-    if (ImGui::DragFloat("##roundness", &round_pct, 0.5f, 1.0f, 100.0f, "Roundness  %.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+    if (ui_drag_float("##roundness", &round_pct, 0.5f, 1.0f, 100.0f, "Roundness  %.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
       b.roundness = round_pct / 100.0f;
       r.changed = true;
     }
@@ -856,8 +886,10 @@ static void preset_card(Context &C, const BrushPreset &preset, bool library, con
   }
   const float pad = 5.0f, text_h = ImGui::GetTextLineHeight();
   const ImVec2 pa = a + ImVec2(pad, pad), pb = a + ImVec2(size.x - pad, size.y - text_h - pad * 1.6f);
-  preview_draw(dl, key, preset_applied(preset, current), style, pa, pb, matches ? 0x2a3d57 : 0x262626,
-               missing ? 0.4f : 1.0f);
+  if (ImGui::IsItemVisible()) {
+    preview_draw(dl, key, preset_applied(preset, current), style, pa, pb, matches ? 0x2a3d57 : 0x262626,
+                 missing ? 0.4f : 1.0f, true);
+  }
   /* The name under it, cut short to fit. */
   const ImVec2 text_at(a.x + pad + 2.0f, pb.y + pad * 0.6f);
   dl->PushClipRect(text_at, ImVec2(a.x + size.x - pad, a.y + size.y), true);

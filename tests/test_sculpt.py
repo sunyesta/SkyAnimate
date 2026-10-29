@@ -55,6 +55,18 @@ oanim.wm.set_sculpt(radius=120, strength=0.3, falloff="CONSTANT", selected_only=
 s = oanim.wm.sculpt_settings()
 assert s["radius"] == 120 and close(s["strength"], 0.3) and s["falloff"] == "CONSTANT" and s["selected_only"], s
 oanim.wm.set_sculpt(selected_only=False)
+# A brush keeps what it was changed to, as a Blender brush does: off to another and back, Push is as it was left;
+# the other comes with its own settings.
+oanim.ops.sculpt.brush_set(brush="GRAB")
+s = oanim.wm.sculpt_settings()
+assert s["preset"] == "Grab" and s["radius"] != 120, s
+oanim.wm.set_sculpt(radius=33)
+oanim.ops.sculpt.preset_load(name="Push")
+s = oanim.wm.sculpt_settings()
+assert s["radius"] == 120 and close(s["strength"], 0.3) and s["falloff"] == "CONSTANT", s
+oanim.ops.sculpt.brush_set(brush="GRAB")
+assert oanim.wm.sculpt_settings()["radius"] == 33, "Grab's change kept too"
+oanim.ops.sculpt.brush_set(brush="PUSH")
 
 # Grab: the points under the brush where the stroke starts follow the mouse, by the falloff.
 fresh_line()
@@ -67,6 +79,15 @@ assert close(p[2][1], 1.0) and close(p[1][1], 1.0) and close(p[3][1], 1.0), p
 assert close(p[0][1], 0.0) and close(p[4][1], 0.0), "outside the brush: untouched"
 oanim.ops.ed.undo()
 assert close(points(layer)[2][1], 0.0), "one undo step"
+
+# Strength has no top, as Blender's (typed past 1): Grab at 2 moves the points twice as far as the mouse.
+oanim.ops.sculpt.stroke(brush="GRAB", path=path((2.0, 0.0), (2.0, 1.0)), radius=1.5, strength=2.0,
+                        falloff="CONSTANT")
+assert close(points(layer)[2][1], 2.0), points(layer)
+oanim.ops.ed.undo()
+oanim.wm.set_sculpt(strength=3.0)
+assert close(oanim.wm.sculpt_settings()["strength"], 3.0), "kept, not cut back to 1"
+oanim.wm.set_sculpt(strength=1.0)
 
 # Smooth falloff: halfway out gets 1 - smoothstep(2/3) of the move.
 oanim.ops.sculpt.stroke(brush="GRAB", path=path((2.0, 0.0), (2.0, 1.0)), radius=1.5, strength=1.0, falloff="SMOOTH")
@@ -133,6 +154,151 @@ p = points(layer)
 assert sum(abs(y) for _, y in p[1:4]) < before * 0.8, p
 assert p[0] == (0.0, 0.0) and p[4] == (4.0, 0.0), ("ends stay", p)
 oanim.ops.ed.undo()
+
+# Smooth is Blender's Grease Pencil Smooth on the line resampled evenly: a binomial blur, two iterations a dab, ends
+# kept. A straight line stays straight (its points may slide along it, as in Blender), and a circle brushed long
+# enough shrinks toward its middle there, as Blender's does.
+while len(layer.points):
+    oanim.ops.mesh.select_all()
+    oanim.ops.mesh.delete()
+layer.add_curve([(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (4.0, 0.0)])
+oanim.ops.mesh.select_none()
+oanim.ops.sculpt.stroke(brush="SMOOTH", path=path(*([(0.8, 0.0)] * 10)), radius=1.0, strength=1.0, falloff="SMOOTH")
+p = points(layer)
+assert all(abs(y) < 1e-4 for _, y in p) and p[0] == (0.0, 0.0) and p[-1] == (4.0, 0.0), ("stays straight", p)
+while len(layer.points):
+    oanim.ops.mesh.select_all()
+    oanim.ops.mesh.delete()
+layer.add_curve([(2 * math.cos(a * math.pi / 4), 2 * math.sin(a * math.pi / 4)) for a in range(8)], True)
+oanim.ops.mesh.select_none()
+oanim.ops.sculpt.stroke(brush="SMOOTH", path=path(*([(2.0, 0.0)] * 20)), radius=1.0, strength=1.0, falloff="SMOOTH")
+radii = [math.hypot(x, y) for x, y in points(layer)]
+assert min(radii) < 2.0 - 1e-3 and max(radii) < 2.0 + 1e-3, ("shrinks where brushed", radii)
+
+# Smooth and Surface Smooth build up while held, frame by frame (moving or not), and never swing back: the lumps
+# under a brush held still shrink a little each frame (not all at once) and keep shrinking (each call here is a stroke of its
+# own, so Surface Smooth fits the line afresh each time, and still settles).
+for brush in ("SMOOTH", "SURFACE_SMOOTH"):
+    while len(layer.points):
+        oanim.ops.mesh.select_all()
+        oanim.ops.mesh.delete()
+    layer.add_curve([(x / 4, (0.06 if x % 2 else -0.06) * (0 < x < 16)) for x in range(17)])
+    oanim.ops.mesh.select_none()
+    left = []
+    for frame in range(30):
+        # Surface Smooth: wiggles up to a unit long go (the zigzag's are half a unit).
+        oanim.ops.sculpt.stroke(brush=brush, path=path((2.0, 0.0)), radius=1.2, strength=1.0, amount=1 / 6,
+                                sensitivity=1.0 / 0.5)
+        ys = [y for _, y in points(layer)]
+        # Lumpiness: how far each point stands off its neighbours' middle (0.12 to start).
+        left.append(sum(abs(ys[i] - (ys[i - 1] + ys[i + 1]) / 2) for i in range(6, 11)) / 5 / 0.12)
+    assert left[0] > 0.5, (brush, "gradual", left[:3])
+    assert all(b <= a + 0.01 for a, b in zip(left, left[1:])), (brush, "never swings back", left)
+    assert left[-1] < 0.1, (brush, left[-1])
+
+# Surface Smooth's Lump Sensitivity is 0-1 with no top: how long a wiggle along the line it takes out (1: a quarter
+# of the canvas's height, whatever its resolution); 0 takes out none. The line is resampled evenly and noise-reduced
+# (the Whittaker-Eilers smoother of the third order), so short wiggles go while a longer wave stays, however tall
+# each is. The brush's size doesn't change it.
+assert close(oanim.wm.sculpt_settings()["surface_sensitivity"], 0.25)
+for typed in (0.04, 3.5):
+    oanim.wm.set_sculpt(surface_sensitivity=typed)
+    assert close(oanim.wm.sculpt_settings()["surface_sensitivity"], typed), "no top"
+oanim.wm.set_sculpt(surface_sensitivity=0.25)
+per_unit = 1 / 0.5  # Lump Sensitivity per document unit of wiggle length
+# A long, tall wave (4 units long) with a short zigzag on it (half a unit long).
+xs = [x / 8 for x in range(33)]
+wave = [(x, 0.3 * math.sin(x / 4 * 2 * math.pi) + (0.03 if i % 4 == 1 else -0.03 if i % 4 == 3 else 0.0) * (0 < i < 32))
+        for i, x in enumerate(xs)]
+
+
+def one_dab(sens, radius=3.0):
+    """One full dab of Surface Smooth over the whole wavy line; how much of the zigzag and of the wave are left."""
+    while len(layer.points):
+        oanim.ops.mesh.select_all()
+        oanim.ops.mesh.delete()
+    layer.add_curve(wave)
+    oanim.ops.mesh.select_none()
+    oanim.ops.sculpt.stroke(brush="SURFACE_SMOOTH", path=path((2.0, 0.0)), radius=radius, strength=1.0,
+                            falloff="CONSTANT", amount=1.0, sensitivity=sens)
+    pts = points(layer)
+    zigzag = sum(abs(y - 0.3 * math.sin(x / 4 * 2 * math.pi)) for x, y in pts[1:-1]) / (len(pts) - 2) / 0.015
+    crest = max(y for _, y in pts) / 0.3
+    return zigzag, crest
+
+
+nothing = one_dab(0.0)
+assert all(math.hypot(a_[0] - b_[0], a_[1] - b_[1]) < 1e-5 for a_, b_ in zip(points(layer), wave)), "0 keeps the wiggles"
+short = one_dab(1.0 * per_unit)
+assert short[0] < 0.25 * nothing[0] and short[1] > 0.9 * nothing[1], ("the short zigzag goes, the long wave stays",
+                                                                      short, nothing)
+assert all(abs(a_ - b_) < 1e-3 for a_, b_ in zip(short, one_dab(1.0 * per_unit, radius=6.0))), \
+    "the brush's size doesn't change what counts as a lump"
+document = oanim.data.document
+height = document.height
+document.height = height * 2
+assert all(abs(a_ - b_) < 1e-3 for a_, b_ in zip(short, one_dab(1.0 * per_unit))), "nor does the file's resolution"
+document.height = height
+mixed = [(x / 4, ((0.02 if x < 8 else 0.12) * (1 if x % 2 else -1)) if 0 < x < 16 else 0.0) for x in range(17)]
+
+
+# Points set smooth are smoothed whatever their handles: extruded points (handles of no length) with sharp kinks
+# between them are a lump to take out, not corners to keep (only points not set smooth, peaked or bent, are).
+while len(layer.points):
+    oanim.ops.mesh.select_all()
+    oanim.ops.mesh.delete()
+layer.add_curve([(x / 4, 0.0) for x in range(9)])
+for x, y in [(2.25, 0.08), (2.5, -0.06), (2.75, 0.07), (3.0, -0.05), (3.25, 0.0), (4.0, 0.0)]:
+    oanim.ops.mesh.select_none()
+    layer.select_points([len(layer.points) - 1])
+    layer.set_point(layer.extrude_selected()[0], (x, y))
+oanim.ops.mesh.select_none()
+before = sum(abs(y) for _, y in points(layer)[9:13])
+oanim.ops.sculpt.stroke(brush="SURFACE_SMOOTH", path=path(*([(2.6, 0.0)] * 30)), radius=1.0, strength=1.0,
+                        amount=1 / 6, sensitivity=1.0 * per_unit)
+after = sum(abs(y) for _, y in points(layer)[9:13])
+assert after < before * 0.3, ("extruded kinks smoothed", before, after, points(layer))
+
+
+def hold(dabs):
+    """One stroke held still over the mixed line for `dabs` frames."""
+    while len(layer.points):
+        oanim.ops.mesh.select_all()
+        oanim.ops.mesh.delete()
+    layer.add_curve(mixed)
+    oanim.ops.mesh.select_none()
+    oanim.ops.sculpt.stroke(brush="SURFACE_SMOOTH", path=path(*([(2.0, 0.0)] * dabs)), radius=1.2, strength=1.0,
+                            amount=1 / 6, sensitivity=1.0 * per_unit)
+    return points(layer)
+
+
+settled, longer = hold(60), hold(120)
+assert all(math.hypot(a[0] - b[0], a[1] - b[1]) < 0.002 for a, b in zip(settled, longer)),     ("held on, a stroke stops at its fit", settled, longer)
+
+# Surface Smooth takes a line's lumps out while its overall curve stays: a lumpy line comes out much flatter,
+# its ends where they were, and a circle stays round.
+assert any(p_["name"] == "Surface Smooth" and p_["brush"] == "SURFACE_SMOOTH" and p_["category"] == "Shape"
+           for p_ in oanim.wm.sculpt_presets())
+while len(layer.points):
+    oanim.ops.mesh.select_all()
+    oanim.ops.mesh.delete()
+lumpy = [(x / 4, 0.06 if x % 2 else -0.06) for x in range(1, 16)]
+layer.add_curve([(0.0, 0.0)] + lumpy + [(4.0, 0.0)])
+oanim.ops.mesh.select_none()
+lumps = sum(abs(y) for _, y in points(layer)[1:-1])
+oanim.ops.sculpt.stroke(brush="SURFACE_SMOOTH", path=path(*[(0.3 + 3.4 * i / 30, 0.0) for i in range(31)]), radius=0.6,
+                        strength=1.0, falloff="SMOOTH", amount=0.5, sensitivity=1.0 * per_unit)
+p = points(layer)
+assert sum(abs(y) for _, y in p[1:-1]) < lumps * 0.25, ("lumps gone", p)
+assert p[0] == (0.0, 0.0) and p[-1] == (4.0, 0.0), ("ends stay", p)
+while len(layer.points):
+    oanim.ops.mesh.select_all()
+    oanim.ops.mesh.delete()
+layer.add_curve([(2 * math.cos(a * math.pi / 4), 2 * math.sin(a * math.pi / 4)) for a in range(8)], True)
+oanim.ops.mesh.select_none()
+oanim.ops.sculpt.stroke(brush="SURFACE_SMOOTH", path=path(*([(2.0, 0.0)] * 20)), radius=1.0, strength=1.0)
+radii = [math.hypot(x, y) for x, y in points(layer)]
+assert min(radii) > 1.97, ("stays round", radii)
 
 # The brush works on the line, not just its points: a small Grab between two far-apart points bends the
 # curve there (its points stay, its handles are fitted to the dragged line).

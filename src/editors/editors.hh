@@ -73,6 +73,9 @@ struct Area {
   uint64_t show_active_seen = 0;
   uint64_t show_active_layer = 0;
   double show_active_time = -10.0;
+  /* Frames it still scrolls to that row: groups Show Active opened only make the list taller once drawn, and a scroll
+   * can't go past the list's height of the frame before, so it goes on till the list has its full height. */
+  int show_active_frames = 0;
   /* Layers editor: list the drawing layers in this frame's draw order (top first), to reorder by
    * dragging, instead of the tree. */
   bool layers_draw_order_view = false;
@@ -129,6 +132,9 @@ bool viewport_drag_active();
 /* Whether the edit going on (a point move: G, R, S, Extrude, a handle tweak) says which layers it changes,
  * each update (see Revision); any other edit with the mouse down may change anything. */
 bool viewport_precise_edit();
+/* Whether a viewport is being panned or zoomed with the middle button (the view only, not a camera looked
+ * through): it changes nothing in the document. */
+bool viewport_navigating();
 /* The frame moved on while playing during that drag: what it began from takes the keys just recorded
  * and, where it isn't holding anything, the new frame (animation_follow_playback). `dragged` is the
  * document as the drag had it before the frame changed. */

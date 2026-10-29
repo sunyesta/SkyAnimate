@@ -1,6 +1,7 @@
 #include "anim/sculpt.hh"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <tuple>
 
@@ -12,8 +13,10 @@
 
 namespace oanim {
 
-static constexpr const char *BRUSH_IDS[SCULPT_BRUSH_COUNT] = {"GRAB", "PUSH", "SMOOTH", "THICKNESS", "PINCH", "TWIST"};
-static constexpr const char *BRUSH_NAMES[SCULPT_BRUSH_COUNT] = {"Grab", "Push", "Smooth", "Thickness", "Pinch", "Twist"};
+static constexpr const char *BRUSH_IDS[SCULPT_BRUSH_COUNT] = {"GRAB", "PUSH", "SMOOTH", "THICKNESS", "PINCH", "TWIST",
+                                                                   "SURFACE_SMOOTH"};
+static constexpr const char *BRUSH_NAMES[SCULPT_BRUSH_COUNT] = {"Grab", "Push", "Smooth", "Thickness", "Pinch", "Twist",
+                                                                     "Surface Smooth"};
 static constexpr const char *FALLOFF_IDS[3] = {"SMOOTH", "SPHERE", "CONSTANT"};
 
 const char *sculpt_brush_id(SculptBrush brush)
@@ -114,66 +117,268 @@ float2 normalized(float2 v)
   return len > 1e-12f ? v / len : float2();
 }
 
-/* The handles (as offsets: `r_h1` from p0, `r_h2` from p3) of the cubic from p0 to p3 nearest the samples
- * `pts` (least squares). The samples were made evenly spaced in the segment's own parameter, and keep it as
- * they move: fitted at those parameters, samples nobody moved give back the curve they came from exactly
- * (guessing the parameters from distances along them bends sharply curved segments out of shape). A
- * handle given (`fix1`, `fix2`) stays as it is; `was` is the longest the segment's handles were. */
-void fit_handles(const std::vector<float2> &pts, float2 p0, float2 p3, const float2 *fix1, const float2 *fix2,
-                 float was, float2 *r_h1, float2 *r_h2)
+}  // namespace
+
+/* --- Surface Smooth's target: the line resampled evenly and noise-reduced ------------------------------------- */
+
+/* The Whittaker-Eilers smoother of the third order (Whittaker 1923; Eilers, "A perfect smoother", 2003): the values z
+ * nearest `y` (by the weights `w`) whose third differences are smallest, minimizing
+ * sum w (z - y)^2 + lambda sum (third difference of z)^2, by solving (W + lambda D'D) z = W y, D the third-difference
+ * matrix; a banded system (three either side of the diagonal), so a Cholesky factor in linear time. The third order
+ * resists a change of bend, not the bend: an arc or a parabola goes through unchanged, wiggles shorter than its
+ * cutoff are taken out. */
+static void whittaker3(std::vector<double> &y, const std::vector<double> &w, double lambda)
 {
-  const size_t m = pts.size();
-  float total = 0.0f;
-  for (size_t k = 1; k < m; k++) {
-    total += distance(pts[k], pts[k - 1]);
+  const int n = int(y.size());
+  if (n < 5) {
+    return;
   }
-  const float2 chord = p3 - p0;
-  float2 h1 = fix1 ? *fix1 : chord / 3.0f, h2 = fix2 ? *fix2 : -chord / 3.0f;
-  if (m > 2) {
-    float s11 = 0.0f, s12 = 0.0f, s22 = 0.0f;
-    float2 r1, r2;
-    for (size_t k = 0; k < m; k++) {
-      const float t = float(k) / float(m - 1), s = 1.0f - t;
-      const float b0 = s * s * s, b1 = 3.0f * s * s * t, b2 = 3.0f * s * t * t, b3 = t * t * t;
-      const float2 rest = pts[k] - (p0 * (b0 + b1) + p3 * (b2 + b3));
-      s11 += b1 * b1;
-      s12 += b1 * b2;
-      s22 += b2 * b2;
-      r1 += rest * b1;
-      r2 += rest * b2;
-    }
-    if (fix1 && fix2) {
-      /* Both kept. */
-    }
-    else if (fix1) {
-      h2 = s22 > 1e-12f ? (r2 - h1 * s12) / s22 : h2;
-    }
-    else if (fix2) {
-      h1 = s11 > 1e-12f ? (r1 - h2 * s12) / s11 : h1;
-    }
-    else {
-      const float det = s11 * s22 - s12 * s12;
-      if (det > 1e-12f * s11 * s22) {
-        h1 = (r1 * s22 - r2 * s12) / det;
-        h2 = (r2 * s11 - r1 * s12) / det;
+  constexpr int band = 3;
+  /* u[i][k]: the upper factor's entry (i, i + k); first the matrix itself, its upper band. */
+  std::vector<std::array<double, band + 1>> u(static_cast<size_t>(n));
+  for (int i = 0; i < n; i++) {
+    u[size_t(i)][0] = w[size_t(i)];
+  }
+  const double d3[4] = {-1.0, 3.0, -3.0, 1.0};
+  for (int i = 0; i + 3 < n; i++) {
+    for (int r = 0; r < 4; r++) {
+      for (int c = r; c < 4; c++) {
+        u[size_t(i + r)][size_t(c - r)] += lambda * d3[r] * d3[c];
       }
     }
   }
-  /* A handle reaching far past the segment is a fit gone wrong: a third of the way along. */
-  const float most = std::max({length(chord), total, was}) * 1.5f;
-  if (!fix1 && length(h1) > most) {
-    h1 = chord / 3.0f;
+  const auto at = [&](int row, int col) -> double & { return u[size_t(row)][size_t(col - row)]; };
+  for (int j = 0; j < n; j++) {
+    double diag = at(j, j);
+    for (int k = std::max(0, j - band); k < j; k++) {
+      diag -= at(k, j) * at(k, j);
+    }
+    at(j, j) = std::sqrt(std::max(diag, 1e-300));
+    for (int i = j + 1; i <= std::min(n - 1, j + band); i++) {
+      double v = at(j, i);
+      for (int k = std::max(0, i - band); k < j; k++) {
+        v -= at(k, j) * at(k, i);
+      }
+      at(j, i) = v / at(j, j);
+    }
   }
-  if (!fix2 && length(h2) > most) {
-    h2 = -chord / 3.0f;
+  /* U'U z = W y: forward through U', back through U. */
+  std::vector<double> x(static_cast<size_t>(n));
+  for (int i = 0; i < n; i++) {
+    double v = w[size_t(i)] * y[size_t(i)];
+    for (int k = std::max(0, i - band); k < i; k++) {
+      v -= at(k, i) * x[size_t(k)];
+    }
+    x[size_t(i)] = v / at(i, i);
   }
-  *r_h1 = h1;
-  *r_h2 = h2;
+  for (int i = n - 1; i >= 0; i--) {
+    double v = x[size_t(i)];
+    for (int k = i + 1; k <= std::min(n - 1, i + band); k++) {
+      v -= at(i, k) * y[size_t(k)];
+    }
+    y[size_t(i)] = v / at(i, i);
+  }
 }
 
-}  // namespace
+/* Smooths one span of a curve, its anchors `first`..`last` (indices into its points; `last` is `first + n` round a
+ * loop), and writes the targets: the span resampled at even steps along its length, those samples smoothed (wiggles
+ * shorter than about `length` along the line go), then each anchor put where its own place along the line went and
+ * each segment's handles fitted to the smoothed line between its two anchors (their directions the smoothed line's
+ * there, so the points stay smooth). An open span's ends stay (a curve's end, or a corner); a loop is smoothed all
+ * round. */
+static void smooth_span(const SculptStroke::Curve &c, int first, int last, bool loop, float lump,
+                        std::vector<float2> &r_pos, std::vector<float2> &r_in, std::vector<float2> &r_out)
+{
+  const int n = int(c.points.size());
+  const auto at = [&](int i) { return ((i % n) + n) % n; };
+  const auto anchor = [&](int i) { return c.pos[size_t(c.anchor[size_t(at(i))])]; };
+  /* The span as it is, finely: its segments' curves, and how far along it each anchor is. */
+  std::vector<float2> fine;
+  std::vector<double> fine_at;
+  std::vector<double> anchor_at;
+  const int per = 24;
+  double along = 0.0;
+  for (int i = first; i < last; i++) {
+    const float2 seg[4] = {anchor(i), anchor(i) + c.handle_out[size_t(at(i))],
+                           anchor(i + 1) + c.handle_in[size_t(at(i + 1))], anchor(i + 1)};
+    anchor_at.push_back(along);
+    for (int k = 0; k < per; k++) {
+      const float2 q = bezier_eval(seg, float(k) / float(per));
+      if (!fine.empty()) {
+        along += double(distance(q, fine.back()));
+      }
+      fine.push_back(q);
+      fine_at.push_back(along);
+    }
+  }
+  along += double(distance(anchor(last), fine.back()));
+  fine.push_back(anchor(last));
+  fine_at.push_back(along);
+  anchor_at.push_back(along);
+  const double total = along;
+  if (total < 1e-9) {
+    return;
+  }
+  /* Even steps: a dozen to the shortest wiggle that goes (finer where the points are close, within reason). */
+  const double spacing = total / double(last - first);
+  double step = std::min(double(lump) / 12.0, spacing / 6.0);
+  step = std::max({step, double(lump) / 64.0, total / 4000.0});
+  const int steps = std::max(8, int(std::ceil(total / step)));
+  step = total / double(steps);
+  /* The place on the fine line `d` along it. */
+  size_t seek = 0;
+  const auto fine_point = [&](double d) {
+    while (seek + 1 < fine_at.size() && fine_at[seek + 1] < d) {
+      seek++;
+    }
+    while (seek > 0 && fine_at[seek] > d) {
+      seek--;
+    }
+    const size_t b = std::min(seek + 1, fine.size() - 1);
+    const double gap = fine_at[b] - fine_at[seek];
+    const float u = gap > 1e-12 ? float((d - fine_at[seek]) / gap) : 0.0f;
+    return fine[seek] + (fine[b] - fine[seek]) * u;
+  };
+  /* The samples: for a loop one round (the last would be the first again), else both ends. */
+  const int count = loop ? steps : steps + 1;
+  std::vector<double> xs, ys;
+  for (int k = 0; k < count; k++) {
+    const float2 q = fine_point(double(k) * step);
+    xs.push_back(q.x);
+    ys.push_back(q.y);
+  }
+  /* The cutoff: the smoother halves a wiggle whose wavelength is 2 pi lambda^(1/6) samples. */
+  const double lambda = std::pow(double(lump) / (2.0 * double(PI) * step), 6.0);
+  if (loop) {
+    /* Round a loop: smoothed with copies of itself either side (far enough that its open ends don't reach), then
+     * the middle round taken. */
+    const int pad = std::min(count * 3, int(std::ceil(3.0 * double(lump) / step)) + 8);
+    std::vector<double> px, py, pw(size_t(count + 2 * pad), 1.0);
+    for (int k = -pad; k < count + pad; k++) {
+      const int m = ((k % count) + count) % count;
+      px.push_back(xs[size_t(m)]);
+      py.push_back(ys[size_t(m)]);
+    }
+    whittaker3(px, pw, lambda);
+    whittaker3(py, pw, lambda);
+    for (int k = 0; k < count; k++) {
+      xs[size_t(k)] = px[size_t(k + pad)];
+      ys[size_t(k)] = py[size_t(k + pad)];
+    }
+  }
+  else {
+    /* Its ends stay: weighed far above everything else. */
+    std::vector<double> w(size_t(count), 1.0);
+    w.front() = w.back() = 1e9 * std::max(1.0, lambda);
+    whittaker3(xs, w, lambda);
+    whittaker3(ys, w, lambda);
+  }
+  /* The smoothed line `d` along it (Catmull-Rom through the samples, so it bends smoothly between them) and which
+   * way it runs there. */
+  const auto sample = [&](int k) {
+    if (loop) {
+      k = ((k % count) + count) % count;
+    }
+    else {
+      k = std::clamp(k, 0, count - 1);
+    }
+    return float2{float(xs[size_t(k)]), float(ys[size_t(k)])};
+  };
+  const auto smooth_at = [&](double d, float2 *r_dir) {
+    const double f = std::clamp(d / step, 0.0, double(loop ? count : count - 1));
+    int k = int(std::floor(f));
+    if (!loop && k >= count - 1) {
+      k = count - 2;
+    }
+    const float t = float(f - double(k));
+    const float2 p0 = sample(k - 1), p1 = sample(k), p2 = sample(k + 1), p3 = sample(k + 2);
+    const float t2 = t * t, t3 = t2 * t;
+    const float2 pos = (p1 * 2.0f + (p2 - p0) * t + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * t2 +
+                        (p1 * 3.0f - p0 - p2 * 3.0f + p3) * t3) * 0.5f;
+    if (r_dir) {
+      const float2 d1 = ((p2 - p0) + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * (2.0f * t) +
+                         (p1 * 3.0f - p0 - p2 * 3.0f + p3) * (3.0f * t2)) * 0.5f;
+      *r_dir = normalized(d1);
+    }
+    return pos;
+  };
+  /* Each anchor where its place along the line went; a span's open ends stay exactly. */
+  std::vector<float2> placed(anchor_at.size()), dir(anchor_at.size());
+  for (size_t j = 0; j < anchor_at.size(); j++) {
+    placed[j] = smooth_at(anchor_at[j], &dir[j]);
+  }
+  if (!loop) {
+    placed.front() = anchor(first);
+    placed.back() = anchor(last);
+  }
+  for (int i = first; i <= last; i++) {
+    if (!(loop && i == last)) {
+      r_pos[size_t(at(i))] = placed[size_t(i - first)];
+    }
+  }
+  /* Each segment's handles: its directions the smoothed line's at its ends, its lengths fitted to the smoothed line
+   * between them (Schneider's fit). */
+  for (int i = first; i < last; i++) {
+    const size_t j = size_t(i - first);
+    std::vector<float2> trace;
+    const int pieces = 12;
+    for (int k = 0; k <= pieces; k++) {
+      trace.push_back(smooth_at(anchor_at[j] + (anchor_at[j + 1] - anchor_at[j]) * double(k) / double(pieces), nullptr));
+    }
+    trace.front() = placed[j];
+    trace.back() = placed[j + 1];
+    const float2 d1 = dir[j], d2 = -dir[j + 1];
+    float a1 = 0.0f, a2 = 0.0f;
+    bezier_fit_handle_lengths(placed[j], placed[j + 1], d1, d2, trace, &a1, &a2);
+    r_out[size_t(at(i))] = d1 * a1;
+    r_in[size_t(at(i + 1))] = d2 * a2;
+  }
+}
 
-SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t> &layers, const SculptDab &dab)
+void sculpt_surface_target(SculptStroke::Curve &c, float lump)
+{
+  const int n = int(c.points.size());
+  c.target_pos.resize(size_t(n));
+  c.target_in = c.handle_in;
+  c.target_out = c.handle_out;
+  for (int i = 0; i < n; i++) {
+    c.target_pos[size_t(i)] = c.pos[size_t(c.anchor[size_t(i)])];
+  }
+  if (n < 2 || lump <= 0.0f) {
+    return;
+  }
+  /* Corners stay corners (Curve::corner: points not set smooth that are peaked or bent): they break the line into
+   * spans smoothed apart, each keeping its ends. */
+  const auto corner = [&](int i) { return size_t(i) < c.corner.size() && c.corner[size_t(i)]; };
+  std::vector<int> breaks;
+  for (int i = 0; i < n; i++) {
+    if ((!c.closed && (i == 0 || i == n - 1)) || corner(i)) {
+      breaks.push_back(i);
+    }
+  }
+  std::sort(breaks.begin(), breaks.end());
+  breaks.erase(std::unique(breaks.begin(), breaks.end()), breaks.end());
+  if (!c.closed) {
+    for (size_t b = 0; b + 1 < breaks.size(); b++) {
+      smooth_span(c, breaks[b], breaks[b + 1], false, lump, c.target_pos, c.target_in, c.target_out);
+    }
+    return;
+  }
+  if (!breaks.empty()) {
+    for (size_t b = 0; b < breaks.size(); b++) {
+      const int first = breaks[b];
+      const int last = b + 1 < breaks.size() ? breaks[b + 1] : breaks[0] + n;
+      smooth_span(c, first, last, false, lump, c.target_pos, c.target_in, c.target_out);
+    }
+    return;
+  }
+  if (n >= 3) {
+    smooth_span(c, 0, n, true, lump, c.target_pos, c.target_in, c.target_out);
+  }
+}
+
+SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t> &layers, const SculptDab &dab,
+                                 const SculptStroke *fitted, const SculptBox *fit_within)
 {
   SculptStroke stroke;
   /* A few samples across the brush, so it works on the line at its own scale. */
@@ -264,21 +469,44 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
         }
         c.handle_out[size_t(a)] = doc_ctrl[1] - doc_ctrl[0];
         c.handle_in[size_t(b)] = doc_ctrl[2] - doc_ctrl[3];
-        const float reach = distance(doc_ctrl[0], doc_ctrl[1]) + distance(doc_ctrl[1], doc_ctrl[2]) +
-                            distance(doc_ctrl[2], doc_ctrl[3]);
-        const int count = std::clamp(int(std::ceil(reach / spacing)), 8, 256);
+        /* The line resampled at even steps along it (as a Grease Pencil stroke's points lie), each sample keeping
+         * its place in the segment's own parameter, so the fitting below can give the segment back exactly. A
+         * short segment still has a few. */
+        const int table = 64;
+        float lengths[table + 1];
+        lengths[0] = 0.0f;
+        float2 last = doc_ctrl[0];
+        for (int k = 1; k <= table; k++) {
+          const float2 q = bezier_eval(doc_ctrl, float(k) / float(table));
+          lengths[k] = lengths[k - 1] + distance(q, last);
+          last = q;
+        }
+        const float seg_length = lengths[table];
+        const int count = std::clamp(int(std::ceil(seg_length / spacing)), 4, 256);
         c.anchor[size_t(a)] = int(c.pos.size());
         const float wa = drawing.points[size_t(pa)].radius, wb = drawing.points[size_t(pb)].radius;
         const float sa = selection(a), sb = selection(b);
+        int at_table = 0;
         for (int k = 0; k < count; k++) {
-          const float t = float(k) / float(count);
+          /* The parameter as far along as k / count of the segment's length. */
+          const float want = seg_length * float(k) / float(count);
+          while (at_table < table && lengths[at_table + 1] < want) {
+            at_table++;
+          }
+          const float span = lengths[std::min(at_table + 1, table)] - lengths[at_table];
+          const float t = seg_length > 1e-12f ?
+                              (float(at_table) + (span > 1e-12f ? (want - lengths[at_table]) / span : 0.0f)) /
+                                  float(table) :
+                              float(k) / float(count);
           c.pos.push_back(bezier_eval(doc_ctrl, t));
+          c.param.push_back(t);
           c.width.push_back(wa + (wb - wa) * t);
           c.select.push_back(sa + (sb - sa) * t);
         }
         if (!c.closed && seg == segments - 1) {
           c.anchor[size_t(b)] = int(c.pos.size());
           c.pos.push_back(doc_ctrl[3]);
+          c.param.push_back(0.0f);
           c.width.push_back(wb);
           c.select.push_back(sb);
         }
@@ -288,7 +516,68 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
         const float2 hi = normalized(c.handle_in[size_t(i)]), ho = normalized(c.handle_out[size_t(i)]);
         c.in_line[size_t(i)] = length(hi) > 0.0f && length(ho) > 0.0f && dot(hi, ho) < -0.99999f;
       }
+      /* Corners, which Surface Smooth keeps: a point not set smooth (aligned) that is peaked (Moho's no curvature)
+       * or whose handles bend more than 25 degrees. A smooth point is never one, whatever its handles: one with a
+       * handle of no length (just extruded, say) or a sharp kink is a lump to smooth, as the artist marked it. */
+      c.corner.resize(size_t(n));
+      for (int i = 0; i < n; i++) {
+        const CurvePoint &sp = shown.points[size_t(i)];
+        const float2 hi = normalized(c.handle_in[size_t(i)]), ho = normalized(c.handle_out[size_t(i)]);
+        const bool bent = length(hi) > 0.0f && length(ho) > 0.0f && dot(-hi, ho) < std::cos(25.0f * PI / 180.0f);
+        c.corner[size_t(i)] = !sp.aligned && (sp.curvature <= 0.0f || bent);
+      }
       c.width_start = c.width;
+      if (dab.brush == SculptBrush::SurfaceSmooth) {
+        /* The fit `fitted` has for this curve when the curve is just as it was then (its points and handles
+         * where they were: not changed since), else fitted now; so after a stroke only the curves it changed are
+         * fitted again. */
+        const SculptStroke::Curve *same = nullptr;
+        const auto unchanged = [&](const SculptStroke::Curve &fc) {
+          if (fc.curve != c.curve || fc.points != c.points || fc.target_pos.size() != c.points.size() ||
+              fc.handle_in != c.handle_in || fc.handle_out != c.handle_out)
+          {
+            return false;
+          }
+          for (size_t i = 0; i < c.points.size(); i++) {
+            if (!(fc.pos[size_t(fc.anchor[i])] == c.pos[size_t(c.anchor[i])])) {
+              return false;
+            }
+          }
+          return true;
+        };
+        if (fitted) {
+          for (const SculptStroke::Layer &fl : fitted->layers) {
+            if (fl.id != id) {
+              continue;
+            }
+            for (const SculptStroke::Curve &fc : fl.curves) {
+              if (unchanged(fc)) {
+                same = &fc;
+                break;
+              }
+            }
+          }
+        }
+        /* Off the view (with `fit_within`): left for later. */
+        bool off_view = false;
+        if (!same && fit_within && !c.pos.empty()) {
+          float2 lo = c.pos[0], hi = c.pos[0];
+          for (const float2 &p : c.pos) {
+            lo = float2{std::min(lo.x, p.x), std::min(lo.y, p.y)};
+            hi = float2{std::max(hi.x, p.x), std::max(hi.y, p.y)};
+          }
+          off_view = hi.x < fit_within->lo.x || lo.x > fit_within->hi.x || hi.y < fit_within->lo.y ||
+                     lo.y > fit_within->hi.y;
+        }
+        if (same) {
+          c.target_pos = same->target_pos;
+          c.target_in = same->target_in;
+          c.target_out = same->target_out;
+        }
+        else if (!off_view) {
+          sculpt_surface_target(c, sculpt_surface_tolerance(dab));
+        }
+      }
       if (dab.brush == SculptBrush::Grab) {
         c.grab.resize(c.pos.size());
         for (size_t k = 0; k < c.pos.size(); k++) {
@@ -342,9 +631,68 @@ static std::vector<MirrorPair> sculpt_mirror_pairs(const std::vector<float2> &re
   return pairs;
 }
 
+/* Blender's gaussian_blur_1D (geometry/intern/smooth_curves.cc, as its Grease Pencil Smooth uses it; smooth ends
+ * and keep shape off): a binomial kernel, the discrete Gaussian, as `iterations` rounds of averaging neighbours
+ * would give, each value then going `influence` of the way to its blurred one. An open line's ends stay. */
+static void gaussian_blur_1d(std::vector<float2> &values, const std::vector<float> &influence, int iterations,
+                             bool cyclic)
+{
+  const std::vector<float2> src = values;
+  const long total = long(src.size());
+  if (total < 2) {
+    return;
+  }
+  const long last = total - 1;
+  const auto fixed = [&](long index) { return !cyclic && (index == 0 || index == last); };
+  const int n_half = (iterations * iterations) / 4 + 2 * iterations + 12;
+  double w = 1.0;
+  std::vector<double> total_weight(size_t(total), 0.0);
+  std::vector<float2> dst(static_cast<size_t>(total));
+  for (int step = 0; step < iterations; step++) {
+    const long offset = iterations - step;
+    for (long index = 0; index < total; index++) {
+      if (fixed(index)) {
+        continue;
+      }
+      double w_before = w, w_after = w;
+      long before = index - offset, after = index + offset;
+      if (cyclic) {
+        before = (before % total + total) % total;
+        after = after % total;
+      }
+      else {
+        if (before < 0) {
+          w_before *= double(-before) / double(index);
+        }
+        before = std::max(before, 0L);
+        if (after > last) {
+          w_after *= double(after - last) / double(last - index);
+        }
+        after = std::min(after, last);
+      }
+      const float2 cval = src[size_t(index)];
+      dst[size_t(index)] += (src[size_t(before)] - cval) * float(w_before);
+      dst[size_t(index)] += (src[size_t(after)] - cval) * float(w_after);
+      total_weight[size_t(index)] += w_before + w_after;
+    }
+    w *= double(n_half + offset) / double(n_half + 1 - offset);
+  }
+  for (long index = 0; index < total; index++) {
+    if (fixed(index)) {
+      continue;
+    }
+    total_weight[size_t(index)] += w;
+    values[size_t(index)] = src[size_t(index)] +
+                            dst[size_t(index)] * float(double(influence[size_t(index)]) / total_weight[size_t(index)]);
+  }
+}
+
 int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
 {
-  const float strength = std::clamp(dab.strength, 0.0f, 1.0f);
+  /* No top to it, as Blender's (typed past 1): Grab and Push go further than the mouse; the brushes that work on
+   * while held do more per step, never past where a full step would take a point (Pinch to the centre, Smooth
+   * all the way to the smoothed line). */
+  const float strength = std::max(dab.strength, 0.0f);
   /* Brushes that work on while held: a full step (amount 1) goes this far. */
   const float step = strength * std::clamp(dab.amount, 0.0f, 1.0f);
   const float sign = dab.invert ? -1.0f : 1.0f;
@@ -390,6 +738,8 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       std::vector<bool> width_changed(total, false);
       /* The brush as dabbed and, mirrored within the layer, again (its turn the other way): each works on
        * the line as the one before left it, weighed where the line was. */
+      /* Surface Smooth works on the points and handles themselves, as each side leaves them. */
+      std::vector<float2> fair_in = c.handle_in, fair_out = c.handle_out;
       for (int side = 0; side < (sl.mirror_self ? 2 : 1); side++) {
         SculptDab brush = dab;
         float turn_sign = sign;
@@ -419,7 +769,7 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
             break;
           case SculptBrush::Pinch:
             for (size_t k = 0; k < total; k++) {
-              moved_to[k] = moved_to[k] + (brush.center - moved_to[k]) * (w[k] * step * 0.5f * sign);
+              moved_to[k] = moved_to[k] + (brush.center - moved_to[k]) * std::min(w[k] * step * 0.5f * sign, 1.0f);
             }
             break;
           case SculptBrush::Twist:
@@ -428,29 +778,52 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
             }
             break;
           case SculptBrush::Smooth: {
-            /* Toward the middle of the samples around each, a few on either side; an open curve's ends
-             * stay, as Smooth Points keeps them. */
-            const int window = 3;
-            for (int pass = 0; pass < 2; pass++) {
-              const std::vector<float2> was = moved_to;
-              for (size_t k = 0; k < total; k++) {
-                if (w[k] <= 0.0f || (!c.closed && (k == 0 || k + 1 == total))) {
-                  continue;
-                }
-                float2 sum;
-                int taken = 0;
-                for (int d = -window; d <= window; d++) {
-                  long j = long(k) + d;
-                  if (c.closed) {
-                    j = (j % long(total) + long(total)) % long(total);
-                  }
-                  else if (j < 0 || j >= long(total)) {
-                    continue;
-                  }
-                  sum += was[size_t(j)];
-                  taken++;
-                }
-                moved_to[k] = was[k] + (sum / float(taken) - was[k]) * (w[k] * step);
+            /* Blender's Grease Pencil Smooth on the resampled line: each dab blurs the samples twice over
+             * (gaussian_blur_1D, two iterations, ends kept, no keep shape), each moving strength x falloff of the way
+             * to its blurred place. It works on while the brush is held, moving or not: each frame is its share of a
+             * dab (a tenth of a second a whole one). */
+            std::vector<float> influence(total);
+            for (size_t k = 0; k < total; k++) {
+              influence[k] = std::min(w[k] * step, 1.0f);
+            }
+            gaussian_blur_1d(moved_to, influence, 2, c.closed);
+            break;
+          }
+          case SculptBrush::SurfaceSmooth: {
+            /* Toward the line fitted at the stroke's start (sculpt_surface_target): each point under the brush
+             * and its handles go strength x falloff x the frame's share of the way, so the effect builds up while
+             * held and stops at the fit, never past it. Neighbours' handles toward it move with their own point.
+             * The samples then follow the new curve, which the fitting below gives back exactly. */
+            if (c.target_pos.size() != size_t(n)) {
+              break;
+            }
+            std::vector<bool> changed(size_t(n), false);
+            std::vector<float2> P(static_cast<size_t>(n));
+            for (int i = 0; i < n; i++) {
+              P[size_t(i)] = moved_to[size_t(c.anchor[size_t(i)])];
+            }
+            const auto mix = [](float2 x, float2 y, float u) { return x + (y - x) * u; };
+            for (int i = 0; i < n; i++) {
+              const float f = std::min(w[size_t(c.anchor[size_t(i)])] * step, 1.0f);
+              if (f <= 0.0f) {
+                continue;
+              }
+              P[size_t(i)] = mix(P[size_t(i)], c.target_pos[size_t(i)], f);
+              fair_in[size_t(i)] = mix(fair_in[size_t(i)], c.target_in[size_t(i)], f);
+              fair_out[size_t(i)] = mix(fair_out[size_t(i)], c.target_out[size_t(i)], f);
+              changed[size_t(i)] = true;
+            }
+            /* The samples of every segment that changed follow the new curve, at their own parameters. */
+            for (int s = 0; s < segment_count(c); s++) {
+              const int a = s, b = (s + 1) % n;
+              if (!changed[size_t(a)] && !changed[size_t(b)]) {
+                continue;
+              }
+              const float2 ctrl[4] = {P[size_t(a)], P[size_t(a)] + fair_out[size_t(a)],
+                                      P[size_t(b)] + fair_in[size_t(b)], P[size_t(b)]};
+              const std::vector<int> idx = segment_samples(c, s);
+              for (size_t k = 0; k < idx.size(); k++) {
+                moved_to[size_t(idx[k])] = bezier_eval(ctrl, k + 1 == idx.size() ? 1.0f : c.param[size_t(idx[k])]);
               }
             }
             break;
@@ -497,12 +870,15 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
         }
         const int a = s, b = (s + 1) % n;
         std::vector<float2> pts;
+        std::vector<float> params;
         for (const int k : samples[size_t(s)]) {
           pts.push_back(c.pos[size_t(k)]);
+          params.push_back(c.param[size_t(k)]);
         }
+        params.back() = 1.0f; /* The next point's sample: the segment's end. */
         const float2 kept1 = stored_handle(a, false), kept2 = stored_handle(b, true);
         float2 h1, h2;
-        fit_handles(pts, pts.front(), pts.back(), held(a) ? &kept1 : nullptr, held(b) ? &kept2 : nullptr,
+        bezier_fit_handles(pts, params, pts.front(), pts.back(), held(a) ? &kept1 : nullptr, held(b) ? &kept2 : nullptr,
                     std::max(length(kept1), length(kept2)), &h1, &h2);
         new_out[size_t(a)] = h1;
         has_out[size_t(a)] = true;

@@ -827,9 +827,10 @@ void vector_operators_register()
                     return OpStatus::Finished;
                   });
   vector_operator("mesh.make_segment", "Make Segment",
-                  "Join the two selected points, each the end of an open curve, with a segment (F, as Blender's): "
-                  "two curves become one, the two ends of one curve close it, and the shapes along them run on. "
-                  "With whole loops selected instead, F joins their fills (mesh.join_fills)",
+                  "Join the two selected points with a segment (F, as Blender's): two curve ends make one curve of "
+                  "two, the two ends of one curve close it, and the shapes along them run on; any other two points "
+                  "get a segment of their own, welded to both, drawn as the line through them is. With whole loops "
+                  "selected instead, F joins their fills (mesh.join_fills)",
                   UNDO, editable_with_selection_poll, [](Context &C) {
                     int made = 0;
                     for (Layer *layer : editable_layers(C)) {
@@ -847,8 +848,8 @@ void vector_operators_register()
                         C.undo_name = "Join Fills";
                         return OpStatus::Finished;
                       }
-                      report(ReportType::Warning, "Select two ends of open curves to join (or both ends of one to close "
-                                                  "it), or two or more loops to fill together");
+                      report(ReportType::Warning, "Select two points not already joined by a segment, or two or more "
+                                                  "loops to fill together");
                       return OpStatus::Cancelled;
                     }
                     return OpStatus::Finished;
@@ -926,6 +927,58 @@ void vector_operators_register()
     };
     operators().add(std::move(ot));
   }
+  /* M: Blender's Merge menu, for points. */
+  {
+    OperatorType ot;
+    ot.idname = "mesh.merge_menu";
+    ot.name = "Merge";
+    ot.description = "Choose how to merge the selected points: all into one, or those near one another";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = editable_with_selection_poll;
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "mesh_merge";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  vector_operator("mesh.merge", "Merge",
+                  "Merge the selected points into one, at their middle (Blender's Merge > At Center): curves through "
+                  "them run through it, and shapes that met only there become one",
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
+                    int merged = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (layer->is_reference() && !layer->reference.edit_points) {
+                        continue;
+                      }
+                      const std::vector<int> picked = drawing_selected_points(layer->drawing);
+                      if (picked.size() >= 2) {
+                        merged += drawing_merge_points(layer->drawing, {picked});
+                      }
+                    }
+                    if (merged == 0) {
+                      report(ReportType::Warning, "Select at least two points to merge");
+                      return OpStatus::Cancelled;
+                    }
+                    report(ReportType::Info, "Removed " + std::to_string(merged) + (merged == 1 ? " point" : " points"));
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.merge_by_distance", "Merge by Distance",
+                  "Merge the selected points that lie within distance= of one another (by way of each other), each "
+                  "group at its middle (Blender's Merge > By Distance)",
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
+                    const float distance = std::max(op_arg_float(C, "distance", 0.001f), 0.0f);
+                    int merged = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (layer->is_reference() && !layer->reference.edit_points) {
+                        continue;
+                      }
+                      merged += drawing_merge_points(layer->drawing, drawing_points_within(layer->drawing, distance));
+                    }
+                    report(ReportType::Info, "Removed " + std::to_string(merged) + (merged == 1 ? " point" : " points"));
+                    return OpStatus::Finished;
+                  },
+                  {op_float_property("distance", "Merge Distance", "Points this close (or closer) become one", "0.001",
+                                     0.0f, 10.0f, 0.0005f)});
   {
     OperatorType ot;
     ot.idname = "mesh.delete_menu";
@@ -1258,7 +1311,7 @@ void vector_operators_register()
     OperatorType ot;
     ot.idname = "wm.tool_shape";
     ot.name = "Shape Tool";
-    ot.description = "Switch to the Shape tool: box or circle";
+    ot.description = "Switch to the Shape tool: shape=BOX, CIRCLE or GRID (columns=, rows= its cells)";
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       /* A setup-only tool: away from frame 0 it says what makes it work. */
@@ -1268,8 +1321,14 @@ void vector_operators_register()
       }
       const std::string shape = op_arg(C, "shape");
       if (!shape.empty() && !primitive_from_identifier(shape, &C.wm->tool_settings.shape)) {
-        report(ReportType::Error, "Unknown shape '" + shape + "': use BOX or CIRCLE");
+        report(ReportType::Error, "Unknown shape '" + shape + "': use BOX, CIRCLE or GRID");
         return OpStatus::Cancelled;
+      }
+      if (op_has_arg(C, "columns")) {
+        C.wm->tool_settings.grid_columns = std::clamp(op_arg_int(C, "columns", 3), 1, GRID_CELLS_MAX);
+      }
+      if (op_has_arg(C, "rows")) {
+        C.wm->tool_settings.grid_rows = std::clamp(op_arg_int(C, "rows", 3), 1, GRID_CELLS_MAX);
       }
       C.wm->tool_settings.tool = Tool::Shape;
       return OpStatus::Finished;

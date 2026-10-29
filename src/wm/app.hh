@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <SDL3/SDL_events.h>
+
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "gpu/scene_renderer.hh"
@@ -15,7 +17,6 @@
 
 struct SDL_Window;
 struct SDL_GLContextState;
-union SDL_Event;
 
 namespace oanim {
 
@@ -47,6 +48,7 @@ class App {
   bool window_init();
   void window_exit();
   void main_loop();
+  void update_number_grab();
   void handle_event(const SDL_Event &event);
   void playback_update();
   /* The frame last shown, to play a frame's sound when scrubbing moves it. */
@@ -91,6 +93,13 @@ class App {
   std::vector<Workspace> workspaces_;
   int next_area_id_ = 1;
   bool show_about_ = false;
+  /* A number field's scrub has the mouse grabbed (relative mouse mode). */
+  bool number_grab_ = false;
+  /* Keys pressed while a click is still on its way to the tools (ImGui hands a click's press and release over one
+   * frame each), held until it has arrived: G right after clicking a point moves that point, as its selection is
+   * there by then. */
+  std::vector<SDL_Event> held_keys_;
+  bool click_arriving() const;
   bool show_preferences_ = false;
   /* The asset library was set up while the app ran: offer Moho's brushes if it has none. */
   /* The last render (Render Frame), shown in the Render Result window. */

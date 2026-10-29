@@ -16,6 +16,7 @@
 
 #include "anim/deform.hh"
 #include "core/log.hh"
+#include "core/parallel.hh"
 #include "anim/dynamics.hh"
 #include "anim/shape_limit.hh"
 #include "anim/reference.hh"
@@ -99,6 +100,9 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
     }
     if (m.type == ModifierType::Bevel) {
       f(m.bevel_amount_keys, m.bevel_amount);
+    }
+    if (modifier_is_deform(m.type)) {
+      f(m.deform_strength_keys, m.deform_strength);
     }
   }
   /* A reference's drawing is built from its original's: its own channels are its offsets. */
@@ -316,16 +320,24 @@ void animation_record(Document &doc)
   const bool auto_key = doc.auto_key;
   /* New points get their weights, so they follow the bones like their neighbours. */
   document_weight_new_points(doc);
-  /* New points get their handles now, from the setup pose, before anything counts as an edit. */
-  const auto init = [](auto &&self, std::vector<Layer> &layers) -> void {
+  /* Every layer, children too: the passes below work on each on its own, over the CPU's cores (a big document has
+   * thousands). */
+  std::vector<Layer *> flat;
+  const auto gather = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
-      if (!layer.is_reference()) {
-        drawing_init_handles(layer.drawing);
-      }
+      flat.push_back(&layer);
       self(self, layer.children);
     }
   };
-  init(init, doc.layers);
+  gather(gather, doc.layers);
+  /* New points get their handles now, from the setup pose, before anything counts as an edit. */
+  parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++) {
+      if (!flat[i]->is_reference()) {
+        drawing_init_handles(flat[i]->drawing);
+      }
+    }
+  });
   /* Every point and shape has its id; edits on references become their overrides (their offsets are
    * then keyed below like any edit). */
   const auto ids = [](auto &&self, std::vector<Layer> &layers) -> void {
@@ -340,8 +352,9 @@ void animation_record(Document &doc)
   references_capture(doc);
   /* Points added to an animated curve take their neighbours' motion. Frame 0 is the setup pose:
    * bones, points and handles moved there move their setup, and every pose with it. */
-  const auto setups = [frame](auto &&self, std::vector<Layer> &layers) -> void {
-    for (Layer &layer : layers) {
+  parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++) {
+      Layer &layer = *flat[i];
       if (!layer.is_reference()) {
         drawing_new_points_follow(layer.drawing, frame);
       }
@@ -353,10 +366,8 @@ void animation_record(Document &doc)
           drawing_take_setup(layer.drawing);
         }
       }
-      self(self, layer.children);
     }
-  };
-  setups(setups, doc.layers);
+  });
   const bool replace = doc.auto_key_mode == AutoKeyMode::Replace;
   /* The channels an edit keyed, for Auto-Freeze Keys (only then: keying every point of a big drawing puts
    * hundreds of thousands here), sorted once recording is done. */
@@ -367,20 +378,24 @@ void animation_record(Document &doc)
     bool empty() const { return list.empty(); }
     size_t count(const void *ch) const { return std::binary_search(list.begin(), list.end(), ch) ? 1 : 0; }
   } keyed{keyed_list};
-  /* A media or text layer with Don't Auto Key on is changed but never auto-keyed. */
-  const auto record_layers = [&](auto &&self, std::vector<Layer> &layers) -> void {
-    for (Layer &layer : layers) {
+  /* A media or text layer with Don't Auto Key on is changed but never auto-keyed. Each layer's channels on their
+   * own (what each keyed gathered apart, then together). */
+  std::vector<std::vector<const void *>> keyed_by_layer(flat.size());
+  parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++) {
+      Layer &layer = *flat[i];
       const bool keys = auto_key && !(layer.is_media() && layer.media.no_auto_key) &&
                         !(layer.is_text() && layer.text.no_auto_key);
       layer_for_each_channel(layer, [&](auto &ch, auto &value) {
         if (record(ch, value, frame, keys, replace) && freezing) {
-          keyed_list.push_back(&ch);
+          keyed_by_layer[i].push_back(&ch);
         }
       });
-      self(self, layer.children);
     }
-  };
-  record_layers(record_layers, doc.layers);
+  });
+  for (const std::vector<const void *> &list : keyed_by_layer) {
+    keyed_list.insert(keyed_list.end(), list.begin(), list.end());
+  }
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });
   layer_for_each_channel(document_camera(doc),
@@ -1772,6 +1787,10 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
     if (layer.modifiers[i].type == ModifierType::Bevel) {
       add("modifiers[" + std::to_string(i) + "].amount", layer.modifiers[i].bevel_amount_keys,
           layer.modifiers[i].bevel_amount);
+    }
+    if (modifier_is_deform(layer.modifiers[i].type)) {
+      add("modifiers[" + std::to_string(i) + "].strength", layer.modifiers[i].deform_strength_keys,
+          layer.modifiers[i].deform_strength);
     }
   }
   if (!drawing) {

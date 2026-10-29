@@ -221,7 +221,7 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
                         const char *undo_name)
 {
   ImGui::SetNextItemWidth(width);
-  ImGui::DragInt(id, value, 0.25f, 0, 1048574, format, ImGuiSliderFlags_AlwaysClamp);
+  ui_drag_int(id, value, 0.25f, 0, 1048574, format, ImGuiSliderFlags_AlwaysClamp);
   if (undo_name && ImGui::IsItemDeactivatedAfterEdit() && C.undo) {
     C.undo->push(undo_name, *C.document);
   }
@@ -852,7 +852,7 @@ static void interp_settings_popup(Context &C)
   else if (s.interp == Interp::Back) {
     row("Overshoot");
     float v = s.overshoot;
-    if (ImGui::DragFloat("##overshoot", &v, 0.02f, 0.0f, 10.0f, "%.2f")) {
+    if (ui_drag_float("##overshoot", &v, 0.02f, 0.0f, 10.0f, "%.2f")) {
       live([v](KeySettings &k) { k.overshoot = v; });
     }
     done();
@@ -860,7 +860,7 @@ static void interp_settings_popup(Context &C)
   else if (s.interp == Interp::Elastic) {
     row("Amplitude");
     float amp = s.elastic_amplitude;
-    if (ImGui::DragFloat("##amplitude", &amp, 0.02f, 1.0f, 5.0f, "%.2f")) {
+    if (ui_drag_float("##amplitude", &amp, 0.02f, 1.0f, 5.0f, "%.2f")) {
       live([amp](KeySettings &k) { k.elastic_amplitude = amp; });
     }
     done();
@@ -869,7 +869,7 @@ static void interp_settings_popup(Context &C)
     }
     row("Period");
     float period = s.elastic_period;
-    if (ImGui::DragFloat("##period", &period, 0.005f, 0.05f, 1.0f, "%.2f")) {
+    if (ui_drag_float("##period", &period, 0.005f, 0.05f, 1.0f, "%.2f")) {
       live([period](KeySettings &k) { k.elastic_period = period; });
     }
     done();
@@ -880,7 +880,7 @@ static void interp_settings_popup(Context &C)
   else if (s.interp == Interp::Noisy) {
     row("Amount");
     float amount = s.noise_amplitude;
-    if (ImGui::DragFloat("##noise_amount", &amount, 0.005f, 0.0f, 1000.0f, "%.3f")) {
+    if (ui_drag_float("##noise_amount", &amount, 0.005f, 0.0f, 1000.0f, "%.3f")) {
       live([amount](KeySettings &k) { k.noise_amplitude = amount; });
     }
     done();
@@ -889,7 +889,7 @@ static void interp_settings_popup(Context &C)
     }
     row("Wiggles");
     float wiggles = s.noise_frequency;
-    if (ImGui::DragFloat("##noise_wiggles", &wiggles, 0.005f, 0.01f, 4.0f, "%.2f per frame")) {
+    if (ui_drag_float("##noise_wiggles", &wiggles, 0.005f, 0.01f, 4.0f, "%.2f per frame")) {
       live([wiggles](KeySettings &k) { k.noise_frequency = wiggles; });
     }
     done();
@@ -897,7 +897,7 @@ static void interp_settings_popup(Context &C)
   else if (s.interp == Interp::Cycle) {
     row("Loop Back");
     int back = s.cycle_back;
-    if (ImGui::DragInt("##cycle_back", &back, 0.2f, 0, 100000, back == 0 ? "to the first key" : "%d frames")) {
+    if (ui_drag_int("##cycle_back", &back, 0.2f, 0, 100000, back == 0 ? "to the first key" : "%d frames")) {
       live([back](KeySettings &k) { k.cycle_back = std::max(0, back); });
     }
     done();
@@ -909,7 +909,7 @@ static void interp_settings_popup(Context &C)
   ImGui::Separator();
   row("Hold");
   int hold = s.hold;
-  if (ImGui::DragInt("##hold", &hold, 0.2f, 0, 100000, hold == 1 ? "%d frame" : "%d frames")) {
+  if (ui_drag_int("##hold", &hold, 0.2f, 0, 100000, hold == 1 ? "%d frame" : "%d frames")) {
     live([hold](KeySettings &k) { k.hold = std::max(0, hold); });
   }
   done();
@@ -1315,7 +1315,7 @@ static void timeline_header(Area &area, Context &C)
           const float swatch = h * 1.3f;
           ImGui::SetNextItemWidth(std::max(h, width - swatch - ImGui::GetStyle().ItemInnerSpacing.x));
           int &count = after ? doc.onion_after : doc.onion_before;
-          if (ImGui::DragInt(after ? "##onion_after" : "##onion_before", &count, 0.1f, 0, 20,
+          if (ui_drag_int(after ? "##onion_after" : "##onion_before", &count, 0.1f, 0, 20,
                              doc.onion_mode == OnionMode::Frames ? "%d frames" : "%d keys")) {
             count = std::clamp(count, 0, 20);
             C.undo->mark_changed();
