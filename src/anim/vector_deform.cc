@@ -816,7 +816,13 @@ static bool mean_value(const std::vector<float2> &v, float2 p, std::vector<float
    * the way there (a point far off moved a little with an outline that hadn't). */
   const size_t n = v.size();
   r_w.assign(n, 0.0f);
-  std::vector<double> sx(n), sy(n), r(n), t(n);
+  /* Each thread's own, kept (this runs for every point bent, several times over). */
+  thread_local std::vector<double> sx, sy, r, t, w;
+  sx.resize(n);
+  sy.resize(n);
+  r.resize(n);
+  t.resize(n);
+  w.resize(n);
   double scale = 0.0;
   for (size_t i = 0; i < n; i++) {
     sx[i] = double(v[i].x) - p.x;
@@ -843,7 +849,6 @@ static bool mean_value(const std::vector<float2> &v, float2 p, std::vector<float
     /* tan of half the angle the edge spans at p, signed. */
     t[i] = std::fabs(a) > 1e-300 ? (r[i] * r[j] - d) / a : 0.0;
   }
-  std::vector<double> w(n);
   double sum = 0.0;
   for (size_t i = 0; i < n; i++) {
     w[i] = (t[(i + n - 1) % n] + t[i]) / r[i];
@@ -1522,36 +1527,44 @@ static float2 rigid_offset(const DeformShape &d, float2 p);
 
 /* A side's nearest place to `p` and the way it runs there; where two parts of a curved side are nearly as near
  * (within a fiftieth of its length), the places on each blended by how much nearer each is. */
-static void side_place(const std::vector<float2> &v, const std::vector<float2> &ways, float length_of, float2 p,
-                       float2 &r_on, float2 &r_way)
+static float side_place(const std::vector<float2> &v, const std::vector<float2> &ways, float length_of, float2 p,
+                        float2 &r_on, float2 &r_way)
 {
   const float soft = std::max(length_of * 0.02f, 1e-9f);
   const size_t pieces = v.size() - 1;
+  /* Each piece's nearest place, worked out once for both passes (called for every point bent, several times). */
+  struct Near {
+    float2 at;
+    float t, dist;
+  };
+  thread_local std::vector<Near> near;
+  near.resize(pieces);
   float closest = FLT_MAX;
   for (size_t k = 0; k < pieces; k++) {
     const float2 e = v[k + 1] - v[k];
     const float ee = dot(e, e);
     const float t = ee > 1e-20f ? std::clamp(dot(p - v[k], e) / ee, 0.0f, 1.0f) : 0.0f;
-    closest = std::min(closest, length(v[k] + e * t - p));
+    const float2 at = v[k] + e * t;
+    near[k] = {at, t, length(at - p)};
+    closest = std::min(closest, near[k].dist);
   }
   float2 on(0.0f, 0.0f), way(0.0f, 0.0f);
   float total = 0.0f;
   for (size_t k = 0; k < pieces; k++) {
-    const float2 e = v[k + 1] - v[k];
-    const float ee = dot(e, e);
-    const float t = ee > 1e-20f ? std::clamp(dot(p - v[k], e) / ee, 0.0f, 1.0f) : 0.0f;
-    const float2 at = v[k] + e * t;
-    const float x = (length(at - p) - closest) / soft;
+    const float x = (near[k].dist - closest) / soft;
     if (x >= 1.0f) {
       continue;
     }
     const float w = (1.0f - x) * (1.0f - x);
-    on = on + at * w;
+    const float t = near[k].t;
+    on = on + near[k].at * w;
     way = way + (ways[k] * (1.0f - t) + ways[k + 1] * t) * w;
     total += w;
   }
   r_on = total > 0.0f ? on / total : v[0];
   r_way = length(way) > 1e-12f ? normalize(way) : float2(1.0f, 0.0f);
+  /* The distance from it (as polyline_distance's). */
+  return closest;
 }
 
 static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
@@ -1568,18 +1581,19 @@ static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &s
   }
   const size_t n = d.envelope_sides.size();
   float near = FLT_MAX;
-  std::vector<float> dist(n);
-  std::vector<float2> fix(n);
+  thread_local std::vector<float> dist;
+  thread_local std::vector<float2> fix;
+  dist.resize(n);
+  fix.resize(n);
   for (size_t s = 0; s < n; s++) {
     const DeformShape::EnvelopeSide &side = d.envelope_sides[s];
-    dist[s] = polyline_distance(side.rest, false, p);
-    near = std::min(near, dist[s]);
     /* Its distance from the side at rest and where the cage put it from the side now, each measured from the side's
      * nearest place (where two parts of a curved side are nearly as near, within a fiftieth of the side's length,
      * the places on each blended by how much nearer each is: so the place never jumps from one to the other as the
      * side moves, and the point with it), at rest and now alike, so a side that hasn't moved sets nothing. */
     float2 rest_on, rest_way, now_on, now_way;
-    side_place(side.rest, side.rest_way, side.rest_at.back(), p, rest_on, rest_way);
+    dist[s] = side_place(side.rest, side.rest_way, side.rest_at.back(), p, rest_on, rest_way);
+    near = std::min(near, dist[s]);
     side_place(side.now, side.now_way, side.now_at.back(), q, now_on, now_way);
     const float across = cross(rest_way, p - rest_on);
     /* Set back to it in full at the side and less further off, as reach / (reach + distance): the distance it ends
@@ -1654,10 +1668,49 @@ struct RigidLattice {
   std::vector<float2> rest;
   std::vector<std::vector<Link>> links;
   std::vector<Hold> holds;
-  std::vector<float> stiff;
   /* Empty where it has none. */
   std::vector<std::vector<float>> mean_value;
+  /* The system where the nodes go to sit (the same matrix every round, every frame: only what it is solved for
+   * moves), as its Cholesky factor, banded: row k holds its `band` entries left of the diagonal, then the diagonal.
+   * The nodes go row by row along the lattice, so a node's neighbours are within a row's length of it. */
+  int band = 0;
+  std::vector<double> factor;
+  /* x with A x = b, A the system above (b and x two columns, x and y). */
+  void solve(const std::vector<float2> &b, std::vector<float2> &x) const;
 };
+
+void RigidLattice::solve(const std::vector<float2> &b, std::vector<float2> &x) const
+{
+  const int count = int(rest.size());
+  const int w = band + 1;
+  std::vector<double> yx(static_cast<size_t>(count)), yy(static_cast<size_t>(count));
+  for (int k = 0; k < count; k++) {
+    double sx = double(b[size_t(k)].x), sy = double(b[size_t(k)].y);
+    const double *row = &factor[size_t(k) * size_t(w)];
+    for (int i = std::max(0, k - band); i < k; i++) {
+      const double l = row[i - k + band];
+      sx -= l * yx[size_t(i)];
+      sy -= l * yy[size_t(i)];
+    }
+    yx[size_t(k)] = sx / row[band];
+    yy[size_t(k)] = sy / row[band];
+  }
+  for (int k = count - 1; k >= 0; k--) {
+    double sx = yx[size_t(k)], sy = yy[size_t(k)];
+    for (int i = k + 1; i <= std::min(count - 1, k + band); i++) {
+      const double l = factor[size_t(i) * size_t(w) + size_t(k - i + band)];
+      sx -= l * yx[size_t(i)];
+      sy -= l * yy[size_t(i)];
+    }
+    const double d = factor[size_t(k) * size_t(w) + size_t(band)];
+    yx[size_t(k)] = sx / d;
+    yy[size_t(k)] = sy / d;
+  }
+  x.resize(static_cast<size_t>(count));
+  for (int k = 0; k < count; k++) {
+    x[size_t(k)] = float2(float(yx[size_t(k)]), float(yy[size_t(k)]));
+  }
+}
 
 static std::shared_ptr<const RigidLattice> rigid_lattice(const std::vector<float2> &outline, float2 lo, float2 hi,
                                                          float size)
@@ -1746,16 +1799,51 @@ static std::shared_ptr<const RigidLattice> rigid_lattice(const std::vector<float
       L.holds.push_back(hold);
     }
   }
-  /* Each node's own stiffness (the system's diagonal), to precondition by. */
-  L.stiff.assign(static_cast<size_t>(count), RigidLattice::HOLD);
+  /* The system where the nodes go to sit (each node held a little where it is, pulled by its links and by the outline's
+   * samples round it), then its factor, once for the lattice. */
   for (int k = 0; k < count; k++) {
     for (const RigidLattice::Link &l : L.links[size_t(k)]) {
-      L.stiff[size_t(k)] += l.weight;
+      L.band = std::max(L.band, std::abs(k - l.to));
     }
   }
   for (const RigidLattice::Hold &hold : L.holds) {
     for (int c = 0; c < 4; c++) {
-      L.stiff[size_t(hold.node[size_t(c)])] += RigidLattice::FIRM * hold.weight[size_t(c)] * hold.weight[size_t(c)];
+      for (int d = 0; d < 4; d++) {
+        L.band = std::max(L.band, std::abs(hold.node[size_t(c)] - hold.node[size_t(d)]));
+      }
+    }
+  }
+  const int w = L.band + 1;
+  std::vector<double> &a = L.factor;
+  a.assign(size_t(count) * size_t(w), 0.0);
+  /* Entry (k, j), j <= k. */
+  const auto at = [&](int k, int j) -> double & { return a[size_t(k) * size_t(w) + size_t(j - k + L.band)]; };
+  for (int k = 0; k < count; k++) {
+    at(k, k) += double(RigidLattice::HOLD);
+    for (const RigidLattice::Link &l : L.links[size_t(k)]) {
+      at(k, k) += double(l.weight);
+      if (l.to < k) {
+        at(k, l.to) -= double(l.weight);
+      }
+    }
+  }
+  for (const RigidLattice::Hold &hold : L.holds) {
+    for (int c = 0; c < 4; c++) {
+      for (int d = 0; d < 4; d++) {
+        const int p = hold.node[size_t(c)], q = hold.node[size_t(d)];
+        if (q <= p) {
+          at(p, q) += double(RigidLattice::FIRM) * double(hold.weight[size_t(c)]) * double(hold.weight[size_t(d)]);
+        }
+      }
+    }
+  }
+  for (int k = 0; k < count; k++) {
+    for (int j = std::max(0, k - L.band); j <= k; j++) {
+      double s = at(k, j);
+      for (int i = std::max(0, std::max(k, j) - L.band); i < j; i++) {
+        s -= at(k, i) * at(j, i);
+      }
+      at(k, j) = j == k ? std::sqrt(std::max(s, 1e-300)) : s / at(j, j);
     }
   }
   L.mean_value.resize(static_cast<size_t>(count));
@@ -1871,7 +1959,6 @@ static void cage_method_build(DeformShape &r)
   const std::vector<float2> &rest = L.rest;
   const std::vector<std::vector<RigidLattice::Link>> &links = L.links;
   const std::vector<RigidLattice::Hold> &holds = L.holds;
-  const std::vector<float> &stiff = L.stiff;
   /* Starting from mean value coordinates (what the offsets are measured from). */
   std::vector<float2> start(static_cast<size_t>(count)), pos(static_cast<size_t>(count));
   for (int k = 0; k < count; k++) {
@@ -1887,36 +1974,7 @@ static void cage_method_build(DeformShape &r)
     pos[size_t(k)] = q;
   }
   constexpr float FIRM = RigidLattice::FIRM, HOLD = RigidLattice::HOLD;
-  const auto apply = [&](const std::vector<float2> &x, std::vector<float2> &r_out) {
-    for (int k = 0; k < count; k++) {
-      float2 s = x[size_t(k)] * HOLD;
-      for (const RigidLattice::Link &l : links[size_t(k)]) {
-        s = s + (x[size_t(k)] - x[size_t(l.to)]) * l.weight;
-      }
-      r_out[size_t(k)] = s;
-    }
-    for (const RigidLattice::Hold &hold : holds) {
-      float2 at(0.0f, 0.0f);
-      for (int c = 0; c < 4; c++) {
-        at = at + x[size_t(hold.node[size_t(c)])] * hold.weight[size_t(c)];
-      }
-      for (int c = 0; c < 4; c++) {
-        float2 &out = r_out[size_t(hold.node[size_t(c)])];
-        out = out + at * (FIRM * hold.weight[size_t(c)]);
-      }
-    }
-  };
   std::vector<float2> turn(static_cast<size_t>(count)), rhs(static_cast<size_t>(count));
-  std::vector<float2> res(static_cast<size_t>(count)), dir(static_cast<size_t>(count)), ad(static_cast<size_t>(count));
-  std::vector<float2> pre(static_cast<size_t>(count));
-  constexpr int CG_STEPS = 40;
-  const auto dot2 = [&](const std::vector<float2> &a, const std::vector<float2> &b) {
-    double s = 0.0;
-    for (int k = 0; k < count; k++) {
-      s += double(dot(a[size_t(k)], b[size_t(k)]));
-    }
-    return s;
-  };
   const auto rotate = [](float2 t, float2 e) { return float2(t.x * e.x - t.y * e.y, t.y * e.x + t.x * e.y); };
   for (int iteration = 0; iteration < 20; iteration++) {
     /* Each node's best turn of how its neighbours sit around it. */
@@ -1945,29 +2003,9 @@ static void cage_method_build(DeformShape &r)
         out = out + r.now[hold.sample] * (FIRM * hold.weight[size_t(c)]);
       }
     }
-    /* Always the same number of steps (Jacobi-preconditioned, from where the nodes are): stopping once close enough
-     * stopped after more or fewer of them as the cage moved, and the inside wobbled with it. */
-    apply(pos, ad);
-    for (int k = 0; k < count; k++) {
-      res[size_t(k)] = rhs[size_t(k)] - ad[size_t(k)];
-      pre[size_t(k)] = res[size_t(k)] / stiff[size_t(k)];
-      dir[size_t(k)] = pre[size_t(k)];
-    }
-    double rz = dot2(res, pre);
-    for (int cg = 0; cg < CG_STEPS && rz > 1e-300; cg++) {
-      apply(dir, ad);
-      const double alpha = rz / std::max(dot2(dir, ad), 1e-300);
-      for (int k = 0; k < count; k++) {
-        pos[size_t(k)] = pos[size_t(k)] + dir[size_t(k)] * float(alpha);
-        res[size_t(k)] = res[size_t(k)] - ad[size_t(k)] * float(alpha);
-        pre[size_t(k)] = res[size_t(k)] / stiff[size_t(k)];
-      }
-      const double next = dot2(res, pre);
-      for (int k = 0; k < count; k++) {
-        dir[size_t(k)] = pre[size_t(k)] + dir[size_t(k)] * float(next / rz);
-      }
-      rz = next;
-    }
+    /* Solved exactly, by the lattice's factor (conjugate gradients, a fixed number of steps from where the nodes were,
+     * took nearly all the build's time). */
+    L.solve(rhs, pos);
   }
   /* The offsets onto the lattice; past the nodes, carried on outward as they were at the edge of them, fading out
    * over a few steps, so the B-spline over the lattice joins them to nothing smoothly. */
