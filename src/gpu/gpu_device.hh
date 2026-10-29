@@ -89,12 +89,14 @@ struct BatchVertex {
   float x, y;
   float r, g, b, a;
   float slot;
+  /* As Vertex's: a colour stroke's offset from its line and widest half width (0: not a stroke). */
+  float ox, oy, w;
 };
 
 /* How a mesh's vertices are laid out. */
 enum class Layout : uint8_t {
   None,
-  /* Vertex: x, y, r, g, b, a. */
+  /* Vertex: x, y, r, g, b, a, and a stroke's offset and widest half width. */
   Color,
   /* BatchVertex: x, y, r, g, b, a, slot. */
   Batch,

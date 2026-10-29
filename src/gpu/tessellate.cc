@@ -16,6 +16,24 @@ static Vertex make_vertex(float2 p, Color c, float alpha_scale)
   return {p.x, p.y, c.r * a, c.g * a, c.b * a, a};
 }
 
+/* A stroke's vertex at `p`, of its cross-section about `centre` on the line. */
+static Vertex make_vertex(float2 p, float2 centre, Color c, float alpha_scale)
+{
+  Vertex v = make_vertex(p, c, alpha_scale);
+  v.ox = p.x - centre.x;
+  v.oy = p.y - centre.y;
+  return v;
+}
+
+/* The vertices from `first` on, a disc's about `centre`: their offsets from it. */
+static void offsets_from(std::vector<Vertex> &vertices, size_t first, float2 centre)
+{
+  for (size_t i = first; i < vertices.size(); i++) {
+    vertices[i].ox = vertices[i].x - centre.x;
+    vertices[i].oy = vertices[i].y - centre.y;
+  }
+}
+
 static void quad(std::vector<Vertex> &out, const Vertex &a, const Vertex &b, const Vertex &c, const Vertex &d)
 {
   out.insert(out.end(), {a, b, c, a, c, d});
@@ -256,7 +274,9 @@ static void disc(float2 center, float radius, Color color, float aa, std::vector
  * no bump shows where they meet. */
 static void stroke_disc(float2 center, float hw, Color color, float aa, std::vector<Vertex> &r_out)
 {
+  const size_t first = r_out.size();
   disc(center, std::max(hw - aa * 0.5f, aa * 0.25f), color, aa, r_out);
+  offsets_from(r_out, first, center);
 }
 
 /* SVG's default: a sharp corner tighter than this (miter length over half width) is bevelled. */
@@ -266,6 +286,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
                        bool closed, Color color, float aa, std::vector<Vertex> &r_out,
                        const std::vector<StrokeJoin> *input_joins)
 {
+  const size_t first_vertex = r_out.size();
   std::vector<float2> points = input_points;
   std::vector<float> half_widths = input_half_widths;
   std::vector<StrokeJoin> joins = input_joins ? *input_joins : std::vector<StrokeJoin>(points.size(), StrokeJoin::Smooth);
@@ -280,8 +301,21 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
   if (n == 0) {
     return;
   }
+  /* Every vertex made below with the stroke's widest half width (Vertex). */
+  struct Widest {
+    std::vector<Vertex> &out;
+    size_t first;
+    float widest;
+    ~Widest()
+    {
+      for (size_t i = first; i < out.size(); i++) {
+        out[i].w = widest;
+      }
+    }
+  } mark_widest{r_out, first_vertex, widest};
   if (n == 1) {
     disc(points[0], std::max(half_widths[0], aa * 0.5f), color, aa, r_out);
+    offsets_from(r_out, first_vertex, points[0]);
     return;
   }
   for (float &hw : half_widths) {
@@ -311,6 +345,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
   struct Side {
     float2 outer_left, core_left, core_right, outer_right;
     float core_alpha;
+    float2 centre;
   };
   const auto core_radius = [&](size_t i) { return std::max(half_widths[i] - aa * 0.5f, 0.0f); };
   const auto make_side = [&](size_t i, float2 left, float2 right) {
@@ -319,7 +354,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
     /* Lines thinner than the soft edge fade instead of vanishing. */
     const float core_alpha = hw < aa * 0.5f ? std::max(hw * 2.0f / aa, 0.05f) : 1.0f;
     const float2 p = points[i];
-    return Side{p + left * outer, p + left * core, p + right * core, p + right * outer, core_alpha};
+    return Side{p + left * outer, p + left * core, p + right * core, p + right * outer, core_alpha, p};
   };
   /* Where two edges at unit distance from a point meet (their normals m0 and m1), per unit of
    * half width. Long mitres are cut short; `too_sharp` reports it so a disc can cover the gap. */
@@ -390,7 +425,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
      * between them and the point (a round join's disc covers this by itself). */
     const float2 i0 = left ? in.core_right : in.core_left, i1 = left ? out.core_right : out.core_left;
     for (const auto &[a, b] : {std::pair{c0, i0}, std::pair{c1, i1}, std::pair{i0, i1}}) {
-      r_out.insert(r_out.end(), {make_vertex(p, color, alpha), make_vertex(a, color, alpha), make_vertex(b, color, alpha)});
+      r_out.insert(r_out.end(), {make_vertex(p, p, color, alpha), make_vertex(a, p, color, alpha), make_vertex(b, p, color, alpha)});
     }
     const float2 tip = (m0 + m1) / denom;
     /* How far the corner reaches is set by the turn alone, as for a stroke of even width: a
@@ -414,18 +449,18 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
       const float2 c_tip = p + tip * core, q_tip = p + tip * outer;
       const float2 ck0 = clip(c0, c_tip, reach * core), ck1 = clip(c1, c_tip, reach * core);
       const float2 qk0 = clip(q0, q_tip, reach * outer), qk1 = clip(q1, q_tip, reach * outer);
-      r_out.insert(r_out.end(), {make_vertex(p, color, alpha), make_vertex(c0, color, alpha),
-                                 make_vertex(ck0, color, alpha), make_vertex(p, color, alpha),
-                                 make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha),
-                                 make_vertex(p, color, alpha), make_vertex(ck1, color, alpha),
-                                 make_vertex(c1, color, alpha)});
+      r_out.insert(r_out.end(), {make_vertex(p, p, color, alpha), make_vertex(c0, p, color, alpha),
+                                 make_vertex(ck0, p, color, alpha), make_vertex(p, p, color, alpha),
+                                 make_vertex(ck0, p, color, alpha), make_vertex(ck1, p, color, alpha),
+                                 make_vertex(p, p, color, alpha), make_vertex(ck1, p, color, alpha),
+                                 make_vertex(c1, p, color, alpha)});
       if (aa > 0.0f) {
-        quad(r_out, make_vertex(c0, color, alpha), make_vertex(ck0, color, alpha), make_vertex(qk0, color, 0.0f),
-             make_vertex(q0, color, 0.0f));
-        quad(r_out, make_vertex(ck0, color, alpha), make_vertex(ck1, color, alpha), make_vertex(qk1, color, 0.0f),
-             make_vertex(qk0, color, 0.0f));
-        quad(r_out, make_vertex(ck1, color, alpha), make_vertex(c1, color, alpha), make_vertex(q1, color, 0.0f),
-             make_vertex(qk1, color, 0.0f));
+        quad(r_out, make_vertex(c0, p, color, alpha), make_vertex(ck0, p, color, alpha), make_vertex(qk0, p, color, 0.0f),
+             make_vertex(q0, p, color, 0.0f));
+        quad(r_out, make_vertex(ck0, p, color, alpha), make_vertex(ck1, p, color, alpha), make_vertex(qk1, p, color, 0.0f),
+             make_vertex(qk0, p, color, 0.0f));
+        quad(r_out, make_vertex(ck1, p, color, alpha), make_vertex(c1, p, color, alpha), make_vertex(q1, p, color, 0.0f),
+             make_vertex(qk1, p, color, 0.0f));
       }
     }
     else {
@@ -436,15 +471,15 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
       }
       const float2 b0 = c0 + bevel_normal * aa, b1 = c1 + bevel_normal * aa;
       r_out.insert(r_out.end(),
-                   {make_vertex(p, color, alpha), make_vertex(c0, color, alpha), make_vertex(c1, color, alpha)});
+                   {make_vertex(p, p, color, alpha), make_vertex(c0, p, color, alpha), make_vertex(c1, p, color, alpha)});
       if (aa <= 0.0f) {
         continue;
       }
-      quad(r_out, make_vertex(c0, color, alpha), make_vertex(c1, color, alpha), make_vertex(b1, color, 0.0f),
-           make_vertex(b0, color, 0.0f));
-      r_out.insert(r_out.end(), {make_vertex(c0, color, alpha), make_vertex(q0, color, 0.0f),
-                                 make_vertex(b0, color, 0.0f), make_vertex(c1, color, alpha),
-                                 make_vertex(b1, color, 0.0f), make_vertex(q1, color, 0.0f)});
+      quad(r_out, make_vertex(c0, p, color, alpha), make_vertex(c1, p, color, alpha), make_vertex(b1, p, color, 0.0f),
+           make_vertex(b0, p, color, 0.0f));
+      r_out.insert(r_out.end(), {make_vertex(c0, p, color, alpha), make_vertex(q0, p, color, 0.0f),
+                                 make_vertex(b0, p, color, 0.0f), make_vertex(c1, p, color, alpha),
+                                 make_vertex(b1, p, color, 0.0f), make_vertex(q1, p, color, 0.0f)});
     }
   }
 
@@ -455,14 +490,14 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
     const Side &a = seg_start[i];
     const Side &b = seg_end[i];
     if (aa > 0.0f) {
-      quad(r_out, make_vertex(a.outer_left, color, 0.0f), make_vertex(a.core_left, color, a.core_alpha),
-           make_vertex(b.core_left, color, b.core_alpha), make_vertex(b.outer_left, color, 0.0f));
+      quad(r_out, make_vertex(a.outer_left, a.centre, color, 0.0f), make_vertex(a.core_left, a.centre, color, a.core_alpha),
+           make_vertex(b.core_left, b.centre, color, b.core_alpha), make_vertex(b.outer_left, b.centre, color, 0.0f));
     }
-    quad(r_out, make_vertex(a.core_left, color, a.core_alpha), make_vertex(a.core_right, color, a.core_alpha),
-         make_vertex(b.core_right, color, b.core_alpha), make_vertex(b.core_left, color, b.core_alpha));
+    quad(r_out, make_vertex(a.core_left, a.centre, color, a.core_alpha), make_vertex(a.core_right, a.centre, color, a.core_alpha),
+         make_vertex(b.core_right, b.centre, color, b.core_alpha), make_vertex(b.core_left, b.centre, color, b.core_alpha));
     if (aa > 0.0f) {
-      quad(r_out, make_vertex(a.core_right, color, a.core_alpha), make_vertex(a.outer_right, color, 0.0f),
-           make_vertex(b.outer_right, color, 0.0f), make_vertex(b.core_right, color, b.core_alpha));
+      quad(r_out, make_vertex(a.core_right, a.centre, color, a.core_alpha), make_vertex(a.outer_right, a.centre, color, 0.0f),
+           make_vertex(b.outer_right, b.centre, color, 0.0f), make_vertex(b.core_right, b.centre, color, b.core_alpha));
     }
   }
 
@@ -480,8 +515,8 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
       return;
     }
     const float2 step = outward * aa;
-    quad(r_out, make_vertex(side.core_left, color, side.core_alpha), make_vertex(side.core_right, color, side.core_alpha),
-         make_vertex(side.core_right + step, color, 0.0f), make_vertex(side.core_left + step, color, 0.0f));
+    quad(r_out, make_vertex(side.core_left, side.centre, color, side.core_alpha), make_vertex(side.core_right, side.centre, color, side.core_alpha),
+         make_vertex(side.core_right + step, side.centre, color, 0.0f), make_vertex(side.core_left + step, side.centre, color, 0.0f));
   };
   cap(0, seg_start[0], -dirs[0]);
   cap(n - 1, seg_end[segments - 1], dirs[segments - 1]);

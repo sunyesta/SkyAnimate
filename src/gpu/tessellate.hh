@@ -14,6 +14,10 @@ namespace oanim {
 struct Vertex {
   float x, y;
   float r, g, b, a;
+  /* A colour stroke's: where the vertex lies from the line's centre, and the stroke's widest half width (0: not a
+   * stroke). The GPU draws a stroke thinner than half a pixel half a pixel wide, from its centre out, and as much
+   * fainter, so its triangles serve every zoom. */
+  float ox = 0.0f, oy = 0.0f, w = 0.0f;
 };
 
 /* Fills a closed polygon (even if concave). `aa` is the soft edge width in the polygon's units. */
@@ -32,7 +36,7 @@ void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, f
 void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &rings, Color color, float pad,
                             std::vector<Vertex> &r_out, std::vector<uint32_t> &r_indices);
 
-/* Strokes a polyline. `half_widths` has one entry per point. `joins` (optional, one per point)
+/* Strokes a polyline (each vertex with its offset from the line and the stroke's widest half width, Vertex). `half_widths` has one entry per point. `joins` (optional, one per point)
  * says how the stroke turns there: Smooth (the default) mitres gently, Round adds a round join
  * and Sharp a mitred one, bevelled past a 4x miter limit. Ends get round caps unless their join
  * is Sharp, which ends them flat. */

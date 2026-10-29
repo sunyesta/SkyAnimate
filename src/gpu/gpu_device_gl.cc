@@ -16,17 +16,28 @@
 
 namespace oanim::gpu {
 
+/* A stroke thinner than half a pixel (a_half, its widest half width; 0 for what isn't a stroke) is drawn half a pixel
+ * wide, each vertex moved out from the line along its offset, and as much fainter: so its weight stays true however
+ * far the view is zoomed out, and its triangles serve every zoom. u_half_px: half the target's size in pixels. */
 static const char *COLOR_VERTEX_SHADER = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
+layout(location = 2) in vec2 a_offset;
+layout(location = 3) in float a_half;
 uniform mat3 u_matrix;
 uniform float u_depth;
+uniform vec2 u_half_px;
 out vec4 v_color;
 void main()
 {
-  vec3 p = u_matrix * vec3(a_pos, 1.0);
+  float k = 1.0;
+  if (a_half > 0.0) {
+    float px = sqrt(abs(determinant(mat2(u_matrix))) * u_half_px.x * u_half_px.y);
+    k = max(1.0, 0.5 / (px * a_half));
+  }
+  vec3 p = u_matrix * vec3(a_pos + a_offset * (k - 1.0), 1.0);
   gl_Position = vec4(p.xy, u_depth * 2.0 - 1.0, 1.0);
-  v_color = a_color;
+  v_color = a_color / k;
 }
 )";
 
@@ -35,17 +46,26 @@ static const char *BATCH_VERTEX_SHADER = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
 layout(location = 2) in float a_slot;
+layout(location = 3) in vec2 a_offset;
+layout(location = 4) in float a_half;
 uniform vec4 u_slots[64];
 uniform float u_depth;
+uniform vec2 u_half_px;
 out vec4 v_color;
 void main()
 {
   int s = int(a_slot + 0.5) * 2;
   vec4 m = u_slots[s];
   vec4 t = u_slots[s + 1];
-  gl_Position = vec4(m.x * a_pos.x + m.z * a_pos.y + t.x, m.y * a_pos.x + m.w * a_pos.y + t.y, u_depth * 2.0 - 1.0,
-                     1.0);
-  v_color = a_color * t.z;
+  /* A hairline as the Color program's. */
+  float k = 1.0;
+  if (a_half > 0.0) {
+    float px = sqrt(abs(m.x * m.w - m.z * m.y) * u_half_px.x * u_half_px.y);
+    k = max(1.0, 0.5 / (px * a_half));
+  }
+  vec2 q = a_pos + a_offset * (k - 1.0);
+  gl_Position = vec4(m.x * q.x + m.z * q.y + t.x, m.y * q.x + m.w * q.y + t.y, u_depth * 2.0 - 1.0, 1.0);
+  v_color = a_color * t.z / k;
 }
 )";
 
@@ -333,7 +353,8 @@ class GLDevice final : public Device {
   };
   /* Each program's uniforms (-1: it hasn't that one). */
   struct Uniforms {
-    GLint matrix = -1, opacity = -1, slots = -1, own_colors = -1, alpha_test = -1, grey = -1, tint = -1, depth = -1;
+    GLint matrix = -1, opacity = -1, slots = -1, own_colors = -1, alpha_test = -1, grey = -1, tint = -1, depth = -1,
+          half_px = -1;
   };
   static constexpr int PROGRAMS = int(Program::FadeSamples) + 1;
 
@@ -456,6 +477,7 @@ bool GLDevice::init()
     Uniforms &u = uniforms_[int(p)];
     u.matrix = gl::GetUniformLocation(program, "u_matrix");
     u.depth = gl::GetUniformLocation(program, "u_depth");
+    u.half_px = gl::GetUniformLocation(program, "u_half_px");
     u.opacity = gl::GetUniformLocation(program, "u_opacity");
     u.slots = gl::GetUniformLocation(program, "u_slots");
     u.own_colors = gl::GetUniformLocation(program, "u_own_colors");
@@ -521,11 +543,15 @@ void GLDevice::layout_attributes(Layout layout)
     case Layout::Color:
       attribute(0, 2, sizeof(Vertex), offsetof(Vertex, x));
       attribute(1, 4, sizeof(Vertex), offsetof(Vertex, r));
+      attribute(2, 2, sizeof(Vertex), offsetof(Vertex, ox));
+      attribute(3, 1, sizeof(Vertex), offsetof(Vertex, w));
       break;
     case Layout::Batch:
       attribute(0, 2, sizeof(BatchVertex), offsetof(BatchVertex, x));
       attribute(1, 4, sizeof(BatchVertex), offsetof(BatchVertex, r));
       attribute(2, 1, sizeof(BatchVertex), offsetof(BatchVertex, slot));
+      attribute(3, 2, sizeof(BatchVertex), offsetof(BatchVertex, ox));
+      attribute(4, 1, sizeof(BatchVertex), offsetof(BatchVertex, w));
       break;
     case Layout::Brush:
       attribute(0, 2, sizeof(BrushVertex), offsetof(BrushVertex, x));
@@ -785,6 +811,9 @@ void GLDevice::draw(const Draw &d)
   }
   if (u.depth >= 0) {
     gl::Uniform1f(u.depth, d.state.depth);
+  }
+  if (u.half_px >= 0) {
+    gl::Uniform2f(u.half_px, 0.5f * float(viewport_[0]), 0.5f * float(viewport_[1]));
   }
   if (u.own_colors >= 0) {
     gl::Uniform1f(u.own_colors, d.own_colors ? 1.0f : 0.0f);

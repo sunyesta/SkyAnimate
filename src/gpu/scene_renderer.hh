@@ -512,6 +512,9 @@ class SceneRenderer {
      * mask_pass_ were when it was asked for, so masks' shapes can be made on other threads with the rest. */
     bool coverage = false;
     MaskPass mask_pass;
+    /* Made for a band of zooms (ZOOM_BAND_OCTAVES wide, `pixel` its middle): curves cut finely enough for the band's
+     * nearest zoom, a stencil fill's cover reaching for its farthest. */
+    bool banded = false;
   };
   /* A drawing's steps: its shapes' triangles and stamps (those of shapes as they were taken from `kept`). Safe on
    * several threads at once for different drawings, unless brushed or ended at masks' edges. */

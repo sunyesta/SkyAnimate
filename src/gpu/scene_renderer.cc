@@ -24,6 +24,9 @@
 
 namespace oanim {
 
+/* How wide a band of zooms a colour drawing made in the viewport serves (draw_drawing), in doublings. */
+static constexpr float ZOOM_BAND_OCTAVES = 4.0f;
+
 
 /* Render statistics: what the render in progress has spent so far (making drawings runs on many threads at once). */
 static std::atomic<bool> g_stats_on{false};
@@ -1519,6 +1522,9 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   const VectorDrawing &drawing = *args.drawing;
   const Transform2D &transform = args.transform;
   const float pixel = args.pixel;
+  /* A banded drawing's pixel at the band's nearest zoom and farthest (MakeArgs::banded). */
+  const float band_reach = args.banded ? std::exp2(0.5f * ZOOM_BAND_OCTAVES) : 1.0f;
+  const float pixel_nearest = pixel / band_reach, pixel_farthest = pixel * band_reach;
   const LineCutter &cutter = args.cutter;
   constexpr float feather = 0.0f;
   /* A point of a line (layer space) shows by those rows. */
@@ -1574,7 +1580,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     flush();
     PaintStep step;
     const StatTimer stat_fan(STAT_FAN);
-    tessellate_stencil_fan(rings, color, pixel, step.vertices, step.fan_indices);
+    tessellate_stencil_fan(rings, color, pixel_farthest, step.vertices, step.fan_indices);
     if (step.vertices.size() > 6) {
       step.stencil_fan = true;
       step.even_odd = even_odd;
@@ -1595,23 +1601,17 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
                           bool is_closed, const std::vector<StrokeJoin> &stroke_joins) {
     const StatTimer stat_stroke(STAT_STROKE);
     batch(!args.coverage);
-    /* A line thinner than a pixel is drawn a pixel wide and as much fainter (in colour; a mask takes
-     * it as it is), so its weight stays true however far the view is zoomed out rather than every
-     * hairline looking a pixel thick. */
-    const float widest = half.empty() ? 0.0f : *std::max_element(half.begin(), half.end());
-    const float min_half = pixel * 0.5f;
-    if (!args.coverage && widest > 0.0f && widest < min_half) {
-      const float k = min_half / widest;
-      std::vector<float> wider = half;
-      for (float &w : wider) {
-        w *= k;
-      }
-      Color faint = shape.style.line;
-      faint.a /= k;
-      tessellate_stroke(pts, wider, is_closed, faint, feather, vertices, &stroke_joins);
-      return;
-    }
+    /* A line thinner than a pixel is drawn a pixel wide and as much fainter, so its weight stays true however far
+     * the view is zoomed out rather than every hairline looking a pixel thick: by the GPU, from each vertex's
+     * offset from the line (Vertex), so the triangles serve every zoom. A mask takes it as it is (its widths kept
+     * a pixel wide where it's made). */
+    const size_t first = vertices.size();
     tessellate_stroke(pts, half, is_closed, shape.style.line, feather, vertices, &stroke_joins);
+    if (args.coverage) {
+      for (size_t i = first; i < vertices.size(); i++) {
+        vertices[i].w = 0.0f;
+      }
+    }
   };
 
   /* Each shape's steps as made last time, kept while the shape, its curves and their points are as they were. */
@@ -1738,7 +1738,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
       {
         const StatTimer stat_outline(STAT_OUTLINE);
         shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins,
-                      pixel * 3.0f / float(quality_));
+                      pixel_nearest * 3.0f / float(quality_));
       }
       if (outline.size() < 2) {
         continue;
@@ -1807,7 +1807,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         else if (!filled_together) {
           filled_together = true;
           const std::vector<std::vector<float2>> loops =
-              shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_));
+              shape_fill_loops(drawing, whole, quality_, pixel_nearest * 3.0f / float(quality_));
           if (gpu_geometry_ && !args.coverage) {
             /* GPU Geometry: the loops as they are, their fill rule worked out by the stencil's count (Even-Odd: where
              * it's odd; Nonzero: where it isn't 0), not cut into pieces on the CPU first (fill_area: Rainbow Dash's
@@ -2151,9 +2151,10 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   const Transform2D to_pixels = document_to_pixels_ * transform;
   /* One pixel in layer space. Edges are hard: multisampling smooths them, and a soft edge
    * strip would bring back seams where edges meet. */
-  /* Zooming reuses what was drawn: the pixel size goes in steps of 2^(1/8) (9%), so a zoom redoes a
-   * drawing's triangles and stamps only every few wheel notches, not on each. */
-  const float pixel = std::exp2(std::round(std::log2(1.0f / std::max(to_pixels.scale(), 1e-6f)) * 8.0f) / 8.0f);
+  /* Zooming reuses what was drawn: the pixel size goes in steps (a band of zooms for most drawings, 2^(1/8) for the
+   * rest; below, once what the drawing has is known), so a zoom redoes a drawing's triangles and stamps only now and
+   * then, not on each wheel notch. */
+  const float pixel_log2 = std::log2(1.0f / std::max(to_pixels.scale(), 1e-6f));
 
   /* What it's drawn as is kept, and drawn again while what makes it stays the same. Brushed lines
    * add their brushes (a brush that isn't there draws a solid line, so it counts once it's found),
@@ -2229,6 +2230,14 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   }
   const LineCutter &cutter = memo ? memo->cutter : own_cutter;
   (void)boils;
+  /* A colour drawing comes out the same at every zoom but for how finely its curves are cut where handles stretch
+   * them, and how far a stencil fill's cover reaches (a hairline is the GPU's, Vertex): in the viewport it is made
+   * for a band of zooms ZOOM_BAND_OCTAVES wide, cut for the band's nearest and covered for its farthest, and drawn as
+   * it is across the band, so a zoom remakes nothing until it leaves the band. Brushed lines (their dabs' spacing),
+   * lines ended at masks' edges, masks' shapes (grown by pixels) and final renders go in steps of 2^(1/8). */
+  const bool banded = interactive_ && !final_render_ && !coverage_pass_ && !brushed && cutter.empty();
+  const float steps_per_octave = banded ? 1.0f / ZOOM_BAND_OCTAVES : 8.0f;
+  const float pixel = std::exp2(std::round(pixel_log2 * steps_per_octave) / steps_per_octave);
   const uint64_t any_zoom = key;
   key = hash_float(key, pixel);
   if (!coverage_pass_) {
@@ -2306,7 +2315,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     }
     Job job;
     job.args = {&doc,   &layer, &drawing, transform, pixel, cutter, &shapes_kept_[hash_float(settings, pixel)],
-                coverage_pass_, mask_pass_};
+                coverage_pass_, mask_pass_, banded};
     job.args.kept->used = render_serial_;
     job.optional = interactive_ && !final_render_ && tessellated_any_zoom_.count(any_zoom) != 0;
     job.key = key;
@@ -2332,7 +2341,8 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   }
   const auto making = std::chrono::steady_clock::now();
   std::vector<PaintStep> steps = make_steps({&doc, &layer, &drawing, transform, pixel, cutter,
-                                             &shapes_kept_[hash_float(settings, pixel)], coverage_pass_, mask_pass_});
+                                             &shapes_kept_[hash_float(settings, pixel)], coverage_pass_, mask_pass_,
+                                             banded});
   made_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - making).count();
   shapes_kept_[hash_float(settings, pixel)].used = render_serial_;
   /* Made here, kept in tessellated_ (the steps keep their place in memory as the vector moves there). */
@@ -2429,7 +2439,7 @@ void SceneRenderer::flush_batch()
       vertices.clear();
       for (size_t k = i; k < j; k++) {
         for (const Vertex &v : batch_[k].step->vertices) {
-          vertices.push_back({v.x, v.y, v.r, v.g, v.b, v.a, float(k - i)});
+          vertices.push_back({v.x, v.y, v.r, v.g, v.b, v.a, float(k - i), v.ox, v.oy, v.w});
         }
       }
       chunk.mesh = device_->make_mesh(gpu::Layout::Batch, vertices.data(), vertices.size() * sizeof(gpu::BatchVertex));
