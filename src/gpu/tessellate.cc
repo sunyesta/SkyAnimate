@@ -3,12 +3,39 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <unordered_map>
 #include <utility>
 
 #include <mapbox/earcut.hpp>
 
 namespace oanim {
+
+uint16_t half_from_float(float f)
+{
+  uint32_t x;
+  std::memcpy(&x, &f, sizeof(x));
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const int exponent = int((x >> 23) & 0xffu) - 127 + 15;
+  uint32_t mantissa = x & 0x7fffffu;
+  if (exponent >= 31) {
+    return uint16_t(sign | 0x7c00u);
+  }
+  if (exponent <= 0) {
+    /* Below the smallest normal: a subnormal (or 0). */
+    if (exponent < -10) {
+      return uint16_t(sign);
+    }
+    mantissa |= 0x800000u;
+    const int shift = 14 - exponent;
+    uint32_t h = mantissa >> shift;
+    h += (mantissa >> (shift - 1)) & 1u;
+    return uint16_t(sign | h);
+  }
+  /* Rounded up at the half (a carry into the exponent is still the right value). */
+  const uint32_t h = (uint32_t(exponent) << 10 | mantissa >> 13) + ((mantissa >> 12) & 1u);
+  return uint16_t(sign | h);
+}
 
 static Vertex make_vertex(float2 p, Color c, float alpha_scale)
 {
@@ -20,8 +47,7 @@ static Vertex make_vertex(float2 p, Color c, float alpha_scale)
 static Vertex make_vertex(float2 p, float2 centre, Color c, float alpha_scale)
 {
   Vertex v = make_vertex(p, c, alpha_scale);
-  v.ox = p.x - centre.x;
-  v.oy = p.y - centre.y;
+  v.set_offset(p.x - centre.x, p.y - centre.y);
   return v;
 }
 
@@ -29,8 +55,7 @@ static Vertex make_vertex(float2 p, float2 centre, Color c, float alpha_scale)
 static void offsets_from(std::vector<Vertex> &vertices, size_t first, float2 centre)
 {
   for (size_t i = first; i < vertices.size(); i++) {
-    vertices[i].ox = vertices[i].x - centre.x;
-    vertices[i].oy = vertices[i].y - centre.y;
+    vertices[i].set_offset(vertices[i].x - centre.x, vertices[i].y - centre.y);
   }
 }
 
@@ -309,7 +334,7 @@ void tessellate_stroke(const std::vector<float2> &input_points, const std::vecto
     ~Widest()
     {
       for (size_t i = first; i < out.size(); i++) {
-        out[i].w = widest;
+        out[i].set_stroke_half(widest);
       }
     }
   } mark_widest{r_out, first_vertex, widest};

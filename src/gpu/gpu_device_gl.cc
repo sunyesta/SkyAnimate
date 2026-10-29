@@ -535,23 +535,24 @@ bool GLDevice::init()
 
 void GLDevice::layout_attributes(Layout layout)
 {
-  const auto attribute = [](GLuint index, GLint size, GLsizei stride, size_t offset) {
+  const auto attribute = [](GLuint index, GLint size, GLsizei stride, size_t offset, GLenum type = GL_FLOAT,
+                            GLboolean normalized = GL_FALSE) {
     gl::EnableVertexAttribArray(index);
-    gl::VertexAttribPointer(index, size, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offset));
+    gl::VertexAttribPointer(index, size, type, normalized, stride, reinterpret_cast<void *>(offset));
   };
   switch (layout) {
     case Layout::Color:
       attribute(0, 2, sizeof(Vertex), offsetof(Vertex, x));
-      attribute(1, 4, sizeof(Vertex), offsetof(Vertex, r));
-      attribute(2, 2, sizeof(Vertex), offsetof(Vertex, ox));
-      attribute(3, 1, sizeof(Vertex), offsetof(Vertex, w));
+      attribute(1, 4, sizeof(Vertex), offsetof(Vertex, rgba), GL_UNSIGNED_BYTE, GL_TRUE);
+      attribute(2, 2, sizeof(Vertex), offsetof(Vertex, ox), GL_HALF_FLOAT);
+      attribute(3, 1, sizeof(Vertex), offsetof(Vertex, w), GL_HALF_FLOAT);
       break;
     case Layout::Batch:
       attribute(0, 2, sizeof(BatchVertex), offsetof(BatchVertex, x));
-      attribute(1, 4, sizeof(BatchVertex), offsetof(BatchVertex, r));
-      attribute(2, 1, sizeof(BatchVertex), offsetof(BatchVertex, slot));
-      attribute(3, 2, sizeof(BatchVertex), offsetof(BatchVertex, ox));
-      attribute(4, 1, sizeof(BatchVertex), offsetof(BatchVertex, w));
+      attribute(1, 4, sizeof(BatchVertex), offsetof(BatchVertex, rgba), GL_UNSIGNED_BYTE, GL_TRUE);
+      attribute(2, 1, sizeof(BatchVertex), offsetof(BatchVertex, slot), GL_UNSIGNED_SHORT);
+      attribute(3, 2, sizeof(BatchVertex), offsetof(BatchVertex, ox), GL_HALF_FLOAT);
+      attribute(4, 1, sizeof(BatchVertex), offsetof(BatchVertex, w), GL_HALF_FLOAT);
       break;
     case Layout::Brush:
       attribute(0, 2, sizeof(BrushVertex), offsetof(BrushVertex, x));

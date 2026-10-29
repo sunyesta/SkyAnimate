@@ -3,6 +3,8 @@
 /* Turns fills and strokes into triangles with a soft one-pixel edge, so they look smooth
  * without multisampling (the same approach Dear ImGui uses for its own shapes). */
 
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include "core/math.hh"
@@ -10,14 +12,37 @@
 
 namespace oanim {
 
-/* Colours are premultiplied by alpha. */
+/* A 16-bit float's bits (round to nearest; tiny values go to 0, huge to infinity). */
+uint16_t half_from_float(float f);
+
+/* Packed small, as the GPU reads it (20 bytes; drawings keep many). */
 struct Vertex {
-  float x, y;
-  float r, g, b, a;
-  /* A colour stroke's: where the vertex lies from the line's centre, and the stroke's widest half width (0: not a
-   * stroke). The GPU draws a stroke thinner than half a pixel half a pixel wide, from its centre out, and as much
-   * fainter, so its triangles serve every zoom. */
-  float ox = 0.0f, oy = 0.0f, w = 0.0f;
+  float x = 0.0f, y = 0.0f;
+  /* The colour, premultiplied by alpha, a byte a channel: red, green, blue, alpha from the lowest byte. */
+  uint32_t rgba = 0;
+  /* A colour stroke's (16-bit floats): where the vertex lies from the line's centre, and the stroke's widest half
+   * width (0: not a stroke). The GPU draws a stroke thinner than half a pixel half a pixel wide, from its centre out,
+   * and as much fainter, so its triangles serve every zoom. */
+  uint16_t ox = 0, oy = 0, w = 0, spare = 0;
+
+  Vertex() = default;
+  /* At (x, y), in a premultiplied colour. */
+  Vertex(float x_, float y_, float r, float g, float b, float a) : x(x_), y(y_), rgba(pack_rgba(r, g, b, a)) {}
+  static uint32_t pack_rgba(float r, float g, float b, float a)
+  {
+    const auto byte = [](float v) { return uint32_t(std::min(std::max(v, 0.0f), 1.0f) * 255.0f + 0.5f); };
+    return byte(r) | byte(g) << 8 | byte(b) << 16 | byte(a) << 24;
+  }
+  void set_offset(float dx, float dy)
+  {
+    ox = half_from_float(dx);
+    oy = half_from_float(dy);
+  }
+  /* The stroke's widest half width; one too thin for a 16-bit float kept the thinnest it has, still a stroke. */
+  void set_stroke_half(float half)
+  {
+    w = half > 0.0f ? std::max<uint16_t>(half_from_float(half), 1) : 0;
+  }
 };
 
 /* Fills a closed polygon (even if concave). `aa` is the soft edge width in the polygon's units. */

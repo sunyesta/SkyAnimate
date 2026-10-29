@@ -1621,7 +1621,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     tessellate_stroke(pts, half, is_closed, shape.style.line, feather, vertices, &stroke_joins);
     if (args.coverage) {
       for (size_t i = first; i < vertices.size(); i++) {
-        vertices[i].w = 0.0f;
+        vertices[i].w = 0;
       }
     }
   };
@@ -2451,7 +2451,7 @@ void SceneRenderer::flush_batch()
       vertices.clear();
       for (size_t k = i; k < j; k++) {
         for (const Vertex &v : batch_[k].step->vertices) {
-          vertices.push_back({v.x, v.y, v.r, v.g, v.b, v.a, float(k - i), v.ox, v.oy, v.w});
+          vertices.push_back({v.x, v.y, v.rgba, v.ox, v.oy, v.w, uint16_t(k - i)});
         }
       }
       chunk.mesh = device_->make_mesh(gpu::Layout::Batch, vertices.data(), vertices.size() * sizeof(gpu::BatchVertex));

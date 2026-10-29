@@ -87,16 +87,18 @@ struct DrawState {
 /* A batched step's vertex: its colour and the slot that places it (Program::Batch). */
 struct BatchVertex {
   float x, y;
-  float r, g, b, a;
-  float slot;
-  /* As Vertex's: a colour stroke's offset from its line and widest half width (0: not a stroke). */
-  float ox, oy, w;
+  /* As Vertex's: premultiplied colour a byte a channel; a colour stroke's offset from its line and widest half width
+   * (16-bit floats, 0: not a stroke). */
+  uint32_t rgba;
+  uint16_t ox, oy, w;
+  /* Its step's place among the batch's. */
+  uint16_t slot;
 };
 
 /* How a mesh's vertices are laid out. */
 enum class Layout : uint8_t {
   None,
-  /* Vertex: x, y, r, g, b, a, and a stroke's offset and widest half width. */
+  /* Vertex: x, y, the colour (bytes), and a stroke's offset and widest half width (16-bit floats). */
   Color,
   /* BatchVertex: x, y, r, g, b, a, slot. */
   Batch,
