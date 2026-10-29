@@ -451,6 +451,8 @@ class SceneRenderer {
   PixelRect layer_region(const Document &doc, const Layer &layer);
   std::unordered_map<uint64_t, PixelRect> regions_;
   void scissor(const PixelRect &rect);
+  /* The bound target cleared (clear) within `rect`: what is drawn in it stays within, and only that is read back. */
+  void clear_within(const PixelRect &rect, const Color &color);
   /* What a step covers in its layer's space (PaintStep::lo, hi), worked out once and kept with it. */
   static void step_bounds(PaintStep &step);
   /* Lays `source`'s samples over the bound target, faded, under paint_, over `lo` to `hi` (clip space). */

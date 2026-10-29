@@ -218,6 +218,14 @@ void SceneRenderer::clear(const Color &color)
   bound_->depth_levels.clear();
 }
 
+void SceneRenderer::clear_within(const PixelRect &rect, const Color &color)
+{
+  flush_batch();
+  scissor(rect);
+  clear(color);
+  scissor(PixelRect());
+}
+
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
                                    int quality, int samples, const Color *background)
 {
@@ -583,7 +591,11 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
      * groups holding it) clip it when it is composited back. */
     Target *group = acquire_target();
     bind_target(group);
-    clear(Color{0, 0, 0, 0});
+    /* Laid back over sample for sample where it draws, where that is known (below): only that much of its image
+     * cleared (what it holds elsewhere is never read); otherwise resolved and laid over whole. */
+    const PixelRect r = layer_region(doc, layer);
+    const bool per_sample = !r.whole && device_->caps().sample_shading && device_->has_sample_texture(group->target);
+    clear_within(per_sample ? r : PixelRect(), Color{0, 0, 0, 0});
     const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
                    outer_fill_free = fill_free_stencil_, outer_depth = depth_required_;
     const HeldMasks outer_clauses = std::move(mask_clauses_);
@@ -602,8 +614,7 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     use_color_stencil();
     /* Laid over sample for sample where it draws (no image resolved, nothing laid over the rest), where that is
      * known; otherwise resolved and laid over the whole image. */
-    const PixelRect r = layer_region(doc, layer);
-    if (!r.whole && device_->caps().sample_shading && device_->has_sample_texture(group->target)) {
+    if (per_sample) {
       lay_samples(group, layer_opacity,
                   float2(float(r.x0) / float(width_) * 2.0f - 1.0f, float(r.y0) / float(height_) * 2.0f - 1.0f),
                   float2(float(r.x1) / float(width_) * 2.0f - 1.0f, float(r.y1) / float(height_) * 2.0f - 1.0f));
@@ -1361,7 +1372,9 @@ void SceneRenderer::draw_faded_drawing(const Document &doc, const Layer &layer, 
   flush_batch();
   Target *own = acquire_target();
   bind_target(own);
-  clear(Color{0, 0, 0, 0});
+  /* Laid back over only what its steps cover (below), within its region: only that cleared, where known. */
+  const bool per_sample = device_->caps().sample_shading && device_->has_sample_texture(own->target);
+  clear_within(per_sample ? layer_region(doc, layer) : PixelRect(), Color{0, 0, 0, 0});
   /* Its own image has no masks of its own (they apply as it is laid over). */
   const unsigned outer_required = required_stencil_, outer_depth = depth_required_;
   required_stencil_ = 0;
@@ -1377,7 +1390,6 @@ void SceneRenderer::draw_faded_drawing(const Document &doc, const Layer &layer, 
   depth_required_ = outer_depth;
   bind_target(target);
   use_color_stencil();
-  const bool per_sample = device_->caps().sample_shading && device_->has_sample_texture(own->target);
   if (!per_sample) {
     resolve(own);
     composite(own, opacity);
@@ -2848,12 +2860,24 @@ void SceneRenderer::draw_layers_in_runs(const Document &doc, const std::vector<D
 {
   /* At most this many drawn live: more, and drawing everything is as quick and needs no images. */
   constexpr size_t LIVE_MAX = 4;
+  const uint64_t view = runs_view();
+  /* The view has just moved (a zoom, a pan past the margin): every step drawn as it is, with no image made of it (the
+   * next frame most likely moves the view again) and no signatures worked out. The first frame at a view that holds
+   * makes the runs (last_layers_ forgotten: one run of everything). */
+  if (view != last_view_) {
+    free_runs();
+    for (const DrawStep &step : steps) {
+      draw_step(doc, step, output_);
+    }
+    last_layers_.clear();
+    last_view_ = view;
+    return;
+  }
   std::vector<uint64_t> layers(steps.size()), signatures(steps.size());
   for (size_t i = 0; i < steps.size(); i++) {
     layers[i] = steps[i].layer->id;
     signatures[i] = clean[i] ? last_signatures_[i] : step_signature(doc, steps[i]);
   }
-  const uint64_t view = runs_view();
 
   const auto draw_all = [&] {
     for (const DrawStep &step : steps) {
