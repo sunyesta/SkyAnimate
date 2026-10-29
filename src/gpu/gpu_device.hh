@@ -37,6 +37,8 @@ enum class Program : uint8_t {
   /* A full-screen triangle laying a target's samples (`texture`, a sample texture) over the same samples.
    * Only where Caps::sample_shading. */
   Run,
+  /* The same over triangles (Vertex, placed by `to_clip`), faded by `opacity`. Only where Caps::sample_shading. */
+  FadeSamples,
 };
 
 enum class Blend : uint8_t {

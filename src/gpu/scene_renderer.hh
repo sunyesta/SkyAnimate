@@ -317,6 +317,9 @@ class SceneRenderer {
      * last 6 vertices cover it, drawn where that isn't 0 (`even_odd`: where it is odd). */
     bool stencil_fan = false;
     bool even_odd = false;
+    /* What it covers (layer space), worked out when first needed (note_bounds). */
+    bool bounded = false;
+    float2 lo, hi;
     /* On the GPU once drawn (uploaded once, kept with it): the triangles, or the stamps per image. */
     gpu::Mesh mesh;
     std::vector<gpu::Mesh> dab_meshes;
@@ -357,6 +360,16 @@ class SceneRenderer {
   uint64_t geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified);
   std::unordered_map<uint64_t, Chunk> chunks_;
   void flush_batch();
+  /* GPU Geometry: a drawing layer less than fully opaque drawn as a whole, as a group is: at full strength into an
+   * image of its own, then laid over `target` sample for sample (where the layer drew), faded, under its masks; so
+   * its lines don't show its fills through them, nor its shapes each other. With a single sample, as a group. */
+  bool fade_whole(const Layer &layer, float opacity) const;
+  void draw_faded_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, Target *target,
+                          float opacity);
+  /* While a faded layer draws into its image: what its steps cover (clip space), to lay only that over. */
+  bool track_bounds_ = false;
+  float2 bounds_lo_, bounds_hi_;
+  void note_bounds(PaintStep &step, const Transform2D &transform);
   /* A stencil-then-cover fill (PaintStep::stencil_fan) under the masks `required` (and depth_required_), drawn at
    * once. */
   void draw_stencil_fill(PaintStep &step, const Transform2D &step_to_clip, float opacity, unsigned required);

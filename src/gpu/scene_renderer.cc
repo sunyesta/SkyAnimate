@@ -464,6 +464,10 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     return;
   }
   if (!layer.is_group()) {
+    if (fade_whole(layer, layer_opacity)) {
+      draw_faded_drawing(doc, layer, transform, target, layer_opacity);
+      return;
+    }
     use_color_stencil();
     draw_drawing(doc, layer, transform, layer_opacity);
     return;
@@ -1096,6 +1100,94 @@ void SceneRenderer::draw_dabs_step(PaintStep &step, const Transform2D &transform
   }
 }
 
+bool SceneRenderer::fade_whole(const Layer &layer, float opacity) const
+{
+  /* A layer whose lines and fills are masked apart can't be laid over as one image. */
+  return gpu_geometry_ && !coverage_pass_ && opacity < 1.0f && opacity > 0.0f && !layer.is_media() &&
+         (line_free_stencil_ | fill_free_stencil_) == 0;
+}
+
+void SceneRenderer::draw_faded_drawing(const Document &doc, const Layer &layer, const Transform2D &transform,
+                                       Target *target, float opacity)
+{
+  flush_batch();
+  Target *own = acquire_target();
+  bind_target(own);
+  clear(Color{0, 0, 0, 0});
+  /* Its own image has no masks of its own (they apply as it is laid over). */
+  const unsigned outer_required = required_stencil_, outer_depth = depth_required_;
+  required_stencil_ = 0;
+  depth_required_ = 0;
+  track_bounds_ = true;
+  bounds_lo_ = float2(1e30f, 1e30f);
+  bounds_hi_ = float2(-1e30f, -1e30f);
+  use_color_stencil();
+  draw_drawing(doc, layer, transform, 1.0f);
+  flush_batch();
+  track_bounds_ = false;
+  required_stencil_ = outer_required;
+  depth_required_ = outer_depth;
+  bind_target(target);
+  use_color_stencil();
+  const bool per_sample = device_->caps().sample_shading && device_->has_sample_texture(own->target);
+  if (!per_sample) {
+    resolve(own);
+    composite(own, opacity);
+  }
+  else if (bounds_lo_.x <= bounds_hi_.x) {
+    /* Over what it covers, a pixel more all round (clip space), not the whole image. */
+    const float px = 2.0f / float(width_), py = 2.0f / float(height_);
+    const float x0 = std::max(bounds_lo_.x - px, -1.0f), y0 = std::max(bounds_lo_.y - py, -1.0f);
+    const float x1 = std::min(bounds_hi_.x + px, 1.0f), y1 = std::min(bounds_hi_.y + py, 1.0f);
+    if (x0 < x1 && y0 < y1) {
+      const Vertex quad[6] = {{x0, y0, 0, 0, 0, 0}, {x1, y0, 0, 0, 0, 0}, {x1, y1, 0, 0, 0, 0},
+                              {x0, y0, 0, 0, 0, 0}, {x1, y1, 0, 0, 0, 0}, {x0, y1, 0, 0, 0, 0}};
+      gpu::Draw draw;
+      draw.state = paint_;
+      draw.state.program = gpu::Program::FadeSamples;
+      draw.texture = device_->sample_texture(own->target);
+      draw.stream = quad;
+      draw.stream_bytes = sizeof(quad);
+      draw.stream_layout = gpu::Layout::Color;
+      draw.count = 6;
+      draw.opacity = opacity;
+      device_->draw(draw);
+    }
+  }
+  release_target(own);
+}
+
+void SceneRenderer::note_bounds(PaintStep &step, const Transform2D &transform)
+{
+  if (!step.bounded) {
+    float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+    const auto add = [&](float x, float y) {
+      lo = float2(std::min(lo.x, x), std::min(lo.y, y));
+      hi = float2(std::max(hi.x, x), std::max(hi.y, y));
+    };
+    for (const Vertex &v : step.vertices) {
+      add(v.x, v.y);
+    }
+    for (const std::vector<BrushVertex> &list : step.dabs.per_image) {
+      for (const BrushVertex &v : list) {
+        add(v.x, v.y);
+      }
+    }
+    step.lo = lo;
+    step.hi = hi;
+    step.bounded = true;
+  }
+  if (step.lo.x > step.hi.x) {
+    return;
+  }
+  const Transform2D m = to_clip(transform);
+  for (const float2 corner : {step.lo, step.hi, float2(step.lo.x, step.hi.y), float2(step.hi.x, step.lo.y)}) {
+    const float2 p = m.apply(corner);
+    bounds_lo_ = float2(std::min(bounds_lo_.x, p.x), std::min(bounds_lo_.y, p.y));
+    bounds_hi_ = float2(std::max(bounds_hi_.x, p.x), std::max(bounds_hi_.y, p.y));
+  }
+}
+
 void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity,
                                uint64_t key)
 {
@@ -1103,6 +1195,9 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
     const Transform2D step_to_clip = to_clip(transform);
     for (size_t i = 0; i < steps.size(); i++) {
       PaintStep &step = steps[i];
+      if (track_bounds_) {
+        note_bounds(step, transform);
+      }
       if (step.is_dabs) {
         /* Stamps draw at once (draw_dabs flushes what waits before them), under the masks lines are. */
         if ((line_free_stencil_ | fill_free_stencil_) != 0) {
@@ -1130,6 +1225,9 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
    * fills the Lines Only ones. */
   const bool lines_apart = !coverage_pass_ && (line_free_stencil_ | fill_free_stencil_) != 0;
   for (PaintStep &step : steps) {
+    if (track_bounds_) {
+      note_bounds(step, transform);
+    }
     if (lines_apart) {
       use_color_stencil(step.is_line ? Paint::Line : Paint::Fill);
     }

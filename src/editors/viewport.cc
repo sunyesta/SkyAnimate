@@ -1663,9 +1663,9 @@ static void shading_buttons(Context &C, ViewportShading &sh, float h, float arro
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Being built, in stages: big fills drawn by the GPU (stencil-then-cover)\n"
-                        "instead of cut into triangles on the CPU, and masks kept in the depth buffer,\n"
-                        "nesting as deep as they go (Classic: four levels). Renders too. Looks the same,\n"
-                        "but where an outline crosses itself or masks nest deeper.");
+                        "instead of cut into triangles on the CPU, masks kept in the depth buffer,\n"
+                        "nesting as deep as they go (Classic: four levels), and see-through layers faded\n"
+                        "as a whole, so their lines don't show their fills through them. Renders too.");
     }
   }
   if (overlay_section("Performance")) {

@@ -168,6 +168,27 @@ void main()
 }
 )";
 
+/* A layer's own image laid over the target sample for sample, faded (a see-through layer as a whole). */
+static const char *FADE_SAMPLES_FRAGMENT_SHADER = R"(#version 400 core
+uniform sampler2DMS u_run;
+uniform float u_opacity;
+out vec4 frag_color;
+void main()
+{
+  frag_color = texelFetch(u_run, ivec2(gl_FragCoord.xy), gl_SampleID) * u_opacity;
+}
+)";
+static const char *FADE_SAMPLES_FRAGMENT_SHADER_ARB = R"(#version 330 core
+#extension GL_ARB_sample_shading : require
+uniform sampler2DMS u_run;
+uniform float u_opacity;
+out vec4 frag_color;
+void main()
+{
+  frag_color = texelFetch(u_run, ivec2(gl_FragCoord.xy), gl_SampleID) * u_opacity;
+}
+)";
+
 /* Stencil-only passes write no colour. */
 static const char *STENCIL_FRAGMENT_SHADER = R"(#version 330 core
 out vec4 frag_color;
@@ -293,7 +314,7 @@ class GLDevice final : public Device {
   struct Uniforms {
     GLint matrix = -1, opacity = -1, slots = -1, own_colors = -1, alpha_test = -1, grey = -1, tint = -1, depth = -1;
   };
-  static constexpr int PROGRAMS = int(Program::Run) + 1;
+  static constexpr int PROGRAMS = int(Program::FadeSamples) + 1;
 
   void layout_attributes(Layout layout);
   void use_program(Program program);
@@ -436,7 +457,9 @@ bool GLDevice::init()
   caps_.sample_textures = gl::TexImage2DMultisample != nullptr;
   if (caps_.sample_textures) {
     add(Program::Run, COMPOSITE_VERTEX_SHADER, major >= 4 ? RUN_FRAGMENT_SHADER : RUN_FRAGMENT_SHADER_ARB);
-    caps_.sample_shading = programs_[int(Program::Run)] != 0;
+    add(Program::FadeSamples, COLOR_VERTEX_SHADER,
+        major >= 4 ? FADE_SAMPLES_FRAGMENT_SHADER : FADE_SAMPLES_FRAGMENT_SHADER_ARB);
+    caps_.sample_shading = programs_[int(Program::Run)] != 0 && programs_[int(Program::FadeSamples)] != 0;
   }
   caps_.batching = programs_[int(Program::Batch)] != 0;
   GLint max_samples = 1;

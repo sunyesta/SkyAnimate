@@ -34,7 +34,7 @@ def shading():
     depending on them, drawn anew; the rest from images kept of them, and pans within a margin shown moved) and
     "zoom_preview" (while a zoom moves, the last image scaled over a blurry wider backdrop, drawn sharp once it
     rests), and the renderer: "gpu_geometry" (big fills drawn by the GPU, stencil-then-cover, and masks in the depth
-    buffer, nesting without limit; off: Classic, every
+    buffer, nesting without limit, and see-through layers faded as a whole; off: Classic, every
     fill cut into triangles on the CPU)."""
     return dict(_oanim.shading())
 

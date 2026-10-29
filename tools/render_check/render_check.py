@@ -20,7 +20,8 @@ Suites (--suites, default all):
             (Even-Odd and Nonzero), outlines crossing themselves (a twist, and a curl covering its middle twice),
             big fills under masks, and see-through ones overlapping, with lines over them. Classic against GPU
             Geometry: a sample or two differs along edges, and fill_twist differs whole (Classic's triangulation
-            drops one lobe of a figure-8; GPU Geometry fills where the outline winds, as the app's own inside test).
+            drops one lobe of a figure-8; GPU Geometry fills where the outline winds, as the app's own inside test),
+            and fill_see_through differs where its shapes overlap (GPU Geometry fades a see-through layer as a whole).
   temporal  a fill, a thin line and a hairline turned 0.15 degrees a frame for 40 frames; scored by flicker (pixels
             whose value goes up, down and up again by more than a little across three frames) per edge pixel.
   scenes    frames of real files (--scene FILE:F1,F2,...), compared between A and B.
@@ -383,6 +384,13 @@ poly(L, star(-0.15, 0.0, 0.2, 0.4, 200), (0.95, 0.3, 0.3, 0.5), line=(0.1, 0.1, 
 poly(L, ring_points(0.15, 0.05, 0.3, 200), (0.3, 0.5, 0.95, 0.5))
 o = layer("Over"); poly(o, star(0.25, -0.1, 0.1, 0.25, 150), (0.3, 0.95, 0.4, 0.6))
 o.opacity = 0.7
+'''),
+        ("fill_see_through", base + r'''
+under = layer("Under"); poly(under, [(-0.7, -0.15), (0.7, -0.15), (0.7, 0.15), (-0.7, 0.15)], (0.2, 0.9, 0.4, 1))
+L = layer("SeeThrough")
+poly(L, star(-0.12, 0.0, 0.18, 0.36, 40), (0.95, 0.35, 0.3, 1), line=(0.1, 0.1, 0.5, 1), width=0.03)
+poly(L, ring_points(0.15, 0.05, 0.28, 64), (0.3, 0.5, 0.95, 1), line=(0.95, 0.95, 0.95, 1), width=0.03)
+L.opacity = 0.5
 '''),
     ]
 
