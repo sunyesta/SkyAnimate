@@ -213,13 +213,33 @@ bool App::window_init()
     report(ReportType::Error, std::string("Could not create the window: ") + SDL_GetError());
     return false;
   }
+  /* OpenGL 4.5 where the driver has it (compute shaders, multi-draw, direct state access for the renderer's newer
+   * paths); 3.3 otherwise, everything the renderer needs at the least. */
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
   gl_context_ = SDL_GL_CreateContext(window_);
+  if (!gl_context_) {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    gl_context_ = SDL_GL_CreateContext(window_);
+  }
   if (!gl_context_) {
     report(ReportType::Error, std::string("Could not create an OpenGL 3.3 context: ") + SDL_GetError());
     return false;
   }
   SDL_GL_MakeCurrent(window_, gl_context_);
   SDL_GL_SetSwapInterval(1);
+  {
+    GLint major = 0, minor = 0, samples = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    glGetIntegerv(GL_MAX_SAMPLES, &samples);
+    const char *renderer = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+    report(ReportType::Info,
+           "OpenGL " + std::to_string(major) + "." + std::to_string(minor) + " on " + (renderer ? renderer : "?") +
+               ", up to " + std::to_string(samples) + " samples a pixel",
+           false);
+  }
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
