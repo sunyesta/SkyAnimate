@@ -1,6 +1,7 @@
 #include "gpu/scene_renderer.hh"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -47,17 +48,35 @@ bool SceneRenderer::init()
   return true;
 }
 
+/* The stencil bits as the GPU holds them: the masks' bits (below) the other way round, so that their levels (bits 0 to
+ * 3) are its top four bits and the scratch they are worked out in (4 to 7) its bottom four, which a fill's winding is
+ * counted in while colour is drawn (counting carries upwards, so it needs the bottom bits). Masks only test and set
+ * bits, so which is which changes nothing for them. */
+static unsigned stencil_bits(unsigned bits)
+{
+  unsigned out = 0;
+  for (int i = 0; i < 8; i++) {
+    out |= ((bits >> i) & 1u) << (7 - i);
+  }
+  return out;
+}
+
 /* Colour drawn where every bit of `required` is set in the stencil, which is left as it is. */
 static gpu::DrawState color_state(unsigned required)
 {
   gpu::DrawState state;
   if (required != 0) {
     state.stencil.compare = gpu::Compare::Equal;
-    state.stencil.ref = required;
-    state.stencil.read_mask = required;
+    state.stencil.ref = stencil_bits(required);
+    state.stencil.read_mask = stencil_bits(required);
   }
   return state;
 }
+
+/* The stencil bits stencil-then-cover fills count winding in: the masks' scratch (MASK_SPARE to MASK_NESTED_SCRATCH),
+ * free while colour is drawn, the masks being worked out by then. The last is the count's lowest bit (odd or even). */
+static constexpr unsigned WINDING_BITS = 0xF0u;
+static constexpr unsigned WINDING_ODD = 1u << 7;
 
 /* No colour; the stencil's `write` bits set to `ref`'s where the test passes (and by `fail` where not). */
 static gpu::DrawState stencil_state(gpu::Compare compare, unsigned ref, unsigned read_mask, unsigned write,
@@ -66,7 +85,13 @@ static gpu::DrawState stencil_state(gpu::Compare compare, unsigned ref, unsigned
   gpu::DrawState state;
   state.program = gpu::Program::Stencil;
   state.write_color = false;
-  state.stencil = {true, compare, ref, read_mask, fail, gpu::StencilOp::Replace, write};
+  state.stencil = {true,
+                   compare,
+                   stencil_bits(ref),
+                   stencil_bits(read_mask),
+                   fail,
+                   gpu::StencilOp::Replace,
+                   stencil_bits(write)};
   return state;
 }
 
@@ -123,6 +148,7 @@ void SceneRenderer::clear(const Color &color)
   flush_batch();
   const float premultiplied[4] = {color.r * color.a, color.g * color.a, color.b * color.a, color.a};
   device_->clear(premultiplied);
+  bound_->fan_dirty = false;
 }
 
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
@@ -184,6 +210,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   }
   document_to_pixels_ = to_pixels;
   final_render_ = background != nullptr;
+  gpu_geometry_ = doc.shading.gpu_geometry;
   required_stencil_ = 0;
   line_free_stencil_ = 0;
   fill_free_stencil_ = 0;
@@ -298,6 +325,9 @@ void SceneRenderer::stencil_fill(unsigned bit, bool set)
   draw.state = stencil_state(gpu::Compare::Always, set ? bit : 0u, bit, bit, gpu::StencilOp::Replace);
   draw.count = 3;
   device_->draw(draw);
+  if (bit & WINDING_BITS) {
+    bound_->fan_dirty = set || (bound_->fan_dirty && (bit & WINDING_BITS) != WINDING_BITS);
+  }
 }
 
 std::set<uint64_t> local_view_layers(const Document &doc, const std::vector<uint64_t> &ids)
@@ -524,6 +554,8 @@ static constexpr unsigned MASK_SPARE = 1u << 4;
 static constexpr unsigned MASK_SCRATCH = 1u << 5;
 static constexpr unsigned MASK_NESTED = 1u << 6;
 static constexpr unsigned MASK_NESTED_SCRATCH = 1u << 7;
+static_assert(WINDING_BITS == (MASK_SPARE | MASK_SCRATCH | MASK_NESTED | MASK_NESTED_SCRATCH),
+              "fills count winding only in the bits masks are worked out in");
 
 unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const Layer *> &masked)
 {
@@ -597,6 +629,9 @@ void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write,
   draw.state = stencil_state(gpu::Compare::Equal, value | (ref & ~test), test, write);
   draw.count = 3;
   device_->draw(draw);
+  if (write & WINDING_BITS) {
+    bound_->fan_dirty = true;
+  }
 }
 
 void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result,
@@ -836,6 +871,9 @@ void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const
   /* With coverage_test_, only where those bits are set (the mask layer's own masks). */
   paint_ = stencil_state(coverage_test_ ? gpu::Compare::Equal : gpu::Compare::Always,
                          (set ? bit : 0u) | coverage_test_, coverage_test_ ? coverage_test_ : bit, bit);
+  if (bit & WINDING_BITS) {
+    bound_->fan_dirty = true;
+  }
   coverage_pass_ = true;
   draw_drawing(doc, layer, transform, 1.0f);
   coverage_pass_ = false;
@@ -971,6 +1009,10 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
       }
       const unsigned required = step.is_line ? required_stencil_ & ~line_free_stencil_
                                              : required_stencil_ & ~fill_free_stencil_;
+      if (step.stencil_fan) {
+        draw_stencil_fill(step, step_to_clip, opacity, required);
+        continue;
+      }
       batch_.push_back({&step, (key ^ (uint64_t(i) + 1) * 0x9e3779b97f4a7c15ull) * 1099511628211ull, step_to_clip,
                         opacity, required});
     }
@@ -985,6 +1027,12 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
       use_color_stencil(step.is_line ? Paint::Line : Paint::Fill);
     }
     if (!step.is_dabs) {
+      if (step.stencil_fan) {
+        draw_stencil_fill(step, to_clip(transform), opacity,
+                          step.is_line ? required_stencil_ & ~line_free_stencil_
+                                       : required_stencil_ & ~fill_free_stencil_);
+        continue;
+      }
       if (!step.vertices.empty()) {
         if (!step.mesh) {
           step.mesh = device_->make_mesh(gpu::Layout::Color, step.vertices.data(),
@@ -1062,6 +1110,29 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     if (batch_lines != lines) {
       flush();
       batch_lines = lines;
+    }
+  };
+  /* GPU Geometry: a colour fill this big (outline points) is drawn by stencil-then-cover, not cut into triangles,
+   * which costs more than drawing it twice once the outline is long (cutting grows about as its square on a spiky
+   * one); smaller ones stay in the batches, drawing two passes each costing more than cutting them (Clay013, a new
+   * zoom: 85 ms Classic, 64 with this at 256 points, 60 at 1,024; drawn again as kept: 31, 37, 32). Masks' shapes
+   * are always cut: the stencil is theirs while they are worked out. OANIM_FAN_MIN_POINTS sets another size (0:
+   * every fill), for render_check. */
+  static const size_t fan_min_points = [] {
+#pragma warning(suppress : 4996)
+    const char *v = std::getenv("OANIM_FAN_MIN_POINTS");
+    return v ? size_t(std::strtoul(v, nullptr, 10)) : size_t(1024);
+  }();
+  const auto fan_fill = [&](size_t points) { return gpu_geometry_ && !coverage_pass_ && points >= fan_min_points; };
+  /* A fill as a step of its own, between the batches before and after it. */
+  const auto stencil_step = [&](const std::vector<const std::vector<float2> *> &rings, Color color, bool even_odd) {
+    flush();
+    PaintStep step;
+    tessellate_stencil_fan(rings, color, pixel, step.vertices);
+    if (step.vertices.size() > 6) {
+      step.stencil_fan = true;
+      step.even_odd = even_odd;
+      steps.push_back(std::move(step));
     }
   };
   const Brush *brush = nullptr;
@@ -1151,9 +1222,9 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   for (int shape_index = 0; shape_index < int(drawing.shapes.size()); shape_index++) {
     ShapeKept &kept_shape = kept_shapes.shapes[size_t(shape_index)];
     if (shape_unchanged(drawing.shapes[size_t(shape_index)], kept_shape)) {
-      /* Into the batch as it goes, as made. */
+      /* Into the batch as it goes, as made (stamps and stencil-then-cover fills as steps of their own). */
       for (const PaintStep &step : kept_shape.steps) {
-        if (step.is_dabs) {
+        if (step.is_dabs || step.stencil_fan) {
           flush();
           steps.push_back(step);
           continue;
@@ -1250,13 +1321,34 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
       if (is_area && stage != MaskPass::Lines && !line_as_drawn) {
         batch(false);
         if (!fills_together) {
-          tessellate_fill(outline, shape.style.fill, feather, vertices);
+          if (fan_fill(outline.size())) {
+            /* One outline fills where it winds round (as fill_contains finds), or Even-Odd where it does so an odd
+             * number of times. */
+            stencil_step({&outline}, shape.style.fill, whole.fill_rule == FillRule::EvenOdd);
+          }
+          else {
+            tessellate_fill(outline, shape.style.fill, feather, vertices);
+          }
         }
         else if (!filled_together) {
           filled_together = true;
-          tessellate_fill_pieces(
-              fill_area(shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_)), whole.fill_rule),
-              shape.style.fill, feather, vertices);
+          const std::vector<FillPiece> &pieces =
+              fill_area(shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_)), whole.fill_rule);
+          std::vector<const std::vector<float2> *> rings;
+          size_t points = 0;
+          for (const FillPiece &piece : pieces) {
+            for (const std::vector<float2> &ring : piece.rings) {
+              rings.push_back(&ring);
+              points += ring.size();
+            }
+          }
+          if (fan_fill(points)) {
+            /* Pieces don't overlap, outer rings one way round and holes the other: their winding is the fill. */
+            stencil_step(rings, shape.style.fill, false);
+          }
+          else {
+            tessellate_fill_pieces(pieces, shape.style.fill, feather, vertices);
+          }
         }
         if (grow > 0.0f && !inside_stroke) {
           /* A mask's Grow: a rim that wide around the area. */
@@ -1453,12 +1545,13 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   }
   flush();
   /* Shapes made apart (or taken as kept) end their steps where they end: plain steps of one kind that follow each
-   * other join again, as one batch made them. */
+   * other join again, as one batch made them (stamps and stencil-then-cover fills stay steps of their own). */
   {
+    const auto plain = [](const PaintStep &step) { return !step.is_dabs && !step.stencil_fan; };
     std::vector<PaintStep> joined;
     joined.reserve(steps.size());
     for (PaintStep &step : steps) {
-      if (!joined.empty() && !step.is_dabs && !joined.back().is_dabs && joined.back().is_line == step.is_line) {
+      if (!joined.empty() && plain(step) && plain(joined.back()) && joined.back().is_line == step.is_line) {
         joined.back().vertices.insert(joined.back().vertices.end(), step.vertices.begin(), step.vertices.end());
         continue;
       }
@@ -1576,7 +1669,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
       key = hash_mix(key, uint64_t(uint32_t(doc.frame_current)));
     }
   }
-  key = hash_mix(key, uint64_t(quality_));
+  key = hash_mix(key, uint64_t(quality_) | uint64_t(gpu_geometry_ && !coverage_pass_) << 8);
   key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
                           uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
                           uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
@@ -1706,6 +1799,63 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
 }
 
 /* A batched vertex: a tessellated one and its step's slot in the chunk. */
+
+void SceneRenderer::draw_stencil_fill(PaintStep &step, const Transform2D &step_to_clip, float opacity,
+                                      unsigned required)
+{
+  flush_batch();
+  if (!step.mesh) {
+    step.mesh = device_->make_mesh(gpu::Layout::Color, step.vertices.data(), step.vertices.size() * sizeof(Vertex));
+  }
+  const int cover = int(step.vertices.size()) - 6;
+  /* Masks worked out since the target was cleared leave their scratch where the count goes: cleared under the cover
+   * (all a fill can reach), not the whole image, which at 16 samples costs more than most fills. */
+  if (bound_->fan_dirty) {
+    gpu::Draw clear;
+    clear.state.write_color = false;
+    clear.state.stencil = {true,
+                           gpu::Compare::Always,
+                           0,
+                           0,
+                           gpu::StencilOp::Zero,
+                           gpu::StencilOp::Zero,
+                           stencil_bits(WINDING_BITS)};
+    clear.mesh = step.mesh;
+    clear.first = cover;
+    clear.count = 6;
+    clear.to_clip = step_to_clip;
+    device_->draw(clear);
+  }
+  gpu::Draw fan;
+  fan.state.write_color = false;
+  fan.state.stencil = {true,
+                       gpu::Compare::Equal,
+                       stencil_bits(required),
+                       stencil_bits(required),
+                       gpu::StencilOp::Keep,
+                       gpu::StencilOp::Keep,
+                       stencil_bits(WINDING_BITS),
+                       true};
+  fan.mesh = step.mesh;
+  fan.count = cover;
+  fan.to_clip = step_to_clip;
+  device_->draw(fan);
+  /* The colour where the count isn't 0 (or is odd), each sample once; the count cleared again all over the cover. */
+  gpu::Draw draw;
+  draw.state.stencil = {true,
+                        gpu::Compare::NotEqual,
+                        0,
+                        stencil_bits(step.even_odd ? WINDING_ODD : WINDING_BITS),
+                        gpu::StencilOp::Zero,
+                        gpu::StencilOp::Zero,
+                        stencil_bits(WINDING_BITS)};
+  draw.mesh = step.mesh;
+  draw.first = cover;
+  draw.count = 6;
+  draw.to_clip = step_to_clip;
+  draw.opacity = opacity;
+  device_->draw(draw);
+}
 
 void SceneRenderer::flush_batch()
 {
@@ -2078,7 +2228,8 @@ uint64_t SceneRenderer::runs_view() const
 {
   uint64_t view = hash_transform(0x76696577ull, document_to_pixels_);
   return hash_mix(hash_mix(hash_mix(view, uint64_t(width_) << 32 | uint64_t(height_)), uint64_t(samples_)),
-                  uint64_t(quality_) | uint64_t(show_guides_) << 8 | uint64_t(media_view_) << 9);
+                  uint64_t(quality_) | uint64_t(show_guides_) << 8 | uint64_t(media_view_) << 9 |
+                      uint64_t(gpu_geometry_) << 10);
 }
 
 std::vector<char> SceneRenderer::clean_steps(const Document &doc, const std::vector<DrawStep> &steps, uint64_t view)

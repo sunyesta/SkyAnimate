@@ -47,7 +47,8 @@ enum class Blend : uint8_t {
 };
 
 enum class Compare : uint8_t { Always, Equal, NotEqual };
-enum class StencilOp : uint8_t { Keep, Replace };
+/* Replace writes `ref`'s bits, Zero clears them (both under `write_mask`). */
+enum class StencilOp : uint8_t { Keep, Replace, Zero };
 
 struct StencilState {
   bool test = true;
@@ -57,6 +58,9 @@ struct StencilState {
   /* What happens to the `write_mask` bits where the test fails, and where it passes. */
   StencilOp fail = StencilOp::Keep, pass = StencilOp::Keep;
   unsigned write_mask = 0;
+  /* Counting winding instead of `pass`: where the test passes, a triangle facing one way adds one and one facing the
+   * other way takes one (wrapping round), so a fan of a path's triangles leaves its winding number there. */
+  bool winding = false;
   bool operator==(const StencilState &) const = default;
 };
 

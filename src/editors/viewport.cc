@@ -1649,6 +1649,24 @@ static void shading_buttons(Context &C, ViewportShading &sh, float h, float arro
     ImGui::CloseCurrentPopup();
   }
   ImGui::TextUnformatted("Viewport Shading");
+  if (overlay_section("Renderer")) {
+    if (ImGui::RadioButton("Classic", !sh.gpu_geometry) && sh.gpu_geometry) {
+      sh.gpu_geometry = false;
+      C.undo->mark_changed();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Every fill cut into triangles on the CPU.");
+    }
+    if (ImGui::RadioButton("GPU Geometry", sh.gpu_geometry) && !sh.gpu_geometry) {
+      sh.gpu_geometry = true;
+      C.undo->mark_changed();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Being built, in stages: big fills drawn by the GPU (stencil-then-cover)\n"
+                        "instead of cut into triangles on the CPU. Renders too. Looks the same,\n"
+                        "but where an outline crosses itself.");
+    }
+  }
   if (overlay_section("Performance")) {
     if (ImGui::Checkbox("Layer Caching", &sh.layer_caching)) {
       C.undo->mark_changed(); /* Saved with the file. */

@@ -33,12 +33,13 @@ def shading():
     """The project's Viewport Shading (saved with it): "layer_caching" (only the layers that changed, and those
     depending on them, drawn anew; the rest from images kept of them, and pans within a margin shown moved) and
     "zoom_preview" (while a zoom moves, the last image scaled over a blurry wider backdrop, drawn sharp once it
-    rests)."""
+    rests), and the renderer: "gpu_geometry" (big fills drawn by the GPU, stencil-then-cover; off: Classic, every
+    fill cut into triangles on the CPU)."""
     return dict(_oanim.shading())
 
 
 def set_shading(name, on=True):
-    """Set a Viewport Shading option of the project by name ("layer_caching", "zoom_preview")."""
+    """Set a Viewport Shading option of the project by name ("layer_caching", "zoom_preview", "gpu_geometry")."""
     _oanim.set_shading(name, bool(on))
 
 

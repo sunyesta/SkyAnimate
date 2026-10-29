@@ -23,6 +23,14 @@ void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, 
  * together, the soft edge on every ring's outside (outward of the fill, into its holes). */
 void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, float aa, std::vector<Vertex> &r_out);
 
+/* A fill for stencil-then-cover (no triangulating): for every edge of every ring, a triangle from the middle of the
+ * rings' bounds (which keeps them mostly within a spiky outline, where a point on it would send them across it);
+ * counted into the stencil (one way round adding one, the other taking one) they leave each place's
+ * winding number, the fill being where it isn't 0 (or, Even-Odd, where it is odd). Then the cover: the rings' bounds
+ * grown by `pad`, 6 vertices in `color`, drawn where the count says. */
+void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &rings, Color color, float pad,
+                            std::vector<Vertex> &r_out);
+
 /* Strokes a polyline. `half_widths` has one entry per point. `joins` (optional, one per point)
  * says how the stroke turns there: Smooth (the default) mitres gently, Round adds a round join
  * and Sharp a mitred one, bevelled past a 4x miter limit. Ends get round caps unless their join

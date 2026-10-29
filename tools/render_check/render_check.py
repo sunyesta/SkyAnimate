@@ -3,6 +3,9 @@
 A configuration is a build (OpenAnimate.exe) and, optionally, Viewport Shading settings, e.g.
     python tools/render_check/render_check.py --a build/run/20261028-120000/OpenAnimate.exe --b build/bin/RelWithDebInfo/OpenAnimate.exe
     python tools/render_check/render_check.py --a EXE --b EXE:layer_caching=0
+    python tools/render_check/render_check.py --a EXE --b EXE:gpu_geometry=1 --suites fills,seams,masks
+GPU Geometry draws fills of 1,024 outline points or more by stencil-then-cover; with OANIM_FAN_MIN_POINTS=0 in the
+environment (the copies inherit it) it draws every colour fill so, which puts every suite through it.
 Each runs in a private copy (its own LOCALAPPDATA, never the user's running app) driven over remote control.
 
 Suites (--suites, default all):
@@ -10,6 +13,11 @@ Suites (--suites, default all):
             angles, as separate layers and as shapes of one layer; scored against the same outline drawn whole:
             any difference inside it is background showing through a seam.
   masks     nested, intersecting and inverted masks, a masked group, a mask on a layer inside a masked group.
+  fills     big fills (what GPU Geometry draws by stencil-then-cover): a spiky star of 800 points (over 1,024 outline points as drawn), rings with holes
+            (Even-Odd and Nonzero), outlines crossing themselves (a twist, and a curl covering its middle twice),
+            big fills under masks, and see-through ones overlapping, with lines over them. Classic against GPU
+            Geometry: a sample or two differs along edges, and fill_twist differs whole (Classic's triangulation
+            drops one lobe of a figure-8; GPU Geometry fills where the outline winds, as the app's own inside test).
   temporal  a fill, a thin line and a hairline turned 0.15 degrees a frame for 40 frames; scored by flicker (pixels
             whose value goes up, down and up again by more than a little across three frames) per edge pixel.
   scenes    frames of real files (--scene FILE:F1,F2,...), compared between A and B.
@@ -257,6 +265,65 @@ m.visible = False; m2.visible = False
     ]
 
 
+def fill_cases():
+    base = SETUP + r'''
+def ring_points(cx, cy, r, n=64, turns=1.0, grow=0.0):
+    return [(cx + (r + grow * i / n) * math.cos(2 * math.pi * turns * i / n),
+             cy + (r + grow * i / n) * math.sin(2 * math.pi * turns * i / n)) for i in range(n)]
+def star(cx, cy, r0, r1, tips):
+    return [(cx + (r1 if i % 2 else r0) * math.cos(math.pi * i / tips),
+             cy + (r1 if i % 2 else r0) * math.sin(math.pi * i / tips)) for i in range(2 * tips)]
+def joined(L, loops, color, rule):
+    """Several loops as one shape (F), filling by `rule`."""
+    first = L.point_count
+    for loop in loops:
+        poly(L, loop, color)
+    L.select_points(range(first, L.point_count))
+    oanim.ops.mesh.make_segment()
+    L.set_shape_style(L.shape_count - 1, fill_rule=rule)
+'''
+    return [
+        ("fill_spiky", base + r'''
+poly(layer("Star"), star(0.0, 0.0, 0.2, 0.45, 400), (0.95, 0.75, 0.3, 1))
+'''),
+        ("fill_ring_evenodd", base + r'''
+joined(layer("Ring"), [ring_points(0, 0, 0.45, 96), ring_points(0.05, 0, 0.22, 96)], (0.4, 0.8, 0.95, 1), "EVEN_ODD")
+'''),
+        ("fill_ring_nonzero", base + r'''
+outer = ring_points(0, 0, 0.45, 96)
+joined(layer("Ring"), [outer, list(reversed(ring_points(0.05, 0, 0.22, 96))), ring_points(-0.5, 0.1, 0.12, 48)],
+       (0.4, 0.95, 0.5, 1), "NONZERO")
+'''),
+        ("fill_star_holes", base + r'''
+joined(layer("Holes"), [star(0, 0, 0.3, 0.48, 160), ring_points(-0.1, 0, 0.12, 80), ring_points(0.14, 0.05, 0.08, 80)],
+       (0.95, 0.5, 0.6, 1), "EVEN_ODD")
+'''),
+        ("fill_twist", base + r'''
+n = 300
+poly(layer("Twist"), [(0.6 * math.sin(2 * math.pi * i / n), 0.35 * math.sin(4 * math.pi * i / n)) for i in range(n)],
+     (0.8, 0.6, 0.95, 1))
+'''),
+        ("fill_curl", base + r'''
+poly(layer("Curl"), ring_points(0, 0, 0.25, 400, turns=2.0, grow=0.2), (0.95, 0.9, 0.4, 1))
+'''),
+        ("fill_masked", base + r'''
+m = layer("Mask"); poly(m, ring_points(0.1, 0.0, 0.35, 64), (1, 1, 1, 1), sharp=False)
+a = layer("Star"); poly(a, star(0.0, 0.0, 0.25, 0.5, 300), (0.3, 0.6, 0.95, 1))
+b = layer("Under"); poly(b, star(-0.3, 0.1, 0.1, 0.3, 200), (0.95, 0.4, 0.3, 1))
+oanim.ops.mask.add(layer=str(a.id), sources=str(m.id), mode="ADD")
+oanim.ops.mask.add(layer=str(b.id), sources=str(m.id), mode="SUBTRACT")
+m.visible = False
+'''),
+        ("fill_translucent", base + r'''
+L = layer("Both")
+poly(L, star(-0.15, 0.0, 0.2, 0.4, 200), (0.95, 0.3, 0.3, 0.5), line=(0.1, 0.1, 0.1, 1), width=0.01)
+poly(L, ring_points(0.15, 0.05, 0.3, 200), (0.3, 0.5, 0.95, 0.5))
+o = layer("Over"); poly(o, star(0.25, -0.1, 0.1, 0.25, 150), (0.3, 0.95, 0.4, 0.6))
+o.opacity = 0.7
+'''),
+    ]
+
+
 TEMPORAL = SETUP + r'''
 fill = layer("Fill"); poly(fill, [(-0.6, -0.35), (-0.1, -0.4), (-0.15, 0.35), (-0.62, 0.3)], (0.9, 0.9, 0.9, 1))
 line = layer("Line"); line.add_curve([(0.05, -0.4), (0.3, 0.1), (0.6, 0.4)])
@@ -309,7 +376,7 @@ def main():
     ap.add_argument("--a", required=True, help="EXE[:setting=0/1,...]")
     ap.add_argument("--b", help="EXE[:setting=0/1,...] (omit: A alone, scored against truth and itself)")
     ap.add_argument("--out", default=os.path.join(ROOT, "build", "render_check"))
-    ap.add_argument("--suites", default="seams,masks,temporal,scenes")
+    ap.add_argument("--suites", default="seams,masks,fills,temporal,scenes")
     ap.add_argument("--scene", action="append", default=[], help="FILE.oanim:F1,F2,...")
     ap.add_argument("--truth", action="store_true")
     ap.add_argument("--viewport", action="store_true")
@@ -374,6 +441,21 @@ def main():
                     copies["a"].new_document(code)
                     images["truth"] = truth_render(copies["a"], os.path.join(args.out, name + "_truth"))
                 compare(name, images, times)
+        if "fills" in suites:
+            for name, code in fill_cases():
+                images, times = {}, {}
+                for k, c in copies.items():
+                    c.new_document(code)
+                    images[k], times[k] = c.render(os.path.join(args.out, "%s_%s_raw.png" % (name, k)))
+                    if args.viewport:
+                        images["viewport_" + k] = c.viewport()
+                if args.truth:
+                    copies["a"].new_document(code)
+                    images["truth"] = truth_render(copies["a"], os.path.join(args.out, name + "_truth"))
+                extra = {}
+                if "viewport_a" in images and "viewport_b" in images:
+                    extra["viewport_differing"] = int((diff(images["viewport_a"], images["viewport_b"]) > args.tolerance).sum())
+                compare(name, {k: v for k, v in images.items() if not k.startswith("viewport_")}, times, extra)
         if "temporal" in suites:
             for k, c in copies.items():
                 c.new_document(TEMPORAL)

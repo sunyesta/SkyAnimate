@@ -67,6 +67,10 @@ struct ViewportShading {
   /* Zoom Preview: while a zoom moves, the last image shown scaled over a blurry wider backdrop, drawn sharp once it
    * rests. Off, each step of a zoom is drawn sharp. */
   bool zoom_preview = true;
+  /* The renderer: GPU Geometry (being built, in stages) fills big shapes by stencil-then-cover instead of cutting
+   * them into triangles on the CPU; Classic triangulates every fill. Renders and the viewport alike; the same but
+   * where an outline crosses itself (GPU Geometry fills where it covers an odd number of times). */
+  bool gpu_geometry = false;
 
   bool operator==(const ViewportShading &) const = default;
 };

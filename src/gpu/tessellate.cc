@@ -201,6 +201,41 @@ void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, f
   }
 }
 
+void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &rings, Color color, float pad,
+                            std::vector<Vertex> &r_out)
+{
+  size_t edges = 0;
+  float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+  for (const std::vector<float2> *ring : rings) {
+    edges += ring->size() >= 3 ? ring->size() : 0;
+    for (const float2 &p : *ring) {
+      lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
+      hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+    }
+  }
+  if (edges == 0) {
+    return;
+  }
+  reserve_more(r_out, edges * 3 + 6);
+  /* Only the stencil is drawn: no colour. */
+  const Color none{0.0f, 0.0f, 0.0f, 0.0f};
+  const float2 pivot((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+  for (const std::vector<float2> *ring : rings) {
+    const size_t n = ring->size();
+    if (n < 3) {
+      continue;
+    }
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+      r_out.insert(r_out.end(), {make_vertex(pivot, none, 1.0f), make_vertex((*ring)[j], none, 1.0f),
+                                 make_vertex((*ring)[i], none, 1.0f)});
+    }
+  }
+  lo = lo - float2(pad, pad);
+  hi = hi + float2(pad, pad);
+  quad(r_out, make_vertex(lo, color, 1.0f), make_vertex(float2(hi.x, lo.y), color, 1.0f), make_vertex(hi, color, 1.0f),
+       make_vertex(float2(lo.x, hi.y), color, 1.0f));
+}
+
 static void disc(float2 center, float radius, Color color, float aa, std::vector<Vertex> &r_out)
 {
   const int segments = std::clamp(int(radius / std::max(aa, 1e-6f) * 1.5f), 8, 48);

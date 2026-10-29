@@ -117,6 +117,9 @@ class SceneRenderer {
   struct Target {
     gpu::Target target;
     bool in_use = false;
+    /* The stencil bits stencil-then-cover fills count in (draw_stencil_fill) may not be clear everywhere: masks
+     * were worked out with them since the target was cleared (each fill then clears them under its cover first). */
+    mutable bool fan_dirty = true;
   };
   /* What the GPU is asked to do, without naming its API (gpu_device.hh): everything below draws through it. */
   std::unique_ptr<gpu::Device> device_;
@@ -298,6 +301,10 @@ class SceneRenderer {
     /* Lines (solid or brushed), drawn without the masks whose rows end them instead (End Lines at
      * Edge with Ends: Brush; see line_free_stencil_). */
     bool is_line = false;
+    /* A stencil-then-cover fill (tessellate_stencil_fan): its triangles count its winding into the stencil, then its
+     * last 6 vertices cover it, drawn where that isn't 0 (`even_odd`: where it is odd). */
+    bool stencil_fan = false;
+    bool even_odd = false;
     /* On the GPU once drawn (uploaded once, kept with it): the triangles, or the stamps per image. */
     gpu::Mesh mesh;
     std::vector<gpu::Mesh> dab_meshes;
@@ -337,6 +344,10 @@ class SceneRenderer {
   uint64_t geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified);
   std::unordered_map<uint64_t, Chunk> chunks_;
   void flush_batch();
+  /* A stencil-then-cover fill (PaintStep::stencil_fan) under the masks `required`, drawn at once. */
+  void draw_stencil_fill(PaintStep &step, const Transform2D &step_to_clip, float opacity, unsigned required);
+  /* This render's document asks for GPU Geometry (ViewportShading::gpu_geometry). */
+  bool gpu_geometry_ = false;
   /* A step of brushed stamps, drawn at once. */
   void draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity);
   void free_step(PaintStep &step);

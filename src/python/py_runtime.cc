@@ -500,6 +500,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     py::dict d;
     d["layer_caching"] = sh.layer_caching;
     d["zoom_preview"] = sh.zoom_preview;
+    d["gpu_geometry"] = sh.gpu_geometry;
     return d;
   });
   m.def("set_shading", [](const std::string &name, bool on) {
@@ -511,8 +512,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     else if (name == "zoom_preview") {
       sh.zoom_preview = on;
     }
+    else if (name == "gpu_geometry") {
+      sh.gpu_geometry = on;
+    }
     else {
-      throw py::value_error("no Viewport Shading setting '" + name + "' (layer_caching, zoom_preview)");
+      throw py::value_error("no Viewport Shading setting '" + name +
+                            "' (layer_caching, zoom_preview, gpu_geometry)");
     }
     C.undo->mark_changed();
   });

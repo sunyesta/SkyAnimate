@@ -333,7 +333,15 @@ static GLenum gl_compare(Compare compare)
 
 static GLenum gl_op(StencilOp op)
 {
-  return op == StencilOp::Replace ? GL_REPLACE : GL_KEEP;
+  switch (op) {
+    case StencilOp::Replace:
+      return GL_REPLACE;
+    case StencilOp::Zero:
+      return GL_ZERO;
+    case StencilOp::Keep:
+      break;
+  }
+  return GL_KEEP;
 }
 
 GLDevice::~GLDevice()
@@ -563,9 +571,15 @@ void GLDevice::set_state(const DrawState &state)
   if (all || s.compare != w.compare || s.ref != w.ref || s.read_mask != w.read_mask) {
     glStencilFunc(gl_compare(s.compare), GLint(s.ref), s.read_mask);
   }
-  if (all || s.fail != w.fail || s.pass != w.pass) {
+  if (all || s.fail != w.fail || s.pass != w.pass || s.winding != w.winding) {
     /* The depth test is off, so a sample never fails it: the second is never used. */
-    glStencilOp(gl_op(s.fail), gl_op(s.pass), gl_op(s.pass));
+    if (s.winding) {
+      gl::StencilOpSeparate(GL_FRONT, gl_op(s.fail), GL_INCR_WRAP, GL_INCR_WRAP);
+      gl::StencilOpSeparate(GL_BACK, gl_op(s.fail), GL_DECR_WRAP, GL_DECR_WRAP);
+    }
+    else {
+      glStencilOp(gl_op(s.fail), gl_op(s.pass), gl_op(s.pass));
+    }
   }
   if (all || s.write_mask != w.write_mask) {
     glStencilMask(s.write_mask);
