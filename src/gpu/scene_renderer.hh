@@ -424,6 +424,9 @@ class SceneRenderer {
   struct Drawn {
     uint64_t key = 0;
     Transform2D transform;
+    /* Its drawing at any zoom (tessellated_any_zoom_), where what stands in for it, made for another zoom, is found
+     * while its own isn't made yet (a zoom moving, or resting with more to make than a frame has time for). */
+    uint64_t any_zoom = 0;
   };
   std::unordered_map<uint64_t, Drawn> drawn_;
   /* A layer's region: the pixels it and everything inside it draw, a few more all round, or the whole image where any

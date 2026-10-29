@@ -851,7 +851,18 @@ SceneRenderer::PixelRect SceneRenderer::layer_region(const Document &doc, const 
   else if (const auto drawn = drawn_.find(layer.id); drawn == drawn_.end()) {
     whole = true;
   }
-  else if (const auto kept = tessellated_.find(drawn->second.key); kept == tessellated_.end()) {
+  else if (auto kept = tessellated_.find(drawn->second.key);
+           kept == tessellated_.end() &&
+           [&] {
+             /* Not made yet: what stands in for it (the same shapes in the layer's space, made for another zoom). */
+             const auto other = drawn->second.any_zoom ? tessellated_any_zoom_.find(drawn->second.any_zoom)
+                                                       : tessellated_any_zoom_.end();
+             if (other != tessellated_any_zoom_.end()) {
+               kept = tessellated_.find(other->second);
+             }
+             return kept == tessellated_.end();
+           }())
+  {
     whole = true;
   }
   else {
@@ -2231,9 +2242,13 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     /* Brushed lines and lines ended at masks' edges are made as they are drawn. Everything else is made here, a new
      * zoom's too, once the zoom rests; while it moves (each step drawn, Zoom Preview off) a drawing made for another
      * zoom stands in as it is (draw_drawing). */
-    if (brushed || !cutter.empty() ||
-        (zooming_ && interactive_ && !final_render_ && tessellated_any_zoom_.count(any_zoom)))
-    {
+    if (brushed || !cutter.empty()) {
+      return;
+    }
+    if (zooming_ && interactive_ && !final_render_ && tessellated_any_zoom_.count(any_zoom)) {
+      if (!coverage_pass_) {
+        drawn_[layer.id] = {key, transform, any_zoom};
+      }
       return;
     }
     /* A mask's shape asked for by more than one row (or card) is made once. */
@@ -2252,7 +2267,7 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     job.origin = movable ? drawing.points[0].pos : float2();
     jobs_.push_back(std::move(job));
     if (!coverage_pass_) {
-      drawn_[layer.id] = {key, transform};
+      drawn_[layer.id] = {key, transform, any_zoom};
     }
     return;
   }
