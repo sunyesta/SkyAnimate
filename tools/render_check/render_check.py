@@ -18,7 +18,8 @@ Suites (--suites, default all):
             Inside the Stroke rows.
   fills     big fills (what GPU Geometry draws by stencil-then-cover): a spiky star of 800 points (over 1,024 outline points as drawn), rings with holes
             (Even-Odd and Nonzero), outlines crossing themselves (a twist, and a curl covering its middle twice),
-            big fills under masks, and see-through ones overlapping, with lines over them. Classic against GPU
+            big fills under masks, see-through ones overlapping, with lines over them, and a ring merged with a bar
+            by a Boolean modifier. Classic against GPU
             Geometry: a sample or two differs along edges, and fill_twist differs whole (Classic's triangulation
             drops one lobe of a figure-8; GPU Geometry fills where the outline winds, as the app's own inside test),
             and fill_see_through differs where its shapes overlap (GPU Geometry fades a see-through layer as a whole).
@@ -391,6 +392,13 @@ L = layer("SeeThrough")
 poly(L, star(-0.12, 0.0, 0.18, 0.36, 40), (0.95, 0.35, 0.3, 1), line=(0.1, 0.1, 0.5, 1), width=0.03)
 poly(L, ring_points(0.15, 0.05, 0.28, 64), (0.3, 0.5, 0.95, 1), line=(0.95, 0.95, 0.95, 1), width=0.03)
 L.opacity = 0.5
+'''),
+        ("fill_boolean", base + r'''
+ring = layer("Ring")
+joined(ring, [ring_points(0, 0, 0.4, 64), ring_points(0, 0, 0.2, 48)], (0.3, 0.7, 0.95, 1), "EVEN_ODD")
+bar = layer("Bar"); poly(bar, [(0.25, -0.06), (0.7, -0.06), (0.7, 0.06), (0.25, 0.06)], (0.95, 0.5, 0.3, 1))
+oanim.data.layers.active = ring
+oanim.ops.object.modifier_add(type="BOOLEAN", targets="Bar")
 '''),
     ]
 
