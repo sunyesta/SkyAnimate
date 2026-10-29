@@ -287,8 +287,10 @@ int bezier_steps(const float2 ctrl[4], int min_steps, float tolerance)
     return min_steps;
   }
   /* Wang's formula: n pieces keep a cubic within `tolerance` of its chords when
-   * n >= sqrt(3/4 * L / tolerance), L the larger second difference of the control points. */
-  const float L = std::max(length(ctrl[0] - ctrl[1] * 2.0f + ctrl[2]), length(ctrl[1] - ctrl[2] * 2.0f + ctrl[3]));
+   * n >= sqrt(3/4 * L / tolerance), L the larger second difference of the control points. Each worked out as
+   * (outer + outer) - 2 inner, which gives the very same number for the segment run the other way, so two outlines
+   * sharing an edge cut it into as many pieces (and bezier_sample gives them the same points). */
+  const float L = std::max(length((ctrl[0] + ctrl[2]) - ctrl[1] * 2.0f), length((ctrl[1] + ctrl[3]) - ctrl[2] * 2.0f));
   const int n = int(std::ceil(std::sqrt(0.75f * L / tolerance)));
   return std::clamp(n, min_steps, 1024);
 }
