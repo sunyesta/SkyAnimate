@@ -44,6 +44,24 @@ def set_shading(name, on=True):
     _oanim.set_shading(name, bool(on))
 
 
+def set_render_stats(on=True):
+    """Record each render's statistics from now on (or stop): for benchmarks (tools/render_bench). Off by default;
+    on, every render also waits for the GPU to time it."""
+    _oanim.set_render_stats(bool(on))
+
+
+def render_stats():
+    """The renders' statistics recorded since last asked (set_render_stats), oldest first: dicts with width, height,
+    final (a render to a file), cpu_ms (the render's own CPU time), prepare_ms (finding and making drawings before
+    drawing), evaluate_ms (bones and modifiers), make_ms (making drawings, summed over the threads), its parts
+    outline_ms, earcut_ms, fan_ms and stroke_ms, mask_make_ms (of make_ms, masks' shapes, made one at a time as
+    they are drawn), drawings_made, gpu_ms (the GPU's time from first draw to last) and
+    gpu ({kind of draw: ms}: batches, fill fans, fill covers, fan clears, mask shapes, mask passes, mask depth,
+    composites, stamps, media, colour draws, clears, resolves), cpu (the same kinds: the CPU's time in their draw calls)
+    and calls (how many)."""
+    return list(_oanim.render_stats())
+
+
 def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False, wheel=0.0):
     """Move the mouse to (x, y) in the window's UI units (as a remote screenshot of the whole
     window shows them), and press (down=True) or release a button: 0 left, 1 right, 2 middle; None

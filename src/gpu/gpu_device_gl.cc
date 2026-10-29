@@ -3,6 +3,7 @@
  * Each draw's state is compared with what was last set and only what differs is sent; begin() forgets what was set,
  * since the UI draws with OpenGL between renders. */
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 
@@ -268,7 +269,8 @@ class GLDevice final : public Device {
   const Caps &caps() const override { return caps_; }
   void begin() override;
   void end() override;
-  Mesh make_mesh(Layout layout, const void *data, size_t bytes) override;
+  Mesh make_mesh(Layout layout, const void *data, size_t bytes, const uint32_t *indices = nullptr,
+                 size_t index_count = 0) override;
   void free_mesh(Mesh &mesh) override;
   Texture make_texture() override;
   void upload_texture(Texture texture, int width, int height, const uint8_t *rgba) override;
@@ -289,10 +291,27 @@ class GLDevice final : public Device {
   void draw(const Draw &draw) override;
   void resolve(Target target) override;
   void read_pixels(Target target, std::vector<uint8_t> &r_rgba) override;
+  void set_timing(bool on) override { timing_ = on; }
+  std::vector<Timing> timings() override;
 
  private:
+  /* Timing: a timestamp each time the kind of draw changes. */
+  void mark(const char *kind);
+  static const char *kind_of(const Draw &d);
+  bool timing_ = false;
+  const char *last_kind_ = nullptr;
+  std::vector<std::pair<const char *, GLuint>> marks_;
+  /* The CPU's time in the device's calls and how many, by kind. */
+  struct CallTime {
+    const char *kind;
+    double ms;
+    int calls;
+  };
+  std::vector<CallTime> call_times_;
+  void add_call_time(const char *kind, std::chrono::steady_clock::time_point start);
+  std::vector<GLuint> queries_;
   struct GLMesh {
-    GLuint vao = 0, vbo = 0;
+    GLuint vao = 0, vbo = 0, ebo = 0;
   };
   struct GLTexture {
     GLuint name = 0;
@@ -399,6 +418,9 @@ GLDevice::~GLDevice()
     if (meshes_[id].vao) {
       gl::DeleteVertexArrays(1, &meshes_[id].vao);
       gl::DeleteBuffers(1, &meshes_[id].vbo);
+      if (meshes_[id].ebo) {
+        gl::DeleteBuffers(1, &meshes_[id].ebo);
+      }
     }
   }
   for (GLMesh &stream : stream_) {
@@ -512,6 +534,9 @@ void GLDevice::layout_attributes(Layout layout)
 
 void GLDevice::begin()
 {
+  marks_.clear();
+  call_times_.clear();
+  last_kind_ = nullptr;
   program_ = vao_ = array_buffer_ = framebuffer_ = texture_2d_ = texture_ms_ = UNKNOWN;
   viewport_[0] = viewport_[1] = -1;
   glDisable(GL_SCISSOR_TEST);
@@ -526,6 +551,7 @@ void GLDevice::begin()
 
 void GLDevice::end()
 {
+  mark("end");
   /* As the UI's drawing expects: stencil off and writable, all colour written, nothing bound. Blending stays on,
    * premultiplied over. */
   glDisable(GL_STENCIL_TEST);
@@ -640,11 +666,102 @@ void GLDevice::set_state(const DrawState &state)
   state_known_ = true;
 }
 
+void GLDevice::mark(const char *kind)
+{
+  if (!timing_ || kind == last_kind_ || !gl::QueryCounter) {
+    return;
+  }
+  if (marks_.size() == queries_.size()) {
+    const size_t more = std::max<size_t>(64, queries_.size());
+    queries_.resize(queries_.size() + more);
+    gl::GenQueries(GLsizei(more), queries_.data() + queries_.size() - more);
+  }
+  const GLuint query = queries_[marks_.size()];
+  gl::QueryCounter(query, GL_TIMESTAMP);
+  marks_.emplace_back(kind, query);
+  last_kind_ = kind;
+}
+
+void GLDevice::add_call_time(const char *kind, std::chrono::steady_clock::time_point start)
+{
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  for (CallTime &c : call_times_) {
+    if (c.kind == kind) {
+      c.ms += ms;
+      c.calls++;
+      return;
+    }
+  }
+  call_times_.push_back({kind, ms, 1});
+}
+
+std::vector<Timing> GLDevice::timings()
+{
+  std::vector<Timing> out;
+  const auto find = [&](const std::string &kind) -> Timing & {
+    for (Timing &t : out) {
+      if (t.kind == kind) {
+        return t;
+      }
+    }
+    out.push_back({kind});
+    return out.back();
+  };
+  for (const CallTime &c : call_times_) {
+    Timing &t = find(c.kind);
+    t.cpu_ms += c.ms;
+    t.calls += c.calls;
+  }
+  if (marks_.size() < 2) {
+    return out;
+  }
+  std::vector<GLuint64> at(marks_.size());
+  for (size_t i = 0; i < marks_.size(); i++) {
+    gl::GetQueryObjectui64v(marks_[i].second, GL_QUERY_RESULT, &at[i]);
+  }
+  /* From each mark to the next is the GPU's time on that kind of draw (and any wait for the CPU before the next). */
+  for (size_t i = 0; i + 1 < marks_.size(); i++) {
+    find(marks_[i].first).gpu_ms += double(at[i + 1] - at[i]) / 1e6;
+  }
+  return out;
+}
+
+const char *GLDevice::kind_of(const Draw &d)
+{
+  const StencilState &s = d.state.stencil;
+  switch (d.state.program) {
+    case Program::Batch:
+      return "batches";
+    case Program::Brush:
+      return d.state.write_color ? "stamps" : "mask shapes";
+    case Program::Media:
+      return "media";
+    case Program::Composite:
+    case Program::Run:
+    case Program::FadeSamples:
+      return "composites";
+    case Program::Stencil:
+      return d.state.depth_write ? "mask depth" : "mask passes";
+    case Program::Color:
+      if (s.winding) {
+        return "fill fans";
+      }
+      if (d.state.write_color) {
+        return s.test && s.pass == StencilOp::Zero ? "fill covers" : "colour draws";
+      }
+      return s.pass == StencilOp::Zero && s.fail == StencilOp::Zero ? "fan clears" : "mask shapes";
+  }
+  return "other";
+}
+
 void GLDevice::draw(const Draw &d)
 {
   if (d.count <= 0) {
     return;
   }
+  const char *kind = kind_of(d);
+  mark(kind);
+  const auto call_start = timing_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
   set_state(d.state);
   use_program(d.state.program);
   const Uniforms &u = uniforms_[int(d.state.program)];
@@ -690,15 +807,20 @@ void GLDevice::draw(const Draw &d)
   else {
     bind_vertex_array(empty_vao_);
   }
-  if (d.fans > 0) {
-    gl::MultiDrawArrays(GL_TRIANGLE_FAN, d.fan_firsts, d.fan_counts, d.fans);
+  if (d.indexed) {
+    glDrawElements(GL_TRIANGLES, d.count, GL_UNSIGNED_INT,
+                   reinterpret_cast<const void *>(size_t(d.first) * sizeof(uint32_t)));
   }
   else {
     glDrawArrays(GL_TRIANGLES, d.first, d.count);
   }
+  if (timing_) {
+    add_call_time(kind, call_start);
+  }
 }
 
-Mesh GLDevice::make_mesh(Layout layout, const void *data, size_t bytes)
+Mesh GLDevice::make_mesh(Layout layout, const void *data, size_t bytes, const uint32_t *indices,
+                         size_t index_count)
 {
   GLMesh mesh;
   gl::GenVertexArrays(1, &mesh.vao);
@@ -707,6 +829,12 @@ Mesh GLDevice::make_mesh(Layout layout, const void *data, size_t bytes)
   bind_array_buffer(mesh.vbo);
   gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(bytes), data, GL_STATIC_DRAW);
   layout_attributes(layout);
+  if (indices && index_count > 0) {
+    /* Part of the vertex array's state, as it is bound. */
+    gl::GenBuffers(1, &mesh.ebo);
+    gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ebo);
+    gl::BufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(index_count * sizeof(uint32_t)), indices, GL_STATIC_DRAW);
+  }
   return Mesh{meshes_.add(mesh)};
 }
 
@@ -724,6 +852,9 @@ void GLDevice::free_mesh(Mesh &mesh)
   }
   gl::DeleteVertexArrays(1, &m.vao);
   gl::DeleteBuffers(1, &m.vbo);
+  if (m.ebo) {
+    gl::DeleteBuffers(1, &m.ebo);
+  }
   meshes_.remove(mesh.id);
   mesh = Mesh();
 }
@@ -905,6 +1036,7 @@ void GLDevice::bind_target(Target target)
 
 void GLDevice::clear(const float premultiplied[4])
 {
+  mark("clears");
   if (!state_known_ || !state_.write_color) {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     if (state_known_) {
@@ -925,6 +1057,7 @@ void GLDevice::clear(const float premultiplied[4])
 
 void GLDevice::resolve(Target target)
 {
+  mark("resolves");
   /* Average each pixel's samples into the target's image. */
   const GLTarget &t = targets_[target.id];
   gl::BindFramebuffer(GL_READ_FRAMEBUFFER, t.draw_framebuffer);

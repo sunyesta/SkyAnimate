@@ -1,7 +1,9 @@
 #include "gpu/scene_renderer.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -22,6 +24,50 @@
 
 namespace oanim {
 
+
+/* Render statistics: what the render in progress has spent so far (making drawings runs on many threads at once). */
+static std::atomic<bool> g_stats_on{false};
+enum Stat { STAT_MAKE, STAT_MAKE_MASK, STAT_OUTLINE, STAT_EARCUT, STAT_FAN, STAT_STROKE, STAT_EVALUATE, STAT_COUNT };
+static std::atomic<long long> g_stat_ns[STAT_COUNT];
+static std::atomic<int> g_stat_made{0};
+static std::mutex g_stats_mutex;
+static std::vector<RenderStats> g_stats;
+
+/* Adds the time it is in scope to `stat`, when statistics are on (and `when`). */
+struct StatTimer {
+  Stat stat;
+  bool on;
+  std::chrono::steady_clock::time_point start;
+  explicit StatTimer(Stat s, bool when = true)
+      : stat(s),
+        on(when && g_stats_on.load(std::memory_order_relaxed)),
+        start(on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point())
+  {
+  }
+  ~StatTimer()
+  {
+    if (on) {
+      g_stat_ns[stat] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+                             .count();
+    }
+  }
+};
+
+void render_stats_set(bool on)
+{
+  g_stats_on = on;
+}
+
+bool render_stats_on()
+{
+  return g_stats_on;
+}
+
+std::vector<RenderStats> render_stats_take()
+{
+  const std::lock_guard<std::mutex> lock(g_stats_mutex);
+  return std::exchange(g_stats, {});
+}
 
 SceneRenderer::~SceneRenderer()
 {
@@ -172,6 +218,14 @@ void SceneRenderer::clear(const Color &color)
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
                                    int quality, int samples, const Color *background)
 {
+  const auto started = std::chrono::steady_clock::now();
+  const bool stats = g_stats_on;
+  if (stats) {
+    for (auto &ns : g_stat_ns) {
+      ns = 0;
+    }
+    g_stat_made = 0;
+  }
   /* Every layer a rig moves asks for its pose: worked out once for the whole render. */
   const ArmaturePoseCacheScope pose_cache;
   /* Every layer drawn looks up its parents, masks and bones: by an index, not a search of the tree. */
@@ -237,6 +291,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   coverage_test_ = 0;
   mask_pass_ = {};
 
+  device_->set_timing(stats);
   device_->begin();
   paint_ = color_state(0);
 
@@ -264,7 +319,10 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
       }
     }
   }
+  const auto prepare_start = std::chrono::steady_clock::now();
   prepare_drawings(doc);
+  const double prepare_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prepare_start).count();
   /* What's left to make one at a time (brushed lines, masks' shapes) has its own time: only making counts, so each
    * render makes some however long drawing the rest takes. */
   made_ms_ = 0.0;
@@ -291,6 +349,32 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   }
   resolve(output_);
   device_->end();
+  if (stats) {
+    RenderStats r;
+    r.width = width_;
+    r.height = height_;
+    r.final_render = final_render_;
+    r.cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    r.prepare_ms = prepare_ms;
+    const auto ms = [](Stat s) { return double(g_stat_ns[s].load()) / 1e6; };
+    r.evaluate_ms = ms(STAT_EVALUATE);
+    r.make_ms = ms(STAT_MAKE);
+    r.mask_make_ms = ms(STAT_MAKE_MASK);
+    r.outline_ms = ms(STAT_OUTLINE);
+    r.earcut_ms = ms(STAT_EARCUT);
+    r.fan_ms = ms(STAT_FAN);
+    r.stroke_ms = ms(STAT_STROKE);
+    r.drawings_made = g_stat_made;
+    r.kinds = device_->timings();
+    for (const gpu::Timing &t : r.kinds) {
+      r.gpu_ms += t.gpu_ms;
+    }
+    const std::lock_guard<std::mutex> lock(g_stats_mutex);
+    if (g_stats.size() >= 10000) {
+      g_stats.erase(g_stats.begin());
+    }
+    g_stats.push_back(std::move(r));
+  }
   /* Drawings no render has used for a while (another zoom, a drawing since changed) go, with their
    * buffers. */
   std::erase_if(chunks_, [this](auto &item) {
@@ -1274,6 +1358,12 @@ uint64_t SceneRenderer::geometry_hash(const Layer &layer, const VectorDrawing &d
 
 std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &args)
 {
+  const StatTimer stat_make(STAT_MAKE);
+  /* Masks' shapes are made as they are drawn, one at a time, not before with the rest. */
+  const StatTimer stat_make_mask(STAT_MAKE_MASK, coverage_pass_);
+  if (stat_make.on) {
+    g_stat_made++;
+  }
   const Document &doc = *args.doc;
   const Layer &layer = *args.layer;
   const VectorDrawing &drawing = *args.drawing;
@@ -1333,7 +1423,8 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   const auto stencil_step = [&](const std::vector<const std::vector<float2> *> &rings, Color color, bool even_odd) {
     flush();
     PaintStep step;
-    tessellate_stencil_fan(rings, color, pixel, step.vertices, step.fan_firsts, step.fan_counts);
+    const StatTimer stat_fan(STAT_FAN);
+    tessellate_stencil_fan(rings, color, pixel, step.vertices, step.fan_indices);
     if (step.vertices.size() > 6) {
       step.stencil_fan = true;
       step.even_odd = even_odd;
@@ -1352,6 +1443,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   /* One stroke (the whole outline, or a run between hidden edges). */
   const auto stroke = [&](const Shape &shape, const std::vector<float2> &pts, const std::vector<float> &half,
                           bool is_closed, const std::vector<StrokeJoin> &stroke_joins) {
+    const StatTimer stat_stroke(STAT_STROKE);
     batch(!coverage_pass_);
     /* A line thinner than a pixel is drawn a pixel wide and as much fainter (in colour; a mask takes
      * it as it is), so its weight stays true however far the view is zoomed out rather than every
@@ -1493,8 +1585,11 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
       bool closed = false;
       /* Quality sets the samples per segment, and the stray allowed where handles stretch a
        * segment: a quarter pixel at the viewport's default 12, finer for renders. */
-      shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins,
-                    pixel * 3.0f / float(quality_));
+      {
+        const StatTimer stat_outline(STAT_OUTLINE);
+        shape_outline(drawing, shape, quality_, outline, &radii, &closed, &visible, &joins,
+                      pixel * 3.0f / float(quality_));
+      }
       if (outline.size() < 2) {
         continue;
       }
@@ -1555,6 +1650,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
             stencil_step({&outline}, shape.style.fill, whole.fill_rule == FillRule::EvenOdd);
           }
           else {
+            const StatTimer stat_earcut(STAT_EARCUT);
             tessellate_fill(outline, shape.style.fill, feather, vertices);
           }
         }
@@ -1573,6 +1669,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
             stencil_step(rings, shape.style.fill, whole.fill_rule == FillRule::EvenOdd);
           }
           else {
+            const StatTimer stat_earcut(STAT_EARCUT);
             tessellate_fill_pieces(fill_area(loops, whole.fill_rule), shape.style.fill, feather, vertices);
           }
         }
@@ -1841,7 +1938,10 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     auto it = evaluated_.find(layer.id);
     if (it == evaluated_.end()) {
       Evaluated e;
-      e.drawing = layer_evaluated_drawing(doc, layer, final_render_, &e.rigid);
+      {
+        const StatTimer stat_evaluate(STAT_EVALUATE);
+        e.drawing = layer_evaluated_drawing(doc, layer, final_render_, &e.rigid);
+      }
       it = evaluated_.emplace(layer.id, std::move(e)).first;
     }
     source = &it->second.drawing;
@@ -2016,7 +2116,8 @@ void SceneRenderer::draw_stencil_fill(PaintStep &step, const Transform2D &step_t
 {
   flush_batch();
   if (!step.mesh) {
-    step.mesh = device_->make_mesh(gpu::Layout::Color, step.vertices.data(), step.vertices.size() * sizeof(Vertex));
+    step.mesh = device_->make_mesh(gpu::Layout::Color, step.vertices.data(), step.vertices.size() * sizeof(Vertex),
+                                   step.fan_indices.data(), step.fan_indices.size());
   }
   const int cover = int(step.vertices.size()) - 6;
   /* Masks worked out since the target was cleared leave their scratch where the count goes: cleared under the cover
@@ -2044,10 +2145,8 @@ void SceneRenderer::draw_stencil_fill(PaintStep &step, const Transform2D &step_t
   fan.state.stencil.write_mask = stencil_bits(WINDING_BITS);
   fan.state.stencil.winding = true;
   fan.mesh = step.mesh;
-  fan.count = cover;
-  fan.fan_firsts = step.fan_firsts.data();
-  fan.fan_counts = step.fan_counts.data();
-  fan.fans = int(step.fan_firsts.size());
+  fan.indexed = true;
+  fan.count = int(step.fan_indices.size());
   fan.to_clip = step_to_clip;
   device_->draw(fan);
   /* The colour where the count isn't 0 (or is odd), each sample once; the count cleared again all over the cover. */
@@ -2359,7 +2458,10 @@ uint64_t SceneRenderer::layer_signature(const Document &doc, const Layer &layer)
       auto it = evaluated_.find(layer.id);
       if (it == evaluated_.end()) {
         Evaluated e;
-        e.drawing = layer_evaluated_drawing(doc, layer, final_render_, &e.rigid);
+        {
+          const StatTimer stat_evaluate(STAT_EVALUATE);
+          e.drawing = layer_evaluated_drawing(doc, layer, final_render_, &e.rigid);
+        }
         it = evaluated_.emplace(layer.id, std::move(e)).first;
       }
       h = hash_transform(hash_mix(h, geometry_hash(layer, it->second.drawing, true)), it->second.rigid);

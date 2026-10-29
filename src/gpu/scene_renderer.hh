@@ -35,6 +35,29 @@ struct BrushDabs;
 struct BrushImage;
 struct DrawStep;
 
+/* Render statistics, for benchmarks (tools/render_bench, oanim.wm.render_stats): off unless asked for. One a render. */
+struct RenderStats {
+  int width = 0, height = 0;
+  bool final_render = false;
+  /* The render's own time on the CPU (not the wait for the GPU's timing), and of it: finding and making drawings
+   * before drawing (prepare), and working out bones and modifiers. */
+  double cpu_ms = 0.0, prepare_ms = 0.0, evaluate_ms = 0.0;
+  /* Making drawings, summed over the threads that made them, and of it: flattening outlines, cutting fills into
+   * triangles, stencil-then-cover fans, and strokes. */
+  double make_ms = 0.0, outline_ms = 0.0, earcut_ms = 0.0, fan_ms = 0.0, stroke_ms = 0.0;
+  /* Of make_ms: masks' shapes (made as they are drawn, one at a time). */
+  double mask_make_ms = 0.0;
+  int drawings_made = 0;
+  /* By kind of draw: the GPU's time, the CPU's in the device's calls, and how many calls (gpu::Timing); and the GPU's
+   * time in all (from the render's first draw to its last). */
+  std::vector<gpu::Timing> kinds;
+  double gpu_ms = 0.0;
+};
+void render_stats_set(bool on);
+bool render_stats_on();
+/* The statistics recorded since last taken, oldest first (at most the last 10,000). */
+std::vector<RenderStats> render_stats_take();
+
 /* Local View's layers (WindowManager::local_view) with everything inside them and every group holding
  * them: the layers it shows. Empty when none of them is still there (everything shows). */
 std::set<uint64_t> local_view_layers(const Document &doc, const std::vector<uint64_t> &ids);
@@ -317,7 +340,7 @@ class SceneRenderer {
      * last 6 vertices cover it, drawn where that isn't 0 (`even_odd`: where it is odd). */
     bool stencil_fan = false;
     bool even_odd = false;
-    std::vector<int> fan_firsts, fan_counts;
+    std::vector<uint32_t> fan_indices;
     /* What it covers (layer space), worked out when first needed (note_bounds). */
     bool bounded = false;
     float2 lo, hi;

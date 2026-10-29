@@ -14,6 +14,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "core/math.hh"
@@ -128,10 +130,8 @@ struct Draw {
   size_t stream_bytes = 0;
   Layout stream_layout = Layout::None;
   int first = 0, count = 0;
-  /* Instead of triangles from `first`: `fans` triangle fans (each its first vertex with each next two), the i-th
-   * `fan_counts[i]` vertices from `fan_firsts[i]`. */
-  const int *fan_firsts = nullptr, *fan_counts = nullptr;
-  int fans = 0;
+  /* The mesh's triangles by its indices: `count` of them from index `first`. */
+  bool indexed = false;
   /* Sampled by Brush, Media, Composite and Run. */
   Texture texture;
   /* Layer space to clip space (Color, Brush, Media). */
@@ -160,6 +160,13 @@ struct TargetDesc {
   DepthStencil depth_stencil;
 };
 
+/* A kind of draw's share of a render (Device::timings). */
+struct Timing {
+  std::string kind;
+  double gpu_ms = 0.0, cpu_ms = 0.0;
+  int calls = 0;
+};
+
 struct Caps {
   int max_samples = 1;
   /* Multisampled colour can be a texture. */
@@ -183,7 +190,9 @@ class Device {
   virtual void begin() = 0;
   virtual void end() = 0;
 
-  virtual Mesh make_mesh(Layout layout, const void *data, size_t bytes) = 0;
+  /* With `indices`, its triangles' corners as indices into the vertices too (Draw::indexed). */
+  virtual Mesh make_mesh(Layout layout, const void *data, size_t bytes, const uint32_t *indices = nullptr,
+                         size_t index_count = 0) = 0;
   virtual void free_mesh(Mesh &mesh) = 0;
 
   /* An RGBA image (8 bits a channel, its first row at v 0) with mipmaps, filtered, clamped at its edges. Upload
@@ -213,6 +222,14 @@ class Device {
   virtual void resolve(Target target) = 0;
   /* The resolved image's pixels, RGBA, bottom row first. */
   virtual void read_pixels(Target target, std::vector<uint8_t> &r_rgba) = 0;
+
+  /* Timing (render statistics, for benchmarks): while on, by kind of draw ("batches", "fill fans", "fill covers",
+   * "mask passes", ...): the GPU's time from one kind to the next, the CPU's time in the device's calls, and how many
+   * calls. Off, nothing is measured. */
+  virtual void set_timing(bool on) = 0;
+  /* After end(): each kind's times in milliseconds, in the order each first came (waits for the GPU to finish the
+   * render). Empty unless timing. */
+  virtual std::vector<Timing> timings() = 0;
 };
 
 std::unique_ptr<Device> make_gl_device();

@@ -521,6 +521,39 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     C.undo->mark_changed();
   });
+  /* Render statistics (oanim.wm.set_render_stats / render_stats), for benchmarks. */
+  m.def("set_render_stats", [](bool on) { render_stats_set(on); });
+  m.def("render_stats", []() {
+    py::list out;
+    for (const RenderStats &r : render_stats_take()) {
+      py::dict d;
+      d["width"] = r.width;
+      d["height"] = r.height;
+      d["final"] = r.final_render;
+      d["cpu_ms"] = r.cpu_ms;
+      d["prepare_ms"] = r.prepare_ms;
+      d["evaluate_ms"] = r.evaluate_ms;
+      d["make_ms"] = r.make_ms;
+      d["mask_make_ms"] = r.mask_make_ms;
+      d["outline_ms"] = r.outline_ms;
+      d["earcut_ms"] = r.earcut_ms;
+      d["fan_ms"] = r.fan_ms;
+      d["stroke_ms"] = r.stroke_ms;
+      d["drawings_made"] = r.drawings_made;
+      d["gpu_ms"] = r.gpu_ms;
+      py::dict gpu, cpu, calls;
+      for (const gpu::Timing &t : r.kinds) {
+        gpu[py::str(t.kind)] = t.gpu_ms;
+        cpu[py::str(t.kind)] = t.cpu_ms;
+        calls[py::str(t.kind)] = t.calls;
+      }
+      d["gpu"] = gpu;
+      d["cpu"] = cpu;
+      d["calls"] = calls;
+      out.append(d);
+    }
+    return out;
+  });
   /* Characters typed (oanim.wm.text_simulate), as the keyboard's text input sends them. */
   m.def("text_simulate", [](const std::string &text) { ImGui::GetIO().AddInputCharactersUTF8(text.c_str()); });
   /* Files being dragged over the window at (x, y) (oanim.wm.file_drag_simulate): the previews show

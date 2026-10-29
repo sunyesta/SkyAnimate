@@ -350,6 +350,8 @@ add_test(NAME deform_kept
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_kept.py)
 add_test(NAME viewport_shading
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_viewport_shading.py)
+add_test(NAME render_stats
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_render_stats.py)
 add_test(NAME deform_stress
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_stress.py)
 add_test(NAME vector_deform
