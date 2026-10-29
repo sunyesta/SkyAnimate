@@ -1001,7 +1001,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"viewport_shading",
             {{"layer_caching", doc.shading.layer_caching},
              {"zoom_preview", doc.shading.zoom_preview},
-             {"gpu_geometry", doc.shading.gpu_geometry}}},
+             {"renderer", doc.shading.gpu_geometry ? "GPU_GEOMETRY" : "CLASSIC"}}},
            {"mirror_editing", {{"x", doc.mirror_x}, {"y", doc.mirror_y}}},
            {"ui_open", doc.ui_open},
            {"ui_panel_order", doc.ui_panel_order},
@@ -3090,7 +3090,9 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   if (const auto it = j.find("viewport_shading"); it != j.end() && it->is_object()) {
     doc.shading.layer_caching = get_bool(*it, "layer_caching", true);
     doc.shading.zoom_preview = get_bool(*it, "zoom_preview", true);
-    doc.shading.gpu_geometry = get_bool(*it, "gpu_geometry", false);
+    /* GPU Geometry unless the file says Classic. (Files saved while Classic was the default have "gpu_geometry":
+     * false, the default then rather than a choice; it's left unread.) */
+    doc.shading.gpu_geometry = get_string(*it, "renderer", "GPU_GEOMETRY") != "CLASSIC";
   }
   if (const auto it = j.find("mirror_editing"); it != j.end() && it->is_object()) {
     doc.mirror_x = get_bool(*it, "x", false);
