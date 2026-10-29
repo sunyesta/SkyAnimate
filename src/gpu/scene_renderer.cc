@@ -16,248 +16,20 @@
 #include "data/media_layer.hh"
 #include "core/parallel.hh"
 #include "gpu/brush_stroke.hh"
-#include "gpu/gl.hh"
 #include "gpu/tessellate.hh"
 #include "media/media.hh"
 
 namespace oanim {
 
 
-static const char *COLOR_VERTEX_SHADER = R"(#version 330 core
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec4 a_color;
-uniform mat3 u_matrix;
-out vec4 v_color;
-void main()
-{
-  vec3 p = u_matrix * vec3(a_pos, 1.0);
-  gl_Position = vec4(p.xy, 0.0, 1.0);
-  v_color = a_color;
-}
-)";
-
-/* Batched steps (see flush_batch): each vertex's slot picks its step's place (clip space) and opacity. */
-static const char *BATCH_VERTEX_SHADER = R"(#version 330 core
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec4 a_color;
-layout(location = 2) in float a_slot;
-uniform vec4 u_slots[64];
-out vec4 v_color;
-void main()
-{
-  int s = int(a_slot + 0.5) * 2;
-  vec4 m = u_slots[s];
-  vec4 t = u_slots[s + 1];
-  gl_Position = vec4(m.x * a_pos.x + m.z * a_pos.y + t.x, m.y * a_pos.x + m.w * a_pos.y + t.y, 0.0, 1.0);
-  v_color = a_color * t.z;
-}
-)";
-
-static const char *BATCH_FRAGMENT_SHADER = R"(#version 330 core
-in vec4 v_color;
-out vec4 frag_color;
-void main()
-{
-  frag_color = v_color;
-}
-)";
-
-static const char *COLOR_FRAGMENT_SHADER = R"(#version 330 core
-in vec4 v_color;
-uniform float u_opacity;
-out vec4 frag_color;
-void main()
-{
-  frag_color = v_color * u_opacity;
-}
-)";
-
-/* Brush dabs: a textured quad each. Ink brushes are white with coverage as alpha, so the dab's
- * colour tints them; a colour brush in its own colours keeps the texture's colour. */
-static const char *BRUSH_VERTEX_SHADER = R"(#version 330 core
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec2 a_uv;
-layout(location = 2) in vec4 a_color;
-uniform mat3 u_matrix;
-out vec2 v_uv;
-out vec4 v_color;
-void main()
-{
-  vec3 p = u_matrix * vec3(a_pos, 1.0);
-  gl_Position = vec4(p.xy, 0.0, 1.0);
-  v_uv = a_uv;
-  v_color = a_color;
-}
-)";
-
-static const char *BRUSH_FRAGMENT_SHADER = R"(#version 330 core
-in vec2 v_uv;
-in vec4 v_color;
-uniform sampler2D u_image;
-uniform float u_opacity;
-uniform float u_own_colors;
-uniform float u_alpha_test;
-out vec4 frag_color;
-void main()
-{
-  vec4 t = texture(u_image, v_uv);
-  vec4 c = mix(v_color * t.a, t * v_color.a, u_own_colors);
-  if (c.a < u_alpha_test) {
-    discard;
-  }
-  frag_color = c * u_opacity;
-}
-)";
-
-/* A Media layer's picture (premultiplied): greyscale and the light table's tint work on its
- * colours, the dark parts taking the tint and the light ones staying white, as blue-line pencil. */
-static const char *MEDIA_FRAGMENT_SHADER = R"(#version 330 core
-in vec2 v_uv;
-in vec4 v_color;
-uniform sampler2D u_image;
-uniform float u_opacity;
-uniform float u_grey;
-uniform vec4 u_tint;
-out vec4 frag_color;
-void main()
-{
-  vec4 t = texture(u_image, v_uv);
-  vec3 c = t.a > 0.0 ? t.rgb / t.a : vec3(0.0);
-  float l = dot(c, vec3(0.299, 0.587, 0.114));
-  c = mix(c, vec3(l), u_grey);
-  c = mix(c, mix(u_tint.rgb, vec3(1.0), l), u_tint.a);
-  frag_color = vec4(c * t.a, t.a) * u_opacity;
-}
-)";
-
-/* A full-screen triangle from gl_VertexID. */
-static const char *COMPOSITE_VERTEX_SHADER = R"(#version 330 core
-out vec2 v_uv;
-void main()
-{
-  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
-  v_uv = p;
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-)";
-
-static const char *COMPOSITE_FRAGMENT_SHADER = R"(#version 330 core
-in vec2 v_uv;
-uniform sampler2D u_source;
-uniform float u_opacity;
-out vec4 frag_color;
-void main()
-{
-  frag_color = texture(u_source, v_uv) * u_opacity;
-}
-)";
-
-/* A layer run's image laid over the target, each sample over the same sample (gl_SampleID runs it per sample). */
-static const char *RUN_FRAGMENT_SHADER = R"(#version 400 core
-uniform sampler2DMS u_run;
-out vec4 frag_color;
-void main()
-{
-  frag_color = texelFetch(u_run, ivec2(gl_FragCoord.xy), gl_SampleID);
-}
-)";
-/* The same where the context is OpenGL 3.3 with per-sample shading as an extension. */
-static const char *RUN_FRAGMENT_SHADER_ARB = R"(#version 330 core
-#extension GL_ARB_sample_shading : require
-uniform sampler2DMS u_run;
-out vec4 frag_color;
-void main()
-{
-  frag_color = texelFetch(u_run, ivec2(gl_FragCoord.xy), gl_SampleID);
-}
-)";
-
-/* Stencil-only passes write no colour. */
-static const char *STENCIL_FRAGMENT_SHADER = R"(#version 330 core
-out vec4 frag_color;
-void main()
-{
-  frag_color = vec4(0.0);
-}
-)";
-
-static unsigned int compile(GLenum type, const char *source)
-{
-  const GLuint shader = gl::CreateShader(type);
-  gl::ShaderSource(shader, 1, &source, nullptr);
-  gl::CompileShader(shader);
-  GLint ok = 0;
-  gl::GetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-  if (!ok) {
-    char log[1024];
-    gl::GetShaderInfoLog(shader, sizeof(log), nullptr, log);
-    report(ReportType::Error, std::string("Shader error: ") + log);
-  }
-  return shader;
-}
-
-static unsigned int link(const char *vertex, const char *fragment)
-{
-  const GLuint program = gl::CreateProgram();
-  const GLuint vs = compile(GL_VERTEX_SHADER, vertex);
-  const GLuint fs = compile(GL_FRAGMENT_SHADER, fragment);
-  gl::AttachShader(program, vs);
-  gl::AttachShader(program, fs);
-  gl::LinkProgram(program);
-  gl::DeleteShader(vs);
-  gl::DeleteShader(fs);
-  GLint ok = 0;
-  gl::GetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (!ok) {
-    char log[1024];
-    gl::GetProgramInfoLog(program, sizeof(log), nullptr, log);
-    report(ReportType::Error, std::string("Shader link error: ") + log);
-    return 0;
-  }
-  return program;
-}
-
-/* Premultiplied "over". */
-static void set_blend_over()
-{
-  glEnable(GL_BLEND);
-  gl::BlendEquation(GL_FUNC_ADD);
-  gl::BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-}
-
 SceneRenderer::~SceneRenderer()
 {
-  if (gl::DeleteFramebuffers) {
-    free_runs();
-    free_targets();
+  /* The device frees what it holds on the GPU. */
+  for (LayerRun &run : runs_) {
+    delete run.image;
   }
-  if (initialized_ && gl::DeleteBuffers) {
-    for (auto &[key, kept] : tessellated_) {
-      for (PaintStep &step : kept.steps) {
-        free_step(step);
-      }
-    }
-  }
-  if (initialized_ && gl::DeleteProgram) {
-    gl::DeleteProgram(color_program_);
-    gl::DeleteProgram(composite_program_);
-    gl::DeleteProgram(stencil_program_);
-    gl::DeleteProgram(brush_program_);
-    gl::DeleteProgram(media_program_);
-    if (run_program_) {
-      gl::DeleteProgram(run_program_);
-    }
-    for (const auto &[id, texture] : brush_textures_) {
-      glDeleteTextures(1, &texture);
-    }
-    for (const auto &[id, texture] : media_textures_) {
-      glDeleteTextures(1, &texture.texture);
-    }
-    gl::DeleteBuffers(1, &brush_vbo_);
-    gl::DeleteVertexArrays(1, &brush_vao_);
-    gl::DeleteBuffers(1, &vbo_);
-    gl::DeleteVertexArrays(1, &vao_);
-    gl::DeleteVertexArrays(1, &quad_vao_);
+  for (Target *target : targets_) {
+    delete target;
   }
 }
 
@@ -266,49 +38,36 @@ bool SceneRenderer::init()
   if (initialized_ || failed_) {
     return initialized_;
   }
-  if (!gl::load()) {
+  device_ = gpu::make_gl_device();
+  if (!device_->init()) {
     failed_ = true;
     return false;
   }
-  color_program_ = link(COLOR_VERTEX_SHADER, COLOR_FRAGMENT_SHADER);
-  batch_program_ = link(BATCH_VERTEX_SHADER, BATCH_FRAGMENT_SHADER);
-  composite_program_ = link(COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER);
-  stencil_program_ = link(COMPOSITE_VERTEX_SHADER, STENCIL_FRAGMENT_SHADER);
-  brush_program_ = link(BRUSH_VERTEX_SHADER, BRUSH_FRAGMENT_SHADER);
-  media_program_ = link(BRUSH_VERTEX_SHADER, MEDIA_FRAGMENT_SHADER);
-  /* Layer runs need per-sample shading (OpenGL 4.0); without it every render draws every layer. */
-  GLint major = 0;
-  glGetIntegerv(GL_MAJOR_VERSION, &major);
-  if (gl::TexImage2DMultisample) {
-    run_program_ = link(COMPOSITE_VERTEX_SHADER, major >= 4 ? RUN_FRAGMENT_SHADER : RUN_FRAGMENT_SHADER_ARB);
-    sample_shading_ = run_program_ != 0;
-  }
-  if (!color_program_ || !composite_program_ || !stencil_program_ || !brush_program_ || !media_program_) {
-    failed_ = true;
-    return false;
-  }
-  gl::GenVertexArrays(1, &vao_);
-  gl::GenBuffers(1, &vbo_);
-  gl::BindVertexArray(vao_);
-  gl::BindBuffer(GL_ARRAY_BUFFER, vbo_);
-  gl::EnableVertexAttribArray(0);
-  gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(0));
-  gl::EnableVertexAttribArray(1);
-  gl::VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(2 * sizeof(float)));
-  gl::GenVertexArrays(1, &brush_vao_);
-  gl::GenBuffers(1, &brush_vbo_);
-  gl::BindVertexArray(brush_vao_);
-  gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
-  gl::EnableVertexAttribArray(0);
-  gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(0));
-  gl::EnableVertexAttribArray(1);
-  gl::VertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(2 * sizeof(float)));
-  gl::EnableVertexAttribArray(2);
-  gl::VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(4 * sizeof(float)));
-  gl::GenVertexArrays(1, &quad_vao_);
-  gl::BindVertexArray(0);
   initialized_ = true;
   return true;
+}
+
+/* Colour drawn where every bit of `required` is set in the stencil, which is left as it is. */
+static gpu::DrawState color_state(unsigned required)
+{
+  gpu::DrawState state;
+  if (required != 0) {
+    state.stencil.compare = gpu::Compare::Equal;
+    state.stencil.ref = required;
+    state.stencil.read_mask = required;
+  }
+  return state;
+}
+
+/* No colour; the stencil's `write` bits set to `ref`'s where the test passes (and by `fail` where not). */
+static gpu::DrawState stencil_state(gpu::Compare compare, unsigned ref, unsigned read_mask, unsigned write,
+                                    gpu::StencilOp fail = gpu::StencilOp::Keep)
+{
+  gpu::DrawState state;
+  state.program = gpu::Program::Stencil;
+  state.write_color = false;
+  state.stencil = {true, compare, ref, read_mask, fail, gpu::StencilOp::Replace, write};
+  return state;
 }
 
 SceneRenderer::Target *SceneRenderer::acquire_target()
@@ -321,49 +80,11 @@ SceneRenderer::Target *SceneRenderer::acquire_target()
     }
   }
   Target *target = new Target;
-  /* 0 samples asks for a plain (not multisampled) buffer. */
-  const int samples = target_samples_ > 1 ? target_samples_ : 0;
-  target->color_texture = samples > 0 && gl::TexImage2DMultisample;
-  if (target->color_texture) {
-    glGenTextures(1, &target->color);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, target->color);
-    gl::TexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGBA8, width_, height_, GL_TRUE);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
-  }
-  else {
-    gl::GenRenderbuffers(1, &target->color);
-    gl::BindRenderbuffer(GL_RENDERBUFFER, target->color);
-    gl::RenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, width_, height_);
-  }
-  gl::GenRenderbuffers(1, &target->depth_stencil);
-  gl::BindRenderbuffer(GL_RENDERBUFFER, target->depth_stencil);
-  gl::RenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, width_, height_);
-  gl::GenFramebuffers(1, &target->draw_framebuffer);
-  gl::BindFramebuffer(GL_FRAMEBUFFER, target->draw_framebuffer);
-  if (target->color_texture) {
-    gl::FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, target->color, 0);
-  }
-  else {
-    gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, target->color);
-  }
-  gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target->depth_stencil);
-  if (gl::CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-    report(ReportType::Error, "Could not create a multisampled image for drawing");
-  }
-
-  glGenTextures(1, &target->texture);
-  glBindTexture(GL_TEXTURE_2D, target->texture);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  gl::GenFramebuffers(1, &target->resolve_framebuffer);
-  gl::BindFramebuffer(GL_FRAMEBUFFER, target->resolve_framebuffer);
-  gl::FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target->texture, 0);
-  if (gl::CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-    report(ReportType::Error, "Could not create an offscreen image for drawing");
-  }
+  gpu::TargetDesc desc;
+  desc.width = width_;
+  desc.height = height_;
+  desc.samples = target_samples_;
+  target->target = device_->make_target(desc);
   target->in_use = true;
   targets_.push_back(target);
   return target;
@@ -377,16 +98,7 @@ void SceneRenderer::release_target(Target *target)
 void SceneRenderer::free_targets()
 {
   for (Target *target : targets_) {
-    gl::DeleteFramebuffers(1, &target->draw_framebuffer);
-    gl::DeleteFramebuffers(1, &target->resolve_framebuffer);
-    if (target->color_texture) {
-      glDeleteTextures(1, &target->color);
-    }
-    else {
-      gl::DeleteRenderbuffers(1, &target->color);
-    }
-    gl::DeleteRenderbuffers(1, &target->depth_stencil);
-    glDeleteTextures(1, &target->texture);
+    device_->free_target(target->target);
     delete target;
   }
   targets_.clear();
@@ -396,28 +108,21 @@ void SceneRenderer::free_targets()
 void SceneRenderer::bind_target(const Target *target)
 {
   flush_batch();
-  gl::BindFramebuffer(GL_FRAMEBUFFER, target->draw_framebuffer);
-  glViewport(0, 0, width_, height_);
+  device_->bind_target(target->target);
   bound_ = target;
 }
 
 void SceneRenderer::resolve(const Target *target)
 {
   flush_batch();
-  /* Average each pixel's samples into the target's image. */
-  gl::BindFramebuffer(GL_READ_FRAMEBUFFER, target->draw_framebuffer);
-  gl::BindFramebuffer(GL_DRAW_FRAMEBUFFER, target->resolve_framebuffer);
-  gl::BlitFramebuffer(0, 0, width_, height_, 0, 0, width_, height_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  device_->resolve(target->target);
 }
 
 void SceneRenderer::clear(const Color &color)
 {
   flush_batch();
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilMask(0xFF);
-  glClearColor(color.r * color.a, color.g * color.a, color.b * color.a, color.a);
-  glClearStencil(0);
-  glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+  const float premultiplied[4] = {color.r * color.a, color.g * color.a, color.b * color.a, color.a};
+  device_->clear(premultiplied);
 }
 
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
@@ -461,10 +166,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
     uv_[2] = uv_[3] = 1.0f;
   }
   /* 1, 2, 4, 8 or 16 samples, no more than the GPU offers. */
-  GLint max_samples = 1;
-  glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
   int use = 1;
-  while (use * 2 <= std::min({samples, int(max_samples), 16})) {
+  while (use * 2 <= std::min({samples, device_->caps().max_samples, 16})) {
     use *= 2;
   }
   samples_ = use;
@@ -488,11 +191,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   coverage_test_ = 0;
   mask_pass_ = {};
 
-  glDisable(GL_SCISSOR_TEST);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_CULL_FACE);
-  glEnable(GL_STENCIL_TEST);
-  set_blend_over();
+  device_->begin();
+  paint_ = color_state(0);
 
   evaluated_.clear();
   deferred_.clear();
@@ -504,8 +204,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   output_ = acquire_target();
   bind_target(output_);
   clear(background ? Color{background->r, background->g, background->b, 1.0f} : Color{0, 0, 0, 0});
-  const bool in_runs = interactive_ && !final_render_ && sample_shading_ && samples_ > 1 &&
-                      mask_preview_layer_ == 0 && layer_runs_ && output_->color_texture;
+  const bool in_runs = interactive_ && !final_render_ && device_->caps().sample_shading && samples_ > 1 &&
+                      mask_preview_layer_ == 0 && layer_runs_ && device_->has_sample_texture(output_->target);
   std::vector<DrawStep> steps;
   std::vector<char> clean;
   skip_prepare_.clear();
@@ -543,21 +243,14 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
     draw_mask_preview(doc, *previewed);
   }
   resolve(output_);
-
-  glDisable(GL_STENCIL_TEST);
-  glStencilMask(0xFF);
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
-  gl::BindVertexArray(0);
-  gl::UseProgram(0);
+  device_->end();
   /* Drawings no render has used for a while (another zoom, a drawing since changed) go, with their
    * buffers. */
   std::erase_if(chunks_, [this](auto &item) {
     if (item.second.used + 120 >= render_serial_) {
       return false;
     }
-    gl::DeleteVertexArrays(1, &item.second.vao);
-    gl::DeleteBuffers(1, &item.second.vbo);
+    device_->free_mesh(item.second.mesh);
     return true;
   });
   std::erase_if(shapes_kept_, [this](auto &item) { return item.second.used + 120 < render_serial_; });
@@ -570,7 +263,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
     }
     return true;
   });
-  return output_->texture;
+  return device_->native_texture(output_->target);
 }
 
 bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height)
@@ -580,11 +273,8 @@ bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int 
     return false;
   }
   const size_t row = size_t(width_) * 4;
-  std::vector<uint8_t> bottom_up(row * size_t(height_));
-  gl::BindFramebuffer(GL_READ_FRAMEBUFFER, output_->resolve_framebuffer);
-  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, bottom_up.data());
-  gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
+  std::vector<uint8_t> bottom_up;
+  device_->read_pixels(output_->target, bottom_up);
   r_rgba.resize(bottom_up.size());
   for (int y = 0; y < height_; y++) {
     std::copy_n(bottom_up.data() + size_t(height_ - 1 - y) * row, row, r_rgba.data() + size_t(y) * row);
@@ -596,30 +286,18 @@ bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int 
 
 void SceneRenderer::use_color_stencil(Paint paint)
 {
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilMask(0);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
   const unsigned required = paint == Paint::Line ? required_stencil_ & ~line_free_stencil_
                                                  : required_stencil_ & ~fill_free_stencil_;
-  color_required_ = required;
-  if (required == 0) {
-    glStencilFunc(GL_ALWAYS, 0, 0);
-  }
-  else {
-    glStencilFunc(GL_EQUAL, GLint(required), required);
-  }
+  paint_ = color_state(required);
 }
 
 void SceneRenderer::stencil_fill(unsigned bit, bool set)
 {
   flush_batch();
-  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-  glStencilMask(bit);
-  glStencilFunc(GL_ALWAYS, set ? GLint(bit) : 0, bit);
-  glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
-  gl::UseProgram(stencil_program_);
-  gl::BindVertexArray(quad_vao_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
+  gpu::Draw draw;
+  draw.state = stencil_state(gpu::Compare::Always, set ? bit : 0u, bit, bit, gpu::StencilOp::Replace);
+  draw.count = 3;
+  device_->draw(draw);
 }
 
 std::set<uint64_t> local_view_layers(const Document &doc, const std::vector<uint64_t> &ids)
@@ -907,21 +585,18 @@ void SceneRenderer::evaluate_mask_cards(const Document &doc, const std::vector<s
       break;
     }
     evaluate_mask_rows(doc, cards[c], MASK_SPARE, scratch, false, free & ~MASK_SPARE);
-    stencil_where(MASK_SPARE, 0, result, 0, GL_REPLACE);
+    stencil_where(MASK_SPARE, 0, result, 0);
   }
 }
 
-void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref, unsigned op)
+void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref)
 {
   flush_batch();
-  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-  glStencilMask(write);
+  gpu::Draw draw;
   /* The reference holds both the value tested (under `test`) and the one written (under `write`). */
-  glStencilFunc(GL_EQUAL, GLint(value | (ref & ~test)), test);
-  glStencilOp(GL_KEEP, GL_KEEP, GLenum(op));
-  gl::UseProgram(stencil_program_);
-  gl::BindVertexArray(quad_vao_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
+  draw.state = stencil_state(gpu::Compare::Equal, value | (ref & ~test), test, write);
+  draw.count = 3;
+  device_->draw(draw);
 }
 
 void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<MaskRow> &rows, unsigned result,
@@ -968,7 +643,7 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
           draw_mask_source(doc, layer, own, nested);
         }
         /* Into the shape, and the bit cleared for the next. */
-        stencil_where(own, own, bit, bit, GL_REPLACE);
+        stencil_where(own, own, bit, bit);
         stencil_fill(own, false);
       };
       each_layer(source);
@@ -989,13 +664,13 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
         stencil_fill(operand, false);
         draw_one(*source, operand);
         if (first) {
-          stencil_where(operand, operand, scratch, scratch, GL_REPLACE);
+          stencil_where(operand, operand, scratch, scratch);
         }
         else if (row.combine == MaskCombine::Difference) {
-          stencil_where(operand, operand, scratch, 0, GL_REPLACE);
+          stencil_where(operand, operand, scratch, 0);
         }
         else {
-          stencil_where(operand, 0, scratch, 0, GL_REPLACE);
+          stencil_where(operand, 0, scratch, 0);
         }
         first = false;
       }
@@ -1031,10 +706,10 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
     const unsigned inside = row.invert ? 0u : scratch;
     switch (row.mode) {
       case MaskMode::Add:
-        stencil_where(scratch, inside, result, result, GL_REPLACE);
+        stencil_where(scratch, inside, result, result);
         break;
       case MaskMode::Subtract:
-        stencil_where(scratch, inside, result, 0, GL_REPLACE);
+        stencil_where(scratch, inside, result, 0);
         break;
     }
   }
@@ -1062,23 +737,17 @@ void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
   required_stencil_ = 0;
   /* Over the drawing at 90%, so it shows faintly through: white where every level shows the layer,
    * black elsewhere. */
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilMask(0);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
   const Transform2D to_document = document_to_pixels_.inverted();
   const float2 a = to_document.apply({0.0f, 0.0f}), b = to_document.apply({float(width_), float(height_)});
   const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x), y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
   constexpr float alpha = 0.9f;
-  gl::UseProgram(color_program_);
   for (const bool shows : {true, false}) {
-    if (required == 0) {
-      if (!shows) {
-        continue;
-      }
-      glStencilFunc(GL_ALWAYS, 0, 0);
+    if (required == 0 && !shows) {
+      continue;
     }
-    else {
-      glStencilFunc(shows ? GL_EQUAL : GL_NOTEQUAL, GLint(required), required);
+    paint_ = color_state(required);
+    if (!shows) {
+      paint_.stencil.compare = gpu::Compare::NotEqual;
     }
     /* Premultiplied. */
     const float v = shows ? alpha : 0.0f;
@@ -1131,7 +800,7 @@ void SceneRenderer::draw_clip_base(const Document &doc, const Layer &layer, unsi
           }
           else if (more) {
             evaluate_mask_rows(doc, card.steps, more, scratch, !deep);
-            stencil_where(more, 0, result, 0, GL_REPLACE);
+            stencil_where(more, 0, result, 0);
           }
         }
       }
@@ -1164,12 +833,9 @@ void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const
     return;
   }
   const Transform2D transform = layer_world_transform(doc, layer.id);
-  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-  glStencilMask(bit);
   /* With coverage_test_, only where those bits are set (the mask layer's own masks). */
-  glStencilFunc(coverage_test_ ? GL_EQUAL : GL_ALWAYS, GLint((set ? bit : 0u) | coverage_test_),
-                coverage_test_ ? coverage_test_ : bit);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+  paint_ = stencil_state(coverage_test_ ? gpu::Compare::Equal : gpu::Compare::Always,
+                         (set ? bit : 0u) | coverage_test_, coverage_test_ ? coverage_test_ : bit, bit);
   coverage_pass_ = true;
   draw_drawing(doc, layer, transform, 1.0f);
   coverage_pass_ = false;
@@ -1274,15 +940,13 @@ static uint64_t setup_hash(const VectorDrawing &d)
   return h;
 }
 
-static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, size_t bytes, bool brush);
-
 void SceneRenderer::draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity)
 {
   /* The brush's images (a brush reloaded since gets its textures again). */
   if (const Brush *brush = brush_find(step.brush)) {
     coverage_alpha_ = step.coverage_alpha;
     draw_dabs(step.dabs, brush_tip_images(*brush, step.settings), step.own_colors, step.merged_alpha, transform,
-              opacity, &step.dab_vaos, &step.dab_vbos);
+              opacity, &step.dab_meshes);
     coverage_alpha_ = 0.5f;
   }
 }
@@ -1290,10 +954,8 @@ void SceneRenderer::draw_dabs_step(PaintStep &step, const Transform2D &transform
 void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D &transform, float opacity,
                                uint64_t key)
 {
-  if (key != 0 && !coverage_pass_ && batch_program_) {
-    const Transform2D to_clip = Transform2D::translate({-1.0f, -1.0f}) *
-                                Transform2D::scaling({2.0f / float(width_), 2.0f / float(height_)}) *
-                                document_to_pixels_ * transform;
+  if (key != 0 && !coverage_pass_ && device_->caps().batching) {
+    const Transform2D step_to_clip = to_clip(transform);
     for (size_t i = 0; i < steps.size(); i++) {
       PaintStep &step = steps[i];
       if (step.is_dabs) {
@@ -1309,8 +971,8 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
       }
       const unsigned required = step.is_line ? required_stencil_ & ~line_free_stencil_
                                              : required_stencil_ & ~fill_free_stencil_;
-      batch_.push_back({&step, (key ^ (uint64_t(i) + 1) * 0x9e3779b97f4a7c15ull) * 1099511628211ull, to_clip, opacity,
-                        required});
+      batch_.push_back({&step, (key ^ (uint64_t(i) + 1) * 0x9e3779b97f4a7c15ull) * 1099511628211ull, step_to_clip,
+                        opacity, required});
     }
     return;
   }
@@ -1324,14 +986,18 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
     }
     if (!step.is_dabs) {
       if (!step.vertices.empty()) {
-        gl::UseProgram(color_program_);
-        gl::Uniform1f(gl::GetUniformLocation(color_program_, "u_opacity"), opacity);
-        set_matrix(color_program_, transform);
-        if (step.vao == 0) {
-          upload_kept(step.vao, step.vbo, step.vertices.data(), step.vertices.size() * sizeof(Vertex), false);
+        if (!step.mesh) {
+          step.mesh = device_->make_mesh(gpu::Layout::Color, step.vertices.data(),
+                                         step.vertices.size() * sizeof(Vertex));
         }
-        gl::BindVertexArray(step.vao);
-        glDrawArrays(GL_TRIANGLES, 0, GLsizei(step.vertices.size()));
+        gpu::Draw draw;
+        draw.state = paint_;
+        draw.state.program = gpu::Program::Color;
+        draw.mesh = step.mesh;
+        draw.count = int(step.vertices.size());
+        draw.to_clip = to_clip(transform);
+        draw.opacity = opacity;
+        device_->draw(draw);
       }
       continue;
     }
@@ -2040,11 +1706,6 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
 }
 
 /* A batched vertex: a tessellated one and its step's slot in the chunk. */
-struct BatchVertex {
-  float x, y;
-  float r, g, b, a;
-  float slot;
-};
 
 void SceneRenderer::flush_batch()
 {
@@ -2052,12 +1713,7 @@ void SceneRenderer::flush_batch()
     return;
   }
   constexpr size_t SLOTS = 32;
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilMask(0);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-  gl::UseProgram(batch_program_);
-  const GLint slots_at = gl::GetUniformLocation(batch_program_, "u_slots");
-  std::vector<BatchVertex> vertices;
+  std::vector<gpu::BatchVertex> vertices;
   float slots[SLOTS * 8];
   for (size_t i = 0; i < batch_.size();) {
     const unsigned required = batch_[i].required;
@@ -2069,26 +1725,14 @@ void SceneRenderer::flush_batch()
     }
     Chunk &chunk = chunks_[chunk_key];
     chunk.used = render_serial_;
-    if (!chunk.vao) {
+    if (!chunk.mesh) {
       vertices.clear();
       for (size_t k = i; k < j; k++) {
         for (const Vertex &v : batch_[k].step->vertices) {
           vertices.push_back({v.x, v.y, v.r, v.g, v.b, v.a, float(k - i)});
         }
       }
-      gl::GenVertexArrays(1, &chunk.vao);
-      gl::GenBuffers(1, &chunk.vbo);
-      gl::BindVertexArray(chunk.vao);
-      gl::BindBuffer(GL_ARRAY_BUFFER, chunk.vbo);
-      gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(vertices.size() * sizeof(BatchVertex)), vertices.data(),
-                     GL_STATIC_DRAW);
-      const GLsizei stride = sizeof(BatchVertex);
-      gl::EnableVertexAttribArray(0);
-      gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, x)));
-      gl::EnableVertexAttribArray(1);
-      gl::VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, r)));
-      gl::EnableVertexAttribArray(2);
-      gl::VertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(offsetof(BatchVertex, slot)));
+      chunk.mesh = device_->make_mesh(gpu::Layout::Batch, vertices.data(), vertices.size() * sizeof(gpu::BatchVertex));
       chunk.vertices = int(vertices.size());
     }
     for (size_t k = i; k < j; k++) {
@@ -2103,152 +1747,94 @@ void SceneRenderer::flush_batch()
       slot[6] = b.opacity;
       slot[7] = 0.0f;
     }
-    gl::Uniform4fv(slots_at, GLsizei((j - i) * 2), slots);
-    if (required == 0) {
-      glStencilFunc(GL_ALWAYS, 0, 0);
-    }
-    else {
-      glStencilFunc(GL_EQUAL, GLint(required), required);
-    }
-    gl::BindVertexArray(chunk.vao);
-    glDrawArrays(GL_TRIANGLES, 0, chunk.vertices);
+    gpu::Draw draw;
+    draw.state = color_state(required);
+    draw.state.program = gpu::Program::Batch;
+    draw.mesh = chunk.mesh;
+    draw.count = chunk.vertices;
+    draw.slots = slots;
+    draw.slot_count = int(j - i);
+    device_->draw(draw);
     i = j;
   }
   batch_.clear();
-  /* As use_color_stencil last left it, for what draws next. */
-  if (color_required_ == 0) {
-    glStencilFunc(GL_ALWAYS, 0, 0);
-  }
-  else {
-    glStencilFunc(GL_EQUAL, GLint(color_required_), color_required_);
-  }
 }
 
-void SceneRenderer::set_matrix(unsigned int program, const Transform2D &transform)
+Transform2D SceneRenderer::to_clip(const Transform2D &transform) const
 {
-  /* Layer space -> pixels -> clip space. */
-  const Transform2D to_clip = Transform2D::translate({-1.0f, -1.0f}) *
-                              Transform2D::scaling({2.0f / float(width_), 2.0f / float(height_)}) *
-                              document_to_pixels_ * transform;
-  const float matrix[9] = {to_clip.a, to_clip.b, 0.0f, to_clip.c, to_clip.d, 0.0f, to_clip.tx, to_clip.ty, 1.0f};
-  gl::UniformMatrix3fv(gl::GetUniformLocation(program, "u_matrix"), 1, GL_FALSE, matrix);
+  return Transform2D::translate({-1.0f, -1.0f}) * Transform2D::scaling({2.0f / float(width_), 2.0f / float(height_)}) *
+         document_to_pixels_ * transform;
 }
 
-unsigned int SceneRenderer::brush_texture(const BrushImage &image)
+gpu::Texture SceneRenderer::brush_texture(const BrushImage &image)
 {
   if (auto it = brush_textures_.find(image.id); it != brush_textures_.end()) {
     return it->second;
   }
-  GLuint texture = 0;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, image.width, image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-               image.rgba.data());
-  gl::GenerateMipmap(GL_TEXTURE_2D);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  const gpu::Texture texture = device_->make_texture();
+  device_->upload_texture(texture, image.width, image.height, image.rgba.data());
   brush_textures_[image.id] = texture;
   return texture;
 }
 
-/* A buffer and layout for kept vertices, uploaded once: the colour program's (x, y, rgba) or the brush
- * program's (x, y, u, v, rgba). */
-static void upload_kept(unsigned int &vao, unsigned int &vbo, const void *data, size_t bytes, bool brush)
-{
-  gl::GenVertexArrays(1, &vao);
-  gl::GenBuffers(1, &vbo);
-  gl::BindVertexArray(vao);
-  gl::BindBuffer(GL_ARRAY_BUFFER, vbo);
-  gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(bytes), data, GL_STATIC_DRAW);
-  if (brush) {
-    gl::EnableVertexAttribArray(0);
-    gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(0));
-    gl::EnableVertexAttribArray(1);
-    gl::VertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(2 * sizeof(float)));
-    gl::EnableVertexAttribArray(2);
-    gl::VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(BrushVertex), reinterpret_cast<void *>(4 * sizeof(float)));
-  }
-  else {
-    gl::EnableVertexAttribArray(0);
-    gl::VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(0));
-    gl::EnableVertexAttribArray(1);
-    gl::VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(2 * sizeof(float)));
-  }
-}
-
 void SceneRenderer::free_step(PaintStep &step)
 {
-  if (step.vao) {
-    gl::DeleteVertexArrays(1, &step.vao);
-    gl::DeleteBuffers(1, &step.vbo);
+  device_->free_mesh(step.mesh);
+  for (gpu::Mesh &mesh : step.dab_meshes) {
+    device_->free_mesh(mesh);
   }
-  for (size_t i = 0; i < step.dab_vaos.size(); i++) {
-    if (step.dab_vaos[i]) {
-      gl::DeleteVertexArrays(1, &step.dab_vaos[i]);
-      gl::DeleteBuffers(1, &step.dab_vbos[i]);
-    }
-  }
-  step.vao = step.vbo = 0;
-  step.dab_vaos.clear();
-  step.dab_vbos.clear();
+  step.dab_meshes.clear();
 }
 
 void SceneRenderer::draw_dabs(const BrushDabs &dabs, const std::vector<BrushImage> &images, bool own_colors,
-                              bool merged, const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos,
-                              std::vector<unsigned int> *vbos)
+                              bool merged, const Transform2D &transform, float opacity, std::vector<gpu::Mesh> *meshes)
 {
   flush_batch();
   const Target *outer = bound_;
   Target *own = nullptr;
+  gpu::Draw draw;
+  draw.state = paint_;
   /* Merged alpha: the dabs go into an image of their own, keeping the strongest one where
    * they overlap, which is then laid over the layer. (Mask coverage needs no merging.) */
   if (merged && !coverage_pass_ && outer) {
     own = acquire_target();
     bind_target(own);
-    glDisable(GL_STENCIL_TEST);
     clear(Color{0, 0, 0, 0});
-    gl::BlendEquation(GL_MAX);
+    draw.state = gpu::DrawState();
+    draw.state.stencil.test = false;
+    draw.state.blend = gpu::Blend::Max;
   }
-  gl::UseProgram(brush_program_);
-  set_matrix(brush_program_, transform);
-  gl::Uniform1i(gl::GetUniformLocation(brush_program_, "u_image"), 0);
-  gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_opacity"), own ? 1.0f : opacity);
-  gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_own_colors"), own_colors ? 1.0f : 0.0f);
-  gl::Uniform1f(gl::GetUniformLocation(brush_program_, "u_alpha_test"), coverage_pass_ ? coverage_alpha_ : 0.0f);
-  gl::ActiveTexture(GL_TEXTURE0);
-  gl::BindVertexArray(brush_vao_);
-  gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
-  if (vaos && vbos) {
-    vaos->resize(dabs.per_image.size(), 0);
-    vbos->resize(dabs.per_image.size(), 0);
+  draw.state.program = gpu::Program::Brush;
+  draw.to_clip = to_clip(transform);
+  draw.opacity = own ? 1.0f : opacity;
+  draw.own_colors = own_colors;
+  draw.alpha_test = coverage_pass_ ? coverage_alpha_ : 0.0f;
+  if (meshes) {
+    meshes->resize(dabs.per_image.size());
   }
   for (size_t i = 0; i < dabs.per_image.size() && i < images.size(); i++) {
     const std::vector<BrushVertex> &list = dabs.per_image[i];
     if (list.empty()) {
       continue;
     }
-    glBindTexture(GL_TEXTURE_2D, brush_texture(images[i]));
-    if (vaos && vbos) {
-      if ((*vaos)[i] == 0) {
-        upload_kept((*vaos)[i], (*vbos)[i], list.data(), list.size() * sizeof(BrushVertex), true);
+    draw.texture = brush_texture(images[i]);
+    if (meshes) {
+      if (!(*meshes)[i]) {
+        (*meshes)[i] = device_->make_mesh(gpu::Layout::Brush, list.data(), list.size() * sizeof(BrushVertex));
       }
-      gl::BindVertexArray((*vaos)[i]);
+      draw.mesh = (*meshes)[i];
     }
     else {
-      gl::BindVertexArray(brush_vao_);
-      gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
-      gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(list.size() * sizeof(BrushVertex)), list.data(), GL_STREAM_DRAW);
+      draw.stream = list.data();
+      draw.stream_bytes = list.size() * sizeof(BrushVertex);
+      draw.stream_layout = gpu::Layout::Brush;
     }
-    glDrawArrays(GL_TRIANGLES, 0, GLsizei(list.size()));
+    draw.count = int(list.size());
+    device_->draw(draw);
   }
   if (own) {
-    set_blend_over();
     resolve(own);
     bind_target(outer);
-    glEnable(GL_STENCIL_TEST);
     use_color_stencil();
     composite(own, opacity);
     release_target(own);
@@ -2271,26 +1857,10 @@ void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Tr
   }
   MediaTexture &tex = media_textures_[layer.id];
   if (!tex.texture) {
-    glGenTextures(1, &tex.texture);
+    tex.texture = device_->make_texture();
   }
-  glBindTexture(GL_TEXTURE_2D, tex.texture);
   if (tex.serial != frame->serial) {
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if (tex.width != frame->width || tex.height != frame->height) {
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frame->width, frame->height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                   frame->rgba.data());
-      tex.width = frame->width;
-      tex.height = frame->height;
-    }
-    else {
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame->width, frame->height, GL_RGBA, GL_UNSIGNED_BYTE,
-                      frame->rgba.data());
-    }
-    gl::GenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    device_->upload_texture(tex.texture, frame->width, frame->height, frame->rgba.data());
     tex.serial = frame->serial;
   }
   const MediaInfo info = media_clip_info(clip);
@@ -2301,29 +1871,37 @@ void SceneRenderer::draw_media(const Document &doc, const Layer &layer, const Tr
   const BrushVertex v[6] = {{q[0].x, q[0].y, 0, 1, 1, 1, 1, 1}, {q[1].x, q[1].y, 1, 1, 1, 1, 1, 1},
                             {q[2].x, q[2].y, 1, 0, 1, 1, 1, 1}, {q[0].x, q[0].y, 0, 1, 1, 1, 1, 1},
                             {q[2].x, q[2].y, 1, 0, 1, 1, 1, 1}, {q[3].x, q[3].y, 0, 0, 1, 1, 1, 1}};
-  gl::UseProgram(media_program_);
-  set_matrix(media_program_, transform);
-  gl::Uniform1i(gl::GetUniformLocation(media_program_, "u_image"), 0);
-  gl::Uniform1f(gl::GetUniformLocation(media_program_, "u_opacity"), opacity);
-  gl::Uniform1f(gl::GetUniformLocation(media_program_, "u_grey"), layer.media.greyscale ? 1.0f : 0.0f);
+  gpu::Draw draw;
+  draw.state = paint_;
+  draw.state.program = gpu::Program::Media;
+  draw.to_clip = to_clip(transform);
+  draw.opacity = opacity;
+  draw.grey = layer.media.greyscale ? 1.0f : 0.0f;
   const Color &tint = layer.media.tint;
-  gl::Uniform4f(gl::GetUniformLocation(media_program_, "u_tint"), tint.r, tint.g, tint.b, layer.media.tint_amount);
-  gl::ActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, tex.texture);
-  gl::BindVertexArray(brush_vao_);
-  gl::BindBuffer(GL_ARRAY_BUFFER, brush_vbo_);
-  gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(sizeof(v)), v, GL_STREAM_DRAW);
-  glDrawArrays(GL_TRIANGLES, 0, 6);
+  draw.tint[0] = tint.r;
+  draw.tint[1] = tint.g;
+  draw.tint[2] = tint.b;
+  draw.tint[3] = layer.media.tint_amount;
+  draw.texture = tex.texture;
+  draw.stream = v;
+  draw.stream_bytes = sizeof(v);
+  draw.stream_layout = gpu::Layout::Brush;
+  draw.count = 6;
+  device_->draw(draw);
 }
 
 void SceneRenderer::draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform)
 {
   flush_batch();
-  set_matrix(color_program_, transform);
-  gl::BindVertexArray(vao_);
-  gl::BindBuffer(GL_ARRAY_BUFFER, vbo_);
-  gl::BufferData(GL_ARRAY_BUFFER, GLsizeiptr(vertices.size() * sizeof(Vertex)), vertices.data(), GL_STREAM_DRAW);
-  glDrawArrays(GL_TRIANGLES, 0, GLsizei(vertices.size()));
+  gpu::Draw draw;
+  draw.state = paint_;
+  draw.state.program = gpu::Program::Color;
+  draw.stream = vertices.data();
+  draw.stream_bytes = vertices.size() * sizeof(Vertex);
+  draw.stream_layout = gpu::Layout::Color;
+  draw.count = int(vertices.size());
+  draw.to_clip = to_clip(transform);
+  device_->draw(draw);
 }
 
 bool SceneRenderer::pan_to(int width, int height, const Transform2D &document_to_pixels)
@@ -2452,25 +2030,16 @@ SceneRenderer::Target *SceneRenderer::make_run_image()
 {
   flush_batch();
   if (!run_depth_stencil_) {
-    gl::GenRenderbuffers(1, &run_depth_stencil_);
-    gl::BindRenderbuffer(GL_RENDERBUFFER, run_depth_stencil_);
-    gl::RenderbufferStorageMultisample(GL_RENDERBUFFER, target_samples_, GL_DEPTH24_STENCIL8, width_, height_);
+    run_depth_stencil_ = device_->make_depth_stencil(width_, height_, target_samples_);
   }
   Target *target = new Target;
-  target->color_texture = true;
-  target->own_depth_stencil = false;
-  glGenTextures(1, &target->color);
-  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, target->color);
-  gl::TexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, target_samples_, GL_RGBA8, width_, height_, GL_TRUE);
-  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
-  target->depth_stencil = run_depth_stencil_;
-  gl::GenFramebuffers(1, &target->draw_framebuffer);
-  gl::BindFramebuffer(GL_FRAMEBUFFER, target->draw_framebuffer);
-  gl::FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, target->color, 0);
-  gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, run_depth_stencil_);
-  if (gl::CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-    report(ReportType::Error, "Could not create an image for a run of layers");
-  }
+  gpu::TargetDesc desc;
+  desc.width = width_;
+  desc.height = height_;
+  desc.samples = target_samples_;
+  desc.resolved = false;
+  desc.depth_stencil = run_depth_stencil_;
+  target->target = device_->make_target(desc);
   return target;
 }
 
@@ -2479,8 +2048,7 @@ void SceneRenderer::free_run_image(Target *target)
   if (!target) {
     return;
   }
-  gl::DeleteFramebuffers(1, &target->draw_framebuffer);
-  glDeleteTextures(1, &target->color);
+  device_->free_target(target->target);
   delete target;
 }
 
@@ -2491,26 +2059,19 @@ void SceneRenderer::free_runs()
   }
   runs_.clear();
   run_layers_.clear();
-  if (run_depth_stencil_ && gl::DeleteRenderbuffers) {
-    gl::DeleteRenderbuffers(1, &run_depth_stencil_);
-    run_depth_stencil_ = 0;
+  if (run_depth_stencil_) {
+    device_->free_depth_stencil(run_depth_stencil_);
   }
 }
 
 void SceneRenderer::composite_run(const Target *run)
 {
   flush_batch();
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilMask(0);
-  glStencilFunc(GL_ALWAYS, 0, 0);
-  set_blend_over();
-  gl::UseProgram(run_program_);
-  gl::ActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, run->color);
-  gl::Uniform1i(gl::GetUniformLocation(run_program_, "u_run"), 0);
-  gl::BindVertexArray(quad_vao_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
-  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+  gpu::Draw draw;
+  draw.state.program = gpu::Program::Run;
+  draw.texture = device_->sample_texture(run->target);
+  draw.count = 3;
+  device_->draw(draw);
 }
 
 uint64_t SceneRenderer::runs_view() const
@@ -2665,13 +2226,13 @@ void SceneRenderer::draw_layers_in_runs(const Document &doc, const std::vector<D
 void SceneRenderer::composite(const Target *source, float opacity)
 {
   flush_batch();
-  gl::UseProgram(composite_program_);
-  gl::ActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, source->texture);
-  gl::Uniform1i(gl::GetUniformLocation(composite_program_, "u_source"), 0);
-  gl::Uniform1f(gl::GetUniformLocation(composite_program_, "u_opacity"), opacity);
-  gl::BindVertexArray(quad_vao_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
+  gpu::Draw draw;
+  draw.state = paint_;
+  draw.state.program = gpu::Program::Composite;
+  draw.texture = device_->resolved_texture(source->target);
+  draw.opacity = opacity;
+  draw.count = 3;
+  device_->draw(draw);
 }
 
 }  // namespace oanim

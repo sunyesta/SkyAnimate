@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -22,6 +23,7 @@
 #include "core/math.hh"
 #include "data/layer.hh"
 #include "gpu/brush_stroke.hh"
+#include "gpu/gpu_device.hh"
 #include "gpu/tessellate.hh"
 
 namespace oanim {
@@ -109,19 +111,15 @@ class SceneRenderer {
   }
 
  private:
+  /* Drawn into: multisampled colour and depth-stencil, and the image the samples resolve into. The colour is a
+   * multisample texture (with the standard sample places) when there are samples, so layer runs' images line up with
+   * it sample for sample. */
   struct Target {
-    /* Drawn into: multisampled colour and depth-stencil. The colour is a multisample texture (with the
-     * standard sample places) when there are samples, so layer runs' images line up with it sample for sample. */
-    unsigned int draw_framebuffer = 0;
-    unsigned int color = 0;
-    bool color_texture = false;
-    unsigned int depth_stencil = 0;
-    bool own_depth_stencil = true;
-    /* The resolved image, averaged from the samples. */
-    unsigned int resolve_framebuffer = 0;
-    unsigned int texture = 0;
+    gpu::Target target;
     bool in_use = false;
   };
+  /* What the GPU is asked to do, without naming its API (gpu_device.hh): everything below draws through it. */
+  std::unique_ptr<gpu::Device> device_;
 
   bool init();
   Target *acquire_target();
@@ -148,10 +146,7 @@ class SceneRenderer {
   /* The last render's steps and signatures, to see which changed. */
   std::vector<uint64_t> last_layers_, last_signatures_;
   uint64_t last_view_ = 0;
-  unsigned int run_depth_stencil_ = 0;
-  unsigned int run_program_ = 0;
-  unsigned int shift_program_ = 0;
-  bool sample_shading_ = false;
+  gpu::DepthStencil run_depth_stencil_;
   /* This render's drawings as drawn: each layer's tessellation key with where it is drawn. */
   std::unordered_map<uint64_t, uint64_t> drawn_signature_;
   std::unordered_map<uint64_t, uint64_t> signature_memo_;
@@ -215,8 +210,8 @@ class SceneRenderer {
    * ones, one level deep, without two of them). `nested`: without their masks. */
   void draw_clip_base(const Document &doc, const Layer &layer, unsigned bit, bool nested, unsigned free,
                       std::vector<const Layer *> &chain);
-  /* Wherever the stencil's `test` bits equal `value`, applies `op` (with `ref`) to the `write` bits. */
-  void stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref, unsigned op);
+  /* Wherever the stencil's `test` bits equal `value`, sets the `write` bits to `ref`'s. */
+  void stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref);
   /* Writes a layer's coverage (and its children's) into one stencil bit, set or cleared. */
   void draw_coverage(const Document &doc, const Layer &layer, const Transform2D &parent, unsigned bit, bool set);
   /* Sets or clears one stencil bit everywhere. */
@@ -226,20 +221,23 @@ class SceneRenderer {
    * as a whole goes by its fills). */
   enum class Paint { Fill, Line };
   void use_color_stencil(Paint paint = Paint::Fill);
+  /* What a layer's shapes, stamps, pictures and faded groups draw with (their program aside): colour under the masks
+   * use_color_stencil set, or a mask's coverage into the stencil (draw_coverage). Each draw is given it whole. */
+  gpu::DrawState paint_;
   /* Draws a vector layer's shapes into the bound target. */
   void draw_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity);
   void draw_vertices(const std::vector<Vertex> &vertices, const Transform2D &transform);
   /* Draws brush dabs. `own_colors`: a colour brush shown in its own colours. Merged alpha
    * draws them into an image of their own first, keeping the strongest dab where they overlap. */
-  /* `vaos`, `vbos` (optional): a kept step's buffers, one per image, so its stamps stay on the GPU
-   * (uploaded the first time). */
+  /* `meshes` (optional): a kept step's stamps, one mesh per image, so they stay on the GPU (uploaded the first
+   * time). */
   /* How opaque a dab's pixel must be to count in a mask (see PaintStep::coverage_alpha). */
   float coverage_alpha_ = 0.5f;
   void draw_dabs(const BrushDabs &dabs, const std::vector<BrushImage> &images, bool own_colors, bool merged,
-                 const Transform2D &transform, float opacity, std::vector<unsigned int> *vaos = nullptr,
-                 std::vector<unsigned int> *vbos = nullptr);
-  unsigned int brush_texture(const BrushImage &image);
-  void set_matrix(unsigned int program, const Transform2D &transform);
+                 const Transform2D &transform, float opacity, std::vector<gpu::Mesh> *meshes = nullptr);
+  gpu::Texture brush_texture(const BrushImage &image);
+  /* Layer space -> pixels -> clip space. */
+  Transform2D to_clip(const Transform2D &transform) const;
   /* Blends `source`'s resolved image onto the bound target. */
   void composite(const Target *source, float opacity);
 
@@ -252,13 +250,11 @@ class SceneRenderer {
    * one comes; a final render waits for it). */
   void draw_media(const Document &doc, const Layer &layer, const Transform2D &transform, float opacity);
   struct MediaTexture {
-    unsigned int texture = 0;
+    gpu::Texture texture;
     uint64_t serial = 0;
-    int width = 0, height = 0;
   };
   /* One texture per Media layer, refilled when its frame changes. */
   std::map<uint64_t, MediaTexture> media_textures_;
-  unsigned int media_program_ = 0;
 
   bool final_render_ = false;
   /* The viewport shows guides (layers not rendered): its overlays are on, Guides among them. */
@@ -272,10 +268,7 @@ class SceneRenderer {
   bool coverage_pass_ = false;
   const Target *bound_ = nullptr;
   /* One texture per brush image, by BrushImage::id. */
-  std::map<uint64_t, unsigned int> brush_textures_;
-  unsigned int brush_program_ = 0;
-  unsigned int brush_vao_ = 0;
-  unsigned int brush_vbo_ = 0;
+  std::map<uint64_t, gpu::Texture> brush_textures_;
   /* Pieces per curve segment for the render in progress. */
   int quality_ = 12;
   /* Within one render: each layer's evaluated drawing (bones, modifiers), worked out once though
@@ -305,10 +298,9 @@ class SceneRenderer {
     /* Lines (solid or brushed), drawn without the masks whose rows end them instead (End Lines at
      * Edge with Ends: Brush; see line_free_stencil_). */
     bool is_line = false;
-    /* On the GPU once drawn (uploaded once, kept with it): the triangles' buffer and layout, or the
-     * stamps' per image. */
-    unsigned int vao = 0, vbo = 0;
-    std::vector<unsigned int> dab_vaos, dab_vbos;
+    /* On the GPU once drawn (uploaded once, kept with it): the triangles, or the stamps per image. */
+    gpu::Mesh mesh;
+    std::vector<gpu::Mesh> dab_meshes;
   };
   struct Tessellated {
     std::vector<PaintStep> steps;
@@ -331,7 +323,7 @@ class SceneRenderer {
     unsigned required = 0;
   };
   struct Chunk {
-    unsigned int vao = 0, vbo = 0;
+    gpu::Mesh mesh;
     int vertices = 0;
     uint64_t used = 0;
   };
@@ -344,13 +336,10 @@ class SceneRenderer {
   std::unordered_map<uint64_t, KeptHash> geometry_hashes_;
   uint64_t geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified);
   std::unordered_map<uint64_t, Chunk> chunks_;
-  unsigned int batch_program_ = 0;
-  /* The stencil test use_color_stencil last set (put back after a flush). */
-  unsigned color_required_ = 0;
   void flush_batch();
   /* A step of brushed stamps, drawn at once. */
   void draw_dabs_step(PaintStep &step, const Transform2D &transform, float opacity);
-  static void free_step(PaintStep &step);
+  void free_step(PaintStep &step);
   std::unordered_map<uint64_t, Tessellated> tessellated_;
   /* Each shape's steps as last made for a drawing (by everything but its geometry and with the zoom), and what they
    * were made from: the shape, the curves it runs along and their points. A drawing changed in a few shapes (a point
@@ -474,12 +463,6 @@ class SceneRenderer {
   int mask_preview_upto_ = -1;
   bool initialized_ = false;
   bool failed_ = false;
-  unsigned int color_program_ = 0;
-  unsigned int composite_program_ = 0;
-  unsigned int stencil_program_ = 0;
-  unsigned int vao_ = 0;
-  unsigned int vbo_ = 0;
-  unsigned int quad_vao_ = 0;
   int width_ = 0;
   int height_ = 0;
   int target_samples_ = 0;

@@ -73,6 +73,7 @@ set(OANIM_SOURCES
   src/editors/viewport.cc
   src/gpu/brush_stroke.cc
   src/gpu/gl.cc
+  src/gpu/gpu_device_gl.cc
   src/gpu/overlay_renderer.cc
   src/gpu/scene_renderer.cc
   src/gpu/tessellate.cc
