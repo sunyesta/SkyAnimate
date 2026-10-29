@@ -3,6 +3,7 @@
  * Each draw's state is compared with what was last set and only what differs is sent; begin() forgets what was set,
  * since the UI draws with OpenGL between renders. */
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <string>
@@ -286,6 +287,7 @@ class GLDevice final : public Device {
   {
     return textures_[targets_[target.id].resolved.id].name;
   }
+  void set_scissor(bool on, int x0, int y0, int x1, int y1) override;
   void bind_target(Target target) override;
   void clear(const float premultiplied[4]) override;
   void draw(const Draw &draw) override;
@@ -359,6 +361,9 @@ class GLDevice final : public Device {
   GLuint program_ = UNKNOWN, vao_ = UNKNOWN, array_buffer_ = UNKNOWN, framebuffer_ = UNKNOWN;
   GLuint texture_2d_ = UNKNOWN, texture_ms_ = UNKNOWN;
   int viewport_[2] = {-1, -1};
+  /* The scissor as last set (begin: off, box unknown). */
+  bool scissor_on_ = false;
+  int scissor_[4] = {0, 0, 0, 0};
   bool state_known_ = false;
   DrawState state_;
 };
@@ -540,6 +545,9 @@ void GLDevice::begin()
   program_ = vao_ = array_buffer_ = framebuffer_ = texture_2d_ = texture_ms_ = UNKNOWN;
   viewport_[0] = viewport_[1] = -1;
   glDisable(GL_SCISSOR_TEST);
+  scissor_on_ = false;
+  /* The UI and other renderers share the context and set their own boxes. */
+  scissor_[0] = scissor_[1] = scissor_[2] = scissor_[3] = -1;
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
   gl::ActiveTexture(GL_TEXTURE0);
@@ -552,6 +560,8 @@ void GLDevice::begin()
 void GLDevice::end()
 {
   mark("end");
+  glDisable(GL_SCISSOR_TEST);
+  scissor_on_ = false;
   /* As the UI's drawing expects: stencil off and writable, all colour written, nothing bound. Blending stays on,
    * premultiplied over. */
   glDisable(GL_STENCIL_TEST);
@@ -1021,6 +1031,26 @@ void GLDevice::free_target(Target &target)
   free_texture(t.resolved);
   targets_.remove(target.id);
   target = Target();
+}
+
+void GLDevice::set_scissor(bool on, int x0, int y0, int x1, int y1)
+{
+  if (on != scissor_on_) {
+    if (on) {
+      glEnable(GL_SCISSOR_TEST);
+    }
+    else {
+      glDisable(GL_SCISSOR_TEST);
+    }
+    scissor_on_ = on;
+  }
+  if (on && (x0 != scissor_[0] || y0 != scissor_[1] || x1 != scissor_[2] || y1 != scissor_[3])) {
+    glScissor(x0, y0, std::max(x1 - x0, 0), std::max(y1 - y0, 0));
+    scissor_[0] = x0;
+    scissor_[1] = y0;
+    scissor_[2] = x1;
+    scissor_[3] = y1;
+  }
 }
 
 void GLDevice::bind_target(Target target)

@@ -134,6 +134,36 @@ class SceneRenderer {
   }
 
  private:
+  /* Pixels x0 <= x < x1, y0 <= y < y1 of the image (y up), or all of it (`whole`). */
+  struct PixelRect {
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    bool whole = true;
+    bool operator==(const PixelRect &) const = default;
+    /* Whether every pixel of `inner` is one of these. */
+    bool contains(const PixelRect &inner) const
+    {
+      return whole || (!inner.whole && (inner.x0 >= inner.x1 || inner.y0 >= inner.y1 ||
+                                        (inner.x0 >= x0 && inner.y0 >= y0 && inner.x1 <= x1 && inner.y1 <= y1)));
+    }
+  };
+  /* Mask levels as a target holds them (the stencil's, or GPU Geometry's depth's): each level's cards, and where it
+   * was worked out (its masked layer's region: elsewhere what it holds means nothing). */
+  struct HeldMasks {
+    std::vector<std::vector<std::vector<MaskRow>>> levels;
+    std::vector<PixelRect> regions;
+    void clear()
+    {
+      levels.clear();
+      regions.clear();
+    }
+    bool operator==(const HeldMasks &) const = default;
+    /* Whether level k holds `cards` all over `region` (a layer beside the last one drawn, inside the region its
+     * masks were worked out for, uses them as they are). */
+    bool holds(size_t k, const std::vector<std::vector<MaskRow>> &cards, const PixelRect &region) const
+    {
+      return k < levels.size() && levels[k] == cards && regions[k].contains(region);
+    }
+  };
   /* Drawn into: multisampled colour and depth-stencil, and the image the samples resolve into. The colour is a
    * multisample texture (with the standard sample places) when there are samples, so layer runs' images line up with
    * it sample for sample. */
@@ -145,7 +175,7 @@ class SceneRenderer {
     mutable bool fan_dirty = true;
     /* GPU Geometry: the mask levels its depth holds (apply_masks), outermost first: a sample's depth is how many of
      * them, in order, it is inside (or more, from levels since let go of, which still hold all of these). */
-    mutable std::vector<std::vector<std::vector<MaskRow>>> depth_levels;
+    mutable HeldMasks depth_levels;
   };
   /* What the GPU is asked to do, without naming its API (gpu_device.hh): everything below draws through it. */
   std::unique_ptr<gpu::Device> device_;
@@ -390,6 +420,22 @@ class SceneRenderer {
   bool fade_whole(const Layer &layer, float opacity) const;
   void draw_faded_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, Target *target,
                           float opacity);
+  /* Where each layer is drawn this render, found by prepare_drawings: its kept steps (by key) and its transform. */
+  struct Drawn {
+    uint64_t key = 0;
+    Transform2D transform;
+  };
+  std::unordered_map<uint64_t, Drawn> drawn_;
+  /* A layer's region: the pixels it and everything inside it draw, a few more all round, or the whole image where any
+   * of it isn't known before it is drawn (brushed lines, lines ended at masks' edges, media, a drawing made later).
+   * A mask level matters only there, so its passes are kept to it (scissor). */
+  PixelRect layer_region(const Document &doc, const Layer &layer);
+  std::unordered_map<uint64_t, PixelRect> regions_;
+  void scissor(const PixelRect &rect);
+  /* What a step covers in its layer's space (PaintStep::lo, hi), worked out once and kept with it. */
+  static void step_bounds(PaintStep &step);
+  /* Lays `source`'s samples over the bound target, faded, under paint_, over `lo` to `hi` (clip space). */
+  void lay_samples(const Target *source, float opacity, float2 lo, float2 hi);
   /* While a faded layer draws into its image: what its steps cover (clip space), to lay only that over. */
   bool track_bounds_ = false;
   float2 bounds_lo_, bounds_hi_;
@@ -533,7 +579,7 @@ class SceneRenderer {
 
  private:
   /* The masks the stencil holds now (bit k: level k), so neighbours with the same masks reuse it. */
-  MaskLevels mask_clauses_;
+  HeldMasks mask_clauses_;
   uint64_t mask_preview_layer_ = 0;
   bool mask_preview_lines_ = false;
   int mask_preview_upto_ = -1;

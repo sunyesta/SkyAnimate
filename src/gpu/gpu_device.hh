@@ -213,6 +213,9 @@ class Device {
   /* The resolved image as the API names it (an OpenGL texture), for the UI to show. */
   virtual unsigned int native_texture(Target target) const = 0;
 
+  /* Draws (and clears) touch only pixels x0 <= x < x1, y0 <= y < y1 of the target (y up from its bottom), or, off,
+   * all of it. */
+  virtual void set_scissor(bool on, int x0 = 0, int y0 = 0, int x1 = 0, int y1 = 0) = 0;
   /* Draws go into this target, all of it. */
   virtual void bind_target(Target target) = 0;
   /* The bound target's colour to `premultiplied`, its stencil and depth to 0. */

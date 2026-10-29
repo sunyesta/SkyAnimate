@@ -296,6 +296,8 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   paint_ = color_state(0);
 
   evaluated_.clear();
+  drawn_.clear();
+  regions_.clear();
   deferred_.clear();
   drawn_signature_.clear();
   signature_memo_.clear();
@@ -568,7 +570,7 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     clear(Color{0, 0, 0, 0});
     const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
                    outer_fill_free = fill_free_stencil_, outer_depth = depth_required_;
-    const MaskLevels outer_clauses = std::move(mask_clauses_);
+    const HeldMasks outer_clauses = std::move(mask_clauses_);
     mask_clauses_.clear();
     required_stencil_ = 0;
     depth_required_ = 0;
@@ -580,10 +582,22 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     line_free_stencil_ = outer_line_free;
     fill_free_stencil_ = outer_fill_free;
     mask_clauses_ = outer_clauses;
-    resolve(group);
     bind_target(target);
     use_color_stencil();
-    composite(group, layer_opacity);
+    /* Laid over sample for sample where it draws (no image resolved, nothing laid over the rest), where that is
+     * known; otherwise resolved and laid over the whole image. */
+    const PixelRect r = layer_region(doc, layer);
+    if (!r.whole && device_->caps().sample_shading && device_->has_sample_texture(group->target)) {
+      lay_samples(group, layer_opacity,
+                  float2(float(r.x0) / float(width_) * 2.0f - 1.0f, float(r.y0) / float(height_) * 2.0f - 1.0f),
+                  float2(float(r.x1) / float(width_) * 2.0f - 1.0f, float(r.y1) / float(height_) * 2.0f - 1.0f));
+    }
+    else {
+      resolve(group);
+      bind_target(target);
+      use_color_stencil();
+      composite(group, layer_opacity);
+    }
     release_target(group);
     return;
   }
@@ -683,8 +697,10 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   /* GPU Geometry: the levels cutting fills and lines alike, for the depth (no limit but the depth's); the stencil
    * keeps the others, one bit of its four for working a depth level out in. */
   MaskLevels depth;
+  std::vector<PixelRect> level_regions, depth_regions;
   const int stencil_max = gpu_geometry_ ? MASK_LEVELS_MAX - 1 : MASK_LEVELS_MAX;
   for (const Layer *l : masked) {
+    const PixelRect region = layer_region(doc, *l);
     /* Its cards by what they cut: fills and lines (sliced), fills only (lines left alone or ended with
      * a brush), lines only (sliced); each kind a level its cards must all show in. */
     std::vector<std::vector<MaskRow>> both, fills, lines;
@@ -699,6 +715,7 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
       if (gpu_geometry_ && !line_free && !fill_free && !cards.empty()) {
         if (depth.size() < DEPTH_LEVELS_MAX) {
           depth.push_back(std::move(cards));
+          depth_regions.push_back(region);
         }
         return;
       }
@@ -708,6 +725,7 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
       applied_line_free_ |= line_free ? 1u << levels.size() : 0u;
       applied_fill_free_ |= fill_free ? 1u << levels.size() : 0u;
       levels.push_back(std::move(cards));
+      level_regions.push_back(region);
     };
     push(both, false, false);
     push(fills, true, false);
@@ -720,28 +738,39 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   if (gpu_geometry_ && bound_) {
     /* The depth's levels: those it holds already, in order (the masks of the groups shared with the last layer
      * drawn, usually), stay; the rest are let go of and the new ones pushed. Fewer than it holds need nothing. */
-    std::vector<MaskLevels::value_type> &held = bound_->depth_levels;
+    HeldMasks &held = bound_->depth_levels;
     size_t same = 0;
-    while (same < depth.size() && same < held.size() && depth[same] == held[same]) {
+    while (same < depth.size() && held.holds(same, depth[same], depth_regions[same])) {
       same++;
     }
     if (same < depth.size()) {
       flush_batch();
-      if (held.size() > same) {
+      /* Each level only where its layer draws (a level within one holding it: a group's layers draw inside it). */
+      if (held.levels.size() > same) {
+        scissor(depth_regions[same]);
         pop_depth_levels(unsigned(same));
       }
       /* Worked out in the first bit the stencil's levels leave, with those above it free. */
       const unsigned bit = 1u << levels.size();
       const unsigned free = (MASK_SPARE | (MASK_SPARE - 1u)) & ~((bit << 1) - 1u);
       for (size_t k = same; k < depth.size(); k++) {
+        scissor(depth_regions[k]);
         evaluate_mask_cards(doc, depth[k], bit, MASK_SCRATCH, free);
         push_depth_level(unsigned(k + 1), bit);
       }
-      held = depth;
+      scissor(PixelRect());
+      held.levels.resize(same);
+      held.regions.resize(same);
+      held.levels.insert(held.levels.end(), depth.begin() + same, depth.end());
+      held.regions.insert(held.regions.end(), depth_regions.begin() + same, depth_regions.end());
     }
     applied_depth_ = unsigned(depth.size());
   }
-  if (levels == mask_clauses_) {
+  bool held = levels.size() == mask_clauses_.levels.size();
+  for (size_t k = 0; held && k < levels.size(); k++) {
+    held = mask_clauses_.holds(k, levels[k], level_regions[k]);
+  }
+  if (held) {
     /* The same as the last thing drawn (its neighbour, usually): the stencil already holds them, and what waits
      * to be drawn in a batch can wait on (a flush for every layer drawn costs more than the drawing). */
     return required;
@@ -749,12 +778,110 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   /* What waits is drawn under the stencil as it is, before the masks change it. */
   flush_batch();
   for (size_t k = 0; k < levels.size(); k++) {
-    /* The levels after this one, and the spare, are free while it is worked out. */
+    /* The levels after this one, and the spare, are free while it is worked out. Only where its layer draws. */
     const unsigned free = (MASK_SPARE | (MASK_SPARE - 1u)) & ~((2u << k) - 1u);
+    scissor(level_regions[k]);
     evaluate_mask_cards(doc, levels[k], 1u << k, MASK_SCRATCH, free);
   }
-  mask_clauses_ = std::move(levels);
+  scissor(PixelRect());
+  mask_clauses_.levels = std::move(levels);
+  mask_clauses_.regions = std::move(level_regions);
   return required;
+}
+
+void SceneRenderer::scissor(const PixelRect &rect)
+{
+  if (rect.whole) {
+    device_->set_scissor(false);
+  }
+  else {
+    device_->set_scissor(true, rect.x0, rect.y0, rect.x1, rect.y1);
+  }
+}
+
+void SceneRenderer::step_bounds(PaintStep &step)
+{
+  if (step.bounded) {
+    return;
+  }
+  float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+  const auto add = [&](float x, float y) {
+    lo = float2(std::min(lo.x, x), std::min(lo.y, y));
+    hi = float2(std::max(hi.x, x), std::max(hi.y, y));
+  };
+  for (const Vertex &v : step.vertices) {
+    add(v.x, v.y);
+  }
+  for (const std::vector<BrushVertex> &list : step.dabs.per_image) {
+    for (const BrushVertex &v : list) {
+      add(v.x, v.y);
+    }
+  }
+  step.lo = lo;
+  step.hi = hi;
+  step.bounded = true;
+}
+
+SceneRenderer::PixelRect SceneRenderer::layer_region(const Document &doc, const Layer &layer)
+{
+  if (auto it = regions_.find(layer.id); it != regions_.end()) {
+    return it->second;
+  }
+  float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+  bool whole = false;
+  const auto add = [&](const PixelRect &r) {
+    if (r.whole) {
+      whole = true;
+    }
+    else if (r.x0 < r.x1 && r.y0 < r.y1) {
+      lo = float2(std::min(lo.x, float(r.x0)), std::min(lo.y, float(r.y0)));
+      hi = float2(std::max(hi.x, float(r.x1)), std::max(hi.y, float(r.y1)));
+    }
+  };
+  if (layer.is_group()) {
+    for (const Layer &child : layer.children) {
+      if (shown(child) && (child.opacity > 0.0f || full_opacity(child))) {
+        add(layer_region(doc, child));
+      }
+    }
+  }
+  else if (layer.is_media() || !layer.has_drawing()) {
+    whole = layer.is_media();
+  }
+  else if (const auto drawn = drawn_.find(layer.id); drawn == drawn_.end()) {
+    whole = true;
+  }
+  else if (const auto kept = tessellated_.find(drawn->second.key); kept == tessellated_.end()) {
+    whole = true;
+  }
+  else {
+    const Transform2D m = document_to_pixels_ * drawn->second.transform;
+    for (PaintStep &step : kept->second.steps) {
+      step_bounds(step);
+      if (step.lo.x > step.hi.x) {
+        continue;
+      }
+      for (const float2 c : {step.lo, step.hi, float2(step.lo.x, step.hi.y), float2(step.hi.x, step.lo.y)}) {
+        const float2 p = m.apply(c);
+        lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
+        hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+      }
+    }
+  }
+  PixelRect r;
+  if (!whole) {
+    r.whole = false;
+    if (lo.x <= hi.x) {
+      /* A few pixels more all round: a drawing standing in as made for a nearby zoom lies a little differently. */
+      constexpr int PAD = 3;
+      r.x0 = std::clamp(int(std::floor(lo.x)) - PAD, 0, width_);
+      r.y0 = std::clamp(int(std::floor(lo.y)) - PAD, 0, height_);
+      r.x1 = std::clamp(int(std::ceil(hi.x)) + PAD, 0, width_);
+      r.y1 = std::clamp(int(std::ceil(hi.y)) + PAD, 0, height_);
+    }
+  }
+  regions_[layer.id] = r;
+  return r;
 }
 
 void SceneRenderer::push_depth_level(unsigned level, unsigned bit)
@@ -1233,44 +1360,33 @@ void SceneRenderer::draw_faded_drawing(const Document &doc, const Layer &layer, 
     const float px = 2.0f / float(width_), py = 2.0f / float(height_);
     const float x0 = std::max(bounds_lo_.x - px, -1.0f), y0 = std::max(bounds_lo_.y - py, -1.0f);
     const float x1 = std::min(bounds_hi_.x + px, 1.0f), y1 = std::min(bounds_hi_.y + py, 1.0f);
-    if (x0 < x1 && y0 < y1) {
-      const Vertex quad[6] = {{x0, y0, 0, 0, 0, 0}, {x1, y0, 0, 0, 0, 0}, {x1, y1, 0, 0, 0, 0},
-                              {x0, y0, 0, 0, 0, 0}, {x1, y1, 0, 0, 0, 0}, {x0, y1, 0, 0, 0, 0}};
-      gpu::Draw draw;
-      draw.state = paint_;
-      draw.state.program = gpu::Program::FadeSamples;
-      draw.texture = device_->sample_texture(own->target);
-      draw.stream = quad;
-      draw.stream_bytes = sizeof(quad);
-      draw.stream_layout = gpu::Layout::Color;
-      draw.count = 6;
-      draw.opacity = opacity;
-      device_->draw(draw);
-    }
+    lay_samples(own, opacity, float2(x0, y0), float2(x1, y1));
   }
   release_target(own);
 }
 
+void SceneRenderer::lay_samples(const Target *source, float opacity, float2 lo, float2 hi)
+{
+  if (!(lo.x < hi.x && lo.y < hi.y)) {
+    return;
+  }
+  const Vertex quad[6] = {{lo.x, lo.y, 0, 0, 0, 0}, {hi.x, lo.y, 0, 0, 0, 0}, {hi.x, hi.y, 0, 0, 0, 0},
+                          {lo.x, lo.y, 0, 0, 0, 0}, {hi.x, hi.y, 0, 0, 0, 0}, {lo.x, hi.y, 0, 0, 0, 0}};
+  gpu::Draw draw;
+  draw.state = paint_;
+  draw.state.program = gpu::Program::FadeSamples;
+  draw.texture = device_->sample_texture(source->target);
+  draw.stream = quad;
+  draw.stream_bytes = sizeof(quad);
+  draw.stream_layout = gpu::Layout::Color;
+  draw.count = 6;
+  draw.opacity = opacity;
+  device_->draw(draw);
+}
+
 void SceneRenderer::note_bounds(PaintStep &step, const Transform2D &transform)
 {
-  if (!step.bounded) {
-    float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
-    const auto add = [&](float x, float y) {
-      lo = float2(std::min(lo.x, x), std::min(lo.y, y));
-      hi = float2(std::max(hi.x, x), std::max(hi.y, y));
-    };
-    for (const Vertex &v : step.vertices) {
-      add(v.x, v.y);
-    }
-    for (const std::vector<BrushVertex> &list : step.dabs.per_image) {
-      for (const BrushVertex &v : list) {
-        add(v.x, v.y);
-      }
-    }
-    step.lo = lo;
-    step.hi = hi;
-    step.bounded = true;
-  }
+  step_bounds(step);
   if (step.lo.x > step.hi.x) {
     return;
   }
@@ -1908,9 +2024,18 @@ void SceneRenderer::prepare_drawings(const Document &doc)
    * and are made over the next renders, so a big drawing sharpens over a few frames rather than in one long one. */
   std::stable_partition(jobs_.begin(), jobs_.end(), [](const Job &job) { return !job.optional; });
   const size_t needed = size_t(std::count_if(jobs_.begin(), jobs_.end(), [](const Job &job) { return !job.optional; }));
+  /* With what each step covers (layer_region asks), worked out on the thread making it. */
+  const auto make = [&](Job &job) {
+    job.steps = make_steps(job.args);
+    if (!job.args.coverage) {
+      for (PaintStep &step : job.steps) {
+        step_bounds(step);
+      }
+    }
+  };
   parallel_for(needed, 1, [&](size_t begin, size_t end) {
     for (size_t i = begin; i < end; i++) {
-      jobs_[i].steps = make_steps(jobs_[i].args);
+      make(jobs_[i]);
     }
   });
   constexpr double OPTIONAL_MS = 8.0;
@@ -1924,7 +2049,7 @@ void SceneRenderer::prepare_drawings(const Document &doc)
     const size_t end = std::min(made + piece, jobs_.size());
     parallel_for(end - made, 1, [&](size_t begin, size_t stop) {
       for (size_t i = made + begin; i < made + stop; i++) {
-        jobs_[i].steps = make_steps(jobs_[i].args);
+        make(jobs_[i]);
       }
     });
     made = end;
@@ -2067,6 +2192,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   }
   if (auto it = tessellated_.find(key); it != tessellated_.end()) {
     if (preparing_) {
+      if (!coverage_pass_) {
+        drawn_[layer.id] = {key, transform};
+      }
       return;
     }
     it->second.used = render_serial_;
@@ -2083,6 +2211,10 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     if (auto placed = tessellated_anywhere_.find(anywhere); placed != tessellated_anywhere_.end()) {
       if (auto it = tessellated_.find(placed->second.key); it != tessellated_.end()) {
         if (preparing_) {
+          if (!coverage_pass_) {
+            drawn_[layer.id] = {placed->second.key,
+                                transform * Transform2D::translate(drawing.points[0].pos - placed->second.origin)};
+          }
           return;
         }
         it->second.used = render_serial_;
@@ -2119,6 +2251,9 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     job.movable = movable;
     job.origin = movable ? drawing.points[0].pos : float2();
     jobs_.push_back(std::move(job));
+    if (!coverage_pass_) {
+      drawn_[layer.id] = {key, transform};
+    }
     return;
   }
   if (interactive_ && !final_render_ && (made_ms_ > budget_ms || zooming_ || deferred_.count(key))) {
