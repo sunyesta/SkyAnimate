@@ -402,6 +402,11 @@ void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_ou
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);
+/* Sample `i` of `steps` evenly in t along a segment, the very same point (to the last bit) as sample `steps - i` of the
+ * segment run the other way: the first half worked out from its start, the second from its end, the middle by a sum
+ * whose order doesn't matter. Two curves running opposite ways along one edge (abutting shapes' outlines) sample it
+ * alike, so their fills meet without a sample showing through between them. */
+float2 bezier_sample(const float2 ctrl[4], int i, int steps);
 /* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of p3,
  * back along the curve), to the samples `d` in order from p0 to p3: the two handle lengths, by least
  * squares, the samples' places along the curve refined by Newton steps (Graphics Gems 1990). A handle

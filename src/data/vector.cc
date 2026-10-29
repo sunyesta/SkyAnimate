@@ -269,6 +269,18 @@ float2 bezier_eval(const float2 c[4], float t)
   return c[0] * (u * u * u) + c[1] * (3.0f * u * u * t) + c[2] * (3.0f * u * t * t) + c[3] * (t * t * t);
 }
 
+float2 bezier_sample(const float2 c[4], int i, int steps)
+{
+  if (2 * i == steps) {
+    return ((c[0] + c[3]) + (c[1] + c[2]) * 3.0f) * 0.125f;
+  }
+  if (2 * i < steps) {
+    return bezier_eval(c, float(i) / float(steps));
+  }
+  const float2 reversed[4] = {c[3], c[2], c[1], c[0]};
+  return bezier_eval(reversed, float(steps - i) / float(steps));
+}
+
 int bezier_steps(const float2 ctrl[4], int min_steps, float tolerance)
 {
   if (tolerance <= 0.0f) {
@@ -288,7 +300,7 @@ void curve_segment_sample(const VectorDrawing &drawing, const Curve &curve, int 
   curve_segment_bezier(drawing, curve, segment, ctrl);
   steps = bezier_steps(ctrl, steps, tolerance);
   for (int i = 0; i < steps; i++) {
-    r_points.push_back(bezier_eval(ctrl, float(i) / float(steps)));
+    r_points.push_back(bezier_sample(ctrl, i, steps));
   }
 }
 
@@ -531,7 +543,7 @@ bool shape_outline(const VectorDrawing &drawing, const Shape &shape, int min_ste
     std::vector<float2> samples(steps_per_segment + 1);
     std::vector<float> along(steps_per_segment + 1, 0.0f);
     for (int i = 0; i <= steps_per_segment; i++) {
-      samples[i] = bezier_eval(ctrl, float(i) / float(steps_per_segment));
+      samples[i] = bezier_sample(ctrl, i, steps_per_segment);
       if (i > 0) {
         along[i] = along[i - 1] + distance(samples[i - 1], samples[i]);
       }
