@@ -128,6 +128,10 @@ struct Draw {
   size_t stream_bytes = 0;
   Layout stream_layout = Layout::None;
   int first = 0, count = 0;
+  /* Instead of triangles from `first`: `fans` triangle fans (each its first vertex with each next two), the i-th
+   * `fan_counts[i]` vertices from `fan_firsts[i]`. */
+  const int *fan_firsts = nullptr, *fan_counts = nullptr;
+  int fans = 0;
   /* Sampled by Brush, Media, Composite and Run. */
   Texture texture;
   /* Layer space to clip space (Color, Brush, Media). */

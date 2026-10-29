@@ -1333,7 +1333,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   const auto stencil_step = [&](const std::vector<const std::vector<float2> *> &rings, Color color, bool even_odd) {
     flush();
     PaintStep step;
-    tessellate_stencil_fan(rings, color, pixel, step.vertices);
+    tessellate_stencil_fan(rings, color, pixel, step.vertices, step.fan_firsts, step.fan_counts);
     if (step.vertices.size() > 6) {
       step.stencil_fan = true;
       step.even_odd = even_odd;
@@ -1391,7 +1391,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     }
     return true;
   };
-  const auto remember_shape = [&](const Shape &shape, ShapeKept &k, size_t first_step) {
+  const auto remember_shape = [&](const Shape &shape, ShapeKept &k, size_t first_step, size_t first_vertex) {
     k.shape = shape;
     k.curves.clear();
     k.points.clear();
@@ -1417,7 +1417,32 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         k.points.emplace_back(i, drawing.points[size_t(i)]);
       }
     }
-    k.steps.assign(steps.begin() + std::ptrdiff_t(first_step), steps.end());
+    /* What the shape made: from where the batch stood when it began (the rest of that batch the shapes' before it)
+     * to the batch as it stands now. */
+    k.steps.clear();
+    const auto add_plain = [&](const std::vector<Vertex> &from, size_t begin, bool is_line) {
+      if (begin < from.size()) {
+        PaintStep piece;
+        piece.is_line = is_line;
+        piece.vertices.assign(from.begin() + std::ptrdiff_t(begin), from.end());
+        k.steps.push_back(std::move(piece));
+      }
+    };
+    if (steps.size() > first_step) {
+      /* (Stamps and stencil fills flush the batch before them, so one of them comes first only whole.) */
+      const PaintStep &head = steps[first_step];
+      if (head.is_dabs || head.stencil_fan) {
+        k.steps.push_back(head);
+      }
+      else {
+        add_plain(head.vertices, first_vertex, head.is_line);
+      }
+      k.steps.insert(k.steps.end(), steps.begin() + std::ptrdiff_t(first_step) + 1, steps.end());
+      add_plain(vertices, 0, batch_lines);
+    }
+    else {
+      add_plain(vertices, first_vertex, batch_lines);
+    }
     /* A shape that made nothing still counts as made (`curves` says so). */
     if (k.curves.empty()) {
       k.curves.emplace_back(-1, Curve());
@@ -1439,15 +1464,13 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
       }
       continue;
     }
-    flush();
-    const size_t first_step = steps.size();
+    /* The batch goes on across shapes (each keeps its part, remember_shape), so a drawing's steps are as few as
+     * its kinds of drawing allow without joining them again after. */
+    const size_t first_step = steps.size(), first_vertex = vertices.size();
     struct Remember {
       const std::function<void()> fn;
       ~Remember() { fn(); }
-    } remember{[&] {
-      flush();
-      remember_shape(drawing.shapes[size_t(shape_index)], kept_shape, first_step);
-    }};
+    } remember{[&] { remember_shape(drawing.shapes[size_t(shape_index)], kept_shape, first_step, first_vertex); }};
     /* Each connected run of the shape's edges draws on its own (see shape_runs). */
     const std::vector<Shape> runs = shape_runs(drawing, drawing.shapes[shape_index]);
     /* With a fill rule its closed runs fill together, holes and all (once, at the first run that fills);
@@ -1747,21 +1770,6 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     }
   }
   flush();
-  /* Shapes made apart (or taken as kept) end their steps where they end: plain steps of one kind that follow each
-   * other join again, as one batch made them (stamps and stencil-then-cover fills stay steps of their own). */
-  {
-    const auto plain = [](const PaintStep &step) { return !step.is_dabs && !step.stencil_fan; };
-    std::vector<PaintStep> joined;
-    joined.reserve(steps.size());
-    for (PaintStep &step : steps) {
-      if (!joined.empty() && plain(step) && plain(joined.back()) && joined.back().is_line == step.is_line) {
-        joined.back().vertices.insert(joined.back().vertices.end(), step.vertices.begin(), step.vertices.end());
-        continue;
-      }
-      joined.push_back(std::move(step));
-    }
-    steps = std::move(joined);
-  }
   return steps;
 }
 
@@ -2037,6 +2045,9 @@ void SceneRenderer::draw_stencil_fill(PaintStep &step, const Transform2D &step_t
   fan.state.stencil.winding = true;
   fan.mesh = step.mesh;
   fan.count = cover;
+  fan.fan_firsts = step.fan_firsts.data();
+  fan.fan_counts = step.fan_counts.data();
+  fan.fans = int(step.fan_firsts.size());
   fan.to_clip = step_to_clip;
   device_->draw(fan);
   /* The colour where the count isn't 0 (or is odd), each sample once; the count cleared again all over the cover. */

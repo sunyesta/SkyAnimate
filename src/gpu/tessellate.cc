@@ -202,7 +202,8 @@ void tessellate_fill_pieces(const std::vector<FillPiece> &pieces, Color color, f
 }
 
 void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &rings, Color color, float pad,
-                            std::vector<Vertex> &r_out)
+                            std::vector<Vertex> &r_out, std::vector<int> &r_fan_firsts,
+                            std::vector<int> &r_fan_counts)
 {
   size_t edges = 0;
   float2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
@@ -216,7 +217,7 @@ void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &ring
   if (edges == 0) {
     return;
   }
-  reserve_more(r_out, edges * 3 + 6);
+  reserve_more(r_out, edges + rings.size() * 2 + 6);
   /* Only the stencil is drawn: no colour. */
   const Color none{0.0f, 0.0f, 0.0f, 0.0f};
   const float2 pivot((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
@@ -225,9 +226,11 @@ void tessellate_stencil_fan(const std::vector<const std::vector<float2> *> &ring
     if (n < 3) {
       continue;
     }
-    for (size_t i = 0, j = n - 1; i < n; j = i++) {
-      r_out.insert(r_out.end(), {make_vertex(pivot, none, 1.0f), make_vertex((*ring)[j], none, 1.0f),
-                                 make_vertex((*ring)[i], none, 1.0f)});
+    r_fan_firsts.push_back(int(r_out.size()));
+    r_fan_counts.push_back(int(n) + 2);
+    r_out.push_back(make_vertex(pivot, none, 1.0f));
+    for (size_t i = 0; i <= n; i++) {
+      r_out.push_back(make_vertex((*ring)[i % n], none, 1.0f));
     }
   }
   lo = lo - float2(pad, pad);

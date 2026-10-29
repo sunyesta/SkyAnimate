@@ -317,6 +317,7 @@ class SceneRenderer {
      * last 6 vertices cover it, drawn where that isn't 0 (`even_odd`: where it is odd). */
     bool stencil_fan = false;
     bool even_odd = false;
+    std::vector<int> fan_firsts, fan_counts;
     /* What it covers (layer space), worked out when first needed (note_bounds). */
     bool bounded = false;
     float2 lo, hi;

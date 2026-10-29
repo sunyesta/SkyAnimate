@@ -690,7 +690,12 @@ void GLDevice::draw(const Draw &d)
   else {
     bind_vertex_array(empty_vao_);
   }
-  glDrawArrays(GL_TRIANGLES, d.first, d.count);
+  if (d.fans > 0) {
+    gl::MultiDrawArrays(GL_TRIANGLE_FAN, d.fan_firsts, d.fan_counts, d.fans);
+  }
+  else {
+    glDrawArrays(GL_TRIANGLES, d.first, d.count);
+  }
 }
 
 Mesh GLDevice::make_mesh(Layout layout, const void *data, size_t bytes)
