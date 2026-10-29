@@ -120,6 +120,9 @@ class SceneRenderer {
     /* The stencil bits stencil-then-cover fills count in (draw_stencil_fill) may not be clear everywhere: masks
      * were worked out with them since the target was cleared (each fill then clears them under its cover first). */
     mutable bool fan_dirty = true;
+    /* GPU Geometry: the mask levels its depth holds (apply_masks), outermost first: a sample's depth is how many of
+     * them, in order, it is inside (or more, from levels since let go of, which still hold all of these). */
+    mutable std::vector<std::vector<std::vector<MaskRow>>> depth_levels;
   };
   /* What the GPU is asked to do, without naming its API (gpu_device.hh): everything below draws through it. */
   std::unique_ptr<gpu::Device> device_;
@@ -194,8 +197,17 @@ class SceneRenderer {
    * shows the layer. */
   void draw_mask_preview(const Document &doc, const Layer &layer);
   /* Sets the stencil to the masks of `masked` (the layers whose masks apply to what is drawn next)
-   * and returns the stencil bits a sample needs. */
+   * and returns the stencil bits a sample needs (and in applied_depth_, the depth levels). */
   unsigned apply_masks(const Document &doc, const std::vector<const Layer *> &masked);
+  /* GPU Geometry: the cards that cut fills and lines alike (most) go into the depth buffer as levels, each layer's
+   * one level, the rest into the stencil as with Classic. A level is worked out in stencil bit `bit` (its cards, as
+   * Classic works one out), then kept where the levels before it hold, written as level `level` into the depth. */
+  void push_depth_level(unsigned level, unsigned bit);
+  /* Lets go of the depth levels past `level`: their samples back to it. */
+  void pop_depth_levels(unsigned level);
+  /* Depth levels a colour sample must be inside (all of the bound target's first this many). */
+  unsigned depth_required_ = 0;
+  unsigned applied_depth_ = 0;
   /* One card's steps, in order, painted on its start into stencil bit `result` (using `scratch` for
    * each step's shape). `nested`: inside a clip base's masks, whose own Clip to Below isn't looked at.
    * `free`: stencil bits nothing holds yet, which a Clip to Below step works out its base's masks in. */
@@ -328,6 +340,7 @@ class SceneRenderer {
     Transform2D to_clip;
     float opacity = 1.0f;
     unsigned required = 0;
+    unsigned depth = 0;
   };
   struct Chunk {
     gpu::Mesh mesh;
@@ -344,7 +357,8 @@ class SceneRenderer {
   uint64_t geometry_hash(const Layer &layer, const VectorDrawing &drawing, bool modified);
   std::unordered_map<uint64_t, Chunk> chunks_;
   void flush_batch();
-  /* A stencil-then-cover fill (PaintStep::stencil_fan) under the masks `required`, drawn at once. */
+  /* A stencil-then-cover fill (PaintStep::stencil_fan) under the masks `required` (and depth_required_), drawn at
+   * once. */
   void draw_stencil_fill(PaintStep &step, const Transform2D &step_to_clip, float opacity, unsigned required);
   /* This render's document asks for GPU Geometry (ViewportShading::gpu_geometry). */
   bool gpu_geometry_ = false;

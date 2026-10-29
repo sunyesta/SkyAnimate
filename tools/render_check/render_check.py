@@ -12,7 +12,10 @@ Suites (--suites, default all):
   seams     abutting opaque shapes of one colour over a contrasting background, split along edges at several
             angles, as separate layers and as shapes of one layer; scored against the same outline drawn whole:
             any difference inside it is background showing through a seam.
-  masks     nested, intersecting and inverted masks, a masked group, a mask on a layer inside a masked group.
+  masks     nested, intersecting and inverted masks, a masked group, a mask on a layer inside a masked group,
+            six groups deep each masked (Classic keeps four levels), masked layers side by side in a masked group,
+            a card cutting only lines with one cutting both, Clip to Below onto a masked base, and shrunk, grown and
+            Inside the Stroke rows.
   fills     big fills (what GPU Geometry draws by stencil-then-cover): a spiky star of 800 points (over 1,024 outline points as drawn), rings with holes
             (Even-Odd and Nonzero), outlines crossing themselves (a twist, and a curl covering its middle twice),
             big fills under masks, and see-through ones overlapping, with lines over them. Classic against GPU
@@ -261,6 +264,66 @@ oanim.ops.mask.add(layer=str(a.id), sources=str(m.id), mode="ADD")
 oanim.ops.mask.add(layer=str(b.id), sources=str(m.id), mode="ADD")
 oanim.ops.mask.add(layer=str(b.id), sources=str(m2.id), mode="SUBTRACT")
 m.visible = False; m2.visible = False
+'''),
+        ("mask_deep_groups", base + r'''
+art = layer("Art"); poly(art, [(-0.8, -0.6), (0.8, -0.6), (0.8, 0.6), (-0.8, 0.6)], (0.6, 0.85, 0.95, 1))
+masks = []
+for k in range(6):
+    # Each cuts its own side, so every level shows.
+    m = layer("M%d" % k); circle(m, 0.18 * math.cos(k * math.pi / 3), 0.18 * math.sin(k * math.pi / 3), 0.42, (1, 1, 1, 1))
+    m.visible = False
+    masks.append(m)
+inner = art
+for k in range(6):
+    oanim.data.layers.active = inner
+    oanim.ops.layer.group()
+    g = oanim.data.layers.active
+    g.name = "G%d" % k
+    oanim.ops.mask.add(layer=str(g.id), sources=str(masks[k].id), mode="ADD")
+    inner = g
+'''),
+        ("mask_siblings", base + r'''
+outer = layer("Outer"); circle(outer, 0.0, 0.0, 0.5, (1, 1, 1, 1)); outer.visible = False
+kids = []
+for k in range(4):
+    a = layer("Kid%d" % k)
+    poly(a, [(-0.7 + 0.35 * k, -0.6), (-0.3 + 0.35 * k, -0.6), (-0.3 + 0.35 * k, 0.6), (-0.7 + 0.35 * k, 0.6)],
+         (0.95, 0.3 + 0.15 * k, 0.4, 1))
+    h = layer("Hole%d" % k); circle(h, -0.5 + 0.35 * k, 0.1 * k - 0.15, 0.12, (1, 1, 1, 1)); h.visible = False
+    oanim.ops.mask.add(layer=str(a.id), sources=str(h.id), mode="SUBTRACT")
+    kids.append(a)
+oanim.data.layers.active = kids[0]
+for a in kids[1:]:
+    a.select = True
+oanim.ops.layer.group()
+g = oanim.data.layers.active
+oanim.ops.mask.add(layer=str(g.id), sources=str(outer.id), mode="ADD")
+'''),
+        ("mask_lines_only", base + r'''
+m = layer("Band"); poly(m, [(-0.2, -0.7), (0.15, -0.7), (0.15, 0.7), (-0.2, 0.7)], (1, 1, 1, 1)); m.visible = False
+c = layer("Round"); circle(c, 0.0, 0.0, 0.45, (1, 1, 1, 1)); c.visible = False
+art = layer("Art")
+poly(art, [(-0.6, -0.4), (0.6, -0.4), (0.6, 0.4), (-0.6, 0.4)], (0.95, 0.8, 0.3, 1), line=(0.1, 0.1, 0.6, 1), width=0.04)
+oanim.ops.mask.add(layer=str(art.id), sources=str(m.id), mode="SUBTRACT", cuts="LINES")
+oanim.ops.mask.add(layer=str(art.id), sources=str(c.id), mode="ADD")
+'''),
+        ("mask_clip_base", base + r'''
+hole = layer("Hole"); circle(hole, 0.1, 0.0, 0.2, (1, 1, 1, 1)); hole.visible = False
+base_l = layer("Base"); circle(base_l, 0.0, 0.0, 0.45, (0.3, 0.3, 0.9, 1))
+oanim.ops.mask.add(layer=str(base_l.id), sources=str(hole.id), mode="SUBTRACT")
+top = layer("Top"); poly(top, [(-0.8, -0.1), (0.8, -0.1), (0.8, 0.5), (-0.8, 0.5)], (0.95, 0.5, 0.2, 1))
+oanim.data.layers.active = top
+oanim.ops.mask.clip_to_below(set="1")
+'''),
+        ("mask_grow_shrink", base + r'''
+m = layer("Shape"); poly(m, [(-0.3, -0.3), (0.3, -0.35), (0.35, 0.3), (-0.25, 0.32)], (1, 1, 1, 1), line=(1, 1, 1, 1), width=0.05)
+m.visible = False
+a = layer("Shrunk"); poly(a, [(-0.8, -0.6), (0.0, -0.6), (0.0, 0.6), (-0.8, 0.6)], (0.4, 0.9, 0.5, 1))
+oanim.ops.mask.add(layer=str(a.id), sources=str(m.id), mode="ADD", grow="-8")
+b = layer("Grown"); poly(b, [(0.0, -0.6), (0.8, -0.6), (0.8, 0.6), (0.0, 0.6)], (0.9, 0.4, 0.5, 1))
+oanim.ops.mask.add(layer=str(b.id), sources=str(m.id), mode="ADD", grow="10")
+i = layer("Inside"); poly(i, [(-0.8, -0.1), (0.8, -0.1), (0.8, 0.1), (-0.8, 0.1)], (0.95, 0.95, 0.3, 1))
+oanim.ops.mask.add(layer=str(i.id), sources=str(m.id), mode="ADD", shape="FILLS_ONLY", inside_stroke="1")
 '''),
     ]
 

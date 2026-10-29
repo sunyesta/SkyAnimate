@@ -18,11 +18,12 @@ static const char *COLOR_VERTEX_SHADER = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
 uniform mat3 u_matrix;
+uniform float u_depth;
 out vec4 v_color;
 void main()
 {
   vec3 p = u_matrix * vec3(a_pos, 1.0);
-  gl_Position = vec4(p.xy, 0.0, 1.0);
+  gl_Position = vec4(p.xy, u_depth * 2.0 - 1.0, 1.0);
   v_color = a_color;
 }
 )";
@@ -33,13 +34,15 @@ layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
 layout(location = 2) in float a_slot;
 uniform vec4 u_slots[64];
+uniform float u_depth;
 out vec4 v_color;
 void main()
 {
   int s = int(a_slot + 0.5) * 2;
   vec4 m = u_slots[s];
   vec4 t = u_slots[s + 1];
-  gl_Position = vec4(m.x * a_pos.x + m.z * a_pos.y + t.x, m.y * a_pos.x + m.w * a_pos.y + t.y, 0.0, 1.0);
+  gl_Position = vec4(m.x * a_pos.x + m.z * a_pos.y + t.x, m.y * a_pos.x + m.w * a_pos.y + t.y, u_depth * 2.0 - 1.0,
+                     1.0);
   v_color = a_color * t.z;
 }
 )";
@@ -70,12 +73,13 @@ layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec4 a_color;
 uniform mat3 u_matrix;
+uniform float u_depth;
 out vec2 v_uv;
 out vec4 v_color;
 void main()
 {
   vec3 p = u_matrix * vec3(a_pos, 1.0);
-  gl_Position = vec4(p.xy, 0.0, 1.0);
+  gl_Position = vec4(p.xy, u_depth * 2.0 - 1.0, 1.0);
   v_uv = a_uv;
   v_color = a_color;
 }
@@ -123,12 +127,13 @@ void main()
 
 /* A full-screen triangle from gl_VertexID. */
 static const char *COMPOSITE_VERTEX_SHADER = R"(#version 330 core
+uniform float u_depth;
 out vec2 v_uv;
 void main()
 {
   vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
   v_uv = p;
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+  gl_Position = vec4(p * 2.0 - 1.0, u_depth * 2.0 - 1.0, 1.0);
 }
 )";
 
@@ -286,7 +291,7 @@ class GLDevice final : public Device {
   };
   /* Each program's uniforms (-1: it hasn't that one). */
   struct Uniforms {
-    GLint matrix = -1, opacity = -1, slots = -1, own_colors = -1, alpha_test = -1, grey = -1, tint = -1;
+    GLint matrix = -1, opacity = -1, slots = -1, own_colors = -1, alpha_test = -1, grey = -1, tint = -1, depth = -1;
   };
   static constexpr int PROGRAMS = int(Program::Run) + 1;
 
@@ -325,6 +330,10 @@ static GLenum gl_compare(Compare compare)
       return GL_EQUAL;
     case Compare::NotEqual:
       return GL_NOTEQUAL;
+    case Compare::Less:
+      return GL_LESS;
+    case Compare::LessEqual:
+      return GL_LEQUAL;
     case Compare::Always:
       break;
   }
@@ -398,6 +407,7 @@ bool GLDevice::init()
     }
     Uniforms &u = uniforms_[int(p)];
     u.matrix = gl::GetUniformLocation(program, "u_matrix");
+    u.depth = gl::GetUniformLocation(program, "u_depth");
     u.opacity = gl::GetUniformLocation(program, "u_opacity");
     u.slots = gl::GetUniformLocation(program, "u_slots");
     u.own_colors = gl::GetUniformLocation(program, "u_own_colors");
@@ -497,6 +507,9 @@ void GLDevice::end()
    * premultiplied over. */
   glDisable(GL_STENCIL_TEST);
   glStencilMask(0xFF);
+  glDisable(GL_DEPTH_TEST);
+  glDepthMask(GL_TRUE);
+  glDepthFunc(GL_LESS);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   gl::BlendEquation(GL_FUNC_ADD);
   gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -571,18 +584,34 @@ void GLDevice::set_state(const DrawState &state)
   if (all || s.compare != w.compare || s.ref != w.ref || s.read_mask != w.read_mask) {
     glStencilFunc(gl_compare(s.compare), GLint(s.ref), s.read_mask);
   }
-  if (all || s.fail != w.fail || s.pass != w.pass || s.winding != w.winding) {
-    /* The depth test is off, so a sample never fails it: the second is never used. */
+  if (all || s.fail != w.fail || s.pass != w.pass || s.winding != w.winding || s.depth_fail != w.depth_fail) {
     if (s.winding) {
-      gl::StencilOpSeparate(GL_FRONT, gl_op(s.fail), GL_INCR_WRAP, GL_INCR_WRAP);
-      gl::StencilOpSeparate(GL_BACK, gl_op(s.fail), GL_DECR_WRAP, GL_DECR_WRAP);
+      gl::StencilOpSeparate(GL_FRONT, gl_op(s.fail), gl_op(s.depth_fail), GL_INCR_WRAP);
+      gl::StencilOpSeparate(GL_BACK, gl_op(s.fail), gl_op(s.depth_fail), GL_DECR_WRAP);
     }
     else {
-      glStencilOp(gl_op(s.fail), gl_op(s.pass), gl_op(s.pass));
+      glStencilOp(gl_op(s.fail), gl_op(s.depth_fail), gl_op(s.pass));
     }
   }
   if (all || s.write_mask != w.write_mask) {
     glStencilMask(s.write_mask);
+  }
+  /* Depth is written only with the test on (as Always, if that's all). */
+  const bool depth_on = state.depth_test != Compare::Always || state.depth_write;
+  const bool depth_was = was.depth_test != Compare::Always || was.depth_write;
+  if (all || depth_on != depth_was) {
+    if (depth_on) {
+      glEnable(GL_DEPTH_TEST);
+    }
+    else {
+      glDisable(GL_DEPTH_TEST);
+    }
+  }
+  if (all || state.depth_test != was.depth_test) {
+    glDepthFunc(gl_compare(state.depth_test));
+  }
+  if (all || state.depth_write != was.depth_write) {
+    glDepthMask(state.depth_write ? GL_TRUE : GL_FALSE);
   }
   state_ = state;
   state_known_ = true;
@@ -603,6 +632,9 @@ void GLDevice::draw(const Draw &d)
   }
   if (u.opacity >= 0) {
     gl::Uniform1f(u.opacity, d.opacity);
+  }
+  if (u.depth >= 0) {
+    gl::Uniform1f(u.depth, d.state.depth);
   }
   if (u.own_colors >= 0) {
     gl::Uniform1f(u.own_colors, d.own_colors ? 1.0f : 0.0f);
@@ -852,12 +884,15 @@ void GLDevice::clear(const float premultiplied[4])
     }
   }
   glStencilMask(0xFF);
+  glDepthMask(GL_TRUE);
   if (state_known_) {
     state_.stencil.write_mask = 0xFF;
+    state_.depth_write = true;
   }
   glClearColor(premultiplied[0], premultiplied[1], premultiplied[2], premultiplied[3]);
   glClearStencil(0);
-  glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+  glClearDepth(0.0);
+  glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
 void GLDevice::resolve(Target target)

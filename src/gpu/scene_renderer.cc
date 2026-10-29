@@ -61,14 +61,31 @@ static unsigned stencil_bits(unsigned bits)
   return out;
 }
 
-/* Colour drawn where every bit of `required` is set in the stencil, which is left as it is. */
-static gpu::DrawState color_state(unsigned required)
+/* Depth masks (GPU Geometry): the depth a mask level's samples hold, and the depth just short of it that a draw
+ * tests against, so that it passes at that level or deeper whatever the rounding. Cleared, everything is level 0. */
+static constexpr unsigned DEPTH_LEVELS_MAX = 1000;
+static float level_depth(unsigned level)
+{
+  return float(level) / 1024.0f;
+}
+static float short_of_level(unsigned level)
+{
+  return (float(level) - 0.5f) / 1024.0f;
+}
+
+/* Colour drawn where every bit of `required` is set in the stencil, which is left as it is, and inside the first
+ * `depth_levels` of the depth's mask levels. */
+static gpu::DrawState color_state(unsigned required, unsigned depth_levels = 0)
 {
   gpu::DrawState state;
   if (required != 0) {
     state.stencil.compare = gpu::Compare::Equal;
     state.stencil.ref = stencil_bits(required);
     state.stencil.read_mask = stencil_bits(required);
+  }
+  if (depth_levels != 0) {
+    state.depth = short_of_level(depth_levels);
+    state.depth_test = gpu::Compare::LessEqual;
   }
   return state;
 }
@@ -149,6 +166,7 @@ void SceneRenderer::clear(const Color &color)
   const float premultiplied[4] = {color.r * color.a, color.g * color.a, color.b * color.a, color.a};
   device_->clear(premultiplied);
   bound_->fan_dirty = false;
+  bound_->depth_levels.clear();
 }
 
 unsigned int SceneRenderer::render(const Document &doc, int width, int height, const Transform2D &document_to_pixels,
@@ -212,6 +230,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   final_render_ = background != nullptr;
   gpu_geometry_ = doc.shading.gpu_geometry;
   required_stencil_ = 0;
+  depth_required_ = 0;
   line_free_stencil_ = 0;
   fill_free_stencil_ = 0;
   mask_clauses_.clear();
@@ -259,6 +278,7 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   }
   /* Media layers In Front: over everything, unmasked. */
   required_stencil_ = 0;
+  depth_required_ = 0;
   for (const Layer *l : document_layers_flat(doc)) {
     if (l->is_media() && l->media.in_front && layer_shown_through_parents(doc, *l)) {
       use_color_stencil();
@@ -315,7 +335,7 @@ void SceneRenderer::use_color_stencil(Paint paint)
 {
   const unsigned required = paint == Paint::Line ? required_stencil_ & ~line_free_stencil_
                                                  : required_stencil_ & ~fill_free_stencil_;
-  paint_ = color_state(required);
+  paint_ = color_state(required, depth_required_);
 }
 
 void SceneRenderer::stencil_fill(unsigned bit, bool set)
@@ -398,14 +418,16 @@ void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &l
   /* Bottom first, in Draw Order, each with the masks of it and the groups holding it. */
   const std::vector<DrawStep> steps = draw_order_steps(doc, layers, [this](const Layer &l) { return shown(l); });
   const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
-                 outer_fill_free = fill_free_stencil_;
+                 outer_fill_free = fill_free_stencil_, outer_depth = depth_required_;
   for (const DrawStep &step : steps) {
     required_stencil_ = outer_required | apply_masks(doc, step.masked);
+    depth_required_ = std::max(outer_depth, applied_depth_);
     line_free_stencil_ = outer_line_free | applied_line_free_;
     fill_free_stencil_ = outer_fill_free | applied_fill_free_;
     draw_layer(doc, *step.layer, Transform2D(), target, opacity);
   }
   required_stencil_ = outer_required;
+  depth_required_ = outer_depth;
   line_free_stencil_ = outer_line_free;
   fill_free_stencil_ = outer_fill_free;
 }
@@ -413,10 +435,12 @@ void SceneRenderer::draw_layers(const Document &doc, const std::vector<Layer> &l
 void SceneRenderer::draw_step(const Document &doc, const DrawStep &step, Target *target)
 {
   required_stencil_ = apply_masks(doc, step.masked);
+  depth_required_ = applied_depth_;
   line_free_stencil_ = applied_line_free_;
   fill_free_stencil_ = applied_fill_free_;
   draw_layer(doc, *step.layer, Transform2D(), target, 1.0f);
   required_stencil_ = 0;
+  depth_required_ = 0;
   line_free_stencil_ = 0;
   fill_free_stencil_ = 0;
 }
@@ -452,14 +476,16 @@ void SceneRenderer::draw_layer(const Document &doc, const Layer &layer, const Tr
     bind_target(group);
     clear(Color{0, 0, 0, 0});
     const unsigned outer_required = required_stencil_, outer_line_free = line_free_stencil_,
-                   outer_fill_free = fill_free_stencil_;
+                   outer_fill_free = fill_free_stencil_, outer_depth = depth_required_;
     const MaskLevels outer_clauses = std::move(mask_clauses_);
     mask_clauses_.clear();
     required_stencil_ = 0;
+    depth_required_ = 0;
     line_free_stencil_ = 0;
     fill_free_stencil_ = 0;
     draw_layers(doc, layer.children, transform, group, 1.0f);
     required_stencil_ = outer_required;
+    depth_required_ = outer_depth;
     line_free_stencil_ = outer_line_free;
     fill_free_stencil_ = outer_fill_free;
     mask_clauses_ = outer_clauses;
@@ -562,6 +588,11 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   MaskLevels levels;
   applied_line_free_ = 0;
   applied_fill_free_ = 0;
+  applied_depth_ = 0;
+  /* GPU Geometry: the levels cutting fills and lines alike, for the depth (no limit but the depth's); the stencil
+   * keeps the others, one bit of its four for working a depth level out in. */
+  MaskLevels depth;
+  const int stencil_max = gpu_geometry_ ? MASK_LEVELS_MAX - 1 : MASK_LEVELS_MAX;
   for (const Layer *l : masked) {
     /* Its cards by what they cut: fills and lines (sliced), fills only (lines left alone or ended with
      * a brush), lines only (sliced); each kind a level its cards must all show in. */
@@ -574,7 +605,13 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
       }
     }
     const auto push = [&](std::vector<std::vector<MaskRow>> &cards, bool line_free, bool fill_free) {
-      if (cards.empty() || int(levels.size()) >= MASK_LEVELS_MAX) {
+      if (gpu_geometry_ && !line_free && !fill_free && !cards.empty()) {
+        if (depth.size() < DEPTH_LEVELS_MAX) {
+          depth.push_back(std::move(cards));
+        }
+        return;
+      }
+      if (cards.empty() || int(levels.size()) >= stencil_max) {
         return;
       }
       applied_line_free_ |= line_free ? 1u << levels.size() : 0u;
@@ -588,6 +625,30 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   unsigned required = 0;
   for (size_t k = 0; k < levels.size(); k++) {
     required |= 1u << k;
+  }
+  if (gpu_geometry_ && bound_) {
+    /* The depth's levels: those it holds already, in order (the masks of the groups shared with the last layer
+     * drawn, usually), stay; the rest are let go of and the new ones pushed. Fewer than it holds need nothing. */
+    std::vector<MaskLevels::value_type> &held = bound_->depth_levels;
+    size_t same = 0;
+    while (same < depth.size() && same < held.size() && depth[same] == held[same]) {
+      same++;
+    }
+    if (same < depth.size()) {
+      flush_batch();
+      if (held.size() > same) {
+        pop_depth_levels(unsigned(same));
+      }
+      /* Worked out in the first bit the stencil's levels leave, with those above it free. */
+      const unsigned bit = 1u << levels.size();
+      const unsigned free = (MASK_SPARE | (MASK_SPARE - 1u)) & ~((bit << 1) - 1u);
+      for (size_t k = same; k < depth.size(); k++) {
+        evaluate_mask_cards(doc, depth[k], bit, MASK_SCRATCH, free);
+        push_depth_level(unsigned(k + 1), bit);
+      }
+      held = depth;
+    }
+    applied_depth_ = unsigned(depth.size());
   }
   if (levels == mask_clauses_) {
     /* The same as the last thing drawn (its neighbour, usually): the stencil already holds them, and what waits
@@ -603,6 +664,52 @@ unsigned SceneRenderer::apply_masks(const Document &doc, const std::vector<const
   }
   mask_clauses_ = std::move(levels);
   return required;
+}
+
+void SceneRenderer::push_depth_level(unsigned level, unsigned bit)
+{
+  flush_batch();
+  /* The bit kept only where the levels before hold (from the second level on; everything holds level 0). */
+  if (level > 1) {
+    gpu::Draw keep;
+    keep.state.program = gpu::Program::Stencil;
+    keep.state.write_color = false;
+    keep.state.stencil = {true, gpu::Compare::Equal, stencil_bits(bit), stencil_bits(bit), gpu::StencilOp::Keep,
+                          gpu::StencilOp::Keep, stencil_bits(bit), false, gpu::StencilOp::Zero};
+    keep.state.depth = short_of_level(level - 1);
+    keep.state.depth_test = gpu::Compare::LessEqual;
+    keep.count = 3;
+    device_->draw(keep);
+  }
+  /* Then the level written there, and the bit cleared. */
+  gpu::Draw write;
+  write.state.program = gpu::Program::Stencil;
+  write.state.write_color = false;
+  write.state.stencil = {true,
+                         gpu::Compare::Equal,
+                         stencil_bits(bit),
+                         stencil_bits(bit),
+                         gpu::StencilOp::Keep,
+                         gpu::StencilOp::Zero,
+                         stencil_bits(bit)};
+  write.state.depth = level_depth(level);
+  write.state.depth_write = true;
+  write.count = 3;
+  device_->draw(write);
+}
+
+void SceneRenderer::pop_depth_levels(unsigned level)
+{
+  flush_batch();
+  gpu::Draw back;
+  back.state.program = gpu::Program::Stencil;
+  back.state.write_color = false;
+  back.state.stencil.test = false;
+  back.state.depth = level_depth(level);
+  back.state.depth_test = gpu::Compare::Less;
+  back.state.depth_write = true;
+  back.count = 3;
+  device_->draw(back);
 }
 
 void SceneRenderer::evaluate_mask_cards(const Document &doc, const std::vector<std::vector<MaskRow>> &cards,
@@ -780,7 +887,7 @@ void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
     if (required == 0 && !shows) {
       continue;
     }
-    paint_ = color_state(required);
+    paint_ = color_state(required, 0);
     if (!shows) {
       paint_.stencil.compare = gpu::Compare::NotEqual;
     }
@@ -1014,7 +1121,7 @@ void SceneRenderer::draw_steps(std::vector<PaintStep> &steps, const Transform2D 
         continue;
       }
       batch_.push_back({&step, (key ^ (uint64_t(i) + 1) * 0x9e3779b97f4a7c15ull) * 1099511628211ull, step_to_clip,
-                        opacity, required});
+                        opacity, required, depth_required_});
     }
     return;
   }
@@ -1826,16 +1933,12 @@ void SceneRenderer::draw_stencil_fill(PaintStep &step, const Transform2D &step_t
     clear.to_clip = step_to_clip;
     device_->draw(clear);
   }
+  /* The winding counted where the masks show the fill (elsewhere it stays 0, so the cover needn't test them too). */
   gpu::Draw fan;
+  fan.state = color_state(required, depth_required_);
   fan.state.write_color = false;
-  fan.state.stencil = {true,
-                       gpu::Compare::Equal,
-                       stencil_bits(required),
-                       stencil_bits(required),
-                       gpu::StencilOp::Keep,
-                       gpu::StencilOp::Keep,
-                       stencil_bits(WINDING_BITS),
-                       true};
+  fan.state.stencil.write_mask = stencil_bits(WINDING_BITS);
+  fan.state.stencil.winding = true;
   fan.mesh = step.mesh;
   fan.count = cover;
   fan.to_clip = step_to_clip;
@@ -1866,10 +1969,10 @@ void SceneRenderer::flush_batch()
   std::vector<gpu::BatchVertex> vertices;
   float slots[SLOTS * 8];
   for (size_t i = 0; i < batch_.size();) {
-    const unsigned required = batch_[i].required;
+    const unsigned required = batch_[i].required, depth = batch_[i].depth;
     size_t j = i;
     uint64_t chunk_key = 1469598103934665603ull;
-    while (j < batch_.size() && j - i < SLOTS && batch_[j].required == required) {
+    while (j < batch_.size() && j - i < SLOTS && batch_[j].required == required && batch_[j].depth == depth) {
       chunk_key = (chunk_key ^ batch_[j].id) * 1099511628211ull;
       j++;
     }
@@ -1898,7 +2001,7 @@ void SceneRenderer::flush_batch()
       slot[7] = 0.0f;
     }
     gpu::Draw draw;
-    draw.state = color_state(required);
+    draw.state = color_state(required, depth);
     draw.state.program = gpu::Program::Batch;
     draw.mesh = chunk.mesh;
     draw.count = chunk.vertices;

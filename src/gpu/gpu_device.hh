@@ -46,7 +46,9 @@ enum class Blend : uint8_t {
   Max,
 };
 
-enum class Compare : uint8_t { Always, Equal, NotEqual };
+/* For the stencil: (held & read_mask) against (ref & read_mask). For depth: the draw's depth against what is held
+ * (Less: drawn where its depth is less). */
+enum class Compare : uint8_t { Always, Equal, NotEqual, Less, LessEqual };
 /* Replace writes `ref`'s bits, Zero clears them (both under `write_mask`). */
 enum class StencilOp : uint8_t { Keep, Replace, Zero };
 
@@ -61,6 +63,8 @@ struct StencilState {
   /* Counting winding instead of `pass`: where the test passes, a triangle facing one way adds one and one facing the
    * other way takes one (wrapping round), so a fan of a path's triangles leaves its winding number there. */
   bool winding = false;
+  /* Where the stencil test passes but the depth test doesn't. */
+  StencilOp depth_fail = StencilOp::Keep;
   bool operator==(const StencilState &) const = default;
 };
 
@@ -69,6 +73,10 @@ struct DrawState {
   bool write_color = true;
   Blend blend = Blend::Over;
   StencilState stencil;
+  /* Every vertex's depth, 0 to 1: what the depth test compares with what is held, and what a depth write leaves. */
+  float depth = 0.5f;
+  Compare depth_test = Compare::Always;
+  bool depth_write = false;
   bool operator==(const DrawState &) const = default;
 };
 
@@ -192,7 +200,7 @@ class Device {
 
   /* Draws go into this target, all of it. */
   virtual void bind_target(Target target) = 0;
-  /* The bound target's colour to `premultiplied` and its stencil to 0. */
+  /* The bound target's colour to `premultiplied`, its stencil and depth to 0. */
   virtual void clear(const float premultiplied[4]) = 0;
   virtual void draw(const Draw &draw) = 0;
   /* Averages the target's samples into its resolved image. */

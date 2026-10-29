@@ -68,8 +68,9 @@ struct ViewportShading {
    * rests. Off, each step of a zoom is drawn sharp. */
   bool zoom_preview = true;
   /* The renderer: GPU Geometry (being built, in stages) fills big shapes by stencil-then-cover instead of cutting
-   * them into triangles on the CPU; Classic triangulates every fill. Renders and the viewport alike; the same but
-   * where an outline crosses itself (GPU Geometry fills where it covers an odd number of times). */
+   * them into triangles on the CPU, and keeps masks in the depth buffer (no limit to how deep they nest); Classic
+   * triangulates every fill and keeps masks in the stencil (four levels deep). Renders and the viewport alike; the
+   * same but where an outline crosses itself (GPU Geometry fills where it winds round) or masks nest deeper. */
   bool gpu_geometry = false;
 
   bool operator==(const ViewportShading &) const = default;
