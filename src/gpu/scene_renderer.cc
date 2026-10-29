@@ -1537,22 +1537,20 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         }
         else if (!filled_together) {
           filled_together = true;
-          const std::vector<FillPiece> &pieces =
-              fill_area(shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_)), whole.fill_rule);
-          std::vector<const std::vector<float2> *> rings;
-          size_t points = 0;
-          for (const FillPiece &piece : pieces) {
-            for (const std::vector<float2> &ring : piece.rings) {
-              rings.push_back(&ring);
-              points += ring.size();
+          const std::vector<std::vector<float2>> loops =
+              shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_));
+          if (gpu_geometry_ && !coverage_pass_) {
+            /* GPU Geometry: the loops as they are, their fill rule worked out by the stencil's count (Even-Odd: where
+             * it's odd; Nonzero: where it isn't 0), not cut into pieces on the CPU first (fill_area: Rainbow Dash's
+             * holed fills, imported from Flash, 452 ms of making to 360, summed over the cores). */
+            std::vector<const std::vector<float2> *> rings;
+            for (const std::vector<float2> &loop : loops) {
+              rings.push_back(&loop);
             }
-          }
-          if (fan_fill(points)) {
-            /* Pieces don't overlap, outer rings one way round and holes the other: their winding is the fill. */
-            stencil_step(rings, shape.style.fill, false);
+            stencil_step(rings, shape.style.fill, whole.fill_rule == FillRule::EvenOdd);
           }
           else {
-            tessellate_fill_pieces(pieces, shape.style.fill, feather, vertices);
+            tessellate_fill_pieces(fill_area(loops, whole.fill_rule), shape.style.fill, feather, vertices);
           }
         }
         if (grow > 0.0f && !inside_stroke) {
