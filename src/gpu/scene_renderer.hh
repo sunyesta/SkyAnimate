@@ -417,6 +417,23 @@ class SceneRenderer {
     uint64_t used = 0;
   };
   std::unordered_map<uint64_t, ShapesKept> shapes_kept_;
+  /* A mask's options for drawing a layer's part of it (grown, shrunk, its fills or lines only, ...). */
+  struct MaskPass {
+    /* Grow (or, negative, shrink) by this many pixels. */
+    float grow = 0.0f;
+    /* What this pass draws: everything, only areas, only the bands around areas that shrinking
+     * clears, or only lines (see draw_mask_source). */
+    enum Stage { All, Areas, Bands, Lines } stage = All;
+    bool exclude_strokes = false;
+    /* Every shape fills, filled or not (a mask's Fill Every Shape). */
+    bool filled = false;
+    /* A mask's Extend (MaskExtend): the shapes swept to far off that way. */
+    int extend = 0;
+    /* Only the strokes (a mask's Strokes Only): no fills. */
+    bool exclude_fills = false;
+    /* Fills cut at their lines' inner edge (a mask's Inside the Stroke, with Fills Only). */
+    bool inside_stroke = false;
+  };
   /* What a drawing's steps are made from (make_steps). */
   struct MakeArgs {
     const Document *doc = nullptr;
@@ -426,9 +443,13 @@ class SceneRenderer {
     float pixel = 1.0f;
     LineCutter cutter;
     ShapesKept *kept = nullptr;
+    /* Made for a mask's coverage (in the stencil, no colour), and that mask's options: what coverage_pass_ and
+     * mask_pass_ were when it was asked for, so masks' shapes can be made on other threads with the rest. */
+    bool coverage = false;
+    MaskPass mask_pass;
   };
   /* A drawing's steps: its shapes' triangles and stamps (those of shapes as they were taken from `kept`). Safe on
-   * several threads at once for different drawings in the colour pass, unless brushed or ended at masks' edges. */
+   * several threads at once for different drawings, unless brushed or ended at masks' edges. */
   std::vector<PaintStep> make_steps(const MakeArgs &args);
   /* Before a render draws: every drawing it will draw whose steps aren't made yet (and that isn't brushed or ended at
    * masks' edges) is found, and all of them made at once on the CPU's cores; the render then finds them made. */
@@ -444,8 +465,16 @@ class SceneRenderer {
   /* Drawings left to be made by later renders (prepare_drawings): drawn as made for another zoom in this one. */
   std::set<uint64_t> deferred_;
   bool preparing_ = false;
+  /* The keys of this render's jobs so far. */
+  std::set<uint64_t> queued_;
   std::vector<Job> jobs_;
   void prepare_drawings(const Document &doc);
+  /* For prepare_drawings: every mask the steps of `layers` will work out (and those inside faded groups), worked out
+   * with nothing drawn (dry_masks_), so the shapes they need are made with the rest, over the cores, rather than one at
+   * a time as the masks are drawn. Each masked layer's once. */
+  void prepare_masks(const Document &doc, const std::vector<Layer> &layers);
+  bool dry_masks_ = false;
+  std::set<uint64_t> prepared_masks_;
   /* By everything but the zoom: the key of the last one made or drawn (see set_interactive). */
   std::unordered_map<uint64_t, uint64_t> tessellated_any_zoom_;
   /* By everything but where the drawing is (its points relative to its first): the key of one made with
@@ -464,22 +493,7 @@ class SceneRenderer {
   uint64_t render_serial_ = 0;
   int samples_ = 1;
   /* Set while a layer draws its part of a group's mask: its masking options apply then. */
-  struct MaskPass {
-    /* Grow (or, negative, shrink) by this many pixels. */
-    float grow = 0.0f;
-    /* What this pass draws: everything, only areas, only the bands around areas that shrinking
-     * clears, or only lines (see draw_mask_source). */
-    enum Stage { All, Areas, Bands, Lines } stage = All;
-    bool exclude_strokes = false;
-    /* Every shape fills, filled or not (a mask's Fill Every Shape). */
-    bool filled = false;
-    /* A mask's Extend (MaskExtend): the shapes swept to far off that way. */
-    int extend = 0;
-    /* Only the strokes (a mask's Strokes Only): no fills. */
-    bool exclude_fills = false;
-    /* Fills cut at their lines' inner edge (a mask's Inside the Stroke, with Fills Only). */
-    bool inside_stroke = false;
-  } mask_pass_;
+  MaskPass mask_pass_;
   /* Stencil bits a colour sample must have set (the masks it's inside). */
   unsigned required_stencil_ = 0;
   /* Of those, the mask levels whose rows all end lines (End Lines at Edge, Ends: Brush): the lines

@@ -424,6 +424,9 @@ void SceneRenderer::use_color_stencil(Paint paint)
 
 void SceneRenderer::stencil_fill(unsigned bit, bool set)
 {
+  if (dry_masks_) {
+    return;
+  }
   flush_batch();
   gpu::Draw draw;
   draw.state = stencil_state(gpu::Compare::Always, set ? bit : 0u, bit, bit, gpu::StencilOp::Replace);
@@ -818,6 +821,9 @@ void SceneRenderer::evaluate_mask_cards(const Document &doc, const std::vector<s
 
 void SceneRenderer::stencil_where(unsigned test, unsigned value, unsigned write, unsigned ref)
 {
+  if (dry_masks_) {
+    return;
+  }
   flush_batch();
   gpu::Draw draw;
   /* The reference holds both the value tested (under `test`) and the one written (under `write`). */
@@ -1054,7 +1060,9 @@ void SceneRenderer::draw_mask_source(const Document &doc, const Layer &source, u
 void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const Transform2D & /*parent*/, unsigned bit,
                                   bool set)
 {
-  flush_batch();
+  if (!dry_masks_) {
+    flush_batch();
+  }
   /* Hidden layers still mask: a mask shape is often kept hidden. */
   if (layer.is_group()) {
     for (const Layer &child : layer.children) {
@@ -1064,10 +1072,12 @@ void SceneRenderer::draw_coverage(const Document &doc, const Layer &layer, const
   }
   const Transform2D transform = layer_world_transform(doc, layer.id);
   /* With coverage_test_, only where those bits are set (the mask layer's own masks). */
-  paint_ = stencil_state(coverage_test_ ? gpu::Compare::Equal : gpu::Compare::Always,
-                         (set ? bit : 0u) | coverage_test_, coverage_test_ ? coverage_test_ : bit, bit);
-  if (bit & WINDING_BITS) {
-    bound_->fan_dirty = true;
+  if (!dry_masks_) {
+    paint_ = stencil_state(coverage_test_ ? gpu::Compare::Equal : gpu::Compare::Always,
+                           (set ? bit : 0u) | coverage_test_, coverage_test_ ? coverage_test_ : bit, bit);
+    if (bit & WINDING_BITS) {
+      bound_->fan_dirty = true;
+    }
   }
   coverage_pass_ = true;
   draw_drawing(doc, layer, transform, 1.0f);
@@ -1360,7 +1370,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
 {
   const StatTimer stat_make(STAT_MAKE);
   /* Masks' shapes are made as they are drawn, one at a time, not before with the rest. */
-  const StatTimer stat_make_mask(STAT_MAKE_MASK, coverage_pass_);
+  const StatTimer stat_make_mask(STAT_MAKE_MASK, args.coverage);
   if (stat_make.on) {
     g_stat_made++;
   }
@@ -1418,7 +1428,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
     const char *v = std::getenv("OANIM_FAN_MIN_POINTS");
     return v ? size_t(std::strtoul(v, nullptr, 10)) : size_t(1024);
   }();
-  const auto fan_fill = [&](size_t points) { return gpu_geometry_ && !coverage_pass_ && points >= fan_min_points; };
+  const auto fan_fill = [&](size_t points) { return gpu_geometry_ && !args.coverage && points >= fan_min_points; };
   /* A fill as a step of its own, between the batches before and after it. */
   const auto stencil_step = [&](const std::vector<const std::vector<float2> *> &rings, Color color, bool even_odd) {
     flush();
@@ -1444,13 +1454,13 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
   const auto stroke = [&](const Shape &shape, const std::vector<float2> &pts, const std::vector<float> &half,
                           bool is_closed, const std::vector<StrokeJoin> &stroke_joins) {
     const StatTimer stat_stroke(STAT_STROKE);
-    batch(!coverage_pass_);
+    batch(!args.coverage);
     /* A line thinner than a pixel is drawn a pixel wide and as much fainter (in colour; a mask takes
      * it as it is), so its weight stays true however far the view is zoomed out rather than every
      * hairline looking a pixel thick. */
     const float widest = half.empty() ? 0.0f : *std::max_element(half.begin(), half.end());
     const float min_half = pixel * 0.5f;
-    if (!coverage_pass_ && widest > 0.0f && widest < min_half) {
+    if (!args.coverage && widest > 0.0f && widest < min_half) {
       const float k = min_half / widest;
       std::vector<float> wider = half;
       for (float &w : wider) {
@@ -1597,14 +1607,14 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
        * shape and everything beyond it that way masks. A filled shape (or Filled Shape) sweeps its
        * whole outline; an outline-only one just the edges it draws, so a line with hidden edges (an
        * upper lip drawn from a whole mouth shape) cuts along what shows. */
-      const MaskPass::Stage stage = coverage_pass_ ? mask_pass_.stage : MaskPass::All;
-      const float grow = coverage_pass_ ? mask_pass_.grow * pixel : 0.0f;
-      const bool is_area = !(coverage_pass_ && mask_pass_.exclude_fills) &&
-                           ((shape.has_fill && closed) || (coverage_pass_ && mask_pass_.filled));
+      const MaskPass::Stage stage = args.coverage ? args.mask_pass.stage : MaskPass::All;
+      const float grow = args.coverage ? args.mask_pass.grow * pixel : 0.0f;
+      const bool is_area = !(args.coverage && args.mask_pass.exclude_fills) &&
+                           ((shape.has_fill && closed) || (args.coverage && args.mask_pass.filled));
       /* Inside the Stroke: the area ends at its line's inner edge: the line's half width in from
        * the outline at each point (as wide as the line is there), less any grow, and wherever the
        * line itself is drawn (a brushed line's dabs, turned or jittered, reach past its width). */
-      const bool inside_stroke = coverage_pass_ && mask_pass_.inside_stroke && shape.has_outline &&
+      const bool inside_stroke = args.coverage && args.mask_pass.inside_stroke && shape.has_outline &&
                                  shape.style.line_width > 0.0f;
       /* The line as drawn, to clear (Bands with Inside the Stroke): no grow, whatever the row's. */
       bool line_as_drawn = false;
@@ -1625,11 +1635,11 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         }
         line_as_drawn = true;
       }
-      if (coverage_pass_ && mask_pass_.extend != 0 && stage != MaskPass::Lines && !line_as_drawn) {
+      if (args.coverage && args.mask_pass.extend != 0 && stage != MaskPass::Lines && !line_as_drawn) {
         static const float2 DIRS[] = {{0, 0}, {0, 1}, {0, -1}, {-1, 0}, {1, 0}};
-        const float2 reach = DIRS[std::clamp(mask_pass_.extend, 0, 4)] * (pixel * 100000.0f);
-        const bool area = !mask_pass_.exclude_fills && ((shape.has_fill && closed) || mask_pass_.filled);
-        const bool strokes = shape.has_outline && !mask_pass_.exclude_strokes;
+        const float2 reach = DIRS[std::clamp(args.mask_pass.extend, 0, 4)] * (pixel * 100000.0f);
+        const bool area = !args.mask_pass.exclude_fills && ((shape.has_fill && closed) || args.mask_pass.filled);
+        const bool strokes = shape.has_outline && !args.mask_pass.exclude_strokes;
         const size_t n = outline.size();
         for (size_t i = 0; i + 1 < n + (closed ? 1 : 0); i++) {
           if (!area && !(strokes && i < visible.size() && visible[i])) {
@@ -1658,7 +1668,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
           filled_together = true;
           const std::vector<std::vector<float2>> loops =
               shape_fill_loops(drawing, whole, quality_, pixel * 3.0f / float(quality_));
-          if (gpu_geometry_ && !coverage_pass_) {
+          if (gpu_geometry_ && !args.coverage) {
             /* GPU Geometry: the loops as they are, their fill rule worked out by the stencil's count (Even-Odd: where
              * it's odd; Nonzero: where it isn't 0), not cut into pieces on the CPU first (fill_area: Rainbow Dash's
              * holed fills, imported from Flash, 452 ms of making to 360, summed over the cores). */
@@ -1680,7 +1690,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         }
       }
       if (shape.has_outline && shape.style.line_width > 0.0f &&
-          (line_as_drawn || !(coverage_pass_ && mask_pass_.exclude_strokes)) && stage != MaskPass::Areas)
+          (line_as_drawn || !(args.coverage && args.mask_pass.exclude_strokes)) && stage != MaskPass::Areas)
       {
         const float line_grow = line_as_drawn ? 0.0f : grow;
         /* A brushed line, if its brush is in the library and has images; otherwise solid. */
@@ -1717,7 +1727,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
           setup_runs_made = true;
           const BrushPath rest = run_index < setup_runs.size() ? brush_path(setup, setup_runs[run_index], extra) : shown;
           brush_stroke(shown, rest, shape.style.brush, shape.style.line, aspects, pixel * 0.5f, seed, dabs,
-                       cutter.empty() ? nullptr : &brush_cut, !coverage_pass_);
+                       cutter.empty() ? nullptr : &brush_cut, !args.coverage);
           if (dabs.count > 0) {
             flush();
             PaintStep step;
@@ -1730,7 +1740,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
             step.own_colors = brush->is_color && !shape.style.brush.tint;
             step.merged_alpha = shape.style.brush.merged_alpha;
             step.coverage_alpha = line_as_drawn ? 0.02f : 0.5f;
-            step.is_line = !coverage_pass_;
+            step.is_line = !args.coverage;
             steps.push_back(std::move(step));
           }
           continue;
@@ -1742,7 +1752,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         for (float &r : radii) {
           r = r * shape.style.line_width * 0.5f + line_grow;
           /* A line shrunk away is gone. */
-          r = line_grow < 0.0f || !coverage_pass_ ? std::max(r, 0.0f) : std::max(r, pixel * 0.5f);
+          r = line_grow < 0.0f || !args.coverage ? std::max(r, 0.0f) : std::max(r, pixel * 0.5f);
           any_width |= r > 0.0f;
         }
         if (!any_width) {
@@ -1753,7 +1763,7 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
         /* End Lines at Edge: whether each point shows (all of them without it). */
         std::vector<char> shows(size_t(n), 1);
         bool cut_any = false;
-        if (!cutter.empty() && !coverage_pass_) {
+        if (!cutter.empty() && !args.coverage) {
           for (int i = 0; i < n; i++) {
             shows[size_t(i)] = line_shows(outline[size_t(i)]);
             cut_any = cut_any || !shows[size_t(i)];
@@ -1875,6 +1885,7 @@ void SceneRenderer::prepare_drawings(const Document &doc)
   /* Found as the render would draw them (and their modifiers worked out, as it would), nothing drawn. */
   preparing_ = true;
   jobs_.clear();
+  queued_.clear();
   for (const Layer *l : document_layers_flat(doc)) {
     if (l->is_group() || l->is_media() || !l->has_drawing() || !layer_shown_through_parents(doc, *l)) {
       continue;
@@ -1883,6 +1894,13 @@ void SceneRenderer::prepare_drawings(const Document &doc)
       continue;
     }
     draw_drawing(doc, *l, layer_world_transform(doc, l->id), 1.0f);
+  }
+  /* The masks' shapes too (a render worked out with masks' layers moving, or bent, makes many). */
+  if (mask_preview_layer_ == 0) {
+    dry_masks_ = true;
+    prepared_masks_.clear();
+    prepare_masks(doc, doc.layers);
+    dry_masks_ = false;
   }
   preparing_ = false;
   /* Those with nothing to stand in for them first, all of them; then those that could be drawn as made for another
@@ -1923,6 +1941,25 @@ void SceneRenderer::prepare_drawings(const Document &doc)
     }
   }
   jobs_.clear();
+}
+
+void SceneRenderer::prepare_masks(const Document &doc, const std::vector<Layer> &layers)
+{
+  for (const DrawStep &step : draw_order_steps(doc, layers, [this](const Layer &l) { return shown(l); })) {
+    for (const Layer *masked : step.masked) {
+      if (!prepared_masks_.insert(masked->id).second) {
+        continue;
+      }
+      /* As apply_masks works a level out first: in the lowest bit, the bits above it free. */
+      for (const CardRows &card : kept_cards(doc, *masked, final_render_)) {
+        evaluate_mask_rows(doc, card.steps, 1u, MASK_SCRATCH, false, (MASK_SPARE | (MASK_SPARE - 1u)) & ~1u);
+      }
+    }
+    /* A faded group's layers, drawn in its own image under their own masks. */
+    if (step.layer->is_group()) {
+      prepare_masks(doc, step.layer->children);
+    }
+  }
 }
 
 void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const Transform2D &layer_transform,
@@ -2062,13 +2099,18 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     /* Brushed lines and lines ended at masks' edges are made as they are drawn. Everything else is made here, a new
      * zoom's too, once the zoom rests; while it moves (each step drawn, Zoom Preview off) a drawing made for another
      * zoom stands in as it is (draw_drawing). */
-    if (brushed || !cutter.empty() || coverage_pass_ ||
+    if (brushed || !cutter.empty() ||
         (zooming_ && interactive_ && !final_render_ && tessellated_any_zoom_.count(any_zoom)))
     {
       return;
     }
+    /* A mask's shape asked for by more than one row (or card) is made once. */
+    if (!queued_.insert(key).second) {
+      return;
+    }
     Job job;
-    job.args = {&doc, &layer, &drawing, transform, pixel, cutter, &shapes_kept_[hash_float(settings, pixel)]};
+    job.args = {&doc,   &layer, &drawing, transform, pixel, cutter, &shapes_kept_[hash_float(settings, pixel)],
+                coverage_pass_, mask_pass_};
     job.args.kept->used = render_serial_;
     job.optional = interactive_ && !final_render_ && tessellated_any_zoom_.count(any_zoom) != 0;
     job.key = key;
@@ -2090,8 +2132,8 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
     }
   }
   const auto making = std::chrono::steady_clock::now();
-  std::vector<PaintStep> steps = make_steps(
-      {&doc, &layer, &drawing, transform, pixel, cutter, &shapes_kept_[hash_float(settings, pixel)]});
+  std::vector<PaintStep> steps = make_steps({&doc, &layer, &drawing, transform, pixel, cutter,
+                                             &shapes_kept_[hash_float(settings, pixel)], coverage_pass_, mask_pass_});
   made_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - making).count();
   shapes_kept_[hash_float(settings, pixel)].used = render_serial_;
   /* Made here, kept in tessellated_ (the steps keep their place in memory as the vector moves there). */
