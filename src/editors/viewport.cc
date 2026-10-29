@@ -11564,6 +11564,25 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   else {
     renderer->set_zooming(!doc.shading.zoom_preview && ImGui::GetTime() - zoom_state.moved < ZOOM_SETTLE);
+    /* Everything it draws from but the view (as same_content above): the same as the last render's, only the view has
+     * moved, and the renderer keeps what it worked out of each drawing. Not while bones move without new revisions
+     * (live physics) or a text is typed on the canvas. */
+    uint64_t content = 0;
+    if (!dynamics_live_running() && !wm.text_editing && order_preview.empty()) {
+      const auto mix = [&content](uint64_t v) { content = content * 0x100000001b3ull ^ (v + 0x9e3779b97f4a7c15ull); };
+      mix(uint64_t(uint32_t(doc.frame_current)));
+      mix(uint64_t(doc.viewport_quality) | uint64_t(doc.viewport_samples) << 16);
+      mix(C.undo->change_count());
+      mix(media_generation());
+      mix(revision_latest());
+      mix(mask_preview_key);
+      mix(uint64_t(wm.media_view));
+      for (const uint64_t id : wm.local_view) {
+        mix(id);
+      }
+      content |= 1;
+    }
+    renderer->set_content(content);
     rendered = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality, doc.viewport_samples);
     last = {rendered,         width_px,          height_px,          document_to_pixels,
             doc.frame_current, doc.viewport_quality, doc.viewport_samples, C.undo->change_count(),

@@ -295,7 +295,20 @@ unsigned int SceneRenderer::render(const Document &doc, int width, int height, c
   device_->begin();
   paint_ = color_state(0);
 
-  evaluated_.clear();
+  /* Only the view changed since the last render (the caller's stamp of everything else the same, and the settings):
+   * every drawing's evaluation and its key's view-independent part are kept from it. Otherwise worked out anew. */
+  const auto mix = [](uint64_t h, uint64_t v) { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
+  const uint64_t memo_stamp =
+      content_stamp_ == 0 ? 0
+                          : mix(mix(content_stamp_, uint64_t(quality_) | uint64_t(samples_) << 8 |
+                                                        uint64_t(gpu_geometry_) << 16 | uint64_t(final_render_) << 17),
+                                mix(mask_preview_layer_, brushes_generation())) | 1;
+  content_stamp_ = 0;
+  if (memo_stamp == 0 || memo_stamp != memo_stamp_) {
+    evaluated_.clear();
+    key_memo_.clear();
+  }
+  memo_stamp_ = memo_stamp;
   drawn_.clear();
   regions_.clear();
   deferred_.clear();
@@ -2104,7 +2117,17 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   /* Modifiers (Mirror, the bones) draw from an evaluated copy, made once per render; otherwise the
    * drawing itself. A drawing the bones carry as one piece is drawn moved instead, so turning a bone
    * draws again what was made of it before rather than making it anew. */
-  const bool modified = layer_has_modifier_effect(doc, layer, final_render_);
+  /* While only the view has changed since the last render (set_content), what this layer's key holds but the view is
+   * as it was: kept (by the pass too: a mask's coverage keys apart). */
+  const uint64_t pass = hash_float(
+      hash_mix(layer.id, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
+                             uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
+                             uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
+                             uint64_t(mask_pass_.inside_stroke) << 10),
+      coverage_pass_ ? mask_pass_.grow : 0.0f);
+  KeyMemo *memo = memo_stamp_ != 0 ? &key_memo_[pass] : nullptr;
+  const bool memo_hit = memo && memo->made;
+  const bool modified = memo_hit ? memo->modified : layer_has_modifier_effect(doc, layer, final_render_);
   const VectorDrawing *source = &layer_drawing(doc, layer);
   Transform2D rigid;
   if (modified) {
@@ -2135,63 +2158,77 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
   /* What it's drawn as is kept, and drawn again while what makes it stays the same. Brushed lines
    * add their brushes (a brush that isn't there draws a solid line, so it counts once it's found),
    * the setup shape their stamps are laid out on, and with line boil the frame. */
-  uint64_t key = hash_mix(0x9e3779b97f4a7c15ull, layer.id);
+  uint64_t key = 0, settings = 0;
   bool brushed = false, boils = false;
-  for (const Shape &s : drawing.shapes) {
-    const bool has_brush = s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name);
-    key = hash_mix(key, has_brush ? 1 : 0);
-    if (has_brush) {
-      brushed = true;
-      boils = boils || s.style.brush.randomize;
-      key = brush_settings_hash(key, s.style.brush);
+  LineCutter own_cutter;
+  if (memo_hit) {
+    key = memo->any_zoom;
+    settings = memo->settings;
+    brushed = memo->brushed;
+    boils = memo->boils;
+  }
+  else {
+    key = hash_mix(0x9e3779b97f4a7c15ull, layer.id);
+    for (const Shape &s : drawing.shapes) {
+      const bool has_brush = s.has_outline && !s.style.brush.name.empty() && brush_find(s.style.brush.name);
+      key = hash_mix(key, has_brush ? 1 : 0);
+      if (has_brush) {
+        brushed = true;
+        boils = boils || s.style.brush.randomize;
+        key = brush_settings_hash(key, s.style.brush);
+      }
     }
-  }
-  if (brushed) {
-    key = hash_mix(key, setup_hash(layer.drawing));
-    key = hash_mix(key, uint64_t(final_render_));
-    if (boils) {
-      key = hash_mix(key, uint64_t(uint32_t(doc.frame_current)));
+    if (brushed) {
+      key = hash_mix(key, setup_hash(layer.drawing));
+      key = hash_mix(key, uint64_t(final_render_));
+      if (boils) {
+        key = hash_mix(key, uint64_t(uint32_t(doc.frame_current)));
+      }
     }
-  }
-  key = hash_mix(key, uint64_t(quality_) | uint64_t(gpu_geometry_ && !coverage_pass_) << 8);
-  key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
-                          uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
-                          uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
-                          uint64_t(mask_pass_.inside_stroke) << 10);
-  key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
-  /* End Lines at Edge: where the masks' rows with it on let the lines show (in the colour pass; a
-   * layer lends its shapes to masks as drawn). Its shapes and where this layer is go in the key. */
-  LineCutter cutter;
-  if (!coverage_pass_) {
-    cutter = line_cutter(doc, layer, final_render_);
-  }
-  if (!cutter.empty()) {
-    key = hash_float(hash_mix(key, cutter.flat ? 0x5eedu : 0xf1a7u), cutter.reach);
-    for (const auto &rows : cutter.levels) {
-      for (const LineCutter::Row &row : rows) {
-        key = hash_mix(key, uint64_t(row.mode) | uint64_t(row.invert) << 4 | uint64_t(row.fills_only) << 5 |
-                                uint64_t(row.strokes_only) << 6 | uint64_t(row.inside_stroke) << 7 |
-                                uint64_t(row.combine) << 8);
-        for (const LineCutter::Piece &piece : row.pieces) {
-          key = hash_mix(key, uint64_t(piece.area) | uint64_t(piece.line) << 1 | uint64_t(piece.closed) << 2 |
-                                  uint64_t(piece.source) << 3);
-          key = hash_float(key, piece.half);
-          for (const float2 &p : piece.outline) {
-            key = hash_float(hash_float(key, p.x), p.y);
+    key = hash_mix(key, uint64_t(quality_) | uint64_t(gpu_geometry_ && !coverage_pass_) << 8);
+    key = hash_mix(key, uint64_t(coverage_pass_) | uint64_t(mask_pass_.stage) << 1 |
+                            uint64_t(mask_pass_.exclude_strokes) << 4 | uint64_t(mask_pass_.filled) << 5 |
+                            uint64_t(mask_pass_.extend) << 6 | uint64_t(mask_pass_.exclude_fills) << 9 |
+                            uint64_t(mask_pass_.inside_stroke) << 10);
+    key = hash_float(key, coverage_pass_ ? mask_pass_.grow : 0.0f);
+    /* End Lines at Edge: where the masks' rows with it on let the lines show (in the colour pass; a
+     * layer lends its shapes to masks as drawn). Its shapes and where this layer is go in the key. */
+    if (!coverage_pass_) {
+      own_cutter = line_cutter(doc, layer, final_render_);
+    }
+    if (!own_cutter.empty()) {
+      key = hash_float(hash_mix(key, own_cutter.flat ? 0x5eedu : 0xf1a7u), own_cutter.reach);
+      for (const auto &rows : own_cutter.levels) {
+        for (const LineCutter::Row &row : rows) {
+          key = hash_mix(key, uint64_t(row.mode) | uint64_t(row.invert) << 4 | uint64_t(row.fills_only) << 5 |
+                                  uint64_t(row.strokes_only) << 6 | uint64_t(row.inside_stroke) << 7 |
+                                  uint64_t(row.combine) << 8);
+          for (const LineCutter::Piece &piece : row.pieces) {
+            key = hash_mix(key, uint64_t(piece.area) | uint64_t(piece.line) << 1 | uint64_t(piece.closed) << 2 |
+                                    uint64_t(piece.source) << 3);
+            key = hash_float(key, piece.half);
+            for (const float2 &p : piece.outline) {
+              key = hash_float(hash_float(key, p.x), p.y);
+            }
           }
         }
       }
+      for (const float v : {transform.apply({0.0f, 0.0f}).x, transform.apply({0.0f, 0.0f}).y,
+                            transform.apply({1.0f, 0.0f}).x, transform.apply({1.0f, 0.0f}).y,
+                            transform.apply({0.0f, 1.0f}).x, transform.apply({0.0f, 1.0f}).y})
+      {
+        key = hash_float(key, v);
+      }
     }
-    for (const float v : {transform.apply({0.0f, 0.0f}).x, transform.apply({0.0f, 0.0f}).y,
-                          transform.apply({1.0f, 0.0f}).x, transform.apply({1.0f, 0.0f}).y,
-                          transform.apply({0.0f, 1.0f}).x, transform.apply({0.0f, 1.0f}).y})
-    {
-      key = hash_float(key, v);
-    }
+    /* Everything but the drawing's shape and place, then those. */
+    settings = key;
+    key = hash_mix(key, geometry_hash(layer, drawing, modified));
   }
-  /* Everything but the drawing's shape and place, then those. */
-  const uint64_t settings = key;
-  key = hash_mix(key, geometry_hash(layer, drawing, modified));
+  if (memo && !memo_hit) {
+    *memo = {true, modified, brushed, boils, settings, key, std::move(own_cutter)};
+  }
+  const LineCutter &cutter = memo ? memo->cutter : own_cutter;
+  (void)boils;
   const uint64_t any_zoom = key;
   key = hash_float(key, pixel);
   if (!coverage_pass_) {
@@ -2217,7 +2254,19 @@ void SceneRenderer::draw_drawing(const Document &doc, const Layer &layer, const 
    * moved. Not with lines ended at masks' edges or brushed ones, which depend on where it is. A 16th of a
    * pixel apart is the same. */
   const bool movable = cutter.empty() && !brushed && !drawing.points.empty();
-  const uint64_t anywhere = movable ? hash_mix(hash_float(settings, pixel), drawing_geometry_hash(drawing, pixel / 16.0f)) : 0;
+  uint64_t anywhere = 0;
+  if (movable) {
+    if (memo && memo->anywhere_pixel == pixel) {
+      anywhere = memo->anywhere;
+    }
+    else {
+      anywhere = hash_mix(hash_float(settings, pixel), drawing_geometry_hash(drawing, pixel / 16.0f));
+      if (memo) {
+        memo->anywhere = anywhere;
+        memo->anywhere_pixel = pixel;
+      }
+    }
+  }
   if (movable) {
     if (auto placed = tessellated_anywhere_.find(anywhere); placed != tessellated_anywhere_.end()) {
       if (auto it = tessellated_.find(placed->second.key); it != tessellated_.end()) {

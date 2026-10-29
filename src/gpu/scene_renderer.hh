@@ -95,6 +95,10 @@ class SceneRenderer {
   /* A zoom moving with each step drawn (Zoom Preview off): drawings are drawn as made for the nearest zoom they
    * were made for, nothing made, so each step is quick; the render after it rests makes them all, at once. */
   void set_zooming(bool on) { zooming_ = on; }
+  /* For the next render: a stamp of everything it draws from but the view (the document's revisions, frame, undo
+   * steps, settings; 0: unknown). The same as the render before's, only the view has changed: what it worked out
+   * of each drawing but where it is on screen is kept from then. */
+  void set_content(uint64_t stamp) { content_stamp_ = stamp; }
   /* Whether the last render drew everything as it is (not some drawings from another zoom, to be made over the next
    * frames): only then can it stand for the next frame when nothing has changed. */
   bool complete() const { return complete_; }
@@ -421,6 +425,18 @@ class SceneRenderer {
   void draw_faded_drawing(const Document &doc, const Layer &layer, const Transform2D &transform, Target *target,
                           float opacity);
   /* Where each layer is drawn this render, found by prepare_drawings: its kept steps (by key) and its transform. */
+  /* What a drawing's key holds but the view, kept while only the view changes (set_content), by layer and pass. */
+  struct KeyMemo {
+    bool made = false;
+    bool modified = false, brushed = false, boils = false;
+    uint64_t settings = 0, any_zoom = 0;
+    LineCutter cutter;
+    /* Its moved-whole key and the pixel size it is for. */
+    uint64_t anywhere = 0;
+    float anywhere_pixel = 0.0f;
+  };
+  std::unordered_map<uint64_t, KeyMemo> key_memo_;
+  uint64_t content_stamp_ = 0, memo_stamp_ = 0;
   struct Drawn {
     uint64_t key = 0;
     Transform2D transform;

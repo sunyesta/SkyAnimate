@@ -485,6 +485,13 @@ const std::vector<BrushImage> &brush_tip_images(const Brush &brush, const BrushS
   return images;
 }
 
+static uint64_t g_brushes_generation = 1;
+
+uint64_t brushes_generation()
+{
+  return g_brushes_generation;
+}
+
 const Brush *brush_find(const std::string &name)
 {
   if (name == BRUSH_ROUND_TIP) {
@@ -503,6 +510,7 @@ const Brush *brush_find(const std::string &name)
 
 void brushes_set_packed(std::vector<Brush> brushes)
 {
+  g_brushes_generation++;
   /* Keep the ones already loaded (their images and GPU textures), by name and bytes. */
   for (Brush &b : brushes) {
     for (Brush &old : packed()) {
@@ -543,6 +551,7 @@ bool brush_shape_bytes(const std::string &name, std::vector<std::string> &r_file
 
 void brushes_reload()
 {
+  g_brushes_generation++;
   library_upgrade();
   std::vector<Brush> found;
   brushes_scan(asset_library_shapes_dir(), found);

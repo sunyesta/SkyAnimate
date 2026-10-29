@@ -55,6 +55,8 @@ const std::vector<BrushImage> &brush_tip_images(const Brush &brush, const BrushS
 /* The shapes in the asset library, sorted by name. */
 const std::vector<Brush> &brushes();
 const Brush *brush_find(const std::string &name);
+/* Changes whenever what brush_find finds may have (the library rescanned, file presets' shapes set). */
+uint64_t brushes_generation();
 /* Rescans the library's Brush Shapes (upgrading a version 1 library first) and its presets. */
 void brushes_reload();
 /* Reads a Brush Shapes folder into `r_brushes`. */
