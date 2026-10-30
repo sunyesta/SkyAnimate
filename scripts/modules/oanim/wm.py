@@ -88,14 +88,28 @@ def pen(samples=False):
 
 
 def draw_settings():
-    """The Draw tool's settings: a dict with mode (FREEHAND or PEN), use_pressure, fill and prediction (how
-    far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off)."""
+    """The Draw tool's settings: a dict with mode (FREEHAND or PEN), use_pressure, fill, line_width (document
+    units), prediction (how far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off),
+    stabilizer (OFF, SMART or PULLED_STRING), smoothing (Smart's amount, 0-1), string_length (screen pixels),
+    catch_up, fidelity (how closely the Bezier points follow the line, 0-1), pressure_smoothing (0-1),
+    pressure_curve (the two handles
+    of pressure's Bezier from (0, 0) to (1, 1), as (x1, y1, x2, y2)), min_size (fraction of the width),
+    speed_width and tilt_width (0-1), taper_start and taper_end (document pixels)."""
     return dict(_oanim.draw_settings())
 
 
 def set_draw(**values):
-    """Change the Draw tool's settings by name (use_pressure, fill, prediction; see draw_settings)."""
+    """Change the Draw tool's settings by name (see draw_settings)."""
     _oanim.set_draw(values)
+
+
+def ink_stroke(samples, pixel=1.0, line_width=10.0, closed=False, **settings):
+    """Runs the Stroke Pen's engine on samples [(x, y, pressure, tilt_x, tilt_y, seconds)], with settings by name
+    as in draw_settings (a document pixel counting as 1 for tapers). A dict: live and tail (the line while the
+    pen is still down, and the rest to its last sample), points (the finished line), each (x, y, radius, speed),
+    and knots (its Bezier points, each (x, y, radius, handle_in, handle_out, corner))."""
+    return dict(_oanim.ink_stroke([tuple(s) for s in samples], settings, float(pixel), float(line_width) * 0.5,
+                                  bool(closed)))
 
 
 def pen_predict(samples, ahead, max_pixels=40.0):

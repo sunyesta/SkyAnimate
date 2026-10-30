@@ -53,6 +53,7 @@
 #include "text/text_outline.hh"
 #include "gpu/overlay_renderer.hh"
 #include "gpu/scene_renderer.hh"
+#include "gpu/tessellate.hh"
 #include "ops/edit_ops.hh"
 #include "ops/media_ops.hh"
 #include "ops/operator.hh"
@@ -385,12 +386,8 @@ struct ToolDrag {
   int area = 0;
   ImVec2 start;
   bool box = false;
-  /* Draw tool: the stroke so far, in layer space, with pressures, and with a pen its tilts (degrees,
-   * across and up) and times (seconds). */
-  std::vector<float2> stroke;
-  std::vector<float> pressures;
-  std::vector<float2> tilts;
-  std::vector<double> times;
+  /* Draw tool: the stroke so far. */
+  InkStroke ink;
   /* The pen's touch the stroke follows (0: the mouse's), and how many of its samples are in. */
   uint64_t pen_stroke = 0;
   size_t pen_taken = 0;
@@ -4186,29 +4183,6 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
   }
 }
 
-/* Douglas-Peucker: keeps the points that matter for the stroke's shape. */
-static void simplify(const std::vector<float2> &pts, size_t first, size_t last, float tolerance,
-                     std::vector<bool> &keep)
-{
-  if (last <= first + 1) {
-    return;
-  }
-  float max_dist = 0.0f;
-  size_t index = first;
-  for (size_t i = first + 1; i < last; i++) {
-    const float d = distance_to_segment(pts[i], pts[first], pts[last]);
-    if (d > max_dist) {
-      max_dist = d;
-      index = i;
-    }
-  }
-  if (max_dist > tolerance) {
-    keep[index] = true;
-    simplify(pts, first, index, tolerance, keep);
-    simplify(pts, index, last, tolerance, keep);
-  }
-}
-
 /* The pen's touch a press is from, if it is the pen's: the one under way, or one that began and ended
  * in the moment before ImGui passed the press on (a quick tap); 0 for the mouse. A touch is followed
  * once. */
@@ -4230,7 +4204,7 @@ static uint64_t pen_touch_pressed()
 
 /* Adds the pen's samples that came in since the last frame to the stroke, every one (a tablet sends far
  * more than a frame's mouse position shows), at the sub-pixel place the tablet gives. */
-static void draw_take_pen(const ViewMapping &view, const Transform2D &to_layer, float pixel)
+static void draw_take_pen(const ViewMapping &view, const Transform2D &to_layer)
 {
   if (g_drag.pen_stroke == 0 || pen_stroke_id() != g_drag.pen_stroke) {
     return;
@@ -4238,45 +4212,76 @@ static void draw_take_pen(const ViewMapping &view, const Transform2D &to_layer, 
   const std::vector<PenSample> &samples = pen_stroke();
   for (; g_drag.pen_taken < samples.size(); g_drag.pen_taken++) {
     const PenSample &p = samples[g_drag.pen_taken];
-    const float2 at = to_layer.apply(view.to_document(ImVec2(p.x, p.y)));
-    /* A pen resting still repeats its place; one sample there is enough. */
-    if (!g_drag.stroke.empty() && distance(at, g_drag.stroke.back()) < pixel * 0.25f) {
-      g_drag.pressures.back() = std::max(g_drag.pressures.back(), p.pressure);
-      continue;
+    g_drag.ink.add({to_layer.apply(view.to_document(ImVec2(p.x, p.y))), p.pressure, {p.tilt_x, p.tilt_y}, p.time});
+  }
+}
+
+/* The stroke as it stands, to `pen` (layer space): the same line the stroke will end as, at its real width
+ * and through the real stroke tessellator, so lifting the pen changes nothing. The soft edge is a pixel,
+ * as the renderer's. */
+static void draw_tool_preview(ImDrawList *dl, const ViewMapping &view, const Transform2D &to_document,
+                              const Style &style, float2 pen)
+{
+  std::vector<InkPoint> line = g_drag.ink.points();
+  const std::vector<InkPoint> tail = g_drag.ink.tail(pen);
+  line.insert(line.end(), tail.begin(), tail.end());
+  ink_taper(line, g_drag.ink.settings(), g_drag.ink.view());
+  const float half = style.line_width * 0.5f * view.zoom * to_document.scale();
+  std::vector<float2> points;
+  std::vector<float> widths;
+  for (const InkPoint &p : line) {
+    const ImVec2 at = view.to_screen(to_document.apply(p.pos));
+    points.push_back({at.x, at.y});
+    widths.push_back(std::max(p.radius * half, 0.0f));
+  }
+  if (points.size() < 2) {
+    return;
+  }
+  std::vector<Vertex> vertices;
+  tessellate_stroke(points, widths, false, style.line, 1.0f, vertices);
+  /* Triangles, a few at a time (a draw list's indices may be 16-bit). The tessellator's colours are
+   * premultiplied, ImGui's not. */
+  const ImVec2 uv = ImGui::GetDrawListSharedData()->TexUvWhitePixel;
+  static constexpr size_t CHUNK = 3 * 10000;
+  for (size_t from = 0; from < vertices.size(); from += CHUNK) {
+    const size_t count = std::min(CHUNK, vertices.size() - from);
+    dl->PrimReserve(int(count), int(count));
+    for (size_t i = 0; i < count; i++) {
+      const Vertex &v = vertices[from + i];
+      const uint32_t a = v.rgba >> 24;
+      const auto straight = [a](uint32_t c) { return a > 0 ? std::min<uint32_t>(c * 255 / a, 255) : 0; };
+      const ImU32 color = IM_COL32(straight(v.rgba & 0xff), straight(v.rgba >> 8 & 0xff),
+                                   straight(v.rgba >> 16 & 0xff), a);
+      dl->PrimWriteIdx(ImDrawIdx(dl->_VtxCurrentIdx));
+      dl->PrimWriteVtx(ImVec2(v.x, v.y), uv, color);
     }
-    g_drag.stroke.push_back(at);
-    g_drag.pressures.push_back(p.pressure);
-    g_drag.tilts.push_back({p.tilt_x, p.tilt_y});
-    g_drag.times.push_back(p.time);
   }
 }
 
 static void draw_tool_finish(Context &C, VectorDrawing &drawing, float pixel)
 {
   ToolSettings &ts = C.wm->tool_settings;
-  std::vector<float2> &stroke = g_drag.stroke;
-  if (stroke.size() < 2) {
+  InkStroke &ink = g_drag.ink;
+  if (ink.empty()) {
     return;
   }
-  std::vector<bool> keep(stroke.size(), false);
-  keep.front() = keep.back() = true;
-  simplify(stroke, 0, stroke.size() - 1, pixel * 1.5f, keep);
-
-  const bool closes = ts.draw_fill && stroke.size() > 8 && distance(stroke.front(), stroke.back()) < pixel * 14.0f;
+  ink.finish();
+  const std::vector<InkPoint> &stroke = ink.points();
+  const bool closes = ts.draw_fill && stroke.size() > 8 && distance(stroke.front().pos, stroke.back().pos) < pixel * 14.0f;
+  const std::vector<InkKnot> knots = ink_fit(stroke, ink.settings(), ink.view(), closes);
+  if (knots.size() < 2) {
+    return;
+  }
   Curve curve;
   deselect_all(drawing);
-  for (size_t i = 0; i < stroke.size(); i++) {
-    if (!keep[i] || (closes && i == stroke.size() - 1)) {
-      continue;
-    }
-    const int p = drawing_add_point(drawing, stroke[i]);
-    if (ts.use_pressure) {
-      drawing.points[p].radius = std::clamp(g_drag.pressures[i], 0.15f, 1.0f);
-    }
-    curve.points.push_back({p});
-  }
-  if (curve.points.size() < 2) {
-    return;
+  for (const InkKnot &knot : knots) {
+    const int p = drawing_add_point(drawing, knot.pos);
+    drawing.points[p].radius = knot.radius;
+    CurvePoint cp{p};
+    cp.curvature = knot.corner ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
+    cp.aligned = !knot.corner;
+    curve_point_set_handles(cp, knot.handle_in, knot.handle_out);
+    curve.points.push_back(cp);
   }
   curve.closed = closes && curve.points.size() >= 3;
   drawing.curves.push_back(curve);
@@ -12230,14 +12235,16 @@ static void viewport_draw_contents(Area &area, Context &C)
             g_drag = {};
             report_banner(ReportType::Info, "The pen's eraser end doesn't draw");
           }
-          else if ((g_drag.pen_stroke = pen_touch_pressed())) {
-            draw_take_pen(view, to_layer, pixel);
+          else {
+            InkSettings ink = ts.ink;
+            ink.use_pressure = ts.use_pressure;
+            g_drag.ink.begin(ink, {pixel, ts.style.line_width * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
+            if ((g_drag.pen_stroke = pen_touch_pressed())) {
+              draw_take_pen(view, to_layer);
+            }
           }
-          if (g_drag.active && g_drag.stroke.empty() && ts.draw_mode != DrawMode::Pen) {
-            g_drag.stroke.push_back(mouse_layer);
-            g_drag.pressures.push_back(wm.pen_pressure);
-            g_drag.tilts.push_back({});
-            g_drag.times.push_back(ImGui::GetTime());
+          if (g_drag.active && g_drag.ink.empty() && ts.draw_mode != DrawMode::Pen) {
+            g_drag.ink.add({mouse_layer, wm.pen_pressure, {}, ImGui::GetTime()});
           }
           break;
         case Tool::Shape:
@@ -12323,32 +12330,23 @@ static void viewport_draw_contents(Area &area, Context &C)
           break;
         }
         if (g_drag.pen_stroke) {
-          draw_take_pen(view, to_layer, pixel);
+          draw_take_pen(view, to_layer);
         }
-        else if (distance(mouse_layer, g_drag.stroke.back()) > pixel * 1.5f) {
-          g_drag.stroke.push_back(mouse_layer);
-          g_drag.pressures.push_back(wm.pen_pressure);
-          g_drag.tilts.push_back({});
-          g_drag.times.push_back(ImGui::GetTime());
+        else if (distance(mouse_layer, g_drag.ink.last_sample()) > pixel * 0.25f) {
+          g_drag.ink.add({mouse_layer, wm.pen_pressure, {}, ImGui::GetTime()});
         }
         {
-          std::vector<ImVec2> line;
-          for (const float2 &p : g_drag.stroke) {
-            line.push_back(view.to_screen(to_document.apply(p)));
-          }
           /* With a pen, a moment more of the line, the way it is going: the frame shown is a little
            * behind the hand, and this keeps the line at the pen's tip. The next frame draws the real
            * samples in its place. */
+          float2 tip = g_drag.ink.last_sample();
           if (g_drag.pen_stroke && g_drag.pen_stroke == pen_stroke_id() && ts.draw_prediction > 0.0f) {
-            const std::vector<PenSample> &samples = pen_stroke();
-            const PenSample ahead = pen_predict(samples, ts.draw_prediction * 1e-3, 40.0f);
-            if (!samples.empty() && (ahead.x != samples.back().x || ahead.y != samples.back().y)) {
-              line.push_back(ImVec2(ahead.x, ahead.y));
+            const PenSample ahead = pen_predict(pen_stroke(), ts.draw_prediction * 1e-3, 40.0f);
+            if (!pen_stroke().empty()) {
+              tip = to_layer.apply(view.to_document(ImVec2(ahead.x, ahead.y)));
             }
           }
-          const float w = std::max(1.0f, ts.style.line_width * view.zoom * to_document.scale());
-          const ImVec4 c(ts.style.line.r, ts.style.line.g, ts.style.line.b, ts.style.line.a);
-          dl->AddPolyline(line.data(), int(line.size()), ImGui::ColorConvertFloat4ToU32(c), ImDrawFlags_None, w);
+          draw_tool_preview(dl, view, to_document, ts.style, tip);
         }
         break;
       case Tool::Cursor:
@@ -12383,7 +12381,7 @@ static void viewport_draw_contents(Area &area, Context &C)
             push_undo(C, "Add Point");
           }
           else {
-            draw_take_pen(view, to_layer, pixel);
+            draw_take_pen(view, to_layer);
             draw_tool_finish(C, *drawing, pixel);
           }
           break;

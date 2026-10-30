@@ -10,6 +10,7 @@
 #include "anim/sculpt.hh"
 #include "core/math.hh"
 #include "data/annotations.hh"
+#include "data/ink_stroke.hh"
 #include "data/vector.hh"
 #include "wm/pen_input.hh"
 
@@ -113,6 +114,8 @@ struct ToolSettings {
   /* While drawing with a pen, the line runs this far (ms) ahead of the pen's last sample, the way it is
    * going, so it keeps up with the hand (0: off). */
   float draw_prediction = 8.0f;
+  /* How freehand strokes are made: smoothing, the pressure curve, tapers, fidelity. */
+  InkSettings ink;
   /* The 2D cursor in document space. */
   float2 cursor;
   /* Weight Paint brush, as Blender's: radius in screen pixels, the weight it paints, how hard,

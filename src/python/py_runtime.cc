@@ -176,6 +176,60 @@ static std::string to_upper(std::string text)
   return text;
 }
 
+/* A Stroke Pen setting by name, as oanim.wm.set_draw takes it; false: no such setting. */
+static bool ink_setting(InkSettings &ink, const std::string &key, const py::handle value)
+{
+  const auto amount = [&]() { return std::clamp(value.cast<float>(), 0.0f, 1.0f); };
+  if (key == "stabilizer") {
+    const std::string name = value.cast<std::string>();
+    if (name != "OFF" && name != "SMART" && name != "PULLED_STRING") {
+      throw py::value_error("stabilizer is OFF, SMART or PULLED_STRING");
+    }
+    ink.stabilizer = name == "OFF"     ? InkStabilizer::Off
+                     : name == "SMART" ? InkStabilizer::Smart
+                                       : InkStabilizer::PulledString;
+  }
+  else if (key == "smoothing") {
+    ink.smoothing = amount();
+  }
+  else if (key == "string_length") {
+    ink.string_length = std::max(value.cast<float>(), 0.0f);
+  }
+  else if (key == "catch_up") {
+    ink.catch_up = value.cast<bool>();
+  }
+  else if (key == "fidelity") {
+    ink.fidelity = amount();
+  }
+  else if (key == "pressure_smoothing") {
+    ink.pressure_smoothing = amount();
+  }
+  else if (key == "pressure_curve") {
+    const auto [x1, y1, x2, y2] = value.cast<std::tuple<float, float, float, float>>();
+    ink.pressure_curve_a = {std::clamp(x1, 0.0f, 1.0f), std::clamp(y1, 0.0f, 1.0f)};
+    ink.pressure_curve_b = {std::clamp(x2, 0.0f, 1.0f), std::clamp(y2, 0.0f, 1.0f)};
+  }
+  else if (key == "min_size") {
+    ink.min_size = amount();
+  }
+  else if (key == "speed_width") {
+    ink.speed_width = amount();
+  }
+  else if (key == "tilt_width") {
+    ink.tilt_width = amount();
+  }
+  else if (key == "taper_start") {
+    ink.taper_start = std::max(value.cast<float>(), 0.0f);
+  }
+  else if (key == "taper_end") {
+    ink.taper_end = std::max(value.cast<float>(), 0.0f);
+  }
+  else {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace oanim::python
 
 /* ---------------------------------------------------------------------------------
@@ -625,6 +679,23 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["use_pressure"] = ts.use_pressure;
     d["fill"] = ts.draw_fill;
     d["prediction"] = ts.draw_prediction;
+    d["line_width"] = ts.style.line_width;
+    const InkSettings &ink = ts.ink;
+    d["stabilizer"] = ink.stabilizer == InkStabilizer::Off     ? "OFF"
+                      : ink.stabilizer == InkStabilizer::Smart ? "SMART"
+                                                               : "PULLED_STRING";
+    d["smoothing"] = ink.smoothing;
+    d["string_length"] = ink.string_length;
+    d["catch_up"] = ink.catch_up;
+    d["fidelity"] = ink.fidelity;
+    d["pressure_smoothing"] = ink.pressure_smoothing;
+    d["pressure_curve"] = py::make_tuple(ink.pressure_curve_a.x, ink.pressure_curve_a.y, ink.pressure_curve_b.x,
+                                         ink.pressure_curve_b.y);
+    d["min_size"] = ink.min_size;
+    d["speed_width"] = ink.speed_width;
+    d["tilt_width"] = ink.tilt_width;
+    d["taper_start"] = ink.taper_start;
+    d["taper_end"] = ink.taper_end;
     return d;
   });
   m.def("set_draw", [](const py::dict &values) {
@@ -640,10 +711,52 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "prediction") {
         ts.draw_prediction = std::clamp(value.cast<float>(), 0.0f, 30.0f);
       }
-      else {
-        throw py::value_error("no draw setting '" + key + "' (use_pressure, fill, prediction)");
+      else if (key == "line_width") {
+        ts.style.line_width = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (!ink_setting(ts.ink, key, value)) {
+        throw py::value_error("no draw setting '" + key + "' (see oanim.wm.draw_settings)");
       }
     }
+  });
+  /* The Stroke Pen's engine on samples (x, y, pressure, tilt_x, tilt_y, seconds), without the window: its line as
+   * the pen left it and the tail to the last sample, the finished line, and the finished line's Bezier points. */
+  m.def("ink_stroke", [](const std::vector<std::tuple<float, float, float, float, float, double>> &samples,
+                         const py::dict &values, float pixel, float half_width, bool closed) {
+    InkSettings settings;
+    for (const auto &[key_obj, value] : values) {
+      const std::string key = py::str(key_obj);
+      if (key == "use_pressure") {
+        settings.use_pressure = value.cast<bool>();
+      }
+      else if (!ink_setting(settings, key, value)) {
+        throw py::value_error("no ink setting '" + key + "'");
+      }
+    }
+    InkStroke ink;
+    ink.begin(settings, {pixel, half_width, 1.0f});
+    for (const auto &[x, y, pressure, tilt_x, tilt_y, time] : samples) {
+      ink.add({{x, y}, pressure, {tilt_x, tilt_y}, time});
+    }
+    const auto listed = [](const std::vector<InkPoint> &points) {
+      py::list list;
+      for (const InkPoint &p : points) {
+        list.append(py::make_tuple(p.pos.x, p.pos.y, p.radius, p.speed));
+      }
+      return list;
+    };
+    py::dict d;
+    d["live"] = listed(ink.points());
+    d["tail"] = listed(ink.tail(ink.last_sample()));
+    ink.finish();
+    d["points"] = listed(ink.points());
+    py::list knots;
+    for (const InkKnot &k : ink_fit(ink.points(), settings, ink.view(), closed)) {
+      knots.append(py::make_tuple(k.pos.x, k.pos.y, k.radius, py::make_tuple(k.handle_in.x, k.handle_in.y),
+                                  py::make_tuple(k.handle_out.x, k.handle_out.y), k.corner));
+    }
+    d["knots"] = knots;
+    return d;
   });
   m.def("pen_predict", [](const std::vector<std::tuple<float, float, double>> &samples, double ahead, float max_pixels) {
     std::vector<PenSample> list;

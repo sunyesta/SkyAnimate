@@ -44,7 +44,7 @@ assert wm.draw_settings()["prediction"] == 30.0, "kept to 30 ms at most"
 wm.set_draw(prediction=0, fill=False)
 assert wm.draw_settings()["prediction"] == 0.0
 try:
-    wm.set_draw(smoothing=1)
+    wm.set_draw(nonsense=1)
 except ValueError:
     pass
 else:

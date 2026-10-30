@@ -194,6 +194,11 @@ static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
   }
 }
 
+void curve_point_set_handles(CurvePoint &cp, float2 in, float2 out)
+{
+  set_handles(VectorDrawing(), cp, in, out, true);
+}
+
 void drawing_init_handles(VectorDrawing &drawing)
 {
   /* Handles are setup data: worked out from the setup pose, they hold on every frame. */

@@ -392,6 +392,8 @@ float2 curve_handle(const VectorDrawing &drawing, const Curve &curve, int i, boo
 /* Gives every point that has none yet its handles, as worked out from its neighbours, so from
  * now on they stay where they are. Runs before edits are recorded (anim/animation.hh). */
 void drawing_init_handles(VectorDrawing &drawing);
+/* Gives a new point these handles (offsets from it) as its setup shape, not as an edit. */
+void curve_point_set_handles(CurvePoint &cp, float2 in, float2 out);
 /* Moves one handle to `pos` (drawing space). An aligned point turns its other handle to stay in
  * line, keeping that one's length (unless `keep_other`). */
 void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool pre, float2 pos,

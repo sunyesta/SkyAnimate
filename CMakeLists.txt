@@ -58,6 +58,7 @@ set(OANIM_SOURCES
   src/text/text_outline.cc
   src/data/vector.cc
   src/data/grid.cc
+  src/data/ink_stroke.cc
   src/editors/brush_editor.cc
   src/editors/console.cc
   src/editors/driver_ui.cc
@@ -414,6 +415,8 @@ add_test(NAME subdivide_points
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide_points.py)
 add_test(NAME pen_input
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_pen_input.py)
+add_test(NAME ink_stroke
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_ink_stroke.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials
