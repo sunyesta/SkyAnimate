@@ -50,12 +50,19 @@ static std::filesystem::path path_from_utf8(const std::string &path)
  * Writing
  */
 
-/* Floats rounded to 7 significant digits, so 0.3f is written as 0.3 rather than
- * 0.30000001192092896 and files stay readable. */
+/* Floats in the fewest digits that read back as the very same float, so 0.3f is written as 0.3
+ * rather than 0.30000001192092896 and files stay readable. (Always 7 lost the last bit of most
+ * places: each save and open moved points by a hair.) */
 static double num(float value)
 {
   char text[32];
-  std::snprintf(text, sizeof(text), "%.7g", double(value));
+  for (int digits = 6; digits < 9; digits++) {
+    std::snprintf(text, sizeof(text), "%.*g", digits, double(value));
+    if (std::strtof(text, nullptr) == value) {
+      return std::strtod(text, nullptr);
+    }
+  }
+  std::snprintf(text, sizeof(text), "%.9g", double(value));
   return std::strtod(text, nullptr);
 }
 

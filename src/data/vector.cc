@@ -1994,13 +1994,11 @@ bool drawing_duplicate_selected(VectorDrawing &drawing)
       if (!selected(start) || (prev >= 0 && selected(prev))) {
         continue;
       }
-      Curve copy;
+      std::vector<int> run;
       std::vector<int> segments;
       int k = start;
       for (int steps = 0; steps < n && selected(k); steps++) {
-        CurvePoint cp = curve.points[k];
-        cp.point = copy_point(cp.point);
-        copy.points.push_back(cp);
+        run.push_back(k);
         const int next = k + 1;
         if (next >= n && !curve.closed) {
           break;
@@ -2010,8 +2008,15 @@ bool drawing_duplicate_selected(VectorDrawing &drawing)
         }
         k = next % n;
       }
-      if (copy.points.size() < 2) {
+      /* A point alone on this curve copies nothing here (copied, it would be left on no curve). */
+      if (run.size() < 2) {
         continue;
+      }
+      Curve copy;
+      for (const int r : run) {
+        CurvePoint cp = curve.points[r];
+        cp.point = copy_point(cp.point);
+        copy.points.push_back(cp);
       }
       drawing.curves.push_back(std::move(copy));
       const int new_curve = int(drawing.curves.size()) - 1;
