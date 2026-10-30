@@ -1,6 +1,7 @@
 #include "anim/drivers.hh"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cfloat>
 #include <cstdlib>
@@ -752,6 +753,16 @@ static const Expression *compiled(const std::string &text, std::string *r_error)
 
 static bool driver_value(Document &doc, Driver &d, double *r_value)
 {
+  if (d.two_way && d.vars.size() == 1) {
+    /* The change from rest, scaled: each side keeps its own rest. */
+    float source = 0.0f;
+    if (!driver_ref_read(doc, d.vars.front().source, &source)) {
+      d.error = "Variable '" + d.vars.front().name + "' reads something that's gone";
+      return false;
+    }
+    *r_value = double(d.target_rest) + double(d.flip ? -d.factor : d.factor) * double(source - d.source_rest);
+    return true;
+  }
   std::vector<double> values;
   values.reserve(d.vars.size());
   for (const DriverVar &v : d.vars) {
@@ -966,6 +977,342 @@ static void drivers_onto_materials(Document &doc)
   }
 }
 
+
+/* --- Two-way links ---------------------------------------------------------------------------------- */
+
+bool driver_two_way_factor(const Driver &d, float *r_factor, std::string *r_why)
+{
+  if (d.vars.size() != 1) {
+    *r_why = "2-Way Linked needs exactly one variable";
+    return false;
+  }
+  if (d.remap) {
+    *r_why = "2-Way Linked works without Remap: a factor does it";
+    return false;
+  }
+  if (d.type != DriverType::Expression) {
+    /* One variable: its average, sum, smallest or largest is itself. */
+    *r_factor = 1.0f;
+    return true;
+  }
+  std::string e;
+  for (const char c : d.expression) {
+    if (!std::isspace(static_cast<unsigned char>(c))) {
+      e += c;
+    }
+  }
+  const std::string &var = d.vars.front().name;
+  float sign = 1.0f;
+  if (!e.empty() && e[0] == '-') {
+    sign = -1.0f;
+    e = e.substr(1);
+  }
+  const auto number = [](const std::string &s, double *r) {
+    char *end = nullptr;
+    *r = std::strtod(s.c_str(), &end);
+    return !s.empty() && end && *end == '\0';
+  };
+  double k = 1.0;
+  bool ok = false;
+  if (e == var) {
+    ok = true;
+  }
+  else if (e.rfind(var + "*", 0) == 0) {
+    ok = number(e.substr(var.size() + 1), &k);
+  }
+  else if (e.rfind(var + "/", 0) == 0) {
+    ok = number(e.substr(var.size() + 1), &k) && std::fabs(k) > 1e-12;
+    k = ok ? 1.0 / k : k;
+  }
+  else if (e.size() > var.size() + 1 && e.compare(e.size() - var.size() - 1, var.size() + 1, "*" + var) == 0) {
+    ok = number(e.substr(0, e.size() - var.size() - 1), &k);
+  }
+  if (!ok) {
+    *r_why = "2-Way Linked needs an expression like " + var + ", -" + var + " or " + var + " * 0.5, which can run backwards";
+    return false;
+  }
+  if (std::fabs(k) < 1e-9) {
+    *r_why = "A factor of 0 can't run backwards";
+    return false;
+  }
+  *r_factor = float(k) * sign;
+  return true;
+}
+
+/* A field's rest: a bone's pose part at rest (no change from the setup pose, a scale of 1), else its
+ * value on frame 0. */
+float driver_field_rest(Document &doc, const DriverRef &ref)
+{
+  if (const int pose = bone_pose_part(ref.path)) {
+    return pose == 3 ? 1.0f : 0.0f;
+  }
+  Layer *layer = layer_find(doc, ref.layer);
+  ChannelRef ch;
+  if (layer && layer_channel(*layer, ref.path, &ch)) {
+    if (ch.scalar && ch.scalar->animated()) {
+      return ch.scalar->evaluate(0);
+    }
+    if (ch.vector && ch.vector->animated() && (ref.component == 0 || ref.component == 1)) {
+      const float2 v = ch.vector->evaluate(0);
+      return ref.component == 0 ? v.x : v.y;
+    }
+  }
+  float value = 0.0f;
+  driver_ref_read(doc, ref, &value);
+  return value;
+}
+
+/* The keys of a field (a component of a two-number channel), as frames and values. */
+static std::vector<std::pair<int, float>> field_keys(Document &doc, const DriverRef &ref)
+{
+  std::vector<std::pair<int, float>> keys;
+  Layer *layer = layer_find(doc, ref.layer);
+  ChannelRef ch;
+  if (!layer || !layer_channel(*layer, ref.path, &ch)) {
+    return keys;
+  }
+  if (ch.scalar) {
+    for (const Key<float> &k : ch.scalar->keys) {
+      keys.push_back({k.frame, k.value});
+    }
+  }
+  else if (ch.vector && (ref.component == 0 || ref.component == 1)) {
+    for (const Key<float2> &k : ch.vector->keys) {
+      keys.push_back({k.frame, ref.component == 0 ? k.value.x : k.value.y});
+    }
+  }
+  return keys;
+}
+
+/* Sets a field's key at `frame` (a two-number channel's other number as it is there). */
+static void field_key_set(Document &doc, const DriverRef &ref, int frame, float value)
+{
+  Layer *layer = layer_find(doc, ref.layer);
+  ChannelRef ch;
+  if (!layer || !layer_channel(*layer, ref.path, &ch)) {
+    return;
+  }
+  if (ch.scalar) {
+    if (!ch.scalar->animated() && frame != 0) {
+      ch.scalar->set_key(0, driver_field_rest(doc, ref));
+    }
+    ch.scalar->set_key(frame, value);
+  }
+  else if (ch.vector && (ref.component == 0 || ref.component == 1)) {
+    float2 v = ch.vector->animated() ? ch.vector->evaluate(frame) : *ch.vector_value;
+    (ref.component == 0 ? v.x : v.y) = value;
+    if (!ch.vector->animated() && frame != 0) {
+      ch.vector->set_key(0, *ch.vector_value);
+    }
+    ch.vector->set_key(frame, v);
+  }
+}
+
+/* Drops a field's keys: a two-number channel's only when every number of it is two-way linked (its
+ * other number's keys would go too). */
+static int field_keys_clear(Document &doc, const DriverRef &ref)
+{
+  Layer *layer = layer_find(doc, ref.layer);
+  ChannelRef ch;
+  if (!layer || !layer_channel(*layer, ref.path, &ch)) {
+    return 0;
+  }
+  if (ch.scalar) {
+    const int n = int(ch.scalar->keys.size());
+    ch.scalar->keys.clear();
+    return n;
+  }
+  if (ch.vector) {
+    DriverRef other = ref;
+    other.component = ref.component == 0 ? 1 : 0;
+    const Driver *od = driver_find(doc, other);
+    if (!od || !od->two_way) {
+      return 0;
+    }
+    const int n = int(ch.vector->keys.size());
+    ch.vector->keys.clear();
+    return n;
+  }
+  return 0;
+}
+
+static float link_factor(const Driver &d)
+{
+  return d.flip ? -d.factor : d.factor;
+}
+
+int driver_two_way_role(Document &doc, const DriverRef &ref)
+{
+  for (const Driver &d : doc.drivers) {
+    if (!d.two_way || d.vars.size() != 1) {
+      continue;
+    }
+    if (d.target == ref) {
+      return 1;
+    }
+    if (d.vars.front().source == ref) {
+      return 2;
+    }
+  }
+  return 0;
+}
+
+int driver_two_way_drop_count(Document &doc, const Driver &d, bool keep_target)
+{
+  if (d.vars.size() != 1) {
+    return 0;
+  }
+  return int(field_keys(doc, keep_target ? d.vars.front().source : d.target).size());
+}
+
+/* The smart action named after the bone a field poses, or "". */
+static std::string smart_action_of(Document &doc, const DriverRef &ref)
+{
+  if (!bone_pose_part(ref.path)) {
+    return "";
+  }
+  const Layer *layer = layer_find(doc, ref.layer);
+  const size_t end = ref.path.find("\"].");
+  if (!layer || end == std::string::npos) {
+    return "";
+  }
+  const std::string bone = ref.path.substr(7, end - 7);
+  for (const std::string &action : layer->actions) {
+    if (action == bone) {
+      return action;
+    }
+  }
+  return "";
+}
+
+/* Whether action `action` keys field `ref` (its channel holds keys under that name). */
+static bool action_keys_field(Document &doc, const std::string &action, const DriverRef &ref)
+{
+  Layer *layer = layer_find(doc, ref.layer);
+  ChannelRef ch;
+  if (action.empty() || !layer || !layer_channel(*layer, ref.path, &ch)) {
+    return false;
+  }
+  if (ch.scalar) {
+    const auto it = ch.scalar->actions.find(action);
+    return it != ch.scalar->actions.end() && !it->second.empty();
+  }
+  if (ch.vector) {
+    const auto it = ch.vector->actions.find(action);
+    return it != ch.vector->actions.end() && !it->second.empty();
+  }
+  return false;
+}
+
+bool driver_two_way_link(Document &doc, Driver &d, bool keep_target, std::string *r_why, int *r_dropped)
+{
+  *r_dropped = 0;
+  float factor = 1.0f;
+  if (!driver_two_way_factor(d, &factor, r_why)) {
+    return false;
+  }
+  const DriverRef source = d.vars.front().source;
+  Slot ts, ss;
+  if (!slot_find(doc, d.target, &ts) || !ts.last || !slot_find(doc, source, &ss) || !ss.last) {
+    *r_why = "2-Way Linked works between two keyable numbers (a channel), not a shape's colour or a setting";
+    return false;
+  }
+  if (source == d.target) {
+    *r_why = "It reads itself";
+    return false;
+  }
+  /* One group each: the side read can't be driven by another link, the driven side can't be read by one. */
+  for (const Driver &o : doc.drivers) {
+    if (&o == &d || !o.two_way || o.vars.size() != 1) {
+      continue;
+    }
+    if (o.target == source) {
+      *r_why = driver_ref_label(doc, source) + " is linked already, to " + driver_ref_label(doc, o.vars.front().source) +
+               ": link to that instead";
+      return false;
+    }
+    if (o.vars.front().source == d.target) {
+      *r_why = driver_ref_label(doc, d.target) + " is read by another link already: a property is in one group only";
+      return false;
+    }
+  }
+  /* A loop through a smart action: a smart bone linked with something its own action moves. */
+  const std::string source_action = smart_action_of(doc, source), target_action = smart_action_of(doc, d.target);
+  if (action_keys_field(doc, source_action, d.target) || action_keys_field(doc, target_action, source)) {
+    *r_why = "A smart bone and something its own action moves would move each other round in a loop";
+    return false;
+  }
+  d.factor = std::fabs(factor);
+  d.flip = factor < 0.0f;
+  d.expression = d.vars.front().name;
+  d.type = DriverType::Expression;
+  d.source_rest = driver_field_rest(doc, source);
+  /* The driven side's own rest: a bone's pose at rest, its frame-0 key, or else what it was before it
+   * was driven (kept when the driver was made: driving overwrites the value itself). */
+  Layer *target_layer = layer_find(doc, d.target.layer);
+  ChannelRef tch;
+  const bool target_keyed = target_layer && layer_channel(*target_layer, d.target.path, &tch) &&
+                            ((tch.scalar && tch.scalar->animated()) || (tch.vector && tch.vector->animated()));
+  if (bone_pose_part(d.target.path) || target_keyed || !d.rest_captured) {
+    d.target_rest = driver_field_rest(doc, d.target);
+  }
+  d.two_way = true;
+  /* The keys, stored once: the variable's. */
+  if (keep_target) {
+    const std::vector<std::pair<int, float>> keys = field_keys(doc, d.target);
+    if (!keys.empty()) {
+      const float k = link_factor(d);
+      *r_dropped += int(field_keys(doc, source).size());
+      if (Layer *sl = layer_find(doc, source.layer); sl) {
+        ChannelRef ch;
+        if (layer_channel(*sl, source.path, &ch) && ch.scalar) {
+          ch.scalar->keys.clear();
+        }
+      }
+      for (const auto &[frame, value] : keys) {
+        field_key_set(doc, source, frame, d.source_rest + (value - d.target_rest) / k);
+      }
+    }
+  }
+  *r_dropped += field_keys_clear(doc, d.target);
+  return true;
+}
+
+void driver_two_way_bake(Document &doc, const Driver &d)
+{
+  if (!d.two_way || d.vars.size() != 1) {
+    return;
+  }
+  const float k = link_factor(d);
+  for (const auto &[frame, value] : field_keys(doc, d.vars.front().source)) {
+    field_key_set(doc, d.target, frame, d.target_rest + k * (value - d.source_rest));
+  }
+}
+
+/* An edit made to the driven side of a two-way link (its value no longer what the link last gave it)
+ * goes back into the side read, so the link then gives it the edit: either side can be edited, and the
+ * keys stay the variable's. Not on the setup frame for a bone's pose (editing there sets the rest). */
+static void two_way_edits_back(Document &doc)
+{
+  const bool setup = doc.frame_current == 0;
+  for (Driver &d : doc.drivers) {
+    if (!d.two_way || d.vars.size() != 1 || (setup && bone_pose_part(d.target.path))) {
+      continue;
+    }
+    Slot ts;
+    if (!slot_find(doc, d.target, &ts) || !ts.last || !*ts.has_last || std::fabs(*ts.value - *ts.last) <= 1e-6f) {
+      continue;
+    }
+    const float k = link_factor(d);
+    Slot ss;
+    if (std::fabs(k) < 1e-9f || !slot_find(doc, d.vars.front().source, &ss)) {
+      continue;
+    }
+    *ss.value = d.source_rest + (*ts.value - d.target_rest) / k;
+    channel_value_applied(doc, d.vars.front().source);
+  }
+}
+
 bool drivers_evaluate(Document &doc)
 {
   std::vector<Driver> &drivers = doc.drivers;
@@ -977,6 +1324,7 @@ bool drivers_evaluate(Document &doc)
     return false;
   }
   drivers_onto_materials(doc);
+  two_way_edits_back(doc);
   /* Each after the drivers whose numbers it reads; a loop stops the drivers in it. */
   const size_t n = drivers.size();
   std::vector<int> state(n, 0);

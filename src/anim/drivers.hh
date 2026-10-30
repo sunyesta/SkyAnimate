@@ -48,6 +48,25 @@ std::string driver_shape_position_path(uint64_t shape_id);
  * variables reading the copies where they read a copied layer. */
 void drivers_copy_for_layers(Document &doc, const std::map<uint64_t, uint64_t> &remap);
 
+/* Two-way links (data/driver.hh, Driver::two_way). The factor a driver's expression scales its one
+ * variable by (var 1, -var -1, var * 0.5, 2 * var, var / 4), or false with why it can't be 2-Way Linked. */
+bool driver_two_way_factor(const Driver &d, float *r_factor, std::string *r_why);
+/* Makes `d` 2-Way Linked: its factor from its expression (a Flip for a minus), each side's rest, and the
+ * keys stored once: the variable's, or with `keep_target` the driven property's turned into the
+ * variable's. `r_dropped`: how many keys went. False with why when it can't be: not one variable times a
+ * number, a side that is linked already in another way, a loop through a smart action. */
+bool driver_two_way_link(Document &doc, Driver &d, bool keep_target, std::string *r_why, int *r_dropped);
+/* A field's rest: a bone's pose part at rest (no change from the setup pose, a scale of 1), else its value
+ * on frame 0 (its key there, or its value now). */
+float driver_field_rest(Document &doc, const DriverRef &ref);
+/* How many keys linking would drop: the driven property's (or with `keep_target` the variable's). */
+int driver_two_way_drop_count(Document &doc, const Driver &d, bool keep_target);
+/* Before a 2-Way Linked driver is taken off (Unlink): the driven property gets keys of its own that move it
+ * as the link did, so nothing changes on screen. */
+void driver_two_way_bake(Document &doc, const Driver &d);
+/* What a field is in a two-way link: 0 none, 1 the driven side, 2 the side read (the keys' owner). */
+int driver_two_way_role(Document &doc, const DriverRef &ref);
+
 /* A driver that copies `source` (Copy As New Driver): its variable reads it, the expression is "var". */
 Driver driver_copying(const DriverRef &source);
 

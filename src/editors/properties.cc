@@ -692,6 +692,16 @@ static void bone_relations_panel(Context &C, Layer &armature)
     if (picked) {
       operator_call(C, "armature.bone_swap_set", {{"bone", bone_name}, {"layer", pick_layer}, {"target", pick_bone}});
     }
+    if (swap_bone) {
+      label("");
+      if (ImGui::Button("Link All Channels")) {
+        operator_call(C, "armature.bone_link_all", {{"bone", bone_name}});
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Its angle, position and scale share the keys of the bone it stands in for, both ways\n"
+                          "(2-Way Linked drivers at factor 1): for the same bone across drawings");
+      }
+    }
   }
 
   /* The bone collections it is in, with their eye and star (as the Bone Collections list). */

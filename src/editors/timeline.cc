@@ -2120,6 +2120,33 @@ static void timeline_body(Area &area, Context &C)
     summaries.assign(rows.size(), {});
     for (size_t r = 0; r < rows.size(); r++) {
       summaries[r] = layers_key_summary(rows[r].layers, rows[r].filter);
+      /* A two-way link's driven side keeps no keys of its own: its row shows the ones it shares (the
+       * other side's), where its motion changes. */
+      if (rows[r].layers.size() == 1 && !rows[r].filter.path.empty()) {
+        for (const Driver &d : doc.drivers) {
+          if (!d.two_way || d.vars.size() != 1 || d.target.layer != rows[r].layers[0]->id || d.target.path != rows[r].filter.path) {
+            continue;
+          }
+          Layer *source = layer_find(doc, d.vars.front().source.layer);
+          ChannelRef ch;
+          if (source && layer_channel(*source, d.vars.front().source.path, &ch)) {
+            const auto add = [&](int frame) {
+              KeyFrameSummary &sum = summaries[r][frame];
+              sum.keys++;
+            };
+            if (ch.scalar) {
+              for (const Key<float> &k : ch.scalar->keys) {
+                add(k.frame);
+              }
+            }
+            else if (ch.vector) {
+              for (const Key<float2> &k : ch.vector->keys) {
+                add(k.frame);
+              }
+            }
+          }
+        }
+      }
     }
     kept.holds.assign(rows.size(), std::nullopt);
     kept.signature = C.undo && !g_key_transform.active ? rows_signature() : 0;

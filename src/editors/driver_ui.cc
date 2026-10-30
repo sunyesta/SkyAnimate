@@ -26,6 +26,8 @@ namespace oanim {
 /* Blender's driven purple, and red for a driver that doesn't work. */
 static const ImVec4 DRIVEN_BG(0.40f, 0.22f, 0.62f, 1.0f), DRIVEN_HOVER(0.47f, 0.27f, 0.71f, 1.0f);
 static const ImVec4 BROKEN_BG(0.62f, 0.17f, 0.17f, 1.0f), BROKEN_HOVER(0.70f, 0.22f, 0.22f, 1.0f);
+/* Two-way links: teal, either side, still editable (an edit to the driven side goes back into the other). */
+static const ImVec4 LINKED_BG(0.10f, 0.40f, 0.42f, 1.0f), LINKED_HOVER(0.13f, 0.48f, 0.50f, 1.0f);
 
 namespace {
 
@@ -63,16 +65,42 @@ std::vector<OpArgs> field_args(const Field &f)
   return {args};
 }
 
-/* 0: not driven; 1: driven; 2: a driver that doesn't work. */
+/* 0: not driven; 1: driven; 2: a driver that doesn't work; 3: in a two-way link (either side). */
 int field_state(Document &doc, const Field &f)
 {
   int state = 0;
+  bool linked = false;
   for (const DriverRef &r : driver_field_refs(doc, f.layer, f.path, f.component)) {
     if (const Driver *d = driver_find(doc, r)) {
       state = std::max(state, d->error.empty() ? 1 : 2);
     }
+    linked = linked || driver_two_way_role(doc, r) != 0;
   }
-  return state;
+  return state == 2 ? 2 : linked ? 3 : state;
+}
+
+/* The other side of a field's two-way links, as words ("Dial: Rotation, factor -0.5"). */
+std::string linked_text(Document &doc, const Field &f)
+{
+  std::string text;
+  for (const DriverRef &r : driver_field_refs(doc, f.layer, f.path, f.component)) {
+    for (const Driver &d : doc.drivers) {
+      if (!d.two_way || d.vars.size() != 1) {
+        continue;
+      }
+      char factor[32];
+      std::snprintf(factor, sizeof(factor), "%g", double(d.flip ? -d.factor : d.factor));
+      if (d.target == r) {
+        text += (text.empty() ? "" : "\n") + std::string("2-Way Linked with ") + driver_ref_label(doc, d.vars.front().source) +
+                ", factor " + factor + " (its keys are the ones kept)";
+      }
+      else if (d.vars.front().source == r) {
+        text += (text.empty() ? "" : "\n") + std::string("2-Way Linked: ") + driver_ref_label(doc, d.target) +
+                " follows it, factor " + factor + " (these keys are both's)";
+      }
+    }
+  }
+  return text;
 }
 
 /* What hovering a driven field says: its drivers and how they work. */
@@ -141,7 +169,8 @@ int ui_driver_field_begin(Context &C, uint64_t layer, const std::string &path, i
   if (state == 0) {
     return 0;
   }
-  const ImVec4 bg = state == 2 ? BROKEN_BG : DRIVEN_BG, hover = state == 2 ? BROKEN_HOVER : DRIVEN_HOVER;
+  const ImVec4 bg = state == 2 ? BROKEN_BG : state == 3 ? LINKED_BG : DRIVEN_BG;
+  const ImVec4 hover = state == 2 ? BROKEN_HOVER : state == 3 ? LINKED_HOVER : DRIVEN_HOVER;
   ImGui::PushStyleColor(ImGuiCol_FrameBg, bg);
   ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
   ImGui::PushStyleColor(ImGuiCol_FrameBgActive, hover);
@@ -168,7 +197,9 @@ void ui_driver_field_end(Context &C, uint64_t layer, const std::string &path, in
     g_menu_frame = ImGui::GetFrameCount();
   }
   if (pushed > 0 && !ImGui::IsAnyItemActive() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("%s", field_tooltip(doc, field).c_str());
+    const std::string linked = linked_text(doc, field);
+    ImGui::SetTooltip("%s", linked.empty() ? field_tooltip(doc, field).c_str()
+                                           : (linked + "\nEdit either side. Right-click: Select Linked, Unlink").c_str());
   }
   if (ui_menu_begin("##driver_menu")) {
     const bool driven = field_state(doc, field) > 0;
@@ -221,6 +252,22 @@ void ui_driver_field_end(Context &C, uint64_t layer, const std::string &path, in
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip(copied == 0 ? "Nothing copied yet: right-click a field > Copy As New Driver"
                                       : "Drive this with the copied driver");
+      }
+    }
+    if (!linked_text(doc, field).empty()) {
+      ImGui::Separator();
+      if (ui_menu_item("Select Linked")) {
+        operator_call(C, "anim.driver_select_linked", args[0]);
+      }
+      bool is_target = false;
+      for (const DriverRef &r : driver_field_refs(doc, layer, path, component)) {
+        is_target = is_target || driver_two_way_role(doc, r) == 1;
+      }
+      if (is_target && ui_menu_item("Unlink")) {
+        operator_call(C, "anim.driver_unlink", args[0]);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Take the link off: this gets keys of its own that move it as the link did");
       }
     }
     if (driven) {
@@ -444,6 +491,127 @@ void ui_driver_window_draw(Context &C)
   }
   bool done = false;
   ImGui::Separator();
+  const OpArgs target_args = {{"layer", std::to_string(target.layer)}, {"path", target.path},
+                              {"component", std::to_string(target.component)}};
+  {
+    /* 2-Way Linked: allowed only for a driver that can run backwards. */
+    float factor = 1.0f;
+    std::string why;
+    const bool can = d->two_way || driver_two_way_factor(*d, &factor, &why);
+    bool linked = d->two_way;
+    ImGui::BeginDisabled(!can);
+    if (ImGui::Checkbox("2-Way Linked", &linked)) {
+      if (!linked) {
+        operator_call(C, "anim.driver_two_way", [&] {
+          OpArgs a = target_args;
+          a["on"] = "0";
+          return a;
+        }());
+      }
+      else {
+        Driver probe = *d;
+        const int from_target = driver_two_way_drop_count(doc, probe, true);
+        const int from_source = driver_two_way_drop_count(doc, probe, false);
+        if (from_target > 0 && from_source > 0) {
+          ImGui::OpenPopup("##keep_keys");
+        }
+        else {
+          OpArgs a = target_args;
+          a["keep"] = from_source > 0 ? "TARGET" : "SOURCE";
+          operator_call(C, "anim.driver_two_way", a);
+        }
+      }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(can ? "This and what its variable reads share one set of keys (the variable's), and either can\n"
+                              "be edited: an edit here goes back into it. The expression becomes a Factor and a Flip"
+                            : why.c_str());
+    }
+    if (ImGui::BeginPopup("##keep_keys")) {
+      /* Both animated: whose keys stay (the others go). */
+      Driver *now = driver_find(doc, target);
+      if (now && now->vars.size() == 1) {
+        ImGui::TextUnformatted("Both are keyed. Keep keys from:");
+        const std::string source_label = driver_ref_label(doc, now->vars.front().source);
+        const std::string target_label = driver_ref_label(doc, target);
+        const int lose_target = driver_two_way_drop_count(doc, *now, false);
+        const int lose_source = driver_two_way_drop_count(doc, *now, true);
+        if (ImGui::Selectable((source_label + " (" + std::to_string(lose_target) + " keys of " + target_label + " go)").c_str())) {
+          OpArgs a = target_args;
+          a["keep"] = "SOURCE";
+          operator_call(C, "anim.driver_two_way", a);
+        }
+        if (ImGui::Selectable((target_label + " (" + std::to_string(lose_source) + " keys of " + source_label + " go)").c_str())) {
+          OpArgs a = target_args;
+          a["keep"] = "TARGET";
+          operator_call(C, "anim.driver_two_way", a);
+        }
+      }
+      ImGui::EndPopup();
+    }
+    d = driver_find(doc, target);
+    if (!d) {
+      ImGui::End();
+      return;
+    }
+  }
+  if (d->two_way && d->vars.size() == 1) {
+    /* Linked: the other side, a Factor and a Flip; Unlink. */
+    if (ImGui::BeginTable("##link", 2, ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+      const auto row = [](const char *label) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+      };
+      row("Linked With");
+      ImGui::TextUnformatted(driver_ref_label(doc, d->vars.front().source).c_str());
+      row("Factor");
+      float factor = d->factor;
+      if (ui_drag_float("##factor", &factor, 0.01f, 0.001f, 1000.0f, "%.3g") && factor > 1e-6f) {
+        d->factor = factor;
+      }
+      done = done || ImGui::IsItemDeactivatedAfterEdit();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How far this moves for each step the other side moves, from their rests (never 0)");
+      }
+      row("");
+      if (ImGui::Checkbox("Flip", &d->flip)) {
+        done = true;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Move the other way (mirrored partners: a left and right eyelid)");
+      }
+      row("Value");
+      float value = 0.0f;
+      driver_ref_read(doc, target, &value);
+      ImGui::Text("%.4g", value);
+      ImGui::EndTable();
+    }
+    if (ImGui::Button("Select Linked")) {
+      operator_call(C, "anim.driver_select_linked", target_args);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Unlink")) {
+      operator_call(C, "anim.driver_unlink", target_args);
+      ImGui::End();
+      return;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Take the link off: this gets keys of its own that move it as the link did");
+    }
+    ImGui::End();
+    if (done) {
+      drivers_evaluate(doc);
+      C.undo->push("Change Driver", doc);
+    }
+    return;
+  }
   if (ImGui::BeginTable("##driver", 2, ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, 90.0f);
     ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);

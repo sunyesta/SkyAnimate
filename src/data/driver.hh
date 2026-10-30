@@ -54,6 +54,17 @@ struct Driver {
   float from_min = 0.0f, from_max = 1.0f;
   float to_min = 0.0f, to_max = 1.0f;
   bool clamp = true;
+  /* 2-Way Linked (the Switch layers' two-way links): it and the property its one variable reads share one
+   * set of keys, the variable's, and either can be edited (an edit to it goes back into the variable). It
+   * shares the change from setup: target = target_rest + factor (minus with `flip`) x (source -
+   * source_rest), so each side keeps its own rest. Only for a driver with one variable and an expression
+   * like var, -var or var * 0.5 (see driver_two_way_factor). */
+  bool two_way = false;
+  float factor = 1.0f;
+  bool flip = false;
+  float source_rest = 0.0f, target_rest = 0.0f;
+  /* target_rest holds what the driven value was before the driver was made (driving overwrites it). */
+  bool rest_captured = false;
   /* Why it couldn't be worked out on the last evaluation ("" when it could): a missing layer, a bad
    * expression, a loop. Not saved. */
   std::string error;
@@ -62,7 +73,8 @@ struct Driver {
   {
     return type == o.type && expression == o.expression && vars == o.vars && remap == o.remap &&
            from_min == o.from_min && from_max == o.from_max && to_min == o.to_min && to_max == o.to_max &&
-           clamp == o.clamp;
+           clamp == o.clamp && two_way == o.two_way && factor == o.factor && flip == o.flip &&
+           source_rest == o.source_rest && target_rest == o.target_rest && rest_captured == o.rest_captured;
   }
   bool operator==(const Driver &) const = default;
 };

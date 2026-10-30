@@ -4,6 +4,8 @@
  * act on every selected shape's same colour (`selected_shapes`), as the Material panel edits do. */
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
@@ -12,6 +14,7 @@
 #include "anim/animation.hh"
 #include "anim/drivers.hh"
 #include "core/log.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -63,9 +66,14 @@ static void put_driver(Document &doc, Driver d, const DriverRef &target)
   d.target = target;
   d.error.clear();
   if (Driver *existing = driver_find(doc, target)) {
+    d.target_rest = existing->target_rest;
+    d.rest_captured = existing->rest_captured;
     *existing = std::move(d);
   }
   else {
+    /* Its own value before driving overwrites it: a two-way link's rest. */
+    d.target_rest = driver_field_rest(doc, target);
+    d.rest_captured = true;
     doc.drivers.push_back(std::move(d));
   }
 }
@@ -179,6 +187,21 @@ static bool apply_settings(Context &C, Driver &d)
   if (const std::string c = op_arg(C, "clamp"); !c.empty()) {
     d.clamp = c == "1";
   }
+  /* A two-way link's factor and flip. */
+  if (const std::string f = op_arg(C, "factor"); !f.empty()) {
+    const float factor = std::strtof(f.c_str(), nullptr);
+    if (std::fabs(factor) < 1e-9f) {
+      report(ReportType::Error, "A factor of 0 can't run backwards");
+      return false;
+    }
+    d.factor = std::fabs(factor);
+    if (factor < 0.0f) {
+      d.flip = !d.flip;
+    }
+  }
+  if (const std::string f = op_arg(C, "flip"); !f.empty()) {
+    d.flip = f == "1";
+  }
   return true;
 }
 
@@ -250,6 +273,114 @@ void driver_operators_register()
                           return OpStatus::Cancelled;
                         }
                         return drivers_changed(C);
+                      });
+
+  driver_operator_add("anim.driver_two_way", "2-Way Linked",
+                      "Make a field's driver 2-Way Linked (on=1) or one-way again (on=0): it and the property its one "
+                      "variable reads share one set of keys, the variable's, and either can be edited; its expression "
+                      "(var, -var, var * 0.5) becomes a Factor and a Flip. When both are animated, keep=SOURCE (the "
+                      "default) keeps the variable's keys, keep=TARGET this field's",
+                      OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                        Document &doc = *C.document;
+                        const bool on = op_arg(C, "on", "1") == "1";
+                        const bool keep_target = op_arg(C, "keep", "SOURCE") == "TARGET";
+                        animation_record(doc);
+                        int changed = 0, dropped = 0;
+                        for (const DriverRef &r : op_refs(C)) {
+                          Driver *d = driver_find(doc, r);
+                          if (!d) {
+                            continue;
+                          }
+                          if (!on) {
+                            if (d->two_way) {
+                              /* One-way again: the expression the link stood for. */
+                              d->two_way = false;
+                              char text[64];
+                              std::snprintf(text, sizeof(text), "%g", double(d->flip ? -d->factor : d->factor));
+                              d->expression = d->factor == 1.0f ? (d->flip ? "-" : "") + d->vars.front().name
+                                                                : d->vars.front().name + " * " + text;
+                              changed++;
+                            }
+                            continue;
+                          }
+                          std::string why;
+                          int gone = 0;
+                          if (!driver_two_way_link(doc, *d, keep_target, &why, &gone)) {
+                            report(ReportType::Warning, why);
+                            return OpStatus::Cancelled;
+                          }
+                          dropped += gone;
+                          changed++;
+                        }
+                        if (changed == 0) {
+                          report(ReportType::Warning, "That field has no driver to change");
+                          return OpStatus::Cancelled;
+                        }
+                        if (on) {
+                          report(ReportType::Info, dropped > 0 ? "Linked both ways: " + std::to_string(dropped) +
+                                                                     (dropped == 1 ? " key" : " keys") + " went (the "
+                                                                     "keys are stored once)"
+                                                               : "Linked both ways");
+                        }
+                        return drivers_changed(C);
+                      });
+
+  driver_operator_add("anim.driver_unlink", "Unlink",
+                      "Take a 2-Way Linked driver off: the field gets keys of its own that move it as the link did, "
+                      "and the property it read keeps its keys",
+                      OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                        Document &doc = *C.document;
+                        animation_record(doc);
+                        int count = 0;
+                        for (const DriverRef &r : op_refs(C)) {
+                          if (const Driver *d = driver_find(doc, r); d && d->two_way) {
+                            driver_two_way_bake(doc, *d);
+                            std::erase_if(doc.drivers, [&](const Driver &o) { return o.target == r; });
+                            count++;
+                          }
+                        }
+                        if (count == 0) {
+                          report(ReportType::Warning, "That field isn't 2-Way Linked");
+                          return OpStatus::Cancelled;
+                        }
+                        return drivers_changed(C);
+                      });
+
+  driver_operator_add("anim.driver_select_linked", "Select Linked",
+                      "Go to the other side of a field's two-way link: the property it reads (or, for a property read, "
+                      "the first that reads it), its layer active and, for a bone, the bone selected",
+                      OPTYPE_REGISTER, [](Context &C) {
+                        Document &doc = *C.document;
+                        DriverRef other;
+                        for (const DriverRef &r : op_refs(C)) {
+                          for (const Driver &d : doc.drivers) {
+                            if (!d.two_way || d.vars.size() != 1 || other.layer) {
+                              continue;
+                            }
+                            if (d.target == r) {
+                              other = d.vars.front().source;
+                            }
+                            else if (d.vars.front().source == r) {
+                              other = d.target;
+                            }
+                          }
+                        }
+                        Layer *layer = other.layer ? layer_find(doc, other.layer) : nullptr;
+                        if (!layer) {
+                          report(ReportType::Warning, "That field isn't 2-Way Linked");
+                          return OpStatus::Cancelled;
+                        }
+                        doc.active_layer = layer->id;
+                        if (other.path.rfind("bones[\"", 0) == 0) {
+                          const size_t end = other.path.find("\"].");
+                          if (const Bone *b = end != std::string::npos ? bone_find_by_name(*layer, other.path.substr(7, end - 7)) : nullptr) {
+                            armature_deselect_all(*layer);
+                            bone_select(*const_cast<Bone *>(b), true);
+                            layer->active_bone = b->id;
+                          }
+                        }
+                        report(ReportType::Info, "Linked: " + driver_ref_label(doc, other));
+                        return OpStatus::Finished;
                       });
 
   driver_operator_add("anim.driver_remove", "Delete Driver",

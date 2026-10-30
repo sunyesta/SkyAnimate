@@ -519,6 +519,52 @@ void rig_operators_register()
                  C.undo_name = bone->name + " Stands In for " + other->name + ": " + target->name;
                  return OpStatus::Finished;
                });
+  rig_operator("armature.bone_link_all", "Link All Channels",
+               "Link a bone (bone=, else the active one) of a switch's child two-way with the bone it stands in for: "
+               "its angle, position and scale share that bone's keys at factor 1, editable from either (for bones "
+               "that really are the same bone across drawings)",
+               bone_layer_active, [](Context &C) {
+                 Document &doc = *C.document;
+                 Layer &armature = *active_armature(C);
+                 const Bone *bone = op_has_arg(C, "bone") ? bone_find_by_name(armature, op_arg(C, "bone"))
+                                                          : bone_find(armature, armature.active_bone);
+                 const Layer *other = bone && bone->swap_layer ? layer_find(doc, bone->swap_layer) : nullptr;
+                 const Bone *partner = other ? bone_find(*other, bone->swap_bone) : nullptr;
+                 if (!partner) {
+                   report(ReportType::Warning, "Give the bone a swap first (Stands In For, or Auto-link by Name)");
+                   return OpStatus::Cancelled;
+                 }
+                 animation_record(doc);
+                 const std::string own = "bones[\"" + bone->name + "\"].", theirs = "bones[\"" + partner->name + "\"].";
+                 const uint64_t own_layer = armature.id, their_layer = other->id;
+                 int linked = 0;
+                 for (const auto &[part, component] : {std::pair{"angle", -1}, std::pair{"position", 0}, std::pair{"position", 1},
+                                                       std::pair{"scale", 0}, std::pair{"scale", 1}})
+                 {
+                   const DriverRef target{own_layer, own + part, component};
+                   std::erase_if(doc.drivers, [&](const Driver &d) { return d.target == target; });
+                   Driver d;
+                   d.target = target;
+                   d.vars.push_back({"var", DriverRef{their_layer, theirs + part, component}});
+                   doc.drivers.push_back(d);
+                   std::string why;
+                   int dropped = 0;
+                   if (!driver_two_way_link(doc, doc.drivers.back(), false, &why, &dropped)) {
+                     doc.drivers.pop_back();
+                     report(ReportType::Warning, why);
+                     continue;
+                   }
+                   linked++;
+                 }
+                 if (linked == 0) {
+                   return OpStatus::Cancelled;
+                 }
+                 drivers_evaluate(doc);
+                 report(ReportType::Info, "\"" + bone->name + "\" shares " + std::to_string(linked) + " channels with \"" +
+                                              other->name + ": " + partner->name + "\"");
+                 C.undo_name = "Link All Channels";
+                 return OpStatus::Finished;
+               });
   rig_operator("armature.swaps_auto_link", "Auto-link by Name",
                "In the switch holding the active layer (or layer=), each bone of its children's bone layers stands in "
                "for the bone of the same name in the first child with bones, unless it has a swap already",
@@ -532,7 +578,7 @@ void rig_operators_register()
                  }
                  const int made = switch_swaps_auto_link(doc, *sw);
                  report(ReportType::Info, std::to_string(made) + (made == 1 ? " bone" : " bones") + " of \"" + sw->name +
-                                              "\" now stand in by name");
+                                              (made == 1 ? "\" now stands in by name" : "\" now stand in by name"));
                  if (made == 0) {
                    return OpStatus::Cancelled;
                  }

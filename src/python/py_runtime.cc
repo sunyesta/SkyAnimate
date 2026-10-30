@@ -1543,6 +1543,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["from"] = py::make_tuple(drv.from_min, drv.from_max);
       d["to"] = py::make_tuple(drv.to_min, drv.to_max);
       d["clamp"] = drv.clamp;
+      d["two_way"] = drv.two_way;
+      d["factor"] = drv.flip ? -drv.factor : drv.factor;
       d["error"] = drv.error;
       float value = 0.0f;
       d["value"] = driver_ref_read(doc, drv.target, &value) ? py::object(py::float_(value)) : py::object(py::none());

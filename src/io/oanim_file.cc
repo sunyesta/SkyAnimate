@@ -1386,6 +1386,13 @@ static json drivers_to_json(const Document &doc)
       dj["remap"] = {{"from_min", num(d.from_min)}, {"from_max", num(d.from_max)}, {"to_min", num(d.to_min)},
                      {"to_max", num(d.to_max)}, {"clamp", d.clamp}};
     }
+    if (d.rest_captured && !d.two_way) {
+      dj["rest"] = num(d.target_rest);
+    }
+    if (d.two_way) {
+      dj["two_way"] = {{"factor", num(d.factor)}, {"flip", d.flip}, {"source_rest", num(d.source_rest)},
+                       {"target_rest", num(d.target_rest)}};
+    }
     list.push_back(std::move(dj));
   }
   return list;
@@ -3282,6 +3289,17 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
       d.to_min = get_float(*it, "to_min", 0.0f);
       d.to_max = get_float(*it, "to_max", 1.0f);
       d.clamp = get_bool(*it, "clamp", true);
+    }
+    if (auto it = dj.find("rest"); it != dj.end() && it->is_number()) {
+      d.target_rest = it->get<float>();
+      d.rest_captured = true;
+    }
+    if (auto it = dj.find("two_way"); it != dj.end() && it->is_object()) {
+      d.two_way = true;
+      d.factor = get_float(*it, "factor", 1.0f);
+      d.flip = get_bool(*it, "flip", false);
+      d.source_rest = get_float(*it, "source_rest", 0.0f);
+      d.target_rest = get_float(*it, "target_rest", 0.0f);
     }
     if (!d.target.path.empty()) {
       doc.drivers.push_back(std::move(d));
