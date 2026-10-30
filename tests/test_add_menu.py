@@ -48,4 +48,21 @@ oanim.data.document.frame_current = 5
 assert oanim.ops.mesh.primitive_point_add(x=0, y=0) == {'CANCELLED'}
 oanim.data.document.frame_current = 0
 
+# A drawing inside a bone layer: Shift A is still its Add menu, not Add Bone (that is for the bone layer itself).
+layers = oanim.data.layers
+assert oanim.ops.layer.new_bone() == {'FINISHED'}
+rig = layers.active
+assert oanim.ops.layer.new() == {'FINISHED'}
+inner = layers.active
+assert oanim.ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
+layers.active = inner
+bones_before = len(rig.bones)
+assert not oanim.ops.armature.bone_primitive_add.poll(), "Add Bone waits for the bone layer itself"
+assert oanim.wm.event_simulate("A", shift=True, area="Viewport")
+assert len(rig.bones) == bones_before, ("no bone added", rig.bones)
+assert oanim.ops.mesh.primitive_point_add(x=0.1, y=0.1) == {'FINISHED'} and inner.point_count == 1
+layers.active = rig
+assert oanim.wm.event_simulate("A", shift=True, area="Viewport")
+assert len(rig.bones) == bones_before + 1, "on the bone layer it adds a bone"
+
 print("Add menu tests passed")

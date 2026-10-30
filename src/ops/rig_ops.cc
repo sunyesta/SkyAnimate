@@ -1608,13 +1608,14 @@ void rig_operators_register()
     operators().add(std::move(ot));
   }
 
+  /* Only with the bone layer itself active: on a drawing inside it, Shift A is the drawing's Add menu. */
   rig_operator("armature.bone_primitive_add", "Add Bone",
-               "Add a new bone at the bone layer's origin, pointing up (Shift A, as in Blender)", armature_poll,
-               [](Context &C) {
+               "Add a new bone at the active bone layer's origin, pointing up (Shift A, as in Blender)",
+               bone_layer_active, [](Context &C) {
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 armature_add_bone(*active_armature(C), op_arg(C, "name"), {0.0f, 0.0f}, {0.0f, 0.5f}, 0);
+                 armature_add_bone(*document_active_layer(*C.document), op_arg(C, "name"), {0.0f, 0.0f}, {0.0f, 0.5f}, 0);
                  return OpStatus::Finished;
                });
 
