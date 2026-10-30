@@ -49,6 +49,7 @@
 #include "ops/undo.hh"
 #include "rna/rna.hh"
 #include "wm/context.hh"
+#include "wm/pen_input.hh"
 #include "wm/event_system.hh"
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
@@ -569,8 +570,92 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     file_drag_set({!files.empty(), files, x, y});
   });
   /* Queues a mouse move (button -1) or press/release (oanim.wm.mouse_simulate), one per frame. */
-  m.def("mouse_simulate", [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift, float wheel) {
-    current_context().wm->mouse_simulated.push_back({x, y, button, down, ctrl, alt, shift, wheel});
+  m.def(
+      "mouse_simulate",
+      [](float x, float y, int button, bool down, bool ctrl, bool alt, bool shift, float wheel, const py::object &pen,
+         bool eraser) {
+        WindowManager::SimulatedMouse e{x, y, button, down, ctrl, alt, shift, wheel};
+        if (!pen.is_none()) {
+          /* (x, y, pressure, tilt_x, tilt_y, time), all but x and y optional. */
+          e.has_pen = true;
+          e.pen_eraser = eraser;
+          for (const py::handle item : pen) {
+            const py::sequence v = py::reinterpret_borrow<py::sequence>(item);
+            PenSample sample;
+            sample.x = v[0].cast<float>();
+            sample.y = v[1].cast<float>();
+            sample.pressure = v.size() > 2 ? std::clamp(v[2].cast<float>(), 0.0f, 1.0f) : 1.0f;
+            sample.tilt_x = v.size() > 3 ? v[3].cast<float>() : 0.0f;
+            sample.tilt_y = v.size() > 4 ? v[4].cast<float>() : 0.0f;
+            sample.time = v.size() > 5 ? v[5].cast<double>() + pen_now() : 0.0;
+            e.pen.push_back(sample);
+          }
+        }
+        current_context().wm->mouse_simulated.push_back(std::move(e));
+      },
+      py::arg("x"), py::arg("y"), py::arg("button"), py::arg("down"), py::arg("ctrl"), py::arg("alt"),
+      py::arg("shift"), py::arg("wheel"), py::arg("pen") = py::none(), py::arg("eraser") = false);
+  /* The pen as last heard from, and its current (or last) touch's samples. */
+  m.def("pen", [](bool samples) {
+    const WindowManager &wm = *current_context().wm;
+    const TabletState &state = tablet_state();
+    py::dict d;
+    d["windows_ink"] = pen_input_seen();
+    d["near"] = wm.pen_near;
+    d["touching"] = state.touching;
+    d["eraser"] = wm.pen_eraser;
+    d["pressure"] = wm.pen_pressure;
+    d["tilt"] = py::make_tuple(state.tilt_x, state.tilt_y);
+    d["touch"] = pen_stroke_id();
+    d["sample_count"] = pen_stroke().size();
+    if (samples) {
+      py::list list;
+      const double began = pen_stroke().empty() ? 0.0 : pen_stroke().front().time;
+      for (const PenSample &p : pen_stroke()) {
+        list.append(py::make_tuple(p.x, p.y, p.pressure, p.tilt_x, p.tilt_y, p.time - began));
+      }
+      d["samples"] = list;
+    }
+    return d;
+  });
+  m.def("draw_settings", []() {
+    const ToolSettings &ts = current_context().wm->tool_settings;
+    py::dict d;
+    d["mode"] = ts.draw_mode == DrawMode::Pen ? "PEN" : "FREEHAND";
+    d["use_pressure"] = ts.use_pressure;
+    d["fill"] = ts.draw_fill;
+    d["prediction"] = ts.draw_prediction;
+    return d;
+  });
+  m.def("set_draw", [](const py::dict &values) {
+    ToolSettings &ts = current_context().wm->tool_settings;
+    for (const auto &[key_obj, value] : values) {
+      const std::string key = py::str(key_obj);
+      if (key == "use_pressure") {
+        ts.use_pressure = value.cast<bool>();
+      }
+      else if (key == "fill") {
+        ts.draw_fill = value.cast<bool>();
+      }
+      else if (key == "prediction") {
+        ts.draw_prediction = std::clamp(value.cast<float>(), 0.0f, 30.0f);
+      }
+      else {
+        throw py::value_error("no draw setting '" + key + "' (use_pressure, fill, prediction)");
+      }
+    }
+  });
+  m.def("pen_predict", [](const std::vector<std::tuple<float, float, double>> &samples, double ahead, float max_pixels) {
+    std::vector<PenSample> list;
+    for (const auto &[x, y, t] : samples) {
+      PenSample p;
+      p.x = x;
+      p.y = y;
+      p.time = t;
+      list.push_back(p);
+    }
+    const PenSample p = pen_predict(list, ahead, max_pixels);
+    return py::make_tuple(p.x, p.y);
   });
   m.def("media_view", []() { return current_context().wm->media_view; });
   m.def("local_view", []() {

@@ -59,6 +59,7 @@
 #include "ops/undo.hh"
 #include "wm/context.hh"
 #include "wm/event_system.hh"
+#include "wm/pen_input.hh"
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 
@@ -384,9 +385,15 @@ struct ToolDrag {
   int area = 0;
   ImVec2 start;
   bool box = false;
-  /* Draw tool: the stroke so far, in layer space, with pressures. */
+  /* Draw tool: the stroke so far, in layer space, with pressures, and with a pen its tilts (degrees,
+   * across and up) and times (seconds). */
   std::vector<float2> stroke;
   std::vector<float> pressures;
+  std::vector<float2> tilts;
+  std::vector<double> times;
+  /* The pen's touch the stroke follows (0: the mouse's), and how many of its samples are in. */
+  uint64_t pen_stroke = 0;
+  size_t pen_taken = 0;
   /* Pen tool: the point following the mouse until release. */
   int pen_point = -1;
   /* Shape tool: where the drag started, in layer space (snapped). */
@@ -2134,9 +2141,13 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
   const float px = 1.0f / std::max(view.zoom, 1e-9f);
   const float eraser = ts.annotate_eraser_radius;
   int hovered_guide = -1;
+  /* Ctrl, or the pen's eraser end, erases notes while drawing them. */
+  const bool erase_held =
+      (mode == AnnotateMode::Draw && io.KeyCtrl) ||
+      ((mode == AnnotateMode::Draw || mode == AnnotateMode::Line) && C.wm->pen_eraser && C.wm->pen_near);
 
   /* What's under the mouse: the eraser's circle, or a guide's handle or line. */
-  if (hovered && (mode == AnnotateMode::Eraser || (mode == AnnotateMode::Draw && io.KeyCtrl) || d.erasing)) {
+  if (hovered && (mode == AnnotateMode::Eraser || erase_held || d.erasing)) {
     dl->AddCircle(io.MousePos, eraser, IM_COL32(0xff, 0xff, 0xff, 170), 0, 1.0f);
   }
   if (guide_mode && hovered && !d.active) {
@@ -2157,7 +2168,7 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
     d.mode = mode;
     d.press = io.MousePos;
     d.press_document = mouse;
-    if (mode == AnnotateMode::Eraser || (mode == AnnotateMode::Draw && io.KeyCtrl)) {
+    if (mode == AnnotateMode::Eraser || erase_held) {
       d.erasing = true;
       d.erased = annotation_erase(doc, mouse, eraser * px);
     }
@@ -4195,6 +4206,48 @@ static void simplify(const std::vector<float2> &pts, size_t first, size_t last, 
     keep[index] = true;
     simplify(pts, first, index, tolerance, keep);
     simplify(pts, index, last, tolerance, keep);
+  }
+}
+
+/* The pen's touch a press is from, if it is the pen's: the one under way, or one that began and ended
+ * in the moment before ImGui passed the press on (a quick tap); 0 for the mouse. A touch is followed
+ * once. */
+static uint64_t pen_touch_pressed()
+{
+  static uint64_t last_used = 0;
+  const uint64_t id = pen_stroke_id();
+  if (id == 0 || id == last_used || pen_stroke().empty()) {
+    return 0;
+  }
+  const double now = pen_now();
+  const bool recent = tablet_state().touching ? now - pen_stroke_began() < 0.5 : now - pen_stroke_ended() < 0.25;
+  if (!recent) {
+    return 0;
+  }
+  last_used = id;
+  return id;
+}
+
+/* Adds the pen's samples that came in since the last frame to the stroke, every one (a tablet sends far
+ * more than a frame's mouse position shows), at the sub-pixel place the tablet gives. */
+static void draw_take_pen(const ViewMapping &view, const Transform2D &to_layer, float pixel)
+{
+  if (g_drag.pen_stroke == 0 || pen_stroke_id() != g_drag.pen_stroke) {
+    return;
+  }
+  const std::vector<PenSample> &samples = pen_stroke();
+  for (; g_drag.pen_taken < samples.size(); g_drag.pen_taken++) {
+    const PenSample &p = samples[g_drag.pen_taken];
+    const float2 at = to_layer.apply(view.to_document(ImVec2(p.x, p.y)));
+    /* A pen resting still repeats its place; one sample there is enough. */
+    if (!g_drag.stroke.empty() && distance(at, g_drag.stroke.back()) < pixel * 0.25f) {
+      g_drag.pressures.back() = std::max(g_drag.pressures.back(), p.pressure);
+      continue;
+    }
+    g_drag.stroke.push_back(at);
+    g_drag.pressures.push_back(p.pressure);
+    g_drag.tilts.push_back({p.tilt_x, p.tilt_y});
+    g_drag.times.push_back(p.time);
   }
 }
 
@@ -12172,9 +12225,19 @@ static void viewport_draw_contents(Area &area, Context &C)
           if (ts.draw_mode == DrawMode::Pen) {
             pen_click(C, *layer, mouse_layer, radius);
           }
-          else {
+          else if (wm.pen_eraser) {
+            /* The pen's eraser end doesn't draw. */
+            g_drag = {};
+            report_banner(ReportType::Info, "The pen's eraser end doesn't draw");
+          }
+          else if ((g_drag.pen_stroke = pen_touch_pressed())) {
+            draw_take_pen(view, to_layer, pixel);
+          }
+          if (g_drag.active && g_drag.stroke.empty() && ts.draw_mode != DrawMode::Pen) {
             g_drag.stroke.push_back(mouse_layer);
             g_drag.pressures.push_back(wm.pen_pressure);
+            g_drag.tilts.push_back({});
+            g_drag.times.push_back(ImGui::GetTime());
           }
           break;
         case Tool::Shape:
@@ -12259,14 +12322,29 @@ static void viewport_draw_contents(Area &area, Context &C)
           }
           break;
         }
-        if (distance(mouse_layer, g_drag.stroke.back()) > pixel * 1.5f) {
+        if (g_drag.pen_stroke) {
+          draw_take_pen(view, to_layer, pixel);
+        }
+        else if (distance(mouse_layer, g_drag.stroke.back()) > pixel * 1.5f) {
           g_drag.stroke.push_back(mouse_layer);
           g_drag.pressures.push_back(wm.pen_pressure);
+          g_drag.tilts.push_back({});
+          g_drag.times.push_back(ImGui::GetTime());
         }
         {
           std::vector<ImVec2> line;
           for (const float2 &p : g_drag.stroke) {
             line.push_back(view.to_screen(to_document.apply(p)));
+          }
+          /* With a pen, a moment more of the line, the way it is going: the frame shown is a little
+           * behind the hand, and this keeps the line at the pen's tip. The next frame draws the real
+           * samples in its place. */
+          if (g_drag.pen_stroke && g_drag.pen_stroke == pen_stroke_id() && ts.draw_prediction > 0.0f) {
+            const std::vector<PenSample> &samples = pen_stroke();
+            const PenSample ahead = pen_predict(samples, ts.draw_prediction * 1e-3, 40.0f);
+            if (!samples.empty() && (ahead.x != samples.back().x || ahead.y != samples.back().y)) {
+              line.push_back(ImVec2(ahead.x, ahead.y));
+            }
           }
           const float w = std::max(1.0f, ts.style.line_width * view.zoom * to_document.scale());
           const ImVec4 c(ts.style.line.r, ts.style.line.g, ts.style.line.b, ts.style.line.a);
@@ -12305,6 +12383,7 @@ static void viewport_draw_contents(Area &area, Context &C)
             push_undo(C, "Add Point");
           }
           else {
+            draw_take_pen(view, to_layer, pixel);
             draw_tool_finish(C, *drawing, pixel);
           }
           break;

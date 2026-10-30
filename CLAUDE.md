@@ -66,8 +66,9 @@ Incremental, pen pressure, stamp brushes (`src/assets`: the asset library set in
 shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brushes as presets in
 `brush_presets.cc`; dabs in `src/gpu/brush_stroke.cc`; the Brush Settings window in
 `src/editors/brush_editor.cc`). The Annotate tool: notes and drawing guides over the drawing, never rendered
-(`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). Still to do in milestone 2: Knife tool (Ctrl K), pen eraser end,
-the style library.
+(`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). Still to do in milestone 2: Knife tool (Ctrl K), the style library,
+and the draw tools rebuild (the spec's "Draw tools" note: stage 1, every Windows Ink pen sample, is in
+`src/wm/pen_input.*`; stages 2-6 to come).
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels
 (`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,

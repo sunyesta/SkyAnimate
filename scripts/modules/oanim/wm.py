@@ -62,14 +62,46 @@ def render_stats():
     return list(_oanim.render_stats())
 
 
-def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False, wheel=0.0):
+def mouse_simulate(x, y, button=None, down=True, ctrl=False, alt=False, shift=False, wheel=0.0, pen=None,
+                   eraser=False):
     """Move the mouse to (x, y) in the window's UI units (as a remote screenshot of the whole
     window shows them), and press (down=True) or release a button: 0 left, 1 right, 2 middle; None
     only moves; `ctrl`, `alt`, `shift`: held; `wheel`: notches the wheel turns there (up positive,
     zooming the viewport in). Events queue and one is used per frame, so a click is a press then a
-    release."""
+    release.
+
+    `pen`: a pen tablet's samples arriving with this event, as Windows Ink hands them over (many to a
+    frame): a list of (x, y[, pressure[, tilt_x, tilt_y[, seconds]]]) in the same units, tilts in degrees,
+    seconds from now. A left press with them starts the pen's touch (`eraser`: with its eraser end), a
+    release ends it; moves in between add to it."""
     _oanim.mouse_simulate(float(x), float(y), -1 if button is None else int(button), bool(down), bool(ctrl),
-                          bool(alt), bool(shift), float(wheel))
+                          bool(alt), bool(shift), float(wheel), None if pen is None else [tuple(p) for p in pen],
+                          bool(eraser))
+
+
+def pen(samples=False):
+    """The pen tablet as last heard from: a dict with windows_ink (samples have come through Windows Ink),
+    near, touching, eraser (its eraser end), pressure (0-1), tilt (degrees across and toward you), touch
+    (which touch of the pen, counting from 1) and sample_count (its samples); with samples=True also
+    samples, each (x, y, pressure, tilt_x, tilt_y, seconds since the touch began)."""
+    return dict(_oanim.pen(bool(samples)))
+
+
+def draw_settings():
+    """The Draw tool's settings: a dict with mode (FREEHAND or PEN), use_pressure, fill and prediction (how
+    far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off)."""
+    return dict(_oanim.draw_settings())
+
+
+def set_draw(**values):
+    """Change the Draw tool's settings by name (use_pressure, fill, prediction; see draw_settings)."""
+    _oanim.set_draw(values)
+
+
+def pen_predict(samples, ahead, max_pixels=40.0):
+    """Where the line is drawn ahead of a pen's samples [(x, y, seconds)], `ahead` seconds on, at most
+    `max_pixels` away (the Draw tool's prediction): (x, y)."""
+    return tuple(_oanim.pen_predict([tuple(s) for s in samples], float(ahead), float(max_pixels)))
 
 
 def layer_grid_lines(on=None):

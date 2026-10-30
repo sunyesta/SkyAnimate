@@ -28,6 +28,7 @@
 #include "core/log.hh"
 #include "data/layer_mirror.hh"
 #include "wm/clipboard_image.hh"
+#include "wm/pen_input.hh"
 #include "data/camera.hh"
 #include "data/media_layer.hh"
 #include "assets/brush_presets.hh"
@@ -268,6 +269,7 @@ bool App::window_init()
 
   /* Files dragged in from Explorer are known while still being dragged, for the editors to preview. */
   file_drop_install(window_);
+  pen_input_install(window_);
 
   update_window_title();
   SDL_MaximizeWindow(window_);
@@ -430,6 +432,20 @@ void App::main_loop()
       wm_.mouse_simulating = true;
       wm_.mouse_simulated_x = m.x;
       wm_.mouse_simulated_y = m.y;
+      if (m.has_pen) {
+        if (m.button == 0 && m.down) {
+          pen_simulate_down(m.pen_eraser);
+          wm_.pen_near = true;
+          wm_.pen_eraser = m.pen_eraser;
+        }
+        for (const PenSample &sample : m.pen) {
+          pen_simulate_sample(sample);
+          wm_.pen_pressure = sample.pressure;
+        }
+        if (m.button == 0 && !m.down) {
+          pen_simulate_up();
+        }
+      }
       if (m.button >= 0) {
         wm_.mouse_simulated_held = m.down;
         ImGui::GetIO().AddMouseButtonEvent(m.button, m.down);
@@ -598,10 +614,27 @@ void App::handle_event(const SDL_Event &event)
         wm_.pen_pressure = event.paxis.value;
       }
       break;
+    /* Which end of the pen is in use: the eraser end draws nothing, and erases where a tool erases. */
+    case SDL_EVENT_PEN_PROXIMITY_IN:
+      wm_.pen_near = true;
+      break;
+    case SDL_EVENT_PEN_PROXIMITY_OUT:
+      wm_.pen_near = false;
+      wm_.pen_eraser = false;
+      break;
+    case SDL_EVENT_PEN_DOWN:
+      wm_.pen_near = true;
+      wm_.pen_eraser = event.ptouch.eraser;
+      break;
+    case SDL_EVENT_PEN_MOTION:
+      wm_.pen_near = true;
+      wm_.pen_eraser = (event.pmotion.pen_state & SDL_PEN_INPUT_ERASER_TIP) != 0;
+      break;
     case SDL_EVENT_MOUSE_MOTION:
       /* A real mouse draws at full pressure; pen-made mouse events keep the pen's. */
       if (event.motion.which != SDL_PEN_MOUSEID) {
         wm_.pen_pressure = 1.0f;
+        wm_.pen_eraser = false;
       }
       break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:

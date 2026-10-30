@@ -11,6 +11,7 @@
 #include "core/math.hh"
 #include "data/annotations.hh"
 #include "data/vector.hh"
+#include "wm/pen_input.hh"
 
 namespace oanim {
 
@@ -109,6 +110,9 @@ struct ToolSettings {
   int warp_cells = 3;
   /* Tablet pressure sets line width while drawing. */
   bool use_pressure = true;
+  /* While drawing with a pen, the line runs this far (ms) ahead of the pen's last sample, the way it is
+   * going, so it keeps up with the hand (0: off). */
+  float draw_prediction = 8.0f;
   /* The 2D cursor in document space. */
   float2 cursor;
   /* Weight Paint brush, as Blender's: radius in screen pixels, the weight it paints, how hard,
@@ -224,6 +228,11 @@ struct WindowManager {
     bool shift = false;
     /* Wheel notches turned there (up positive). */
     float wheel = 0.0f;
+    /* A pen's samples arriving with it (oanim.wm.mouse_simulate(pen=...)), in the window as ImGui counts:
+     * a left press starts the pen's touch (its eraser end when `pen_eraser`), a release ends it. */
+    bool has_pen = false;
+    bool pen_eraser = false;
+    std::vector<PenSample> pen;
   };
   std::vector<SimulatedMouse> mouse_simulated;
   /* The mouse is where the last simulated event put it, until the real one moves: it counts as over
@@ -343,6 +352,9 @@ struct WindowManager {
   std::vector<ModalKey> modal_keys;
   /* Latest pen pressure, 0-1 (1 for a mouse). */
   float pen_pressure = 1.0f;
+  /* The pen is near the tablet, and its eraser end is the one down (or its eraser button held). */
+  bool pen_near = false;
+  bool pen_eraser = false;
   /* F or Shift F with the Sculpt tool: the viewport sizes the brush's radius ('R') or strength ('S')
    * with the mouse until a click. */
   char sculpt_adjust_request = 0;
