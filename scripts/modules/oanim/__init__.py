@@ -649,6 +649,10 @@ class _Layer:
         """The name of the material shape `index` is linked to, or "" when its look is its own."""
         return self.shape_style(index)["material"]
 
+    def curve_points(self, curve):
+        """Curve `curve`'s points, as indices into points, in order along it."""
+        return list(_oanim.layer_curve_points(self._id, curve))
+
     def shape_contains(self, index, point):
         """Whether shape `index`'s fill covers `point` (x, y), in the layer's space."""
         return bool(_oanim.layer_shape_contains(self._id, index, float(point[0]), float(point[1])))

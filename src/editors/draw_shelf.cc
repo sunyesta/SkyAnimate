@@ -136,6 +136,35 @@ static void tile_picture(ImDrawList *dl, const ToolSettings &ts, const DrawPrese
     dl->AddRectFilled(p1 - ImVec2(r, r), p1 + ImVec2(r, r), COL_INK);
     return;
   }
+  if (p.mode == DrawMode::StrokeEraser || p.mode == DrawMode::Trimmer) {
+    const float s = size * 0.36f, t = std::max(1.5f, size * 0.05f);
+    const ImU32 gone = IM_COL32(0xc8, 0xc8, 0xc8, 255);
+    if (p.mode == DrawMode::Trimmer) {
+      /* A line crossing two others, the piece between them gone. */
+      for (const float x : {-0.5f, 0.5f}) {
+        dl->AddLine(c + ImVec2(x * s, -s), c + ImVec2(x * s, s), COL_INK, t);
+      }
+      dl->AddLine(c + ImVec2(-s * 1.1f, 0.0f), c + ImVec2(-s * 0.5f, 0.0f), COL_INK, t);
+      dl->AddLine(c + ImVec2(s * 0.5f, 0.0f), c + ImVec2(s * 1.1f, 0.0f), COL_INK, t);
+      dl->AddLine(c + ImVec2(-s * 0.5f, 0.0f), c + ImVec2(s * 0.5f, 0.0f), gone, t);
+    }
+    else if (p.ink.erase_whole) {
+      /* Two lines, one of them gone. */
+      dl->AddBezierCubic(c + ImVec2(-s, s * 0.6f), c + ImVec2(-s * 0.3f, -s * 0.1f), c + ImVec2(s * 0.3f, s * 1.1f),
+                         c + ImVec2(s, s * 0.4f), COL_INK, t, 20);
+      dl->AddBezierCubic(c + ImVec2(-s, -s * 0.4f), c + ImVec2(-s * 0.3f, -s * 1.1f), c + ImVec2(s * 0.3f, s * 0.1f),
+                         c + ImVec2(s, -s * 0.6f), gone, t, 20);
+    }
+    else {
+      /* A line with a gap in it. */
+      dl->AddBezierCubic(c + ImVec2(-s * 1.1f, s * 0.5f), c + ImVec2(-s * 0.8f, -s * 0.2f), c + ImVec2(-s * 0.5f, -s * 0.1f),
+                         c + ImVec2(-s * 0.25f, s * 0.1f), COL_INK, t, 16);
+      dl->AddBezierCubic(c + ImVec2(s * 0.25f, -s * 0.1f), c + ImVec2(s * 0.5f, s * 0.1f), c + ImVec2(s * 0.8f, s * 0.2f),
+                         c + ImVec2(s * 1.1f, -s * 0.5f), COL_INK, t, 16);
+      dl->AddLine(c + ImVec2(-s * 0.25f, s * 0.1f), c + ImVec2(s * 0.25f, -s * 0.1f), gone, t);
+    }
+    return;
+  }
   InkSettings ink;
   float line_width = 0.0f;
   preset_now(ts, p, &ink, &line_width);
@@ -201,6 +230,12 @@ static std::string tile_tooltip(const ToolSettings &ts, const DrawPreset &p)
   }
   if (p.mode == DrawMode::FillEraser) {
     return p.name + "\nCuts the brushed area out of fills; lines stay";
+  }
+  if (p.mode == DrawMode::StrokeEraser) {
+    return p.name + (p.ink.erase_whole ? "\nTakes away every line it touches; fills stay" : "\nCuts lines where brushed; fills stay");
+  }
+  if (p.mode == DrawMode::Trimmer) {
+    return p.name + "\nBrush across a line: the touched piece goes, out to the nearest crossings";
   }
   InkSettings ink;
   float line_width = 0.0f;

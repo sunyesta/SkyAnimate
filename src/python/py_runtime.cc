@@ -179,10 +179,12 @@ static std::string to_upper(std::string text)
 
 static const char *draw_mode_id(DrawMode mode)
 {
-  return mode == DrawMode::Pen        ? "PEN"
-         : mode == DrawMode::FillPen  ? "FILL_PEN"
-         : mode == DrawMode::FillEraser ? "FILL_ERASER"
-                                        : "FREEHAND";
+  return mode == DrawMode::Pen            ? "PEN"
+         : mode == DrawMode::FillPen      ? "FILL_PEN"
+         : mode == DrawMode::FillEraser   ? "FILL_ERASER"
+         : mode == DrawMode::StrokeEraser ? "STROKE_ERASER"
+         : mode == DrawMode::Trimmer      ? "TRIMMER"
+                                          : "FREEHAND";
 }
 
 /* The Stroke Pen's settings by name, as oanim.wm.draw_settings gives them. */
@@ -204,6 +206,7 @@ static void ink_settings_read(const InkSettings &ink, py::dict &d)
   d["tilt_width"] = ink.tilt_width;
   d["taper_start"] = ink.taper_start;
   d["taper_end"] = ink.taper_end;
+  d["erase_whole"] = ink.erase_whole;
 }
 
 /* A Stroke Pen setting by name, as oanim.wm.set_draw takes it; false: no such setting. */
@@ -256,6 +259,9 @@ static bool ink_setting(InkSettings &ink, const std::string &key, const py::hand
   }
   else if (key == "taper_end") {
     ink.taper_end = std::max(value.cast<float>(), 0.0f);
+  }
+  else if (key == "erase_whole") {
+    ink.erase_whole = value.cast<bool>();
   }
   else {
     return false;
@@ -715,6 +721,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["erase_selected"] = ts.draw_erase_selected;
     d["fill"] = ts.draw_fill;
     d["weld"] = ts.draw_weld;
+    d["trim"] = ts.draw_trim;
     d["cursor_circle"] = ts.draw_cursor_circle;
     d["prediction"] = ts.draw_prediction;
     d["line_width"] = ts.style.line_width;
@@ -764,6 +771,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "weld") {
         ts.draw_weld = value.cast<bool>();
+      }
+      else if (key == "trim") {
+        ts.draw_trim = value.cast<bool>();
       }
       else if (key == "cursor_circle") {
         ts.draw_cursor_circle = value.cast<bool>();
@@ -1369,6 +1379,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Document &doc = *current_context().document;
     doc.active_shape_layer = layer.id;
     doc.active_shape = layer.drawing.shapes[size_t(index)].id;
+  });
+  m.def("layer_curve_points", [layer_or_raise](uint64_t id, int curve) {
+    const VectorDrawing &drawing = layer_or_raise(id).drawing;
+    std::vector<int> points;
+    for (const CurvePoint &cp : drawing.curves.at(size_t(curve)).points) {
+      points.push_back(cp.point);
+    }
+    return points;
   });
   m.def("layer_shape_contains", [layer_or_raise](uint64_t id, int shape, float x, float y) {
     const VectorDrawing &drawing = layer_or_raise(id).drawing;

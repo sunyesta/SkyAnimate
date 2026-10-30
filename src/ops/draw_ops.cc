@@ -9,14 +9,17 @@
 #include "core/log.hh"
 #include "data/document.hh"
 #include "data/fill_paint.hh"
+#include "data/line_cut.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "wm/context.hh"
 
 namespace oanim {
 
-/* How near (screen pixels) a stroke's end welds to a point. */
+/* How near (screen pixels) a stroke's end welds to a point, and how long an end past a crossing counts as
+ * overshooting it. */
 static constexpr float WELD_PIXELS = 8.0f;
+static constexpr float OVERSHOOT_PIXELS = 30.0f;
 
 /* Picks a preset, as clicking it on the shelf does: the pen going keeps what it was changed to (for coming back
  * to), and the one coming takes what it was last changed to, else its saved settings. Clicking a pen always
@@ -49,7 +52,11 @@ void draw_mode_set(ToolSettings &ts, DrawMode mode)
     return;
   }
   const auto last = ts.draw_kind_preset.find(int(mode));
-  const char *first = mode == DrawMode::FillPen ? "Fill Pen" : mode == DrawMode::FillEraser ? "Fill Eraser" : "Ink";
+  const char *first = mode == DrawMode::FillPen        ? "Fill Pen"
+                      : mode == DrawMode::FillEraser   ? "Fill Eraser"
+                      : mode == DrawMode::StrokeEraser ? "Stroke Eraser"
+                      : mode == DrawMode::Trimmer      ? "Vector Trimmer"
+                                                       : "Ink";
   const DrawPreset *p = draw_preset_find(last != ts.draw_kind_preset.end() ? last->second : first);
   /* The kind it is already on keeps its pen. */
   const DrawPreset *now = draw_preset_find(ts.draw_preset);
@@ -111,7 +118,61 @@ static bool stroke_line(Context &C, VectorDrawing &drawing, const InkStroke &ink
     shape.edges.push_back({int(drawing.curves.size()) - 1, s});
   }
   drawing.shapes.push_back(std::move(shape));
+  if (ts.draw_trim && !closes) {
+    drawing_trim_overshoots(drawing, int(drawing.curves.size()) - 1, OVERSHOOT_PIXELS * pixel, pixel);
+  }
   return true;
+}
+
+/* The Stroke Eraser's or Trimmer's stroke, on the active drawing or every one being edited. */
+static bool stroke_cut_lines(Context &C, Layer &layer, const InkStroke &ink, DrawMode mode)
+{
+  Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  const float pixel = ink.view().pixel;
+  std::vector<Layer *> layers = {&layer};
+  if (ts.draw_erase_all_layers) {
+    layers = editable_layers(C);
+  }
+  const InkSweep sweep = ink_sweep(ink.points(), ink.settings(), ink.view());
+  /* All the lines as they were, for crossings: one layer's cut isn't another's. */
+  std::vector<std::vector<std::vector<float2>>> paths;
+  for (Layer *other : layers) {
+    paths.push_back(mode == DrawMode::Trimmer ? drawing_line_paths(other->drawing, pixel) : std::vector<std::vector<float2>>());
+  }
+  const Transform2D from = layer_world_transform(doc, layer.id);
+  bool cut = false;
+  for (size_t i = 0; i < layers.size(); i++) {
+    Layer *other = layers[i];
+    const Transform2D to_other = layer_world_transform(doc, other->id).inverted();
+    const Transform2D to = to_other * from;
+    InkSweep moved = sweep;
+    for (float2 &c : moved.centers) {
+      c = to.apply(c);
+    }
+    for (float &r : moved.radii) {
+      r *= to.scale();
+    }
+    const float other_pixel = pixel * to.scale();
+    if (mode == DrawMode::StrokeEraser) {
+      cut |= drawing_lines_erase(other->drawing, moved, other_pixel, ink.settings().erase_whole, ts.draw_erase_selected);
+      continue;
+    }
+    std::vector<std::vector<float2>> others;
+    for (size_t j = 0; j < layers.size(); j++) {
+      if (j != i) {
+        const Transform2D across = to_other * layer_world_transform(doc, layers[j]->id);
+        for (std::vector<float2> path : paths[j]) {
+          for (float2 &p : path) {
+            p = across.apply(p);
+          }
+          others.push_back(std::move(path));
+        }
+      }
+    }
+    cut |= drawing_lines_trim(other->drawing, moved, others, other_pixel, ts.draw_erase_selected);
+  }
+  return cut;
 }
 
 /* The pieces moved by `t`. */
@@ -162,6 +223,9 @@ bool draw_stroke_commit(Context &C, Layer &layer, InkStroke &ink, DrawMode mode)
   C.wm->draw_last_closed = false;
   if (!draw_mode_paints(mode)) {
     return stroke_line(C, layer.drawing, ink);
+  }
+  if (mode == DrawMode::StrokeEraser || mode == DrawMode::Trimmer) {
+    return stroke_cut_lines(C, layer, ink, mode);
   }
   const float pixel = ink.view().pixel;
   /* A little closer than a line's: a blob is fitted again each time it grows. */
@@ -214,7 +278,10 @@ static OpStatus stroke_exec(Context &C)
   for (const InkSample &sample : parse_samples(op_arg(C, "samples"))) {
     ink.add(sample);
   }
-  const DrawMode mode = ts.draw_mode == DrawMode::FillPen && op_arg_bool(C, "erase") ? DrawMode::FillEraser : ts.draw_mode;
+  const bool erase = op_arg_bool(C, "erase");
+  const DrawMode mode = erase && ts.draw_mode == DrawMode::FillPen    ? DrawMode::FillEraser
+                        : erase && ts.draw_mode == DrawMode::Freehand ? DrawMode::StrokeEraser
+                                                                      : ts.draw_mode;
   return draw_stroke_commit(C, *layer, ink, mode) ? OpStatus::Finished : OpStatus::Cancelled;
 }
 
@@ -238,13 +305,13 @@ void draw_operators_register()
   };
   const auto has_opacity = [](Context &C) {
     const ToolSettings &ts = C.wm->tool_settings;
-    return ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen && ts.draw_mode != DrawMode::FillEraser;
+    return ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen && !draw_mode_cuts(ts.draw_mode);
   };
 
   add("draw.stroke", "Draw",
       "A stroke through the Stroke Pen's engine with the Draw tool's settings, on the active drawing: samples=\"x,y,"
       "pressure,seconds;...\" in the layer's space, pixel= the layer units a screen pixel stands for, erase=1 (Ctrl) "
-      "with the Fill Pen cuts instead",
+      "with the Stroke Pen or Fill Pen erases instead",
       OPTYPE_UNDO, [](Context &C) { return C.document != nullptr; }, stroke_exec);
   add("draw.preset_load", "Load Draw Preset", "Pick the pen named name= (as clicking it on the shelf)", 0, nullptr,
       [](Context &C) {

@@ -88,8 +88,9 @@ def pen(samples=False):
 
 
 def draw_settings():
-    """The Draw tool's settings: a dict with mode (FREEHAND, PEN, FILL_PEN or FILL_ERASER), preset (the pen's name),
-    fill_size (the Fill Pen and Fill Eraser's width, document units), erase_all_layers, erase_selected, use_pressure, fill,
+    """The Draw tool's settings: a dict with mode (FREEHAND, PEN, FILL_PEN, FILL_ERASER, STROKE_ERASER or TRIMMER),
+    preset (the pen's name), fill_size (the Fill Pen and erasers' width, document units), erase_all_layers,
+    erase_selected, erase_whole (the Stroke Eraser takes whole lines), trim (ends past a crossing go), use_pressure, fill,
     fill_color and line_color to set (r, g, b, a),
     weld (a stroke's ends join points they finish on), cursor_circle, line_width (document units), prediction (how far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off),
     stabilizer (OFF, SMART or PULLED_STRING), smoothing (Smart's amount, 0-1), string_length (screen pixels),

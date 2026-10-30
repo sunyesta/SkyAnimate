@@ -70,7 +70,7 @@ shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brush
 and the draw tools rebuild (the spec's "Draw tools" note: stage 1, every Windows Ink pen sample, is in
 `src/wm/pen_input.*`; stage 2, the Stroke Pen's engine, in `src/data/ink_stroke.*`; stage 3, the shelf and presets, in
 `src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`; stage 4, the Fill Pen and Fill Eraser,
-in `src/data/fill_paint.*`; stages 5-6 to come).
+in `src/data/fill_paint.*`; stage 5, the Stroke Eraser and Vector Trimmer, in `src/data/line_cut.*`; stage 6 to come).
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels
 (`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,

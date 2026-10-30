@@ -25,8 +25,9 @@ namespace oanim {
 struct FillPiece;
 
 /* What the Draw tool draws: freehand strokes; with the Bezier Pen, clicking to add points along a curve; with the
- * Fill Pen, filled areas; and with the Fill Eraser, it cuts areas out of fills. */
-enum class DrawMode { Freehand, Pen, FillPen, FillEraser };
+ * Fill Pen, filled areas. And what it takes away: with the Fill Eraser, areas of fills; with the Stroke Eraser, the
+ * brushed parts of lines; with the Vector Trimmer, pieces of line out to where they cross. */
+enum class DrawMode { Freehand, Pen, FillPen, FillEraser, StrokeEraser, Trimmer };
 
 /* Off: the samples as they are. Smart: see above. Pulled String: the line stays put until the pen is
  * further than the string's length away, then is pulled along behind it (exact corners, a learned feel). */
@@ -58,6 +59,8 @@ struct InkSettings {
   /* Over how long the line narrows to a point from each end, in document pixels (as the width field). */
   float taper_start = 0.0f;
   float taper_end = 0.0f;
+  /* The Stroke Eraser takes the whole of each line it touches. */
+  bool erase_whole = false;
   bool operator==(const InkSettings &) const = default;
 };
 
@@ -162,7 +165,13 @@ std::vector<InkKnot> ink_fit(std::vector<InkPoint> points, const InkSettings &se
  * within `tolerance` screen pixels; `pixel`: layer units a screen pixel stands for. Corners are where it turns
  * sharply at a single point, there being no pen to have slowed for them. */
 std::vector<InkKnot> ink_fit_ring(const std::vector<float2> &ring, float tolerance, float pixel);
-/* What a finished line covers, tapered (data/fill_area.hh). */
-std::vector<FillPiece> ink_area(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view);
+/* A finished line as discs along it, tapered: `radii` in layer units. What an eraser covers. */
+struct InkSweep {
+  std::vector<float2> centers;
+  std::vector<float> radii;
+};
+InkSweep ink_sweep(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view);
+/* What a finished line covers, as an area (data/fill_area.hh). */
+std::vector<FillPiece> ink_area(const std::vector<InkPoint> &points, const InkSettings &settings, const InkView &view);
 
 }  // namespace oanim

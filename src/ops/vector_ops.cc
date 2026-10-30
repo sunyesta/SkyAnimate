@@ -1352,7 +1352,8 @@ void vector_operators_register()
     OperatorType ot;
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
-    ot.description = "Switch to the Draw tool: freehand strokes, or mode= PEN (the Bezier Pen), FILL_PEN or FILL_ERASER";
+    ot.description = "Switch to the Draw tool: freehand strokes, or mode= PEN (the Bezier Pen), FILL_PEN, FILL_ERASER, "
+                     "STROKE_ERASER or TRIMMER";
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       /* A setup-only tool: away from frame 0 it says what makes it work. */
@@ -1373,8 +1374,14 @@ void vector_operators_register()
       else if (mode == "FILL_ERASER") {
         draw_mode_set(C.wm->tool_settings, DrawMode::FillEraser);
       }
+      else if (mode == "STROKE_ERASER") {
+        draw_mode_set(C.wm->tool_settings, DrawMode::StrokeEraser);
+      }
+      else if (mode == "TRIMMER") {
+        draw_mode_set(C.wm->tool_settings, DrawMode::Trimmer);
+      }
       else if (!mode.empty()) {
-        report(ReportType::Error, "Unknown draw mode '" + mode + "': use FREEHAND, PEN, FILL_PEN or FILL_ERASER");
+        report(ReportType::Error, "Unknown draw mode '" + mode + "': use FREEHAND, PEN, FILL_PEN, FILL_ERASER, STROKE_ERASER or TRIMMER");
         return OpStatus::Cancelled;
       }
       C.wm->tool_settings.tool = Tool::Draw;

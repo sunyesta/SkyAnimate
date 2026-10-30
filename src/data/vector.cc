@@ -1269,6 +1269,21 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t)
   float2 ctrl[4];
   curve_segment_bezier(drawing, curve, edge.segment, ctrl);
   const int point = drawing_add_point(drawing, bezier_eval(ctrl, t));
+  /* The line's width there, which runs by distance along the segment, not by the curve parameter. */
+  {
+    float upto = 0.0f, total = 0.0f;
+    float2 last = ctrl[0];
+    for (int i = 1; i <= 32; i++) {
+      const float2 p = bezier_eval(ctrl, float(i) / 32.0f);
+      total += distance(last, p);
+      upto += float(i) / 32.0f <= t ? distance(last, p) : 0.0f;
+      last = p;
+    }
+    int from = 0, to = 0;
+    curve_segment_points(curve, edge.segment, &from, &to);
+    const float r0 = drawing.points[from].radius, r1 = drawing.points[to].radius;
+    drawing.points[point].radius = r0 + (r1 - r0) * (total > 1e-12f ? upto / total : t);
+  }
   /* A point added between two of a group's is in it, weighted between theirs (as Blender's
    * Subdivide does). */
   if (!drawing.groups.empty()) {

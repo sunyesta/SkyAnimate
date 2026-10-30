@@ -774,7 +774,7 @@ std::vector<InkKnot> ink_fit_ring(const std::vector<float2> &ring, float toleran
   return knots;
 }
 
-std::vector<FillPiece> ink_area(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view)
+InkSweep ink_sweep(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view)
 {
   /* A tap: its widest, as a dot's. */
   float widest = 0.0f;
@@ -792,17 +792,20 @@ std::vector<FillPiece> ink_area(std::vector<InkPoint> points, const InkSettings 
       radii.push_back(radius);
     }
   }
-  if (centers.empty()) {
-    return {};
-  }
   if (centers.size() == 1) {
     radii[0] = widest * view.half_width;
   }
-  else if (distance(points.back().pos, centers.back()) > 0.0f) {
+  else if (!centers.empty() && distance(points.back().pos, centers.back()) > 0.0f) {
     centers.push_back(points.back().pos);
     radii.push_back(points.back().radius * view.half_width);
   }
-  return fill_sweep(centers, radii, view.pixel * 0.1f);
+  return {std::move(centers), std::move(radii)};
+}
+
+std::vector<FillPiece> ink_area(const std::vector<InkPoint> &points, const InkSettings &settings, const InkView &view)
+{
+  const InkSweep sweep = ink_sweep(points, settings, view);
+  return sweep.centers.empty() ? std::vector<FillPiece>() : fill_sweep(sweep.centers, sweep.radii, view.pixel * 0.1f);
 }
 
 }  // namespace oanim

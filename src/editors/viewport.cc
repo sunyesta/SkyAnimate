@@ -738,6 +738,20 @@ static void draw_mode_icon(ImDrawList *dl, DrawMode mode, ImVec2 c, float s, ImU
     dl->AddQuadFilled(c - u - v, c + u - v, c + u + v, c - u + v, col);
     return;
   }
+  if (mode == DrawMode::StrokeEraser) {
+    /* A line with a gap in it. */
+    const float t = std::max(1.0f, s * 0.2f);
+    dl->AddLine(c + ImVec2(-s, s * 0.5f), c + ImVec2(-s * 0.3f, s * 0.15f), col, t);
+    dl->AddLine(c + ImVec2(s * 0.3f, -s * 0.15f), c + ImVec2(s, -s * 0.5f), col, t);
+    return;
+  }
+  if (mode == DrawMode::Trimmer) {
+    /* Two lines, and one stopped at the second. */
+    const float t = std::max(1.0f, s * 0.2f);
+    dl->AddLine(c + ImVec2(s * 0.3f, -s), c + ImVec2(s * 0.3f, s), col, t);
+    dl->AddLine(c + ImVec2(-s, 0.0f), c + ImVec2(s * 0.3f, 0.0f), col, t);
+    return;
+  }
   if (mode == DrawMode::Freehand) {
     const ImVec2 tip = c + ImVec2(-s * 0.75f, s * 0.75f);
     const ImVec2 dir = ImVec2(0.7071f, -0.7071f), side = ImVec2(0.7071f, 0.7071f) * (s * 0.22f);
@@ -943,6 +957,8 @@ static const ToolInfo TOOLS[] = {
      "Fill Pen: paints filled areas, merging with a fill of the same colour it overlaps; Ctrl cuts.\n"
      "Bezier Pen: click to add points along a curve, drag to place each; click the first point to close it.\n"
      "Fill Eraser: cuts the brushed area out of fills, leaving lines alone.\n"
+     "Stroke Eraser: cuts lines where brushed, leaving fills alone.\n"
+     "Vector Trimmer: brush across a line, and the touched piece goes, out to the nearest crossings.\n"
      "Right-click to pick the kind",
      "wm.tool_draw"},
     {Tool::Shape, "Shape",
@@ -1173,10 +1189,11 @@ static void draw_flyout(Context &C, ImVec2 button_pos, float button)
   ToolSettings &ts = C.wm->tool_settings;
   static bool open_last_frame = false;
   const ImU32 col = IM_COL32(0xe6, 0xe6, 0xe6, 255);
-  const DrawMode modes[] = {DrawMode::Freehand, DrawMode::FillPen, DrawMode::Pen, DrawMode::FillEraser};
-  static const char *const names[] = {"Stroke Pen", "Fill Pen", "Bezier Pen", "Fill Eraser"};
+  const DrawMode modes[] = {DrawMode::Freehand,   DrawMode::FillPen,      DrawMode::Pen,
+                            DrawMode::FillEraser, DrawMode::StrokeEraser, DrawMode::Trimmer};
+  static const char *const names[] = {"Stroke Pen", "Fill Pen", "Bezier Pen", "Fill Eraser", "Stroke Eraser", "Vector Trimmer"};
   std::vector<FlyoutItem> items;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 6; i++) {
     const DrawMode mode = modes[i];
     items.push_back({names[i], [mode, col](ImDrawList *dl, ImVec2 c, float s) { draw_mode_icon(dl, mode, c, s, col); },
                      ts.tool == Tool::Draw && ts.draw_mode == mode, mode == DrawMode::FillEraser});
@@ -2852,6 +2869,10 @@ static void draw_stroke_dropdown(WindowManager &wm)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("A stroke's ends join a point they finish on, so the two move together");
   }
+  ImGui::Checkbox("Trim Overshoots", &ts.draw_trim);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("A stroke's ends past the last line they crossed go, on lifting");
+  }
 }
 
 /* The Advanced dropdown: how the pen sets the line's width. */
@@ -2883,7 +2904,7 @@ static void draw_header(Context &C)
   ToolSettings &ts = wm.tool_settings;
   const float h = ImGui::GetFrameHeight();
   const DrawMode mode = ts.draw_mode;
-  const bool bezier = mode == DrawMode::Pen, fill_pen = mode == DrawMode::FillPen, eraser = mode == DrawMode::FillEraser;
+  const bool bezier = mode == DrawMode::Pen, fill_pen = mode == DrawMode::FillPen, eraser = draw_mode_cuts(mode);
   const DrawPreset *preset = draw_preset_find(ts.draw_preset);
   const bool changed = preset && !bezier && (!(preset->ink == ts.ink) || preset->line_width != draw_width(ts, mode));
   const std::string name = bezier ? "Bezier Pen" : ts.draw_preset + (changed ? " *" : "");
@@ -2927,11 +2948,17 @@ static void draw_header(Context &C)
     return;
   }
   if (eraser) {
+    if (mode == DrawMode::StrokeEraser) {
+      if (header_toggle("Whole Line", ts.ink.erase_whole, "Take away the whole of every line touched, not just the part brushed")) {
+        ts.ink.erase_whole = !ts.ink.erase_whole;
+      }
+      ImGui::SameLine(0, 2.0f);
+    }
     if (header_toggle("All Layers", ts.draw_erase_all_layers, "Cut every drawing being edited, not only the active one")) {
       ts.draw_erase_all_layers = !ts.draw_erase_all_layers;
     }
     ImGui::SameLine(0, 2.0f);
-    if (header_toggle("Selected Only", ts.draw_erase_selected, "Cut only the selected shapes' fills")) {
+    if (header_toggle("Selected Only", ts.draw_erase_selected, "Cut only the selected shapes")) {
       ts.draw_erase_selected = !ts.draw_erase_selected;
     }
     ImGui::SameLine();
@@ -12524,16 +12551,13 @@ static void viewport_draw_contents(Area &area, Context &C)
           if (ts.draw_mode == DrawMode::Pen) {
             pen_click(C, *layer, mouse_layer, radius);
           }
-          else if (wm.pen_eraser && ts.draw_mode == DrawMode::Freehand) {
-            /* The pen's eraser end doesn't draw. */
-            g_drag = {};
-            report_banner(ReportType::Info, "The pen's eraser end doesn't draw");
-          }
           else {
-            /* Ctrl or the pen's eraser end cuts with the Fill Pen, as Grease Pencil's Ctrl erases. */
-            g_drag.ink_mode = ts.draw_mode == DrawMode::FillPen && (io.KeyCtrl || wm.pen_eraser) ? DrawMode::FillEraser
-                                                                                                 : ts.draw_mode;
-            g_drag.ink.begin(ts.ink, {pixel, draw_width(ts, ts.draw_mode) * 0.5f,
+            /* Ctrl or the pen's eraser end erases with its matching eraser, as Grease Pencil's Ctrl does. */
+            const bool erase = io.KeyCtrl || wm.pen_eraser;
+            g_drag.ink_mode = erase && ts.draw_mode == DrawMode::FillPen    ? DrawMode::FillEraser
+                              : erase && ts.draw_mode == DrawMode::Freehand ? DrawMode::StrokeEraser
+                                                                            : ts.draw_mode;
+            g_drag.ink.begin(ts.ink, {pixel, draw_width(ts, g_drag.ink_mode) * 0.5f,
                                       2.0f / std::max(float(doc.height), 1.0f)});
             if ((g_drag.pen_stroke = pen_touch_pressed())) {
               draw_take_pen(view, to_layer);
@@ -12644,9 +12668,9 @@ static void viewport_draw_contents(Area &area, Context &C)
           }
           /* An eraser shows where it has been; it cuts on lifting. */
           draw_tool_preview(dl, view, to_document,
-                            g_drag.ink_mode == DrawMode::FillEraser ? Color{0.9f, 0.3f, 0.3f, 0.4f}
-                            : g_drag.ink_mode == DrawMode::FillPen  ? ts.style.fill
-                                                                    : ts.style.line,
+                            draw_mode_cuts(g_drag.ink_mode)        ? Color{0.9f, 0.3f, 0.3f, 0.4f}
+                            : g_drag.ink_mode == DrawMode::FillPen ? ts.style.fill
+                                                                   : ts.style.line,
                             tip);
         }
         break;
@@ -12684,9 +12708,11 @@ static void viewport_draw_contents(Area &area, Context &C)
           else {
             draw_take_pen(view, to_layer);
             if (draw_stroke_commit(C, *layer, g_drag.ink, g_drag.ink_mode)) {
-              push_undo(C, g_drag.ink_mode == DrawMode::FillEraser ? "Erase Fill"
-                           : g_drag.ink_mode == DrawMode::FillPen  ? "Paint Fill"
-                                                                   : "Draw");
+              push_undo(C, g_drag.ink_mode == DrawMode::FillEraser     ? "Erase Fill"
+                           : g_drag.ink_mode == DrawMode::StrokeEraser ? "Erase Line"
+                           : g_drag.ink_mode == DrawMode::Trimmer      ? "Trim Line"
+                           : g_drag.ink_mode == DrawMode::FillPen      ? "Paint Fill"
+                                                                       : "Draw");
             }
           }
           break;

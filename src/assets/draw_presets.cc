@@ -100,6 +100,13 @@ static std::vector<DrawPreset> builtin_presets()
       bezier,
       area("Fill Eraser", DrawMode::FillEraser, 0.04f, DRAW_CATEGORY_ERASERS, [](InkSettings &ink) { ink.use_pressure = false; }),
       area("Pressure Fill Eraser", DrawMode::FillEraser, 0.06f, DRAW_CATEGORY_ERASERS, [](InkSettings &ink) { ink.min_size = 0.2f; }),
+      area("Stroke Eraser", DrawMode::StrokeEraser, 0.02f, DRAW_CATEGORY_ERASERS, [](InkSettings &ink) { ink.use_pressure = false; }),
+      area("Whole Line Eraser", DrawMode::StrokeEraser, 0.02f, DRAW_CATEGORY_ERASERS,
+           [](InkSettings &ink) {
+             ink.use_pressure = false;
+             ink.erase_whole = true;
+           }),
+      area("Vector Trimmer", DrawMode::Trimmer, 0.02f, DRAW_CATEGORY_TRIM, [](InkSettings &ink) { ink.use_pressure = false; }),
   };
 }
 
@@ -118,6 +125,22 @@ static std::string library_dir()
   return path_to_utf8(path_from_utf8(shapes).parent_path() / DRAW_DIR);
 }
 
+static const char *mode_id(DrawMode mode)
+{
+  switch (mode) {
+    case DrawMode::FillPen:
+      return "FILL_PEN";
+    case DrawMode::FillEraser:
+      return "FILL_ERASER";
+    case DrawMode::StrokeEraser:
+      return "STROKE_ERASER";
+    case DrawMode::Trimmer:
+      return "TRIMMER";
+    default:
+      return "STROKE_PEN";
+  }
+}
+
 static const char *stabilizer_id(InkStabilizer s)
 {
   return s == InkStabilizer::Off ? "OFF" : s == InkStabilizer::Smart ? "SMART" : "PULLED_STRING";
@@ -128,7 +151,7 @@ static json preset_json(const DrawPreset &p)
   const InkSettings &ink = p.ink;
   return {{"version", 1},
           {"name", p.name},
-          {"mode", p.mode == DrawMode::FillPen ? "FILL_PEN" : p.mode == DrawMode::FillEraser ? "FILL_ERASER" : "STROKE_PEN"},
+          {"mode", mode_id(p.mode)},
           {"lineWidth", p.line_width},
           {"stabilizer", stabilizer_id(ink.stabilizer)},
           {"smoothing", ink.smoothing},
@@ -142,7 +165,8 @@ static json preset_json(const DrawPreset &p)
           {"speedWidth", ink.speed_width},
           {"tiltWidth", ink.tilt_width},
           {"taperStart", ink.taper_start},
-          {"taperEnd", ink.taper_end}};
+          {"taperEnd", ink.taper_end},
+          {"eraseWhole", ink.erase_whole}};
 }
 
 static DrawPreset preset_from_json(const json &j, const std::string &fallback_name)
@@ -152,7 +176,11 @@ static DrawPreset preset_from_json(const json &j, const std::string &fallback_na
   InkSettings &ink = p.ink;
   p.name = j.value("name", fallback_name);
   const std::string mode = j.value("mode", "STROKE_PEN");
-  p.mode = mode == "FILL_PEN" ? DrawMode::FillPen : mode == "FILL_ERASER" ? DrawMode::FillEraser : DrawMode::Freehand;
+  for (const DrawMode kind : {DrawMode::FillPen, DrawMode::FillEraser, DrawMode::StrokeEraser, DrawMode::Trimmer}) {
+    if (mode == mode_id(kind)) {
+      p.mode = kind;
+    }
+  }
   p.line_width = std::max(j.value("lineWidth", p.line_width), 0.0f);
   const std::string stabilizer = j.value("stabilizer", "SMART");
   ink.stabilizer = stabilizer == "OFF"             ? InkStabilizer::Off
@@ -175,6 +203,7 @@ static DrawPreset preset_from_json(const json &j, const std::string &fallback_na
   ink.tilt_width = amount("tiltWidth", none.tilt_width);
   ink.taper_start = std::max(j.value("taperStart", none.taper_start), 0.0f);
   ink.taper_end = std::max(j.value("taperEnd", none.taper_end), 0.0f);
+  ink.erase_whole = j.value("eraseWhole", none.erase_whole);
   p.category = DRAW_CATEGORY_MINE;
   return p;
 }

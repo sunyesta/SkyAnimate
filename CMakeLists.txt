@@ -46,6 +46,7 @@ set(OANIM_SOURCES
   src/data/document.cc
   src/data/document_layers.cc
   src/data/layer.cc
+  src/data/line_cut.cc
   src/data/material.cc
   src/data/annotations.cc
   src/data/layer_mirror.cc
@@ -426,6 +427,8 @@ add_test(NAME draw_presets
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_presets.py)
 add_test(NAME fill_paint
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_fill_paint.py)
+add_test(NAME line_cut
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_line_cut.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

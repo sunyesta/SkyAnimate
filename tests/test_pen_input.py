@@ -1,6 +1,6 @@
 """Pen tablets (Windows Ink, every sample): the Draw tool's prediction, its settings, the pen's state.
 
-Every sample of a pen's touch reaching the Draw tool, and the eraser end not drawing, need the window: they are
+Every sample of a pen's touch reaching the Draw tool, and the eraser end erasing, need the window: they are
 checked live with oanim.wm.mouse_simulate(pen=[...]) on a private copy.
 
 Run with:  OpenAnimate --background --python tests/test_pen_input.py
