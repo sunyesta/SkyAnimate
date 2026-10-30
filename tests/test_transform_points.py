@@ -62,4 +62,51 @@ assert [k["frame"] for k in layer.keyframes("points[0].pos")] == [0, 10]
 doc.frame_current = 0
 assert close(where(0), (1.5, 0.5)), "the setup stays"
 
+# Part of a shape: a selected point's handle leading to a point left out keeps its length (it only rides along with
+# its point), so the part not picked keeps its shape. A circle's top, right and bottom points scaled twice as wide
+# from the left of their box: the left half stays round, exactly as it was.
+import math
+doc.frame_current = 0
+oanim.ops.layer.new()
+ring = oanim.data.layers.active
+ring.add_primitive("CIRCLE", [(-1.0, -1.0), (1.0, 1.0)], fill=True)
+
+
+def ring_handles():
+    return [(tuple(round(v, 4) for v in i), tuple(round(v, 4) for v in o)) for _, i, o in ring.curve_handles(0)]
+
+
+def left_half():
+    pts, _ = ring.shape_outline(0, 16)
+    return sorted((round(x, 4), round(y, 4)) for x, y in pts if x < -1e-3)
+
+
+left_before, handles_before = left_half(), ring_handles()
+places = [(round(x, 4), round(y, 4)) for x, y, _ in ring.points]
+left = places.index((-1.0, 0.0))
+top, right_i = places.index((0.0, 1.0)), places.index((1.0, 0.0))
+oanim.ops.mesh.select_none()
+ring.select_points([i for i in range(len(places)) if i != left])
+assert oanim.ops.mesh.transform_selected(scale_x="2", scale_y="1", pivot_x="0", pivot_y="0") == {'FINISHED'}
+assert left_half() == left_before, "the left half keeps its shape"
+assert ring_handles()[left] == handles_before[left]
+h_in, h_out = ring_handles()[top]
+assert abs(h_in[0] - 1.1046) < 1e-3 and abs(h_out[0] + 0.5523) < 1e-3, ("toward the right: stretched; left: kept", h_in, h_out)
+oanim.ops.ed.undo()
+# Turned, a smooth point's handle toward the part left out keeps its length and stays in line: no corner.
+oanim.ops.mesh.select_none()
+ring.select_points([i for i in range(len(places)) if i != left])
+assert oanim.ops.mesh.transform_selected(angle="30", pivot_x="0", pivot_y="0") == {'FINISHED'}
+(ix, iy), (ox, oy) = ring_handles()[top]
+px, py = ring.points[top][:2]
+a, b = (ix - px, iy - py), (ox - px, oy - py)
+assert abs(math.hypot(*b) - 0.5523) < 1e-3, ("its length kept", b)
+assert abs(a[0] * b[1] - a[1] * b[0]) < 1e-4 and a[0] * b[0] + a[1] * b[1] < 0, ("in line", a, b)
+oanim.ops.ed.undo()
+# Everything picked: every handle scales, as before.
+oanim.ops.mesh.select_all()
+assert oanim.ops.mesh.transform_selected(scale_x="2", scale_y="1", pivot_x="0", pivot_y="0") == {'FINISHED'}
+assert abs(ring_handles()[top][1][0] + 1.1046) < 1e-3, ring_handles()[top]
+oanim.ops.ed.undo()
+
 print("Transform Points tests passed")

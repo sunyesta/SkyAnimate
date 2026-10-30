@@ -8640,44 +8640,100 @@ static bool nearest_point(Context &C, const Transform2D &to_gizmo, float2 p, flo
 }
 
 /* Moves everything gathered in `moving` by `map` (gizmo space), proportional editing blending it. */
-static void point_gizmo_place(Context &C, ModalTransform &moving, const Transform2D &to_document,
-                              const Transform2D &map)
+/* Whether `item`, a handle of a selected point, leads to a point that isn't selected (the curve's next point
+ * shown for an out handle, its last for an in handle; none past an open end). */
+static bool handle_leads_out(const Document &doc, const ModalTransform::Item &item)
+{
+  const Layer *layer = layer_find(doc, item.layer);
+  if (!layer || item.curve < 0 || item.curve >= int(layer->drawing.curves.size())) {
+    return false;
+  }
+  const VectorDrawing &drawing = layer->drawing;
+  const Curve &curve = drawing.curves[size_t(item.curve)];
+  const int n = int(curve.points.size());
+  /* The next point shown: detail hidden above the shape's level rides the curve, picked or not. */
+  int k = item.index;
+  for (int step = 0; step < n; step++) {
+    k += item.pre ? -1 : 1;
+    if (k < 0 || k >= n) {
+      if (!curve.closed) {
+        return false;
+      }
+      k = (k + n) % n;
+    }
+    if (k == item.index) {
+      return false;
+    }
+    const MeshPoint &neighbour = drawing.points[size_t(curve.points[size_t(k)].point)];
+    if (!neighbour.detail.hidden) {
+      return !neighbour.selected;
+    }
+  }
+  return false;
+}
+
+/* The selection mapped by the Transform Points box (document space -> document space). A selected point's handle
+ * that leads to a point left out keeps its length and only rides along with its point, so the part not picked
+ * keeps its shape (scaling a circle's right half from the right leaves the left half round); a smooth point's
+ * such handle stays in line with its other one, which the map turns and stretches, so no corner appears where
+ * the selection ends. With proportional editing the points left out come along, and every handle maps. */
+static void point_gizmo_place_map(Context &C, ModalTransform &moving, const std::function<float2(float2)> &map)
 {
   ModalLayers layers;
   if (!modal_layers(C, moving, layers)) {
     return;
   }
-  const Transform2D in_document = to_document * map * to_document.inverted();
+  const Document &doc = *C.document;
+  const bool keep_outward = !C.wm->tool_settings.proportional;
+  std::map<std::tuple<uint64_t, int, int, bool>, const ModalTransform::Item *> handles;
+  for (const ModalTransform::Item &item : moving.items) {
+    if (item.curve >= 0 && !item.direct) {
+      handles[{item.layer, item.curve, item.index, item.pre}] = &item;
+    }
+  }
   for (const ModalTransform::Item &item : moving.items) {
     const float w = modal_weight(C.wm->tool_settings, item);
     if (w <= 0.0f) {
       modal_rest(layers, item);
       continue;
     }
-    modal_place(layers, item, item.start + (in_document.apply(item.start) - item.start) * w);
+    float2 to = map(item.start);
+    if (keep_outward && item.curve >= 0 && !item.direct && !item.proportional && item.mirror_source < 0 &&
+        handle_leads_out(doc, item))
+    {
+      const float2 offset = item.start - item.origin;
+      const float2 at = map(item.origin);
+      float2 out = offset;
+      const auto other = handles.find({item.layer, item.curve, item.index, !item.pre});
+      if (other != handles.end() && length(offset) > 1e-9f) {
+        const float2 other0 = other->second->start - item.origin;
+        const float2 other1 = map(other->second->start) - at;
+        if (length(other0) > 1e-9f && length(other1) > 1e-9f &&
+            dot(normalize(other0), normalize(offset)) < -0.9998f)
+        {
+          out = -normalize(other1) * length(offset);
+        }
+      }
+      to = at + out;
+    }
+    modal_place(layers, item, item.start + (to - item.start) * w);
   }
   modal_mirror(C, moving, layers);
+}
+
+static void point_gizmo_place(Context &C, ModalTransform &moving, const Transform2D &to_document,
+                              const Transform2D &map)
+{
+  const Transform2D in_document = to_document * map * to_document.inverted();
+  point_gizmo_place_map(C, moving, [&](float2 p) { return in_document.apply(p); });
 }
 
 /* The same through any map (gizmo space): a Distort or Warp cage's. */
 static void point_gizmo_place(Context &C, ModalTransform &moving, const Transform2D &to_document,
                               const std::function<float2(float2)> &map)
 {
-  ModalLayers layers;
-  if (!modal_layers(C, moving, layers)) {
-    return;
-  }
   const Transform2D to_gizmo = to_document.inverted();
-  for (const ModalTransform::Item &item : moving.items) {
-    const float w = modal_weight(C.wm->tool_settings, item);
-    if (w <= 0.0f) {
-      modal_rest(layers, item);
-      continue;
-    }
-    const float2 to = to_document.apply(map(to_gizmo.apply(item.start)));
-    modal_place(layers, item, item.start + (to - item.start) * w);
-  }
-  modal_mirror(C, moving, layers);
+  point_gizmo_place_map(C, moving, [&](float2 p) { return to_document.apply(map(to_gizmo.apply(p))); });
 }
 
 /* The header's fields and buttons: mesh.transform_selected, one map of the selection as one undo step. */
