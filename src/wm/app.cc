@@ -723,7 +723,7 @@ static ImGuiID workspace_dockspace_id(const Workspace &workspace)
 }
 
 /* Menu item that runs an operator, showing its shortcut and greyed out when its poll fails. */
-static void menu_operator(Context &C, const char *label, const char *idname)
+static void menu_operator(Context &C, const char *label, const char *idname, const OpArgs &args = {})
 {
   const OperatorType *ot = operators().find(idname);
   if (!ot) {
@@ -731,7 +731,7 @@ static void menu_operator(Context &C, const char *label, const char *idname)
   }
   const std::string shortcut = keymaps().shortcut_for(idname);
   if (ImGui::MenuItem(label, shortcut.empty() ? nullptr : shortcut.c_str(), false, operator_poll(C, *ot))) {
-    operator_call(C, idname);
+    operator_call(C, idname, args);
   }
   if (!ot->description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("%s\n\nPython: oanim.ops.%s()", ot->description.c_str(), idname);
@@ -942,7 +942,6 @@ void App::draw_top_bar()
 
   if (ImGui::BeginMenu("Render")) {
     menu_operator(ctx_, "Render Frame", "render.render");
-    menu_operator(ctx_, "Render as SVG...", "render.render_svg");
     if (ImGui::MenuItem("View Render", nullptr, show_render_, render_texture_ != 0)) {
       show_render_ = !show_render_;
     }
@@ -1056,6 +1055,12 @@ void App::draw_file_menu()
   ImGui::Separator();
   if (ImGui::BeginMenu("Import")) {
     menu_operator(ctx_, "Media (Image, Video, Sound)...", "media.add");
+    ImGui::EndMenu();
+  }
+  if (ImGui::BeginMenu("Export")) {
+    menu_operator(ctx_, "SVG (Current Frame)...", "export.svg");
+    menu_operator(ctx_, "PDF (Current Frame)...", "export.pdf", {{"frames", "CURRENT"}});
+    menu_operator(ctx_, "PDF (Frame Range, a Page a Frame)...", "export.pdf", {{"frames", "RANGE"}});
     ImGui::EndMenu();
   }
   ImGui::Separator();

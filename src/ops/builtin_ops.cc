@@ -8,6 +8,7 @@
 
 #include "core/log.hh"
 #include "data/document.hh"
+#include "io/pdf_export.hh"
 #include "io/svg_export.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
@@ -16,6 +17,34 @@
 #include "wm/file_dialog.hh"
 
 namespace oanim {
+
+/* An export's file: the "filepath" argument (its extension added when missing), or, with a window, asked for in a
+ * save dialog that runs `idname` again with it (false then: nothing yet). */
+static bool export_path(Context &C, const char *idname, const char *filter_name, const char *extension,
+                        const std::string &default_name, std::string *r_path)
+{
+  std::string path = op_arg(C, "filepath");
+  if (path.empty()) {
+    if (C.wm->background) {
+      report(ReportType::Error, std::string(idname) + " needs a filepath without a window");
+      return false;
+    }
+    Context *ctx = &C;
+    OpArgs args = C.op_args ? *C.op_args : OpArgs{};
+    const std::string op = idname;
+    file_dialog_save(filter_name, extension, default_name, [ctx, args, op](const std::string &chosen) mutable {
+      args["filepath"] = chosen;
+      operator_call(*ctx, op, args);
+    });
+    return false;
+  }
+  if (std::filesystem::path(std::u8string(path.begin(), path.end())).extension() != std::string(".") + extension) {
+    path += std::string(".") + extension;
+  }
+  *r_path = path;
+  return true;
+}
+
 
 /* What undo leaves alone: the playhead (as in Blender and Moho) and text blocks, so undoing a
  * drawing change never loses typed code. The action being edited is undone with the rest: its
@@ -366,33 +395,20 @@ void builtin_operators_register()
     operators().add(std::move(ot));
   }
   {
-    /* The current frame through the camera as vectors (io/svg_export.hh): asks where to save it when not told. */
+    /* The current frame through the camera as vectors (io/svg_export.hh). */
     OperatorType ot;
-    ot.idname = "render.render_svg";
-    ot.name = "Render as SVG";
-    ot.description = "Render the current frame at the document's size as an SVG file: fills, lines and masks as "
-                     "vectors, media as pictures (brushed lines come out solid)";
+    ot.idname = "export.svg";
+    ot.name = "Export SVG";
+    ot.description = "Save the current frame through the camera as an SVG file, at the document's size: fills, lines "
+                     "and masks as vectors, media and brushed lines as pictures";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.wm != nullptr && C.document != nullptr; };
     ot.exec = [](Context &C) {
-      std::string path = op_arg(C, "filepath");
-      if (path.empty()) {
-        if (C.wm->background) {
-          report(ReportType::Error, "render.render_svg needs a filepath without a window");
-          return OpStatus::Cancelled;
-        }
-        char name[32];
-        std::snprintf(name, sizeof(name), "_%04d.svg", C.document->frame_current);
-        Context *ctx = &C;
-        OpArgs args = C.op_args ? *C.op_args : OpArgs{};
-        file_dialog_save("SVG images", "svg", C.document->name + name, [ctx, args](const std::string &chosen) mutable {
-          args["filepath"] = chosen;
-          operator_call(*ctx, "render.render_svg", args);
-        });
+      char name[32];
+      std::snprintf(name, sizeof(name), "_%04d.svg", C.document->frame_current);
+      std::string path;
+      if (!export_path(C, "export.svg", "SVG images", "svg", C.document->name + name, &path)) {
         return OpStatus::Cancelled;
-      }
-      if (std::filesystem::path(std::u8string(path.begin(), path.end())).extension() != ".svg") {
-        path += ".svg";
       }
       SvgExport options;
       options.width = op_arg_int(C, "width", 0);
@@ -404,17 +420,72 @@ void builtin_operators_register()
         report(ReportType::Error, error);
         return OpStatus::Cancelled;
       }
-      std::string text = "Rendered frame " + std::to_string(C.document->frame_current) + " as SVG to " + path + " (" +
+      std::string text = "Exported frame " + std::to_string(C.document->frame_current) + " as SVG to " + path + " (" +
                          std::to_string(made.fills) + " fills, " + std::to_string(made.lines) + " lines, " +
                          std::to_string(made.masks) + " masks";
-      if (made.pictures > 0) {
-        text += ", " + std::to_string(made.pictures) + " pictures";
-      }
-      text += ")";
       if (made.brushed > 0) {
-        text += "; " + std::to_string(made.brushed) + " brushed lines are solid in it";
+        text += ", " + std::to_string(made.brushed) + " brushed lines as pictures";
       }
-      report(ReportType::Info, text);
+      if (made.pictures > 0) {
+        text += ", " + std::to_string(made.pictures) + " media pictures";
+      }
+      report(ReportType::Info, text + ")");
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* Frames through the camera as vector pages, every layer a PDF layer (io/pdf_export.hh). */
+    OperatorType ot;
+    ot.idname = "export.pdf";
+    ot.name = "Export PDF";
+    ot.description = "Save frames through the camera as a PDF, a page a frame (frames: CURRENT, or RANGE for the "
+                     "scene's frame range), every layer a PDF layer that can be switched off and on (hidden layers "
+                     "and guides in it too, switched off)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.wm != nullptr && C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      const Document &doc = *C.document;
+      const bool range = op_arg(C, "frames", "CURRENT") == "RANGE";
+      const int first = op_arg_int(C, "frame_start", doc.frame_start);
+      const int last = std::max(op_arg_int(C, "frame_end", doc.frame_end), first);
+      char name[48];
+      if (range) {
+        std::snprintf(name, sizeof(name), "_%04d-%04d.pdf", first, last);
+      }
+      else {
+        std::snprintf(name, sizeof(name), "_%04d.pdf", doc.frame_current);
+      }
+      std::string path;
+      if (!export_path(C, "export.pdf", "PDF documents", "pdf", doc.name + name, &path)) {
+        return OpStatus::Cancelled;
+      }
+      PdfExport options;
+      options.width = op_arg_int(C, "width", 0);
+      options.height = op_arg_int(C, "height", 0);
+      options.transparent = op_arg_bool(C, "transparent");
+      if (range) {
+        options.frame_first = first;
+        options.frame_last = last;
+      }
+      std::string error;
+      PdfExportReport made;
+      if (!pdf_export(doc, path, options, &error, &made)) {
+        report(ReportType::Error, error);
+        return OpStatus::Cancelled;
+      }
+      std::string text = "Exported " + std::to_string(made.pages) + (made.pages == 1 ? " page" : " pages") +
+                         " as PDF to " + path + " (" + std::to_string(made.layers) + " layers, " +
+                         std::to_string(made.masks) + " masks";
+      if (made.brushed > 0) {
+        text += ", " + std::to_string(made.brushed) + " brushed lines as pictures";
+      }
+      if (made.pictures > 0) {
+        text += ", " + std::to_string(made.pictures) + " media pictures";
+      }
+      char size[32];
+      std::snprintf(size, sizeof(size), "; %.1f MB", double(made.bytes) / 1e6);
+      report(ReportType::Info, text + ")" + size);
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

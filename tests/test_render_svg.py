@@ -28,7 +28,7 @@ def square(name, x0, x1, hidden=False, fill=True):
 
 def render(name, **args):
     path = folder / name
-    assert oanim.ops.render.render_svg(filepath=str(path), **args) == {'FINISHED'}
+    assert oanim.ops.export.svg(filepath=str(path), **args) == {'FINISHED'}
     assert path.exists(), path
     return ET.parse(path).getroot()
 
@@ -38,7 +38,7 @@ def paths(root):
 
 
 # Without a filepath and no window there's nothing to ask: it says so.
-assert oanim.ops.render.render_svg() == {'CANCELLED'}
+assert oanim.ops.export.svg() == {'CANCELLED'}
 
 art = square("art", -0.5, 0.5)
 root = render("plain.svg")
@@ -46,11 +46,10 @@ assert root.tag == SVG + "svg", root.tag
 assert (root.get("width"), root.get("height")) == (str(doc.width), str(doc.height)), root.attrib
 assert root.get("viewBox") == "0 0 %d %d" % (doc.width, doc.height)
 # The background, then the square's fill (Beziers) and its line (an outline, filled).
-rects = list(root.iter(SVG + "rect"))
-assert rects and rects[0].get("width") == str(doc.width), [r.attrib for r in rects]
 ps = paths(root)
-assert len(ps) == 2, [p.attrib for p in ps]
-fill, line = ps
+assert len(ps) == 3, [p.attrib for p in ps]
+background, fill, line = ps
+assert background.get("d") == "M0 0L%d 0 %d %d 0 %dZ" % (doc.width, doc.width, doc.height, doc.height), background.attrib
 assert "C" in fill.get("d") and fill.get("d").endswith("Z"), fill.get("d")[:80]
 assert "C" not in line.get("d"), line.get("d")[:80]
 # The square is in the middle of the picture: its corners at the frame's +-0.5 (the frame 2 units tall).
@@ -60,10 +59,10 @@ assert abs(min(xs) - (doc.width / 2 - doc.height / 4)) < 0.6 and abs(max(xs) - (
 
 # A transparent one has no background.
 root = render("clear.svg", transparent="1")
-assert not list(root.iter(SVG + "rect")), "no background"
+assert len(paths(root)) == 2, "no background"
 
 # A .svg is added when the name has none.
-assert oanim.ops.render.render_svg(filepath=str(folder / "named")) == {'FINISHED'}
+assert oanim.ops.export.svg(filepath=str(folder / "named")) == {'FINISHED'}
 assert (folder / "named.svg").exists()
 
 # A mask: the art refers to a mask (its layer's card), painted from the hidden square's shape.
@@ -78,8 +77,8 @@ assert masked, "the art masked"
 mask_id = masked[0].get("mask")[5:-1]
 assert mask_id in masks, mask_id
 # The hidden mask layer isn't drawn in colour, only in the mask.
-drawn = [p for p in paths(root) if p.get("fill") not in ("#fff", "#000")]
-assert len(drawn) == 2, [p.attrib for p in drawn]
+drawn = [p for e in root if e.tag != SVG + "defs" for p in e.iter(SVG + "path")]
+assert len(drawn) == 3, [p.attrib for p in drawn]
 
 # A see-through layer fades as a whole: its shapes in a group with its opacity.
 art.opacity = 0.5

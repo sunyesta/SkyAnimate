@@ -4,8 +4,8 @@
  * their Bezier outlines; a line is the outline of what the renderer draws for it (its width at every point, its
  * joins and ends), so it can be filled as one path; masks are SVG masks painted as the cards paint theirs (Start
  * With, Add and Subtract, Invert, Union, Difference and Intersection, Grow and Shrink, Extend, Fills or Strokes
- * Only, Clip to Below); faded groups and see-through layers are groups with an opacity; media pictures go in as
- * PNGs. Brushed lines are written as solid lines (their stamps are pictures). */
+ * Only, Clip to Below); faded groups and see-through layers are groups with an opacity; media pictures and brushed
+ * lines' stamps go in as PNGs (io/vector_export.hh). */
 
 #include <string>
 
@@ -25,7 +25,7 @@ struct SvgExportReport {
   int fills = 0;
   int lines = 0;
   int masks = 0;
-  /* Brushed lines written solid. */
+  /* Brushed lines, as pictures of their stamps. */
   int brushed = 0;
   int pictures = 0;
 };
