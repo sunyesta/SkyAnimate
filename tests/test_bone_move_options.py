@@ -126,6 +126,32 @@ for without in ("0",):
     ops.ed.undo()
     ops.ed.undo()
 
+# --- Selection to Cursor (and to Grid, to Active) take both options, shown while posing ----------------------
+doc.frame_current = 14
+oanim.wm.set_cursor((0.4, -0.6))
+pick("arm")
+# An undo step holding the pick (the panel's redo undoes back to it).
+ops.anim.keyframe_insert()
+prop_was = bone("prop")
+arm_was = bone("arm")
+assert ops.view.snap_selected_to_cursor(without_children="1", only_bones="0") == {'FINISHED'}
+assert not close(bone("arm")["head"], arm_was["head"]), "the arm moved"
+assert close(bone("prop")["head"], prop_was["head"]) and close(bone("prop")["tail"], prop_was["tail"]),     ("its child stays", bone("prop"), prop_was)
+idname, args, _ = oanim.wm.last_operation()
+assert idname == "view.snap_selected_to_cursor" and args["posing"] == "1" and args["without_children"] == "1", args
+# Unticked in the panel: the child comes along.
+r = oanim.wm.redo_last(without_children=False)
+assert r == "FINISHED", (r, oanim.wm.last_operation())
+assert not close(bone("prop")["head"], prop_was["head"]), "off: the child moves with it"
+ops.ed.undo()
+# Left out, they are as the bone moves last had them (kept until the frame changes).
+assert ops.armature.translate(move_x="0", move_y="0.1", posing="1", without_children="1") == {'FINISHED'}
+ops.ed.undo()
+pick("arm")
+assert ops.view.snap_selected_to_cursor() == {'FINISHED'}
+assert close(bone("prop")["head"], prop_was["head"]), "kept from the last move"
+assert oanim.wm.last_operation()[1]["without_children"] == "1"
+ops.ed.undo()
 # --- Move Only Bones on a dynamic bone: the drawing stays where it showed, as the swing it has now --------
 ops.wm.read_homefile(confirmed="1")
 layers = oanim.data.layers
@@ -159,5 +185,26 @@ assert all(close(a, b, 2e-3) for a, b in zip(now, was)), ("the strand stays", no
 ops.ed.undo()
 assert ops.armature.rotate(angle="35", posing="1", only_bones="0") == {'FINISHED'}
 assert not all(close(a, b, 2e-3) for a, b in zip(strand.evaluated()[0], was)), "off: it follows the hair"
+
+ops.ed.undo()
+
+# Move Only Bones: the strand the hair bends stays where it shows.
+was = strand.evaluated()[0]
+layers.active = rig
+ops.armature.select_none()
+rig.select_bone("hair")
+ops.anim.keyframe_insert()
+was = strand.evaluated()[0]
+assert ops.view.snap_selected_to_cursor(only_bones="1") == {'FINISHED'}
+assert all(close(a, b, 2e-3) for a, b in zip(strand.evaluated()[0], was)), "the strand stays"
+assert oanim.wm.redo_last(only_bones=False) == "FINISHED"
+assert not all(close(a, b, 2e-3) for a, b in zip(strand.evaluated()[0], was)), "off: it follows the hair"
+ops.ed.undo()
+# On the setup frame they aren't offered (bones move without children there anyway).
+doc.frame_current = 0
+pick("head")
+assert ops.view.snap_selected_to_cursor() == {'FINISHED'}
+assert oanim.wm.last_operation()[1]["posing"] == "0"
+ops.ed.undo()
 
 print("bone_move_options: ok")

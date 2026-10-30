@@ -9074,9 +9074,24 @@ static bool snap_selection_to(Context &C, float2 to, bool keep_offset)
       }
       return snap_points_to(C, [&](float2) { return to; });
     case SnapSelection::Bones: {
+      /* Move Only Bones and Move Without Children as the bone moves have them (kept until the frame or action
+       * changes); posing only, so the panel shows them then. */
+      const bool posing = doc.frame_current != 0;
+      op_arg_used(C, "posing", posing ? "1" : "0");
+      const auto option = [&](const char *name, StickyOption &sticky) {
+        if (op_has_arg(C, name)) {
+          sticky_set(sticky, doc, op_arg_bool(C, name));
+        }
+        const bool on = sticky_on(sticky, doc);
+        op_arg_used(C, name, on ? "1" : "0");
+        return on ? "1" : "0";
+      };
+      const char *only_bones = option("only_bones", g_move_only_bones);
+      const char *without_children = option("without_children", g_move_without_children);
       const float2 d = to - middle;
-      return operator_call(C, "armature.translate", {{"move_x", num_arg(d.x)}, {"move_y", num_arg(d.y)}}) ==
-             OpStatus::Finished;
+      return operator_call(C, "armature.translate",
+                           {{"move_x", num_arg(d.x)}, {"move_y", num_arg(d.y)}, {"only_bones", only_bones},
+                            {"without_children", without_children}}) == OpStatus::Finished;
     }
     case SnapSelection::Media: {
       Layer &layer = *document_active_layer(doc);
@@ -9142,7 +9157,9 @@ static void snap_operators_register()
     operators().add(std::move(ot));
   };
   selection_op("view.snap_selected_to_grid", "Selection to Grid",
-               "Move each selected point onto its nearest grid point (bones and a Media layer: their middle)", {},
+               "Move each selected point onto its nearest grid point (bones and a Media layer: their middle); "
+               "only_bones= and without_children= as Move Bones",
+               {only_bones_option(), without_children_option()},
                [](Context &C) {
                  const float grid = C.wm->tool_settings.grid_size;
                  if (snap_selection(C) == SnapSelection::Points) {
@@ -9159,12 +9176,14 @@ static void snap_operators_register()
   offset.fallback = "0";
   selection_op("view.snap_selected_to_cursor", "Selection to Cursor",
                "Move the selection to the 2D cursor: each point onto it, or with use_offset=1 the selection's middle "
-               "(bones always move together)",
-               {offset}, [](Context &C) {
+               "(bones always move together); only_bones= and without_children= as Move Bones",
+               {offset, only_bones_option(), without_children_option()}, [](Context &C) {
                  return snap_selection_to(C, C.wm->tool_settings.cursor, op_arg_bool(C, "use_offset"));
                });
   selection_op("view.snap_selected_to_active", "Selection to Active",
-               "Move the selection onto the active element (each point; bones together)", {}, [](Context &C) {
+               "Move the selection onto the active element (each point; bones together); only_bones= and "
+               "without_children= as Move Bones",
+               {only_bones_option(), without_children_option()}, [](Context &C) {
                  float2 at;
                  return snap_active(C, &at) && snap_selection_to(C, at, false);
                });
