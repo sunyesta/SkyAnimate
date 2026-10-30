@@ -1869,6 +1869,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return *bone;
   };
+  m.def("layer_bone_pose", [layer_or_raise](uint64_t id, const std::string &name) {
+    /* A bone's head and tail as posed now (bone layer space). */
+    const Layer &armature = layer_or_raise(id);
+    const Bone *b = bone_find_by_name(armature, name);
+    if (!b) {
+      throw py::value_error("no bone \"" + name + "\"");
+    }
+    const bool setup = current_context().document->frame_current == 0;
+    for (const BonePose &p : armature_pose(armature, setup)) {
+      if (p.id == b->id) {
+        return py::make_tuple(p.head.x, p.head.y, p.tail.x, p.tail.y);
+      }
+    }
+    throw py::value_error("no pose");
+  });
   m.def("layer_bones", [layer_or_raise](uint64_t id, bool keyed) {
     animation_sync(*current_context().document);
     const Layer &layer = layer_or_raise(id);

@@ -516,6 +516,10 @@ class _Layer:
         """The group above whose Parent Bone overrides this layer's own (and its weights), or ""."""
         return _oanim.layer_parent_bone_group(self._id)
 
+    def bone_pose(self, name):
+        """A bone layer's bone `name` as posed now: (head_x, head_y, tail_x, tail_y), bone layer space."""
+        return tuple(_oanim.layer_bone_pose(self._id, name))
+
     def to_document(self, point):
         """Where `point` (layer space) shows in the document, bones and parents included."""
         return _oanim.layer_to_document(self._id, tuple(point))
