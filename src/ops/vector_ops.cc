@@ -921,6 +921,90 @@ void vector_operators_register()
                     return OpStatus::Finished;
                   });
   {
+    /* Blender's Subdivide (right-click on points): each segment between two selected points cut into
+     * number_cuts + 1 pieces, keeping its shape exactly (each cut an exact split, as the knife's). The cuts are
+     * spaced evenly along the segment's length, not its Bezier parameter, so they don't bunch up where its
+     * handles are long. At a shape's detail level above 0 they are detail of that level, as the knife's are; the
+     * new points join the selection. */
+    OpProperty cuts;
+    cuts.name = "number_cuts";
+    cuts.label = "Number of Cuts";
+    cuts.description = "How many points each segment between two selected points gets";
+    cuts.kind = OpProperty::Kind::Int;
+    cuts.fallback = "1";
+    cuts.min = 1.0f;
+    cuts.max = 100.0f;
+    cuts.step = 1.0f;
+    vector_operator(
+        "mesh.subdivide", "Subdivide",
+        "Cut each segment between two selected points into number_cuts + 1 pieces, keeping the curve's shape: the "
+        "new points spaced evenly along it and selected (at a shape's detail level, as its detail)",
+        MIRRORED, editable_with_selection_poll,
+        [](Context &C) {
+          const int number = std::clamp(int(op_arg_float(C, "number_cuts", 1.0f)), 1, 100);
+          int made = 0;
+          for (Layer *layer : editable_layers(C)) {
+            if (layer->is_reference()) {
+              continue;
+            }
+            VectorDrawing &drawing = layer->drawing;
+            const auto shown_selected = [&](int p) {
+              return drawing.points[size_t(p)].selected && !drawing.points[size_t(p)].detail.hidden;
+            };
+            std::vector<int> added;
+            for (int c = 0; c < int(drawing.curves.size()); c++) {
+              const int level = drawing_knife_level(drawing, c);
+              /* From the last segment back, so the ones before keep their places as points go in. */
+              for (int s = drawing.curves[size_t(c)].segment_count() - 1; s >= 0; s--) {
+                const Curve &curve = drawing.curves[size_t(c)];
+                int a, b;
+                curve_segment_points(curve, s, &a, &b);
+                if (!shown_selected(a) || !shown_selected(b)) {
+                  continue;
+                }
+                /* Where the cuts go along its length, as parameters of the whole segment. */
+                float2 ctrl[4];
+                curve_segment_bezier(drawing, curve, s, ctrl);
+                constexpr int STEPS = 128;
+                std::vector<float> along(STEPS + 1, 0.0f);
+                float2 prev = ctrl[0];
+                for (int k = 1; k <= STEPS; k++) {
+                  const float2 now = bezier_eval(ctrl, float(k) / STEPS);
+                  along[size_t(k)] = along[size_t(k - 1)] + distance(prev, now);
+                  prev = now;
+                }
+                std::vector<float> ts;
+                for (int k = 1; k <= number; k++) {
+                  const float want = along[STEPS] * float(k) / float(number + 1);
+                  const auto it = std::lower_bound(along.begin(), along.end(), want);
+                  const int hi = std::clamp(int(it - along.begin()), 1, STEPS);
+                  const float span = along[size_t(hi)] - along[size_t(hi - 1)];
+                  const float f = span > 1e-12f ? (want - along[size_t(hi - 1)]) / span : 0.0f;
+                  ts.push_back((float(hi - 1) + f) / STEPS);
+                }
+                /* The last cut first: the part before it is then the segment again, its parameters scaled. */
+                float end = 1.0f;
+                for (int k = number - 1; k >= 0; k--) {
+                  const float t = std::clamp(ts[size_t(k)] / end, 1e-4f, 1.0f - 1e-4f);
+                  added.push_back(drawing_detail_split(drawing, {c, s}, t, level));
+                  end = ts[size_t(k)];
+                  made++;
+                }
+              }
+            }
+            for (const int p : added) {
+              drawing.points[size_t(p)].selected = true;
+            }
+          }
+          if (made == 0) {
+            report(ReportType::Warning, "Select two neighbouring points of a curve to subdivide the segment between them");
+            return OpStatus::Cancelled;
+          }
+          return OpStatus::Finished;
+        },
+        {cuts});
+  }
+  {
     /* X opens the Delete menu at the mouse, as in Blender. */
     OperatorType ot;
     ot.idname = "wm.link_data_menu";

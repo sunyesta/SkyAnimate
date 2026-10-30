@@ -12639,6 +12639,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Align", "mesh.handles_align");
     menu_operator(C, "Unalign", "mesh.handles_unalign");
     menu_operator(C, "Smooth Points", "mesh.smooth_points");
+    menu_operator(C, "Subdivide", "mesh.subdivide");
     ImGui::Separator();
     menu_operator(C, "Join Fills", "mesh.join_fills");
     menu_operator(C, "Separate Fills", "mesh.separate_fills");
