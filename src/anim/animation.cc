@@ -13,6 +13,7 @@
 #include <tuple>
 #include <type_traits>
 #include <typeinfo>
+#include <unordered_set>
 
 #include "anim/deform.hh"
 #include "core/log.hh"
@@ -152,6 +153,34 @@ template<typename F> static void layers_for_each_channel(std::vector<Layer> &lay
     layers_for_each_channel(layer.children, f);
   }
 }
+
+/* While smart actions are worked out again (animation_refresh_smart), the layers with any smart action
+ * data, found once: the rest are passed over without a look. */
+static const std::unordered_set<const Layer *> *g_smart_layers = nullptr;
+
+/* As layers_for_each_channel, but only on the layers having a channel `wanted` says yes to. Looking costs
+ * little; the walk itself turns every drawing's points into their changes from the setup pose and back,
+ * which on a big rig is most of what smart actions cost each time a smart bone turns. */
+template<typename P, typename F> static void layers_for_each_channel_if(std::vector<Layer> &layers, P &&wanted, F &&f)
+{
+  for (Layer &layer : layers) {
+    if (g_smart_layers && !g_smart_layers->contains(&layer)) {
+      layers_for_each_channel_if(layer.children, wanted, f);
+      continue;
+    }
+    bool any = false;
+    layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) { any = any || wanted(ch); });
+    if (any) {
+      layer_for_each_channel(layer, f);
+    }
+    layers_for_each_channel_if(layer.children, wanted, f);
+  }
+}
+
+/* A channel with something a smart action added to take off (or marked as played into). */
+static constexpr auto smart_added = [](const auto &ch) {
+  return ch.smart_live || !(ch.smart == std::decay_t<decltype(ch.smart)>{});
+};
 
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
  * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
@@ -550,7 +579,7 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
 
 void animation_strip_smart(Document &doc)
 {
-  layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
+  layers_for_each_channel_if(doc.layers, smart_added, [&](auto &ch, auto &value) {
     value -= ch.smart;
     ch.last -= ch.smart;
     ch.smart = {};
@@ -702,6 +731,18 @@ template<typename F> static void owner_for_each_channel(Layer &owner, F &&f)
 {
   layer_for_each_channel(owner, f);
   layers_for_each_channel(owner.children, f);
+}
+
+/* As owner_for_each_channel, on the layers with keys in action `action` only (the rest have nothing to play). */
+template<typename F> static void owner_for_each_channel_with(Layer &owner, const std::string &action, F &&f)
+{
+  const auto in_action = [&](const auto &ch) { return ch.actions.find(action) != ch.actions.end(); };
+  bool any = false;
+  layer_for_each_channel<false>(owner, [&](auto &ch, auto & /*value*/) { any = any || in_action(ch); });
+  if (any) {
+    layer_for_each_channel(owner, f);
+  }
+  layers_for_each_channel_if(owner.children, in_action, f);
 }
 
 /* Puts the timeline being edited away under `from` and brings out `to` ("" = mainline). */
@@ -1605,7 +1646,24 @@ void animation_refresh_smart(Document &doc)
    * from the bones as they are now. Always, whatever `smart_applied` says: a drag puts the bones
    * back as they were when it began every update, their smart offsets with them (a smart bone
    * turned past its action's end and then back the other way kept the end pose). */
-  layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {
+  /* The few layers with something to take off or keys in an action: a smart bone being turned has this
+   * worked out again every update, and a big rig's thousands of other layers have nothing. */
+  std::unordered_set<const Layer *> involved;
+  const auto find = [&](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &layer : layers) {
+      bool any = false;
+      layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
+        any = any || smart_added(ch) || !ch.actions.empty();
+      });
+      if (any) {
+        involved.insert(&layer);
+      }
+      self(self, layer.children);
+    }
+  };
+  find(find, doc.layers);
+  g_smart_layers = &involved;
+  layers_for_each_channel_if(doc.layers, smart_added, [&](auto &ch, auto &value) {
     value -= ch.smart;
     ch.last -= ch.smart;
     ch.smart = {};
@@ -1613,6 +1671,7 @@ void animation_refresh_smart(Document &doc)
   });
   doc.smart_applied = false;
   apply_smart_actions(doc, doc.frame_current);
+  g_smart_layers = nullptr;
 }
 
 static void apply_smart_actions_playing(Document &doc, int frame);
@@ -1695,7 +1754,7 @@ static void apply_smart_actions_playing(Document &doc, int frame)
     };
     gather_switches(gather_switches, owner.children);
     const auto play = [&](const std::string &name, float t, const void *skip, bool skip_driving) {
-      owner_for_each_channel(owner, [&](auto &ch, auto &value) {
+      owner_for_each_channel_with(owner, name, [&](auto &ch, auto &value) {
         if (static_cast<const void *>(&ch) == skip || (skip_driving && driving.count(static_cast<const void *>(&ch)))) {
           return;
         }
@@ -1771,7 +1830,7 @@ static void apply_smart_actions_playing(Document &doc, int frame)
       if (mix.strength <= 0.0f) {
         continue;
       }
-      owner_for_each_channel(owner, [&](auto &ch, auto &value) {
+      owner_for_each_channel_with(owner, fix.name, [&](auto &ch, auto &value) {
         if (driving.count(static_cast<const void *>(&ch)) || switches.count(static_cast<const void *>(&ch))) {
           return;
         }

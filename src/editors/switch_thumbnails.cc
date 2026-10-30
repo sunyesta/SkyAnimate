@@ -26,6 +26,7 @@ struct Thumb {
 
 std::map<uint64_t, Thumb> g_thumbs;
 std::unique_ptr<SceneRenderer> g_renderer;
+bool g_hold = false;
 int g_budget_frame = -1;
 int g_budget = 0;
 /* Drawn again per frame at most: the rest wait their turn, showing their last picture. */
@@ -64,13 +65,18 @@ bool children_bounds(const Document &doc, const Layer &sw, float2 *r_min, float2
 
 }  // namespace
 
+void switch_thumbnails_hold(bool hold)
+{
+  g_hold = hold;
+}
+
 unsigned int switch_thumbnail(Document &doc, const Layer &sw, const Layer &child, int size)
 {
   Thumb &thumb = g_thumbs[child.id];
   const uint64_t stamp = mix(mix(mix(mix(revision_latest(), uint64_t(doc.frame_current)), uint64_t(size)),
                                  media_generation()),
                              sw.id);
-  if (thumb.drawn && thumb.stamp == stamp) {
+  if (thumb.drawn && (thumb.stamp == stamp || g_hold)) {
     return thumb.texture;
   }
   if (g_budget_frame != ImGui::GetFrameCount()) {

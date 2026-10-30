@@ -6632,9 +6632,11 @@ static void bone_modal_end(Context &C, bool confirm)
  * ViewportActionPanel can adjust. */
 static void bone_modal_confirm(Context &C, float2 delta, float degrees, float factor)
 {
-  const BoneModal bm = g_bone_modal;
+  /* Taken, not copied: the snapshot is a whole document (on a big rig, copying it twice was most of the pause as
+   * the drag ended). */
+  BoneModal bm = std::move(g_bone_modal);
   const int frame = C.document->frame_current;
-  *C.document = bm.snapshot;
+  *C.document = std::move(bm.snapshot);
   C.document->frame_current = frame;
   g_bone_modal.active = false;
   g_bone_modal.snapshot = Document();

@@ -16,4 +16,8 @@ struct Layer;
  * without OpenGL (background runs). */
 unsigned int switch_thumbnail(Document &doc, const Layer &sw, const Layer &child, int size);
 
+/* While a drag or transform runs (`hold`), thumbnails keep their last picture: the document changes every
+ * frame then, and drawing them again each time (and reading them back from the GPU) slows the drag. */
+void switch_thumbnails_hold(bool hold);
+
 }  // namespace oanim

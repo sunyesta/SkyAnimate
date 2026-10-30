@@ -237,7 +237,24 @@ void asset_shelf_draw(Area &area, Context &C)
     rows = area.shelf_pins;
   }
   else {
-    rows = context_switches(doc);
+    /* Finding them looks through the whole document, so it waits for something that could change them
+     * (an edit, undo, the active layer or bone, another file): not every frame of a bone being turned. */
+    static struct {
+      uint64_t changes = 0, active = 0, bone = 0, serial = 0;
+      bool bone_selected = false, valid = false;
+      std::vector<uint64_t> rows;
+    } found;
+    const Layer *active = document_active_layer(doc);
+    const Bone *bone = active && active->is_bone_layer() ? bone_find(*active, active->active_bone) : nullptr;
+    const uint64_t changes = C.undo ? C.undo->change_count() : 0;
+    if (!found.valid || found.changes != changes || found.active != doc.active_layer ||
+        found.bone != (bone ? bone->id : 0) || found.bone_selected != (bone && bone->selected) ||
+        found.serial != doc.view_serial)
+    {
+      found = {changes, doc.active_layer, bone ? bone->id : 0, doc.view_serial, bone && bone->selected, true,
+               context_switches(doc)};
+    }
+    rows = found.rows;
     if (rows.empty()) {
       /* Nothing fits now: what fitted last. */
       rows = area.shelf_last;

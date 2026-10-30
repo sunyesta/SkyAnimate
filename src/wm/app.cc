@@ -2,6 +2,7 @@
 
 #include "anim/animation.hh"
 #include "anim/dynamics.hh"
+#include "editors/switch_thumbnails.hh"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -369,6 +370,7 @@ void App::main_loop()
     playback_update();
     /* Mid-drag, bone dynamics keep their simulated frames until the mouse comes up. */
     dynamics_hold_cache(wm_.modal_running || ImGui::IsAnyMouseDown());
+    switch_thumbnails_hold(wm_.modal_running || ImGui::IsAnyMouseDown());
     /* Something dragged while playing: the frame left is keyed with where the drag has it (auto-key
      * on), as Blender records, and the drag goes on from the new frame. */
     const bool recording = doc_.frame_current != frame_before && viewport_drag_active();
