@@ -308,7 +308,7 @@ static void layer_context_menu(Context &C, Layer &layer)
   }
   ImGui::Separator();
   menu_op(C, "Group With Selection", "layer.group");
-  menu_op(C, "Wrap in Switch", "layer.wrap_in_switch");
+  menu_op(C, "Convert to Switch", "layer.convert_to_switch");
   {
     int switches = 0;
     for (const Layer *l : document_layers_flat(doc)) {

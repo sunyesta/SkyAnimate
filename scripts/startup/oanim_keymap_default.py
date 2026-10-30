@@ -157,6 +157,8 @@ KEYMAP = (
     ("Layers", "layer.duplicate", "D", {"shift": True}),
     # Blender's Duplicate Linked: a live copy.
     ("Layers", "layer.make_reference", "D", {"alt": True}),
+    # Group With Selection: the picked layers into a new group (a folder), as Ctrl G groups in Figma and Photoshop.
+    ("Layers", "layer.group", "G", {"ctrl": True}),
     ("Layers", "armature.move_to_collection_menu", "M", {}),
     ("Layers", "armature.assign_to_collection_menu", "M", {"shift": True}),
     # The Sculpt tool, over the viewport: its brushes, and sizing the brush (Blender's F and Shift F).

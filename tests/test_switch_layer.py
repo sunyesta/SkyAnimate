@@ -318,4 +318,34 @@ assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 assert 60 in keyed(sw), keyed(sw)
 doc.auto_key = True
 
+# Convert to Switch (the Layers editor's right-click menu): a group becomes a switch where it is, its children
+# the drawings, the top one the default; not offered for anything but a group.
+goto(0)
+# At the top, not inside a switch's drawing (one not shown shows nothing of what is in it).
+layers.active = [l for l in layers.all() if l.parent is None and l.type != "SWITCH"][0]
+oanim.ops.layer.new_group()
+holder = layers.active
+assert holder.parent is None
+holder.name = "Holder"
+for name in ("Low", "High"):
+    layers.active = holder
+    oanim.ops.layer.new()
+    layers.active.name = name
+    assert oanim.ops.layer.move_to_group(group=str(holder.id)) == {'FINISHED'}
+layers.active = holder
+order = [c.name for c in holder.children]
+assert oanim.ops.layer.convert_to_switch() == {'FINISHED'}
+sync()
+assert holder.type == "SWITCH" and holder.name == "Holder" and [c.name for c in holder.children] == order
+assert holder.switch_default == order[0] and holder.switch_active == order[0], (holder.switch_default, holder.switch_active, order)
+assert oanim.ops.layer.switch_set(layer=str(holder.id), child=order[1]) == {'FINISHED'}
+assert holder.switch_default == order[1]
+oanim.ops.ed.undo()
+oanim.ops.ed.undo()
+assert holder.type == "GROUP", "one undo step"
+layers.active = holder.children[0]
+assert not oanim.ops.layer.convert_to_switch.poll(), "only a group converts"
+layers.active = holder
+assert oanim.ops.layer.convert_to_switch.poll()
+
 print("switch layer OK")

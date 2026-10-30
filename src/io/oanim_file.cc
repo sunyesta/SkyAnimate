@@ -3155,7 +3155,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   overlays_from_json(j.value("viewport_overlays", json::object()), doc.overlays);
   if (const auto it = j.find("viewport_shading"); it != j.end() && it->is_object()) {
     doc.shading.layer_caching = get_bool(*it, "layer_caching", true);
-    doc.shading.zoom_preview = get_bool(*it, "zoom_preview", true);
+    doc.shading.zoom_preview = get_bool(*it, "zoom_preview", false);
     /* GPU Geometry unless the file says Classic. (Files saved while Classic was the default have "gpu_geometry":
      * false, the default then rather than a choice; it's left unread.) */
     doc.shading.gpu_geometry = get_string(*it, "renderer", "GPU_GEOMETRY") != "CLASSIC";

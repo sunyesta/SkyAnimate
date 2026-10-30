@@ -1439,6 +1439,40 @@ void layer_operators_register()
     });
   }
 
+  /* The active and picked groups become switches where they are, their children its drawings, the top one the
+   * default (as a switch reset to its own picks starts). Name, place, masks and everything else stay. */
+  const auto groups_to_convert = [](Document &doc) {
+    std::vector<Layer *> groups;
+    const auto gather = [&](auto &self, std::vector<Layer> &layers) -> void {
+      for (Layer &layer : layers) {
+        if (layer.type == LayerType::Group && (layer.id == doc.active_layer || layer.selected)) {
+          groups.push_back(&layer);
+        }
+        self(self, layer.children);
+      }
+    };
+    gather(gather, doc.layers);
+    return groups;
+  };
+  layer_operator("layer.convert_to_switch", "Convert to Switch",
+                 "Turn the active and picked groups into switches: their children become the drawings each shows "
+                 "one of at a time, the top one to start with",
+                 [groups_to_convert](Context &C) { return C.document && !groups_to_convert(*C.document).empty(); },
+                 [groups_to_convert](Context &C) {
+                   Document &doc = *C.document;
+                   for (Layer *layer : groups_to_convert(doc)) {
+                     layer->type = LayerType::Switch;
+                     layer->switch_keys.keys.clear();
+                     layer->switch_keys.actions.clear();
+                     layer->switch_value = layer->children.empty() ? 0.0f : float(layer->children.front().id);
+                     layer->switch_keys.last = layer->switch_value;
+                     layer->switch_keys.has_last = true;
+                     layer_touch(*layer);
+                   }
+                   switches_resolve(doc, doc.frame_current);
+                   return OpStatus::Finished;
+                 });
+
 }
 
 }  // namespace oanim

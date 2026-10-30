@@ -66,7 +66,7 @@ struct ViewportShading {
   bool layer_caching = true;
   /* Zoom Preview: while a zoom moves, the last image shown scaled over a blurry wider backdrop, drawn sharp once it
    * rests. Off, each step of a zoom is drawn sharp. */
-  bool zoom_preview = true;
+  bool zoom_preview = false;
   /* The renderer: GPU Geometry (the default; being built, in stages) fills big shapes by stencil-then-cover instead of cutting
    * them into triangles on the CPU, keeps masks in the depth buffer (no limit to how deep they nest) and fades a
    * see-through layer as a whole (its lines don't show its fills through them); Classic triangulates every fill,

@@ -53,9 +53,14 @@ layer.select_points([6, 7])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (6, 2, 2), counts(layer)
 
-# A line down to one point is gone, and its shape with it.
+# A line down to one point is gone, and its shape with it; the point left stays, on no curve (as Blender's Delete
+# Vertices leaves an edge's other end), until deleted too.
 oanim.ops.mesh.select_none()
 layer.select_points([5])
+assert oanim.ops.mesh.delete() == {'FINISHED'}
+assert counts(layer) == (5, 1, 1), counts(layer)
+oanim.ops.mesh.select_none()
+layer.select_points([4])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert counts(layer) == (4, 1, 1), counts(layer)
 
@@ -410,11 +415,11 @@ for n, gone in ((8, [1, 3, 5, 7]), (12, [3, 4, 5])):
     oanim.ops.layer.delete()
 oanim.data.layers.active = menu_layer
 
-# Delete Points: the points go, and lines left too short with them.
+# Delete Points: the points go, and lines left too short with them (the line's other point stays).
 oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
 assert oanim.ops.mesh.delete_points() == {'FINISHED'}
-assert menu_layer.point_count == 3 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
+assert menu_layer.point_count == 4 and menu_layer.curve_count == 1, (menu_layer.point_count, menu_layer.curve_count)
 # Delete Edges with no edge between the selected points does nothing.
 oanim.ops.mesh.select_none()
 menu_layer.select_points([0])
@@ -457,5 +462,37 @@ assert oanim.wm.event_simulate("NUMPAD_PERIOD", area="Layers")
 outer.select = False
 layers.active = outer
 oanim.ops.layer.delete()
+
+# Deleting one end of a line of two points: the line goes, the other point stays (on no curve), as Blender's
+# Delete Vertices leaves the other end of an edge. Both ends picked: both go.
+oanim.ops.layer.new()
+pair = layers.active
+pair.add_curve([(0.0, 0.0), (1.0, 0.0)])
+oanim.ops.mesh.select_none()
+pair.select_points([0])
+assert oanim.ops.mesh.delete_points() == {'FINISHED'}
+assert pair.point_count == 1 and pair.curve_count == 0 and pair.shape_count == 0,     (pair.point_count, pair.curve_count, pair.shape_count)
+assert [p[:2] for p in pair.points] == [(1.0, 0.0)]
+oanim.ops.ed.undo()
+oanim.ops.mesh.select_none()
+pair.select_points([1])
+assert oanim.wm.event_simulate("DEL", area="Viewport")
+assert [p[:2] for p in pair.points] == [(0.0, 0.0)], "the Delete key the same"
+oanim.ops.ed.undo()
+oanim.ops.mesh.select_none()
+pair.select_points([0, 1])
+assert oanim.ops.mesh.delete_points() == {'FINISHED'} and pair.point_count == 0
+
+# Ctrl G over the Layers editor: Group With Selection, the picked layers into a new group (a folder).
+oanim.ops.layer.new()
+first = layers.active
+oanim.ops.layer.new()
+second = layers.active
+first.selected = True
+assert oanim.wm.event_simulate("G", ctrl=True, area="Layers")
+folder = layers.active
+assert folder.type == "GROUP" and sorted(c.name for c in folder.children) == sorted([first.name, second.name]),     (folder.type, [c.name for c in folder.children])
+oanim.ops.ed.undo()
+assert first.parent is None or first.parent.type != "GROUP" or first.parent.id != folder.id
 
 print("Drawing and layer tests passed")

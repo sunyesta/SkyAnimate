@@ -60,4 +60,26 @@ ring.select_points([1])
 assert len(ring.extrude_selected()) == 1
 assert ring.shape_count == 1 and ring.curve_count == 2
 assert sorted(len(r) for r in ring.shape_runs(0)) == [1, 4], ring.shape_runs(0)
+
+# An open end extruded leads on to the new point: its handle out, which had no length (nothing to lead to), now
+# carries on the way the curve came in, as long as its handle in, so the curve doesn't turn there.
+oanim.ops.layer.new()
+arc = layers.active
+arc.add_curve([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)])
+oanim.ops.mesh.select_none()
+arc.select_points([2])
+assert arc.extrude_selected() == [3]
+arc.move_points((1.0, 0.0))
+_, h_in, h_out = arc.curve_handles(0)[2]
+d_in = (h_in[0] - 2.0, h_in[1] - 0.0)
+d_out = (h_out[0] - 2.0, h_out[1] - 0.0)
+assert close(d_out, (-d_in[0], -d_in[1])) and abs(d_out[0]) > 0.1, (d_in, d_out)
+# From the curve's start (turned round to grow there) the same.
+oanim.ops.mesh.select_none()
+arc.select_points([0])
+assert len(arc.extrude_selected()) == 1
+arc.move_points((-1.0, 0.0))
+handles = arc.curve_handles(0)
+for kind, h_in, h_out in handles[1:-1]:
+    assert not close(h_in, h_out), ("every inner point has handles of length", handles)
 print("extrude branch: ok")

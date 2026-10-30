@@ -857,23 +857,8 @@ void drawing_remove_points(VectorDrawing &drawing, const std::vector<bool> &remo
   shapes_remap_curves(drawing, curve_remap, segment_remap);
   drawing.points = std::move(points);
   drawing.curves = std::move(curves);
-
-  /* Points no curve uses any more are left over from deleted neighbours; drop them too. */
-  std::vector<bool> used(drawing.points.size(), false);
-  for (const Curve &curve : drawing.curves) {
-    for (const CurvePoint &cp : curve.points) {
-      used[cp.point] = true;
-    }
-  }
-  std::vector<bool> orphan(drawing.points.size());
-  bool any_orphan = false;
-  for (size_t i = 0; i < used.size(); i++) {
-    orphan[i] = !used[i];
-    any_orphan |= orphan[i];
-  }
-  if (any_orphan) {
-    drawing_remove_points(drawing, orphan);
-  }
+  /* A point whose curve went with its neighbours (a line of two, one end deleted) stays, on no curve, as
+   * Blender's Delete Vertices leaves the other end of an edge: only what was picked goes. */
   /* The points gone leave their groups. */
   drawing_groups_prune(drawing);
 }
@@ -1159,6 +1144,12 @@ std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &s
     }
     const int added = drawing_add_point(drawing, drawing.points[size_t(i)].pos);
     Curve &curve = drawing.curves[size_t(end.curve)];
+    /* The end had no handle out (nothing to lead to); now it leads on to the new point, so it takes one the way
+     * the curve came in, as long as its handle in, and the curve runs on smoothly rather than turning there. */
+    CurvePoint &was_end = curve.points.back();
+    if (was_end.handles_set && length(was_end.handle_out) < 1e-6f && length(was_end.handle_in) > 1e-6f) {
+      was_end.handle_out = -was_end.handle_in;
+    }
     curve.points.push_back({added});
     /* Shapes that cover the whole curve grow with it. */
     const int new_segment = curve.segment_count() - 1;

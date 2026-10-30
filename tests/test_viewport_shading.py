@@ -7,8 +7,8 @@ import zipfile
 
 import oanim
 
-assert oanim.wm.shading() == {"layer_caching": True, "zoom_preview": True, "gpu_geometry": True}, \
-    "GPU Geometry, both Performance options on in a new project"
+assert oanim.wm.shading() == {"layer_caching": True, "zoom_preview": False, "gpu_geometry": True}, \
+    "GPU Geometry, Layer Caching on and Zoom Preview off in a new project"
 oanim.wm.set_shading("layer_caching", False)
 oanim.wm.set_shading("zoom_preview", False)
 oanim.wm.set_shading("gpu_geometry", False)
