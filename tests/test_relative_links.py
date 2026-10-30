@@ -87,6 +87,11 @@ layers.active = rig
 rig.bone_set("arm_L", shape="CUSTOM", shape_layer="Shape_L")
 assert ops.armature.constraint_add(type="LIMIT_SHAPE", bone="arm_L") == {'FINISHED'}
 rig.bone_constraint_set("arm_L", 0, shape_layer="Cage_L")
+# A second bone, arm_R, on the left too (its name swaps with arm_L's when mirrored); the ear follows arm_L.
+assert ops.armature.bone_add(name="arm_R", head_x="0.2", head_y="0.6", tail_x="0.5", tail_y="0.9", parent="arm_L") == {'FINISHED'}
+layers.active = find("Ear_L", rig)
+assert ops.layer.parent_bone_set(bone="arm_L") == {'FINISHED'}
+rig = find("Rig_L")
 
 
 def check_links(top, body_name, cage_name, ear_name, shape_name, ref_name, bone_name, label):
@@ -139,8 +144,21 @@ right = find("Rig_R")
 assert right is not None and right.parent.name == "Arm_R", [(l.name, l.parent and l.parent.name) for l in layers.all()]
 ref_r = find("BodyRef_R", right)
 assert ref_r is not None and ref_r.reference_source is not None, "the reference stays one, its original mirrored with it"
-# (A bone layer inside a mirrored group keeps its bones as they are, names and all.)
-check_links(right, "Body_R", "Cage_R", "Ear_R", "Shape_R", "BodyRef_R", "arm_L", "symmetrize")
+# A bone layer inside a mirrored group has its bones mirrored, each taking its other side's name (arm_L and arm_R
+# swap), so what follows arm_L on the left follows arm_R on the right.
+check_links(right, "Body_R", "Cage_R", "Ear_R", "Shape_R", "BodyRef_R", "arm_R", "symmetrize")
+
+
+def ends(layer, name):
+    b = next(x for x in layer.bones if x["name"] == name)
+    return [tuple(round(v, 4) for v in layer.to_document(p)) for p in (b["head"], b["tail"])]
+
+
+for left_name, right_name in (("arm_L", "arm_R"), ("arm_R", "arm_L")):
+    mirrored_ends = [(-x, y) for x, y in ends(rig, left_name)]
+    assert ends(right, right_name) == mirrored_ends, (left_name, ends(right, right_name), mirrored_ends)
+assert next(b for b in right.bones if b["name"] == "arm_L")["parent"] == "arm_R", "the hierarchy goes across too"
+assert find("Ear_R", right).parent_bone == "arm_R", find("Ear_R", right).parent_bone
 assert abs(modifier(find("Body_R", right), "MIRROR")["center"][0] + 0.3) < 1e-6, "the Mirror's centre goes across"
 # The reference shows the mirrored body, moved as the left one is (mirrored).
 left_pts = [find("BodyRef_L", rig).to_document(p) for p in find("BodyRef_L", rig).evaluated()[0]]

@@ -182,9 +182,43 @@ static std::map<uint64_t, uint64_t> symmetrize_bone_flip(const Document &doc, ui
   return flip;
 }
 
+/* A bone layer copied with a mirrored group: its bones mirrored across its own vertical axis, as its drawings are,
+ * from the setup pose (their keys go, as the drawings' do). Each takes its other side's name (arm_L and arm_R
+ * swap) but keeps its id, so the weights, Parent Bone, custom shapes and constraints of what is inside still find
+ * it, now on the mirrored bone. */
+static void symmetrize_bones(Layer &armature)
+{
+  const std::vector<BonePose> was = armature_pose(armature, true);
+  const auto reflect = [](float2 p) { return float2(-p.x, p.y); };
+  /* Roots come before their children, so each finds its parent mirrored already. */
+  for (size_t i = 0; i < armature.bones.size(); i++) {
+    const BonePose &bp = was[i];
+    const std::vector<BonePose> now = armature_pose(armature, true);
+    Bone &b = armature.bones[i];
+    const BonePose *parent = b.parent ? bone_pose_find(now, b.parent) : nullptr;
+    const Transform2D to_parent = (parent ? parent->setup : Transform2D()).inverted();
+    const float2 h = to_parent.apply(reflect(bp.setup_head)), t = to_parent.apply(reflect(bp.setup_tail));
+    b.position = b.setup_position = h;
+    b.angle = b.setup_angle = std::atan2(t.y - h.y, t.x - h.x);
+    b.position_keys = {};
+    b.angle_keys = {};
+    b.scale_keys = {};
+    /* Mirrored, a turn one way is a turn the other. */
+    for (BoneConstraint &c : b.constraints) {
+      const float lo = c.min_angle;
+      c.min_angle = -c.max_angle;
+      c.max_angle = -lo;
+    }
+  }
+  for (Bone &b : armature.bones) {
+    b.name = bone_mirror_name(b.name);
+  }
+}
+
 /* The copy's contents mirrored in place: drawings flipped (setup pose, no point keys), weights and
  * Parent Bone moved to the other side's bones, the layers inside flipped about their parent's
- * axis. */
+ * axis. A bone layer inside has its bones mirrored in place (symmetrize_bones), so what is inside it keeps
+ * its bones by id. */
 static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bone_flip, bool top)
 {
   const auto flip_bone = [&](uint64_t id) {
@@ -232,8 +266,12 @@ static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bo
     clear_transform_keys(l);
   }
   l.selected = false;
+  if (l.is_bone_layer()) {
+    symmetrize_bones(l);
+  }
+  const std::map<uint64_t, uint64_t> same;
   for (Layer &child : l.children) {
-    symmetrize_contents(child, bone_flip, false);
+    symmetrize_contents(child, l.is_bone_layer() ? same : bone_flip, false);
   }
 }
 
