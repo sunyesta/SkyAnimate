@@ -36,7 +36,8 @@ bool switch_value_from_name(const Layer &sw, const std::string &name, float *r_v
 /* Who wins on every switch at `frame` (smart actions have put their picks in switch_rig), which
  * child each shows, and which layers are switched out. Run after smart actions. While the active
  * layer is inside a child a switch isn't showing, the viewport shows that child instead, for
- * editing, without keying it (Layer::edit_out; renders and exports keep the pick). */
+ * editing, without keying it (Layer::edit_out; renders and exports keep the pick), on the frame it
+ * became active: scrubbing or playing shows the picks again. */
 void switches_resolve(Document &doc, int frame);
 
 /* Picks `value` at the current frame: keyed there, or on frame 0 the default. */

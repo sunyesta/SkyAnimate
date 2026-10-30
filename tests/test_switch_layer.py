@@ -280,6 +280,20 @@ goto(40)
 assert sw.switch_active == "C"
 
 
+# --- A hidden child shows for editing only on the frame it was selected: scrubbing shows the picks --------
+layers.active = sw
+goto(30)
+pick = sw.switch_active
+hidden = next(c for c in sw.children if c.name != pick)
+layers.active = hidden
+sync()
+assert drawn() == [hidden.name], drawn()
+goto(31)
+assert drawn() == [sw.switch_active], ("scrubbing shows the keyed pick", drawn(), sw.switch_active)
+goto(30)
+assert drawn() == [pick], ("and back on its frame too", drawn())
+layers.active = sw
+
 # --- Picks follow Auto Keying ------------------------------------------------------------------------
 doc.auto_key = False
 goto(50)

@@ -190,10 +190,25 @@ static void resolve(std::vector<Layer> &layers, int frame, bool out, bool edit_o
   }
 }
 
+/* The layer that became active, and on which frame: a hidden child it is in shows for editing only on
+ * that frame. Once the frame changes (scrubbing, playing) the switches show their picks again, though it
+ * stays active. */
+static uint64_t g_editing_layer = 0;
+static int g_editing_frame = 0;
+static bool g_editing = false;
+
 void switches_resolve(Document &doc, int frame)
 {
+  if (doc.active_layer != g_editing_layer) {
+    g_editing_layer = doc.active_layer;
+    g_editing_frame = frame;
+    g_editing = true;
+  }
+  else if (frame != g_editing_frame) {
+    g_editing = false;
+  }
   std::set<uint64_t> editing;
-  for (const Layer *l = layer_find(doc, doc.active_layer); l; l = layer_parent(doc, l->id)) {
+  for (const Layer *l = g_editing ? layer_find(doc, doc.active_layer) : nullptr; l; l = layer_parent(doc, l->id)) {
     editing.insert(l->id);
   }
   resolve(doc.layers, frame, false, false, editing);
