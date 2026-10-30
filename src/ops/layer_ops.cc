@@ -200,6 +200,30 @@ static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bo
     }
   }
   l.parent_bone = flip_bone(l.parent_bone);
+  /* A reference kept (its original mirrored with it): what it moved, mirrored too; as the drawings, from the
+   * setup frame. Its own weights take the other side's bones. */
+  if (l.is_reference()) {
+    const auto mirrored = [](ReferencePoint &rp) {
+      rp.offset.x = -rp.offset.x;
+      rp.offset_keys = {};
+    };
+    for (auto &[id, rp] : l.reference.points) {
+      mirrored(rp);
+    }
+    for (auto &[key, rp] : l.reference.handles) {
+      mirrored(rp);
+    }
+    for (auto &[id, weights] : l.reference.weights) {
+      for (BoneWeight &w : weights) {
+        w.bone = flip_bone(w.bone);
+      }
+    }
+    l.reference.built = false;
+  }
+  /* A Mirror modifier's axis goes across with the drawing. */
+  for (Modifier &mod : l.modifiers) {
+    mod.center.x = -mod.center.x;
+  }
   if (!top) {
     l.position.x = -l.position.x;
     l.rotation = -l.rotation;
@@ -213,16 +237,26 @@ static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bo
   }
 }
 
-/* A copy to mirror: references become plain layers showing what they showed. */
-static void symmetrize_unreference(const Document &doc, Layer &l)
+/* A copy to mirror: a reference stays one when its original is mirrored with it (it then shows that one's
+ * copy) or has a side of its own whose other side is there (Ear_L's reference shows Ear_R); any other becomes a
+ * plain layer showing what it showed, there being nothing mirrored for it to show. */
+static void symmetrize_unreference(const Document &doc, Layer &l, const std::set<uint64_t> &inside)
 {
-  if (l.is_reference()) {
-    l.drawing = layer_drawing(doc, l);
-    l.reference_source = 0;
-    l.reference = {};
+  if (l.is_reference() && !inside.count(l.reference_source)) {
+    const Layer *source = layer_find(doc, l.reference_source);
+    const std::string other = source ? bone_mirror_name(source->name) : std::string();
+    bool partner = false;
+    for (const Layer *o : document_layers_flat(doc)) {
+      partner |= source && other != source->name && o->name == other;
+    }
+    if (!partner) {
+      l.drawing = layer_drawing(doc, l);
+      l.reference_source = 0;
+      l.reference = {};
+    }
   }
   for (Layer &child : l.children) {
-    symmetrize_unreference(doc, child);
+    symmetrize_unreference(doc, child, inside);
   }
 }
 
@@ -243,15 +277,6 @@ struct SymmetrizeLog {
   std::vector<uint64_t> copies;
   std::set<uint64_t> copy_ids;
 };
-
-/* Draw Order holds a layer's id (minus it for Behind). */
-static void draw_order_map(float &order, const std::function<uint64_t(uint64_t)> &map)
-{
-  if (order != 0.0f) {
-    const uint64_t id = map(uint64_t(std::fabs(order)));
-    order = order < 0.0f ? -float(id) : float(id);
-  }
-}
 
 static void layer_tree_walk(Layer &l, const std::function<void(Layer &)> &fn)
 {
@@ -312,23 +337,14 @@ static void symmetrize_pair(Document &doc, uint64_t id, int from, std::set<uint6
                             parent_setup_space(doc, source_id) * source->local_transform() * flip_x;
 
   Layer plain = *source;
-  symmetrize_unreference(doc, plain);
+  std::set<uint64_t> inside;
+  layer_tree_walk(plain, [&](Layer &l) { inside.insert(l.id); });
+  symmetrize_unreference(doc, plain, inside);
   std::map<uint64_t, uint64_t> remap;
   Layer copy = layer_copy_with_new_ids(doc, plain, &remap);
   symmetrize_contents(copy, symmetrize_bone_flip(doc, source_id), true);
   layer_set_local_transform(copy, local, source->scale.x < 0.0f);
   clear_transform_keys(copy);
-  /* Draw Order naming a layer copied with it names its copy (masks already do). */
-  const auto copied = [&](uint64_t i) {
-    const auto it = remap.find(i);
-    return it != remap.end() ? it->second : i;
-  };
-  layer_tree_walk(copy, [&](Layer &l) {
-    draw_order_map(l.draw_order, copied);
-    for (auto &k : l.draw_order_keys.keys) {
-      draw_order_map(k.value, copied);
-    }
-  });
 
   /* Remaking: the old contents go, and the new layers take the ids of the old ones of the same name,
    * so masks naming those still find them. */
@@ -365,13 +381,7 @@ static void symmetrize_pair(Document &doc, uint64_t id, int from, std::set<uint6
       const auto it = reassign.find(i);
       return it != reassign.end() ? it->second : i;
     };
-    layer_tree_walk(copy, [&](Layer &l) {
-      layer_masks_remap(l, reassign);
-      draw_order_map(l.draw_order, reassigned);
-      for (auto &k : l.draw_order_keys.keys) {
-        draw_order_map(k.value, reassigned);
-      }
-    });
+    layer_tree_walk(copy, [&](Layer &l) { layer_links_map(l, reassigned); });
   }
 
   uint64_t placed = 0;
@@ -415,19 +425,7 @@ static void symmetrize_flip_links(Document &doc, const SymmetrizeLog &log)
   };
   for (const uint64_t id : log.copies) {
     if (Layer *copy = layer_find(doc, id)) {
-      layer_tree_walk(*copy, [&](Layer &l) {
-        for (LayerMask &m : l.masks) {
-          for (MaskStep &s : m.steps) {
-            for (uint64_t &mid : s.layers) {
-              mid = other(mid);
-            }
-          }
-        }
-        draw_order_map(l.draw_order, other);
-        for (auto &k : l.draw_order_keys.keys) {
-          draw_order_map(k.value, other);
-        }
-      });
+      layer_tree_walk(*copy, [&](Layer &l) { layer_links_map(l, other); });
     }
   }
 }
@@ -1016,16 +1014,26 @@ void layer_operators_register()
                        picked.push_back(l->id);
                      }
                    }
+                   /* Copied together, under a group held only meanwhile: links among them (references, masks, Draw
+                    * Order, bone shapes, modifiers' layers) name the copies, across picked layers too. */
+                   Layer bundle;
+                   bundle.type = LayerType::Group;
+                   std::erase_if(picked, [&](uint64_t id) { return !layer_find(doc, id); });
+                   for (const uint64_t id : picked) {
+                     bundle.children.push_back(*layer_find(doc, id));
+                   }
                    std::map<uint64_t, uint64_t> remap;
+                   Layer copied = layer_copy_with_new_ids(doc, bundle, &remap);
                    std::vector<uint64_t> copies;
                    uint64_t active_copy = 0;
-                   for (const uint64_t id : picked) {
+                   for (size_t k = 0; k < picked.size(); k++) {
+                     const uint64_t id = picked[k];
                      int index = 0;
                      std::vector<Layer> *container = layer_container(doc, id, &index);
                      if (!container) {
                        continue;
                      }
-                     Layer copy = layer_copy_with_new_ids(doc, (*container)[index], &remap);
+                     Layer copy = std::move(copied.children[k]);
                      copy.name = document_layer_unique_name(doc, (*container)[index].name);
                      copy.selected = false;
                      if (id == doc.active_layer) {
@@ -1033,18 +1041,6 @@ void layer_operators_register()
                      }
                      copies.push_back(copy.id);
                      container->insert(container->begin() + index, std::move(copy));
-                   }
-                   /* Masks among the copies name the copies. */
-                   for (const uint64_t id : copies) {
-                     if (Layer *copy = layer_find(doc, id)) {
-                       const auto walk = [&](auto &&self, Layer &l) -> void {
-                         layer_masks_remap(l, remap);
-                         for (Layer &child : l.children) {
-                           self(self, child);
-                         }
-                       };
-                       walk(walk, *copy);
-                     }
                    }
                    /* So do their drivers (as Blender copies an object's with it). */
                    drivers_copy_for_layers(doc, remap);

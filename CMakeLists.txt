@@ -407,6 +407,8 @@ add_test(NAME duplicate_stress
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_duplicate_stress.py)
 add_test(NAME bone_turn_snap
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_turn_snap.py)
+add_test(NAME relative_links
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_relative_links.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

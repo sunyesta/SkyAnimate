@@ -1,6 +1,7 @@
 /* The layer tree inside a document: finding, adding, moving, copying and referencing layers. */
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <unordered_map>
 
@@ -604,15 +605,57 @@ static void assign_new_ids(Document &doc, Layer &layer, std::map<uint64_t, uint6
   }
 }
 
+void layer_links_map(Layer &layer, const std::function<uint64_t(uint64_t)> &map)
+{
+  const auto link = [&](uint64_t &id) {
+    if (id != 0) {
+      id = map(id);
+    }
+  };
+  link(layer.reference_source);
+  for (LayerMask &m : layer.masks) {
+    for (MaskStep &s : m.steps) {
+      for (uint64_t &id : s.layers) {
+        link(id);
+      }
+    }
+  }
+  /* Draw Order holds a layer's id, minus it for Behind. */
+  const auto order = [&](float &o) {
+    if (o != 0.0f) {
+      const uint64_t id = map(uint64_t(std::fabs(o)));
+      o = o < 0.0f ? -float(id) : float(id);
+    }
+  };
+  order(layer.draw_order);
+  for (auto &k : layer.draw_order_keys.keys) {
+    order(k.value);
+  }
+  for (Bone &b : layer.bones) {
+    link(b.shape_layer);
+    link(b.swap_layer);
+    for (BoneConstraint &c : b.constraints) {
+      link(c.shape_layer);
+      link(c.fit_layer);
+    }
+  }
+  for (Modifier &mod : layer.modifiers) {
+    link(mod.deform_layer);
+    for (MergeTarget &t : mod.merge_targets) {
+      link(t.layer);
+    }
+  }
+}
+
 static void remap_references(Layer &layer, const std::map<uint64_t, uint64_t> &remap)
 {
-  /* References inside a copied group point at the copies of their sources when those were
-   * copied too, so a duplicated rig stays self-contained. */
-  if (auto it = remap.find(layer.reference_source); it != remap.end()) {
-    layer.reference_source = it->second;
-  }
-  /* Masks naming copied layers name their copies, and a switch's keys its copied children. */
-  layer_masks_remap(layer, remap);
+  /* Links inside a copied group (references, masks, Draw Order, bone shapes, constraints' and modifiers'
+   * layers) point at the copies of what they name when that was copied too, so a duplicated rig stays
+   * self-contained; and a switch's keys its copied children. */
+  layer_links_map(layer, [&](uint64_t id) {
+    const auto it = remap.find(id);
+    return it != remap.end() ? it->second : id;
+  });
   switch_remap(layer, remap);
   for (Layer &child : layer.children) {
     remap_references(child, remap);

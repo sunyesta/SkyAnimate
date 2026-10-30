@@ -5,6 +5,7 @@
  * Bones arrive in milestone 4. Keep this a plain copyable value: undo snapshots copy it. */
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -280,6 +281,12 @@ Layer layer_copy_with_new_ids(Document &doc, const Layer &layer,
 Layer layer_make_reference(Document &doc, const Layer &source);
 /* Points `layer`'s masks at the layers `remap` gives for the ones they name (copies of them). */
 void layer_masks_remap(Layer &layer, const std::map<uint64_t, uint64_t> &remap);
+/* Every link `layer` (only it, not its children) has to other layers by id, put through `map`: its reference's
+ * source, its masks' layers, Draw Order (and its keys), its bones' custom shapes and the layers they stand in
+ * for, its bone constraints' shape layers, and its modifiers' layers (a deform's shape, a Boolean's targets;
+ * shapes are named by id within those layers, so they follow). Copying keeps a group's links relative: what
+ * named a layer copied with it names the copy. */
+void layer_links_map(Layer &layer, const std::function<uint64_t(uint64_t)> &map);
 /* Removes a layer and makes a neighbour active. References to it become ordinary layers. */
 bool document_remove_layer(Document &doc, uint64_t id);
 /* Moves a layer up (-1) or down (+1) among its siblings. */

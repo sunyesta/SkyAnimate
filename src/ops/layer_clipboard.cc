@@ -129,6 +129,11 @@ static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &
       for (const auto &k : l.draw_order_keys.keys) {
         note(uint64_t(std::fabs(k.value)));
       }
+      /* Bone shapes, constraints' and modifiers' layers too, to find by name. */
+      layer_links_map(l, [&](uint64_t other) {
+        note(other);
+        return other;
+      });
       for (const Shape &s : l.drawing.shapes) {
         if (s.material) {
           materials.insert(s.material);
@@ -322,14 +327,36 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
     });
   }
 
+  /* The other links naming layers left behind (bone shapes, constraints' and modifiers' layers): set aside by
+   * name as well, each held meanwhile as a tag no layer has (they'd name some other layer of this document). */
+  std::vector<std::string> left_behind;
+  constexpr uint64_t TAG = uint64_t(1) << 62;
+  for (Layer &item : items) {
+    tree_walk(item, [&](Layer &l) {
+      layer_links_map(l, [&](uint64_t other) -> uint64_t {
+        if (copied.count(other)) {
+          return other;
+        }
+        const auto e = external.find(other);
+        left_behind.push_back(e != external.end() ? e->second : std::string());
+        return TAG + left_behind.size() - 1;
+      });
+    });
+  }
+
   std::vector<uint64_t> pasted;
   std::map<uint64_t, uint64_t> remap;
   std::set<std::string> taken;
   for (const Layer *l : document_layers_flat(doc)) {
     taken.insert(l->name);
   }
-  for (Layer &item : items) {
-    Layer copy = layer_copy_with_new_ids(doc, item, &remap);
+  /* Copied together, under a group held only meanwhile: one map of old ids to new covers every link once,
+   * across items too (a second pass could take a new id for an old one of the other file). */
+  Layer bundle;
+  bundle.type = LayerType::Group;
+  bundle.children = std::move(items);
+  Layer copies = layer_copy_with_new_ids(doc, bundle, &remap);
+  for (Layer &copy : copies.children) {
     tree_walk(copy, [&](Layer &l) {
       if (taken.count(l.name)) {
         l.name = document_layer_unique_name(doc, l.name);
@@ -340,8 +367,7 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
     container->insert(container->begin() + index++, std::move(copy));
   }
 
-  /* Draw Order naming copied layers names their copies; then the ones left behind, by name, where
-   * this document has them. */
+  /* Links naming layers left behind: by name, where this document has them. */
   const auto by_name = [&](const std::string &name) -> uint64_t {
     for (const Layer *l : document_layers_flat(doc)) {
       if (l->name == name && !std::count(pasted.begin(), pasted.end(), l->id)) {
@@ -352,16 +378,13 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
   };
   for (const uint64_t id : pasted) {
     tree_walk(*layer_find(doc, id), [&](Layer &l) {
-      const auto map_order = [&](float &order) {
-        const auto it = remap.find(uint64_t(std::fabs(order)));
-        if (order != 0.0f && it != remap.end()) {
-          order = order < 0.0f ? -float(it->second) : float(it->second);
+      layer_links_map(l, [&](uint64_t other) -> uint64_t {
+        if (other < TAG || other - TAG >= left_behind.size()) {
+          return other;
         }
-      };
-      map_order(l.draw_order);
-      for (auto &k : l.draw_order_keys.keys) {
-        map_order(k.value);
-      }
+        const std::string &name = left_behind[size_t(other - TAG)];
+        return name.empty() ? 0 : by_name(name);
+      });
     });
   }
   for (const auto &[old_id, set_aside] : outside) {
