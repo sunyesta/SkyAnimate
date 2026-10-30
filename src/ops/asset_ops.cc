@@ -5,6 +5,7 @@
 
 #include "anim/deform.hh"
 #include "assets/asset_library.hh"
+#include "wm/pen_input.hh"
 #include "assets/brush_presets.hh"
 #include "assets/brushes.hh"
 #include "core/log.hh"
@@ -203,6 +204,20 @@ void asset_operators_register()
                          return OpStatus::Cancelled;
                        }
                        return asset_library_set(directory) ? OpStatus::Finished : OpStatus::Cancelled;
+                     });
+
+  asset_operator_add("preferences.tablet_api_set", "Set Tablet API",
+                     "Pick how pens are heard: api= AUTOMATIC, WINDOWS_INK or WINTAB (WinTab comes with a tablet's driver)",
+                     OPTYPE_REGISTER, [](Context &C) {
+                       const std::string api = op_arg(C, "api");
+                       if (api != "AUTOMATIC" && api != "WINDOWS_INK" && api != "WINTAB") {
+                         report(ReportType::Error, "Unknown tablet API '" + api + "': use AUTOMATIC, WINDOWS_INK or WINTAB");
+                         return OpStatus::Cancelled;
+                       }
+                       preferences().tablet_api = api == "AUTOMATIC" ? 0 : api == "WINDOWS_INK" ? 1 : 2;
+                       preferences_save();
+                       pen_input_set_api(TabletApi(preferences().tablet_api));
+                       return OpStatus::Finished;
                      });
 
   asset_operator_add("preferences.brushes_reload", "Reload Brushes",

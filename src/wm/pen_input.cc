@@ -7,11 +7,22 @@
 #include <algorithm>
 #include <cmath>
 
+#include "wm/pen_wintab.hh"
+
 namespace oanim {
 
 static SDL_Window *g_window = nullptr;
 static HWND g_hwnd = nullptr;
 static bool g_seen = false;
+static TabletApi g_api = TabletApi::Automatic;
+/* When Windows Ink last sent a pen, and whether the last sample was WinTab's. */
+static double g_ink_time = -1e9;
+static bool g_from_wintab = false;
+/* Automatic: WinTab's samples are left alone this long (seconds) after Windows Ink's, a driver sending both. */
+static constexpr double INK_WINS_SECONDS = 1.0;
+/* WinTab's place further than this (pixels) from the cursor is a driver's mapping gone wrong: several displays,
+ * a part of the tablet mapped to a display. The cursor is always right. */
+static constexpr double WINTAB_MISMATCH_PIXELS = 40.0;
 static TabletState g_state;
 static std::vector<PenSample> g_stroke;
 static uint64_t g_stroke_id = 0;
@@ -41,6 +52,22 @@ double pen_now()
   return double(c.QuadPart) * seconds_per_tick();
 }
 
+/* A place on the screen in the window, as ImGui counts. */
+static void screen_to_window(double x, double y, PenSample *s)
+{
+  POINT origin = {0, 0};
+  ClientToScreen(g_hwnd, &origin);
+  RECT client = {};
+  GetClientRect(g_hwnd, &client);
+  int w = 0, h = 0;
+  SDL_GetWindowSize(g_window, &w, &h);
+  /* The window's pixels to its size as SDL (and ImGui) count it. */
+  const double sx = client.right > 0 ? double(w) / double(client.right) : 1.0;
+  const double sy = client.bottom > 0 ? double(h) / double(client.bottom) : 1.0;
+  s->x = float((x - origin.x) * sx);
+  s->y = float((y - origin.y) * sy);
+}
+
 /* Where a pen sample is in the window, as ImGui counts. The pixel position is whole pixels; the
  * HIMETRIC one, mapped through the tablet's rectangles, keeps the tablet's finer steps (slow strokes
  * otherwise come out stepped), and is used when it lands on the same pixel (some drivers map it oddly). */
@@ -64,35 +91,13 @@ static void place(const POINTER_INFO &p, PenSample *s)
       y = fy;
     }
   }
-  POINT origin = {0, 0};
-  ClientToScreen(g_hwnd, &origin);
-  RECT client = {};
-  GetClientRect(g_hwnd, &client);
-  int w = 0, h = 0;
-  SDL_GetWindowSize(g_window, &w, &h);
-  /* The window's pixels to its size as SDL (and ImGui) count it. */
-  const double sx = client.right > 0 ? double(w) / double(client.right) : 1.0;
-  const double sy = client.bottom > 0 ? double(h) / double(client.bottom) : 1.0;
-  s->x = float((x - origin.x) * sx);
-  s->y = float((y - origin.y) * sy);
+  screen_to_window(x, y, s);
 }
 
-static void take(const POINTER_PEN_INFO &info)
+/* The next sample, whichever API it came through. */
+static void take_sample(const PenSample &s, bool touching, bool in_range)
 {
-  const POINTER_INFO &p = info.pointerInfo;
-  const bool touching = (p.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
-  if (touching && !g_state.touching) {
-    g_rects = false;
-  }
-  PenSample s;
-  place(p, &s);
-  s.pressure = (info.penMask & PEN_MASK_PRESSURE) ? std::clamp(float(info.pressure) / 1024.0f, 0.0f, 1.0f) : 1.0f;
-  s.tilt_x = (info.penMask & PEN_MASK_TILT_X) ? float(info.tiltX) : 0.0f;
-  s.tilt_y = (info.penMask & PEN_MASK_TILT_Y) ? float(info.tiltY) : 0.0f;
-  s.eraser = (info.penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) != 0;
-  s.time = p.PerformanceCount ? double(p.PerformanceCount) * seconds_per_tick() : pen_now();
-
-  g_state.in_range = (p.pointerFlags & POINTER_FLAG_INRANGE) != 0 && !(p.pointerFlags & POINTER_FLAG_CANCELED);
+  g_state.in_range = in_range;
   g_state.eraser = s.eraser;
   g_state.pressure = touching ? s.pressure : 0.0f;
   g_state.tilt_x = s.tilt_x;
@@ -112,12 +117,64 @@ static void take(const POINTER_PEN_INFO &info)
   g_state.touching = touching;
 }
 
-/* Every pointer message the window gets, before SDL handles it (which it then does as usual). A pen's
+static void take(const POINTER_PEN_INFO &info)
+{
+  const POINTER_INFO &p = info.pointerInfo;
+  const bool touching = (p.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
+  if (touching && !g_state.touching) {
+    g_rects = false;
+  }
+  PenSample s;
+  place(p, &s);
+  s.pressure = (info.penMask & PEN_MASK_PRESSURE) ? std::clamp(float(info.pressure) / 1024.0f, 0.0f, 1.0f) : 1.0f;
+  s.tilt_x = (info.penMask & PEN_MASK_TILT_X) ? float(info.tiltX) : 0.0f;
+  s.tilt_y = (info.penMask & PEN_MASK_TILT_Y) ? float(info.tiltY) : 0.0f;
+  s.eraser = (info.penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) != 0;
+  s.time = p.PerformanceCount ? double(p.PerformanceCount) * seconds_per_tick() : pen_now();
+  take_sample(s, touching, (p.pointerFlags & POINTER_FLAG_INRANGE) != 0 && !(p.pointerFlags & POINTER_FLAG_CANCELED));
+}
+
+void pen_input_wintab_sample(double screen_x, double screen_y, const PenSample &sample, bool touching, bool in_range)
+{
+  if (g_api == TabletApi::Automatic && pen_now() - g_ink_time < INK_WINS_SECONDS) {
+    return;
+  }
+  g_from_wintab = true;
+  PenSample s = sample;
+  POINT cursor;
+  if (GetCursorPos(&cursor) && (std::abs(screen_x - cursor.x) > WINTAB_MISMATCH_PIXELS ||
+                                std::abs(screen_y - cursor.y) > WINTAB_MISMATCH_PIXELS))
+  {
+    screen_x = cursor.x;
+    screen_y = cursor.y;
+  }
+  screen_to_window(screen_x, screen_y, &s);
+  take_sample(s, touching, in_range);
+}
+
+void pen_input_wintab_left()
+{
+  if (g_from_wintab) {
+    PenSample s;
+    s.pressure = 0.0f;
+    s.time = pen_now();
+    take_sample(s, false, false);
+  }
+}
+
+/* Every message the window gets, before SDL handles it (which it then does as usual). A pen's pointer
  * message carries the samples coalesced into it as its history, newest first. */
 static bool SDLCALL pen_hook(void * /*userdata*/, MSG *msg)
 {
   const UINT m = msg->message;
+  if (msg->hwnd == g_hwnd) {
+    wintab_message(m, msg->wParam, msg->lParam);
+  }
   if ((m != WM_POINTERDOWN && m != WM_POINTERUPDATE && m != WM_POINTERUP) || msg->hwnd != g_hwnd) {
+    return true;
+  }
+  /* WinTab picked: the same pen comes through there. */
+  if (g_api == TabletApi::WinTab && wintab_started()) {
     return true;
   }
   const UINT32 id = GET_POINTERID_WPARAM(msg->wParam);
@@ -127,6 +184,8 @@ static bool SDLCALL pen_hook(void * /*userdata*/, MSG *msg)
     return true;
   }
   g_seen = true;
+  g_ink_time = pen_now();
+  g_from_wintab = false;
   UINT32 count = std::max<UINT32>(info.pointerInfo.historyCount, 1);
   std::vector<POINTER_PEN_INFO> history(count);
   if (count > 1 && GetPointerPenInfoHistory(id, &count, history.data()) && count > 0) {
@@ -153,6 +212,27 @@ void pen_input_install(SDL_Window *window)
 bool pen_input_seen()
 {
   return g_seen;
+}
+
+void pen_input_set_api(TabletApi api)
+{
+  g_api = api;
+  if (api == TabletApi::WindowsInk) {
+    wintab_stop();
+  }
+  else if (g_hwnd) {
+    wintab_start(g_hwnd);
+  }
+}
+
+TabletApi pen_input_api()
+{
+  return g_api;
+}
+
+bool pen_input_from_wintab()
+{
+  return g_from_wintab;
 }
 
 const TabletState &tablet_state()

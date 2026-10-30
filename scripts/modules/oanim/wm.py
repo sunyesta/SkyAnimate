@@ -87,6 +87,16 @@ def pen(samples=False):
     return dict(_oanim.pen(bool(samples)))
 
 
+def wintab_convert(x, y, pressure, azimuth, altitude, in_x=0, in_y=0, in_width=1, in_height=1, screen_x=0, screen_y=0,
+                   screen_width=1, screen_height=1, pressure_max=1, azimuth_max=0, altitude_max=0):
+    """A WinTab packet as the app reads it, given what the tablet's values are out of: (screen x, screen y, pressure,
+    tilt_x, tilt_y)."""
+    return tuple(_oanim.wintab_convert(int(x), int(y), int(pressure), int(azimuth), int(altitude), {
+        "in_x": in_x, "in_y": in_y, "in_width": in_width, "in_height": in_height, "screen_x": screen_x,
+        "screen_y": screen_y, "screen_width": screen_width, "screen_height": screen_height,
+        "pressure_max": pressure_max, "azimuth_max": azimuth_max, "altitude_max": altitude_max}))
+
+
 def draw_settings():
     """The Draw tool's settings: a dict with mode (FREEHAND, PEN, FILL_PEN, FILL_ERASER, STROKE_ERASER or TRIMMER),
     preset (the pen's name), fill_size (the Fill Pen and erasers' width, document units), erase_all_layers,

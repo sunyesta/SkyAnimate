@@ -60,4 +60,39 @@ assert not pen["windows_ink"] and not pen["touching"] and pen["touch"] == 0 and 
 wm.mouse_simulate(10, 10, 0, True, pen=[(10, 10, 0.5, 20, -10, 0.0), (12, 11)], eraser=True)
 wm.mouse_simulate(12, 11, 0, False, pen=[])
 
+# --- The Tablet API ----------------------------------------------------------------------------------------------
+assert wm.pen()["api"] == "AUTOMATIC"
+assert oanim.ops.preferences.tablet_api_set(api="WINTAB") == {"FINISHED"}
+assert wm.pen()["api"] == "WINTAB"
+assert not wm.pen()["wintab_open"], "no window to open it on"
+oanim.ops.preferences.tablet_api_set(api="WINDOWS_INK")
+assert wm.pen()["api"] == "WINDOWS_INK"
+assert oanim.ops.preferences.tablet_api_set(api="SMOKE_SIGNALS") == {"CANCELLED"}
+assert wm.pen()["api"] == "WINDOWS_INK"
+oanim.ops.preferences.tablet_api_set(api="AUTOMATIC")
+
+# A WinTab packet: a 40000 x 30000 tablet on a 1920 x 1080 screen, its y counting up from the bottom.
+tablet = dict(in_width=40000, in_height=30000, screen_width=1920, screen_height=1080, pressure_max=8192, azimuth_max=3600,
+              altitude_max=900)
+x, y, pressure, tilt_x, tilt_y = wm.wintab_convert(20000, 7500, 4096, 0, 900, **tablet)
+assert abs(x - 960.0) < 1e-6 and abs(y - 810.0) < 1e-6, (x, y)
+assert abs(pressure - 0.5) < 1e-6
+assert abs(tilt_x) < 1e-3 and abs(tilt_y) < 1e-3, "standing straight"
+# Finer than a pixel: what the tablet's units are for.
+assert 0.03 < wm.wintab_convert(20001, 7500, 0, 0, 900, **tablet)[0] - 960.0 < 0.06
+# Where the screen starts counts, and the tablet's.
+moved = dict(tablet, screen_x=-1920, screen_y=100, in_x=1000, in_y=2000)
+x, y = wm.wintab_convert(1000, 2000, 0, 0, 900, **moved)[:2]
+assert abs(x + 1920.0) < 1e-6 and abs(y - 1180.0) < 1e-6, (x, y)
+# Leaning right, azimuth a quarter turn clockwise, 45 degrees over: tilt across, none up.
+_, _, _, tilt_x, tilt_y = wm.wintab_convert(0, 0, 0, 900, 450, **tablet)
+assert abs(tilt_x - 45.0) < 0.01 and abs(tilt_y) < 0.01, (tilt_x, tilt_y)
+# Leaning toward the user, azimuth a half turn: toward them counts up, as Windows Ink's.
+_, _, _, tilt_x, tilt_y = wm.wintab_convert(0, 0, 0, 1800, 450, **tablet)
+assert abs(tilt_x) < 0.01 and abs(tilt_y - 45.0) < 0.01, (tilt_x, tilt_y)
+# Upside down (some drivers' way to say so): the same lean.
+assert abs(wm.wintab_convert(0, 0, 0, 900, -450, **tablet)[3] - 45.0) < 0.01
+# A tablet without tilt, and pressure past the most it should reach.
+assert wm.wintab_convert(0, 0, 9000, 900, 450, **dict(tablet, azimuth_max=0, altitude_max=0))[2:] == (1.0, 0.0, 0.0)
+
 print("pen input: ok")

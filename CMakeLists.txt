@@ -119,6 +119,7 @@ set(OANIM_SOURCES
   src/wm/file_dialog.cc
   src/wm/file_drop.cc
   src/wm/pen_input.cc
+  src/wm/pen_wintab.cc
   src/wm/keymap.cc
   src/wm/remote.cc
 )

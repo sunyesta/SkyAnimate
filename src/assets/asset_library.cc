@@ -74,6 +74,9 @@ void preferences_load()
   if (auto it = j.find("remote_port"); it != j.end() && it->is_number_integer()) {
     preferences().remote_port = std::clamp(it->get<int>(), 1024, 65535);
   }
+  if (auto it = j.find("tablet_api"); it != j.end() && it->is_number_integer()) {
+    preferences().tablet_api = std::clamp(it->get<int>(), 0, 2);
+  }
   for (const auto &[key, flag] : {std::pair{"status_statistics", &Preferences::status_statistics},
                                  std::pair{"status_frame", &Preferences::status_frame},
                                  std::pair{"status_version", &Preferences::status_version}})
@@ -138,6 +141,7 @@ void preferences_save()
                   {"asset_library", preferences().asset_library},
                   {"remote_control", preferences().remote_control},
                   {"remote_port", preferences().remote_port},
+                  {"tablet_api", preferences().tablet_api},
                   {"status_statistics", preferences().status_statistics},
                   {"status_frame", preferences().status_frame},
                   {"status_version", preferences().status_version},

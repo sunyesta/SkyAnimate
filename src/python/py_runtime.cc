@@ -16,6 +16,7 @@
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
 #include "assets/draw_presets.hh"
+#include "wm/pen_wintab.hh"
 #include "assets/sculpt_presets.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -694,6 +695,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const TabletState &state = tablet_state();
     py::dict d;
     d["windows_ink"] = pen_input_seen();
+    const TabletApi api = pen_input_api();
+    d["api"] = api == TabletApi::Automatic ? "AUTOMATIC" : api == TabletApi::WindowsInk ? "WINDOWS_INK" : "WINTAB";
+    d["wintab_installed"] = wintab_installed();
+    d["wintab_open"] = wintab_started();
+    d["from_wintab"] = pen_input_from_wintab();
     d["near"] = wm.pen_near;
     d["touching"] = state.touching;
     d["eraser"] = wm.pen_eraser;
@@ -818,6 +824,25 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     d["knots"] = knots;
     return d;
+  });
+  /* A WinTab packet as the app reads it: (screen x, screen y, pressure, tilt_x, tilt_y). */
+  m.def("wintab_convert", [](long x, long y, unsigned pressure, int azimuth, int altitude, const py::dict &range) {
+    WintabRange r;
+    r.in_x = range["in_x"].cast<long>();
+    r.in_y = range["in_y"].cast<long>();
+    r.in_width = range["in_width"].cast<long>();
+    r.in_height = range["in_height"].cast<long>();
+    r.screen_x = range["screen_x"].cast<int>();
+    r.screen_y = range["screen_y"].cast<int>();
+    r.screen_width = range["screen_width"].cast<int>();
+    r.screen_height = range["screen_height"].cast<int>();
+    r.pressure_max = range["pressure_max"].cast<int>();
+    r.azimuth_max = range["azimuth_max"].cast<int>();
+    r.altitude_max = range["altitude_max"].cast<int>();
+    double screen_x = 0.0, screen_y = 0.0;
+    PenSample s;
+    wintab_convert(r, {x, y, pressure, azimuth, altitude}, &screen_x, &screen_y, &s);
+    return py::make_tuple(screen_x, screen_y, s.pressure, s.tilt_x, s.tilt_y);
   });
   m.def("pen_predict", [](const std::vector<std::tuple<float, float, double>> &samples, double ahead, float max_pixels) {
     std::vector<PenSample> list;

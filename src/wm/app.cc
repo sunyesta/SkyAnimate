@@ -29,6 +29,7 @@
 #include "data/layer_mirror.hh"
 #include "wm/clipboard_image.hh"
 #include "wm/pen_input.hh"
+#include "wm/pen_wintab.hh"
 #include "data/camera.hh"
 #include "data/media_layer.hh"
 #include "assets/brush_presets.hh"
@@ -271,6 +272,7 @@ bool App::window_init()
   /* Files dragged in from Explorer are known while still being dragged, for the editors to preview. */
   file_drop_install(window_);
   pen_input_install(window_);
+  pen_input_set_api(TabletApi(preferences().tablet_api));
 
   update_window_title();
   SDL_MaximizeWindow(window_);
@@ -422,6 +424,13 @@ void App::main_loop()
     ImGui_ImplSDL3_NewFrame();
     if (wm_.mouse_simulating && wm_.mouse_simulated.empty()) {
       ImGui::GetIO().AddMousePosEvent(wm_.mouse_simulated_x, wm_.mouse_simulated_y);
+    }
+    /* SDL hears nothing of a pen through WinTab: the mouse it moves looks like a mouse. */
+    if (pen_input_from_wintab()) {
+      const TabletState &tablet = tablet_state();
+      wm_.pen_near = tablet.in_range;
+      wm_.pen_eraser = tablet.in_range && tablet.eraser;
+      wm_.pen_pressure = tablet.touching ? tablet.pressure : 1.0f;
     }
     if (!wm_.mouse_simulated.empty()) {
       const WindowManager::SimulatedMouse m = wm_.mouse_simulated.front();
@@ -1200,14 +1209,14 @@ void App::draw_asset_library_prompts()
 
 }
 
-/* Edit > Preferences: where the asset library is, what's in it, and remote control. */
+/* Edit > Preferences: where the asset library is, what's in it, the tablet API, and remote control. */
 void App::draw_preferences()
 {
   if (!show_preferences_) {
     return;
   }
   const ImGuiViewport *main = ImGui::GetMainViewport();
-  ImGui::SetNextWindowSize(ImVec2(560, 340), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
   if (!ImGui::Begin("Preferences", &show_preferences_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
     ImGui::End();
@@ -1234,9 +1243,36 @@ void App::draw_preferences()
   }
   ImGui::EndDisabled();
 
+  /* Which API pens come through, as Blender's Input preferences. */
+  ImGui::SeparatorText("Tablet");
+  Preferences &prefs = preferences();
+  ImGui::TextUnformatted("Tablet API");
+  ImGui::SameLine(130);
+  static const char *const tablet_apis[] = {"Automatic", "Windows Ink", "WinTab"};
+  ImGui::SetNextItemWidth(160);
+  int tablet_api = prefs.tablet_api;
+  if (ImGui::Combo("##tablet_api", &tablet_api, tablet_apis, 3)) {
+    operator_call(ctx_, "preferences.tablet_api_set", {{"api", tablet_api == 0   ? "AUTOMATIC"
+                                                               : tablet_api == 1 ? "WINDOWS_INK"
+                                                                                 : "WINTAB"}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How Open Animate hears your pen. Automatic suits nearly everyone: Windows Ink, and WinTab\n"
+                      "if your tablet's driver has Use Windows Ink turned off. Pick one if your pen misbehaves.");
+  }
+  ImGui::SetCursorPosX(130);
+  if (prefs.tablet_api != 1 && !wintab_started()) {
+    ImGui::TextDisabled(prefs.tablet_api == 2 ? "WinTab isn't installed (it comes with a tablet's driver): using Windows Ink"
+                                              : "Using Windows Ink (WinTab comes with a tablet's driver; none here)");
+  }
+  else {
+    ImGui::TextDisabled(prefs.tablet_api == 2 ? "Using WinTab" : prefs.tablet_api == 1 ? "Using Windows Ink"
+                        : pen_input_from_wintab()                                      ? "Using WinTab, the pen sending nothing through Windows Ink"
+                                                                                       : "Using Windows Ink, with WinTab ready");
+  }
+
   /* Remote control, for Claude through the MCP bridge (tools/mcp). */
   ImGui::SeparatorText("Remote Control");
-  Preferences &prefs = preferences();
   if (ImGui::Checkbox("Allow Remote Control", &prefs.remote_control)) {
     if (prefs.remote_control) {
       prefs.remote_control = remote_start(prefs.remote_port) != 0;

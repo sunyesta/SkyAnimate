@@ -1,6 +1,7 @@
 #pragma once
 
-/* Pen tablets through Windows Ink, every sample the pen sends. SDL passes on one pen position per event
+/* Pen tablets, every sample the pen sends: through Windows Ink, described here, or WinTab (wm/pen_wintab.hh), a
+ * Preferences choice as Blender's, both feeding the same strokes. SDL passes on one pen position per event
  * and the window gets one mouse position a frame, so a quick stroke loses its detail; Windows coalesces
  * the pen's samples (a tablet sends 133-240 a second) into its pointer messages and keeps the rest as
  * the message's history. A Windows message hook (SDL_SetWindowsMessageHook) reads that history, oldest
@@ -41,10 +42,19 @@ struct TabletState {
   float tilt_x = 0.0f, tilt_y = 0.0f;
 };
 
+/* Which API pens come through. Automatic: Windows Ink, and WinTab when the driver sends nothing through that (its
+ * "Use Windows Ink" off). */
+enum class TabletApi { Automatic, WindowsInk, WinTab };
+
 /* Hooks the window's messages (after SDL made the window). */
 void pen_input_install(SDL_Window *window);
 /* Whether any pen sample has come through the hook (so the tablet works with Windows Ink). */
 bool pen_input_seen();
+/* Picks the API, opening or closing WinTab as it needs. */
+void pen_input_set_api(TabletApi api);
+TabletApi pen_input_api();
+/* Whether the last sample came through WinTab, which SDL doesn't see: the tablet state is all there is of it. */
+bool pen_input_from_wintab();
 
 const TabletState &tablet_state();
 /* The samples of the pen's current touch, or its last one after it lifts, oldest first; and which touch

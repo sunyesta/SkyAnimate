@@ -26,6 +26,8 @@ struct Preferences {
    * bridge in tools/mcp, may drive the app. Off until turned on. */
   bool remote_control = false;
   int remote_port = 7853;
+  /* Which API pens come through (TabletApi): 0 Automatic, 1 Windows Ink, 2 WinTab. */
+  int tablet_api = 0;
   /* What the status bar shows at its right (its right-click menu): the statistics, the frame, the version. */
   bool status_statistics = true;
   bool status_frame = false;

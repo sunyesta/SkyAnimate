@@ -66,11 +66,11 @@ Incremental, pen pressure, stamp brushes (`src/assets`: the asset library set in
 shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brushes as presets in
 `brush_presets.cc`; dabs in `src/gpu/brush_stroke.cc`; the Brush Settings window in
 `src/editors/brush_editor.cc`). The Annotate tool: notes and drawing guides over the drawing, never rendered
-(`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). Still to do in milestone 2: Knife tool (Ctrl K), the style library,
-and the draw tools rebuild (the spec's "Draw tools" note: stage 1, every Windows Ink pen sample, is in
-`src/wm/pen_input.*`; stage 2, the Stroke Pen's engine, in `src/data/ink_stroke.*`; stage 3, the shelf and presets, in
-`src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`; stage 4, the Fill Pen and Fill Eraser,
-in `src/data/fill_paint.*`; stage 5, the Stroke Eraser and Vector Trimmer, in `src/data/line_cut.*`; stage 6 to come).
+(`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). The draw tools (the spec's "Draw tools" note): every pen sample through Windows Ink or WinTab in
+`src/wm/pen_input.*` and `src/wm/pen_wintab.*`, the Stroke Pen's engine in `src/data/ink_stroke.*`, the shelf and presets in
+`src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`, the Fill Pen and Fill Eraser in
+`src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Still to do in milestone 2: Knife tool
+(Ctrl K), the style library.
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels
 (`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,
