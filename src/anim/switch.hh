@@ -58,6 +58,16 @@ Layer *switch_of(Document &doc, uint64_t layer);
 /* The child of `sw` that holds `layer` (or is it); null when it isn't inside `sw`. */
 const Layer *switch_child_holding(const Document &doc, const Layer &sw, uint64_t layer);
 
+/* A preview (the asset shelf's hover, a thumbnail being drawn): while set, the viewport shows `child` of
+ * switch `sw` (0: none) in place of its pick and of a child being edited, nothing keyed and no undo
+ * step. Renders and exports keep the pick. One switch at a time; cleared with switch_preview_clear. */
+void switch_preview_set(uint64_t sw, uint64_t child);
+void switch_preview_clear();
+bool switch_preview_active(uint64_t *r_sw = nullptr, uint64_t *r_child = nullptr);
+
+/* How many keys of `sw` (frame 0's, the timeline's and actions') show `child`. */
+int switch_keys_showing(const Layer &sw, uint64_t child);
+
 /* A child put into an empty switch becomes its default. */
 void switch_child_added(Layer &sw, uint64_t child);
 

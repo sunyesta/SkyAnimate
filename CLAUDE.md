@@ -83,7 +83,9 @@ child's id, hand keys win over smart actions until a Rig key, switched-out child
 `Layer::shown()`) and stage 2 (picking: Layers editor dots, [ ], Switch menus, timeline bars,
 editing a hidden child via `Layer::edit_out`, Replace Keys With, Wrap in Switch) and stage 3 (sub bone
 groups and bone swaps, `src/anim/bone_family.*`: families of bone layers drawn and clicked together,
-Match Pose from Previous Drawing); stages 4-5 are planned in the spec's Switch layers section. Next: key buttons in Properties, dope sheet, frame-by-frame layers
+Match Pose from Previous Drawing) and stage 4 (the Asset Shelf editor, `src/editors/asset_shelf.cc`, with
+thumbnails in `src/editors/switch_thumbnails.*`, hover previews via `switch_preview_set`, Duplicate and
+Duplicate with Keys); stage 5 (two-way links) is planned in the spec's Switch layers section. Next: key buttons in Properties, dope sheet, frame-by-frame layers
 and onion skins, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,

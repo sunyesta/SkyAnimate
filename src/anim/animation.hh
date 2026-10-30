@@ -161,6 +161,11 @@ void armature_bone_renamed(Document &doc, uint64_t owner, const std::string &fro
 
 /* Takes what smart actions add off every plain value, leaving the data (for saving). */
 void animation_strip_smart(Document &doc);
+
+/* A layer and everything inside it without timeline keys (Duplicate in a switch): each channel keeps
+ * its setup value (frame 0), or with `from_now` the value it has now, its drawings then taking that as
+ * their setup pose. With `keep_actions` its actions' keys (smart actions) stay. */
+void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
 /* Works smart actions out again for the bones as they are now (a bone turned without changing
  * frame). animation_sync does this when the frame hasn't moved. */
 void animation_refresh_smart(Document &doc);

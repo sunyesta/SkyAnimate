@@ -67,6 +67,8 @@ set(OANIM_SOURCES
   src/editors/sculpt_shelf.cc
   src/wm/clipboard_image.cc
   src/editors/layers_editor.cc
+  src/editors/asset_shelf.cc
+  src/editors/switch_thumbnails.cc
   src/editors/properties.cc
   src/editors/text_editor.cc
   src/editors/timeline.cc
@@ -393,6 +395,8 @@ add_test(NAME switch_layer
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_layer.py)
 add_test(NAME switch_bones
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_bones.py)
+add_test(NAME switch_shelf
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_shelf.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

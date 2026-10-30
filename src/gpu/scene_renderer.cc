@@ -490,8 +490,34 @@ void SceneRenderer::set_local_view(const Document &doc, const std::vector<uint64
   local_view_ = local_view_layers(doc, ids);
 }
 
+void SceneRenderer::set_force_shown(const Document &doc, uint64_t id)
+{
+  force_shown_.clear();
+  Document &d = const_cast<Document &>(doc);
+  const Layer *layer = id ? layer_find(d, id) : nullptr;
+  if (!layer) {
+    return;
+  }
+  for (const Layer *p = layer_parent(d, id); p; p = layer_parent(d, p->id)) {
+    force_shown_.insert(p->id);
+  }
+  /* Inside it, switches show their own picks. */
+  const auto add = [&](auto &&self, const Layer &l) -> void {
+    force_shown_.insert(l.id);
+    for (const Layer &c : l.children) {
+      if (!l.is_switch() || c.id == l.switch_shown) {
+        self(self, c);
+      }
+    }
+  };
+  add(add, *layer);
+}
+
 bool SceneRenderer::shown(const Layer &layer) const
 {
+  if (!force_shown_.empty() && force_shown_.contains(layer.id)) {
+    return layer.visible;
+  }
   if (!final_render_ && !local_view_.empty() && !local_view_.contains(layer.id)) {
     return false;
   }

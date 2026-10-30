@@ -694,6 +694,9 @@ void App::build_default_layout(Workspace &workspace, ImGuiID dockspace_id)
     node_of(EditorType::Properties) = right;
     node_of(EditorType::Info) = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.35f, nullptr, &bottom);
     node_of(EditorType::Timeline) = bottom;
+    /* The Asset Shelf beside the timeline, Info to its right. */
+    node_of(EditorType::AssetShelf) =
+        ImGui::DockBuilderSplitNode(node_of(EditorType::Info), ImGuiDir_Left, 0.6f, nullptr, &node_of(EditorType::Info));
     node_of(EditorType::Viewport) = main_id;
   }
   else {
@@ -797,7 +800,7 @@ Workspace App::workspace_new(const std::string &name, WorkspaceKind kind)
   }
   return {name, kind,
           {area(EditorType::Viewport), area(EditorType::Layers), area(EditorType::Properties),
-           area(EditorType::Timeline), area(EditorType::Info)}};
+           area(EditorType::Timeline), area(EditorType::AssetShelf), area(EditorType::Info)}};
 }
 
 std::string App::workspace_unique_name(const std::string &base) const

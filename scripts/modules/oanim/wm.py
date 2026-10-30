@@ -313,6 +313,16 @@ def clipboard_set_image(rgba, width, height):
     _oanim.clipboard_set_image(bytes(rgba), int(width), int(height))
 
 
+def switch_preview(switch=None, child=None):
+    """Preview a switch's child in the viewport, as hovering a tile on the asset shelf does: shown in
+    place of the pick, nothing keyed, no undo step; renders keep the pick. Without arguments it ends."""
+    if switch is None:
+        _oanim.switch_preview(0, 0)
+    else:
+        _oanim.switch_preview(switch.id if hasattr(switch, "id") else int(switch),
+                              0 if child is None else (child.id if hasattr(child, "id") else int(child)))
+
+
 def render_png(filepath, width=0, height=0, guides=False, transparent=False):
     """Render the current frame through the camera to a PNG, as Render Frame does: `width` x `height`
     (0: the document's size), with guide layers (a reference) too if `guides`, and a clear background if

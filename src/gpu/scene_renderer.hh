@@ -104,6 +104,9 @@ class SceneRenderer {
   bool complete() const { return complete_; }
   /* Local View: draw only these layers, what's inside them and the groups holding them (empty: all). */
   void set_local_view(const Document &doc, const std::vector<uint64_t> &ids);
+  /* A switch's child drawn whether the switch shows it or not (a thumbnail): it, what's inside it as its own
+   * switches pick, and the groups holding it, by their eyes alone (0: none). */
+  void set_force_shown(const Document &doc, uint64_t layer);
 
   /* The viewport's renders draw a margin around what was asked for (an eighth of its longer side), so a pan that
    * keeps within it shows the same image moved (shown_uv) with nothing drawn. */
@@ -335,6 +338,7 @@ class SceneRenderer {
   bool wait_for_media_ = false;
   /* Local View's layers with everything inside them and every group holding them; empty: all. */
   std::set<uint64_t> local_view_;
+  std::set<uint64_t> force_shown_;
   /* Drawing a mask's coverage into the stencil (no colour): brush dabs count where they're
    * at least half covered. */
   bool coverage_pass_ = false;

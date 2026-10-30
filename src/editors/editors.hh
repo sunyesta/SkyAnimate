@@ -20,11 +20,11 @@ namespace oanim {
 struct Context;
 struct Document;
 
-enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info };
+enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info, AssetShelf };
 
 inline constexpr EditorType EDITOR_TYPES[] = {EditorType::Viewport,   EditorType::Properties, EditorType::Layers,
-                                              EditorType::Timeline,   EditorType::TextEditor, EditorType::Console,
-                                              EditorType::Info};
+                                              EditorType::Timeline,   EditorType::AssetShelf, EditorType::TextEditor,
+                                              EditorType::Console,    EditorType::Info};
 
 const char *editor_type_label(EditorType type);
 /* Name of the editor's keymap, tried before "Window" while the mouse is over it. */
@@ -89,6 +89,17 @@ struct Area {
   std::string sculpt_shelf_search;
   float sculpt_shelf_tile = 0.0f;
 
+  /* Asset Shelf (asset_shelf.cc): the tab (0 Context, 1 All Switches), pinned and its rows (switch ids),
+   * the rows that fitted last (kept while nothing fits), the search, the tiles' size and whether hovering
+   * previews. */
+  int shelf_tab = 0;
+  bool shelf_pinned = false;
+  std::vector<uint64_t> shelf_pins;
+  std::vector<uint64_t> shelf_last;
+  std::string shelf_search;
+  float shelf_tile = 72.0f;
+  bool shelf_hover_preview = true;
+
   /* Text editor. */
   bool show_line_numbers = true;
 
@@ -147,6 +158,8 @@ void properties_draw(Area &area, Context &C);
 void layers_draw(Area &area, Context &C);
 /* Timeline editor, in timeline.cc. */
 void timeline_draw(Area &area, Context &C);
+/* Asset Shelf, in asset_shelf.cc. */
+void asset_shelf_draw(Area &area, Context &C);
 /* The timeline's channel rows as a timeline with every row open lists them (for tests). */
 struct TimelineRowInfo {
   int depth = 0;

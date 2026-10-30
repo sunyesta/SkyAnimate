@@ -324,6 +324,8 @@ struct WindowManager {
   int material_hover_frame = -10;
   /* Show Active (. over the Layers editor): the layer whose row the Layers editors scroll to (its
    * row flashes for a moment), and a count of the requests, so each is taken once. */
+  /* The asset shelf: the tile whose name opens for typing (a duplicate just made), else 0. */
+  uint64_t shelf_rename = 0;
   uint64_t layers_show_active = 0;
   uint64_t layers_show_active_serial = 0;
   /* Mouse position in document space while over a viewport, for operators that act at the

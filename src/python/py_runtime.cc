@@ -3555,6 +3555,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return names;
   });
+  m.def("switch_preview", [](uint64_t sw, uint64_t child) {
+    if (sw == 0) {
+      switch_preview_clear();
+    }
+    else {
+      switch_preview_set(sw, child);
+    }
+    Document &doc = *current_context().document;
+    switches_resolve(doc, doc.frame_current);
+  });
   m.def("layer_switch", [layer_or_raise](uint64_t id) {
     const Layer &sw = layer_or_raise(id);
     if (!sw.is_switch()) {

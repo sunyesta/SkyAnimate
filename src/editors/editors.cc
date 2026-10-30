@@ -20,6 +20,7 @@
 #include "anim/animation.hh"
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
+#include "editors/switch_thumbnails.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 #include "editors/statistics.hh"
@@ -53,6 +54,8 @@ const char *editor_type_label(EditorType type)
       return "Python Console";
     case EditorType::Info:
       return "Info";
+    case EditorType::AssetShelf:
+      return "Asset Shelf";
   }
   return "Unknown";
 }
@@ -1878,8 +1881,22 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
     children.push_back({child.name, child.id});
   }
   const uint64_t shown = sw->switch_shown;
+  /* Each child with its thumbnail (switch_thumbnails.hh): the viewport's picker. */
+  const float thumb = ImGui::GetFrameHeight() * 1.6f;
   for (const auto &[name, id] : children) {
     ImGui::PushID(int(id));
+    Layer *live_sw = layer_find(doc, sw_id);
+    const Layer *child = live_sw ? layer_find(doc, id) : nullptr;
+    const unsigned int tex = child ? switch_thumbnail(doc, *live_sw, *child, int(thumb * 2.0f)) : 0;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(thumb, thumb));
+    ImDrawList *mdl = ImGui::GetWindowDrawList();
+    mdl->AddRectFilled(at, at + ImVec2(thumb, thumb), IM_COL32(0x30, 0x30, 0x30, 255), 3.0f);
+    if (tex) {
+      mdl->AddImage(ImTextureRef(ImTextureID(intptr_t(tex))), at, at + ImVec2(thumb, thumb));
+    }
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (thumb - ImGui::GetFrameHeight()) * 0.5f);
     if (ui_menu_item(name.c_str(), nullptr, id == shown)) {
       pick(name);
     }
@@ -2305,6 +2322,9 @@ bool area_draw(Area &area, Context &C)
         break;
       case EditorType::Timeline:
         timeline_draw(area, C);
+        break;
+      case EditorType::AssetShelf:
+        asset_shelf_draw(area, C);
         break;
       case EditorType::TextEditor:
         text_editor_draw(area, C);

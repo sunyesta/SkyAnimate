@@ -513,6 +513,37 @@ void animation_evaluate(Document &doc, int frame)
   doc.evaluated_frame = frame;
 }
 
+void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
+{
+  layer_for_each_channel(layer, [&](auto &ch, auto &value) {
+    using T = std::decay_t<decltype(value)>;
+    value -= ch.smart;
+    if (ch.animated() && !from_now) {
+      value = ch.evaluate(0);
+    }
+    ch.keys.clear();
+    if (!keep_actions) {
+      ch.actions.clear();
+    }
+    ch.smart = T{};
+    ch.smart_live = false;
+    ch.last = value;
+    ch.has_last = true;
+  });
+  if (from_now) {
+    /* The pose now becomes the setup: the points' changes from it are 0, and recording must see
+     * that as how they were, not as an edit. */
+    drawing_take_setup(layer.drawing);
+    layer_for_each_channel(layer, [](auto &ch, auto &value) {
+      ch.last = value;
+      ch.has_last = true;
+    });
+  }
+  for (Layer &child : layer.children) {
+    layer_strip_keys(child, from_now, keep_actions);
+  }
+}
+
 void animation_strip_smart(Document &doc)
 {
   layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) {

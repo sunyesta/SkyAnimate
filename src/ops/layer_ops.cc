@@ -559,7 +559,7 @@ void layer_operators_register()
                  "Show one child of a switch (layer=, else the active layer or the switch holding it): child= its "
                  "name, empty for none, RIG to hand it back to the rig. On frame 0 it's the default; on other "
                  "frames it's keyed, and a key made by hand wins over smart actions until a Rig key. hold=1 "
-                 "(Alt) picks it for the whole hold the frame is in instead",
+                 "(Alt) picks it for the whole hold the frame is in instead; default=1 makes it the default (frame 0's)",
                  [](Context &C) { return C.document != nullptr; }, [](Context &C) {
                    Document &doc = *C.document;
                    const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
@@ -575,6 +575,19 @@ void layer_operators_register()
                      return OpStatus::Cancelled;
                    }
                    animation_record(doc);
+                   if (op_arg_int(C, "default", 0) != 0) {
+                     /* Set as Default: frame 0's pick, whatever frame this is. */
+                     const int now = doc.frame_current;
+                     doc.frame_current = 0;
+                     switch_set(doc, *sw, value);
+                     doc.frame_current = now;
+                     Channel<float> &ch = sw->switch_keys;
+                     sw->switch_value = ch.animated() ? ch.evaluate(now) : value;
+                     ch.last = sw->switch_value;
+                     switches_resolve(doc, now);
+                     C.undo_name = sw->name + ": Default " + switch_value_label(*sw, value);
+                     return OpStatus::Finished;
+                   }
                    switch_pick(doc, *sw, value, op_arg_int(C, "hold", 0) != 0);
                    C.undo_name = sw->name + ": " + switch_value_label(*sw, value);
                    return OpStatus::Finished;
@@ -615,6 +628,160 @@ void layer_operators_register()
           return OpStatus::Finished;
         });
   }
+
+  {
+    /* Duplicate and Duplicate with Keys, for a switch's children (the asset shelf's right-click menu). */
+    OperatorType ot;
+    ot.idname = "layer.switch_duplicate";
+    ot.name = "Duplicate";
+    ot.description = "Copy a child of a switch (child=, else the one holding the active layer) to change into another "
+                     "drawing: placed after it, picked and keyed at this frame (on frame 0 only added). Without "
+                     "keys= its timeline keys are left out; its smart actions' keys, its bones' swaps and its "
+                     "drivers come along";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && switch_of(*C.document, C.document->active_layer); };
+    ot.props = {
+        op_bool_property("keys", "Timeline Keys", "Keep the timeline keys too (Duplicate with Keys)", "0"),
+        [] {
+          OpProperty p;
+          p.name = "start_from";
+          p.label = "Start From";
+          p.description = "Without timeline keys: the copy's setup pose is the original's (Setup), or how it looks on this "
+                          "frame (This Frame: its drawings and bones take this pose as their setup)";
+          p.items = {{"SETUP", "Setup"}, {"THIS_FRAME", "This Frame"}};
+          p.fallback = "SETUP";
+          p.visible = [](const OpArgs &args) {
+            const auto it = args.find("keys");
+            return it == args.end() || (it->second != "1" && it->second != "True" && it->second != "true");
+          };
+          return p;
+        }(),
+        op_bool_property("smart_keys", "Smart Action Keys", "Keep the keys its smart actions hold", "1"),
+    };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      Layer *sw = nullptr;
+      uint64_t child_id = 0;
+      if (op_has_arg(C, "child")) {
+        const Layer *named = layer_by_name_or_id(doc, op_arg(C, "child"));
+        sw = named ? layer_parent(doc, named->id) : nullptr;
+        child_id = named ? named->id : 0;
+      }
+      else if ((sw = switch_of(doc, doc.active_layer))) {
+        const Layer *holding = switch_child_holding(doc, *sw, doc.active_layer);
+        child_id = holding ? holding->id : 0;
+      }
+      if (!sw || !sw->is_switch() || !child_id) {
+        report(ReportType::Warning, "Name a child of a switch (child=)");
+        return OpStatus::Cancelled;
+      }
+      const auto truthy = [&](const char *name, const char *fallback) {
+        const std::string v = op_arg(C, name, fallback);
+        return v == "1" || v == "True" || v == "true";
+      };
+      const bool keys = truthy("keys", "0");
+      const bool from_now = op_arg(C, "start_from", "SETUP") == "THIS_FRAME" && !keys && doc.frame_current != 0;
+      const bool smart_keys = truthy("smart_keys", "1");
+      animation_record(doc);
+      const uint64_t sw_id = sw->id;
+      int index = 0;
+      std::vector<Layer> *container = layer_container(doc, child_id, &index);
+      std::map<uint64_t, uint64_t> remap;
+      Layer copy = layer_copy_with_new_ids(doc, (*container)[size_t(index)], &remap);
+      copy.name = document_layer_unique_name(doc, (*container)[size_t(index)].name);
+      copy.selected = false;
+      /* Its bones stand in for the original's (or for what those stand in for). */
+      const auto swaps = [&](auto &&self, Layer &l) -> void {
+        if (l.is_bone_layer()) {
+          for (auto &[old_id, new_id] : remap) {
+            if (new_id != l.id) {
+              continue;
+            }
+            for (Bone &b : l.bones) {
+              if (b.swap_layer == 0) {
+                b.swap_layer = old_id;
+                b.swap_bone = b.id;
+              }
+              else if (const auto it = remap.find(b.swap_layer); it != remap.end()) {
+                b.swap_layer = it->second;
+              }
+            }
+          }
+        }
+        layer_masks_remap(l, remap);
+        for (Layer &c : l.children) {
+          self(self, c);
+        }
+      };
+      swaps(swaps, copy);
+      const uint64_t copy_id = copy.id;
+      container->insert(container->begin() + index + 1, std::move(copy));
+      drivers_copy_for_layers(doc, remap);
+      Layer &placed = *layer_find(doc, copy_id);
+      if (!keys) {
+        if (from_now) {
+          /* Its own bones first take this pose as their rest, bending its drawings to it. */
+          std::vector<uint64_t> armatures;
+          const auto gather = [&](auto &&self, const Layer &l) -> void {
+            if (l.is_bone_layer()) {
+              armatures.push_back(l.id);
+            }
+            for (const Layer &c : l.children) {
+              self(self, c);
+            }
+          };
+          gather(gather, placed);
+          const uint64_t was_active = doc.active_layer;
+          for (const uint64_t id : armatures) {
+            doc.active_layer = id;
+            operator_call(C, "armature.apply_pose_as_rest", {{"keep_animation", "0"}});
+          }
+          doc.active_layer = was_active;
+        }
+        layer_strip_keys(*layer_find(doc, copy_id), from_now, smart_keys);
+      }
+      Layer &now_sw = *layer_find(doc, sw_id);
+      const int frame = doc.frame_current;
+      if (frame != 0) {
+        switch_set(doc, now_sw, float(copy_id));
+      }
+      doc.active_layer = copy_id;
+      switches_resolve(doc, frame);
+      if (C.wm) {
+        C.wm->shelf_rename = copy_id;
+      }
+      C.undo_name = std::string(keys ? "Duplicate with Keys: " : "Duplicate: ") + layer_find(doc, copy_id)->name;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+
+  layer_operator("layer.switch_add_child", "Add to Switch",
+                 "Add an empty drawing to a switch (layer=, else the one holding the active layer), last, to draw "
+                 "in: picked and keyed at this frame (on frame 0 only added)",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
+                   Layer *sw = switch_of(doc, named ? named->id : doc.active_layer);
+                   if (!sw) {
+                     report(ReportType::Warning, "Not a switch layer, nor inside one");
+                     return OpStatus::Cancelled;
+                   }
+                   animation_record(doc);
+                   const uint64_t sw_id = sw->id;
+                   doc.active_layer = sw_id;
+                   Layer &added = document_add_layer(doc, LayerType::Vector, "");
+                   const uint64_t id = added.id;
+                   /* Added above the switch: into it, last. */
+                   document_reparent_layer(doc, id, sw_id, int(layer_find(doc, sw_id)->children.size()));
+                   if (doc.frame_current != 0) {
+                     switch_set(doc, *layer_find(doc, sw_id), float(id));
+                   }
+                   doc.active_layer = id;
+                   switches_resolve(doc, doc.frame_current);
+                   C.undo_name = "Add to " + layer_find(doc, sw_id)->name;
+                   return OpStatus::Finished;
+                 });
 
   layer_operator("layer.switch_replace_keys", "Replace Keys With",
                  "Point every key of a switch (layer=, else the one holding the active layer) that shows child "

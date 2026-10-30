@@ -95,6 +95,50 @@ static bool hand_value(const Layer &sw, int frame, float *r_value)
   return true;
 }
 
+static uint64_t g_preview_switch = 0, g_preview_child = 0;
+static bool g_preview = false;
+
+void switch_preview_set(uint64_t sw, uint64_t child)
+{
+  g_preview = true;
+  g_preview_switch = sw;
+  g_preview_child = child;
+}
+
+void switch_preview_clear()
+{
+  g_preview = false;
+}
+
+bool switch_preview_active(uint64_t *r_sw, uint64_t *r_child)
+{
+  if (r_sw) {
+    *r_sw = g_preview_switch;
+  }
+  if (r_child) {
+    *r_child = g_preview_child;
+  }
+  return g_preview;
+}
+
+int switch_keys_showing(const Layer &sw, uint64_t child)
+{
+  int count = 0;
+  const auto shows = [&](float v) { return value_id(v) == child; };
+  for (const Key<float> &k : sw.switch_keys.keys) {
+    count += shows(k.value) ? 1 : 0;
+  }
+  for (const auto &[name, keys] : sw.switch_keys.actions) {
+    for (const Key<float> &k : keys) {
+      count += shows(k.value) ? 1 : 0;
+    }
+  }
+  if (!sw.switch_keys.animated() && shows(sw.switch_value)) {
+    count++;
+  }
+  return count;
+}
+
 /* `out`: switched out as renders show it; `edit_out`: as the viewport does, where the child holding
  * the layer being edited (`editing`: it and the layers holding it) shows in place of the pick. */
 static void resolve(std::vector<Layer> &layers, int frame, bool out, bool edit_out, const std::set<uint64_t> &editing)
@@ -122,9 +166,18 @@ static void resolve(std::vector<Layer> &layers, int frame, bool out, bool edit_o
         edit_shown = child.id;
       }
     }
+    if (g_preview && g_preview_switch == layer.id) {
+      edit_shown = g_preview_child;
+    }
     for (Layer &child : layer.children) {
+      const bool was_out = child.switched_out, was_edit_out = child.edit_out;
       child.switched_out = out || child.id != layer.switch_shown;
       child.edit_out = edit_out || child.id != edit_shown;
+      if (child.switched_out != was_out || child.edit_out != was_edit_out) {
+        /* Shown or hidden now: views draw it anew. */
+        layer_touch(child);
+        layer_touch(layer);
+      }
       resolve(child.children, frame, child.switched_out, child.edit_out, editing);
     }
   }
