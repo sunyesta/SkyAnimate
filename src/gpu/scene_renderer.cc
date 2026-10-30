@@ -498,7 +498,9 @@ bool SceneRenderer::shown(const Layer &layer) const
   /* A layer not rendered is a guide: in the viewport only while it shows guides (its overlays), or a
    * media one in Media View. */
   const bool media_view = media_view_ && !final_render_ && layer.is_media();
-  return layer.shown() && (layer.render_visible || (!final_render_ && show_guides_) || media_view);
+  /* The viewport shows a hidden switch child being edited; a render the switches' picks. */
+  const bool visible = final_render_ ? layer.shown_in_render() : layer.shown();
+  return visible && (layer.render_visible || (!final_render_ && show_guides_) || media_view);
 }
 
 bool SceneRenderer::full_opacity(const Layer &layer) const

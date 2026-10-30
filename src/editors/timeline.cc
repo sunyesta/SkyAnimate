@@ -2667,7 +2667,54 @@ static void timeline_body(Area &area, Context &C)
         }
       }
     }
-    for (const auto &[a, b] : order_row ? std::vector<std::pair<int, int>>() : hold_spans(r)) {
+    const bool switch_row = rows[r].filter.path == "switch" && rows[r].layers.size() == 1 && rows[r].layers[0]->is_switch();
+    if (switch_row) {
+      /* Switch: between keys, a bar naming the child shown, coloured by who decides there: a key made by
+       * hand (teal), the rig (orange: a Rig key, or the stretch from frame 0 when smart actions key it),
+       * the default (grey); red for a child that is gone. */
+      const Layer &sw = *rows[r].layers[0];
+      const std::vector<Key<float>> &keys = sw.switch_keys.keys;
+      const bool rigged = switch_keyed_by_actions(sw);
+      const std::string fallback = switch_value_label(sw, switch_default(sw));
+      for (size_t i = 0; i < keys.size(); i++) {
+        const float xa = frame_x(float(keys[i].frame)) + key_r * 0.6f;
+        const float xb = i + 1 < keys.size() ? frame_x(float(keys[i + 1].frame)) - key_r * 0.6f : p1.x;
+        if (xb <= xa || xb < k0.x || xa > p1.x) {
+          continue;
+        }
+        const float v = keys[i].value;
+        const bool rig = v < -0.5f || (keys[i].frame == 0 && rigged);
+        const bool by_hand = keys[i].frame > 0 && v > -0.5f;
+        const bool missing = v > 0.5f && !switch_child(sw, v);
+        const ImU32 fill = missing   ? IM_COL32(0x80, 0x30, 0x30, 200)
+                           : rig     ? IM_COL32(0x8c, 0x5a, 0x1e, 220)
+                           : by_hand ? IM_COL32(0x1d, 0x6e, 0x6e, 220)
+                                     : IM_COL32(0x4a, 0x4a, 0x4a, 220);
+        const std::string label = v < -0.5f        ? "Rig, else " + fallback
+                                  : rig            ? "Rig, else " + switch_value_label(sw, v)
+                                  : by_hand        ? switch_value_label(sw, v)
+                                                   : switch_value_label(sw, v) + " (default)";
+        const ImVec2 bmin(xa, ky - row_h * 0.32f), bmax(xb, ky + row_h * 0.32f);
+        dl->AddRectFilled(bmin, bmax, fill, 3.0f);
+        dl->PushClipRect(bmin, bmax, true);
+        dl->AddText(ImVec2(std::max(xa, k0.x) + 5.0f, ky - font_size * 0.5f), IM_COL32(0xf0, 0xf0, 0xf0, 255), label.c_str());
+        dl->PopClipRect();
+        if (hovered && io.MousePos.x >= bmin.x && io.MousePos.x < bmax.x && io.MousePos.y >= bmin.y &&
+            io.MousePos.y < bmax.y && !g_press.active)
+        {
+          const int last = i + 1 < keys.size() ? keys[i + 1].frame - 1 : -1;
+          const char *who = missing ? " (a child that is gone: the default shows)"
+                            : rig   ? " (its smart actions pick, else the default)"
+                            : by_hand ? " (keyed by hand: wins over smart actions)"
+                                      : " (the default)";
+          ImGui::SetTooltip("%s shows %s, frame %d%s%s\nDrag a key to retime; Replace Keys With... is in its "
+                            "right-click Switch menu",
+                            sw.name.c_str(), label.c_str(), keys[i].frame,
+                            last >= 0 ? (" to " + std::to_string(last)).c_str() : " on", who);
+        }
+      }
+    }
+    for (const auto &[a, b] : order_row || switch_row ? std::vector<std::pair<int, int>>() : hold_spans(r)) {
       const float xa = frame_x(float(a)), xb = frame_x(float(b));
       if (xb < k0.x || xa > p1.x) {
         continue;

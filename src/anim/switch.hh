@@ -34,11 +34,29 @@ std::string switch_value_label(const Layer &sw, float value);
 bool switch_value_from_name(const Layer &sw, const std::string &name, float *r_value);
 
 /* Who wins on every switch at `frame` (smart actions have put their picks in switch_rig), which
- * child each shows, and which layers are switched out. Run after smart actions. */
+ * child each shows, and which layers are switched out. Run after smart actions. While the active
+ * layer is inside a child a switch isn't showing, the viewport shows that child instead, for
+ * editing, without keying it (Layer::edit_out; renders and exports keep the pick). */
 void switches_resolve(Document &doc, int frame);
 
 /* Picks `value` at the current frame: keyed there, or on frame 0 the default. */
 void switch_set(Document &doc, Layer &sw, float value);
+/* Picks `value` for the whole hold the current frame is in: the key it starts with gets it (the
+ * default when that is frame 0, or the switch isn't keyed). */
+void switch_set_hold(Document &doc, Layer &sw, float value);
+/* Points every key holding `from` (frame 0, the timeline's and actions') at `to`; how many. */
+int switch_replace_keys(Document &doc, Layer &sw, float from, float to);
+
+/* Who decides at a frame: a hand key, a smart action, or the default (nothing else). */
+enum class SwitchSource { Hand, Rig, Default };
+/* Who decides now (smart actions as they last played). */
+SwitchSource switch_source(const Layer &sw, int frame);
+/* Whether any smart action keys the switch. */
+bool switch_keyed_by_actions(const Layer &sw);
+/* The switch a layer belongs to: itself when it is one, else the nearest switch holding it; null. */
+Layer *switch_of(Document &doc, uint64_t layer);
+/* The child of `sw` that holds `layer` (or is it); null when it isn't inside `sw`. */
+const Layer *switch_child_holding(const Document &doc, const Layer &sw, uint64_t layer);
 
 /* A child put into an empty switch becomes its default. */
 void switch_child_added(Layer &sw, uint64_t child);

@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <tuple>
 
 #include "anim/draw_order.hh"
 #include "anim/drivers.hh"
@@ -31,6 +32,27 @@ namespace oanim {
 static bool active_layer_poll(Context &C)
 {
   return C.document && document_active_layer(*C.document) != nullptr;
+}
+
+/* Picks `value` on `sw` (for the whole hold with `hold`). While the active layer was inside one of its
+ * children, it moves to the picked child (or the switch, for None or Rig), so the viewport shows the
+ * pick rather than the child being edited. */
+static void switch_pick(Document &doc, Layer &sw, float value, bool hold)
+{
+  const uint64_t sw_id = sw.id;
+  const bool editing_child = switch_child_holding(doc, sw, doc.active_layer) != nullptr;
+  if (hold) {
+    switch_set_hold(doc, sw, value);
+  }
+  else {
+    switch_set(doc, sw, value);
+  }
+  Layer &now = *layer_find(doc, sw_id);
+  if (editing_child) {
+    const Layer *child = switch_child(now, value);
+    doc.active_layer = child ? child->id : sw_id;
+    switches_resolve(doc, doc.frame_current);
+  }
 }
 
 static void layer_operator(const char *idname, const char *name, const char *description,
@@ -513,16 +535,15 @@ void layer_operators_register()
   layer_operator("layer.switch_set", "Set Switch",
                  "Show one child of a switch (layer=, else the active layer or the switch holding it): child= its "
                  "name, empty for none, RIG to hand it back to the rig. On frame 0 it's the default; on other "
-                 "frames it's keyed, and a key made by hand wins over smart actions until a Rig key",
+                 "frames it's keyed, and a key made by hand wins over smart actions until a Rig key. hold=1 "
+                 "(Alt) picks it for the whole hold the frame is in instead",
                  [](Context &C) { return C.document != nullptr; }, [](Context &C) {
                    Document &doc = *C.document;
-                   Layer *sw = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer"))
-                                                      : document_active_layer(doc);
-                   if (sw && !sw->is_switch()) {
-                     sw = layer_parent(doc, sw->id);
-                   }
-                   if (!sw || !sw->is_switch()) {
-                     report(ReportType::Warning, "Not a switch layer");
+                   const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
+                   Layer *sw = op_has_arg(C, "layer") ? (named ? switch_of(doc, named->id) : nullptr)
+                                                      : switch_of(doc, doc.active_layer);
+                   if (!sw) {
+                     report(ReportType::Warning, "Not a switch layer, nor inside one");
                      return OpStatus::Cancelled;
                    }
                    float value = 0.0f;
@@ -531,8 +552,85 @@ void layer_operators_register()
                      return OpStatus::Cancelled;
                    }
                    animation_record(doc);
-                   switch_set(doc, *sw, value);
+                   switch_pick(doc, *sw, value, op_arg_int(C, "hold", 0) != 0);
                    C.undo_name = sw->name + ": " + switch_value_label(*sw, value);
+                   return OpStatus::Finished;
+                 });
+
+  for (const auto &[idname, name, step, tip] :
+       {std::tuple{"layer.switch_next", "Next in Switch", 1,
+                   "Show the next child of the switch holding the active layer (the one below it in the Layers "
+                   "editor), keyed at this frame"},
+        std::tuple{"layer.switch_previous", "Previous in Switch", -1,
+                   "Show the previous child of the switch holding the active layer (the one above it in the "
+                   "Layers editor), keyed at this frame"}})
+  {
+    const int dir = step;
+    layer_operator(
+        idname, name, tip, [](Context &C) { return C.document && switch_of(*C.document, C.document->active_layer); },
+        [dir](Context &C) {
+          Document &doc = *C.document;
+          Layer *sw = switch_of(doc, doc.active_layer);
+          if (!sw || sw->children.empty()) {
+            return OpStatus::Cancelled;
+          }
+          /* From what the viewport shows: the child being edited, else the pick. */
+          const Layer *editing = switch_child_holding(doc, *sw, doc.active_layer);
+          const uint64_t from = editing ? editing->id : sw->switch_shown;
+          const int n = int(sw->children.size());
+          int at = -1;
+          for (int i = 0; i < n; i++) {
+            if (sw->children[size_t(i)].id == from) {
+              at = i;
+            }
+          }
+          const int next = at < 0 ? (dir > 0 ? 0 : n - 1) : ((at + dir) % n + n) % n;
+          const float value = float(sw->children[size_t(next)].id);
+          animation_record(doc);
+          switch_pick(doc, *sw, value, false);
+          C.undo_name = sw->name + ": " + switch_value_label(*sw, value);
+          return OpStatus::Finished;
+        });
+  }
+
+  layer_operator("layer.switch_replace_keys", "Replace Keys With",
+                 "Point every key of a switch (layer=, else the one holding the active layer) that shows child "
+                 "from= (a name, or the id a missing child had) at child= instead (a name, empty for none)",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
+                   Layer *sw = switch_of(doc, named ? named->id : doc.active_layer);
+                   if (!sw) {
+                     report(ReportType::Warning, "Not a switch layer, nor inside one");
+                     return OpStatus::Cancelled;
+                   }
+                   float from = 0.0f, to = 0.0f;
+                   const std::string from_text = op_arg(C, "from");
+                   if (!switch_value_from_name(*sw, from_text, &from)) {
+                     char *stop = nullptr;
+                     const unsigned long long id = std::strtoull(from_text.c_str(), &stop, 10);
+                     if (from_text.empty() || *stop != '\0') {
+                       report(ReportType::Warning, "\"" + sw->name + "\" has no layer named \"" + from_text + "\"");
+                       return OpStatus::Cancelled;
+                     }
+                     from = float(id);
+                   }
+                   if (!switch_value_from_name(*sw, op_arg(C, "child"), &to)) {
+                     report(ReportType::Warning, "\"" + sw->name + "\" has no layer named \"" + op_arg(C, "child") + "\"");
+                     return OpStatus::Cancelled;
+                   }
+                   animation_record(doc);
+                   const std::string from_label = switch_value_label(*sw, from);
+                   const int count = switch_replace_keys(doc, *sw, from, to);
+                   if (count == 0) {
+                     report(ReportType::Info, "No keys of \"" + sw->name + "\" show " + from_label);
+                     return OpStatus::Cancelled;
+                   }
+                   report(ReportType::Info, std::to_string(count) + (count == 1 ? " key" : " keys") + " of \"" +
+                                                sw->name + (count == 1 ? "\" now shows " : "\" now show ") +
+                                                switch_value_label(*sw, to) +
+                                                " instead of " + from_label);
+                   C.undo_name = sw->name + ": Replace Keys";
                    return OpStatus::Finished;
                  });
 
@@ -991,34 +1089,40 @@ void layer_operators_register()
                                                                                         : OpStatus::Cancelled;
                  });
 
-  layer_operator(
-      "layer.group", "Group With Selection",
-      "Put the active and selected layers into a new group where the active one was, as Moho does",
-      active_layer_poll, [](Context &C) {
-        Document &doc = *C.document;
-        /* The layers to move, top first; a layer inside another picked group goes with it. */
-        std::vector<uint64_t> ids;
-        for (const Layer *layer : document_layers_flat(doc)) {
-          if (layer->id != doc.active_layer && !layer->selected) {
-            continue;
-          }
-          bool inside_picked = false;
-          for (const Layer *p = layer_parent(doc, layer->id); p; p = layer_parent(doc, p->id)) {
-            inside_picked = inside_picked || p->id == doc.active_layer || p->selected;
-          }
-          if (!inside_picked) {
-            ids.push_back(layer->id);
-          }
+  for (const auto &[idname, name, type, tip] :
+       {std::tuple{"layer.group", "Group With Selection", LayerType::Group,
+                   "Put the active and selected layers into a new group where the active one was, as Moho does"},
+        std::tuple{"layer.wrap_in_switch", "Wrap in Switch", LayerType::Switch,
+                   "Put the active and selected layers into a new switch where the active one was: it shows one "
+                   "of them at a time, the top one to start with"}})
+  {
+    const LayerType kind = type;
+    layer_operator(idname, name, tip, active_layer_poll, [kind](Context &C) {
+      Document &doc = *C.document;
+      /* The layers to move, top first; a layer inside another picked group goes with it. */
+      std::vector<uint64_t> ids;
+      for (const Layer *layer : document_layers_flat(doc)) {
+        if (layer->id != doc.active_layer && !layer->selected) {
+          continue;
         }
-        Layer &group = document_add_layer(doc, LayerType::Group, "");
-        const uint64_t group_id = group.id;
-        for (const uint64_t id : ids) {
-          document_reparent_layer(doc, id, group_id, int(layer_find(doc, group_id)->children.size()));
+        bool inside_picked = false;
+        for (const Layer *p = layer_parent(doc, layer->id); p; p = layer_parent(doc, p->id)) {
+          inside_picked = inside_picked || p->id == doc.active_layer || p->selected;
         }
-        layers_deselect(doc);
-        doc.active_layer = group_id;
-        return OpStatus::Finished;
-      });
+        if (!inside_picked) {
+          ids.push_back(layer->id);
+        }
+      }
+      Layer &group = document_add_layer(doc, kind, "");
+      const uint64_t group_id = group.id;
+      for (const uint64_t id : ids) {
+        document_reparent_layer(doc, id, group_id, int(layer_find(doc, group_id)->children.size()));
+      }
+      layers_deselect(doc);
+      doc.active_layer = group_id;
+      return OpStatus::Finished;
+    });
+  }
 
 }
 

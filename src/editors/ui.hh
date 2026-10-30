@@ -225,6 +225,9 @@ void ui_mask_pick_update(Context &C);
 void ui_mask_menu_items(Context &C, uint64_t layer);
 /* The Draw Order menu's items, for `layer` (0: the active and picked layers). */
 void ui_draw_order_menu_items(Context &C, uint64_t layer);
+/* The Switch menu's items for switch `sw`: its children to pick (keyed at this frame; with Alt held,
+ * for the whole hold), None, Rig, and Replace Keys With. */
+void ui_switch_menu_items(Context &C, uint64_t sw);
 /* A click on `layer` while it is on (0: on no layer, which keeps it on). */
 void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
 /* The shape eyedropper: the same, for a shape clicked in the viewport (the brush eyedropper): `pick`

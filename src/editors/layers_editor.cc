@@ -3,6 +3,7 @@
  * double-click, drag to reorder or drop into a group, and a right-click menu. */
 
 #define IMGUI_DEFINE_MATH_OPERATORS
+#include "anim/switch.hh"
 #include "imgui.h"
 #include "imgui_stdlib.h"
 
@@ -299,8 +300,15 @@ static void layer_context_menu(Context &C, Layer &layer)
     ui_draw_order_menu_items(C, 0);
     ui_submenu_end();
   }
+  if (const Layer *sw = switch_of(doc, layer.id)) {
+    if (ui_submenu_begin(("Switch: " + sw->name).c_str())) {
+      ui_switch_menu_items(C, sw->id);
+      ui_submenu_end();
+    }
+  }
   ImGui::Separator();
   menu_op(C, "Group With Selection", "layer.group");
+  menu_op(C, "Wrap in Switch", "layer.wrap_in_switch");
   if (layer.type == LayerType::Group) {
     menu_op(C, "Convert to Bone Group", "layer.convert_to_bone");
   }
@@ -676,6 +684,36 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     }
   }
   x += h * 0.7f;
+  if (const Layer *sw = layer_parent(doc, layer.id); sw && sw->is_switch()) {
+    /* Rive's radio buttons: filled for the child the switch shows (as renders show it), a ring for the
+     * others; one shown only for editing gets an orange ring. A click picks it, keyed at this frame
+     * (Alt: for the whole hold); the eye stays the viewport's own. */
+    const bool picked = sw->switch_shown == layer.id;
+    const bool peeked = !picked && !layer.edit_out;
+    const ImVec2 c(x + h * 0.3f, cy);
+    ImGui::SetCursorScreenPos(ImVec2(x, row_min.y));
+    const uint64_t sw_id = sw->id;
+    const std::string name = layer.name;
+    if (ImGui::InvisibleButton("##switch_pick", ImVec2(h * 0.6f, h))) {
+      operator_call(C, "layer.switch_set",
+                    {{"layer", std::to_string(sw_id)}, {"child", name}, {"hold", ImGui::GetIO().KeyAlt ? "1" : "0"}});
+    }
+    const bool dot_hovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(picked   ? "Shown by the switch now.\nClick another child's dot to show that one instead"
+                        : peeked ? "Shown while you edit it, not keyed.\nClick to show it here (keyed at this frame; "
+                                   "Alt: the whole hold)"
+                                 : "Click to show this child here (keyed at this frame; Alt: the whole hold)");
+    }
+    const ImU32 ring = peeked ? IM_COL32(0xff, 0x9a, 0x3c, 255) : dot_hovered ? IM_COL32(0xf0, 0xf0, 0xf0, 255) : COL_ICON;
+    if (picked) {
+      dl->AddCircleFilled(c, icon * 0.75f, IM_COL32(0xe6, 0xe6, 0xe6, 255));
+    }
+    else {
+      dl->AddCircle(c, icon * 0.7f, ring, 0, 1.5f);
+    }
+    x += h * 0.6f;
+  }
   icon_layer_type(dl, ImVec2(x + h * 0.4f, cy), icon * 1.3f, layer);
   if (layer.is_reference() && reference_change_count(layer) > 0) {
     /* A copy with changes of its own (the Reference tab lists them). */
@@ -706,6 +744,13 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
     float after = x + ImGui::CalcTextSize(layer.name.c_str()).x + 8.0f;
     const float limit = row_min.x + row_w - h * 4.0f;
+    if (layer.is_switch()) {
+      const std::string pick = switch_value_label(layer, float(layer.switch_shown));
+      if (after + ImGui::CalcTextSize(pick.c_str()).x < limit) {
+        dl->AddText(ImVec2(after, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0x90, 0x90, 0x90, 255), pick.c_str());
+        after += ImGui::CalcTextSize(pick.c_str()).x + 8.0f;
+      }
+    }
     mask_symbol(C, layer, after, row_min.y, h, limit);
   }
 

@@ -55,6 +55,8 @@ for name, colour in (("A", (1.0, 0.0, 0.0, 1.0)), ("B", (0.0, 1.0, 0.0, 1.0)), (
     l.set_shape_style(0, fill=colour)
     assert oanim.ops.layer.move_to_group(group=str(sw.id)) == {'FINISHED'}
     children[name] = l
+# The switch itself active: the viewport shows its pick (a child active would show for editing).
+layers.active = sw
 sync()
 
 # The first layer put in becomes the default; only it is drawn.
@@ -188,5 +190,85 @@ assert oanim.ops.layer.delete() == {'FINISHED'}
 goto(12)
 assert sw.switch_active == "B", ("C gone: the default", sw.switch_active)
 assert oanim.ops.layer.switch_set(layer=sw.name, child="C") == {'CANCELLED'}
+
+
+# === Stage 2: picking =================================================================================
+assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
+doc = oanim.data.document
+goto(0)
+made = {}
+for name, colour in (("A", (1.0, 0.0, 0.0, 1.0)), ("B", (0.0, 1.0, 0.0, 1.0)), ("C", (0.0, 0.0, 1.0, 1.0))):
+    oanim.ops.layer.new()
+    l = layers.active
+    l.name = name
+    l.add_curve([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)], closed=True, fill=True)
+    l.set_shape_style(0, fill=colour)
+    made[name] = l
+for l in made.values():
+    l.selected = True
+
+# Wrap in Switch: the picked layers into a new switch, the top one (C) the default.
+assert oanim.ops.layer.wrap_in_switch() == {'FINISHED'}
+sw = layers.active
+sync()
+assert sw.type == "SWITCH" and [c.name for c in sw.children] == ["C", "B", "A"], [c.name for c in sw.children]
+assert sw.switch_default == "C" and drawn() == ["C"], (sw.switch_default, drawn())
+
+# ] and [: the next and previous child in the Layers editor's order (wrapping), keyed at this frame.
+goto(5)
+assert oanim.ops.layer.switch_next() == {'FINISHED'} and sw.switch_active == "B"
+assert oanim.ops.layer.switch_next() == {'FINISHED'} and sw.switch_active == "A"
+assert oanim.ops.layer.switch_next() == {'FINISHED'} and sw.switch_active == "C", "wraps round"
+assert oanim.ops.layer.switch_previous() == {'FINISHED'} and sw.switch_active == "A"
+assert keyed(sw) == [0, 5], keyed(sw)
+
+# Alt: the whole hold the frame is in (from frame 5's key on), no new key.
+goto(9)
+assert oanim.ops.layer.switch_set(layer=sw.name, child="B", hold="1") == {'FINISHED'}
+assert keyed(sw) == [0, 5] and sw.switch_active == "B"
+goto(5)
+assert sw.switch_active == "B", "the key at 5 now shows B"
+goto(2)
+assert oanim.ops.layer.switch_set(layer=sw.name, child="A", hold="1") == {'FINISHED'}
+assert sw.switch_default == "A" and keyed(sw) == [0, 5], "the hold from frame 0 is the default's"
+
+# Replace Keys With: every key showing B shows C instead.
+goto(30)
+oanim.ops.layer.switch_set(layer=sw.name, child="B")
+assert oanim.ops.layer.switch_replace_keys(layer=sw.name, **{"from": "B"}, child="C") == {'FINISHED'}
+for frame, want in ((5, "C"), (30, "C"), (0, "A")):
+    goto(frame)
+    assert sw.switch_active == want, (frame, sw.switch_active)
+assert oanim.ops.layer.switch_replace_keys(layer=sw.name, **{"from": "B"}, child="A") == {'CANCELLED'}, "none left"
+
+# Editing a hidden child shows it in the viewport, unkeyed; renders and exports keep the pick.
+goto(30)
+assert sw.switch_active == "C"
+layers.active = made["B"]
+sync()
+assert drawn() == ["B"], ("the child being edited shows in the viewport", drawn())
+assert sw.switch_active == "C" and keyed(sw) == [0, 5, 30], "nothing keyed, the pick unchanged"
+svg = folder / "editing.svg"
+assert oanim.ops.export.svg(filepath=str(svg)) == {'FINISHED'}
+text = svg.read_text()
+assert "#0000ff" in text and "#00ff00" not in text, "the export shows the pick, C"
+# Picking while editing a child moves the active layer to the pick, so the viewport shows it.
+assert oanim.ops.layer.switch_next() == {'FINISHED'}
+assert sw.switch_active == "A" and layers.active.name == "A" and drawn() == ["A"], (sw.switch_active, layers.active.name, drawn())
+layers.active = sw
+sync()
+assert drawn() == ["A"]
+
+# A child that is gone: its keys show the default until Replace Keys With points them elsewhere.
+goto(40)
+oanim.ops.layer.switch_set(layer=sw.name, child="B")
+gone_id = made["B"].id
+layers.active = made["B"]
+assert oanim.ops.layer.delete() == {'FINISHED'}
+goto(40)
+assert sw.switch_active == "A", ("B gone: the default", sw.switch_active)
+assert oanim.ops.layer.switch_replace_keys(layer=sw.name, **{"from": str(gone_id)}, child="C") == {'FINISHED'}
+goto(40)
+assert sw.switch_active == "C"
 
 print("switch layer OK")

@@ -1,6 +1,7 @@
 #include "anim/switch.hh"
 
 #include <cmath>
+#include <set>
 
 #include "data/document.hh"
 
@@ -94,12 +95,15 @@ static bool hand_value(const Layer &sw, int frame, float *r_value)
   return true;
 }
 
-static void resolve(std::vector<Layer> &layers, int frame, bool out)
+/* `out`: switched out as renders show it; `edit_out`: as the viewport does, where the child holding
+ * the layer being edited (`editing`: it and the layers holding it) shows in place of the pick. */
+static void resolve(std::vector<Layer> &layers, int frame, bool out, bool edit_out, const std::set<uint64_t> &editing)
 {
   for (Layer &layer : layers) {
     layer.switched_out = out;
+    layer.edit_out = edit_out;
     if (!layer.is_switch()) {
-      resolve(layer.children, frame, out);
+      resolve(layer.children, frame, out, edit_out, editing);
       continue;
     }
     float value;
@@ -112,16 +116,27 @@ static void resolve(std::vector<Layer> &layers, int frame, bool out)
       shown = switch_child(layer, switch_default(layer));
     }
     layer.switch_shown = shown ? shown->id : 0;
+    uint64_t edit_shown = layer.switch_shown;
+    for (const Layer &child : layer.children) {
+      if (editing.count(child.id)) {
+        edit_shown = child.id;
+      }
+    }
     for (Layer &child : layer.children) {
       child.switched_out = out || child.id != layer.switch_shown;
-      resolve(child.children, frame, child.switched_out);
+      child.edit_out = edit_out || child.id != edit_shown;
+      resolve(child.children, frame, child.switched_out, child.edit_out, editing);
     }
   }
 }
 
 void switches_resolve(Document &doc, int frame)
 {
-  resolve(doc.layers, frame, false);
+  std::set<uint64_t> editing;
+  for (const Layer *l = layer_find(doc, doc.active_layer); l; l = layer_parent(doc, l->id)) {
+    editing.insert(l->id);
+  }
+  resolve(doc.layers, frame, false, false, editing);
 }
 
 void switch_set(Document &doc, Layer &sw, float value)
@@ -144,6 +159,103 @@ void switch_set(Document &doc, Layer &sw, float value)
   ch.last = sw.switch_value;
   ch.has_last = true;
   switches_resolve(doc, frame);
+}
+
+void switch_set_hold(Document &doc, Layer &sw, float value)
+{
+  Channel<float> &ch = sw.switch_keys;
+  const Key<float> *start = nullptr;
+  for (const Key<float> &k : ch.keys) {
+    if (k.frame > doc.frame_current) {
+      break;
+    }
+    start = &k;
+  }
+  if (!start || (start->frame == 0 && doc.action.empty())) {
+    /* The hold from frame 0: the default. */
+    const int now = doc.frame_current;
+    doc.frame_current = 0;
+    switch_set(doc, sw, value);
+    doc.frame_current = now;
+    sw.switch_value = ch.animated() ? ch.evaluate(now) : value;
+    ch.last = sw.switch_value;
+    switches_resolve(doc, now);
+    return;
+  }
+  ch.set_key(start->frame, value).interp = Interp::Step;
+  sw.switch_value = ch.evaluate(doc.frame_current);
+  ch.last = sw.switch_value;
+  ch.has_last = true;
+  switches_resolve(doc, doc.frame_current);
+}
+
+int switch_replace_keys(Document &doc, Layer &sw, float from, float to)
+{
+  const auto same = [&](float v) { return std::fabs(v - from) < 0.5f; };
+  int count = 0;
+  const auto replace = [&](std::vector<Key<float>> &keys) {
+    for (Key<float> &k : keys) {
+      if (same(k.value)) {
+        k.value = to;
+        count++;
+      }
+    }
+  };
+  Channel<float> &ch = sw.switch_keys;
+  replace(ch.keys);
+  for (auto &[name, keys] : ch.actions) {
+    replace(keys);
+  }
+  if (!ch.animated() && same(sw.switch_value)) {
+    sw.switch_value = to;
+    count++;
+  }
+  sw.switch_value = ch.animated() ? ch.evaluate(doc.frame_current) : sw.switch_value;
+  ch.last = sw.switch_value;
+  ch.has_last = true;
+  switches_resolve(doc, doc.frame_current);
+  return count;
+}
+
+SwitchSource switch_source(const Layer &sw, int frame)
+{
+  float value;
+  if (hand_value(sw, frame, &value)) {
+    return SwitchSource::Hand;
+  }
+  return sw.switch_rig_set && !is_rig(sw.switch_rig) ? SwitchSource::Rig : SwitchSource::Default;
+}
+
+bool switch_keyed_by_actions(const Layer &sw)
+{
+  for (const auto &[name, keys] : sw.switch_keys.actions) {
+    if (!name.empty() && !keys.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Layer *switch_of(Document &doc, uint64_t layer)
+{
+  for (Layer *l = layer_find(doc, layer); l; l = layer_parent(doc, l->id)) {
+    if (l->is_switch()) {
+      return l;
+    }
+  }
+  return nullptr;
+}
+
+const Layer *switch_child_holding(const Document &doc, const Layer &sw, uint64_t layer)
+{
+  for (const Layer *l = layer_find(doc, layer); l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
+    for (const Layer &child : sw.children) {
+      if (child.id == l->id) {
+        return &child;
+      }
+    }
+  }
+  return nullptr;
 }
 
 void switch_child_added(Layer &sw, uint64_t child)

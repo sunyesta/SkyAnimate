@@ -874,6 +874,9 @@ struct Layer {
   float switch_rig = 0.0f;
   bool switch_rig_set = false;
   bool switched_out = false;
+  /* Runtime: switched out as the viewport shows it, where the child being edited is shown in place of
+   * the pick (see switches_resolve). */
+  bool edit_out = false;
 
   /* Its masks, as cards (see LayerMask). */
   std::vector<LayerMask> masks;
@@ -941,8 +944,11 @@ struct Layer {
 
   bool is_group() const { return type == LayerType::Group || type == LayerType::Bone || type == LayerType::Switch; }
   bool is_switch() const { return type == LayerType::Switch; }
-  /* Visible, and not a child a switch above it isn't showing now: what is drawn, picked and edited. */
-  bool shown() const { return visible && !switched_out; }
+  /* Visible, and not a child a switch above it isn't showing now: what the viewport draws, picks and
+   * edits (a hidden child being edited shows there). */
+  bool shown() const { return visible && !edit_out; }
+  /* As renders and exports show it: the switches' own picks. */
+  bool shown_in_render() const { return visible && !switched_out; }
   bool is_bone_layer() const { return type == LayerType::Bone; }
   bool is_media() const { return type == LayerType::Media; }
   bool is_text() const { return type == LayerType::Text; }

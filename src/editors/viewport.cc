@@ -29,6 +29,7 @@
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/switch.hh"
 #include "anim/dynamics.hh"
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
@@ -12257,6 +12258,12 @@ static void viewport_draw_contents(Area &area, Context &C)
       ui_mask_menu_items(C, 0);
       ui_submenu_end();
     }
+    if (const Layer *sw = switch_of(doc, doc.active_layer)) {
+      if (ui_submenu_begin(("Switch: " + sw->name).c_str())) {
+        ui_switch_menu_items(C, sw->id);
+        ui_submenu_end();
+      }
+    }
     ui_menu_end();
   }
   bone_parent_menus(C, hovered);
@@ -12366,6 +12373,12 @@ static void viewport_draw_contents(Area &area, Context &C)
     if (ui_submenu_begin("Draw Order")) {
       ui_draw_order_menu_items(C, 0);
       ui_submenu_end();
+    }
+    if (const Layer *sw = switch_of(doc, doc.active_layer)) {
+      if (ui_submenu_begin(("Switch: " + sw->name).c_str())) {
+        ui_switch_menu_items(C, sw->id);
+        ui_submenu_end();
+      }
     }
     ui_menu_end();
   }

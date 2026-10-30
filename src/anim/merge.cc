@@ -498,11 +498,11 @@ static bool shown_in(const std::vector<Layer> &list, uint64_t id, bool *r_shown)
 {
   for (const Layer &layer : list) {
     if (layer.id == id) {
-      *r_shown = layer.shown();
+      *r_shown = layer.shown_in_render();
       return true;
     }
     if (shown_in(layer.children, id, r_shown)) {
-      *r_shown = *r_shown && layer.shown();
+      *r_shown = *r_shown && layer.shown_in_render();
       return true;
     }
   }

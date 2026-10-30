@@ -224,7 +224,7 @@ class SceneWalker {
 
   /* --- What shows --------------------------------------------------------------------------- */
 
-  static bool shown(const Layer &layer) { return layer.shown() && layer.render_visible; }
+  static bool shown(const Layer &layer) { return layer.shown_in_render() && layer.render_visible; }
 
   /* What is drawn: what shows, or with hidden layers everything. */
   /* A child a switch isn't showing on this frame isn't part of its picture, hidden layers or not. */

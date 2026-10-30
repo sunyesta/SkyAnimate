@@ -49,6 +49,9 @@ KEYMAP = (
     ("Viewport", "screen.redo_last", "F9", {}),
     ("Viewport", "transform.translate", "G", {}),
     # Draw order, as Photoshop and Figma arrange: Ctrl ] / Ctrl [ one step, with Shift all the way.
+    # Harmony's [ and ]: the previous or next child of the switch holding the active layer, keyed.
+    ("Window", "layer.switch_previous", "LEFT_BRACKET", {}),
+    ("Window", "layer.switch_next", "RIGHT_BRACKET", {}),
     ("Window", "layer.draw_order_forward", "RIGHT_BRACKET", {"ctrl": True}),
     ("Window", "layer.draw_order_backward", "LEFT_BRACKET", {"ctrl": True}),
     ("Window", "layer.draw_order_front", "RIGHT_BRACKET", {"ctrl": True, "shift": True}),

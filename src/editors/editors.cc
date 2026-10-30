@@ -18,6 +18,7 @@
 
 #include "anim/animation.hh"
 #include "anim/draw_order.hh"
+#include "anim/switch.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 #include "editors/statistics.hh"
@@ -1849,6 +1850,88 @@ void ui_mask_menu_items(Context &C, uint64_t layer_id)
   ImGui::Separator();
   if (ui_menu_item("Remove Masks", nullptr, false, layer && !layer->masks.empty())) {
     operator_call(C, "mask.remove", args);
+  }
+}
+
+void ui_switch_menu_items(Context &C, uint64_t sw_id)
+{
+  Document &doc = *C.document;
+  const Layer *sw = layer_find(doc, sw_id);
+  if (!sw || !sw->is_switch()) {
+    return;
+  }
+  const SwitchSource source = switch_source(*sw, doc.frame_current);
+  const std::string now = "Now: " + switch_value_label(*sw, float(sw->switch_shown)) +
+                          (source == SwitchSource::Hand  ? " (keyed)"
+                           : source == SwitchSource::Rig ? " (from the rig)"
+                                                         : " (the default)");
+  ImGui::TextDisabled("%s", now.c_str());
+  ImGui::Separator();
+  const bool hold = ImGui::GetIO().KeyAlt;
+  const auto pick = [&](const std::string &child) {
+    operator_call(C, "layer.switch_set", {{"layer", std::to_string(sw_id)}, {"child", child}, {"hold", hold ? "1" : "0"}});
+  };
+  /* Names are copied first: picking changes the document under the menu. */
+  std::vector<std::pair<std::string, uint64_t>> children;
+  for (const Layer &child : sw->children) {
+    children.push_back({child.name, child.id});
+  }
+  const uint64_t shown = sw->switch_shown;
+  for (const auto &[name, id] : children) {
+    ImGui::PushID(int(id));
+    if (ui_menu_item(name.c_str(), nullptr, id == shown)) {
+      pick(name);
+    }
+    ImGui::PopID();
+  }
+  if (ui_menu_item("None", nullptr, shown == 0)) {
+    pick("");
+  }
+  if (ui_menu_item("Rig", nullptr, false, doc.frame_current != 0)) {
+    pick("RIG");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(doc.frame_current != 0 ? "From this frame, its smart actions pick (or the default does)"
+                                             : "Frame 0 is the default: there's nothing to hand back");
+  }
+  ImGui::Separator();
+  ImGui::TextDisabled("%s", hold ? "Alt: for the whole hold" : "Keyed at this frame (Alt: the whole hold)");
+  /* Replace Keys With: every value its keys hold, then what to show instead. */
+  std::vector<float> values;
+  const auto gather = [&](float v) {
+    if (v > -0.5f && std::find(values.begin(), values.end(), v) == values.end()) {
+      values.push_back(v);
+    }
+  };
+  gather(switch_default(*sw));
+  for (const Key<float> &k : sw->switch_keys.keys) {
+    gather(k.value);
+  }
+  for (const auto &[action, keys] : sw->switch_keys.actions) {
+    for (const Key<float> &k : keys) {
+      gather(k.value);
+    }
+  }
+  if (ui_submenu_begin("Replace Keys With", !values.empty())) {
+    for (const float from : values) {
+      const std::string from_label = switch_value_label(*sw, from);
+      ImGui::PushID(int(from));
+      if (ui_submenu_begin(("Keys Showing " + from_label).c_str())) {
+        for (const auto &[name, id] : children) {
+          if (float(id) != from && ui_menu_item(name.c_str())) {
+            operator_call(C, "layer.switch_replace_keys",
+                          {{"layer", std::to_string(sw_id)}, {"from", std::to_string(int64_t(from))}, {"child", name}});
+          }
+        }
+        if (from != 0.0f && ui_menu_item("None")) {
+          operator_call(C, "layer.switch_replace_keys",
+                        {{"layer", std::to_string(sw_id)}, {"from", std::to_string(int64_t(from))}, {"child", ""}});
+        }
+        ui_submenu_end();
+      }
+      ImGui::PopID();
+    }
+    ui_submenu_end();
   }
 }
 
