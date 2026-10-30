@@ -21,6 +21,7 @@
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
+#include "anim/bone_family.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
 #include "wm/clipboard_image.hh"
@@ -1887,6 +1888,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["select_tail"] = bone_tail_selected(layer, b);
       d["connected"] = b.connected;
       d["inherit_rotation"] = b.inherit_rotation;
+      /* Its swap: (bone layer, bone) it stands in for, or None. */
+      {
+        const Document &swap_doc = *current_context().document;
+        const Layer *swap_layer = b.swap_layer ? layer_find(swap_doc, b.swap_layer) : nullptr;
+        const Bone *swap_bone = swap_layer ? bone_find(*swap_layer, b.swap_bone) : nullptr;
+        d["stands_in_for"] = swap_bone ? py::object(py::make_tuple(swap_layer->name, swap_bone->name)) : py::object(py::none());
+      }
       d["inherit_scale"] = b.inherit_scale == InheritScale::Full      ? "FULL"
                            : b.inherit_scale == InheritScale::Uniform ? "UNIFORM"
                                                                       : "NONE";
@@ -3539,6 +3547,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   /* The drawing layers as drawn now (rules applied), bottom first, by name; hidden ones left out. */
   /* What a viewport click on `hit` picks for the Draw Order eyedropper moving `moving` (ids). */
+  m.def("layer_bone_family", [layer_or_raise](uint64_t id) {
+    layer_or_raise(id);
+    std::vector<std::string> names;
+    for (const Layer *l : armature_family(*current_context().document, id)) {
+      names.push_back(l->name);
+    }
+    return names;
+  });
   m.def("layer_switch", [layer_or_raise](uint64_t id) {
     const Layer &sw = layer_or_raise(id);
     if (!sw.is_switch()) {

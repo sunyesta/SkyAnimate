@@ -552,6 +552,11 @@ struct Bone {
   std::string name;
   /* The parent bone's id, or 0 for a root. */
   uint64_t parent = 0;
+  /* A bone swap (anim/bone_family.hh): this bone stands in for bone `swap_bone` of bone layer
+   * `swap_layer`, its counterpart in another child of a switch (a bent leg's shin for the straight
+   * leg's). 0: none. Swaps don't share poses; they say which bone is which across children. */
+  uint64_t swap_layer = 0;
+  uint64_t swap_bone = 0;
   float2 position;
   /* Radians, counter-clockwise. */
   float angle = 0.0f;
@@ -921,6 +926,10 @@ struct Layer {
   /* Bone layers: the All collection's eye and star. */
   bool all_bones_visible = true;
   bool all_bones_solo = false;
+  /* Bone layers inside a bone layer: a sub bone group, whose bones show and can be picked with the bone
+   * layer around it while either is worked in (a leg's own bones in a switch of legs, hung from the
+   * hip with Parent Bone); only while it is shown. */
+  bool sub_bone_group = true;
   /* Inside a bone layer: its points can be picked and moved along with the bones while the bone
    * layer is the active one (it is in All, and can be put in other collections too). */
   bool edit_with_bones = false;

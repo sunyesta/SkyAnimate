@@ -22,6 +22,8 @@
 #include "anim/vector_deform.hh"
 #include "anim/drivers.hh"
 #include "anim/draw_order.hh"
+#include "anim/switch.hh"
+#include "anim/bone_family.hh"
 #include "anim/merge.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
@@ -650,6 +652,47 @@ static void bone_relations_panel(Context &C, Layer &armature)
                       "the bone's angle and scale are keyed back there");
   }
   ImGui::EndDisabled();
+
+  /* In a child of a switch: the bone it stands in for in another child (a bone swap,
+   * anim/bone_family.hh), which carries the selection across a pick and guides Match Pose. */
+  if (Layer *sw = switch_of(doc, armature.id); sw && switch_child_holding(doc, *sw, armature.id)) {
+    active = bone_find(armature, own);
+    const Layer *own_child = switch_child_holding(doc, *sw, armature.id);
+    const Layer *swap_layer = active->swap_layer ? layer_find(doc, active->swap_layer) : nullptr;
+    const Bone *swap_bone = swap_layer ? bone_find(*swap_layer, active->swap_bone) : nullptr;
+    const std::string now = swap_bone ? swap_layer->name + ": " + swap_bone->name : "None";
+    label("Stands In For");
+    std::string pick_layer, pick_bone;
+    bool picked = false;
+    if (ImGui::BeginCombo("##stands_in_for", now.c_str(), ImGuiComboFlags_HeightLarge)) {
+      if (ImGui::Selectable("None", !swap_bone)) {
+        picked = true;
+      }
+      for (Layer &child : sw->children) {
+        Layer *other = &child == own_child ? nullptr : switch_child_armature(child);
+        if (!other || other->id == armature.id) {
+          continue;
+        }
+        for (const Bone &b : other->bones) {
+          const std::string item = other->name + ": " + b.name;
+          if (ImGui::Selectable(item.c_str(), swap_bone && swap_layer->id == other->id && swap_bone->id == b.id)) {
+            picked = true;
+            pick_layer = std::to_string(other->id);
+            pick_bone = b.name;
+          }
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Its counterpart in another of the switch's drawings (the straight leg's shin for the bent\n"
+                        "leg's). Poses aren't shared: a pick carries the selection across, and Match Pose from\n"
+                        "Previous Drawing lines it up. The switch's menu has Auto-link Bones by Name");
+    }
+    if (picked) {
+      operator_call(C, "armature.bone_swap_set", {{"bone", bone_name}, {"layer", pick_layer}, {"target", pick_bone}});
+    }
+  }
 
   /* The bone collections it is in, with their eye and star (as the Bone Collections list). */
   active = bone_find(armature, own);
@@ -5877,6 +5920,10 @@ static void layer_tab(Context &C)
     if (layer->is_group()) {
       /* Picking the group edits what's inside it. */
       ui_prop(C, ptr, "edit_descendants", path);
+    }
+    if (layer->is_bone_layer() && layer_parent(doc, layer->id) && layer_armature(doc, layer_parent(doc, layer->id)->id)) {
+      /* A bone group inside another: its bones show with the outer one's. */
+      ui_prop(C, ptr, "sub_bone_group", path);
     }
     ui_prop(C, ptr, "label_color", path);
     ui_panel_end();

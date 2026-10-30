@@ -25,6 +25,7 @@
 #include <unordered_map>
 
 #include "core/log.hh"
+#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
@@ -8094,10 +8095,32 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
           }
           else {
             const uint64_t picked = pick_bone(doc, armature, view, io.MousePos);
-            if (!io.KeyShift) {
+            /* Missed its own bones: one of its family's (the bone layer around it, a shown sub bone
+             * group) under the click is worked in instead, so a character's bones all answer clicks. */
+            Layer *other = nullptr;
+            uint64_t other_bone = 0;
+            if (!picked) {
+              for (Layer *l : armature_family(doc, armature.id)) {
+                if (l->id != armature.id && (other_bone = pick_bone(doc, *l, view, io.MousePos)) != 0) {
+                  other = l;
+                  break;
+                }
+              }
+            }
+            if (!io.KeyShift || other) {
               armature_deselect_all(armature);
             }
-            if (Bone *b = bone_find(armature, picked)) {
+            if (other) {
+              if (!io.KeyShift) {
+                armature_deselect_all(*other);
+              }
+              if (Bone *b = bone_find(*other, other_bone)) {
+                bone_select(*b, true);
+                other->active_bone = other_bone;
+              }
+              doc.active_layer = other->id;
+            }
+            else if (Bone *b = bone_find(armature, picked)) {
               bone_select(*b, true);
               armature.active_bone = picked;
             }
@@ -10210,13 +10233,32 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
           push_undo(C, "Select");
         }
         else {
-          bone_click_select(armature, hit, io.KeyShift);
+          /* Missed its own bones: one of its family's under the click (the bone layer around it, a
+           * shown sub bone group, anim/bone_family.hh) is worked in instead. */
+          Layer *other = nullptr;
+          BoneHit other_hit;
+          if (!hit.bone) {
+            for (Layer *l : armature_family(doc, armature.id)) {
+              if (l->id != armature.id && (other_hit = pick_bone_part(doc, *l, view, g_bone_box.start)).bone) {
+                other = l;
+                break;
+              }
+            }
+          }
+          if (other) {
+            armature_deselect_all(armature);
+            bone_click_select(*other, other_hit, false);
+            doc.active_layer = other->id;
+          }
+          else {
+            bone_click_select(armature, hit, io.KeyShift);
+          }
           if (!io.KeyShift) {
             for (Layer *l : point_layers) {
               deselect_all(l->drawing);
             }
           }
-          push_undo(C, hit.bone ? "Select Bone" : "Deselect");
+          push_undo(C, hit.bone || other ? "Select Bone" : "Deselect");
         }
       }
       g_bone_box = {};
@@ -12120,12 +12162,21 @@ static void viewport_draw_contents(Area &area, Context &C)
                                     ov.armature != ArmatureDisplay::Off
                                 ? active_armature(C)
                                 : nullptr;
+    /* With the active bone layer, the rest of its family: the bone layer around it and the sub bone
+     * groups shown inside (anim/bone_family.hh), drawn as other bone layers are. */
+    std::set<uint64_t> family;
+    if (const Layer *active = document_active_layer(doc); active && active->is_bone_layer()) {
+      for (const Layer *l : armature_family(doc, active->id)) {
+        family.insert(l->id);
+      }
+    }
     const auto visit = [&](auto &&self, const std::vector<Layer> &list, bool shown) -> void {
       for (const Layer &l : list) {
         const bool visible = shown && l.shown();
         if (l.is_bone_layer() && visible &&
             (ov.armature == ArmatureDisplay::On ||
-             (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer)) || &l == painting))
+             (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer || family.contains(l.id))) ||
+             &l == painting))
         {
           /* Only the bone layer being worked in is drawn solid. */
           g_plain_armature = doc.frame_current != 0 ? 0

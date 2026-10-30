@@ -9,6 +9,8 @@
 #include <set>
 #include <tuple>
 
+#include "anim/switch.hh"
+#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/bevel.hh"
@@ -483,6 +485,146 @@ void rig_operators_register()
     const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
     return l && l->is_bone_layer();
   };
+  rig_operator("armature.bone_swap_set", "Set Bone Swap",
+               "Make a bone (bone=, else the active one) of the active bone layer stand in for bone target= of bone "
+               "layer layer= (another child of the same switch): which bone is which across the switch's "
+               "drawings. Without target= it stands in for none",
+               bone_layer_active, [](Context &C) {
+                 Document &doc = *C.document;
+                 Layer &armature = *active_armature(C);
+                 Bone *bone = op_has_arg(C, "bone") ? const_cast<Bone *>(bone_find_by_name(armature, op_arg(C, "bone")))
+                                                    : bone_find(armature, armature.active_bone);
+                 if (!bone) {
+                   report(ReportType::Warning, "No such bone");
+                   return OpStatus::Cancelled;
+                 }
+                 if (op_arg(C, "target").empty()) {
+                   bone->swap_layer = bone->swap_bone = 0;
+                   C.undo_name = bone->name + ": No Swap";
+                   return OpStatus::Finished;
+                 }
+                 const Layer *other = layer_by_name_or_id(doc, op_arg(C, "layer"));
+                 const Bone *target = other && other->is_bone_layer() ? bone_find_by_name(*other, op_arg(C, "target")) : nullptr;
+                 if (!target || other->id == armature.id) {
+                   report(ReportType::Warning, "Name a bone layer (layer=) and one of its bones (target=)");
+                   return OpStatus::Cancelled;
+                 }
+                 if (bone_swap_root(doc, other->id, target->id) == std::pair<uint64_t, uint64_t>{armature.id, bone->id}) {
+                   report(ReportType::Warning, "\"" + other->name + ": " + target->name + "\" already stands in for \"" +
+                                                   armature.name + ": " + bone->name + "\": that would go round in a loop");
+                   return OpStatus::Cancelled;
+                 }
+                 bone->swap_layer = other->id;
+                 bone->swap_bone = target->id;
+                 C.undo_name = bone->name + " Stands In for " + other->name + ": " + target->name;
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.swaps_auto_link", "Auto-link by Name",
+               "In the switch holding the active layer (or layer=), each bone of its children's bone layers stands in "
+               "for the bone of the same name in the first child with bones, unless it has a swap already",
+               nullptr, [](Context &C) {
+                 Document &doc = *C.document;
+                 const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
+                 Layer *sw = switch_of(doc, named ? named->id : doc.active_layer);
+                 if (!sw) {
+                   report(ReportType::Warning, "Not a switch layer, nor inside one");
+                   return OpStatus::Cancelled;
+                 }
+                 const int made = switch_swaps_auto_link(doc, *sw);
+                 report(ReportType::Info, std::to_string(made) + (made == 1 ? " bone" : " bones") + " of \"" + sw->name +
+                                              "\" now stand in by name");
+                 if (made == 0) {
+                   return OpStatus::Cancelled;
+                 }
+                 C.undo_name = sw->name + ": Auto-link Swaps";
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.match_pose_previous", "Match Pose from Previous Drawing",
+               "Pose the active bone layer's bones (a child of a switch, or inside one) as their counterparts in the "
+               "drawing the switch showed before this hold lie on this frame, and key them: no pop at the swap",
+               bone_layer_active, [](Context &C) {
+                 Document &doc = *C.document;
+                 if (doc.frame_current == 0) {
+                   report_banner(ReportType::Warning, "Match Pose keys a pose: go to a frame after the setup (frame 0)");
+                   return OpStatus::Cancelled;
+                 }
+                 Layer &armature = *active_armature(C);
+                 Layer *sw = switch_of(doc, armature.id);
+                 const Layer *child = sw ? switch_child_holding(doc, *sw, armature.id) : nullptr;
+                 if (!child) {
+                   report(ReportType::Warning, "\"" + armature.name + "\" isn't inside a switch");
+                   return OpStatus::Cancelled;
+                 }
+                 /* The hold this frame is in starts at the switch key at or before it; before it, the
+                  * switch's keys showed the previous drawing. */
+                 int start = 0;
+                 for (const Key<float> &k : sw->switch_keys.keys) {
+                   if (k.frame <= doc.frame_current) {
+                     start = k.frame;
+                   }
+                 }
+                 float before = start > 0 ? sw->switch_keys.evaluate(start - 1) : 0.0f;
+                 if (before < -0.5f) {
+                   before = switch_default(*sw);
+                 }
+                 Layer *previous = const_cast<Layer *>(switch_child(*sw, before));
+                 const Layer *from = previous ? switch_child_armature(*previous) : nullptr;
+                 if (start == 0 || !from || previous->id == child->id) {
+                   report(ReportType::Warning, "\"" + sw->name + "\" shows no other drawing with bones before this hold");
+                   return OpStatus::Cancelled;
+                 }
+                 animation_record(doc);
+                 const int count = armature_match_pose(doc, armature, *from);
+                 if (count == 0) {
+                   report(ReportType::Warning, "No bone of \"" + armature.name + "\" stands in for one of \"" + from->name +
+                                                   "\" (Bone panel: Stands In For, or Auto-link by Name)");
+                   return OpStatus::Cancelled;
+                 }
+                 /* Keyed whatever Auto Keying says: matching is for this frame. */
+                 const bool auto_key = doc.auto_key;
+                 doc.auto_key = true;
+                 animation_record(doc);
+                 doc.auto_key = auto_key;
+                 report(ReportType::Info, "Posed " + std::to_string(count) + (count == 1 ? " bone" : " bones") + " of \"" +
+                                              armature.name + "\" as \"" + from->name + "\"'s");
+                 C.undo_name = "Match Pose from " + from->name;
+                 return OpStatus::Finished;
+               });
+  rig_operator("armature.select_used_bones", "Select Bones This Drawing Uses",
+               "Select the bones the active drawing follows (its points' weights and its Parent Bone), in its bone "
+               "layer, which becomes the active layer",
+               [](Context &C) {
+                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+                 return l && l->has_drawing() && layer_armature(*C.document, l->id);
+               },
+               [](Context &C) {
+                 Document &doc = *C.document;
+                 const Layer &drawing = *document_active_layer(doc);
+                 Layer &armature = *layer_find(doc, layer_armature(doc, drawing.id)->id);
+                 std::set<uint64_t> used;
+                 if (drawing.parent_bone) {
+                   used.insert(drawing.parent_bone);
+                 }
+                 for (const MeshPoint &p : drawing.drawing.points) {
+                   for (const BoneWeight &w : p.weights) {
+                     if (w.weight > 0.0f) {
+                       used.insert(w.bone);
+                     }
+                   }
+                 }
+                 int count = 0;
+                 for (Bone &b : armature.bones) {
+                   const bool on = used.contains(b.id) && bone_shown(armature, b);
+                   bone_select(b, on);
+                   if (on) {
+                     armature.active_bone = count++ == 0 ? b.id : armature.active_bone;
+                   }
+                 }
+                 doc.active_layer = armature.id;
+                 report(ReportType::Info, "\"" + drawing.name + "\" uses " + std::to_string(count) +
+                                              (count == 1 ? " bone" : " bones") + " of \"" + armature.name + "\"");
+                 return OpStatus::Finished;
+               });
   rig_operator("armature.select_all", "Select All Bones", "Select every bone of the bone layer (A)",
                bone_layer_active, [](Context &C) {
                  Layer &armature = *document_active_layer(*C.document);

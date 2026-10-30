@@ -309,6 +309,9 @@ static void layer_context_menu(Context &C, Layer &layer)
   ImGui::Separator();
   menu_op(C, "Group With Selection", "layer.group");
   menu_op(C, "Wrap in Switch", "layer.wrap_in_switch");
+  if (layer.has_drawing() && layer_armature(doc, layer.id)) {
+    menu_op(C, "Select Bones This Drawing Uses", "armature.select_used_bones");
+  }
   if (layer.type == LayerType::Group) {
     menu_op(C, "Convert to Bone Group", "layer.convert_to_bone");
   }

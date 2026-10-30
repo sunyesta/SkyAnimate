@@ -26,6 +26,7 @@ set(OANIM_SOURCES
   src/anim/merge.cc
   src/anim/draw_order.cc
   src/anim/switch.cc
+  src/anim/bone_family.cc
   src/anim/layer_pick.cc
   src/anim/dynamics.cc
   src/anim/sculpt.cc
@@ -390,6 +391,8 @@ add_test(NAME draw_order
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_order.py)
 add_test(NAME switch_layer
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_layer.py)
+add_test(NAME switch_bones
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_bones.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

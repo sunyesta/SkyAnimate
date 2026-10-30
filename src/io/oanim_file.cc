@@ -555,6 +555,7 @@ static json layer_to_json(const Layer &layer)
       {"locked", layer.locked},
       {"edit_with_bones", layer.edit_with_bones},
       {"edit_descendants", layer.edit_descendants},
+      {"sub_bone_group", layer.sub_bone_group},
       {"expanded", layer.expanded},
       {"selected", layer.selected},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
@@ -715,6 +716,9 @@ static json layer_to_json(const Layer &layer)
       }
       if (!b.inherit_rotation) {
         bj["inherit_rotation"] = false;
+      }
+      if (b.swap_layer != 0) {
+        bj["swap"] = {b.swap_layer, b.swap_bone};
       }
       if (b.inherit_scale != InheritScale::Full) {
         bj["inherit_scale"] = b.inherit_scale == InheritScale::Uniform ? "UNIFORM" : "NONE";
@@ -2133,6 +2137,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.locked = get_bool(j, "locked", false);
   layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
   layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
+  layer.sub_bone_group = get_bool(j, "sub_bone_group", true);
   layer.expanded = get_bool(j, "expanded", true);
   layer.selected = get_bool(j, "selected", false);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
@@ -2337,6 +2342,12 @@ static Layer layer_from_json(const json &j, int depth)
     }
     b.connected = bj.contains("connected") && bj["connected"].is_boolean() && bj["connected"].get<bool>();
     b.inherit_rotation = get_bool(bj, "inherit_rotation", true);
+    if (const auto it = bj.find("swap"); it != bj.end() && it->is_array() && it->size() == 2 &&
+        (*it)[0].is_number_unsigned() && (*it)[1].is_number_unsigned())
+    {
+      b.swap_layer = (*it)[0].get<uint64_t>();
+      b.swap_bone = (*it)[1].get<uint64_t>();
+    }
     b.local_location = get_bool(bj, "local_location", true);
     if (const auto it = bj.find("inherit_scale"); it != bj.end() && it->is_string()) {
       const std::string s = it->get<std::string>();

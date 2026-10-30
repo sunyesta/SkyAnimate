@@ -17,6 +17,7 @@
 #include "anim/layer_pick.hh"
 #include "anim/reference.hh"
 #include "anim/switch.hh"
+#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "core/log.hh"
 #include "data/layer_mirror.hh"
@@ -49,8 +50,30 @@ static void switch_pick(Document &doc, Layer &sw, float value, bool hold)
   }
   Layer &now = *layer_find(doc, sw_id);
   if (editing_child) {
-    const Layer *child = switch_child(now, value);
+    /* Working in the outgoing child's bones: their counterparts in the incoming child are selected
+     * (bone swaps), and it becomes the bone layer worked in. */
+    const Layer *was = document_active_layer(doc);
+    std::vector<uint64_t> selected;
+    const uint64_t was_id = was && was->is_bone_layer() ? was->id : 0;
+    if (was_id) {
+      for (const Bone &b : was->bones) {
+        if (b.selected) {
+          selected.push_back(b.id);
+        }
+      }
+    }
+    Layer *child = const_cast<Layer *>(switch_child(now, value));
     doc.active_layer = child ? child->id : sw_id;
+    if (Layer *to = child && was_id ? switch_child_armature(*child) : nullptr) {
+      armature_deselect_all(*to);
+      for (const uint64_t id : selected) {
+        if (Bone *b = bone_find(*to, bone_counterpart(doc, was_id, id, *to))) {
+          bone_select(*b, true);
+          to->active_bone = b->id;
+        }
+      }
+      doc.active_layer = to->id;
+    }
     switches_resolve(doc, doc.frame_current);
   }
 }

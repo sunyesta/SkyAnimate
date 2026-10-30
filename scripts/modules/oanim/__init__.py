@@ -277,6 +277,13 @@ class _Layer:
         return _oanim.layer_switch(self._id)[0]
 
     @property
+    def bone_family(self):
+        """A bone layer: the names of the bone layers worked in with it, outermost first: the bone layer
+        around it if it is a sub bone group, and the sub bone groups shown inside (a switch shows only
+        one child's). Their bones show and answer clicks together."""
+        return list(_oanim.layer_bone_family(self._id))
+
+    @property
     def switch_default(self):
         """A switch layer: the name of the child it shows on frame 0 and wherever nothing else picks, or None."""
         return _oanim.layer_switch(self._id)[1]

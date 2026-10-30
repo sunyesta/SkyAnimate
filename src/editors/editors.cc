@@ -16,6 +16,7 @@
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 
+#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
@@ -1910,6 +1911,25 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
   for (const auto &[action, keys] : sw->switch_keys.actions) {
     for (const Key<float> &k : keys) {
       gather(k.value);
+    }
+  }
+  ImGui::Separator();
+  {
+    const Layer *active = document_active_layer(doc);
+    const bool posable = active && active->is_bone_layer() && switch_child_holding(doc, *sw, active->id) &&
+                         doc.frame_current != 0;
+    if (ui_menu_item("Match Pose from Previous Drawing", nullptr, false, posable)) {
+      operator_call(C, "armature.match_pose_previous");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(posable ? "Pose this drawing's bones as the drawing shown before this hold lies, and key them"
+                                : "Work in a child's bones (its bone group active), on a frame after the setup");
+    }
+    if (ui_menu_item("Auto-link Bones by Name")) {
+      operator_call(C, "armature.swaps_auto_link", {{"layer", std::to_string(sw_id)}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Each child's bones stand in for the first child's bones of the same name (bone swaps)");
     }
   }
   if (ui_submenu_begin("Replace Keys With", !values.empty())) {
