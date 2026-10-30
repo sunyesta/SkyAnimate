@@ -349,7 +349,8 @@ class _Layer:
 
     @property
     def actions(self):
-        """A bone layer's actions: [{"name", "kind": "ACTION", "SMART" or "FIX"}]. Make them with
+        """A bone layer's actions: [{"name", "kind": "ACTION", "SMART" or "FIX", "full_turn": a 360 smart action
+        (its bone keyed exactly a whole turn, so it goes round and round)}]. Make them with
         oanim.ops.anim.action_new / fix_action_new, edit one with action_set, rename with action_rename."""
         return [dict(a) for a in _oanim.layer_actions(self._id)]
 

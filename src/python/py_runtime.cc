@@ -3382,6 +3382,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::dict d;
       d["name"] = name;
       d["kind"] = smart_action_bone(layer, name) ? "SMART" : fix_action_find(layer, name) ? "FIX" : "ACTION";
+      d["full_turn"] = smart_action_full_turn(layer, name);
       out.append(d);
     }
     return out;
@@ -3604,6 +3605,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       ui_switch_link_report_open(link->id);
     }
     return link != nullptr;
+  });
+  m.def("bone_turn_snap", [](float degrees, bool rotate_key) {
+    std::string what;
+    const float snapped = viewport_bone_turn_snap(*current_context().document, degrees, rotate_key, &what);
+    return py::make_tuple(snapped, what);
   });
   m.def("frame_sync_playing", [](int frame, uint64_t edits) {
     Document &doc = *current_context().document;

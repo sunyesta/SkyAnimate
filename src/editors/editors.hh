@@ -152,6 +152,9 @@ bool viewport_navigating();
 void viewport_drag_follow_playback(Document &dragged, Document &now);
 /* Called every frame no drag is going on: forgets what the last one held. */
 void viewport_drag_follow_forget();
+/* For tests: where Ctrl puts a turn of `degrees` of the active bone layer's picked bones (R when `rotate_key`, else
+ * the Transform Bones tool's turn), and what it snapped to ("45Â°", "start" or "setup"). */
+float viewport_bone_turn_snap(Document &doc, float degrees, bool rotate_key, std::string *r_what);
 /* Properties editor, in properties.cc. */
 void properties_draw(Area &area, Context &C);
 /* Layers editor, in layers_editor.cc. */

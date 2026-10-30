@@ -5549,6 +5549,21 @@ static void bone_counter_apply(Document &doc, const BoneCounter &counter)
   }
 }
 
+/* Ctrl while turning bones (R, and the Transform Bones tool's turn): the turn lands on the nearest of the
+ * reference bone (the active one if picked, else the first picked) pointing a multiple of 45 degrees on
+ * screen, its angle when the turn began, and posing its setup angle, each of those with whole turns more or
+ * less (so a 360 smart bone's full turn is one Ctrl away). */
+struct BoneTurnSnap {
+  bool valid = false;
+  /* The reference bone's direction on screen when the turn began (radians), and which way a turn of its
+   * angle turns it there (-1 where the bone layer or its parent is mirrored). */
+  float dir0 = 0.0f;
+  float sign = 1.0f;
+  /* Posing: the turn that brings it back to its setup angle. */
+  bool posing = false;
+  float to_setup = 0.0f;
+};
+
 struct BoneModal {
   /* The mouse with Shift's precision (G, R and S follow this). */
   PreciseMouse precise;
@@ -5567,6 +5582,8 @@ struct BoneModal {
   /* Whole turns count, as in ModalTransform. */
   float2 last_mouse;
   float turned = 0.0f;
+  /* Ctrl's targets for R (see BoneTurnSnap). */
+  BoneTurnSnap turn_snap;
   /* X or Y (0 none, 1 X, 2 Y): G along the document's axis; S along each bone's own axis while
    * posing (frame 0 only resizes, the same every way). */
   int axis = 0;
@@ -6618,6 +6635,92 @@ static void bone_modal_find_touched(Document &doc)
   walk(walk, doc.layers);
 }
 
+/* `angle_frame`: true when the turn adds to bone angles (R; the parent's frame counts), false when it turns
+ * the bone layer's space about the pivot (the Transform Bones tool). */
+static BoneTurnSnap bone_turn_snap_begin(const Layer &armature, bool setup_frame, const Transform2D &to_document,
+                                         bool angle_frame)
+{
+  BoneTurnSnap s;
+  int ref = -1;
+  for (int i = 0; i < int(armature.bones.size()); i++) {
+    const Bone &b = armature.bones[size_t(i)];
+    if (!b.selected && !b.select_head && !b.select_tail) {
+      continue;
+    }
+    if (ref < 0 || b.id == armature.active_bone) {
+      ref = i;
+    }
+  }
+  if (ref < 0) {
+    return s;
+  }
+  const std::vector<BonePose> pose = armature_pose(armature, setup_frame);
+  const BonePose &bp = pose[size_t(ref)];
+  const float2 dir = to_document.apply_vector(bp.tail - bp.head);
+  if (length(dir) < 1e-9f) {
+    return s;
+  }
+  const auto det = [](const Transform2D &t) { return t.a * t.d - t.b * t.c; };
+  float sign = det(to_document) < 0.0f ? -1.0f : 1.0f;
+  const Bone &bone = armature.bones[size_t(ref)];
+  if (angle_frame && bone.parent) {
+    for (size_t i = 0; i < armature.bones.size(); i++) {
+      if (armature.bones[i].id == bone.parent && det(pose[i].pose) < 0.0f) {
+        sign = -sign;
+      }
+    }
+  }
+  s.valid = true;
+  s.dir0 = std::atan2(dir.y, dir.x);
+  s.sign = sign;
+  s.posing = !setup_frame;
+  s.to_setup = bone.setup_angle - bone.angle;
+  return s;
+}
+
+/* The snapped turn for `turned` (radians), and what it snapped to (for the header). */
+static float bone_turn_snapped(const BoneTurnSnap &s, float turned, const char **r_what)
+{
+  const float full = 2.0f * PI, step = PI / 4.0f;
+  const auto whole_turns = [&](float base) { return base + std::round((turned - base) / full) * full; };
+  float best = turned;
+  float best_off = std::numeric_limits<float>::max();
+  const auto offer = [&](float t, const char *what) {
+    if (std::fabs(t - turned) < best_off - 1e-5f) {
+      best_off = std::fabs(t - turned);
+      best = t;
+      *r_what = what;
+    }
+  };
+  /* The starting and setup angles first: on a tie with a 45 degree direction they win. */
+  offer(whole_turns(0.0f), "start");
+  if (s.posing) {
+    offer(whole_turns(s.to_setup), "setup");
+  }
+  if (s.valid) {
+    const float dir = s.dir0 + s.sign * turned;
+    offer((std::round(dir / step) * step - s.dir0) * s.sign, "45\xC2\xB0");
+  }
+  else {
+    offer(std::round(turned / step) * step, "45\xC2\xB0");
+  }
+  return best;
+}
+
+float viewport_bone_turn_snap(Document &doc, float degrees, bool rotate_key, std::string *r_what)
+{
+  const Layer *armature = document_active_layer(doc);
+  if (!armature || !armature->is_bone_layer()) {
+    return degrees;
+  }
+  const BoneTurnSnap s = bone_turn_snap_begin(*armature, doc.frame_current == 0,
+                                              layer_world_transform(doc, armature->id), rotate_key);
+  const char *what = "";
+  const float snapped = bone_turn_snapped(s, degrees * PI / 180.0f, &what) * 180.0f / PI;
+  *r_what = what;
+  return snapped;
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
@@ -6639,6 +6742,9 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   }
   modal.pivot = sum / float(std::max<size_t>(heads.size(), 1));
   modal.bones = armature->bones;
+  if (kind == 'R') {
+    modal.turn_snap = bone_turn_snap_begin(*armature, modal.setup_frame, to_document, true);
+  }
   modal.snapshot = doc;
   if (!modal.setup_frame && move_only_bones_on(doc)) {
     modal.counter = bone_counter_capture(doc, armature->id);
@@ -6795,15 +6901,16 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   else if (g_bone_modal.kind == 'R') {
     g_bone_modal.turned += turn_between(g_bone_modal.last_mouse, mouse, g_bone_modal.pivot);
     g_bone_modal.last_mouse = mouse;
-    degrees = g_bone_modal.turned * 180.0f / PI;
-    if (snap) {
-      degrees = std::round(degrees / 5.0f) * 5.0f;
-    }
+    const char *snapped = nullptr;
+    degrees = (snap ? bone_turn_snapped(g_bone_modal.turn_snap, g_bone_modal.turned, &snapped) : g_bone_modal.turned) *
+              180.0f / PI;
     if (num.any()) {
       degrees = num.value(0, 0.0f);
+      snapped = nullptr;
     }
     armature_rotate_selected(*armature, g_bone_modal.bones, degrees * PI / 180.0f, g_bone_modal.setup_frame);
-    std::snprintf(text, sizeof(text), "Rotate Bones  %s\xC2\xB0", num.shown(0, degrees, "%.1f").c_str());
+    std::snprintf(text, sizeof(text), "Rotate Bones  %s\xC2\xB0%s%s", num.shown(0, degrees, "%.1f").c_str(),
+                  snapped ? "  snapped to " : "", snapped ? snapped : "");
   }
   else {
     const float start = std::max(distance(g_bone_modal.start_mouse, g_bone_modal.pivot), 1e-6f);
@@ -7454,6 +7561,8 @@ struct BoneGizmo {
   ImVec2 start_screen;
   float2 last;
   float turned = 0.0f;
+  /* Ctrl's targets while turning (see BoneTurnSnap). */
+  BoneTurnSnap turn_snap;
   bool changed = false;
   /* The pivot while dragging (bone layer space). */
   float2 live_pivot;
@@ -8107,6 +8216,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
         }
       }
       g.bones = armature.bones;
+      g.turn_snap = mode == GizmoMode::Rotate ? bone_turn_snap_begin(armature, setup, base_space, false) : BoneTurnSnap();
       g.counter = {};
       if (!setup && move_only_bones_on(doc) && mode != GizmoMode::Select && mode != GizmoMode::Pivot) {
         g.counter = bone_counter_capture(doc, armature.id);
@@ -8257,7 +8367,11 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
           }
           float2 snap, origin;
           const bool snapping = g.mode == GizmoMode::Move && io.KeyCtrl && nearest_end(mouse, true, snap);
-          const Transform2D map = gizmo_box_map(g.mode, g.handle, g.lo, g.hi, g.pivot, g.start, mouse, g.turned,
+          /* Ctrl: the turn lands on 45 degree directions, the start or the setup angle (BoneTurnSnap). */
+          const char *snapped = nullptr;
+          const float turned = g.mode == GizmoMode::Rotate && io.KeyCtrl ? bone_turn_snapped(g.turn_snap, g.turned, &snapped)
+                                                                         : g.turned;
+          const Transform2D map = gizmo_box_map(g.mode, g.handle, g.lo, g.hi, g.pivot, g.start, mouse, turned,
                                                 snapping ? &snap : nullptr, g.live_pivot, g.live, origin);
           g.live_map = map;
           armature_map_selected(armature, g.bones, turn * map * unturn, setup);

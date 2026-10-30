@@ -100,6 +100,9 @@ std::string fix_action_broken(const Layer &owner, const FixAction &fix);
 std::vector<std::pair<std::string, float>> smart_actions_playing(const Layer &owner);
 /* A smart action's length: its driving bone's last key there (0 with none). */
 float smart_action_length(const Layer &owner, const std::string &name);
+/* A 360 smart action (Moho's 360 smart bone): its bone's last key is exactly one whole turn from the setup,
+ * so the bone's turn counts round and round (modulo a turn). */
+bool smart_action_full_turn(const Layer &owner, const std::string &name);
 /* Turned less than this share of its length, a smart action doesn't count toward a fix being made or
  * offered (a bone nudged by accident); fixes still play from any amount. */
 inline constexpr float FIX_COUNTS_FROM = 0.05f;

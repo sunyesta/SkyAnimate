@@ -318,6 +318,13 @@ def switch_link_report(switch):
     return _oanim.switch_link_report(switch.id if hasattr(switch, "id") else int(switch))
 
 
+def bone_turn_snap(degrees, rotate_key=True):
+    """For tests: where Ctrl puts a turn of `degrees` of the active bone layer's picked bones, as R has it
+    (`rotate_key`) or the Transform Bones tool's turn: (degrees, what it snapped to: "45°", "start" or
+    "setup")."""
+    return tuple(_oanim.bone_turn_snap(float(degrees), bool(rotate_key)))
+
+
 def frame_sync_playing(frame, edits):
     """Go to `frame` as playing does in the main loop (for tests): `edits` stands for the stamp of edits the app
     can see coming (Python runs, undo steps, operators, UI edits). While it stays the same, drawings switches hide

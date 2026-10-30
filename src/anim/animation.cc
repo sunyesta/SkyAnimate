@@ -1159,6 +1159,35 @@ std::string fix_action_broken(const Layer &owner, const FixAction &fix)
   return "";
 }
 
+/* Moho's 360 smart bone: an action whose driving bone's last key is exactly one whole turn from its setup
+ * angle (either way) goes round and round: the bone's turn counts modulo a whole turn, so turning on past
+ * the end starts it over and turning back past the setup plays it from the end (a 360 head turn on a dial).
+ * Whole turns are within a tenth of a degree. */
+static bool smart_keys_full_turn(const std::vector<Key<float>> &keys)
+{
+  return !keys.empty() && std::fabs(std::fabs(keys.back().value) - 2.0f * PI) < 0.1f * PI / 180.0f;
+}
+
+static float smart_turn_wrapped(const std::vector<Key<float>> &keys, float turn)
+{
+  if (!smart_keys_full_turn(keys)) {
+    return turn;
+  }
+  const float full = 2.0f * PI;
+  /* Into [0, a turn) for an action keyed the positive way, (-a turn, 0] for one keyed the other. */
+  return keys.back().value > 0.0f ? turn - std::floor(turn / full) * full : turn - std::ceil(turn / full) * full;
+}
+
+bool smart_action_full_turn(const Layer &owner, const std::string &name)
+{
+  const Bone *driver = smart_action_bone(owner, name);
+  if (!driver) {
+    return false;
+  }
+  const auto it = driver->angle_keys.actions.find(name);
+  return it != driver->angle_keys.actions.end() && smart_keys_full_turn(it->second);
+}
+
 /* What each smart action's bone picks: its frame for the bone's turn in `angles` (owner's bones, in order). */
 static std::vector<std::pair<std::string, float>> smart_frames_for(const Layer &owner, const std::vector<float> &turns)
 {
@@ -1174,7 +1203,7 @@ static std::vector<std::pair<std::string, float>> smart_frames_for(const Layer &
     }
     /* The driving bone's keys are its Angle (the turn from its setup pose), so its action starts at
      * 0 and the bone's turn now picks the frame; turning an unkeyed bone plays it at once. */
-    const float t = smart_frame(it->second, 0.0f, turns[size_t(driver - owner.bones.data())]);
+    const float t = smart_frame(it->second, 0.0f, smart_turn_wrapped(it->second, turns[size_t(driver - owner.bones.data())]));
     if (t > 0.0f) {
       frames.push_back({name, t});
     }

@@ -339,7 +339,8 @@ static void action_menu(Context &C, float width)
       int count = 0;
       for (const std::string &name : owner->actions) {
         if (smart_action_bone(*owner, name) == single) {
-          action_item(name, name, "", 0);
+          /* A 360 smart action (its bone keyed a whole turn) goes round and round: say so. */
+          action_item(name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
           count++;
         }
       }
@@ -457,7 +458,10 @@ static void action_menu(Context &C, float width)
       };
       const auto plain = [&](const std::string &name) { action_item(name, name, "", 0); };
       section("Actions", [&](const std::string &n) { return !action_adds(*owner, n); }, plain);
-      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*owner, n) != nullptr; }, plain);
+      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*owner, n) != nullptr; },
+              [&](const std::string &name) {
+                action_item(name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
+              });
       const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(*owner);
       section("Fix Actions", [&](const std::string &n) { return fix_action_find(*owner, n) != nullptr; },
               [&](const std::string &name) {
