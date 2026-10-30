@@ -22,8 +22,11 @@
 
 namespace oanim {
 
-/* What the Draw tool draws: freehand strokes, or with the Bezier Pen, clicking to add points along a curve. */
-enum class DrawMode { Freehand, Pen };
+struct FillPiece;
+
+/* What the Draw tool draws: freehand strokes; with the Bezier Pen, clicking to add points along a curve; with the
+ * Fill Pen, filled areas; and with the Fill Eraser, it cuts areas out of fills. */
+enum class DrawMode { Freehand, Pen, FillPen, FillEraser };
 
 /* Off: the samples as they are. Smart: see above. Pulled String: the line stays put until the pen is
  * further than the string's length away, then is pulled along behind it (exact corners, a learned feel). */
@@ -155,5 +158,11 @@ struct InkKnot {
  * tap) is a dot: two points half a pixel apart, the width of its widest. */
 std::vector<InkKnot> ink_fit(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view,
                              bool closed);
+/* A closed outline (a fill's edge, a polygon of many short sides in layer space) as Bezier points, at least three,
+ * within `tolerance` screen pixels; `pixel`: layer units a screen pixel stands for. Corners are where it turns
+ * sharply at a single point, there being no pen to have slowed for them. */
+std::vector<InkKnot> ink_fit_ring(const std::vector<float2> &ring, float tolerance, float pixel);
+/* What a finished line covers, tapered (data/fill_area.hh). */
+std::vector<FillPiece> ink_area(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view);
 
 }  // namespace oanim

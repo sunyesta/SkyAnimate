@@ -21,6 +21,8 @@ struct LayerMask;
 struct Shape;
 struct VectorDrawing;
 class InkStroke;
+enum class DrawMode;
+struct ToolSettings;
 
 void layer_operators_register();
 /* layer.copy and layer.paste (ops/layer_clipboard.cc). */
@@ -37,9 +39,11 @@ void rig_operators_register();
 void sculpt_operators_register();
 /* draw.* (ops/draw_ops.cc). */
 void draw_operators_register();
-/* Ends a freehand stroke on `drawing`: its Bezier points as a new curve and outline (no undo step). False: nothing
- * came of it. */
-bool draw_stroke_commit(Context &C, VectorDrawing &drawing, InkStroke &ink);
+/* Ends a stroke of `ink` on `layer` as `mode` makes it (a line, painted fill, or a cut), with no undo step. False:
+ * nothing came of it. */
+bool draw_stroke_commit(Context &C, Layer &layer, InkStroke &ink, DrawMode mode);
+/* Makes `mode` the Draw tool's kind of pen, with the preset it last used. */
+void draw_mode_set(ToolSettings &ts, DrawMode mode);
 /* annotation.* and guide.* (ops/annotation_ops.cc). */
 void annotation_operators_register();
 /* Where Ctrl puts handle `point` of guide `guide` (an index into the document's guides, or -1 for a

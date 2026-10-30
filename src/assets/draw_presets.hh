@@ -3,7 +3,8 @@
 /* Draw tool presets: the kinds of pen the shelf along the bottom of the viewport offers while Draw is the
  * tool (Blender's asset shelf), each with how it makes a line.
  *
- * - Built-in presets come with the app: Ink, Pencil, Marker, Tapered, Mouse, and the Bezier Pen.
+ * - Built-in presets come with the app: Ink, Pencil, Marker, Tapered, Mouse, the Fill Pen and Fill Marker, the
+ *   Bezier Pen, and under Erasers the Fill Eraser and Pressure Fill Eraser.
  * - Saved presets live in the asset library, <library>/Draw Presets/<Name>.oadraw (JSON), for every
  *   project, and show under Mine.
  *
@@ -23,7 +24,7 @@ struct DrawPreset {
   InkSettings ink;
   /* Document units, as Style::line_width. */
   float line_width = 0.008f;
-  /* "Pens" (built-in) or "Mine" (saved). */
+  /* "Pens", "Erasers" (built-in) or "Mine" (saved). */
   std::string category;
   bool builtin = false;
 };

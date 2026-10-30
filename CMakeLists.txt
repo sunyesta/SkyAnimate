@@ -51,6 +51,7 @@ set(OANIM_SOURCES
   src/data/layer_mirror.cc
   src/data/media_layer.cc
   src/data/fill_area.cc
+  src/data/fill_paint.cc
   src/data/text.cc
   src/ops/text_ops.cc
   src/editors/text_panel.cc
@@ -423,6 +424,8 @@ add_test(NAME ink_stroke
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_ink_stroke.py)
 add_test(NAME draw_presets
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_presets.py)
+add_test(NAME fill_paint
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_fill_paint.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

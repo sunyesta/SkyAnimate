@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "data/fill_area.hh"
+
 namespace oanim {
 
 /* The spring's clock: it moves in steps this long (seconds) however seldom samples come, so a mouse's line
@@ -670,6 +672,137 @@ std::vector<InkKnot> ink_fit(std::vector<InkPoint> points, const InkSettings &se
     knots.pop_back();
   }
   return knots;
+}
+
+std::vector<InkKnot> ink_fit_ring(const std::vector<float2> &ring, float tolerance, float pixel)
+{
+  /* Its corners, in screen pixels, with no sides too short to say which way they go. */
+  std::vector<float2> sides;
+  for (const float2 &point : ring) {
+    const float2 at = point / pixel;
+    if (sides.empty() || distance(at, sides.back()) >= 0.2f) {
+      sides.push_back(at);
+    }
+  }
+  while (sides.size() > 3 && distance(sides.back(), sides.front()) < 0.2f) {
+    sides.pop_back();
+  }
+  const int count = int(sides.size());
+  std::vector<InkKnot> knots;
+  if (count < 3) {
+    return knots;
+  }
+  std::vector<int> sharp;
+  for (int i = 0; i < count; i++) {
+    const float2 in = normalize(sides[i] - sides[(i + count - 1) % count]);
+    const float2 out = normalize(sides[(i + 1) % count] - sides[i]);
+    if (dot(in, out) < std::cos(40.0f * PI / 180.0f)) {
+      sharp.push_back(i);
+    }
+  }
+  /* Going round from a corner if it has one, every few pixels: a fit only looks at its samples, and a long
+   * straight side has none between its ends. */
+  const int first = sharp.empty() ? 0 : sharp.front();
+  std::vector<float2> p;
+  std::vector<float> along;
+  std::vector<int> ends;
+  const auto add = [&](float2 at) {
+    along.push_back(p.empty() ? 0.0f : along.back() + distance(at, p.back()));
+    p.push_back(at);
+  };
+  for (int k = 0; k < count; k++) {
+    const int i = (first + k) % count;
+    if (std::find(sharp.begin(), sharp.end(), i) != sharp.end()) {
+      ends.push_back(int(p.size()));
+    }
+    const float2 a = sides[i], b = sides[(i + 1) % count];
+    const int steps = std::max(int(distance(a, b) / 3.0f), 1);
+    for (int s = 0; s < steps; s++) {
+      add(lerp(a, b, float(s) / float(steps)));
+    }
+  }
+  add(sides[first]);
+  const int last = int(p.size()) - 1;
+  const bool cornered = !ends.empty();
+  if (!cornered) {
+    ends.push_back(0);
+  }
+  ends.push_back(last);
+  /* A loop needs at least three points: runs split at their middles, smoothly, until it has them. */
+  std::vector<bool> corner(p.size(), false);
+  for (const int end : ends) {
+    corner[end] = cornered;
+  }
+  while (ends.size() < 4) {
+    size_t longest = 0;
+    for (size_t i = 0; i + 1 < ends.size(); i++) {
+      if (ends[i + 1] - ends[i] > ends[longest + 1] - ends[longest]) {
+        longest = i;
+      }
+    }
+    if (ends[longest + 1] - ends[longest] < 2) {
+      return knots;
+    }
+    ends.insert(ends.begin() + longest + 1, (ends[longest] + ends[longest + 1]) / 2);
+  }
+
+  const std::vector<float> no_width(p.size(), 0.0f);
+  Fitter fitter{p, along, no_width, tolerance, std::vector<float>(p.size(), 0.0f), {}};
+  /* The way the line goes through a smooth end. */
+  const auto through = [&](int i) {
+    const int before = i == 0 ? last : i, after = i == last ? 0 : i;
+    return normalize(fitter.direction(after, 1, last) - fitter.direction(before, -1, 0));
+  };
+  for (size_t i = 0; i + 1 < ends.size(); i++) {
+    const int a = ends[i], b = ends[i + 1];
+    const float2 t1 = corner[a] ? fitter.direction(a, 1, b, 6.0f) : through(a);
+    const float2 t2 = corner[b] ? fitter.direction(b, -1, a, 6.0f) : through(b) * -1.0f;
+    const size_t from = fitter.segments.size();
+    fitter.fit(a, b, t1, t2);
+    fitter.merge(from);
+  }
+
+  const std::vector<FitSegment> &segments = fitter.segments;
+  knots.resize(segments.size());
+  for (size_t i = 0; i < segments.size(); i++) {
+    const FitSegment &segment = segments[i], &before = segments[(i + segments.size() - 1) % segments.size()];
+    knots[i].pos = p[segment.first] * pixel;
+    knots[i].corner = corner[segment.first];
+    knots[i].handle_in = (before.ctrl[2] - before.ctrl[3]) * pixel;
+    knots[i].handle_out = (segment.ctrl[1] - segment.ctrl[0]) * pixel;
+  }
+  return knots;
+}
+
+std::vector<FillPiece> ink_area(std::vector<InkPoint> points, const InkSettings &settings, const InkView &view)
+{
+  /* A tap: its widest, as a dot's. */
+  float widest = 0.0f;
+  for (const InkPoint &point : points) {
+    widest = std::max(widest, point.radius);
+  }
+  ink_taper(points, settings, view);
+  std::vector<float2> centers;
+  std::vector<float> radii;
+  for (const InkPoint &point : points) {
+    const float radius = point.radius * view.half_width;
+    /* Fewer than the line has: every sample's disc would only cost time, this close together. */
+    if (centers.empty() || distance(point.pos, centers.back()) >= std::max(view.pixel, radius * 0.2f)) {
+      centers.push_back(point.pos);
+      radii.push_back(radius);
+    }
+  }
+  if (centers.empty()) {
+    return {};
+  }
+  if (centers.size() == 1) {
+    radii[0] = widest * view.half_width;
+  }
+  else if (distance(points.back().pos, centers.back()) > 0.0f) {
+    centers.push_back(points.back().pos);
+    radii.push_back(points.back().radius * view.half_width);
+  }
+  return fill_sweep(centers, radii, view.pixel * 0.1f);
 }
 
 }  // namespace oanim

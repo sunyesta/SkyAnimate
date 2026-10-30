@@ -649,6 +649,10 @@ class _Layer:
         """The name of the material shape `index` is linked to, or "" when its look is its own."""
         return self.shape_style(index)["material"]
 
+    def shape_contains(self, index, point):
+        """Whether shape `index`'s fill covers `point` (x, y), in the layer's space."""
+        return bool(_oanim.layer_shape_contains(self._id, index, float(point[0]), float(point[1])))
+
     def shape_style(self, index):
         """Shape `index`'s look: {fill, line (r, g, b, a), line_width, has_fill, has_outline, hidden,
         fill_rule ("LOOPS": each loop filled on its own; "EVEN_ODD": a loop inside another a hole; "NONZERO":

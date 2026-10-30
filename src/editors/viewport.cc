@@ -387,8 +387,9 @@ struct ToolDrag {
   int area = 0;
   ImVec2 start;
   bool box = false;
-  /* Draw tool: the stroke so far. */
+  /* Draw tool: the stroke so far, and what it will make. */
   InkStroke ink;
+  DrawMode ink_mode = DrawMode::Freehand;
   /* The pen's touch the stroke follows (0: the mouse's), and how many of its samples are in. */
   uint64_t pen_stroke = 0;
   size_t pen_taken = 0;
@@ -522,7 +523,7 @@ static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSetting
   /* Weights are about points, not curve shapes: handles would only get in the way there. Edges
    * and Strokes modes pick lines, not points, so their handles go too; and the Transform Points box
    * works on the points as a whole. */
-  if (!ov.show || !ov.points || (ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand) ||
+  if (!ov.show || !ov.points || (ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen) ||
       ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect || ts.tool == Tool::TransformPoints ||
       ts.tool == Tool::TransformLayer ||
       ts.tool == Tool::Sculpt || ts.select_mode == SelectMode::Edge || ts.select_mode == SelectMode::Stroke)
@@ -538,7 +539,7 @@ static bool point_gizmo_busy();
 static bool points_overlay_shown(const ViewportOverlays &ov, const ToolSettings &ts)
 {
   /* Transform Layer moves the layer as a whole: its points would only look picked. */
-  return ov.points && !(ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand) &&
+  return ov.points && !(ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen) &&
          !(ts.tool == Tool::Sculpt && !ts.sculpt_selected_only) && ts.tool != Tool::TransformLayer &&
          !point_gizmo_busy();
 }
@@ -724,6 +725,19 @@ static void annotate_mode_icon(ImDrawList *dl, AnnotateMode mode, ImVec2 c, floa
 /* Icons for the Draw tool's modes: a pencil for freehand, a curve with two points for the pen. */
 static void draw_mode_icon(ImDrawList *dl, DrawMode mode, ImVec2 c, float s, ImU32 col)
 {
+  if (mode == DrawMode::FillPen) {
+    /* A blob. */
+    const ImVec2 points[] = {c + ImVec2(-s * 0.8f, s * 0.2f),  c + ImVec2(-s * 0.3f, -s * 0.7f), c + ImVec2(s * 0.5f, -s * 0.6f),
+                             c + ImVec2(s * 0.8f, s * 0.1f),   c + ImVec2(s * 0.3f, s * 0.7f),   c + ImVec2(-s * 0.4f, s * 0.7f)};
+    dl->AddConvexPolyFilled(points, 6, col);
+    return;
+  }
+  if (mode == DrawMode::FillEraser) {
+    /* An eraser block, leaning. */
+    const ImVec2 u(0.7071f * s, -0.7071f * s), v(0.7071f * s * 0.5f, 0.7071f * s * 0.5f);
+    dl->AddQuadFilled(c - u - v, c + u - v, c + u + v, c - u + v, col);
+    return;
+  }
   if (mode == DrawMode::Freehand) {
     const ImVec2 tip = c + ImVec2(-s * 0.75f, s * 0.75f);
     const ImVec2 dir = ImVec2(0.7071f, -0.7071f), side = ImVec2(0.7071f, 0.7071f) * (s * 0.22f);
@@ -926,7 +940,9 @@ static const ToolInfo TOOLS[] = {
      "wm.tool_annotate"},
     {Tool::Draw, "Draw",
      "Stroke Pen: freehand lines; tablet pressure sets the width. The shelf below the view has the pens.\n"
+     "Fill Pen: paints filled areas, merging with a fill of the same colour it overlaps; Ctrl cuts.\n"
      "Bezier Pen: click to add points along a curve, drag to place each; click the first point to close it.\n"
+     "Fill Eraser: cuts the brushed area out of fills, leaving lines alone.\n"
      "Right-click to pick the kind",
      "wm.tool_draw"},
     {Tool::Shape, "Shape",
@@ -1157,16 +1173,16 @@ static void draw_flyout(Context &C, ImVec2 button_pos, float button)
   ToolSettings &ts = C.wm->tool_settings;
   static bool open_last_frame = false;
   const ImU32 col = IM_COL32(0xe6, 0xe6, 0xe6, 255);
-  const DrawMode modes[] = {DrawMode::Freehand, DrawMode::Pen};
+  const DrawMode modes[] = {DrawMode::Freehand, DrawMode::FillPen, DrawMode::Pen, DrawMode::FillEraser};
+  static const char *const names[] = {"Stroke Pen", "Fill Pen", "Bezier Pen", "Fill Eraser"};
   std::vector<FlyoutItem> items;
-  for (const DrawMode mode : modes) {
-    items.push_back({mode == DrawMode::Pen ? "Bezier Pen" : "Stroke Pen",
-                     [mode, col](ImDrawList *dl, ImVec2 c, float s) { draw_mode_icon(dl, mode, c, s, col); },
-                     ts.tool == Tool::Draw && ts.draw_mode == mode});
+  for (int i = 0; i < 4; i++) {
+    const DrawMode mode = modes[i];
+    items.push_back({names[i], [mode, col](ImDrawList *dl, ImVec2 c, float s) { draw_mode_icon(dl, mode, c, s, col); },
+                     ts.tool == Tool::Draw && ts.draw_mode == mode, mode == DrawMode::FillEraser});
   }
   if (const int picked = tool_flyout("##draw_flyout", open_last_frame, button_pos, button, items); picked >= 0) {
-    ts.tool = Tool::Draw;
-    ts.draw_mode = modes[picked];
+    draw_mode_set(ts, modes[picked]);
   }
 }
 
@@ -1821,16 +1837,16 @@ static bool pressure_field(const char *id, float *v, float speed, float soft_min
   return true;
 }
 
-static void width_field(const Document &doc, ToolSettings &ts, bool pressure)
+static void width_field(const Document &doc, ToolSettings &ts, float &width, bool pressure)
 {
   const float units_to_pixels = float(doc.height) * 0.5f;
-  float pixels = ts.style.line_width * units_to_pixels;
+  float pixels = width * units_to_pixels;
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * (pressure ? 6.0f : 4.5f));
   if (pressure ? pressure_field("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px", &ts.ink.use_pressure,
                                 "Pen pressure sets the line's width")
                : ui_drag_float("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px"))
   {
-    ts.style.line_width = pixels / units_to_pixels;
+    width = pixels / units_to_pixels;
   }
 }
 
@@ -2816,10 +2832,16 @@ static void draw_stroke_dropdown(WindowManager &wm)
       InkSettings settings = wm.draw_last.settings();
       settings.fidelity = ink.fidelity;
       shown_points = int(ink_fit(last, settings, wm.draw_last.view(), wm.draw_last_closed).size());
+      /* A painted area's own points depend on what it merged with: nothing to say for those. */
       shown_fidelity = ink.fidelity;
       shown_samples = last.size();
     }
-    ImGui::TextDisabled("Last line makes %d points", shown_points);
+    if (!draw_mode_paints(ts.draw_mode)) {
+      ImGui::TextDisabled("Last line makes %d points", shown_points);
+    }
+  }
+  if (draw_mode_paints(ts.draw_mode)) {
+    return;
   }
   ImGui::Spacing();
   ImGui::Checkbox("Close and Fill", &ts.draw_fill);
@@ -2860,9 +2882,10 @@ static void draw_header(Context &C)
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
   const float h = ImGui::GetFrameHeight();
-  const bool bezier = ts.draw_mode == DrawMode::Pen;
+  const DrawMode mode = ts.draw_mode;
+  const bool bezier = mode == DrawMode::Pen, fill_pen = mode == DrawMode::FillPen, eraser = mode == DrawMode::FillEraser;
   const DrawPreset *preset = draw_preset_find(ts.draw_preset);
-  const bool changed = preset && !bezier && (!(preset->ink == ts.ink) || preset->line_width != ts.style.line_width);
+  const bool changed = preset && !bezier && (!(preset->ink == ts.ink) || preset->line_width != draw_width(ts, mode));
   const std::string name = bezier ? "Bezier Pen" : ts.draw_preset + (changed ? " *" : "");
   if (ImGui::Button((name + "##draw_preset").c_str())) {
     wm.draw_popup_request = true;
@@ -2872,23 +2895,29 @@ static void draw_header(Context &C)
                               : "The pen: click for the pens (Shift Space)");
   }
   ImGui::SameLine();
-  color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
-  ImGui::SameLine();
-  width_field(doc, ts, !bezier);
+  if (!fill_pen && !eraser) {
+    color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
+    ImGui::SameLine();
+  }
+  width_field(doc, ts, draw_width(ts, mode), !bezier);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How wide the line is (F)");
+    ImGui::SetTooltip(fill_pen || eraser ? "How wide the brush is (F)" : "How wide the line is (F)");
   }
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(h * 4.6f);
-  ui_slider_float("##opacity", &ts.style.line.a, 0.0f, 1.0f, "Opacity %.2f");
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How solid the line is (Shift F)");
+  if (!eraser) {
+    ImGui::SetNextItemWidth(h * 4.6f);
+    ui_slider_float("##opacity", fill_pen ? &ts.style.fill.a : &ts.style.line.a, 0.0f, 1.0f, "Opacity %.2f");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(fill_pen ? "How solid the fill is (Shift F)" : "How solid the line is (Shift F)");
+    }
+    ImGui::SameLine();
+    color_swatch("##fill_color", ts.style.fill, fill_pen ? "The colour to paint with" : "Fill colour for new shapes");
+    ImGui::SameLine();
   }
-  ImGui::SameLine();
-  color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
-  ImGui::SameLine();
-  tool_brush_button(C);
-  ImGui::SameLine();
+  if (!fill_pen && !eraser) {
+    tool_brush_button(C);
+    ImGui::SameLine();
+  }
   if (bezier) {
     if (header_toggle("Auto Fill", ts.draw_fill, "Fill curves closed on their first point")) {
       ts.draw_fill = !ts.draw_fill;
@@ -2897,7 +2926,17 @@ static void draw_header(Context &C)
     ImGui::TextDisabled("Click to add points, drag to place  |  Click the first point to close  |  Ctrl: grid");
     return;
   }
-  if (header_dropdown("Stroke", "##draw_stroke", "Stabilizer, fidelity, closing and welding")) {
+  if (eraser) {
+    if (header_toggle("All Layers", ts.draw_erase_all_layers, "Cut every drawing being edited, not only the active one")) {
+      ts.draw_erase_all_layers = !ts.draw_erase_all_layers;
+    }
+    ImGui::SameLine(0, 2.0f);
+    if (header_toggle("Selected Only", ts.draw_erase_selected, "Cut only the selected shapes' fills")) {
+      ts.draw_erase_selected = !ts.draw_erase_selected;
+    }
+    ImGui::SameLine();
+  }
+  if (header_dropdown("Stroke", "##draw_stroke", "Stabilizer and fidelity")) {
     draw_stroke_dropdown(wm);
     ImGui::EndPopup();
   }
@@ -2910,7 +2949,7 @@ static void draw_header(Context &C)
   if (header_dropdown("Cursor", "##draw_cursor", "What the mouse shows while drawing")) {
     ImGui::Checkbox("Width Circle", &ts.draw_cursor_circle);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Show the line's width as a circle round the mouse");
+      ImGui::SetTooltip("Show the width as a circle round the mouse");
     }
     ImGui::EndPopup();
   }
@@ -3115,7 +3154,7 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       ImGui::SameLine();
       color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
       ImGui::SameLine();
-      width_field(doc, ts, false);
+      width_field(doc, ts, ts.style.line_width, false);
       ImGui::SameLine();
       color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
       ImGui::SameLine();
@@ -4446,14 +4485,14 @@ static void draw_take_pen(const ViewMapping &view, const Transform2D &to_layer)
 /* The stroke as it stands, to `pen` (layer space): the same line the stroke will end as, at its real width
  * and through the real stroke tessellator, so lifting the pen changes nothing. The soft edge is a pixel,
  * as the renderer's. */
-static void draw_tool_preview(ImDrawList *dl, const ViewMapping &view, const Transform2D &to_document,
-                              const Style &style, float2 pen)
+static void draw_tool_preview(ImDrawList *dl, const ViewMapping &view, const Transform2D &to_document, Color color,
+                              float2 pen)
 {
   std::vector<InkPoint> line = g_drag.ink.points();
   const std::vector<InkPoint> tail = g_drag.ink.tail(pen);
   line.insert(line.end(), tail.begin(), tail.end());
   ink_taper(line, g_drag.ink.settings(), g_drag.ink.view());
-  const float half = style.line_width * 0.5f * view.zoom * to_document.scale();
+  const float half = g_drag.ink.view().half_width * view.zoom * to_document.scale();
   std::vector<float2> points;
   std::vector<float> widths;
   for (const InkPoint &p : line) {
@@ -4462,7 +4501,7 @@ static void draw_tool_preview(ImDrawList *dl, const ViewMapping &view, const Tra
     widths.push_back(std::max(p.radius * half, 0.0f));
   }
   if (points.size() >= 2) {
-    ink_line_draw(dl, points, widths, style.line);
+    ink_line_draw(dl, points, widths, color);
   }
 }
 
@@ -5166,7 +5205,9 @@ static bool draw_adjust_input(Context &C, Area &area, float pixel, bool hovered,
   ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   DrawAdjust &adjust = g_draw_adjust;
-  float &value = wm.draw_adjust_request == 'R' || adjust.kind == 'R' ? ts.style.line_width : ts.style.line.a;
+  float &value = wm.draw_adjust_request == 'R' || adjust.kind == 'R' ? draw_width(ts, ts.draw_mode)
+                 : ts.draw_mode == DrawMode::FillPen                  ? ts.style.fill.a
+                                                                      : ts.style.line.a;
   if (wm.draw_adjust_request && hovered && !g_drag.active) {
     adjust = {};
     adjust.kind = wm.draw_adjust_request;
@@ -12456,9 +12497,9 @@ static void viewport_draw_contents(Area &area, Context &C)
     if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       ts.cursor = view.to_document(io.MousePos);
     }
-    if (ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand && ts.draw_cursor_circle && !g_drag.active) {
+    if (ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen && ts.draw_cursor_circle && !g_drag.active) {
       /* The line's width round the mouse, in black and white to show on any drawing. */
-      const float half = ts.style.line_width * 0.5f / pixel;
+      const float half = draw_width(ts, ts.draw_mode) * 0.5f / pixel;
       if (half >= 1.5f) {
         dl->AddCircle(io.MousePos, half, IM_COL32(0x00, 0x00, 0x00, 170), 0, 1.0f);
         dl->AddCircle(io.MousePos, half + 1.0f, IM_COL32(0xff, 0xff, 0xff, 170), 0, 1.0f);
@@ -12483,13 +12524,17 @@ static void viewport_draw_contents(Area &area, Context &C)
           if (ts.draw_mode == DrawMode::Pen) {
             pen_click(C, *layer, mouse_layer, radius);
           }
-          else if (wm.pen_eraser) {
+          else if (wm.pen_eraser && ts.draw_mode == DrawMode::Freehand) {
             /* The pen's eraser end doesn't draw. */
             g_drag = {};
             report_banner(ReportType::Info, "The pen's eraser end doesn't draw");
           }
           else {
-            g_drag.ink.begin(ts.ink, {pixel, ts.style.line_width * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
+            /* Ctrl or the pen's eraser end cuts with the Fill Pen, as Grease Pencil's Ctrl erases. */
+            g_drag.ink_mode = ts.draw_mode == DrawMode::FillPen && (io.KeyCtrl || wm.pen_eraser) ? DrawMode::FillEraser
+                                                                                                 : ts.draw_mode;
+            g_drag.ink.begin(ts.ink, {pixel, draw_width(ts, ts.draw_mode) * 0.5f,
+                                      2.0f / std::max(float(doc.height), 1.0f)});
             if ((g_drag.pen_stroke = pen_touch_pressed())) {
               draw_take_pen(view, to_layer);
             }
@@ -12597,7 +12642,12 @@ static void viewport_draw_contents(Area &area, Context &C)
               tip = to_layer.apply(view.to_document(ImVec2(ahead.x, ahead.y)));
             }
           }
-          draw_tool_preview(dl, view, to_document, ts.style, tip);
+          /* An eraser shows where it has been; it cuts on lifting. */
+          draw_tool_preview(dl, view, to_document,
+                            g_drag.ink_mode == DrawMode::FillEraser ? Color{0.9f, 0.3f, 0.3f, 0.4f}
+                            : g_drag.ink_mode == DrawMode::FillPen  ? ts.style.fill
+                                                                    : ts.style.line,
+                            tip);
         }
         break;
       case Tool::Cursor:
@@ -12633,8 +12683,10 @@ static void viewport_draw_contents(Area &area, Context &C)
           }
           else {
             draw_take_pen(view, to_layer);
-            if (draw_stroke_commit(C, *drawing, g_drag.ink)) {
-              push_undo(C, "Draw");
+            if (draw_stroke_commit(C, *layer, g_drag.ink, g_drag.ink_mode)) {
+              push_undo(C, g_drag.ink_mode == DrawMode::FillEraser ? "Erase Fill"
+                           : g_drag.ink_mode == DrawMode::FillPen  ? "Paint Fill"
+                                                                   : "Draw");
             }
           }
           break;

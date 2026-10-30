@@ -1,5 +1,5 @@
-/* The Draw tool's operators (data/ink_stroke.hh, assets/draw_presets.hh): a scripted stroke, picking, saving,
- * putting back and deleting presets, the presets popup, and F / Shift F to size the line. */
+/* The Draw tool's operators (data/ink_stroke.hh, data/fill_paint.hh, assets/draw_presets.hh): a scripted stroke, picking,
+ * saving, putting back and deleting presets, the presets popup, and F / Shift F to size the line. */
 
 #include <sstream>
 #include <string>
@@ -8,6 +8,7 @@
 #include "assets/draw_presets.hh"
 #include "core/log.hh"
 #include "data/document.hh"
+#include "data/fill_paint.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "wm/context.hh"
@@ -23,32 +24,51 @@ static constexpr float WELD_PIXELS = 8.0f;
 static void preset_apply(ToolSettings &ts, const DrawPreset &p)
 {
   ts.tool = Tool::Draw;
-  ts.draw_mode = p.mode;
-  if (p.mode != DrawMode::Freehand) {
+  if (p.mode == DrawMode::Pen) {
+    ts.draw_mode = DrawMode::Pen;
     return;
   }
-  ts.draw_changes[ts.draw_preset] = {ts.ink, ts.style.line_width};
+  const DrawPreset *going = draw_preset_find(ts.draw_preset);
+  ts.draw_changes[ts.draw_preset] = {ts.ink, draw_width(ts, going ? going->mode : DrawMode::Freehand)};
+  ts.draw_mode = p.mode;
   ts.draw_preset = p.name;
+  ts.draw_kind_preset[int(p.mode)] = p.name;
   ts.ink = p.ink;
-  ts.style.line_width = p.line_width;
+  draw_width(ts, p.mode) = p.line_width;
   if (const auto it = ts.draw_changes.find(p.name); it != ts.draw_changes.end()) {
     ts.ink = it->second.ink;
-    ts.style.line_width = it->second.line_width;
+    draw_width(ts, p.mode) = it->second.line_width;
   }
 }
 
-bool draw_stroke_commit(Context &C, VectorDrawing &drawing, InkStroke &ink)
+void draw_mode_set(ToolSettings &ts, DrawMode mode)
+{
+  if (mode == DrawMode::Pen) {
+    ts.tool = Tool::Draw;
+    ts.draw_mode = mode;
+    return;
+  }
+  const auto last = ts.draw_kind_preset.find(int(mode));
+  const char *first = mode == DrawMode::FillPen ? "Fill Pen" : mode == DrawMode::FillEraser ? "Fill Eraser" : "Ink";
+  const DrawPreset *p = draw_preset_find(last != ts.draw_kind_preset.end() ? last->second : first);
+  /* The kind it is already on keeps its pen. */
+  const DrawPreset *now = draw_preset_find(ts.draw_preset);
+  if (now && now->mode == mode) {
+    p = now;
+  }
+  if (p) {
+    preset_apply(ts, *p);
+  }
+}
+
+/* A stroke pen's line on the active drawing. */
+static bool stroke_line(Context &C, VectorDrawing &drawing, const InkStroke &ink)
 {
   ToolSettings &ts = C.wm->tool_settings;
-  if (ink.empty()) {
-    return false;
-  }
-  ink.finish();
   const std::vector<InkPoint> &stroke = ink.points();
   const float pixel = ink.view().pixel;
   const bool closes = ts.draw_fill && stroke.size() > 8 && distance(stroke.front().pos, stroke.back().pos) < pixel * 14.0f;
   const std::vector<InkKnot> knots = ink_fit(stroke, ink.settings(), ink.view(), closes);
-  C.wm->draw_last = ink;
   C.wm->draw_last_closed = closes;
   if (knots.size() < 2) {
     return false;
@@ -94,6 +114,69 @@ bool draw_stroke_commit(Context &C, VectorDrawing &drawing, InkStroke &ink)
   return true;
 }
 
+/* The pieces moved by `t`. */
+static std::vector<FillPiece> pieces_moved(std::vector<FillPiece> pieces, const Transform2D &t)
+{
+  for (FillPiece &piece : pieces) {
+    for (std::vector<float2> &ring : piece.rings) {
+      for (float2 &p : ring) {
+        p = t.apply(p);
+      }
+    }
+  }
+  return pieces;
+}
+
+/* The Fill Eraser's stroke, on the active drawing or every one being edited. */
+static bool stroke_erase(Context &C, Layer &layer, const std::vector<FillPiece> &area, float pixel, float tolerance)
+{
+  Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  std::vector<Layer *> layers = {&layer};
+  if (ts.draw_erase_all_layers) {
+    layers = editable_layers(C);
+  }
+  bool cut = false;
+  int skipped = 0;
+  const Transform2D from = layer_world_transform(doc, layer.id);
+  for (Layer *other : layers) {
+    const Transform2D to = layer_world_transform(doc, other->id).inverted() * from;
+    cut |= drawing_fill_erase(other->drawing, other == &layer ? area : pieces_moved(area, to), pixel / to.scale(), tolerance,
+                              ts.draw_erase_selected, &skipped);
+  }
+  if (skipped > 0) {
+    report(ReportType::Info, skipped == 1 ? "A shape with keys wasn't cut: cutting rebuilds its points" :
+                                            std::to_string(skipped) + " shapes with keys weren't cut: cutting rebuilds their points");
+  }
+  return cut;
+}
+
+bool draw_stroke_commit(Context &C, Layer &layer, InkStroke &ink, DrawMode mode)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  if (ink.empty()) {
+    return false;
+  }
+  ink.finish();
+  C.wm->draw_last = ink;
+  C.wm->draw_last_closed = false;
+  if (!draw_mode_paints(mode)) {
+    return stroke_line(C, layer.drawing, ink);
+  }
+  const float pixel = ink.view().pixel;
+  /* A little closer than a line's: a blob is fitted again each time it grows. */
+  const float tolerance = ink_tolerance(ink.settings().fidelity) * 0.6f;
+  const std::vector<FillPiece> area = ink_area(ink.points(), ink.settings(), ink.view());
+  if (area.empty()) {
+    return false;
+  }
+  if (mode == DrawMode::FillEraser) {
+    return stroke_erase(C, layer, area, pixel, tolerance);
+  }
+  drawing_fill_paint(layer.drawing, area, ts.style, pixel, tolerance);
+  return true;
+}
+
 /* "x,y,pressure,seconds;...": the stroke's samples in the active layer's space. */
 static std::vector<InkSample> parse_samples(const std::string &text)
 {
@@ -123,11 +206,16 @@ static OpStatus stroke_exec(Context &C)
   }
   const float pixel = op_arg_float(C, "pixel", 2.0f / std::max(float(doc.height), 1.0f));
   InkStroke ink;
-  ink.begin(ts.ink, {pixel, ts.style.line_width * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
+  if (ts.draw_mode == DrawMode::Pen) {
+    report(ReportType::Error, "draw.stroke needs a pen that draws by dragging, not the Bezier Pen");
+    return OpStatus::Cancelled;
+  }
+  ink.begin(ts.ink, {pixel, draw_width(ts, ts.draw_mode) * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
   for (const InkSample &sample : parse_samples(op_arg(C, "samples"))) {
     ink.add(sample);
   }
-  return draw_stroke_commit(C, layer->drawing, ink) ? OpStatus::Finished : OpStatus::Cancelled;
+  const DrawMode mode = ts.draw_mode == DrawMode::FillPen && op_arg_bool(C, "erase") ? DrawMode::FillEraser : ts.draw_mode;
+  return draw_stroke_commit(C, *layer, ink, mode) ? OpStatus::Finished : OpStatus::Cancelled;
 }
 
 void draw_operators_register()
@@ -144,14 +232,19 @@ void draw_operators_register()
     operators().add(std::move(ot));
   };
   const auto draw_tool = [](Context &C) { return C.wm->tool_settings.tool == Tool::Draw; };
-  const auto stroke_pen = [](Context &C) {
+  const auto drags = [](Context &C) {
     const ToolSettings &ts = C.wm->tool_settings;
-    return ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand;
+    return ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen;
+  };
+  const auto has_opacity = [](Context &C) {
+    const ToolSettings &ts = C.wm->tool_settings;
+    return ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen && ts.draw_mode != DrawMode::FillEraser;
   };
 
   add("draw.stroke", "Draw",
       "A stroke through the Stroke Pen's engine with the Draw tool's settings, on the active drawing: samples=\"x,y,"
-      "pressure,seconds;...\" in the layer's space, pixel= the layer units a screen pixel stands for",
+      "pressure,seconds;...\" in the layer's space, pixel= the layer units a screen pixel stands for, erase=1 (Ctrl) "
+      "with the Fill Pen cuts instead",
       OPTYPE_UNDO, [](Context &C) { return C.document != nullptr; }, stroke_exec);
   add("draw.preset_load", "Load Draw Preset", "Pick the pen named name= (as clicking it on the shelf)", 0, nullptr,
       [](Context &C) {
@@ -169,8 +262,9 @@ void draw_operators_register()
         ToolSettings &ts = C.wm->tool_settings;
         DrawPreset p;
         p.name = op_arg(C, "name", ts.draw_preset);
+        p.mode = ts.draw_mode == DrawMode::Pen ? DrawMode::Freehand : ts.draw_mode;
         p.ink = ts.ink;
-        p.line_width = ts.style.line_width;
+        p.line_width = draw_width(ts, p.mode);
         std::string error;
         const std::string saved = draw_preset_save(p, &error);
         if (saved.empty()) {
@@ -178,6 +272,7 @@ void draw_operators_register()
           return OpStatus::Cancelled;
         }
         ts.draw_preset = saved;
+        ts.draw_kind_preset[int(p.mode)] = saved;
         /* Saved as it is: nothing changed from that. */
         ts.draw_changes.erase(saved);
         report(ReportType::Info, "Saved pen \"" + saved + "\"");
@@ -194,7 +289,7 @@ void draw_operators_register()
         ts.draw_changes.erase(p->name);
         if (ts.draw_preset == p->name) {
           ts.ink = p->ink;
-          ts.style.line_width = p->line_width;
+          draw_width(ts, p->mode) = p->line_width;
         }
         return OpStatus::Finished;
       });
@@ -212,13 +307,13 @@ void draw_operators_register()
     C.wm->draw_popup_request = true;
     return OpStatus::Finished;
   });
-  add("draw.width_adjust", "Adjust Line Width", "Size the line with the mouse (F); click to keep it", 0, stroke_pen,
+  add("draw.width_adjust", "Adjust Line Width", "Size the line with the mouse (F); click to keep it", 0, drags,
       [](Context &C) {
         C.wm->draw_adjust_request = 'R';
         return OpStatus::Finished;
       });
   add("draw.opacity_adjust", "Adjust Line Opacity", "Set the line's opacity with the mouse (Shift F); click to keep it",
-      0, stroke_pen, [](Context &C) {
+      0, has_opacity, [](Context &C) {
         C.wm->draw_adjust_request = 'S';
         return OpStatus::Finished;
       });

@@ -1,6 +1,7 @@
 #include "data/fill_area.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
@@ -128,6 +129,103 @@ const std::vector<FillPiece> &fill_area(const std::vector<std::vector<float2>> &
     }
   }
   return cache.emplace(key, std::move(pieces)).first->second;
+}
+
+static c2::PathsD pieces_paths(const std::vector<FillPiece> &pieces)
+{
+  c2::PathsD paths;
+  for (const FillPiece &piece : pieces) {
+    for (const std::vector<float2> &ring : piece.rings) {
+      c2::PathD path;
+      path.reserve(ring.size());
+      for (const float2 &p : ring) {
+        path.push_back({double(p.x), double(p.y)});
+      }
+      paths.push_back(std::move(path));
+    }
+  }
+  return paths;
+}
+
+static std::vector<FillPiece> tree_pieces(const c2::PolyTreeD &tree)
+{
+  std::vector<FillPiece> pieces;
+  for (const auto &outer : tree) {
+    collect(*outer, pieces);
+  }
+  return pieces;
+}
+
+std::vector<FillPiece> fill_boolean(const std::vector<FillPiece> &a, const std::vector<FillPiece> &b, FillBoolean op)
+{
+  c2::ClipperD clipper(PRECISION);
+  clipper.AddSubject(pieces_paths(a));
+  clipper.AddClip(pieces_paths(b));
+  c2::PolyTreeD tree;
+  /* Rings go round the ways FillPiece says, so nonzero counts holes out. */
+  clipper.Execute(op == FillBoolean::Union ? c2::ClipType::Union : c2::ClipType::Difference, c2::FillRule::NonZero, tree);
+  return tree_pieces(tree);
+}
+
+bool fill_overlap(const std::vector<FillPiece> &a, const std::vector<FillPiece> &b)
+{
+  if (a.empty() || b.empty()) {
+    return false;
+  }
+  c2::ClipperD clipper(PRECISION);
+  clipper.AddSubject(pieces_paths(a));
+  clipper.AddClip(pieces_paths(b));
+  c2::PathsD out;
+  clipper.Execute(c2::ClipType::Intersection, c2::FillRule::NonZero, out);
+  return !out.empty();
+}
+
+std::vector<FillPiece> fill_sweep(const std::vector<float2> &centers, const std::vector<float> &radii, float tolerance)
+{
+  c2::PathsD paths;
+  const auto add = [&](c2::PathD path) {
+    if (c2::Area(path) < 0.0) {
+      std::reverse(path.begin(), path.end());
+    }
+    paths.push_back(std::move(path));
+  };
+  const size_t n = centers.size();
+  for (size_t i = 0; i < n; i++) {
+    const double r = radii[i];
+    if (r <= 0.0) {
+      continue;
+    }
+    /* A 12-gon at least: a corner sharper than that between two of its sides is a real one (ink_fit_ring). */
+    const double step = std::acos(std::clamp(1.0 - double(tolerance) / r, -1.0, 1.0));
+    const int sides = std::clamp(int(std::ceil(3.14159265 / std::max(step, 1e-3))), 12, 64);
+    c2::PathD disc;
+    disc.reserve(sides);
+    for (int k = 0; k < sides; k++) {
+      const double a = 2.0 * 3.14159265358979 * k / sides;
+      disc.push_back({centers[i].x + r * std::cos(a), centers[i].y + r * std::sin(a)});
+    }
+    add(std::move(disc));
+  }
+  /* Between each two discs, the band touching both (its edges lean as the radius changes). */
+  for (size_t i = 0; i + 1 < n; i++) {
+    const float len = distance(centers[i], centers[i + 1]);
+    const float r0 = radii[i], r1 = radii[i + 1];
+    if (len <= std::abs(r0 - r1) || len <= 0.0f) {
+      continue;
+    }
+    const float2 d = (centers[i + 1] - centers[i]) / len;
+    const float lean = (r0 - r1) / len;
+    const float2 side = perpendicular(d) * std::sqrt(1.0f - lean * lean);
+    const float2 left = side + d * lean, right = d * lean - side;
+    const auto point = [](float2 p) { return c2::PointD(p.x, p.y); };
+    add({point(centers[i] + right * r0), point(centers[i + 1] + right * r1), point(centers[i + 1] + left * r1),
+         point(centers[i] + left * r0)});
+  }
+  c2::ClipperD clipper(PRECISION);
+  clipper.AddSubject(paths);
+  c2::PolyTreeD tree;
+  clipper.Execute(c2::ClipType::Union, c2::FillRule::NonZero, tree);
+  return tree_pieces(tree);
 }
 
 bool fill_contains(const std::vector<std::vector<float2>> &loops, FillRule rule, float2 p)

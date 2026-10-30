@@ -56,6 +56,12 @@ static std::vector<DrawPreset> builtin_presets()
   bezier.mode = DrawMode::Pen;
   bezier.category = DRAW_CATEGORY_PENS;
   bezier.builtin = true;
+  const auto area = [&](const char *name, DrawMode mode, float size, const char *category, auto &&set) {
+    DrawPreset p = make(name, size, set);
+    p.mode = mode;
+    p.category = category;
+    return p;
+  };
   return {
       make("Ink", 0.008f, [](InkSettings &) {}),
       make("Pencil", 0.005f,
@@ -85,7 +91,15 @@ static std::vector<DrawPreset> builtin_presets()
              ink.taper_start = 20.0f;
              ink.taper_end = 40.0f;
            }),
+      area("Fill Pen", DrawMode::FillPen, 0.03f, DRAW_CATEGORY_PENS, [](InkSettings &ink) { ink.min_size = 0.3f; }),
+      area("Fill Marker", DrawMode::FillPen, 0.06f, DRAW_CATEGORY_PENS,
+           [](InkSettings &ink) {
+             ink.use_pressure = false;
+             ink.smoothing = 0.6f;
+           }),
       bezier,
+      area("Fill Eraser", DrawMode::FillEraser, 0.04f, DRAW_CATEGORY_ERASERS, [](InkSettings &ink) { ink.use_pressure = false; }),
+      area("Pressure Fill Eraser", DrawMode::FillEraser, 0.06f, DRAW_CATEGORY_ERASERS, [](InkSettings &ink) { ink.min_size = 0.2f; }),
   };
 }
 
@@ -114,6 +128,7 @@ static json preset_json(const DrawPreset &p)
   const InkSettings &ink = p.ink;
   return {{"version", 1},
           {"name", p.name},
+          {"mode", p.mode == DrawMode::FillPen ? "FILL_PEN" : p.mode == DrawMode::FillEraser ? "FILL_ERASER" : "STROKE_PEN"},
           {"lineWidth", p.line_width},
           {"stabilizer", stabilizer_id(ink.stabilizer)},
           {"smoothing", ink.smoothing},
@@ -136,6 +151,8 @@ static DrawPreset preset_from_json(const json &j, const std::string &fallback_na
   DrawPreset p;
   InkSettings &ink = p.ink;
   p.name = j.value("name", fallback_name);
+  const std::string mode = j.value("mode", "STROKE_PEN");
+  p.mode = mode == "FILL_PEN" ? DrawMode::FillPen : mode == "FILL_ERASER" ? DrawMode::FillEraser : DrawMode::Freehand;
   p.line_width = std::max(j.value("lineWidth", p.line_width), 0.0f);
   const std::string stabilizer = j.value("stabilizer", "SMART");
   ink.stabilizer = stabilizer == "OFF"             ? InkStabilizer::Off

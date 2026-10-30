@@ -177,6 +177,14 @@ static std::string to_upper(std::string text)
   return text;
 }
 
+static const char *draw_mode_id(DrawMode mode)
+{
+  return mode == DrawMode::Pen        ? "PEN"
+         : mode == DrawMode::FillPen  ? "FILL_PEN"
+         : mode == DrawMode::FillEraser ? "FILL_ERASER"
+                                        : "FREEHAND";
+}
+
 /* The Stroke Pen's settings by name, as oanim.wm.draw_settings gives them. */
 static void ink_settings_read(const InkSettings &ink, py::dict &d)
 {
@@ -700,8 +708,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("draw_settings", []() {
     const ToolSettings &ts = current_context().wm->tool_settings;
     py::dict d;
-    d["mode"] = ts.draw_mode == DrawMode::Pen ? "PEN" : "FREEHAND";
+    d["mode"] = draw_mode_id(ts.draw_mode);
     d["preset"] = ts.draw_preset;
+    d["fill_size"] = ts.fill_size;
+    d["erase_all_layers"] = ts.draw_erase_all_layers;
+    d["erase_selected"] = ts.draw_erase_selected;
     d["fill"] = ts.draw_fill;
     d["weld"] = ts.draw_weld;
     d["cursor_circle"] = ts.draw_cursor_circle;
@@ -716,7 +727,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     for (const DrawPreset &p : draw_presets()) {
       py::dict d;
       d["name"] = p.name;
-      d["mode"] = p.mode == DrawMode::Pen ? "PEN" : "FREEHAND";
+      d["mode"] = draw_mode_id(p.mode);
       d["line_width"] = p.line_width;
       d["category"] = p.category;
       d["builtin"] = p.builtin;
@@ -737,6 +748,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "line_width") {
         ts.style.line_width = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (key == "fill_color" || key == "line_color") {
+        const auto [r, g, b, a] = value.cast<std::tuple<float, float, float, float>>();
+        (key == "fill_color" ? ts.style.fill : ts.style.line) = {r, g, b, a};
+      }
+      else if (key == "fill_size") {
+        ts.fill_size = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (key == "erase_all_layers") {
+        ts.draw_erase_all_layers = value.cast<bool>();
+      }
+      else if (key == "erase_selected") {
+        ts.draw_erase_selected = value.cast<bool>();
       }
       else if (key == "weld") {
         ts.draw_weld = value.cast<bool>();
@@ -1345,6 +1369,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Document &doc = *current_context().document;
     doc.active_shape_layer = layer.id;
     doc.active_shape = layer.drawing.shapes[size_t(index)].id;
+  });
+  m.def("layer_shape_contains", [layer_or_raise](uint64_t id, int shape, float x, float y) {
+    const VectorDrawing &drawing = layer_or_raise(id).drawing;
+    return shape >= 0 && shape < int(drawing.shapes.size()) && shape_fill_contains(drawing, drawing.shapes[shape], {x, y});
   });
   m.def("layer_shape_style", [layer_or_raise](uint64_t id, int index) {
     const VectorDrawing &drawing = layer_drawing(*current_context().document, layer_or_raise(id));

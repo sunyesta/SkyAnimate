@@ -56,6 +56,12 @@ inline bool annotate_mode_is_guide(AnnotateMode mode)
 /* Blender Grease Pencil's selection modes (1, 2, 3). */
 enum class SelectMode { Point, Edge, Stroke };
 
+/* The Fill Pen and Fill Eraser's kinds of pen brush areas, the others draw lines. */
+inline bool draw_mode_paints(DrawMode mode)
+{
+  return mode == DrawMode::FillPen || mode == DrawMode::FillEraser;
+}
+
 /* Settings shared by the viewport tools, like Blender's ToolSettings. */
 struct ToolSettings {
   Tool tool = Tool::Select;
@@ -119,6 +125,14 @@ struct ToolSettings {
     float line_width = 0.008f;
   };
   std::map<std::string, DrawPresetChanges> draw_changes;
+  /* The preset each kind of pen last used (by DrawMode), so coming back to it brings it back. */
+  std::map<int, std::string> draw_kind_preset;
+  /* How wide the Fill Pen and Fill Eraser are, in document units, as Style::line_width is the Stroke Pen's: not
+   * the line width that shapes take. */
+  float fill_size = 0.03f;
+  /* The Fill Eraser cuts every drawing being edited, not only the active one; and only selected shapes. */
+  bool draw_erase_all_layers = false;
+  bool draw_erase_selected = false;
   /* A stroke's ends join a point they end on. */
   bool draw_weld = false;
   /* The line's width as a circle round the mouse. */
@@ -184,6 +198,12 @@ struct ModalKey {
 };
 
 /* Window-manager state that operators may change. */
+/* How wide a kind of pen draws. */
+inline float &draw_width(ToolSettings &ts, DrawMode mode)
+{
+  return draw_mode_paints(mode) ? ts.fill_size : ts.style.line_width;
+}
+
 struct WindowManager {
   bool background = false;
   bool quit_requested = false;

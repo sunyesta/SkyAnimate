@@ -63,12 +63,12 @@ static void preset_now(const ToolSettings &ts, const DrawPreset &p, InkSettings 
 {
   *r_ink = p.ink;
   *r_line_width = p.line_width;
-  if (p.mode != DrawMode::Freehand) {
+  if (p.mode == DrawMode::Pen) {
     return;
   }
   if (ts.draw_preset == p.name) {
     *r_ink = ts.ink;
-    *r_line_width = ts.style.line_width;
+    *r_line_width = draw_mode_paints(p.mode) ? ts.fill_size : ts.style.line_width;
   }
   else if (const auto it = ts.draw_changes.find(p.name); it != ts.draw_changes.end()) {
     *r_ink = it->second.ink;
@@ -148,9 +148,16 @@ static void tile_picture(ImDrawList *dl, const ToolSettings &ts, const DrawPrese
     points.push_back({at.x, at.y});
     widths.push_back(std::min(point.radius * half, size * 0.1f));
   }
-  if (points.size() >= 2) {
-    ink_line_draw(dl, points, widths, Color{0.12f, 0.12f, 0.12f, 1.0f});
+  if (points.size() < 2) {
+    return;
   }
+  if (p.mode == DrawMode::FillEraser) {
+    /* A patch of fill, with the eraser's path cut out of it. */
+    dl->AddRectFilled(a + ImVec2(size * 0.1f, size * 0.2f), b - ImVec2(size * 0.1f, size * 0.2f), IM_COL32(0xd8, 0x9a, 0x5c, 255), 3.0f);
+    ink_line_draw(dl, points, widths, Color{0.95f, 0.95f, 0.95f, 1.0f});
+    return;
+  }
+  ink_line_draw(dl, points, widths, p.mode == DrawMode::FillPen ? Color{0.85f, 0.6f, 0.36f, 1.0f} : Color{0.12f, 0.12f, 0.12f, 1.0f});
 }
 
 static bool in_tab(const DrawPreset &p, int tab)
@@ -192,10 +199,14 @@ static std::string tile_tooltip(const ToolSettings &ts, const DrawPreset &p)
   if (p.mode == DrawMode::Pen) {
     return p.name + "\nClick to add points along a curve, drag to place each";
   }
+  if (p.mode == DrawMode::FillEraser) {
+    return p.name + "\nCuts the brushed area out of fills; lines stay";
+  }
   InkSettings ink;
   float line_width = 0.0f;
   preset_now(ts, p, &ink, &line_width);
   std::string text = p.name + "\n";
+  text += p.mode == DrawMode::FillPen ? "Paints a fill, merging with one of the same colour it overlaps. " : "";
   text += ink.stabilizer == InkStabilizer::Off     ? "No smoothing"
           : ink.stabilizer == InkStabilizer::Smart ? "Smart smoothing"
                                                    : "Pulled String";
@@ -268,14 +279,14 @@ static bool preset_tiles(Context &C, ShelfState &shelf, float width)
       continue;
     }
     const DrawPreset &p = *shown[size_t(k)];
-    const bool active = ts.draw_mode == p.mode && (p.mode != DrawMode::Freehand || ts.draw_preset == p.name);
+    const bool active = ts.draw_mode == p.mode && (p.mode == DrawMode::Pen || ts.draw_preset == p.name);
     shelf_tile_box(dl, a, b, active, hovered);
     tile_picture(dl, ts, p, a, b);
     shelf_tile_name(dl, a, b, p.name, active);
     InkSettings ink;
     float line_width = 0.0f;
     preset_now(ts, p, &ink, &line_width);
-    const bool changed = p.mode == DrawMode::Freehand && (!(ink == p.ink) || line_width != p.line_width);
+    const bool changed = p.mode != DrawMode::Pen && (!(ink == p.ink) || line_width != p.line_width);
     if (changed) {
       dl->AddCircleFilled(ImVec2(b.x - size * 0.1f, a.y + size * 0.1f), size * 0.045f, COL_CHANGED);
     }

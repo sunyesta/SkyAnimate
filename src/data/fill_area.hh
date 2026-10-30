@@ -27,6 +27,16 @@ std::vector<std::vector<float2>> shape_fill_loops(const VectorDrawing &drawing, 
  * while by the loops' exact points, as the same fill is worked out again every redraw. */
 const std::vector<FillPiece> &fill_area(const std::vector<std::vector<float2>> &loops, FillRule rule);
 
+/* What two sets of pieces make together. */
+enum class FillBoolean { Union, Subtract };
+std::vector<FillPiece> fill_boolean(const std::vector<FillPiece> &a, const std::vector<FillPiece> &b, FillBoolean op);
+/* Whether two sets of pieces share any area. */
+bool fill_overlap(const std::vector<FillPiece> &a, const std::vector<FillPiece> &b);
+/* What a disc covers going along `centers`, its radius changing with `radii`: a brush's stroke as an area (the
+ * envelope of its discs, so a tight turn or a loop is what it should be, where offsetting a line folds over).
+ * `tolerance`: how far its round edges may be off. */
+std::vector<FillPiece> fill_sweep(const std::vector<float2> &centers, const std::vector<float> &radii, float tolerance);
+
 /* Whether `p` is inside `loops` under `rule` (Loops: inside any of them). */
 bool fill_contains(const std::vector<std::vector<float2>> &loops, FillRule rule, float2 p);
 

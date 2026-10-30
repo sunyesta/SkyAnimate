@@ -1352,7 +1352,7 @@ void vector_operators_register()
     OperatorType ot;
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
-    ot.description = "Switch to the Draw tool: freehand strokes, or the Bezier Pen (mode=\"PEN\")";
+    ot.description = "Switch to the Draw tool: freehand strokes, or mode= PEN (the Bezier Pen), FILL_PEN or FILL_ERASER";
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       /* A setup-only tool: away from frame 0 it says what makes it work. */
@@ -1362,13 +1362,19 @@ void vector_operators_register()
       }
       const std::string mode = op_arg(C, "mode");
       if (mode == "PEN") {
-        C.wm->tool_settings.draw_mode = DrawMode::Pen;
+        draw_mode_set(C.wm->tool_settings, DrawMode::Pen);
       }
       else if (mode == "FREEHAND") {
-        C.wm->tool_settings.draw_mode = DrawMode::Freehand;
+        draw_mode_set(C.wm->tool_settings, DrawMode::Freehand);
+      }
+      else if (mode == "FILL_PEN") {
+        draw_mode_set(C.wm->tool_settings, DrawMode::FillPen);
+      }
+      else if (mode == "FILL_ERASER") {
+        draw_mode_set(C.wm->tool_settings, DrawMode::FillEraser);
       }
       else if (!mode.empty()) {
-        report(ReportType::Error, "Unknown draw mode '" + mode + "': use FREEHAND or PEN");
+        report(ReportType::Error, "Unknown draw mode '" + mode + "': use FREEHAND, PEN, FILL_PEN or FILL_ERASER");
         return OpStatus::Cancelled;
       }
       C.wm->tool_settings.tool = Tool::Draw;
