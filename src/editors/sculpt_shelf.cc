@@ -1,9 +1,6 @@
-/* The Sculpt tool's brush shelf: a strip along the bottom of the viewport while Sculpt is the tool,
- * as Blender's asset shelf shows brushes. Tabs (All, Move, Shape, Mine), a search field and the
- * tiles' size along its top; under them a tile per preset, its picture a line before and after the
- * brush, its name beneath. Clicking a tile picks the preset; Mine's + tile saves the brush as it is
- * now, and right-clicking a saved one deletes it. Dragging the top edge sizes the shelf; the arrow
- * folds it to its tabs. The viewport's view sits above it, so it never covers the drawing. */
+/* The Sculpt tool's brush shelf (editors/tool_shelf.hh), while Sculpt is the tool: tabs All, Move, Shape and Mine; a
+ * tile per preset, its picture a line before and after the brush, its name beneath. Clicking a tile picks the
+ * preset; Mine's + tile saves the brush as it is now, and right-clicking a saved one deletes it. */
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -22,41 +19,13 @@
 
 namespace oanim {
 
-static const char *const SHELF_TABS[] = {"All", "Move", "Shape", "Mine"};
-static constexpr ImU32 COL_SHELF = IM_COL32(0x2b, 0x2b, 0x2b, 255);
-static constexpr ImU32 COL_SHELF_HEADER = IM_COL32(0x23, 0x23, 0x23, 255);
-static constexpr ImU32 COL_TILE = IM_COL32(0xf2, 0xf2, 0xf2, 255);
-static constexpr ImU32 COL_TILE_ACTIVE = IM_COL32(0x47, 0x72, 0xb3, 255);
 static constexpr ImU32 COL_INK = IM_COL32(0x1e, 0x1e, 0x1e, 255);
 static constexpr ImU32 COL_INK_BEFORE = IM_COL32(0xa8, 0xa8, 0xa8, 255);
 static constexpr ImU32 COL_ARROW = IM_COL32(0xe0, 0xa0, 0x20, 255);
 
-static float header_height()
-{
-  return std::round(ImGui::GetFrameHeight() * 1.3f);
-}
-
-static float tile_size(const Area &area)
-{
-  return area.sculpt_shelf_tile > 0.0f ? area.sculpt_shelf_tile : std::round(ImGui::GetFrameHeight() * 2.6f);
-}
-
-/* A tile and the name under it. */
-static float tile_height(const Area &area)
-{
-  return tile_size(area) + ImGui::GetFontSize() + 6.0f;
-}
-
 float sculpt_shelf_height(const Context &C, const Area &area)
 {
-  if (C.wm->tool_settings.tool != Tool::Sculpt) {
-    return 0.0f;
-  }
-  if (!area.sculpt_shelf_open) {
-    return header_height();
-  }
-  const float one_row = header_height() + tile_height(area) + 12.0f;
-  return area.sculpt_shelf_height > 0.0f ? std::max(area.sculpt_shelf_height, one_row) : one_row;
+  return C.wm->tool_settings.tool == Tool::Sculpt ? shelf_height(area.sculpt_shelf) : 0.0f;
 }
 
 static void arrow(ImDrawList *dl, ImVec2 from, ImVec2 to, ImU32 col, float t)
@@ -174,14 +143,6 @@ void sculpt_brush_icon(ImDrawList *dl, SculptBrush brush, ImVec2 c, float s, ImU
   }
 }
 
-static std::string lower(std::string s)
-{
-  for (char &c : s) {
-    c = char(std::tolower(static_cast<unsigned char>(c)));
-  }
-  return s;
-}
-
 static bool in_tab(const SculptPreset &p, int tab)
 {
   switch (tab) {
@@ -233,94 +194,34 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     return;
   }
   ToolSettings &ts = C.wm->tool_settings;
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  const ImVec2 max = min + size;
-  const float hh = header_height();
+  ShelfState &shelf = area.sculpt_shelf;
   const float unit = ImGui::GetFrameHeight();
-  dl->AddRectFilled(min, max, COL_SHELF);
-  dl->AddRectFilled(min, ImVec2(max.x, min.y + hh), COL_SHELF_HEADER);
-  dl->AddLine(min, ImVec2(max.x, min.y), IM_COL32(0x18, 0x18, 0x18, 255), 1.0f);
   ImGui::PushID("##sculpt_shelf");
-
-  /* The top edge sizes it (open). */
-  if (area.sculpt_shelf_open) {
-    ImGui::SetCursorScreenPos(min - ImVec2(0, 3));
-    ImGui::InvisibleButton("##edge", ImVec2(size.x, 6));
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    }
-    if (ImGui::IsItemActive()) {
-      area.sculpt_shelf_height = std::max(size.y - ImGui::GetIO().MouseDelta.y, hh + tile_height(area) + 12.0f);
-    }
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-      area.sculpt_shelf_height = 0.0f;
-    }
-  }
-
-  /* Header: the fold arrow, the tabs; on the right the tiles' size and the search. */
-  ImGui::SetCursorScreenPos(ImVec2(min.x + 6.0f, min.y + (hh - unit) * 0.5f));
-  if (ImGui::ArrowButton("##fold", area.sculpt_shelf_open ? ImGuiDir_Down : ImGuiDir_Up)) {
-    area.sculpt_shelf_open = !area.sculpt_shelf_open;
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip(area.sculpt_shelf_open ? "Fold the brush shelf" : "Open the brush shelf");
-  }
-  for (int i = 0; i < 4; i++) {
-    ImGui::SameLine(0, i == 0 ? 10.0f : 2.0f);
-    const bool on = area.sculpt_shelf_tab == i;
-    if (on) {
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    }
-    if (ImGui::Button(SHELF_TABS[i])) {
-      area.sculpt_shelf_tab = i;
-      area.sculpt_shelf_open = true;
-    }
-    if (on) {
-      ImGui::PopStyleColor();
-    }
-  }
-  const float search_w = unit * 7.0f, size_w = unit * 3.2f;
-  ImGui::SetCursorScreenPos(ImVec2(max.x - search_w - size_w - 14.0f, min.y + (hh - unit) * 0.5f));
-  ImGui::SetNextItemWidth(size_w);
-  static const char *const SIZES[] = {"Small", "Medium", "Large"};
-  const float base = std::round(unit * 2.6f);
-  int size_index = area.sculpt_shelf_tile <= 0.0f ? 1 : area.sculpt_shelf_tile < base ? 0 : area.sculpt_shelf_tile > base ? 2 : 1;
-  if (ImGui::Combo("##tile_size", &size_index, SIZES, 3)) {
-    area.sculpt_shelf_tile = size_index == 1 ? 0.0f : size_index == 0 ? std::round(base * 0.7f) : std::round(base * 1.45f);
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How big the brush pictures are");
-  }
-  ImGui::SameLine(0, 6.0f);
-  ImGui::SetNextItemWidth(search_w);
-  ImGui::InputTextWithHint("##search", "Search", &area.sculpt_shelf_search);
-
-  if (!area.sculpt_shelf_open) {
+  if (!shelf_frame(shelf, {{0, "All"}, {1, "Move"}, {2, "Shape"}, {3, "Mine"}}, min, size)) {
     ImGui::PopID();
     return;
   }
 
   /* The tiles, in rows, scrolling when they don't fit. */
-  const float ts_px = tile_size(area);
-  const float th = tile_height(area);
+  const float ts_px = shelf_tile_size(shelf);
+  const float th = shelf_tile_height(shelf);
   const float gap = 8.0f;
-  const ImVec2 body_min(min.x, min.y + hh);
-  ImGui::SetCursorScreenPos(body_min);
+  const ImVec2 body_min = ImGui::GetCursorScreenPos();
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(0, 0, 0, 0));
-  if (ImGui::BeginChild("##tiles", ImVec2(size.x, size.y - hh), ImGuiChildFlags_None)) {
+  if (ImGui::BeginChild("##tiles", ImVec2(size.x, min.y + size.y - body_min.y), ImGuiChildFlags_None)) {
     ImDrawList *tdl = ImGui::GetWindowDrawList();
     const ImVec2 start = ImGui::GetCursorScreenPos() + ImVec2(gap, 6.0f);
     const int per_row = std::max(1, int((size.x - gap) / (ts_px + gap)));
-    const std::string search = lower(area.sculpt_shelf_search);
+    const std::string search = shelf_lower(shelf.search);
     std::vector<const SculptPreset *> shown;
     for (const SculptPreset &p : sculpt_presets()) {
-      if (in_tab(p, area.sculpt_shelf_tab) && (search.empty() || lower(p.name).find(search) != std::string::npos)) {
+      if (in_tab(p, shelf.tab) && (search.empty() || shelf_lower(p.name).find(search) != std::string::npos)) {
         shown.push_back(&p);
       }
     }
     /* Mine (and All) end with a + tile: save the brush as it is now. */
-    const bool plus = area.sculpt_shelf_tab == 0 || area.sculpt_shelf_tab == 3;
+    const bool plus = shelf.tab == 0 || shelf.tab == 3;
     const int count = int(shown.size()) + (plus ? 1 : 0);
     static std::string save_name;
     static std::string menu_preset;
@@ -332,16 +233,7 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
       const bool hovered = ImGui::IsItemHovered();
       const ImVec2 a = at, b = at + ImVec2(ts_px, ts_px);
       if (k == int(shown.size())) {
-        /* The + tile. */
-        tdl->AddRectFilled(a, b, hovered ? IM_COL32(0x4a, 0x4a, 0x4a, 255) : IM_COL32(0x3a, 0x3a, 0x3a, 255), 4.0f);
-        tdl->AddRect(a, b, IM_COL32(0x60, 0x60, 0x60, 255), 4.0f, 0, 1.0f);
-        const ImVec2 c = (a + b) * 0.5f;
-        const float r = ts_px * 0.22f;
-        tdl->AddLine(c - ImVec2(r, 0), c + ImVec2(r, 0), IM_COL32(0xe6, 0xe6, 0xe6, 255), 2.0f);
-        tdl->AddLine(c - ImVec2(0, r), c + ImVec2(0, r), IM_COL32(0xe6, 0xe6, 0xe6, 255), 2.0f);
-        const char *label = "Save";
-        tdl->AddText(ImVec2(a.x + (ts_px - ImGui::CalcTextSize(label).x) * 0.5f, b.y + 3.0f),
-                     IM_COL32(0xc8, 0xc8, 0xc8, 255), label);
+        shelf_plus_tile(tdl, a, b, hovered);
         if (hovered) {
           ImGui::SetTooltip("Save the brush as it is now (%s, radius %.0f px, strength %.2f) to the asset library, "
                             "under Mine",
@@ -360,7 +252,7 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
           const bool enter = ImGui::InputText("##name", &save_name, ImGuiInputTextFlags_EnterReturnsTrue);
           if (ImGui::Button("Save") || enter) {
             operator_call(C, "sculpt.preset_save", {{"name", save_name}});
-            area.sculpt_shelf_tab = 3;
+            shelf.tab = 3;
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
@@ -374,23 +266,10 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
       }
       const SculptPreset &p = *shown[size_t(k)];
       const bool active = ts.sculpt_preset == p.name;
-      tdl->AddRectFilled(a, b, COL_TILE, 4.0f);
-      if (active || hovered) {
-        tdl->AddRect(a - ImVec2(1, 1), b + ImVec2(1, 1), active ? COL_TILE_ACTIVE : IM_COL32(0x90, 0x90, 0x90, 255),
-                     5.0f, 0, active ? 2.5f : 1.5f);
-      }
+      shelf_tile_box(tdl, a, b, active, hovered);
       sculpt_brush_icon(tdl, p.brush, (a + b) * 0.5f - ImVec2(0, ts_px * 0.03f), ts_px * 0.42f, COL_INK, COL_INK_BEFORE);
       falloff_mark(tdl, p, b - ImVec2(ts_px * 0.13f, ts_px * 0.13f), ts_px * 0.09f);
-      /* Its name, cut to the tile's width. */
-      std::string name = p.name;
-      while (name.size() > 1 && ImGui::CalcTextSize(name.c_str()).x > ts_px) {
-        name.pop_back();
-      }
-      if (name.size() < p.name.size() && name.size() > 2) {
-        name.replace(name.size() - 2, 2, "..");
-      }
-      tdl->AddText(ImVec2(a.x + (ts_px - ImGui::CalcTextSize(name.c_str()).x) * 0.5f, b.y + 3.0f),
-                   active ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255), name.c_str());
+      shelf_tile_name(tdl, a, b, p.name, active);
       if (hovered) {
         static const char *const FALLOFFS[] = {"Smooth", "Sphere", "Constant"};
         /* As it is now: the active one as the header has it, another as it was last changed to. */
@@ -428,7 +307,7 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     }
     if (count == 0) {
       ImGui::SetCursorScreenPos(start);
-      ImGui::TextDisabled(area.sculpt_shelf_tab == 3 ? "No saved brushes yet" : "No brushes match");
+      ImGui::TextDisabled(shelf.tab == 3 ? "No saved brushes yet" : "No brushes match");
     }
     /* Room for the rows, so the shelf scrolls. */
     const int rows = (count + per_row - 1) / per_row;

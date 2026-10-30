@@ -53,9 +53,6 @@ inline bool annotate_mode_is_guide(AnnotateMode mode)
   return mode == AnnotateMode::GuideLine || mode == AnnotateMode::GuidePerspective || mode == AnnotateMode::GuideGrid;
 }
 
-/* The Draw tool draws freehand strokes, or with the pen: click to add points along a curve. */
-enum class DrawMode { Freehand, Pen };
-
 /* Blender Grease Pencil's selection modes (1, 2, 3). */
 enum class SelectMode { Point, Edge, Stroke };
 
@@ -109,13 +106,23 @@ struct ToolSettings {
    * corner on its own), 2 Warp (a grid of `warp_cells` each way bending what's inside). */
   int gizmo_mode = 0;
   int warp_cells = 3;
-  /* Tablet pressure sets line width while drawing. */
-  bool use_pressure = true;
   /* While drawing with a pen, the line runs this far (ms) ahead of the pen's last sample, the way it is
    * going, so it keeps up with the hand (0: off). */
   float draw_prediction = 8.0f;
-  /* How freehand strokes are made: smoothing, the pressure curve, tapers, fidelity. */
+  /* How freehand strokes are made, set by picking a pen on the shelf (assets/draw_presets.hh; `draw_preset` names
+   * it), then changed in the header. */
   InkSettings ink;
+  std::string draw_preset = "Ink";
+  /* What each pen on the shelf was changed to (by its name), kept while Open Animate runs, as sculpt_changes. */
+  struct DrawPresetChanges {
+    InkSettings ink;
+    float line_width = 0.008f;
+  };
+  std::map<std::string, DrawPresetChanges> draw_changes;
+  /* A stroke's ends join a point they end on. */
+  bool draw_weld = false;
+  /* The line's width as a circle round the mouse. */
+  bool draw_cursor_circle = true;
   /* The 2D cursor in document space. */
   float2 cursor;
   /* Weight Paint brush, as Blender's: radius in screen pixels, the weight it paints, how hard,
@@ -361,6 +368,13 @@ struct WindowManager {
   /* F or Shift F with the Sculpt tool: the viewport sizes the brush's radius ('R') or strength ('S')
    * with the mouse until a click. */
   char sculpt_adjust_request = 0;
+  /* The same for the Draw tool: the line's width ('R') or opacity ('S'). */
+  char draw_adjust_request = 0;
+  /* Shift Space or the header's pen button: the viewport shows the pens at the mouse. */
+  bool draw_popup_request = false;
+  /* The last stroke, for the Fidelity readout. */
+  InkStroke draw_last;
+  bool draw_last_closed = false;
 
   /* The .oanim file the document was opened from or saved to; empty for a new document. */
   std::string filepath;

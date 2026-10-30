@@ -15,6 +15,7 @@
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
+#include "assets/draw_presets.hh"
 #include "assets/sculpt_presets.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -176,6 +177,27 @@ static std::string to_upper(std::string text)
   return text;
 }
 
+/* The Stroke Pen's settings by name, as oanim.wm.draw_settings gives them. */
+static void ink_settings_read(const InkSettings &ink, py::dict &d)
+{
+  d["use_pressure"] = ink.use_pressure;
+  d["stabilizer"] = ink.stabilizer == InkStabilizer::Off     ? "OFF"
+                    : ink.stabilizer == InkStabilizer::Smart ? "SMART"
+                                                             : "PULLED_STRING";
+  d["smoothing"] = ink.smoothing;
+  d["string_length"] = ink.string_length;
+  d["catch_up"] = ink.catch_up;
+  d["fidelity"] = ink.fidelity;
+  d["pressure_smoothing"] = ink.pressure_smoothing;
+  d["pressure_curve"] = py::make_tuple(ink.pressure_curve_a.x, ink.pressure_curve_a.y, ink.pressure_curve_b.x,
+                                       ink.pressure_curve_b.y);
+  d["min_size"] = ink.min_size;
+  d["speed_width"] = ink.speed_width;
+  d["tilt_width"] = ink.tilt_width;
+  d["taper_start"] = ink.taper_start;
+  d["taper_end"] = ink.taper_end;
+}
+
 /* A Stroke Pen setting by name, as oanim.wm.set_draw takes it; false: no such setting. */
 static bool ink_setting(InkSettings &ink, const std::string &key, const py::handle value)
 {
@@ -188,6 +210,9 @@ static bool ink_setting(InkSettings &ink, const std::string &key, const py::hand
     ink.stabilizer = name == "OFF"     ? InkStabilizer::Off
                      : name == "SMART" ? InkStabilizer::Smart
                                        : InkStabilizer::PulledString;
+  }
+  else if (key == "use_pressure") {
+    ink.use_pressure = value.cast<bool>();
   }
   else if (key == "smoothing") {
     ink.smoothing = amount();
@@ -676,36 +701,35 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const ToolSettings &ts = current_context().wm->tool_settings;
     py::dict d;
     d["mode"] = ts.draw_mode == DrawMode::Pen ? "PEN" : "FREEHAND";
-    d["use_pressure"] = ts.use_pressure;
+    d["preset"] = ts.draw_preset;
     d["fill"] = ts.draw_fill;
+    d["weld"] = ts.draw_weld;
+    d["cursor_circle"] = ts.draw_cursor_circle;
     d["prediction"] = ts.draw_prediction;
     d["line_width"] = ts.style.line_width;
-    const InkSettings &ink = ts.ink;
-    d["stabilizer"] = ink.stabilizer == InkStabilizer::Off     ? "OFF"
-                      : ink.stabilizer == InkStabilizer::Smart ? "SMART"
-                                                               : "PULLED_STRING";
-    d["smoothing"] = ink.smoothing;
-    d["string_length"] = ink.string_length;
-    d["catch_up"] = ink.catch_up;
-    d["fidelity"] = ink.fidelity;
-    d["pressure_smoothing"] = ink.pressure_smoothing;
-    d["pressure_curve"] = py::make_tuple(ink.pressure_curve_a.x, ink.pressure_curve_a.y, ink.pressure_curve_b.x,
-                                         ink.pressure_curve_b.y);
-    d["min_size"] = ink.min_size;
-    d["speed_width"] = ink.speed_width;
-    d["tilt_width"] = ink.tilt_width;
-    d["taper_start"] = ink.taper_start;
-    d["taper_end"] = ink.taper_end;
+    ink_settings_read(ts.ink, d);
     return d;
+  });
+  /* The pens on the shelf (assets/draw_presets.hh). */
+  m.def("draw_presets", []() {
+    py::list list;
+    for (const DrawPreset &p : draw_presets()) {
+      py::dict d;
+      d["name"] = p.name;
+      d["mode"] = p.mode == DrawMode::Pen ? "PEN" : "FREEHAND";
+      d["line_width"] = p.line_width;
+      d["category"] = p.category;
+      d["builtin"] = p.builtin;
+      ink_settings_read(p.ink, d);
+      list.append(d);
+    }
+    return list;
   });
   m.def("set_draw", [](const py::dict &values) {
     ToolSettings &ts = current_context().wm->tool_settings;
     for (const auto &[key_obj, value] : values) {
       const std::string key = py::str(key_obj);
-      if (key == "use_pressure") {
-        ts.use_pressure = value.cast<bool>();
-      }
-      else if (key == "fill") {
+      if (key == "fill") {
         ts.draw_fill = value.cast<bool>();
       }
       else if (key == "prediction") {
@@ -713,6 +737,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "line_width") {
         ts.style.line_width = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (key == "weld") {
+        ts.draw_weld = value.cast<bool>();
+      }
+      else if (key == "cursor_circle") {
+        ts.draw_cursor_circle = value.cast<bool>();
       }
       else if (!ink_setting(ts.ink, key, value)) {
         throw py::value_error("no draw setting '" + key + "' (see oanim.wm.draw_settings)");
@@ -726,10 +756,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     InkSettings settings;
     for (const auto &[key_obj, value] : values) {
       const std::string key = py::str(key_obj);
-      if (key == "use_pressure") {
-        settings.use_pressure = value.cast<bool>();
-      }
-      else if (!ink_setting(settings, key, value)) {
+      if (!ink_setting(settings, key, value)) {
         throw py::value_error("no ink setting '" + key + "'");
       }
     }

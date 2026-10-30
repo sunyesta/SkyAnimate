@@ -37,6 +37,7 @@
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
+#include "assets/draw_presets.hh"
 #include "assets/sculpt_presets.hh"
 #include "anim/layer_pick.hh"
 #include "data/layer_mirror.hh"
@@ -424,6 +425,7 @@ static void weight_select_header(Context &C);
 static void transform_bones_header(Context &C);
 static void transform_points_header(Context &C);
 static void sculpt_header(Context &C);
+static void draw_header(Context &C);
 static OpArgs weight_args();
 static std::vector<uint64_t> editable_layer_ids(Context &C);
 
@@ -923,9 +925,9 @@ static const ToolInfo TOOLS[] = {
      "move it.\nRight-click to pick the variant",
      "wm.tool_annotate"},
     {Tool::Draw, "Draw",
-     "Draw: freehand strokes; tablet pressure sets the width.\n"
-     "Pen: click to add points along a curve, drag to place each; click the first point to close it.\n"
-     "Right-click to pick Draw or Pen",
+     "Stroke Pen: freehand lines; tablet pressure sets the width. The shelf below the view has the pens.\n"
+     "Bezier Pen: click to add points along a curve, drag to place each; click the first point to close it.\n"
+     "Right-click to pick the kind",
      "wm.tool_draw"},
     {Tool::Shape, "Shape",
      "Drag to draw a box or circle; Shift keeps the sides even, Alt draws from the centre.\n"
@@ -1158,7 +1160,7 @@ static void draw_flyout(Context &C, ImVec2 button_pos, float button)
   const DrawMode modes[] = {DrawMode::Freehand, DrawMode::Pen};
   std::vector<FlyoutItem> items;
   for (const DrawMode mode : modes) {
-    items.push_back({mode == DrawMode::Pen ? "Pen" : "Draw",
+    items.push_back({mode == DrawMode::Pen ? "Bezier Pen" : "Stroke Pen",
                      [mode, col](ImDrawList *dl, ImVec2 c, float s) { draw_mode_icon(dl, mode, c, s, col); },
                      ts.tool == Tool::Draw && ts.draw_mode == mode});
   }
@@ -1824,7 +1826,7 @@ static void width_field(const Document &doc, ToolSettings &ts, bool pressure)
   const float units_to_pixels = float(doc.height) * 0.5f;
   float pixels = ts.style.line_width * units_to_pixels;
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * (pressure ? 6.0f : 4.5f));
-  if (pressure ? pressure_field("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px", &ts.use_pressure,
+  if (pressure ? pressure_field("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px", &ts.ink.use_pressure,
                                 "Pen pressure sets the line's width")
                : ui_drag_float("##width", &pixels, 0.1f, 0.0f, 500.0f, "Width %.1f px"))
   {
@@ -2667,6 +2669,253 @@ static void proportional_buttons(ToolSettings &ts, float h, float arrow_w)
   ImGui::EndPopup();
 }
 
+/* The brush new strokes get: the Brush Settings window, on the tool. */
+static void tool_brush_button(Context &C)
+{
+  const Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  const float icon_h = ImGui::GetFrameHeight();
+  const ImVec2 icon_at = ImGui::GetCursorScreenPos();
+  if (ImGui::Button(("     " + brush_shown_name(doc, ts.style.brush) + "##tool_brush").c_str())) {
+    brush_window_open(BrushTarget::Tool);
+  }
+  brush_preset_icon(ImGui::GetWindowDrawList(), icon_at + ImVec2(2.0f, 0.0f), icon_at + ImVec2(icon_h, icon_h),
+                    ImGui::GetColorU32(ImGuiCol_Text));
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The brush for new strokes: click for Brush Settings");
+  }
+}
+
+/* A header button with a down arrow opening a dropdown of settings, as Blender's tool header popovers. True while
+ * it is open: the caller fills it and ends it with ImGui::EndPopup. */
+static bool header_dropdown(const char *label, const char *popup, const char *tooltip)
+{
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float text_w = ImGui::CalcTextSize(label).x;
+  if (ImGui::Button((std::string("##") + popup).c_str(), ImVec2(text_w + style.FramePadding.x * 2.0f + h * 0.55f, h))) {
+    ImGui::OpenPopup(popup);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("%s", tooltip);
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
+  dl->AddText(at + ImVec2(style.FramePadding.x, style.FramePadding.y), ink, label);
+  const ImVec2 tip = at + ImVec2(style.FramePadding.x + text_w + h * 0.3f, h * 0.5f);
+  dl->AddTriangleFilled(tip + ImVec2(-3.5f, -1.5f), tip + ImVec2(3.5f, -1.5f), tip + ImVec2(0.0f, 2.5f), ink);
+  ImGui::SetNextWindowPos(ImVec2(at.x, at.y + h + 2.0f), ImGuiCond_Appearing);
+  if (!ImGui::BeginPopup(popup)) {
+    return false;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::CloseCurrentPopup();
+  }
+  return true;
+}
+
+/* A full-width bar in a dropdown, with what it does on hovering. */
+static void dropdown_bar(const char *id, float *v, float min, float max, const char *format, const char *tooltip)
+{
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 11.0f);
+  ui_slider_float(id, v, min, max, format);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("%s", tooltip);
+  }
+}
+
+/* How pressure maps to size, as Harmony's Pen Pressure Feel: a Bezier from no pressure, no size to full pressure,
+ * full size, its two handles dragged. */
+static void pressure_curve_edit(InkSettings &ink)
+{
+  const float size = ImGui::GetFrameHeight() * 7.0f;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##pressure_curve", ImVec2(size, size));
+  const auto place = [&](float2 p) { return at + ImVec2(p.x, 1.0f - p.y) * size; };
+  static float2 *dragged = nullptr;
+  if (ImGui::IsItemActivated()) {
+    const ImVec2 mouse = ImGui::GetIO().MousePos, to_a = mouse - place(ink.pressure_curve_a),
+                 to_b = mouse - place(ink.pressure_curve_b);
+    const bool nearer_a = to_a.x * to_a.x + to_a.y * to_a.y <= to_b.x * to_b.x + to_b.y * to_b.y;
+    dragged = nearer_a ? &ink.pressure_curve_a : &ink.pressure_curve_b;
+  }
+  if (ImGui::IsItemActive() && dragged) {
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    *dragged = {std::clamp((mouse.x - at.x) / size, 0.0f, 1.0f), std::clamp(1.0f - (mouse.y - at.y) / size, 0.0f, 1.0f)};
+  }
+  else {
+    dragged = nullptr;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !ImGui::IsItemActive()) {
+    ImGui::SetTooltip("Pen pressure (across) to size (up): drag the handles. Bowed up, a light touch draws wide; "
+                      "bowed down, it takes a firm press");
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 corner = at + ImVec2(size, size);
+  dl->AddRectFilled(at, corner, IM_COL32(0x1e, 0x1e, 0x1e, 255));
+  for (int i = 1; i < 4; i++) {
+    const float f = size * float(i) / 4.0f;
+    dl->AddLine(at + ImVec2(f, 0), at + ImVec2(f, size), IM_COL32(0x3a, 0x3a, 0x3a, 255));
+    dl->AddLine(at + ImVec2(0, f), at + ImVec2(size, f), IM_COL32(0x3a, 0x3a, 0x3a, 255));
+  }
+  const ImVec2 from = place({0.0f, 0.0f}), to = place({1.0f, 1.0f});
+  const ImVec2 a = place(ink.pressure_curve_a), b = place(ink.pressure_curve_b);
+  dl->AddLine(from, a, IM_COL32(0x80, 0x80, 0x80, 255));
+  dl->AddLine(to, b, IM_COL32(0x80, 0x80, 0x80, 255));
+  dl->AddBezierCubic(from, a, b, to, IM_COL32(0xe6, 0xe6, 0xe6, 255), 2.0f, 32);
+  dl->AddCircleFilled(a, 4.0f, IM_COL32(0x47, 0x72, 0xb3, 255));
+  dl->AddCircleFilled(b, 4.0f, IM_COL32(0x47, 0x72, 0xb3, 255));
+  dl->AddRect(at, corner, IM_COL32(0x60, 0x60, 0x60, 255));
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+  if (ImGui::Button("Linear")) {
+    const InkSettings even;
+    ink.pressure_curve_a = even.pressure_curve_a;
+    ink.pressure_curve_b = even.pressure_curve_b;
+  }
+  ImGui::EndGroup();
+}
+
+/* The Stroke dropdown: how the hand becomes a line. */
+static void draw_stroke_dropdown(WindowManager &wm)
+{
+  ToolSettings &ts = wm.tool_settings;
+  InkSettings &ink = ts.ink;
+  ImGui::TextUnformatted("Stabilizer");
+  static const char *const names[] = {"Off", "Smart", "Pulled String"};
+  int stabilizer = int(ink.stabilizer);
+  ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 11.0f);
+  if (ImGui::Combo("##stabilizer", &stabilizer, names, 3)) {
+    ink.stabilizer = InkStabilizer(stabilizer);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Smart leaves out a slow hand's wobble and follows a fast one. Pulled String draws a line pulled "
+                      "behind the pen on a string: exact corners, a learned feel");
+  }
+  if (ink.stabilizer == InkStabilizer::Smart) {
+    dropdown_bar("##smoothing", &ink.smoothing, 0.0f, 1.0f, "Smoothing %.2f", "How much wobble a slow line loses");
+  }
+  else if (ink.stabilizer == InkStabilizer::PulledString) {
+    dropdown_bar("##string", &ink.string_length, 1.0f, 100.0f, "String %.0f px", "How long the string is, in screen pixels");
+    ImGui::Checkbox("Catch Up", &ink.catch_up);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("End the line at the pen, rather than a string's length short of it");
+    }
+  }
+  ImGui::Spacing();
+  dropdown_bar("##fidelity", &ink.fidelity, 0.0f, 1.0f, "Fidelity %.2f",
+               "How closely the line's points follow the hand: higher is closer and makes more of them");
+  /* What the last stroke makes at this fidelity, worked out again only when one of them changes. */
+  static float shown_fidelity = -1.0f;
+  static size_t shown_samples = 0;
+  static int shown_points = 0;
+  const std::vector<InkPoint> &last = wm.draw_last.points();
+  if (!last.empty()) {
+    if (shown_fidelity != ink.fidelity || shown_samples != last.size()) {
+      InkSettings settings = wm.draw_last.settings();
+      settings.fidelity = ink.fidelity;
+      shown_points = int(ink_fit(last, settings, wm.draw_last.view(), wm.draw_last_closed).size());
+      shown_fidelity = ink.fidelity;
+      shown_samples = last.size();
+    }
+    ImGui::TextDisabled("Last line makes %d points", shown_points);
+  }
+  ImGui::Spacing();
+  ImGui::Checkbox("Close and Fill", &ts.draw_fill);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("A stroke ending where it started closes, and fills");
+  }
+  ImGui::Checkbox("Weld Ends", &ts.draw_weld);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("A stroke's ends join a point they finish on, so the two move together");
+  }
+}
+
+/* The Advanced dropdown: how the pen sets the line's width. */
+static void draw_advanced_dropdown(ToolSettings &ts)
+{
+  InkSettings &ink = ts.ink;
+  ImGui::TextUnformatted("Pressure");
+  pressure_curve_edit(ink);
+  dropdown_bar("##min_size", &ink.min_size, 0.0f, 1.0f, "Min Size %.2f", "The thinnest the line gets, as a part of its width");
+  dropdown_bar("##pressure_smoothing", &ink.pressure_smoothing, 0.0f, 1.0f, "Pressure Smoothing %.2f",
+               "Evens out pressure's jitter, which is what makes a slow line's width wobble");
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Taper");
+  dropdown_bar("##taper_start", &ink.taper_start, 0.0f, 300.0f, "Start %.0f px", "How long the line takes to widen from a point");
+  dropdown_bar("##taper_end", &ink.taper_end, 0.0f, 300.0f, "End %.0f px", "How long the line takes to narrow to a point");
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Width From");
+  dropdown_bar("##speed_width", &ink.speed_width, 0.0f, 1.0f, "Speed %.2f", "A fast pen draws thinner: width without a tablet");
+  dropdown_bar("##tilt_width", &ink.tilt_width, 0.0f, 1.0f, "Tilt %.2f", "A leaning pen draws wider, as the side of a pencil");
+  ImGui::Spacing();
+  dropdown_bar("##prediction", &ts.draw_prediction, 0.0f, 30.0f, "Prediction %.0f ms",
+               "How far ahead of the pen the line is drawn, to keep up with the hand");
+}
+
+static void draw_header(Context &C)
+{
+  const Document &doc = *C.document;
+  WindowManager &wm = *C.wm;
+  ToolSettings &ts = wm.tool_settings;
+  const float h = ImGui::GetFrameHeight();
+  const bool bezier = ts.draw_mode == DrawMode::Pen;
+  const DrawPreset *preset = draw_preset_find(ts.draw_preset);
+  const bool changed = preset && !bezier && (!(preset->ink == ts.ink) || preset->line_width != ts.style.line_width);
+  const std::string name = bezier ? "Bezier Pen" : ts.draw_preset + (changed ? " *" : "");
+  if (ImGui::Button((name + "##draw_preset").c_str())) {
+    wm.draw_popup_request = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(changed ? "The pen, changed from its saved settings: click for the pens (Shift Space)"
+                              : "The pen: click for the pens (Shift Space)");
+  }
+  ImGui::SameLine();
+  color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
+  ImGui::SameLine();
+  width_field(doc, ts, !bezier);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How wide the line is (F)");
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(h * 4.6f);
+  ui_slider_float("##opacity", &ts.style.line.a, 0.0f, 1.0f, "Opacity %.2f");
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How solid the line is (Shift F)");
+  }
+  ImGui::SameLine();
+  color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
+  ImGui::SameLine();
+  tool_brush_button(C);
+  ImGui::SameLine();
+  if (bezier) {
+    if (header_toggle("Auto Fill", ts.draw_fill, "Fill curves closed on their first point")) {
+      ts.draw_fill = !ts.draw_fill;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Click to add points, drag to place  |  Click the first point to close  |  Ctrl: grid");
+    return;
+  }
+  if (header_dropdown("Stroke", "##draw_stroke", "Stabilizer, fidelity, closing and welding")) {
+    draw_stroke_dropdown(wm);
+    ImGui::EndPopup();
+  }
+  ImGui::SameLine(0, 2.0f);
+  if (header_dropdown("Advanced", "##draw_advanced", "Pressure, tapers, width from speed and tilt, prediction")) {
+    draw_advanced_dropdown(ts);
+    ImGui::EndPopup();
+  }
+  ImGui::SameLine(0, 2.0f);
+  if (header_dropdown("Cursor", "##draw_cursor", "What the mouse shows while drawing")) {
+    ImGui::Checkbox("Width Circle", &ts.draw_cursor_circle);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Show the line's width as a circle round the mouse");
+    }
+    ImGui::EndPopup();
+  }
+}
+
 static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
 {
   Document &doc = *C.document;
@@ -2858,31 +3107,21 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       break;
     case Tool::Draw:
     case Tool::Shape:
-      ImGui::TextUnformatted(ts.tool == Tool::Shape         ? primitive_name(ts.shape)
-                             : ts.draw_mode == DrawMode::Pen ? "Pen"
-                                                             : "Draw");
+      if (ts.tool == Tool::Draw) {
+        draw_header(C);
+        break;
+      }
+      ImGui::TextUnformatted(primitive_name(ts.shape));
       ImGui::SameLine();
       color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
       ImGui::SameLine();
-      width_field(doc, ts, ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand);
+      width_field(doc, ts, false);
       ImGui::SameLine();
       color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
       ImGui::SameLine();
-      {
-        /* The brush new strokes get: the Brush Settings window, on the tool. */
-        const float icon_h = ImGui::GetFrameHeight();
-        const ImVec2 icon_at = ImGui::GetCursorScreenPos();
-        if (ImGui::Button(("     " + brush_shown_name(doc, ts.style.brush) + "##tool_brush").c_str())) {
-          brush_window_open(BrushTarget::Tool);
-        }
-        brush_preset_icon(ImGui::GetWindowDrawList(), icon_at + ImVec2(2.0f, 0.0f), icon_at + ImVec2(icon_h, icon_h),
-                          ImGui::GetColorU32(ImGuiCol_Text));
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("The brush for new strokes: click for Brush Settings");
-        }
-      }
+      tool_brush_button(C);
       ImGui::SameLine();
-      if (ts.tool == Tool::Shape && ts.shape == PrimitiveKind::Grid) {
+      if (ts.shape == PrimitiveKind::Grid) {
         /* A grid's cells: its lines are outlines only. */
         const float w = ImGui::GetFrameHeight() * 3.4f;
         ImGui::SetNextItemWidth(w);
@@ -2901,24 +3140,12 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
         ImGui::SameLine();
         ImGui::TextDisabled("Drag to draw  |  Shift: square  |  Alt: from centre  |  Ctrl: snap");
       }
-      else if (ts.tool == Tool::Shape) {
+      else {
         if (header_toggle("Fill", ts.draw_fill, "Fill boxes and circles")) {
           ts.draw_fill = !ts.draw_fill;
         }
         ImGui::SameLine();
         ImGui::TextDisabled("Drag to draw  |  Shift: even  |  Alt: from centre  |  Ctrl: grid");
-      }
-      else if (ts.draw_mode == DrawMode::Pen) {
-        if (header_toggle("Auto Fill", ts.draw_fill, "Fill curves closed on their first point")) {
-          ts.draw_fill = !ts.draw_fill;
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("Click to add points, drag to place  |  Click the first point to close  |  Ctrl: grid");
-      }
-      else {
-        if (header_toggle("Auto Fill", ts.draw_fill, "Fill strokes that end where they started")) {
-          ts.draw_fill = !ts.draw_fill;
-        }
       }
       break;
     case Tool::Annotate:
@@ -4234,66 +4461,9 @@ static void draw_tool_preview(ImDrawList *dl, const ViewMapping &view, const Tra
     points.push_back({at.x, at.y});
     widths.push_back(std::max(p.radius * half, 0.0f));
   }
-  if (points.size() < 2) {
-    return;
+  if (points.size() >= 2) {
+    ink_line_draw(dl, points, widths, style.line);
   }
-  std::vector<Vertex> vertices;
-  tessellate_stroke(points, widths, false, style.line, 1.0f, vertices);
-  /* Triangles, a few at a time (a draw list's indices may be 16-bit). The tessellator's colours are
-   * premultiplied, ImGui's not. */
-  const ImVec2 uv = ImGui::GetDrawListSharedData()->TexUvWhitePixel;
-  static constexpr size_t CHUNK = 3 * 10000;
-  for (size_t from = 0; from < vertices.size(); from += CHUNK) {
-    const size_t count = std::min(CHUNK, vertices.size() - from);
-    dl->PrimReserve(int(count), int(count));
-    for (size_t i = 0; i < count; i++) {
-      const Vertex &v = vertices[from + i];
-      const uint32_t a = v.rgba >> 24;
-      const auto straight = [a](uint32_t c) { return a > 0 ? std::min<uint32_t>(c * 255 / a, 255) : 0; };
-      const ImU32 color = IM_COL32(straight(v.rgba & 0xff), straight(v.rgba >> 8 & 0xff),
-                                   straight(v.rgba >> 16 & 0xff), a);
-      dl->PrimWriteIdx(ImDrawIdx(dl->_VtxCurrentIdx));
-      dl->PrimWriteVtx(ImVec2(v.x, v.y), uv, color);
-    }
-  }
-}
-
-static void draw_tool_finish(Context &C, VectorDrawing &drawing, float pixel)
-{
-  ToolSettings &ts = C.wm->tool_settings;
-  InkStroke &ink = g_drag.ink;
-  if (ink.empty()) {
-    return;
-  }
-  ink.finish();
-  const std::vector<InkPoint> &stroke = ink.points();
-  const bool closes = ts.draw_fill && stroke.size() > 8 && distance(stroke.front().pos, stroke.back().pos) < pixel * 14.0f;
-  const std::vector<InkKnot> knots = ink_fit(stroke, ink.settings(), ink.view(), closes);
-  if (knots.size() < 2) {
-    return;
-  }
-  Curve curve;
-  deselect_all(drawing);
-  for (const InkKnot &knot : knots) {
-    const int p = drawing_add_point(drawing, knot.pos);
-    drawing.points[p].radius = knot.radius;
-    CurvePoint cp{p};
-    cp.curvature = knot.corner ? CURVATURE_PEAKED : CURVATURE_SMOOTH;
-    cp.aligned = !knot.corner;
-    curve_point_set_handles(cp, knot.handle_in, knot.handle_out);
-    curve.points.push_back(cp);
-  }
-  curve.closed = closes && curve.points.size() >= 3;
-  drawing.curves.push_back(curve);
-  Shape shape;
-  shape.style = ts.style;
-  shape.has_fill = curve.closed;
-  shape.name = "Stroke " + std::to_string(drawing.shapes.size() + 1);
-  for (int s = 0; s < drawing.curves.back().segment_count(); s++) {
-    shape.edges.push_back({int(drawing.curves.size()) - 1, s});
-  }
-  drawing.shapes.push_back(std::move(shape));
-  push_undo(C, "Draw");
 }
 
 static void pen_click(Context &C, Layer &layer, float2 mouse, float radius)
@@ -4957,6 +5127,87 @@ static void sculpt_header(Context &C)
   }
 }
 
+/* How far the mouse is along an F or Shift F drag. */
+static float adjust_reach(float &base_x, bool &slow, float &slow_x, float &slow_reach)
+{
+  const ImGuiIO &io = ImGui::GetIO();
+  const float now = slow ? slow_reach + 0.1f * (io.MousePos.x - slow_x) : io.MousePos.x - base_x;
+  if (!slow && (ImGui::IsKeyPressed(ImGuiKey_LeftShift, false) || ImGui::IsKeyPressed(ImGuiKey_RightShift, false))) {
+    slow = true;
+    slow_x = io.MousePos.x;
+    slow_reach = now;
+  }
+  else if (slow && !io.KeyShift) {
+    /* Leaving Precision Mode carries on from where it got to. */
+    slow = false;
+    base_x = io.MousePos.x - now;
+  }
+  return std::max(now, 0.0f);
+}
+
+/* F or Shift F with the Draw tool, as the Sculpt tool's: the line's width ('R'), the circle showing it, or its
+ * opacity ('S'). True while it has the mouse. */
+struct DrawAdjust {
+  char kind = 0;
+  int area = 0;
+  ImVec2 anchor;
+  float base_x = 0.0f;
+  bool slow = false;
+  float slow_x = 0.0f, slow_reach = 0.0f;
+  float was = 0.0f;
+};
+static DrawAdjust g_draw_adjust;
+/* Shift F: this many pixels from the anchor is fully solid. */
+static constexpr float DRAW_OPACITY_PX = 200.0f;
+
+static bool draw_adjust_input(Context &C, Area &area, float pixel, bool hovered, ImDrawList *dl)
+{
+  WindowManager &wm = *C.wm;
+  ToolSettings &ts = wm.tool_settings;
+  const ImGuiIO &io = ImGui::GetIO();
+  DrawAdjust &adjust = g_draw_adjust;
+  float &value = wm.draw_adjust_request == 'R' || adjust.kind == 'R' ? ts.style.line_width : ts.style.line.a;
+  if (wm.draw_adjust_request && hovered && !g_drag.active) {
+    adjust = {};
+    adjust.kind = wm.draw_adjust_request;
+    adjust.area = area.id;
+    adjust.was = value;
+    adjust.anchor = io.MousePos;
+    adjust.base_x = io.MousePos.x - (adjust.kind == 'R' ? value * 0.5f / pixel : value * DRAW_OPACITY_PX);
+  }
+  wm.draw_adjust_request = 0;
+  if (!adjust.kind || adjust.area != area.id) {
+    return false;
+  }
+  const float reach = adjust_reach(adjust.base_x, adjust.slow, adjust.slow_x, adjust.slow_reach);
+  char text[64];
+  if (adjust.kind == 'R') {
+    value = reach * 2.0f * pixel;
+    dl->AddCircle(adjust.anchor, reach, IM_COL32(0xff, 0xff, 0xff, 230), 64, 1.5f);
+    dl->AddCircle(adjust.anchor, reach + 1.5f, IM_COL32(0x00, 0x00, 0x00, 160), 64, 1.0f);
+    std::snprintf(text, sizeof(text), "Width %.1f px", double(value) * C.document->height * 0.5);
+  }
+  else {
+    value = std::clamp(reach / DRAW_OPACITY_PX, 0.0f, 1.0f);
+    dl->AddCircle(adjust.anchor, DRAW_OPACITY_PX, IM_COL32(0xff, 0xff, 0xff, 120), 64, 1.0f);
+    dl->AddCircleFilled(adjust.anchor, value * DRAW_OPACITY_PX, IM_COL32(0x47, 0x72, 0xb3, 90), 64);
+    std::snprintf(text, sizeof(text), "Opacity %.2f", double(value));
+  }
+  /* On a plate: the drawing under it can be any colour. */
+  const ImVec2 text_size = ImGui::CalcTextSize(text), text_at = adjust.anchor - text_size * 0.5f;
+  dl->AddRectFilled(text_at - ImVec2(6, 3), text_at + text_size + ImVec2(6, 3), IM_COL32(0x18, 0x18, 0x18, 220), 4.0f);
+  dl->AddText(text_at, IM_COL32(0xff, 0xff, 0xff, 255), text);
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+    adjust.kind = 0;
+  }
+  else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    value = adjust.was;
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    adjust.kind = 0;
+  }
+  return true;
+}
+
 /* Surface Smooth's ghost: the fit its next stroke would move the line toward. Worked out again only when the
  * drawing is edited (a stroke, another edit, undo or redo: the undo history moves), or the frame, the layers or
  * the tolerance change, and then (the tolerance the same) only for the curves that changed; never for moving the
@@ -5067,19 +5318,7 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   }
   wm.sculpt_adjust_request = 0;
   if (g_sculpt.adjust && g_sculpt.adjust_area == area.id) {
-    const float now = g_sculpt.slow ? g_sculpt.slow_reach + 0.1f * (io.MousePos.x - g_sculpt.slow_x)
-                                    : io.MousePos.x - g_sculpt.base_x;
-    if (!g_sculpt.slow && (ImGui::IsKeyPressed(ImGuiKey_LeftShift, false) || ImGui::IsKeyPressed(ImGuiKey_RightShift, false))) {
-      g_sculpt.slow = true;
-      g_sculpt.slow_x = io.MousePos.x;
-      g_sculpt.slow_reach = now;
-    }
-    else if (g_sculpt.slow && !io.KeyShift) {
-      /* Leaving Precision Mode carries on from where it got to. */
-      g_sculpt.slow = false;
-      g_sculpt.base_x = io.MousePos.x - now;
-    }
-    const float reach = std::max(now, 0.0f);
+    const float reach = adjust_reach(g_sculpt.base_x, g_sculpt.slow, g_sculpt.slow_x, g_sculpt.slow_reach);
     char text[64];
     if (g_sculpt.adjust == 'R') {
       ts.sculpt_radius = std::clamp(reach, 2.0f, 1000.0f);
@@ -11560,8 +11799,8 @@ static void viewport_draw_contents(Area &area, Context &C)
   ToolSettings &ts = wm.tool_settings;
   ImGuiIO &io = ImGui::GetIO();
   const ImVec2 origin = ImGui::GetCursorScreenPos();
-  /* The Sculpt tool's brush shelf takes a strip along the bottom: the view is what's above it. */
-  const float shelf_h = sculpt_shelf_height(C, area);
+  /* The Sculpt and Draw tools' shelves take a strip along the bottom: the view is what's above it. */
+  const float shelf_h = ts.tool == Tool::Draw ? draw_shelf_height(C, area) : sculpt_shelf_height(C, area);
   const ImVec2 size = ImGui::GetContentRegionAvail() - ImVec2(0.0f, shelf_h);
   if (size.x < 8.0f || size.y < 8.0f) {
     return;
@@ -12182,6 +12421,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (ts.tool == Tool::Sculpt && points_editable && !g_modal.active) {
     sculpt_input(C, area, view, hovered, dl);
   }
+  else if (ts.tool == Tool::Draw && points_editable && !g_modal.active && draw_adjust_input(C, area, pixel, hovered, dl)) {
+    /* F or Shift F: the line's width or opacity, until a click. */
+  }
   else if (armature_active && !g_modal.active) {
     bone_tool_input(C, area, *armature_active, view, hovered, dl);
   }
@@ -12214,10 +12456,21 @@ static void viewport_draw_contents(Area &area, Context &C)
     if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       ts.cursor = view.to_document(io.MousePos);
     }
+    if (ts.tool == Tool::Draw && ts.draw_mode == DrawMode::Freehand && ts.draw_cursor_circle && !g_drag.active) {
+      /* The line's width round the mouse, in black and white to show on any drawing. */
+      const float half = ts.style.line_width * 0.5f / pixel;
+      if (half >= 1.5f) {
+        dl->AddCircle(io.MousePos, half, IM_COL32(0x00, 0x00, 0x00, 170), 0, 1.0f);
+        dl->AddCircle(io.MousePos, half + 1.0f, IM_COL32(0xff, 0xff, 0xff, 170), 0, 1.0f);
+      }
+    }
     /* New artwork is drawn on the setup frame, so it exists on every frame (as bones are added
      * there); other frames animate what is drawn. */
     const bool draws = ts.tool == Tool::Draw || ts.tool == Tool::Shape;
-    if (draws && doc.frame_current != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (draws && io.MousePos.y < origin.y + ImGui::GetFrameHeight() + 8.0f) {
+      /* A click between the header's buttons reaches the view, but isn't on the drawing. */
+    }
+    else if (draws && doc.frame_current != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       report_banner(ReportType::Warning, "Switch to Setup (frame 0) to draw");
     }
     else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -12236,9 +12489,7 @@ static void viewport_draw_contents(Area &area, Context &C)
             report_banner(ReportType::Info, "The pen's eraser end doesn't draw");
           }
           else {
-            InkSettings ink = ts.ink;
-            ink.use_pressure = ts.use_pressure;
-            g_drag.ink.begin(ink, {pixel, ts.style.line_width * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
+            g_drag.ink.begin(ts.ink, {pixel, ts.style.line_width * 0.5f, 2.0f / std::max(float(doc.height), 1.0f)});
             if ((g_drag.pen_stroke = pen_touch_pressed())) {
               draw_take_pen(view, to_layer);
             }
@@ -12382,7 +12633,9 @@ static void viewport_draw_contents(Area &area, Context &C)
           }
           else {
             draw_take_pen(view, to_layer);
-            draw_tool_finish(C, *drawing, pixel);
+            if (draw_stroke_commit(C, *drawing, g_drag.ink)) {
+              push_undo(C, "Draw");
+            }
           }
           break;
         case Tool::Shape: {
@@ -12837,8 +13090,14 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
 
   if (shelf_h > 0.0f) {
-    sculpt_shelf_draw(C, area, origin + ImVec2(0.0f, size.y), ImVec2(size.x, shelf_h));
+    (ts.tool == Tool::Draw ? draw_shelf_draw : sculpt_shelf_draw)(C, area, origin + ImVec2(0.0f, size.y),
+                                                                  ImVec2(size.x, shelf_h));
   }
+  if (wm.draw_popup_request) {
+    wm.draw_popup_request = false;
+    ImGui::OpenPopup("##draw_presets");
+  }
+  draw_presets_popup(C);
   /* GPU overlays of layers no longer edited go after a while. */
   overlay_collect();
   /* Claim the whole region so the window doesn't scroll. */

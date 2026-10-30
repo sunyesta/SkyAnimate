@@ -88,14 +88,20 @@ def pen(samples=False):
 
 
 def draw_settings():
-    """The Draw tool's settings: a dict with mode (FREEHAND or PEN), use_pressure, fill, line_width (document
-    units), prediction (how far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off),
+    """The Draw tool's settings: a dict with mode (FREEHAND or PEN), preset (the pen's name), use_pressure, fill,
+    weld (a stroke's ends join points they finish on), cursor_circle, line_width (document units), prediction (how far ahead of a pen's last sample the line is drawn while drawing, ms; 0 off),
     stabilizer (OFF, SMART or PULLED_STRING), smoothing (Smart's amount, 0-1), string_length (screen pixels),
     catch_up, fidelity (how closely the Bezier points follow the line, 0-1), pressure_smoothing (0-1),
     pressure_curve (the two handles
     of pressure's Bezier from (0, 0) to (1, 1), as (x1, y1, x2, y2)), min_size (fraction of the width),
     speed_width and tilt_width (0-1), taper_start and taper_end (document pixels)."""
     return dict(_oanim.draw_settings())
+
+
+def draw_presets():
+    """The pens on the Draw tool's shelf: dicts with name, mode, line_width, category (Pens or Mine), builtin and the
+    line's settings as in draw_settings. Pick one with oanim.ops.draw.preset_load(name=...)."""
+    return list(_oanim.draw_presets())
 
 
 def set_draw(**values):

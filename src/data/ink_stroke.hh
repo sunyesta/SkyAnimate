@@ -22,6 +22,9 @@
 
 namespace oanim {
 
+/* What the Draw tool draws: freehand strokes, or with the Bezier Pen, clicking to add points along a curve. */
+enum class DrawMode { Freehand, Pen };
+
 /* Off: the samples as they are. Smart: see above. Pulled String: the line stays put until the pen is
  * further than the string's length away, then is pulled along behind it (exact corners, a learned feel). */
 enum class InkStabilizer { Off, Smart, PulledString };
@@ -52,6 +55,7 @@ struct InkSettings {
   /* Over how long the line narrows to a point from each end, in document pixels (as the width field). */
   float taper_start = 0.0f;
   float taper_end = 0.0f;
+  bool operator==(const InkSettings &) const = default;
 };
 
 struct InkSample {

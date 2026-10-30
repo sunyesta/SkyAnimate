@@ -138,6 +138,7 @@ int App::run(const LaunchOptions &options)
   driver_operators_register();
   rig_operators_register();
   sculpt_operators_register();
+  draw_operators_register();
   file_operators_register();
   media_operators_register();
   text_operators_register();

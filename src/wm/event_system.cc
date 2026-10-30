@@ -49,6 +49,10 @@ bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only)
   if (C.area_type == "Viewport" && C.wm->tool_settings.tool == Tool::Sculpt && try_keymap(C, "Sculpt", event)) {
     return true;
   }
+  /* And the Draw tool's (F and Shift F, Shift Space). */
+  if (C.area_type == "Viewport" && C.wm->tool_settings.tool == Tool::Draw && try_keymap(C, "Draw", event)) {
+    return true;
+  }
   if (C.area_type != "Window" && try_keymap(C, C.area_type, event)) {
     return true;
   }

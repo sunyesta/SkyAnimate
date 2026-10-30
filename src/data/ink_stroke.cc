@@ -655,7 +655,8 @@ std::vector<InkKnot> ink_fit(std::vector<InkPoint> points, const InkSettings &se
     const int sample = i < segments.size() ? segments[i].first : segments.back().last;
     knot.pos = kept[sample].pos;
     knot.radius = kept[sample].radius;
-    knot.corner = std::find(ends.begin(), ends.end(), sample) != ends.end();
+    /* The line's own ends aren't corners: E carries on from them smoothly. */
+    knot.corner = i > 0 && i < segments.size() && std::find(ends.begin(), ends.end(), sample) != ends.end();
     if (i > 0) {
       knot.handle_in = (segments[i - 1].ctrl[2] - segments[i - 1].ctrl[3]) * view.pixel;
     }

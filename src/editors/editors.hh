@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "anim/sculpt.hh"
+#include "editors/tool_shelf.hh"
 
 struct ImDrawList;
 struct ImVec2;
@@ -80,14 +81,10 @@ struct Area {
    * dragging, instead of the tree. */
   bool layers_draw_order_view = false;
 
-  /* Viewport: the Sculpt tool's brush shelf along the bottom (Blender's asset shelf): open or folded
-   * to its tabs, its height when open (0: one row of tiles), the tab (0 All, 1 Move, 2 Shape, 3 Mine),
-   * the search text and the tiles' size in pixels (0: the default). */
-  bool sculpt_shelf_open = true;
-  float sculpt_shelf_height = 0.0f;
-  int sculpt_shelf_tab = 0;
-  std::string sculpt_shelf_search;
-  float sculpt_shelf_tile = 0.0f;
+  /* Viewport: the Sculpt and Draw tools' shelves along the bottom (Blender's asset shelf). Sculpt's tabs are 0 All,
+   * 1 Move, 2 Shape, 3 Mine. */
+  ShelfState sculpt_shelf;
+  ShelfState draw_shelf;
 
   /* Asset Shelf (asset_shelf.cc): the tab (0 Context, 1 All Switches), pinned and its rows (switch ids),
    * the rows that fitted last (kept while nothing fits), the search, the tiles' size and whether hovering
@@ -135,6 +132,12 @@ void viewport_draw(Area &area, Context &C);
  * Sculpt is the tool), drawn into the strip below the view. */
 float sculpt_shelf_height(const Context &C, const Area &area);
 void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
+/* The Draw tool's shelf (draw_shelf.cc): the same for Draw, and its pens in a popup ("##draw_presets", opened by the
+ * caller); a line of varying width drawn with the stroke tessellator into an ImGui draw list. */
+float draw_shelf_height(const Context &C, const Area &area);
+void draw_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
+void draw_presets_popup(Context &C);
+void ink_line_draw(ImDrawList *dl, const std::vector<float2> &points, const std::vector<float> &half_widths, Color color);
 /* A sculpt brush's picture: a line before and after it (the shelf's tiles, the tool bar). */
 void sculpt_brush_icon(ImDrawList *dl, SculptBrush brush, ImVec2 center, float size, unsigned int col,
                        unsigned int before);

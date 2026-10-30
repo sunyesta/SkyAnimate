@@ -35,6 +35,7 @@ set(OANIM_SOURCES
   src/assets/asset_library.cc
   src/assets/brushes.cc
   src/assets/brush_presets.cc
+  src/assets/draw_presets.cc
   src/assets/sculpt_presets.cc
   src/core/crash.cc
   src/core/log.cc
@@ -65,7 +66,9 @@ set(OANIM_SOURCES
   src/editors/editors.cc
   src/editors/number_field.cc
   src/editors/screen_eyedropper.cc
+  src/editors/draw_shelf.cc
   src/editors/sculpt_shelf.cc
+  src/editors/tool_shelf.cc
   src/wm/clipboard_image.cc
   src/editors/layers_editor.cc
   src/editors/asset_shelf.cc
@@ -102,6 +105,7 @@ set(OANIM_SOURCES
   src/ops/layer_clipboard.cc
   src/ops/operator.cc
   src/ops/rig_ops.cc
+  src/ops/draw_ops.cc
   src/ops/sculpt_ops.cc
   src/ops/undo.cc
   src/ops/vector_ops.cc
@@ -417,6 +421,8 @@ add_test(NAME pen_input
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_pen_input.py)
 add_test(NAME ink_stroke
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_ink_stroke.py)
+add_test(NAME draw_presets
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_draw_presets.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

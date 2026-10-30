@@ -1352,7 +1352,7 @@ void vector_operators_register()
     OperatorType ot;
     ot.idname = "wm.tool_draw";
     ot.name = "Draw Tool";
-    ot.description = "Switch to the Draw tool: freehand strokes, or the pen (mode=\"PEN\")";
+    ot.description = "Switch to the Draw tool: freehand strokes, or the Bezier Pen (mode=\"PEN\")";
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       /* A setup-only tool: away from frame 0 it says what makes it work. */
@@ -1465,8 +1465,8 @@ void vector_operators_register()
     /* Kept for scripts: the pen is now a mode of the Draw tool. */
     OperatorType ot;
     ot.idname = "wm.tool_pen";
-    ot.name = "Pen Tool";
-    ot.description = "Switch to the Draw tool's pen: click to add points along a curve";
+    ot.name = "Bezier Pen Tool";
+    ot.description = "Switch to the Draw tool's Bezier Pen: click to add points along a curve";
     ot.exec = [](Context &C) {
       C.wm->tool_settings.tool = Tool::Draw;
       C.wm->tool_settings.draw_mode = DrawMode::Pen;
