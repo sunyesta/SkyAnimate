@@ -677,6 +677,9 @@ bool document_remove_layer(Document &doc, uint64_t id)
   if (!container) {
     return false;
   }
+  /* A linked switches' lead inside it hands the group's keys on first. */
+  switch_links_before_remove(doc, id);
+  container = layer_container(doc, id, &index);
   const Layer removed = (*container)[index];
   Layer *parent = layer_parent(doc, id);
   const uint64_t parent_id = parent ? parent->id : 0;

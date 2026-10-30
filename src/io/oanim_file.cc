@@ -556,6 +556,7 @@ static json layer_to_json(const Layer &layer)
       {"edit_with_bones", layer.edit_with_bones},
       {"edit_descendants", layer.edit_descendants},
       {"sub_bone_group", layer.sub_bone_group},
+      {"link_same_named", layer.link_same_named},
       {"expanded", layer.expanded},
       {"selected", layer.selected},
       {"label_color", enum_identifier("label_color", int(layer.label_color))},
@@ -885,9 +886,18 @@ static json layer_to_json(const Layer &layer)
     j["draw_order"] = std::llround(layer.draw_order);
   }
   put_keys(j, "draw_order_keys", layer.draw_order_keys);
+  if (!layer.switch_aliases.empty()) {
+    j["aliases"] = layer.switch_aliases;
+  }
   if (layer.is_switch()) {
     /* The child as a layer id (Rig is -1), as Draw Order names its target. */
     j["switch"] = std::llround(layer.switch_value);
+    if (layer.switch_link) {
+      j["switch_link"] = layer.switch_link;
+    }
+    if (layer.switch_link_off) {
+      j["switch_link_off"] = true;
+    }
     put_keys(j, "switch_keys", layer.switch_keys);
   }
   if (layer.is_reference()) {
@@ -1034,6 +1044,18 @@ std::string oanim_document_to_json(const Document &doc)
            {"materials", materials_to_json(doc)},
            {"brush_presets", brush_presets_to_json(doc)},
            {"drivers", drivers_to_json(doc)},
+           {"switch_links", [&] {
+              json links = json::array();
+              for (const SwitchLink &l : doc.switch_links) {
+                json names = json::array();
+                for (const SwitchLinkName &n : l.names) {
+                  names.push_back({n.id, n.name});
+                }
+                links.push_back({{"id", l.id}, {"lead", l.lead}, {"names", names}, {"next_name", l.next_name}});
+              }
+              return links;
+            }()},
+           {"next_switch_link", doc.next_switch_link},
            {"annotations", annotations_to_json(doc)},
            {"active_annotation", doc.active_annotation},
            {"guides", guides_to_json(doc)},
@@ -2145,6 +2167,12 @@ static Layer layer_from_json(const json &j, int depth)
   layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
   layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
   layer.sub_bone_group = get_bool(j, "sub_bone_group", true);
+  layer.link_same_named = get_bool(j, "link_same_named", true);
+  for (const json &a : get_array(j, "aliases")) {
+    if (a.is_string()) {
+      layer.switch_aliases.push_back(a.get<std::string>());
+    }
+  }
   layer.expanded = get_bool(j, "expanded", true);
   layer.selected = get_bool(j, "selected", false);
   layer.label_color = get_enum(j, "label_color", LabelColor::None);
@@ -2595,6 +2623,10 @@ static Layer layer_from_json(const json &j, int depth)
   get_keys(j, "draw_order_keys", layer.draw_order_keys);
   if (layer.type == LayerType::Switch) {
     layer.switch_value = float(get_int(j, "switch", 0));
+    if (const auto it = j.find("switch_link"); it != j.end() && it->is_number_unsigned()) {
+      layer.switch_link = it->get<uint64_t>();
+    }
+    layer.switch_link_off = get_bool(j, "switch_link_off", false);
     get_keys(j, "switch_keys", layer.switch_keys);
   }
   const auto read_step = [](const json &sj, MaskStep &m) {
@@ -3256,6 +3288,27 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     if (t.is_object()) {
       doc.texts.push_back({get_string(t, "name", "Text"), get_string(t, "body"), get_string(t, "filepath")});
     }
+  }
+  for (const json &lj : get_array(j, "switch_links")) {
+    if (!lj.is_object()) {
+      continue;
+    }
+    SwitchLink l;
+    l.id = lj.value("id", uint64_t(0));
+    l.lead = lj.value("lead", uint64_t(0));
+    l.next_name = lj.value("next_name", uint64_t(1));
+    for (const json &nj : get_array(lj, "names")) {
+      if (nj.is_array() && nj.size() == 2 && nj[0].is_number_unsigned() && nj[1].is_string()) {
+        l.names.push_back({nj[0].get<uint64_t>(), nj[1].get<std::string>()});
+      }
+    }
+    if (l.id) {
+      doc.switch_links.push_back(std::move(l));
+    }
+  }
+  doc.next_switch_link = std::max<uint64_t>(j.value("next_switch_link", uint64_t(1)), 1);
+  for (const SwitchLink &l : doc.switch_links) {
+    doc.next_switch_link = std::max(doc.next_switch_link, l.id + 1);
   }
   for (const json &dj : get_array(j, "drivers")) {
     if (!dj.is_object()) {

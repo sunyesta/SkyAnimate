@@ -875,6 +875,18 @@ struct Layer {
   /* Runtime, worked out every frame (switches_resolve): the child a switch shows (0: none), what its
    * smart actions pick (switch_rig, when switch_rig_set), and for every layer whether a switch above
    * it shows another child, which hides it without touching its own visibility. */
+  /* Switch layers linked by name (Document::switch_links): the group, 0 for none; `switch_link_off`:
+   * unlinked by hand, so same-named switches don't link it again. `link_same_named`: on a switch, the
+   * same-named switches at the same place inside its different children link (a Mouth in each view of
+   * Heads). A switch's child: the other names it answers to (an alias: the profile "Oh" for O). */
+  uint64_t switch_link = 0;
+  bool switch_link_off = false;
+  bool link_same_named = true;
+  std::vector<std::string> switch_aliases;
+  /* Runtime: a child's name when links last looked (a rename shows as a change); a linked switch's name
+   * the keys want that it has no child for, now (it keeps its last match). */
+  std::string link_name_seen;
+  std::string switch_missing;
   uint64_t switch_shown = 0;
   float switch_rig = 0.0f;
   bool switch_rig_set = false;

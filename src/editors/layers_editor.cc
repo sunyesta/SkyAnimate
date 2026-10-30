@@ -309,6 +309,15 @@ static void layer_context_menu(Context &C, Layer &layer)
   ImGui::Separator();
   menu_op(C, "Group With Selection", "layer.group");
   menu_op(C, "Wrap in Switch", "layer.wrap_in_switch");
+  {
+    int switches = 0;
+    for (const Layer *l : document_layers_flat(doc)) {
+      switches += l->is_switch() && (l->selected || l->id == doc.active_layer) && !l->switch_link ? 1 : 0;
+    }
+    if (switches >= 2) {
+      menu_op(C, "Link Switches", "layer.switch_link");
+    }
+  }
   if (layer.has_drawing() && layer_armature(doc, layer.id)) {
     menu_op(C, "Select Bones This Drawing Uses", "armature.select_used_bones");
   }
@@ -752,6 +761,49 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
       if (after + ImGui::CalcTextSize(pick.c_str()).x < limit) {
         dl->AddText(ImVec2(after, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(0x90, 0x90, 0x90, 255), pick.c_str());
         after += ImGui::CalcTextSize(pick.c_str()).x + 8.0f;
+      }
+      if (const SwitchLink *link = switch_link_of(doc, layer); link && after + h < limit) {
+        /* Linked by name: a chain (teal); a click selects its partners. A warning beside it when its keys
+         * pick names it has no drawing for. */
+        const ImVec2 c(after + h * 0.4f, cy);
+        const ImU32 teal = IM_COL32(0x4f, 0xc8, 0xc8, 255);
+        dl->AddCircle(c - ImVec2(icon * 0.45f, 0), icon * 0.55f, teal, 0, 1.6f);
+        dl->AddCircle(c + ImVec2(icon * 0.45f, 0), icon * 0.55f, teal, 0, 1.6f);
+        ImGui::SetCursorScreenPos(ImVec2(after, row_min.y));
+        const uint64_t link_id = link->id;
+        if (ImGui::InvisibleButton("##link", ImVec2(h * 0.8f, h))) {
+          for (Layer *m : switch_link_members(doc, link_id)) {
+            m->selected = m->id != doc.active_layer;
+          }
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          std::string with;
+          for (const Layer *m : switch_link_members(doc, link_id)) {
+            const Layer *p = layer_parent(doc, m->id);
+            with += "\n    " + (p ? p->name + " > " : std::string()) + m->name;
+          }
+          ImGui::SetTooltip("Linked by name with:%s\nPicking a drawing in one picks the same-named drawing in all.\n"
+                            "Click to select them; the Switch menu has the Link Report and Unlink",
+                            with.c_str());
+        }
+        after += h * 0.8f;
+        const std::vector<std::string> lacks = switch_link_lacks(doc, layer);
+        if (!lacks.empty() && after + h < limit) {
+          const ImVec2 w(after + h * 0.35f, cy);
+          const float r = icon * 0.75f;
+          dl->AddTriangleFilled(w + ImVec2(0, -r), w + ImVec2(r, r * 0.8f), w + ImVec2(-r, r * 0.8f), IM_COL32(0xff, 0x9a, 0x3c, 255));
+          ImGui::SetCursorScreenPos(ImVec2(after, row_min.y));
+          ImGui::InvisibleButton("##lacks", ImVec2(h * 0.7f, h));
+          if (ImGui::IsItemHovered()) {
+            std::string names;
+            for (const std::string &n : lacks) {
+              names += (names.empty() ? "" : ", ") + n;
+            }
+            ImGui::SetTooltip("Its keys pick %s, which it has no drawing for: it keeps showing the last one it had.\n"
+                              "Give a drawing that name as an alias (asset shelf: Aliases), or add one", names.c_str());
+          }
+          after += h * 0.7f;
+        }
       }
     }
     mask_symbol(C, layer, after, row_min.y, h, limit);

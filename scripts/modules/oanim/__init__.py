@@ -284,6 +284,29 @@ class _Layer:
         return list(_oanim.layer_bone_family(self._id))
 
     @property
+    def switch_linked(self):
+        """A switch linked by name: the names of the switches in its link (the one holding the keys first),
+        or [] when it isn't linked."""
+        return list(_oanim.layer_switch_link(self._id)[0])
+
+    @property
+    def switch_link_names(self):
+        """A linked switch's group: the drawing names its keys can pick."""
+        return list(_oanim.layer_switch_link(self._id)[1])
+
+    @property
+    def switch_missing(self):
+        """A linked switch: the name the keys pick now that it has no drawing for ("" when it has it); it
+        keeps showing the last name it had."""
+        return _oanim.layer_switch_link(self._id)[2]
+
+    @property
+    def switch_aliases(self):
+        """The other names this drawing answers to in a linked switch (set with
+        oanim.ops.layer.switch_aliases_set)."""
+        return list(_oanim.layer_aliases(self._id))
+
+    @property
     def switch_default(self):
         """A switch layer: the name of the child it shows on frame 0 and wherever nothing else picks, or None."""
         return _oanim.layer_switch(self._id)[1]

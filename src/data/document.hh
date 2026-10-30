@@ -37,6 +37,23 @@ enum class AutoKeyMode { AddReplace, Replace };
 /* Onion skins step back and forward by keys (of the layers being edited) or by frames. */
 enum class OnionMode { Keyframes, Frames };
 
+/* Switches linked by name (anim/switch.hh): one set of keys for the group, on its lead member's Switch
+ * channel, holding entries of `names` (their ids; 0 none, -1 Rig) rather than layer ids; each member
+ * shows its child answering to the entry's name (its name, or one of its aliases). */
+struct SwitchLinkName {
+  uint64_t id = 0;
+  std::string name;
+  bool operator==(const SwitchLinkName &) const = default;
+};
+struct SwitchLink {
+  uint64_t id = 0;
+  /* The member whose Switch channel holds the group's keys. */
+  uint64_t lead = 0;
+  std::vector<SwitchLinkName> names;
+  uint64_t next_name = 1;
+  bool operator==(const SwitchLink &) const = default;
+};
+
 struct Document {
   /* The viewports' overlays (kept as they are through undo, as Blender's are). */
   ViewportOverlays overlays;
@@ -140,6 +157,10 @@ struct Document {
   std::vector<BrushPreset> brush_presets;
   /* Values worked out from other values every frame (data/driver.hh, anim/drivers.hh). */
   std::vector<Driver> drivers;
+  /* Switches linked by name (anim/switch.hh): a Mouth in each view of a Heads switch showing the same
+   * mouth. */
+  std::vector<SwitchLink> switch_links;
+  uint64_t next_switch_link = 1;
   /* Shared looks for shapes (data/material.hh), in the order they were made. */
   std::vector<Material> materials;
   uint64_t next_material_id = 1;

@@ -313,6 +313,11 @@ def clipboard_set_image(rgba, width, height):
     _oanim.clipboard_set_image(bytes(rgba), int(width), int(height))
 
 
+def switch_link_report(switch):
+    """Open the Link Report for a linked switch (its group's names by switch). False when it isn't linked."""
+    return _oanim.switch_link_report(switch.id if hasattr(switch, "id") else int(switch))
+
+
 def switch_preview(switch=None, child=None):
     """Preview a switch's child in the viewport, as hovering a tile on the asset shelf does: shown in
     place of the pick, nothing keyed, no undo step; renders keep the pick. Without arguments it ends."""

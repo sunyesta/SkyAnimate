@@ -787,6 +787,117 @@ void layer_operators_register()
                    return OpStatus::Finished;
                  });
 
+  layer_operator("layer.switch_link", "Link Switches",
+                 "Link the picked switches (or layers=, names or ids separated by commas) by name: picking a drawing in "
+                 "one picks the same-named drawing in all. The active one's keys are kept; the others' go",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   std::vector<Layer *> members;
+                   if (op_has_arg(C, "layers")) {
+                     std::string list = op_arg(C, "layers");
+                     size_t at = 0;
+                     while (at <= list.size()) {
+                       const size_t comma = std::min(list.find(',', at), list.size());
+                       std::string part = list.substr(at, comma - at);
+                       part.erase(0, part.find_first_not_of(' '));
+                       part.erase(part.find_last_not_of(' ') + 1);
+                       if (Layer *l = part.empty() ? nullptr : layer_by_name_or_id(doc, part); l && l->is_switch()) {
+                         members.push_back(l);
+                       }
+                       at = comma + 1;
+                     }
+                   }
+                   else {
+                     for (const Layer *l : document_layers_flat(doc)) {
+                       if (l->is_switch() && (l->selected || l->id == doc.active_layer)) {
+                         members.push_back(layer_find(doc, l->id));
+                       }
+                     }
+                   }
+                   std::erase_if(members, [](const Layer *l) { return l->switch_link != 0; });
+                   if (members.size() < 2) {
+                     report(ReportType::Warning, "Pick two or more switches that aren't linked yet");
+                     return OpStatus::Cancelled;
+                   }
+                   animation_record(doc);
+                   Layer *keep = nullptr;
+                   for (Layer *m : members) {
+                     keep = m->id == doc.active_layer ? m : keep;
+                   }
+                   int dropped = 0;
+                   switch_link_create(doc, members, keep, &dropped);
+                   switches_resolve(doc, doc.frame_current);
+                   report(ReportType::Info, "Linked " + std::to_string(members.size()) + " switches by name" +
+                                                (dropped > 0 ? " (" + std::to_string(dropped) + " keys of the others went)" : ""));
+                   C.undo_name = "Link Switches";
+                   return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.switch_unlink", "Unlink Switch",
+                 "Take a switch (layer=, else the one holding the active layer) out of its link by name: its own keys "
+                 "then show what it showed, and same-named switches don't link it again",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   const Layer *named = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : nullptr;
+                   Layer *sw = switch_of(doc, named ? named->id : doc.active_layer);
+                   while (sw && !sw->switch_link) {
+                     Layer *p = layer_parent(doc, sw->id);
+                     sw = p ? switch_of(doc, p->id) : nullptr;
+                   }
+                   animation_record(doc);
+                   if (!sw || !switch_unlink(doc, *sw)) {
+                     report(ReportType::Warning, "Not a linked switch, nor inside one");
+                     return OpStatus::Cancelled;
+                   }
+                   C.undo_name = "Unlink " + sw->name;
+                   return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.switch_aliases_set", "Set Aliases",
+                 "The other names a drawing (layer=, else the active layer) answers to in a linked switch, separated "
+                 "by commas (aliases=): the profile \"Oh\" also answering to O",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   Layer *l = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : document_active_layer(doc);
+                   if (!l) {
+                     return OpStatus::Cancelled;
+                   }
+                   l->switch_aliases.clear();
+                   const std::string list = op_arg(C, "aliases");
+                   size_t at = 0;
+                   while (at <= list.size()) {
+                     const size_t comma = std::min(list.find(',', at), list.size());
+                     std::string part = list.substr(at, comma - at);
+                     part.erase(0, part.find_first_not_of(' '));
+                     part.erase(part.find_last_not_of(' ') + 1);
+                     if (!part.empty() && part != l->name) {
+                       l->switch_aliases.push_back(part);
+                     }
+                     at = comma + 1;
+                   }
+                   switches_resolve(doc, doc.frame_current);
+                   C.undo_name = l->name + ": Aliases";
+                   return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.rename_here", "Rename Here Only",
+                 "Rename a drawing of a linked switch (layer=, name=) without renaming its partners in the linked "
+                 "switches: it no longer answers to its old name there",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   Layer *l = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer")) : document_active_layer(doc);
+                   const std::string name = op_arg(C, "name");
+                   if (!l || name.empty()) {
+                     return OpStatus::Cancelled;
+                   }
+                   animation_record(doc);
+                   l->name = name;
+                   switch_rename_here_next();
+                   switch_links_update(doc);
+                   C.undo_name = "Rename Layer";
+                   return OpStatus::Finished;
+                 });
+
   layer_operator("layer.switch_replace_keys", "Replace Keys With",
                  "Point every key of a switch (layer=, else the one holding the active layer) that shows child "
                  "from= (a name, or the id a missing child had) at child= instead (a name, empty for none)",
@@ -800,7 +911,17 @@ void layer_operators_register()
                    }
                    float from = 0.0f, to = 0.0f;
                    const std::string from_text = op_arg(C, "from");
-                   if (!switch_value_from_name(*sw, from_text, &from)) {
+                   bool by_entry = false;
+                   if (const SwitchLink *link = switch_link_of(doc, *sw); link && !switch_value_from_name(*sw, from_text, &from)) {
+                     /* Linked: a name of its group it has no drawing for (keys showing "Special"). */
+                     for (const SwitchLinkName &n : link->names) {
+                       if (n.name == from_text) {
+                         from = float(n.id);
+                         by_entry = true;
+                       }
+                     }
+                   }
+                   if (!by_entry && !switch_value_from_name(*sw, from_text, &from)) {
                      char *stop = nullptr;
                      const unsigned long long id = std::strtoull(from_text.c_str(), &stop, 10);
                      if (from_text.empty() || *stop != '\0') {
@@ -814,8 +935,8 @@ void layer_operators_register()
                      return OpStatus::Cancelled;
                    }
                    animation_record(doc);
-                   const std::string from_label = switch_value_label(*sw, from);
-                   const int count = switch_replace_keys(doc, *sw, from, to);
+                   const std::string from_label = by_entry ? from_text : switch_value_label(*sw, from);
+                   const int count = switch_replace_keys(doc, *sw, from, to, by_entry);
                    if (count == 0) {
                      report(ReportType::Info, "No keys of \"" + sw->name + "\" show " + from_label);
                      return OpStatus::Cancelled;

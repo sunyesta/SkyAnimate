@@ -1456,7 +1456,7 @@ static std::string keyed_value(Layer &layer, const std::string &path, int frame)
         return g_timeline_doc ? draw_order_label(*g_timeline_doc, k->value) : std::string();
       }
       else if (path == "switch") {
-        return switch_value_label(layer, k->value);
+        return g_timeline_doc ? switch_key_label(*g_timeline_doc, layer, k->value) : switch_value_label(layer, k->value);
       }
       else {
         std::snprintf(text, sizeof(text), turn ? "%.1f\xC2\xB0" : "%.3f", turn ? k->value * 180.0f / PI : k->value);
@@ -2702,7 +2702,19 @@ static void timeline_body(Area &area, Context &C)
       const Layer &sw = *rows[r].layers[0];
       const std::vector<Key<float>> &keys = sw.switch_keys.keys;
       const bool rigged = switch_keyed_by_actions(sw);
-      const std::string fallback = switch_value_label(sw, switch_default(sw));
+      /* A linked group's keys (on its lead) read as names, for the member being worked in: one lacking a
+       * name says what it keeps showing. */
+      const SwitchLink *link = switch_link_of(doc, sw);
+      const Layer *viewer = &sw;
+      if (link) {
+        for (const Layer *l = document_active_layer(doc); l; l = layer_parent(doc, l->id)) {
+          if (l->is_switch() && l->switch_link == link->id) {
+            viewer = l;
+            break;
+          }
+        }
+      }
+      const std::string fallback = switch_key_label(doc, *viewer, switch_default(sw));
       for (size_t i = 0; i < keys.size(); i++) {
         const float xa = frame_x(float(keys[i].frame)) + key_r * 0.6f;
         const float xb = i + 1 < keys.size() ? frame_x(float(keys[i + 1].frame)) - key_r * 0.6f : p1.x;
@@ -2712,15 +2724,20 @@ static void timeline_body(Area &area, Context &C)
         const float v = keys[i].value;
         const bool rig = v < -0.5f || (keys[i].frame == 0 && rigged);
         const bool by_hand = keys[i].frame > 0 && v > -0.5f;
-        const bool missing = v > 0.5f && !switch_child(sw, v);
+        const bool missing = !link && v > 0.5f && !switch_child(sw, v);
+        const std::string held = link && switch_key_missing(doc, *viewer, v) ? switch_key_held(doc, *viewer, v, keys[i].frame) : "";
         const ImU32 fill = missing   ? IM_COL32(0x80, 0x30, 0x30, 200)
                            : rig     ? IM_COL32(0x8c, 0x5a, 0x1e, 220)
                            : by_hand ? IM_COL32(0x1d, 0x6e, 0x6e, 220)
                                      : IM_COL32(0x4a, 0x4a, 0x4a, 220);
-        const std::string label = v < -0.5f        ? "Rig, else " + fallback
-                                  : rig            ? "Rig, else " + switch_value_label(sw, v)
-                                  : by_hand        ? switch_value_label(sw, v)
-                                                   : switch_value_label(sw, v) + " (default)";
+        const std::string name = switch_key_label(doc, *viewer, v);
+        std::string label = v < -0.5f ? "Rig, else " + fallback
+                            : rig     ? "Rig, else " + name
+                            : by_hand ? name
+                                      : name + " (default)";
+        if (!held.empty()) {
+          label += " (not here: keeps " + held + ")";
+        }
         const ImVec2 bmin(xa, ky - row_h * 0.32f), bmax(xb, ky + row_h * 0.32f);
         dl->AddRectFilled(bmin, bmax, fill, 3.0f);
         dl->PushClipRect(bmin, bmax, true);
@@ -2736,7 +2753,7 @@ static void timeline_body(Area &area, Context &C)
                                       : " (the default)";
           ImGui::SetTooltip("%s shows %s, frame %d%s%s\nDrag a key to retime; Replace Keys With... is in its "
                             "right-click Switch menu",
-                            sw.name.c_str(), label.c_str(), keys[i].frame,
+                            viewer->name.c_str(), label.c_str(), keys[i].frame,
                             last >= 0 ? (" to " + std::to_string(last)).c_str() : " on", who);
         }
       }

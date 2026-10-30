@@ -228,6 +228,9 @@ void ui_draw_order_menu_items(Context &C, uint64_t layer);
 /* The Switch menu's items for switch `sw`: its children to pick (keyed at this frame; with Alt held,
  * for the whole hold), None, Rig, and Replace Keys With. */
 void ui_switch_menu_items(Context &C, uint64_t sw);
+/* The Link Report window (a linked switches' names by switch): opened on a group, drawn every frame. */
+void ui_switch_link_report_open(uint64_t link);
+void ui_switch_link_report_draw(Context &C);
 /* A click on `layer` while it is on (0: on no layer, which keeps it on). */
 void ui_layer_eyedropper_pick(Context &C, uint64_t layer);
 /* The shape eyedropper: the same, for a shape clicked in the viewport (the brush eyedropper): `pick`

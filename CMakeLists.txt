@@ -399,6 +399,8 @@ add_test(NAME switch_shelf
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_shelf.py)
 add_test(NAME two_way_links
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_two_way_links.py)
+add_test(NAME switch_links
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_switch_links.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

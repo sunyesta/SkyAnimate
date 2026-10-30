@@ -44,6 +44,7 @@ struct ShelfState {
   uint64_t menu_switch = 0, menu_child = 0;
   uint64_t renaming = 0;
   bool focus_rename = false;
+  bool rename_here = false;
   std::string rename_text;
   double hover_since = 0.0;
   uint64_t hover_child = 0;
@@ -145,12 +146,41 @@ void tile_menu(Context &C, Area &area, uint64_t sw_id, uint64_t child_id)
     g_shelf.rename_text = name;
     g_shelf.focus_rename = true;
   }
-  const bool is_default = std::fabs(switch_default(*sw) - float(child_id)) < 0.5f;
+  const bool is_default = switch_default_child(doc, *sw) == child_id;
   if (ui_menu_item("Set as Default", nullptr, is_default)) {
     operator_call(C, "layer.switch_set", {{"layer", std::to_string(sw_id)}, {"child", name}, {"default", "1"}});
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Shown on frame 0, and wherever no key or smart action picks another");
+  }
+  if (ui_submenu_begin("Aliases")) {
+    /* The other names it answers to in a linked switch, separated by commas. */
+    static std::string text;
+    static uint64_t text_for = 0;
+    if (text_for != child_id) {
+      text.clear();
+      for (const std::string &a : child->switch_aliases) {
+        text += (text.empty() ? "" : ", ") + a;
+      }
+      text_for = child_id;
+    }
+    ImGui::TextDisabled("Other names it answers to (O, Oh):");
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    if (ImGui::InputText("##aliases", &text, ImGuiInputTextFlags_EnterReturnsTrue)) {
+      operator_call(C, "layer.switch_aliases_set", {{"layer", std::to_string(child_id)}, {"aliases", text}});
+      text_for = 0;
+      ImGui::CloseCurrentPopup();
+    }
+    ui_submenu_end();
+  }
+  if (ui_menu_item("Rename Here Only")) {
+    g_shelf.renaming = child_id;
+    g_shelf.rename_text = name;
+    g_shelf.focus_rename = true;
+    g_shelf.rename_here = true;
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("In a linked switch, renaming renames its partners too; this renames only this one");
   }
   if (ui_submenu_begin("Replace Keys With")) {
     for (const Layer &other : sw->children) {
@@ -179,7 +209,7 @@ void tile_menu(Context &C, Area &area, uint64_t sw_id, uint64_t child_id)
     area.shelf_pins = {sw_id};
   }
   ImGui::Separator();
-  const int used = switch_keys_showing(*sw, child_id);
+  const int used = switch_keys_showing(doc, *sw, child_id);
   const std::string del = used > 0 ? "Delete (used by " + std::to_string(used) + (used == 1 ? " key)" : " keys)") : "Delete";
   if (ui_menu_item(del.c_str())) {
     doc.active_layer = child_id;
@@ -302,8 +332,16 @@ void asset_shelf_draw(Area &area, Context &C)
       continue;
     }
     ImGui::PushID(int(sw_id));
-    const SwitchSource source = switch_source(*sw, doc.frame_current);
-    ImGui::Text("%s", sw->name.c_str());
+    const SwitchSource source = switch_source(doc, *sw, doc.frame_current);
+    if (const SwitchLink *link = switch_link_of(doc, *sw)) {
+      const Layer *p = layer_parent(doc, sw->id);
+      ImGui::Text("%s%s", p ? (p->name + " > ").c_str() : "", sw->name.c_str());
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.31f, 0.78f, 0.78f, 1.0f), "(linked: %d)", int(switch_link_members(doc, link->id).size()));
+    }
+    else {
+      ImGui::Text("%s", sw->name.c_str());
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("%s%s", switch_value_label(*sw, float(sw->switch_shown)).c_str(),
                         source == SwitchSource::Hand  ? " (keyed)"
@@ -396,10 +434,16 @@ void asset_shelf_draw(Area &area, Context &C)
         ImGui::InputText("##rename", &g_shelf.rename_text, ImGuiInputTextFlags_AutoSelectAll);
         if (ImGui::IsItemDeactivated()) {
           if (!g_shelf.rename_text.empty() && g_shelf.rename_text != child->name) {
-            layer_find(doc, child_id)->name = g_shelf.rename_text;
-            C.undo->push("Rename Layer", doc);
+            if (g_shelf.rename_here) {
+              operator_call(C, "layer.rename_here", {{"layer", std::to_string(child_id)}, {"name", g_shelf.rename_text}});
+            }
+            else {
+              layer_find(doc, child_id)->name = g_shelf.rename_text;
+              C.undo->push("Rename Layer", doc);
+            }
           }
           g_shelf.renaming = 0;
+          g_shelf.rename_here = false;
         }
       }
       else {

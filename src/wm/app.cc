@@ -443,6 +443,7 @@ void App::main_loop()
     revisions_check_frame(true);
     brush_window_draw(ctx_);
     ui_driver_window_draw(ctx_);
+    ui_switch_link_report_draw(ctx_);
     /* A linked shape's look edited this frame (a colour being dragged) shows on every shape sharing
      * its material from the next frame; a text changed (from Python, a driver) has its letters made
      * again. */

@@ -603,17 +603,16 @@ void rig_operators_register()
                  }
                  /* The hold this frame is in starts at the switch key at or before it; before it, the
                   * switch's keys showed the previous drawing. */
+                 const SwitchLink *link = switch_link_of(doc, *sw);
+                 const Layer *keyed = link && layer_find(doc, link->lead) ? layer_find(doc, link->lead) : sw;
                  int start = 0;
-                 for (const Key<float> &k : sw->switch_keys.keys) {
+                 for (const Key<float> &k : keyed->switch_keys.keys) {
                    if (k.frame <= doc.frame_current) {
                      start = k.frame;
                    }
                  }
-                 float before = start > 0 ? sw->switch_keys.evaluate(start - 1) : 0.0f;
-                 if (before < -0.5f) {
-                   before = switch_default(*sw);
-                 }
-                 Layer *previous = const_cast<Layer *>(switch_child(*sw, before));
+                 Layer *previous = start > 0 ? const_cast<Layer *>(switch_child(*sw, float(switch_child_at(doc, *sw, start - 1))))
+                                             : nullptr;
                  const Layer *from = previous ? switch_child_armature(*previous) : nullptr;
                  if (start == 0 || !from || previous->id == child->id) {
                    report(ReportType::Warning, "\"" + sw->name + "\" shows no other drawing with bones before this hold");

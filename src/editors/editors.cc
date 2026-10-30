@@ -1857,6 +1857,101 @@ void ui_mask_menu_items(Context &C, uint64_t layer_id)
   }
 }
 
+/* --- The Link Report: a linked group's names by its switches ------------------------------------ */
+
+static uint64_t g_link_report = 0;
+static bool g_link_report_open = false;
+
+void ui_switch_link_report_open(uint64_t link)
+{
+  g_link_report = link;
+  g_link_report_open = true;
+}
+
+void ui_switch_link_report_draw(Context &C)
+{
+  if (!g_link_report_open || !C.document) {
+    return;
+  }
+  Document &doc = *C.document;
+  const SwitchLink *link = nullptr;
+  for (const SwitchLink &l : doc.switch_links) {
+    link = l.id == g_link_report ? &l : link;
+  }
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0.0f), ImGuiCond_Appearing);
+  if (!ImGui::Begin("Link Report###oanim_link_report", &g_link_report_open, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
+    ImGui::End();
+    return;
+  }
+  if (!link) {
+    ImGui::TextDisabled("That link is gone.");
+    ImGui::End();
+    return;
+  }
+  const std::vector<Layer *> members = switch_link_members(doc, link->id);
+  /* Every name: the group's, then any drawing's not in it. */
+  std::vector<std::string> names;
+  for (const SwitchLinkName &n : link->names) {
+    names.push_back(n.name);
+  }
+  for (const Layer *m : members) {
+    for (const Layer &c : m->children) {
+      if (std::find(names.begin(), names.end(), c.name) == names.end()) {
+        names.push_back(c.name);
+      }
+    }
+  }
+  ImGui::TextWrapped("Names down the side, the linked switches across. A switch lacking a name keeps showing the "
+                     "last one it had there; an alias makes a drawing answer to another name.");
+  if (ImGui::BeginTable("##link_report", int(members.size()) + 1,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
+    ImGui::TableSetupColumn("Name");
+    for (const Layer *m : members) {
+      const Layer *p = layer_parent(doc, m->id);
+      ImGui::TableSetupColumn(((p ? p->name + " > " : std::string()) + m->name + (m->id == link->lead ? " (keys)" : "")).c_str());
+    }
+    ImGui::TableHeadersRow();
+    for (const std::string &name : names) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::TextUnformatted(name.c_str());
+      for (size_t k = 0; k < members.size(); k++) {
+        ImGui::TableSetColumnIndex(int(k) + 1);
+        const Layer *by_name = nullptr, *by_alias = nullptr, *nearly = nullptr;
+        for (const Layer &c : members[k]->children) {
+          if (c.name == name) {
+            by_name = &c;
+          }
+          else if (std::find(c.switch_aliases.begin(), c.switch_aliases.end(), name) != c.switch_aliases.end()) {
+            by_alias = &c;
+          }
+          else if (switch_name_stem(c.name) == switch_name_stem(name)) {
+            nearly = &c;
+          }
+        }
+        if (by_name) {
+          ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "yes");
+        }
+        else if (by_alias) {
+          ImGui::TextColored(ImVec4(0.55f, 0.8f, 0.9f, 1.0f), "alias: %s", by_alias->name.c_str());
+        }
+        else if (nearly) {
+          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "nearly: %s", nearly->name.c_str());
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("\"%s\" isn't \"%s\": names must match exactly. Rename it, or give it the alias",
+                              nearly->name.c_str(), name.c_str());
+          }
+        }
+        else {
+          ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "missing");
+        }
+      }
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
 void ui_switch_menu_items(Context &C, uint64_t sw_id)
 {
   Document &doc = *C.document;
@@ -1864,7 +1959,7 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
   if (!sw || !sw->is_switch()) {
     return;
   }
-  const SwitchSource source = switch_source(*sw, doc.frame_current);
+  const SwitchSource source = switch_source(doc, *sw, doc.frame_current);
   const std::string now = "Now: " + switch_value_label(*sw, float(sw->switch_shown)) +
                           (source == SwitchSource::Hand  ? " (keyed)"
                            : source == SwitchSource::Rig ? " (from the rig)"
@@ -1921,8 +2016,15 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
       values.push_back(v);
     }
   };
-  gather(switch_default(*sw));
-  for (const Key<float> &k : sw->switch_keys.keys) {
+  /* A linked switch's keys are its group's, on the lead (names, not its own children). */
+  const Layer *keyed = sw;
+  if (const SwitchLink *link = switch_link_of(doc, *sw)) {
+    if (const Layer *lead = layer_find(doc, link->lead)) {
+      keyed = lead;
+    }
+  }
+  gather(switch_default(*keyed));
+  for (const Key<float> &k : keyed->switch_keys.keys) {
     gather(k.value);
   }
   for (const auto &[action, keys] : sw->switch_keys.actions) {
@@ -1949,20 +2051,37 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
       ImGui::SetTooltip("Each child's bones stand in for the first child's bones of the same name (bone swaps)");
     }
   }
+  if (const SwitchLink *link = switch_link_of(doc, *sw)) {
+    ImGui::Separator();
+    const size_t members = switch_link_members(doc, link->id).size();
+    ImGui::TextDisabled("Linked by name with %d other switch%s", int(members) - 1, members == 2 ? "" : "es");
+    if (ui_menu_item("Link Report...")) {
+      ui_switch_link_report_open(link->id);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Which names each linked switch has, which it lacks, and names that nearly match");
+    }
+    if (ui_menu_item("Unlink")) {
+      operator_call(C, "layer.switch_unlink", {{"layer", std::to_string(sw_id)}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("This switch on its own again, its keys showing what it showed (nothing changes on screen)");
+    }
+  }
   if (ui_submenu_begin("Replace Keys With", !values.empty())) {
     for (const float from : values) {
-      const std::string from_label = switch_value_label(*sw, from);
+      const std::string from_label = switch_key_label(doc, *sw, from);
+      /* A linked switch's keys name its group's names: passed by name. */
+      const std::string from_arg = keyed != sw ? from_label : std::to_string(int64_t(from));
       ImGui::PushID(int(from));
       if (ui_submenu_begin(("Keys Showing " + from_label).c_str())) {
         for (const auto &[name, id] : children) {
-          if (float(id) != from && ui_menu_item(name.c_str())) {
-            operator_call(C, "layer.switch_replace_keys",
-                          {{"layer", std::to_string(sw_id)}, {"from", std::to_string(int64_t(from))}, {"child", name}});
+          if ((keyed != sw ? name != from_label : float(id) != from) && ui_menu_item(name.c_str())) {
+            operator_call(C, "layer.switch_replace_keys", {{"layer", std::to_string(sw_id)}, {"from", from_arg}, {"child", name}});
           }
         }
         if (from != 0.0f && ui_menu_item("None")) {
-          operator_call(C, "layer.switch_replace_keys",
-                        {{"layer", std::to_string(sw_id)}, {"from", std::to_string(int64_t(from))}, {"child", ""}});
+          operator_call(C, "layer.switch_replace_keys", {{"layer", std::to_string(sw_id)}, {"from", from_arg}, {"child", ""}});
         }
         ui_submenu_end();
       }

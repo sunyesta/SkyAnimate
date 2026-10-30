@@ -7,6 +7,7 @@
 #include <memory>
 #include <set>
 
+#include "anim/switch.hh"
 #include "anim/animation.hh"
 #include "anim/keep_poses.hh"
 #include "assets/asset_library.hh"
@@ -219,6 +220,11 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
       for (Layer *p = layer_parent(*C.document, l->id); p; p = layer_parent(*C.document, p->id)) {
         if (p->is_switch() && keyed(*p)) {
           add(p);
+        }
+        /* Linked by name: the group's keys are on its lead. */
+        const SwitchLink *link = p->is_switch() ? switch_link_of(*C.document, *p) : nullptr;
+        if (Layer *lead = link ? layer_find(*C.document, link->lead) : nullptr; lead && keyed(*lead)) {
+          add(lead);
         }
       }
     }
@@ -783,12 +789,15 @@ void anim_operators_register()
                         keys += layer_insert_keys(*layer, frame);
                         /* A switch it sits in with a pick not keyed (Auto Keying off): that pick is keyed too. */
                         for (Layer *p = layer_parent(doc, layer->id); p && frame != 0; p = layer_parent(doc, p->id)) {
-                          Channel<float> &ch = p->switch_keys;
-                          if (p->is_switch() && switches.insert(p->id).second && ch.animated() &&
-                              std::fabs(p->switch_value - ch.evaluate(frame)) > 0.5f)
+                          /* A linked switch's keys are its group lead's. */
+                          const SwitchLink *link = p->is_switch() ? switch_link_of(doc, *p) : nullptr;
+                          Layer *keyed = link && layer_find(doc, link->lead) ? layer_find(doc, link->lead) : p;
+                          Channel<float> &ch = keyed->switch_keys;
+                          if (p->is_switch() && switches.insert(keyed->id).second && ch.animated() &&
+                              std::fabs(keyed->switch_value - ch.evaluate(frame)) > 0.5f)
                           {
-                            ch.set_key(frame, p->switch_value).interp = Interp::Step;
-                            ch.last = p->switch_value;
+                            ch.set_key(frame, keyed->switch_value).interp = Interp::Step;
+                            ch.last = keyed->switch_value;
                             keys++;
                           }
                         }

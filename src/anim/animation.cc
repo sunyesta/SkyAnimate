@@ -311,6 +311,10 @@ float simulation_value_at(const Document &doc, const char *path, float plain, in
 
 void animation_record(Document &doc)
 {
+  /* Switches linked by name: new same-named switches join, renames reach partners. */
+  for (const std::string &text : switch_links_update(doc)) {
+    report(ReportType::Info, text);
+  }
   if (doc.evaluated_frame < 0) {
     /* Nothing evaluated yet: the plain values are where everything starts. */
     animation_evaluate(doc, doc.frame_current);

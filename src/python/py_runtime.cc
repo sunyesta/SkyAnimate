@@ -59,6 +59,11 @@
 
 namespace py = pybind11;
 
+namespace oanim {
+/* editors/ui.hh (which needs ImGui): the Link Report window. */
+void ui_switch_link_report_open(uint64_t link);
+}  // namespace oanim
+
 namespace oanim::python {
 
 /* See python_runs. */
@@ -3557,6 +3562,34 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return names;
   });
+  m.def("layer_switch_link", [layer_or_raise](uint64_t id) {
+    /* A linked switch's group: its members' names (the lead first), its names, what it lacks now. */
+    const Layer &sw = layer_or_raise(id);
+    Document &doc = *current_context().document;
+    py::list members, names;
+    if (const SwitchLink *link = switch_link_of(doc, sw)) {
+      if (const Layer *lead = layer_find(doc, link->lead)) {
+        members.append(lead->name);
+      }
+      for (const Layer *m : switch_link_members(doc, link->id)) {
+        if (m->id != link->lead) {
+          members.append(m->name);
+        }
+      }
+      for (const SwitchLinkName &n : link->names) {
+        names.append(n.name);
+      }
+    }
+    return py::make_tuple(members, names, sw.switch_missing);
+  });
+  m.def("layer_aliases", [layer_or_raise](uint64_t id) { return layer_or_raise(id).switch_aliases; });
+  m.def("switch_link_report", [layer_or_raise](uint64_t id) {
+    const SwitchLink *link = switch_link_of(*current_context().document, layer_or_raise(id));
+    if (link) {
+      ui_switch_link_report_open(link->id);
+    }
+    return link != nullptr;
+  });
   m.def("switch_preview", [](uint64_t sw, uint64_t child) {
     if (sw == 0) {
       switch_preview_clear();
@@ -3576,7 +3609,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       const Layer *child = switch_child(sw, value);
       return child ? py::object(py::str(child->name)) : py::object(py::none());
     };
-    return py::make_tuple(name(float(sw.switch_shown)), name(switch_default(sw)));
+    return py::make_tuple(name(float(sw.switch_shown)), name(float(switch_default_child(*current_context().document, sw))));
   });
   m.def("draw_order_pick_target", [](uint64_t hit, const std::vector<uint64_t> &moving) {
     return draw_order_pick_target(*current_context().document, hit, moving);
