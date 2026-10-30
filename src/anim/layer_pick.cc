@@ -463,4 +463,129 @@ bool layer_pick_apply(Document &doc, uint64_t id, LayerPickMode mode)
   return document_selection_hash(doc) != selection_before;
 }
 
+void line_runs(const std::vector<float2> &outline, const std::vector<float> &radii, const std::vector<bool> &visible,
+               const std::vector<StrokeJoin> &joins, bool closed, const LineCutter *cutter,
+               const Transform2D &to_document, const LineRunStroke &stroke)
+{
+  const auto shows_at = [&](float2 p) { return line_cutter_shows(*cutter, to_document.apply(p)); };
+  std::vector<float2> run;
+  std::vector<float> run_radii;
+  std::vector<StrokeJoin> run_joins;
+  const int n = int(outline.size());
+  const int pieces = closed ? n : n - 1;
+  /* End Lines at Edge: whether each point shows (all of them without it). */
+  std::vector<char> shows(size_t(n), 1);
+  bool cut_any = false;
+  if (cutter) {
+    for (int i = 0; i < n; i++) {
+      shows[size_t(i)] = shows_at(outline[size_t(i)]);
+      cut_any = cut_any || !shows[size_t(i)];
+    }
+  }
+  int hidden_at = -1;
+  for (int i = 0; i < pieces && hidden_at < 0; i++) {
+    hidden_at = visible[i] ? -1 : i;
+  }
+  if (hidden_at < 0 && !cut_any) {
+    stroke(outline, radii, closed, joins);
+  }
+  else {
+    /* Hidden edges (and End Lines at Edge) break the outline into open runs. A closed
+     * outline starts just after a hidden piece, or at a point cut away, so no run wraps
+     * around its start. */
+    int start = 0;
+    if (closed) {
+      start = hidden_at >= 0 ? hidden_at + 1 : 0;
+      if (hidden_at < 0) {
+        for (int i = 0; i < n; i++) {
+          if (!shows[size_t(i)]) {
+            start = i;
+            break;
+          }
+        }
+      }
+    }
+    run.clear();
+    run_radii.clear();
+    run_joins.clear();
+    const auto flush_run = [&] {
+      if (run.size() >= 2) {
+        stroke(run, run_radii, false, run_joins);
+      }
+      run.clear();
+      run_radii.clear();
+      run_joins.clear();
+    };
+    /* Where the line crosses the edge between points i and j, found by halving. An end made
+     * there is round (Ends: Brush) or flat (Flat). */
+    const StrokeJoin cut_join = cutter && cutter->flat ? StrokeJoin::Sharp : StrokeJoin::Smooth;
+    const auto crossing = [&](int i, int j, float2 *r_point, float *r_radius) {
+      const bool from = shows[size_t(i)] != 0;
+      float lo = 0.0f, hi = 1.0f;
+      for (int step = 0; step < 12; step++) {
+        const float mid = (lo + hi) * 0.5f;
+        const bool here = shows_at(outline[size_t(i)] + (outline[size_t(j)] - outline[size_t(i)]) * mid);
+        (here == from ? lo : hi) = mid;
+      }
+      const float t = (lo + hi) * 0.5f;
+      *r_point = outline[size_t(i)] + (outline[size_t(j)] - outline[size_t(i)]) * t;
+      *r_radius = radii[size_t(i)] + (radii[size_t(j)] - radii[size_t(i)]) * t;
+    };
+    for (int k = 0; k < pieces; k++) {
+      const int i = (start + k) % n, j = (i + 1) % n;
+      if (!visible[i]) {
+        flush_run();
+        continue;
+      }
+      const bool a = shows[size_t(i)] != 0, b = shows[size_t(j)] != 0;
+      if (!a && !b) {
+        flush_run();
+        continue;
+      }
+      if (a && run.empty()) {
+        run.push_back(outline[i]);
+        run_radii.push_back(radii[i]);
+        run_joins.push_back(joins[i]);
+      }
+      if (a && b) {
+        run.push_back(outline[j]);
+        run_radii.push_back(radii[j]);
+        run_joins.push_back(joins[j]);
+        continue;
+      }
+      float2 at;
+      float r = 0.0f;
+      crossing(i, j, &at, &r);
+      if (!cutter->flat) {
+        /* A round end stops its radius short of the edge, back along the line, so it just
+         * touches it (Reach 0); Reach moves it on, past the edge from 0.5. */
+        const float stop = r * (1.0f - 2.0f * cutter->reach);
+        const float2 back = a ? outline[size_t(i)] - at : outline[size_t(j)] - at;
+        const float len = length(back);
+        if (len > 1e-9f) {
+          at = at + back * (std::clamp(stop, -len, len) / len);
+        }
+      }
+      if (a) {
+        /* Leaving: the run ends at the edge. */
+        run.push_back(at);
+        run_radii.push_back(r);
+        run_joins.push_back(cut_join);
+        flush_run();
+      }
+      else {
+        /* Coming back: a run starts at the edge. */
+        flush_run();
+        run.push_back(at);
+        run_radii.push_back(r);
+        run_joins.push_back(cut_join);
+        run.push_back(outline[j]);
+        run_radii.push_back(radii[j]);
+        run_joins.push_back(joins[j]);
+      }
+    }
+    flush_run();
+  }
+}
+
 }  // namespace oanim

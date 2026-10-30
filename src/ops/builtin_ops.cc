@@ -1,16 +1,19 @@
 #include "ops/builtin_ops.hh"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 
 #include "core/log.hh"
 #include "data/document.hh"
+#include "io/svg_export.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "python/py_runtime.hh"
 #include "wm/context.hh"
+#include "wm/file_dialog.hh"
 
 namespace oanim {
 
@@ -358,6 +361,60 @@ void builtin_operators_register()
     ot.poll = [](Context &C) { return C.wm && !C.wm->background; };
     ot.exec = [](Context &C) {
       C.wm->render_requested = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* The current frame through the camera as vectors (io/svg_export.hh): asks where to save it when not told. */
+    OperatorType ot;
+    ot.idname = "render.render_svg";
+    ot.name = "Render as SVG";
+    ot.description = "Render the current frame at the document's size as an SVG file: fills, lines and masks as "
+                     "vectors, media as pictures (brushed lines come out solid)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.wm != nullptr && C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      std::string path = op_arg(C, "filepath");
+      if (path.empty()) {
+        if (C.wm->background) {
+          report(ReportType::Error, "render.render_svg needs a filepath without a window");
+          return OpStatus::Cancelled;
+        }
+        char name[32];
+        std::snprintf(name, sizeof(name), "_%04d.svg", C.document->frame_current);
+        Context *ctx = &C;
+        OpArgs args = C.op_args ? *C.op_args : OpArgs{};
+        file_dialog_save("SVG images", "svg", C.document->name + name, [ctx, args](const std::string &chosen) mutable {
+          args["filepath"] = chosen;
+          operator_call(*ctx, "render.render_svg", args);
+        });
+        return OpStatus::Cancelled;
+      }
+      if (std::filesystem::path(std::u8string(path.begin(), path.end())).extension() != ".svg") {
+        path += ".svg";
+      }
+      SvgExport options;
+      options.width = op_arg_int(C, "width", 0);
+      options.height = op_arg_int(C, "height", 0);
+      options.transparent = op_arg_bool(C, "transparent");
+      std::string error;
+      SvgExportReport made;
+      if (!svg_export_frame(*C.document, path, options, &error, &made)) {
+        report(ReportType::Error, error);
+        return OpStatus::Cancelled;
+      }
+      std::string text = "Rendered frame " + std::to_string(C.document->frame_current) + " as SVG to " + path + " (" +
+                         std::to_string(made.fills) + " fills, " + std::to_string(made.lines) + " lines, " +
+                         std::to_string(made.masks) + " masks";
+      if (made.pictures > 0) {
+        text += ", " + std::to_string(made.pictures) + " pictures";
+      }
+      text += ")";
+      if (made.brushed > 0) {
+        text += "; " + std::to_string(made.brushed) + " brushed lines are solid in it";
+      }
+      report(ReportType::Info, text);
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

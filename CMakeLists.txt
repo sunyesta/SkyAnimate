@@ -78,6 +78,7 @@ set(OANIM_SOURCES
   src/gpu/scene_renderer.cc
   src/gpu/tessellate.cc
   src/io/oanim_file.cc
+  src/io/svg_export.cc
   src/media/audio.cc
   src/media/media.cc
   src/ops/anim_ops.cc
@@ -211,6 +212,8 @@ add_test(NAME keep_poses
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_keep_poses.py)
 add_test(NAME mask_combine
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mask_combine.py)
+add_test(NAME render_svg
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_render_svg.py)
 add_test(NAME annotations
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_annotations.py)
 add_test(NAME bone_move_options

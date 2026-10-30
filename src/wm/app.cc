@@ -942,6 +942,7 @@ void App::draw_top_bar()
 
   if (ImGui::BeginMenu("Render")) {
     menu_operator(ctx_, "Render Frame", "render.render");
+    menu_operator(ctx_, "Render as SVG...", "render.render_svg");
     if (ImGui::MenuItem("View Render", nullptr, show_render_, render_texture_ != 0)) {
       show_render_ = !show_render_;
     }

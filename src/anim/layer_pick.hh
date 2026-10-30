@@ -7,6 +7,7 @@
  * while guides are hidden, and layers outside Local View aren't either. */
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "core/math.hh"
@@ -79,6 +80,17 @@ struct LineCutter {
 LineCutter line_cutter(const Document &doc, const Layer &layer, bool render);
 /* Whether a line shows at `at` (document space) by those rows. */
 bool line_cutter_shows(const LineCutter &cutter, float2 at);
+
+/* A line's samples (shape_outline's: layer space, each point's half width, whether the outline runs on from it,
+ * its join) as the runs that draw, each handed to `stroke` (points, half widths, closed, joins): the whole line,
+ * or open runs where hidden edges break it and, with a `cutter` (`to_document` taking the line to its space),
+ * where it crosses its shapes' edges, a round end stopped short of the edge as its Reach says or a flat one
+ * there. */
+using LineRunStroke = std::function<void(const std::vector<float2> &points, const std::vector<float> &half_widths,
+                                         bool closed, const std::vector<StrokeJoin> &joins)>;
+void line_runs(const std::vector<float2> &outline, const std::vector<float> &radii, const std::vector<bool> &visible,
+               const std::vector<StrokeJoin> &joins, bool closed, const LineCutter *cutter,
+               const Transform2D &to_document, const LineRunStroke &stroke);
 
 /* The group a pick with Pick: Group takes instead of `id`: its outermost group (the layer itself at
  * the top level). */
