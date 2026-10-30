@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <functional>
 #include <map>
+#include <unordered_set>
 
 #include "core/log.hh"
 #include "data/layer_mirror.hh"
@@ -49,18 +50,25 @@ std::shared_ptr<const std::set<uint64_t>> editable_layer_ids(Document &doc)
 std::vector<Layer *> document_editable_layers(Document &doc)
 {
   std::vector<Layer *> layers;
+  /* Each once. A set, as a group or bone layer can bring thousands. */
+  std::unordered_set<const Layer *> taken;
+  const auto add = [&](Layer *layer) {
+    if (taken.insert(layer).second) {
+      layers.push_back(layer);
+    }
+  };
   /* The active layer, when its drawing can be edited (a reference's too; see editable_drawing). */
   Layer *active = document_active_layer(doc);
   if (active && (!active->has_drawing() || active->locked)) {
     active = nullptr;
   }
   if (active) {
-    layers.push_back(active);
+    add(active);
   }
   for (const Layer *layer : document_layers_flat(doc)) {
     if (layer->selected && layer != active && layer->shown() && layer->has_drawing() && !layer->locked)
     {
-      layers.push_back(layer_find(doc, layer->id));
+      add(layer_find(doc, layer->id));
     }
   }
   /* A group picked or active with Edit Descendants brings every drawing inside it, as if each were
@@ -70,8 +78,8 @@ std::vector<Layer *> document_editable_layers(Document &doc)
       if (!child.shown()) {
         continue;
       }
-      if (child.has_drawing() && !child.locked && std::find(layers.begin(), layers.end(), &child) == layers.end()) {
-        layers.push_back(&child);
+      if (child.has_drawing() && !child.locked) {
+        add(&child);
       }
       self(self, child);
     }
@@ -83,17 +91,23 @@ std::vector<Layer *> document_editable_layers(Document &doc)
       take_descendants(take_descendants, *layer_find(doc, flat->id));
     }
   }
-  /* A bone layer being worked in brings the drawings in its shown bone collections. */
-  if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
-    for (const Layer *layer : document_layers_flat(doc)) {
-      const Layer *owner = layer_armature(doc, layer->id);
-      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->shown() && layer->has_drawing() &&
-          !layer->locked &&
-          std::find(layers.begin(), layers.end(), layer) == layers.end())
-      {
-        layers.push_back(layer_find(doc, layer->id));
+  /* A bone layer being worked in brings the drawings in its shown bone collections: those inside it, not
+   * inside another bone layer within it. Walked from the bone layer itself, as asking each layer of the
+   * document which bone layer holds it searches the whole tree each time (the toolbar asks every frame). */
+  if (Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
+    const auto take = [&](auto &&self, Layer &parent) -> void {
+      for (Layer &layer : parent.children) {
+        if (layer.edit_with_bones && layer.type == LayerType::Vector && bone_collections_show(*bones, layer.collections) &&
+            layer.shown() && layer.has_drawing() && !layer.locked)
+        {
+          add(&layer);
+        }
+        if (!layer.is_bone_layer()) {
+          self(self, layer);
+        }
       }
-    }
+    };
+    take(take, *bones);
   }
   return layers;
 }
