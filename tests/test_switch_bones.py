@@ -18,6 +18,7 @@ doc = oanim.data.document
 layers = oanim.data.layers
 folder = pathlib.Path(tempfile.mkdtemp(prefix="oanim_switch_bones_"))
 doc.frame_current = 0
+doc.auto_key = True
 
 
 def sync():

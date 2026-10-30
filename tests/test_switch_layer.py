@@ -16,6 +16,7 @@ doc = oanim.data.document
 layers = oanim.data.layers
 folder = pathlib.Path(tempfile.mkdtemp(prefix="oanim_switch_"))
 doc.frame_current = 0
+doc.auto_key = True
 
 
 def sync():
@@ -163,6 +164,7 @@ path = folder / "switch.oanim"
 assert oanim.ops.wm.save_as_mainfile(filepath=str(path)) == {'FINISHED'}
 assert oanim.ops.wm.open_mainfile(filepath=str(path)) == {'FINISHED'}
 doc = oanim.data.document
+doc.auto_key = True
 sw = next(l for l in layers.all() if l.type == "SWITCH")
 assert keyed(sw) == [0, 10, 20, 25, 30], keyed(sw)
 for frame, want in ((0, "B"), (12, "C"), (22, None), (30, "A")):
@@ -200,6 +202,7 @@ assert "Switch" in names, names
 # === Stage 2: picking =================================================================================
 assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
 doc = oanim.data.document
+doc.auto_key = True
 goto(0)
 made = {}
 for name, colour in (("A", (1.0, 0.0, 0.0, 1.0)), ("B", (0.0, 1.0, 0.0, 1.0)), ("C", (0.0, 0.0, 1.0, 1.0))):
@@ -275,5 +278,30 @@ assert sw.switch_active == "A", ("B gone: the default", sw.switch_active)
 assert oanim.ops.layer.switch_replace_keys(layer=sw.name, **{"from": str(gone_id)}, child="C") == {'FINISHED'}
 goto(40)
 assert sw.switch_active == "C"
+
+
+# --- Picks follow Auto Keying ------------------------------------------------------------------------
+doc.auto_key = False
+goto(50)
+keys = keyed(sw)
+assert oanim.ops.layer.switch_set(layer=sw.name, child="A") == {'FINISHED'}
+assert sw.switch_active == "A" and keyed(sw) == keys, ("shown, not keyed", sw.switch_active, keyed(sw))
+goto(51)
+goto(50)
+assert sw.switch_active == "C", ("gone when the frame changes", sw.switch_active)
+# Keyed by hand (the key button, or I).
+assert oanim.ops.layer.switch_set(layer=sw.name, child="A") == {'FINISHED'}
+assert oanim.ops.anim.keyframe_toggle(layer=str(sw.id), paths="switch") == {'FINISHED'}
+assert 50 in keyed(sw), keyed(sw)
+goto(51)
+goto(50)
+assert sw.switch_active == "A"
+# I with one of its drawings active keys the switch's pick too.
+goto(60)
+assert oanim.ops.layer.switch_set(layer=sw.name, child="C") == {'FINISHED'}
+layers.active = next(c for c in sw.children if c.name == "C")
+assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
+assert 60 in keyed(sw), keyed(sw)
+doc.auto_key = True
 
 print("switch layer OK")

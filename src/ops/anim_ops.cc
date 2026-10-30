@@ -776,8 +776,22 @@ void anim_operators_register()
                       /* Edits not yet recorded belong to the frame they were made at. */
                       animation_record(*C.document);
                       int keys = 0;
+                      Document &doc = *C.document;
+                      const int frame = doc.frame_current;
+                      std::set<uint64_t> switches;
                       for (Layer *layer : keying_layers(C)) {
-                        keys += layer_insert_keys(*layer, C.document->frame_current);
+                        keys += layer_insert_keys(*layer, frame);
+                        /* A switch it sits in with a pick not keyed (Auto Keying off): that pick is keyed too. */
+                        for (Layer *p = layer_parent(doc, layer->id); p && frame != 0; p = layer_parent(doc, p->id)) {
+                          Channel<float> &ch = p->switch_keys;
+                          if (p->is_switch() && switches.insert(p->id).second && ch.animated() &&
+                              std::fabs(p->switch_value - ch.evaluate(frame)) > 0.5f)
+                          {
+                            ch.set_key(frame, p->switch_value).interp = Interp::Step;
+                            ch.last = p->switch_value;
+                            keys++;
+                          }
+                        }
                       }
                       return keys > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                     });

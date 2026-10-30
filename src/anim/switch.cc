@@ -151,7 +151,14 @@ static void resolve(std::vector<Layer> &layers, int frame, bool out, bool edit_o
       continue;
     }
     float value;
-    if (!hand_value(layer, frame, &value)) {
+    const Channel<float> &keys = layer.switch_keys;
+    if (frame > 0 && keys.animated() && !is_rig(layer.switch_value) &&
+        std::fabs(layer.switch_value - keys.evaluate(frame)) > 0.5f)
+    {
+      /* A pick not keyed (Auto Keying off): shown, as a hand key would be, until the frame changes. */
+      value = layer.switch_value;
+    }
+    else if (!hand_value(layer, frame, &value)) {
       value = layer.switch_rig_set && !is_rig(layer.switch_rig) ? layer.switch_rig : switch_default(layer);
     }
     /* A child that is gone shows the default, and the default gone shows none. */
@@ -196,6 +203,17 @@ void switch_set(Document &doc, Layer &sw, float value)
 {
   Channel<float> &ch = sw.switch_keys;
   const int frame = doc.frame_current;
+  if (frame != 0 && !doc.auto_key) {
+    /* Auto Keying off: shown, not keyed, as any property edited then. Keyed, it shows until the frame
+     * changes (I keys it); not keyed yet, it is the switch's value everywhere. */
+    sw.switch_value = value;
+    if (!ch.animated()) {
+      ch.last = value;
+      ch.has_last = true;
+    }
+    switches_resolve(doc, frame);
+    return;
+  }
   if (frame != 0 && !ch.animated() && doc.action.empty()) {
     /* The default stays what it was (an action's keys start after frame 0, the shared setup). */
     ch.set_key(0, switch_default(sw)).interp = Interp::Step;

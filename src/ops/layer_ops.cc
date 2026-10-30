@@ -42,6 +42,10 @@ static void switch_pick(Document &doc, Layer &sw, float value, bool hold)
 {
   const uint64_t sw_id = sw.id;
   const bool editing_child = switch_child_holding(doc, sw, doc.active_layer) != nullptr;
+  if (doc.frame_current != 0 && !doc.auto_key && !hold) {
+    report(ReportType::Info, sw.switch_keys.animated() ? "Auto Keying is off: shown until the frame changes, not keyed (I keys it)"
+                                                       : "Auto Keying is off: not keyed, so it shows on every frame (I keys it)");
+  }
   if (hold) {
     switch_set_hold(doc, sw, value);
   }
