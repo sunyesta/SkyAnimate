@@ -786,6 +786,10 @@ static void resolve(Document &doc, std::vector<Layer> &layers, int frame, bool o
                     const std::set<uint64_t> &editing)
 {
   for (Layer &layer : layers) {
+    if (layer.switched_out != out || layer.edit_out != edit_out) {
+      /* Shown or hidden now, with the switch's drawing it is in: views draw it anew. */
+      layer_touch(layer);
+    }
     layer.switched_out = out;
     layer.edit_out = edit_out;
     if (!layer.is_switch()) {

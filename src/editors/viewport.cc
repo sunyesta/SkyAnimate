@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/log.hh"
 #include "anim/bone_family.hh"
@@ -32,6 +33,7 @@
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
 #include "anim/dynamics.hh"
+#include "data/driver.hh"
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
@@ -5574,6 +5576,11 @@ struct BoneModal {
   NumInput num;
   /* Move Only Bones: what the bones bent, to put back (empty: off). */
   BoneCounter counter;
+  /* Each update says which layers it changed (`touch`), as a point drag does, instead of every layer of the
+   * document being taken as changed (on a big rig, the viewport then worked every drawing out again each frame).
+   * Off where it can't know: bone dynamics simulating. */
+  bool edits_known = false;
+  std::vector<Layer *> touch;
 };
 static BoneModal g_bone_modal;
 
@@ -6574,6 +6581,43 @@ static void bone_counter_restore(Document &doc, const BoneCounter &counter)
   }
 }
 
+/* The layers a bone drag can change, for one that knows its edits (BoneModal::touch): bone layers (their bones),
+ * what smart actions play into, what bones bend point by point (and every other worked-out drawing: references,
+ * look-at warps), driven layers, switches, and what Move Only Bones puts back. Layers moving whole with a bone
+ * change nothing of their own: the viewport finds where they are each frame. */
+static void bone_modal_find_touched(Document &doc)
+{
+  BoneModal &bm = g_bone_modal;
+  bm.touch.clear();
+  bm.edits_known = !dynamics_live_running();
+  const LayerIndexScope layer_index(doc);
+  const ArmaturePoseCacheScope poses;
+  std::set<uint64_t> wanted;
+  for (const Driver &d : doc.drivers) {
+    wanted.insert(d.target.layer);
+  }
+  for (const BoneCounter::LayerState &st : bm.counter.layers) {
+    wanted.insert(st.id);
+  }
+  const std::unordered_set<uint64_t> smart = animation_smart_drag_layers();
+  const auto walk = [&](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &l : layers) {
+      for (const Bone &b : l.bones) {
+        for (const BoneConstraint &c : b.constraints) {
+          bm.edits_known = bm.edits_known && c.type != BoneConstraintType::Dynamics;
+        }
+      }
+      if (l.is_bone_layer() || l.is_switch() || wanted.contains(l.id) || smart.contains(l.id) ||
+          (l.has_drawing() && layer_has_modifier_effect(doc, l, false)))
+      {
+        bm.touch.push_back(&l);
+      }
+      self(self, l.children);
+    }
+  };
+  walk(walk, doc.layers);
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
@@ -6604,6 +6648,9 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   modal.last_mouse = mouse_document;
   modal.active = true;
   g_bone_modal = std::move(modal);
+  /* Smart actions follow every update: the layers they play into found once, now. */
+  animation_smart_drag_begin(doc);
+  bone_modal_find_touched(doc);
   C.wm->modal_running = true;
   C.wm->modal_keys.clear();
   return true;
@@ -6611,6 +6658,7 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
 
 static void bone_modal_end(Context &C, bool confirm)
 {
+  animation_smart_drag_end();
   if (confirm) {
     push_undo(C, g_bone_modal.kind == 'R' ? "Rotate Bones" : g_bone_modal.kind == 'S' ? "Scale Bones" : "Move Bones");
   }
@@ -6623,6 +6671,8 @@ static void bone_modal_end(Context &C, bool confirm)
   g_bone_modal.snapshot = Document();
   g_bone_modal.bones.clear();
   g_bone_modal.counter = {};
+  g_bone_modal.touch.clear();
+  g_bone_modal.edits_known = false;
   C.wm->modal_running = false;
   C.wm->modal_keys.clear();
 }
@@ -6634,6 +6684,7 @@ static void bone_modal_confirm(Context &C, float2 delta, float degrees, float fa
 {
   /* Taken, not copied: the snapshot is a whole document (on a big rig, copying it twice was most of the pause as
    * the drag ended). */
+  animation_smart_drag_end();
   BoneModal bm = std::move(g_bone_modal);
   const int frame = C.document->frame_current;
   *C.document = std::move(bm.snapshot);
@@ -6783,6 +6834,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   animation_refresh_smart(*C.document);
   if (!g_bone_modal.counter.layers.empty()) {
     bone_counter_apply(*C.document, g_bone_modal.counter);
+  }
+  if (g_bone_modal.edits_known) {
+    for (Layer *l : g_bone_modal.touch) {
+      layer_touch(*l);
+    }
   }
   if (confirm) {
     bone_modal_confirm(C, delta, degrees, factor);
@@ -11139,7 +11195,7 @@ static void modal_rest_follow(ModalTransform &modal)
 
 bool viewport_precise_edit()
 {
-  return g_modal.active;
+  return g_modal.active || (g_bone_modal.active && g_bone_modal.edits_known);
 }
 
 /* Set by the viewport being middle-dragged, each frame (viewport_navigating). */

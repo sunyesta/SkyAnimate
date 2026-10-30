@@ -21,6 +21,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "anim/channel.hh"
@@ -169,6 +170,13 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
 /* Works smart actions out again for the bones as they are now (a bone turned without changing
  * frame). animation_sync does this when the frame hasn't moved. */
 void animation_refresh_smart(Document &doc);
+/* A bone drag on `doc` begins: until it ends, the layers smart actions play into are the ones found now (it
+ * changes no layers, only bones), and the drag works smart actions out again itself every update, so
+ * animation_sync leaves them. End it before the document is put back or replaced. */
+void animation_smart_drag_begin(Document &doc);
+void animation_smart_drag_end();
+/* The layers smart actions play into during the bone drag going on (their ids). */
+std::unordered_set<uint64_t> animation_smart_drag_layers();
 
 /* The document's Simulation settings (gravity, wind, wind_direction, wind_gusts, wind_gust_speed,
  * wind_turbulence) as channels of Document::simulation, made ready. */

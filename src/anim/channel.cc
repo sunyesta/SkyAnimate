@@ -1,6 +1,7 @@
 #include "anim/channel.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <functional>
 
@@ -363,12 +364,41 @@ template<typename T> const Key<T> *Channel<T>::key_at(int frame) const
   return const_cast<Channel<T> *>(this)->key_at(frame);
 }
 
+static std::atomic<uint64_t> g_keys_generation{0};
+static thread_local int g_keys_quiet = 0;
+
+uint64_t channel_keys_generation()
+{
+  return g_keys_generation.load(std::memory_order_relaxed);
+}
+
+ChannelKeysQuiet::ChannelKeysQuiet()
+{
+  g_keys_quiet++;
+}
+
+ChannelKeysQuiet::~ChannelKeysQuiet()
+{
+  g_keys_quiet--;
+}
+
+static void keys_changed()
+{
+  if (g_keys_quiet == 0) {
+    g_keys_generation.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
 template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value)
 {
   if (Key<T> *existing = key_at(frame)) {
+    if (!(existing->value == value)) {
+      keys_changed();
+    }
     existing->value = value;
     return *existing;
   }
+  keys_changed();
   const auto at = std::lower_bound(keys.begin(), keys.end(), frame,
                                    [](const Key<T> &k, int f) { return k.frame < f; });
   Key<T> key;
@@ -418,6 +448,9 @@ template<typename T> bool Channel<T>::remove_key(int frame)
 {
   const size_t before = keys.size();
   std::erase_if(keys, [frame](const Key<T> &k) { return k.frame == frame; });
+  if (keys.size() != before) {
+    keys_changed();
+  }
   return keys.size() != before;
 }
 

@@ -176,20 +176,20 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
   /* A selected bone layer, or a group with Edit Descendants (whose drawings are edited with it), brings
    * the animated layers inside it, listed right after it, as Blender's summary shows an armature's
    * children. */
-  /* Whether a layer has keys, asked of every layer in a big group each frame (twice): kept until the next
-   * change, frame or action, since keys come from recording edits, which those bring. */
+  /* Whether a layer has keys, asked of every layer in a big group each frame (twice): kept until a key is set
+   * or removed, the next change or another action (not every frame change: playing records nothing new). */
   static const Document *keys_doc = nullptr;
   static uint64_t keys_changes = 0;
-  static int keys_frame = 0;
+  static uint64_t keys_generation = 0;
   static std::string keys_action;
   static std::map<uint64_t, bool> has_keys;
   if (C.document && (!C.undo || keys_doc != C.document || keys_changes != C.undo->change_count() ||
-                     keys_frame != C.document->frame_current || keys_action != C.document->action))
+                     keys_generation != channel_keys_generation() || keys_action != C.document->action))
   {
     has_keys.clear();
     keys_doc = C.document;
     keys_changes = C.undo ? C.undo->change_count() : 0;
-    keys_frame = C.document->frame_current;
+    keys_generation = channel_keys_generation();
     keys_action = C.document->action;
   }
   const auto keyed = [&](const Layer &l) {

@@ -1121,19 +1121,21 @@ static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
   if (layer.is_reference() && layer.reference.match_original) {
     return false;
   }
+  /* Asked of every layer before every undo step and frame change: whether it has new points first, which
+   * costs little, before working out its bones' pose. */
+  VectorDrawing &drawing = layer.drawing;
+  if (layer.type != LayerType::Vector ||
+      std::none_of(drawing.points.begin(), drawing.points.end(), [](const MeshPoint &p) { return p.weights.empty(); }))
+  {
+    return false;
+  }
   Deformer d;
   if (!weightable(doc, layer, d)) {
     return false;
   }
-  VectorDrawing &drawing = layer.drawing;
   std::vector<bool> weighted(drawing.points.size());
-  bool any_new = false;
   for (size_t i = 0; i < drawing.points.size(); i++) {
     weighted[i] = !drawing.points[i].weights.empty();
-    any_new |= !weighted[i];
-  }
-  if (!any_new) {
-    return false;
   }
   std::vector<std::vector<BoneWeight>> found(drawing.points.size());
   for (size_t i = 0; i < drawing.points.size(); i++) {
@@ -1158,8 +1160,10 @@ static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
 
 bool document_weight_new_points(Document &doc, bool exact)
 {
-  /* Asked before every undo step: each layer's bone layer found by an index (weighing changes no layers). */
+  /* Asked before every undo step: each layer's bone layer found by an index, and each bone layer posed once
+   * (weighing changes no layers, nor bones). */
   const LayerIndexScope layer_index(doc);
+  const ArmaturePoseCacheScope poses;
   bool changed = false;
   const auto visit = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {

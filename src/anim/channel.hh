@@ -200,6 +200,17 @@ template<typename T> struct Channel {
 extern template struct Channel<float>;
 extern template struct Channel<float2>;
 
+/* Grows each time a key is added, changed or removed (set_key, remove_key), anywhere: for what is kept until
+ * keys change. */
+uint64_t channel_keys_generation();
+/* While one is alive (on this thread), keys set on scratch channels (a copy sampled and dropped) don't count. */
+struct ChannelKeysQuiet {
+  ChannelKeysQuiet();
+  ~ChannelKeysQuiet();
+  ChannelKeysQuiet(const ChannelKeysQuiet &) = delete;
+  ChannelKeysQuiet &operator=(const ChannelKeysQuiet &) = delete;
+};
+
 /* A key's interpolation and its settings: everything but its frame, value, colour and selection. */
 struct KeySettings {
   Interp interp = Interp::Smooth;

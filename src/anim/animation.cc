@@ -3,6 +3,8 @@
 #include "anim/drivers.hh"
 
 #include <algorithm>
+#include <bit>
+#include <functional>
 #include <string_view>
 #include <cstdlib>
 #include <cmath>
@@ -181,6 +183,33 @@ template<typename P, typename F> static void layers_for_each_channel_if(std::vec
 static constexpr auto smart_added = [](const auto &ch) {
   return ch.smart_live || !(ch.smart == std::decay_t<decltype(ch.smart)>{});
 };
+
+/* The layers with smart action data: something added to take off, or keys in an action. A smart bone being
+ * turned has its actions worked out again every update, and a big rig's thousands of other layers have
+ * nothing to do with them. */
+static void find_smart_layers(std::vector<Layer> &layers, std::unordered_set<const Layer *> &r_found)
+{
+  for (Layer &layer : layers) {
+    bool any = false;
+    layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
+      any = any || smart_added(ch) || !ch.actions.empty();
+    });
+    if (any) {
+      r_found.insert(&layer);
+    }
+    find_smart_layers(layer.children, r_found);
+  }
+}
+
+static void find_smart_layers(Document &doc, std::unordered_set<const Layer *> &r_found)
+{
+  find_smart_layers(doc.layers, r_found);
+}
+
+/* While a bone drag runs (animation_smart_drag_begin): its document and the layers found as it began. The
+ * drag works smart actions out again itself every update, its layers staying where they are. */
+static const Document *g_drag_doc = nullptr;
+static std::unordered_set<const Layer *> g_drag_layers;
 
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
  * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
@@ -518,15 +547,53 @@ void animation_record(Document &doc)
   }
 }
 
+/* Every layer's channels evaluated on `frame`. Just after animation_record (`recorded`: every value is as the
+ * edits left it, and recorded), a layer it would change nothing on is left as it is: no keys, nothing a smart
+ * action added, each channel's value its last recorded one. Most of a big rig's layers are like that, and
+ * evaluating one turns its drawing's points into their changes from the setup pose and back. Bone layers always,
+ * as evaluating also settles their bones. Otherwise every layer: evaluating also drops edits not recorded. */
+static void evaluate_layers(std::vector<Layer> &layers, int frame, bool recorded,
+                            std::unordered_set<const Layer *> *r_smart)
+{
+  for (Layer &layer : layers) {
+    bool needed = !recorded || layer.is_bone_layer();
+    bool actions = false;
+    if (!needed || r_smart) {
+      layer_for_each_channel<false>(layer, [&](auto &ch, auto &value) {
+        needed = needed || ch.animated() || smart_added(ch) || !ch.has_last || !(ch.last == value);
+        actions = actions || !ch.actions.empty();
+      });
+    }
+    if (needed) {
+      layer_for_each_channel(layer, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
+    }
+    /* What smart actions play into, found on the way (evaluating took off what they had added). */
+    if (r_smart && actions) {
+      r_smart->insert(&layer);
+    }
+    evaluate_layers(layer.children, frame, recorded, r_smart);
+  }
+}
+
+static void evaluate_frame(Document &doc, int frame, bool recorded);
+
 void animation_evaluate(Document &doc, int frame)
 {
-  layers_for_each_channel(doc.layers, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
+  evaluate_frame(doc, frame, false);
+}
+
+static void evaluate_frame(Document &doc, int frame, bool recorded)
+{
+  std::unordered_set<const Layer *> smart;
+  evaluate_layers(doc.layers, frame, recorded, recorded ? &smart : nullptr);
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   simulation_out(doc);
   layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   doc.smart_applied = false;
+  g_smart_layers = recorded ? &smart : nullptr;
   apply_smart_actions(doc, frame);
+  g_smart_layers = nullptr;
   /* Drivers on top of keys and smart actions, before references copy their originals. A driven
    * smart bone plays its smart action, and drivers reading what that moves see it. */
   if (drivers_evaluate(doc)) {
@@ -590,13 +657,52 @@ void animation_strip_smart(Document &doc)
 
 static uint64_t g_frame_changes = 0;
 
+/* What smart actions are worked out from, as one number: the frame, the timeline being edited, each layer as it is
+ * (its revision: an edit the app can't follow touches every layer), and the smart bones' angles. */
+static uint64_t smart_inputs(const Document &doc)
+{
+  uint64_t h = 0xcbf29ce484222325ull;
+  const auto mix = [&](uint64_t v) { h = (h ^ v) * 0x100000001b3ull; };
+  mix(uint64_t(reinterpret_cast<uintptr_t>(&doc)));
+  mix(uint64_t(uint32_t(doc.frame_current)));
+  mix(std::hash<std::string>()(doc.action));
+  mix(doc.action_layer);
+  mix(doc.smart_applied ? 1 : 2);
+  const auto walk = [&](auto &&self, const std::vector<Layer> &layers) -> void {
+    for (const Layer &layer : layers) {
+      mix(layer.id);
+      mix(layer.revision.value);
+      if (layer.is_bone_layer()) {
+        for (const std::string &name : layer.actions) {
+          if (const Bone *b = smart_action_bone(layer, name)) {
+            mix(uint64_t(std::bit_cast<uint32_t>(b->angle)));
+            mix(uint64_t(std::bit_cast<uint32_t>(b->turn)));
+          }
+        }
+      }
+      self(self, layer.children);
+    }
+  };
+  walk(walk, doc.layers);
+  return h;
+}
+
 void animation_sync(Document &doc)
 {
   if (doc.evaluated_frame == doc.frame_current) {
     /* Same frame, but bones may have turned: smart actions and dynamics follow at once (and a
-     * setting whose keys just went shows its value). */
+     * setting whose keys just went shows its value). Not when nothing they are worked out from has
+     * changed since: on a big rig that is most of what an idle frame costs. */
     simulation_in(doc);
-    animation_refresh_smart(doc);
+    static uint64_t refreshed = 0;
+    if (g_drag_doc == &doc) {
+      /* A bone drag works them out itself, every update. */
+      refreshed = 0;
+    }
+    else if (const uint64_t inputs = smart_inputs(doc); inputs != refreshed) {
+      animation_refresh_smart(doc);
+      refreshed = smart_inputs(doc);
+    }
     /* Drivers follow what they read at once (a bone turned on this frame), and smart actions what
      * they pose. */
     if (drivers_evaluate(doc)) {
@@ -611,11 +717,12 @@ void animation_sync(Document &doc)
     shape_limits_update(doc);
     return;
   }
-  if (doc.evaluated_frame >= 0) {
+  const bool recorded = doc.evaluated_frame >= 0;
+  if (recorded) {
     animation_record(doc);
     g_frame_changes++;
   }
-  animation_evaluate(doc, doc.frame_current);
+  evaluate_frame(doc, doc.frame_current, recorded);
 }
 
 /* --- Recording while playing ------------------------------------------------------------------ */
@@ -891,6 +998,7 @@ const Bone *smart_action_bone(const Layer &owner, const std::string &action)
 template<typename T>
 static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t, bool constant = false)
 {
+  const ChannelKeysQuiet scratch;
   Channel<T> c;
   c.keys = keys;
   /* A yes/no channel (visibility, Draw Order) holds each key until the next, between frames too: the
@@ -1645,24 +1753,16 @@ void animation_refresh_smart(Document &doc)
   /* Take off what was added (from the value and its recorded value alike), then work it out again
    * from the bones as they are now. Always, whatever `smart_applied` says: a drag puts the bones
    * back as they were when it began every update, their smart offsets with them (a smart bone
-   * turned past its action's end and then back the other way kept the end pose). */
-  /* The few layers with something to take off or keys in an action: a smart bone being turned has this
-   * worked out again every update, and a big rig's thousands of other layers have nothing. */
+   * turned past its action's end and then back the other way kept the end pose). Only the few layers
+   * with smart action data are looked at: found now, or kept by a bone drag. */
   std::unordered_set<const Layer *> involved;
-  const auto find = [&](auto &&self, std::vector<Layer> &layers) -> void {
-    for (Layer &layer : layers) {
-      bool any = false;
-      layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
-        any = any || smart_added(ch) || !ch.actions.empty();
-      });
-      if (any) {
-        involved.insert(&layer);
-      }
-      self(self, layer.children);
-    }
-  };
-  find(find, doc.layers);
-  g_smart_layers = &involved;
+  if (g_drag_doc == &doc) {
+    g_smart_layers = &g_drag_layers;
+  }
+  else {
+    find_smart_layers(doc, involved);
+    g_smart_layers = &involved;
+  }
   layers_for_each_channel_if(doc.layers, smart_added, [&](auto &ch, auto &value) {
     value -= ch.smart;
     ch.last -= ch.smart;
@@ -1672,6 +1772,28 @@ void animation_refresh_smart(Document &doc)
   doc.smart_applied = false;
   apply_smart_actions(doc, doc.frame_current);
   g_smart_layers = nullptr;
+}
+
+void animation_smart_drag_begin(Document &doc)
+{
+  g_drag_layers.clear();
+  find_smart_layers(doc, g_drag_layers);
+  g_drag_doc = &doc;
+}
+
+std::unordered_set<uint64_t> animation_smart_drag_layers()
+{
+  std::unordered_set<uint64_t> ids;
+  for (const Layer *l : g_drag_layers) {
+    ids.insert(l->id);
+  }
+  return ids;
+}
+
+void animation_smart_drag_end()
+{
+  g_drag_doc = nullptr;
+  g_drag_layers.clear();
 }
 
 static void apply_smart_actions_playing(Document &doc, int frame);
@@ -1688,7 +1810,17 @@ static void switches_clear_rig(std::vector<Layer> &layers)
 static void apply_smart_actions(Document &doc, int frame)
 {
   switches_clear_rig(doc.layers);
+  /* Each action plays into the layers with smart action data only, found once for them all. */
+  std::unordered_set<const Layer *> involved;
+  const bool own = g_smart_layers == nullptr;
+  if (own) {
+    find_smart_layers(doc, involved);
+    g_smart_layers = &involved;
+  }
   apply_smart_actions_playing(doc, frame);
+  if (own) {
+    g_smart_layers = nullptr;
+  }
   switches_resolve(doc, frame);
 }
 

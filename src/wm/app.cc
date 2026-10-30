@@ -370,7 +370,7 @@ void App::main_loop()
     playback_update();
     /* Mid-drag, bone dynamics keep their simulated frames until the mouse comes up. */
     dynamics_hold_cache(wm_.modal_running || ImGui::IsAnyMouseDown());
-    switch_thumbnails_hold(wm_.modal_running || ImGui::IsAnyMouseDown());
+    switch_thumbnails_hold(wm_.modal_running || ImGui::IsAnyMouseDown() || wm_.playing);
     /* Something dragged while playing: the frame left is keyed with where the drag has it (auto-key
      * on), as Blender records, and the drag goes on from the new frame. */
     const bool recording = doc_.frame_current != frame_before && viewport_drag_active();
@@ -1416,9 +1416,9 @@ void App::record_selection()
   if (revision_latest() == selection_seen_revision_ && undo_.change_count() == selection_seen_changes_) {
     return;
   }
-  /* Mid-drag nothing is recorded: looked at once it's over (hashing every point's selection each frame of a drag
-   * costs a big document milliseconds). */
-  if (wm_.modal_running || ImGui::IsAnyMouseDown()) {
+  /* Mid-drag or playing nothing is recorded: looked at once it's over (hashing every point's selection each frame
+   * of a drag costs a big document milliseconds, and playing changes no selection). */
+  if (wm_.modal_running || ImGui::IsAnyMouseDown() || wm_.playing) {
     return;
   }
   selection_seen_revision_ = revision_latest();

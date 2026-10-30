@@ -1,6 +1,7 @@
 #include "editors/switch_thumbnails.hh"
 
 #include <algorithm>
+#include <bit>
 #include <cfloat>
 #include <map>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <SDL3/SDL_opengl.h>
 
 #include "anim/deform.hh"
+#include "data/bones.hh"
 #include "data/document.hh"
 #include "gpu/scene_renderer.hh"
 #include "media/media.hh"
@@ -30,7 +32,9 @@ bool g_hold = false;
 int g_budget_frame = -1;
 int g_budget = 0;
 /* Drawn again per frame at most: the rest wait their turn, showing their last picture. */
-constexpr int PER_FRAME = 3;
+constexpr int PER_FRAME = 2;
+/* Seconds the document stays unchanged before pictures out of date are drawn again. */
+constexpr double QUIET = 0.3;
 
 uint64_t mix(uint64_t h, uint64_t v)
 {
@@ -63,6 +67,41 @@ bool children_bounds(const Document &doc, const Layer &sw, float2 *r_min, float2
   return any;
 }
 
+uint64_t mix(uint64_t h, const Transform2D &t)
+{
+  for (const float v : {t.a, t.b, t.c, t.d, t.tx, t.ty}) {
+    h = mix(h, uint64_t(std::bit_cast<uint32_t>(v)));
+  }
+  return h;
+}
+
+/* What the child's picture is drawn from: its layers as they are (their revisions), where the switch is, and
+ * the poses of the bones that move them. Not the whole document's latest revision: picking a bone or any other
+ * edit elsewhere would draw every thumbnail again. */
+uint64_t content_stamp(const Document &doc, const Layer &sw, const Layer &child)
+{
+  uint64_t h = mix(0, layer_world_transform(doc, sw.id));
+  const auto pose = [&](const Layer &armature) {
+    for (const BonePose &p : armature_pose(armature, doc.frame_current == 0)) {
+      h = mix(mix(h, p.id), p.skin);
+    }
+  };
+  if (const Layer *armature = layer_armature(doc, sw.id)) {
+    pose(*armature);
+  }
+  const auto walk = [&](auto &&self, const Layer &l) -> void {
+    h = mix(h, l.revision.value);
+    if (l.is_bone_layer()) {
+      pose(l);
+    }
+    for (const Layer &c : l.children) {
+      self(self, c);
+    }
+  };
+  walk(walk, child);
+  return h;
+}
+
 }  // namespace
 
 void switch_thumbnails_hold(bool hold)
@@ -73,10 +112,25 @@ void switch_thumbnails_hold(bool hold)
 unsigned int switch_thumbnail(Document &doc, const Layer &sw, const Layer &child, int size)
 {
   Thumb &thumb = g_thumbs[child.id];
-  const uint64_t stamp = mix(mix(mix(mix(revision_latest(), uint64_t(doc.frame_current)), uint64_t(size)),
+  if (thumb.drawn && g_hold) {
+    return thumb.texture;
+  }
+  const uint64_t stamp = mix(mix(mix(mix(content_stamp(doc, sw, child), uint64_t(doc.frame_current)), uint64_t(size)),
                                  media_generation()),
                              sw.id);
-  if (thumb.drawn && (thumb.stamp == stamp || g_hold)) {
+  if (thumb.drawn && thumb.stamp == stamp) {
+    return thumb.texture;
+  }
+  /* Drawn again once the document has been still a moment: a click or an undo can touch every layer, and drawing a
+   * big switch's pictures again (each read back from the GPU) right then makes the click itself slow. */
+  static uint64_t last_latest = 0;
+  static double changed_at = 0.0;
+  const double now = ImGui::GetTime();
+  if (revision_latest() != last_latest) {
+    last_latest = revision_latest();
+    changed_at = now;
+  }
+  if (thumb.drawn && now - changed_at < QUIET) {
     return thumb.texture;
   }
   if (g_budget_frame != ImGui::GetFrameCount()) {
@@ -87,8 +141,23 @@ unsigned int switch_thumbnail(Document &doc, const Layer &sw, const Layer &child
     return thumb.texture;
   }
   g_budget--;
-  float2 lo, hi;
-  if (!children_bounds(doc, sw, &lo, &hi)) {
+  /* The box is the same for every child of the switch: worked out once for this state of the document (a big
+   * switch's children are thousands of layers), with each layer and bone pose found once. */
+  static struct {
+    uint64_t sw = 0, stamp = 0;
+    bool any = false;
+    float2 lo, hi;
+  } box;
+  const uint64_t box_stamp = mix(mix(revision_latest(), uint64_t(doc.frame_current)), media_generation());
+  if (box.sw != sw.id || box.stamp != box_stamp) {
+    const LayerIndexScope layer_index(doc);
+    const ArmaturePoseCacheScope poses;
+    box.sw = sw.id;
+    box.stamp = box_stamp;
+    box.any = children_bounds(doc, sw, &box.lo, &box.hi);
+  }
+  const float2 lo = box.lo, hi = box.hi;
+  if (!box.any) {
     thumb.stamp = stamp;
     thumb.drawn = true;
     return thumb.texture;

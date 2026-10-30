@@ -25,22 +25,71 @@ template<typename LayerT, typename ListT> static LayerT *find_in(ListT &list, ui
   return nullptr;
 }
 
-/* The index of a LayerIndexScope: the document it is for and its layers by id. */
+/* The index of a LayerIndexScope: the document it is for and its layers by id. Ids are small whole numbers, so
+ * they index arrays (kept from one scope to the next: a big document is indexed several times a frame, and
+ * filling arrays allocates nothing); one too big for that goes in a map. */
 struct LayerIndex {
+  static constexpr uint64_t DENSE_MAX = 1u << 20;
   const Document *doc = nullptr;
-  std::unordered_map<uint64_t, const Layer *> layers;
+  std::vector<const Layer *> layers;
   /* Each layer's group (null at the top). */
-  std::unordered_map<uint64_t, const Layer *> parents;
+  std::vector<const Layer *> parents;
+  std::unordered_map<uint64_t, std::pair<const Layer *, const Layer *>> sparse;
+  /* The ids filled in, to empty them again. */
+  std::vector<uint64_t> used;
   /* Whether any layer has a Boolean modifier (what merge_takes_from looks for). */
   bool any_boolean = false;
+
+  void add(const Layer &layer, const Layer *parent)
+  {
+    if (layer.id >= DENSE_MAX) {
+      sparse[layer.id] = {&layer, parent};
+      return;
+    }
+    if (layer.id >= layers.size()) {
+      layers.resize(size_t(layer.id) + 1, nullptr);
+      parents.resize(size_t(layer.id) + 1, nullptr);
+    }
+    layers[size_t(layer.id)] = &layer;
+    parents[size_t(layer.id)] = parent;
+    used.push_back(layer.id);
+  }
+  const Layer *find(uint64_t id) const
+  {
+    if (id < layers.size()) {
+      return layers[size_t(id)];
+    }
+    const auto it = sparse.find(id);
+    return it == sparse.end() ? nullptr : it->second.first;
+  }
+  /* The layer's group (null at the top, or for a layer not in the document). */
+  const Layer *parent(uint64_t id) const
+  {
+    if (id < parents.size()) {
+      return parents[size_t(id)];
+    }
+    const auto it = sparse.find(id);
+    return it == sparse.end() ? nullptr : it->second.second;
+  }
+  void clear()
+  {
+    for (const uint64_t id : used) {
+      layers[size_t(id)] = nullptr;
+      parents[size_t(id)] = nullptr;
+    }
+    used.clear();
+    sparse.clear();
+    any_boolean = false;
+    doc = nullptr;
+  }
 };
+static thread_local LayerIndex g_layer_index_storage;
 static thread_local LayerIndex *g_layer_index = nullptr;
 
 static void index_layers(const std::vector<Layer> &list, const Layer *parent, LayerIndex &index)
 {
   for (const Layer &layer : list) {
-    index.layers.emplace(layer.id, &layer);
-    index.parents.emplace(layer.id, parent);
+    index.add(layer, parent);
     for (const Modifier &m : layer.modifiers) {
       index.any_boolean = index.any_boolean || m.type == ModifierType::Boolean;
     }
@@ -100,7 +149,7 @@ LayerIndexScope::LayerIndexScope(const Document &doc)
   if (g_layer_index) {
     return;
   }
-  g_layer_index = new LayerIndex;
+  g_layer_index = &g_layer_index_storage;
   g_layer_index->doc = &doc;
   index_layers(doc.layers, nullptr, *g_layer_index);
   owner_ = true;
@@ -109,7 +158,7 @@ LayerIndexScope::LayerIndexScope(const Document &doc)
 LayerIndexScope::~LayerIndexScope()
 {
   if (owner_) {
-    delete g_layer_index;
+    g_layer_index->clear();
     g_layer_index = nullptr;
   }
 }
@@ -120,8 +169,7 @@ static const Layer *indexed(const Document &doc, uint64_t id, bool *r_used)
   if (!*r_used) {
     return nullptr;
   }
-  const auto it = g_layer_index->layers.find(id);
-  return it == g_layer_index->layers.end() ? nullptr : it->second;
+  return g_layer_index->find(id);
 }
 
 Layer *layer_find(Document &doc, uint64_t id)
@@ -195,8 +243,7 @@ static Layer *parent_in(std::vector<Layer> &list, Layer *parent, uint64_t id)
 Layer *layer_parent(Document &doc, uint64_t id)
 {
   if (const LayerIndex *index = index_for(doc)) {
-    const auto it = index->parents.find(id);
-    return it == index->parents.end() ? nullptr : const_cast<Layer *>(it->second);
+    return const_cast<Layer *>(index->parent(id));
   }
   return parent_in(doc.layers, nullptr, id);
 }
@@ -255,13 +302,8 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
 static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, uint64_t id, Transform2D *r_transform)
 {
   std::vector<const Layer *> chain;
-  for (auto it = index.layers.find(id); it != index.layers.end();) {
-    chain.push_back(it->second);
-    const auto up = index.parents.find(it->second->id);
-    if (up == index.parents.end() || !up->second) {
-      break;
-    }
-    it = index.layers.find(up->second->id);
+  for (const Layer *l = index.find(id); l; l = index.parent(l->id)) {
+    chain.push_back(l);
   }
   if (chain.empty()) {
     return false;
