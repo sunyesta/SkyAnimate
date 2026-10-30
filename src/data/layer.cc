@@ -229,6 +229,7 @@ const char *layer_type_name(LayerType type)
          : type == LayerType::Group ? "Group"
          : type == LayerType::Media ? "Media"
          : type == LayerType::Text  ? "Text"
+         : type == LayerType::Switch ? "Switch"
                                     : "Vector";
 }
 
@@ -264,7 +265,7 @@ const rna::StructRNA &Layer::rna()
     s.name = "Layer";
     PropertyRNA type_prop = def_enum<Layer, LayerType>("type", "Type", "Kind of layer", &Layer::type,
                                                        {{"VECTOR", "Vector"}, {"GROUP", "Group"}, {"BONE", "Bone"},
-                                                        {"MEDIA", "Media"}, {"TEXT", "Text"}});
+                                                        {"MEDIA", "Media"}, {"TEXT", "Text"}, {"SWITCH", "Switch"}});
     type_prop.set = nullptr;
     s.properties = {
         def_string<Layer>("name", "Name", "Name shown in the Layers editor", &Layer::name),

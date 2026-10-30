@@ -702,7 +702,7 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
   else {
     /* Faded while hidden: by its eye, or as a guide while the viewport hides guides. */
     const bool guide_hidden = !layer.render_visible && !(doc.overlays.show && doc.overlays.guides);
-    const ImU32 text = layer.visible && !guide_hidden ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
+    const ImU32 text = layer.shown() && !guide_hidden ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
     dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
     float after = x + ImGui::CalcTextSize(layer.name.c_str()).x + 8.0f;
     const float limit = row_min.x + row_w - h * 4.0f;
@@ -906,7 +906,7 @@ static void draw_order_view(Context &C)
     float x = row_min.x + 8.0f;
     icon_layer_type(dl, ImVec2(x + h * 0.4f, cy), h * 0.32f * 1.3f, layer);
     x += h * 0.9f;
-    const ImU32 text = layer.visible ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
+    const ImU32 text = layer.shown() ? IM_COL32(0xe6, 0xe6, 0xe6, 255) : IM_COL32(0x80, 0x80, 0x80, 255);
     dl->AddText(ImVec2(x, cy - ImGui::GetFontSize() * 0.5f), text, layer.name.c_str());
     if (const Layer *parent = layer_parent(doc, layer.id)) {
       const float name_w = ImGui::CalcTextSize(layer.name.c_str()).x;
@@ -949,6 +949,7 @@ void layers_draw(Area &area, Context &C)
   if (ImGui::BeginPopup("##add_layer")) {
     menu_op(C, "Vector Layer", "layer.new");
     menu_op(C, "Group", "layer.new_group");
+    menu_op(C, "Switch", "layer.new_switch");
     menu_op(C, "Bone Layer", "layer.new_bone");
     menu_op(C, "Text", "layer.new_text");
     menu_op(C, "Media...", "media.import");

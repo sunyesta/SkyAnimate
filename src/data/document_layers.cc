@@ -4,6 +4,7 @@
 #include <map>
 #include <unordered_map>
 
+#include "anim/switch.hh"
 #include "data/document.hh"
 
 #include "data/bones.hh"
@@ -532,7 +533,10 @@ Layer &document_add_layer(Document &doc, LayerType type, const std::string &name
   layer.id = doc.next_layer_id++;
   layer.type = type;
   layer.edit_descendants = type != LayerType::Bone;
-  layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Bone ? "Bones" : type == LayerType::Group ? "Group" : "Layer")
+  layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Bone     ? "Bones"
+                                                              : type == LayerType::Group  ? "Group"
+                                                              : type == LayerType::Switch ? "Switch"
+                                                                                          : "Layer")
                             : name;
 
   /* Above the active layer, in the same group, as Moho and Blender add new items. */
@@ -565,8 +569,9 @@ static void remap_references(Layer &layer, const std::map<uint64_t, uint64_t> &r
   if (auto it = remap.find(layer.reference_source); it != remap.end()) {
     layer.reference_source = it->second;
   }
-  /* Masks naming copied layers name their copies. */
+  /* Masks naming copied layers name their copies, and a switch's keys its copied children. */
   layer_masks_remap(layer, remap);
+  switch_remap(layer, remap);
   for (Layer &child : layer.children) {
     remap_references(child, remap);
   }
@@ -734,6 +739,9 @@ bool document_reparent_layer(Document &doc, uint64_t id, uint64_t new_parent, in
   std::vector<Layer> &destination = new_parent ? layer_find(doc, new_parent)->children : doc.layers;
   index = std::clamp(index, 0, int(destination.size()));
   destination.insert(destination.begin() + index, std::move(moving));
+  if (new_parent) {
+    switch_child_added(*layer_find(doc, new_parent), id);
+  }
   return true;
 }
 

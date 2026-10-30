@@ -58,7 +58,7 @@ std::vector<Layer *> document_editable_layers(Document &doc)
     layers.push_back(active);
   }
   for (const Layer *layer : document_layers_flat(doc)) {
-    if (layer->selected && layer != active && layer->visible && layer->has_drawing() && !layer->locked)
+    if (layer->selected && layer != active && layer->shown() && layer->has_drawing() && !layer->locked)
     {
       layers.push_back(layer_find(doc, layer->id));
     }
@@ -67,7 +67,7 @@ std::vector<Layer *> document_editable_layers(Document &doc)
    * picked (a hidden or locked one, or one inside a hidden group, stays out). */
   const auto take_descendants = [&](auto &&self, Layer &group) -> void {
     for (Layer &child : group.children) {
-      if (!child.visible) {
+      if (!child.shown()) {
         continue;
       }
       if (child.has_drawing() && !child.locked && std::find(layers.begin(), layers.end(), &child) == layers.end()) {
@@ -78,7 +78,7 @@ std::vector<Layer *> document_editable_layers(Document &doc)
   };
   for (const Layer *flat : document_layers_flat(doc)) {
     if ((flat->selected || flat->id == doc.active_layer) && flat->is_group() && flat->edit_descendants &&
-        flat->visible)
+        flat->shown())
     {
       take_descendants(take_descendants, *layer_find(doc, flat->id));
     }
@@ -87,7 +87,7 @@ std::vector<Layer *> document_editable_layers(Document &doc)
   if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
     for (const Layer *layer : document_layers_flat(doc)) {
       const Layer *owner = layer_armature(doc, layer->id);
-      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->visible && layer->has_drawing() &&
+      if (owner && owner->id == bones->id && layer_edited_with_bones(doc, *layer) && layer->shown() && layer->has_drawing() &&
           !layer->locked &&
           std::find(layers.begin(), layers.end(), layer) == layers.end())
       {
@@ -136,7 +136,7 @@ MirrorSelection mirror_selection_begin(Context &C)
       }
       continue;
     }
-    if (!partner->visible || partner->locked || partner->type != LayerType::Vector ||
+    if (!partner->shown() || partner->locked || partner->type != LayerType::Vector ||
         (partner->is_reference() && !partner->reference.edit_points))
     {
       continue;

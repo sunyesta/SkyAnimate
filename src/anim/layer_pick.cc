@@ -85,7 +85,7 @@ static bool drawing_covers(const VectorDrawing &drawing, float2 p, float extra, 
 static bool layer_covers(const Document &doc, const Layer &layer, float2 at, float extra, bool fills_only,
                          bool filled, bool shown_only, bool strokes_only = false, bool inside_stroke = false)
 {
-  if (shown_only && !layer.visible) {
+  if (shown_only && !layer.shown()) {
     return false;
   }
   if (layer.is_group()) {
@@ -133,7 +133,7 @@ static std::vector<LayerMask> live_rows(const Document &doc, const Layer &layer)
 /* Clip to Below's base at `at`, as it shows: its shown layers, each where its own masks let it. */
 static bool clip_base_shows(const Document &doc, const Layer &base, float2 at, bool fills_only, int depth)
 {
-  if (!base.visible) {
+  if (!base.shown()) {
     return false;
   }
   if (base.is_group()) {

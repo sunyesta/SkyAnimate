@@ -498,7 +498,7 @@ bool SceneRenderer::shown(const Layer &layer) const
   /* A layer not rendered is a guide: in the viewport only while it shows guides (its overlays), or a
    * media one in Media View. */
   const bool media_view = media_view_ && !final_render_ && layer.is_media();
-  return layer.visible && (layer.render_visible || (!final_render_ && show_guides_) || media_view);
+  return layer.shown() && (layer.render_visible || (!final_render_ && show_guides_) || media_view);
 }
 
 bool SceneRenderer::full_opacity(const Layer &layer) const

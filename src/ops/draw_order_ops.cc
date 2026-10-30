@@ -44,7 +44,7 @@ static bool draw_order_poll(Context &C)
 
 static bool drawn(const Layer &l)
 {
-  return l.visible;
+  return l.shown();
 }
 
 /* A drawing layer's box in document space, as drawn now. */

@@ -113,8 +113,9 @@ struct ReferenceSettings {
 
 /* Bone: a group that owns a skeleton and moves its children with it (Moho's bone layer). Media: an
  * image, image sequence, video or sound (data/media_layer.hh). Text: text kept as typed, its letters'
- * outlines its drawing (data/text.hh). */
-enum class LayerType { Vector, Group, Bone, Media, Text };
+ * outlines its drawing (data/text.hh). Switch: a group that shows one of its children, or none
+ * (anim/switch.hh). */
+enum class LayerType { Vector, Group, Bone, Media, Text, Switch };
 
 /* --- Media layers ------------------------------------------------------------------------------
  * A Media layer shows clips along the timeline, as a video editor's track: each clip is a file shown
@@ -858,6 +859,21 @@ struct Layer {
     c.constant = true;
     return c;
   }();
+  /* Switch layers (anim/switch.hh): the child shown, as keyed: its id, 0 for none, SWITCH_RIG to hand
+   * it back to the rig. Keyed like visibility: each key holds until the next; frame 0 is the default. */
+  float switch_value = 0.0f;
+  Channel<float> switch_keys = [] {
+    Channel<float> c;
+    c.constant = true;
+    return c;
+  }();
+  /* Runtime, worked out every frame (switches_resolve): the child a switch shows (0: none), what its
+   * smart actions pick (switch_rig, when switch_rig_set), and for every layer whether a switch above
+   * it shows another child, which hides it without touching its own visibility. */
+  uint64_t switch_shown = 0;
+  float switch_rig = 0.0f;
+  bool switch_rig_set = false;
+  bool switched_out = false;
 
   /* Its masks, as cards (see LayerMask). */
   std::vector<LayerMask> masks;
@@ -923,7 +939,10 @@ struct Layer {
   int pose_frame = 0;
   std::map<uint64_t, BoneDynamicsState> dynamics_now;
 
-  bool is_group() const { return type == LayerType::Group || type == LayerType::Bone; }
+  bool is_group() const { return type == LayerType::Group || type == LayerType::Bone || type == LayerType::Switch; }
+  bool is_switch() const { return type == LayerType::Switch; }
+  /* Visible, and not a child a switch above it isn't showing now: what is drawn, picked and edited. */
+  bool shown() const { return visible && !switched_out; }
   bool is_bone_layer() const { return type == LayerType::Bone; }
   bool is_media() const { return type == LayerType::Media; }
   bool is_text() const { return type == LayerType::Text; }

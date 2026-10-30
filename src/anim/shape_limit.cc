@@ -163,7 +163,7 @@ void shape_limits_update(Document &doc)
         std::vector<float2> carried;
         for (const Layer *l : document_layers_flat(doc)) {
           const bool picked = c.fit_layer != 0 ? l->id == c.fit_layer : l->parent_bone == b.id;
-          if (!picked || !l->has_drawing() || !l->visible || layer_armature(doc, l->id) != &rig) {
+          if (!picked || !l->has_drawing() || !l->shown() || layer_armature(doc, l->id) != &rig) {
             continue;
           }
           const VectorDrawing drawn = layer_evaluated_drawing(doc, *l, false);

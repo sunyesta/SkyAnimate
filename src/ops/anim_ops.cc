@@ -64,7 +64,7 @@ static std::vector<Layer *> group_descendants(Layer &group)
   }
   const auto walk = [&](auto &&self, Layer &parent) -> void {
     for (Layer &child : parent.children) {
-      if (!child.visible) {
+      if (!child.shown()) {
         continue;
       }
       if (!child.locked) {

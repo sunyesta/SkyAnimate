@@ -16,6 +16,7 @@
 
 #include "anim/animation.hh"
 #include "anim/draw_order.hh"
+#include "anim/switch.hh"
 #include "anim/onion.hh"
 #include "assets/asset_library.hh"
 #include "data/bones.hh"
@@ -1453,6 +1454,9 @@ static std::string keyed_value(Layer &layer, const std::string &path, int frame)
       }
       else if (path == "draw_order") {
         return g_timeline_doc ? draw_order_label(*g_timeline_doc, k->value) : std::string();
+      }
+      else if (path == "switch") {
+        return switch_value_label(layer, k->value);
       }
       else {
         std::snprintf(text, sizeof(text), turn ? "%.1f\xC2\xB0" : "%.3f", turn ? k->value * 180.0f / PI : k->value);

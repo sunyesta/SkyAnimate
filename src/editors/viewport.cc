@@ -10309,7 +10309,7 @@ static uint64_t layer_under_mouse(const Document &doc, const ViewMapping &view, 
   const float px = std::max(distance(view.to_document(mouse + ImVec2(1.0f, 0.0f)), at), 1e-9f);
   /* Top first, as drawn (Draw Order included). */
   const std::vector<const Layer *> order = draw_order_layers(
-      doc, [&](const Layer &l) { return l.visible && (local.empty() || local.contains(l.id)); });
+      doc, [&](const Layer &l) { return l.shown() && (local.empty() || local.contains(l.id)); });
   const auto find = [&]() -> uint64_t {
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
       const Layer &layer = **it;
@@ -10409,7 +10409,7 @@ static void draw_layer_box(ImDrawList *dl, const Document &doc, const Layer &lay
 {
   ImVec2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
   const auto add = [&](auto &&self, const Layer &l) -> void {
-    if (!l.visible) {
+    if (!l.shown()) {
       return;
     }
     for (const Layer &child : l.children) {
@@ -10477,7 +10477,7 @@ static bool layer_content_bounds(const Document &doc, const Layer &layer, float2
     r_hi = float2(std::max(r_hi.x, p.x), std::max(r_hi.y, p.y));
   };
   const auto add = [&](auto &&self, const Layer &l) -> void {
-    if (!l.visible) {
+    if (!l.shown()) {
       return;
     }
     for (const Layer &child : l.children) {
@@ -10905,7 +10905,7 @@ static std::vector<uint64_t> layer_pick_hits(Context &C, const ViewMapping &view
   if (ov.show && ov.armature != ArmatureDisplay::Off) {
     const auto visit = [&](auto &&self, const std::vector<Layer> &list) -> void {
       for (const Layer &l : list) {
-        if (!l.visible || (!local.empty() && !local.contains(l.id))) {
+        if (!l.shown() || (!local.empty() && !local.contains(l.id))) {
           continue;
         }
         if (l.is_bone_layer() &&
@@ -12121,7 +12121,7 @@ static void viewport_draw_contents(Area &area, Context &C)
                                 : nullptr;
     const auto visit = [&](auto &&self, const std::vector<Layer> &list, bool shown) -> void {
       for (const Layer &l : list) {
-        const bool visible = shown && l.visible;
+        const bool visible = shown && l.shown();
         if (l.is_bone_layer() && visible &&
             (ov.armature == ArmatureDisplay::On ||
              (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer)) || &l == painting))
@@ -12159,7 +12159,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   /* A material under the mouse in the Shape panel's list: every shape using it, outlined. */
   if (wm.material_hover != 0 && ImGui::GetFrameCount() - wm.material_hover_frame <= 1) {
     for (const Layer *l : document_layers_flat(doc)) {
-      if (!l->has_shapes() || !l->visible) {
+      if (!l->has_shapes() || !l->shown()) {
         continue;
       }
       const VectorDrawing &d = layer_drawing(doc, *l);

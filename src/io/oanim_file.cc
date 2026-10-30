@@ -881,6 +881,11 @@ static json layer_to_json(const Layer &layer)
     j["draw_order"] = std::llround(layer.draw_order);
   }
   put_keys(j, "draw_order_keys", layer.draw_order_keys);
+  if (layer.is_switch()) {
+    /* The child as a layer id (Rig is -1), as Draw Order names its target. */
+    j["switch"] = std::llround(layer.switch_value);
+    put_keys(j, "switch_keys", layer.switch_keys);
+  }
   if (layer.is_reference()) {
     /* A reference's drawing lives in its source; storing a copy would only go stale. */
     j["reference_source"] = layer.reference_source;
@@ -2570,6 +2575,10 @@ static Layer layer_from_json(const json &j, int depth)
   layer.clip_to_below = get_bool(j, "clip_to_below", false);
   layer.clip_exclude_strokes = get_bool(j, "clip_exclude_strokes", false);
   get_keys(j, "draw_order_keys", layer.draw_order_keys);
+  if (layer.type == LayerType::Switch) {
+    layer.switch_value = float(get_int(j, "switch", 0));
+    get_keys(j, "switch_keys", layer.switch_keys);
+  }
   const auto read_step = [](const json &sj, MaskStep &m) {
     m.grow = std::clamp(get_float(sj, "grow", get_bool(sj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
     m.fills_only = get_bool(sj, "fills_only", false);

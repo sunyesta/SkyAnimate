@@ -78,8 +78,11 @@ points, radius, curvature and stored handles; edits become keys through `src/ani
 (WIC and Media Foundation, a worker thread per video), playback sound in `src/media/audio.*` (SDL
 audio stream; Sync to Audio, scrubbing), clips and packing in `src/data/media_layer.*`, operators in
 `src/ops/media_ops.cc`, the timeline's clip bars in `src/editors/timeline_media.*`; test media in
-`tests/data/media`. Next: key buttons in Properties, dope sheet, frame-by-frame layers and onion
-skins, switch layers, PNG sequence export, playback range.
+`tests/data/media`. Switch layers stage 1 (`LayerType::Switch`, `src/anim/switch.*`: keys hold the
+child's id, hand keys win over smart actions until a Rig key, switched-out children via
+`Layer::shown()`); stages 2-5 are planned in the spec's Switch layers section. Next: key buttons in
+Properties, dope sheet, frame-by-frame layers and onion skins, switch picking (stage 2), PNG sequence
+export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,
 `src/data/bones.*` for the skeleton and _L/_R names), weights (automatic for new points,

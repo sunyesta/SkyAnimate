@@ -20,6 +20,7 @@
 #include "anim/dynamics.hh"
 #include "anim/shape_limit.hh"
 #include "anim/reference.hh"
+#include "anim/switch.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/document.hh"
@@ -50,6 +51,14 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
   if constexpr (sync) {
     for (Key<float> &k : layer.draw_order_keys.keys) {
       k.interp = Interp::Step;
+    }
+  }
+  if (layer.is_switch()) {
+    f(layer.switch_keys, layer.switch_value);
+    if constexpr (sync) {
+      for (Key<float> &k : layer.switch_keys.keys) {
+        k.interp = Interp::Step;
+      }
     }
   }
   f(layer.position_keys, layer.position);
@@ -530,6 +539,8 @@ void animation_sync(Document &doc)
       animation_refresh_smart(doc);
       drivers_evaluate(doc);
     }
+    /* Switches follow children added, removed or picked at once. */
+    switches_resolve(doc, doc.frame_current);
     /* References follow edits to their originals at once, and edits to them become theirs. */
     references_capture(doc);
     dynamics_update(doc);
@@ -1569,7 +1580,25 @@ void animation_refresh_smart(Document &doc)
   apply_smart_actions(doc, doc.frame_current);
 }
 
+static void apply_smart_actions_playing(Document &doc, int frame);
+
+static void switches_clear_rig(std::vector<Layer> &layers)
+{
+  for (Layer &layer : layers) {
+    layer.switch_rig_set = false;
+    switches_clear_rig(layer.children);
+  }
+}
+
+/* Smart actions, then who wins on every switch (anim/switch.hh): a switch's pick is never added. */
 static void apply_smart_actions(Document &doc, int frame)
+{
+  switches_clear_rig(doc.layers);
+  apply_smart_actions_playing(doc, frame);
+  switches_resolve(doc, frame);
+}
+
+static void apply_smart_actions_playing(Document &doc, int frame)
 {
   /* The setup frame (0) is the rig at rest: turning a smart bone there sets its rest angle and plays
    * nothing, as in Moho (and bones don't bend the drawing there either). `frame`: the one evaluated
@@ -1618,9 +1647,44 @@ static void apply_smart_actions(Document &doc, int frame)
         driving.insert(&b->angle_keys);
       }
     }
+    /* Switches pick rather than add: an action has a say once its bone has turned past one of its
+     * switch keys, and the first listed with a say wins. */
+    std::map<const void *, Layer *> switches;
+    const auto gather_switches = [&](auto &&self, std::vector<Layer> &layers) -> void {
+      for (Layer &l : layers) {
+        if (l.is_switch()) {
+          switches[&l.switch_keys] = &l;
+        }
+        self(self, l.children);
+      }
+    };
+    gather_switches(gather_switches, owner.children);
     const auto play = [&](const std::string &name, float t, const void *skip, bool skip_driving) {
       owner_for_each_channel(owner, [&](auto &ch, auto &value) {
         if (static_cast<const void *>(&ch) == skip || (skip_driving && driving.count(static_cast<const void *>(&ch)))) {
+          return;
+        }
+        if (const auto sw = switches.find(static_cast<const void *>(&ch)); sw != switches.end()) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(ch)>, Channel<float>>) {
+            const auto it = ch.actions.find(name);
+            if (it == ch.actions.end() || sw->second->switch_rig_set) {
+              return;
+            }
+            const Key<float> *passed = nullptr;
+            for (const Key<float> &k : it->second) {
+              if (float(k.frame) > t + 1e-4f) {
+                break;
+              }
+              if (k.frame > 0) {
+                passed = &k;
+              }
+            }
+            if (passed && passed->value > SWITCH_RIG + 0.5f) {
+              sw->second->switch_rig = passed->value;
+              sw->second->switch_rig_set = true;
+              ch.smart_live = true;
+            }
+          }
           return;
         }
         const auto it = ch.actions.find(name);
@@ -1673,7 +1737,7 @@ static void apply_smart_actions(Document &doc, int frame)
         continue;
       }
       owner_for_each_channel(owner, [&](auto &ch, auto &value) {
-        if (driving.count(static_cast<const void *>(&ch))) {
+        if (driving.count(static_cast<const void *>(&ch)) || switches.count(static_cast<const void *>(&ch))) {
           return;
         }
         const auto it = ch.actions.find(fix.name);
@@ -1732,6 +1796,9 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   add("opacity", layer.opacity_keys, layer.opacity);
   add("visible", layer.visible_keys, layer.visible_value);
   add("draw_order", layer.draw_order_keys, layer.draw_order);
+  if (layer.is_switch()) {
+    add("switch", layer.switch_keys, layer.switch_value);
+  }
   for (Bone &bone : layer.bones) {
     const std::string base = "bones[\"" + bone.name + "\"].";
     /* Its keys hold Transform and Angle (see layer_for_each_channel); a change made through them
@@ -1873,6 +1940,7 @@ static bool layer_channel_direct(Layer &layer, const std::string &path, ChannelR
   if (path == "opacity") return take(layer.opacity_keys, layer.opacity);
   if (path == "visible") return take(layer.visible_keys, layer.visible_value);
   if (path == "draw_order") return take(layer.draw_order_keys, layer.draw_order);
+  if (path == "switch" && layer.is_switch()) return take(layer.switch_keys, layer.switch_value);
   if (path.rfind("bones[\"", 0) == 0) {
     const size_t end = path.find("\"].", 7);
     if (end == std::string::npos) {
@@ -2192,6 +2260,7 @@ std::string channel_label(Layer &layer, const std::string &path, bool owner)
       {"opacity", "Opacity"},
       {"visible", "Visibility"},
       {"draw_order", "Draw Order"},
+      {"switch", "Switch"},
       {"angle", "Angle"},
       {"influence", "Influence"},
       {"gravity", "Gravity"},
@@ -2281,7 +2350,7 @@ KeyKind channel_kind(const std::string &path)
   if (path == "opacity") {
     return KEY_OPACITY;
   }
-  if (path == "visible") {
+  if (path == "visible" || path == "switch") {
     return KEY_VISIBILITY;
   }
   if (path == "draw_order") {

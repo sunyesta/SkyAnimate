@@ -20,6 +20,7 @@
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/switch.hh"
 #include "anim/dynamics.hh"
 #include "anim/reference.hh"
 #include "wm/clipboard_image.hh"
@@ -3538,6 +3539,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   /* The drawing layers as drawn now (rules applied), bottom first, by name; hidden ones left out. */
   /* What a viewport click on `hit` picks for the Draw Order eyedropper moving `moving` (ids). */
+  m.def("layer_switch", [layer_or_raise](uint64_t id) {
+    const Layer &sw = layer_or_raise(id);
+    if (!sw.is_switch()) {
+      throw py::value_error("\"" + sw.name + "\" is not a switch layer");
+    }
+    const auto name = [&](float value) -> py::object {
+      const Layer *child = switch_child(sw, value);
+      return child ? py::object(py::str(child->name)) : py::object(py::none());
+    };
+    return py::make_tuple(name(float(sw.switch_shown)), name(switch_default(sw)));
+  });
   m.def("draw_order_pick_target", [](uint64_t hit, const std::vector<uint64_t> &moving) {
     return draw_order_pick_target(*current_context().document, hit, moving);
   });
@@ -3545,7 +3557,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Document &doc = *current_context().document;
     animation_sync(doc);
     py::list names;
-    for (const Layer *l : draw_order_layers(doc, [](const Layer &layer) { return layer.visible; })) {
+    for (const Layer *l : draw_order_layers(doc, [](const Layer &layer) { return layer.shown(); })) {
       names.append(l->name);
     }
     return names;

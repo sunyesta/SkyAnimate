@@ -15,6 +15,8 @@
 #include "anim/drivers.hh"
 #include "anim/layer_pick.hh"
 #include "anim/reference.hh"
+#include "anim/switch.hh"
+#include "anim/animation.hh"
 #include "core/log.hh"
 #include "data/layer_mirror.hh"
 #include "data/bones.hh"
@@ -498,6 +500,39 @@ void layer_operators_register()
   layer_operator("layer.new_group", "New Group", "Add a group layer above the active layer", nullptr,
                  [](Context &C) {
                    document_add_layer_mirrored(*C.document, LayerType::Group, C.wm && C.wm->tool_settings.mirror_x);
+                   return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.new_switch", "New Switch",
+                 "Add a switch layer above the active layer: a group that shows one of its children, or none",
+                 nullptr, [](Context &C) {
+                   document_add_layer_mirrored(*C.document, LayerType::Switch, C.wm && C.wm->tool_settings.mirror_x);
+                   return OpStatus::Finished;
+                 });
+
+  layer_operator("layer.switch_set", "Set Switch",
+                 "Show one child of a switch (layer=, else the active layer or the switch holding it): child= its "
+                 "name, empty for none, RIG to hand it back to the rig. On frame 0 it's the default; on other "
+                 "frames it's keyed, and a key made by hand wins over smart actions until a Rig key",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   Layer *sw = op_has_arg(C, "layer") ? layer_by_name_or_id(doc, op_arg(C, "layer"))
+                                                      : document_active_layer(doc);
+                   if (sw && !sw->is_switch()) {
+                     sw = layer_parent(doc, sw->id);
+                   }
+                   if (!sw || !sw->is_switch()) {
+                     report(ReportType::Warning, "Not a switch layer");
+                     return OpStatus::Cancelled;
+                   }
+                   float value = 0.0f;
+                   if (!switch_value_from_name(*sw, op_arg(C, "child"), &value)) {
+                     report(ReportType::Warning, "\"" + sw->name + "\" has no layer named \"" + op_arg(C, "child") + "\"");
+                     return OpStatus::Cancelled;
+                   }
+                   animation_record(doc);
+                   switch_set(doc, *sw, value);
+                   C.undo_name = sw->name + ": " + switch_value_label(*sw, value);
                    return OpStatus::Finished;
                  });
 

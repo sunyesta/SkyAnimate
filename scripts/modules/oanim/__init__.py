@@ -270,6 +270,18 @@ class _Layer:
         return tuple(_oanim.layer_draw_order(self._id))
 
     @property
+    def switch_active(self):
+        """A switch layer: the name of the child it shows now, or None. Who wins: a key made by hand
+        (after frame 0) until a Rig key, then smart actions, then the default. Set it with
+        oanim.ops.layer.switch_set(child=name) (keyed on frames other than 0)."""
+        return _oanim.layer_switch(self._id)[0]
+
+    @property
+    def switch_default(self):
+        """A switch layer: the name of the child it shows on frame 0 and wherever nothing else picks, or None."""
+        return _oanim.layer_switch(self._id)[1]
+
+    @property
     def hidden_edges(self):
         """[(curve, segment), ...] whose outline is hidden, as with Moho's Hide Edge."""
         return [tuple(e) for e in _oanim.layer_hidden_edges(self._id)]

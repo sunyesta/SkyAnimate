@@ -123,7 +123,7 @@ static void begin(Context &C, Layer &layer, int pos)
 static Layer *active_text_under(Document &doc, float2 p, float slack, float2 *r_local)
 {
   Layer *layer = document_active_layer(doc);
-  if (!layer || !layer->is_text() || layer->locked || !layer->visible) {
+  if (!layer || !layer->is_text() || layer->locked || !layer->shown()) {
     return nullptr;
   }
   const Transform2D to_layer = layer_world_transform(doc, layer->id).inverted();
