@@ -211,6 +211,13 @@ OpProperty op_bool_property(const char *name, const char *label, const char *des
   return p;
 }
 
+static uint64_t g_operator_runs = 0;
+
+uint64_t operator_runs()
+{
+  return g_operator_runs;
+}
+
 OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
 {
   const OperatorType *found = operators().find(idname);
@@ -253,6 +260,7 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     /* Mirror editing: the mirror images join the selection for the run (an outer run did it already). */
     const bool mirror = (ot.flag & OPTYPE_MIRROR) && !outer_args;
     const MirrorSelection mirrored = mirror ? mirror_selection_begin(C) : MirrorSelection();
+    g_operator_runs++;
     status = ot.exec(C);
     if (mirror) {
       mirror_selection_end(C, mirrored);

@@ -66,6 +66,9 @@ class App {
   int revision_frame_ = 0;
   uint64_t revision_python_runs_ = 0;
   uint64_t revision_unknown_changes_ = 0;
+  /* Grows with every frame the UI may have edited something unsaid (a field dragged, a modal, a click): with Python
+   * runs, undo steps and operators run, the stamp of edits animation_sync_playing keeps what it found by. */
+  uint64_t ui_edits_ = 0;
   void revisions_check_frame(bool after_ui);
   void revisions_verify();
   void draw_top_bar();

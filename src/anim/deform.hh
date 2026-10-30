@@ -76,8 +76,9 @@ int layer_automatic_weights(const Document &doc, Layer &layer, const std::vector
 /* Points not weighted yet (new ones) in layers inside a bone layer with bones get weights: those of
  * the nearest weighted points along their curves, or automatic weights when there are none.
  * `exact`: automatic weights only, unpruned (older files' flexi-binding, unchanged). Runs before
- * every undo step, so a new stroke follows the bones at once. */
-bool document_weight_new_points(Document &doc, bool exact = false);
+ * every undo step, so a new stroke follows the bones at once. `skip`: layers (and what is in them) known to have no
+ * new points. */
+bool document_weight_new_points(Document &doc, bool exact = false, bool (*skip)(const Layer &) = nullptr);
 
 /* The Mirror modifier on a drawing; `flip_bone` maps a point's bone to the other side's. */
 VectorDrawing drawing_mirror(const VectorDrawing &drawing, const Modifier &mirror,

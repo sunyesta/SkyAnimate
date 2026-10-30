@@ -169,6 +169,11 @@ void animation_strip_smart(Document &doc);
 void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
 /* Works smart actions out again for the bones as they are now (a bone turned without changing
  * frame). animation_sync does this when the frame hasn't moved. */
+/* As animation_sync, for the main loop's own frame changes (playing): `edits` stamps every edit the app can see
+ * coming (Python runs, undo steps, operators run, edits in the UI). While it and the keys stay as they were, a
+ * drawing a switch hides that comes out the same on every frame (no keys, no action data, nothing smart actions
+ * added) is neither recorded nor evaluated again: on a rig with many views, most of the document. */
+void animation_sync_playing(Document &doc, uint64_t edits);
 void animation_refresh_smart(Document &doc);
 /* A bone drag on `doc` begins: until it ends, the layers smart actions play into are the ones found now (it
  * changes no layers, only bones), and the drag works smart actions out again itself every update, so

@@ -318,6 +318,13 @@ def switch_link_report(switch):
     return _oanim.switch_link_report(switch.id if hasattr(switch, "id") else int(switch))
 
 
+def frame_sync_playing(frame, edits):
+    """Go to `frame` as playing does in the main loop (for tests): `edits` stands for the stamp of edits the app
+    can see coming (Python runs, undo steps, operators, UI edits). While it stays the same, drawings switches hide
+    that come out the same on every frame are neither recorded nor evaluated."""
+    _oanim.frame_sync_playing(int(frame), int(edits))
+
+
 def switch_preview(switch=None, child=None):
     """Preview a switch's child in the viewport, as hovering a tile on the asset shelf does: shown in
     place of the pick, nothing keyed, no undo step; renders keep the pick. Without arguments it ends."""

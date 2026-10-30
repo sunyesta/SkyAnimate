@@ -3605,6 +3605,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return link != nullptr;
   });
+  m.def("frame_sync_playing", [](int frame, uint64_t edits) {
+    Document &doc = *current_context().document;
+    doc.frame_current = frame;
+    animation_sync_playing(doc, edits);
+  });
   m.def("switch_preview", [](uint64_t sw, uint64_t child) {
     if (sw == 0) {
       switch_preview_clear();

@@ -1158,7 +1158,7 @@ static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
   return true;
 }
 
-bool document_weight_new_points(Document &doc, bool exact)
+bool document_weight_new_points(Document &doc, bool exact, bool (*skip)(const Layer &))
 {
   /* Asked before every undo step: each layer's bone layer found by an index, and each bone layer posed once
    * (weighing changes no layers, nor bones). */
@@ -1167,6 +1167,9 @@ bool document_weight_new_points(Document &doc, bool exact)
   bool changed = false;
   const auto visit = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
+      if (skip && skip(layer)) {
+        continue;
+      }
       changed |= weigh_new_points(doc, layer, exact);
       self(self, layer.children);
     }

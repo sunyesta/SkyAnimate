@@ -381,8 +381,15 @@ void App::main_loop()
     if (recording) {
       dragged = doc_;
     }
-    /* The frame may have moved (playback, scrubbing): show its animation. */
-    animation_sync(doc_);
+    /* The frame may have moved (playback, scrubbing): show its animation, leaving the drawings switches hide
+     * that come out the same on every frame as they are while nothing was edited. */
+    uint64_t edits = 0xcbf29ce484222325ull;
+    for (const uint64_t v : {python::python_runs(), undo_.change_count(), undo_.unknown_changes(), operator_runs(),
+                             ui_edits_})
+    {
+      edits = (edits ^ v) * 0x100000001b3ull;
+    }
+    animation_sync_playing(doc_, edits);
     revisions_check_frame(false);
     if (recording) {
       viewport_drag_follow_playback(dragged, doc_);
@@ -1364,6 +1371,8 @@ void App::revisions_check_frame(bool after_ui)
     unknown = unknown || (ImGui::IsAnyItemActive() && !navigating) || (wm_.modal_running && !precise) ||
               (ImGui::IsAnyMouseDown() && !precise && !navigating);
     /* A Boolean modifier makes a layer from others: a move of theirs changes it too. */
+    /* Precise drags say what they edit, but still edit: counted too. */
+    ui_edits_ += unknown || wm_.modal_running ? 1 : 0;
     if (precise && !unknown) {
       for (const Layer *l : document_layers_flat(doc_)) {
         for (const Modifier &m : l->modifiers) {

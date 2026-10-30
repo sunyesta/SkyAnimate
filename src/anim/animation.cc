@@ -211,6 +211,66 @@ static void find_smart_layers(Document &doc, std::unordered_set<const Layer *> &
 static const Document *g_drag_doc = nullptr;
 static std::unordered_set<const Layer *> g_drag_layers;
 
+/* Drawings a switch hides that come out the same on every frame (still): no keys, no action data, nothing smart
+ * actions added, no edit waiting, nothing in them worked out from elsewhere (bones, references, drivers, media,
+ * switches). Found after a frame is evaluated, and kept while the edits the app can see coming (its stamp) and the
+ * keys stay as they were: a frame change of the main loop's (playing) then neither records nor evaluates them,
+ * and one shows on any frame as it is. On the 360 rig most of the document is such drawings. */
+struct StillDrawings {
+  const Document *doc = nullptr;
+  uint64_t stamp = 0;
+  bool valid = false;
+  std::unordered_set<uint64_t> ids;
+};
+static StillDrawings g_still;
+/* While a frame change of the main loop's is recorded and evaluated: the still drawings to leave as they are. */
+static const std::unordered_set<uint64_t> *g_still_skip = nullptr;
+
+/* A still drawing hidden now (in renders and the viewport alike): left as it is. */
+static bool still_skipped(const Layer &layer)
+{
+  return g_still_skip && layer.switched_out && layer.edit_out && g_still_skip->contains(layer.id);
+}
+
+static bool layer_still(const Layer &layer, const std::unordered_set<uint64_t> &driven)
+{
+  if (layer.is_bone_layer() || layer.is_reference() || layer.is_media() || layer.is_switch() ||
+      driven.contains(layer.id))
+  {
+    return false;
+  }
+  bool still = true;
+  layer_for_each_channel<false>(const_cast<Layer &>(layer), [&](auto &ch, auto &value) {
+    still = still && !ch.animated() && ch.actions.empty() && !smart_added(ch) && ch.has_last && ch.last == value;
+  });
+  if (!still) {
+    return false;
+  }
+  return std::all_of(layer.children.begin(), layer.children.end(),
+                     [&](const Layer &child) { return layer_still(child, driven); });
+}
+
+static void find_still_drawings(const Document &doc, std::unordered_set<uint64_t> &r_ids)
+{
+  std::unordered_set<uint64_t> driven;
+  for (const Driver &d : doc.drivers) {
+    driven.insert(d.target.layer);
+  }
+  const auto walk = [&](auto &&self, const std::vector<Layer> &layers) -> void {
+    for (const Layer &layer : layers) {
+      if (layer.is_switch()) {
+        for (const Layer &child : layer.children) {
+          if (layer_still(child, driven)) {
+            r_ids.insert(child.id);
+          }
+        }
+      }
+      self(self, layer.children);
+    }
+  };
+  walk(walk, doc.layers);
+}
+
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
  * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
 template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
@@ -390,12 +450,15 @@ void animation_record(Document &doc)
   const int frame = doc.evaluated_frame;
   const bool auto_key = doc.auto_key;
   /* New points get their weights, so they follow the bones like their neighbours. */
-  document_weight_new_points(doc);
+  document_weight_new_points(doc, false, still_skipped);
   /* Every layer, children too: the passes below work on each on its own, over the CPU's cores (a big document has
    * thousands). */
   std::vector<Layer *> flat;
   const auto gather = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
+      if (still_skipped(layer)) {
+        continue;
+      }
       flat.push_back(&layer);
       self(self, layer.children);
     }
@@ -413,6 +476,9 @@ void animation_record(Document &doc)
    * then keyed below like any edit). */
   const auto ids = [](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &layer : layers) {
+      if (still_skipped(layer)) {
+        continue;
+      }
       if (!layer.is_reference()) {
         drawing_ensure_ids(layer.drawing);
       }
@@ -556,6 +622,9 @@ static void evaluate_layers(std::vector<Layer> &layers, int frame, bool recorded
                             std::unordered_set<const Layer *> *r_smart)
 {
   for (Layer &layer : layers) {
+    if (recorded && still_skipped(layer)) {
+      continue;
+    }
     bool needed = !recorded || layer.is_bone_layer();
     bool actions = false;
     if (!needed || r_smart) {
@@ -723,6 +792,33 @@ void animation_sync(Document &doc)
     g_frame_changes++;
   }
   evaluate_frame(doc, doc.frame_current, recorded);
+}
+
+void animation_sync_playing(Document &doc, uint64_t edits)
+{
+  if (doc.evaluated_frame == doc.frame_current) {
+    animation_sync(doc);
+    return;
+  }
+  const auto stamp_now = [&]() {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (const uint64_t v : {uint64_t(reinterpret_cast<uintptr_t>(&doc)), edits, channel_keys_generation()}) {
+      h = (h ^ v) * 0x100000001b3ull;
+    }
+    return h;
+  };
+  const bool kept = g_still.valid && g_still.doc == &doc && g_still.stamp == stamp_now();
+  g_still_skip = kept ? &g_still.ids : nullptr;
+  animation_sync(doc);
+  g_still_skip = nullptr;
+  if (!kept) {
+    /* Just evaluated in full: which hidden drawings are still, as of now. */
+    g_still.ids.clear();
+    find_still_drawings(doc, g_still.ids);
+    g_still.doc = &doc;
+    g_still.stamp = stamp_now();
+    g_still.valid = true;
+  }
 }
 
 /* --- Recording while playing ------------------------------------------------------------------ */
