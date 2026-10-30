@@ -192,6 +192,11 @@ assert sw.switch_active == "B", ("C gone: the default", sw.switch_active)
 assert oanim.ops.layer.switch_set(layer=sw.name, child="C") == {'CANCELLED'}
 
 
+# --- With one of its drawings active, the timeline still shows the switch's keys ----------------------
+layers.active = children["A"]
+names = [r[1] for r in oanim.wm.timeline_rows()]
+assert "Switch" in names, names
+
 # === Stage 2: picking =================================================================================
 assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
 doc = oanim.data.document

@@ -212,6 +212,17 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
       add_inside(add_inside, *l);
     }
   }
+  /* The switches a picked layer sits in, once keyed: picking a switch's drawing (which makes it the
+   * active layer) shows the Switch row that keyed it. */
+  if (C.document) {
+    for (Layer *l : picked) {
+      for (Layer *p = layer_parent(*C.document, l->id); p; p = layer_parent(*C.document, p->id)) {
+        if (p->is_switch() && keyed(*p)) {
+          add(p);
+        }
+      }
+    }
+  }
   /* The document's animated gravity and wind (a Simulation row). */
   if (C.document && layer_has_keys(document_simulation(*C.document))) {
     add(&C.document->simulation);
