@@ -44,6 +44,7 @@
 #include "core/log.hh"
 #include "gpu/brush_stroke.hh"
 #include "gpu/scene_renderer.hh"
+#include "gpu/tessellate.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/file_ops.hh"
@@ -625,6 +626,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   /* Render statistics (oanim.wm.set_render_stats / render_stats), for benchmarks. */
   m.def("set_render_stats", [](bool on) { render_stats_set(on); });
+  m.def("fill_covers", [](const std::vector<std::pair<float, float>> &outline) {
+    std::vector<float2> polygon;
+    for (const auto &[x, y] : outline) {
+      polygon.emplace_back(x, y);
+    }
+    std::vector<Vertex> triangles;
+    tessellate_fill(polygon, Color{}, 0.0f, triangles);
+    double area = 0.0;
+    for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
+      const Vertex &a = triangles[i], &b = triangles[i + 1], &c = triangles[i + 2];
+      area += std::abs((double(b.x) - a.x) * (double(c.y) - a.y) - (double(b.y) - a.y) * (double(c.x) - a.x)) * 0.5;
+    }
+    return area;
+  });
   m.def("render_stats", []() {
     py::list out;
     for (const RenderStats &r : render_stats_take()) {

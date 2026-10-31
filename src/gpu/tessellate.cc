@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
@@ -146,6 +147,9 @@ static void soft_edge(const std::vector<float2> &poly, float outward, Color colo
   }
 }
 
+/* What tessellate_fill keeps of an outline that crosses itself, in place of its triangles. */
+static constexpr uint32_t CROSSES_ITSELF = UINT32_MAX;
+
 void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, std::vector<Vertex> &r_out)
 {
   std::vector<float2> poly = polygon;
@@ -178,9 +182,28 @@ void tessellate_fill(const std::vector<float2> &polygon, Color color, float aa, 
     for (const float2 &p : poly) {
       rings[0].push_back({p.x, p.y});
     }
-    found = cuts.emplace(key, mapbox::earcut<uint32_t>(rings)).first;
+    std::vector<uint32_t> cut = mapbox::earcut<uint32_t>(rings);
+    /* Earcut takes an outline that doesn't cross itself. One that does (the two lines of a thin shape bent across each
+     * other) it cuts wrongly, filling far past it, up to a straight line between its ends: seen by its triangles not
+     * adding up to the outline's area. */
+    double triangles = 0.0, outline = 0.0;
+    for (size_t i = 0; i + 2 < cut.size(); i += 3) {
+      const float2 a = poly[cut[i]], b = poly[cut[i + 1]], c = poly[cut[i + 2]];
+      triangles += std::abs((double(b.x) - a.x) * (double(c.y) - a.y) - (double(b.y) - a.y) * (double(c.x) - a.x));
+    }
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+      outline += double(poly[j].x) * poly[i].y - double(poly[i].x) * poly[j].y;
+    }
+    if (std::abs(triangles - std::abs(outline)) > 0.01 * std::max(triangles, std::abs(outline))) {
+      cut.assign(1, CROSSES_ITSELF);
+    }
+    found = cuts.emplace(key, std::move(cut)).first;
   }
   const std::vector<uint32_t> &indices = found->second;
+  if (indices.size() == 1 && indices[0] == CROSSES_ITSELF) {
+    tessellate_fill_pieces(fill_area({poly}, FillRule::NonZero), color, aa, r_out);
+    return;
+  }
   reserve_more(r_out, indices.size());
   for (const uint32_t i : indices) {
     r_out.push_back(make_vertex(poly[i], color, 1.0f));

@@ -50,6 +50,12 @@ def set_render_stats(on=True):
     _oanim.set_render_stats(bool(on))
 
 
+def fill_covers(outline):
+    """The area an outline's fill covers, by the triangles made for it: [(x, y)]. A background run draws nothing, so
+    this is how a test sees what a fill does."""
+    return _oanim.fill_covers([tuple(p) for p in outline])
+
+
 def render_stats():
     """The renders' statistics recorded since last asked (set_render_stats), oldest first: dicts with width, height,
     final (a render to a file), cpu_ms (the render's own CPU time), prepare_ms (finding and making drawings before
