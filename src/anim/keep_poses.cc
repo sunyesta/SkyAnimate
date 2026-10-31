@@ -1,4 +1,5 @@
 #include "anim/keep_poses.hh"
+#include "data/detail.hh"
 
 #include <algorithm>
 #include <cmath>
@@ -368,6 +369,159 @@ DrawingsShownAll drawings_shown_capture_all(Document &doc, const std::vector<uin
   }
   use_action(doc, was_owner, was);
   return out;
+}
+
+void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t> &ids)
+{
+  if (ids.empty()) {
+    return;
+  }
+  /* A point added just now has no weights yet: its bones are part of how it shows. */
+  document_weight_new_points(doc);
+  const std::set<uint64_t> freed(ids.begin(), ids.end());
+  VectorDrawing &drawing = layer.drawing;
+  std::vector<int> curves;
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    for (const CurvePoint &cp : drawing.curves[c].points) {
+      if (freed.count(drawing.points[cp.point].id)) {
+        curves.push_back(int(c));
+        break;
+      }
+    }
+  }
+  /* How a curve point shows, in its own bones' space. */
+  struct Shown {
+    float2 pos, in, out;
+    float radius = 1.0f;
+  };
+  struct Pose {
+    int frame = 0;
+    std::map<std::pair<int, uint64_t>, Shown> points;
+  };
+  struct Timeline {
+    uint64_t owner = 0;
+    std::string name;
+    std::vector<Pose> poses;
+  };
+  std::vector<Timeline> timelines = {{0, "", {}}};
+  if (const Layer *owner = action_owner(doc, layer.id)) {
+    for (const std::string &name : owner->actions) {
+      timelines.push_back({owner->id, name, {}});
+    }
+  }
+  const std::string was_action = doc.action;
+  uint64_t was_owner = 0;
+  animation_record(doc);
+  const Layer *armature = layer_armature(doc, layer.id);
+  for (Timeline &timeline : timelines) {
+    if (timeline.name == was_action) {
+      was_owner = timeline.owner;
+    }
+    use_action(doc, timeline.owner, timeline.name);
+    std::set<int> frames;
+    const auto add = [&](const auto &ch) {
+      for (const auto &k : ch.keys) {
+        if (k.frame != 0) {
+          frames.insert(k.frame);
+        }
+      }
+    };
+    for (const int c : curves) {
+      for (const CurvePoint &cp : drawing.curves[c].points) {
+        add(drawing.points[cp.point].pos_keys);
+        add(drawing.points[cp.point].radius_keys);
+        add(cp.handle_in_keys);
+        add(cp.handle_out_keys);
+      }
+    }
+    if (armature) {
+      for (const Bone &b : armature->bones) {
+        add(b.position_keys);
+        add(b.angle_keys);
+        add(b.scale_keys);
+      }
+    }
+    for (const int f : frames) {
+      doc.frame_current = f;
+      animation_sync(doc);
+      /* The line as it shows: its points through their bones, the riding ones placed on that. */
+      const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+      const auto skin_of = [&](int point) { return size_t(point) < skins.size() ? skins[size_t(point)] : Transform2D(); };
+      VectorDrawing shown = drawing;
+      for (Curve &curve : shown.curves) {
+        for (CurvePoint &cp : curve.points) {
+          const Transform2D skin = skin_of(cp.point);
+          cp.handle_in = skin.apply_vector(cp.handle_in);
+          cp.handle_out = skin.apply_vector(cp.handle_out);
+        }
+      }
+      for (size_t i = 0; i < shown.points.size(); i++) {
+        shown.points[i].pos = skin_of(int(i)).apply(shown.points[i].pos);
+      }
+      drawing_detail_ride(shown);
+      drawing_detail_final_handles(shown);
+      Pose pose;
+      pose.frame = f;
+      for (const int c : curves) {
+        for (const CurvePoint &cp : shown.curves[c].points) {
+          const Transform2D undo = skin_of(cp.point).inverted();
+          const MeshPoint &p = shown.points[cp.point];
+          pose.points[{c, p.id}] = {undo.apply(p.pos), undo.apply_vector(cp.handle_in), undo.apply_vector(cp.handle_out),
+                                    p.radius};
+        }
+      }
+      timeline.poses.push_back(std::move(pose));
+    }
+  }
+  use_action(doc, 0, "");
+  doc.frame_current = 0;
+  animation_sync(doc);
+
+  /* Only these, whatever else is selected. */
+  std::vector<bool> selected(drawing.points.size());
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    selected[i] = drawing.points[i].selected;
+    drawing.points[i].selected = freed.count(drawing.points[i].id) > 0;
+  }
+  int skipped = 0;
+  bool dropped = false;
+  drawing_detail_lower_selected(drawing, &skipped, &dropped);
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    drawing.points[i].selected = selected[i];
+  }
+
+  /* Each pose keyed back, whatever the record button says. */
+  const bool auto_key = doc.auto_key;
+  doc.auto_key = true;
+  animation_record(doc);
+  for (const Timeline &timeline : timelines) {
+    use_action(doc, timeline.owner, timeline.name);
+    for (const Pose &pose : timeline.poses) {
+      doc.frame_current = pose.frame;
+      animation_sync(doc);
+      for (const int c : curves) {
+        for (CurvePoint &cp : drawing.curves[c].points) {
+          MeshPoint &p = drawing.points[cp.point];
+          const auto it = pose.points.find({c, p.id});
+          if (it == pose.points.end()) {
+            continue;
+          }
+          if (freed.count(p.id)) {
+            p.pos = it->second.pos;
+            p.radius = it->second.radius;
+          }
+          cp.handle_in = it->second.in;
+          cp.handle_out = it->second.out;
+          cp.handles_set = true;
+        }
+      }
+      animation_record(doc);
+    }
+  }
+  doc.auto_key = auto_key;
+  use_action(doc, was_owner, was_action);
+  doc.frame_current = 0;
+  animation_sync(doc);
 }
 
 /* The way a frame's X axis points, and an angle brought within half a turn. */

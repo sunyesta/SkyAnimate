@@ -161,10 +161,26 @@ static SegmentFrame segment_frame(const float2 ctrl[4], float t)
   return f;
 }
 
+/* The line's width on a segment `t` along it: it runs by distance, not by the curve parameter. */
+static float segment_radius(const float2 ctrl[4], float r0, float r1, float t)
+{
+  float upto = 0.0f, total = 0.0f;
+  float2 last = ctrl[0];
+  for (int i = 1; i <= 24; i++) {
+    const float at = float(i) / 24.0f;
+    const float2 p = bezier_eval(ctrl, at);
+    total += distance(last, p);
+    upto += at <= t ? distance(last, p) : 0.0f;
+    last = p;
+  }
+  return r0 + (r1 - r0) * (total > 1e-12f ? upto / total : t);
+}
+
 /* `keep_level`: capturing, detail points up to this level (the ones shown at the curve's edit level)
  * that didn't move themselves keep their place when their segment moved, instead of riding it: what
- * is edited on a level stays as it is there (-1: every detail point rides). */
-static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture, int keep_level = -1)
+ * is edited on a level stays as it is there (-1: every detail point rides). Riding points always ride.
+ * `riding_only`: only they are placed, the rest staying where they are (bones have just put them there). */
+static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture, int keep_level = -1, bool riding_only = false)
 {
   normalize_levels(drawing, curve);
   const std::vector<Run> runs = curve_runs(drawing, curve);
@@ -193,9 +209,24 @@ static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture, int k
       CurvePoint &cp = curve.points[i];
       MeshPoint &p = drawing.points[cp.point];
       PointDetail &dt = p.detail;
+      if (riding_only && !dt.rides) {
+        pos[i] = p.pos;
+        in[i] = cp.handle_in;
+        out[i] = cp.handle_out;
+        continue;
+      }
+      if (dt.rides && !p.radius_keys.animated()) {
+        const float line = segment_radius(ctrl, drawing.points[curve.points[run.a].point].radius,
+                                          drawing.points[curve.points[run.b].point].radius, t);
+        if (capture && dt.built && p.radius != dt.built_radius) {
+          dt.radius_offset = p.radius - line;
+        }
+        p.radius = line + dt.radius_offset;
+        dt.built_radius = p.radius;
+      }
       if (capture) {
         /* A shown point whose segment moved under it (its offsets now place it elsewhere) stays. */
-        const bool keep = dt.built && dt.level <= keep_level;
+        const bool keep = dt.built && dt.level <= keep_level && !dt.rides;
         if (!dt.built || p.pos != dt.built_pos || (keep && at + frame.world(dt.pos) != dt.built_pos)) {
           dt.pos = frame.local(p.pos - at);
         }
@@ -228,6 +259,67 @@ static void curve_sync(VectorDrawing &drawing, Curve &curve, bool capture, int k
   }
 }
 
+void drawing_detail_ride(VectorDrawing &drawing)
+{
+  for (Curve &curve : drawing.curves) {
+    const bool rides = std::any_of(curve.points.begin(), curve.points.end(),
+                                   [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.rides; });
+    if (rides) {
+      curve_sync(drawing, curve, false, -1, true);
+    }
+  }
+}
+
+bool drawing_curve_moves(const VectorDrawing &drawing, int curve)
+{
+  for (const CurvePoint &cp : drawing.curves[curve].points) {
+    const MeshPoint &p = drawing.points[cp.point];
+    if (p.pos_keys.animated() || !p.pos_keys.actions.empty() || cp.handle_in_keys.animated() ||
+        !cp.handle_in_keys.actions.empty() || cp.handle_out_keys.animated() || !cp.handle_out_keys.actions.empty() ||
+        !p.weights.empty())
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool drawing_riding_selected(const VectorDrawing &drawing)
+{
+  return std::any_of(drawing.points.begin(), drawing.points.end(),
+                     [](const MeshPoint &p) { return p.selected && p.detail.rides; });
+}
+
+void drawing_riding_delete_selected(VectorDrawing &drawing)
+{
+  if (!drawing_riding_selected(drawing)) {
+    return;
+  }
+  drawing_ensure_ids(drawing);
+  std::vector<uint64_t> ids;
+  for (const Curve &curve : drawing.curves) {
+    const int n = int(curve.points.size());
+    for (int i = 0; i < n; i++) {
+      const MeshPoint &p = drawing.points[curve.points[i].point];
+      const int before = (i + n - 1) % n, after = (i + 1) % n;
+      if (p.selected && p.detail.rides && level_at(drawing, curve, before) <= 1 && level_at(drawing, curve, after) <= 1) {
+        ids.push_back(p.id);
+      }
+    }
+  }
+  RawEdit raw;
+  for (const uint64_t id : ids) {
+    drawing_dissolve_point(drawing, drawing_point_index(drawing, id));
+  }
+  drawing_detail_sync(drawing, false);
+}
+
+/* Whether a curve at edit level `level` shows a point. */
+static bool shown_at(const MeshPoint &p, int level)
+{
+  return p.detail.level <= level || p.detail.rides;
+}
+
 std::vector<int> drawing_curve_detail_levels(const VectorDrawing &drawing)
 {
   std::vector<int> levels(drawing.curves.size(), -1);
@@ -252,8 +344,7 @@ VectorDrawing drawing_detail_shown_curves(const VectorDrawing &drawing)
   }
   const std::vector<int> levels = drawing_curve_detail_levels(drawing);
   for (size_t c = 0; c < shown.curves.size(); c++) {
-    std::erase_if(shown.curves[c].points,
-                  [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
+    std::erase_if(shown.curves[c].points, [&](const CurvePoint &cp) { return !shown_at(drawing.points[cp.point], levels[c]); });
   }
   drawing_detail_final_handles(shown);
   return shown;
@@ -271,7 +362,7 @@ void drawing_detail_update_shown(VectorDrawing &drawing)
   for (size_t c = 0; c < drawing.curves.size(); c++) {
     for (CurvePoint &cp : drawing.curves[c].points) {
       MeshPoint &p = drawing.points[cp.point];
-      if (p.detail.level > levels[c]) {
+      if (!shown_at(p, levels[c])) {
         p.detail.hidden = true;
         p.selected = false;
         cp.select_in = cp.select_out = false;
@@ -326,7 +417,7 @@ void drawing_detail_shown_handle_factors(const VectorDrawing &drawing, std::vect
   for (size_t c = 0; c < drawing.curves.size(); c++) {
     Curve shown = drawing.curves[c];
     if (detail) {
-      std::erase_if(shown.points, [&](const CurvePoint &cp) { return drawing.points[cp.point].detail.level > levels[c]; });
+      std::erase_if(shown.points, [&](const CurvePoint &cp) { return !shown_at(drawing.points[cp.point], levels[c]); });
     }
     if (detail && curve_detail_max_level(drawing, shown) > 0) {
       curve_handle_factors(drawing, shown, r_in[c], r_out[c]);
@@ -509,6 +600,11 @@ int drawing_knife_level(const VectorDrawing &drawing, int curve)
 
 int drawing_detail_split(VectorDrawing &drawing, ShapeEdge edge, float t, int level)
 {
+  /* A plain point on a curve that moves would change the line on every frame the curve has moved. */
+  const bool rides = level == 0 && drawing_curve_moves(drawing, edge.curve);
+  if (rides) {
+    level = 1;
+  }
   /* A cut into a run whose detail points are all where the splits of their parents' segment put them
    * (none moved since: no offsets), or into a segment with nothing finer on it yet: the cut is one
    * more exact split of the parents' segment, at a place along it known exactly, and the parents keep
@@ -559,6 +655,7 @@ int drawing_detail_split(VectorDrawing &drawing, ShapeEdge edge, float t, int le
   const int point = drawing_split_segment(drawing, edge, t);
   drawing.points[point].detail = {};
   drawing.points[point].detail.level = clamped;
+  drawing.points[point].detail.rides = rides;
   drawing_ensure_ids(drawing);
   const uint64_t id = drawing.points[point].id;
   drawing_detail_edit_end(drawing, edit);
@@ -603,9 +700,13 @@ std::vector<int> shape_curves(const VectorDrawing &drawing, const Shape &shape)
 
 int shape_detail_max_level(const VectorDrawing &drawing, const Shape &shape)
 {
+  /* Riding points aren't detail to the eye: they show with the curve's own at every level. */
   int level = 0;
   for (const int c : shape_curves(drawing, shape)) {
-    level = std::max(level, curve_detail_max_level(drawing, drawing.curves[c]));
+    for (const CurvePoint &cp : drawing.curves[c].points) {
+      const PointDetail &detail = drawing.points[cp.point].detail;
+      level = std::max(level, detail.rides ? 0 : detail.level);
+    }
   }
   return level;
 }
@@ -615,7 +716,7 @@ int shape_detail_point_count(const VectorDrawing &drawing, const Shape &shape)
   int count = 0;
   for (const int c : shape_curves(drawing, shape)) {
     for (const CurvePoint &cp : drawing.curves[c].points) {
-      count += drawing.points[cp.point].detail.level > 0 ? 1 : 0;
+      count += drawing.points[cp.point].detail.level > 0 && !drawing.points[cp.point].detail.rides ? 1 : 0;
     }
   }
   return count;
@@ -645,7 +746,7 @@ bool drawing_detail_selected(const VectorDrawing &drawing)
   for (const Curve &curve : drawing.curves) {
     for (const CurvePoint &cp : curve.points) {
       const MeshPoint &p = drawing.points[cp.point];
-      if (p.detail.level > 0 && (p.selected || cp.select_in || cp.select_out)) {
+      if (p.detail.level > 0 && !p.detail.rides && (p.selected || cp.select_in || cp.select_out)) {
         return true;
       }
     }

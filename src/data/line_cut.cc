@@ -4,6 +4,8 @@
 #include <cmath>
 #include <functional>
 
+#include "data/detail.hh"
+
 namespace oanim {
 
 namespace {
@@ -196,7 +198,12 @@ static void cut_stretches(VectorDrawing &drawing, const Line &line, std::vector<
     const double at = cuts[i];
     const int segment = int(at);
     const double t = (at - segment) / (int(done) == segment && done > 0.0 ? done - segment : 1.0);
-    drawing_split_segment(drawing, {line.curve, segment}, float(t));
+    if (drawing_curve_moves(drawing, line.curve)) {
+      drawing_detail_split(drawing, {line.curve, segment}, float(t), 0);
+    }
+    else {
+      drawing_split_segment(drawing, {line.curve, segment}, float(t));
+    }
     done = at;
   }
   /* The curve's places now: every old point and every cut. */
@@ -219,7 +226,7 @@ static void cut_stretches(VectorDrawing &drawing, const Line &line, std::vector<
 }
 
 /* Takes the segments away: gone, or hidden where a fill runs along them, and it needs them for its edge. */
-static void edges_take(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges)
+static void edges_take(VectorDrawing &drawing, const std::vector<ShapeEdge> &edges, const RidingFree &free)
 {
   std::vector<bool> filled(drawing.curves.size(), false);
   for (const Shape &shape : drawing.shapes) {
@@ -230,8 +237,18 @@ static void edges_take(VectorDrawing &drawing, const std::vector<ShapeEdge> &edg
     }
   }
   std::vector<ShapeEdge> hide, remove;
+  std::vector<uint64_t> riding;
   for (const ShapeEdge &edge : edges) {
     (filled[edge.curve] ? hide : remove).push_back(edge);
+    for (const CurvePoint &cp : drawing.curves[edge.curve].points) {
+      const MeshPoint &p = drawing.points[cp.point];
+      if (p.detail.rides && !filled[edge.curve] && std::find(riding.begin(), riding.end(), p.id) == riding.end()) {
+        riding.push_back(p.id);
+      }
+    }
+  }
+  if (!riding.empty() && free) {
+    free(riding);
   }
   drawing_set_edges_hidden(drawing, hide, true);
   drawing_delete_edges(drawing, remove);
@@ -258,7 +275,8 @@ static float line_half(const VectorDrawing &drawing, const Line &line)
   return half;
 }
 
-bool drawing_lines_erase(VectorDrawing &drawing, const InkSweep &sweep, float pixel, bool whole, bool selected_only)
+bool drawing_lines_erase(VectorDrawing &drawing, const InkSweep &sweep, float pixel, bool whole, bool selected_only,
+                         const RidingFree &free)
 {
   std::vector<ShapeEdge> edges;
   std::vector<Line> lines = drawing_lines(drawing, pixel);
@@ -272,7 +290,7 @@ bool drawing_lines_erase(VectorDrawing &drawing, const InkSweep &sweep, float pi
       cut_stretches(drawing, line, whole ? whole_line(line) : covered, edges);
     }
   }
-  edges_take(drawing, edges);
+  edges_take(drawing, edges, free);
   return !edges.empty();
 }
 
@@ -379,7 +397,7 @@ static std::vector<double> line_crossings(const Line &line, const std::vector<Li
 }
 
 bool drawing_lines_trim(VectorDrawing &drawing, const InkSweep &sweep, const std::vector<std::vector<float2>> &others,
-                        float pixel, bool selected_only)
+                        float pixel, bool selected_only, const RidingFree &free)
 {
   const std::vector<Line> lines = drawing_lines(drawing, pixel);
   /* All worked out first: a cut changes the line it is on, which the others' crossings go by. */
@@ -423,7 +441,7 @@ bool drawing_lines_trim(VectorDrawing &drawing, const InkSweep &sweep, const std
   for (auto &[line, pieces] : cuts) {
     cut_stretches(drawing, *line, std::move(pieces), edges);
   }
-  edges_take(drawing, edges);
+  edges_take(drawing, edges, free);
   return !edges.empty();
 }
 
@@ -461,7 +479,7 @@ void drawing_trim_overshoots(VectorDrawing &drawing, int curve, float reach, flo
   }
   std::vector<ShapeEdge> edges;
   cut_stretches(drawing, *line, std::move(pieces), edges);
-  edges_take(drawing, edges);
+  edges_take(drawing, edges, nullptr);
 }
 
 }  // namespace oanim

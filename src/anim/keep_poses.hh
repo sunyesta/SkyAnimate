@@ -17,6 +17,7 @@
 namespace oanim {
 
 struct Document;
+struct Layer;
 
 /* The setup pose of some layers, as it was before a move. */
 struct SetupSnapshot {
@@ -79,6 +80,11 @@ struct DrawingsShownAll {
   bool empty() const;
 };
 DrawingsShownAll drawings_shown_capture_all(Document &doc, const std::vector<uint64_t> &layers);
+
+/* Make Independent: riding points (data/detail.hh, by id) of `layer` become ordinary points, on the setup frame, keyed
+ * on every frame the line moves, in the mainline and every action, so each pose shows as it did: their places and
+ * widths, and the handles their segments split into, their neighbours' included. */
+void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t> &ids);
 
 /* Keep Animation for a change in how bones hang from their parents (Relations: Inherit Rotation and
  * Scale): how each of `bones` shows (its angle, and its size along and across it) on every frame keyed

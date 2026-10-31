@@ -3613,10 +3613,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("layer_detail", [layer_or_raise](uint64_t id) {
     VectorDrawing &drawing = layer_or_raise(id).drawing;
     drawing_detail_sync(drawing, true);
-    py::list levels, hidden, shape_levels, shape_max;
+    py::list levels, hidden, rides, shape_levels, shape_max;
     for (const MeshPoint &pt : drawing.points) {
       levels.append(pt.detail.level);
       hidden.append(pt.detail.hidden);
+      rides.append(pt.detail.rides);
     }
     for (const Shape &shape : drawing.shapes) {
       shape_levels.append(shape.detail_level);
@@ -3625,6 +3626,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     py::dict r;
     r["levels"] = levels;
     r["hidden"] = hidden;
+    r["rides"] = rides;
     r["shape_levels"] = shape_levels;
     r["shape_max_levels"] = shape_max;
     /* The points each curve's wire runs through, at its edit level. */

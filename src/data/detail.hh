@@ -18,7 +18,13 @@
  *   handle) moved since it was last placed is an edit, and its offsets are taken from where it is.
  *   Animation keys a detail point's offsets (see drawing_changes_from_values).
  * - Each shape has its edit level (Shape::detail_level): a curve shows its points up to the highest
- *   level of the shapes using it; the others are hidden (and can't be picked) but still draw. */
+ *   level of the shapes using it; the others are hidden (and can't be picked) but still draw.
+ * - A riding point (PointDetail::rides) is what the knife, Subdivide and the like add to a curve that moves (keys,
+ *   or bones): a level 1 detail point, so the curve's look doesn't change on any frame and no key is touched, but
+ *   one that shows at every level like the curve's own points and never counts as detail. Unlike a shown detail
+ *   point it stays on its segment when the segment moves; moved itself, it keeps its offset from the segment, as
+ *   detail does. Bones bend the curve and it is placed on the result, where other detail is bent by its own weights.
+ *   Its width comes from the line's. Make Independent turns it into an ordinary point, with keys to match. */
 
 #include <cstdint>
 #include <map>
@@ -36,6 +42,15 @@ bool drawing_has_detail(const VectorDrawing &drawing);
  * point or handle that moved since it was last placed keeps where it is: its offsets are taken from
  * there. Also marks the points hidden at their curves' edit levels. */
 void drawing_detail_sync(VectorDrawing &drawing, bool capture);
+/* Places the riding points on the curve as it is now (after bones bent it). */
+void drawing_detail_ride(VectorDrawing &drawing);
+/* Whether a curve's shape changes from frame to frame: keys on it, or bones. */
+bool drawing_curve_moves(const VectorDrawing &drawing, int curve);
+/* Whether any selected point rides. */
+bool drawing_riding_selected(const VectorDrawing &drawing);
+/* Takes out the selected riding points, giving back the curve as it was without them: its neighbours' handles
+ * are still the ones it had. (Finer detail hanging from one is left to the ordinary delete.) */
+void drawing_riding_delete_selected(VectorDrawing &drawing);
 /* The handles as drawn and rendered: a handle facing finer detail shortened as its segment splits.
  * For a copy (drawing, rendering), never the drawing itself. */
 void drawing_detail_final_handles(VectorDrawing &drawing);
@@ -75,7 +90,8 @@ void drawing_detail_edit_end(VectorDrawing &drawing, DetailEdit &edit);
 /* The level the knife adds points at on a curve: its edit level (0 on a curve no shape uses). */
 int drawing_knife_level(const VectorDrawing &drawing, int curve);
 /* The knife: inserts a point into segment `edge` of the curve as it shows (final handles) at `t`,
- * keeping its shape, as a detail point of `level` (0: a base point). Returns the new point. */
+ * keeping its shape, as a detail point of `level` (0: a base point, or a riding point on a curve that moves).
+ * Returns the new point. */
 int drawing_detail_split(VectorDrawing &drawing, ShapeEdge edge, float t, int level);
 
 /* The curves a shape runs along. */

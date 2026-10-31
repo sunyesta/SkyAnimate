@@ -710,6 +710,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
         Deformer d;
         if (deformer_init(doc, *original, d)) {
           deform(d, drawing);
+          drawing_detail_ride(drawing);
         }
       }
     }
@@ -773,6 +774,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
           bones_moved = true;
         }
         deform(d, drawing, only_bones ? r_rigid : nullptr);
+        drawing_detail_ride(drawing);
       }
     }
     else if (modifier_is_deform(m.type)) {

@@ -51,6 +51,12 @@ struct PointDetail {
   bool built = false;
   /* Above its curve's edit level: not shown, picked or selected. Not saved. */
   bool hidden = false;
+  /* A riding point: added to a curve that moves, it is worked out from the segment it sits on, on every frame,
+   * as if it had never been added, until it is moved itself (see data/detail.hh). Shown at every level. */
+  bool rides = false;
+  /* A riding point's width: what it has over the width of the line there, and as last placed (not saved). */
+  float radius_offset = 0.0f;
+  float built_radius = 0.0f;
   bool operator==(const PointDetail &) const = default;
 };
 

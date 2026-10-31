@@ -295,6 +295,10 @@ static json drawing_to_json(const VectorDrawing &drawing)
                          {"setup_pos", float2_to_json(dt.setup_pos)},
                          {"setup_in", float2_to_json(dt.setup_in)},
                          {"setup_out", float2_to_json(dt.setup_out)}};
+      if (dt.rides) {
+        point["detail"]["rides"] = true;
+        point["detail"]["radius_offset"] = num(dt.radius_offset);
+      }
     }
     return point;
   });
@@ -1691,6 +1695,8 @@ static VectorDrawing drawing_from_json(const json &j)
         dt.setup_pos = get_float2(*it, "setup_pos", dt.pos);
         dt.setup_in = get_float2(*it, "setup_in", dt.in);
         dt.setup_out = get_float2(*it, "setup_out", dt.out);
+        dt.rides = it->value("rides", false);
+        dt.radius_offset = get_float(*it, "radius_offset", 0.0f);
       }
     }
   }

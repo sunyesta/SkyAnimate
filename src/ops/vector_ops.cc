@@ -1,6 +1,7 @@
 /* Operators that edit the active vector layer's drawing: selection, delete, shapes, curvature,
  * and the start of modal transforms (G, R, S, E). */
 
+#include "anim/keep_poses.hh"
 #include "ops/edit_ops.hh"
 
 #include <algorithm>
@@ -613,6 +614,7 @@ void vector_operators_register()
                         drawing_delete_edges(drawing, drawing_selected_edges(drawing));
                         continue;
                       }
+                      drawing_riding_delete_selected(drawing);
                       std::vector<bool> remove(drawing.points.size());
                       for (size_t i = 0; i < drawing.points.size(); i++) {
                         remove[i] = drawing.points[i].selected;
@@ -1760,6 +1762,34 @@ void vector_operators_register()
                       text += " (their keys were removed)";
                     }
                     report(dropped ? ReportType::Warning : ReportType::Info, text);
+                    return OpStatus::Finished;
+                  });
+  vector_operator("mesh.make_independent", "Make Independent",
+                  "Make the selected riding points ordinary points, keyed so every pose stays as it is (setup frame)",
+                  MIRRORED, editable_with_selection_poll, [setup_frame](Context &C) {
+                    if (!setup_frame(C, "Make Independent")) {
+                      return OpStatus::Cancelled;
+                    }
+                    int made = 0;
+                    for (Layer *layer : editable_layers(C)) {
+                      if (layer->is_reference() || !drawing_riding_selected(layer->drawing)) {
+                        continue;
+                      }
+                      std::vector<uint64_t> ids;
+                      drawing_ensure_ids(layer->drawing);
+                      for (const MeshPoint &p : layer->drawing.points) {
+                        if (p.selected && p.detail.rides) {
+                          ids.push_back(p.id);
+                        }
+                      }
+                      made += int(ids.size());
+                      riding_points_free(*C.document, *layer, ids);
+                    }
+                    if (made == 0) {
+                      report(ReportType::Warning, "Select riding points to make independent");
+                      return OpStatus::Cancelled;
+                    }
+                    report(ReportType::Info, "Made " + std::to_string(made) + (made == 1 ? " point" : " points") + " independent");
                     return OpStatus::Finished;
                   });
   vector_operator("mesh.detail_apply", "Apply Detail",

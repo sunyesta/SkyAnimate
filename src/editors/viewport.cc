@@ -13065,9 +13065,13 @@ static void viewport_draw_contents(Area &area, Context &C)
     ImGui::Separator();
     /* Detail levels: up a level; detail points picked, down a level, or back onto the curve of the
      * level below. */
-    bool detail = false;
+    bool detail = false, riding = false;
     for (const Layer *editing : editable_layers(C)) {
       detail |= !editing->is_reference() && drawing_detail_selected(editing->drawing);
+      riding |= !editing->is_reference() && drawing_riding_selected(editing->drawing);
+    }
+    if (riding) {
+      menu_operator(C, "Make Independent", "mesh.make_independent");
     }
     menu_operator(C, "Move to Higher Level", "mesh.detail_raise");
     if (detail) {
