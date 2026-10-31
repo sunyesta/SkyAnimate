@@ -215,8 +215,8 @@ assert ops.mesh.symmetrize() == {'FINISHED'}
 assert close(handle_toward(layer, peak, side_l), (-0.3, -0.2), 1e-3), handle_toward(layer, peak, side_l)
 assert close(handle_toward(layer, peak, side_r), (0.3, -0.2), 1e-3), handle_toward(layer, peak, side_r)
 
-# --- A riding point on one side and a point of its own on the other: the lines are drawn the same ---------------------
-# A rider's neighbours draw their handles shortened, so copying them as stored would leave the two sides different.
+# --- A detail point on one side and a point of its own on the other: the lines are drawn the same ---------------------
+# Its neighbours draw their handles shortened, so copying them as stored would leave the two sides different.
 def drawn(layer):
     """The curve as it draws: (where, handle in, handle out) along it, the handles as offsets from their point."""
     points, curves = layer.shown()
@@ -225,13 +225,14 @@ def drawn(layer):
 
 
 for direction in ("RIGHT_TO_LEFT", "LEFT_TO_RIGHT"):
-    layer = line([(1.0, 1.0), (0.0, 0.0), (-0.5, 0.45), (-1.0, 1.0)], "Rider")
+    layer = line([(1.0, 1.0), (0.0, 0.0), (-0.5, 0.45), (-1.0, 1.0)], "Detail")
     layer.move_handle(0, 1, "IN", (0.3, 0.05))
     layer.move_handle(0, 1, "OUT", (-0.1, -0.02))
     pose(layer, 10, {0: (1.1, 1.0)})
     doc.frame_current = 0
-    rider = layer.split_segment(0, 0, 0.5)
-    assert layer.detail["rides"][rider]
+    layer.set_detail_level(1)
+    detail = layer.split_segment(0, 0, 0.5)
+    assert layer.detail["levels"][detail] == 1
     doc.frame_current = 10
     everything(layer)
     assert ops.mesh.symmetrize(direction=direction) == {'FINISHED'}
@@ -245,12 +246,13 @@ for direction in ("RIGHT_TO_LEFT", "LEFT_TO_RIGHT"):
             assert close(into, (-other_out[0], other_out[1]), 1e-3), (direction, i, into, other_out)
     doc.frame_current = 0
 
-# A rider on one side alone, the other going straight to the same point: the handle as it is, past the rider.
-layer = line([(1.0, 1.0), (0.0, 0.0), (-1.0, 1.0)], "Rider alone")
+# Detail on one side alone, the other going straight to the same point: the handle as it is, past the detail.
+layer = line([(1.0, 1.0), (0.0, 0.0), (-1.0, 1.0)], "Detail alone")
 layer.move_handle(0, 0, "OUT", (0.8, 0.5))
 pose(layer, 10, {0: (1.1, 1.0)})
 doc.frame_current = 0
-rider = layer.split_segment(0, 0, 0.5)
+layer.set_detail_level(1)
+layer.split_segment(0, 0, 0.5)
 doc.frame_current = 10
 layer.select_points(range(layer.point_count), False)
 layer.select_points([0, 2])
@@ -476,18 +478,16 @@ everything(layer)
 assert ops.mesh.symmetrize(threshold="0.01") == {'CANCELLED'}, "uneven: it's on the axis, not the partner of 0"
 assert close(where(layer, 1), (-0.005, 0.02))
 
-# --- Riding points are matched like the rest -------------------------------------------------------------------
+# --- Points added to a moving curve are matched like the rest ------------------------------------------------------
 layer = line([(2.0, 0.0), (1.0, 1.0), (-1.0, 1.0), (-2.0, 0.0)])
 pose(layer, 10, {1: (1.2, 1.3)})
 doc.frame_current = 0
-left_rider = layer.split_segment(0, 2, 0.5)
-right_rider = layer.split_segment(0, 0, 0.5)
-assert layer.detail["rides"][left_rider] and layer.detail["rides"][right_rider]
+left_new = layer.split_segment(0, 2, 0.5)
+right_new = layer.split_segment(0, 0, 0.5)
 doc.frame_current = 10
 everything(layer)
 assert ops.mesh.symmetrize(match_shape="1") == {'FINISHED'}
-assert all(layer.detail["rides"][i] for i in (left_rider, right_rider)), "they go on riding"
-a, b = where(layer, right_rider), where(layer, left_rider)
+a, b = where(layer, right_new), where(layer, left_new)
 assert close(b, (-a[0], a[1]), 1e-3), (a, b)
 assert close(where(layer, 2), (-1.2, 1.3)), where(layer, 2)
 doc.frame_current = 0

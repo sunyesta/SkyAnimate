@@ -36,8 +36,6 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
-/* The same by each point's own weights alone: where a riding point (data/detail.hh) would go as an ordinary one. */
-std::vector<Transform2D> layer_point_skins_weighted(const Document &doc, const Layer &layer);
 /* The same with the bones posed as `poses` has them (each one's skin), for a change worked out
  * without posing the bones: Apply Pose as Rest Pose bending the setup drawing to the new rest. */
 std::vector<Transform2D> layer_point_skins_posed(const Document &doc, const Layer &layer,

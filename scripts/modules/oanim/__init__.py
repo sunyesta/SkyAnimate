@@ -222,8 +222,7 @@ class _Layer:
     @property
     def detail(self):
         """Detail levels: {"levels": each point's level (0: its own points, 1 and up: detail the
-        knife added), "hidden": each point hidden at its shape's level, "rides": each point riding the curve
-        (added to a curve that moves, so its look doesn't change on any frame), "shape_levels": each shape's
+        knife added), "hidden": each point hidden at its shape's level, "shape_levels": each shape's
         edit level, "shape_max_levels": each shape's highest detail level, "wires": the points each curve's wire runs through, at its
         edit level}."""
         return dict(_oanim.layer_detail(self._id))
@@ -731,7 +730,7 @@ class _Layer:
 
     def split_segment(self, curve, segment, t=0.5):
         """Add a point on segment `segment` of curve `curve`, `t` along it, as the Split tool does
-        (on a curve that moves, a riding point: see detail). Returns the new point's index."""
+        (on an animated curve it takes its neighbours' motion). Returns the new point's index."""
         return _oanim.layer_split_segment(self._id, curve, segment, t)
 
     def move_points(self, offset):

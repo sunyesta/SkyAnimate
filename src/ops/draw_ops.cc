@@ -5,10 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "anim/keep_poses.hh"
 #include "assets/draw_presets.hh"
 #include "core/log.hh"
-#include "data/detail.hh"
 #include "data/document.hh"
 #include "data/fill_paint.hh"
 #include "data/line_cut.hh"
@@ -156,9 +154,8 @@ static bool stroke_cut_lines(Context &C, Layer &layer, const InkStroke &ink, Dra
       r *= to.scale();
     }
     const float other_pixel = pixel * to.scale();
-    const auto free = [&](const std::vector<uint64_t> &ids) { riding_points_free(doc, *other, ids); };
     if (mode == DrawMode::StrokeEraser) {
-      cut |= drawing_lines_erase(other->drawing, moved, other_pixel, ink.settings().erase_whole, ts.draw_erase_selected, free);
+      cut |= drawing_lines_erase(other->drawing, moved, other_pixel, ink.settings().erase_whole, ts.draw_erase_selected);
       continue;
     }
     std::vector<std::vector<float2>> others;
@@ -173,7 +170,7 @@ static bool stroke_cut_lines(Context &C, Layer &layer, const InkStroke &ink, Dra
         }
       }
     }
-    cut |= drawing_lines_trim(other->drawing, moved, others, other_pixel, ts.draw_erase_selected, free);
+    cut |= drawing_lines_trim(other->drawing, moved, others, other_pixel, ts.draw_erase_selected);
   }
   return cut;
 }

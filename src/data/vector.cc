@@ -3519,7 +3519,7 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   struct HandleMatch {
     HandleOf source, image;
     /* What goes across: the handle as drawn, when the lines are drawn to images of each other, one side's through a
-     * riding point and the other's through a point of its own. Otherwise the handle as it is, past any detail: a riding
+     * detail point and the other's through a point of its own. Otherwise the handle as it is, past any detail: a detail
      * point on one side alone doesn't change that side's look. */
     float scale;
   };

@@ -134,7 +134,7 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
   }
   for (MeshPoint &p : layer.drawing.points) {
     f(p.pos_keys, p.transform);
-    f(p.radius_keys, point_width_channel(p));
+    f(p.radius_keys, p.radius);
   }
   for (Curve &curve : layer.drawing.curves) {
     for (CurvePoint &cp : curve.points) {
@@ -579,7 +579,7 @@ void animation_record(Document &doc)
       drawing_changes_from_values(drawing);
       for (MeshPoint &p : drawing.points) {
         freeze(p.pos_keys, p.transform, frame);
-        freeze(p.radius_keys, point_width_channel(p), frame);
+        freeze(p.radius_keys, p.radius, frame);
       }
       for (Curve &curve : drawing.curves) {
         for (CurvePoint &cp : curve.points) {
@@ -2248,7 +2248,7 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
     MeshPoint &p = layer.drawing.points[i];
     const std::string base = "points[" + std::to_string(i) + "].";
     add(base + "pos", p.pos_keys, p.transform);
-    add(base + "radius", p.radius_keys, point_width_channel(p));
+    add(base + "radius", p.radius_keys, p.radius);
   }
   for (size_t c = 0; c < layer.drawing.curves.size(); c++) {
     Curve &curve = layer.drawing.curves[c];

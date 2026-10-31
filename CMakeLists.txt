@@ -430,8 +430,6 @@ add_test(NAME fill_paint
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_fill_paint.py)
 add_test(NAME line_cut
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_line_cut.py)
-add_test(NAME riding_points
-  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_riding_points.py)
 add_test(NAME masks
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_masks.py)
 add_test(NAME materials

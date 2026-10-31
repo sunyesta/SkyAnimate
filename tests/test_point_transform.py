@@ -1,6 +1,6 @@
 """Point and handle keys hold the change from the setup pose (frame 0): a point's Transform and a
 handle's Angle and Length. Reshaping frame 0 keeps every pose's motion; going through frames adds no
-keys; a point added to an animated curve rides it; saving keeps it; files from
+keys; a point added to an animated curve takes its neighbours' motion; saving keeps it; files from
 before (format 2, the points' own values in their keys, as the Moho converter writes) open
 converted.
 
@@ -98,7 +98,7 @@ assert [f for f, v in keys("points[1].pos")] == [0, 10]
 assert [f for f, v in keys("curves[0].points[1].handle_out")] == [0, 10]
 assert not keys("points[0].pos") and not keys("points[2].pos"), "still points have no keys"
 
-# --- A point added to an animated curve rides it, on no keys of its own ---------------------------------
+# --- A point added to an animated curve takes its neighbours' motion ----------------------------------
 doc.frame_current = 0
 new = layer.split_segment(0, 0, 0.5)
 doc.frame_current = 1
@@ -106,8 +106,8 @@ doc.frame_current = 0
 rest = where(new)
 doc.frame_current = 10
 moved = sub(where(new), rest)
-assert 0.1 < moved[1] < 0.35, ("on the line, between a still point and one moving 0.5", moved)
-assert not keys("points[%d].pos" % new)
+assert 0.15 < moved[1] < 0.35 and abs(moved[0]) < 0.05, ("between a still point and one moving 0.5", moved)
+assert [f for f, v in keys("points[%d].pos" % new)] == [0, 10]
 
 # --- Saved and opened ------------------------------------------------------------------------------------
 doc.frame_current = 0

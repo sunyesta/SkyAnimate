@@ -69,9 +69,8 @@ shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brush
 (`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). The draw tools (the spec's "Draw tools" note): every pen sample through Windows Ink or WinTab in
 `src/wm/pen_input.*` and `src/wm/pen_wintab.*`, the Stroke Pen's engine in `src/data/ink_stroke.*`, the shelf and presets in
 `src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`, the Fill Pen and Fill Eraser in
-`src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Riding points (a point added to a curve
-that moves stays out of its animation) are detail points with a flag, in `src/data/detail.*`, baked by `riding_points_free` in
-`src/anim/keep_poses.cc`. Still to do in milestone 2: Knife tool (Ctrl K), the style library.
+`src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Still to do in milestone 2: Knife tool
+(Ctrl K), the style library.
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels
 (`src/anim/channel.*`, Moho interpolation modes, hold, interval) on layer transform, opacity,

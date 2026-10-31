@@ -2,7 +2,6 @@
  * and the start of modal transforms (G, R, S, E). */
 
 #include "anim/deform.hh"
-#include "anim/keep_poses.hh"
 #include "ops/edit_ops.hh"
 
 #include <algorithm>
@@ -207,29 +206,6 @@ static bool editable_poll(Context &C)
 
 /* Calls f for each editable layer with selected shapes (a point of theirs selected), with which;
  * false when there are none. */
-/* A riding point `edit` would leave without a segment to sit on (a line's end) can't ride on: it is made an ordinary
- * point first, keyed to hold every pose. Tried on a copy, as it is whatever the edit does. */
-static void free_riding_left_as_ends(Context &C, Layer &layer, const std::function<void(VectorDrawing &)> &edit)
-{
-  const VectorDrawing &drawing = layer.drawing;
-  if (layer.is_reference() || std::none_of(drawing.points.begin(), drawing.points.end(),
-                                           [](const MeshPoint &p) { return p.detail.rides; }))
-  {
-    return;
-  }
-  VectorDrawing trial = drawing;
-  edit(trial);
-  drawing_detail_sync(trial, false);
-  std::vector<uint64_t> ids;
-  for (const MeshPoint &p : drawing.points) {
-    const int after = p.detail.rides ? drawing_point_index(trial, p.id) : -1;
-    if (after >= 0 && !trial.points[after].detail.rides) {
-      ids.push_back(p.id);
-    }
-  }
-  riding_points_free(*C.document, layer, ids);
-}
-
 static bool for_selected_shapes(Context &C, const std::function<void(Layer &, const std::vector<bool> &)> &f)
 {
   bool any = false;
@@ -731,31 +707,22 @@ void vector_operators_register()
   select_mode_op("mesh.select_mode_stroke", "Stroke Selection Mode", SelectMode::Stroke);
 
   /* --- Editing ----------------------------------------------------------------- */
-  /* Riding points give the curve back as it was without them; the rest go. */
-  const auto delete_selected = [](VectorDrawing &drawing) {
-    drawing_riding_delete_selected(drawing);
-    std::vector<bool> remove(drawing.points.size());
-    for (size_t i = 0; i < drawing.points.size(); i++) {
-      remove[i] = drawing.points[i].selected;
-    }
-    drawing_remove_points(drawing, remove);
-  };
-  const auto delete_selected_edges = [](VectorDrawing &drawing) {
-    return drawing_delete_edges(drawing, drawing_selected_edges(drawing));
-  };
   vector_operator("mesh.delete", "Delete Points",
                   "Delete the selected points and the curves left too short; in Edges mode, delete the selected "
                   "edges and keep their points",
-                  MIRRORED, editable_with_selection_poll, [delete_selected, delete_selected_edges](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     const bool edges = C.wm->tool_settings.select_mode == SelectMode::Edge;
                     for (Layer *layer : editable_layers(C)) {
+                      VectorDrawing &drawing = layer->drawing;
                       if (edges) {
-                        free_riding_left_as_ends(C, *layer, delete_selected_edges);
-                        delete_selected_edges(layer->drawing);
+                        drawing_delete_edges(drawing, drawing_selected_edges(drawing));
                         continue;
                       }
-                      free_riding_left_as_ends(C, *layer, delete_selected);
-                      delete_selected(layer->drawing);
+                      std::vector<bool> remove(drawing.points.size());
+                      for (size_t i = 0; i < drawing.points.size(); i++) {
+                        remove[i] = drawing.points[i].selected;
+                      }
+                      drawing_remove_points(drawing, remove);
                     }
                     return OpStatus::Finished;
                   });
@@ -968,10 +935,13 @@ void vector_operators_register()
 
   /* What the X menu offers, as Blender's Delete menu: each whatever the selection mode is. */
   vector_operator("mesh.delete_points", "Delete Points", "Delete the selected points and the curves left too short",
-                  MIRRORED, editable_with_selection_poll, [delete_selected](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     for (Layer *layer : editable_layers(C)) {
-                      free_riding_left_as_ends(C, *layer, delete_selected);
-                      delete_selected(layer->drawing);
+                      std::vector<bool> remove(layer->drawing.points.size());
+                      for (size_t i = 0; i < layer->drawing.points.size(); i++) {
+                        remove[i] = layer->drawing.points[i].selected;
+                      }
+                      drawing_remove_points(layer->drawing, remove);
                     }
                     return OpStatus::Finished;
                   });
@@ -1032,11 +1002,10 @@ void vector_operators_register()
                   });
   vector_operator("mesh.delete_edges", "Delete Edges",
                   "Delete the segments between selected points, keeping the points: curves split there",
-                  MIRRORED, editable_with_selection_poll, [delete_selected_edges](Context &C) {
+                  MIRRORED, editable_with_selection_poll, [](Context &C) {
                     int deleted = 0;
                     for (Layer *layer : editable_layers(C)) {
-                      free_riding_left_as_ends(C, *layer, delete_selected_edges);
-                      deleted += delete_selected_edges(layer->drawing);
+                      deleted += drawing_delete_edges(layer->drawing, drawing_selected_edges(layer->drawing));
                     }
                     return deleted ? OpStatus::Finished : OpStatus::Cancelled;
                   });
@@ -1285,7 +1254,7 @@ void vector_operators_register()
       "mesh.separate", "Separate",
       "Move the selected points, the curve pieces between them and the shapes they cover into a new layer of their "
       "own, above this one (P, as Blender's Separate > Selection)",
-      MIRRORED, editable_with_selection_poll, [delete_selected_edges](Context &C) {
+      MIRRORED, editable_with_selection_poll, [](Context &C) {
         Document &doc = *C.document;
         std::vector<uint64_t> ids;
         for (Layer *layer : editable_layers(C)) {
@@ -1296,7 +1265,6 @@ void vector_operators_register()
         std::vector<std::string> made;
         for (const uint64_t id : ids) {
           Layer *layer = layer_find(doc, id);
-          free_riding_left_as_ends(C, *layer, delete_selected_edges);
           VectorDrawing piece = layer->drawing;
           if (!drawing_duplicate_selected(piece)) {
             continue;
@@ -1877,16 +1845,6 @@ void vector_operators_register()
                       if (layer->is_reference()) {
                         continue;
                       }
-                      /* Riding points have keys to get to stay as they are; the rest of the selection goes down. */
-                      std::vector<uint64_t> riding;
-                      drawing_ensure_ids(layer->drawing);
-                      for (const MeshPoint &p : layer->drawing.points) {
-                        if (p.selected && p.detail.rides) {
-                          riding.push_back(p.id);
-                        }
-                      }
-                      riding_points_free(*C.document, *layer, riding);
-                      lowered += int(riding.size());
                       int s = 0;
                       bool keys = false;
                       lowered += drawing_detail_lower_selected(layer->drawing, &s, &keys);
@@ -1909,34 +1867,6 @@ void vector_operators_register()
                     report(dropped ? ReportType::Warning : ReportType::Info, text);
                     return OpStatus::Finished;
                   });
-  vector_operator("mesh.make_independent", "Make Independent",
-                  "Make the selected riding points ordinary points, keyed so every pose stays as it is (setup frame)",
-                  MIRRORED, editable_with_selection_poll, [setup_frame](Context &C) {
-                    if (!setup_frame(C, "Make Independent")) {
-                      return OpStatus::Cancelled;
-                    }
-                    int made = 0;
-                    for (Layer *layer : editable_layers(C)) {
-                      if (layer->is_reference() || !drawing_riding_selected(layer->drawing)) {
-                        continue;
-                      }
-                      std::vector<uint64_t> ids;
-                      drawing_ensure_ids(layer->drawing);
-                      for (const MeshPoint &p : layer->drawing.points) {
-                        if (p.selected && p.detail.rides) {
-                          ids.push_back(p.id);
-                        }
-                      }
-                      made += int(ids.size());
-                      riding_points_free(*C.document, *layer, ids);
-                    }
-                    if (made == 0) {
-                      report(ReportType::Warning, "Select riding points to make independent");
-                      return OpStatus::Cancelled;
-                    }
-                    report(ReportType::Info, "Made " + std::to_string(made) + (made == 1 ? " point" : " points") + " independent");
-                    return OpStatus::Finished;
-                  });
   vector_operator("mesh.detail_apply", "Apply Detail",
                   "Make the selected shapes' detail points ordinary points, as they show (setup frame)", MIRRORED,
                   editable_poll, [setup_frame](Context &C) {
@@ -1947,10 +1877,7 @@ void vector_operators_register()
                     bool dropped = false;
                     const bool any = for_selected_shapes(C, [&](Layer &layer, const std::vector<bool> &shapes) {
                       bool keys = false;
-                      drawing_ensure_ids(layer.drawing);
-                      const std::vector<uint64_t> riding = drawing_riding_on_shapes(layer.drawing, shapes);
-                      riding_points_free(*C.document, layer, riding);
-                      changed += int(riding.size()) + drawing_detail_apply(layer.drawing, shapes, &keys);
+                      changed += drawing_detail_apply(layer.drawing, shapes, &keys);
                       dropped |= keys;
                     });
                     if (!any) {
