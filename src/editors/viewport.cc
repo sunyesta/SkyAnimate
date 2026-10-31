@@ -5444,8 +5444,9 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   /* Surface Smooth shows the fit it moves the line toward: during a stroke the stroke's own, else the fit a
    * stroke would start with now. Whether or not the mouse is over the view, so it follows Lump Sensitivity as it
    * is scrubbed in the header. */
-  /* By the brush picked, not the one Shift lends for the moment (Shift also scrubs a field finely). */
-  if (ts.sculpt_brush == SculptBrush::SurfaceSmooth) {
+  /* By the brush picked, not the one Shift lends for the moment (Shift also scrubs a field finely). With the overlays
+   * off (Shift Z) nothing shows, and nothing is fitted for it. */
+  if (ts.sculpt_brush == SculptBrush::SurfaceSmooth && doc.overlays.show) {
     SculptDab ghost_dab = dab;
     ghost_dab.brush = SculptBrush::SurfaceSmooth;
     if (g_sculpt.active && g_sculpt.area == area.id && !g_sculpt.smoothing) {
@@ -6734,7 +6735,7 @@ static std::string layer_modal_update(Context &C, const ViewMapping &view, ImDra
   else {
     /* Blender's dashed line from the centre to the mouse. */
     const ImVec2 a = view.to_screen(lm.pivot), b = io.MousePos;
-    const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+    const float len = C.document->overlays.show ? std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)) : 0.0f;
     for (float t = 0.0f; t < len; t += 8.0f) {
       const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 4.0f, len) / std::max(len, 1.0f);
       dl->AddLine(ImVec2(a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0),
@@ -6917,7 +6918,7 @@ static std::string radius_modal_update(Context &C, const ViewMapping &view, ImDr
   const float2 mouse = rm.precise.update(view.to_document(io.MousePos), io.KeyShift);
   /* Blender's dashed line from the middle to the mouse. */
   const ImVec2 a = view.to_screen(rm.pivot), b = io.MousePos;
-  const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+  const float len = C.document->overlays.show ? std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)) : 0.0f;
   for (float t = 0.0f; t < len; t += 8.0f) {
     const float u0 = t / std::max(len, 1.0f), u1 = std::min(t + 4.0f, len) / std::max(len, 1.0f);
     dl->AddLine(ImVec2(a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0),
@@ -11284,6 +11285,19 @@ static void layer_gizmo_input(Context &C, Area &area, const ViewMapping &view, b
   if (g_layer_pivot.layer != layer->id) {
     g_layer_pivot = {layer->id, false, {}};
   }
+  const auto type_in_layer = [&]() {
+    C.wm->tool_settings.tool = Tool::EditText;
+    const TextToolView text_view{[&](float2 p) { return view.to_screen(p); },
+                                 [&](ImVec2 p) { return view.to_document(p); }, view.zoom};
+    text_editing_begin_at(C, text_view, io.MousePos);
+  };
+  /* With the overlays off (Shift Z) the box is gone: not drawn, and nothing to grab. A drag it began goes on. */
+  if (!doc.overlays.show && !g.active) {
+    if (hovered && layer->is_text() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+      type_in_layer();
+    }
+    return;
+  }
   float2 lo, hi;
   if (g.active) {
     lo = g.lo;
@@ -11331,10 +11345,7 @@ static void layer_gizmo_input(Context &C, Area &area, const ViewMapping &view, b
       return;
     }
     if (layer->is_text()) {
-      C.wm->tool_settings.tool = Tool::EditText;
-      const TextToolView text_view{[&](float2 p) { return view.to_screen(p); },
-                                   [&](ImVec2 p) { return view.to_document(p); }, view.zoom};
-      text_editing_begin_at(C, text_view, io.MousePos);
+      type_in_layer();
       return;
     }
   }
@@ -11502,9 +11513,12 @@ static void layer_gizmo_input(Context &C, Area &area, const ViewMapping &view, b
     }
   }
 
+  if (!doc.overlays.show) {
+    return;
+  }
   /* The box, its handles, the turn marks at its corners and the pivot, over the layer's grid. */
   const Transform2D shown = g.active ? g.parent * layer->local_transform() : world;
-  if (C.wm->tool_settings.layer_grid && doc.overlays.show) {
+  if (C.wm->tool_settings.layer_grid) {
     draw_layer_grid(dl, view, shown);
   }
   const auto at = [&](float2 local) { return view.to_screen(shown.apply(local)); };
@@ -11653,7 +11667,9 @@ static bool layer_pick_wanted(Context &C, const ViewMapping &view)
 static void layer_pick_update(Context &C, const ViewMapping &view, ImDrawList *dl)
 {
   const ImGuiIO &io = ImGui::GetIO();
-  if (const Layer *target = layer_find(*C.document, layer_pick_target(C, view, g_layer_click.start))) {
+  if (const Layer *target = layer_find(*C.document, layer_pick_target(C, view, g_layer_click.start));
+      target && C.document->overlays.show)
+  {
     draw_layer_box(dl, *C.document, *target, view);
   }
   if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -12459,7 +12475,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   else if (ts.tool == Tool::SelectLayer && !g_modal.active) {
     /* The tool: the layer a click would pick, outlined. */
-    if (hovered) {
+    if (hovered && ov.show) {
       if (const Layer *target = layer_find(doc, layer_pick_target(C, view, io.MousePos))) {
         draw_layer_box(dl, doc, *target, view);
       }
@@ -12505,7 +12521,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (g_modal.active && g_modal.area == area.id) {
     modal_info = modal_update(C, view);
     /* Proportional editing's reach, a circle about the middle of what moves, as Blender's. */
-    if (g_modal.active && g_modal.proportional && ts.proportional) {
+    if (ov.show && g_modal.active && g_modal.proportional && ts.proportional) {
       dl->AddCircle(view.to_screen(g_modal.pivot), ts.proportional_size * view.zoom, IM_COL32(0xff, 0xff, 0xff, 150),
                     0, 1.5f);
     }

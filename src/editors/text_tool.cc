@@ -226,6 +226,9 @@ static bool wrap_handles(Context &C, Layer &layer, const TextToolView &view, boo
   }
   /* The handles: bars a text box's edges are, dots on point text's ends. */
   for (const int side : {-1, 1}) {
+    if (!doc.overlays.show) {
+      break;
+    }
     const float x = g_wrap.active ? (side < 0 ? g_wrap.left : g_wrap.right) : (side < 0 ? lo.x : hi.x);
     const ImVec2 p = view.to_screen(world.apply({x, mid}));
     const bool lit = over == side || (g_wrap.active && g_wrap.side == side);
@@ -267,8 +270,9 @@ void text_editing_input(Context &C, const TextToolView &view, bool hovered, ImDr
   /* --- The mouse. --- */
   /* The wrap handles first (the Edit Text tool's own). */
   if (C.wm->tool_settings.tool == Tool::EditText) {
-    if (Layer *active = document_active_layer(doc); active && active->is_text() && !active->locked &&
-                                                    wrap_handles(C, *active, view, hovered, dl))
+    if (Layer *active = document_active_layer(doc);
+        active && active->is_text() && !active->locked && (doc.overlays.show || g_wrap.active) &&
+        wrap_handles(C, *active, view, hovered, dl))
     {
       return;
     }
@@ -320,7 +324,7 @@ void text_editing_input(Context &C, const TextToolView &view, bool hovered, ImDr
     }
   }
   if (!editing) {
-    if (under) {
+    if (under && doc.overlays.show) {
       /* What a click would type in: its lines' box, faint. */
       const Transform2D to_document = layer_world_transform(doc, under->id);
       const TextBox b = text_bounds(under->text);
@@ -492,6 +496,9 @@ void text_editing_input(Context &C, const TextToolView &view, bool hovered, ImDr
   if (std::fmod(ImGui::GetTime() - g_edit.blink_from, 1.06) < 0.53) {
     dl->AddLine(top, bottom, IM_COL32(0xff, 0xff, 0xff, 255), 3.0f);
     dl->AddLine(top, bottom, IM_COL32(0x10, 0x10, 0x10, 255), 1.5f);
+  }
+  if (!doc.overlays.show) {
+    return;
   }
   const TextBox b = text_bounds(layer.text);
   const ImVec2 q[4] = {view.to_screen(to_document.apply(b.min)), view.to_screen(to_document.apply({b.max.x, b.min.y})),
