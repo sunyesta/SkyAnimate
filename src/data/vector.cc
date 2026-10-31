@@ -3466,25 +3466,35 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   struct HandleOf {
     CurvePoint *curve_point;
     bool out;
-    /* The point it reaches for. */
-    int faces;
+    /* The point it reaches for, and the next along the curve, which is the one the line is drawn to. */
+    int faces, next;
+    /* How much it is shortened where it is drawn, for facing finer detail. */
+    float drawn;
     float2 &handle() const
     {
       return out ? curve_point->handle_out : curve_point->handle_in;
     }
   };
+  std::vector<std::vector<float>> drawn_in(drawing.curves.size()), drawn_out(drawing.curves.size());
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    drawing_detail_handle_factors(drawing, c, drawn_in[size_t(c)], drawn_out[size_t(c)]);
+  }
   /* A point's handles, on every curve through it: a welded point has some on each. A line's end has none past it. */
   const auto handles_of = [&](int point) {
     std::vector<HandleOf> handles;
-    for (Curve &curve : drawing.curves) {
-      for (int i = 0; i < int(curve.points.size()); i++) {
+    for (int c = 0; c < int(drawing.curves.size()); c++) {
+      Curve &curve = drawing.curves[size_t(c)];
+      const int n = int(curve.points.size());
+      for (int i = 0; i < n; i++) {
         if (curve.points[i].point == point) {
           const int before = neighbour(curve, i, -1), after = neighbour(curve, i, 1);
           if (before >= 0) {
-            handles.push_back({&curve.points[i], false, before});
+            handles.push_back({&curve.points[i], false, before, curve.points[(i + n - 1) % n].point,
+                               drawn_in[size_t(c)][size_t(i)]});
           }
           if (after >= 0) {
-            handles.push_back({&curve.points[i], true, after});
+            handles.push_back({&curve.points[i], true, after, curve.points[(i + 1) % n].point,
+                               drawn_out[size_t(c)][size_t(i)]});
           }
         }
       }
@@ -3502,28 +3512,39 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   for (int i = 0; i < int(drawing.points.size()); i++) {
     before.push_back(place(i));
   }
+  const auto gap = [&](int a, int b) {
+    const auto it = partner.find(a);
+    return it != partner.end() && it->second == b ? 0.0f : distance(across(before[size_t(a)]), before[size_t(b)]);
+  };
+  struct HandleMatch {
+    HandleOf source, image;
+    /* What goes across: the handle as drawn, when the lines are drawn to images of each other, one side's through a
+     * riding point and the other's through a point of its own. Otherwise the handle as it is, past any detail: a riding
+     * point on one side alone doesn't change that side's look. */
+    float scale;
+  };
   const auto match_handles = [&](const std::vector<HandleOf> &from, const std::vector<HandleOf> &to) {
     struct Fit {
       float d;
       size_t from, to;
+      bool drawn;
     };
     std::vector<Fit> fits;
     for (size_t f = 0; f < from.size(); f++) {
       for (size_t t = 0; t < to.size(); t++) {
-        const auto it = partner.find(from[f].faces);
-        const bool partners = it != partner.end() && it->second == to[t].faces;
-        fits.push_back({partners ? 0.0f : distance(across(before[size_t(from[f].faces)]), before[size_t(to[t].faces)]),
-                        f, t});
+        const float reach = gap(from[f].faces, to[t].faces), line = gap(from[f].next, to[t].next);
+        fits.push_back({std::min(reach, line), f, t, line <= reach});
       }
     }
     std::stable_sort(fits.begin(), fits.end(), [](const Fit &a, const Fit &b) { return a.d < b.d; });
-    std::vector<std::pair<HandleOf, HandleOf>> matched;
+    std::vector<HandleMatch> matched;
     std::set<size_t> used_from, used_to;
     for (const Fit &fit : fits) {
       if (!used_from.count(fit.from) && !used_to.count(fit.to)) {
         used_from.insert(fit.from);
         used_to.insert(fit.to);
-        matched.push_back({from[fit.from], to[fit.to]});
+        const HandleOf &source = from[fit.from], &image = to[fit.to];
+        matched.push_back({source, image, fit.drawn ? source.drawn / image.drawn : 1.0f});
       }
     }
     return matched;
@@ -3534,10 +3555,10 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
     result.copied.push_back({src, dst});
     /* The copy's two handles stay in line only if they came from a pair in line. */
     std::map<const CurvePoint *, const CurvePoint *> given;
-    for (const auto &[source, image] : match_handles(handles_of(src), handles_of(dst))) {
+    for (const auto &[source, image, scale] : match_handles(handles_of(src), handles_of(dst))) {
       const CurvePoint &from = *source.curve_point;
       CurvePoint &to = *image.curve_point;
-      image.handle() = handle_stored(dst, reflect2(handle_shown(src, source.handle()), true, false));
+      image.handle() = handle_stored(dst, reflect2(handle_shown(src, source.handle() * scale), true, false));
       (image.out ? to.weight_out : to.weight_in) = source.out ? from.weight_out : from.weight_in;
       (image.out ? to.offset_out : to.offset_in) = -(source.out ? from.offset_out : from.offset_in);
       to.curvature = from.curvature;
@@ -3593,8 +3614,8 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
         ((h.x > 0.0f) == right_to_left ? sources : images).push_back(handle);
       }
     }
-    for (const auto &[source, image] : match_handles(sources, images)) {
-      image.handle() = handle_stored(c, reflect2(handle_shown(c, source.handle()), true, false));
+    for (const auto &[source, image, scale] : match_handles(sources, images)) {
+      image.handle() = handle_stored(c, reflect2(handle_shown(c, source.handle() * scale), true, false));
     }
   }
   result.centre_points = centre;

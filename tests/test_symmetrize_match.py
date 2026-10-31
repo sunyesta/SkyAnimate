@@ -215,6 +215,50 @@ assert ops.mesh.symmetrize() == {'FINISHED'}
 assert close(handle_toward(layer, peak, side_l), (-0.3, -0.2), 1e-3), handle_toward(layer, peak, side_l)
 assert close(handle_toward(layer, peak, side_r), (0.3, -0.2), 1e-3), handle_toward(layer, peak, side_r)
 
+# --- A riding point on one side and a point of its own on the other: the lines are drawn the same ---------------------
+# A rider's neighbours draw their handles shortened, so copying them as stored would leave the two sides different.
+def drawn(layer):
+    """The curve as it draws: (where, handle in, handle out) along it, the handles as offsets from their point."""
+    points, curves = layer.shown()
+    return [(points[c[0]], (c[1][0] - points[c[0]][0], c[1][1] - points[c[0]][1]),
+             (c[2][0] - points[c[0]][0], c[2][1] - points[c[0]][1])) for c in curves[0][0]]
+
+
+for direction in ("RIGHT_TO_LEFT", "LEFT_TO_RIGHT"):
+    layer = line([(1.0, 1.0), (0.0, 0.0), (-0.5, 0.45), (-1.0, 1.0)], "Rider")
+    layer.move_handle(0, 1, "IN", (0.3, 0.05))
+    layer.move_handle(0, 1, "OUT", (-0.1, -0.02))
+    pose(layer, 10, {0: (1.1, 1.0)})
+    doc.frame_current = 0
+    rider = layer.split_segment(0, 0, 0.5)
+    assert layer.detail["rides"][rider]
+    doc.frame_current = 10
+    everything(layer)
+    assert ops.mesh.symmetrize(direction=direction) == {'FINISHED'}
+    line_now = drawn(layer)
+    assert len(line_now) == 5, line_now
+    for i in range(5):
+        at, into, out = line_now[i]
+        other_at, other_in, other_out = line_now[4 - i]
+        assert close(at, (-other_at[0], other_at[1]), 1e-3), (direction, i, line_now)
+        if i > 0:
+            assert close(into, (-other_out[0], other_out[1]), 1e-3), (direction, i, into, other_out)
+    doc.frame_current = 0
+
+# A rider on one side alone, the other going straight to the same point: the handle as it is, past the rider.
+layer = line([(1.0, 1.0), (0.0, 0.0), (-1.0, 1.0)], "Rider alone")
+layer.move_handle(0, 0, "OUT", (0.8, 0.5))
+pose(layer, 10, {0: (1.1, 1.0)})
+doc.frame_current = 0
+rider = layer.split_segment(0, 0, 0.5)
+doc.frame_current = 10
+layer.select_points(range(layer.point_count), False)
+layer.select_points([0, 2])
+assert ops.mesh.symmetrize() == {'FINISHED'}
+coarse = handle_toward(layer, 0, 1)
+assert close(handle_toward(layer, 2, 1), (-coarse[0], coarse[1]), 1e-3), (coarse, handle_toward(layer, 2, 1))
+doc.frame_current = 0
+
 # --- Axis: a shape that has moved off the layer's line --------------------------------------------------------
 
 layer = line([(1.0, 0.0), (0.5, 1.0), (-0.5, 1.0), (-1.0, 0.0)])
