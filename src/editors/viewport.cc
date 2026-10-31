@@ -440,7 +440,16 @@ struct Posed {
   std::vector<Transform2D> skins;
   bool moved = false;
   VectorDrawing storage;
+  /* With Resample's points between the drawing's own, bent where they are: the curves as they show, which the wire
+   * goes along (see posed_wires). `drawing` keeps the drawing's own points, to edit. */
+  VectorDrawing wires;
 };
+
+/* The curves the wire and the picking of lines go along. */
+static const VectorDrawing *posed_wires(const Posed &shown)
+{
+  return shown.wires.curves.empty() ? nullptr : &shown.wires;
+}
 
 static Posed posed(const Document &doc, const Layer &layer)
 {
@@ -453,6 +462,9 @@ static Posed posed(const Document &doc, const Layer &layer)
   });
   const bool deformed = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
     return modifier_is_deform(m.type) && m.show_viewport && m.deform_layer != 0;
+  });
+  const bool resampled = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+    return m.type == ModifierType::Resample && m.show_viewport;
   });
   if (!armature && !deformed && !layer.is_reference() && layer.followed_bone() == 0 && !layer.points_follow_bone() &&
       !layer_binding_group(doc, layer.id))
@@ -480,19 +492,29 @@ static Posed posed(const Document &doc, const Layer &layer)
       cp.handle_out = r.skins[cp.point].apply_vector(cp.handle_out);
     }
   }
-  if (deformed) {
+  if (deformed || resampled) {
     /* A deform modifier bends the segments between the points too: each as one Bezier bent as near as it can be
      * (the wire leaves out the points Precision adds), its handles stored for drawing (same curves, the points'
-     * moves in the skins). */
+     * moves in the skins). Resample's points bend with the rest, and no segment between the drawing's own could
+     * follow that: the wire goes through them, and the drawing's own points keep their handles, whole, to edit. */
     VectorDeformWireScope wire;
-    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    bool added = false;
     for (size_t c = 0; c < r.storage.curves.size() && c < shown.curves.size(); c++) {
       Curve &curve = r.storage.curves[c];
-      for (size_t k = 0; k < curve.points.size() && k < shown.curves[c].points.size(); k++) {
+      if (curve.points.size() != shown.curves[c].points.size()) {
+        added = true;
+        continue;
+      }
+      for (size_t k = 0; deformed && k < curve.points.size(); k++) {
         curve.points[k].handle_in = shown.curves[c].points[k].handle_in;
         curve.points[k].handle_out = shown.curves[c].points[k].handle_out;
         curve.points[k].handles_set = true;
       }
+    }
+    if (added && !drawing_has_detail(layer.drawing) && shown.curves.size() >= r.storage.curves.size()) {
+      shown.curves.resize(r.storage.curves.size());
+      r.wires = std::move(shown);
     }
   }
   r.drawing = &r.storage;
@@ -4407,10 +4429,19 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       /* Where the lines show: posed by bones, and a reference matching its original where that is; at
        * the shape's detail level, as its wires are drawn. */
       const Posed shown = posed(*C.document, *layer);
-      const VectorDrawing lines = drawing_detail_shown_curves(*shown.drawing);
+      const VectorDrawing *wires = posed_wires(shown);
+      const VectorDrawing lines = wires ? *wires : drawing_detail_shown_curves(*shown.drawing);
       if (drawing_pick_segment(lines, to_document.inverted().apply(mouse_document), PICK_PIXELS * pixel, &edge, &t)) {
+        if (wires) {
+          /* A piece of a segment Resample split: the segment, by the drawing's own points before it. */
+          int own = -1;
+          for (int i = 0; i <= edge.segment; i++) {
+            own += wires->points[wires->curves[edge.curve].points[i].point].made_by < 0 ? 1 : 0;
+          }
+          edge.segment = std::max(own, 0);
+        }
         int a, b;
-        curve_segment_points(lines.curves[edge.curve], edge.segment, &a, &b);
+        curve_segment_points((wires ? *shown.drawing : lines).curves[edge.curve], edge.segment, &a, &b);
         hit_layer = layer;
         picked = C.wm->tool_settings.select_mode == SelectMode::Edge ? std::vector<int>{a, b} : std::vector<int>{a};
         hit_edge = edge;
@@ -4721,16 +4752,16 @@ static uint64_t overlay_fingerprint(const VectorDrawing &d, float unit)
 }
 
 /* The wires, handles and points of a drawing being edited (layer space): what the GPU overlays draw. */
-static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Transform2D &to_document, bool show_wires,
-                                        bool show_points, int quality, HandleDisplay handles, bool point_squares,
+static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const VectorDrawing *wires, const Transform2D &to_document,
+                                        bool show_wires, bool show_points, int quality, HandleDisplay handles, bool point_squares,
                                         const LineCutter *cutter, float point_size, float handle_size, float pixel)
 {
   OverlayGeometry g;
   /* Wires show each curve as it is edited: at its shape's detail level, through the points shown
    * (data/detail.hh); the stroke under them draws all of its detail. */
   VectorDrawing shown_curves;
-  const VectorDrawing *lines = &drawing;
-  if (drawing_has_detail(drawing)) {
+  const VectorDrawing *lines = wires ? wires : &drawing;
+  if (!wires && drawing_has_detail(drawing)) {
     shown_curves = drawing_detail_shown_curves(drawing);
     lines = &shown_curves;
   }
@@ -4754,8 +4785,19 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Tran
       for (int i = 0; i < steps; i++) {
         line.push_back(bezier_eval(ctrl, float(i) / float(steps)));
       }
-      line.push_back(drawing.points[b].pos);
-      const bool selected = drawing.points[a].selected && drawing.points[b].selected;
+      line.push_back(lines->points[b].pos);
+      /* A piece of a segment that Resample split is picked with that segment: by the drawing's own points around it. */
+      const int n = int(curve.points.size());
+      const auto own_selected = [&](int i, int dir) {
+        for (int step = 0; step < n; step++) {
+          const MeshPoint &p = lines->points[curve.points[((i + dir * step) % n + n) % n].point];
+          if (p.made_by < 0) {
+            return p.selected;
+          }
+        }
+        return false;
+      };
+      const bool selected = own_selected(s, -1) && own_selected(s + 1, 1);
       const ImU32 col = selected ? COL_WIRE_SELECTED : COL_WIRE;
       const ImU32 faint = (col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110);
       const float thickness = selected ? 1.6f : 1.0f;
@@ -4877,11 +4919,13 @@ static void draw_modifier_points(ImDrawList *dl, const Document &doc, const Laye
  * next overlay_flush: made again only when what they show changes, kept per `slot` (the layer, in its
  * viewport). `cutter` (optional, End Lines at Edge): the stretches of the wires whose line it cuts away draw
  * dashed and faint, as hidden edges do. */
-static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const VectorDrawing &drawing,
+static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const Posed &shown,
                                  const Transform2D &to_document, const ViewMapping &view, bool show_wires,
                                  bool show_points, int quality, HandleDisplay handles, bool point_squares = true,
                                  const LineCutter *cutter = nullptr, float point_size = 6.0f, float handle_size = 6.5f)
 {
+  const VectorDrawing &drawing = *shown.drawing;
+  const VectorDrawing *wires = posed_wires(shown);
   /* A pixel in layer space, in steps of 2^(1/8) as the scene renderer's: zooming makes them again every few
    * wheel notches. */
   const float pixel =
@@ -4890,6 +4934,9 @@ static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const Vector
   uint64_t key = overlay_mix(1469598103934665603ull, uint64_t(show_wires) | uint64_t(show_points) << 1 |
                                                          uint64_t(point_squares) << 2 | uint64_t(handles) << 3);
   key = overlay_mix(key, uint64_t(uint32_t(quality)));
+  if (wires) {
+    key = overlay_mix(key, overlay_fingerprint(*wires, pixel / 16.0f));
+  }
   for (const float v : {point_size, handle_size, pixel}) {
     key = overlay_mix_float(key, v);
   }
@@ -4938,7 +4985,7 @@ static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const Vector
   const float2 first = drawing.points.empty() ? float2() : drawing.points[0].pos;
   if (!overlay_kept(slot, key)) {
     overlay_keep(slot, key,
-                 overlay_geometry(drawing, to_document, show_wires, show_points, quality, handles, point_squares,
+                 overlay_geometry(drawing, wires, to_document, show_wires, show_points, quality, handles, point_squares,
                                   cutter, point_size, handle_size, pixel),
                  first);
   }
@@ -12800,7 +12847,8 @@ static void viewport_draw_contents(Area &area, Context &C)
      * collections. */
     for (Layer *editing : editable_layers(C)) {
       const LineCutter cut = line_cutter(doc, *editing, false);
-      draw_drawing_overlay(overlay_slot(area, editing->id), *editing, *posed(doc, *editing).drawing,
+      const Posed shown = posed(doc, *editing);
+      draw_drawing_overlay(overlay_slot(area, editing->id), *editing, shown,
                            layer_world_transform(doc, editing->id), view, ov.wireframe, points_overlay_shown(ov, ts),
                            std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
                            ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
@@ -12815,14 +12863,15 @@ static void viewport_draw_contents(Area &area, Context &C)
           continue;
         }
         const LineCutter cut = line_cutter(doc, *editing, false);
-        draw_drawing_overlay(overlay_slot(area, editing->id), *editing, *posed(doc, *editing).drawing,
+        const Posed shown = posed(doc, *editing);
+        draw_drawing_overlay(overlay_slot(area, editing->id), *editing, shown,
                              layer_world_transform(doc, editing->id), view, ov.wireframe, points_overlay_shown(ov, ts),
                              std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
                              ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
       }
       const Posed shown = posed(doc, *layer);
       const LineCutter cut = line_cutter(doc, *layer, false);
-      draw_drawing_overlay(overlay_slot(area, layer->id), *layer, *shown.drawing, to_document, view, ov.wireframe,
+      draw_drawing_overlay(overlay_slot(area, layer->id), *layer, shown, to_document, view, ov.wireframe,
                            points_overlay_shown(ov, ts), std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
                            ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
       overlay_flush(dl);
