@@ -11,6 +11,7 @@
 
 #include "anim/switch.hh"
 #include "anim/bone_family.hh"
+#include "anim/action_mirror.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/bevel.hh"
@@ -63,6 +64,60 @@ static bool on_setup_frame(Context &C)
   }
   report_banner(ReportType::Warning, "Switch to Setup (frame 0) to change the rig");
   return false;
+}
+
+/* Bone Symmetrize's Mirror Smart Actions: the smart actions of the bones it made the other side of go there too, each as
+ * the action of its bone's partner, replacing what that had. With both sides picked and both actions there, `left_to_right`
+ * says which is the source. */
+static void mirror_smart_actions(Context &C, uint64_t owner_id, const std::vector<uint64_t> &picked, bool left_to_right)
+{
+  Document &doc = *C.document;
+  const std::string was_action = doc.action;
+  const uint64_t was_owner = doc.action_layer;
+  document_set_action(doc, 0, "");
+  const Layer &owner = *layer_find(doc, owner_id);
+  const auto has = [&](const std::string &name) {
+    return std::find(owner.actions.begin(), owner.actions.end(), name) != owner.actions.end();
+  };
+  const auto picks = [&](const std::string &action) {
+    const Bone *bone = smart_action_bone(owner, action);
+    return bone && std::find(picked.begin(), picked.end(), bone->id) != picked.end();
+  };
+  std::vector<std::pair<std::string, std::string>> jobs;
+  std::vector<std::string> centred;
+  for (const std::string &name : owner.actions) {
+    if (!smart_action_bone(owner, name) || fix_action_find(owner, name)) {
+      continue;
+    }
+    const std::string other = bone_mirror_name(name);
+    if (other == name) {
+      centred.push_back(name);
+    }
+    else if (picks(name) && !(has(other) && picks(other) && (name < other) != left_to_right)) {
+      jobs.push_back({name, other});
+    }
+  }
+  std::string text;
+  for (const auto &[from, to] : jobs) {
+    const bool replaced = has(to);
+    const std::vector<std::string> notes = document_action_mirror(doc, owner_id, from, to);
+    text += (text.empty() ? "" : "; ") + ("Mirrored " + from + " into " + to) + (replaced ? " (replaced it)" : "");
+    for (const std::string &note : notes) {
+      text += "; " + note;
+    }
+  }
+  for (const std::string &name : centred) {
+    text += (text.empty() ? "" : "; ") + (name + " has no side, so it has no other action to mirror into");
+  }
+  if (!was_action.empty()) {
+    document_set_action(doc, was_owner, was_action);
+  }
+  if (text.empty()) {
+    report(ReportType::Warning, "No smart actions of these bones to mirror");
+  }
+  else {
+    report(ReportType::Info, text);
+  }
 }
 
 static void rig_operator(const char *idname, const char *name, const char *description,
@@ -2959,6 +3014,7 @@ void rig_operators_register()
                    report(ReportType::Warning, "Name bones with _L or _R (or .L, .R, Left, Right) to symmetrize them");
                    return OpStatus::Cancelled;
                  }
+                 const std::vector<uint64_t> picked = sources;
                  const auto reflect = [](float2 p) { return float2(-p.x, p.y); };
                  int made = 0;
                  /* Parents before children, so a mirrored child finds its mirrored parent. */
@@ -3006,8 +3062,30 @@ void rig_operators_register()
                      it = sources.erase(it);
                    }
                  }
+                 if (made > 0 && op_arg_bool(C, "smart_actions")) {
+                   mirror_smart_actions(C, armature.id, picked, op_arg(C, "direction", "L_TO_R") != "R_TO_L");
+                 }
                  return made > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
+               },
+               [] {
+                 OpProperty smart_actions = op_bool_property(
+                     "smart_actions", "Mirror Smart Actions",
+                     "Make each of these bones' smart actions on the other side too, replacing what is there: _L and _R "
+                     "bones and layers swap their keys, reflected, and _X ones swap them inside themselves",
+                     "0");
+                 OpProperty direction;
+                 direction.name = "direction";
+                 direction.label = "Direction";
+                 direction.description = "Which side's action is copied, when both sides' are there and both bones are "
+                                         "being symmetrized";
+                 direction.items = {{"L_TO_R", "_L to _R"}, {"R_TO_L", "_R to _L"}};
+                 direction.fallback = "L_TO_R";
+                 direction.visible = [](const OpArgs &args) {
+                   const auto it = args.find("smart_actions");
+                   return it != args.end() && (it->second == "1" || it->second == "True" || it->second == "true");
+                 };
+                 return std::vector<OpProperty>{smart_actions, direction};
+               }());
 
   /* --- Modifiers ----------------------------------------------------------------------- */
   const auto modifier_layer = [](Context &C) -> Layer * {

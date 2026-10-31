@@ -50,6 +50,7 @@ set(OANIM_SOURCES
   src/data/material.cc
   src/data/annotations.cc
   src/data/layer_mirror.cc
+  src/anim/action_mirror.cc
   src/data/media_layer.cc
   src/data/fill_area.cc
   src/data/fill_paint.cc
@@ -252,6 +253,8 @@ add_test(NAME detail_lower
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_detail_lower.py)
 add_test(NAME layer_mirror
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_mirror.py)
+add_test(NAME action_mirror
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_mirror.py)
 add_test(NAME separate
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_separate.py)
 add_test(NAME mirror_ops
