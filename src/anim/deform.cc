@@ -779,13 +779,14 @@ void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &
 }
 
 /* What the groups around it make of the drawing as its own stack left it. Each runs as a copy of the group's modifier,
- * for this drawing: its automatic weights, and what it keeps apart from the other drawings' under its own name. */
+ * for this drawing: its automatic weights, and what it keeps apart from the other drawings' under its own name
+ * (`kept_as`: apart from what the drawing itself keeps, for a few loose points through the same deform). */
 static void group_deforms_run(const Document &doc, const Layer &layer, const std::vector<GroupDeform> &deforms,
-                              VectorDrawing &drawing, bool render)
+                              VectorDrawing &drawing, bool render, const char *kept_as = "")
 {
   for (const GroupDeform &g : deforms) {
     Modifier run = *g.modifier;
-    run.name = g.modifier->name + "@" + std::to_string(g.group->id);
+    run.name = g.modifier->name + "@" + std::to_string(g.group->id) + kept_as;
     run.deform_custom = false;
     run.deform_from_group = g.group->id;
     const Layer *shape = layer_find(doc, run.deform_layer);
@@ -806,26 +807,45 @@ std::vector<float2> layer_group_deform_points(const Document &doc, const Layer &
   for (size_t i = 0; i < points.size(); i++) {
     drawing.points[i].pos = points[i];
   }
-  group_deforms_run(doc, layer, around, drawing, false);
+  group_deforms_run(doc, layer, around, drawing, false, "#points");
   for (size_t i = 0; i < points.size(); i++) {
     points[i] = drawing.points[i].pos;
   }
   return points;
 }
 
+/* The group deforms' turn and stretch right around each of `at`, from a small step each way through them. */
+static std::vector<Transform2D> group_deform_stretches(const Document &doc, const Layer &layer,
+                                                       const std::vector<float2> &at)
+{
+  const float step = 0.002f;
+  std::vector<float2> probes;
+  probes.reserve(at.size() * 3);
+  for (const float2 p : at) {
+    probes.insert(probes.end(), {p, p + float2(step, 0.0f), p + float2(0.0f, step)});
+  }
+  probes = layer_group_deform_points(doc, layer, std::move(probes));
+  std::vector<Transform2D> stretches(at.size());
+  for (size_t i = 0; i < at.size(); i++) {
+    const float2 x = (probes[i * 3 + 1] - probes[i * 3]) / step, y = (probes[i * 3 + 2] - probes[i * 3]) / step;
+    /* A shape collapsed there can't be taken back through. */
+    if (std::fabs(x.x * y.y - x.y * y.x) > 1e-4f) {
+      stretches[i].a = x.x;
+      stretches[i].b = x.y;
+      stretches[i].c = y.x;
+      stretches[i].d = y.y;
+    }
+  }
+  return stretches;
+}
+
 Transform2D layer_group_deform_at(const Document &doc, const Layer &layer, float2 at)
 {
-  const float step = 0.01f;
-  const std::vector<float2> p = layer_group_deform_points(doc, layer, {at, at + float2(step, 0.0f), at + float2(0.0f, step)});
-  const float2 x = (p[1] - p[0]) / step, y = (p[2] - p[0]) / step;
-  Transform2D t;
-  t.a = x.x;
-  t.b = x.y;
-  t.c = y.x;
-  t.d = y.y;
+  Transform2D t = group_deform_stretches(doc, layer, {at})[0];
+  const float2 p = layer_group_deform_points(doc, layer, {at})[0];
   const float2 moved = t.apply_vector(at);
-  t.tx = p[0].x - moved.x;
-  t.ty = p[0].y - moved.y;
+  t.tx = p.x - moved.x;
+  t.ty = p.y - moved.y;
   return t;
 }
 
@@ -1002,12 +1022,27 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
 {
   std::vector<Transform2D> skins = layer_point_skins_bones(doc, layer);
   const bool grouped = layer_has_group_deforms(doc, layer, false);
+  /* On to where the deforms show it. A group's stretch goes in too, so a drag there lands under the cursor. */
+  const auto onto_shown = [&](const VectorDrawing &stored) {
+    const size_t count = std::min(skins.size(), stored.points.size());
+    if (grouped) {
+      std::vector<float2> at(count);
+      for (size_t i = 0; i < count; i++) {
+        at[i] = skins[i].apply(stored.points[i].pos);
+      }
+      const std::vector<Transform2D> stretches = group_deform_stretches(doc, layer, at);
+      for (size_t i = 0; i < count; i++) {
+        skins[i] = stretches[i] * skins[i];
+      }
+    }
+    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    for (size_t i = 0; i < count && i < shown.points.size(); i++) {
+      skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(stored.points[i].pos)) * skins[i];
+    }
+  };
   if (matched_original(doc, layer)) {
     if (grouped) {
-      const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
-      for (size_t i = 0; i < skins.size() && i < layer.drawing.points.size() && i < shown.points.size(); i++) {
-        skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(layer.drawing.points[i].pos)) * skins[i];
-      }
+      onto_shown(layer.drawing);
     }
     return skins;
   }
@@ -1044,10 +1079,7 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
     renumbered = renumbered || m.type == ModifierType::Bevel || m.type == ModifierType::Boolean;
   }
   if (deformed && !renumbered && layer.type == LayerType::Vector) {
-    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
-    for (size_t i = 0; i < drawing.points.size() && i < shown.points.size(); i++) {
-      skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(drawing.points[i].pos)) * skins[i];
-    }
+    onto_shown(drawing);
   }
   return skins;
 }

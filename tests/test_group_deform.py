@@ -263,4 +263,19 @@ walking.location_x = 0.5
 at(10)
 assert close(mover.evaluated()[0][0], (1.0, 0.0)), ("an unchanged shape bends nothing", mover.evaluated()[0])
 
+# --- A point placed where it shows lands there, through the shape's stretch ------------------------------------------
+doc.frame_current = 0
+placed = new_layer("Placed", [(0.3, 0.2), (0.0, 0.0)])
+wide = new_layer("Wide")
+assert wide.add_primitive("BOX", [(-1, -1), (1, 1)])
+add_cage(new_group("Around", placed), wide)
+doc.frame_current = 10
+for i, p in enumerate(wide.points):
+    wide.set_point(i, (p[0] * 1.5, p[1]))
+at(10)
+x, y = placed.shown()[0][0]
+placed.place_point(0, (x + 0.2, y))
+at(10)
+assert close(placed.shown()[0][0], (x + 0.2, y), 0.01), (placed.shown()[0][0], x + 0.2, y)
+
 print("group deforms: all good")
