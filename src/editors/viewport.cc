@@ -478,6 +478,7 @@ static Posed posed(const Document &doc, const Layer &layer)
       cp.handle_out = r.skins[cp.point].apply_vector(cp.handle_out);
     }
   }
+  drawing_detail_ride(r.storage);
   if (deformed) {
     /* A deform modifier bends the segments between the points too: each as one Bezier bent as near as it can be
      * (the wire leaves out the points Precision adds), its handles stored for drawing (same curves, the points'

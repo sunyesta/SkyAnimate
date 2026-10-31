@@ -327,7 +327,7 @@ int drawings_shown_keep(Document &doc, const DrawingsShown &before)
 /* Edits action `name` of `owner`, the mainline for "". */
 static void use_action(Document &doc, uint64_t owner, const std::string &name)
 {
-  if (doc.action != name) {
+  if (doc.action != name || (!name.empty() && doc.action_layer != owner)) {
     document_set_action(doc, name.empty() ? 0 : owner, name);
   }
 }
@@ -389,7 +389,8 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
       }
     }
   }
-  /* How a curve point shows, in its own bones' space. */
+  /* How a curve point shows, in its own bones' space. Detail that stays: as it shows, its place being worked out
+   * from the curve it will then be on. */
   struct Shown {
     float2 pos, in, out;
     float radius = 1.0f;
@@ -397,6 +398,11 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
   struct Pose {
     int frame = 0;
     std::map<std::pair<int, uint64_t>, Shown> points;
+    /* The curves a freed point is off the line on, so what sits beside it isn't where the new segments put it. */
+    std::set<int> off_line;
+  };
+  const auto off_its_line = [](const PointDetail &dt) {
+    return dt.level > 0 && length(dt.pos) + length(dt.in) + length(dt.out) >= 1e-4f;
   };
   struct Timeline {
     uint64_t owner = 0;
@@ -410,13 +416,11 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
     }
   }
   const std::string was_action = doc.action;
-  uint64_t was_owner = 0;
+  const uint64_t was_owner = doc.action_layer;
+  const int was_frame = doc.frame_current;
   animation_record(doc);
   const Layer *armature = layer_armature(doc, layer.id);
   for (Timeline &timeline : timelines) {
-    if (timeline.name == was_action) {
-      was_owner = timeline.owner;
-    }
     use_action(doc, timeline.owner, timeline.name);
     std::set<int> frames;
     const auto add = [&](const auto &ch) {
@@ -445,7 +449,7 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
       doc.frame_current = f;
       animation_sync(doc);
       /* The line as it shows: its points through their bones, the riding ones placed on that. */
-      const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+      const std::vector<Transform2D> skins = layer_point_skins_weighted(doc, layer);
       const auto skin_of = [&](int point) { return size_t(point) < skins.size() ? skins[size_t(point)] : Transform2D(); };
       VectorDrawing shown = drawing;
       for (Curve &curve : shown.curves) {
@@ -464,10 +468,14 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
       pose.frame = f;
       for (const int c : curves) {
         for (const CurvePoint &cp : shown.curves[c].points) {
-          const Transform2D undo = skin_of(cp.point).inverted();
           const MeshPoint &p = shown.points[cp.point];
+          const bool stays = p.detail.level > 0 && !freed.count(p.id);
+          const Transform2D undo = stays ? Transform2D() : skin_of(cp.point).inverted();
           pose.points[{c, p.id}] = {undo.apply(p.pos), undo.apply_vector(cp.handle_in), undo.apply_vector(cp.handle_out),
                                     p.radius};
+          if (!stays && off_its_line(p.detail)) {
+            pose.off_line.insert(c);
+          }
         }
       }
       timeline.poses.push_back(std::move(pose));
@@ -483,36 +491,81 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
     selected[i] = drawing.points[i].selected;
     drawing.points[i].selected = freed.count(drawing.points[i].id) > 0;
   }
+  /* All the way down: a riding point past moved detail is above level 1, and stops showing on the way. */
+  std::vector<int> levels;
+  for (Shape &shape : drawing.shapes) {
+    levels.push_back(shape.detail_level);
+    shape.detail_level = DETAIL_LEVEL_MAX;
+  }
   int skipped = 0;
   bool dropped = false;
-  drawing_detail_lower_selected(drawing, &skipped, &dropped);
+  while (drawing_detail_lower_selected(drawing, &skipped, &dropped) > 0) {
+  }
+  for (size_t s = 0; s < drawing.shapes.size(); s++) {
+    drawing.shapes[s].detail_level = levels[s];
+  }
   for (size_t i = 0; i < drawing.points.size(); i++) {
     drawing.points[i].selected = selected[i];
+  }
+  drawing_detail_update_shown(drawing);
+  /* A pose holds each handle as it shows; a handle facing riding points that stay is stored longer than that. */
+  std::map<int, std::pair<std::vector<float>, std::vector<float>>> factors;
+  for (const int c : curves) {
+    drawing_detail_handle_factors(drawing, c, factors[c].first, factors[c].second);
   }
 
   /* Each pose keyed back, whatever the record button says. */
   const bool auto_key = doc.auto_key;
   doc.auto_key = true;
   animation_record(doc);
-  for (const Timeline &timeline : timelines) {
-    use_action(doc, timeline.owner, timeline.name);
-    for (const Pose &pose : timeline.poses) {
+  /* The mainline last: its keys hold what is left once its smart actions, keyed by then, have played. */
+  for (auto timeline = timelines.rbegin(); timeline != timelines.rend(); ++timeline) {
+    use_action(doc, timeline->owner, timeline->name);
+    for (const Pose &pose : timeline->poses) {
       doc.frame_current = pose.frame;
       animation_sync(doc);
+      /* Detail off the line, on a segment that parted: where it is off by is measured on the new ones. The rest of
+       * the detail rides them. */
+      const auto replaced = [&](int c, const PointDetail &dt) {
+        return dt.level > 0 && (pose.off_line.count(c) || off_its_line(dt));
+      };
+      const auto hold = [&](int c, size_t i, const Transform2D &undo) {
+        CurvePoint &cp = drawing.curves[c].points[i];
+        MeshPoint &p = drawing.points[cp.point];
+        const auto it = pose.points.find({c, p.id});
+        if (it == pose.points.end()) {
+          return;
+        }
+        if (p.detail.level > 0 || freed.count(p.id)) {
+          p.pos = undo.apply(it->second.pos);
+        }
+        if (freed.count(p.id)) {
+          p.radius = it->second.radius;
+        }
+        cp.handle_in = undo.apply_vector(it->second.in) / std::max(factors[c].first[i], 1e-6f);
+        cp.handle_out = undo.apply_vector(it->second.out) / std::max(factors[c].second[i], 1e-6f);
+        cp.handles_set = true;
+      };
+      bool detail = false;
       for (const int c : curves) {
-        for (CurvePoint &cp : drawing.curves[c].points) {
-          MeshPoint &p = drawing.points[cp.point];
-          const auto it = pose.points.find({c, p.id});
-          if (it == pose.points.end()) {
-            continue;
+        for (size_t i = 0; i < drawing.curves[c].points.size(); i++) {
+          const PointDetail &dt = drawing.points[drawing.curves[c].points[i].point].detail;
+          detail = detail || replaced(c, dt);
+          if (dt.level == 0) {
+            hold(c, i, Transform2D());
           }
-          if (freed.count(p.id)) {
-            p.pos = it->second.pos;
-            p.radius = it->second.radius;
+        }
+      }
+      if (detail) {
+        drawing_detail_sync(drawing, false);
+        const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+        for (const int c : curves) {
+          for (size_t i = 0; i < drawing.curves[c].points.size(); i++) {
+            const int point = drawing.curves[c].points[i].point;
+            if (replaced(c, drawing.points[point].detail)) {
+              hold(c, i, skins[size_t(point)].inverted());
+            }
           }
-          cp.handle_in = it->second.in;
-          cp.handle_out = it->second.out;
-          cp.handles_set = true;
         }
       }
       animation_record(doc);
@@ -520,7 +573,7 @@ void riding_points_free(Document &doc, Layer &layer, const std::vector<uint64_t>
   }
   doc.auto_key = auto_key;
   use_action(doc, was_owner, was_action);
-  doc.frame_current = 0;
+  doc.frame_current = was_frame;
   animation_sync(doc);
 }
 

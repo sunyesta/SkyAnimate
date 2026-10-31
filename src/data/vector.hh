@@ -54,7 +54,8 @@ struct PointDetail {
   /* A riding point: added to a curve that moves, it is worked out from the segment it sits on, on every frame,
    * as if it had never been added, until it is moved itself (see data/detail.hh). Shown at every level. */
   bool rides = false;
-  /* A riding point's width: what it has over the width of the line there, and as last placed (not saved). */
+  /* A riding point's width: what it has over the width of the line there (what its Width keys hold), and as last
+   * placed (not saved). */
   float radius_offset = 0.0f;
   float built_radius = 0.0f;
   bool operator==(const PointDetail &) const = default;
@@ -93,6 +94,12 @@ struct MeshPoint {
   PointDetail detail;
   bool operator==(const MeshPoint &) const = default;
 };
+
+/* What a point's Width keys hold: its width, or on a riding point what it has over the line's. */
+inline float &point_width_channel(MeshPoint &p)
+{
+  return p.detail.rides ? p.detail.radius_offset : p.radius;
+}
 
 struct CurvePoint {
   /* Index into VectorDrawing::points. */

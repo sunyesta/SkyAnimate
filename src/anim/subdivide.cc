@@ -179,9 +179,13 @@ VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, 
                                 std::vector<int> *r_new_points, const std::vector<std::vector<int>> *given)
 {
   VectorDrawing drawing = source;
-  /* Detail final, then none: the split curve is the whole curve. */
+  /* Detail final, then none: the split curve is the whole curve. Its riding points are the line's now, so they bend
+   * with it as the new points do. */
   if (drawing_has_detail(drawing)) {
     drawing_detail_final_handles(drawing);
+    drawing_riding_parents(drawing, [&](MeshPoint &p, const MeshPoint &a, const MeshPoint &b, float t) {
+      p.weights = blend(a.weights, b.weights, t);
+    });
     for (MeshPoint &p : drawing.points) {
       p.detail = PointDetail();
     }
