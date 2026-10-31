@@ -53,6 +53,26 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
+/* A place to show one of the layer's points at (layer space), and its skin undone, from when it was picked up. */
+struct PointTarget {
+  int point = 0;
+  float2 at;
+  Transform2D unskin;
+};
+/* A skin is right only around where a point was: a deform isn't straight, so a point sent far by its skin alone lands
+ * off. This moves the points on until they show at their targets, as near as the deforms let them. */
+void layer_points_settle(const Document &doc, Layer &layer, const std::vector<PointTarget> &targets);
+/* A handle dragged by itself, likewise: where its end is to show (layer space) as the edit wire shows it. `keep_other`
+ * as curve_point_move_handle's. */
+struct HandleTarget {
+  int curve = 0;
+  int index = 0;
+  bool in = false;
+  bool keep_other = false;
+  float2 at;
+  Transform2D unskin;
+};
+void layer_handles_settle(const Document &doc, Layer &layer, const std::vector<HandleTarget> &targets);
 /* The same with the bones posed as `poses` has them (each one's skin), for a change worked out
  * without posing the bones: Apply Pose as Rest Pose bending the setup drawing to the new rest. */
 std::vector<Transform2D> layer_point_skins_posed(const Document &doc, const Layer &layer,

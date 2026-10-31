@@ -865,7 +865,8 @@ static void stack_stretches(const Document &doc, const Layer &layer, std::vector
   }
 }
 
-/* The stack, on the layer's drawing. `probe`: on its points alone moved by that, with nothing to fit between them. */
+/* The stack, on the layer's drawing. `probe`: on its points alone moved by that, with nothing to fit between them, and
+ * without a Boolean's joining, so each is where the rest of the stack puts it whatever becomes of the outline. */
 static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bool render, Transform2D *r_rigid,
                                      const float2 *probe)
 {
@@ -972,7 +973,7 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
     else if (modifier_is_deform(m.type)) {
       vector_deform_apply(doc, layer, m, drawing, bones_moved ? before_bones : drawing, render);
     }
-    else if (m.type == ModifierType::Boolean) {
+    else if (m.type == ModifierType::Boolean && !probe) {
       /* At its place in the stack, top to bottom: it joins the drawing as the modifiers above leave it
        * (its handles as they finally are), and those below work on the joined outline. */
       drawing_detail_final_handles(drawing);
@@ -1046,6 +1047,123 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
   return drawing;
 }
 
+/* Whether a deform modifier, its own or a group's, bends the layer. */
+static bool layer_is_deformed(const Document &doc, const Layer &layer)
+{
+  return layer_has_group_deforms(doc, layer, false) ||
+         std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+           return m.show_viewport && modifier_is_deform(m.type) && m.deform_layer != 0;
+         });
+}
+
+/* The layer's own points where the stack puts them. */
+static VectorDrawing stack_points(const Document &doc, const Layer &layer)
+{
+  const VectorDeformProbeScope kept(1);
+  const float2 here(0.0f, 0.0f);
+  return stack_evaluated(doc, layer, false, nullptr, &here);
+}
+
+void layer_points_settle(const Document &doc, Layer &layer, const std::vector<PointTarget> &targets)
+{
+  /* Nothing bends on the setup frame. */
+  if (doc.frame_current == 0 || targets.empty() || matched_original(doc, layer) || !layer_is_deformed(doc, layer)) {
+    return;
+  }
+  struct Best {
+    float2 stored, off;
+    float miss = FLT_MAX;
+    float step = 1.0f;
+  };
+  std::vector<Best> best(targets.size());
+  for (int pass = 0; pass < 8; pass++) {
+    const VectorDrawing shown = stack_points(doc, layer);
+    bool done = true;
+    for (size_t i = 0; i < targets.size(); i++) {
+      const PointTarget &t = targets[i];
+      if (t.point < 0 || t.point >= int(shown.points.size()) || t.point >= int(layer.drawing.points.size())) {
+        continue;
+      }
+      float2 &stored = layer.drawing.points[size_t(t.point)].pos;
+      const float2 off = t.at - shown.points[size_t(t.point)].pos;
+      Best &b = best[i];
+      if (length(off) < b.miss) {
+        b = {stored, off, length(off), b.step};
+      }
+      else {
+        /* It got no nearer (past a fold, a kink, the end of a line): less of the way from the best so far. */
+        b.step *= 0.5f;
+      }
+      if (b.miss > std::max(1e-6f, 1e-5f * length(t.at))) {
+        done = false;
+      }
+      stored = b.stored + t.unskin.apply_vector(b.off) * b.step;
+    }
+    if (done) {
+      break;
+    }
+  }
+  for (size_t i = 0; i < targets.size(); i++) {
+    if (best[i].miss < FLT_MAX) {
+      layer.drawing.points[size_t(targets[i].point)].pos = best[i].stored;
+    }
+  }
+}
+
+void layer_handles_settle(const Document &doc, Layer &layer, const std::vector<HandleTarget> &targets)
+{
+  if (doc.frame_current == 0 || targets.empty() || matched_original(doc, layer) || !layer_is_deformed(doc, layer)) {
+    return;
+  }
+  VectorDrawing &drawing = layer.drawing;
+  struct Best {
+    float2 stored, off;
+    float miss = FLT_MAX;
+    float step = 1.0f;
+  };
+  std::vector<Best> best(targets.size());
+  const auto put = [&](const HandleTarget &t, float2 end) {
+    curve_point_move_handle(drawing, drawing.curves[size_t(t.curve)], t.index, t.in, end, t.keep_other);
+  };
+  for (int pass = 0; pass < 6; pass++) {
+    /* As the wire shows it: what is being dragged. */
+    const VectorDeformWireScope wire;
+    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    bool done = true;
+    for (size_t i = 0; i < targets.size(); i++) {
+      const HandleTarget &t = targets[i];
+      /* A Resample or a Bevel leaves no such handle to compare. */
+      if (size_t(t.curve) >= shown.curves.size() ||
+          shown.curves[size_t(t.curve)].points.size() != drawing.curves[size_t(t.curve)].points.size())
+      {
+        continue;
+      }
+      const Curve &curve = drawing.curves[size_t(t.curve)];
+      const float2 stored = curve_handle(drawing, curve, t.index, t.in);
+      const float2 off = t.at - curve_handle(shown, shown.curves[size_t(t.curve)], t.index, t.in);
+      Best &b = best[i];
+      if (length(off) < b.miss) {
+        b = {stored, off, length(off), b.step};
+      }
+      else {
+        b.step *= 0.5f;
+      }
+      if (b.miss > std::max(1e-6f, 1e-4f * length(t.at))) {
+        done = false;
+      }
+      put(t, b.stored + t.unskin.apply_vector(b.off) * b.step);
+    }
+    if (done) {
+      break;
+    }
+  }
+  for (size_t i = 0; i < targets.size(); i++) {
+    if (best[i].miss < FLT_MAX) {
+      put(targets[i], best[i].stored);
+    }
+  }
+}
+
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer)
 {
   std::vector<Transform2D> skins = layer_point_skins_bones(doc, layer);
@@ -1053,7 +1171,7 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
   /* On to where the deforms show it. */
   const auto onto_shown = [&](const VectorDrawing &stored) {
     const size_t count = std::min(skins.size(), stored.points.size());
-    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+    const VectorDrawing shown = stack_points(doc, layer);
     for (size_t i = 0; i < count && i < shown.points.size(); i++) {
       skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(stored.points[i].pos)) * skins[i];
     }
@@ -1086,17 +1204,8 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
       }
     }
   }
-  /* Bent by a deform modifier: on to where it shows. Only where the stack keeps the points' indices (no Bevel or
-   * Boolean, which make the outline anew). */
-  bool deformed = grouped, renumbered = false;
-  for (const Modifier &m : layer.modifiers) {
-    if (!m.show_viewport) {
-      continue;
-    }
-    deformed = deformed || (modifier_is_deform(m.type) && m.deform_layer != 0);
-    renumbered = renumbered || m.type == ModifierType::Bevel || m.type == ModifierType::Boolean;
-  }
-  if (deformed && !renumbered && layer.type == LayerType::Vector) {
+  /* Bent by a deform modifier: on to where it shows. */
+  if (layer.type == LayerType::Vector && layer_is_deformed(doc, layer)) {
     /* Turned and stretched as they do there, so a drag lands under the cursor. (Nothing bends on the setup frame.) */
     if (doc.frame_current != 0) {
       stack_stretches(doc, layer, skins, std::min(skins.size(), drawing.points.size()));

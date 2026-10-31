@@ -267,6 +267,8 @@ add_test(NAME mesh_envelope_stress
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mesh_envelope_stress.py)
 add_test(NAME fill_crossing
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_fill_crossing.py)
+add_test(NAME deform_point_edit
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_point_edit.py)
 add_test(NAME separate
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_separate.py)
 add_test(NAME mirror_ops

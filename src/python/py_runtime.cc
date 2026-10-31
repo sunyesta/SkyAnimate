@@ -3018,7 +3018,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (index < 0 || index >= int(layer.drawing.points.size())) {
       throw py::index_error("no point " + std::to_string(index));
     }
-    layer.drawing.points[size_t(index)].pos = stored_at(*current_context().document, layer, index, at);
+    const Document &doc = *current_context().document;
+    layer.drawing.points[size_t(index)].pos = stored_at(doc, layer, index, at);
+    std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+    skins.resize(layer.drawing.points.size());
+    const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+    layer_points_settle(doc, layer, {{index, in_layer, skins[size_t(index)].inverted()}});
     current_context().undo->mark_changed();
   });
   m.def("layer_place_handle", [layer_or_raise, stored_at](uint64_t id, int curve_index, int index, const std::string &side,
@@ -3037,8 +3042,29 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       throw py::value_error("side must be 'IN' or 'OUT'");
     }
     Curve &curve = drawing.curves[size_t(curve_index)];
-    const float2 stored = stored_at(*current_context().document, layer, curve.points[size_t(index)].point, at);
+    const Document &doc = *current_context().document;
+    float2 stored = stored_at(doc, layer, curve.points[size_t(index)].point, at);
+    /* Bent by a deform, it shows as no skin takes back: changed by as much as it is moved, as a drag does. */
+    if (doc.frame_current != 0 && layer_has_modifier_effect(doc, layer, false)) {
+      const VectorDeformWireScope wire;
+      const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+      if (curve_index < int(shown.curves.size()) && shown.curves[size_t(curve_index)].points.size() == curve.points.size()) {
+        std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+        skins.resize(drawing.points.size());
+        const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+        const float2 from = curve_handle(shown, shown.curves[size_t(curve_index)], index, side == "IN");
+        stored = curve_handle(drawing, curve, index, side == "IN") +
+                 skins[size_t(curve.points[size_t(index)].point)].inverted().apply_vector(in_layer - from);
+      }
+    }
     curve_point_move_handle(drawing, curve, index, side == "IN", stored, keep_other);
+    {
+      std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+      skins.resize(drawing.points.size());
+      const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+      layer_handles_settle(doc, layer, {{curve_index, index, side == "IN", keep_other, in_layer,
+                                         skins[size_t(curve.points[size_t(index)].point)].inverted()}});
+    }
     current_context().undo->mark_changed();
   });
 

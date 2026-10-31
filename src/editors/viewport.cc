@@ -347,6 +347,9 @@ struct ModalTransform {
     bool direct = false;
     /* A handle moved by itself: how much shorter it shows than it is stored. */
     float shown_scale = 1.0f;
+    /* A handle as it is stored, from its point: a move changes it by as much as it shows moved. What shows is the handle
+     * as a deform bends it, which no skin takes back to this. */
+    float2 stored_from;
     /* A handle's point, in document space: what S and R work about when only handles move. */
     float2 origin;
     /* Shown -> stored (layer space): undoes the bones' move, so a posed point lands where it is
@@ -3589,6 +3592,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
           item.direct = direct;
           item.shown_scale = direct ? factors.of(c, i, pre) : 1.0f;
           item.origin = to_document.apply(shown.drawing->points[cp.point].pos);
+          item.stored_from = curve_handle(drawing, curve, i, pre) - drawing.points[cp.point].pos;
           if (along) {
             /* Its own reach, as Blender's proportional editing takes each Bezier handle as a point of its own:
              * a handle nearer the selection comes further than its point, so the curve bends into the falloff
@@ -3729,16 +3733,20 @@ static void modal_place(ModalLayers &layers, const ModalTransform::Item &item, f
      * just this one, which breaks the line: the point is no longer aligned, so later moves don't
      * snap the other handle back. */
     const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
-    const bool alone = ImGui::GetIO().KeyAlt;
+    /* (A background run has no keys to read.) */
+    const bool alone = ImGui::GetCurrentContext() && ImGui::GetIO().KeyAlt;
     const float2 here = drawing.points[cp.point].pos;
-    curve_point_move_handle(drawing, curve, item.index, item.pre, here + (stored - here) / item.shown_scale,
+    const float2 moved = item.unskin.apply_vector(to_layer.apply_vector(p - item.start));
+    curve_point_move_handle(drawing, curve, item.index, item.pre, here + item.stored_from + moved / item.shown_scale,
                             partner_moves || alone);
     if (alone && !partner_moves) {
       cp.aligned = false;
     }
   }
   else {
-    (item.pre ? cp.handle_in : cp.handle_out) = stored - drawing.points[cp.point].pos;
+    /* With its point: changed by as much as it now shows differently from its point. */
+    const float2 was = item.unskin.apply_vector(to_layer.apply_vector(item.start - item.origin));
+    (item.pre ? cp.handle_in : cp.handle_out) = item.stored_from + (stored - drawing.points[cp.point].pos) - was;
   }
 }
 
@@ -3907,6 +3915,9 @@ static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &la
                         float angle, float2 scale)
 {
   const ToolSettings &ts = C.wm->tool_settings;
+  /* The points, each to where it goes, and the handles moved by themselves, for the layers a deform bends. */
+  std::map<uint64_t, std::vector<PointTarget>> targets;
+  std::map<uint64_t, std::vector<HandleTarget>> handles;
   for (const ModalTransform::Item &item : modal.items) {
     const float w = modal_weight(ts, item);
     if (w <= 0.0f) {
@@ -3914,16 +3925,33 @@ static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &la
       continue;
     }
     const float2 c = modal.about_points ? item.origin : modal.pivot;
+    float2 to;
     if (kind == 'G') {
-      modal_place(layers, item, item.start + delta * w);
+      to = item.start + delta * w;
     }
     else if (kind == 'R') {
-      modal_place(layers, item, c + rotate(item.start - c, angle * w));
+      to = c + rotate(item.start - c, angle * w);
     }
     else {
       const float2 d = item.start - c;
-      modal_place(layers, item, c + float2(d.x * (1.0f + (scale.x - 1.0f) * w), d.y * (1.0f + (scale.y - 1.0f) * w)));
+      to = c + float2(d.x * (1.0f + (scale.x - 1.0f) * w), d.y * (1.0f + (scale.y - 1.0f) * w));
     }
+    modal_place(layers, item, to);
+    if (item.curve < 0 && item.mirror_source < 0) {
+      targets[item.layer].push_back({item.point, layers[item.layer].second.apply(to), item.unskin});
+    }
+    else if (item.direct && item.shown_scale == 1.0f && item.mirror_source < 0) {
+      const Curve &curve = layers[item.layer].first->drawing.curves[size_t(item.curve)];
+      const CurvePoint &cp = curve.points[size_t(item.index)];
+      handles[item.layer].push_back({item.curve, item.index, item.pre, item.pre ? cp.select_out : cp.select_in,
+                                     layers[item.layer].second.apply(to), item.unskin});
+    }
+  }
+  for (const auto &[id, points] : targets) {
+    layer_points_settle(*C.document, *layers[id].first, points);
+  }
+  for (const auto &[id, ends] : handles) {
+    layer_handles_settle(*C.document, *layers[id].first, ends);
   }
   modal_mirror(C, modal, layers);
 }
