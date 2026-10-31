@@ -482,11 +482,12 @@ SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Laye
   const float thr = std::max(threshold, 0.0f);
   for (int a = 0; a < n; a++) {
     const float2 here = place(a);
-    if (!both.points[a].selected || std::fabs(here.x - shared.axis) <= thr) {
+    if (!both.points[a].selected) {
       continue;
     }
+    const bool on_axis = std::fabs(here.x - shared.axis) <= thr;
     for (int b = n; b < int(both.points.size()); b++) {
-      if (!both.points[b].detail.hidden) {
+      if (!both.points[b].detail.hidden && (!on_axis || symmetrize_near_pair(here, place(b), shared.axis, thr))) {
         candidates.push_back({distance(float2(2.0f * shared.axis - here.x, here.y), place(b)), a, b});
       }
     }

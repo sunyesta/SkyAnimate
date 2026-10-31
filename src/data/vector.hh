@@ -742,6 +742,10 @@ int drawing_copy_shape_looks(const VectorDrawing &from, VectorDrawing &to, const
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
                                     const std::map<uint64_t, uint64_t> *weight_flip,
                                     const SymmetrizeMatch *match = nullptr);
+/* Whether points at `a` and `b` are partners though the threshold counts one or both as on the axis at x = `axis`:
+ * across it from each other, one within the threshold of the other's mirror image, and mirroring moves them less
+ * than the axis would. So raising it can't break a pair. */
+bool symmetrize_near_pair(float2 a, float2 b, float axis, float threshold);
 
 /* Layer Symmetrize's copy: the drawing flipped left to right across its own vertical axis, as its
  * setup pose, with its point, handle and curvature keys gone (so it rests there on every frame).

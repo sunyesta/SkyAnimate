@@ -284,6 +284,50 @@ assert ops.mesh.symmetrize(match_shape="1") == {'CANCELLED'}
 assert "on this frame" in wm.banner_report()[3], wm.banner_report()
 doc.frame_current = 0
 
+# --- Raising the Threshold never breaks a pair -------------------------------------------------------------------
+# Partners by the shape, not the setup. A threshold that takes in one of them, or both, leaves them partners.
+for threshold in ("0.01", "0.2", "0.42", "0.45", "0.5", "1.0", "5.0"):
+    layer = line([(0.0, 0.7), (0.19, 0.5)])
+    pose(layer, 10, {0: (0.46, 0.83), 1: (-0.41, 0.85)})
+    everything(layer)
+    assert ops.mesh.symmetrize(match_shape="1", threshold=threshold) == {'FINISHED'}, threshold
+    assert close(where(layer, 0), (0.46, 0.83)) and close(where(layer, 1), (-0.46, 0.83)), (threshold, where(layer, 1))
+    doc.frame_current = 0
+
+# In the panel, dragged up past where one point is taken in, and on past both.
+layer = line([(0.0, 0.7), (0.19, 0.5)])
+pose(layer, 10, {0: (0.46, 0.83), 1: (-0.41, 0.85)})
+assert ops.mesh.select_all() == {'FINISHED'}, "an undo step to come back to"
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert "matched the shape on this frame" in wm.banner_report()[3], wm.banner_report()
+for threshold in (0.2, 0.43, 0.6, 2.0):
+    assert wm.redo_last(threshold=threshold) == "FINISHED", threshold
+    assert close(where(layer, 1), (-0.46, 0.83)), (threshold, where(layer, 1))
+doc.frame_current = 0
+
+# On frame 0 too.
+layer = line([(0.46, 0.83), (-0.41, 0.85)])
+everything(layer)
+assert ops.mesh.symmetrize(threshold="0.43") == {'FINISHED'}
+assert close(where(layer, 1), (-0.46, 0.83)), where(layer, 1)
+
+# The axis's own points stay the axis's: the top and the bottom of a shape are across it, but no partners.
+layer = line([(0.002, 1.0), (1.0, 0.0), (-0.003, -1.0), (-1.0, 0.0)])
+everything(layer)
+assert ops.mesh.symmetrize(threshold="0.05") == {'FINISHED'}
+assert close(where(layer, 0), (0.0, 1.0)) and close(where(layer, 2), (0.0, -1.0)), (where(layer, 0), where(layer, 2))
+assert close(where(layer, 3), (-1.0, 0.0)), where(layer, 3)
+
+# A point near the axis isn't taken for the partner of one already paired, or of one far across.
+layer = line([(0.12, 0.0), (-0.12, 0.0), (-0.09, 0.0)])
+everything(layer)
+assert ops.mesh.symmetrize(threshold="0.1") == {'FINISHED'}
+assert close(where(layer, 1), (-0.12, 0.0)) and close(where(layer, 2), (0.0, 0.0)), (where(layer, 1), where(layer, 2))
+layer = line([(1.0, 0.0), (-0.005, 0.02)])
+everything(layer)
+assert ops.mesh.symmetrize(threshold="0.01") == {'CANCELLED'}, "uneven: it's on the axis, not the partner of 0"
+assert close(where(layer, 1), (-0.005, 0.02))
+
 # --- Riding points are matched like the rest -------------------------------------------------------------------
 layer = line([(2.0, 0.0), (1.0, 1.0), (-1.0, 1.0), (-2.0, 0.0)])
 pose(layer, 10, {1: (1.2, 1.3)})
@@ -354,6 +398,18 @@ assert close(where(ear_r, 1), (-1.9, 0.7)) and close(where(ear_r, 2), (-1.0, 1.0
 assert close(where(ear_l, 1), (1.9, 0.7)), "the source side stays"
 doc.frame_current = 0
 assert close(where(ear_r, 1), (-1.5, 0.5)), "the setup stays"
+
+# A threshold that takes in a sided pair's points leaves them partners.
+ops.wm.read_homefile(confirmed="1")
+doc, layers = oanim.data.document, oanim.data.layers
+doc.auto_key = True
+ear_r = line([(-1.0, 0.0), (-1.5, 0.5), (-1.1, 1.0)], "Ear_R")
+ear_l = line([(1.0, 0.0), (1.4, 0.6), (1.0, 1.0)], "Ear_L")
+pose(ear_l, 10, {1: (1.9, 0.7)})
+everything(ear_l)
+assert ops.mesh.symmetrize(match_shape="1", threshold="3.0") == {'FINISHED'}
+assert close(where(ear_r, 1), (-1.9, 0.7)) and close(where(ear_l, 1), (1.9, 0.7)), (where(ear_r, 1), where(ear_l, 1))
+doc.frame_current = 0
 
 # Both ears moved off the middle: the middle of the pair.
 ops.wm.read_homefile(confirmed="1")

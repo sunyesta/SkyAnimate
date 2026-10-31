@@ -420,7 +420,8 @@ void vector_operators_register()
     OpProperty threshold;
     threshold.name = "threshold";
     threshold.label = "Threshold";
-    threshold.description = "How near the axis a point is to count as on it";
+    threshold.description = "How near the axis a point is to count as on it, unless its partner's mirror image is as "
+                            "near it: then the two stay a pair";
     threshold.kind = OpProperty::Kind::Float;
     threshold.fallback = "0.01";
     threshold.min = 0.0f;
@@ -529,8 +530,9 @@ void vector_operators_register()
         if (match_shape) {
           op_arg_used(C, "match_shape", "1");
           op_arg_used(C, "axis", middle ? "SELECTION" : "LAYER");
-          report(ReportType::Info, std::string("Symmetrize: the setup's sides don't pair, so it went by the current shape") +
-                                       (layer_axis ? "" : ", across the middle of the selection"));
+          report(ReportType::Info, std::string("Symmetrize matched the shape on this frame") +
+                                       (layer_axis ? "" : ", across the middle of the selection") +
+                                       " (these points aren't partners in the setup pose)");
         }
       }
       const bool weights = !match_shape && op_arg_bool(C, "weights");

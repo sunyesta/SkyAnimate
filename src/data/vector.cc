@@ -3271,6 +3271,16 @@ float proportional_weight(ProportionalFalloff falloff, float distance, float siz
 
 namespace oanim {
 
+bool symmetrize_near_pair(float2 a, float2 b, float axis, float threshold)
+{
+  const float ax = a.x - axis, bx = b.x - axis;
+  if ((ax > 0.0f) == (bx > 0.0f) || ax == 0.0f || bx == 0.0f) {
+    return false;
+  }
+  const float d = distance(float2(-ax, a.y), float2(bx, b.y));
+  return d <= threshold && d < std::fabs(ax) + std::fabs(bx);
+}
+
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
                                     const std::map<uint64_t, uint64_t> *weight_flip, const SymmetrizeMatch *match)
 {
@@ -3310,6 +3320,48 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
     }
     const float x = place(i).x - axis;
     (x > thr ? right : x < -thr ? left : centre).push_back(i);
+  }
+  struct Candidate {
+    float d;
+    int r, l;
+  };
+  /* Each right point against each left one, the nearest reflection first. */
+  const auto nearest_first = [&](const std::vector<int> &rs, const std::vector<int> &ls) {
+    std::vector<Candidate> candidates;
+    for (const int r : rs) {
+      for (const int l : ls) {
+        candidates.push_back({distance(across(place(r)), place(l)), r, l});
+      }
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) { return a.d < b.d; });
+    return candidates;
+  };
+  /* A point the threshold counts as on the axis goes back to its side when it has a partner there. The points off the
+   * axis are in this too, or one could take the partner of another. */
+  if (!centre.empty()) {
+    std::vector<int> rs = right, ls = left;
+    const auto is_centre = [&](int i) { return std::find(centre.begin(), centre.end(), i) != centre.end(); };
+    for (const int c : centre) {
+      if (place(c).x != axis) {
+        (place(c).x > axis ? rs : ls).push_back(c);
+      }
+    }
+    std::set<int> partnered;
+    for (const Candidate &c : nearest_first(rs, ls)) {
+      if (!partnered.count(c.r) && !partnered.count(c.l) &&
+          ((!is_centre(c.r) && !is_centre(c.l)) || symmetrize_near_pair(place(c.r), place(c.l), axis, thr)))
+      {
+        partnered.insert(c.r);
+        partnered.insert(c.l);
+      }
+    }
+    for (const int c : centre) {
+      if (partnered.count(c)) {
+        (place(c).x > axis ? right : left).push_back(c);
+      }
+    }
+    centre.erase(std::remove_if(centre.begin(), centre.end(), [&](int c) { return partnered.count(c) > 0; }),
+                 centre.end());
   }
   result.right = int(right.size());
   result.left = int(left.size());
@@ -3361,18 +3413,7 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
     }
   }
   /* Pairs: the nearest reflection first, each point used once. */
-  struct Candidate {
-    float d;
-    int r, l;
-  };
-  std::vector<Candidate> candidates;
-  for (const int r : right) {
-    for (const int l : left) {
-      candidates.push_back({distance(across(place(r)), place(l)), r, l});
-    }
-  }
-  std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) { return a.d < b.d; });
-  for (const Candidate &c : candidates) {
+  for (const Candidate &c : nearest_first(right, left)) {
     if (!used.count(c.r) && !used.count(c.l)) {
       used.insert(c.r);
       used.insert(c.l);
