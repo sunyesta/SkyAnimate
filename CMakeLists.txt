@@ -263,6 +263,8 @@ add_test(NAME deform_drag
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_drag.py)
 add_test(NAME mesh_envelope
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mesh_envelope.py)
+add_test(NAME mesh_envelope_stress
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_mesh_envelope_stress.py)
 add_test(NAME separate
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_separate.py)
 add_test(NAME mirror_ops

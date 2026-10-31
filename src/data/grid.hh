@@ -54,6 +54,8 @@ struct GridSurface {
    * bottom to top), and the nodes' bounds. */
   std::vector<std::array<float2, 4>> across, up;
   float2 lo, hi;
+  /* Each cell's bounds (row by row), so locate tries only the cells a place can be in. */
+  std::vector<float2> cell_lo, cell_hi;
 
   bool build(const VectorDrawing &drawing, const DrawingGrid &grid);
   /* The patch of a cell at `st`; outside 0..1, on straight from its edge. */

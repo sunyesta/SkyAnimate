@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 #include "data/vector.hh"
 
@@ -85,24 +86,34 @@ bool GridSurface::build(const VectorDrawing &drawing, const DrawingGrid &grid)
   for (size_t k = 0; k < grid.nodes.size(); k++) {
     index[k] = drawing_point_index(drawing, grid.nodes[k]);
   }
+  /* Each segment by the two points it joins (the first, if more do): every edge looks one up, and a grid being animated
+   * is built again each frame. */
+  const auto pair_key = [](int a, int b) {
+    return uint64_t(uint32_t(std::min(a, b))) << 32 | uint64_t(uint32_t(std::max(a, b)));
+  };
+  std::unordered_map<uint64_t, std::pair<const Curve *, int>> segments;
+  for (const Curve &curve : drawing.curves) {
+    for (int s = 0; s < curve.segment_count(); s++) {
+      int from, to;
+      curve_segment_points(curve, s, &from, &to);
+      segments.emplace(pair_key(from, to), std::make_pair(&curve, s));
+    }
+  }
   /* The Bezier from point a to point b: the curve segment joining them (either way round), else straight. */
   const auto edge = [&](int a, int b, std::array<float2, 4> &r) {
-    for (const Curve &curve : drawing.curves) {
-      for (int s = 0; s < curve.segment_count(); s++) {
-        int from, to;
-        curve_segment_points(curve, s, &from, &to);
-        if ((from == a && to == b) || (from == b && to == a)) {
-          float2 ctrl[4];
-          curve_segment_bezier(drawing, curve, s, ctrl);
-          if (from == a) {
-            r = {ctrl[0], ctrl[1], ctrl[2], ctrl[3]};
-          }
-          else {
-            r = {ctrl[3], ctrl[2], ctrl[1], ctrl[0]};
-          }
-          return;
-        }
+    if (const auto it = segments.find(pair_key(a, b)); it != segments.end()) {
+      const auto [curve, s] = it->second;
+      int from, to;
+      curve_segment_points(*curve, s, &from, &to);
+      float2 ctrl[4];
+      curve_segment_bezier(drawing, *curve, s, ctrl);
+      if (from == a) {
+        r = {ctrl[0], ctrl[1], ctrl[2], ctrl[3]};
       }
+      else {
+        r = {ctrl[3], ctrl[2], ctrl[1], ctrl[0]};
+      }
+      return;
     }
     const float2 pa = drawing.points[size_t(a)].pos, pb = drawing.points[size_t(b)].pos;
     r = {pa, pa + (pb - pa) / 3.0f, pa + (pb - pa) * (2.0f / 3.0f), pb};
@@ -124,6 +135,26 @@ bool GridSurface::build(const VectorDrawing &drawing, const DrawingGrid &grid)
     const float2 p = drawing.points[size_t(k)].pos;
     lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
     hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+  }
+  cell_lo.clear();
+  cell_hi.clear();
+  for (int j = 0; j < rows; j++) {
+    for (int i = 0; i < columns; i++) {
+      float2 a = across[size_t(j * columns + i)][0], b = a;
+      for (const std::array<float2, 4> *side :
+           {&across[size_t(j * columns + i)], &across[size_t((j + 1) * columns + i)], &up[size_t(i * rows + j)],
+            &up[size_t((i + 1) * rows + j)]})
+      {
+        for (const float2 &q : *side) {
+          a = float2(std::min(a.x, q.x), std::min(a.y, q.y));
+          b = float2(std::max(b.x, q.x), std::max(b.y, q.y));
+        }
+      }
+      /* A patch can bulge a little past its sides. */
+      const float2 margin = (b - a) * 0.1f;
+      cell_lo.push_back(a - margin);
+      cell_hi.push_back(b + margin);
+    }
   }
   return true;
 }
@@ -175,41 +206,62 @@ bool GridSurface::locate(float2 p, GridPlace &r_place) const
   const float scale = std::max(std::max(hi.x - lo.x, hi.y - lo.y), 1e-6f);
   float best = FLT_MAX;
   bool found = false;
+  const auto try_cell = [&](int column, int row) {
+    /* Newton's method on the cell's patch, from its middle. */
+    float2 st(0.5f, 0.5f);
+    bool converged = false;
+    for (int it = 0; it < 40; it++) {
+      const float2 f = eval(column, row, st) - p;
+      if (length(f) < scale * 1e-6f) {
+        converged = true;
+        break;
+      }
+      const float h = 1e-3f;
+      const float2 ds = (eval(column, row, {st.x + h, st.y}) - eval(column, row, {st.x - h, st.y})) / (2.0f * h);
+      const float2 dt = (eval(column, row, {st.x, st.y + h}) - eval(column, row, {st.x, st.y - h})) / (2.0f * h);
+      const float det = ds.x * dt.y - dt.x * ds.y;
+      if (std::fabs(det) < 1e-12f) {
+        break;
+      }
+      float2 step((dt.y * f.x - dt.x * f.y) / det, (-ds.y * f.x + ds.x * f.y) / det);
+      /* Not too far at once: a folded cell can throw it a long way. */
+      const float reach = length(step);
+      if (reach > 2.0f) {
+        step = step * (2.0f / reach);
+      }
+      st = st - step;
+    }
+    if (!converged) {
+      return;
+    }
+    /* How far outside the cell the place is (0 inside): the cell holding it, else the nearest. */
+    const float out = std::max({0.0f, -st.x, st.x - 1.0f, -st.y, st.y - 1.0f});
+    if (out < best) {
+      best = out;
+      r_place = {column, row, st};
+      found = true;
+    }
+  };
+  const auto in_bounds = [&](int column, int row) {
+    const float2 a = cell_lo[size_t(row * columns + column)], b = cell_hi[size_t(row * columns + column)];
+    return p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y;
+  };
+  /* Only the cells whose bounds hold it, for the first that holds it: a place outside them all looks at the others too,
+   * for the nearest. */
   for (int row = 0; row < rows; row++) {
     for (int column = 0; column < columns; column++) {
-      /* Newton's method on the cell's patch, from its middle. */
-      float2 st(0.5f, 0.5f);
-      bool converged = false;
-      for (int it = 0; it < 40; it++) {
-        const float2 f = eval(column, row, st) - p;
-        if (length(f) < scale * 1e-6f) {
-          converged = true;
-          break;
+      if (in_bounds(column, row)) {
+        try_cell(column, row);
+        if (found && best <= 0.0f) {
+          return true;
         }
-        const float h = 1e-3f;
-        const float2 ds = (eval(column, row, {st.x + h, st.y}) - eval(column, row, {st.x - h, st.y})) / (2.0f * h);
-        const float2 dt = (eval(column, row, {st.x, st.y + h}) - eval(column, row, {st.x, st.y - h})) / (2.0f * h);
-        const float det = ds.x * dt.y - dt.x * ds.y;
-        if (std::fabs(det) < 1e-12f) {
-          break;
-        }
-        float2 step((dt.y * f.x - dt.x * f.y) / det, (-ds.y * f.x + ds.x * f.y) / det);
-        /* Not too far at once: a folded cell can throw it a long way. */
-        const float reach = length(step);
-        if (reach > 2.0f) {
-          step = step * (2.0f / reach);
-        }
-        st = st - step;
       }
-      if (!converged) {
-        continue;
-      }
-      /* How far outside the cell the place is (0 inside): the cell holding it, else the nearest. */
-      const float out = std::max({0.0f, -st.x, st.x - 1.0f, -st.y, st.y - 1.0f});
-      if (out < best) {
-        best = out;
-        r_place = {column, row, st};
-        found = true;
+    }
+  }
+  for (int row = 0; row < rows; row++) {
+    for (int column = 0; column < columns; column++) {
+      if (!in_bounds(column, row)) {
+        try_cell(column, row);
       }
     }
   }
