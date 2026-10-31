@@ -56,6 +56,19 @@ VectorDeformWireScope::~VectorDeformWireScope()
   g_wire--;
 }
 
+/* VectorDeformProbeScope: its kind, 0 when there is none. */
+thread_local int g_probe = 0;
+
+VectorDeformProbeScope::VectorDeformProbeScope(int kind)
+{
+  g_probe = kind;
+}
+
+VectorDeformProbeScope::~VectorDeformProbeScope()
+{
+  g_probe = 0;
+}
+
 /* Every curve point's handles as the curve draws them, stored, so they bend with the deform too. */
 static void handles_explicit(VectorDrawing &drawing)
 {
@@ -2754,7 +2767,8 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   const DeformShape &d = *built;
   const PointGroup *group = deform_group(layer, m);
   /* The same drawing bent by the same build as before: what it made then. */
-  const auto bend_key = std::make_tuple(layer.id, m.name, render);
+  const std::string kept_as = m.name + std::string(size_t(g_probe), '\t');
+  const auto bend_key = std::make_tuple(layer.id, kept_as, render);
   const auto same_bend = [&](const KeptBend &k) {
     return k.build == build && k.render == render && k.wire == g_wire && k.m == m && k.drawing == drawing &&
            k.before_bones == before_bones && k.grouped == (group != nullptr) && (!group || k.group == *group);

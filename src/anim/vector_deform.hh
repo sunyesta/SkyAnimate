@@ -69,6 +69,15 @@ struct VectorDeformWireScope {
   VectorDeformWireScope &operator=(const VectorDeformWireScope &) = delete;
 };
 
+/* While alive: what the deforms make on this thread is kept apart from what the drawing itself makes, under `kind` (1, 2...),
+ * for the drawing moved a little to measure the stretch around its points. */
+struct VectorDeformProbeScope {
+  explicit VectorDeformProbeScope(int kind);
+  ~VectorDeformProbeScope();
+  VectorDeformProbeScope(const VectorDeformProbeScope &) = delete;
+  VectorDeformProbeScope &operator=(const VectorDeformProbeScope &) = delete;
+};
+
 /* How much each of the layer's own points follows the deform, 0-1, before Strength: its Custom weight, else
  * the automatic one. For Weight Paint's display. */
 std::vector<float> vector_deform_weights(const Document &doc, const Layer &layer, const Modifier &m);
