@@ -1,6 +1,7 @@
 /* Operators that edit the active vector layer's drawing: selection, delete, shapes, curvature,
  * and the start of modal transforms (G, R, S, E). */
 
+#include "anim/deform.hh"
 #include "anim/keep_poses.hh"
 #include "ops/edit_ops.hh"
 
@@ -431,13 +432,47 @@ void vector_operators_register()
     weights.description = "Copy the bone weights too, to the other side's bones (_L and _R)";
     weights.kind = OpProperty::Kind::Bool;
     weights.fallback = "0";
-    ot.props = {direction, threshold, weights};
+    const auto matching = [](const OpArgs &args) {
+      const auto it = args.find("match_shape");
+      return it != args.end() && (it->second == "1" || it->second == "True" || it->second == "true");
+    };
+    /* Weights hold on every frame, and a shape matched here has other partners than the setup's. */
+    weights.visible = [matching](const OpArgs &args) { return !matching(args); };
+    OpProperty match_shape = op_bool_property(
+        "match_shape", "Match Current Shape",
+        "Go by the shape as it shows on this frame, through its bones: sides and pairs from where the points are now, "
+        "each copy on the exact mirror image of its partner. Otherwise the pose is mirrored from the setup's pairs",
+        "0");
+    match_shape.enabled = [](Context &C) { return C.document->frame_current != 0; };
+    match_shape.disabled_why = "On frame 0 the points already pair where they are";
+    OpProperty axis;
+    axis.name = "axis";
+    axis.label = "Axis";
+    axis.description = "The vertical line to mirror across: the layer's own, or the middle of the selected points (of "
+                       "both layers, on a sided pair), for a shape that has moved off it";
+    axis.items = {{"LAYER", "Layer Axis"}, {"SELECTION", "Middle of Selection"}};
+    axis.fallback = "LAYER";
+    axis.visible = matching;
+    ot.props = {direction, threshold, weights, match_shape, axis};
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       const bool right_to_left = op_arg(C, "direction", "RIGHT_TO_LEFT") != "LEFT_TO_RIGHT";
       const float threshold = op_arg_float(C, "threshold", 0.01f);
-      const bool weights = op_arg_bool(C, "weights");
       const bool setup = doc.frame_current == 0;
+      const bool match_shape = !setup && op_arg_bool(C, "match_shape");
+      const bool weights = !match_shape && op_arg_bool(C, "weights");
+      const bool middle = op_arg(C, "axis", "LAYER") == "SELECTION";
+      const auto match_of = [&](const Layer &layer) {
+        SymmetrizeMatch match;
+        match.skins = layer_point_skins(doc, layer);
+        match.middle = middle;
+        return match;
+      };
+      /* What rides or hangs on the points only lands once they have moved: a second run puts it right. */
+      const auto runs = [&](const Layer &layer) {
+        const auto detail = [](const MeshPoint &p) { return p.detail.level > 0; };
+        return match_shape && std::any_of(layer.drawing.points.begin(), layer.drawing.points.end(), detail) ? 2 : 1;
+      };
       std::vector<Layer *> layers;
       for (Layer *layer : editable_layers(C)) {
         if (!layer->is_reference() && has_selection(layer->drawing)) {
@@ -464,8 +499,12 @@ void vector_operators_register()
       for (auto &[id, partner] : partner_of) {
         Layer trial = *layer_find(doc, id), trial_partner = *partner;
         std::vector<int> unmatched;
+        const SymmetrizeMatch match = match_shape ? match_of(trial) : SymmetrizeMatch();
+        const SymmetrizeMatch partner_match = match_shape ? match_of(trial_partner) : SymmetrizeMatch();
         const SymmetrizeResult r = layer_symmetrize_with_partner(doc, trial, trial_partner, right_to_left, threshold,
-                                                                 setup, nullptr, &unmatched);
+                                                                 setup, nullptr, &unmatched,
+                                                                 match_shape ? &match : nullptr,
+                                                                 match_shape ? &partner_match : nullptr);
         if (!r.done) {
           Layer *layer = layer_find(doc, id);
           for (MeshPoint &p : layer->drawing.points) {
@@ -484,7 +523,9 @@ void vector_operators_register()
       }
       for (Layer *layer : layers) {
         VectorDrawing trial = layer->drawing;
-        const SymmetrizeResult r = drawing_symmetrize(trial, right_to_left, threshold, setup, nullptr);
+        const SymmetrizeMatch match = match_shape ? match_of(*layer) : SymmetrizeMatch();
+        const SymmetrizeResult r = drawing_symmetrize(trial, right_to_left, threshold, setup, nullptr,
+                                                      match_shape ? &match : nullptr);
         if (!r.done) {
           for (MeshPoint &p : layer->drawing.points) {
             p.selected = false;
@@ -514,7 +555,14 @@ void vector_operators_register()
             }
           }
         }
-        drawing_symmetrize(layer->drawing, right_to_left, threshold, setup, weights ? &flip : nullptr);
+        for (int run = runs(*layer); run > 0; run--) {
+          const SymmetrizeMatch match = match_shape ? match_of(*layer) : SymmetrizeMatch();
+          drawing_symmetrize(layer->drawing, right_to_left, threshold, setup, weights ? &flip : nullptr,
+                             match_shape ? &match : nullptr);
+          if (match_shape) {
+            drawing_detail_sync(layer->drawing, true);
+          }
+        }
       }
       for (auto &[id, partner] : partner_of) {
         Layer *layer = layer_find(doc, id);
@@ -527,8 +575,17 @@ void vector_operators_register()
             }
           }
         }
-        layer_symmetrize_with_partner(doc, *layer, *partner, right_to_left, threshold, setup,
-                                      weights ? &flip : nullptr, nullptr);
+        for (int run = std::max(runs(*layer), runs(*partner)); run > 0; run--) {
+          const SymmetrizeMatch match = match_shape ? match_of(*layer) : SymmetrizeMatch();
+          const SymmetrizeMatch partner_match = match_shape ? match_of(*partner) : SymmetrizeMatch();
+          layer_symmetrize_with_partner(doc, *layer, *partner, right_to_left, threshold, setup,
+                                        weights ? &flip : nullptr, nullptr, match_shape ? &match : nullptr,
+                                        match_shape ? &partner_match : nullptr);
+          if (match_shape) {
+            drawing_detail_sync(layer->drawing, true);
+            drawing_detail_sync(partner->drawing, true);
+          }
+        }
       }
       return layers.empty() && partner_of.empty() ? OpStatus::Cancelled : OpStatus::Finished;
     };

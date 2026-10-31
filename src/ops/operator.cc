@@ -155,22 +155,36 @@ OpStatus operator_redo_last(Context &C, const OpArgs &args)
   }
   const std::string idname = last->idname, area = last->area;
   /* As Undo does: the frame, the texts and the overlays aren't part of the step. */
-  const int frame = C.document->frame_current;
-  auto texts = C.document->texts;
-  const ViewportOverlays overlays = C.document->overlays;
-  auto ui_open = C.document->ui_open;
-  const ViewportView view = C.document->view;
-  C.undo->undo(*C.document);
-  C.document->view = view;
-  C.document->frame_current = frame;
-  C.document->texts = std::move(texts);
-  C.document->overlays = overlays;
-  C.document->ui_open = std::move(ui_open);
+  const auto step = [&](bool back) {
+    const int frame = C.document->frame_current;
+    auto texts = C.document->texts;
+    const ViewportOverlays overlays = C.document->overlays;
+    auto ui_open = C.document->ui_open;
+    const ViewportView view = C.document->view;
+    if (back) {
+      C.undo->undo(*C.document);
+    }
+    else {
+      C.undo->redo(*C.document);
+    }
+    C.document->view = view;
+    C.document->frame_current = frame;
+    C.document->texts = std::move(texts);
+    C.document->overlays = overlays;
+    C.document->ui_open = std::move(ui_open);
+  };
+  step(true);
   /* As it was first run: from the same editor. */
   const std::string saved_area = C.area_type;
   C.area_type = area;
   const OpStatus status = operator_call(C, idname, args);
   C.area_type = saved_area;
+  if (status == OpStatus::Cancelled) {
+    /* The last result stands, and the panel stays on what was asked, for another option to make it work. */
+    step(false);
+    g_last_redo.args = args;
+    operator_last_redo_keep(C);
+  }
   return status;
 }
 

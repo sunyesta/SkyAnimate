@@ -714,7 +714,17 @@ void drawing_mirror_selected_handles(VectorDrawing &drawing, bool mirror_x, bool
  * its partner's place, handles (reflected), width and corner, and with `weight_flip` its weights
  * (bone ids through the map: _L to _R). On the setup frame it reshapes the drawing; posed
  * (`setup_frame` false) it mirrors the pose: each copy's change from its setup becomes its
- * partner's, reflected. */
+ * partner's, reflected. With `match` it goes by the shape as it shows now instead: sides and pairs
+ * from where the points show, each copy put on the exact mirror image of its partner, the points on
+ * the axis onto it, and no shape's look copied (looks hold on every frame). A curve's two sides pair from
+ * opposite ends when they are even, so the line mirrors as well as its points; the rest by the nearest. */
+struct SymmetrizeMatch {
+  /* Per point, what takes it from where it is stored to where it shows (empty: where it is stored). */
+  std::vector<Transform2D> skins;
+  /* The vertical line mirrored across: x = `axis`, or with `middle` the middle of the selected points. */
+  float axis = 0.0f;
+  bool middle = false;
+};
 struct SymmetrizeResult {
   bool done = false;
   int right = 0, left = 0, centre = 0;
@@ -730,7 +740,8 @@ struct SymmetrizeResult {
  * of those images (not itself). Returns how many shapes changed. */
 int drawing_copy_shape_looks(const VectorDrawing &from, VectorDrawing &to, const std::map<int, int> &image);
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
-                                    const std::map<uint64_t, uint64_t> *weight_flip);
+                                    const std::map<uint64_t, uint64_t> *weight_flip,
+                                    const SymmetrizeMatch *match = nullptr);
 
 /* Layer Symmetrize's copy: the drawing flipped left to right across its own vertical axis, as its
  * setup pose, with its point, handle and curvature keys gone (so it rests there on every frame).

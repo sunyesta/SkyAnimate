@@ -3272,22 +3272,94 @@ float proportional_weight(ProportionalFalloff falloff, float distance, float siz
 namespace oanim {
 
 SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, float threshold, bool setup_frame,
-                                    const std::map<uint64_t, uint64_t> *weight_flip)
+                                    const std::map<uint64_t, uint64_t> *weight_flip, const SymmetrizeMatch *match)
 {
   SymmetrizeResult result;
-  const auto place = [&](int i) { return setup_frame ? drawing.points[i].pos : point_setup_pos(drawing.points[i]); };
+  const auto skin = [&](int i) {
+    return match && size_t(i) < match->skins.size() ? match->skins[size_t(i)] : Transform2D();
+  };
+  /* Matching the shape: where each point shows, before anything moves. */
+  std::vector<float2> shown;
+  if (match) {
+    for (int i = 0; i < int(drawing.points.size()); i++) {
+      shown.push_back(skin(i).apply(drawing.points[i].pos));
+    }
+  }
+  const auto place = [&](int i) {
+    return match ? shown[size_t(i)] : setup_frame ? drawing.points[i].pos : point_setup_pos(drawing.points[i]);
+  };
+  float axis = match ? match->axis : 0.0f;
+  if (match && match->middle) {
+    float lo = std::numeric_limits<float>::max(), hi = -lo;
+    for (int i = 0; i < int(drawing.points.size()); i++) {
+      if (drawing.points[i].selected) {
+        lo = std::min(lo, shown[size_t(i)].x);
+        hi = std::max(hi, shown[size_t(i)].x);
+      }
+    }
+    axis = lo <= hi ? (lo + hi) * 0.5f : 0.0f;
+  }
+  const auto across = [&](float2 p) { return float2(2.0f * axis - p.x, p.y); };
+  const auto handle_shown = [&](int i, float2 h) { return match ? skin(i).apply_vector(h) : h; };
+  const auto handle_stored = [&](int i, float2 h) { return match ? skin(i).inverted().apply_vector(h) : h; };
   const float thr = std::max(threshold, 0.0f);
   std::vector<int> right, left, centre;
   for (int i = 0; i < int(drawing.points.size()); i++) {
     if (!drawing.points[i].selected) {
       continue;
     }
-    const float x = place(i).x;
+    const float x = place(i).x - axis;
     (x > thr ? right : x < -thr ? left : centre).push_back(i);
   }
   result.right = int(right.size());
   result.left = int(left.size());
   result.centre = int(centre.size());
+  std::set<int> used;
+  std::vector<std::pair<int, int>> pairs;
+  /* Matching the shape: a line mirrored onto itself runs backwards, so a curve's two sides pair from opposite ends (a
+   * closed one's from where they fit best). The nearest first could cross them: the points would mirror, the line
+   * through them wouldn't. */
+  if (match) {
+    const auto on = [](const std::vector<int> &side, int point) {
+      return std::find(side.begin(), side.end(), point) != side.end();
+    };
+    for (const Curve &curve : drawing.curves) {
+      std::vector<int> r, l;
+      for (const CurvePoint &cp : curve.points) {
+        if (used.count(cp.point) || on(r, cp.point) || on(l, cp.point)) {
+          continue;
+        }
+        if (on(right, cp.point)) {
+          r.push_back(cp.point);
+        }
+        else if (on(left, cp.point)) {
+          l.push_back(cp.point);
+        }
+      }
+      const int n = int(r.size());
+      if (n == 0 || n != int(l.size())) {
+        continue;
+      }
+      int start = 0;
+      float least = std::numeric_limits<float>::max();
+      for (int s = 0; s < (curve.closed ? n : 1); s++) {
+        float d = 0.0f;
+        for (int i = 0; i < n; i++) {
+          d += distance(across(place(r[size_t((s + i) % n)])), place(l[size_t(n - 1 - i)]));
+        }
+        if (d < least) {
+          least = d;
+          start = s;
+        }
+      }
+      for (int i = 0; i < n; i++) {
+        const int a = r[size_t((start + i) % n)], b = l[size_t(n - 1 - i)];
+        used.insert(a);
+        used.insert(b);
+        pairs.push_back({a, b});
+      }
+    }
+  }
   /* Pairs: the nearest reflection first, each point used once. */
   struct Candidate {
     float d;
@@ -3296,12 +3368,10 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   std::vector<Candidate> candidates;
   for (const int r : right) {
     for (const int l : left) {
-      candidates.push_back({distance(reflect2(place(r), true, false), place(l)), r, l});
+      candidates.push_back({distance(across(place(r)), place(l)), r, l});
     }
   }
   std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) { return a.d < b.d; });
-  std::set<int> used;
-  std::vector<std::pair<int, int>> pairs;
   for (const Candidate &c : candidates) {
     if (!used.count(c.r) && !used.count(c.l)) {
       used.insert(c.r);
@@ -3373,13 +3443,16 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
           }
           const int dp = neighbour(curve, j, -1), dn = neighbour(curve, j, 1);
           const auto gap = [&](int a, int b) {
-            return a < 0 || b < 0 ? std::numeric_limits<float>::max() : distance(reflect2(place(a), true, false), place(b));
+            return a < 0 || b < 0 ? std::numeric_limits<float>::max() : distance(across(place(a)), place(b));
           };
           const int s = sp >= 0 ? sp : sn;
           const bool swap = s >= 0 && (s == sp ? gap(sp, dn) < gap(sp, dp) : gap(sn, dp) < gap(sn, dn));
           CurvePoint &to = curve.points[j];
-          to.handle_in = reflect2(swap ? from.handle_out : from.handle_in, true, false);
-          to.handle_out = reflect2(swap ? from.handle_in : from.handle_out, true, false);
+          const auto reflected = [&](float2 h) {
+            return handle_stored(dst, reflect2(handle_shown(src, h), true, false));
+          };
+          to.handle_in = reflected(swap ? from.handle_out : from.handle_in);
+          to.handle_out = reflected(swap ? from.handle_in : from.handle_out);
           to.weight_in = swap ? from.weight_out : from.weight_in;
           to.weight_out = swap ? from.weight_in : from.weight_out;
           to.offset_in = -(swap ? from.offset_out : from.offset_in);
@@ -3392,7 +3465,10 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
     }
     MeshPoint &to = drawing.points[dst];
     const MeshPoint &from = drawing.points[src];
-    if (setup_frame) {
+    if (match) {
+      to.pos = skin(dst).inverted().apply(across(shown[size_t(src)]));
+    }
+    else if (setup_frame) {
       to.pos = reflect2(from.pos, true, false);
     }
     else {
@@ -3414,12 +3490,19 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
   const float nearly_flat = std::tan(10.0f * PI / 180.0f);
   for (const int c : centre) {
     MeshPoint &p = drawing.points[c];
-    p.pos.x = setup_frame ? 0.0f : point_setup_pos(p).x;
+    if (match) {
+      p.pos = skin(c).inverted().apply(float2(axis, shown[size_t(c)].y));
+    }
+    else {
+      p.pos.x = setup_frame ? 0.0f : point_setup_pos(p).x;
+    }
     for (Curve &curve : drawing.curves) {
       for (CurvePoint &cp : curve.points) {
         if (cp.point != c || !cp.handles_set) {
           continue;
         }
+        cp.handle_in = handle_shown(c, cp.handle_in);
+        cp.handle_out = handle_shown(c, cp.handle_out);
         const auto flatten = [&](float2 &h) {
           if (std::fabs(h.y) <= nearly_flat * std::fabs(h.x)) {
             h.y = 0.0f;
@@ -3437,19 +3520,23 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
           flatten(cp.handle_in);
           flatten(cp.handle_out);
         }
+        cp.handle_in = handle_stored(c, cp.handle_in);
+        cp.handle_out = handle_stored(c, cp.handle_out);
       }
     }
   }
   result.centre_points = centre;
   /* The shapes on the copied side give their looks to their images. */
-  std::map<int, int> image;
-  for (const auto &[src, dst] : result.copied) {
-    image[src] = dst;
+  if (!match) {
+    std::map<int, int> image;
+    for (const auto &[src, dst] : result.copied) {
+      image[src] = dst;
+    }
+    for (const int c : centre) {
+      image[c] = c;
+    }
+    drawing_copy_shape_looks(drawing, drawing, image);
   }
-  for (const int c : centre) {
-    image[c] = c;
-  }
-  drawing_copy_shape_looks(drawing, drawing, image);
   result.done = true;
   return result;
 }

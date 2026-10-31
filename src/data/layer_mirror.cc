@@ -422,7 +422,8 @@ int layer_mirror_partners_end(Document &doc, const PartnerMirror &mirror)
 SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Layer &partner, bool right_to_left,
                                                float threshold, bool setup_frame,
                                                const std::map<uint64_t, uint64_t> *weight_flip,
-                                               std::vector<int> *r_unmatched)
+                                               std::vector<int> *r_unmatched, const SymmetrizeMatch *match,
+                                               const SymmetrizeMatch *partner_match)
 {
   /* Both drawings as one, in the space the pair mirrors across, so the in-layer Symmetrize does it. */
   const Transform2D to_axis[2] = {mirror_space(doc, layer.id), mirror_space(doc, partner.id)};
@@ -446,6 +447,32 @@ SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Laye
       both.curves.push_back(std::move(curve));
     }
   }
+  /* Matching the shape: each layer's skins in that space, and the axis worked out here, as the partner's
+   * points aren't picked yet. */
+  SymmetrizeMatch shared;
+  if (match) {
+    for (int k = 0; k < 2; k++) {
+      const std::vector<Transform2D> &skins = k == 0 ? match->skins : partner_match->skins;
+      const Transform2D &t = to_axis[k], back = t.inverted();
+      for (size_t i = 0; i < parts[k]->points.size(); i++) {
+        shared.skins.push_back(i < skins.size() ? t * skins[i] * back : Transform2D());
+      }
+    }
+    if (match->middle) {
+      float lo = FLT_MAX, hi = -FLT_MAX;
+      for (size_t i = 0; i < both.points.size(); i++) {
+        if (!both.points[i].detail.hidden) {
+          const float x = shared.skins[i].apply(both.points[i].pos).x;
+          lo = std::min(lo, x);
+          hi = std::max(hi, x);
+        }
+      }
+      shared.axis = lo <= hi ? (lo + hi) * 0.5f : 0.0f;
+    }
+  }
+  const auto place = [&](int i) {
+    return match ? shared.skins[size_t(i)].apply(both.points[i].pos) : point_setup_pos(both.points[i]);
+  };
   /* The partner's points that take part: the nearest to each selected point's reflection, one each. */
   struct Candidate {
     float d;
@@ -454,13 +481,13 @@ SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Laye
   std::vector<Candidate> candidates;
   const float thr = std::max(threshold, 0.0f);
   for (int a = 0; a < n; a++) {
-    const float2 here = point_setup_pos(both.points[a]);
-    if (!both.points[a].selected || std::fabs(here.x) <= thr) {
+    const float2 here = place(a);
+    if (!both.points[a].selected || std::fabs(here.x - shared.axis) <= thr) {
       continue;
     }
     for (int b = n; b < int(both.points.size()); b++) {
       if (!both.points[b].detail.hidden) {
-        candidates.push_back({distance(float2(-here.x, here.y), point_setup_pos(both.points[b])), a, b});
+        candidates.push_back({distance(float2(2.0f * shared.axis - here.x, here.y), place(b)), a, b});
       }
     }
   }
@@ -473,7 +500,8 @@ SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Laye
     }
   }
   const VectorDrawing was = both;
-  SymmetrizeResult result = drawing_symmetrize(both, right_to_left, threshold, setup_frame, weight_flip);
+  SymmetrizeResult result = drawing_symmetrize(both, right_to_left, threshold, setup_frame, weight_flip,
+                                               match ? &shared : nullptr);
   if (!result.done) {
     if (r_unmatched) {
       for (const int i : result.unmatched) {
@@ -528,8 +556,10 @@ SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Laye
       }
     }
   }
-  drawing_copy_shape_looks(layer.drawing, partner.drawing, to_partner);
-  drawing_copy_shape_looks(partner.drawing, layer.drawing, to_layer);
+  if (!match) {
+    drawing_copy_shape_looks(layer.drawing, partner.drawing, to_partner);
+    drawing_copy_shape_looks(partner.drawing, layer.drawing, to_layer);
+  }
   return result;
 }
 

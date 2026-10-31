@@ -76,10 +76,12 @@ void document_mirror_new_geometry(Document &doc, const Document &previous);
  * nearest their reflections (one each) are made mirror images across the pair's axis, one side copied
  * onto the other as drawing_symmetrize does inside one layer (`right_to_left`: the +x side is copied).
  * Returns that result; on `done` false nothing changed and `r_unmatched` holds the layer's selected
- * points left without a partner. */
+ * points left without a partner. With `match` and `partner_match` (each layer's skins) it goes by the
+ * shape as it shows now, as drawing_symmetrize does; their `middle` is the middle of both layers. */
 SymmetrizeResult layer_symmetrize_with_partner(Document &doc, Layer &layer, Layer &partner, bool right_to_left,
                                                float threshold, bool setup_frame,
                                                const std::map<uint64_t, uint64_t> *weight_flip,
-                                               std::vector<int> *r_unmatched);
+                                               std::vector<int> *r_unmatched, const SymmetrizeMatch *match = nullptr,
+                                               const SymmetrizeMatch *partner_match = nullptr);
 
 }  // namespace oanim
