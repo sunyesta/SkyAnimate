@@ -443,7 +443,7 @@ void vector_operators_register()
         "match_shape", "Match Current Shape",
         "Go by the shape as it shows on this frame, through its bones: sides and pairs from where the points are now, "
         "each copy on the exact mirror image of its partner. Otherwise the pose is mirrored from the setup's pairs",
-        "0");
+        "1");
     match_shape.enabled = [](Context &C) { return C.document->frame_current != 0; };
     match_shape.disabled_why = "On frame 0 the points already pair where they are";
     OpProperty axis;
@@ -460,7 +460,9 @@ void vector_operators_register()
       const bool right_to_left = op_arg(C, "direction", "RIGHT_TO_LEFT") != "LEFT_TO_RIGHT";
       const float threshold = op_arg_float(C, "threshold", 0.01f);
       const bool setup = doc.frame_current == 0;
-      bool match_shape = !setup && op_arg_bool(C, "match_shape");
+      const bool told = op_has_arg(C, "match_shape");
+      /* Weights hold on every frame, so a script asking for them means the setup's pairs. */
+      bool match_shape = !setup && (told ? op_arg_bool(C, "match_shape") : !op_arg_bool(C, "weights"));
       bool middle = op_arg(C, "axis", "LAYER") == "SELECTION";
       const auto match_of = [&](const Layer &layer) {
         SymmetrizeMatch match;
@@ -517,23 +519,27 @@ void vector_operators_register()
         }
         return true;
       };
-      /* Off frame 0 and not told which way (the menu): points the setup's sides can't pair go by the shape, as a run
-       * that stops here would open no panel to pick that in. The panel shows it, to turn off. */
-      if (!setup && op_arg(C, "match_shape").empty() && !pairs_up(false)) {
-        match_shape = pairs_up(true);
-        const bool layer_axis = match_shape;
-        if (!match_shape && op_arg(C, "axis").empty()) {
+      /* Not told which way (the menu): points the shape can't pair go by the setup's pairs, else across the middle of
+       * the selection, as a run that stops here would open no panel to pick those in. The panel shows what ran. */
+      if (!told && match_shape && !pairs_up(true)) {
+        if (pairs_up(false)) {
+          match_shape = false;
+          report(ReportType::Info, "Symmetrize went by the setup's pairs (these points aren't even on this frame)");
+        }
+        else if (!op_has_arg(C, "axis")) {
           middle = true;
-          match_shape = pairs_up(true);
-          middle = match_shape;
+          if (pairs_up(true)) {
+            report(ReportType::Info, "Symmetrize went across the middle of the selection (these points aren't even "
+                                     "across the layer's axis)");
+          }
+          else {
+            middle = false;
+          }
         }
-        if (match_shape) {
-          op_arg_used(C, "match_shape", "1");
-          op_arg_used(C, "axis", middle ? "SELECTION" : "LAYER");
-          report(ReportType::Info, std::string("Symmetrize matched the shape on this frame") +
-                                       (layer_axis ? "" : ", across the middle of the selection") +
-                                       " (these points aren't partners in the setup pose)");
-        }
+      }
+      if (!told) {
+        op_arg_used(C, "match_shape", match_shape ? "1" : "0");
+        op_arg_used(C, "axis", middle ? "SELECTION" : "LAYER");
       }
       const bool weights = !match_shape && op_arg_bool(C, "weights");
       /* Each layer has to pair up before any changes. */

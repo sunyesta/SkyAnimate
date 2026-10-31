@@ -50,20 +50,21 @@ def everything(layer):
 SETUP = [(2.0, 0.0), (1.0, 1.0), (-1.0, 1.0), (-2.0, 0.0)]
 AT_10 = {0: (2.2, 0.1), 1: (-1.2, 0.5), 2: (1.5, 0.8), 3: (-2.0, 0.0)}
 
-# Without the option the setup says: 0 and 1 are the right side, so 2 is made from 1.
+# Turned off the setup says: 0 and 1 are the right side, so 2 is made from 1.
 plain = line(SETUP)
 pose(plain, 10, AT_10)
 everything(plain)
-assert ops.mesh.symmetrize() == {'FINISHED'}
+assert ops.mesh.symmetrize(match_shape="0") == {'FINISHED'}
 assert close(where(plain, 2), (1.2, 0.5)), where(plain, 2)
 assert close(where(plain, 1), (-1.2, 0.5)), "the setup's right side stays"
 doc.frame_current = 0
 
-# With it, 0 and 2 are the right side now.
+# By default, off frame 0, 0 and 2 are the right side now.
 moved = line(SETUP)
 pose(moved, 10, AT_10)
 everything(moved)
-assert ops.mesh.symmetrize(match_shape="1") == {'FINISHED'}
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert wm.last_operation()[1]["match_shape"] == "1", "the panel shows it on"
 assert close(where(moved, 2), (1.5, 0.8)) and close(where(moved, 0), (2.2, 0.1)), "the right side now stays"
 assert close(where(moved, 1), (-1.5, 0.8)) and close(where(moved, 3), (-2.2, 0.1)), (where(moved, 1), where(moved, 3))
 doc.frame_current = 11
@@ -144,7 +145,9 @@ doc.frame_current = 0
 layer = line(SETUP)
 pose(layer, 10, {2: (0.5, 1.0)})
 everything(layer)
-assert ops.mesh.symmetrize() == {'FINISHED'}, "even in the setup"
+assert ops.mesh.symmetrize() == {'FINISHED'}, "from the menu: even in the setup, so its pairs"
+assert wm.last_operation()[1]["match_shape"] == "0", "the panel shows what ran"
+assert "the setup's pairs" in wm.banner_report()[3], wm.banner_report()
 doc.frame_current = 0
 layer = line(SETUP)
 pose(layer, 10, {2: (0.5, 1.0)})
@@ -200,12 +203,24 @@ for layer, args in ((a, {}), (b, {"match_shape": "1", "axis": "SELECTION"})):
     everything(layer)
     assert ops.mesh.symmetrize(**args) == {'FINISHED'}
 assert close(where(a, 1), (-1.0, 0.0)) and close(where(b, 1), where(a, 1)), (where(a, 1), where(b, 1))
+c = line([(1.0, 0.0), (-1.2, 0.3)])
+everything(c)
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert wm.last_operation()[1]["match_shape"] == "0", "the panel on frame 0: off, so Weights shows and Axis doesn't"
+
+# Weights asked for by a script off frame 0: the setup's pairs, which is the way they copy.
+layer = line(SETUP)
+pose(layer, 10, AT_10)
+everything(layer)
+assert ops.mesh.symmetrize(weights="1") == {'FINISHED'}
+assert close(where(layer, 2), (1.2, 0.5)) and wm.last_operation()[1]["match_shape"] == "0"
+doc.frame_current = 0
 
 # The ViewportActionPanel: turning it on runs Symmetrize again in place of the first run.
 layer = line(SETUP)
 pose(layer, 10, AT_10)
 assert ops.mesh.select_all() == {'FINISHED'}, "an undo step to come back to"
-assert ops.mesh.symmetrize() == {'FINISHED'}
+assert ops.mesh.symmetrize(match_shape="0") == {'FINISHED'}
 assert close(where(layer, 2), (1.2, 0.5))
 assert wm.redo_last(match_shape=True) == "FINISHED"
 assert close(where(layer, 2), (1.5, 0.8)) and close(where(layer, 1), (-1.5, 0.8)), (where(layer, 1), where(layer, 2))
@@ -228,7 +243,7 @@ assert close(where(layer, 2), (4.5, 1.2)) and close(where(layer, 3), (4.0, 0.0))
 assert wm.last_operation()[1]["axis"] == "SELECTION"
 doc.frame_current = 0
 
-# --- Run from the menu: points the setup's sides can't pair go by the shape, and the panel says so ---------------
+# --- Run from the menu ---------------------------------------------------------------------------------------
 # Both right of the axis in the setup, one on each side on this frame: the setup's way there is nothing to pair.
 layer = line([(0.15, 0.5), (0.2, 0.9)])
 pose(layer, 10, {0: (-0.33, 0.96), 1: (0.4, 0.92)})
@@ -258,29 +273,31 @@ layer.select_points([0, 1])
 assert ops.mesh.symmetrize() == {'CANCELLED'}, "frame 0 has only the one shape"
 assert "setup pose" not in wm.banner_report()[3]
 
-# What the setup pairs goes on being mirrored from it: this only steps in where that can't work.
-layer = line(SETUP)
-pose(layer, 10, AT_10)
-everything(layer)
-assert ops.mesh.symmetrize() == {'FINISHED'}
-assert wm.last_operation()[1]["match_shape"] == "0" and close(where(layer, 2), (1.2, 0.5))
-doc.frame_current = 0
-
-# A shape off the layer's line, from the menu: the middle of the selection, so the panel opens to change it.
+# A shape off the layer's line, from the menu: the setup can't pair it either, so the middle of the selection, and the
+# panel opens to change it.
 layer = line([(1.0, 0.0), (1.5, 1.0), (2.0, 1.0), (2.5, 0.0)])
 pose(layer, 10, {0: (4.0, 0.0), 1: (4.5, 1.0), 2: (5.5, 1.2), 3: (6.0, 0.0)})
 everything(layer)
 assert ops.mesh.symmetrize() == {'FINISHED'}
 args = wm.last_operation()[1]
 assert args["match_shape"] == "1" and args["axis"] == "SELECTION", args
+assert "the middle of the selection" in wm.banner_report()[3], wm.banner_report()
 assert close(where(layer, 1), (4.5, 1.2)), where(layer, 1)
 doc.frame_current = 0
 
-# Not even on this frame either: the warning, in this frame's numbers.
+# Told which way, it doesn't look for another.
 layer = line(SETUP)
 pose(layer, 10, {2: (0.5, 1.0)})
 layer.select_points([0, 1, 2])
 assert ops.mesh.symmetrize(match_shape="1") == {'CANCELLED'}
+assert "on this frame" in wm.banner_report()[3], wm.banner_report()
+doc.frame_current = 0
+
+# Nothing pairs by any of them: the warning, in this frame's numbers.
+layer = line([(2.0, 0.0), (1.0, 1.0), (0.5, 0.2), (-1.0, 1.0), (-2.0, 0.0)])
+pose(layer, 10, {3: (0.8, 1.0)})
+layer.select_points([0, 1, 3, 2])
+assert ops.mesh.symmetrize() == {'CANCELLED'}
 assert "on this frame" in wm.banner_report()[3], wm.banner_report()
 doc.frame_current = 0
 
@@ -299,7 +316,7 @@ layer = line([(0.0, 0.7), (0.19, 0.5)])
 pose(layer, 10, {0: (0.46, 0.83), 1: (-0.41, 0.85)})
 assert ops.mesh.select_all() == {'FINISHED'}, "an undo step to come back to"
 assert ops.mesh.symmetrize() == {'FINISHED'}
-assert "matched the shape on this frame" in wm.banner_report()[3], wm.banner_report()
+assert wm.last_operation()[1]["match_shape"] == "1"
 for threshold in (0.2, 0.43, 0.6, 2.0):
     assert wm.redo_last(threshold=threshold) == "FINISHED", threshold
     assert close(where(layer, 1), (-0.46, 0.83)), (threshold, where(layer, 1))
