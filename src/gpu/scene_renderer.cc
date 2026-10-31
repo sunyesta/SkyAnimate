@@ -1826,6 +1826,18 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
           batch(false);
           tessellate_fill({a, b, b + reach, a + reach}, shape.style.fill, feather, vertices);
         }
+        /* Neighbours share an edge, but corners that far off are clipped, each triangle rounded its own way, so a crack
+         * can open up along it, one sample wide, and move as the line does: a strip a pixel wide across each joint. */
+        const float2 across = float2(reach.y, -reach.x) * (0.5f / 100000.0f);
+        const auto swept = [&](size_t i) { return area || (strokes && i < visible.size() && visible[i]); };
+        for (size_t i = closed ? 0 : 1; i < n; i++) {
+          if (swept(i) && swept((i + n - 1) % n)) {
+            const float2 joint = outline[i];
+            batch(false);
+            tessellate_fill({joint - across, joint + across, joint + across + reach, joint - across + reach}, shape.style.fill,
+                            feather, vertices);
+          }
+        }
       }
       /* A mask's Filled Shape: any shape masks with its inside, an open one closed straight across. */
       if (is_area && stage != MaskPass::Lines && !line_as_drawn) {
