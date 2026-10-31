@@ -553,6 +553,33 @@ void drawing_detail_shown_handle_factors(const VectorDrawing &drawing, std::vect
   }
 }
 
+ShownHandleFactors drawing_detail_shown_factors(const VectorDrawing &drawing)
+{
+  ShownHandleFactors factors;
+  if (!drawing_has_detail(drawing)) {
+    return factors;
+  }
+  std::vector<std::vector<float>> in, out;
+  drawing_detail_shown_handle_factors(drawing, in, out);
+  const std::vector<int> levels = drawing_curve_detail_levels(drawing);
+  factors.in.resize(drawing.curves.size());
+  factors.out.resize(drawing.curves.size());
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    const std::vector<CurvePoint> &points = drawing.curves[c].points;
+    factors.in[c].assign(points.size(), 1.0f);
+    factors.out[c].assign(points.size(), 1.0f);
+    size_t k = 0;
+    for (size_t i = 0; i < points.size(); i++) {
+      if (shown_at(drawing.points[points[i].point], levels[c])) {
+        factors.in[c][i] = in[c][k];
+        factors.out[c][i] = out[c][k];
+        k++;
+      }
+    }
+  }
+  return factors;
+}
+
 void drawing_detail_final_handles(VectorDrawing &drawing)
 {
   if (!drawing_has_detail(drawing)) {

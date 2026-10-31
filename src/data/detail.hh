@@ -79,6 +79,16 @@ VectorDrawing drawing_detail_shown_curves(const VectorDrawing &drawing);
  * shown curve's points; 1 where it doesn't): a handle stored from one as shown is divided by it. */
 void drawing_detail_shown_handle_factors(const VectorDrawing &drawing, std::vector<std::vector<float>> &r_in,
                                          std::vector<std::vector<float>> &r_out);
+/* The same by each curve's own points (1 on those not shown): where the handles drawn over a drawing end, each where
+ * its line really bends, is the stored handle times this. A handle dragged there is stored divided by it. */
+struct ShownHandleFactors {
+  std::vector<std::vector<float>> in, out;
+  float of(int curve, int i, bool pre) const
+  {
+    return in.empty() ? 1.0f : (pre ? in : out)[size_t(curve)][size_t(i)];
+  }
+};
+ShownHandleFactors drawing_detail_shown_factors(const VectorDrawing &drawing);
 /* Each curve's edit level: the highest detail level of the shapes using it (a curve no shape uses
  * shows every level). */
 std::vector<int> drawing_curve_detail_levels(const VectorDrawing &drawing);

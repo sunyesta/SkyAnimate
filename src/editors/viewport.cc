@@ -345,6 +345,8 @@ struct ModalTransform {
     int index = -1;
     bool pre = false;
     bool direct = false;
+    /* A handle moved by itself: how much shorter it shows than it is stored. */
+    float shown_scale = 1.0f;
     /* A handle's point, in document space: what S and R work about when only handles move. */
     float2 origin;
     /* Shown -> stored (layer space): undoes the bones' move, so a posed point lands where it is
@@ -658,6 +660,14 @@ struct HandleHit {
   float distance = FLT_MAX;
 };
 
+/* Where a handle shows: where its line really bends, short of where it is stored when it faces detail. */
+static float2 handle_end(const VectorDrawing &drawing, const ShownHandleFactors &factors, int c, int i, bool pre)
+{
+  const Curve &curve = drawing.curves[c];
+  const float2 here = drawing.points[curve.points[i].point].pos;
+  return here + (curve_handle(drawing, curve, i, pre) - here) * factors.of(c, i, pre);
+}
+
 /* The shown handle nearest the mouse, within picking distance, on any edited layer. */
 static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, HandleDisplay display)
 {
@@ -669,6 +679,7 @@ static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, 
     const Transform2D to_document = layer_world_transform(*C.document, layer->id);
     const Posed shown = posed(*C.document, *layer);
     const VectorDrawing &drawing = *shown.drawing;
+    const ShownHandleFactors factors = drawing_detail_shown_factors(drawing);
     for (int c = 0; c < int(drawing.curves.size()); c++) {
       const Curve &curve = drawing.curves[c];
       for (int i = 0; i < int(curve.points.size()); i++) {
@@ -677,7 +688,7 @@ static HandleHit pick_handle(Context &C, const ViewMapping &view, ImVec2 mouse, 
         }
         const float2 here = drawing.points[curve.points[i].point].pos;
         for (const bool pre : {true, false}) {
-          const float2 h = curve_handle(drawing, curve, i, pre);
+          const float2 h = handle_end(drawing, factors, c, i, pre);
           if (distance(h, here) < 1e-9f) {
             continue;
           }
@@ -3531,6 +3542,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
              std::isfinite(reach[point]);
     };
     /* Handles after the points, so they're placed once their points have moved. */
+    const ShownHandleFactors factors = drawing_detail_shown_factors(*shown.drawing);
     for (int c = 0; c < int(drawing.curves.size()); c++) {
       Curve &curve = drawing.curves[c];
       for (int i = 0; i < int(curve.points.size()); i++) {
@@ -3544,13 +3556,16 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
           if (!direct && !(point_moves && stored)) {
             continue;
           }
-          const float2 h = to_document.apply(curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre));
+          /* By itself it moves from where it shows; with its point it comes along as it is stored. */
+          const float2 h = to_document.apply(direct ? handle_end(*shown.drawing, factors, c, i, pre) :
+                                                      curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre));
           ModalTransform::Item item{layer->id, cp.point, h};
           item.unskin = shown.skins[cp.point].inverted();
           item.curve = c;
           item.index = i;
           item.pre = pre;
           item.direct = direct;
+          item.shown_scale = direct ? factors.of(c, i, pre) : 1.0f;
           item.origin = to_document.apply(shown.drawing->points[cp.point].pos);
           if (along) {
             /* Its own reach, as Blender's proportional editing takes each Bezier handle as a point of its own:
@@ -3693,7 +3708,9 @@ static void modal_place(ModalLayers &layers, const ModalTransform::Item &item, f
      * snap the other handle back. */
     const bool partner_moves = item.pre ? cp.select_out : cp.select_in;
     const bool alone = ImGui::GetIO().KeyAlt;
-    curve_point_move_handle(drawing, curve, item.index, item.pre, stored, partner_moves || alone);
+    const float2 here = drawing.points[cp.point].pos;
+    curve_point_move_handle(drawing, curve, item.index, item.pre, here + (stored - here) / item.shown_scale,
+                            partner_moves || alone);
     if (alone && !partner_moves) {
       cp.aligned = false;
     }
@@ -4449,6 +4466,7 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
     VectorDrawing &drawing = layer->drawing;
     const Posed shown = posed(*C.document, *layer);
     /* Handles shown before the box (whose points were selected then) can be boxed too. */
+    const ShownHandleFactors factors = drawing_detail_shown_factors(*shown.drawing);
     std::vector<std::pair<CurvePoint *, int>> boxed;
     for (size_t c = 0; c < drawing.curves.size(); c++) {
       Curve &curve = drawing.curves[c];
@@ -4457,7 +4475,7 @@ static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, 
         if (handle_visible(drawing, cp, handles)) {
           const float2 here = shown.drawing->points[cp.point].pos;
           for (const bool pre : {true, false}) {
-            const float2 h = curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre);
+            const float2 h = handle_end(*shown.drawing, factors, int(c), i, pre);
             if (distance(h, here) > 1e-9f && inside(h)) {
               boxed.push_back({&cp, pre ? 0 : 1});
             }
@@ -4774,7 +4792,9 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Tran
     return g;
   }
   /* Handles under the points: a line out to a dot, coloured by type, bright when selected. */
-  for (const Curve &curve : drawing.curves) {
+  const ShownHandleFactors factors = drawing_detail_shown_factors(drawing);
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    const Curve &curve = drawing.curves[c];
     for (int i = 0; i < int(curve.points.size()); i++) {
       const CurvePoint &cp = curve.points[i];
       if (!handle_visible(drawing, cp, handles)) {
@@ -4783,7 +4803,7 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Tran
       const float2 here = drawing.points[cp.point].pos;
       const bool point_selected = drawing.points[cp.point].selected;
       for (const bool pre : {true, false}) {
-        const float2 h = curve_handle(drawing, curve, i, pre);
+        const float2 h = handle_end(drawing, factors, c, i, pre);
         if (distance(h, here) < 1e-9f) {
           continue;
         }
@@ -8954,6 +8974,7 @@ static std::vector<float2> point_gizmo_places(Context &C, const Transform2D &to_
     const Transform2D to = to_gizmo * layer_world_transform(*C.document, layer->id);
     const Posed shown = posed(*C.document, *layer);
     const VectorDrawing &d = *shown.drawing;
+    const ShownHandleFactors factors = drawing_detail_shown_factors(d);
     for (int i = 0; i < int(d.points.size()); i++) {
       if (layer->drawing.points[i].selected == selected) {
         places.push_back(to.apply(d.points[i].pos));
@@ -8970,7 +8991,7 @@ static std::vector<float2> point_gizmo_places(Context &C, const Transform2D &to_
         }
         for (const bool pre : {true, false}) {
           if (pre ? cp.select_in : cp.select_out) {
-            places.push_back(to.apply(curve_handle(d, d.curves[c], i, pre)));
+            places.push_back(to.apply(handle_end(d, factors, c, i, pre)));
           }
         }
       }
