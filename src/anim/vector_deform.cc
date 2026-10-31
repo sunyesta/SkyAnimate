@@ -531,6 +531,19 @@ static std::vector<float> lengths_along(const std::vector<float2> &v)
   return at;
 }
 
+/* The shape's space to the layer's, at rest or (`now`) as it is. A group's deform goes by way of the group as it stood at
+ * setup, so what moves the group itself leaves the deform as it was and moves what is in it on top; when only the
+ * shape's change of shape counts, its rest is where it now is. */
+static Transform2D shape_to_layer(const Document &doc, const Layer &layer, const Modifier &m, uint64_t target, bool now)
+{
+  if (m.deform_from_group == 0) {
+    return now ? layer_relative_transform(doc, layer.id, target) : layer_setup_relative_transform(doc, layer.id, target);
+  }
+  return layer_relative_transform(doc, layer.id, m.deform_from_group) *
+         (now || m.deform_rest_posed ? layer_relative_to_setup(doc, m.deform_from_group, target)
+                                     : layer_setup_relative_transform(doc, m.deform_from_group, target));
+}
+
 static bool shape_rest(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &r_rest,
                        const Layer **r_target, bool render)
 {
@@ -539,8 +552,11 @@ static bool shape_rest(const Document &doc, const Layer &layer, const Modifier &
     return false;
   }
   r_rest = layer_setup_drawing(doc, *target, render);
+  if (m.deform_rest_posed) {
+    layer_pose_drawing(doc, *target, r_rest);
+  }
   /* From the groups the two share down (layer_relative_transform), as the shape now is. */
-  transform_drawing(r_rest, layer_setup_relative_transform(doc, layer.id, target->id));
+  transform_drawing(r_rest, shape_to_layer(doc, layer, m, target->id, false));
   *r_target = target;
   return drawing_shape_index(r_rest, m.deform_shape) >= 0;
 }
@@ -633,11 +649,14 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
       return false;
     }
     g_deforming.push_back(layer.id);
-    r_bent = layer_evaluated_drawing(doc, *target, render);
+    {
+      const GroupDeformReading reading(layer.id);
+      r_bent = layer_evaluated_drawing(doc, *target, render);
+    }
     g_deforming.pop_back();
     /* From the groups the two share down: a shared group moving (the character walked, its top group scaled) doesn't
      * change the shape bent by, so its build is kept. */
-    transform_drawing(r_bent, layer_relative_transform(doc, layer.id, target->id));
+    transform_drawing(r_bent, shape_to_layer(doc, layer, m, target->id, true));
     if (drawing_shape_index(r_bent, m.deform_shape) < 0) {
       return false;
     }

@@ -3089,15 +3089,20 @@ void rig_operators_register()
 
   /* --- Modifiers ----------------------------------------------------------------------- */
   const auto modifier_layer = [](Context &C) -> Layer * {
-    Layer *layer = C.document ? document_active_layer(*C.document) : nullptr;
-    return layer && !layer->is_group() ? layer : nullptr;
+    return C.document ? document_active_layer(*C.document) : nullptr;
   };
   rig_operator("object.modifier_add", "Add Modifier",
                "Add a modifier to the active layer (type=MIRROR, BEVEL, SUBDIVIDE, CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM "
-               "or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does)",
+               "or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does). A group takes the deforms, "
+               "which bend every drawing inside it",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
                  const std::string type = op_arg(C, "type", "MIRROR");
+                 const bool deform = type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM";
+                 if (modifier_layer(C)->is_group() && !deform) {
+                   report(ReportType::Warning, "A group takes Curve, Cage and Mesh Deform: pick a drawing layer for the others");
+                   return OpStatus::Cancelled;
+                 }
                  if (type == "BOOLEAN") {
                    Layer &layer = *modifier_layer(C);
                    if (layer.type != LayerType::Vector) {
@@ -3134,14 +3139,15 @@ void rig_operators_register()
                    layer.modifiers.insert(at, m);
                    return OpStatus::Finished;
                  }
-                 if (type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM") {
+                 if (deform) {
                    Layer &layer = *modifier_layer(C);
                    Modifier m;
                    m.type = type == "CURVE_DEFORM" ? ModifierType::CurveDeform
                             : type == "CAGE_DEFORM" ? ModifierType::CageDeform
                                                     : ModifierType::MeshDeform;
-                   if (layer.type != LayerType::Vector) {
-                     report(ReportType::Warning, std::string(deform_type_name(m.type)) + " bends a drawing: pick a drawing layer");
+                   if (layer.type != LayerType::Vector && !layer.is_group()) {
+                     report(ReportType::Warning, std::string(deform_type_name(m.type)) +
+                                                     " bends drawings: pick a drawing layer or a group");
                      return OpStatus::Cancelled;
                    }
                    m.name = deform_type_name(m.type);

@@ -460,9 +460,10 @@ static Posed posed(const Document &doc, const Layer &layer)
   const bool armature = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
     return m.type == ModifierType::Armature && m.show_viewport;
   });
-  const bool deformed = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
-    return modifier_is_deform(m.type) && m.show_viewport && m.deform_layer != 0;
-  });
+  const bool deformed = layer_has_group_deforms(doc, layer, false) ||
+                        std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+                          return modifier_is_deform(m.type) && m.show_viewport && m.deform_layer != 0;
+                        });
   const bool resampled = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
     return m.type == ModifierType::Resample && m.show_viewport;
   });
@@ -6129,20 +6130,28 @@ static std::vector<ScreenBone> screen_bones(const Document &doc, const Layer &ar
   const Transform2D from_document = to_document.inverted();
   const std::vector<BonePose> poses = keyed ? armature_keyed_pose(armature, doc.frame_current == 0)
                                             : armature_pose(armature, doc.frame_current == 0);
+  /* Each bone's head, tail and a step along it, through a group's deform: bones show where what they carry shows. */
+  std::vector<float2> ends;
+  for (const BonePose &p : poses) {
+    /* Along the bone's own axis, so a bone with no length still points somewhere. */
+    const float2 ahead = p.head + normalize(p.pose.apply_vector({1.0f, 0.0f})) * 0.01f;
+    ends.insert(ends.end(), {p.head, p.tail, ahead});
+  }
+  ends = layer_group_deform_points(doc, armature, std::move(ends));
   std::vector<ScreenBone> r(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const float along = length(poses[i].pose.apply_vector({1.0f, 0.0f}));
     const float across = length(poses[i].pose.apply_vector({0.0f, 1.0f}));
-    r[i] = {view.to_screen(to_document.apply(poses[i].head)), view.to_screen(to_document.apply(poses[i].tail)),
+    const float2 head = ends[i * 3], tail = ends[i * 3 + 1], ahead = ends[i * 3 + 2];
+    r[i] = {view.to_screen(to_document.apply(head)), view.to_screen(to_document.apply(tail)),
             along > 1e-9f ? std::clamp(across / along, 0.1f, 10.0f) : 1.0f};
-    /* Along the bone's own axis, so a bone with no length still points somewhere. */
-    const float2 ahead = poses[i].head + normalize(poses[i].pose.apply_vector({1.0f, 0.0f}));
     const ImVec2 d = view.to_screen(to_document.apply(ahead)) - r[i].head;
     const float n = std::sqrt(d.x * d.x + d.y * d.y);
     if (n > 1e-6f) {
       r[i].dir = d / n;
     }
-    r[i].moved = to_document * poses[i].skin * from_document;
+    r[i].moved = Transform2D::translate(to_document.apply_vector(head - poses[i].head)) * to_document * poses[i].skin *
+                 from_document;
   }
   return r;
 }
@@ -7154,6 +7163,23 @@ float viewport_bone_turn_snap(Document &doc, float degrees, bool rotate_key, std
   return snapped;
 }
 
+/* The bone layer's space to the document's right at the picked bones, as they show: through a group's deform, so a drag
+ * moves them as far as they show moved. `r_middle`: the middle of their heads. */
+static Transform2D picked_bones_shown(const Document &doc, const Layer &armature, bool setup_frame,
+                                      float2 *r_middle = nullptr)
+{
+  float2 sum;
+  const std::vector<float2> heads = armature_picked_heads(armature, setup_frame);
+  for (const float2 &h : heads) {
+    sum += h;
+  }
+  const float2 middle = sum / float(std::max<size_t>(heads.size(), 1));
+  if (r_middle) {
+    *r_middle = middle;
+  }
+  return layer_world_transform(doc, armature.id) * layer_group_deform_at(doc, armature, middle);
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
@@ -7167,13 +7193,10 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   modal.armature = armature->id;
   modal.setup_frame = doc.frame_current == 0;
   const Transform2D to_document = layer_world_transform(doc, armature->id);
-  modal.to_armature = to_document.inverted();
-  float2 sum;
-  const std::vector<float2> heads = armature_picked_heads(*armature, modal.setup_frame);
-  for (const float2 &h : heads) {
-    sum += to_document.apply(h);
-  }
-  modal.pivot = sum / float(std::max<size_t>(heads.size(), 1));
+  float2 middle;
+  const Transform2D shown = picked_bones_shown(doc, *armature, modal.setup_frame, &middle);
+  modal.to_armature = shown.inverted();
+  modal.pivot = shown.apply(middle);
   modal.bones = armature->bones;
   if (kind == 'R') {
     modal.turn_snap = bone_turn_snap_begin(*armature, modal.setup_frame, to_document, true);
@@ -9320,7 +9343,7 @@ static OpStatus bones_transform_exec(Context &C, char kind)
   const float2 move(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
   const float degrees = op_arg_float(C, "angle", 0.0f);
   if (kind == 'G') {
-    const Transform2D to_armature = layer_world_transform(doc, armature->id).inverted();
+    const Transform2D to_armature = picked_bones_shown(doc, *armature, setup).inverted();
     armature_grab_selected(*armature, start, to_armature.apply_vector(move), setup, C.wm->tool_settings.auto_ik);
   }
   else if (kind == 'R') {

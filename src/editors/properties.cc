@@ -3317,40 +3317,42 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     ImGui::TextDisabled(target ? "Pick the shape that bends it" : "Pick a layer, then its shape");
   }
 
-  /* Weights. */
-  static const char *const WEIGHT_NAMES[] = {"Automatic", "Custom"};
-  static const char *const WEIGHT_TIPS[] = {
-      "Every point of the drawing follows it fully, past the shape too (as Blender's deform modifiers bend the "
-      "whole object). Paint Custom weights to hold parts back",
-      "A point group of their own, painted in Weight Paint (pick this modifier at the top of the viewport). It "
-      "starts from the automatic weights; points added later take theirs"};
-  modifier_row_label("Weights", column, "How much each point follows the deform (and so, inside a bone layer, "
-                                        "how much less it follows the bones)");
-  if (const int k = segmented_choice("##deform_weights", m.deform_custom ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2, width());
-      k >= 0 && (k == 1) != m.deform_custom)
-  {
-    m.deform_custom = k == 1;
-    const bool has_group = !m.deform_group.empty() &&
-                           std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
-                                       [&](const PointGroup &g) { return g.name == m.deform_group; });
-    if (m.deform_custom && !has_group) {
-      vector_deform_fill_group(doc, layer, m);
-    }
-    done = true;
-  }
-  if (m.deform_custom) {
-    modifier_row_label("Point Group", column, "Where the weights are kept");
-    ImGui::TextUnformatted(m.deform_group.c_str());
-    modifier_row_label("", column);
-    if (ImGui::Button("Reset to Automatic")) {
-      vector_deform_fill_group(doc, layer, m);
+  /* Weights: a group's deform has the automatic ones, every drawing inside following it fully. */
+  if (!layer.is_group()) {
+    static const char *const WEIGHT_NAMES[] = {"Automatic", "Custom"};
+    static const char *const WEIGHT_TIPS[] = {
+        "Every point of the drawing follows it fully, past the shape too (as Blender's deform modifiers bend the "
+        "whole object). Paint Custom weights to hold parts back",
+        "A point group of their own, painted in Weight Paint (pick this modifier at the top of the viewport). It "
+        "starts from the automatic weights; points added later take theirs"};
+    modifier_row_label("Weights", column, "How much each point follows the deform (and so, inside a bone layer, "
+                                          "how much less it follows the bones)");
+    if (const int k = segmented_choice("##deform_weights", m.deform_custom ? 1 : 0, WEIGHT_NAMES, WEIGHT_TIPS, 2, width());
+        k >= 0 && (k == 1) != m.deform_custom)
+    {
+      m.deform_custom = k == 1;
+      const bool has_group = !m.deform_group.empty() &&
+                             std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                                         [&](const PointGroup &g) { return g.name == m.deform_group; });
+      if (m.deform_custom && !has_group) {
+        vector_deform_fill_group(doc, layer, m);
+      }
       done = true;
     }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Fill the point group with the automatic weights again, as a fresh start");
+    if (m.deform_custom) {
+      modifier_row_label("Point Group", column, "Where the weights are kept");
+      ImGui::TextUnformatted(m.deform_group.c_str());
+      modifier_row_label("", column);
+      if (ImGui::Button("Reset to Automatic")) {
+        vector_deform_fill_group(doc, layer, m);
+        done = true;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Fill the point group with the automatic weights again, as a fresh start");
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("Paint them in Weight Paint");
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Paint them in Weight Paint");
   }
 
   /* Strength: keyable, with its key button. */
@@ -3411,28 +3413,34 @@ static void modifiers_panel(Context &C, Layer &layer)
     ImGui::OpenPopup("##add_modifier");
   }
   if (ImGui::BeginPopup("##add_modifier")) {
-    ImGui::TextDisabled("Generate");
-    if (ImGui::MenuItem("Mirror")) {
-      operator_call(C, "object.modifier_add", {{"type", "MIRROR"}});
+    if (!layer.is_group()) {
+      ImGui::TextDisabled("Generate");
+      if (ImGui::MenuItem("Mirror")) {
+        operator_call(C, "object.modifier_add", {{"type", "MIRROR"}});
+      }
+      if (ImGui::MenuItem("Bevel")) {
+        operator_call(C, "object.modifier_add", {{"type", "BEVEL"}});
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Cut the drawing's corners off and round them: the sharp ones, or a point group's");
+      }
+      if (ImGui::MenuItem("Resample")) {
+        operator_call(C, "object.modifier_add", {{"type", "RESAMPLE"}});
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Split the segments into smaller pieces before the bones bend them, for bendier "
+                          "animation without more points to animate. At rest the drawing looks the same");
+      }
+      if (ImGui::MenuItem("Boolean")) {
+        operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Join this layer's shapes with other layers' into one outline, the corners where they "
+                          "meet rounded as you like");
+      }
+      ImGui::Separator();
     }
-    if (ImGui::MenuItem("Bevel")) {
-      operator_call(C, "object.modifier_add", {{"type", "BEVEL"}});
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Cut the drawing's corners off and round them: the sharp ones, or a point group's");
-    }
-    if (ImGui::MenuItem("Resample")) {
-      operator_call(C, "object.modifier_add", {{"type", "RESAMPLE"}});
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Split the segments into smaller pieces before the bones bend them, for bendier "
-                        "animation without more points to animate. At rest the drawing looks the same");
-    }
-    if (ImGui::MenuItem("Boolean")) {
-      operator_call(C, "object.modifier_add", {{"type", "BOOLEAN"}});
-    }
-    ImGui::Separator();
-    ImGui::TextDisabled("Deform");
+    ImGui::TextDisabled(layer.is_group() ? "Deform every drawing inside" : "Deform");
     if (ImGui::MenuItem("Curve Deform")) {
       operator_call(C, "object.modifier_add", {{"type", "CURVE_DEFORM"}});
     }
@@ -3454,10 +3462,6 @@ static void modifiers_panel(Context &C, Layer &layer)
       ImGui::SetTooltip("Bend the drawing with a grid, or a mesh of cells you drew, on another layer: each cell "
                         "bends what is in it, as Blender's Lattice and Moho's Smart Warp. Animate it and the "
                         "drawing follows");
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Join this layer's shapes with other layers' into one outline, the corners where they "
-                        "meet rounded as you like");
     }
     ImGui::EndPopup();
   }
@@ -3509,7 +3513,7 @@ static void modifiers_panel(Context &C, Layer &layer)
     }
     /* Show Points, on the modifiers that add points; the others keep its place, so the buttons line up. */
     ImGui::SameLine(0, 1);
-    if (modifier_makes_points(m)) {
+    if (modifier_makes_points(m) && !layer.is_group()) {
       ImGui::BeginDisabled(!m.show_viewport);
       const int added = modifier_added_points(doc, layer, size_t(i));
       const std::string tip = "Show the points this modifier adds, as hollow teal dots where they end up (they "
@@ -5927,6 +5931,9 @@ static void layer_tab(Context &C)
        * others). */
       ui_prop(C, ptr, "edit_with_bones", path);
     }
+    if (layer->type == LayerType::Vector && (layer->ignore_group_deforms || layer_has_group_deforms(doc, *layer, false))) {
+      ui_prop(C, ptr, "ignore_group_deforms", path);
+    }
     if (layer->is_group()) {
       /* Picking the group edits what's inside it. */
       ui_prop(C, ptr, "edit_descendants", path);
@@ -7657,8 +7664,8 @@ void properties_draw(Area &area, Context &C)
   const Layer *active_layer = document_active_layer(*C.document);
   const bool bones = active_layer && active_layer->is_bone_layer();
   /* Drawings have a Modifiers tab, left of their data tab, as Blender's modifier tab sits beside the
-   * object data tab. */
-  const bool modifiers = active_layer && active_layer->has_drawing();
+   * object data tab. Groups have one for the deforms that bend what is in them. */
+  const bool modifiers = active_layer && (active_layer->has_drawing() || active_layer->is_group());
   struct TabEntry {
     const char *label;
     int id;

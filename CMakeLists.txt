@@ -257,6 +257,8 @@ add_test(NAME action_mirror
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_mirror.py)
 add_test(NAME smart_nested
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_smart_nested.py)
+add_test(NAME group_deform
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_group_deform.py)
 add_test(NAME separate
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_separate.py)
 add_test(NAME mirror_ops

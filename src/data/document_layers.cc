@@ -392,7 +392,7 @@ static Transform2D chain_transform_below(const std::vector<const Layer *> &chain
   return parent;
 }
 
-static Transform2D relative_transform(const Document &doc, uint64_t from, uint64_t to, bool setup_frame)
+static Transform2D relative_transform(const Document &doc, uint64_t from, uint64_t to, bool from_setup, bool to_setup)
 {
   const std::vector<const Layer *> a = layer_chain(doc, from), b = layer_chain(doc, to);
   int shared = -1;
@@ -400,17 +400,22 @@ static Transform2D relative_transform(const Document &doc, uint64_t from, uint64
   {
     shared++;
   }
-  return chain_transform_below(a, shared, setup_frame).inverted() * chain_transform_below(b, shared, setup_frame);
+  return chain_transform_below(a, shared, from_setup).inverted() * chain_transform_below(b, shared, to_setup);
 }
 
 Transform2D layer_relative_transform(const Document &doc, uint64_t from, uint64_t to)
 {
-  return relative_transform(doc, from, to, doc.frame_current == 0);
+  return relative_transform(doc, from, to, doc.frame_current == 0, doc.frame_current == 0);
 }
 
 Transform2D layer_setup_relative_transform(const Document &doc, uint64_t from, uint64_t to)
 {
-  return relative_transform(doc, from, to, true);
+  return relative_transform(doc, from, to, true, true);
+}
+
+Transform2D layer_relative_to_setup(const Document &doc, uint64_t from, uint64_t to)
+{
+  return relative_transform(doc, from, to, true, doc.frame_current == 0);
 }
 
 Transform2D layer_setup_world_transform(const Document &doc, uint64_t id)

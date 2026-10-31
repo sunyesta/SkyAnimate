@@ -770,6 +770,12 @@ struct Modifier {
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;
+  /* Not saved, set on the copy a group's deform runs as on a drawing inside it (anim/deform.cc): the group, measured
+   * from as it stood at setup, so what moves the group itself moves what is in it on top of the deform. */
+  uint64_t deform_from_group = 0;
+  /* With it: the drawing is moved by the bones that move the shape, so the shape's rest is posed by them too and only
+   * its change of shape bends the drawing (their movement would count twice). */
+  bool deform_rest_posed = false;
   bool operator==(const Modifier &) const = default;
 };
 
@@ -945,6 +951,8 @@ struct Layer {
   /* Inside a bone layer: its points can be picked and moved along with the bones while the bone
    * layer is the active one (it is in All, and can be put in other collections too). */
   bool edit_with_bones = false;
+  /* The deform modifiers of the groups around this drawing leave it alone. */
+  bool ignore_group_deforms = false;
   /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
    * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
    * with their bone collections instead). */

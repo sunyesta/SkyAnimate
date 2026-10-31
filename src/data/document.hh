@@ -261,6 +261,8 @@ Transform2D layer_world_transform(const Document &doc, uint64_t id);
 Transform2D layer_relative_transform(const Document &doc, uint64_t from, uint64_t to);
 /* The same with the bones at rest (layer_setup_world_transform's). */
 Transform2D layer_setup_relative_transform(const Document &doc, uint64_t from, uint64_t to);
+/* Layer `to` as it is now, in layer `from`'s space as that was at setup: what moved `from` itself doesn't count. */
+Transform2D layer_relative_to_setup(const Document &doc, uint64_t from, uint64_t to);
 /* The same with the bones at rest (as on the setup frame): where a layer is before any Parent Bone
  * moves it. */
 Transform2D layer_setup_world_transform(const Document &doc, uint64_t id);

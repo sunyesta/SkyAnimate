@@ -25,6 +25,23 @@ struct Modifier;
 
 /* Whether the layer shows anything other than its plain drawing. */
 bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool render);
+/* Whether a deform modifier on a group around the drawing bends it. They run after its own stack, nearest group first,
+ * on every drawing inside however deep (a group's images and video stay as they are). */
+bool layer_has_group_deforms(const Document &doc, const Layer &layer, bool render);
+/* While a drawing reads another as a deform's shape: that one shows without the group deforms of the groups the reader
+ * is in, which bend the reader once themselves. */
+struct GroupDeformReading {
+  explicit GroupDeformReading(uint64_t layer);
+  ~GroupDeformReading();
+};
+/* Points of a bone layer's space (bones) where the deforms on it and the groups around it bend them, as they bend the
+ * drawings the bones carry: bones show and are picked there, their data stays as it is. */
+std::vector<float2> layer_group_deform_points(const Document &doc, const Layer &layer, std::vector<float2> points);
+/* How those deforms move things right around `at`: from there, the way a drag shown on screen is taken back. */
+Transform2D layer_group_deform_at(const Document &doc, const Layer &layer, float2 at);
+/* The layer's setup drawing moved as its bones now move it: a deform's shape at rest when only its change of shape
+ * should count (Modifier::deform_rest_posed). */
+void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &drawing);
 /* With `r_rigid`: when the bones carry the whole drawing as one piece (turned and moved, as by a head
  * bone), their move is left out of the result and put there, to draw it with; otherwise identity. A
  * drawing kept that way while bones turn is drawn again from what was made of it before. */

@@ -281,6 +281,9 @@ const rna::StructRNA &Layer::rna()
                         "group is the active layer. It is then in the bone group's All collection; Assign or M put "
                         "it in others",
                         &Layer::edit_with_bones),
+        def_bool<Layer>("ignore_group_deforms", "Ignore Group Deforms",
+                        "The deform modifiers of the groups around this drawing leave it alone",
+                        &Layer::ignore_group_deforms),
         def_bool<Layer>("link_same_named", "Link Same-Named Switches",
                         "A switch: the switches of the same name at the same place inside its different drawings "
                         "(a Mouth in each view of a Heads switch) are linked by name: picking a mouth in one picks "

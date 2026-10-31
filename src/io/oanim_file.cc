@@ -561,6 +561,7 @@ static json layer_to_json(const Layer &layer)
       {"render_visible", layer.render_visible},
       {"locked", layer.locked},
       {"edit_with_bones", layer.edit_with_bones},
+      {"ignore_group_deforms", layer.ignore_group_deforms},
       {"edit_descendants", layer.edit_descendants},
       {"sub_bone_group", layer.sub_bone_group},
       {"link_same_named", layer.link_same_named},
@@ -2172,6 +2173,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.render_visible = get_bool(j, "render_visible", true);
   layer.locked = get_bool(j, "locked", false);
   layer.edit_with_bones = get_bool(j, "edit_with_bones", false);
+  layer.ignore_group_deforms = get_bool(j, "ignore_group_deforms", false);
   layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
   layer.sub_bone_group = get_bool(j, "sub_bone_group", true);
   layer.link_same_named = get_bool(j, "link_same_named", true);

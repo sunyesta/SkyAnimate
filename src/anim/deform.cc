@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "anim/bevel.hh"
+#include "anim/draw_order.hh"
 #include "anim/merge.hh"
 #include "anim/subdivide.hh"
 #include "anim/vector_deform.hh"
@@ -255,6 +256,25 @@ static std::vector<BoneWeight> point_weights(const Deformer &d, const MeshPoint 
   return weights;
 }
 
+/* Whether the bones of `armature` move this drawing: its points, or it (or a group around it) as a whole. */
+static bool bones_carry(const Document &doc, const Layer &layer, const Layer &armature)
+{
+  if (&layer == &armature) {
+    return true;
+  }
+  Deformer d;
+  if (deformer_init(doc, layer, d) && d.armature == &armature) {
+    return true;
+  }
+  Document &editable = const_cast<Document &>(doc);
+  for (const Layer *l = &layer; l; l = layer_parent(editable, l->id)) {
+    if (l->followed_bone() != 0 && layer_armature(doc, l->id) == &armature) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* Where a point is in the setup pose (layer space). */
 static float2 setup_position(const MeshPoint &p)
 {
@@ -470,9 +490,76 @@ static const Layer *matched_original(const Document &doc, const Layer &layer)
 static bool look_warp_find(const Document &doc, const Layer &layer, BonePose *r_pose = nullptr,
                            Transform2D *r_to_armature = nullptr, bool *r_carried = nullptr);
 
+/* --- Deforms on groups ---------------------------------------------------------------------- */
+
+/* The drawings reading another as a deform's shape, while they do. */
+static thread_local std::vector<uint64_t> g_group_readers;
+
+GroupDeformReading::GroupDeformReading(uint64_t layer)
+{
+  g_group_readers.push_back(layer);
+}
+
+GroupDeformReading::~GroupDeformReading()
+{
+  g_group_readers.pop_back();
+}
+
+struct GroupDeform {
+  const Layer *group;
+  const Modifier *modifier;
+};
+
+/* The deforms on the groups around a drawing, nearest group first (a bone layer: its own first, for its bones). A Match
+ * Original reference goes by the groups around its original too, wherever it is itself, as it does by the original's
+ * bones. */
+static std::vector<GroupDeform> group_deforms(const Document &doc, const Layer &layer, bool render)
+{
+  std::vector<GroupDeform> found;
+  if ((layer.type != LayerType::Vector && !layer.is_bone_layer()) || layer.ignore_group_deforms) {
+    return found;
+  }
+  const Layer *original = matched_original(doc, layer);
+  const auto gather = [&](const Layer &from) {
+    Document &d = const_cast<Document &>(doc);
+    for (const Layer *group = from.is_bone_layer() ? &from : layer_parent(d, from.id); group;
+         group = layer_parent(d, group->id))
+    {
+      if (group->modifiers.empty() ||
+          std::any_of(g_group_readers.begin(), g_group_readers.end(),
+                      [&](uint64_t reader) { return layer_inside(doc, reader, group->id); }) ||
+          std::any_of(found.begin(), found.end(), [&](const GroupDeform &g) { return g.group == group; }))
+      {
+        continue;
+      }
+      for (const Modifier &m : group->modifiers) {
+        /* The shape itself, kept inside the group, stays as it is drawn. */
+        if (modifier_is_deform(m.type) && modifier_on(m, render) && m.deform_layer != 0 && m.deform_layer != layer.id &&
+            !(original && m.deform_layer == original->id))
+        {
+          found.push_back({group, &m});
+        }
+      }
+    }
+  };
+  if (original) {
+    gather(*original);
+  }
+  gather(layer);
+  return found;
+}
+
+bool layer_has_group_deforms(const Document &doc, const Layer &layer, bool render)
+{
+  return !group_deforms(doc, layer, render).empty();
+}
+
 bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool render)
 {
   if (matched_original(doc, layer)) {
+    return true;
+  }
+  if (layer_has_group_deforms(doc, layer, render)) {
     return true;
   }
   /* Detail shows its handles final (data/detail.hh). */
@@ -683,11 +770,71 @@ static VectorDrawing subdivided(const Document &doc, const Layer &layer, const V
   return out;
 }
 
+void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &drawing)
+{
+  Deformer d;
+  if (deformer_init(doc, layer, d)) {
+    deform(d, drawing);
+  }
+}
+
+/* What the groups around it make of the drawing as its own stack left it. Each runs as a copy of the group's modifier,
+ * for this drawing: its automatic weights, and what it keeps apart from the other drawings' under its own name. */
+static void group_deforms_run(const Document &doc, const Layer &layer, const std::vector<GroupDeform> &deforms,
+                              VectorDrawing &drawing, bool render)
+{
+  for (const GroupDeform &g : deforms) {
+    Modifier run = *g.modifier;
+    run.name = g.modifier->name + "@" + std::to_string(g.group->id);
+    run.deform_custom = false;
+    run.deform_from_group = g.group->id;
+    const Layer *shape = layer_find(doc, run.deform_layer);
+    const Layer *armature = shape ? layer_armature(doc, shape->id) : nullptr;
+    run.deform_rest_posed = armature && !armature->bones.empty() && bones_carry(doc, layer, *armature);
+    vector_deform_apply(doc, layer, run, drawing, drawing, render);
+  }
+}
+
+std::vector<float2> layer_group_deform_points(const Document &doc, const Layer &layer, std::vector<float2> points)
+{
+  const std::vector<GroupDeform> around = group_deforms(doc, layer, false);
+  if (around.empty()) {
+    return points;
+  }
+  VectorDrawing drawing;
+  drawing.points.resize(points.size());
+  for (size_t i = 0; i < points.size(); i++) {
+    drawing.points[i].pos = points[i];
+  }
+  group_deforms_run(doc, layer, around, drawing, false);
+  for (size_t i = 0; i < points.size(); i++) {
+    points[i] = drawing.points[i].pos;
+  }
+  return points;
+}
+
+Transform2D layer_group_deform_at(const Document &doc, const Layer &layer, float2 at)
+{
+  const float step = 0.01f;
+  const std::vector<float2> p = layer_group_deform_points(doc, layer, {at, at + float2(step, 0.0f), at + float2(0.0f, step)});
+  const float2 x = (p[1] - p[0]) / step, y = (p[2] - p[0]) / step;
+  Transform2D t;
+  t.a = x.x;
+  t.b = x.y;
+  t.c = y.x;
+  t.d = y.y;
+  const float2 moved = t.apply_vector(at);
+  t.tx = p[0].x - moved.x;
+  t.ty = p[0].y - moved.y;
+  return t;
+}
+
 VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render, Transform2D *r_rigid)
 {
   if (r_rigid) {
     *r_rigid = Transform2D();
   }
+  const std::vector<GroupDeform> around = group_deforms(doc, layer, render);
   if (const Layer *original = matched_original(doc, layer)) {
     /* Match Original: shaped by the original's modifiers and posed by its bones, where it is. */
     VectorDrawing drawing = layer.drawing;
@@ -714,6 +861,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
       }
     }
     transform_drawing(drawing, reference_match_transform(doc, layer));
+    group_deforms_run(doc, layer, around, drawing, render);
     drawing_detail_final_handles(drawing);
     /* Its own Merges still come last (an outline copy of a fill joining another layer's line). */
     for (const Modifier &m : layer.modifiers) {
@@ -734,9 +882,10 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
   bool eye_carried = false;
   const bool on_eye = layer.type == LayerType::Vector &&
                       look_warp_find(doc, layer, &eye, &eye_to_armature, &eye_carried);
-  const bool only_bones = !on_eye && std::all_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &m) {
-    return !modifier_on(m, render) || m.type == ModifierType::Armature;
-  });
+  const bool only_bones = !on_eye && around.empty() &&
+                          std::all_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &m) {
+                            return !modifier_on(m, render) || m.type == ModifierType::Armature;
+                          });
   /* The drawing as it was before the bones moved it: what a deform modifier below them measures from (each
    * point's weight shares it between the deform and the bones). Kept only while a deform modifier follows. */
   VectorDrawing before_bones;
@@ -790,6 +939,7 @@ VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, b
   if (on_eye) {
     look_warp_drawing(doc, drawing, eye, eye_to_armature, eye_carried);
   }
+  group_deforms_run(doc, layer, around, drawing, render);
   /* Handles scale as the bones and Mirror move them, so the final ones can come last. */
   drawing_detail_final_handles(drawing);
   /* Shapes another layer's Boolean draws as part of its outline don't draw here too. */
@@ -851,7 +1001,14 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer)
 {
   std::vector<Transform2D> skins = layer_point_skins_bones(doc, layer);
+  const bool grouped = layer_has_group_deforms(doc, layer, false);
   if (matched_original(doc, layer)) {
+    if (grouped) {
+      const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
+      for (size_t i = 0; i < skins.size() && i < layer.drawing.points.size() && i < shown.points.size(); i++) {
+        skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(layer.drawing.points[i].pos)) * skins[i];
+      }
+    }
     return skins;
   }
   const VectorDrawing &drawing = layer_drawing(doc, layer);
@@ -878,7 +1035,7 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
   }
   /* Bent by a deform modifier: on to where it shows. Only where the stack keeps the points' indices (no Bevel or
    * Boolean, which make the outline anew). */
-  bool deformed = false, renumbered = false;
+  bool deformed = grouped, renumbered = false;
   for (const Modifier &m : layer.modifiers) {
     if (!m.show_viewport) {
       continue;
