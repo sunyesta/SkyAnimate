@@ -3019,12 +3019,17 @@ int drawing_find_mirror_point(const VectorDrawing &drawing, int point, bool x, b
   if (distance(target, here) <= eps) {
     return -1;
   }
+  /* The nearest: two points almost on top of each other (a mouth's corner) each have their own image. */
+  int image = -1;
+  float nearest = eps;
   for (int j = 0; j < int(drawing.points.size()); j++) {
-    if (j != point && distance(point_setup_pos(drawing.points[j]), target) <= eps) {
-      return j;
+    const float d = distance(point_setup_pos(drawing.points[j]), target);
+    if (j != point && d <= nearest) {
+      image = j;
+      nearest = d;
     }
   }
-  return -1;
+  return image;
 }
 
 void drawing_mirror_handles(VectorDrawing &drawing, int src, int dst, bool x, bool y)

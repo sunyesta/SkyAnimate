@@ -72,3 +72,39 @@ ops.mesh.select_none()
 square.select_points([0])
 assert ops.mesh.merge() == {'CANCELLED'}
 print("Merge tests passed")
+
+# --- With X mirror editing each side merges by itself: a line's two ends don't meet --------------------------------------
+# A mouth: two lines whose ends nearly touch, each corner's two points far closer together than the lookup's reach.
+ops.wm.read_homefile(confirmed="1")
+layers = oanim.data.layers
+ops.layer.new()
+lips = layers.active
+lips.add_curve([(0.0431, 0.4249), (0.0, 0.413), (-0.0431, 0.4249)])
+lips.add_curve([(0.0431, 0.4248), (0.0, 0.4157), (-0.0431, 0.4248)])
+oanim.wm.set_mirror_editing(True, False)
+lips.select_points([0, 3])
+assert ops.mesh.merge() == {'FINISHED'}
+assert oanim.wm.banner_report()[3] == "Removed 2 points", oanim.wm.banner_report()
+assert lips.point_count == 4, lips.point_count
+where = [tuple(p[:2]) for p in lips.points]
+assert abs(where[0][0] - 0.0431) < 1e-4, ("the right corner stays on the right", where)
+assert abs(where[2][0] + 0.0431) < 1e-4 or abs(where[3][0] + 0.0431) < 1e-4, ("and the left on the left", where)
+assert sorted(p[2] for p in lips.points) == [False, False, False, True], "the images aren't left selected"
+assert lips.curve_count == 2 and len({tuple(w) for w in lips.detail["wires"]}) == 2, lips.detail["wires"]
+
+# Picked on both sides by hand: they meet, as asked.
+ops.layer.new()
+both = layers.active
+both.add_curve([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)])
+both.select_points([0, 2])
+assert ops.mesh.merge() == {'FINISHED'}
+assert both.point_count == 2 and abs(both.points[0][0]) < 1e-4, [p[:2] for p in both.points]
+
+# One point picked with its image nowhere to merge with: nothing to do on either side.
+ops.layer.new()
+one = layers.active
+one.add_curve([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)])
+one.select_points([0])
+assert ops.mesh.merge() == {'CANCELLED'}
+assert one.point_count == 3 and [p[2] for p in one.points] == [True, False, False], "the selection is as it was"
+oanim.wm.set_mirror_editing(False, False)

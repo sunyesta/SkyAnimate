@@ -1147,17 +1147,26 @@ void vector_operators_register()
   vector_operator("mesh.merge", "Merge",
                   "Merge the selected points into one, at their middle (Blender's Merge > At Center): curves through "
                   "them run through it, and shapes that met only there become one",
-                  MIRRORED, editable_with_selection_poll, [](Context &C) {
+                  UNDO, editable_with_selection_poll, [](Context &C) {
+                    /* With X mirror editing the images merge among themselves, each side at its own middle: all
+                     * together, a line's two ends would meet. */
+                    const MirrorSelection mirrored = mirror_selection_begin(C);
                     int merged = 0;
                     for (Layer *layer : editable_layers(C)) {
                       if (layer->is_reference() && !layer->reference.edit_points) {
                         continue;
                       }
-                      const std::vector<int> picked = drawing_selected_points(layer->drawing);
-                      if (picked.size() >= 2) {
-                        merged += drawing_merge_points(layer->drawing, {picked});
+                      std::vector<int> picked, images;
+                      const auto added = mirrored.added.find(layer->id);
+                      for (const int p : drawing_selected_points(layer->drawing)) {
+                        const uint64_t id = layer->drawing.points[size_t(p)].id;
+                        const bool image = added != mirrored.added.end() &&
+                                           std::find(added->second.begin(), added->second.end(), id) != added->second.end();
+                        (image ? images : picked).push_back(p);
                       }
+                      merged += drawing_merge_points(layer->drawing, {picked, images});
                     }
+                    mirror_selection_end(C, mirrored);
                     if (merged == 0) {
                       report(ReportType::Warning, "Select at least two points to merge");
                       return OpStatus::Cancelled;
