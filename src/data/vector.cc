@@ -3447,62 +3447,103 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
       }
     }
   }
+  /* The next point along a curve that a handle reaches: of the point's own level or coarser, as its handle is the
+   * coarse one past finer detail. -1 past a line's end. */
   const auto neighbour = [&](const Curve &curve, int i, int dir) {
     const int n = int(curve.points.size());
-    const int k = i + dir;
-    if (!curve.closed && (k < 0 || k >= n)) {
-      return -1;
-    }
-    return curve.points[(k % n + n) % n].point;
-  };
-  const auto find = [&](int point, Curve **r_curve) -> int {
-    for (Curve &curve : drawing.curves) {
-      for (int i = 0; i < int(curve.points.size()); i++) {
-        if (curve.points[i].point == point) {
-          *r_curve = &curve;
-          return i;
-        }
+    const int level = drawing.points[curve.points[i].point].detail.level;
+    for (int k = i + dir, step = 1; step < n; k += dir, step++) {
+      if (!curve.closed && (k < 0 || k >= n)) {
+        return -1;
+      }
+      const int point = curve.points[(k % n + n) % n].point;
+      if (drawing.points[point].detail.level <= level) {
+        return point;
       }
     }
     return -1;
+  };
+  struct HandleOf {
+    CurvePoint *curve_point;
+    bool out;
+    /* The point it reaches for. */
+    int faces;
+    float2 &handle() const
+    {
+      return out ? curve_point->handle_out : curve_point->handle_in;
+    }
+  };
+  /* A point's handles, on every curve through it: a welded point has some on each. A line's end has none past it. */
+  const auto handles_of = [&](int point) {
+    std::vector<HandleOf> handles;
+    for (Curve &curve : drawing.curves) {
+      for (int i = 0; i < int(curve.points.size()); i++) {
+        if (curve.points[i].point == point) {
+          const int before = neighbour(curve, i, -1), after = neighbour(curve, i, 1);
+          if (before >= 0) {
+            handles.push_back({&curve.points[i], false, before});
+          }
+          if (after >= 0) {
+            handles.push_back({&curve.points[i], true, after});
+          }
+        }
+      }
+    }
+    return handles;
+  };
+  /* Which handle of `to` each one of `from` lands on, by what they face: its partner, else the point nearest its
+   * reflection, the nearest first and each handle used once. Where everything was before anything moves. */
+  std::map<int, int> partner;
+  for (const auto &[r, l] : pairs) {
+    partner[r] = l;
+    partner[l] = r;
+  }
+  std::vector<float2> before;
+  for (int i = 0; i < int(drawing.points.size()); i++) {
+    before.push_back(place(i));
+  }
+  const auto match_handles = [&](const std::vector<HandleOf> &from, const std::vector<HandleOf> &to) {
+    struct Fit {
+      float d;
+      size_t from, to;
+    };
+    std::vector<Fit> fits;
+    for (size_t f = 0; f < from.size(); f++) {
+      for (size_t t = 0; t < to.size(); t++) {
+        const auto it = partner.find(from[f].faces);
+        const bool partners = it != partner.end() && it->second == to[t].faces;
+        fits.push_back({partners ? 0.0f : distance(across(before[size_t(from[f].faces)]), before[size_t(to[t].faces)]),
+                        f, t});
+      }
+    }
+    std::stable_sort(fits.begin(), fits.end(), [](const Fit &a, const Fit &b) { return a.d < b.d; });
+    std::vector<std::pair<HandleOf, HandleOf>> matched;
+    std::set<size_t> used_from, used_to;
+    for (const Fit &fit : fits) {
+      if (!used_from.count(fit.from) && !used_to.count(fit.to)) {
+        used_from.insert(fit.from);
+        used_to.insert(fit.to);
+        matched.push_back({from[fit.from], to[fit.to]});
+      }
+    }
+    return matched;
   };
 
   for (const auto &[r, l] : pairs) {
     const int src = right_to_left ? r : l, dst = right_to_left ? l : r;
     result.copied.push_back({src, dst});
-    /* The handles first, while the neighbours are where they were: the copy runs the same way
-     * along its curve when the source's previous point reflects nearer its previous one. */
-    Curve *src_curve = nullptr;
-    const int si = find(src, &src_curve);
-    if (si >= 0) {
-      const CurvePoint from = src_curve->points[si];
-      const int sp = neighbour(*src_curve, si, -1), sn = neighbour(*src_curve, si, 1);
-      for (Curve &curve : drawing.curves) {
-        for (int j = 0; j < int(curve.points.size()); j++) {
-          if (curve.points[j].point != dst) {
-            continue;
-          }
-          const int dp = neighbour(curve, j, -1), dn = neighbour(curve, j, 1);
-          const auto gap = [&](int a, int b) {
-            return a < 0 || b < 0 ? std::numeric_limits<float>::max() : distance(across(place(a)), place(b));
-          };
-          const int s = sp >= 0 ? sp : sn;
-          const bool swap = s >= 0 && (s == sp ? gap(sp, dn) < gap(sp, dp) : gap(sn, dp) < gap(sn, dn));
-          CurvePoint &to = curve.points[j];
-          const auto reflected = [&](float2 h) {
-            return handle_stored(dst, reflect2(handle_shown(src, h), true, false));
-          };
-          to.handle_in = reflected(swap ? from.handle_out : from.handle_in);
-          to.handle_out = reflected(swap ? from.handle_in : from.handle_out);
-          to.weight_in = swap ? from.weight_out : from.weight_in;
-          to.weight_out = swap ? from.weight_in : from.weight_out;
-          to.offset_in = -(swap ? from.offset_out : from.offset_in);
-          to.offset_out = -(swap ? from.offset_in : from.offset_out);
-          to.curvature = from.curvature;
-          to.aligned = from.aligned;
-          to.handles_set = true;
-        }
-      }
+    /* The copy's two handles stay in line only if they came from a pair in line. */
+    std::map<const CurvePoint *, const CurvePoint *> given;
+    for (const auto &[source, image] : match_handles(handles_of(src), handles_of(dst))) {
+      const CurvePoint &from = *source.curve_point;
+      CurvePoint &to = *image.curve_point;
+      image.handle() = handle_stored(dst, reflect2(handle_shown(src, source.handle()), true, false));
+      (image.out ? to.weight_out : to.weight_in) = source.out ? from.weight_out : from.weight_in;
+      (image.out ? to.offset_out : to.offset_in) = -(source.out ? from.offset_out : from.offset_in);
+      to.curvature = from.curvature;
+      const auto [it, first] = given.try_emplace(&to, &from);
+      to.aligned = from.aligned && (first || it->second == &from);
+      to.handles_set = true;
     }
     MeshPoint &to = drawing.points[dst];
     const MeshPoint &from = drawing.points[src];
@@ -3537,33 +3578,23 @@ SymmetrizeResult drawing_symmetrize(VectorDrawing &drawing, bool right_to_left, 
     else {
       p.pos.x = setup_frame ? 0.0f : point_setup_pos(p).x;
     }
-    for (Curve &curve : drawing.curves) {
-      for (CurvePoint &cp : curve.points) {
-        if (cp.point != c || !cp.handles_set) {
-          continue;
-        }
-        cp.handle_in = handle_shown(c, cp.handle_in);
-        cp.handle_out = handle_shown(c, cp.handle_out);
-        const auto flatten = [&](float2 &h) {
-          if (std::fabs(h.y) <= nearly_flat * std::fabs(h.x)) {
-            h.y = 0.0f;
-          }
-        };
-        const bool in_right = cp.handle_in.x > 0.0f, out_right = cp.handle_out.x > 0.0f;
-        if (in_right != out_right && std::fabs(cp.handle_in.x) > 1e-9f && std::fabs(cp.handle_out.x) > 1e-9f) {
-          /* One handle each way: the source side's sets both. */
-          float2 &source = (in_right == right_to_left) ? cp.handle_in : cp.handle_out;
-          float2 &image = (in_right == right_to_left) ? cp.handle_out : cp.handle_in;
-          flatten(source);
-          image = reflect2(source, true, false);
-        }
-        else {
-          flatten(cp.handle_in);
-          flatten(cp.handle_out);
-        }
-        cp.handle_in = handle_stored(c, cp.handle_in);
-        cp.handle_out = handle_stored(c, cp.handle_out);
+    /* Handles going each way, on any of its curves: the source side's set their images. */
+    std::vector<HandleOf> sources, images;
+    for (const HandleOf &handle : handles_of(c)) {
+      if (!handle.curve_point->handles_set) {
+        continue;
       }
+      float2 h = handle_shown(c, handle.handle());
+      if (std::fabs(h.y) <= nearly_flat * std::fabs(h.x)) {
+        h.y = 0.0f;
+      }
+      handle.handle() = handle_stored(c, h);
+      if (std::fabs(h.x) > 1e-9f) {
+        ((h.x > 0.0f) == right_to_left ? sources : images).push_back(handle);
+      }
+    }
+    for (const auto &[source, image] : match_handles(sources, images)) {
+      image.handle() = handle_stored(c, reflect2(handle_shown(c, source.handle()), true, false));
     }
   }
   result.centre_points = centre;

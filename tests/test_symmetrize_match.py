@@ -129,7 +129,94 @@ _, in2, _ = layer.curve_handles(0)[2]
 assert close(in2, (-out0[0], out0[1]), 1e-3), (out0, in2)
 doc.frame_current = 0
 
+# --- Handles on welded points: each lands on the handle facing the same way, on whichever curve that is --------------
+def point_at(layer, xy):
+    return min(range(layer.point_count), key=lambda i: abs(where(layer, i)[0] - xy[0]) + abs(where(layer, i)[1] - xy[1]))
+
+
+def handle_toward(layer, point, other):
+    """The handle of `point` reaching for `other` on their curve, as an offset from the point (coarse, past detail)."""
+    points, curves = layer.shown(level=0)
+    for cps, _ in curves:
+        ids = [c[0] for c in cps]
+        if point in ids and other in ids:
+            i, j = ids.index(point), ids.index(other)
+            h = cps[i][1 if j < i else 2]
+            return (h[0] - points[point][0], h[1] - points[point][1])
+    raise AssertionError((point, other))
+
+
+def weld(layer, xy):
+    layer.select_points(range(layer.point_count), False)
+    layer.select_points([i for i in range(layer.point_count) if close(where(layer, i), xy)])
+    assert ops.mesh.merge() == {'FINISHED'}
+
+
+def hair():
+    """Two lines meeting at each of (1, 0) and (-1, 0), as the hair's do: not in the same order on the two sides."""
+    layer = line([(1.0, 0.0), (1.5, 1.0)], "Hair")
+    layer.add_curve([(-1.4, 1.0), (-1.0, 0.0)])
+    layer.add_curve([(1.0, 0.0), (0.5, -1.0)])
+    layer.add_curve([(-1.0, 0.0), (-0.6, -1.0)])
+    weld(layer, (1.0, 0.0))
+    weld(layer, (-1.0, 0.0))
+    right, left = point_at(layer, (1.0, 0.0)), point_at(layer, (-1.0, 0.0))
+    up_r, down_r = point_at(layer, (1.5, 1.0)), point_at(layer, (0.5, -1.0))
+    up_l, down_l = point_at(layer, (-1.4, 1.0)), point_at(layer, (-0.6, -1.0))
+    wires = layer.detail["wires"]
+    for c, wire in enumerate(wires):
+        if right in wire:
+            i = wire.index(right)
+            to = (1.1, 0.4) if up_r in wire else (0.8, -0.3)
+            layer.move_handle(c, i, "OUT" if i == 0 else "IN", to)
+    layer.select_points(range(layer.point_count), False)
+    layer.select_points([right, left])
+    return layer, right, left, up_r, down_r, up_l, down_l
+
+
+# On frame 0.
+layer, right, left, up_r, down_r, up_l, down_l = hair()
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert close(handle_toward(layer, left, up_l), (-0.1, 0.4), 1e-3), handle_toward(layer, left, up_l)
+assert close(handle_toward(layer, left, down_l), (0.2, -0.3), 1e-3), handle_toward(layer, left, down_l)
+assert close(handle_toward(layer, right, up_r), (0.1, 0.4), 1e-3), "the source side stays"
+
+# Off it, on the shape.
+layer, right, left, up_r, down_r, up_l, down_l = hair()
+pose(layer, 10, {right: (1.2, 0.1), left: (-0.8, 0.3)})
+layer.select_points([right, left])
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert close(where(layer, left), (-1.2, 0.1))
+up, down = handle_toward(layer, right, up_r), handle_toward(layer, right, down_r)
+assert close(handle_toward(layer, left, up_l), (-up[0], up[1]), 1e-3), (up, handle_toward(layer, left, up_l))
+assert close(handle_toward(layer, left, down_l), (-down[0], down[1]), 1e-3), (down, handle_toward(layer, left, down_l))
+doc.frame_current = 0
+
+# Left to Right copies the left side's the same way.
+layer, right, left, up_r, down_r, up_l, down_l = hair()
+was = handle_toward(layer, right, down_r)
+layer.move_handle(*[(c, w.index(left), "OUT" if w.index(left) == 0 else "IN")
+                    for c, w in enumerate(layer.detail["wires"]) if left in w and down_l in w][0], (-0.7, -0.2))
+assert ops.mesh.symmetrize(direction="LEFT_TO_RIGHT") == {'FINISHED'}
+assert close(handle_toward(layer, right, down_r), (-0.3, -0.2), 1e-3), (was, handle_toward(layer, right, down_r))
+
+# A point on the axis with a line ending at it from each side: the source side's handle sets the other's.
+layer = line([(1.0, 0.0), (0.0, 1.0)], "Peak")
+layer.add_curve([(-1.0, 0.2), (0.0, 1.0)])
+weld(layer, (0.0, 1.0))
+peak = point_at(layer, (0.0, 1.0))
+side_r, side_l = point_at(layer, (1.0, 0.0)), point_at(layer, (-1.0, 0.2))
+for c, wire in enumerate(layer.detail["wires"]):
+    i = wire.index(peak)
+    layer.move_handle(c, i, "OUT" if i == 0 else "IN", (0.3, 0.8) if side_r in wire else (-0.1, 0.9))
+layer.select_points(range(layer.point_count), False)
+layer.select_points([peak])
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert close(handle_toward(layer, peak, side_l), (-0.3, -0.2), 1e-3), handle_toward(layer, peak, side_l)
+assert close(handle_toward(layer, peak, side_r), (0.3, -0.2), 1e-3), handle_toward(layer, peak, side_r)
+
 # --- Axis: a shape that has moved off the layer's line --------------------------------------------------------
+
 layer = line([(1.0, 0.0), (0.5, 1.0), (-0.5, 1.0), (-1.0, 0.0)])
 pose(layer, 10, {0: (6.0, 0.0), 1: (5.5, 1.2), 2: (4.5, 1.0), 3: (4.0, 0.0)})
 everything(layer)
