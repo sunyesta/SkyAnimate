@@ -459,9 +459,8 @@ void vector_operators_register()
       const bool right_to_left = op_arg(C, "direction", "RIGHT_TO_LEFT") != "LEFT_TO_RIGHT";
       const float threshold = op_arg_float(C, "threshold", 0.01f);
       const bool setup = doc.frame_current == 0;
-      const bool match_shape = !setup && op_arg_bool(C, "match_shape");
-      const bool weights = !match_shape && op_arg_bool(C, "weights");
-      const bool middle = op_arg(C, "axis", "LAYER") == "SELECTION";
+      bool match_shape = !setup && op_arg_bool(C, "match_shape");
+      bool middle = op_arg(C, "axis", "LAYER") == "SELECTION";
       const auto match_of = [&](const Layer &layer) {
         SymmetrizeMatch match;
         match.skins = layer_point_skins(doc, layer);
@@ -495,6 +494,46 @@ void vector_operators_register()
         }
         ++it;
       }
+      /* Whether everything pairs up, by the setup's sides or by the shape (tried on copies). */
+      const auto pairs_up = [&](bool matching) {
+        for (auto &[id, partner] : partner_of) {
+          Layer trial = *layer_find(doc, id), trial_partner = *partner;
+          const SymmetrizeMatch match = matching ? match_of(trial) : SymmetrizeMatch();
+          const SymmetrizeMatch partner_match = matching ? match_of(trial_partner) : SymmetrizeMatch();
+          if (!layer_symmetrize_with_partner(doc, trial, trial_partner, right_to_left, threshold, setup, nullptr, nullptr,
+                                             matching ? &match : nullptr, matching ? &partner_match : nullptr)
+                   .done)
+          {
+            return false;
+          }
+        }
+        for (Layer *layer : layers) {
+          VectorDrawing trial = layer->drawing;
+          const SymmetrizeMatch match = matching ? match_of(*layer) : SymmetrizeMatch();
+          if (!drawing_symmetrize(trial, right_to_left, threshold, setup, nullptr, matching ? &match : nullptr).done) {
+            return false;
+          }
+        }
+        return true;
+      };
+      /* Off frame 0 and not told which way (the menu): points the setup's sides can't pair go by the shape, as a run
+       * that stops here would open no panel to pick that in. The panel shows it, to turn off. */
+      if (!setup && op_arg(C, "match_shape").empty() && !pairs_up(false)) {
+        match_shape = pairs_up(true);
+        const bool layer_axis = match_shape;
+        if (!match_shape && op_arg(C, "axis").empty()) {
+          middle = true;
+          match_shape = pairs_up(true);
+          middle = match_shape;
+        }
+        if (match_shape) {
+          op_arg_used(C, "match_shape", "1");
+          op_arg_used(C, "axis", middle ? "SELECTION" : "LAYER");
+          report(ReportType::Info, std::string("Symmetrize: the setup's sides don't pair, so it went by the current shape") +
+                                       (layer_axis ? "" : ", across the middle of the selection"));
+        }
+      }
+      const bool weights = !match_shape && op_arg_bool(C, "weights");
       /* Each layer has to pair up before any changes. */
       for (auto &[id, partner] : partner_of) {
         Layer trial = *layer_find(doc, id), trial_partner = *partner;
@@ -534,8 +573,9 @@ void vector_operators_register()
             layer->drawing.points[i].selected = true;
           }
           C.undo->mark_changed();
+          /* Off frame 0 the sides counted may not be the ones on view. */
           const std::string side_counts = std::to_string(r.right) + " on the right, " + std::to_string(r.left) +
-                                          " on the left";
+                                          " on the left" + (setup ? "" : match_shape ? " on this frame" : " in the setup pose");
           report_banner(ReportType::Warning,
                         "Symmetrize: \"" + layer->name + "\" has " + side_counts +
                             " (off the axis); each point needs a partner on the other side",

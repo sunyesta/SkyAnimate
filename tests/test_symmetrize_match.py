@@ -228,6 +228,62 @@ assert close(where(layer, 2), (4.5, 1.2)) and close(where(layer, 3), (4.0, 0.0))
 assert wm.last_operation()[1]["axis"] == "SELECTION"
 doc.frame_current = 0
 
+# --- Run from the menu: points the setup's sides can't pair go by the shape, and the panel says so ---------------
+# Both right of the axis in the setup, one on each side on this frame: the setup's way there is nothing to pair.
+layer = line([(0.15, 0.5), (0.2, 0.9)])
+pose(layer, 10, {0: (-0.33, 0.96), 1: (0.4, 0.92)})
+assert ops.mesh.select_all() == {'FINISHED'}, "an undo step to come back to"
+assert ops.mesh.symmetrize() == {'FINISHED'}, "not uneven on this frame"
+assert close(where(layer, 0), (-0.4, 0.92)) and close(where(layer, 1), (0.4, 0.92)), (where(layer, 0), where(layer, 1))
+args = wm.last_operation()[1]
+assert args["match_shape"] == "1" and args["axis"] == "LAYER", ("the panel shows what ran", args)
+# Turned off in the panel: the warning, saying whose sides it counted, the last result standing and the panel open.
+assert wm.redo_last(match_shape=False) == "CANCELLED"
+assert "in the setup pose" in wm.banner_report()[3], wm.banner_report()
+assert close(where(layer, 0), (-0.4, 0.92)), "the last result stands"
+assert wm.last_operation()[1]["match_shape"] == "0"
+assert wm.redo_last(match_shape=True) == "FINISHED"
+assert close(where(layer, 0), (-0.4, 0.92))
+doc.frame_current = 0
+
+# Told not to, it doesn't, and the same selection on frame 0 goes on warning.
+layer = line([(0.15, 0.5), (0.2, 0.9), (0.6, 0.2)])
+pose(layer, 10, {0: (-0.33, 0.96), 1: (0.4, 0.92)})
+layer.select_points([0, 1])
+assert ops.mesh.symmetrize(match_shape="0") == {'CANCELLED'}
+assert close(where(layer, 0), (-0.33, 0.96))
+doc.frame_current = 0
+layer.select_points(range(3), False)
+layer.select_points([0, 1])
+assert ops.mesh.symmetrize() == {'CANCELLED'}, "frame 0 has only the one shape"
+assert "setup pose" not in wm.banner_report()[3]
+
+# What the setup pairs goes on being mirrored from it: this only steps in where that can't work.
+layer = line(SETUP)
+pose(layer, 10, AT_10)
+everything(layer)
+assert ops.mesh.symmetrize() == {'FINISHED'}
+assert wm.last_operation()[1]["match_shape"] == "0" and close(where(layer, 2), (1.2, 0.5))
+doc.frame_current = 0
+
+# A shape off the layer's line, from the menu: the middle of the selection, so the panel opens to change it.
+layer = line([(1.0, 0.0), (1.5, 1.0), (2.0, 1.0), (2.5, 0.0)])
+pose(layer, 10, {0: (4.0, 0.0), 1: (4.5, 1.0), 2: (5.5, 1.2), 3: (6.0, 0.0)})
+everything(layer)
+assert ops.mesh.symmetrize() == {'FINISHED'}
+args = wm.last_operation()[1]
+assert args["match_shape"] == "1" and args["axis"] == "SELECTION", args
+assert close(where(layer, 1), (4.5, 1.2)), where(layer, 1)
+doc.frame_current = 0
+
+# Not even on this frame either: the warning, in this frame's numbers.
+layer = line(SETUP)
+pose(layer, 10, {2: (0.5, 1.0)})
+layer.select_points([0, 1, 2])
+assert ops.mesh.symmetrize(match_shape="1") == {'CANCELLED'}
+assert "on this frame" in wm.banner_report()[3], wm.banner_report()
+doc.frame_current = 0
+
 # --- Riding points are matched like the rest -------------------------------------------------------------------
 layer = line([(2.0, 0.0), (1.0, 1.0), (-1.0, 1.0), (-2.0, 0.0)])
 pose(layer, 10, {1: (1.2, 1.3)})
