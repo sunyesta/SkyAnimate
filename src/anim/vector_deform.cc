@@ -144,6 +144,8 @@ struct DeformShape {
     /* Its outline, sample for sample, at rest and now. */
     std::vector<float2> rest, now;
     float size = 1.0f;
+    /* One of its sides is on the mesh's outline. */
+    bool outer = false;
   };
   std::vector<Cell> cells;
   /* A grid's or four-sided cells' outline as its sides (the cells' sides no other cell shares), each a Bezier at
@@ -185,6 +187,9 @@ struct DeformShape {
    * outline a side's say is down to half, the cage as a whole (Rigid's) taking the rest. */
   float envelope_power = 8.0f;
   float envelope_reach = 1.0f;
+  /* Mesh Deform's Envelope: the mesh inside its outer cells at rest, its lines and the nodes off the outline, where the
+   * sides' say has faded out (mesh_envelope). */
+  std::vector<std::vector<float2>> envelope_ring;
   /* Mean Value and Rigid: how each corner of the outline turns (a complex number of length 1), for what lies past it,
    * which keeps its distance from the outline. */
   std::vector<float2> cage_turn;
@@ -642,12 +647,22 @@ static void gather_edge_sides(DeformShape &r)
       }
       if (!shared) {
         r.edge_sides.push_back({side, c.now_sides[size_t(k)]});
+        r.cells[i].outer = true;
       }
     }
   }
 }
 
+/* Blend 0 to 1: the nearest side leading as the cube of nearness to as nearness itself (past the cube, two sides
+ * setting a point's distance from each at a closing corner pull it apart faster than the corner gives room, and
+ * it folds). */
+static float envelope_power_of(float blend)
+{
+  return 3.0f * std::pow(1.0f / 3.0f, std::clamp(blend, 0.0f, 1.0f));
+}
+
 static void cage_method_build(DeformShape &r);
+static void mesh_envelope_build(DeformShape &r, float blend);
 
 /* The shape at rest and (`now`) as it is, in the layer's space: what a deform is built from. */
 static bool deform_shape_inputs(const Document &doc, const Layer &layer, const Modifier &m, bool now, bool render,
@@ -697,6 +712,9 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     r.outline_rest = {r.border};
     r.outline_now = {outline_now};
     gather_edge_sides(r);
+    if (now && m.deform_mesh_method == MeshMethod::Envelope) {
+      mesh_envelope_build(r, m.deform_blend);
+    }
     return true;
   }
   /* Branching (more than two of its segments meeting at a point): a network, never one line or loop. */
@@ -724,6 +742,9 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
                  ? DeformKind::Grid
                  : DeformKind::Mesh;
     gather_edge_sides(r);
+    if (now && m.deform_mesh_method == MeshMethod::Envelope) {
+      mesh_envelope_build(r, m.deform_blend);
+    }
     return true;
   }
   if (m.type != (closed ? ModifierType::CageDeform : ModifierType::CurveDeform)) {
@@ -759,10 +780,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   r.stretch = m.deform_stretch;
   if (closed && now) {
     r.cage_method = m.deform_cage_method;
-    /* Blend 0 to 1: the nearest side leading as the cube of nearness to as nearness itself (past the cube, two sides
-     * setting a point's distance from each at a closing corner pull it apart faster than the corner gives room, and
-     * it folds). */
-    r.envelope_power = 3.0f * std::pow(1.0f / 3.0f, std::clamp(m.deform_blend, 0.0f, 1.0f));
+    r.envelope_power = envelope_power_of(m.deform_blend);
     cage_method_build(r);
   }
   if (!closed) {
@@ -1601,18 +1619,9 @@ static float side_place(const std::vector<float2> &v, const std::vector<float2> 
   return closest;
 }
 
-static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
+/* The sides near `p` (where it is at rest) setting its distance from each back, from `q` (where it has been put). */
+static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
 {
-  float2 q = p;
-  if (mean_value(d.rest, p, scratch)) {
-    q = float2(0.0f, 0.0f);
-    for (size_t i = 0; i < d.now.size(); i++) {
-      q = q + d.now[i] * scratch[i];
-    }
-  }
-  if (!d.lattice.empty()) {
-    q = q + rigid_offset(d, p);
-  }
   const size_t n = d.envelope_sides.size();
   float near = FLT_MAX;
   thread_local std::vector<float> dist;
@@ -1633,8 +1642,25 @@ static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &s
     /* Set back to it in full at the side and less further off, as reach / (reach + distance): the distance it ends
      * at then always grows with the distance it had, however hard the cage squeezes there, so nothing folds. */
     const float now_across = cross(now_way, q - now_on);
-    const float keep = d.envelope_reach / (d.envelope_reach + dist[s]);
+    float keep = d.envelope_reach / (d.envelope_reach + dist[s]);
+    if (!d.envelope_ring.empty()) {
+      /* A stretch can't fold, whatever sets it back. Where a cell squeezes what is in it, though, setting that back as it
+       * fades out by the ring (below) can bring what lies further from the side nearer to it, and a curved cell squeezes
+       * hardest in its middle: held back as the square of the squeeze, so nothing folds. */
+      const float squeeze = std::fabs(across) > 1e-9f ? std::clamp(now_across / across, 0.0f, 1.0f) : 1.0f;
+      keep *= squeeze * squeeze;
+    }
     fix[s] = float2(-now_way.y, now_way.x) * ((across - now_across) * keep);
+  }
+  /* On a mesh, full at the outline and none by the ring, where the mesh places everything exactly as drawn. */
+  float fade = 1.0f;
+  if (!d.envelope_ring.empty()) {
+    float ring = FLT_MAX;
+    for (const std::vector<float2> &line : d.envelope_ring) {
+      ring = std::min(ring, polyline_distance(line, false, p));
+    }
+    const float along = near + ring > 1e-12f ? near / (near + ring) : 0.0f;
+    fade = 1.0f - along * along * (3.0f - 2.0f * along);
   }
   const double floor = std::max(double(near), double(d.cage_band) * 1e-3);
   double fx = 0.0, fy = 0.0, ws = 0.0;
@@ -1644,7 +1670,44 @@ static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &s
     fy += w * fix[s].y;
     ws += w;
   }
-  return ws > 0.0 ? q + float2(float(fx / ws), float(fy / ws)) : q;
+  return ws > 0.0 ? q + float2(float(fx / ws), float(fy / ws)) * fade : q;
+}
+
+static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
+{
+  float2 q = p;
+  if (mean_value(d.rest, p, scratch)) {
+    q = float2(0.0f, 0.0f);
+    for (size_t i = 0; i < d.now.size(); i++) {
+      q = q + d.now[i] * scratch[i];
+    }
+  }
+  if (!d.lattice.empty()) {
+    q = q + rigid_offset(d, p);
+  }
+  return envelope_sides_apply(d, p, q);
+}
+
+/* Whether a place at rest is in a cell on the mesh's outline. */
+static bool in_outer_cell(const DeformShape &d, float2 p)
+{
+  if (d.cells.empty()) {
+    const GridSurface &g = d.rest_grid;
+    GridPlace place;
+    return g.locate(p, place) && (place.column == 0 || place.row == 0 || place.column == g.columns - 1 ||
+                                  place.row == g.rows - 1);
+  }
+  float2 st;
+  return std::any_of(d.cells.begin(), d.cells.end(),
+                     [&](const DeformShape::Cell &c) { return c.outer && quad_cell_at(c, p, st); });
+}
+
+/* Mesh Deform's Envelope: `q` is where the mesh puts `p`; in the outer cells the outline's sides then set its distance
+ * from them back, as Cage Deform's Envelope does, so lines along the edge keep their width. Their say fades out by the
+ * mesh inside the outer cells, or they would pull what its inner nodes carry back toward where it was. */
+static float2 mesh_envelope(const DeformShape &d, float2 p, float2 q)
+{
+  return !d.envelope_sides.empty() && in_outer_cell(d, p) ? envelope_sides_apply(d, p, q) : q;
 }
 
 /* Rigid: how far the inside moves from mean value coordinates there (a cubic B-spline over the lattice). */
@@ -1897,6 +1960,97 @@ static std::shared_ptr<const RigidLattice> rigid_lattice(const std::vector<float
   return made;
 }
 
+/* A side's lengths along it and the way it runs at each sample. False when it has no length. */
+static bool envelope_side_finish(DeformShape::EnvelopeSide &side, float size)
+{
+  side.rest_at = lengths_along(side.rest);
+  side.now_at = lengths_along(side.now);
+  if (side.rest_at.back() < size * 1e-6f) {
+    return false;
+  }
+  /* The way it runs at each sample: its two pieces' ways together (the end ones, their piece's). */
+  const auto ways = [](const std::vector<float2> &v, std::vector<float2> &r_way) {
+    const size_t m = v.size();
+    r_way.assign(m, float2(1.0f, 0.0f));
+    for (size_t k = 0; k < m; k++) {
+      float2 w(0.0f, 0.0f);
+      if (k > 0 && length(v[k] - v[k - 1]) > 1e-12f) {
+        w = w + normalize(v[k] - v[k - 1]);
+      }
+      if (k + 1 < m && length(v[k + 1] - v[k]) > 1e-12f) {
+        w = w + normalize(v[k + 1] - v[k]);
+      }
+      if (length(w) > 1e-12f) {
+        r_way[k] = normalize(w);
+      }
+      else if (k > 0) {
+        r_way[k] = r_way[k - 1];
+      }
+    }
+  };
+  ways(side.rest, side.rest_way);
+  ways(side.now, side.now_way);
+  return true;
+}
+
+/* The outline's sides for Mesh Deform's Envelope (of four-sided cells: what the points outside follow too), and the
+ * mesh inside the outer cells: every line with neither end on the outline, and the inner end of those with one. */
+static void mesh_envelope_build(DeformShape &r, float blend)
+{
+  if (r.edge_sides.empty()) {
+    return;
+  }
+  r.envelope_power = envelope_power_of(blend);
+  float2 lo = r.edge_sides[0][0][0], hi = lo;
+  for (const std::array<std::array<float2, 4>, 2> &side : r.edge_sides) {
+    for (const float2 &q : side[0]) {
+      lo = float2(std::min(lo.x, q.x), std::min(lo.y, q.y));
+      hi = float2(std::max(hi.x, q.x), std::max(hi.y, q.y));
+    }
+  }
+  const float size = std::max(hi.x - lo.x, hi.y - lo.y);
+  for (const std::array<std::array<float2, 4>, 2> &side : r.edge_sides) {
+    /* Fewer samples than a cage's side has: each is a cell's width, and this runs for every point bent. */
+    DeformShape::EnvelopeSide e;
+    for (int k = 0; k <= 6; k++) {
+      const float t = float(k) / 6.0f;
+      e.rest.push_back(bezier3(side[0], t));
+      e.now.push_back(bezier3(side[1], t));
+    }
+    if (envelope_side_finish(e, size)) {
+      r.envelope_sides.push_back(std::move(e));
+    }
+  }
+  /* As far as the mesh is big, as a cage's. */
+  r.envelope_reach = size;
+  r.cage_band = size;
+  std::vector<std::array<float2, 4>> lines = r.rest_grid.across;
+  lines.insert(lines.end(), r.rest_grid.up.begin(), r.rest_grid.up.end());
+  for (const DeformShape::Cell &c : r.cells) {
+    lines.insert(lines.end(), c.rest_sides.begin(), c.rest_sides.end());
+  }
+  const auto on_outline = [&](float2 p) {
+    return std::any_of(r.edge_sides.begin(), r.edge_sides.end(), [&](const auto &side) {
+      return length(side[0][0] - p) < size * 1e-5f || length(side[0][3] - p) < size * 1e-5f;
+    });
+  };
+  for (const std::array<float2, 4> &line : lines) {
+    const bool from = on_outline(line[0]), to = on_outline(line[3]);
+    if (from && to) {
+      continue;
+    }
+    if (from || to) {
+      r.envelope_ring.push_back({from ? line[3] : line[0], from ? line[3] : line[0]});
+      continue;
+    }
+    std::vector<float2> samples;
+    for (int k = 0; k <= 4; k++) {
+      samples.push_back(bezier3(line, float(k) / 4.0f));
+    }
+    r.envelope_ring.push_back(std::move(samples));
+  }
+}
+
 static void cage_method_build(DeformShape &r)
 {
   const size_t n = r.rest.size();
@@ -1921,34 +2075,9 @@ static void cage_method_build(DeformShape &r)
         side.rest.push_back(r.rest[(first + k) % n]);
         side.now.push_back(r.now[(first + k) % n]);
       }
-      side.rest_at = lengths_along(side.rest);
-      side.now_at = lengths_along(side.now);
-      if (side.rest_at.back() < size * 1e-6f) {
-        continue;
+      if (envelope_side_finish(side, size)) {
+        r.envelope_sides.push_back(std::move(side));
       }
-      /* The way it runs at each sample: its two pieces' ways together (the end ones, their piece's). */
-      const auto ways = [](const std::vector<float2> &v, std::vector<float2> &r_way) {
-        const size_t m = v.size();
-        r_way.assign(m, float2(1.0f, 0.0f));
-        for (size_t k = 0; k < m; k++) {
-          float2 w(0.0f, 0.0f);
-          if (k > 0 && length(v[k] - v[k - 1]) > 1e-12f) {
-            w = w + normalize(v[k] - v[k - 1]);
-          }
-          if (k + 1 < m && length(v[k + 1] - v[k]) > 1e-12f) {
-            w = w + normalize(v[k + 1] - v[k]);
-          }
-          if (length(w) > 1e-12f) {
-            r_way[k] = normalize(w);
-          }
-          else if (k > 0) {
-            r_way[k] = r_way[k - 1];
-          }
-        }
-      };
-      ways(side.rest, side.rest_way);
-      ways(side.now, side.now_way);
-      r.envelope_sides.push_back(std::move(side));
     }
     /* As far as the cage is big: a band along a side keeps nearly all its width (one a tenth as wide as the cage, 90%
      * or more), and what is deep inside still mostly follows the cage as a whole. */
@@ -2091,7 +2220,7 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
           for (int k = 0; k < 4; k++) {
             float t;
             if (cell_side_at(c, k, p, t)) {
-              return cell_side_point(c.now_sides, k, t);
+              return mesh_envelope(d, p, cell_side_point(c.now_sides, k, t));
             }
           }
         }
@@ -2099,7 +2228,7 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
       if (outside_mesh(d, p)) {
         return d.edge_sides.empty() ? outline_follow(d, p, scratch) : sides_follow(d, p, scratch);
       }
-      return mesh_inside_map(d, p, scratch);
+      return mesh_envelope(d, p, mesh_inside_map(d, p, scratch));
     }
     case DeformKind::Cage: {
       if (d.cage_method == CageMethod::Envelope && !d.envelope_sides.empty()) {
@@ -2328,6 +2457,10 @@ static float2 bent_handle(const DeformShape &d, float2 p0, float2 q0, float2 han
     float2 st;
     if (!c.quad || !quad_cell_at(c, p0, st)) {
       continue;
+    }
+    /* Where Envelope's sides have a say it isn't the patch that places it. */
+    if (c.outer && !d.envelope_sides.empty()) {
+      break;
     }
     /* Along a side it sits on: as the bent side runs there (the handle's share of the side's own way, kept). */
     for (int k = 0; k < 4; k++) {

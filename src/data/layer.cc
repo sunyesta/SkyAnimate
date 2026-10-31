@@ -28,6 +28,24 @@ bool cage_method_from_id(const std::string &id, CageMethod &r_method)
   return false;
 }
 
+static constexpr const char *MESH_METHOD_IDS[] = {"CELLS", "ENVELOPE"};
+
+const char *mesh_method_id(MeshMethod method)
+{
+  return MESH_METHOD_IDS[int(method)];
+}
+
+bool mesh_method_from_id(const std::string &id, MeshMethod &r_method)
+{
+  for (int k = 0; k < 2; k++) {
+    if (id == MESH_METHOD_IDS[k]) {
+      r_method = MeshMethod(k);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool modifier_can_apply(const Modifier &m)
 {
   /* A deform modifier does nothing on the setup frame, where Apply works. */

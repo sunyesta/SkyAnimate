@@ -3133,6 +3133,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["stretch"] = mod.deform_stretch;
         d["resample_self"] = mod.deform_resample_self;
         d["cage_method"] = cage_method_id(mod.deform_cage_method);
+        d["mesh_method"] = mesh_method_id(mod.deform_mesh_method);
         d["blend"] = mod.deform_blend;
       }
       if (mod.type == ModifierType::Resample) {
@@ -3399,6 +3400,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (modifier_is_deform(mod.type) && key == "cage_method") {
         if (!cage_method_from_id(value.cast<std::string>(), mod.deform_cage_method)) {
           throw py::value_error("cage_method is MEAN_VALUE, RIGID or ENVELOPE");
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "mesh_method") {
+        if (!mesh_method_from_id(value.cast<std::string>(), mod.deform_mesh_method)) {
+          throw py::value_error("mesh_method is CELLS or ENVELOPE");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "blend") {

@@ -692,6 +692,10 @@ static json layer_to_json(const Layer &layer)
           mj["cage_method"] = cage_method_id(m.deform_cage_method);
           mj["blend"] = num(m.deform_blend);
         }
+        if (m.type == ModifierType::MeshDeform) {
+          mj["mesh_method"] = mesh_method_id(m.deform_mesh_method);
+          mj["blend"] = num(m.deform_blend);
+        }
       }
       modifiers.push_back(std::move(mj));
     }
@@ -2284,6 +2288,9 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_resample_self = get_bool(mj, "resample_self", false);
       if (!cage_method_from_id(get_string(mj, "cage_method", "MEAN_VALUE"), m.deform_cage_method)) {
         m.deform_cage_method = CageMethod::MeanValue;
+      }
+      if (!mesh_method_from_id(get_string(mj, "mesh_method", "CELLS"), m.deform_mesh_method)) {
+        m.deform_mesh_method = MeshMethod::Cells;
       }
       m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
     }

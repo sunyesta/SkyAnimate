@@ -678,6 +678,12 @@ enum class CageMethod { MeanValue, Rigid, Envelope };
 const char *cage_method_id(CageMethod method);
 bool cage_method_from_id(const std::string &id, CageMethod &r_method);
 
+enum class MeshMethod { Cells, Envelope };
+
+/* A Mesh Method's name in files and Python ("CELLS", "ENVELOPE"), and back. */
+const char *mesh_method_id(MeshMethod method);
+bool mesh_method_from_id(const std::string &id, MeshMethod &r_method);
+
 struct Modifier {
   ModifierType type = ModifierType::Mirror;
   std::string name = "Mirror";
@@ -764,6 +770,9 @@ struct Modifier {
   bool deform_stretch = true;
   /* Cage Deform's Method: how what is in the cage follows it. */
   CageMethod deform_cage_method = CageMethod::MeanValue;
+  /* Mesh Deform's Method: each cell bending what is in it, or with Envelope the outline's sides also keeping what lies
+   * near them at its distance from them, in the outer cells. */
+  MeshMethod deform_mesh_method = MeshMethod::Cells;
   /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how
    * near it is); 1, gently (as how near it is). */
   float deform_blend = 0.5f;

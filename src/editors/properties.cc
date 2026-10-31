@@ -3241,6 +3241,36 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   }
   else if (kind == DeformKind::Grid) {
     ImGui::TextDisabled("Grid: each cell bends what is in it");
+    static const char *const METHOD_NAMES[] = {"Cells", "Envelope"};
+    static const char *const METHOD_TIPS[] = {
+        "Each cell bends what is in it, so the drawing fits the mesh exactly, and a line along the edge stretches with "
+        "its cell",
+        "As Cage Deform's Envelope: the outer cells keep what lies near the outline at its distance from it, so lines "
+        "along the edge keep their width. This eases off toward the next cells in, whose points and lines are still "
+        "exactly where the mesh puts them (Blend says how evenly the sides share a corner)"};
+    modifier_row_label("Method", column, "How what is in the mesh follows it");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const int method = int(m.deform_mesh_method);
+    if (ImGui::BeginCombo("##mesh_method", METHOD_NAMES[method])) {
+      for (int k = 0; k < 2; k++) {
+        if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
+          m.deform_mesh_method = MeshMethod(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", METHOD_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (m.deform_mesh_method == MeshMethod::Envelope) {
+      modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
+                                          "corner: low, the nearest side leads sharply (edges hug their own side "
+                                          "most); high, the sides blend gently");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      factor_slider("##mesh_blend", &m.deform_blend);
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    }
   }
   else if (kind == DeformKind::Cage) {
     ImGui::TextDisabled("Cage: what is in the shape bends with it");
