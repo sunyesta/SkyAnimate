@@ -503,14 +503,16 @@ static Posed posed(const Document &doc, const Layer &layer)
      * follow that: the wire goes through them, and the drawing's own points keep their handles, whole, to edit. */
     VectorDeformWireScope wire;
     VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
-    bool added = false;
+    /* Fitted by a Resample Self: the wire takes the fit, the handles stay as stored (layer_handles_fitted). */
+    const bool fitted = layer_handles_fitted(doc, layer);
+    bool added = fitted;
     for (size_t c = 0; c < r.storage.curves.size() && c < shown.curves.size(); c++) {
       Curve &curve = r.storage.curves[c];
       if (curve.points.size() != shown.curves[c].points.size()) {
         added = true;
         continue;
       }
-      for (size_t k = 0; deformed && k < curve.points.size(); k++) {
+      for (size_t k = 0; deformed && !fitted && k < curve.points.size(); k++) {
         curve.points[k].handle_in = shown.curves[c].points[k].handle_in;
         curve.points[k].handle_out = shown.curves[c].points[k].handle_out;
         curve.points[k].handles_set = true;
@@ -519,6 +521,26 @@ static Posed posed(const Document &doc, const Layer &layer)
     if (added && !drawing_has_detail(layer.drawing) && shown.curves.size() >= r.storage.curves.size()) {
       shown.curves.resize(r.storage.curves.size());
       r.wires = std::move(shown);
+    }
+    if (fitted) {
+      /* Each handle's end where the stack puts it. */
+      std::vector<StackPlace> ends;
+      for (const Curve &curve : layer.drawing.curves) {
+        for (int k = 0; k < int(curve.points.size()); k++) {
+          ends.push_back({curve.points[size_t(k)].point, curve_handle(layer.drawing, curve, k, true)});
+          ends.push_back({curve.points[size_t(k)].point, curve_handle(layer.drawing, curve, k, false)});
+        }
+      }
+      const std::vector<float2> placed = layer_places_shown(doc, layer, ends);
+      size_t next = 0;
+      for (Curve &curve : r.storage.curves) {
+        for (CurvePoint &cp : curve.points) {
+          const float2 at = r.storage.points[size_t(cp.point)].pos;
+          cp.handle_in = placed[next++] - at;
+          cp.handle_out = placed[next++] - at;
+          cp.handles_set = true;
+        }
+      }
     }
   }
   r.drawing = &r.storage;
@@ -3585,7 +3607,11 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
           const float2 h = to_document.apply(direct ? handle_end(*shown.drawing, factors, c, i, pre) :
                                                       curve_handle(*shown.drawing, shown.drawing->curves[c], i, pre));
           ModalTransform::Item item{layer->id, cp.point, h};
-          item.unskin = shown.skins[cp.point].inverted();
+          /* A handle moved by itself, fitted: by the stretch at its end, which may be nothing like its point's (a point
+           * in a squeezed cell, its handle reaching out of it). */
+          item.unskin = direct && layer_handles_fitted(*C.document, *layer)
+                            ? layer_place_unskin(*C.document, *layer, {cp.point, curve_handle(drawing, curve, i, pre)})
+                            : shown.skins[cp.point].inverted();
           item.curve = c;
           item.index = i;
           item.pre = pre;
@@ -3943,8 +3969,10 @@ static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &la
     else if (item.direct && item.shown_scale == 1.0f && item.mirror_source < 0) {
       const Curve &curve = layers[item.layer].first->drawing.curves[size_t(item.curve)];
       const CurvePoint &cp = curve.points[size_t(item.index)];
+      const Transform2D &to_layer = layers[item.layer].second;
       handles[item.layer].push_back({item.curve, item.index, item.pre, item.pre ? cp.select_out : cp.select_in,
-                                     layers[item.layer].second.apply(to), item.unskin});
+                                     to_layer.apply(to), item.unskin,
+                                     length(item.unskin.apply_vector(to_layer.apply_vector(to - item.start)))});
     }
   }
   for (const auto &[id, points] : targets) {

@@ -268,10 +268,12 @@ static float2 cell_eval(const std::array<std::array<float2, 4>, 4> &sides, float
 /* Where `p` is in a four-sided cell (Newton's method on its patch, as GridSurface::locate). */
 static bool cell_locate(const std::array<std::array<float2, 4>, 4> &sides, float size, float2 p, float2 &r_st)
 {
+  /* As GridSurface::locate: no nearer than these numbers can tell. */
+  const float near_enough = std::max(size * 1e-6f, (std::fabs(p.x) + std::fabs(p.y) + size) * 4e-7f);
   float2 st(0.5f, 0.5f);
   for (int it = 0; it < 40; it++) {
     const float2 f = cell_eval(sides, st) - p;
-    if (length(f) < size * 1e-6f) {
+    if (length(f) < near_enough) {
       r_st = st;
       return true;
     }
@@ -1174,7 +1176,13 @@ static float2 sides_follow(const DeformShape &d, float2 p, std::vector<float> &s
   for (const std::array<std::array<float2, 4>, 2> &side : d.edge_sides) {
     float t;
     const float dist = bezier_nearest(side[0], p, t);
-    const float2 rest_way = way(side[0], t), now_way = way(side[1], t);
+    /* A side with no handles has no way at its very ends: as it runs just along from there. Near a row of the mesh every
+     * side's nearest place can be an end, and with none to go by the point would stay where it is. */
+    const auto way_there = [&](const std::array<float2, 4> &b) {
+      const float2 w = way(b, t);
+      return length(w) >= 1e-10f ? w : way(b, std::clamp(t, 0.05f, 0.95f));
+    };
+    const float2 rest_way = way_there(side[0]), now_way = way_there(side[1]);
     const float rest_len = length(rest_way), now_len = length(now_way);
     if (rest_len < 1e-10f || now_len < 1e-10f) {
       continue;

@@ -2953,6 +2953,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     skins.resize(drawing.points.size());
     const Transform2D world = layer_world_transform(doc, layer.id);
     const auto shown = [&](int point, float2 p) { return world.apply(skins[size_t(point)].apply(p)); };
+    const bool fitted = layer_handles_fitted(doc, layer);
     py::list points;
     for (int i = 0; i < int(drawing.points.size()); i++) {
       const float2 q = shown(i, drawing.points[size_t(i)].pos);
@@ -2965,8 +2966,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::list cps;
       for (int i = 0; i < int(curve.points.size()); i++) {
         const CurvePoint &cp = curve.points[size_t(i)];
-        const float2 in = shown(cp.point, curve_handle(drawing, curve, i, true));
-        const float2 out = shown(cp.point, curve_handle(drawing, curve, i, false));
+        /* Fitted by a Resample Self, a handle's end shows where the stack puts it, as in the viewport. */
+        const auto end = [&](bool pre) {
+          const float2 stored_end = curve_handle(drawing, curve, i, pre);
+          return fitted ? world.apply(layer_places_shown(doc, layer, {{cp.point, stored_end}})[0]) : shown(cp.point, stored_end);
+        };
+        const float2 in = end(true), out = end(false);
         const PointDetail &dt = drawing.points[size_t(cp.point)].detail;
         int index = i;
         for (int k = 0; k < int(whole.points.size()); k++) {
@@ -3043,9 +3048,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     Curve &curve = drawing.curves[size_t(curve_index)];
     const Document &doc = *current_context().document;
+    const float2 was = curve_handle(drawing, curve, index, side == "IN");
     float2 stored = stored_at(doc, layer, curve.points[size_t(index)].point, at);
     /* Bent by a deform, it shows as no skin takes back: changed by as much as it is moved, as a drag does. */
-    if (doc.frame_current != 0 && layer_has_modifier_effect(doc, layer, false)) {
+    const bool fitted = layer_handles_fitted(doc, layer);
+    if (fitted) {
+      const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+      const StackPlace place{curve.points[size_t(index)].point, was};
+      stored = was + layer_place_unskin(doc, layer, place).apply_vector(in_layer - layer_places_shown(doc, layer, {place})[0]);
+    }
+    else if (doc.frame_current != 0 && layer_has_modifier_effect(doc, layer, false)) {
       const VectorDeformWireScope wire;
       const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
       if (curve_index < int(shown.curves.size()) && shown.curves[size_t(curve_index)].points.size() == curve.points.size()) {
@@ -3062,8 +3074,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       std::vector<Transform2D> skins = layer_point_skins(doc, layer);
       skins.resize(drawing.points.size());
       const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
+      const StackPlace place{curve.points[size_t(index)].point, was};
       layer_handles_settle(doc, layer, {{curve_index, index, side == "IN", keep_other, in_layer,
-                                         skins[size_t(curve.points[size_t(index)].point)].inverted()}});
+                                         fitted ? layer_place_unskin(doc, layer, place)
+                                                : skins[size_t(curve.points[size_t(index)].point)].inverted(),
+                                         length(stored - was)}});
     }
     current_context().undo->mark_changed();
   });

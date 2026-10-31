@@ -204,6 +204,9 @@ bool GridSurface::locate(float2 p, GridPlace &r_place) const
     return false;
   }
   const float scale = std::max(std::max(hi.x - lo.x, hi.y - lo.y), 1e-6f);
+  /* Near enough, and no nearer than these numbers can tell: a small grid far from the origin (a mouth's) would otherwise
+   * wander around its answer, and be taken for a place in some other cell. */
+  const float near_enough = std::max(scale * 1e-6f, (std::fabs(p.x) + std::fabs(p.y) + scale) * 4e-7f);
   float best = FLT_MAX;
   bool found = false;
   const auto try_cell = [&](int column, int row) {
@@ -212,7 +215,7 @@ bool GridSurface::locate(float2 p, GridPlace &r_place) const
     bool converged = false;
     for (int it = 0; it < 40; it++) {
       const float2 f = eval(column, row, st) - p;
-      if (length(f) < scale * 1e-6f) {
+      if (length(f) < near_enough) {
         converged = true;
         break;
       }

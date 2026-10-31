@@ -53,6 +53,19 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
+/* Whether a deform's Resample Self fits the layer's segments afresh: their handles as they show then come of fitting the
+ * bent line, not of bending the handles, so a small change to one can turn up anywhere. Such a handle's end is shown and
+ * edited as a place of its own, where the deforms put it (layer_places_shown), and the wire still takes the fit. */
+bool layer_handles_fitted(const Document &doc, const Layer &layer);
+/* A place in the layer's stored space, carried as point `point` is (its weights and bones). */
+struct StackPlace {
+  int point = 0;
+  float2 at;
+};
+/* Where the stack shows places (layer space). */
+std::vector<float2> layer_places_shown(const Document &doc, const Layer &layer, const std::vector<StackPlace> &places);
+/* What the stack does right around a place, undone: from a move as it shows to the move stored. */
+Transform2D layer_place_unskin(const Document &doc, const Layer &layer, const StackPlace &place);
 /* A place to show one of the layer's points at (layer space), and its skin undone, from when it was picked up. */
 struct PointTarget {
   int point = 0;
@@ -71,6 +84,8 @@ struct HandleTarget {
   bool keep_other = false;
   float2 at;
   Transform2D unskin;
+  /* How far the move itself takes the stored handle. */
+  float moved = 0.0f;
 };
 void layer_handles_settle(const Document &doc, Layer &layer, const std::vector<HandleTarget> &targets);
 /* The same with the bones posed as `poses` has them (each one's skin), for a change worked out

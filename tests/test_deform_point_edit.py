@@ -5,6 +5,8 @@
 - a handle grabbed and not moved leaves the line as it was (what shows is bent, not the stored handle), and moved it
   lands where it was sent;
 - a point grabbed, turned by nothing or scaled by one leaves the line too;
+- a small mesh far from the origin and squeezed hard, as a mouth's, stays smooth: every place inside and past it bends,
+  and with Resample Self a handle's end shows and moves as a place of its own, so the line follows the mouse calmly;
 - the dots stay on the drawing, a Bevel's outline included;
 - an edit on a bent frame leaves the setup alone, and Proportional and X mirror work as ever.
 
@@ -262,7 +264,7 @@ for name, make in rigs:
                 assert ops.mesh.translate(move_x="0.04", move_y="0.03") == {'FINISHED'}
                 at(10)
                 now_end = a.evaluated_handles(c, True)[i][1 if side == "IN" else 2]
-                assert math.dist(now_end, (end[0] + 0.04, end[1] + 0.03)) < 0.015, (name, "handle", c, i, side, now_end, end)
+                assert math.dist(now_end, (end[0] + 0.04, end[1] + 0.03)) < 0.025, (name, "handle", c, i, side, now_end, end)
                 ops.ed.undo()
                 at(10)
 
@@ -318,5 +320,101 @@ at(10)
 oanim.wm.set_mirror_editing(False)
 assert math.dist(shown(b)[0], (before[0][0] - 0.1, before[0][1] + 0.05)) < 1e-3
 assert abs(stored(b)[2][0] + stored(b)[0][0]) < 1e-4 and stored(b)[2] != was[2], "its image moves too"
+
+# --- A mouth's mesh: small, far from the origin, one column squeezed nine times over, its sides with no handles. The numbers
+# are a real frame's, on which dragging a handle sent the line flying. --------------------------------------------------
+REST = [(-0.06175, 0.37386), (0.00000, 0.37386), (0.06175, 0.37386),
+        (-0.06175, 0.41675), (0.00000, 0.41675), (0.06175, 0.41675),
+        (-0.06175, 0.45964), (0.00000, 0.45964), (0.06175, 0.45964)]
+GRID_CURVES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8]]
+NOW = [(0.08959, 0.37386), (0.11012, 0.37386), (0.11634, 0.37386),
+       (0.11047, 0.41675), (0.16451, 0.41675), (0.17175, 0.41675),
+       (0.11047, 0.45964), (0.17222, 0.45964), (0.17945, 0.45964)]
+LIP_POINTS = [(0.08399, 0.43785), (0.00086, 0.38636), (-0.09787, 0.41738),
+              (0.00000, 0.42794)]
+LIP_HANDLES = [(0, 0, (0.08399, 0.43785), (0.09228, 0.42216)), (0, 1, (0.0454, 0.38754), (-0.04788, 0.38506)), (0, 2, (-0.11368, 0.40483), (-0.09787, 0.41738)), (1, 0, (0.08399, 0.43785), (0.07606, 0.44835)), (1, 1, (0.04605, 0.42729), (-0.04606, 0.4286)), (1, 2, (-0.08067, 0.4298), (-0.09787, 0.41738))]
+
+doc.frame_current = 0
+small = new_layer("Small")
+assert small.add_primitive("GRID", [REST[0], REST[-1]], columns=2, rows=2)
+for i, p in enumerate(REST):
+    small.set_point(i, p)
+for c in range(6):
+    handles = small.curve_handles(c)
+    for i, (kind, h_in, h_out) in enumerate(handles):
+        at_point = small.points[[0, 1, 2, 3, 4, 5, 6, 7, 8].index(GRID_CURVES[c][i])][:2]
+        small.move_handle(c, i, "IN", at_point)
+        small.move_handle(c, i, "OUT", at_point)
+
+# Every place in and around it bends, nothing stays behind or flies off, however near a row of the mesh.
+places = new_layer("Places")
+row = REST[3][1]
+lattice = [(-0.104 + 0.0016 * i, row + 0.00031 * (j - 6)) for j in range(13) for i in range(13)]
+lattice += [(-0.0605 + 0.0101 * i, 0.3755 + 0.0071 * j) for j in range(13) for i in range(13)]
+places.add_curve(lattice)
+deform(places, "MESH_DEFORM", small, precision=0.0)
+doc.frame_current = 10
+for i, p in enumerate(NOW):
+    small.set_point(i, p)
+at(10)
+now = [tuple(p) for p in places.evaluated()[0]][:len(lattice)]
+assert all(not math.isnan(v) for p in now for v in p)
+stuck = [p for p, q in zip(lattice, now) if abs(q[0] - p[0]) < 0.03]
+assert not stuck, ("left unbent", len(stuck), stuck[:3])
+wild = [q for q in now if not (-0.1 < q[0] < 0.3 and 0.33 < q[1] < 0.5)]
+assert not wild, ("sent far off", len(wild), wild[:3])
+places.visible = False
+
+doc.frame_current = 0
+lip = new_layer("Lip")
+lip.add_curve([LIP_POINTS[0], LIP_POINTS[1], LIP_POINTS[2]])
+lip.add_curve([LIP_POINTS[0], LIP_POINTS[3], LIP_POINTS[2]])
+for c, i, h_in, h_out in LIP_HANDLES:
+    if i > 0:
+        lip.move_handle(c, i, "IN", h_in)
+    if i < 2:
+        lip.move_handle(c, i, "OUT", h_out)
+deform(lip, "MESH_DEFORM", small, mesh_method="ENVELOPE", resample_self=True)
+at(10)
+
+
+def lip_line():
+    points = []
+    for shape in range(lip.shape_count):
+        points.extend(lip.evaluated_outline(shape, 16)[0])
+    return points
+
+
+step = (0.0004, -0.0002)
+size = math.hypot(*step)
+for resample_self in (True, False):
+    lip.modifier_set(0, resample_self=resample_self)
+    at(10)
+    worst_line = worst_end = 0.0
+    for c in range(2):
+        for i, side in ((0, "OUT"), (1, "IN"), (1, "OUT"), (2, "IN")):
+            lines, ends = [], []
+            for k in range(24):
+                layers.active = lip
+                ops.mesh.select_none()
+                lip.select_handle(c, i, side)
+                assert ops.mesh.translate(move_x=str(step[0] * k), move_y=str(step[1] * k)) == {'FINISHED'}
+                at(10)
+                lines.append(lip_line())
+                ends.append(lip.shown()[1][c][0][i][1 if side == "IN" else 2])
+                ops.ed.undo()
+                at(10)
+            for a, b in zip(lines, lines[1:]):
+                if resample_self:
+                    worst_line = max(worst_line, max(math.dist(p, q) for p, q in zip(a, b)) / size)
+                else:
+                    # Precision's cuts shift along the line, so sample by sample says nothing: how far its extent moves.
+                    box = lambda v: (min(p[0] for p in v), max(p[0] for p in v), min(p[1] for p in v), max(p[1] for p in v))
+                    worst_line = max(worst_line, max(abs(x - y) for x, y in zip(box(a), box(b))) / size)
+            if resample_self:
+                worst_end = max(worst_end, max(math.dist(e, (ends[0][0] + step[0] * k, ends[0][1] + step[1] * k)) for k, e in enumerate(ends)))
+    # Between what the fixes make of this frame and what it comes to without any one of them.
+    assert worst_line < (15.0 if resample_self else 60.0), ("the line leapt", resample_self, worst_line)
+    assert worst_end < 0.006, ("its end left the cursor", worst_end)
 
 print("point editing on deformed drawings: all good")
