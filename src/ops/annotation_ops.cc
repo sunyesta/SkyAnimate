@@ -394,8 +394,9 @@ void annotation_operators_register()
     ot.idname = "guide.move_point";
     ot.name = "Move Guide Handle";
     ot.description = "Put handle point= of guide index= (the picked one by default) at x=, y= (document space); "
-                     "snap=1 snaps it as Ctrl does (to a point of the drawing, another guide's handle or line, or "
-                     "the line's turn in 15 degree steps) within radius= (document units)";
+                     "snap=1 snaps it as Ctrl does on a Perspective or Grid (to a point of the drawing, another "
+                     "guide's handle or line, or the line's turn in 15 degree steps) within radius= (document "
+                     "units); guide.drag has a Line's Ctrl";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = have_guides;
     ot.exec = [](Context &C) {

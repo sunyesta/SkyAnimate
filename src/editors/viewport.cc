@@ -2476,16 +2476,11 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
         d.point = -1;
       }
       else {
-        float2 first = mouse;
-        if (io.KeyCtrl) {
-          first = guide_snap(doc, -1, 0, mouse, GUIDE_SNAP_PIXELS * px, nullptr);
-        }
         d.creating = true;
         if (annotate_guide_type(mode) == GuideType::Line) {
           /* A click on empty canvas only drops the pick: the drag makes the guide. */
           d.grab = GuideGrab::Draw;
           d.point = 1;
-          d.press_document = first;
         }
         else {
           /* On empty canvas: a new guide of the tool's kind, its first handle here, the drag placing the
@@ -2493,6 +2488,10 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
           DrawingGuide made;
           made.type = annotate_guide_type(mode);
           made.lines = ts.guide_lines;
+          float2 first = mouse;
+          if (io.KeyCtrl) {
+            first = guide_snap(doc, -1, 0, mouse, GUIDE_SNAP_PIXELS * px, nullptr);
+          }
           const int count = guide_point_count(made.type, ts.guide_points);
           made.points.assign(size_t(count), first);
           doc.guides.push_back(std::move(made));
@@ -2548,19 +2547,8 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
       }
       if (d.dragged && d.guide < int(doc.guides.size())) {
         DrawingGuide &g = doc.guides[size_t(d.guide)];
-        /* Ctrl: a moving end goes to what's near it, else every drag keeps to its angle steps. */
-        const bool end_moves = d.grab == GuideGrab::Draw || d.grab == GuideGrab::End;
-        d.snapped = false;
-        const float2 to = end_moves && io.KeyCtrl ? guide_snap(doc, d.guide, -1, mouse, GUIDE_SNAP_PIXELS * px, &d.snapped)
-                                                  : mouse;
-        if (d.snapped) {
-          g.points = d.start_points;
-          g.points[size_t(d.point)] = to;
-          dl->AddCircle(view.to_screen(to), 9.0f, IM_COL32(0xff, 0xd0, 0x40, 255), 0, 2.0f);
-        }
-        else {
-          g.points = guide_line_drag(d.grab, d.point, d.start_points, d.press_document, mouse, io.KeyCtrl);
-        }
+        /* Ctrl keeps it to its angle steps; a Line takes no notice of points or other guides. */
+        g.points = guide_line_drag(d.grab, d.point, d.start_points, d.press_document, mouse, io.KeyCtrl);
       }
     }
     else if (d.guide >= 0 && d.guide < int(doc.guides.size())) {
