@@ -3156,10 +3156,15 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
         uint64_t shape = clicked->drawing.shapes.size() == 1 ? clicked->drawing.shapes[0].id : 0;
         for (const Shape &s : clicked->drawing.shapes) {
           test.deform_shape = s.id;
-          if (vector_deform_kind(doc, *own, test) != DeformKind::None) {
+          if (vector_deform_kind(doc, *own, test) != DeformKind::None ||
+              (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, test)))
+          {
             shape = s.id;
             break;
           }
+        }
+        if (m.deform_layer != clicked->id || m.deform_shape != shape) {
+          m.deform_part_from = m.deform_part_to = 0;
         }
         m.deform_layer = clicked->id;
         m.deform_shape = shape;
@@ -3188,11 +3193,13 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     target = layer_find(doc, picked);
     /* Its only shape, or its first grid's, picked for you. */
     m.deform_shape = target && target->drawing.shapes.size() == 1 ? target->drawing.shapes[0].id : 0;
+    m.deform_part_from = m.deform_part_to = 0;
     done = true;
   }
 
   /* The shape: one of that layer's. */
-  modifier_row_label("Shape", column, m.type == ModifierType::CurveDeform  ? "The open line that bends it"
+  modifier_row_label("Shape", column, m.type == ModifierType::CurveDeform  ? "The line that bends it, or the shape with "
+                                                                              "the Part of it that does"
                                        : m.type == ModifierType::CageDeform ? "The closed shape (a cage) that bends it"
                                                                              : "The grid, mesh of cells drawn by hand, or "
                                                                                "line (each point pinned to it, as a bendy "
@@ -3208,7 +3215,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       /* Only the shapes this deform takes; the others say which one does. */
       Modifier test = m;
       test.deform_shape = s.id;
-      const bool fits = vector_deform_kind(doc, layer, test) != DeformKind::None;
+      const bool fits = vector_deform_kind(doc, layer, test) != DeformKind::None ||
+                        (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, test));
       const ModifierType other = fits ? m.type : vector_deform_fitting_type(doc, layer, test);
       const std::string label = fits || other == m.type ? s.name
                                                         : s.name + "  (" + deform_type_name(other) + ")";
@@ -3216,6 +3224,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       ImGui::BeginDisabled(!fits);
       if (ImGui::Selectable(label.c_str(), s.id == m.deform_shape) && s.id != m.deform_shape) {
         m.deform_shape = s.id;
+        m.deform_part_from = m.deform_part_to = 0;
         done = true;
       }
       ImGui::EndDisabled();
@@ -3232,6 +3241,36 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   {
     deform_eyedropper_start(layer.id, index, pick_tag);
   }
+
+  /* A Curve Deform's Part: one stretch of its shape, as the points selected on it say. */
+  const auto part_row = [&](bool closed) {
+    modifier_row_label("Part", column, "Follow one stretch of the shape, not all of it. On the shape's layer, select the "
+                                       "points along that stretch, end to end, and press this. It stays live, so two "
+                                       "lips can follow the top and bottom of one mouth line");
+    if (ImGui::Button("Use Selected Points")) {
+      if (vector_deform_part_from_selection(doc, m)) {
+        done = true;
+      }
+      else {
+        report(ReportType::Warning, "Select the points along the part you want on the shape's layer, end to end: two at "
+                                    "least, and not all the way round");
+      }
+    }
+    if (m.deform_part_from != 0) {
+      modifier_row_label("", column);
+      if (closed && ImGui::Button("Other Side")) {
+        std::swap(m.deform_part_from, m.deform_part_to);
+        done = true;
+      }
+      if (closed) {
+        ImGui::SameLine();
+      }
+      if (ImGui::Button("Clear")) {
+        m.deform_part_from = m.deform_part_to = 0;
+        done = true;
+      }
+    }
+  };
 
   /* What it makes of the shape. */
   const DeformKind kind = vector_deform_kind(doc, layer, m);
@@ -3335,6 +3374,16 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                         "(Illustrator's Art Brush). Off, it keeps its length and slides along the line, as "
                         "Blender's Curve modifier does");
     }
+    if (vector_deform_takes_part(doc, m)) {
+      Modifier whole = m;
+      whole.deform_part_from = whole.deform_part_to = 0;
+      part_row(vector_deform_kind(doc, layer, whole) != DeformKind::Line);
+    }
+  }
+  else if (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, m)) {
+    /* A closed shape with no Part, or one whose points have gone. */
+    ImGui::TextDisabled("Closed shape: pick the Part of it to follow");
+    part_row(true);
   }
   else if (target && drawing_shape_index(target->drawing, m.deform_shape) >= 0 &&
            vector_deform_fitting_type(doc, layer, m) != m.type)

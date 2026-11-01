@@ -753,7 +753,8 @@ struct Modifier {
    * bones. `deform_strength` (keyable) scales every weight. `deform_precision` > 0 first adds points where
    * the deform would bend a segment further than that from what its points and handles can follow
    * (Illustrator's Fidelity), so straight lines bend too. A line: what lies along it keeps its distance along
-   * it, spread as the line grows when `deform_stretch`; */
+   * it, spread as the line grows when `deform_stretch`, and a Curve Deform follows only the stretch of its shape from
+   * point `deform_part_from` to `deform_part_to` (their ids, 0: all of it; a closed shape needs one); */
   uint64_t deform_layer = 0;
   uint64_t deform_shape = 0;
   bool deform_custom = false;
@@ -768,6 +769,8 @@ struct Modifier {
   /* Not saved: read from a file of the single Vector Deform modifier, its type still to be told by its shape. */
   bool deform_legacy = false;
   bool deform_stretch = true;
+  uint64_t deform_part_from = 0;
+  uint64_t deform_part_to = 0;
   /* Cage Deform's Method: how what is in the cage follows it. */
   CageMethod deform_cage_method = CageMethod::MeanValue;
   /* Mesh Deform's Method: each cell bending what is in it, or with Envelope the outline's sides also keeping what lies

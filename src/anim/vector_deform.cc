@@ -703,6 +703,44 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
   return true;
 }
 
+/* The point at place `i` of a chain of `shape`'s edges: where edge `i` starts, or at the end where the last one ends. */
+static int chain_point(const VectorDrawing &drawing, const std::vector<OrientedEdge> &chain, size_t i)
+{
+  const OrientedEdge &o = chain[std::min(i, chain.size() - 1)];
+  int from, to;
+  curve_segment_points(drawing.curves[size_t(o.edge.curve)], o.edge.segment, &from, &to);
+  return (i < chain.size()) != o.reversed ? from : to;
+}
+
+/* The stretch of `shape` from point `from` to point `to` (ids): round a closed shape the way its chain runs, so the two
+ * swapped are the other side; on an open one between them. False when it has no such points. */
+static bool shape_part(const VectorDrawing &drawing, const Shape &shape, uint64_t from, uint64_t to, Shape &r_part)
+{
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  if (from == to || !shape_chain(drawing, shape, chain, &closed)) {
+    return false;
+  }
+  const size_t n = chain.size();
+  size_t a = n + 1, b = n + 1;
+  for (size_t i = 0; i < n + (closed ? 0 : 1); i++) {
+    const uint64_t id = drawing.points[size_t(chain_point(drawing, chain, i))].id;
+    a = id == from ? i : a;
+    b = id == to ? i : b;
+  }
+  if (a > n || b > n) {
+    return false;
+  }
+  if (!closed && a > b) {
+    std::swap(a, b);
+  }
+  r_part.edges.clear();
+  for (size_t i = a; i != b; i = closed ? (i + 1) % n : i + 1) {
+    r_part.edges.push_back(chain[i].edge);
+  }
+  return true;
+}
+
 static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &rest, const VectorDrawing &bent,
                               DeformShape &r)
 {
@@ -734,10 +772,20 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     }
     return true;
   }
+  /* A Part: one stretch of the shape, followed as an open line of its own. */
+  Shape rest_part, bent_part;
+  const bool part = m.type == ModifierType::CurveDeform && m.deform_part_from != 0;
+  if (part && (!shape_part(rest, rest_shape, m.deform_part_from, m.deform_part_to, rest_part) ||
+               (now && !shape_part(bent, *bent_shape, m.deform_part_from, m.deform_part_to, bent_part))))
+  {
+    return false;
+  }
+  const Shape &line = part ? rest_part : rest_shape;
+  const Shape *bent_line = part ? &bent_part : bent_shape;
   /* Branching (more than two of its segments meeting at a point): a network, never one line or loop. */
   std::map<int, int> meeting;
   bool branches = false;
-  for (const ShapeEdge &e : rest_shape.edges) {
+  for (const ShapeEdge &e : line.edges) {
     if (e.curve >= 0 && e.curve < int(rest.curves.size())) {
       int from, to;
       curve_segment_points(rest.curves[size_t(e.curve)], e.segment, &from, &to);
@@ -746,7 +794,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     }
   }
   bool closed = false;
-  const bool one_run = !branches && shape_outline(rest, rest_shape, OUTLINE_STEPS, r.rest, nullptr, &closed);
+  const bool one_run = !branches && shape_outline(rest, line, OUTLINE_STEPS, r.rest, nullptr, &closed);
   if (!one_run || (mesh && closed && rest_shape.edges.size() == 4) || (mesh && !closed)) {
     /* A network drawn by hand (or a closed four-sided shape, one cell): its cells; a Grid when every one has four
      * sides. */
@@ -771,7 +819,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
    * small corners as it moved). */
   const int steps = closed ? OUTLINE_STEPS : LINE_STEPS;
   if (!closed) {
-    shape_outline(rest, rest_shape, steps, r.rest, nullptr, &closed);
+    shape_outline(rest, line, steps, r.rest, nullptr, &closed);
   }
   /* A closed outline ends where it starts: one sample is enough. */
   if (closed && r.rest.size() > 1 && length(r.rest.back() - r.rest.front()) < 1e-6f) {
@@ -779,7 +827,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   }
   if (now) {
     bool bent_closed = false;
-    if (!shape_outline(bent, *bent_shape, steps, r.now, nullptr, &bent_closed)) {
+    if (!shape_outline(bent, *bent_line, steps, r.now, nullptr, &bent_closed)) {
       return false;
     }
     if (closed && r.now.size() > r.rest.size()) {
@@ -2482,6 +2530,51 @@ static float point_weight(const PointGroup *group, const MeshPoint &p)
     }
   }
   return 1.0f;
+}
+
+bool vector_deform_takes_part(const Document &doc, const Modifier &m)
+{
+  const Layer *target = layer_find(doc, m.deform_layer);
+  const int index = target && target->has_drawing() ? drawing_shape_index(target->drawing, m.deform_shape) : -1;
+  if (index < 0 || shape_grid(target->drawing, target->drawing.shapes[size_t(index)])) {
+    return false;
+  }
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  return shape_chain(target->drawing, target->drawing.shapes[size_t(index)], chain, &closed);
+}
+
+bool vector_deform_part_from_selection(Document &doc, Modifier &m)
+{
+  if (!vector_deform_takes_part(doc, m)) {
+    return false;
+  }
+  VectorDrawing &drawing = layer_find(doc, m.deform_layer)->drawing;
+  drawing_ensure_ids(drawing);
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  shape_chain(drawing, drawing.shapes[size_t(drawing_shape_index(drawing, m.deform_shape))], chain, &closed);
+  /* The points along the shape, and the selected ones' one run among them. */
+  const size_t n = chain.size() + (closed ? 0 : 1);
+  const auto id_at = [&](size_t i) { return drawing.points[size_t(chain_point(drawing, chain, i))].id; };
+  const auto selected = [&](size_t i) { return drawing.points[size_t(chain_point(drawing, chain, i))].selected; };
+  size_t count = 0, starts = 0, first = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (selected(i)) {
+      count++;
+      const bool after_selected = i > 0 ? selected(i - 1) : closed && selected(n - 1);
+      if (!after_selected) {
+        starts++;
+        first = i;
+      }
+    }
+  }
+  if (count < 2 || starts != 1 || (closed && count == n)) {
+    return false;
+  }
+  m.deform_part_from = id_at(first);
+  m.deform_part_to = id_at((first + count - 1) % n);
+  return true;
 }
 
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m)

@@ -551,7 +551,9 @@ class _Layer:
         "CURVE_DEFORM", "CAGE_DEFORM" or "MESH_DEFORM") and settings. A deform's: layer and shape (names), kind ("GRID", "CAGE",
         "LINE" as "Grid"..., "" when it has none), weights ("AUTOMATIC": every point fully, or "CUSTOM"), group, strength,
         fits (the deform type that takes its shape: its own, or the one to switch to), precision (how far a bent segment may stray from the true bend before points are added; 0 off), stretch
-        (a line: what lies along it spreads as it grows), resample_self (the drawing sampled evenly, bent, and its own points and handles fitted
+        (a line: what lies along it spreads as it grows), part (Curve Deform: the stretch of its shape to follow, as (from,
+        to) point numbers on the shape's layer, round a closed shape the way its points run, so swapped they are the other
+        side; set it as those, "SELECTED" for the points selected there, or None; a closed shape needs one), resample_self (the drawing sampled evenly, bent, and its own points and handles fitted
         to that; no points added), cage_method (a cage: "MEAN_VALUE", "RIGID": the inside as rigid as possible, or
         "ENVELOPE": Toon Boom Harmony's, each side keeping what lies near it at its distance from it),
         blend (Envelope: 0 the nearest side leads sharply, 1 gently)."""

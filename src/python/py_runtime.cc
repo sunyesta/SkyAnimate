@@ -3189,6 +3189,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["strength"] = mod.deform_strength;
         d["precision"] = mod.deform_precision;
         d["stretch"] = mod.deform_stretch;
+        /* Its two ends as point numbers on the shape's layer, None when it has no Part (or they are gone). */
+        d["part"] = py::none();
+        if (target && mod.deform_part_from != 0) {
+          const int from = drawing_point_index(target->drawing, mod.deform_part_from);
+          const int to = drawing_point_index(target->drawing, mod.deform_part_to);
+          if (from >= 0 && to >= 0) {
+            d["part"] = py::make_tuple(from, to);
+          }
+        }
         d["resample_self"] = mod.deform_resample_self;
         d["cage_method"] = cage_method_id(mod.deform_cage_method);
         d["mesh_method"] = mesh_method_id(mod.deform_mesh_method);
@@ -3416,6 +3425,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         mod.deform_layer = target ? target->id : 0;
         mod.deform_shape = 0;
+        mod.deform_part_from = mod.deform_part_to = 0;
       }
       else if (modifier_is_deform(mod.type) && key == "shape") {
         const std::string name = value.cast<std::string>();
@@ -3427,6 +3437,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         if (!found && !name.empty()) {
           throw py::value_error("no shape '" + name + "' on the deform's layer (set layer first)");
         }
+        mod.deform_part_from = found == mod.deform_shape ? mod.deform_part_from : 0;
+        mod.deform_part_to = found == mod.deform_shape ? mod.deform_part_to : 0;
         mod.deform_shape = found;
       }
       else if (modifier_is_deform(mod.type) && key == "weights") {
@@ -3452,6 +3464,32 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "stretch") {
         mod.deform_stretch = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::CurveDeform && key == "part") {
+        Document &doc = *current_context().document;
+        if (value.is_none()) {
+          mod.deform_part_from = mod.deform_part_to = 0;
+        }
+        else if (py::isinstance<py::str>(value)) {
+          if (value.cast<std::string>() != "SELECTED") {
+            throw py::value_error("part is (from, to) point numbers, \"SELECTED\" or None");
+          }
+          if (!vector_deform_part_from_selection(doc, mod)) {
+            throw py::value_error("the selected points don't run along the shape end to end");
+          }
+        }
+        else {
+          const auto ends = value.cast<std::pair<int, int>>();
+          Layer *target = layer_find(doc, mod.deform_layer);
+          if (!target || std::min(ends.first, ends.second) < 0 ||
+              std::max(ends.first, ends.second) >= int(target->drawing.points.size()))
+          {
+            throw py::value_error("part's points aren't on the deform's layer (set layer first)");
+          }
+          drawing_ensure_ids(target->drawing);
+          mod.deform_part_from = target->drawing.points[size_t(ends.first)].id;
+          mod.deform_part_to = target->drawing.points[size_t(ends.second)].id;
+        }
       }
       else if (modifier_is_deform(mod.type) && key == "resample_self") {
         mod.deform_resample_self = value.cast<bool>();

@@ -1,7 +1,7 @@
 /* The deform modifiers, Curve, Cage and Mesh Deform: a shape on any layer bends a layer as it moves from where it
  * is on the setup frame (Moho's Smart Warp, Live2D's warp deformers, Blender's Curve, Mesh Deform and Lattice).
- * Each takes its own shapes (Curve Deform an open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh
- * of cells, or a closed four-sided shape as one cell); their kind:
+ * Each takes its own shapes (Curve Deform an open line or a Part of any line or closed shape, Cage Deform one closed
+ * shape, Mesh Deform a grid or a mesh of cells, or a closed four-sided shape as one cell); their kind:
  *
  * - Grid (the Shape tool's Grid): each cell bends what is in it as its Coons patch (data/grid.hh), so a
  *   grid line curved with its handles curves what lies along it.
@@ -45,6 +45,11 @@ const char *deform_kind_name(DeformKind kind);
 DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m);
 /* Whether it deforms by a grid drawn as one, what Smooth works on (not a mesh of cells drawn by hand). */
 bool vector_deform_drawn_grid(const Document &doc, const Layer &layer, const Modifier &m);
+/* Whether `m`'s shape is one line or loop (no grid, no branches): what a Curve Deform's Part is a stretch of. */
+bool vector_deform_takes_part(const Document &doc, const Modifier &m);
+/* Sets `m`'s Part from the points selected on its shape, which must run along it end to end, two at least and not
+ * a whole loop. False, `m` as it was, if they don't. */
+bool vector_deform_part_from_selection(Document &doc, Modifier &m);
 /* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
  * four-sided shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);

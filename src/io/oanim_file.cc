@@ -687,6 +687,10 @@ static json layer_to_json(const Layer &layer)
         put_keys(mj, "strength_keys", m.deform_strength_keys);
         mj["tolerance"] = num(m.deform_precision);
         mj["stretch"] = m.deform_stretch;
+        if (m.deform_part_from != 0) {
+          mj["part_from"] = m.deform_part_from;
+          mj["part_to"] = m.deform_part_to;
+        }
         mj["resample_self"] = m.deform_resample_self;
         if (m.type == ModifierType::CageDeform) {
           mj["cage_method"] = cage_method_id(m.deform_cage_method);
@@ -2286,6 +2290,8 @@ static Layer layer_from_json(const json &j, int depth)
        * ("precision") take the default. */
       m.deform_precision = std::max(0.0f, get_float(mj, "tolerance", m.deform_precision));
       m.deform_stretch = get_bool(mj, "stretch", true);
+      m.deform_part_from = get_id(mj, "part_from");
+      m.deform_part_to = get_id(mj, "part_to");
       m.deform_resample_self = get_bool(mj, "resample_self", false);
       if (!cage_method_from_id(get_string(mj, "cage_method", "MEAN_VALUE"), m.deform_cage_method)) {
         m.deform_cage_method = CageMethod::MeanValue;
