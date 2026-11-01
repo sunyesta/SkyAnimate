@@ -217,10 +217,9 @@ void guide_segments(const DrawingGuide &guide, float2 lo, float2 hi, float min_c
   const std::vector<float2> &p = guide.points;
   switch (guide.type) {
     case GuideType::Line: {
-      if (p.size() < 2 || length(p[1] - p[0]) < 1e-9f) {
-        return;
+      if (p.size() >= 2) {
+        r_segments.push_back({p[0], p[1]});
       }
-      line_across(p[0], normalize(p[1] - p[0]), lo, hi, r_segments);
       return;
     }
     case GuideType::Perspective: {
@@ -286,6 +285,84 @@ float guide_distance(const DrawingGuide &guide, float2 p, float2 lo, float2 hi, 
     best = std::min(best, distance_to_segment(p, a, b));
   }
   return best;
+}
+
+/* The nearest of `angle`, in 45 degree steps, the line's `original` angle and that angle's opposite. */
+static float guide_best_snap(float angle, float original)
+{
+  const auto off_by = [&](float to) {
+    return std::abs(std::atan2(std::sin(angle - to), std::cos(angle - to)));
+  };
+  const float step = PI / 4.0f;
+  const float snapped = std::round(angle / step) * step;
+  const float to_snapped = off_by(snapped), to_original = off_by(original), to_opposite = off_by(original + PI);
+  if (to_original < to_snapped && to_original < to_opposite) {
+    return original;
+  }
+  return to_opposite < to_snapped ? original + PI : snapped;
+}
+
+std::vector<float2> guide_line_drag(GuideGrab grab, int end, const std::vector<float2> &start, float2 press,
+                                    float2 mouse, bool constrain)
+{
+  std::vector<float2> points = start;
+  if (start.size() < 2) {
+    return points;
+  }
+  end = end == 0 ? 0 : 1;
+  const auto along = [](float angle, float distance) {
+    return float2(std::cos(angle), std::sin(angle)) * distance;
+  };
+  const auto angle_of = [](float2 v) { return std::atan2(v.y, v.x); };
+  const float2 pivot = start[size_t(1 - end)];
+  switch (grab) {
+    case GuideGrab::None:
+      break;
+    case GuideGrab::Draw:
+    case GuideGrab::End: {
+      float2 v = mouse - pivot;
+      if (constrain) {
+        const float step = PI / 4.0f;
+        const float angle = grab == GuideGrab::Draw ? std::round(angle_of(v) / step) * step
+                                                    : guide_best_snap(angle_of(v), angle_of(start[size_t(end)] - pivot));
+        v = along(angle, length(v));
+      }
+      points[size_t(end)] = pivot + v;
+      break;
+    }
+    case GuideGrab::RotateEnd: {
+      const float was = angle_of(start[size_t(end)] - pivot);
+      float angle = angle_of(mouse - pivot);
+      if (constrain) {
+        angle = guide_best_snap(angle, was);
+      }
+      points[size_t(end)] = pivot + along(angle, length(start[size_t(end)] - pivot));
+      break;
+    }
+    case GuideGrab::RotateCenter: {
+      const float2 center = (start[0] + start[1]) * 0.5f;
+      const float was = angle_of(start[1] - start[0]);
+      float angle = was + angle_of(mouse - center) - angle_of(press - center);
+      if (constrain) {
+        angle = guide_best_snap(angle, was);
+      }
+      const float2 half = along(angle, length(start[1] - start[0]) * 0.5f);
+      points[0] = center - half;
+      points[1] = center + half;
+      break;
+    }
+    case GuideGrab::Move: {
+      float2 delta = mouse - press;
+      if (constrain) {
+        const float step = PI / 2.0f;
+        delta = along(std::round(angle_of(delta) / step) * step, length(delta));
+      }
+      points[0] = start[0] + delta;
+      points[1] = start[1] + delta;
+      break;
+    }
+  }
+  return points;
 }
 
 }  // namespace oanim

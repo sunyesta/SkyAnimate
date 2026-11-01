@@ -920,13 +920,19 @@ class _Data:
         [{"type" (LINE, PERSPECTIVE, GRID), "points" (its handles, document space: a line's two, a
         perspective's vanishing points, a grid's origin and cell corner), "lines" (perspective: how
         many round each point), "hidden", "locked"}]. Change them with oanim.ops.guide.add / set /
-        move_point / delete."""
+        move_point / drag / mirror / delete / delete_all."""
         return [dict(g) for g in _oanim.guides()[0]]
 
     @property
     def active_guide(self):
         """The index of the picked guide (-1 with none)."""
         return _oanim.guides()[1]
+
+    @property
+    def guide_settings(self):
+        """How all the guides show: {"show", "hue" (0 to 360), "opacity" (0 to 100)}. Change it with
+        oanim.ops.guide.settings."""
+        return dict(_oanim.guide_settings())
 
     @property
     def filepath(self):

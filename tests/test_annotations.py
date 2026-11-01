@@ -133,6 +133,85 @@ assert data.active_guide == -1
 ops.ed.undo()
 assert [g["type"] for g in data.guides] == ["GRID", "PERSPECTIVE"]
 
+# --- Guide lines: sz_draw_guides' measures --------------------------------------------------------------
+def line(index=-1):
+    return data.guides[index]["points"]
+
+
+def angle_of(points):
+    return math.degrees(math.atan2(points[1][1] - points[0][1], points[1][0] - points[0][0]))
+
+
+def length_of(points):
+    return math.dist(points[0], points[1])
+
+
+assert ops.guide.add(type="LINE", points="0 0 2 0") == {'FINISHED'}
+# An end goes where it's dragged; Ctrl's snap takes 45 degree steps, or the line's old angle if nearer.
+assert ops.guide.drag(grab="END", end="1", press="2 0", mouse="3 1") == {'FINISHED'}
+assert close(line()[1], (3, 1))
+assert ops.guide.drag(grab="END", end="1", press="3 1", mouse="1 0.98", snap="1") == {'FINISHED'}
+assert abs(angle_of(line()) - 45) < 1e-3, angle_of(line())
+ops.ed.undo()
+assert close(line()[1], (3, 1)), "one undo for a drag"
+old = angle_of(line())
+assert ops.guide.drag(grab="END", end="1", press="3 1", mouse="2 0.7", snap="1") == {'FINISHED'}
+assert abs(angle_of(line()) - old) < 1e-3, ("keeps its old angle", angle_of(line()), old)
+assert ops.guide.set(points="0 0 2 0") == {'FINISHED'}
+# An end's turn keeps the length, whichever way, and the other end stays.
+assert ops.guide.drag(grab="ROTATE_END", end="1", press="2.2 0", mouse="0 5") == {'FINISHED'}
+assert close(line()[0], (0, 0)) and close(line()[1], (0, 2)), line()
+assert ops.guide.drag(grab="ROTATE_END", end="0", press="0 0", mouse="1 2") == {'FINISHED'}
+assert close(line()[1], (0, 2)) and abs(length_of(line()) - 2) < 1e-4 and close(line()[0], (2, 2)), line()
+assert ops.guide.set(points="0 0 2 0") == {'FINISHED'}
+# Round the middle: by how far the mouse went round it, from wherever it took hold.
+assert ops.guide.drag(grab="ROTATE_CENTER", press="1 1", mouse="0 0") == {'FINISHED'}
+assert abs(length_of(line()) - 2) < 1e-4 and close(((line()[0][0] + line()[1][0]) / 2, (line()[0][1] + line()[1][1]) / 2), (1, 0))
+assert abs((angle_of(line()) % 180) - 90) < 1e-3, angle_of(line())
+assert ops.guide.set(points="0 0 2 0") == {'FINISHED'}
+assert ops.guide.drag(grab="ROTATE_CENTER", press="1 1", mouse="0.2 1.1", snap="1") == {'FINISHED'}
+assert abs(angle_of(line()) - 45) < 1e-3, angle_of(line())
+# Move: all of it; Ctrl keeps it to the axes.
+assert ops.guide.set(points="0 0 2 0") == {'FINISHED'}
+assert ops.guide.drag(grab="MOVE", press="1 0", mouse="2 1") == {'FINISHED'}
+assert close(line()[0], (1, 1)) and close(line()[1], (3, 1))
+assert ops.guide.drag(grab="MOVE", press="0 0", mouse="1 0.2", snap="1") == {'FINISHED'}
+assert abs(line()[0][1] - 1) < 1e-4 and line()[0][0] > 1.5, line()
+assert ops.guide.drag(grab="SPIN", press="0 0", mouse="1 1") == {'CANCELLED'}
+# Mirror across the document's centre; locked ones stay.
+assert ops.guide.set(points="1 2 3 4") == {'FINISHED'}
+assert ops.guide.mirror(axis="X") == {'FINISHED'}
+assert close(line()[0], (-1, 2)) and close(line()[1], (-3, 4))
+assert ops.guide.mirror(axis="Y") == {'FINISHED'}
+assert close(line()[0], (-1, -2)) and close(line()[1], (-3, -4))
+assert ops.guide.mirror(axis="Z") == {'CANCELLED'}
+assert ops.guide.set(locked="1") == {'FINISHED'}
+assert ops.guide.mirror(axis="X") == {'CANCELLED'} and ops.guide.drag(press="0 0", mouse="1 1") == {'CANCELLED'}
+assert ops.guide.set(locked="0") == {'FINISHED'}
+# Only a line's own stretch snaps now it ends: past its end, nothing.
+assert ops.guide.add(type="LINE", points="20 0 22 0") == {'FINISHED'}
+assert ops.guide.add(type="LINE", points="30 30 31 31") == {'FINISHED'}
+assert ops.guide.move_point(point="1", x="21", y="0.05", snap="1", radius="0.1") == {'FINISHED'}
+assert close(line()[1], (21, 0)), ("onto the line", line())
+assert ops.guide.move_point(point="1", x="25", y="0.05", snap="1", radius="0.1") == {'FINISHED'}
+assert not close(line()[1], (25, 0)), ("past its end", line())
+ops.guide.delete()
+ops.guide.delete(index=str(len(data.guides) - 1))
+# One colour for all of them, saved with the file below; a new document starts red and solid.
+assert data.guide_settings == {"show": True, "hue": 0, "opacity": 100}
+assert ops.guide.settings(hue="999", opacity="-5", show="0") == {'FINISHED'}
+assert data.guide_settings == {"show": False, "hue": 360, "opacity": 0}
+ops.ed.undo()
+assert data.guide_settings == {"show": True, "hue": 0, "opacity": 100}
+assert ops.guide.settings(hue="200", opacity="60") == {'FINISHED'}
+# Delete All, in one undo.
+count = len(data.guides)
+assert ops.guide.delete_all() == {'FINISHED'} and data.guides == [] and data.active_guide == -1
+assert ops.guide.delete_all() == {'CANCELLED'}
+ops.ed.undo()
+assert len(data.guides) == count
+ops.guide.delete()
+
 # The tool, by its variants.
 assert ops.wm.tool_annotate(mode="GUIDE_PERSPECTIVE") == {'FINISHED'}
 assert ops.wm.tool_annotate(mode="LASSO") == {'CANCELLED'}
@@ -146,9 +225,11 @@ assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 assert data.annotations == saved_notes, (data.annotations, saved_notes)
 assert data.guides == saved_guides
+assert data.guide_settings == {"show": True, "hue": 200, "opacity": 60}
 assert not oanim.wm.overlays()["annotations"]
 # A file from before them opens with none.
 assert ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
 assert data.annotations == [] and data.guides == []
+assert data.guide_settings == {"show": True, "hue": 0, "opacity": 100}
 
 print("annotations: ok")

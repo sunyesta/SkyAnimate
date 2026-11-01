@@ -1098,6 +1098,10 @@ std::string oanim_document_to_json(const Document &doc)
            {"active_annotation", doc.active_annotation},
            {"guides", guides_to_json(doc)},
            {"active_guide", doc.active_guide},
+           {"guide_settings",
+            {{"show", doc.guide_settings.show},
+             {"hue", doc.guide_settings.hue},
+             {"opacity", doc.guide_settings.opacity}}},
            /* Mask rows take their layers' shapes before those layers' own masks (before this, a mask
             * layer's own masks cut its shape first, one level deep). */
            {"mask_sources", "shapes"},
@@ -3494,6 +3498,11 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     doc.guides.push_back(std::move(g));
   }
   doc.active_guide = std::clamp(get_int(j, "active_guide", -1), -1, int(doc.guides.size()) - 1);
+  if (const auto it = j.find("guide_settings"); it != j.end() && it->is_object()) {
+    doc.guide_settings.show = get_bool(*it, "show", true);
+    doc.guide_settings.hue = std::clamp(get_int(*it, "hue", 0), 0, 360);
+    doc.guide_settings.opacity = std::clamp(get_int(*it, "opacity", 100), 0, 100);
+  }
   layers_validate(doc);
   /* Older files' flexi-binding becomes the same weights, kept. */
   document_weight_new_points(doc, true);

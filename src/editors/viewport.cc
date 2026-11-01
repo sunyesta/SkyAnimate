@@ -59,6 +59,7 @@
 #include "ops/media_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
+#include "python/py_runtime.hh"
 #include "wm/context.hh"
 #include "wm/event_system.hh"
 #include "wm/pen_input.hh"
@@ -1008,8 +1009,11 @@ static const ToolInfo TOOLS[] = {
     {Tool::Annotate, "Annotate",
      "Notes and drawing guides over the drawing, on every frame; never rendered, and drawing takes no notice "
      "of them.\nAnnotate: drag to draw (Ctrl: erase). Annotate Line: drag a line, with arrowheads.\n"
-     "Guide Line, Perspective, Grid: drag to make one; drag a handle to change it (Ctrl snaps), its line to "
-     "move it.\nRight-click to pick the variant",
+     "Guide Line, Perspective, Grid: drag to make one; drag a handle to change it, its line to move it. Ctrl "
+     "snaps. A Guide Line's ends resize it; on the picked one, drag past an end or alongside it to turn it. "
+     "Double-click a guide line to duplicate it; right-click or Alt-click it, or press X over it or while "
+     "dragging it, to delete it.\n"
+     "Right-click the tool to pick the variant",
      "wm.tool_annotate"},
     {Tool::Draw, "Draw",
      "Stroke Pen: freehand lines; tablet pressure sets the width. The shelf below the view has the pens.\n"
@@ -1279,6 +1283,34 @@ static void shape_flyout(Context &C, ImVec2 button_pos, float button)
   }
 }
 
+/* The Guide Line tool's icon, sz_draw_guides' own picture: its shape is in the alpha, so it takes the
+ * button's colour. 0 when the file can't be read. */
+static GLuint guide_line_icon(ImVec2 *r_size)
+{
+  static GLuint texture = 0;
+  static ImVec2 size;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    const std::u8string path = (python::scripts_dir() / "icons" / "sz_draw_guides.png").u8string();
+    if (const MediaFramePtr frame = media_frame(std::string(path.begin(), path.end()), false, 0.0, true)) {
+      std::vector<uint8_t> rgba = frame->rgba;
+      for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+        rgba[i] = rgba[i + 1] = rgba[i + 2] = 255;
+      }
+      glGenTextures(1, &texture);
+      glBindTexture(GL_TEXTURE_2D, texture);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frame->width, frame->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      size = ImVec2(float(frame->width), float(frame->height));
+    }
+  }
+  *r_size = size;
+  return texture;
+}
+
 /* Icons for the Annotate tool's variants. */
 static void annotate_mode_icon(ImDrawList *dl, AnnotateMode mode, ImVec2 c, float s, ImU32 col)
 {
@@ -1300,11 +1332,20 @@ static void annotate_mode_icon(ImDrawList *dl, AnnotateMode mode, ImVec2 c, floa
       dl->AddLine(at(-0.5f, -0.15f), at(0.25f, 0.6f), col, t);
       break;
     }
-    case AnnotateMode::GuideLine:
+    case AnnotateMode::GuideLine: {
+      ImVec2 size;
+      if (const GLuint icon = guide_line_icon(&size)) {
+        /* Whole pixels, on the pixel grid: it's a 24 pixel picture. */
+        const ImVec2 shown = size * std::max(1.0f, std::round(s * 2.6f / size.x));
+        const ImVec2 corner = ImFloor(c - shown * 0.5f);
+        dl->AddImage(ImTextureRef(ImTextureID(intptr_t(icon))), corner, corner + shown, ImVec2(0, 0), ImVec2(1, 1), col);
+        break;
+      }
       dl->AddLine(at(-0.95f, 0.75f), at(0.95f, -0.75f), guide, t);
       dl->AddCircleFilled(at(-0.5f, 0.39f), s * 0.2f, col);
       dl->AddCircleFilled(at(0.5f, -0.39f), s * 0.2f, col);
       break;
+    }
     case AnnotateMode::GuidePerspective:
       dl->AddLine(at(-0.95f, -0.3f), at(0.95f, -0.3f), guide, t);
       for (const float x : {-0.9f, -0.3f, 0.3f, 0.9f}) {
@@ -1929,10 +1970,13 @@ static void width_field(const Document &doc, ToolSettings &ts, float &width, boo
 /* --- Annotations and drawing guides (data/annotations.hh): drawn over the drawing, made and changed by
  * the Annotate tool. --- */
 
-/* The drawing guides' colour: light blue, the picked one brighter. */
-static ImU32 guide_color(bool picked, bool hovered)
+/* The drawing guides' colour: the document's hue, `strength` of its opacity. */
+static ImU32 guide_color(const GuideSettings &settings, float strength)
 {
-  return picked ? IM_COL32(0x8f, 0xd8, 0xff, 230) : hovered ? IM_COL32(0x8f, 0xd8, 0xff, 190) : IM_COL32(0x6f, 0xc8, 0xff, 120);
+  ImVec4 c;
+  ImGui::ColorConvertHSVtoRGB(float(settings.hue) / 360.0f, 1.0f, 1.0f, c.x, c.y, c.z);
+  c.w = strength * float(settings.opacity) / 100.0f;
+  return ImGui::ColorConvertFloat4ToU32(c);
 }
 
 /* What the view shows, in document space. */
@@ -1949,6 +1993,14 @@ static constexpr float GUIDE_MIN_CELL_PIXELS = 6.0f;
 static constexpr float GUIDE_HANDLE_PICK = 9.0f;
 static constexpr float GUIDE_LINE_PICK = 5.0f;
 static constexpr float GUIDE_SNAP_PIXELS = 12.0f;
+/* A Line guide, in pixels: its widths, the ticks across its ends, how near grabs an end or the line, and
+ * how far round the picked one it can be turned from. A drag starts past GUIDE_DRAG_START. */
+static constexpr float GUIDE_MEASURE_WIDTH = 2.0f;
+static constexpr float GUIDE_MEASURE_PICKED_WIDTH = 4.0f;
+static constexpr float GUIDE_MEASURE_TICK = 8.0f;
+static constexpr float GUIDE_MEASURE_GRAB = 8.0f;
+static constexpr float GUIDE_MEASURE_TURN = 40.0f;
+static constexpr float GUIDE_DRAG_START = 2.0f;
 
 /* An annotation line's end at `tip`, coming from `from` (screen space). */
 static void annotation_end_draw(ImDrawList *dl, AnnotationEnd end, ImVec2 tip, ImVec2 from, float thickness, ImU32 col)
@@ -2026,8 +2078,86 @@ static ImU32 color_u32(const Color &c)
   return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a));
 }
 
-/* A guide's handle and its line under `mouse` (screen): the handle first (the picked guide's before the
- * others'), then the nearest line. Only shown, unlocked guides. */
+/* What's on a Line guide under the mouse. */
+struct GuideMeasureHit {
+  int guide = -1;
+  GuideGrab grab = GuideGrab::None;
+  int end = 1;
+};
+
+static float2 screen_point(const ViewMapping &view, float2 p)
+{
+  const ImVec2 s = view.to_screen(p);
+  return {s.x, s.y};
+}
+
+/* A Line guide's end or line under `mouse` (screen): the last made first. Only shown, unlocked ones. */
+static GuideMeasureHit pick_guide_measure(const Document &doc, const ViewMapping &view, ImVec2 mouse)
+{
+  const float2 m(mouse.x, mouse.y);
+  for (int g = int(doc.guides.size()) - 1; g >= 0; g--) {
+    const DrawingGuide &guide = doc.guides[size_t(g)];
+    if (guide.type != GuideType::Line || guide.hidden || guide.locked || guide.points.size() < 2) {
+      continue;
+    }
+    const float2 a = screen_point(view, guide.points[0]), b = screen_point(view, guide.points[1]);
+    if (length(m - a) < GUIDE_MEASURE_GRAB) {
+      return {g, GuideGrab::End, 0};
+    }
+    if (length(m - b) < GUIDE_MEASURE_GRAB) {
+      return {g, GuideGrab::End, 1};
+    }
+    if (distance_to_segment(m, a, b) < GUIDE_MEASURE_GRAB) {
+      return {g, GuideGrab::Move, 1};
+    }
+  }
+  return {};
+}
+
+/* Round the picked Line guide: past an end turns that end, alongside it turns it about its middle. */
+static GuideMeasureHit pick_guide_turn(const Document &doc, const ViewMapping &view, ImVec2 mouse)
+{
+  const int g = doc.active_guide;
+  if (g < 0 || g >= int(doc.guides.size())) {
+    return {};
+  }
+  const DrawingGuide &guide = doc.guides[size_t(g)];
+  if (guide.type != GuideType::Line || guide.hidden || guide.locked || guide.points.size() < 2) {
+    return {};
+  }
+  const float2 m(mouse.x, mouse.y);
+  const float2 a = screen_point(view, guide.points[0]), b = screen_point(view, guide.points[1]);
+  if (length(m - a) < GUIDE_MEASURE_TURN && dot(a - b, m - a) > 0.0f) {
+    return {g, GuideGrab::RotateEnd, 0};
+  }
+  if (length(m - b) < GUIDE_MEASURE_TURN && dot(b - a, m - b) > 0.0f) {
+    return {g, GuideGrab::RotateEnd, 1};
+  }
+  if (distance_to_segment(m, a, b) < GUIDE_MEASURE_TURN) {
+    return {g, GuideGrab::RotateCenter, 1};
+  }
+  return {};
+}
+
+/* A Line guide on screen: its line with a tick across each end. */
+static void guide_measure_draw(ImDrawList *dl, const ViewMapping &view, const DrawingGuide &guide, float width, ImU32 col)
+{
+  if (guide.points.size() < 2) {
+    return;
+  }
+  const ImVec2 a = view.to_screen(guide.points[0]), b = view.to_screen(guide.points[1]);
+  dl->AddLine(a, b, col, width);
+  const ImVec2 d = b - a;
+  const float len = std::sqrt(d.x * d.x + d.y * d.y);
+  if (len > 0.0f) {
+    const ImVec2 tick = ImVec2(-d.y, d.x) * (GUIDE_MEASURE_TICK / len);
+    dl->AddLine(a - tick, a + tick, col, width);
+    dl->AddLine(b - tick, b + tick, col, width);
+  }
+}
+
+/* A Perspective or Grid guide's handle and its line under `mouse` (screen): the handle first (the picked
+ * guide's before the others'), then the nearest line. Only shown, unlocked guides. */
 static bool pick_guide_handle(const Document &doc, const ViewMapping &view, ImVec2 mouse, int *r_guide, int *r_point)
 {
   float best = GUIDE_HANDLE_PICK * GUIDE_HANDLE_PICK;
@@ -2035,7 +2165,7 @@ static bool pick_guide_handle(const Document &doc, const ViewMapping &view, ImVe
   for (int pass = 0; pass < 2 && !found; pass++) {
     for (int g = 0; g < int(doc.guides.size()); g++) {
       const DrawingGuide &guide = doc.guides[size_t(g)];
-      if (guide.hidden || guide.locked || ((g == doc.active_guide) != (pass == 0))) {
+      if (guide.type == GuideType::Line || guide.hidden || guide.locked || ((g == doc.active_guide) != (pass == 0))) {
         continue;
       }
       for (int k = 0; k < int(guide.points.size()); k++) {
@@ -2061,7 +2191,7 @@ static int pick_guide_line(const Document &doc, const ViewMapping &view, ImVec2 
   int found = -1;
   for (int g = 0; g < int(doc.guides.size()); g++) {
     const DrawingGuide &guide = doc.guides[size_t(g)];
-    if (guide.hidden || guide.locked) {
+    if (guide.type == GuideType::Line || guide.hidden || guide.locked) {
       continue;
     }
     const float d = guide_distance(guide, view.to_document(mouse), lo, hi, GUIDE_MIN_CELL_PIXELS * px);
@@ -2084,16 +2214,23 @@ static void draw_annotation_overlays(ImDrawList *dl, Context &C, const ViewMappi
   float2 lo, hi;
   view_box(view, lo, hi);
   const float px = 1.0f / std::max(view.zoom, 1e-9f);
-  if ((ov.show && ov.guides) || guide_tool) {
+  const GuideSettings &look = doc.guide_settings;
+  if (look.show && ((ov.show && ov.guides) || guide_tool)) {
     std::vector<std::pair<float2, float2>> segments;
     for (int g = 0; g < int(doc.guides.size()); g++) {
       const DrawingGuide &guide = doc.guides[size_t(g)];
       if (guide.hidden) {
         continue;
       }
+      const bool picked = guide_tool && g == doc.active_guide;
+      if (guide.type == GuideType::Line) {
+        guide_measure_draw(dl, view, guide, picked ? GUIDE_MEASURE_PICKED_WIDTH : GUIDE_MEASURE_WIDTH,
+                           guide_color(look, 1.0f));
+        continue;
+      }
       segments.clear();
       guide_segments(guide, lo, hi, GUIDE_MIN_CELL_PIXELS * px, segments);
-      const ImU32 col = guide_color(guide_tool && g == doc.active_guide, g == hovered_guide);
+      const ImU32 col = guide_color(look, picked ? 0.9f : g == hovered_guide ? 0.75f : 0.47f);
       for (const auto &[a, b] : segments) {
         dl->AddLine(view.to_screen(a), view.to_screen(b), col, 1.0f);
       }
@@ -2110,22 +2247,23 @@ static void draw_annotation_overlays(ImDrawList *dl, Context &C, const ViewMappi
       }
     }
   }
-  if (guide_tool) {
-    /* The handles to drag: every shown, unlocked guide's, the picked guide's filled. */
+  if (guide_tool && look.show) {
+    /* The handles to drag: every shown, unlocked Perspective's and Grid's, the picked guide's filled. */
+    const ImU32 handle = guide_color(look, 1.0f);
     for (int g = 0; g < int(doc.guides.size()); g++) {
       const DrawingGuide &guide = doc.guides[size_t(g)];
-      if (guide.hidden || guide.locked) {
+      if (guide.type == GuideType::Line || guide.hidden || guide.locked) {
         continue;
       }
       for (const float2 &p : guide.points) {
         const ImVec2 s = view.to_screen(p);
         if (g == doc.active_guide) {
-          dl->AddCircleFilled(s, 5.0f, IM_COL32(0x8f, 0xd8, 0xff, 255));
+          dl->AddCircleFilled(s, 5.0f, handle);
           dl->AddCircle(s, 5.0f, IM_COL32(0x10, 0x10, 0x10, 255), 0, 1.0f);
         }
         else {
           dl->AddCircleFilled(s, 4.0f, IM_COL32(0x20, 0x20, 0x20, 220));
-          dl->AddCircle(s, 4.0f, IM_COL32(0x8f, 0xd8, 0xff, 255), 0, 1.5f);
+          dl->AddCircle(s, 4.0f, handle, 0, 1.5f);
         }
       }
     }
@@ -2147,6 +2285,11 @@ struct AnnotateDrag {
   int guide = -1;
   int point = -1;
   bool creating = false;
+  /* A Line guide: what the drag does to it. It's left alone until the mouse has gone GUIDE_DRAG_START, and
+   * a new one is only made then. */
+  GuideGrab grab = GuideGrab::None;
+  bool dragged = false;
+  bool duplicated = false;
   std::vector<float2> start_points;
   std::vector<DrawingGuide> guides_before;
   int active_before = -1;
@@ -2228,10 +2371,22 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
   AnnotateDrag &d = g_annotate;
   const AnnotateMode mode = d.active ? d.mode : ts.annotate_mode;
   const bool guide_mode = annotate_mode_is_guide(mode);
+  const bool guides_shown = doc.guide_settings.show;
   const float2 mouse = view.to_document(io.MousePos);
   const float px = 1.0f / std::max(view.zoom, 1e-9f);
   const float eraser = ts.annotate_eraser_radius;
   int hovered_guide = -1;
+  /* X or Delete took the guide being dragged: the drag is over. */
+  if (C.wm->guide_deleted) {
+    C.wm->guide_deleted = false;
+    if (d.active) {
+      d = {};
+      return -1;
+    }
+  }
+  if (hovered) {
+    C.wm->guide_hover = -1;
+  }
   /* Ctrl, or the pen's eraser end, erases notes while drawing them. */
   const bool erase_held =
       (mode == AnnotateMode::Draw && io.KeyCtrl) ||
@@ -2241,18 +2396,30 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
   if (hovered && (mode == AnnotateMode::Eraser || erase_held || d.erasing)) {
     dl->AddCircle(io.MousePos, eraser, IM_COL32(0xff, 0xff, 0xff, 170), 0, 1.0f);
   }
-  if (guide_mode && hovered && !d.active) {
+  if (guide_mode && guides_shown && hovered && !d.active) {
     int g = -1, k = -1;
-    if (pick_guide_handle(doc, view, io.MousePos, &g, &k)) {
+    GuideMeasureHit measure = pick_guide_measure(doc, view, io.MousePos);
+    if (measure.guide >= 0) {
+      /* Line guides show nothing for the mouse; X or Delete over one deletes it, as a right-click on or
+       * round one does. */
+      C.wm->guide_hover = measure.guide;
+    }
+    else if (pick_guide_handle(doc, view, io.MousePos, &g, &k)) {
       dl->AddCircle(view.to_screen(doc.guides[size_t(g)].points[size_t(k)]), 8.0f, IM_COL32(0xff, 0xff, 0xff, 220), 0, 1.5f);
       hovered_guide = g;
     }
     else {
-      hovered_guide = pick_guide_line(doc, view, io.MousePos);
+      measure = pick_guide_turn(doc, view, io.MousePos);
+      hovered_guide = measure.guide >= 0 ? -1 : pick_guide_line(doc, view, io.MousePos);
+    }
+    if (measure.guide >= 0 && !io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      operator_call(C, "guide.delete", {{"index", std::to_string(measure.guide)}});
+      g_right_click_spent = true;
+      return -1;
     }
   }
 
-  if (!d.active && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  if (!d.active && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && (guides_shown || !guide_mode)) {
     d = {};
     d.active = true;
     d.area = area.id;
@@ -2276,7 +2443,31 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
       d.guides_before = doc.guides;
       d.active_before = doc.active_guide;
       int g = -1, k = -1;
-      if (pick_guide_handle(doc, view, io.MousePos, &g, &k)) {
+      GuideMeasureHit measure = pick_guide_measure(doc, view, io.MousePos);
+      const bool handle = measure.guide < 0 && pick_guide_handle(doc, view, io.MousePos, &g, &k);
+      if (measure.guide < 0 && !handle) {
+        measure = pick_guide_turn(doc, view, io.MousePos);
+      }
+      if (measure.guide >= 0 && io.KeyAlt) {
+        operator_call(C, "guide.delete", {{"index", std::to_string(measure.guide)}});
+        d = {};
+        return -1;
+      }
+      if (measure.guide >= 0) {
+        d.guide = measure.guide;
+        d.grab = measure.grab;
+        d.point = measure.end;
+        /* Double-clicking its line drags a copy away. */
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+            (measure.grab == GuideGrab::Move || measure.grab == GuideGrab::RotateCenter))
+        {
+          DrawingGuide copy = doc.guides[size_t(measure.guide)];
+          doc.guides.push_back(std::move(copy));
+          d.guide = int(doc.guides.size()) - 1;
+          d.duplicated = true;
+        }
+      }
+      else if (handle) {
         d.guide = g;
         d.point = k;
       }
@@ -2285,24 +2476,35 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
         d.point = -1;
       }
       else {
-        /* On empty canvas: a new guide of the tool's kind, its first handle here, the drag placing the
-         * next. */
-        DrawingGuide made;
-        made.type = annotate_guide_type(mode);
-        made.lines = ts.guide_lines;
         float2 first = mouse;
         if (io.KeyCtrl) {
           first = guide_snap(doc, -1, 0, mouse, GUIDE_SNAP_PIXELS * px, nullptr);
         }
-        const int count = guide_point_count(made.type, ts.guide_points);
-        made.points.assign(size_t(count), first);
-        doc.guides.push_back(std::move(made));
-        d.guide = int(doc.guides.size()) - 1;
-        d.point = count >= 2 ? 1 : 0;
         d.creating = true;
+        if (annotate_guide_type(mode) == GuideType::Line) {
+          /* A click on empty canvas only drops the pick: the drag makes the guide. */
+          d.grab = GuideGrab::Draw;
+          d.point = 1;
+          d.press_document = first;
+        }
+        else {
+          /* On empty canvas: a new guide of the tool's kind, its first handle here, the drag placing the
+           * next. */
+          DrawingGuide made;
+          made.type = annotate_guide_type(mode);
+          made.lines = ts.guide_lines;
+          const int count = guide_point_count(made.type, ts.guide_points);
+          made.points.assign(size_t(count), first);
+          doc.guides.push_back(std::move(made));
+          d.guide = int(doc.guides.size()) - 1;
+          d.point = count >= 2 ? 1 : 0;
+        }
       }
       doc.active_guide = d.guide;
-      d.start_points = doc.guides[size_t(d.guide)].points;
+      C.wm->guide_hover = -1;
+      if (d.guide >= 0) {
+        d.start_points = doc.guides[size_t(d.guide)].points;
+      }
     }
   }
 
@@ -2334,6 +2536,32 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
       annotation_stroke_draw(dl, view, preview, mode == AnnotateMode::Line ? ts.annotate_start : AnnotationEnd::None,
                              mode == AnnotateMode::Line ? ts.annotate_end : AnnotationEnd::None, shown.thickness,
                              color_u32(shown.color));
+    }
+    else if (d.grab != GuideGrab::None) {
+      d.dragged |= moved_by.x * moved_by.x + moved_by.y * moved_by.y > GUIDE_DRAG_START * GUIDE_DRAG_START;
+      if (d.dragged && d.guide < 0) {
+        DrawingGuide made;
+        made.points = {d.press_document, d.press_document};
+        doc.guides.push_back(std::move(made));
+        d.guide = doc.active_guide = int(doc.guides.size()) - 1;
+        d.start_points = doc.guides.back().points;
+      }
+      if (d.dragged && d.guide < int(doc.guides.size())) {
+        DrawingGuide &g = doc.guides[size_t(d.guide)];
+        /* Ctrl: a moving end goes to what's near it, else every drag keeps to its angle steps. */
+        const bool end_moves = d.grab == GuideGrab::Draw || d.grab == GuideGrab::End;
+        d.snapped = false;
+        const float2 to = end_moves && io.KeyCtrl ? guide_snap(doc, d.guide, -1, mouse, GUIDE_SNAP_PIXELS * px, &d.snapped)
+                                                  : mouse;
+        if (d.snapped) {
+          g.points = d.start_points;
+          g.points[size_t(d.point)] = to;
+          dl->AddCircle(view.to_screen(to), 9.0f, IM_COL32(0xff, 0xd0, 0x40, 255), 0, 2.0f);
+        }
+        else {
+          g.points = guide_line_drag(d.grab, d.point, d.start_points, d.press_document, mouse, io.KeyCtrl);
+        }
+      }
     }
     else if (d.guide >= 0 && d.guide < int(doc.guides.size())) {
       DrawingGuide &g = doc.guides[size_t(d.guide)];
@@ -2379,6 +2607,33 @@ static int annotate_tool_input(Context &C, const Area &area, const ViewMapping &
                       {{"points", points_text({d.points[0], mouse})},
                        {"start", annotation_end_identifier(ts.annotate_start)},
                        {"end", annotation_end_identifier(ts.annotate_end)}});
+      }
+    }
+    else if (d.grab != GuideGrab::None) {
+      const bool turning = d.grab == GuideGrab::RotateEnd || d.grab == GuideGrab::RotateCenter;
+      if (d.guide >= 0 && d.guide < int(doc.guides.size())) {
+        DrawingGuide &g = doc.guides[size_t(d.guide)];
+        if (length(g.points[1] - g.points[0]) < std::max(GUIDE_LINE_MIN_LENGTH, GUIDE_DRAG_START * px)) {
+          /* Dragged down to nothing: it goes. */
+          doc.guides.erase(doc.guides.begin() + d.guide);
+          doc.active_guide = -1;
+          if (!d.creating) {
+            push_undo(C, "Delete Guide");
+          }
+        }
+        else if (d.creating) {
+          push_undo(C, "Add Line Guide");
+        }
+        else if (d.duplicated) {
+          push_undo(C, "Duplicate Guide");
+        }
+        else if (d.dragged) {
+          push_undo(C, turning ? "Rotate Guide" : d.grab == GuideGrab::End ? "Move Guide Handle" : "Move Guide");
+        }
+        else if (turning) {
+          /* A click beside the picked guide drops the pick. */
+          doc.active_guide = -1;
+        }
       }
     }
     else if (d.guide >= 0 && d.guide < int(doc.guides.size())) {
@@ -2514,6 +2769,56 @@ static void annotate_header(Context &C)
                                ? &doc.guides[size_t(doc.active_guide)]
                                : nullptr;
     const bool picked_perspective = picked && picked->type == GuideType::Perspective;
+    GuideSettings &look = doc.guide_settings;
+    if (ImGui::Checkbox("Show guides", &look.show)) {
+      g_annotate_header_changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(h * 3.5f);
+    if (ui_drag_int("##guide_hue", &look.hue, 1.0f, 0, 360, "Hue %d", ImGuiSliderFlags_AlwaysClamp)) {
+      g_annotate_header_changed = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Every guide's colour");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(h * 4.5f);
+    if (ui_drag_int("##guide_opacity", &look.opacity, 1.0f, 0, 100, "Opacity %d%%", ImGuiSliderFlags_AlwaysClamp)) {
+      g_annotate_header_changed = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How solid every guide is");
+    }
+    ImGui::SameLine();
+    if (picked && picked->type == GuideType::Line && picked->points.size() >= 2) {
+      ImGui::Text("Length: %.3f", double(length(picked->points[1] - picked->points[0])));
+    }
+    else {
+      ImGui::TextUnformatted("Length: ---");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!picked);
+    if (ImGui::Button("Mirror H")) {
+      operator_call(C, "guide.mirror", {{"axis", "X"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Mirror the picked guide horizontally, across the document's centre");
+    }
+    ImGui::SameLine(0, 1);
+    if (ImGui::Button("Mirror V")) {
+      operator_call(C, "guide.mirror", {{"axis", "Y"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Mirror the picked guide vertically, across the document's centre");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(doc.guides.empty());
+    if (ImGui::Button("Delete All")) {
+      operator_call(C, "guide.delete_all");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
     if (picked_perspective || mode == AnnotateMode::GuidePerspective) {
       /* The picked perspective guide's, else new ones'. */
       const int count = picked_perspective ? int(picked->points.size()) : ts.guide_points;
@@ -2566,7 +2871,8 @@ static void annotate_header(Context &C)
       }
       ImGui::SameLine();
     }
-    ImGui::TextDisabled("Drag to make a guide  |  Drag a handle to change it, its line to move it  |  Ctrl: snap");
+    ImGui::TextDisabled("Drag to make a guide  |  Drag an end or its line  |  Beside the picked one: turn  |  Ctrl: snap  "
+                        "|  Double-click: copy  |  Right-click or X: delete");
   }
   if (g_annotate_header_changed && !ImGui::IsAnyItemActive()) {
     push_undo(C, "Change Annotation");
@@ -11807,6 +12113,13 @@ static bool layer_pick_wanted(Context &C, const ViewMapping &view)
       pick_handle(C, view, ImGui::GetIO().MousePos, handles_shown(C.document->overlays, ts)).layer)
   {
     return false;
+  }
+  /* Alt-click on a guide line deletes it. */
+  if (ts.tool == Tool::Annotate && annotate_mode_is_guide(ts.annotate_mode) && C.document->guide_settings.show) {
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    if (pick_guide_measure(*C.document, view, mouse).guide >= 0 || pick_guide_turn(*C.document, view, mouse).guide >= 0) {
+      return false;
+    }
   }
   return true;
 }

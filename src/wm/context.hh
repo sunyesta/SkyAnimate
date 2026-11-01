@@ -351,6 +351,9 @@ struct WindowManager {
     uint64_t layer = 0;
     int card = 0, step = 0, child = -1;
   } mask_area_hover;
+  /* The guide line under the mouse with a guide tool (-1: none), and that X or Delete just took a guide. */
+  int guide_hover = -1;
+  bool guide_deleted = false;
   /* The active masking area: `step` -1 is the base, `child` >= 0 one inside that group. */
   struct MaskAreaPick {
     uint64_t layer = 0;

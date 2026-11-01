@@ -1501,6 +1501,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return py::make_tuple(list, doc.active_guide);
   });
+  m.def("guide_settings", []() {
+    const GuideSettings &s = current_context().document->guide_settings;
+    py::dict d;
+    d["show"] = s.show;
+    d["hue"] = s.hue;
+    d["opacity"] = s.opacity;
+    return d;
+  });
   m.def("move_options", []() {
     const MoveOptions o = viewport_move_options(*current_context().document);
     py::dict d;

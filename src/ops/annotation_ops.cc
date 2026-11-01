@@ -132,17 +132,18 @@ float2 guide_snap(const Document &doc, int guide, int point, float2 p, float rad
     if (g == guide || other.hidden || other.points.empty()) {
       continue;
     }
-    float2 a = other.points[0], dir;
+    float2 a = other.points[0], on;
     if (other.type == GuideType::Line && other.points.size() >= 2) {
-      dir = normalize(other.points[1] - a);
+      const float2 span = other.points[1] - a;
+      on = a + span * std::clamp(dot(p - a, span) / std::max(dot(span, span), 1e-12f), 0.0f, 1.0f);
     }
     else if (other.type == GuideType::Perspective) {
-      dir = other.points.size() >= 2 ? normalize(other.points[1] - a) : float2(1.0f, 0.0f);
+      const float2 dir = other.points.size() >= 2 ? normalize(other.points[1] - a) : float2(1.0f, 0.0f);
+      on = a + dir * dot(p - a, dir);
     }
     else {
       continue;
     }
-    const float2 on = a + dir * dot(p - a, dir);
     const float d = length(on - p);
     if (d < best) {
       best = d;
@@ -308,7 +309,7 @@ void annotation_operators_register()
     OperatorType ot;
     ot.idname = "guide.add";
     ot.name = "Add Guide";
-    ot.description = "Add a drawing guide and pick it: type= LINE (an endless line through its two points), "
+    ot.description = "Add a drawing guide and pick it: type= LINE (a measure between its two points), "
                      "PERSPECTIVE (one to three vanishing points) or GRID (origin, then a cell's corner); points=\"x "
                      "y x y ...\" (document space); lines= (perspective: how many round each point)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
@@ -429,18 +430,122 @@ void annotation_operators_register()
     operators().add(std::move(ot));
   }
   {
-    /* X or Delete over the viewport with a guide tool: the picked guide goes (the keymap tries this first). */
+    OperatorType ot;
+    ot.idname = "guide.delete_all";
+    ot.name = "Delete All Guides";
+    ot.description = "Delete every drawing guide";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = have_guides;
+    ot.exec = [](Context &C) {
+      C.document->guides.clear();
+      C.document->active_guide = -1;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "guide.settings";
+    ot.name = "Guide Settings";
+    ot.description = "How all the guides show: show=, hue= (0 to 360), opacity= (0 to 100)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = have_document;
+    ot.exec = [](Context &C) {
+      GuideSettings &s = C.document->guide_settings;
+      if (op_has_arg(C, "show")) {
+        s.show = op_arg_bool(C, "show");
+      }
+      s.hue = std::clamp(op_arg_int(C, "hue", s.hue), 0, 360);
+      s.opacity = std::clamp(op_arg_int(C, "opacity", s.opacity), 0, 100);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "guide.mirror";
+    ot.name = "Mirror Guide";
+    ot.description = "Mirror guide index= (the picked one by default) across the document's centre: axis= X "
+                     "(left to right) or Y (top to bottom)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = have_guides;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const int i = index_arg(C, "index", doc.active_guide, doc.guides.size());
+      const std::string axis = op_arg(C, "axis", "X");
+      if (i < 0 || doc.guides[size_t(i)].locked || (axis != "X" && axis != "Y")) {
+        return OpStatus::Cancelled;
+      }
+      for (float2 &p : doc.guides[size_t(i)].points) {
+        (axis == "X" ? p.x : p.y) *= -1.0f;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "guide.drag";
+    ot.name = "Drag Guide";
+    ot.description = "What the Annotate tool's drag does to Line guide index= (the picked one by default): grab= "
+                     "END, ROTATE_END, ROTATE_CENTER or MOVE, from end= (0 or 1), press=\"x y\" to mouse=\"x y\" "
+                     "(document space); snap=1 keeps to the angle steps, as Ctrl does";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = have_guides;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const int i = index_arg(C, "index", doc.active_guide, doc.guides.size());
+      if (i < 0 || doc.guides[size_t(i)].type != GuideType::Line || doc.guides[size_t(i)].locked) {
+        return OpStatus::Cancelled;
+      }
+      const std::string name = op_arg(C, "grab", "MOVE");
+      const GuideGrab grab = name == "END"             ? GuideGrab::End
+                             : name == "ROTATE_END"    ? GuideGrab::RotateEnd
+                             : name == "ROTATE_CENTER" ? GuideGrab::RotateCenter
+                             : name == "MOVE"          ? GuideGrab::Move
+                                                       : GuideGrab::None;
+      const std::vector<float2> press = parse_points(op_arg(C, "press"));
+      const std::vector<float2> mouse = parse_points(op_arg(C, "mouse"));
+      if (grab == GuideGrab::None || press.size() != 1 || mouse.size() != 1) {
+        report(ReportType::Error, "grab is END, ROTATE_END, ROTATE_CENTER or MOVE; press and mouse are \"x y\"");
+        return OpStatus::Cancelled;
+      }
+      DrawingGuide &g = doc.guides[size_t(i)];
+      g.points = guide_line_drag(grab, op_arg_int(C, "end", 1), g.points, press[0], mouse[0], op_arg_bool(C, "snap"));
+      guide_validate(g);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    /* X or Delete over the viewport with a guide tool: the guide line under the mouse goes, else the picked
+     * guide, which is the one being dragged during a drag (the keymap tries this first). */
     OperatorType ot;
     ot.idname = "guide.delete_picked";
     ot.name = "Delete Guide";
-    ot.description = "Delete the picked guide, while a guide tool is active";
+    ot.description = "Delete the guide line under the mouse, else the picked guide, while a guide tool is active";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) {
-      return C.document && C.wm && C.wm->tool_settings.tool == Tool::Annotate &&
-             annotate_mode_is_guide(C.wm->tool_settings.annotate_mode) && C.document->active_guide >= 0 &&
-             C.document->active_guide < int(C.document->guides.size());
+      if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::Annotate ||
+          !annotate_mode_is_guide(C.wm->tool_settings.annotate_mode))
+      {
+        return false;
+      }
+      const int count = int(C.document->guides.size());
+      return C.wm->guide_hover < count && (C.wm->guide_hover >= 0 || (C.document->active_guide >= 0 && C.document->active_guide < count));
     };
-    ot.exec = guide_delete_exec;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const int i = C.wm->guide_hover >= 0 ? C.wm->guide_hover : doc.active_guide;
+      if (i < 0 || i >= int(doc.guides.size())) {
+        return OpStatus::Cancelled;
+      }
+      doc.guides.erase(doc.guides.begin() + i);
+      doc.active_guide = doc.active_guide == i ? -1 : doc.active_guide - (doc.active_guide > i ? 1 : 0);
+      C.wm->guide_hover = -1;
+      C.wm->guide_deleted = true;
+      return OpStatus::Finished;
+    };
     operators().add(std::move(ot));
   }
 }

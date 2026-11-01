@@ -173,6 +173,7 @@ struct Document {
   int active_annotation = 0;
   std::vector<DrawingGuide> guides;
   int active_guide = -1;
+  GuideSettings guide_settings;
 
   /* The active shape (Blender's active element): the shape last clicked, in the viewport or the
    * Shape tab's list, by its layer and its id. The Shape and Material panels show it while it's
