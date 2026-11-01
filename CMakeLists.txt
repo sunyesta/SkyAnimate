@@ -22,6 +22,7 @@ set(OANIM_SOURCES
   src/anim/subdivide.cc
   src/anim/vector_deform.cc
   src/anim/shape_limit.cc
+  src/anim/follow_point.cc
   src/anim/keep_poses.cc
   src/anim/merge.cc
   src/anim/draw_order.cc
@@ -232,6 +233,8 @@ add_test(NAME render_svg
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_render_svg.py)
 add_test(NAME export_pdf
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_export_pdf.py)
+add_test(NAME follow_point
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point.py)
 add_test(NAME annotations
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_annotations.py)
 add_test(NAME bone_move_options

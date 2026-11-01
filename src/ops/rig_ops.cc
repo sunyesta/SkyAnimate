@@ -454,6 +454,7 @@ static std::vector<std::string> bone_constraint_driven_fields(BoneConstraintType
     case BoneConstraintType::IndependentAngle:
     case BoneConstraintType::TrackTo:
     case BoneConstraintType::StretchTo:
+    case BoneConstraintType::FollowPoint:
       break;
   }
   return fields;
@@ -1342,7 +1343,7 @@ void rig_operators_register()
   };
   rig_operator("armature.constraint_add", "Add Bone Constraint",
                "Add a constraint (type=LIMIT_ANGLE, INDEPENDENT_ANGLE, MAINTAIN_VOLUME, COPY_ANGLE, COPY_POSITION, "
-               "COPY_SCALE, TRACK_TO, STRETCH_TO, IK or DYNAMICS) to the bone `bone` (default: the active bone)",
+               "COPY_SCALE, TRACK_TO, STRETCH_TO, IK, FOLLOW_POINT or DYNAMICS) to the bone `bone` (default: the active bone)",
                bone_layer_active, [constraint_bone](Context &C) {
                  Bone *bone = constraint_bone(C);
                  BoneConstraintType type;
@@ -3375,6 +3376,7 @@ void rig_operators_register()
                  }
                  Modifier copy = layer.modifiers[index];
                  copy.uid = 0;
+                 copy.id = 0;
                  /* Blender's names: "Boolean.001", the next number free. */
                  std::string base = copy.name;
                  if (const size_t dot = base.rfind('.');

@@ -701,6 +701,9 @@ static json layer_to_json(const Layer &layer)
       }
       if (modifier_is_deform(m.type)) {
         mj["layer"] = m.deform_layer;
+        if (m.id != 0) {
+          mj["id"] = m.id;
+        }
         mj["shape"] = m.deform_shape;
         mj["weights"] = m.deform_custom ? "CUSTOM" : "AUTOMATIC";
         mj["group"] = m.deform_group;
@@ -828,6 +831,11 @@ static json layer_to_json(const Layer &layer)
                      {"max_stretch", num(c.max_stretch)},
                      {"shape_layer", c.shape_layer},
                      {"shape", c.shape_id},
+                     {"follow_layer", c.follow_layer},
+                     {"follow_modifier", c.follow_modifier},
+                     {"follow_point", {num(c.follow_point.x), num(c.follow_point.y)}},
+                     {"follow_rest", {num(c.follow_rest.x), num(c.follow_rest.y)}},
+                     {"follow_show", c.follow_show},
                      {"fit", c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER"},
                      {"fit_layer", c.fit_layer},
                      {"overlap", num(c.overlap)},
@@ -2306,6 +2314,7 @@ static Layer layer_from_json(const json &j, int depth)
       /* The single Vector Deform of before: Curve, Cage or Mesh Deform by its shape, once all is read. */
       m.deform_legacy = type == "VECTOR_DEFORM";
       m.deform_layer = get_id(mj, "layer");
+      m.id = get_id(mj, "id");
       m.deform_shape = get_id(mj, "shape");
       m.deform_custom = get_string(mj, "weights", "AUTOMATIC") == "CUSTOM";
       m.deform_group = get_string(mj, "group", "");
@@ -2546,6 +2555,15 @@ static Layer layer_from_json(const json &j, int depth)
       c.max_stretch = std::max(1.0f, get_float(cj, "max_stretch", 1.0f));
       c.shape_layer = get_id(cj, "shape_layer");
       c.shape_id = get_id(cj, "shape");
+      c.follow_layer = get_id(cj, "follow_layer");
+      c.follow_modifier = get_id(cj, "follow_modifier");
+      if (const auto it = cj.find("follow_point"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_point = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      if (const auto it = cj.find("follow_rest"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_rest = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      c.follow_show = get_bool(cj, "follow_show", false);
       c.shape_fit = get_string(cj, "fit", "WHOLE") == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
       c.fit_layer = get_id(cj, "fit_layer");
       c.overlap = std::clamp(get_float(cj, "overlap", 0.0f), 0.0f, 1.0f);

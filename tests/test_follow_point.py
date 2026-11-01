@@ -1,0 +1,357 @@
+"""Follow Point: a bone stays on a bending shape without bending, by a point of its own that a deform carries.
+
+- Its point starts at the bone's head, and only the point's change reaches the bone: nothing jumps, and keys still work.
+- It goes where the deform puts that point, on a drawing's deform and on a group's, by Strength and Influence.
+- Position only: the bone doesn't turn or scale.
+- The point moves separately from the bone, and two bones on one cage keep their own places.
+- A bone above it moving the shape counts once: a face feature on a head its own bones move.
+- A bone that moves its own shape, however it does, is refused and says why; nothing drifts while a frame is held.
+- Chains go in order, whatever order the layers are in. Saved with the file; a deleted deform says so.
+
+Run with:  OpenAnimate --background --python tests/test_follow_point.py
+"""
+
+import math
+import os
+import shutil
+import tempfile
+
+import oanim
+
+doc = oanim.data.document
+layers = oanim.data.layers
+ops = oanim.ops
+doc.frame_current = 0
+anchor = layers.active
+
+
+def close(a, b, eps=1e-3):
+    return abs(a[0] - b[0]) < eps and abs(a[1] - b[1]) < eps
+
+
+def new_layer(name):
+    layers.active = anchor
+    ops.layer.new()
+    layer = layers.active
+    layer.name = name
+    return layer
+
+
+def new_rig(name):
+    layers.active = anchor
+    assert ops.layer.new_bone() == {'FINISHED'}
+    rig = layers.active
+    rig.name = name
+    return rig
+
+
+def new_group(name, *children):
+    layers.active = anchor
+    assert ops.layer.new_group() == {'FINISHED'}
+    group = layers.active
+    group.name = name
+    for child in children:
+        layers.active = child
+        assert ops.layer.move_to_group(group=str(group.id)) == {'FINISHED'}
+    return group
+
+
+def box(name, lo=(-1, -1), hi=(1, 1)):
+    layer = new_layer(name)
+    assert layer.add_primitive("BOX", [lo, hi])
+    return layer
+
+
+def add_deform(layer, shape, kind="CAGE_DEFORM"):
+    layers.active = layer
+    assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    index = len(layer.modifiers) - 1
+    layer.modifier_set(index, layer=shape.name, shape=shape.shapes[0][0])
+    return layer.modifiers[index]["name"]
+
+
+def add_bone(rig, name, head, tail=None, parent=None):
+    at(0)
+    layers.active = rig
+    tail = tail or (head[0] + 0.2, head[1])
+    assert ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]), tail_y=str(tail[1])) == {'FINISHED'}
+    ops.armature.bone_parent_set(bone=name, parent=parent or "")
+
+
+def follow(rig, bone, layer, deform):
+    layers.active = rig
+    assert ops.armature.constraint_add(bone=bone, type="FOLLOW_POINT") == {'FINISHED'}
+    index = len(rig.bone_constraints(bone)) - 1
+    rig.bone_constraint_set(bone, index, follow_deform=(layer.name, deform))
+    return index
+
+
+def at(frame):
+    doc.frame_current = frame + 1
+    doc.frame_current = frame
+
+
+def head(rig, bone):
+    return rig.bone_pose(bone)[:2]
+
+
+def move_box(cage, offset, frame=10):
+    """Every point of the cage moved, on that frame."""
+    doc.frame_current = 0
+    rest = [p[:2] for p in cage.points]
+    doc.frame_current = frame
+    for i, p in enumerate(rest):
+        cage.set_point(i, (p[0] + offset[0], p[1] + offset[1]))
+    at(frame)
+
+
+def constraint(rig, bone, index=0):
+    return rig.bone_constraints(bone)[index]
+
+
+# --- A drawing's deform ---------------------------------------------------------------------------------------
+cage = box("Cage")
+art = box("Art", (-0.5, -0.5), (0.5, 0.5))
+deform = add_deform(art, cage)
+rig = new_rig("Rig")
+add_bone(rig, "eye", (0.25, 0.25))
+assert rig.bone_constraints("eye") == []
+i = follow(rig, "eye", art, deform)
+c = constraint(rig, "eye")
+assert c["type"] == "FOLLOW_POINT" and c["name"] == "Follow Point"
+assert c["follow_layer"] == "Art" and c["follow_modifier"] == deform and c["follow_error"] == "", c
+assert close(c["follow_point"], (0.25, 0.25)), ("starts at the bone's head", c)
+assert not c["show_follow_point"]
+
+at(0)
+assert close(head(rig, "eye"), (0.25, 0.25))
+move_box(cage, (0.5, 0.0))
+assert close(head(rig, "eye"), (0.75, 0.25)), head(rig, "eye")
+assert close(constraint(rig, "eye")["follow_now"], (0.75, 0.25)), "where it is shown"
+at(5)
+assert close(head(rig, "eye"), (0.5, 0.25)), ("between the keys", head(rig, "eye"))
+at(0)
+assert close(head(rig, "eye"), (0.25, 0.25)), "frame 0 is the rest"
+
+# Only position reaches it.
+doc.frame_current = 10
+for index, p in enumerate(cage.points):
+    if p[0] > 0:
+        cage.set_point(index, (p[0], p[1] + p[0]))
+at(10)
+pose = rig.bone_pose("eye")
+assert abs(pose[3] - pose[1]) < 1e-3, ("no turn from a slanted cage", pose)
+assert abs(pose[2] - pose[0] - 0.2) < 1e-3, ("no scale", pose)
+
+# Strength and Influence take part of it, and keys on the bone stay on top.
+at(0)
+move_box(cage, (0.5, 0.0))
+at(10)
+assert close(head(rig, "eye"), (0.75, 0.25))
+rig.bone_constraint_set("eye", i, influence=0.5)
+at(10)
+assert close(head(rig, "eye"), (0.5, 0.25)), head(rig, "eye")
+rig.bone_constraint_set("eye", i, influence=1.0)
+art.modifier_set(0, strength=0.5)
+at(10)
+assert close(head(rig, "eye"), (0.5, 0.25)), head(rig, "eye")
+art.modifier_set(0, strength=1.0)
+rig.bone_constraint_set("eye", i, enabled=False)
+at(10)
+assert close(head(rig, "eye"), (0.25, 0.25)), "off, it stays"
+rig.bone_constraint_set("eye", i, enabled=True)
+doc.frame_current = 10
+rig.bone_set("eye", position=(0.25, 0.35))
+at(10)
+assert close(head(rig, "eye"), (0.75, 0.35)), ("its own keys on top", head(rig, "eye"))
+doc.frame_current = 10
+rig.bone_set("eye", position=(0.25, 0.25))
+at(10)
+
+# The point moves apart from the bone, and hiding it changes nothing.
+at(0)
+rig.bone_constraint_set("eye", i, follow_point=(-0.25, 0.0), show_follow_point=True)
+assert close(head(rig, "eye"), (0.25, 0.25)), "the bone stays when its point moves at rest"
+at(10)
+assert close(head(rig, "eye"), (0.75, 0.25)), "a cage moved whole moves it the same"
+assert close(constraint(rig, "eye")["follow_now"], (0.25, 0.0))
+rig.bone_constraint_set("eye", i, show_follow_point=False)
+at(10)
+assert close(head(rig, "eye"), (0.75, 0.25)), "hidden, it still follows"
+
+# Two bones on one cage keep their own places: a corner pulled moves the near one more.
+add_bone(rig, "far", (-0.75, -0.75))
+far = follow(rig, "far", art, deform)
+assert close(constraint(rig, "far")["follow_point"], (-0.75, -0.75))
+at(10)
+assert close(head(rig, "far"), (-0.25, -0.75)), head(rig, "far")
+rig.bone_constraint_set("eye", i, follow_point=(0.25, 0.25))
+
+# --- A group's deform, as the mouth cage is -----------------------------------------------------------------------
+at(0)
+group_cage = box("GroupCage")
+inside = box("Inside", (-0.5, -0.5), (0.5, 0.5))
+group = new_group("Group", inside)
+group_deform = add_deform(group, group_cage)
+group_rig = new_rig("GroupRig")
+add_bone(group_rig, "stud", (0.25, 0.25))
+g = follow(group_rig, "stud", group, group_deform)
+assert constraint(group_rig, "stud")["follow_error"] == "", constraint(group_rig, "stud")
+move_box(group_cage, (0.4, 0.0))
+assert close(head(group_rig, "stud"), (0.65, 0.25)), head(group_rig, "stud")
+# What moves the group stays on top of the deform.
+doc.frame_current = 10
+group.location_y = 0.3
+at(10)
+assert close(head(group_rig, "stud"), (0.65, 0.55)), head(group_rig, "stud")
+doc.frame_current = 10
+group.location_y = 0.0
+at(10)
+
+# --- A face feature on a head its own bones move -----------------------------------------------------------------
+at(0)
+face = new_rig("Face")
+add_bone(face, "head", (0.0, 0.0), (0.0, 1.0))
+add_bone(face, "stud", (0.5, 0.5), parent="head")
+head_cage = box("HeadCage")
+head_art = box("HeadArt", (-0.8, -0.8), (0.8, 0.8))
+for layer in (head_cage, head_art):
+    layers.active = layer
+    assert ops.layer.move_to_group(group=str(face.id)) == {'FINISHED'}
+layers.active = head_cage
+assert ops.layer.parent_bone_set(bone="head") == {'FINISHED'}
+head_deform = add_deform(head_art, head_cage)
+f = follow(face, "stud", head_art, head_deform)
+c = constraint(face, "stud")
+assert c["follow_error"] == "", ("the head moving the cage is no loop for a bone on it", c)
+# The head turning carries the cage and the stud: that counts once.
+doc.frame_current = 10
+face.bone_set("head", angle=face.bones[0]["setup_angle"] + math.pi / 2)
+at(10)
+turned = (-0.5, 0.5)
+assert close(head(face, "stud"), turned, 1e-2), ("carried once", head(face, "stud"), constraint(face, "stud"))
+assert close(constraint(face, "stud")["follow_offset"], (0, 0), 1e-2), constraint(face, "stud")
+
+# A group the same bone moves: the turn reaches the bone through the group, and counts once.
+at(0)
+carrier = new_rig("Carrier")
+add_bone(carrier, "turn", (0.0, 0.0), (0.0, 1.0))
+add_bone(carrier, "free", (0.5, 0.5))
+carried_cage = box("CarriedCage")
+carried_art = box("CarriedArt", (-0.8, -0.8), (0.8, 0.8))
+carried_group = new_group("CarriedGroup", carried_art)
+for layer in (carried_cage, carried_group):
+    layers.active = layer
+    assert ops.layer.move_to_group(group=str(carrier.id)) == {'FINISHED'}
+    assert ops.layer.parent_bone_set(bone="turn") == {'FINISHED'}
+carried_deform = add_deform(carried_group, carried_cage)
+follow(carrier, "free", carried_group, carried_deform)
+assert constraint(carrier, "free")["follow_error"] == "", constraint(carrier, "free")
+doc.frame_current = 10
+carrier.bone_set("turn", angle=carrier.bones[0]["setup_angle"] + math.pi / 2)
+at(10)
+assert close(head(carrier, "free"), (-0.5, 0.5), 1e-2), ("once, not twice", head(carrier, "free"), constraint(carrier, "free"))
+
+# --- Loops are refused and say so -------------------------------------------------------------------------------
+at(0)
+loop_rig = new_rig("LoopRig")
+add_bone(loop_rig, "root", (0.0, 0.0))
+add_bone(loop_rig, "chaser", (0.5, 0.0))
+loop_cage = box("LoopCage")
+loop_art = box("LoopArt", (-0.5, -0.5), (0.5, 0.5))
+for layer in (loop_cage,):
+    layers.active = layer
+    assert ops.layer.move_to_group(group=str(loop_rig.id)) == {'FINISHED'}
+    assert ops.layer.parent_bone_set(bone="chaser") == {'FINISHED'}
+loop_deform = add_deform(loop_art, loop_cage)
+n = follow(loop_rig, "chaser", loop_art, loop_deform)
+at(10)
+error = constraint(loop_rig, "chaser")["follow_error"]
+assert error.startswith("Loop"), error
+assert constraint(loop_rig, "chaser")["follow_offset"] == (0.0, 0.0)
+# Through a target too: root copies chaser, the cage follows root.
+at(0)
+layers.active = loop_cage
+assert ops.layer.parent_bone_set(bone="root") == {'FINISHED'}
+at(10)
+assert constraint(loop_rig, "chaser")["follow_error"] == "", "the bone it follows no longer moves it"
+layers.active = loop_rig
+assert ops.armature.constraint_add(bone="root", type="COPY_POSITION") == {'FINISHED'}
+loop_rig.bone_constraint_set("root", 0, target="chaser", follow_move=True)
+at(10)
+assert constraint(loop_rig, "chaser")["follow_error"].startswith("Loop"), constraint(loop_rig, "chaser")
+loop_rig.bone_constraint_set("root", 0, target="")
+at(10)
+assert constraint(loop_rig, "chaser")["follow_error"] == ""
+
+# Two rigs following each other.
+at(0)
+rig_a, rig_b = new_rig("RigA"), new_rig("RigB")
+add_bone(rig_a, "a", (0.0, 0.0))
+add_bone(rig_b, "b", (0.0, 0.0))
+cage_a, cage_b = box("CageA"), box("CageB")
+art_a, art_b = box("ArtA", (-0.5, -0.5), (0.5, 0.5)), box("ArtB", (-0.5, -0.5), (0.5, 0.5))
+for cage_layer, r, bone in ((cage_a, rig_a, "a"), (cage_b, rig_b, "b")):
+    layers.active = cage_layer
+    assert ops.layer.move_to_group(group=str(r.id)) == {'FINISHED'}
+    assert ops.layer.parent_bone_set(bone=bone) == {'FINISHED'}
+deform_a, deform_b = add_deform(art_a, cage_a), add_deform(art_b, cage_b)
+follow(rig_a, "a", art_b, deform_b)
+follow(rig_b, "b", art_a, deform_a)
+at(10)
+assert constraint(rig_a, "a")["follow_error"].startswith("Loop"), constraint(rig_a, "a")
+assert constraint(rig_b, "b")["follow_error"].startswith("Loop"), constraint(rig_b, "b")
+held = [head(rig_a, "a"), head(rig_b, "b")]
+for _ in range(5):
+    at(10)
+assert held == [head(rig_a, "a"), head(rig_b, "b")], "nothing drifts while a frame is held"
+
+# --- A chain: first rig follows a cage the second rig's follower moves, whichever comes first in the layers ----------
+at(0)
+for later_first in (False, True):
+    first_name, second_name = ("Second", "First") if later_first else ("First", "Second")
+    rig_1 = new_rig("Chain" + first_name)
+    rig_2 = new_rig("Chain" + second_name)
+    add_bone(rig_1, "one", (0.0, 0.0))
+    add_bone(rig_2, "two", (0.0, 0.0))
+    base = box("Base" + first_name)
+    base_art = box("BaseArt" + first_name, (-0.5, -0.5), (0.5, 0.5))
+    middle = box("Middle" + first_name)
+    middle_art = box("MiddleArt" + first_name, (-0.5, -0.5), (0.5, 0.5))
+    layers.active = middle
+    assert ops.layer.move_to_group(group=str(rig_2.id)) == {'FINISHED'}
+    assert ops.layer.parent_bone_set(bone="two") == {'FINISHED'}
+    follow(rig_2, "two", base_art, add_deform(base_art, base))
+    follow(rig_1, "one", middle_art, add_deform(middle_art, middle))
+    move_box(base, (0.3, 0.0))
+    assert close(head(rig_2, "two"), (0.3, 0.0)), head(rig_2, "two")
+    assert close(head(rig_1, "one"), (0.3, 0.0)), ("in order", later_first, head(rig_1, "one"))
+    at(0)
+
+# --- Saved, and a deleted deform says so -------------------------------------------------------------------------
+at(0)
+rig.bone_constraint_set("eye", i, show_follow_point=True)
+folder = tempfile.mkdtemp(prefix="oanim_follow_point_")
+try:
+    path = os.path.join(folder, "follow.oanim")
+    assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+    assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
+    rig = next(l for l in layers.all() if l.name == "Rig")
+    art = next(l for l in layers.all() if l.name == "Art")
+    c = constraint(rig, "eye")
+    assert c["follow_layer"] == "Art" and c["follow_modifier"] == deform and c["show_follow_point"], c
+    assert close(c["follow_point"], (0.25, 0.25)), c
+    at(10)
+    assert close(head(rig, "eye"), (0.75, 0.25)), head(rig, "eye")
+    layers.active = art
+    assert ops.object.modifier_remove(index="0") == {'FINISHED'}
+    at(10)
+    assert constraint(rig, "eye")["follow_error"] == "Its deform is gone", constraint(rig, "eye")
+    assert close(head(rig, "eye"), (0.25, 0.25)), head(rig, "eye")
+    ops.ed.undo()
+    at(10)
+    assert close(head(rig, "eye"), (0.75, 0.25)), "undo brings it back"
+finally:
+    shutil.rmtree(folder, ignore_errors=True)
+
+print("follow_point: ok")

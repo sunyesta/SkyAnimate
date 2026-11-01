@@ -18,6 +18,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/follow_point.hh"
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
 #include "anim/drivers.hh"
@@ -3905,8 +3906,8 @@ static void constraints_panel(Context &C, Layer &armature)
         {"Tracking", {BoneConstraintType::TrackTo, BoneConstraintType::StretchTo, BoneConstraintType::IK,
                       BoneConstraintType::LookAt}},
         {"Limit", {BoneConstraintType::LimitShape}},
-        {"Relationship", {BoneConstraintType::ChildOf, BoneConstraintType::IndependentAngle,
-                          BoneConstraintType::MaintainVolume}},
+        {"Relationship", {BoneConstraintType::ChildOf, BoneConstraintType::FollowPoint,
+                          BoneConstraintType::IndependentAngle, BoneConstraintType::MaintainVolume}},
         {"Physics", {BoneConstraintType::Dynamics}},
     };
     for (const auto &[group, types] : groups) {
@@ -4492,6 +4493,53 @@ static void constraints_panel(Context &C, Layer &armature)
                               "it shows (Blender's Affect Transform). Off, only where it shows is held: its position can\n"
                               "go on past the edge, and has to come all the way back before it moves again");
           }
+          break;
+        }
+        case BoneConstraintType::FollowPoint: {
+          modifier_row_label("Deform", column, "The Curve, Cage or Mesh Deform to follow. The bone takes the move it gives a\n"
+                                               "point of its own, which starts at the bone's head, and doesn't bend");
+          Layer *owner = nullptr;
+          const Modifier *followed = follow_point_modifier(doc, c, &owner);
+          const std::string shown = followed ? owner->name + ": " + followed->name : std::string("None");
+          if (ImGui::BeginCombo("##follow_deform", shown.c_str(), ImGuiComboFlags_HeightLarge)) {
+            if (ImGui::Selectable("None", !followed)) {
+              follow_point_aim(doc, armature, *bone, c, nullptr, nullptr);
+              C.undo->push("Follow Point", doc);
+            }
+            for (const Layer *l : document_layers_flat(doc)) {
+              Layer &candidate = *layer_find(doc, l->id);
+              for (Modifier &m : candidate.modifiers) {
+                if (!modifier_is_deform(m.type)) {
+                  continue;
+                }
+                const std::string label = candidate.name + ": " + m.name;
+                ImGui::PushID(&m);
+                if (ImGui::Selectable(label.c_str(), &m == followed)) {
+                  follow_point_aim(doc, armature, *bone, c, &candidate, &m);
+                  C.undo->push("Follow Point", doc);
+                }
+                ImGui::PopID();
+              }
+            }
+            ImGui::EndCombo();
+          }
+          modifier_row_label("", column);
+          if (ImGui::Checkbox("Show Follow Point", &c.follow_show)) {
+            C.undo->push("Follow Point", doc);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Shows the point in the viewport, light blue. Drag it on frame 0 to choose the place this\n"
+                              "bone follows. Hiding it changes nothing");
+          }
+          modifier_row_label("", column);
+          ImGui::PushTextWrapPos(0.0f);
+          if (!c.follow_error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", c.follow_error.c_str());
+          }
+          else {
+            ImGui::TextDisabled("Smart actions, drivers, Dynamics and Delay don't see this move.");
+          }
+          ImGui::PopTextWrapPos();
           break;
         }
         case BoneConstraintType::ChildOf: {

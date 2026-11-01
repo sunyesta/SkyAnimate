@@ -12,11 +12,11 @@ namespace oanim {
 static const char *const CONSTRAINT_IDS[BONE_CONSTRAINT_TYPES] = {
     "LIMIT_ANGLE", "INDEPENDENT_ANGLE", "MAINTAIN_VOLUME", "COPY_ANGLE", "COPY_POSITION",
     "COPY_SCALE",  "TRACK_TO",          "STRETCH_TO",     "IK",         "DYNAMICS", "LIMIT_SHAPE",
-    "CHILD_OF",    "LOOK_AT"};
+    "CHILD_OF",    "LOOK_AT",           "FOLLOW_POINT"};
 static const char *const CONSTRAINT_NAMES[BONE_CONSTRAINT_TYPES] = {
     "Limit Angle", "Independent Angle", "Maintain Volume", "Copy Angle", "Copy Position",
     "Copy Scale",  "Track To",          "Stretch To",       "IK",         "Dynamics", "Limit to Shape",
-    "Child Of",    "Look At"};
+    "Child Of",    "Look At",           "Follow Point"};
 
 const char *bone_constraint_identifier(BoneConstraintType type)
 {
@@ -518,6 +518,10 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
                 position += (parent_pose.inverted().apply(goal) - position) * (c.factor * w);
               }
             }
+            break;
+          case BoneConstraintType::FollowPoint:
+            /* On top of what its parent gives it (anim/follow_point.hh). */
+            position += parent_pose.inverted().apply_vector(c.follow_offset) * w;
             break;
           case BoneConstraintType::ChildOf:
             if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {

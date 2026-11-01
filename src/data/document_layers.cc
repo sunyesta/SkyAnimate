@@ -671,6 +671,7 @@ void layer_links_map(Layer &layer, const std::function<uint64_t(uint64_t)> &map)
     for (BoneConstraint &c : b.constraints) {
       link(c.shape_layer);
       link(c.fit_layer);
+      link(c.follow_layer);
     }
   }
   for (Modifier &mod : layer.modifiers) {

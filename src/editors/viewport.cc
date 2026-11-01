@@ -31,6 +31,7 @@
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
+#include "anim/follow_point.hh"
 #include "anim/switch.hh"
 #include "anim/dynamics.hh"
 #include "data/driver.hh"
@@ -12112,6 +12113,106 @@ static bool layer_pick_wanted(Context &C, const ViewMapping &view)
   return true;
 }
 
+/* --- Follow Point's light blue points (anim/follow_point.hh) --- */
+
+static constexpr float FOLLOW_POINT_RADIUS = 5.0f;
+static constexpr float FOLLOW_POINT_PICK = 9.0f;
+
+/* Every Show Follow Point constraint's. */
+template<typename Fn> static void for_each_shown_follow_point(Document &doc, Fn &&fn)
+{
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (!flat->is_bone_layer()) {
+      continue;
+    }
+    Layer &rig = *layer_find(doc, flat->id);
+    for (Bone &bone : rig.bones) {
+      for (BoneConstraint &c : bone.constraints) {
+        if (c.type == BoneConstraintType::FollowPoint && c.follow_show && c.follow_layer != 0) {
+          fn(rig, bone, c);
+        }
+      }
+    }
+  }
+}
+
+static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &view)
+{
+  Document &doc = *C.document;
+  if (!doc.overlays.show) {
+    return;
+  }
+  for_each_shown_follow_point(doc, [&](Layer &, Bone &, BoneConstraint &c) {
+    const ImVec2 at = view.to_screen(c.follow_now);
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, IM_COL32(0x10, 0x10, 0x10, 255));
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, IM_COL32(0x6f, 0xc8, 0xff, 255));
+  });
+}
+
+/* A point dragged on frame 0, where it is its rest: on other frames it shows where the deform has carried it. */
+struct FollowPointDrag {
+  bool active = false;
+  int area = -1;
+  uint64_t rig = 0, bone = 0;
+  int index = 0;
+  float2 start;
+  bool moved = false;
+};
+static FollowPointDrag g_follow_drag;
+
+/* Whether the mouse is on a point, or dragging one. */
+static bool follow_point_input(Context &C, const Area &area, const ViewMapping &view, bool hovered)
+{
+  Document &doc = *C.document;
+  FollowPointDrag &d = g_follow_drag;
+  if (d.active) {
+    if (d.area != area.id) {
+      return false;
+    }
+    Layer *rig = layer_find(doc, d.rig);
+    Bone *bone = rig ? bone_find(*rig, d.bone) : nullptr;
+    BoneConstraint *c = bone && d.index < int(bone->constraints.size()) ? &bone->constraints[size_t(d.index)] : nullptr;
+    Layer *owner = nullptr;
+    if (!c || !follow_point_modifier(doc, *c, &owner)) {
+      d = {};
+      return false;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      follow_point_place(doc, *rig, *c, *owner, d.start);
+      c->follow_now = layer_world_transform(doc, owner->id).apply(d.start);
+      g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      d = {};
+      return true;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (d.moved) {
+        push_undo(C, "Move Follow Point");
+      }
+      d = {};
+      return true;
+    }
+    const float2 to = view.to_document(ImGui::GetIO().MousePos);
+    const float2 point = layer_world_transform(doc, owner->id).inverted().apply(to);
+    d.moved = d.moved || length(point - d.start) > 1e-6f;
+    follow_point_place(doc, *rig, *c, *owner, point);
+    c->follow_now = to;
+    return true;
+  }
+  if (!hovered || doc.frame_current != 0 || !doc.overlays.show || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    return false;
+  }
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
+  for_each_shown_follow_point(doc, [&](Layer &rig, Bone &bone, BoneConstraint &c) {
+    const float distance = ImLengthSqr(view.to_screen(c.follow_now) - mouse);
+    if (distance < best) {
+      best = distance;
+      d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), c.follow_point, false};
+    }
+  });
+  return d.active;
+}
+
 /* Runs a pick click: shows what it would pick, and picks on release if the mouse stayed put. */
 static void layer_pick_update(Context &C, const ViewMapping &view, ImDrawList *dl)
 {
@@ -12874,6 +12975,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     annotate_hovered_guide = -1;
   }
   draw_annotation_overlays(dl, C, view, annotate_hovered_guide);
+  draw_follow_points(dl, C, view);
   if (wm.overlays_toggle_request && hovered) {
     C.document->overlays.show = !C.document->overlays.show;
     wm.overlays_toggle_request = false;
@@ -12921,6 +13023,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   else if (g_layer_click.active && g_layer_click.area == area.id) {
     layer_pick_update(C, view, dl);
+  }
+  else if (!g_modal.active && follow_point_input(C, area, view, hovered)) {
+    /* The light blue point has the mouse. */
   }
   else if (hovered && !g_modal.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && layer_pick_wanted(C, view)) {
     g_layer_click = {true, area.id, io.MousePos};

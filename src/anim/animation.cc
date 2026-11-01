@@ -21,6 +21,7 @@
 #include "core/log.hh"
 #include "core/parallel.hh"
 #include "anim/dynamics.hh"
+#include "anim/follow_point.hh"
 #include "anim/shape_limit.hh"
 #include "anim/reference.hh"
 #include "anim/switch.hh"
@@ -676,7 +677,8 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
   const int shown = doc.frame_current;
   doc.frame_current = frame;
   dynamics_update(doc);
-  /* Limit to Shape reads its shapes as drawn now, dynamics included. */
+  /* Follow Point and Limit to Shape read what's drawn now, dynamics included. */
+  follow_points_update(doc);
   shape_limits_update(doc);
   doc.frame_current = shown;
   doc.evaluated_frame = frame;
@@ -783,6 +785,7 @@ void animation_sync(Document &doc)
     /* References follow edits to their originals at once, and edits to them become theirs. */
     references_capture(doc);
     dynamics_update(doc);
+    follow_points_update(doc);
     shape_limits_update(doc);
     return;
   }

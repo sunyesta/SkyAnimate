@@ -60,6 +60,10 @@ void vector_deform_resolve_legacy(Document &doc);
 /* Whether `m`'s shape is bent, through other deforms, by `layer` itself: such a loop does nothing. */
 bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m);
 
+/* Where `m` puts place `at` of `layer`'s space now, by its Strength alone (no drawing point, so no weights). `at`
+ * itself on frame 0, or when it bends nothing. */
+float2 vector_deform_point(const Document &doc, const Layer &layer, const Modifier &m, float2 at);
+
 /* The modifier on `drawing`, the stack's drawing so far. `before_bones` is that drawing as it was before the
  * Armature modifier moved it (the drawing itself when none did): where the deform measures each point from,
  * and what its weight shares between the deform and the bones. */

@@ -19,6 +19,7 @@
 #include "wm/pen_wintab.hh"
 #include "assets/sculpt_presets.hh"
 #include "anim/animation.hh"
+#include "anim/follow_point.hh"
 #include "anim/deform.hh"
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
@@ -2455,6 +2456,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["max_stretch"] = c.max_stretch;
       d["shape_layer"] = c.shape_layer;
       d["shape"] = c.shape_id;
+      {
+        Layer *owner = nullptr;
+        const Modifier *deform = follow_point_modifier(*current_context().document, c, &owner);
+        d["follow_layer"] = deform ? owner->name : std::string();
+        d["follow_modifier"] = deform ? deform->name : std::string();
+      }
+      d["follow_point"] = py::make_tuple(c.follow_point.x, c.follow_point.y);
+      d["show_follow_point"] = c.follow_show;
+      d["follow_offset"] = py::make_tuple(c.follow_offset.x, c.follow_offset.y);
+      d["follow_now"] = py::make_tuple(c.follow_now.x, c.follow_now.y);
+      d["follow_error"] = c.follow_error;
       d["fit"] = c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER";
       d["fit_layer"] = c.fit_layer;
       d["overlap"] = c.overlap;
@@ -2610,6 +2622,41 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "shape") {
         c.shape_id = value.cast<uint64_t>();
+      }
+      else if (key == "follow_deform") {
+        /* (layer name, modifier name), or None: the point starts at the bone's head. */
+        Document &doc = *current_context().document;
+        Layer *owner = nullptr;
+        Modifier *deform = nullptr;
+        if (!value.is_none()) {
+          const auto names = value.cast<std::pair<std::string, std::string>>();
+          for (const Layer *l : document_layers_flat(doc)) {
+            if (l->name == names.first) {
+              owner = layer_find(doc, l->id);
+              break;
+            }
+          }
+          for (size_t k = 0; owner && k < owner->modifiers.size(); k++) {
+            Modifier &candidate = owner->modifiers[k];
+            if (candidate.name == names.second && modifier_is_deform(candidate.type)) {
+              deform = &candidate;
+            }
+          }
+          if (!deform) {
+            throw py::key_error("no deform '" + names.second + "' on a layer named '" + names.first + "'");
+          }
+        }
+        follow_point_aim(doc, layer, bone, c, owner, deform);
+      }
+      else if (key == "follow_point") {
+        const auto point = value.cast<std::pair<float, float>>();
+        Layer *owner = nullptr;
+        if (follow_point_modifier(*current_context().document, c, &owner)) {
+          follow_point_place(*current_context().document, layer, c, *owner, {point.first, point.second});
+        }
+      }
+      else if (key == "show_follow_point") {
+        c.follow_show = value.cast<bool>();
       }
       else if (key == "fit") {
         const std::string fit = value.cast<std::string>();

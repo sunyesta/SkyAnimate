@@ -372,8 +372,11 @@ enum class BoneConstraintType {
   /* Eyes: the bone (a pupil) shifts toward the target bone (a look target), which stands in front of
    * the face at its Depth: each eye a ball, turning to look at it, the pupil where that turn puts it. */
   LookAt,
+  /* Harmony's Point Kinematic Output: the bone takes the move a Curve, Cage or Mesh Deform gives a point of
+   * its own, staying on the bending shape without bending (anim/follow_point.hh). */
+  FollowPoint,
 };
-inline constexpr int BONE_CONSTRAINT_TYPES = 13;
+inline constexpr int BONE_CONSTRAINT_TYPES = 14;
 
 /* LimitShape: what has to stay inside the shape, the bone's head or the whole of the drawings it
  * carries. */
@@ -499,6 +502,19 @@ struct BoneConstraint {
    * there is nothing to stay inside. */
   std::vector<float2> shape_region;
   std::vector<float2> shape_footprint;
+  /* FollowPoint: the deform (modifier `follow_modifier`, its Modifier::id, on layer `follow_layer`) and the point it
+   * carries, at rest, in that layer's space and (`follow_rest`, as it was on frame 0) in the bone layer's; and whether
+   * that point is shown (light blue, dragged on frame 0). */
+  uint64_t follow_layer = 0;
+  uint64_t follow_modifier = 0;
+  float2 follow_point;
+  float2 follow_rest;
+  bool follow_show = false;
+  /* FollowPoint, worked out every frame and never saved (anim/follow_point.hh): the move, in the bone layer's space;
+   * where the point is now (document space); and why it can't follow (empty when it can). */
+  float2 follow_offset;
+  float2 follow_now;
+  std::string follow_error;
   /* Dynamics, per channel. */
   BoneSpring angle_spring{.limit = 0.7853982f}, position_spring{.limit = 0.1f},
       scale_spring{.limit = 0.5f};
@@ -815,6 +831,8 @@ struct Modifier {
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;
+  /* Its id on the layer, for a Follow Point constraint to name it by (0 until one does). */
+  uint64_t id = 0;
   /* Not saved, set on the copy a group's deform runs as on a drawing inside it (anim/deform.cc): the group, measured
    * from as it stood at setup, so what moves the group itself moves what is in it on top of the deform. */
   uint64_t deform_from_group = 0;
