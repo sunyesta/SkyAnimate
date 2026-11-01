@@ -269,6 +269,8 @@ add_test(NAME fill_crossing
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_fill_crossing.py)
 add_test(NAME deform_point_edit
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_point_edit.py)
+add_test(NAME curve_deform_robust
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_curve_deform_robust.py)
 add_test(NAME curve_deform_part
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_curve_deform_part.py)
 add_test(NAME mesh_smooth

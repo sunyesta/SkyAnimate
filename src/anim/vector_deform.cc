@@ -684,7 +684,10 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
     return false;
   }
   if (now) {
-    if (std::find(g_deforming.begin(), g_deforming.end(), target->id) != g_deforming.end()) {
+    /* The layer itself again: bent by a reference of itself, whose Match Original bends it the same way. */
+    if (std::find(g_deforming.begin(), g_deforming.end(), target->id) != g_deforming.end() ||
+        std::find(g_deforming.begin(), g_deforming.end(), layer.id) != g_deforming.end())
+    {
       return false;
     }
     g_deforming.push_back(layer.id);
@@ -1119,7 +1122,9 @@ static bool line_smoothed(const std::vector<float2> &v, const std::vector<float>
 
 /* How far across a line a point may sit on the inside of its bend there: no further than the bend's radius,
  * past which it would fold over to the far side. Up to half the radius it keeps its distance; beyond, it eases
- * toward the radius, keeping its order. */
+ * toward the radius, keeping its order. As the line turns right back on itself neither side is the inside (the turn
+ * goes from all the way left to all the way right as it passes a half turn), so this fades out by then: a line dragged
+ * into a kink or a loop would otherwise throw what lies beside it across in one step. */
 static float across_in_bend(const std::vector<float2> &v, const std::vector<float> &at, float s, float across)
 {
   const float total = at.back();
@@ -1137,7 +1142,10 @@ static float across_in_bend(const std::vector<float2> &v, const std::vector<floa
   if (d <= half) {
     return across;
   }
-  return std::copysign(half + half * std::tanh((d - half) / half), across);
+  const float kept = half + half * std::tanh((d - half) / half);
+  const float pi = 3.14159265f;
+  const float fade = smooth01((std::fabs(turn) - 0.75f * pi) / (0.25f * pi));
+  return std::copysign(kept + (d - kept) * fade, across);
 }
 
 static float polyline_distance(const std::vector<float2> &v, bool closed, float2 p);
@@ -2437,7 +2445,9 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
             line_frame_at(v, at, here - h, a, ta, na);
             line_frame_at(v, at, here + h, b, tb, nb);
             if (length(b - a) > 1e-12f) {
-              const float f = smooth01(h / (4.0f * spacing));
+              /* Where the line has doubled back the chord is short, and flips as the line passes through itself: there
+               * the way it runs here. */
+              const float f = smooth01(h / (4.0f * spacing)) * smooth01(length(b - a) / (0.2f * h));
               r_tangent = normalize(r_tangent + (normalize(b - a) - r_tangent) * f);
               r_normal = float2(-r_tangent.y, r_tangent.x);
             }

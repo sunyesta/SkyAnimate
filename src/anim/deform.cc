@@ -878,8 +878,18 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
   if (const Layer *original = matched_original(doc, layer)) {
     /* Match Original: shaped by the original's modifiers and posed by its bones, where it is. */
     VectorDrawing drawing = layer.drawing;
+    if (probe) {
+      drawing.curves.clear();
+      drawing.shapes.clear();
+      for (MeshPoint &p : drawing.points) {
+        p.pos = p.pos + *probe;
+      }
+    }
     const Layer *bones = layer_armature(doc, original->id);
     const auto flip = [bones](uint64_t bone) { return bones ? bone_mirror_id(*bones, bone) : bone; };
+    /* As the stack below keeps it: what a deform measures from. */
+    VectorDrawing before_bones;
+    bool bones_moved = false;
     for (const Modifier &m : original->modifiers) {
       if (!modifier_on(m, render)) {
         continue;
@@ -896,12 +906,20 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
       else if (m.type == ModifierType::Armature) {
         Deformer d;
         if (deformer_init(doc, *original, d)) {
+          before_bones = drawing;
+          bones_moved = true;
           deform(d, drawing);
         }
+      }
+      else if (modifier_is_deform(m.type)) {
+        vector_deform_apply(doc, *original, m, drawing, bones_moved ? before_bones : drawing, render);
       }
     }
     transform_drawing(drawing, reference_match_transform(doc, layer));
     group_deforms_run(doc, layer, around, drawing, render);
+    if (probe) {
+      return drawing;
+    }
     drawing_detail_final_handles(drawing);
     /* Its own Merges still come last (an outline copy of a fill joining another layer's line). */
     for (const Modifier &m : layer.modifiers) {
@@ -1227,8 +1245,12 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
       skins[i] = Transform2D::translate(shown.points[i].pos - skins[i].apply(stored.points[i].pos)) * skins[i];
     }
   };
-  if (matched_original(doc, layer)) {
-    if (grouped) {
+  if (const Layer *original = matched_original(doc, layer)) {
+    const bool deformed = layer_is_deformed(doc, *original);
+    if (deformed && doc.frame_current != 0) {
+      stack_stretches(doc, layer, skins, std::min(skins.size(), layer.drawing.points.size()));
+    }
+    if (grouped || deformed) {
       onto_shown(layer.drawing);
     }
     return skins;

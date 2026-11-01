@@ -3429,7 +3429,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "shape") {
         const std::string name = value.cast<std::string>();
-        const Layer *target = layer_find(*current_context().document, mod.deform_layer);
+        Layer *target = layer_find(*current_context().document, mod.deform_layer);
+        /* A shape just drawn from Python has no id yet. */
+        if (target) {
+          drawing_ensure_ids(target->drawing);
+        }
         uint64_t found = 0;
         for (const Shape &s : target ? target->drawing.shapes : std::vector<Shape>()) {
           found = !found && s.name == name ? s.id : found;
