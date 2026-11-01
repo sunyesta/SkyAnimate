@@ -71,6 +71,8 @@ struct PointTarget {
   int point = 0;
   float2 at;
   Transform2D unskin;
+  /* How far the move itself takes the stored point. */
+  float moved = 0.0f;
 };
 /* A skin is right only around where a point was: a deform isn't straight, so a point sent far by its skin alone lands
  * off. This moves the points on until they show at their targets, as near as the deforms let them. */

@@ -3964,7 +3964,9 @@ static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &la
     }
     modal_place(layers, item, to);
     if (item.curve < 0 && item.mirror_source < 0) {
-      targets[item.layer].push_back({item.point, layers[item.layer].second.apply(to), item.unskin});
+      const Transform2D &to_layer = layers[item.layer].second;
+      targets[item.layer].push_back({item.point, to_layer.apply(to), item.unskin,
+                                     length(item.unskin.apply_vector(to_layer.apply_vector(to - item.start)))});
     }
     else if (item.direct && item.shown_scale == 1.0f && item.mirror_source < 0) {
       const Curve &curve = layers[item.layer].first->drawing.curves[size_t(item.curve)];

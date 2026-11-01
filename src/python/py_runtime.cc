@@ -3024,11 +3024,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       throw py::index_error("no point " + std::to_string(index));
     }
     const Document &doc = *current_context().document;
+    const float2 was = layer.drawing.points[size_t(index)].pos;
     layer.drawing.points[size_t(index)].pos = stored_at(doc, layer, index, at);
     std::vector<Transform2D> skins = layer_point_skins(doc, layer);
     skins.resize(layer.drawing.points.size());
     const float2 in_layer = layer_world_transform(doc, layer.id).inverted().apply({at.first, at.second});
-    layer_points_settle(doc, layer, {{index, in_layer, skins[size_t(index)].inverted()}});
+    layer_points_settle(doc, layer, {{index, in_layer, skins[size_t(index)].inverted(),
+                                      length(layer.drawing.points[size_t(index)].pos - was)}});
     current_context().undo->mark_changed();
   });
   m.def("layer_place_handle", [layer_or_raise, stored_at](uint64_t id, int curve_index, int index, const std::string &side,

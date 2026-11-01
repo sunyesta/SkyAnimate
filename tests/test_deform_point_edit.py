@@ -6,7 +6,8 @@
   lands where it was sent;
 - a point grabbed, turned by nothing or scaled by one leaves the line too;
 - a small mesh far from the origin and squeezed hard, as a mouth's, stays smooth: every place inside and past it bends,
-  and with Resample Self a handle's end shows and moves as a place of its own, so the line follows the mouse calmly;
+  with Resample Self a handle's end shows and moves as a place of its own, so the line follows the mouse calmly, and
+  points dragged through the squeezed column stay with the mouse;
 - the dots stay on the drawing, a Bevel's outline included;
 - an edit on a bent frame leaves the setup alone, and Proportional and X mirror work as ever.
 
@@ -416,5 +417,26 @@ for resample_self in (True, False):
     # Between what the fixes make of this frame and what it comes to without any one of them.
     assert worst_line < (15.0 if resample_self else 60.0), ("the line leapt", resample_self, worst_line)
     assert worst_end < 0.006, ("its end left the cursor", worst_end)
+
+# Its points, dragged through the squeezed column: each stays with the mouse, step by step.
+lip.modifier_set(0, resample_self=True)
+at(10)
+worst_step = worst_off = 0.0
+for point in range(lip.point_count):
+    for way in ((0.0006, 0.0003), (-0.0006, -0.0003), (0.0003, -0.0006)):
+        start = lip.shown()[0][point]
+        shown_at = []
+        for k in range(24):
+            layers.active = lip
+            pick(lip, point)
+            assert ops.mesh.translate(move_x=str(way[0] * k), move_y=str(way[1] * k)) == {'FINISHED'}
+            at(10)
+            shown_at.append(lip.shown()[0][point])
+            ops.ed.undo()
+            at(10)
+        worst_step = max(worst_step, max(math.dist(a, b) for a, b in zip(shown_at, shown_at[1:])) / math.hypot(*way))
+        worst_off = max(worst_off, max(math.dist(p, (start[0] + way[0] * k, start[1] + way[1] * k)) for k, p in enumerate(shown_at)))
+assert worst_step < 10.0, ("a point left the mouse", worst_step)
+assert worst_off < 0.008, ("a point left the cursor", worst_off)
 
 print("point editing on deformed drawings: all good")

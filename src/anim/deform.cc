@@ -1076,42 +1076,44 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
   if (doc.frame_current == 0 || targets.empty() || matched_original(doc, layer) || !layer_is_deformed(doc, layer)) {
     return;
   }
-  struct Best {
-    float2 stored, off;
-    float miss = FLT_MAX;
-    float step = 1.0f;
-  };
-  std::vector<Best> best(targets.size());
-  for (int pass = 0; pass < 8; pass++) {
-    const VectorDrawing shown = stack_points(doc, layer);
+  /* The same steps at every update of a drag, none chosen over another, so a point changes smoothly with the mouse, each
+   * by the stretch where it now is: that can change many times over on the way, at the side of a squeezed cell. Limited
+   * to twice the move: past a fold or the end of a line there is nowhere nearer to go. */
+  std::vector<float2> from(targets.size());
+  for (size_t i = 0; i < targets.size(); i++) {
+    from[i] = layer.drawing.points[size_t(targets[i].point)].pos;
+  }
+  std::vector<StackPlace> places;
+  for (int pass = 0; pass < 6; pass++) {
+    places.clear();
+    for (const PointTarget &t : targets) {
+      const float2 at = layer.drawing.points[size_t(t.point)].pos;
+      places.push_back({t.point, at});
+      places.push_back({t.point, at + float2(STRETCH_STEP, 0.0f)});
+      places.push_back({t.point, at + float2(0.0f, STRETCH_STEP)});
+    }
+    const std::vector<float2> shown = layer_places_shown(doc, layer, places);
     bool done = true;
     for (size_t i = 0; i < targets.size(); i++) {
       const PointTarget &t = targets[i];
-      if (t.point < 0 || t.point >= int(shown.points.size()) || t.point >= int(layer.drawing.points.size())) {
+      const float2 off = t.at - shown[i * 3];
+      if (length(off) <= std::max(1e-6f, 1e-5f * length(t.at))) {
         continue;
       }
+      done = false;
+      Transform2D stretch;
+      const Transform2D back = stretch_from_steps(shown[i * 3], shown[i * 3 + 1], shown[i * 3 + 2], stretch) ? stretch.inverted()
+                                                                                                             : t.unskin;
       float2 &stored = layer.drawing.points[size_t(t.point)].pos;
-      const float2 off = t.at - shown.points[size_t(t.point)].pos;
-      Best &b = best[i];
-      if (length(off) < b.miss) {
-        b = {stored, off, length(off), b.step};
+      float2 next = stored + back.apply_vector(off);
+      const float went = length(next - from[i]), most = t.moved * 2.0f;
+      if (went > most && went > 0.0f) {
+        next = from[i] + (next - from[i]) * (most / went);
       }
-      else {
-        /* It got no nearer (past a fold, a kink, the end of a line): less of the way from the best so far. */
-        b.step *= 0.5f;
-      }
-      if (b.miss > std::max(1e-6f, 1e-5f * length(t.at))) {
-        done = false;
-      }
-      stored = b.stored + t.unskin.apply_vector(b.off) * b.step;
+      stored = next;
     }
     if (done) {
       break;
-    }
-  }
-  for (size_t i = 0; i < targets.size(); i++) {
-    if (best[i].miss < FLT_MAX) {
-      layer.drawing.points[size_t(targets[i].point)].pos = best[i].stored;
     }
   }
 }
@@ -1199,7 +1201,11 @@ void layer_handles_settle(const Document &doc, Layer &layer, const std::vector<H
         from[i] = stored;
       }
       float2 next = stored + off * (fitted ? 1.0f : 0.8f);
-      const float went = length(next - from[i]), most = t.moved * (fitted ? 2.0f : 0.5f);
+      /* Where the deform squeezes or stretches hard at the point, the move is many times what shows, and half of that
+       * can swing from one way to another between updates: there it fades out, and the handle just goes as it is moved. */
+      const float area = std::fabs(t.unskin.a * t.unskin.d - t.unskin.b * t.unskin.c);
+      const float mild = std::clamp((std::min(area, 1.0f / std::max(area, 1e-6f)) - 0.25f) / 0.5f, 0.0f, 1.0f);
+      const float went = length(next - from[i]), most = t.moved * (fitted ? 2.0f : 0.5f * mild);
       if (went > most && went > 0.0f) {
         next = from[i] + (next - from[i]) * (most / went);
       }
