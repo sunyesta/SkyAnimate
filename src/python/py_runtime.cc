@@ -2468,6 +2468,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["follow_now"] = py::make_tuple(c.follow_now.x, c.follow_now.y);
       d["follow_error"] = c.follow_error;
       d["follow_second"] = c.follow_two;
+      d["follow_shift"] = py::make_tuple(c.follow_shift.x, c.follow_shift.y);
+      d["follow_shift2"] = py::make_tuple(c.follow_shift2.x, c.follow_shift2.y);
       d["follow_point2"] = py::make_tuple(c.follow_point2.x, c.follow_point2.y);
       d["follow_rotation"] = c.follow_rotation;
       d["follow_scale"] = c.follow_scale;
@@ -2677,6 +2679,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "follow_rotation") {
         c.follow_rotation = value.cast<bool>();
+      }
+      else if (key == "follow_shift" || key == "follow_shift2") {
+        const auto shift = value.cast<std::pair<float, float>>();
+        (key == "follow_shift" ? c.follow_shift : c.follow_shift2) = {shift.first, shift.second};
+      }
+      else if (key == "follow_to" || key == "follow_to2") {
+        /* Where it's to show now, in document space: as a drag does. */
+        const auto to = value.cast<std::pair<float, float>>();
+        const bool second = key == "follow_to2";
+        (second ? c.follow_shift2 : c.follow_shift) =
+            follow_point_shift_to(*current_context().document, layer, bone, c, second, {to.first, to.second});
       }
       else if (key == "follow_scale") {
         c.follow_scale = value.cast<bool>();

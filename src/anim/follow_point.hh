@@ -32,6 +32,9 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
 /* Puts `c`'s point (`second`: its second point) at `point`, in `owner`'s space. */
 void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point,
                         bool second = false);
+/* What `c`'s point (`second`: its second point) has to be shifted by to show at `to` (document space) on this frame,
+ * through the bend. */
+float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, bool second, float2 to);
 /* Turns `c`'s second point on or off. On for the first time it starts along the bone, far enough off for a steady
  * angle. */
 void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on);

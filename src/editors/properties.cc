@@ -4575,6 +4575,25 @@ static void constraints_panel(Context &C, Layer &armature)
                                 "apart they are can scale it. Further apart gives a steadier angle");
             }
           }
+          ImGui::BeginDisabled(doc.frame_current == 0);
+          for (const bool second : {false, true}) {
+            if (second && !c.follow_two) {
+              continue;
+            }
+            modifier_row_label(second ? "Second Shift" : "Shift", column,
+                               "How far the point is moved from where it rests, on this frame: key it for a follower that\n"
+                               "slides along the shape. Dragging the light blue point does the same");
+            const std::string shift_path = constraint_path + (second ? "follow_shift2" : "follow_shift");
+            const auto k = keyed_begin(shift_path);
+            float2 &shift = second ? c.follow_shift2 : c.follow_shift;
+            float values[2] = {shift.x, shift.y};
+            if (ui_drag_float2(second ? "##follow_shift2" : "##follow_shift", values, 0.001f, -100.0f, 100.0f, "%.3f")) {
+              shift = {values[0], values[1]};
+            }
+            done("Follow Point");
+            keyed_end(shift_path, k);
+          }
+          ImGui::EndDisabled();
           if (c.follow_two) {
             modifier_row_label("", column);
             if (ImGui::Checkbox("Rotation", &c.follow_rotation)) {

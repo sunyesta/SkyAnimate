@@ -86,6 +86,8 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
     for (BoneConstraint &c : bone.constraints) {
       f(c.influence_keys, c.influence);
       f(c.facing_keys, c.facing);
+      f(c.follow_shift_keys, c.follow_shift);
+      f(c.follow_shift2_keys, c.follow_shift2);
       f(c.weight_keys, c.weight);
       f(c.wind_catch_keys, c.wind_catch);
       f(c.gravity_keys, c.gravity);
@@ -2234,6 +2236,10 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
       if (c.type == BoneConstraintType::LookAt) {
         add(cb + "facing", c.facing_keys, c.facing);
       }
+      if (c.type == BoneConstraintType::FollowPoint) {
+        add(cb + "follow_shift", c.follow_shift_keys, c.follow_shift);
+        add(cb + "follow_shift2", c.follow_shift2_keys, c.follow_shift2);
+      }
       add(cb + "weight", c.weight_keys, c.weight);
       add(cb + "wind_catch", c.wind_catch_keys, c.wind_catch);
       add(cb + "gravity", c.gravity_keys, c.gravity);
@@ -2399,6 +2405,8 @@ static bool layer_channel_direct(Layer &layer, const std::string &path, ChannelR
     const std::string_view field = rest.substr(close + 2);
     if (field == "influence") return take(c.influence_keys, c.influence);
     if (field == "facing") return take(c.facing_keys, c.facing);
+    if (field == "follow_shift") return take(c.follow_shift_keys, c.follow_shift);
+    if (field == "follow_shift2") return take(c.follow_shift2_keys, c.follow_shift2);
     if (field == "weight") return take(c.weight_keys, c.weight);
     if (field == "wind_catch") return take(c.wind_catch_keys, c.wind_catch);
     if (field == "gravity") return take(c.gravity_keys, c.gravity);

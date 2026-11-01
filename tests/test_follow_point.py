@@ -8,6 +8,7 @@
 - A bone that moves its own shape, however it does, is refused and says why; nothing drifts while a frame is held.
 - Chains go in order, whatever order the layers are in. Saved with the file; a deleted deform says so.
 - A second point turns and scales the bone, each switchable, counting a bone above it once.
+- Its points can be keyed, as their change from setup: a follower slides along the shape, through the bend.
 - layer.follow_deform does it for a layer in one undo step: two eyes on one cage stay rigid, each by its own place.
 
 Run with:  OpenAnimate --background --python tests/test_follow_point.py
@@ -462,6 +463,87 @@ assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) =
 layers.active = eye_l
 assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier="Nothing") == {'CANCELLED'}
 
+# --- The point keyed: a follower sliding along the shape ---------------------------------------------------------------
+at(0)
+slide_cage = box("SlideCage")
+slide_art = box("SlideArt", (-0.5, -0.5), (0.5, 0.5))
+slide_deform = add_deform(slide_art, slide_cage)
+slide_rig = new_rig("SlideRig")
+add_bone(slide_rig, "slider", (0.0, 0.0))
+k = follow(slide_rig, "slider", slide_art, slide_deform)
+# Keys hold the change from setup: it slides, and frame 0 stays the rest.
+doc.frame_current = 10
+slide_rig.bone_constraint_set("slider", k, follow_shift=(0.4, 0.0))
+at(10)
+assert close(constraint(slide_rig, "slider")["follow_shift"], (0.4, 0.0)), constraint(slide_rig, "slider")
+assert close(head(slide_rig, "slider"), (0.4, 0.0)), head(slide_rig, "slider")
+at(0)
+assert close(constraint(slide_rig, "slider")["follow_shift"], (0.0, 0.0)) and close(head(slide_rig, "slider"), (0.0, 0.0))
+at(5)
+assert 0.0 < head(slide_rig, "slider")[0] < 0.4, ("between the keys", head(slide_rig, "slider"))
+# With the cage moved too, the two add up, through the bend.
+move_box(slide_cage, (0.0, 0.3))
+assert close(head(slide_rig, "slider"), (0.4, 0.3)), head(slide_rig, "slider")
+# Moving the point on frame 0 moves it on every frame: the keys are changes from there.
+at(0)
+slide_rig.bone_constraint_set("slider", k, follow_point=(-0.2, 0.0))
+assert close(head(slide_rig, "slider"), (0.0, 0.0)), "the bone stays at rest"
+at(10)
+assert close(constraint(slide_rig, "slider")["follow_now"], (0.2, 0.3)), constraint(slide_rig, "slider")
+assert close(head(slide_rig, "slider"), (0.4, 0.3)), ("the same move from where the bone is", head(slide_rig, "slider"))
+
+# As a drag does: the point lands under the mouse through the bend, here a cage pulled unevenly.
+at(0)
+pull_cage = box("PullCage")
+pull_art = box("PullArt", (-0.5, -0.5), (0.5, 0.5))
+pull_deform = add_deform(pull_art, pull_cage)
+add_bone(slide_rig, "puller", (0.1, 0.1))
+q = follow(slide_rig, "puller", pull_art, pull_deform)
+doc.frame_current = 0
+corner = max(range(len(pull_cage.points)), key=lambda i: pull_cage.points[i][0] + pull_cage.points[i][1])
+start = pull_cage.points[corner][:2]
+doc.frame_current = 10
+pull_cage.set_point(corner, (start[0] + 0.7, start[1] + 0.5))
+at(10)
+for target in ((0.5, 0.3), (-0.3, 0.2), (0.1, -0.4)):
+    doc.frame_current = 10
+    slide_rig.bone_constraint_set("puller", q, follow_to=target)
+    at(10)
+    c = constraint(slide_rig, "puller")
+    assert close(c["follow_now"], target, 2e-3), ("under the mouse", target, c["follow_now"], c["follow_shift"])
+    assert close(head(slide_rig, "puller"), target, 2e-3), (head(slide_rig, "puller"), target)
+
+# A bone above it moving the shape: the keyed slide stays, on top of what the bone carries.
+at(0)
+face_key = new_rig("FaceKey")
+add_bone(face_key, "skull", (0.0, 0.0), (0.0, 1.0))
+add_bone(face_key, "sticker", (0.5, 0.5), parent="skull")
+key_cage = box("KeyCage")
+key_art = box("KeyArt", (-0.8, -0.8), (0.8, 0.8))
+for layer in (key_cage, key_art):
+    layers.active = layer
+    assert ops.layer.move_to_group(group=str(face_key.id)) == {'FINISHED'}
+layers.active = key_cage
+assert ops.layer.parent_bone_set(bone="skull") == {'FINISHED'}
+f = follow(face_key, "sticker", key_art, add_deform(key_art, key_cage))
+doc.frame_current = 10
+face_key.bone_constraint_set("sticker", f, follow_shift=(0.0, 0.2))
+face_key.bone_set("skull", angle=face_key.bones[0]["setup_angle"] + math.pi / 2)
+at(10)
+assert close(head(face_key, "sticker"), (-0.7, 0.5), 2e-2), ("a quarter turn and its slide", head(face_key, "sticker"), constraint(face_key, "sticker"))
+
+# The second point keyed turns the bone.
+at(0)
+add_bone(slide_rig, "turner", (0.0, 0.0))
+u = follow(slide_rig, "turner", slide_art, slide_deform)
+slide_rig.bone_constraint_set("turner", u, follow_second=True)
+slide_rig.bone_constraint_set("turner", u, follow_point2=(0.3, 0.0))
+doc.frame_current = 10
+slide_rig.bone_constraint_set("turner", u, follow_shift2=(-0.3, 0.3))
+at(10)
+pose = slide_rig.bone_pose("turner")
+assert abs(math.atan2(pose[3] - pose[1], pose[2] - pose[0]) - math.pi / 2) < 0.05, ("turned", pose)
+
 # --- Saved, and a deleted deform says so -------------------------------------------------------------------------
 at(0)
 rig.bone_constraint_set("eye", i, show_follow_point=True)
@@ -481,6 +563,12 @@ try:
     c = constraint(gem_rig, "gem")
     assert c["follow_second"] and c["follow_scale"] and c["follow_rotation"] and close(c["follow_point2"], (0.5, 0.0)), c
     assert close(gem_rig.bone_pose("gem")[2:4], (0.4, 0.0), 2e-2), gem_rig.bone_pose("gem")
+    slide_rig = next(l for l in layers.all() if l.name == "SlideRig")
+    at(10)
+    assert close(constraint(slide_rig, "slider")["follow_shift"], (0.4, 0.0)), "the keys are saved"
+    at(0)
+    assert close(constraint(slide_rig, "slider")["follow_shift"], (0.0, 0.0))
+    at(10)
     layers.active = art
     assert ops.object.modifier_remove(index="0") == {'FINISHED'}
     at(10)

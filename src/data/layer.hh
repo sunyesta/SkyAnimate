@@ -517,6 +517,11 @@ struct BoneConstraint {
   float2 follow_rest2;
   bool follow_rotation = true;
   bool follow_scale = false;
+  /* FollowPoint: how far each point has been moved from where it rests on this frame, in that layer's space (keyable:
+   * keys hold the change from setup, so moving the point on frame 0 moves it on every frame). */
+  float2 follow_shift;
+  float2 follow_shift2;
+  Channel<float2> follow_shift_keys, follow_shift2_keys;
   /* FollowPoint, worked out every frame and never saved (anim/follow_point.hh): the move, in the bone layer's space;
    * where the point is now (document space); and why it can't follow (empty when it can). */
   float2 follow_offset;

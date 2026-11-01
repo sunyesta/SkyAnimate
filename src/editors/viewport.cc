@@ -12156,7 +12156,7 @@ static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &vi
   });
 }
 
-/* A point dragged on frame 0, where it is its rest: on other frames it shows where the deform has carried it. */
+/* A point dragged: on frame 0 that places its rest; on other frames it shifts it from there, keyed like any change. */
 struct FollowPointDrag {
   bool active = false;
   int area = -1;
@@ -12164,6 +12164,7 @@ struct FollowPointDrag {
   int index = 0;
   bool second = false;
   float2 start;
+  float2 pressed;
   bool moved = false;
 };
 static FollowPointDrag g_follow_drag;
@@ -12186,27 +12187,40 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
       return false;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-      follow_point_place(doc, *rig, *c, *owner, d.start, d.second);
-      (d.second ? c->follow_now2 : c->follow_now) = layer_world_transform(doc, owner->id).apply(d.start);
+      if (doc.frame_current == 0) {
+        follow_point_place(doc, *rig, *c, *owner, d.start, d.second);
+        (d.second ? c->follow_now2 : c->follow_now) = layer_world_transform(doc, owner->id).apply(d.start);
+      }
+      else {
+        (d.second ? c->follow_shift2 : c->follow_shift) = d.start;
+      }
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       d = {};
       return true;
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
       if (d.moved) {
-        push_undo(C, "Move Follow Point");
+        push_undo(C, doc.frame_current == 0 ? "Move Follow Point" : "Shift Follow Point");
       }
       d = {};
       return true;
     }
     const float2 to = view.to_document(ImGui::GetIO().MousePos);
+    if (doc.frame_current != 0) {
+      if (length(to - d.pressed) > 1e-6f) {
+        const float2 shift = follow_point_shift_to(doc, *rig, *bone, *c, d.second, to);
+        d.moved = d.moved || length(shift - d.start) > 1e-6f;
+        (d.second ? c->follow_shift2 : c->follow_shift) = shift;
+      }
+      return true;
+    }
     const float2 point = layer_world_transform(doc, owner->id).inverted().apply(to);
     d.moved = d.moved || length(point - d.start) > 1e-6f;
     follow_point_place(doc, *rig, *c, *owner, point, d.second);
     (d.second ? c->follow_now2 : c->follow_now) = to;
     return true;
   }
-  if (!hovered || doc.frame_current != 0 || !doc.overlays.show || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  if (!hovered || !doc.overlays.show || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     return false;
   }
   const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -12219,8 +12233,10 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
       const float distance = ImLengthSqr(view.to_screen(second ? c.follow_now2 : c.follow_now) - mouse);
       if (distance < best) {
         best = distance;
+        const bool rest = doc.frame_current == 0;
         d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), second,
-             second ? c.follow_point2 : c.follow_point, false};
+             rest ? (second ? c.follow_point2 : c.follow_point) : (second ? c.follow_shift2 : c.follow_shift),
+             view.to_document(mouse), false};
       }
     }
   });

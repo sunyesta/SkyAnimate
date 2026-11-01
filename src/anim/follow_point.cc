@@ -145,14 +145,35 @@ static void order_followers(std::vector<Follower> &all, int i, std::vector<int> 
   r_order.push_back(i);
 }
 
-static void follower_update(Document &doc, Follower &f)
+/* How a follower reads its deform on this frame. */
+struct PointReader {
+  Document *doc = nullptr;
+  const Layer *owner = nullptr;
+  Modifier run;
+  Transform2D now, rest, skin;
+  bool carried = false;
+
+  /* Where the bones above put a place: the shape's rest is posed by them too, so only its change of shape is left. */
+  float2 carried_at(float2 at) const
+  {
+    return carried ? now.inverted().apply(skin.apply(rest.apply(at))) : at;
+  }
+  /* Where the deform shows a place, in the bone layer's space. */
+  float2 shown(float2 at) const
+  {
+    return now.apply(vector_deform_point(*doc, *owner, run, carried_at(at)));
+  }
+};
+
+static PointReader point_reader(Document &doc, const Follower &f)
 {
-  BoneConstraint &c = *f.c;
-  const Modifier &m = *f.modifier;
-  const Transform2D now = layer_relative_transform(doc, f.rig->id, f.owner->id);
-  const Transform2D rest = layer_setup_relative_transform(doc, f.rig->id, f.owner->id);
+  PointReader r;
+  r.doc = &doc;
+  r.owner = f.owner;
+  r.now = layer_relative_transform(doc, f.rig->id, f.owner->id);
+  r.rest = layer_setup_relative_transform(doc, f.rig->id, f.owner->id);
   const auto shape_bones = f.shape_bones.find(f.rig->id);
-  const bool carried = shape_bones != f.shape_bones.end() && above(*f.rig, *f.bone, shape_bones->second);
+  r.carried = shape_bones != f.shape_bones.end() && above(*f.rig, *f.bone, shape_bones->second);
   /* A layer the shape's bones move takes only the change of shape from the deform, as the drawings in it do. */
   bool owner_carried = false;
   for (const auto &[rig_id, bones] : f.owner_bones) {
@@ -161,45 +182,64 @@ static void follower_update(Document &doc, Follower &f)
                                       std::any_of(bones.begin(), bones.end(),
                                                   [&](uint64_t b) { return shared->second.count(b) != 0; }));
   }
-
   /* Kept apart from what the deform keeps for the drawings it bends. A group's deform has no drawing to run on: it runs
    * on the group, as it does on a drawing inside, so what moves the group stays on top of it. */
-  Modifier run = m;
-  run.deform_rest_posed = carried || owner_carried;
-  run.name = m.name + (run.deform_rest_posed ? "#posed" : "#point");
-  run.deform_custom = false;
+  r.run = *f.modifier;
+  r.run.deform_rest_posed = r.carried || owner_carried;
+  r.run.name = f.modifier->name + (r.run.deform_rest_posed ? "#posed" : "#point");
+  r.run.deform_custom = false;
   if (!f.owner->has_drawing()) {
-    run.deform_from_group = f.owner->id;
+    r.run.deform_from_group = f.owner->id;
   }
-  float2 at = c.follow_point;
-  if (carried) {
-    /* Where the bones above put the point: the shape's rest is posed by them too, so only its change of shape is left. */
+  if (r.carried) {
     const std::vector<BonePose> poses = armature_pose(*f.rig, false);
     if (const BonePose *parent = bone_pose_find(poses, f.bone->parent)) {
-      at = now.inverted().apply(parent->skin.apply(rest.apply(at)));
+      r.skin = parent->skin;
     }
   }
-  const float2 bent = vector_deform_point(doc, *f.owner, run, at);
-  c.follow_offset = now.apply(bent) - (carried ? now.apply(at) : c.follow_rest);
-  c.follow_now = layer_world_transform(doc, f.rig->id).apply(now.apply(bent));
+  return r;
+}
+
+static void follower_update(Document &doc, Follower &f)
+{
+  BoneConstraint &c = *f.c;
+  const PointReader r = point_reader(doc, f);
+  const Transform2D to_world = layer_world_transform(doc, f.rig->id);
+  const float2 here = r.shown(c.follow_point + c.follow_shift);
+  const float2 start = r.now.apply(r.carried_at(c.follow_point));
+  c.follow_offset = here - (r.carried ? start : c.follow_rest);
+  c.follow_now = to_world.apply(here);
   if (!c.follow_two) {
     return;
   }
-  float2 at2 = c.follow_point2;
-  if (carried) {
-    const std::vector<BonePose> poses = armature_pose(*f.rig, false);
-    if (const BonePose *parent = bone_pose_find(poses, f.bone->parent)) {
-      at2 = now.inverted().apply(parent->skin.apply(rest.apply(at2)));
-    }
-  }
-  const float2 bent2 = vector_deform_point(doc, *f.owner, run, at2);
-  c.follow_now2 = layer_world_transform(doc, f.rig->id).apply(now.apply(bent2));
-  const float2 was = carried ? now.apply(at2) - now.apply(at) : c.follow_rest2 - c.follow_rest;
-  const float2 is = now.apply(bent2) - now.apply(bent);
+  const float2 here2 = r.shown(c.follow_point2 + c.follow_shift2);
+  c.follow_now2 = to_world.apply(here2);
+  const float2 was = r.carried ? r.now.apply(r.carried_at(c.follow_point2)) - start : c.follow_rest2 - c.follow_rest;
+  const float2 is = here2 - here;
   if (length(was) > 1e-6f && length(is) > 1e-6f) {
     c.follow_turn = std::atan2(was.x * is.y - was.y * is.x, dot(was, is));
     c.follow_stretch = length(is) / length(was);
   }
+}
+
+/* What moves the deform's shape and the layer it's on. */
+static void follower_gather(Document &doc, Follower &f)
+{
+  std::set<uint64_t> seen;
+  if (const Layer *shape = layer_find(doc, f.modifier->deform_layer)) {
+    gather_bones(doc, *shape, true, seen, f.shape_bones);
+  }
+  f.bones = f.shape_bones;
+  gather_bones(doc, *f.owner, false, seen, f.bones);
+  for (const Layer *l = f.owner; l; l = layer_parent(doc, l->id)) {
+    const Layer *rig = l->parent_bone != 0 ? layer_armature(doc, l->id) : nullptr;
+    if (rig) {
+      f.owner_bones[rig->id].insert(l->parent_bone);
+    }
+  }
+  close_bones(doc, f.shape_bones);
+  close_bones(doc, f.owner_bones);
+  close_bones(doc, f.bones);
 }
 
 void follow_points_update(Document &doc)
@@ -227,8 +267,8 @@ void follow_points_update(Document &doc)
           }
           continue;
         }
-        c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point);
-        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2);
+        c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point + c.follow_shift);
+        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2 + c.follow_shift2);
         /* Layers' setup is what they are now (only the bones rest), so frame 0's place is kept from frame 0. */
         if (doc.frame_current == 0) {
           c.follow_rest = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point);
@@ -251,21 +291,7 @@ void follow_points_update(Document &doc)
     return;
   }
   for (Follower &f : all) {
-    std::set<uint64_t> seen;
-    if (const Layer *shape = layer_find(doc, f.modifier->deform_layer)) {
-      gather_bones(doc, *shape, true, seen, f.shape_bones);
-    }
-    f.bones = f.shape_bones;
-    gather_bones(doc, *f.owner, false, seen, f.bones);
-    for (const Layer *l = f.owner; l; l = layer_parent(doc, l->id)) {
-      const Layer *rig = l->parent_bone != 0 ? layer_armature(doc, l->id) : nullptr;
-      if (rig) {
-        f.owner_bones[rig->id].insert(l->parent_bone);
-      }
-    }
-    close_bones(doc, f.shape_bones);
-    close_bones(doc, f.owner_bones);
-    close_bones(doc, f.bones);
+    follower_gather(doc, f);
     const auto own = f.bones.find(f.rig->id);
     if (own != f.bones.end() && own->second.count(f.bone->id)) {
       f.c->follow_error = "Loop: this bone moves the deform's shape or the layer it's on";
@@ -341,6 +367,45 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
       follow_point_second(doc, rig, bone, c, true);
     }
   }
+}
+
+/* How far a step is taken to see how the deform moves a place, and how far one drag's step may go. */
+static constexpr float FOLLOW_SOLVE_STEP = 0.002f;
+static constexpr float FOLLOW_SOLVE_REACH = 0.2f;
+
+float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, bool second, float2 to)
+{
+  const float2 shift = second ? c.follow_shift2 : c.follow_shift;
+  Follower f;
+  f.rig = &rig;
+  f.bone = &bone;
+  f.c = &c;
+  f.modifier = follow_point_modifier(doc, c, &f.owner);
+  if (!f.modifier) {
+    return shift;
+  }
+  follower_gather(doc, f);
+  const PointReader r = point_reader(doc, f);
+  const float2 target = layer_world_transform(doc, rig.id).inverted().apply(to);
+  const float2 base = second ? c.follow_point2 : c.follow_point;
+  float2 at = base + shift;
+  /* Newton's method through the deform: it has no inverse, and a point moved by hand stays close to where it was. */
+  for (int i = 0; i < 8; i++) {
+    const float2 here = r.shown(at);
+    const float2 off = target - here;
+    if (length(off) < 1e-5f) {
+      break;
+    }
+    const float2 x = (r.shown(at + float2(FOLLOW_SOLVE_STEP, 0.0f)) - here) / FOLLOW_SOLVE_STEP;
+    const float2 y = (r.shown(at + float2(0.0f, FOLLOW_SOLVE_STEP)) - here) / FOLLOW_SOLVE_STEP;
+    const float det = x.x * y.y - x.y * y.x;
+    float2 step = std::abs(det) > 1e-4f ? float2((y.y * off.x - y.x * off.y) / det, (x.x * off.y - x.y * off.x) / det) : off;
+    if (length(step) > FOLLOW_SOLVE_REACH) {
+      step = normalize(step) * FOLLOW_SOLVE_REACH;
+    }
+    at = at + step;
+  }
+  return at - base;
 }
 
 void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point,

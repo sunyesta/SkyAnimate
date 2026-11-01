@@ -482,6 +482,10 @@ void mirror_bone_keys(Layer &owner, const std::string &from, const std::string &
       for (size_t i = 0; i < bone.constraints.size(); i++) {
         BoneConstraint mine = source->constraints[i];
         mirror_keys(mine.facing_keys, bone.constraints[i].facing_keys, from, to, [](float2 v) { return float2(-v.x, v.y); });
+        mirror_keys(mine.follow_shift_keys, bone.constraints[i].follow_shift_keys, from, to,
+                    [](float2 v) { return float2(-v.x, v.y); });
+        mirror_keys(mine.follow_shift2_keys, bone.constraints[i].follow_shift2_keys, from, to,
+                    [](float2 v) { return float2(-v.x, v.y); });
         const std::vector<Channel<float> *> a = constraint_channels(mine), b = constraint_channels(bone.constraints[i]);
         for (size_t k = 0; k < a.size(); k++) {
           mirror_keys(*a[k], *b[k], from, to, [](float v) { return v; });
