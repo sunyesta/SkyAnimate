@@ -56,6 +56,13 @@ float2 guide_snap(const Document &doc, int guide, int point, float2 p, float rad
 Layer *layer_by_name_or_id(Document &doc, const std::string &text);
 /* "Subtract head", "Add head, Subtract outside neck": a card's steps, for menus and undo steps. */
 std::string mask_label(const Document &doc, const LayerMask &mask);
+/* Global masking areas, as shared materials: every step with the number. */
+struct MaskAreaName {
+  uint64_t id = 0;
+  std::string name;
+};
+std::vector<MaskAreaName> mask_areas(const Document &doc);
+int mask_area_users(const Document &doc, uint64_t global);
 /* A layer's mask cards in words, as the Masking tab's header shows them ("Shows: inside head, minus
  * mouth; lines: everything but ear, lines ending at the edge"). */
 std::string mask_summary(const Document &doc, const Layer &layer);

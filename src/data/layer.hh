@@ -180,10 +180,9 @@ struct MediaSettings {
 /* A layer's masks are cards, each a mask of its own, painted as Photoshop's layer masks are: it
  * starts white (everything shown) or black (nothing shown), as its Start With says, and its steps,
  * read top to bottom, each paint their shape onto it: Add (+ Shape) paints white, shows inside it;
- * Subtract (- Shape) black, hides inside it; Invert paints the outside instead. Read that way a white
- * card is a puzzle, so the Masking tab reads every card as one rule: it builds a shape from nothing, then
- * shows or hides the layer by it. A black card shows it, a white one hides it, and on a white card each
- * paint means its opposite: nothing saved changes (mask_step_verb, mask_card_flip). A step's shape is all
+ * Subtract (- Shape) black, hides inside it; Invert paints the outside instead. The Masking tab calls a
+ * card a Mask (the cut) and its steps Masking Areas, stacked on Show All or Hide All (the Start With). A
+ * step's shape is all
  * its layers together, as drawn (before any masks of their own; its Shape and Fill Every Shape say
  * which parts), named as track mattes name theirs. Each card says what of the layer it masks
  * (Affects: all, its fills or its lines) and how it cuts lines (sliced, or ended at its shape's
@@ -208,16 +207,21 @@ bool mask_cuts(const LayerMask &card);
 /* Whether a card ends the masked layer's lines at its shape's edge (End Lines at Edge, on a card that
  * masks lines), and with which Ends (`r_flat`). */
 bool mask_card_ends_lines(const LayerMask &card, bool *r_flat);
-/* What a step does to the shape its card builds, however it is saved: adds to it (Add; with Invert, its
- * outside), takes from it (Remove) or keeps only what is inside it too (KeepOnly). */
+/* What a masking area does to what's below it: paints it white (Add; with Invert, its outside), paints it
+ * black (Remove), or keeps only what's inside it (KeepOnly: black outside it). */
 enum class MaskVerb : uint8_t { Add, Remove, KeepOnly };
 const char *mask_verb_identifier(MaskVerb verb);
 bool mask_verb_from_identifier(const std::string &identifier, MaskVerb *r_verb);
-MaskVerb mask_step_verb(const LayerMask &card, const MaskStep &step);
-void mask_step_set_verb(const LayerMask &card, MaskStep &step, MaskVerb verb);
-/* The exact opposite mask: Start With swapped and every step's paint with it, so the steps read the same
- * and what was shown is hidden. */
-void mask_card_flip(LayerMask &card);
+MaskVerb mask_step_verb(const MaskStep &step);
+void mask_step_set_verb(MaskStep &step, MaskVerb verb);
+/* Whether a step has nothing to paint: no layers, and not a group with something in it. */
+bool mask_step_empty(const MaskStep &step);
+/* Why group `index` of `card` can't be worked out where it is, for the Masking tab to say; null when it can.
+ * On the base any group can (its steps paint the card directly); higher up only those that make a single shape. */
+const char *mask_group_problem(const LayerMask &card, size_t index);
+/* `card` with its groups worked out into ordinary steps, the only thing the renderer, picking, End Lines and
+ * export read (layer_mask_cards). */
+LayerMask mask_card_flatten(const LayerMask &card);
 /* A card's name as shown: its own, or "Mask 2" by its place (`index`, from 0). */
 std::string mask_card_name(const LayerMask &card, int index);
 /* Every layer a card's steps name, once each. */
@@ -265,12 +269,24 @@ struct MaskStep {
   bool show_expanded = false;
   /* Not saved: Clip to Below's (layer_mask_cards), which masks with what its base shows. */
   bool clip = false;
+  /* A group: `children` build a shape of their own from nothing, as a layer's would be, for this step
+   * to paint (mask_card_flatten). */
+  bool group = false;
+  std::vector<MaskStep> children;
+  /* A group's or a global area's name. */
+  std::string name;
+  /* A global masking area, as a shared material: every step with this number (0: none) is kept alike
+   * but for its own paint, so nothing that reads steps has to know (mask_area_sync, mask_ops.cc). */
+  uint64_t global = 0;
+  /* Not saved: a flattened step's place in its card, (step << 8) | (child + 1). */
+  int order = 0;
   bool operator==(const MaskStep &o) const
   {
     return mode == o.mode && invert == o.invert && layers == o.layers && combine == o.combine && grow == o.grow &&
            fills_only == o.fills_only &&
            strokes_only == o.strokes_only && filled == o.filled && inside_stroke == o.inside_stroke &&
-           extend == o.extend && clip == o.clip;
+           extend == o.extend && clip == o.clip && group == o.group && children == o.children && name == o.name &&
+           global == o.global;
   }
 };
 

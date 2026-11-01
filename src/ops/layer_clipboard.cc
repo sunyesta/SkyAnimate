@@ -407,7 +407,7 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
       }
     }
     for (LayerMask &m : l->masks) {
-      std::erase_if(m.steps, [](const MaskStep &s) { return s.layers.empty(); });
+      std::erase_if(m.steps, mask_step_empty);
     }
     std::erase_if(l->masks, [](const LayerMask &m) { return m.steps.empty(); });
   }

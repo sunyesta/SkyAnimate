@@ -511,7 +511,11 @@ static bool merges(const Layer &a, uint64_t b)
 
 std::vector<LayerMask> layer_mask_cards(const Document &doc, const Layer &layer)
 {
-  std::vector<LayerMask> cards = layer.masks;
+  std::vector<LayerMask> cards;
+  cards.reserve(layer.masks.size());
+  for (const LayerMask &card : layer.masks) {
+    cards.push_back(mask_card_flatten(card));
+  }
   /* Two layers merged into one outline don't mask each other (a Join Lines pair, say): the outline
    * holds both, so it would cut the whole of either away. Steps left naming nothing go, and a card
    * left with no steps. */
@@ -610,6 +614,26 @@ static void assign_new_ids(Document &doc, Layer &layer, std::map<uint64_t, uint6
   }
 }
 
+/* The step's layers and its group's: a global area they change is its own from then on. */
+template<typename F> static void mask_step_map_layers(MaskStep &step, const F &change)
+{
+  const auto walk = [&](auto &&self, MaskStep &s, bool &changed) -> void {
+    for (uint64_t &id : s.layers) {
+      const uint64_t was = id;
+      change(id);
+      changed = changed || id != was;
+    }
+    for (MaskStep &child : s.children) {
+      self(self, child, changed);
+    }
+  };
+  bool changed = false;
+  walk(walk, step, changed);
+  if (changed) {
+    step.global = 0;
+  }
+}
+
 void layer_links_map(Layer &layer, const std::function<uint64_t(uint64_t)> &map)
 {
   const auto link = [&](uint64_t &id) {
@@ -620,9 +644,7 @@ void layer_links_map(Layer &layer, const std::function<uint64_t(uint64_t)> &map)
   link(layer.reference_source);
   for (LayerMask &m : layer.masks) {
     for (MaskStep &s : m.steps) {
-      for (uint64_t &id : s.layers) {
-        link(id);
-      }
+      mask_step_map_layers(s, link);
     }
   }
   /* Draw Order holds a layer's id, minus it for Behind. */
@@ -683,11 +705,11 @@ void layer_masks_remap(Layer &layer, const std::map<uint64_t, uint64_t> &remap)
 {
   for (LayerMask &m : layer.masks) {
     for (MaskStep &s : m.steps) {
-      for (uint64_t &id : s.layers) {
+      mask_step_map_layers(s, [&](uint64_t &id) {
         if (auto it = remap.find(id); it != remap.end()) {
           id = it->second;
         }
-      }
+      });
     }
   }
 }

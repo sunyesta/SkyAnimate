@@ -8,7 +8,6 @@
 #include <string>
 
 #include "anim/draw_order.hh"
-#include "anim/drivers.hh"
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
@@ -263,10 +262,11 @@ std::string mask_label(const Document &doc, const LayerMask &m)
   std::string text;
   for (const MaskStep &s : m.steps) {
     const std::string names = layer_names(doc, s.layers, s.combine == MaskCombine::Union ? ", " : mask_combine_joiner(s.combine));
-    const MaskVerb verb = mask_step_verb(m, s);
-    text += std::string(text.empty() ? (m.start_shown ? "Hide: " : "Show: ") : ", ") +
+    const MaskVerb verb = mask_step_verb(s);
+    text += std::string(text.empty() ? (m.start_shown ? "Show All, " : "Hide All, ") : ", ") +
             (verb == MaskVerb::KeepOnly ? "Keep Only " : verb == MaskVerb::Remove ? "- " : s.invert ? "+ outside " : "+ ") +
-            (names.empty() ? std::string("nothing") : names) + BEYOND[int(s.extend)];
+            (s.group ? (s.name.empty() ? std::string("Group") : s.name) : names.empty() ? std::string("nothing") : names) +
+            BEYOND[int(s.extend)];
   }
   return text.empty() ? std::string("Empty mask") : text;
 }
@@ -377,7 +377,7 @@ std::string mask_summary(const Document &doc, const Layer &layer)
 
 /* verb=: what the step does to the shape the card builds, ADD, REMOVE or KEEP_ONLY, whichever way the card is
  * saved. */
-static bool mask_step_verb_arg(Context &C, const LayerMask &card, MaskStep &step)
+static bool mask_step_verb_arg(Context &C, MaskStep &step)
 {
   if (!op_has_arg(C, "verb")) {
     return true;
@@ -387,27 +387,75 @@ static bool mask_step_verb_arg(Context &C, const LayerMask &card, MaskStep &step
     report(ReportType::Error, "verb is ADD, REMOVE or KEEP_ONLY");
     return false;
   }
-  mask_step_set_verb(card, step, verb);
+  mask_step_set_verb(step, verb);
   return true;
 }
 
-/* Whether a driver keeps the card's Start With or a step's paint, which Show and Hide would fight. */
-static bool mask_card_driven(Document &doc, const Layer &layer, int index, const LayerMask &card)
+/* A global area's shape, from `source` to every other step with its number: all but each one's own paint. */
+static void mask_area_sync(Document &doc, const MaskStep &source)
 {
-  DriverRef ref;
-  ref.layer = layer.id;
-  const std::string base = "masks[" + std::to_string(index) + "]";
-  ref.path = base + ".start";
-  if (driver_find(doc, ref)) {
-    return true;
+  if (source.global == 0) {
+    return;
   }
-  for (size_t i = 0; i < card.steps.size(); i++) {
-    ref.path = base + ".steps[" + std::to_string(i) + "].mode";
-    if (driver_find(doc, ref)) {
-      return true;
+  const MaskStep shared = source;
+  for (const Layer *found : document_layers_flat(doc)) {
+    Layer *layer = layer_find(doc, found->id);
+    for (LayerMask &card : layer->masks) {
+      for (MaskStep &s : card.steps) {
+        if (s.global == shared.global) {
+          const MaskMode mode = s.mode;
+          const bool invert = s.invert, expanded = s.show_expanded;
+          s = shared;
+          s.mode = mode;
+          s.invert = invert;
+          s.show_expanded = expanded;
+        }
+      }
     }
   }
-  return false;
+}
+
+/* The steps of a global area, anywhere, and how many. */
+static const MaskStep *mask_area_find(const Document &doc, uint64_t global, int *r_users = nullptr)
+{
+  const MaskStep *first = nullptr;
+  int users = 0;
+  for (const Layer *layer : document_layers_flat(doc)) {
+    for (const LayerMask &card : layer->masks) {
+      for (const MaskStep &s : card.steps) {
+        if (s.global == global) {
+          first = first ? first : &s;
+          users++;
+        }
+      }
+    }
+  }
+  if (r_users) {
+    *r_users = users;
+  }
+  return first;
+}
+
+int mask_area_users(const Document &doc, uint64_t global)
+{
+  int users = 0;
+  mask_area_find(doc, global, &users);
+  return global != 0 ? users : 0;
+}
+
+std::vector<MaskAreaName> mask_areas(const Document &doc)
+{
+  std::vector<MaskAreaName> areas;
+  for (const Layer *layer : document_layers_flat(doc)) {
+    for (const LayerMask &card : layer->masks) {
+      for (const MaskStep &s : card.steps) {
+        if (s.global != 0 && std::none_of(areas.begin(), areas.end(), [&](const MaskAreaName &a) { return a.id == s.global; })) {
+          areas.push_back({s.global, s.name});
+        }
+      }
+    }
+  }
+  return areas;
 }
 
 /* The card `index=` (and its step `step=`, default 0) of a layer, or null. */
@@ -460,7 +508,7 @@ void mask_operators_register()
         if (!mask_step_args(C, &own, first)) {
           return OpStatus::Cancelled;
         }
-        if (card && !mask_step_verb_arg(C, *card, own)) {
+        if (card && !mask_step_verb_arg(C, own)) {
           return OpStatus::Cancelled;
         }
         std::erase(own.layers, layer->id);
@@ -469,7 +517,16 @@ void mask_operators_register()
           continue;
         }
         if (card) {
-          card->steps.push_back(own);
+          /* group=: into that group of the card, else on top of the stack. */
+          const int into_group = op_arg_int(C, "group", -1);
+          if (into_group >= 0 && into_group < int(card->steps.size()) && card->steps[size_t(into_group)].group) {
+            MaskStep &group = card->steps[size_t(into_group)];
+            group.children.push_back(own);
+            mask_area_sync(doc, group);
+          }
+          else {
+            card->steps.push_back(own);
+          }
           undo = "Mask " + layer->name + ": " + mask_label(doc, *card);
           count++;
           continue;
@@ -507,9 +564,21 @@ void mask_operators_register()
       Document &doc = *C.document;
       const int index = op_arg_int(C, "index", -1);
       const int step = op_arg_int(C, "step", -1);
+      const int child = op_arg_int(C, "child", -1);
       int count = 0;
       std::string undo;
       for (Layer *layer : mask_targets(C)) {
+        if (index >= 0 && step >= 0 && child >= 0) {
+          LayerMask *inside = card_at(*layer, index);
+          if (inside && step < int(inside->steps.size()) && child < int(inside->steps[size_t(step)].children.size())) {
+            MaskStep &group = inside->steps[size_t(step)];
+            group.children.erase(group.children.begin() + child);
+            mask_area_sync(doc, group);
+            undo = "Remove Masking Area " + layer->name + ": " + mask_label(doc, *inside);
+            count++;
+          }
+          continue;
+        }
         if (index < 0) {
           count += int(layer->masks.size());
           layer->masks.clear();
@@ -548,10 +617,9 @@ void mask_operators_register()
     ot.description = "Change one of a layer's mask cards (index=): name=, start= (EVERYTHING, NOTHING), cuts= (ALL, FILLS, "
                      "LINES: what of the layer it masks; lines_only=1 as before), end_lines=0/1 (the layer's lines "
                      "end at its shape's edge), ends=BRUSH or FLAT, reach= (line widths past the edge, -2 to 2), "
-                     "enabled=0/1 (in the viewport), render=0/1, toggle=1 (on or off in the viewport), result=SHOW or "
-                     "HIDE (the exact opposite mask: Start With and every step's paint swapped, so the steps read the "
-                     "same); and its step step= (0 without it): verb= (ADD, REMOVE, KEEP_ONLY: what it does to the "
-                     "shape the card builds), mode= (ADD, SUBTRACT; a lone step's mode sets Start With too), invert=0/1, "
+                     "enabled=0/1 (in the viewport), render=0/1, toggle=1 (on or off in the viewport); and its step "
+                     "step= (0 without it; with child=, that one inside a group): verb= (ADD, REMOVE, KEEP_ONLY), mode= "
+                     "(ADD, SUBTRACT; a lone step's mode sets Start With too), area_name=, invert=0/1, "
                      "grow=, shape= (AS_DRAWN, FILLS_ONLY, STROKES_ONLY), filled=0/1, inside_stroke=0/1, extend= "
                      "(NONE, UP, DOWN, LEFT, RIGHT), sources= (| between layers' ids or names), outside= and expand= "
                      "as before rows";
@@ -561,6 +629,7 @@ void mask_operators_register()
       Document &doc = *C.document;
       const int index = op_arg_int(C, "index", 0);
       const int step_index = op_arg_int(C, "step", 0);
+      const int child = op_arg_int(C, "child", -1);
       std::vector<uint64_t> sources;
       if (op_has_arg(C, "sources") && !mask_sources(C, &sources)) {
         return OpStatus::Cancelled;
@@ -572,36 +641,27 @@ void mask_operators_register()
         if (!card || step_index < 0 || step_index >= int(card->steps.size())) {
           continue;
         }
-        MaskStep &step = card->steps[size_t(step_index)];
+        MaskStep &top = card->steps[size_t(step_index)];
+        if (child >= int(top.children.size())) {
+          continue;
+        }
+        MaskStep &step = child >= 0 ? top.children[size_t(child)] : top;
         const MaskMode was = step.mode;
-        if (!mask_step_args(C, &step, step_index == 0) || !mask_card_args(C, card) ||
-            !mask_step_verb_arg(C, *card, step))
-        {
+        if (!mask_step_args(C, &step, step_index == 0) || !mask_card_args(C, card) || !mask_step_verb_arg(C, step)) {
           return OpStatus::Cancelled;
         }
         /* A lone step's mode is the whole card's: Subtract alone starts from everything. */
         if (step.mode != was && card->steps.size() == 1 && !op_has_arg(C, "start") && !op_has_arg(C, "verb")) {
           mask_card_start_from_steps(*card);
         }
-        if (op_has_arg(C, "result")) {
-          const std::string result = op_arg(C, "result");
-          if (result != "SHOW" && result != "HIDE") {
-            report(ReportType::Error, "result is SHOW or HIDE");
-            return OpStatus::Cancelled;
-          }
-          if ((result == "HIDE") != card->start_shown) {
-            if (mask_card_driven(doc, *layer, index, *card)) {
-              report(ReportType::Warning, "A driver sets this mask's Start With or a step's mode: take it off to swap "
-                                          "Show and Hide");
-              continue;
-            }
-            mask_card_flip(*card);
-          }
-        }
         if (op_has_arg(C, "sources")) {
           step.layers = sources;
           std::erase(step.layers, layer->id);
         }
+        if (op_has_arg(C, "area_name")) {
+          step.name = op_arg(C, "area_name");
+        }
+        mask_area_sync(doc, top);
         undo = op_has_arg(C, "name") ? "Rename Mask: " + mask_card_name(*card, index)
                                      : std::string(card->enabled ? "Mask " : "Mask Off ") + layer->name + ": " +
                                            mask_label(doc, *card);
@@ -839,13 +899,172 @@ void mask_operators_register()
     operators().add(std::move(ot));
   }
   {
+    OperatorType ot;
+    ot.idname = "mask.group";
+    ot.name = "Add Masking Group";
+    ot.description = "A new group on top of card index='s stack (verb= ADD, REMOVE or KEEP_ONLY, name=): the areas put in "
+                     "it build a shape of their own, which it then paints as a layer's would";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) {
+      const int index = op_arg_int(C, "index", 0);
+      int count = 0;
+      for (Layer *layer : mask_targets(C)) {
+        LayerMask *card = card_at(*layer, index);
+        if (!card) {
+          continue;
+        }
+        MaskStep group;
+        group.group = true;
+        group.show_expanded = true;
+        group.name = op_arg(C, "name", "Group");
+        mask_step_set_verb(group, card->start_shown ? MaskVerb::Remove : MaskVerb::Add);
+        if (!mask_step_verb_arg(C, group)) {
+          return OpStatus::Cancelled;
+        }
+        card->steps.push_back(std::move(group));
+        count++;
+      }
+      return count ? OpStatus::Finished : OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.area_move";
+    ot.name = "Move Masking Area";
+    ot.description = "Move step= of card index= (child= if it's inside a group) to place to= in the stack, or with "
+                     "group= to place to= in that group. Groups don't nest";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::vector<Layer *> targets = mask_targets(C);
+      LayerMask *card = targets.empty() ? nullptr : card_at(*targets.front(), op_arg_int(C, "index", 0));
+      const int step = op_arg_int(C, "step", -1), child = op_arg_int(C, "child", -1);
+      int to = op_arg_int(C, "to", 0), group = op_arg_int(C, "group", -1);
+      if (!card || step < 0 || step >= int(card->steps.size())) {
+        return OpStatus::Cancelled;
+      }
+      std::vector<MaskStep> &steps = card->steps;
+      if (child >= int(steps[size_t(step)].children.size()) || (child < 0 && group == step) ||
+          (group >= 0 && (group >= int(steps.size()) || !steps[size_t(group)].group)) ||
+          (group >= 0 && child < 0 && steps[size_t(step)].group))
+      {
+        return OpStatus::Cancelled;
+      }
+      /* Out of its place, keeping `group` and `to` meaning what they meant. */
+      MaskStep moved;
+      if (child >= 0) {
+        std::vector<MaskStep> &kids = steps[size_t(step)].children;
+        moved = kids[size_t(child)];
+        kids.erase(kids.begin() + child);
+        mask_area_sync(doc, steps[size_t(step)]);
+        if (group == step && to > child) {
+          to--;
+        }
+      }
+      else {
+        moved = steps[size_t(step)];
+        steps.erase(steps.begin() + step);
+        if (group > step) {
+          group--;
+        }
+        if (group < 0 && to > step) {
+          to--;
+        }
+      }
+      if (group >= 0) {
+        std::vector<MaskStep> &kids = steps[size_t(group)].children;
+        moved.global = 0;
+        kids.insert(kids.begin() + std::clamp(to, 0, int(kids.size())), moved);
+        mask_area_sync(doc, steps[size_t(group)]);
+      }
+      else {
+        steps.insert(steps.begin() + std::clamp(to, 0, int(steps.size())), moved);
+      }
+      C.undo_name = "Move Masking Area";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.area_global";
+    ot.name = "Global Masking Area";
+    ot.description = "Step step= of card index=, as a shared material: action=MAKE makes it a global area (name=), "
+                     "action=LINK links it to global area global=, keeping its own + or -, action=UNLINK makes it its "
+                     "own again, looking the same";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::vector<Layer *> targets = mask_targets(C);
+      LayerMask *card = targets.empty() ? nullptr : card_at(*targets.front(), op_arg_int(C, "index", 0));
+      const int index = op_arg_int(C, "step", -1);
+      if (!card || index < 0 || index >= int(card->steps.size())) {
+        return OpStatus::Cancelled;
+      }
+      MaskStep &step = card->steps[size_t(index)];
+      const std::string action = op_arg(C, "action");
+      if (action == "MAKE") {
+        uint64_t next = 1;
+        for (const MaskAreaName &a : mask_areas(doc)) {
+          next = std::max(next, a.id + 1);
+        }
+        step.global = next;
+        std::string base = op_arg(C, "name", step.name);
+        if (base.empty()) {
+          for (const uint64_t id : step.layers) {
+            if (const Layer *l = layer_find(doc, id)) {
+              base = l->name;
+              break;
+            }
+          }
+        }
+        std::string name = base.empty() ? std::string("Area") : base;
+        const std::vector<MaskAreaName> taken = mask_areas(doc);
+        for (int n = 1; std::any_of(taken.begin(), taken.end(), [&](const MaskAreaName &a) { return a.name == name; }); n++) {
+          char suffix[16];
+          std::snprintf(suffix, sizeof(suffix), ".%03d", n);
+          name = base + suffix;
+        }
+        step.name = name;
+      }
+      else if (action == "LINK") {
+        const uint64_t global = std::strtoull(op_arg(C, "global").c_str(), nullptr, 10);
+        const MaskStep *shared = mask_area_find(doc, global);
+        if (!shared) {
+          report(ReportType::Warning, "There's no such global masking area");
+          return OpStatus::Cancelled;
+        }
+        const MaskMode mode = step.mode;
+        const bool invert = step.invert;
+        const MaskStep copy = *shared;
+        step = copy;
+        step.mode = mode;
+        step.invert = invert;
+      }
+      else if (action == "UNLINK") {
+        step.global = 0;
+      }
+      else {
+        report(ReportType::Error, "action is MAKE, LINK or UNLINK");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
     /* Inside... / Outside...: the viewport or the Layers editor gives the layer clicked. */
     OperatorType ot;
     ot.idname = "mask.pick";
     ot.name = "Pick Mask Layer";
     ot.description = "Click the layer to mask with (a new card, mode=ADD or SUBTRACT; INSIDE is Add, OUTSIDE is "
                      "Subtract), in the viewport or the Layers editor; with index=, a new step of that card "
-                     "instead (verb=ADD, REMOVE or KEEP_ONLY), and with step= too, it joins that step. Esc cancels";
+                     "instead (verb=ADD, REMOVE or KEEP_ONLY; group= puts it in that group), and with step= too, it "
+                     "joins that step. Esc cancels";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = mask_poll;
     ot.exec = [](Context &C) {
@@ -862,6 +1081,7 @@ void mask_operators_register()
       pick = {};
       pick.mode = mode == "INSIDE" ? std::string() : mode;
       pick.verb = op_arg(C, "verb");
+      pick.group = op_arg_int(C, "group", -1);
       pick.index = op_arg_int(C, "index", -1);
       pick.step = op_arg_int(C, "step", -1);
       for (const Layer *l : mask_targets(C)) {

@@ -1786,6 +1786,9 @@ void ui_mask_pick_update(Context &C)
               if (!p.verb.empty()) {
                 add["verb"] = p.verb;
               }
+              if (p.group >= 0) {
+                add["group"] = std::to_string(p.group);
+              }
             }
             operator_call(C, "mask.add", add);
           }

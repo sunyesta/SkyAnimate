@@ -337,8 +337,8 @@ struct WindowManager {
   } draw_order_pick;
   /* A mask card's View button, while held: the viewport shows `layer`'s mask after its row `upto`
    * in black and white instead of the drawing (the lines' mask with `lines`, else the fills').
-   * `frame` is the UI frame it was last held on (it stops a frame after it's let go). `step`, a step's
-   * own: the shape that card has built by the end of that step. */
+   * `frame` is the UI frame it was last held on (it stops a frame after it's let go). `step`, a masking
+   * area's own (MaskStep::order): that card as far as that area. */
   struct MaskPreview {
     uint64_t layer = 0;
     bool lines = false;
@@ -354,6 +354,8 @@ struct WindowManager {
      * outside after. `verb`, or what it does to the card's shape (a MaskVerb identifier). */
     std::string mode;
     std::string verb;
+    /* A new step goes in this group of the card, not on top. */
+    int group = -1;
     /* `index` >= 0: a new step of that card; with `step` >= 0 too, that step's layers. */
     int index = -1;
     int step = -1;

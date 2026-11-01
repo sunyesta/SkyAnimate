@@ -155,27 +155,148 @@ bool mask_verb_from_identifier(const std::string &identifier, MaskVerb *r_verb)
   return false;
 }
 
-MaskVerb mask_step_verb(const LayerMask &card, const MaskStep &step)
+MaskVerb mask_step_verb(const MaskStep &step)
 {
-  /* On a white card the shape is what's painted black. */
-  if ((step.mode == MaskMode::Add) != card.start_shown) {
+  if (step.mode == MaskMode::Add) {
     return MaskVerb::Add;
   }
   return step.invert ? MaskVerb::KeepOnly : MaskVerb::Remove;
 }
 
-void mask_step_set_verb(const LayerMask &card, MaskStep &step, MaskVerb verb)
+void mask_step_set_verb(MaskStep &step, MaskVerb verb)
 {
-  step.mode = (verb == MaskVerb::Add) != card.start_shown ? MaskMode::Add : MaskMode::Subtract;
+  step.mode = verb == MaskVerb::Add ? MaskMode::Add : MaskMode::Subtract;
   step.invert = verb == MaskVerb::KeepOnly;
 }
 
-void mask_card_flip(LayerMask &card)
+bool mask_step_empty(const MaskStep &step)
 {
-  card.start_shown = !card.start_shown;
-  for (MaskStep &step : card.steps) {
-    step.mode = step.mode == MaskMode::Add ? MaskMode::Subtract : MaskMode::Add;
+  return step.layers.empty() && step.children.empty();
+}
+
+/* Whether nothing paints below step `index`: it is the first thing on the base. */
+static bool mask_step_on_base(const LayerMask &card, size_t index)
+{
+  return std::all_of(card.steps.begin(), card.steps.begin() + std::ptrdiff_t(index), mask_step_empty);
+}
+
+static bool mask_steps_same_shape(const MaskStep &a, const MaskStep &b)
+{
+  return a.grow == b.grow && a.fills_only == b.fills_only && a.strokes_only == b.strokes_only && a.filled == b.filled &&
+         a.inside_stroke == b.inside_stroke && a.extend == b.extend;
+}
+
+/* How a group's children make one Combine step: + then all +, all -, or all Keep Only; false if they don't. */
+static bool mask_group_combine(const MaskStep &group, MaskCombine *r_combine)
+{
+  const std::vector<MaskStep> &kids = group.children;
+  if (kids.empty() || mask_step_verb(kids[0]) != MaskVerb::Add || kids[0].invert) {
+    return false;
   }
+  const MaskVerb rest = kids.size() > 1 ? mask_step_verb(kids[1]) : MaskVerb::Add;
+  for (size_t i = 0; i < kids.size(); i++) {
+    if ((i > 0 && mask_step_verb(kids[i]) != rest) || (i > 0 && kids[i].invert != (rest == MaskVerb::KeepOnly)) ||
+        !mask_steps_same_shape(kids[0], kids[i]) || kids[i].group ||
+        (kids[i].layers.size() > 1 && (rest != MaskVerb::Add || kids[i].combine != MaskCombine::Union)))
+    {
+      return false;
+    }
+  }
+  *r_combine = rest == MaskVerb::Add ? MaskCombine::Union
+               : rest == MaskVerb::Remove ? MaskCombine::Difference
+                                          : MaskCombine::Intersection;
+  return true;
+}
+
+const char *mask_group_problem(const LayerMask &card, size_t index)
+{
+  const MaskStep &group = card.steps[index];
+  if (!group.group || group.children.empty() || mask_step_on_base(card, index)) {
+    return nullptr;
+  }
+  const bool adding = std::all_of(group.children.begin(), group.children.end(), [](const MaskStep &s) {
+    return mask_step_verb(s) == MaskVerb::Add;
+  });
+  MaskCombine combine;
+  if ((adding && mask_step_verb(group) != MaskVerb::KeepOnly) || mask_group_combine(group, &combine)) {
+    return nullptr;
+  }
+  return "Can't work this group out here yet: move it to the bottom of the stack, or use only + inside it";
+}
+
+LayerMask mask_card_flatten(const LayerMask &card)
+{
+  LayerMask flat = card;
+  flat.steps.clear();
+  const auto inline_children = [&](const MaskStep &group, size_t i, bool swapped) {
+    for (size_t k = 0; k < group.children.size(); k++) {
+      MaskStep s = group.children[k];
+      s.order = int(i << 8) | int(k + 1);
+      if (swapped) {
+        s.mode = s.mode == MaskMode::Add ? MaskMode::Subtract : MaskMode::Add;
+      }
+      flat.steps.push_back(std::move(s));
+    }
+  };
+  for (size_t i = 0; i < card.steps.size(); i++) {
+    const MaskStep &s = card.steps[i];
+    if (!s.group) {
+      flat.steps.push_back(s);
+      flat.steps.back().order = int(i << 8);
+      continue;
+    }
+    if (s.children.empty() || mask_group_problem(card, i)) {
+      continue;
+    }
+    const MaskVerb verb = mask_step_verb(s);
+    if (mask_step_on_base(card, i)) {
+      /* Built on the base, the group's own steps paint it: taking it from white is each of them the other way
+       * (de Morgan), and keeping only it is the same steps on black. */
+      if (verb == MaskVerb::Add && !card.start_shown) {
+        inline_children(s, i, false);
+      }
+      else if (verb == MaskVerb::Remove && card.start_shown) {
+        inline_children(s, i, true);
+      }
+      else if (verb == MaskVerb::KeepOnly && card.start_shown) {
+        flat.start_shown = false;
+        inline_children(s, i, false);
+      }
+      continue;
+    }
+    MaskCombine combine;
+    if (verb != MaskVerb::KeepOnly &&
+        std::all_of(s.children.begin(), s.children.end(), [](const MaskStep &c) { return mask_step_verb(c) == MaskVerb::Add; }))
+    {
+      inline_children(s, i, verb == MaskVerb::Remove);
+    }
+    else if (mask_group_combine(s, &combine)) {
+      MaskStep one = s.children.front();
+      one.layers.clear();
+      for (const MaskStep &c : s.children) {
+        one.layers.insert(one.layers.end(), c.layers.begin(), c.layers.end());
+      }
+      one.mode = s.mode;
+      one.invert = s.invert;
+      one.combine = combine;
+      one.order = int(i << 8) | 0xff;
+      flat.steps.push_back(std::move(one));
+    }
+  }
+  /* Hide All with nothing on it hides everything, but a card with no steps counts as no card: painted black
+   * inside and outside one of its layers. */
+  if (flat.steps.empty() && !flat.start_shown) {
+    const std::vector<uint64_t> named = mask_card_layers(card);
+    if (!named.empty()) {
+      MaskStep black;
+      black.mode = MaskMode::Subtract;
+      black.layers = {named.front()};
+      flat.steps.push_back(black);
+      black.invert = true;
+      flat.steps.push_back(black);
+    }
+  }
+  return flat;
 }
 
 std::string mask_card_name(const LayerMask &card, int index)
@@ -186,12 +307,18 @@ std::string mask_card_name(const LayerMask &card, int index)
 std::vector<uint64_t> mask_card_layers(const LayerMask &card)
 {
   std::vector<uint64_t> ids;
-  for (const MaskStep &s : card.steps) {
+  const auto add = [&](auto &&self, const MaskStep &s) -> void {
     for (const uint64_t id : s.layers) {
       if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
         ids.push_back(id);
       }
     }
+    for (const MaskStep &child : s.children) {
+      self(self, child);
+    }
+  };
+  for (const MaskStep &s : card.steps) {
+    add(add, s);
   }
   return ids;
 }

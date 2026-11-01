@@ -591,18 +591,36 @@ static json layer_to_json(const Layer &layer)
     json masks = json::array();
     for (const LayerMask &card : layer.masks) {
       json steps = json::array();
+      const auto step_json = [](auto &&self, const MaskStep &m) -> json {
+        json s = {{"mode", mask_mode_identifier(m.mode)},
+                  {"invert", m.invert},
+                  {"layers", m.layers},
+                  {"combine", mask_combine_identifier(m.combine)},
+                  {"grow", num(m.grow)},
+                  {"fills_only", m.fills_only},
+                  {"strokes_only", m.strokes_only},
+                  {"inside_stroke", m.inside_stroke},
+                  {"filled", m.filled},
+                  {"extend", mask_extend_identifier(m.extend)},
+                  {"show_expanded", m.show_expanded}};
+        if (m.group) {
+          json children = json::array();
+          for (const MaskStep &child : m.children) {
+            children.push_back(self(self, child));
+          }
+          s["group"] = true;
+          s["children"] = std::move(children);
+        }
+        if (!m.name.empty()) {
+          s["name"] = m.name;
+        }
+        if (m.global != 0) {
+          s["global"] = m.global;
+        }
+        return s;
+      };
       for (const MaskStep &m : card.steps) {
-        steps.push_back({{"mode", mask_mode_identifier(m.mode)},
-                         {"invert", m.invert},
-                         {"layers", m.layers},
-                         {"combine", mask_combine_identifier(m.combine)},
-                         {"grow", num(m.grow)},
-                         {"fills_only", m.fills_only},
-                         {"strokes_only", m.strokes_only},
-                         {"inside_stroke", m.inside_stroke},
-                         {"filled", m.filled},
-                         {"extend", mask_extend_identifier(m.extend)},
-                         {"show_expanded", m.show_expanded}});
+        steps.push_back(step_json(step_json, m));
       }
       json mj = {{"name", card.name},
                  {"start", card.start_shown ? "EVERYTHING" : "NOTHING"},
@@ -2653,7 +2671,21 @@ static Layer layer_from_json(const json &j, int depth)
     layer.switch_link_off = get_bool(j, "switch_link_off", false);
     get_keys(j, "switch_keys", layer.switch_keys);
   }
-  const auto read_step = [](const json &sj, MaskStep &m) {
+  const auto read_step = [](auto &&self, const json &sj, MaskStep &m) -> void {
+    m.name = get_string(sj, "name");
+    m.global = get_id(sj, "global");
+    m.group = get_bool(sj, "group", false);
+    for (const json &cj : get_array(sj, "children")) {
+      if (cj.is_object()) {
+        MaskStep child;
+        if (!mask_mode_from_identifier(get_string(cj, "mode", "ADD"), &child.mode)) {
+          child.mode = MaskMode::Add;
+        }
+        child.invert = get_bool(cj, "invert", false);
+        self(self, cj, child);
+        m.children.push_back(std::move(child));
+      }
+    }
     m.grow = std::clamp(get_float(sj, "grow", get_bool(sj, "expand", false) ? 1.0f : 0.0f), -64.0f, 64.0f);
     m.fills_only = get_bool(sj, "fills_only", false);
     m.strokes_only = !m.fills_only && get_bool(sj, "strokes_only", false);
@@ -2703,7 +2735,7 @@ static Layer layer_from_json(const json &j, int depth)
         }
         step.invert = get_bool(sj, "invert", false);
         step.show_expanded = get_bool(sj, "show_expanded", false);
-        read_step(sj, step);
+        read_step(read_step, sj, step);
         card.steps.push_back(std::move(step));
       }
       layer.masks.push_back(std::move(card));
@@ -2719,7 +2751,7 @@ static Layer layer_from_json(const json &j, int depth)
                                  &row.step)) {
       row.step.mode = MaskMode::Add;
     }
-    read_step(mj, row.step);
+    read_step(read_step, mj, row.step);
     row.enabled = get_bool(mj, "enabled", true);
     row.render = get_bool(mj, "render", true);
     row.cuts = cuts;

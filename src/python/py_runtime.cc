@@ -3899,7 +3899,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("layer_masks", [layer_or_raise](uint64_t id) {
     Document &doc = *current_context().document;
-    const auto step_dict = [&](const MaskStep &s, py::dict &d) {
+    const auto step_dict = [&](auto &&self, const MaskStep &s, py::dict &d) -> void {
+      d["verb"] = mask_verb_identifier(mask_step_verb(s));
+      d["name"] = s.name;
+      d["group"] = s.group;
+      d["global"] = s.global;
+      d["users"] = mask_area_users(doc, s.global);
+      py::list kids;
+      for (const MaskStep &child : s.children) {
+        py::dict cd;
+        self(self, child, cd);
+        kids.append(cd);
+      }
+      d["children"] = kids;
       d["mode"] = mask_mode_identifier(s.mode);
       d["invert"] = s.invert;
       d["combine"] = mask_combine_identifier(s.combine);
@@ -3925,7 +3937,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::dict d;
       d["name"] = card.name;
       d["start"] = card.start_shown ? "EVERYTHING" : "NOTHING";
-      d["result"] = card.start_shown ? "HIDE" : "SHOW";
       d["enabled"] = card.enabled;
       d["render"] = card.render;
       d["end_lines"] = card.end_lines;
@@ -3936,14 +3947,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::list steps;
       for (const MaskStep &s : card.steps) {
         py::dict sd;
-        step_dict(s, sd);
-        sd["verb"] = mask_verb_identifier(mask_step_verb(card, s));
+        step_dict(step_dict, s, sd);
+        const char *problem = mask_group_problem(card, size_t(&s - card.steps.data()));
+        sd["problem"] = problem ? problem : "";
         steps.append(sd);
       }
       d["steps"] = steps;
       /* Its first step's, on the card too (as rows had them). */
       if (!card.steps.empty()) {
-        step_dict(card.steps.front(), d);
+        step_dict(step_dict, card.steps.front(), d);
+        d["name"] = card.name;
       }
       result.append(d);
     }

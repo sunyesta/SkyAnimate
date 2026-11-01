@@ -1414,8 +1414,12 @@ void layer_operators_register()
           for (LayerMask &card : masks) {
             for (MaskStep &step : card.steps) {
               std::erase(step.layers, id);
+              for (MaskStep &child : step.children) {
+                std::erase(child.layers, id);
+              }
+              std::erase_if(step.children, mask_step_empty);
             }
-            std::erase_if(card.steps, [](const MaskStep &step) { return step.layers.empty(); });
+            std::erase_if(card.steps, mask_step_empty);
           }
           target->masks = std::move(masks);
           target->clip_to_below = source.clip_to_below;

@@ -12215,7 +12215,7 @@ static void viewport_draw_contents(Area &area, Context &C)
                                     : nullptr;
   const uint64_t mask_preview_key =
       mask_previewed ? ((mask_previewed->id * 2 + (wm.mask_preview.lines ? 1 : 0)) * 1024 +
-                        uint64_t(wm.mask_preview.upto + 1)) * 64 + uint64_t(wm.mask_preview.step + 1)
+                        uint64_t(wm.mask_preview.upto + 1)) * 65536 + uint64_t(wm.mask_preview.step + 1)
                      : 0;
   renderer->set_mask_preview(mask_previewed ? mask_previewed->id : 0, wm.mask_preview.lines, wm.mask_preview.upto,
                              wm.mask_preview.step);
@@ -12461,8 +12461,7 @@ static void viewport_draw_contents(Area &area, Context &C)
                                      : "\"" + card.name + "\"");
     }
     const std::string what = wm.mask_preview.step >= 0
-                                 ? "The shape by step " + std::to_string(wm.mask_preview.step + 1) + " of" + row +
-                                       ":  white is in the shape"
+                                 ? "As far as this masking area, of" + row + ":  white shows, black is hidden"
                                  : std::string(wm.mask_preview.lines ? "Lines" : "Fills") + " mask" + row + " of " +
                                        mask_previewed->name + ":  white shows, black is hidden";
     const ImVec2 at = origin + ImVec2(ImGui::GetFrameHeight() * 2.0f, ImGui::GetFrameHeight() * 1.6f);
