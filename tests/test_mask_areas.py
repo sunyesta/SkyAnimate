@@ -160,6 +160,21 @@ assert ops.mask.set(index="0", step="0", child="1", grow="0") == {'FINISHED'}
 assert ops.mask.remove(index="0", step="0", child="1") == {'FINISHED'}
 assert [c["layers"] for c in head.masks[0]["steps"][0]["children"]] == [["inside"], ["lip"]]
 assert not seen()["hole"]
+# Convert To and Delete, as a row's right-click menu calls them: a group's area, and a group whole.
+assert ops.mask.set(index="0", step="0", child="1", verb="REMOVE") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["children"][1]["verb"] == "REMOVE"
+assert ops.mask.set(index="0", step="0", child="1", verb="KEEP_ONLY") == {'FINISHED'}
+assert ops.mask.set(index="0", step="0", verb="ADD") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["verb"] == "ADD"
+assert ops.mask.set(index="0", step="0", verb="REMOVE") == {'FINISHED'}
+assert ops.mask.add(card="0", sources="patch", verb="ADD") == {'FINISHED'}
+assert ops.mask.remove(index="0", step="0") == {'FINISHED'}
+assert [s["layers"] for s in head.masks[0]["steps"]] == [["patch"]], "a group goes with what's in it"
+# The last area takes its mask with it.
+assert ops.mask.remove(index="0", step="0") == {'FINISHED'}
+assert not head.masks
+mouth_group("REMOVE", "EVERYTHING")
+assert ops.mask.remove(index="0", step="0", child="1") == {'FINISHED'}
 # Out of the group on top of the stack, and back in.
 assert ops.mask.area_move(index="0", step="0", child="1", to="1") == {'FINISHED'}
 assert [len(s["children"]) for s in head.masks[0]["steps"]] == [1, 0], head.masks[0]["steps"]

@@ -6137,6 +6137,42 @@ static void mask_cards(Context &C, Layer &layer)
           right -= h * 0.7f;
           dl->AddText(ImVec2(right, row_at.y + style.FramePadding.y), IM_COL32(0xff, 0xbf, 0x73, 255), "!");
         }
+        /* Right-click, anywhere on the row: what to turn it into, and Delete. */
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+            ImGui::IsMouseHoveringRect(row_at, row_at + ImVec2(list_w, h)) && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        {
+          area = {layer.id, i, si, ci};
+          ImGui::OpenPopup("##area_row_menu");
+        }
+        if (ImGui::BeginPopup("##area_row_menu")) {
+          OpArgs args = at;
+          args["step"] = std::to_string(si);
+          if (ci >= 0) {
+            args["child"] = std::to_string(ci);
+          }
+          if (ImGui::BeginMenu("Convert To")) {
+            static const char *const VERB_NAMES[] = {"Add", "Subtract", "Keep Only"};
+            for (int k = 0; k < 3; k++) {
+              if (ImGui::MenuItem(VERB_NAMES[k], nullptr, int(verb) == k) && int(verb) != k) {
+                OpArgs convert = args;
+                convert["verb"] = mask_verb_identifier(MaskVerb(k));
+                operator_call(C, "mask.set", convert);
+              }
+            }
+            ImGui::EndMenu();
+          }
+          ImGui::Separator();
+          if (ImGui::MenuItem("Delete")) {
+            operator_call(C, "mask.remove", args);
+            area.layer = 0;
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(ci < 0 && m.steps.size() == 1 ? "Delete this area, and the mask with it: it's the last one"
+                                                            : s.group ? "Delete this group and what's in it"
+                                                                      : "Delete this area");
+          }
+          ImGui::EndPopup();
+        }
         ImGui::SetCursorScreenPos(ImVec2(row_at.x, row_at.y + h + 1.0f));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         if (ci < 0 && notes[size_t(si)]) {
