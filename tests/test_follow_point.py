@@ -7,6 +7,8 @@
 - A bone above it moving the shape counts once: a face feature on a head its own bones move.
 - A bone that moves its own shape, however it does, is refused and says why; nothing drifts while a frame is held.
 - Chains go in order, whatever order the layers are in. Saved with the file; a deleted deform says so.
+- A second point turns and scales the bone, each switchable, counting a bone above it once.
+- layer.follow_deform does it for a layer in one undo step: two eyes on one cage stay rigid, each by its own place.
 
 Run with:  OpenAnimate --background --python tests/test_follow_point.py
 """
@@ -328,6 +330,138 @@ for later_first in (False, True):
     assert close(head(rig_1, "one"), (0.3, 0.0)), ("in order", later_first, head(rig_1, "one"))
     at(0)
 
+# --- A second point turns and scales it ---------------------------------------------------------------------------
+at(0)
+gem_cage = box("GemCage")
+gem_art = box("GemArt", (-0.5, -0.5), (0.5, 0.5))
+gem_deform = add_deform(gem_art, gem_cage)
+gem_rig = new_rig("GemRig")
+add_bone(gem_rig, "gem", (0.0, 0.0), (0.2, 0.0))
+g = follow(gem_rig, "gem", gem_art, gem_deform)
+gem_rig.bone_constraint_set("gem", g, follow_second=True)
+c = constraint(gem_rig, "gem")
+assert c["follow_second"] and close(c["follow_point2"], (0.2, 0.0)), ("along the bone", c)
+gem_rig.bone_constraint_set("gem", g, follow_point2=(0.5, 0.0))
+
+
+def transform_box(cage, fn, frame=10):
+    doc.frame_current = 0
+    rest = [p[:2] for p in cage.points]
+    doc.frame_current = frame
+    for i, p in enumerate(rest):
+        cage.set_point(i, fn(p))
+    at(frame)
+
+
+# The cage turned a quarter turn: the bone turns with it, its head on its point.
+transform_box(gem_cage, lambda p: (-p[1], p[0]))
+pose = gem_rig.bone_pose("gem")
+assert close(pose[:2], (0.0, 0.0)) and close(pose[2:4], (0.0, 0.2), 1e-2), ("turned", pose, constraint(gem_rig, "gem"))
+assert abs(constraint(gem_rig, "gem")["follow_turn"] - math.pi / 2) < 0.05, constraint(gem_rig, "gem")["follow_turn"]
+gem_rig.bone_constraint_set("gem", g, influence=0.5)
+at(10)
+pose = gem_rig.bone_pose("gem")
+assert abs(math.atan2(pose[3] - pose[1], pose[2] - pose[0]) - math.pi / 4) < 0.05, ("Influence takes part of it", pose)
+gem_rig.bone_constraint_set("gem", g, influence=1.0, follow_rotation=False)
+at(10)
+pose = gem_rig.bone_pose("gem")
+assert close(pose[2:4], (0.2, 0.0), 1e-2), ("Rotation off", pose)
+gem_rig.bone_constraint_set("gem", g, follow_rotation=True)
+
+# The cage twice as big: scale is off until asked for, and goes both ways.
+transform_box(gem_cage, lambda p: (p[0] * 2, p[1] * 2))
+pose = gem_rig.bone_pose("gem")
+assert close(pose[2:4], (0.2, 0.0), 1e-2), ("no scale yet", pose)
+gem_rig.bone_constraint_set("gem", g, follow_scale=True)
+at(10)
+pose = gem_rig.bone_pose("gem")
+assert abs(constraint(gem_rig, "gem")["follow_stretch"] - 2.0) < 0.06 and close(pose[2:4], (0.4, 0.0), 2e-2), ("scaled", pose)
+at(0)
+assert close(gem_rig.bone_pose("gem")[2:4], (0.2, 0.0)), "frame 0 is the rest"
+# Off, the second point changes nothing, and it's kept.
+gem_rig.bone_constraint_set("gem", g, follow_second=False)
+at(10)
+assert close(gem_rig.bone_pose("gem")[2:4], (0.2, 0.0), 1e-2)
+gem_rig.bone_constraint_set("gem", g, follow_second=True)
+assert close(constraint(gem_rig, "gem")["follow_point2"], (0.5, 0.0)), "kept"
+at(10)
+assert close(gem_rig.bone_pose("gem")[2:4], (0.4, 0.0), 2e-2)
+
+# A bone above it turning the shape counts once here too: no turn of its own.
+at(0)
+add_bone(face, "stud2", (0.5, 0.5), parent="head")
+s = follow(face, "stud2", head_art, head_deform)
+face.bone_constraint_set("stud2", s, follow_second=True, follow_point2=(0.5, 0.0))
+doc.frame_current = 10
+at(10)
+c = constraint(face, "stud2")
+assert c["follow_error"] == "" and abs(c["follow_turn"]) < 1e-2, c
+pose = face.bone_pose("stud2")
+assert close(pose[:2], (-0.5, 0.5), 1e-2), pose
+
+# --- One command for a layer ------------------------------------------------------------------------------------
+at(0)
+face_rig = new_rig("FaceRig")
+add_bone(face_rig, "neck", (0.0, -1.0))
+eye_cage = box("EyeCage")
+eye_l = box("Eye_L", (0.3, 0.3), (0.5, 0.5))
+eye_r = box("Eye_R", (-0.5, 0.3), (-0.3, 0.5))
+face_group = new_group("FaceGroup", eye_l, eye_r)
+layers.active = face_group
+assert ops.layer.move_to_group(group=str(face_rig.id)) == {'FINISHED'}
+face_deform = add_deform(face_group, eye_cage)
+loose = box("Loose", (0.0, 0.0), (0.1, 0.1))
+before = len(face_rig.bones)
+doc.frame_current = 5
+layers.active = eye_l
+assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}, "frame 0 only"
+at(0)
+for eye, name, middle in ((eye_l, "Eye_L_Follow", (0.4, 0.4)), (eye_r, "Eye_R_Follow", (-0.4, 0.4))):
+    layers.active = eye
+    assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'FINISHED'}
+    assert eye.parent_bone == name and eye.ignore_group_deforms, (eye.parent_bone, eye.ignore_group_deforms)
+    c = constraint(face_rig, name)
+    assert c["type"] == "FOLLOW_POINT" and c["follow_layer"] == "FaceGroup" and c["follow_error"] == "", c
+    assert close(c["follow_point"], middle), c
+assert len(face_rig.bones) == before + 2
+
+def spread(layer):
+    points = layer.evaluated()[0]
+    return points[0][0] - points[2][0], points[0][1] - points[2][1]
+
+
+rest = [spread(eye_l), spread(eye_r)]
+assert close(eye_l.evaluated()[0][0][:2], eye_l.points[0][:2]), "nothing jumps"
+# One corner of the cage pulled up: each eye goes by its own place, and stays the shape it was.
+doc.frame_current = 0
+pulled = max(range(len(eye_cage.points)), key=lambda i: eye_cage.points[i][0] + eye_cage.points[i][1])
+start = eye_cage.points[pulled][:2]
+doc.frame_current = 10
+eye_cage.set_point(pulled, (start[0], start[1] + 0.6))
+at(10)
+left, right = head(face_rig, "Eye_L_Follow"), head(face_rig, "Eye_R_Follow")
+assert left[1] - 0.4 > right[1] - 0.4 + 0.05, ("each by its own place", left, right)
+assert close(spread(eye_l), rest[0]) and close(spread(eye_r), rest[1]), ("rigid", spread(eye_l), rest)
+shown = eye_l.to_document(eye_l.evaluated()[0][0][:2])
+assert abs((shown[1] - 0.3) - (left[1] - 0.4)) < 0.2, (shown, left)
+
+# One undo takes all of it back.
+at(0)
+layers.active = eye_r
+names = [b["name"] for b in face_rig.bones]
+assert ops.ed.undo() == {'FINISHED'}
+assert "Eye_R_Follow" not in [b["name"] for b in face_rig.bones] and eye_r.parent_bone == "" and not eye_r.ignore_group_deforms
+assert ops.ed.redo() == {'FINISHED'}
+assert [b["name"] for b in face_rig.bones] == names
+
+# A layer it can't do says why and changes nothing.
+layers.active = loose
+assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}, "not in a bone layer"
+layers.active = eye_cage
+assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}
+layers.active = eye_l
+assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier="Nothing") == {'CANCELLED'}
+
 # --- Saved, and a deleted deform says so -------------------------------------------------------------------------
 at(0)
 rig.bone_constraint_set("eye", i, show_follow_point=True)
@@ -343,6 +477,10 @@ try:
     assert close(c["follow_point"], (0.25, 0.25)), c
     at(10)
     assert close(head(rig, "eye"), (0.75, 0.25)), head(rig, "eye")
+    gem_rig = next(l for l in layers.all() if l.name == "GemRig")
+    c = constraint(gem_rig, "gem")
+    assert c["follow_second"] and c["follow_scale"] and c["follow_rotation"] and close(c["follow_point2"], (0.5, 0.0)), c
+    assert close(gem_rig.bone_pose("gem")[2:4], (0.4, 0.0), 2e-2), gem_rig.bone_pose("gem")
     layers.active = art
     assert ops.object.modifier_remove(index="0") == {'FINISHED'}
     at(10)

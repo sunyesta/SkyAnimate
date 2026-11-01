@@ -6,9 +6,12 @@
 #include <string>
 #include <vector>
 
+#include "anim/deform.hh"
+#include "anim/draw_order.hh"
 #include "anim/vector_deform.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "ops/edit_ops.hh"
 
 namespace oanim {
 
@@ -179,6 +182,24 @@ static void follower_update(Document &doc, Follower &f)
   const float2 bent = vector_deform_point(doc, *f.owner, run, at);
   c.follow_offset = now.apply(bent) - (carried ? now.apply(at) : c.follow_rest);
   c.follow_now = layer_world_transform(doc, f.rig->id).apply(now.apply(bent));
+  if (!c.follow_two) {
+    return;
+  }
+  float2 at2 = c.follow_point2;
+  if (carried) {
+    const std::vector<BonePose> poses = armature_pose(*f.rig, false);
+    if (const BonePose *parent = bone_pose_find(poses, f.bone->parent)) {
+      at2 = now.inverted().apply(parent->skin.apply(rest.apply(at2)));
+    }
+  }
+  const float2 bent2 = vector_deform_point(doc, *f.owner, run, at2);
+  c.follow_now2 = layer_world_transform(doc, f.rig->id).apply(now.apply(bent2));
+  const float2 was = carried ? now.apply(at2) - now.apply(at) : c.follow_rest2 - c.follow_rest;
+  const float2 is = now.apply(bent2) - now.apply(bent);
+  if (length(was) > 1e-6f && length(is) > 1e-6f) {
+    c.follow_turn = std::atan2(was.x * is.y - was.y * is.x, dot(was, is));
+    c.follow_stretch = length(is) / length(was);
+  }
 }
 
 void follow_points_update(Document &doc)
@@ -195,6 +216,8 @@ void follow_points_update(Document &doc)
           continue;
         }
         c.follow_offset = {};
+        c.follow_turn = 0.0f;
+        c.follow_stretch = 1.0f;
         c.follow_error.clear();
         Layer *owner = nullptr;
         const Modifier *m = follow_point_modifier(doc, c, &owner);
@@ -205,9 +228,11 @@ void follow_points_update(Document &doc)
           continue;
         }
         c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point);
+        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2);
         /* Layers' setup is what they are now (only the bones rest), so frame 0's place is kept from frame 0. */
         if (doc.frame_current == 0) {
           c.follow_rest = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point);
+          c.follow_rest2 = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point2);
         }
         if (!c.enabled || !m->show_viewport) {
           continue;
@@ -310,13 +335,105 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
   const std::vector<BonePose> poses = armature_pose(rig, true);
   if (const BonePose *pose = bone_pose_find(poses, bone.id)) {
     follow_point_place(doc, rig, c, *owner, layer_setup_relative_transform(doc, rig.id, owner->id).inverted().apply(pose->head));
+    c.follow_point2 = c.follow_point;
+    if (c.follow_two) {
+      c.follow_two = false;
+      follow_point_second(doc, rig, bone, c, true);
+    }
   }
 }
 
-void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point)
+void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point,
+                        bool second)
 {
-  c.follow_point = point;
-  c.follow_rest = layer_setup_relative_transform(doc, rig.id, owner.id).apply(point);
+  (second ? c.follow_point2 : c.follow_point) = point;
+  (second ? c.follow_rest2 : c.follow_rest) = layer_setup_relative_transform(doc, rig.id, owner.id).apply(point);
+}
+
+/* How far from the first a second point starts, in the bone layer: spread out, the angle stays steady. */
+static constexpr float FOLLOW_SECOND_REACH = 0.1f;
+
+void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on)
+{
+  c.follow_two = on;
+  Layer *owner = nullptr;
+  if (!on || length(c.follow_point2 - c.follow_point) > 1e-6f ||
+      !follow_point_modifier(const_cast<Document &>(doc), c, &owner))
+  {
+    return;
+  }
+  const std::vector<BonePose> poses = armature_pose(rig, true);
+  const BonePose *pose = bone_pose_find(poses, bone.id);
+  if (!pose) {
+    return;
+  }
+  const float2 along = pose->tail - pose->head;
+  const float2 to = c.follow_rest + (length(along) > 1e-6f ? normalize(along) : float2(1.0f, 0.0f)) *
+                                        std::max(length(along), FOLLOW_SECOND_REACH);
+  follow_point_place(doc, rig, c, *owner, layer_setup_relative_transform(doc, rig.id, owner->id).inverted().apply(to), true);
+}
+
+/* The middle of what `layer` draws at rest, in `rig`'s space, and how many points that took. */
+static int rest_middle(const Document &doc, const Layer &layer, const Layer &rig, float2 &r_lo, float2 &r_hi)
+{
+  int count = 0;
+  if (layer.has_drawing()) {
+    const Transform2D to = layer_setup_relative_transform(doc, rig.id, layer.id);
+    for (const MeshPoint &p : layer_setup_drawing(doc, layer, false).points) {
+      const float2 q = to.apply(p.pos);
+      r_lo = {std::min(r_lo.x, q.x), std::min(r_lo.y, q.y)};
+      r_hi = {std::max(r_hi.x, q.x), std::max(r_hi.y, q.y)};
+      count++;
+    }
+  }
+  for (const Layer &child : layer.children) {
+    count += rest_middle(doc, child, rig, r_lo, r_hi);
+  }
+  return count;
+}
+
+/* Leaves `layer` and the drawings in it out of the group deforms around them: the bone carries them now. */
+static void ignore_group_deforms(Layer &layer)
+{
+  layer.ignore_group_deforms = true;
+  for (Layer &child : layer.children) {
+    ignore_group_deforms(child);
+  }
+}
+
+bool follow_point_layer(Document &doc, Layer &layer, Layer &owner, Modifier &m, std::string &r_why)
+{
+  const Layer *found = layer_armature(doc, layer.id);
+  Layer *rig = found ? layer_find(doc, found->id) : nullptr;
+  if (!rig || layer.is_bone_layer()) {
+    r_why = "\"" + layer.name + "\" needs to be inside a bone layer to follow a deform";
+    return false;
+  }
+  if (owner.id == layer.id || m.deform_layer == layer.id) {
+    r_why = "\"" + layer.name + "\" can't follow its own deform";
+    return false;
+  }
+  if (layer_binding_group(doc, layer.id)) {
+    r_why = "A group above \"" + layer.name + "\" has a Parent Bone that moves it";
+    return false;
+  }
+  float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+  const float2 middle = rest_middle(doc, layer, *rig, lo, hi) > 0 ? (lo + hi) * 0.5f : float2();
+  Bone *bone = armature_add_bone(*rig, layer.name + "_Follow", middle, middle + float2(0.0f, 0.05f), layer.parent_bone);
+  if (!bone) {
+    r_why = "No bone could be added";
+    return false;
+  }
+  BoneConstraint c;
+  c.type = BoneConstraintType::FollowPoint;
+  c.name = bone_constraint_name(c.type);
+  bone->constraints.push_back(c);
+  follow_point_aim(doc, *rig, *bone, bone->constraints.back(), &owner, &m);
+  layer.parent_bone = bone->id;
+  if (owner.id != layer.id && layer_inside(doc, layer.id, owner.id)) {
+    ignore_group_deforms(layer);
+  }
+  return true;
 }
 
 }  // namespace oanim

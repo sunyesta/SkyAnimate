@@ -2467,6 +2467,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["follow_offset"] = py::make_tuple(c.follow_offset.x, c.follow_offset.y);
       d["follow_now"] = py::make_tuple(c.follow_now.x, c.follow_now.y);
       d["follow_error"] = c.follow_error;
+      d["follow_second"] = c.follow_two;
+      d["follow_point2"] = py::make_tuple(c.follow_point2.x, c.follow_point2.y);
+      d["follow_rotation"] = c.follow_rotation;
+      d["follow_scale"] = c.follow_scale;
+      d["follow_turn"] = c.follow_turn;
+      d["follow_stretch"] = c.follow_stretch;
+      d["follow_now2"] = py::make_tuple(c.follow_now2.x, c.follow_now2.y);
       d["fit"] = c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER";
       d["fit_layer"] = c.fit_layer;
       d["overlap"] = c.overlap;
@@ -2657,6 +2664,22 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "show_follow_point") {
         c.follow_show = value.cast<bool>();
+      }
+      else if (key == "follow_second") {
+        follow_point_second(*current_context().document, layer, bone, c, value.cast<bool>());
+      }
+      else if (key == "follow_point2") {
+        const auto point = value.cast<std::pair<float, float>>();
+        Layer *owner = nullptr;
+        if (follow_point_modifier(*current_context().document, c, &owner)) {
+          follow_point_place(*current_context().document, layer, c, *owner, {point.first, point.second}, true);
+        }
+      }
+      else if (key == "follow_rotation") {
+        c.follow_rotation = value.cast<bool>();
+      }
+      else if (key == "follow_scale") {
+        c.follow_scale = value.cast<bool>();
       }
       else if (key == "fit") {
         const std::string fit = value.cast<std::string>();

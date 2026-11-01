@@ -12143,9 +12143,16 @@ static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &vi
     return;
   }
   for_each_shown_follow_point(doc, [&](Layer &, Bone &, BoneConstraint &c) {
+    const ImU32 blue = IM_COL32(0x6f, 0xc8, 0xff, 255), dark = IM_COL32(0x10, 0x10, 0x10, 255);
     const ImVec2 at = view.to_screen(c.follow_now);
-    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, IM_COL32(0x10, 0x10, 0x10, 255));
-    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, IM_COL32(0x6f, 0xc8, 0xff, 255));
+    if (c.follow_two) {
+      const ImVec2 second = view.to_screen(c.follow_now2);
+      dl->AddLine(at, second, blue, 1.0f);
+      dl->AddCircleFilled(second, FOLLOW_POINT_RADIUS + 1.5f, dark);
+      dl->AddCircleFilled(second, FOLLOW_POINT_RADIUS, blue);
+    }
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, dark);
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, blue);
   });
 }
 
@@ -12155,6 +12162,7 @@ struct FollowPointDrag {
   int area = -1;
   uint64_t rig = 0, bone = 0;
   int index = 0;
+  bool second = false;
   float2 start;
   bool moved = false;
 };
@@ -12178,8 +12186,8 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
       return false;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-      follow_point_place(doc, *rig, *c, *owner, d.start);
-      c->follow_now = layer_world_transform(doc, owner->id).apply(d.start);
+      follow_point_place(doc, *rig, *c, *owner, d.start, d.second);
+      (d.second ? c->follow_now2 : c->follow_now) = layer_world_transform(doc, owner->id).apply(d.start);
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       d = {};
       return true;
@@ -12194,8 +12202,8 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
     const float2 to = view.to_document(ImGui::GetIO().MousePos);
     const float2 point = layer_world_transform(doc, owner->id).inverted().apply(to);
     d.moved = d.moved || length(point - d.start) > 1e-6f;
-    follow_point_place(doc, *rig, *c, *owner, point);
-    c->follow_now = to;
+    follow_point_place(doc, *rig, *c, *owner, point, d.second);
+    (d.second ? c->follow_now2 : c->follow_now) = to;
     return true;
   }
   if (!hovered || doc.frame_current != 0 || !doc.overlays.show || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -12204,10 +12212,16 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
   const ImVec2 mouse = ImGui::GetIO().MousePos;
   float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
   for_each_shown_follow_point(doc, [&](Layer &rig, Bone &bone, BoneConstraint &c) {
-    const float distance = ImLengthSqr(view.to_screen(c.follow_now) - mouse);
-    if (distance < best) {
-      best = distance;
-      d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), c.follow_point, false};
+    for (const bool second : {false, true}) {
+      if (second && !c.follow_two) {
+        continue;
+      }
+      const float distance = ImLengthSqr(view.to_screen(second ? c.follow_now2 : c.follow_now) - mouse);
+      if (distance < best) {
+        best = distance;
+        d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), second,
+             second ? c.follow_point2 : c.follow_point, false};
+      }
     }
   });
   return d.active;

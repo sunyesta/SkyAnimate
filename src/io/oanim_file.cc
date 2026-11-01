@@ -836,6 +836,11 @@ static json layer_to_json(const Layer &layer)
                      {"follow_point", {num(c.follow_point.x), num(c.follow_point.y)}},
                      {"follow_rest", {num(c.follow_rest.x), num(c.follow_rest.y)}},
                      {"follow_show", c.follow_show},
+                     {"follow_two", c.follow_two},
+                     {"follow_point2", {num(c.follow_point2.x), num(c.follow_point2.y)}},
+                     {"follow_rest2", {num(c.follow_rest2.x), num(c.follow_rest2.y)}},
+                     {"follow_rotation", c.follow_rotation},
+                     {"follow_scale", c.follow_scale},
                      {"fit", c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER"},
                      {"fit_layer", c.fit_layer},
                      {"overlap", num(c.overlap)},
@@ -2564,6 +2569,15 @@ static Layer layer_from_json(const json &j, int depth)
         c.follow_rest = {(*it)[0].get<float>(), (*it)[1].get<float>()};
       }
       c.follow_show = get_bool(cj, "follow_show", false);
+      c.follow_two = get_bool(cj, "follow_two", false);
+      if (const auto it = cj.find("follow_point2"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_point2 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      if (const auto it = cj.find("follow_rest2"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_rest2 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      c.follow_rotation = get_bool(cj, "follow_rotation", true);
+      c.follow_scale = get_bool(cj, "follow_scale", false);
       c.shape_fit = get_string(cj, "fit", "WHOLE") == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
       c.fit_layer = get_id(cj, "fit_layer");
       c.overlap = std::clamp(get_float(cj, "overlap", 0.0f), 0.0f, 1.0f);

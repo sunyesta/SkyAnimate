@@ -2188,6 +2188,38 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     ImGui::PopStyleVar();
     ImGui::EndDisabled();
   }
+  /* Follow Deform: the layer stays on a deform without bending, by a bone of its own. */
+  if (!layer.is_bone_layer()) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Follow Deform");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original);
+    if (ImGui::BeginCombo("##follow_deform_layer", "Add...", ImGuiComboFlags_HeightLarge)) {
+      for (const Layer *l : document_layers_flat(doc)) {
+        for (const Modifier &m : l->modifiers) {
+          if (!modifier_is_deform(m.type) || l->id == layer.id || m.deform_layer == layer.id) {
+            continue;
+          }
+          const std::string label = l->name + ": " + m.name;
+          ImGui::PushID(&m);
+          if (ImGui::Selectable(label.c_str())) {
+            operator_call(C, "layer.follow_deform", {{"deform_layer", l->name}, {"modifier", m.name}});
+          }
+          ImGui::PopID();
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0)"
+                                               : "Keeps this layer on a Curve, Cage or Mesh Deform without bending it: a new bone at\n"
+                                                 "its middle gets a Follow Point there, and the layer goes on that bone");
+    }
+  }
   /* Bone Follows Selection: the parent bone keyed onto the selection on each of its keyed frames. */
   if (layer.has_drawing() || layer.is_group()) {
     ImGui::TableNextRow();
@@ -4530,6 +4562,28 @@ static void constraints_panel(Context &C, Layer &armature)
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip("Shows the point in the viewport, light blue. Drag it on frame 0 to choose the place this\n"
                               "bone follows. Hiding it changes nothing");
+          }
+          modifier_row_label("", column);
+          {
+            bool two = c.follow_two;
+            if (ImGui::Checkbox("Second Point", &two)) {
+              follow_point_second(doc, armature, *bone, c, two);
+              C.undo->push("Follow Point", doc);
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+              ImGui::SetTooltip("A second place on the shape: the way from the first to it can turn the bone, and how far\n"
+                                "apart they are can scale it. Further apart gives a steadier angle");
+            }
+          }
+          if (c.follow_two) {
+            modifier_row_label("", column);
+            if (ImGui::Checkbox("Rotation", &c.follow_rotation)) {
+              C.undo->push("Follow Point", doc);
+            }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Scale", &c.follow_scale)) {
+              C.undo->push("Follow Point", doc);
+            }
           }
           modifier_row_label("", column);
           ImGui::PushTextWrapPos(0.0f);

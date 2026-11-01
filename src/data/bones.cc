@@ -522,6 +522,12 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
           case BoneConstraintType::FollowPoint:
             /* On top of what its parent gives it (anim/follow_point.hh). */
             position += parent_pose.inverted().apply_vector(c.follow_offset) * w;
+            if (c.follow_two && c.follow_rotation) {
+              angle += c.follow_turn * w;
+            }
+            if (c.follow_two && c.follow_scale) {
+              scale = scale * (1.0f + (c.follow_stretch - 1.0f) * w);
+            }
             break;
           case BoneConstraintType::ChildOf:
             if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {

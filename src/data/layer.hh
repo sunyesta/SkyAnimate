@@ -510,11 +510,22 @@ struct BoneConstraint {
   float2 follow_point;
   float2 follow_rest;
   bool follow_show = false;
+  /* FollowPoint with a second point (`follow_two`, a place of its own on the shape, as the first): the way from the first
+   * to it turns the bone (Rotation) and how far apart they are scales it (Scale). */
+  bool follow_two = false;
+  float2 follow_point2;
+  float2 follow_rest2;
+  bool follow_rotation = true;
+  bool follow_scale = false;
   /* FollowPoint, worked out every frame and never saved (anim/follow_point.hh): the move, in the bone layer's space;
    * where the point is now (document space); and why it can't follow (empty when it can). */
   float2 follow_offset;
   float2 follow_now;
   std::string follow_error;
+  /* And with the second point: its turn from frame 0 (radians), how much further apart they are, and where it is now. */
+  float follow_turn = 0.0f;
+  float follow_stretch = 1.0f;
+  float2 follow_now2;
   /* Dynamics, per channel. */
   BoneSpring angle_spring{.limit = 0.7853982f}, position_spring{.limit = 0.1f},
       scale_spring{.limit = 0.5f};

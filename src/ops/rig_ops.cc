@@ -14,6 +14,7 @@
 #include "anim/action_mirror.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/follow_point.hh"
 #include "anim/bevel.hh"
 #include "anim/subdivide.hh"
 #include "anim/drivers.hh"
@@ -787,6 +788,51 @@ void rig_operators_register()
                    parent = p ? p->id : 0;
                  }
                  armature_add_bone(armature, op_arg(C, "name"), head, tail, parent);
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("layer.follow_deform", "Follow Deform",
+               "Make the active layer stay on a deform without bending: a new bone at its middle, with a Follow Point on "
+               "modifier= of layer deform_layer=, and the layer on that bone. The layer has to be inside a bone layer",
+               [](Context &C) {
+                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+                 return l && layer_armature(*C.document, l->id) != nullptr;
+               },
+               [](Context &C) {
+                 if (!on_setup_frame(C)) {
+                   return OpStatus::Cancelled;
+                 }
+                 Document &doc = *C.document;
+                 Layer &layer = *document_active_layer(doc);
+                 const std::string owner_name = op_arg(C, "deform_layer"), modifier_name = op_arg(C, "modifier");
+                 Layer *owner = nullptr;
+                 for (const Layer *l : document_layers_flat(doc)) {
+                   if (l->name == owner_name) {
+                     owner = layer_find(doc, l->id);
+                     break;
+                   }
+                 }
+                 Modifier *deform = nullptr;
+                 for (size_t i = 0; owner && i < owner->modifiers.size(); i++) {
+                   if (owner->modifiers[i].name == modifier_name && modifier_is_deform(owner->modifiers[i].type)) {
+                     deform = &owner->modifiers[i];
+                   }
+                 }
+                 if (!deform) {
+                   report(ReportType::Warning, "No deform \"" + modifier_name + "\" on a layer named \"" + owner_name + "\"");
+                   return OpStatus::Cancelled;
+                 }
+                 std::string why;
+                 if (!follow_point_layer(doc, layer, *owner, *deform, why)) {
+                   report(ReportType::Warning, why);
+                   return OpStatus::Cancelled;
+                 }
+                 follow_points_update(doc);
+                 const Layer *rig = layer_armature(doc, layer.id);
+                 const Bone *bone = rig ? bone_find(*rig, layer.parent_bone) : nullptr;
+                 if (bone && !bone->constraints.back().follow_error.empty()) {
+                   report(ReportType::Warning, bone->constraints.back().follow_error);
+                 }
                  return OpStatus::Finished;
                });
 
