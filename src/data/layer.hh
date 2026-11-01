@@ -773,6 +773,8 @@ struct Modifier {
   /* Mesh Deform's Method: each cell bending what is in it, or with Envelope the outline's sides also keeping what lies
    * near them at its distance from them, in the outer cells. */
   MeshMethod deform_mesh_method = MeshMethod::Cells;
+  /* Mesh Deform on a drawn grid: its rows and columns as smooth lines through their nodes (GridSurface::smooth). */
+  bool deform_smooth = false;
   /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how
    * near it is); 1, gently (as how near it is). */
   float deform_blend = 0.5f;

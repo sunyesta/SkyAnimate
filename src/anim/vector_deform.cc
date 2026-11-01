@@ -715,6 +715,12 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     if (!mesh || !r.rest_grid.build(rest, *grid) || (now && !r.now_grid.build(bent, *grid))) {
       return false;
     }
+    if (m.deform_smooth) {
+      r.rest_grid.smooth();
+      if (now) {
+        r.now_grid.smooth();
+      }
+    }
     r.kind = DeformKind::Grid;
     std::vector<float2> outline_now;
     if (!border_of_grid(r.rest_grid, r.border) || !border_of_grid(now ? r.now_grid : r.rest_grid, outline_now)) {
@@ -2520,6 +2526,12 @@ void vector_deform_resolve_legacy(Document &doc)
     }
   };
   visit(visit, doc.layers);
+}
+
+bool vector_deform_drawn_grid(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  DeformShape d;
+  return deform_shape_build(doc, layer, m, false, false, d) && d.kind == DeformKind::Grid && d.cells.empty();
 }
 
 DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m)

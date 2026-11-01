@@ -58,12 +58,17 @@ struct GridSurface {
   std::vector<float2> cell_lo, cell_hi;
 
   bool build(const VectorDrawing &drawing, const DrawingGrid &grid);
+  /* Each row and column of the grid as one smooth line through its nodes, in place of the sides' own handles, so nothing
+   * bent by it gets a corner at a node. It never overshoots a node: a cell squeezed narrow beside a wide one stays narrow,
+   * and a straight, even grid stays as it is. */
+  void smooth();
   /* The patch of a cell at `st`; outside 0..1, on straight from its edge. */
   float2 eval(int column, int row, float2 st) const;
   bool locate(float2 p, GridPlace &r_place) const;
 
  private:
   float2 patch(int column, int row, float2 st) const;
+  void update_cell_bounds();
 };
 
 /* Where `p` is in `grid` as `rest` has it (its cell, found by the Coons patches themselves, so a grid

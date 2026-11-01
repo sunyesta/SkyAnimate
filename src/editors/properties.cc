@@ -3271,6 +3271,17 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       factor_slider("##mesh_blend", &m.deform_blend);
       done |= ImGui::IsItemDeactivatedAfterEdit();
     }
+    if (vector_deform_drawn_grid(doc, layer, m)) {
+      modifier_row_label("", column);
+      if (ImGui::Checkbox("Smooth", &m.deform_smooth)) {
+        done = true;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Bends by smooth lines through the grid's nodes, in place of its sides' own handles, so what "
+                          "it bends has no corners at the nodes. You still key only the nodes, and it goes through "
+                          "every one. The grid itself draws as it is");
+      }
+    }
   }
   else if (kind == DeformKind::Cage) {
     ImGui::TextDisabled("Cage: what is in the shape bends with it");

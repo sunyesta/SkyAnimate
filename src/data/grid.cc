@@ -136,6 +136,12 @@ bool GridSurface::build(const VectorDrawing &drawing, const DrawingGrid &grid)
     lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
     hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
   }
+  update_cell_bounds();
+  return true;
+}
+
+void GridSurface::update_cell_bounds()
+{
   cell_lo.clear();
   cell_hi.clear();
   for (int j = 0; j < rows; j++) {
@@ -156,7 +162,60 @@ bool GridSurface::build(const VectorDrawing &drawing, const DrawingGrid &grid)
       cell_hi.push_back(b + margin);
     }
   }
-  return true;
+}
+
+/* The tangent at a node from the steps either side: their average, cut back if along either step it is over three times
+ * that step (Fritsch and Carlson's limit, past which the curve would run beyond the next node), and none where the line
+ * turns back. It is measured along the steps, not in x and y, so a grid turned whole keeps the same curves. */
+static float2 node_slope(float2 before, float2 after)
+{
+  if (dot(before, after) <= 0.0f) {
+    return float2(0.0f, 0.0f);
+  }
+  const float2 wanted = (before + after) * 0.5f;
+  const float most = std::max(dot(wanted, before) / dot(before, before), dot(wanted, after) / dot(after, after));
+  return most > 3.0f ? wanted * (3.0f / most) : wanted;
+}
+
+/* A run of sides end to end, as one line. */
+static void smooth_line(const std::vector<std::array<float2, 4> *> &sides)
+{
+  const size_t n = sides.size();
+  std::vector<float2> steps(n), slopes(n + 1);
+  for (size_t i = 0; i < n; i++) {
+    steps[i] = (*sides[i])[3] - (*sides[i])[0];
+  }
+  for (size_t i = 1; i < n; i++) {
+    slopes[i] = node_slope(steps[i - 1], steps[i]);
+  }
+  /* Its ends: as a parabola through the step there would leave, which is within the same limit. */
+  slopes[0] = n > 1 ? (steps[0] * 3.0f - slopes[1]) * 0.5f : steps[0];
+  slopes[n] = n > 1 ? (steps[n - 1] * 3.0f - slopes[n - 1]) * 0.5f : steps[0];
+  for (size_t i = 0; i < n; i++) {
+    std::array<float2, 4> &side = *sides[i];
+    side[1] = side[0] + slopes[i] / 3.0f;
+    side[2] = side[3] - slopes[i + 1] / 3.0f;
+  }
+}
+
+void GridSurface::smooth()
+{
+  std::vector<std::array<float2, 4> *> sides;
+  for (int j = 0; j <= rows; j++) {
+    sides.clear();
+    for (int i = 0; i < columns; i++) {
+      sides.push_back(&across[size_t(j * columns + i)]);
+    }
+    smooth_line(sides);
+  }
+  for (int i = 0; i <= columns; i++) {
+    sides.clear();
+    for (int j = 0; j < rows; j++) {
+      sides.push_back(&up[size_t(i * rows + j)]);
+    }
+    smooth_line(sides);
+  }
+  update_cell_bounds();
 }
 
 static float2 bezier_at(const std::array<float2, 4> &c, float t)

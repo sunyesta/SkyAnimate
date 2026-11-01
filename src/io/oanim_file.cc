@@ -694,6 +694,7 @@ static json layer_to_json(const Layer &layer)
         }
         if (m.type == ModifierType::MeshDeform) {
           mj["mesh_method"] = mesh_method_id(m.deform_mesh_method);
+          mj["smooth"] = m.deform_smooth;
           mj["blend"] = num(m.deform_blend);
         }
       }
@@ -2292,6 +2293,7 @@ static Layer layer_from_json(const json &j, int depth)
       if (!mesh_method_from_id(get_string(mj, "mesh_method", "CELLS"), m.deform_mesh_method)) {
         m.deform_mesh_method = MeshMethod::Cells;
       }
+      m.deform_smooth = get_bool(mj, "smooth", false);
       m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
     }
     if (m.type == ModifierType::Resample) {

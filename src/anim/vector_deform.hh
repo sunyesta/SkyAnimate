@@ -43,6 +43,8 @@ const char *deform_kind_name(DeformKind kind);
 
 /* What `m`'s shape is (None: no such layer or shape, or it is on `layer` itself). */
 DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m);
+/* Whether it deforms by a grid drawn as one, what Smooth works on (not a mesh of cells drawn by hand). */
+bool vector_deform_drawn_grid(const Document &doc, const Layer &layer, const Modifier &m);
 /* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
  * four-sided shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);
