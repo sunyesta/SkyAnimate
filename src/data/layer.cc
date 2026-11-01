@@ -165,13 +165,17 @@ MaskVerb mask_step_verb(const MaskStep &step)
 
 void mask_step_set_verb(MaskStep &step, MaskVerb verb)
 {
+  /* Show All or Hide All: there's no keeping only inside the whole canvas. */
+  if (step.whole && verb == MaskVerb::KeepOnly) {
+    return;
+  }
   step.mode = verb == MaskVerb::Add ? MaskMode::Add : MaskMode::Subtract;
   step.invert = verb == MaskVerb::KeepOnly;
 }
 
 bool mask_step_empty(const MaskStep &step)
 {
-  return step.layers.empty() && step.children.empty();
+  return step.layers.empty() && step.children.empty() && !step.whole;
 }
 
 /* Whether nothing paints below step `index`: it is the first thing on the base. */
@@ -196,7 +200,7 @@ static bool mask_group_combine(const MaskStep &group, MaskCombine *r_combine)
   const MaskVerb rest = kids.size() > 1 ? mask_step_verb(kids[1]) : MaskVerb::Add;
   for (size_t i = 0; i < kids.size(); i++) {
     if ((i > 0 && mask_step_verb(kids[i]) != rest) || (i > 0 && kids[i].invert != (rest == MaskVerb::KeepOnly)) ||
-        !mask_steps_same_shape(kids[0], kids[i]) || kids[i].group ||
+        !mask_steps_same_shape(kids[0], kids[i]) || kids[i].group || kids[i].whole ||
         (kids[i].layers.size() > 1 && (rest != MaskVerb::Add || kids[i].combine != MaskCombine::Union)))
     {
       return false;
@@ -211,17 +215,12 @@ static bool mask_group_combine(const MaskStep &group, MaskCombine *r_combine)
 const char *mask_group_problem(const LayerMask &card, size_t index)
 {
   const MaskStep &group = card.steps[index];
-  if (!group.group || group.children.empty() || mask_step_on_base(card, index)) {
+  if (!group.group || group.children.empty() ||
+      std::any_of(group.children.begin(), group.children.end(), [](const MaskStep &s) { return mask_step_verb(s) == MaskVerb::Add; }))
+  {
     return nullptr;
   }
-  const bool adding = std::all_of(group.children.begin(), group.children.end(), [](const MaskStep &s) {
-    return mask_step_verb(s) == MaskVerb::Add;
-  });
-  MaskCombine combine;
-  if ((adding && mask_step_verb(group) != MaskVerb::KeepOnly) || mask_group_combine(group, &combine)) {
-    return nullptr;
-  }
-  return "Can't work this group out here yet: move it to the bottom of the stack, or use only + inside it";
+  return "This group is empty: it starts from nothing, so it needs a + area or Show All in it";
 }
 
 LayerMask mask_card_flatten(const LayerMask &card)
@@ -245,7 +244,7 @@ LayerMask mask_card_flatten(const LayerMask &card)
       flat.steps.back().order = int(i << 8);
       continue;
     }
-    if (s.children.empty() || mask_group_problem(card, i)) {
+    if (s.children.empty()) {
       continue;
     }
     const MaskVerb verb = mask_step_verb(s);
@@ -281,6 +280,15 @@ LayerMask mask_card_flatten(const LayerMask &card)
       one.combine = combine;
       one.order = int(i << 8) | 0xff;
       flat.steps.push_back(std::move(one));
+    }
+    else {
+      /* Stays a group: every evaluator works out its shape, as paint on nothing, and paints that. */
+      MaskStep group = s;
+      group.order = int(i << 8);
+      for (size_t k = 0; k < group.children.size(); k++) {
+        group.children[k].order = int(i << 8) | int(k + 1);
+      }
+      flat.steps.push_back(std::move(group));
     }
   }
   /* Hide All with nothing on it hides everything, but a card with no steps counts as no card: painted black

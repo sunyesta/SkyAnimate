@@ -143,14 +143,66 @@ assert not shown["hole"] and shown["side cut"] and shown["past the lip"], ("lip 
 above_patch("KEEP_ONLY", ("inside", "ADD"), ("lip", "KEEP_ONLY"))
 shown = seen()
 assert shown["hole"] and not shown["past the lip"], ("kept to where they overlap", shown)
-# Three kinds at once, up here: not worked out yet, so it does nothing rather than guess.
-above_patch("REMOVE", ("lip", "ADD"), ("cut", "REMOVE"), ("patch", "KEEP_ONLY"))
+# Three kinds at once, up here: the group works out its shape and paints it, whatever it holds.
+above_patch("REMOVE", ("lip", "ADD"), ("cut", "REMOVE"), ("inside", "KEEP_ONLY"))
 shown = seen()
-assert shown["hole"] and shown["past the lip"], ("a group that can't be worked out here does nothing", shown)
-assert "Can't work this group out" in head.masks[0]["steps"][1]["problem"], "and says so on its row"
-# On the base the same group is fine.
-assert ops.mask.area_move(index="0", step="1", to="0") == {'FINISHED'}
-assert head.masks[0]["steps"][0]["problem"] == ""
+assert not shown["hole"] and shown["side cut"] and shown["past the lip"] and not shown["outside"], ("taken away", shown)
+assert head.masks[0]["steps"][1]["problem"] == ""
+assert head.mask_summary == "Shows: inside inside, minus (lip, minus cut, within inside)", head.mask_summary
+above_patch("ADD", ("lip", "ADD"), ("cut", "REMOVE"), ("patch", "ADD"))
+shown = seen()
+assert shown["far"] and shown["outside"] and shown["hole"], ("added", shown)
+above_patch("KEEP_ONLY", ("lip", "ADD"), ("cut", "REMOVE"), ("patch", "ADD"))
+shown = seen()
+assert shown["hole"] and not shown["past the lip"] and not shown["side cut"], ("kept", shown)
+# Inverted paint inside it, and the same on the lines' side of things.
+above_patch("REMOVE", ("lip", "ADD"), ("cut", "KEEP_ONLY"), ("patch", "ADD"))
+shown = seen()
+assert shown["hole"] and not shown["side cut"], ("only what's in the cut, and the patch", shown)
+assert ops.mask.set(index="0", end_lines="1") == {'FINISHED'}
+assert head.line_shows(*SPOTS["hole"]) and not head.line_shows(*SPOTS["side cut"]), "End Lines reads the group too"
+# Show All and Hide All are areas: in a group, a Show All is white to cut from.
+above_patch("REMOVE", ("cut", "REMOVE"))
+assert ops.mask.add(card="0", group="1", whole="SHOW") == {'FINISHED'}
+group = head.masks[0]["steps"][1]
+assert group["children"][0]["whole"] and group["children"][0]["verb"] == "ADD", ("it goes in at the bottom", group["children"])
+assert group["problem"] == ""
+shown = seen()
+assert not shown["hole"] and shown["side cut"] and not shown["outside"], ("all but the cut, taken from the inside", shown)
+assert head.mask_summary == "Shows: inside inside, minus (everything, minus cut)", head.mask_summary
+assert ops.mask.set(index="0", step="1", child="0", verb="KEEP_ONLY") == {'FINISHED'}
+assert head.masks[0]["steps"][1]["children"][0]["verb"] == "ADD", "there's no keeping only the whole canvas"
+assert ops.mask.set(index="0", step="1", child="0", verb="REMOVE") == {'FINISHED'}
+assert "needs a + area" in head.masks[0]["steps"][1]["problem"]
+# In the stack too: painting over what's below it, and the file keeps it.
+clear()
+assert ops.mask.add(sources="inside", mode="ADD") == {'FINISHED'}
+assert ops.mask.add(card="0", whole="HIDE") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["whole"], "at the bottom of the stack"
+assert ops.mask.area_move(index="0", step="0", to="2") == {'FINISHED'}
+assert not any(seen().values()), seen()
+assert ops.mask.set(index="0", step="1", verb="ADD") == {'FINISHED'}
+assert all(seen().values()), seen()
+assert head.line_shows(*SPOTS["hole"])
+assert ops.mask.add(sources="inside", whole="NOPE") == {'CANCELLED'}
+save_path = folder / "whole.oanim"
+assert ops.wm.save_as_mainfile(filepath=str(save_path)) == {'FINISHED'}
+assert ops.wm.open_mainfile(filepath=str(save_path)) == {'FINISHED'}
+head = find("head")
+assert head.masks[0]["steps"][1]["whole"]
+layers.active = head
+
+# Export paints a group's shape as a mask of its own.
+above_patch("REMOVE", ("lip", "ADD"), ("cut", "REMOVE"), ("inside", "KEEP_ONLY"))
+svg = folder / "group.svg"
+assert ops.export.svg(filepath=str(svg)) == {'FINISHED'}
+assert svg.read_text(encoding="utf-8").count("<mask") >= 5, "the card, the group, and each of its areas"
+
+# Nothing + in it: it builds nothing, and says so.
+above_patch("REMOVE", ("cut", "REMOVE"))
+assert "needs a + area" in head.masks[0]["steps"][1]["problem"], head.masks[0]["steps"][1]["problem"]
+shown = seen()
+assert shown["hole"] and shown["side cut"], ("an empty group paints nothing", shown)
 
 # --- Areas in a group change, move and go ----------------------------------------------------------------------------
 mouth_group("REMOVE", "EVERYTHING")

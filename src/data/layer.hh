@@ -216,11 +216,11 @@ MaskVerb mask_step_verb(const MaskStep &step);
 void mask_step_set_verb(MaskStep &step, MaskVerb verb);
 /* Whether a step has nothing to paint: no layers, and not a group with something in it. */
 bool mask_step_empty(const MaskStep &step);
-/* Why group `index` of `card` can't be worked out where it is, for the Masking tab to say; null when it can.
- * On the base any group can (its steps paint the card directly); higher up only those that make a single shape. */
+/* What's wrong with group `index` of `card`, for the Masking tab to say; null when nothing is. */
 const char *mask_group_problem(const LayerMask &card, size_t index);
-/* `card` with its groups worked out into ordinary steps, the only thing the renderer, picking, End Lines and
- * export read (layer_mask_cards). */
+/* `card` with its groups turned into ordinary steps where they can be: what the renderer, picking, End Lines and
+ * export read (layer_mask_cards). One that can't (a mix of paints, above the base) stays a group step, and each of
+ * those works out its shape on the side and paints it as a layer's. */
 LayerMask mask_card_flatten(const LayerMask &card);
 /* A card's name as shown: its own, or "Mask 2" by its place (`index`, from 0). */
 std::string mask_card_name(const LayerMask &card, int index);
@@ -273,6 +273,8 @@ struct MaskStep {
    * to paint (mask_card_flatten). */
   bool group = false;
   std::vector<MaskStep> children;
+  /* Show All (Add) or Hide All (Subtract): the whole canvas, not a layer's shape. */
+  bool whole = false;
   /* A group's or a global area's name. */
   std::string name;
   /* A global masking area, as a shared material: every step with this number (0: none) is kept alike
@@ -286,7 +288,7 @@ struct MaskStep {
            fills_only == o.fills_only &&
            strokes_only == o.strokes_only && filled == o.filled && inside_stroke == o.inside_stroke &&
            extend == o.extend && clip == o.clip && group == o.group && children == o.children && name == o.name &&
-           global == o.global;
+           global == o.global && whole == o.whole;
   }
 };
 

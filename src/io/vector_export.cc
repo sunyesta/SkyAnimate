@@ -681,9 +681,16 @@ class SceneWalker {
       card.cuts = m.clip ? MaskCuts::All : m.cuts;
       bool flat = false;
       card.brush_ends = mask_card_ends_lines(m, &flat) && !flat;
-      for (MaskStep s : m.steps) {
+      const auto live = [&](MaskStep &s) {
         std::erase_if(s.layers, [&](uint64_t id) { return id == 0 || id == layer.id || !layer_find(doc_, id); });
-        if (!s.layers.empty()) {
+      };
+      for (MaskStep s : m.steps) {
+        live(s);
+        for (MaskStep &child : s.children) {
+          live(child);
+        }
+        std::erase_if(s.children, mask_step_empty);
+        if (!mask_step_empty(s)) {
           card.steps.push_back(std::move(s));
         }
       }
@@ -752,24 +759,37 @@ class SceneWalker {
     if (it != card_ids_.end()) {
       return it->second;
     }
+    const int id = steps_mask(card.steps, card.start_shown);
+    card_ids_.emplace(key, id);
+    return id;
+  }
+
+  /* Steps painted on white or black, as a mask. */
+  int steps_mask(const std::vector<MaskStep> &steps, bool start)
+  {
     std::vector<VectorNode> content;
-    content.push_back(rect(card.start_shown));
-    for (const MaskStep &step : card.steps) {
+    content.push_back(rect(start));
+    for (const MaskStep &step : steps) {
+      if (step.whole) {
+        content.push_back(rect(step.mode == MaskMode::Add));
+        continue;
+      }
       int shape = step_shape(step);
       if (step.invert) {
         shape = add_mask({rect(true), rect(false, shape)});
       }
       content.push_back(rect(step.mode == MaskMode::Add, shape));
     }
-    const int id = add_mask(std::move(content));
-    card_ids_.emplace(key, id);
-    return id;
+    return add_mask(std::move(content));
   }
 
   /* A step's shape as a mask (white inside): its layers together, or the first less the others, or where they all
    * are; grown, shrunk or stretched as the step says. */
   int step_shape(const MaskStep &step)
   {
+    if (step.group) {
+      return steps_mask(step.children, false);
+    }
     const bool inside_stroke = step.fills_only && step.inside_stroke;
     const bool shrink = step.grow < 0.0f || inside_stroke;
     Pass pass;

@@ -3903,6 +3903,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["verb"] = mask_verb_identifier(mask_step_verb(s));
       d["name"] = s.name;
       d["group"] = s.group;
+      d["whole"] = s.whole;
       d["global"] = s.global;
       d["users"] = mask_area_users(doc, s.global);
       py::list kids;

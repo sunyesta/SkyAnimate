@@ -522,15 +522,22 @@ std::vector<LayerMask> layer_mask_cards(const Document &doc, const Layer &layer)
   bool pruned = false;
   for (LayerMask &card : cards) {
     for (MaskStep &step : card.steps) {
-      const size_t before = step.layers.size();
-      std::erase_if(step.layers, [&](uint64_t id) {
-        const Layer *other = layer_find(doc, id);
-        return other && (merges(*other, layer.id) || merges(layer, id));
-      });
-      pruned |= step.layers.size() != before;
+      const auto prune = [&](MaskStep &s) {
+        const size_t before = s.layers.size();
+        std::erase_if(s.layers, [&](uint64_t id) {
+          const Layer *other = layer_find(doc, id);
+          return other && (merges(*other, layer.id) || merges(layer, id));
+        });
+        pruned |= s.layers.size() != before;
+      };
+      prune(step);
+      for (MaskStep &child : step.children) {
+        prune(child);
+      }
+      std::erase_if(step.children, mask_step_empty);
     }
     if (pruned) {
-      std::erase_if(card.steps, [](const MaskStep &step) { return step.layers.empty(); });
+      std::erase_if(card.steps, mask_step_empty);
     }
   }
   if (pruned) {

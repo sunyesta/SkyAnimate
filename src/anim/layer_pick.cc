@@ -119,10 +119,17 @@ static std::vector<LayerMask> live_rows(const Document &doc, const Layer &layer)
     if (!m.enabled || (m.cuts == MaskCuts::Lines && !m.clip)) {
       continue;
     }
-    for (MaskStep &step : m.steps) {
+    const auto live = [&](MaskStep &step) {
       std::erase_if(step.layers, [&](uint64_t id) { return id == layer.id || !layer_find(doc, id); });
+    };
+    for (MaskStep &step : m.steps) {
+      live(step);
+      for (MaskStep &child : step.children) {
+        live(child);
+      }
+      std::erase_if(step.children, mask_step_empty);
     }
-    std::erase_if(m.steps, [](const MaskStep &step) { return step.layers.empty(); });
+    std::erase_if(m.steps, mask_step_empty);
     if (!m.steps.empty()) {
       cards.push_back(std::move(m));
     }
@@ -151,6 +158,63 @@ static bool clip_base_shows(const Document &doc, const Layer &base, float2 at, b
          (depth >= 2 || rows_show_at(doc, base, live_rows(doc, base), at, depth + 1));
 }
 
+/* Steps painted on `start`, top to bottom: whether `at` ends up white. */
+static bool steps_paint_at(const Document &doc, const std::vector<MaskStep> &steps, bool start, float2 at, int depth);
+
+/* Whether `at` is in a step's shape, before Invert. */
+static bool step_covers_at(const Document &doc, const MaskStep &step, float2 at, int depth)
+{
+  if (step.group) {
+    return steps_paint_at(doc, step.children, false, at, depth);
+  }
+  /* Its layers combined: any of them, the first and none of the others, or all of them. */
+  bool inside = false;
+  bool first = true;
+  for (const uint64_t id : step.layers) {
+    const Layer *source = layer_find(doc, id);
+    if (!source) {
+      continue;
+    }
+    bool here = false;
+    if (step.clip) {
+      here = clip_base_shows(doc, *source, at, step.fills_only, depth);
+    }
+    else {
+      here = layer_covers(doc, *source, at, 0.0f, step.fills_only, step.filled, false, step.strokes_only,
+                          step.fills_only && step.inside_stroke);
+    }
+    const MaskCombine combine = step.clip || first ? MaskCombine::Union : step.combine;
+    first = false;
+    if (combine == MaskCombine::Union) {
+      inside = inside || here;
+      if (inside && step.combine == MaskCombine::Union) {
+        break;
+      }
+    }
+    else if (combine == MaskCombine::Difference) {
+      inside = inside && !here;
+    }
+    else {
+      inside = inside && here;
+    }
+    if (!inside && step.combine != MaskCombine::Union) {
+      break;
+    }
+  }
+  return inside;
+}
+
+static bool steps_paint_at(const Document &doc, const std::vector<MaskStep> &steps, bool start, float2 at, int depth)
+{
+  bool shows = start;
+  for (const MaskStep &step : steps) {
+    if (step.whole || step_covers_at(doc, step, at, depth) != step.invert) {
+      shows = step.mode == MaskMode::Add;
+    }
+  }
+  return shows;
+}
+
 /* Cards, each its steps painted on its start, all of which must show, as the renderer evaluates them
  * (data/layer.hh). A step's mask layers lend their shapes as drawn, before their own masks, as the
  * renderer does; Clip to Below's base counts as it shows. */
@@ -158,50 +222,7 @@ static bool rows_show_at(const Document &doc, const Layer & /*owner*/, const std
                          int depth)
 {
   for (const LayerMask &card : cards) {
-    bool shows = card.start_shown;
-    for (const MaskStep &step : card.steps) {
-      /* Its layers combined: any of them, the first and none of the others, or all of them. */
-      bool inside = false;
-      bool first = true;
-      for (const uint64_t id : step.layers) {
-        const Layer *source = layer_find(doc, id);
-        if (!source) {
-          continue;
-        }
-        bool here = false;
-        if (step.clip) {
-          here = clip_base_shows(doc, *source, at, step.fills_only, depth);
-        }
-        else {
-          here = layer_covers(doc, *source, at, 0.0f, step.fills_only, step.filled, false, step.strokes_only,
-                              step.fills_only && step.inside_stroke);
-        }
-        const MaskCombine combine = step.clip || first ? MaskCombine::Union : step.combine;
-        first = false;
-        if (combine == MaskCombine::Union) {
-          inside = inside || here;
-          if (inside && step.combine == MaskCombine::Union) {
-            break;
-          }
-        }
-        else if (combine == MaskCombine::Difference) {
-          inside = inside && !here;
-        }
-        else {
-          inside = inside && here;
-        }
-        if (!inside && step.combine != MaskCombine::Union) {
-          break;
-        }
-      }
-      if (step.invert) {
-        inside = !inside;
-      }
-      if (inside) {
-        shows = step.mode == MaskMode::Add;
-      }
-    }
-    if (!shows) {
+    if (!steps_paint_at(doc, card.steps, card.start_shown, at, depth)) {
       return false;
     }
   }
@@ -221,7 +242,7 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
         continue;
       }
       std::vector<LineCutter::Row> rows;
-      for (const MaskStep &m : card.steps) {
+      const auto make_row = [&](auto &&make, const MaskStep &m) -> LineCutter::Row {
         LineCutter::Row row;
         row.mode = int(m.mode);
         row.invert = m.invert;
@@ -229,6 +250,11 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
         row.strokes_only = m.strokes_only;
         row.inside_stroke = m.fills_only && m.inside_stroke;
         row.combine = m.combine;
+        row.group = m.group;
+        row.whole = m.whole;
+        for (const MaskStep &child : m.children) {
+          row.kids.push_back(make(make, child));
+        }
         const auto add = [&](auto &&self, const Layer &source) -> void {
           if (source.is_group()) {
             for (const Layer &child : source.children) {
@@ -283,7 +309,10 @@ LineCutter line_cutter(const Document &doc, const Layer &layer, bool render)
             row.sources++;
           }
         }
-        rows.push_back(std::move(row));
+        return row;
+      };
+      for (const MaskStep &m : card.steps) {
+        rows.push_back(make_row(make_row, m));
       }
       if (rows.empty()) {
         continue;
@@ -332,6 +361,15 @@ static bool cutter_pieces_cover(const LineCutter::Row &row, float2 p, int source
 
 static bool cutter_row_covers(const LineCutter::Row &row, float2 p)
 {
+  if (row.group) {
+    bool shows = false;
+    for (const LineCutter::Row &kid : row.kids) {
+      if (kid.whole || cutter_row_covers(kid, p) != kid.invert) {
+        shows = MaskMode(kid.mode) == MaskMode::Add;
+      }
+    }
+    return shows;
+  }
   if (row.combine == MaskCombine::Union || row.sources < 2) {
     return cutter_pieces_cover(row, p, -1);
   }
@@ -352,8 +390,8 @@ bool line_cutter_shows(const LineCutter &cutter, float2 at)
   for (const std::vector<LineCutter::Row> &rows : cutter.levels) {
     bool shows = rows.front().start_shown;
     for (const LineCutter::Row &row : rows) {
-      bool inside = cutter_row_covers(row, at);
-      if (row.invert) {
+      bool inside = row.whole || cutter_row_covers(row, at);
+      if (row.invert && !row.whole) {
         inside = !inside;
       }
       if (inside) {

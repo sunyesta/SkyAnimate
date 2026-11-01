@@ -13025,11 +13025,17 @@ static void viewport_draw_contents(Area &area, Context &C)
         continue;
       }
       for (const MaskStep &s : m.steps) {
-        for (const uint64_t id : s.layers) {
-          const bool hovered_mask = std::find(wm.mask_hover.begin(), wm.mask_hover.end(), id) != wm.mask_hover.end();
-          if (const Layer *source = layer_find(doc, id); source && !hovered_mask) {
-            draw_mask_outline(dl, doc, *source, view, m.start_shown && mask_step_cuts(s), false);
+        const auto outline = [&](const MaskStep &area) {
+          for (const uint64_t id : area.layers) {
+            const bool hovered_mask = std::find(wm.mask_hover.begin(), wm.mask_hover.end(), id) != wm.mask_hover.end();
+            if (const Layer *source = layer_find(doc, id); source && !hovered_mask) {
+              draw_mask_outline(dl, doc, *source, view, m.start_shown && mask_step_cuts(area), false);
+            }
           }
+        };
+        outline(s);
+        for (const MaskStep &child : s.children) {
+          outline(child);
         }
       }
     }

@@ -263,6 +263,11 @@ std::string mask_label(const Document &doc, const LayerMask &m)
   for (const MaskStep &s : m.steps) {
     const std::string names = layer_names(doc, s.layers, s.combine == MaskCombine::Union ? ", " : mask_combine_joiner(s.combine));
     const MaskVerb verb = mask_step_verb(s);
+    if (s.whole) {
+      text += std::string(text.empty() ? (m.start_shown ? "Show All, " : "Hide All, ") : ", ") +
+              (s.mode == MaskMode::Add ? "Show All" : "Hide All");
+      continue;
+    }
     text += std::string(text.empty() ? (m.start_shown ? "Show All, " : "Hide All, ") : ", ") +
             (verb == MaskVerb::KeepOnly ? "Keep Only " : verb == MaskVerb::Remove ? "- " : s.invert ? "+ outside " : "+ ") +
             (s.group ? (s.name.empty() ? std::string("Group") : s.name) : names.empty() ? std::string("nothing") : names) +
@@ -303,6 +308,27 @@ std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &laye
         if (const Layer *l = layer_find(doc, id)) {
           names += (names.empty() ? "" : mask_combine_joiner(s.combine)) + l->name;
         }
+      }
+      /* A group kept whole: its own steps, in brackets. */
+      if (s.group) {
+        std::string inner;
+        for (const MaskStep &child : s.children) {
+          if (child.whole) {
+            inner = child.mode == MaskMode::Add ? "everything" : "nothing";
+            continue;
+          }
+          const std::string words = layer_names(doc, child.layers, mask_combine_joiner(child.combine));
+          const MaskVerb verb = mask_step_verb(child);
+          inner += (inner.empty() ? "" : ", ") +
+                   std::string(inner.empty() && verb == MaskVerb::Add ? "" : verb == MaskVerb::Add ? "plus " : verb == MaskVerb::Remove ? "minus " : "within ") +
+                   (child.invert && verb == MaskVerb::Add ? "outside " : "") + words;
+        }
+        names = "(" + inner + ")";
+      }
+      if (s.whole) {
+        text = s.mode == MaskMode::Add ? "everything" : "nothing";
+        any = true;
+        continue;
       }
       if (names.empty()) {
         continue;
@@ -515,7 +541,13 @@ void mask_operators_register()
       if (!mask_sources(C, &step.layers)) {
         return OpStatus::Cancelled;
       }
-      if (step.layers.empty()) {
+      /* whole=SHOW or HIDE: the whole canvas, at the bottom of the stack or the group, where it's of use. */
+      const std::string whole = op_arg(C, "whole");
+      if (!whole.empty() && (whole != "SHOW" && whole != "HIDE")) {
+        report(ReportType::Error, "whole is SHOW or HIDE");
+        return OpStatus::Cancelled;
+      }
+      if (step.layers.empty() && whole.empty()) {
         report(ReportType::Warning, "Name the layers to mask with (sources=)");
         return OpStatus::Cancelled;
       }
@@ -539,7 +571,12 @@ void mask_operators_register()
           return OpStatus::Cancelled;
         }
         std::erase(own.layers, layer->id);
-        if (own.layers.empty()) {
+        if (!whole.empty()) {
+          own = {};
+          own.whole = true;
+          own.mode = whole == "SHOW" ? MaskMode::Add : MaskMode::Subtract;
+        }
+        else if (own.layers.empty()) {
           report(ReportType::Warning, "A layer can't be its own mask");
           continue;
         }
@@ -548,11 +585,11 @@ void mask_operators_register()
           const int into_group = op_arg_int(C, "group", -1);
           if (into_group >= 0 && into_group < int(card->steps.size()) && card->steps[size_t(into_group)].group) {
             MaskStep &group = card->steps[size_t(into_group)];
-            group.children.push_back(own);
+            group.children.insert(own.whole ? group.children.begin() : group.children.end(), own);
             mask_area_sync(doc, group);
           }
           else {
-            card->steps.push_back(own);
+            card->steps.insert(own.whole ? card->steps.begin() : card->steps.end(), own);
           }
           undo = "Mask " + layer->name + ": " + mask_label(doc, *card);
           count++;

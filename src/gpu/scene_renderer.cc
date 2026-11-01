@@ -684,7 +684,7 @@ static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, b
     bool flat = false;
     card.brush_ends = mask_card_ends_lines(m, &flat) && !flat;
     card.index = index;
-    for (const MaskStep &s : m.steps) {
+    const auto make_row = [&](auto &&make, const MaskStep &s, bool start) -> SceneRenderer::MaskRow {
       SceneRenderer::MaskRow row;
       row.step = s.order;
       row.mode = s.mode;
@@ -697,13 +697,25 @@ static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, b
       row.filled = s.filled;
       row.extend = int(s.extend);
       row.clip = s.clip;
-      row.start_shown = m.start_shown;
+      row.start_shown = start;
+      row.group = s.group;
+      row.whole = s.whole;
       for (const uint64_t id : s.layers) {
         if (id != 0 && id != layer.id && layer_find(doc, id)) {
           row.layers.push_back(id);
         }
       }
-      if (!row.layers.empty()) {
+      for (const MaskStep &child : s.children) {
+        SceneRenderer::MaskRow kid = make(make, child, false);
+        if (!kid.layers.empty() || kid.whole) {
+          row.kids.push_back(std::move(kid));
+        }
+      }
+      return row;
+    };
+    for (const MaskStep &s : m.steps) {
+      SceneRenderer::MaskRow row = make_row(make_row, s, m.start_shown);
+      if (!row.layers.empty() || !row.kids.empty() || row.whole) {
         card.steps.push_back(std::move(row));
       }
     }
@@ -1036,6 +1048,32 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
    * to bottom. */
   stencil_fill(result, rows.front().start_shown);
   for (const MaskRow &row : rows) {
+    /* Painted on the result: where the row's shape is (or with Invert, where it isn't). */
+    const auto paint = [&]() {
+      const unsigned inside = row.invert ? 0u : scratch;
+      switch (row.mode) {
+        case MaskMode::Add:
+          stencil_where(scratch, inside, result, result);
+          break;
+        case MaskMode::Subtract:
+          stencil_where(scratch, inside, result, 0);
+          break;
+      }
+    };
+    if (row.whole) {
+      stencil_fill(result, row.mode == MaskMode::Add);
+      continue;
+    }
+    /* A group's shape is its own rows on nothing, worked out into the scratch with a scratch of their own. With no
+     * bit for that, deep in a clip base's masks, it paints nothing. */
+    if (row.group) {
+      const unsigned inner = !nested ? MASK_NESTED : (free & (~free + 1u));
+      if (inner && !row.kids.empty()) {
+        evaluate_mask_rows(doc, row.kids, scratch, inner, true, (nested ? free : free | MASK_NESTED_SCRATCH) & ~inner & ~scratch);
+        paint();
+      }
+      continue;
+    }
     /* The row's shape: its layers combined (as one, or the first minus the others, or where they all
      * are), grown or shrunk. Shrinking draws the areas, then clears a band around each area's edge,
      * then draws the lines (thinner). */
@@ -1132,16 +1170,7 @@ void SceneRenderer::evaluate_mask_rows(const Document &doc, const std::vector<Ma
       }
     }
     mask_pass_ = {};
-    /* Where the row's shape is (or with Invert, where it isn't). */
-    const unsigned inside = row.invert ? 0u : scratch;
-    switch (row.mode) {
-      case MaskMode::Add:
-        stencil_where(scratch, inside, result, result);
-        break;
-      case MaskMode::Subtract:
-        stencil_where(scratch, inside, result, 0);
-        break;
-    }
+    paint();
   }
 }
 
@@ -1158,6 +1187,9 @@ void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
       /* A masking area's own View: only as far as that area. */
       if (mask_preview_step_ >= 0) {
         std::erase_if(card.steps, [&](const MaskRow &row) { return row.step > mask_preview_step_; });
+        for (MaskRow &row : card.steps) {
+          std::erase_if(row.kids, [&](const MaskRow &kid) { return kid.step > mask_preview_step_; });
+        }
       }
       if (!card.steps.empty()) {
         cards.push_back(std::move(card.steps));
@@ -2607,16 +2639,24 @@ uint64_t SceneRenderer::masks_signature(const Document &doc, const Layer &layer)
   uint64_t h = 0x6d61736b73ull;
   for (const CardRows &card : kept_cards(doc, layer, final_render_)) {
     h = hash_mix(h, uint64_t(card.cuts) | uint64_t(card.brush_ends) << 4 | uint64_t(uint32_t(card.index)) << 8);
-    for (const MaskRow &row : card.steps) {
+    const auto mix_row = [&](auto &&self, const MaskRow &row) -> void {
       h = hash_mix(h, uint64_t(row.mode) | uint64_t(row.invert) << 4 | uint64_t(row.combine) << 5 |
                           uint64_t(row.fills_only) << 8 | uint64_t(row.strokes_only) << 9 | uint64_t(row.filled) << 10 |
                           uint64_t(row.inside_stroke) << 11 | uint64_t(row.clip) << 12 |
-                          uint64_t(row.start_shown) << 13 | uint64_t(uint32_t(row.extend)) << 16);
+                          uint64_t(row.start_shown) << 13 | uint64_t(row.group) << 14 | uint64_t(row.whole) << 15 |
+                          uint64_t(uint32_t(row.extend)) << 16);
       h = hash_float(h, row.grow);
       for (const uint64_t id : row.layers) {
         const Layer *source = layer_find(doc, id);
         h = hash_mix(h, source ? layer_signature(doc, *source) : id);
       }
+      for (const MaskRow &kid : row.kids) {
+        self(self, kid);
+      }
+      h = hash_mix(h, row.kids.size());
+    };
+    for (const MaskRow &row : card.steps) {
+      mix_row(mix_row, row);
     }
   }
   return h;

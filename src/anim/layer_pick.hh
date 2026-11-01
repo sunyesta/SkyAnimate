@@ -65,6 +65,11 @@ struct LineCutter {
     std::vector<Piece> pieces;
     /* On a level's first row: its card's Start With (the level starts with everything shown). */
     bool start_shown = false;
+    /* A group: its shape is what `kids` paint on nothing. */
+    bool group = false;
+    std::vector<Row> kids;
+    /* Show All or Hide All. */
+    bool whole = false;
   };
   /* The steps of each card that ends lines, the layer's, then its groups' (each level must show). */
   std::vector<std::vector<Row>> levels;

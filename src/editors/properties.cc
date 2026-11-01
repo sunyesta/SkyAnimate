@@ -5180,6 +5180,13 @@ static void mask_area_panel(Context &C, Layer &layer, const WindowManager::MaskA
   }
   const MaskStep &top = card.steps[size_t(pick.step)];
   const MaskStep st = pick.child >= 0 ? top.children[size_t(pick.child)] : top;
+  if (st.whole) {
+    ImGui::Text("Current Masking Area:");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.24f, 1.0f), "%s", st.mode == MaskMode::Add ? "Show All" : "Hide All");
+    ImGui::TextDisabled("The whole canvas, so there's nothing to set here.");
+    return;
+  }
   const std::string id = std::to_string(layer.id);
   OpArgs at{{"layer", id}, {"index", std::to_string(pick.card)}, {"step", std::to_string(pick.step)}};
   if (pick.child >= 0) {
@@ -6000,8 +6007,16 @@ static void mask_cards(Context &C, Layer &layer)
         }
         ImGui::Separator();
         for (int k = 0; k < 2; k++) {
-          if (ImGui::Selectable(k == 0 ? "      Show All" : "      Hide All", m.start_shown == (k == 0))) {
-            operator_call(C, "mask.set", with("start", k == 0 ? "EVERYTHING" : "NOTHING"));
+          if (ImGui::Selectable(k == 0 ? "      Show All" : "      Hide All")) {
+            OpArgs add_all{{"layer", id}, {"card", std::to_string(i)}, {"whole", k == 0 ? "SHOW" : "HIDE"}};
+            if (into >= 0) {
+              add_all["group"] = std::to_string(into);
+            }
+            operator_call(C, "mask.add", add_all);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(k == 0 ? "Paint the whole canvas white, at the bottom of the stack or group"
+                                     : "Paint the whole canvas black, at the bottom of the stack or group");
           }
           const ImVec2 lo = ImGui::GetItemRectMin();
           mask_paint_icon(ImGui::GetWindowDrawList(), ImVec2(lo.x + h * 0.4f, lo.y + ImGui::GetItemRectSize().y * 0.5f),
@@ -6032,6 +6047,16 @@ static void mask_cards(Context &C, Layer &layer)
             dims[k] = true;
           }
           nothing_yet = nothing_yet && dims[k];
+        }
+        /* Show All or Hide All paints over everything below it. */
+        for (size_t k = m.steps.size(); k-- > 1;) {
+          if (m.steps[k].whole) {
+            for (size_t below = 0; below < k; below++) {
+              notes[below] = m.steps[k].mode == MaskMode::Add ? "Covered by the Show All above it" : "Covered by the Hide All above it";
+              dims[below] = true;
+            }
+            break;
+          }
         }
       }
       const float list_w = ImGui::GetContentRegionAvail().x - 4.0f;
@@ -6181,15 +6206,25 @@ static void mask_cards(Context &C, Layer &layer)
           if (ci >= 0) {
             args["child"] = std::to_string(ci);
           }
-          args["verb"] = mask_verb_identifier(MaskVerb((int(verb) + 1) % 3));
+          args["verb"] = mask_verb_identifier(MaskVerb((int(verb) + 1) % (s.whole ? 2 : 3)));
           operator_call(C, "mask.set", args);
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("%s\nClick for the next one", MASK_VERB_TIPS[int(verb)]);
+          if (s.whole) {
+            ImGui::SetTooltip("%s\nClick to swap Show All and Hide All", s.mode == MaskMode::Add ? "Paints the whole canvas white" : "Paints the whole canvas black");
+          }
+          else {
+            ImGui::SetTooltip("%s\nClick for the next one", MASK_VERB_TIPS[int(verb)]);
+          }
         }
-        mask_verb_icon(dl, ImVec2(x + h * 0.5f, row_at.y + h * 0.5f), h * 0.3f, int(verb), 0);
+        if (s.whole) {
+          mask_paint_icon(dl, ImVec2(x + h * 0.5f, row_at.y + h * 0.5f), h * 0.24f, s.mode == MaskMode::Add, IM_COL32(0x90, 0x90, 0x90, 255));
+        }
+        else {
+          mask_verb_icon(dl, ImVec2(x + h * 0.5f, row_at.y + h * 0.5f), h * 0.3f, int(verb), 0);
+        }
         x += h + 4.0f;
-        std::string label = s.name;
+        std::string label = s.whole ? std::string(s.mode == MaskMode::Add ? "Show All" : "Hide All") : s.name;
         if (!s.group && label.empty()) {
           for (const uint64_t l : s.layers) {
             const Layer *source = layer_find(doc, l);
@@ -6247,8 +6282,11 @@ static void mask_cards(Context &C, Layer &layer)
           args["rows"] = row_list;
           if (ImGui::BeginMenu("Convert To")) {
             static const char *const VERB_NAMES[] = {"Add", "Subtract", "Keep Only"};
-            for (int k = 0; k < 3; k++) {
-              if (ImGui::MenuItem(VERB_NAMES[k], nullptr, int(verb) == k) && (int(verb) != k || picked_rows.size() > 1)) {
+            static const char *const WHOLE_NAMES[] = {"Show All", "Hide All"};
+            for (int k = 0; k < (s.whole ? 2 : 3); k++) {
+              if (ImGui::MenuItem((s.whole ? WHOLE_NAMES : VERB_NAMES)[k], nullptr, int(verb) == k) &&
+                  (int(verb) != k || picked_rows.size() > 1))
+              {
                 OpArgs convert = args;
                 convert["verb"] = mask_verb_identifier(MaskVerb(k));
                 operator_call(C, "mask.areas_set", convert);
@@ -6320,7 +6358,22 @@ static void mask_cards(Context &C, Layer &layer)
           ImGui::EndDragDropTarget();
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("What the areas above paint on. Press + to change it");
+          ImGui::SetTooltip("What the areas above paint on. Right-click to change it");
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+          ImGui::OpenPopup("##base_menu");
+        }
+        if (ImGui::BeginPopup("##base_menu")) {
+          if (ImGui::BeginMenu("Convert To")) {
+            if (ImGui::MenuItem("Show All", nullptr, m.start_shown) && !m.start_shown) {
+              operator_call(C, "mask.set", with("start", "EVERYTHING"));
+            }
+            if (ImGui::MenuItem("Hide All", nullptr, !m.start_shown) && m.start_shown) {
+              operator_call(C, "mask.set", with("start", "NOTHING"));
+            }
+            ImGui::EndMenu();
+          }
+          ImGui::EndPopup();
         }
         mask_paint_icon(dl, ImVec2(base_at.x + h * 1.35f, base_at.y + h * 0.5f), h * 0.24f, m.start_shown,
                         IM_COL32(0x90, 0x90, 0x90, 255));

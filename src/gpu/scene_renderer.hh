@@ -601,6 +601,11 @@ class SceneRenderer {
     bool start_shown = false;
     /* Its place among its card's steps. */
     int step = 0;
+    /* A group: its shape is what `kids` paint on nothing. */
+    bool group = false;
+    std::vector<MaskRow> kids;
+    /* Show All or Hide All. */
+    bool whole = false;
     bool operator==(const MaskRow &) const = default;
   };
   /* Each stencil level's cards (each its steps), which must all show: a masked layer's cards that

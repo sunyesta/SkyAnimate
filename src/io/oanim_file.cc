@@ -611,6 +611,9 @@ static json layer_to_json(const Layer &layer)
           s["group"] = true;
           s["children"] = std::move(children);
         }
+        if (m.whole) {
+          s["whole"] = true;
+        }
         if (!m.name.empty()) {
           s["name"] = m.name;
         }
@@ -2675,6 +2678,7 @@ static Layer layer_from_json(const json &j, int depth)
     m.name = get_string(sj, "name");
     m.global = get_id(sj, "global");
     m.group = get_bool(sj, "group", false);
+    m.whole = get_bool(sj, "whole", false);
     for (const json &cj : get_array(sj, "children")) {
       if (cj.is_object()) {
         MaskStep child;
