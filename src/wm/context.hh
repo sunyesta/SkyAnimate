@@ -346,6 +346,20 @@ struct WindowManager {
     int frame = -10;
     int step = -1;
   } mask_preview;
+  /* The masking area under the mouse in the Masking tab, for mask.area_delete_hovered (`layer` 0: none). */
+  struct MaskAreaHover {
+    uint64_t layer = 0;
+    int card = 0, step = 0, child = -1;
+  } mask_area_hover;
+  /* The active masking area: `step` -1 is the base, `child` >= 0 one inside that group. */
+  struct MaskAreaPick {
+    uint64_t layer = 0;
+    int card = 0, step = -2, child = -1;
+  } mask_area_pick;
+  /* The picked masking areas of that mask, as the Layers editor's picked layers, each (step << 8) | (child + 1). */
+  std::vector<int> mask_area_rows;
+  /* The Masking tab is showing: its keys work. */
+  bool mask_tab_shown = false;
   /* Inside... / Outside... (mask.pick): waiting for a click on the layer to mask `layers` with;
    * `index` >= 0 adds it to that mask of theirs instead of a new one. */
   struct MaskPick {

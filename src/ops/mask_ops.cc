@@ -458,6 +458,33 @@ std::vector<MaskAreaName> mask_areas(const Document &doc)
   return areas;
 }
 
+/* rows=, | between them, else the picked ones: lowest first, each once. */
+static std::vector<int> mask_rows_arg(Context &C)
+{
+  std::vector<int> rows;
+  if (!op_has_arg(C, "rows")) {
+    rows = C.wm ? C.wm->mask_area_rows : std::vector<int>();
+  }
+  const std::string list = op_arg(C, "rows");
+  for (size_t at = 0; at < list.size();) {
+    const size_t bar = std::min(list.find('|', at), list.size());
+    rows.push_back(std::atoi(list.substr(at, bar - at).c_str()));
+    at = bar + 1;
+  }
+  std::sort(rows.begin(), rows.end());
+  rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+  return rows;
+}
+
+static std::string mask_rows_text(const std::vector<int> &rows)
+{
+  std::string text;
+  for (const int row : rows) {
+    text += (text.empty() ? "" : "|") + std::to_string(row);
+  }
+  return text;
+}
+
 /* The card `index=` (and its step `step=`, default 0) of a layer, or null. */
 static LayerMask *card_at(Layer &layer, int index)
 {
@@ -943,10 +970,50 @@ void mask_operators_register()
       LayerMask *card = targets.empty() ? nullptr : card_at(*targets.front(), op_arg_int(C, "index", 0));
       const int step = op_arg_int(C, "step", -1), child = op_arg_int(C, "child", -1);
       int to = op_arg_int(C, "to", 0), group = op_arg_int(C, "group", -1);
-      if (!card || step < 0 || step >= int(card->steps.size())) {
+      if (!card) {
         return OpStatus::Cancelled;
       }
       std::vector<MaskStep> &steps = card->steps;
+      /* rows=: several in the stack together, keeping their order. */
+      if (op_has_arg(C, "rows")) {
+        const std::vector<int> rows = mask_rows_arg(C);
+        for (const int row : rows) {
+          const int at = row >> 8;
+          if ((row & 0xff) != 0 || at >= int(steps.size()) || at == group || (group >= 0 && steps[size_t(at)].group)) {
+            return OpStatus::Cancelled;
+          }
+        }
+        if (rows.empty() || (group >= 0 && (group >= int(steps.size()) || !steps[size_t(group)].group))) {
+          return OpStatus::Cancelled;
+        }
+        std::vector<MaskStep> moved;
+        for (const int row : rows) {
+          moved.push_back(steps[size_t(row >> 8)]);
+        }
+        for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+          const int at = *it >> 8;
+          steps.erase(steps.begin() + at);
+          group -= group > at ? 1 : 0;
+          to -= group < 0 && to > at ? 1 : 0;
+        }
+        std::vector<MaskStep> &into = group >= 0 ? steps[size_t(group)].children : steps;
+        for (MaskStep &s : moved) {
+          s.global = group >= 0 ? 0 : s.global;
+        }
+        into.insert(into.begin() + std::clamp(to, 0, int(into.size())), moved.begin(), moved.end());
+        if (group >= 0) {
+          mask_area_sync(doc, steps[size_t(group)]);
+        }
+        if (C.wm) {
+          C.wm->mask_area_rows.clear();
+          C.wm->mask_area_pick.layer = 0;
+        }
+        C.undo_name = "Move Masking Areas";
+        return OpStatus::Finished;
+      }
+      if (step < 0 || step >= int(steps.size())) {
+        return OpStatus::Cancelled;
+      }
       if (child >= int(steps[size_t(step)].children.size()) || (child < 0 && group == step) ||
           (group >= 0 && (group >= int(steps.size()) || !steps[size_t(group)].group)) ||
           (group >= 0 && child < 0 && steps[size_t(step)].group))
@@ -984,6 +1051,145 @@ void mask_operators_register()
         steps.insert(steps.begin() + std::clamp(to, 0, int(steps.size())), moved);
       }
       C.undo_name = "Move Masking Area";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.area_delete_hovered";
+    ot.name = "Delete Masking Area";
+    ot.description = "Delete the masking area under the mouse in the Masking tab, with the others picked if it's one "
+                     "of them (the last one takes its mask with it)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && C.wm && C.wm->mask_area_hover.layer != 0; };
+    ot.exec = [](Context &C) {
+      const WindowManager::MaskAreaHover hover = C.wm->mask_area_hover;
+      const int row = (hover.step << 8) | (hover.child + 1);
+      const std::vector<int> &picked = C.wm->mask_area_rows;
+      const bool many = C.wm->mask_area_pick.layer == hover.layer && C.wm->mask_area_pick.card == hover.card &&
+                        std::find(picked.begin(), picked.end(), row) != picked.end();
+      const std::vector<int> rows = many ? picked : std::vector<int>{row};
+      const OpStatus status = operator_call(C, "mask.areas_delete", {{"layer", std::to_string(hover.layer)},
+                                                                     {"index", std::to_string(hover.card)},
+                                                                     {"rows", mask_rows_text(rows)}});
+      C.wm->mask_area_hover = {};
+      return status;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.areas_delete";
+    ot.name = "Delete Masking Areas";
+    ot.description = "Delete card index='s masking areas rows= ((step << 8) | (child + 1), | between them; the picked ones "
+                     "without it). The last one takes its mask with it, and a group goes with what's in it";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) {
+      const std::vector<int> rows = mask_rows_arg(C);
+      const std::string index = op_arg(C, "index", "0");
+      const std::vector<Layer *> targets = mask_targets(C);
+      if (rows.empty() || targets.empty()) {
+        return OpStatus::Cancelled;
+      }
+      /* From the top down, so what's left keeps its place: inside a group before the group. */
+      for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+        OpArgs args = {{"layer", std::to_string(targets.front()->id)}, {"index", index}, {"step", std::to_string(*it >> 8)}};
+        if ((*it & 0xff) != 0) {
+          args["child"] = std::to_string((*it & 0xff) - 1);
+        }
+        operator_call(C, "mask.remove", args);
+      }
+      if (C.wm) {
+        C.wm->mask_area_rows.clear();
+        C.wm->mask_area_pick.layer = 0;
+      }
+      C.undo_name = "Delete Masking Areas";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.areas_set";
+    ot.name = "Convert Masking Areas";
+    ot.description = "Make card index='s masking areas rows= (the picked ones without it) verb= ADD, REMOVE or KEEP_ONLY";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = mask_poll;
+    ot.exec = [](Context &C) {
+      const std::vector<int> rows = mask_rows_arg(C);
+      const std::vector<Layer *> targets = mask_targets(C);
+      if (rows.empty() || targets.empty()) {
+        return OpStatus::Cancelled;
+      }
+      for (const int row : rows) {
+        OpArgs args = {{"layer", std::to_string(targets.front()->id)}, {"index", op_arg(C, "index", "0")},
+                       {"step", std::to_string(row >> 8)}, {"verb", op_arg(C, "verb")}};
+        if ((row & 0xff) != 0) {
+          args["child"] = std::to_string((row & 0xff) - 1);
+        }
+        if (operator_call(C, "mask.set", args) != OpStatus::Finished) {
+          return OpStatus::Cancelled;
+        }
+      }
+      C.undo_name = "Convert Masking Areas";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mask.areas_group";
+    ot.name = "Join as Group";
+    ot.description = "Join card index='s masking areas rows= (the picked ones without it, Ctrl G in the Masking tab) as a "
+                     "group, where the lowest of them was. All + stays a +, all - a -, painting as they did; any other mix "
+                     "keeps each one's own and takes its shape from the base, as a new group does. Groups don't nest";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) {
+      return mask_poll(C) && (op_has_arg(C, "rows") || !C.wm || (C.wm->mask_tab_shown && !C.wm->mask_area_rows.empty()));
+    };
+    ot.exec = [](Context &C) {
+      std::vector<int> rows = mask_rows_arg(C);
+      const std::vector<Layer *> targets = mask_targets(C);
+      const int index = op_has_arg(C, "index") || !C.wm ? op_arg_int(C, "index", 0) : C.wm->mask_area_pick.card;
+      LayerMask *card = targets.empty() ? nullptr : card_at(*targets.front(), index);
+      if (!card || rows.empty()) {
+        return OpStatus::Cancelled;
+      }
+      for (const int row : rows) {
+        if ((row & 0xff) != 0 || (row >> 8) >= int(card->steps.size()) || card->steps[size_t(row >> 8)].group) {
+          report(ReportType::Warning, "Groups don't go inside groups: pick areas that are in the stack, not in a group");
+          return OpStatus::Cancelled;
+        }
+      }
+      MaskStep group;
+      group.group = true;
+      group.show_expanded = true;
+      group.name = "Group";
+      const MaskVerb first = mask_step_verb(card->steps[size_t(rows.front() >> 8)]);
+      const bool alike = first != MaskVerb::KeepOnly && std::all_of(rows.begin(), rows.end(), [&](int row) {
+        return mask_step_verb(card->steps[size_t(row >> 8)]) == first;
+      });
+      mask_step_set_verb(group, alike ? first : card->start_shown ? MaskVerb::Remove : MaskVerb::Add);
+      for (const int row : rows) {
+        MaskStep s = card->steps[size_t(row >> 8)];
+        s.global = 0;
+        if (alike) {
+          s.mode = MaskMode::Add;
+        }
+        group.children.push_back(std::move(s));
+      }
+      const int low = rows.front() >> 8;
+      for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+        card->steps.erase(card->steps.begin() + (*it >> 8));
+      }
+      card->steps.insert(card->steps.begin() + low, std::move(group));
+      if (C.wm) {
+        C.wm->mask_area_pick = {targets.front()->id, index, low, -1};
+        C.wm->mask_area_rows = {low << 8};
+      }
+      C.undo_name = "Join as Group";
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

@@ -5161,14 +5161,8 @@ static int segmented(const char *id, int value, int count, const char *const *na
   return clicked;
 }
 
-/* A mask's Masking Area picked in its stack: `step` -1 is the base, `child` >= 0 one inside that group. */
-struct MaskAreaPick {
-  uint64_t layer = 0;
-  int card = 0, step = -2, child = -1;
-};
-
 /* Current Masking Area: the settings of the picked one, so the stack stays a short list. */
-static void mask_area_panel(Context &C, Layer &layer, const MaskAreaPick &pick)
+static void mask_area_panel(Context &C, Layer &layer, const WindowManager::MaskAreaPick &pick)
 {
   Document &doc = *C.document;
   const ImGuiStyle &style = ImGui::GetStyle();
@@ -5556,7 +5550,9 @@ static void mask_cards(Context &C, Layer &layer)
   const float h = ImGui::GetFrameHeight();
   const std::string id = std::to_string(layer.id);
   /* The picked Masking Area: what it was if that's still there, else the top of the first mask. */
-  static MaskAreaPick area;
+  WindowManager::MaskAreaPick &area = C.wm->mask_area_pick;
+  std::vector<int> &picked_rows = C.wm->mask_area_rows;
+  C.wm->mask_tab_shown = true;
   {
     const bool card_ok = area.layer == layer.id && area.card >= 0 && area.card < int(layer.masks.size());
     const std::vector<MaskStep> *steps = card_ok ? &layer.masks[size_t(area.card)].steps : nullptr;
@@ -5564,8 +5560,23 @@ static void mask_cards(Context &C, Layer &layer)
     const bool child_ok = step_ok && (area.child < 0 || (area.step >= 0 && area.child < int((*steps)[size_t(area.step)].children.size())));
     if (!child_ok) {
       area = {layer.id, 0, layer.masks.empty() ? -1 : int(layer.masks[0].steps.size()) - 1, -1};
+      picked_rows.clear();
+    }
+    /* What's picked is what's still there, the active one among it. */
+    if (!layer.masks.empty()) {
+      const std::vector<MaskStep> &now = layer.masks[size_t(area.card)].steps;
+      std::erase_if(picked_rows, [&](int row) {
+        const int at = row >> 8, inside = (row & 0xff) - 1;
+        return at >= int(now.size()) || inside >= int(now[size_t(at)].children.size());
+      });
+      const int active = (area.step << 8) | (area.child + 1);
+      if (area.step >= 0 && std::find(picked_rows.begin(), picked_rows.end(), active) == picked_rows.end()) {
+        picked_rows.push_back(active);
+      }
     }
   }
+  /* A plain press on a picked row keeps them all for a drag, and narrows to it if the button comes up without one. */
+  static int narrow_row = -1;
   /* A row dragged onto another, moved once the stacks are drawn. */
   OpArgs area_drop;
 
@@ -6024,19 +6035,86 @@ static void mask_cards(Context &C, Layer &layer)
         }
       }
       const float list_w = ImGui::GetContentRegionAvail().x - 4.0f;
+      /* The rows as they're listed, for Shift's range. */
+      std::vector<int> row_order;
+      for (int si = int(m.steps.size()) - 1; si >= 0; si--) {
+        row_order.push_back(si << 8);
+        if (m.steps[size_t(si)].group && m.steps[size_t(si)].show_expanded) {
+          for (int ci = int(m.steps[size_t(si)].children.size()) - 1; ci >= 0; ci--) {
+            row_order.push_back((si << 8) | (ci + 1));
+          }
+        }
+      }
+      /* A row dragged that's one of several picked, in the stack, takes the others with it. */
+      const auto moved_rows = [&](int step, int child) {
+        const int row = (step << 8) | (child + 1);
+        std::string rows;
+        if (picked_rows.size() > 1 && child < 0 && std::find(picked_rows.begin(), picked_rows.end(), row) != picked_rows.end() &&
+            std::all_of(picked_rows.begin(), picked_rows.end(), [](int r) { return (r & 0xff) == 0; }))
+        {
+          for (const int r : picked_rows) {
+            rows += (rows.empty() ? "" : "|") + std::to_string(r);
+          }
+        }
+        return rows;
+      };
       const auto area_row = [&](const MaskStep &s, int si, int ci) {
         ImGui::PushID(si * 1024 + ci + 1);
         const float indent = ci >= 0 ? h * 1.2f : 0.0f;
         const ImVec2 row_at = ImGui::GetCursorScreenPos();
-        const bool picked_here = area.card == i && area.step == si && area.child == ci;
+        const int this_row = (si << 8) | (ci + 1);
+        const bool active_here = area.card == i && area.step == si && area.child == ci;
+        const bool picked_here = area.card == i && std::find(picked_rows.begin(), picked_rows.end(), this_row) != picked_rows.end();
         ImGui::SetNextItemAllowOverlap();
-        if (ImGui::Selectable("##row", picked_here, ImGuiSelectableFlags_AllowOverlap, ImVec2(list_w, h))) {
-          area = {layer.id, i, si, ci};
+        const bool released = ImGui::Selectable("##row", picked_here, ImGuiSelectableFlags_AllowOverlap, ImVec2(list_w, h));
+        /* As the Layers editor's rows: Shift picks from the active one to here and it stays active, Ctrl adds or takes
+         * out this one, and a plain press picks just this one. */
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+          const ImGuiIO &io = ImGui::GetIO();
+          if (io.KeyShift && !io.KeyCtrl && area.card == i && area.step >= 0) {
+            const int active = (area.step << 8) | (area.child + 1);
+            const size_t a = size_t(std::find(row_order.begin(), row_order.end(), active) - row_order.begin());
+            const size_t b = size_t(std::find(row_order.begin(), row_order.end(), this_row) - row_order.begin());
+            if (a < row_order.size() && b < row_order.size()) {
+              picked_rows.assign(row_order.begin() + std::ptrdiff_t(std::min(a, b)), row_order.begin() + std::ptrdiff_t(std::max(a, b) + 1));
+            }
+          }
+          else if (io.KeyCtrl && area.card == i && picked_here) {
+            std::erase(picked_rows, this_row);
+            if (active_here && !picked_rows.empty()) {
+              area = {layer.id, i, picked_rows.back() >> 8, (picked_rows.back() & 0xff) - 1};
+            }
+            else if (active_here) {
+              /* The only one picked: it stays. */
+              picked_rows.push_back(this_row);
+            }
+          }
+          else if (io.KeyCtrl && area.card == i && area.step >= 0) {
+            picked_rows.push_back(this_row);
+            area = {layer.id, i, si, ci};
+          }
+          else if (picked_here) {
+            narrow_row = this_row;
+            area = {layer.id, i, si, ci};
+          }
+          else {
+            picked_rows = {this_row};
+            area = {layer.id, i, si, ci};
+          }
+        }
+        if (released && narrow_row == this_row && area.card == i) {
+          const ImGuiIO &io = ImGui::GetIO();
+          if (io.MouseDragMaxDistanceSqr[0] <= io.MouseDragThreshold * io.MouseDragThreshold) {
+            picked_rows = {this_row};
+          }
+          narrow_row = -1;
         }
         if (ImGui::BeginDragDropSource()) {
           const int moved[3] = {i, si, ci};
           ImGui::SetDragDropPayload("OANIM_MASK_AREA", moved, sizeof(moved));
-          ImGui::TextUnformatted(s.group ? s.name.c_str() : "Masking area");
+          ImGui::TextUnformatted(picked_here && picked_rows.size() > 1 ? "Masking areas"
+                                 : s.group                             ? s.name.c_str()
+                                                                       : "Masking area");
           ImGui::EndDragDropSource();
         }
         if (ImGui::BeginDragDropTarget()) {
@@ -6060,6 +6138,9 @@ static void mask_cards(Context &C, Layer &layer)
               if (moved[2] >= 0) {
                 area_drop["child"] = std::to_string(moved[2]);
               }
+              if (const std::string rows = moved_rows(moved[1], moved[2]); !rows.empty()) {
+                area_drop["rows"] = rows;
+              }
               if (onto) {
                 area_drop["group"] = std::to_string(si);
                 area_drop["to"] = std::to_string(s.children.size());
@@ -6076,7 +6157,8 @@ static void mask_cards(Context &C, Layer &layer)
           ImGui::EndDragDropTarget();
         }
         if (picked_here) {
-          dl->AddRectFilled(row_at, row_at + ImVec2(list_w, h), IM_COL32(0x3a, 0x5a, 0x8c, 255), 3.0f);
+          dl->AddRectFilled(row_at, row_at + ImVec2(list_w, h),
+                            active_here ? IM_COL32(0x3a, 0x5a, 0x8c, 255) : IM_COL32(0x2e, 0x42, 0x60, 255), 3.0f);
         }
         const bool dimmed = ci < 0 && dims[size_t(si)];
         const ImU32 text_col = ImGui::GetColorU32(dimmed ? ImGuiCol_TextDisabled : ImGuiCol_Text);
@@ -6137,34 +6219,52 @@ static void mask_cards(Context &C, Layer &layer)
           right -= h * 0.7f;
           dl->AddText(ImVec2(right, row_at.y + style.FramePadding.y), IM_COL32(0xff, 0xbf, 0x73, 255), "!");
         }
+        /* X or Delete over it deletes it (mask.area_delete_hovered). */
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+            ImGui::IsMouseHoveringRect(row_at, row_at + ImVec2(list_w, h)))
+        {
+          C.wm->mask_area_hover = {layer.id, i, si, ci};
+        }
         /* Right-click, anywhere on the row: what to turn it into, and Delete. */
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
             ImGui::IsMouseHoveringRect(row_at, row_at + ImVec2(list_w, h)) && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
         {
-          area = {layer.id, i, si, ci};
+          /* On one of the picked, for all of them; else just this one. */
+          if (!picked_here || area.card != i) {
+            picked_rows = {this_row};
+            area = {layer.id, i, si, ci};
+          }
           ImGui::OpenPopup("##area_row_menu");
         }
         if (ImGui::BeginPopup("##area_row_menu")) {
-          OpArgs args = at;
-          args["step"] = std::to_string(si);
-          if (ci >= 0) {
-            args["child"] = std::to_string(ci);
+          std::string row_list;
+          bool in_stack = true;
+          for (const int row : picked_rows) {
+            row_list += (row_list.empty() ? "" : "|") + std::to_string(row);
+            in_stack = in_stack && (row & 0xff) == 0 && (row >> 8) < int(m.steps.size()) && !m.steps[size_t(row >> 8)].group;
           }
+          OpArgs args = at;
+          args["rows"] = row_list;
           if (ImGui::BeginMenu("Convert To")) {
             static const char *const VERB_NAMES[] = {"Add", "Subtract", "Keep Only"};
             for (int k = 0; k < 3; k++) {
-              if (ImGui::MenuItem(VERB_NAMES[k], nullptr, int(verb) == k) && int(verb) != k) {
+              if (ImGui::MenuItem(VERB_NAMES[k], nullptr, int(verb) == k) && (int(verb) != k || picked_rows.size() > 1)) {
                 OpArgs convert = args;
                 convert["verb"] = mask_verb_identifier(MaskVerb(k));
-                operator_call(C, "mask.set", convert);
+                operator_call(C, "mask.areas_set", convert);
               }
             }
             ImGui::EndMenu();
           }
+          if (ImGui::MenuItem("Join as Group", "Ctrl G", false, in_stack)) {
+            operator_call(C, "mask.areas_group", args);
+          }
+          if (!in_stack && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Groups don't go inside groups: pick areas that are in the stack, not in a group");
+          }
           ImGui::Separator();
-          if (ImGui::MenuItem("Delete")) {
-            operator_call(C, "mask.remove", args);
-            area.layer = 0;
+          if (ImGui::MenuItem("Delete", "X")) {
+            operator_call(C, "mask.areas_delete", args);
           }
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip(ci < 0 && m.steps.size() == 1 ? "Delete this area, and the mask with it: it's the last one"
@@ -6197,6 +6297,7 @@ static void mask_cards(Context &C, Layer &layer)
         const ImVec2 base_at = ImGui::GetCursorScreenPos();
         if (ImGui::Selectable("##base", area.card == i && area.step == -1, 0, ImVec2(list_w, h))) {
           area = {layer.id, i, -1, -1};
+          picked_rows.clear();
         }
         if (area.card == i && area.step == -1) {
           dl->AddRectFilled(base_at, base_at + ImVec2(list_w, h), IM_COL32(0x3a, 0x5a, 0x8c, 255), 3.0f);
@@ -6210,6 +6311,9 @@ static void mask_cards(Context &C, Layer &layer)
               area_drop = {{"layer", id}, {"index", std::to_string(i)}, {"step", std::to_string(moved[1])}, {"to", "0"}};
               if (moved[2] >= 0) {
                 area_drop["child"] = std::to_string(moved[2]);
+              }
+              if (const std::string rows = moved_rows(moved[1], moved[2]); !rows.empty()) {
+                area_drop["rows"] = rows;
               }
             }
           }
@@ -8125,6 +8229,8 @@ static void point_panel(Context &C, VectorDrawing &drawing)
 
 void properties_draw(Area &area, Context &C)
 {
+  C.wm->mask_area_hover = {};
+  C.wm->mask_tab_shown = false;
   /* A property shown from the timeline: its panel opens and its row flashes (see ui_flash_bind). */
   struct FlashBinding {
     explicit FlashBinding(WindowManager *wm) { ui_flash_bind(wm); }

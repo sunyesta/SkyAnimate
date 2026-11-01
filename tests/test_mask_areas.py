@@ -188,6 +188,74 @@ assert ops.mask.add(card="0", sources="patch", verb="ADD") == {'FINISHED'}
 assert ops.mask.area_move(index="0", step="2", to="0") == {'FINISHED'}
 assert head.masks[0]["steps"][0]["layers"] == ["patch"]
 
+# --- Several at once, as the Layers editor's picked rows ---------------------------------------------------------------
+ROW = lambda step, child=-1: (step << 8) | (child + 1)
+
+
+def rows(*at):
+    return "|".join(str(ROW(*a)) for a in at)
+
+
+def plain(*verbs_and_layers):
+    clear()
+    first = True
+    for layer_name, verb in verbs_and_layers:
+        if first:
+            assert ops.mask.add(sources=layer_name, mode="ADD" if verb == "ADD" else "SUBTRACT") == {'FINISHED'}
+            first = False
+        else:
+            assert ops.mask.add(card="0", sources=layer_name, verb=verb) == {'FINISHED'}
+
+
+# All - stays a -, painting as it did.
+plain(("inside", "REMOVE"), ("cut", "REMOVE"), ("patch", "REMOVE"))
+before = seen()
+assert ops.mask.areas_group(index="0", rows=rows((0,), (1,))) == {'FINISHED'}
+steps = head.masks[0]["steps"]
+assert steps[0]["group"] and steps[0]["verb"] == "REMOVE" and [c["verb"] for c in steps[0]["children"]] == ["ADD", "ADD"]
+assert steps[1]["layers"] == ["patch"]
+assert seen() == before, ("the same paint", seen(), before)
+
+# All + stays a +, where the lowest was.
+plain(("patch", "REMOVE"), ("inside", "ADD"), ("lip", "ADD"))
+before = seen()
+assert ops.mask.areas_group(index="0", rows=rows((1,), (2,))) == {'FINISHED'}
+assert head.masks[0]["steps"][1]["group"] and head.masks[0]["steps"][1]["verb"] == "ADD"
+assert seen() == before, seen()
+
+# A mix keeps each one's own, the group taking its paint from the base: that's the mouth hole.
+plain(("inside", "ADD"), ("cut", "REMOVE"), ("lip", "KEEP_ONLY"))
+assert ops.mask.set(index="0", start="EVERYTHING") == {'FINISHED'}
+assert ops.mask.areas_group(index="0", rows=rows((0,), (1,), (2,))) == {'FINISHED'}
+steps = head.masks[0]["steps"]
+assert len(steps) == 1 and steps[0]["verb"] == "REMOVE"
+assert [c["verb"] for c in steps[0]["children"]] == ["ADD", "REMOVE", "KEEP_ONLY"]
+assert seen() == HOLE, seen()
+
+# It's one undo step, and groups don't go inside groups.
+
+assert ops.mask.add(card="0", sources="patch", verb="ADD") == {'FINISHED'}
+assert ops.mask.areas_group(index="0", rows=rows((0,), (1,))) == {'CANCELLED'}
+assert ops.mask.areas_group(index="0", rows=rows((0, 1), (1,))) == {'CANCELLED'}
+
+# Convert and delete take them all; deleting them all takes the mask.
+plain(("inside", "ADD"), ("cut", "ADD"), ("lip", "ADD"), ("patch", "ADD"))
+assert ops.mask.areas_set(index="0", rows=rows((1,), (2,)), verb="REMOVE") == {'FINISHED'}
+assert [s["verb"] for s in head.masks[0]["steps"]] == ["ADD", "REMOVE", "REMOVE", "ADD"]
+assert ops.mask.areas_delete(index="0", rows=rows((1,), (3,))) == {'FINISHED'}
+assert [s["layers"] for s in head.masks[0]["steps"]] == [["inside"], ["lip"]]
+assert ops.mask.areas_delete(index="0", rows=rows((0,), (1,))) == {'FINISHED'}
+assert not head.masks
+
+# Moved together, keeping their order.
+plain(("inside", "ADD"), ("cut", "ADD"), ("lip", "ADD"), ("patch", "ADD"))
+assert ops.mask.area_move(index="0", rows=rows((0,), (2,)), to="4") == {'FINISHED'}
+assert [s["layers"][0] for s in head.masks[0]["steps"]] == ["cut", "patch", "inside", "lip"]
+assert ops.mask.group(index="0") == {'FINISHED'}
+assert ops.mask.area_move(index="0", rows=rows((1,), (3,)), group="4", to="0") == {'FINISHED'}
+assert [c["layers"][0] for c in head.masks[0]["steps"][2]["children"]] == ["patch", "lip"]
+assert [s["layers"][0] for s in head.masks[0]["steps"][:2]] == ["cut", "inside"]
+
 # --- Global areas -----------------------------------------------------------------------------------------------------
 clear()
 assert ops.mask.add(sources="inside", mode="SUBTRACT") == {'FINISHED'}
