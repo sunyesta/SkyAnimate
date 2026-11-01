@@ -210,18 +210,22 @@ bool GridSurface::locate(float2 p, GridPlace &r_place) const
   float best = FLT_MAX;
   bool found = false;
   const auto try_cell = [&](int column, int row) {
-    /* Newton's method on the cell's patch, from its middle. */
-    float2 st(0.5f, 0.5f);
+    /* Newton's method on the cell's patch, from where the place is in its bounds: most cells are nearly boxes, so it is
+     * all but there, and this runs for every place bent. */
+    const float2 a = cell_lo[size_t(row * columns + column)], b = cell_hi[size_t(row * columns + column)];
+    float2 st(std::clamp((p.x - a.x) / std::max(b.x - a.x, 1e-12f), 0.05f, 0.95f),
+              std::clamp((p.y - a.y) / std::max(b.y - a.y, 1e-12f), 0.05f, 0.95f));
     bool converged = false;
     for (int it = 0; it < 40; it++) {
-      const float2 f = eval(column, row, st) - p;
+      const float2 here = eval(column, row, st);
+      const float2 f = here - p;
       if (length(f) < near_enough) {
         converged = true;
         break;
       }
       const float h = 1e-3f;
-      const float2 ds = (eval(column, row, {st.x + h, st.y}) - eval(column, row, {st.x - h, st.y})) / (2.0f * h);
-      const float2 dt = (eval(column, row, {st.x, st.y + h}) - eval(column, row, {st.x, st.y - h})) / (2.0f * h);
+      const float2 ds = (eval(column, row, {st.x + h, st.y}) - here) / h;
+      const float2 dt = (eval(column, row, {st.x, st.y + h}) - here) / h;
       const float det = ds.x * dt.y - dt.x * ds.y;
       if (std::fabs(det) < 1e-12f) {
         break;

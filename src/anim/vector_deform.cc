@@ -1173,9 +1173,19 @@ static float2 sides_follow(const DeformShape &d, float2 p, std::vector<float> &s
     return b[0] * (u * u * u) + b[1] * (3.0f * u * u * t) + b[2] * (3.0f * u * t * t) + b[3] * (t * t * t);
   };
   double sum_x = 0.0, sum_y = 0.0, weight = 0.0;
-  for (const std::array<std::array<float2, 4>, 2> &side : d.edge_sides) {
+  /* How near each side is, first: only those near enough to count look inside the mesh below, the dearest part. */
+  thread_local std::vector<std::pair<float, float>> nearest_on;
+  nearest_on.resize(d.edge_sides.size());
+  float nearest = FLT_MAX;
+  for (size_t s = 0; s < d.edge_sides.size(); s++) {
     float t;
-    const float dist = bezier_nearest(side[0], p, t);
+    const float dist = bezier_nearest(d.edge_sides[s][0], p, t);
+    nearest_on[s] = {dist, t};
+    nearest = std::min(nearest, dist);
+  }
+  for (size_t s = 0; s < d.edge_sides.size(); s++) {
+    const std::array<std::array<float2, 4>, 2> &side = d.edge_sides[s];
+    const auto [dist, t] = nearest_on[s];
     /* A side with no handles has no way at its very ends: as it runs just along from there. Near a row of the mesh every
      * side's nearest place can be an end, and with none to go by the point would stay where it is. */
     const auto way_there = [&](const std::array<float2, 4> &b) {
@@ -1200,7 +1210,8 @@ static float2 sides_follow(const DeformShape &d, float2 p, std::vector<float> &s
      * to not at all as it gets further out: no crease where a line crosses the outline, and no swelling. */
     const float chord = std::max(length(side[0][3] - side[0][0]), 1e-6f);
     const float ease = chord * 0.25f, out = std::fabs(across);
-    if (out < ease * 6.0f) {
+    /* (Two and a half times as far off, a side has under a thousandth of the nearest's say.) */
+    if (out < ease * 6.0f && dist < nearest * 2.5f) {
       const float outward = across >= 0.0f ? 1.0f : -1.0f;
       const float2 normal = float2(-rest_dir.y, rest_dir.x) * outward;
       const float step = chord * 2e-3f;
@@ -2798,13 +2809,23 @@ static void resample_fit(const DeformShape &d, const VectorDrawing &base, const 
 {
   /* Samples per segment. */
   constexpr int steps = 16;
-  std::vector<float2> inner;
+  /* Each segment on its own (it sets only the handles leaving and reaching it): shared over the cores. */
+  std::vector<std::pair<size_t, int>> pieces;
   for (size_t c = 0; c < drawing.curves.size() && c < base.curves.size(); c++) {
-    Curve &curve = drawing.curves[c];
-    const Curve &was = base.curves[c];
-    const int n = int(curve.points.size());
-    const int segments = std::min(curve.segment_count(), was.segment_count());
+    const int segments = std::min(drawing.curves[c].segment_count(), base.curves[c].segment_count());
     for (int s = 0; s < segments; s++) {
+      pieces.emplace_back(c, s);
+    }
+  }
+  (void)scratch;
+  parallel_for(pieces.size(), 2, [&](size_t begin, size_t end) {
+    std::vector<float2> inner;
+    std::vector<float> scratch;
+    for (size_t piece = begin; piece < end; piece++) {
+      const auto [c, s] = pieces[piece];
+      Curve &curve = drawing.curves[c];
+      const Curve &was = base.curves[c];
+      const int n = int(curve.points.size());
       const int a = s, b = (s + 1) % n;
       CurvePoint &from = curve.points[size_t(a)], &to = curve.points[size_t(b)];
       const float wa = weights[size_t(from.point)], wb = weights[size_t(to.point)];
@@ -2879,7 +2900,7 @@ static void resample_fit(const DeformShape &d, const VectorDrawing &base, const 
         to.handle_in = h2;
       }
     }
-  }
+  });
 }
 
 /* The drawing bent (base: as it was before the bones, the same points): each point where the deform puts it, each
@@ -2989,6 +3010,21 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
 void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                          const VectorDrawing &before_bones, bool render)
 {
+  /* Resample Self fits each segment with the wire or without it alike: the same, and kept for both, or the edit wire and
+   * the render would each fit every segment each time. */
+  struct WireLeft {
+    int was;
+    bool off;
+    ~WireLeft()
+    {
+      if (off) {
+        g_wire = was;
+      }
+    }
+  } wire_left{g_wire, m.deform_resample_self};
+  if (m.deform_resample_self) {
+    g_wire = 0;
+  }
   /* Frame 0 is the rest: nothing bends there. (While the shape is being edited there its frame-0 keys still
    * hold where it was until the edit is recorded, so measuring would bend the drawing by the edit.) */
   if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {

@@ -1078,7 +1078,8 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
   }
   /* The same steps at every update of a drag, none chosen over another, so a point changes smoothly with the mouse, each
    * by the stretch where it now is: that can change many times over on the way, at the side of a squeezed cell. Limited
-   * to twice the move: past a fold or the end of a line there is nowhere nearer to go. */
+   * to a dozen times the move, more than the worst squeeze wants: past a fold or the end of a line there is nowhere
+   * nearer to go. */
   std::vector<float2> from(targets.size());
   for (size_t i = 0; i < targets.size(); i++) {
     from[i] = layer.drawing.points[size_t(targets[i].point)].pos;
@@ -1106,7 +1107,7 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
                                                                                                              : t.unskin;
       float2 &stored = layer.drawing.points[size_t(t.point)].pos;
       float2 next = stored + back.apply_vector(off);
-      const float went = length(next - from[i]), most = t.moved * 2.0f;
+      const float went = length(next - from[i]), most = t.moved * 12.0f;
       if (went > most && went > 0.0f) {
         next = from[i] + (next - from[i]) * (most / went);
       }
