@@ -111,7 +111,7 @@ assert oanim.ops.mask.add(layer=str(lone.id), card="0", sources="patch", mode="A
 assert len(lone.masks) == 1 and [s["layers"] for s in lone.masks[0]["steps"]] == [["head"], ["patch"]]
 assert lone.line_shows(0.0, 0.0), "+ patch brings them back"
 assert not lone.line_shows(0.75, 0.0), "only where it adds"
-assert lone.mask_summary == "Shows: everything but head, plus patch, lines ending at the edge", lone.mask_summary
+assert lone.mask_summary == "Shows: everything but (head, minus patch), lines ending at the edge", lone.mask_summary
 # The step as - Shape: hidden there too.
 assert oanim.ops.mask.set(layer=str(lone.id), index="0", step="1", mode="SUBTRACT") == {'FINISHED'}
 assert not lone.line_shows(0.0, 0.0)

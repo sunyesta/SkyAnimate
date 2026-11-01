@@ -12214,9 +12214,11 @@ static void viewport_draw_contents(Area &area, Context &C)
                                     ? layer_find(doc, wm.mask_preview.layer)
                                     : nullptr;
   const uint64_t mask_preview_key =
-      mask_previewed ? (mask_previewed->id * 2 + (wm.mask_preview.lines ? 1 : 0)) * 1024 + uint64_t(wm.mask_preview.upto + 1)
+      mask_previewed ? ((mask_previewed->id * 2 + (wm.mask_preview.lines ? 1 : 0)) * 1024 +
+                        uint64_t(wm.mask_preview.upto + 1)) * 64 + uint64_t(wm.mask_preview.step + 1)
                      : 0;
-  renderer->set_mask_preview(mask_previewed ? mask_previewed->id : 0, wm.mask_preview.lines, wm.mask_preview.upto);
+  renderer->set_mask_preview(mask_previewed ? mask_previewed->id : 0, wm.mask_preview.lines, wm.mask_preview.upto,
+                             wm.mask_preview.step);
   /* The last render is used again while nothing it shows has changed: no layer (each change gives a new revision,
    * and anything not sure to have said so, a Python run, a widget being used, a drag, touches every layer), no undo
    * step, no frame, view, size or setting below, no video frame decoded, and it drew everything (a zoom's drawings
@@ -12458,8 +12460,11 @@ static void viewport_draw_contents(Area &area, Context &C)
       row = " " + (card.name.empty() ? std::to_string(upto + 1) + " (" + mask_label(doc, card) + ")"
                                      : "\"" + card.name + "\"");
     }
-    const std::string what = std::string(wm.mask_preview.lines ? "Lines" : "Fills") + " mask" + row + " of " +
-                             mask_previewed->name + ":  white shows, black is hidden";
+    const std::string what = wm.mask_preview.step >= 0
+                                 ? "The shape by step " + std::to_string(wm.mask_preview.step + 1) + " of" + row +
+                                       ":  white is in the shape"
+                                 : std::string(wm.mask_preview.lines ? "Lines" : "Fills") + " mask" + row + " of " +
+                                       mask_previewed->name + ":  white shows, black is hidden";
     const ImVec2 at = origin + ImVec2(ImGui::GetFrameHeight() * 2.0f, ImGui::GetFrameHeight() * 1.6f);
     const ImVec2 text = ImGui::CalcTextSize(what.c_str());
     dl->AddRectFilled(at - ImVec2(6, 3), at + text + ImVec2(6, 3), IM_COL32(0xe0, 0x70, 0x10, 230), 4.0f);

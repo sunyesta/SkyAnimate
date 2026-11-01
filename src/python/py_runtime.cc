@@ -3925,6 +3925,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::dict d;
       d["name"] = card.name;
       d["start"] = card.start_shown ? "EVERYTHING" : "NOTHING";
+      d["result"] = card.start_shown ? "HIDE" : "SHOW";
       d["enabled"] = card.enabled;
       d["render"] = card.render;
       d["end_lines"] = card.end_lines;
@@ -3936,6 +3937,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       for (const MaskStep &s : card.steps) {
         py::dict sd;
         step_dict(s, sd);
+        sd["verb"] = mask_verb_identifier(mask_step_verb(card, s));
         steps.append(sd);
       }
       d["steps"] = steps;

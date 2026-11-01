@@ -108,7 +108,7 @@ assert art.line_shows(1.75, 1.75), "the slicing card doesn't end lines"
 layers.active = art
 assert oanim.ops.mask.set(index="0", name="Ear join") == {'FINISHED'}
 assert art.masks[0]["name"] == "Ear join" and art.masks[1]["name"] == ""
-assert art.mask_summary.startswith("Shows: Ear join: everything but head"), art.mask_summary
+assert art.mask_summary.startswith("Shows: Ear join: everything but (head, minus patch)"), art.mask_summary
 assert oanim.wm.undo_history()[0][-1] == "Rename Mask: Ear join"
 
 # Clip to Below alone starts from everything (only what's over its base shows).

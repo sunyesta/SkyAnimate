@@ -180,7 +180,10 @@ struct MediaSettings {
 /* A layer's masks are cards, each a mask of its own, painted as Photoshop's layer masks are: it
  * starts white (everything shown) or black (nothing shown), as its Start With says, and its steps,
  * read top to bottom, each paint their shape onto it: Add (+ Shape) paints white, shows inside it;
- * Subtract (- Shape) black, hides inside it; Invert paints the outside instead. A step's shape is all
+ * Subtract (- Shape) black, hides inside it; Invert paints the outside instead. Read that way a white
+ * card is a puzzle, so the Masking tab reads every card as one rule: it builds a shape from nothing, then
+ * shows or hides the layer by it. A black card shows it, a white one hides it, and on a white card each
+ * paint means its opposite: nothing saved changes (mask_step_verb, mask_card_flip). A step's shape is all
  * its layers together, as drawn (before any masks of their own; its Shape and Fill Every Shape say
  * which parts), named as track mattes name theirs. Each card says what of the layer it masks
  * (Affects: all, its fills or its lines) and how it cuts lines (sliced, or ended at its shape's
@@ -205,6 +208,16 @@ bool mask_cuts(const LayerMask &card);
 /* Whether a card ends the masked layer's lines at its shape's edge (End Lines at Edge, on a card that
  * masks lines), and with which Ends (`r_flat`). */
 bool mask_card_ends_lines(const LayerMask &card, bool *r_flat);
+/* What a step does to the shape its card builds, however it is saved: adds to it (Add; with Invert, its
+ * outside), takes from it (Remove) or keeps only what is inside it too (KeepOnly). */
+enum class MaskVerb : uint8_t { Add, Remove, KeepOnly };
+const char *mask_verb_identifier(MaskVerb verb);
+bool mask_verb_from_identifier(const std::string &identifier, MaskVerb *r_verb);
+MaskVerb mask_step_verb(const LayerMask &card, const MaskStep &step);
+void mask_step_set_verb(const LayerMask &card, MaskStep &step, MaskVerb verb);
+/* The exact opposite mask: Start With swapped and every step's paint with it, so the steps read the same
+ * and what was shown is hidden. */
+void mask_card_flip(LayerMask &card);
 /* A card's name as shown: its own, or "Mask 2" by its place (`index`, from 0). */
 std::string mask_card_name(const LayerMask &card, int index);
 /* Every layer a card's steps name, once each. */

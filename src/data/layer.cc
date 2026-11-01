@@ -139,6 +139,45 @@ bool mask_card_ends_lines(const LayerMask &card, bool *r_flat)
   return true;
 }
 
+const char *mask_verb_identifier(MaskVerb verb)
+{
+  return verb == MaskVerb::Add ? "ADD" : verb == MaskVerb::Remove ? "REMOVE" : "KEEP_ONLY";
+}
+
+bool mask_verb_from_identifier(const std::string &identifier, MaskVerb *r_verb)
+{
+  for (const MaskVerb verb : {MaskVerb::Add, MaskVerb::Remove, MaskVerb::KeepOnly}) {
+    if (identifier == mask_verb_identifier(verb)) {
+      *r_verb = verb;
+      return true;
+    }
+  }
+  return false;
+}
+
+MaskVerb mask_step_verb(const LayerMask &card, const MaskStep &step)
+{
+  /* On a white card the shape is what's painted black. */
+  if ((step.mode == MaskMode::Add) != card.start_shown) {
+    return MaskVerb::Add;
+  }
+  return step.invert ? MaskVerb::KeepOnly : MaskVerb::Remove;
+}
+
+void mask_step_set_verb(const LayerMask &card, MaskStep &step, MaskVerb verb)
+{
+  step.mode = (verb == MaskVerb::Add) != card.start_shown ? MaskMode::Add : MaskMode::Subtract;
+  step.invert = verb == MaskVerb::KeepOnly;
+}
+
+void mask_card_flip(LayerMask &card)
+{
+  card.start_shown = !card.start_shown;
+  for (MaskStep &step : card.steps) {
+    step.mode = step.mode == MaskMode::Add ? MaskMode::Subtract : MaskMode::Add;
+  }
+}
+
 std::string mask_card_name(const LayerMask &card, int index)
 {
   return card.name.empty() ? "Mask " + std::to_string(index + 1) : card.name;

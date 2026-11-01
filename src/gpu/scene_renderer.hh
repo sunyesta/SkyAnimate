@@ -133,8 +133,9 @@ class SceneRenderer {
   /* A mask card's held View: the next viewport renders show `layer`'s card `upto` (its mask alone)
    * over the drawing at 90%, white where it shows the layer's fills (`lines`: its lines) and black
    * where it hides them. 0: off. */
-  void set_mask_preview(uint64_t layer, bool lines, int upto)
+  void set_mask_preview(uint64_t layer, bool lines, int upto, int step = -1)
   {
+    mask_preview_step_ = step;
     mask_preview_layer_ = layer;
     mask_preview_lines_ = lines;
     mask_preview_upto_ = upto;
@@ -598,6 +599,8 @@ class SceneRenderer {
     bool clip = false;
     /* Its card's Start With (everything shown). */
     bool start_shown = false;
+    /* Its place among its card's steps. */
+    int step = 0;
     bool operator==(const MaskRow &) const = default;
   };
   /* Each stencil level's cards (each its steps), which must all show: a masked layer's cards that
@@ -611,6 +614,7 @@ class SceneRenderer {
   uint64_t mask_preview_layer_ = 0;
   bool mask_preview_lines_ = false;
   int mask_preview_upto_ = -1;
+  int mask_preview_step_ = -1;
   bool initialized_ = false;
   bool failed_ = false;
   int width_ = 0;

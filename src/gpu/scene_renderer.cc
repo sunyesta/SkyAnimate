@@ -684,8 +684,11 @@ static std::vector<CardRows> cards_of(const Document &doc, const Layer &layer, b
     bool flat = false;
     card.brush_ends = mask_card_ends_lines(m, &flat) && !flat;
     card.index = index;
+    int step = -1;
     for (const MaskStep &s : m.steps) {
+      step++;
       SceneRenderer::MaskRow row;
+      row.step = step;
       row.mode = s.mode;
       row.invert = s.invert;
       row.combine = s.combine;
@@ -1154,9 +1157,17 @@ void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
   for (CardRows &card : cards_of(doc, layer, false)) {
     const bool picked = mask_preview_upto_ >= 0 ? card.index == mask_preview_upto_ : card.cuts != skip;
     if (picked) {
-      cards.push_back(std::move(card.steps));
+      /* A step's own View: only as far as that step. */
+      if (mask_preview_step_ >= 0) {
+        std::erase_if(card.steps, [&](const MaskRow &row) { return row.step > mask_preview_step_; });
+      }
+      if (!card.steps.empty()) {
+        cards.push_back(std::move(card.steps));
+      }
     }
   }
+  /* That shows the shape built so far, white in it: a card that hides its shape paints it black. */
+  const bool shape_flipped = mask_preview_step_ >= 0 && !cards.empty() && cards.front().front().start_shown;
   unsigned required = 0;
   if (!cards.empty()) {
     evaluate_mask_cards(doc, cards, 1u, MASK_SCRATCH, (MASK_SPARE | (MASK_SPARE - 1u)) & ~1u);
@@ -1179,7 +1190,7 @@ void SceneRenderer::draw_mask_preview(const Document &doc, const Layer &layer)
       paint_.stencil.compare = gpu::Compare::NotEqual;
     }
     /* Premultiplied. */
-    const float v = shows ? alpha : 0.0f;
+    const float v = shows != shape_flipped ? alpha : 0.0f;
     const std::vector<Vertex> quad = {{x0, y0, v, v, v, alpha}, {x1, y0, v, v, v, alpha}, {x1, y1, v, v, v, alpha},
                                       {x0, y0, v, v, v, alpha}, {x1, y1, v, v, v, alpha}, {x0, y1, v, v, v, alpha}};
     draw_vertices(quad, Transform2D());

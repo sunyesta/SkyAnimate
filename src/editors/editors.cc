@@ -1783,6 +1783,9 @@ void ui_mask_pick_update(Context &C)
             }
             if (card) {
               add["card"] = std::to_string(p.index);
+              if (!p.verb.empty()) {
+                add["verb"] = p.verb;
+              }
             }
             operator_call(C, "mask.add", add);
           }
@@ -1792,6 +1795,9 @@ void ui_mask_pick_update(Context &C)
       [wm]() {
         const WindowManager::MaskPick &p = wm->mask_pick;
         const char *what = p.index >= 0 && p.step >= 0 ? "Click the layer to join the step's shape"
+                           : p.verb == "ADD"         ? "Click the layer to add to the shape"
+                           : p.verb == "REMOVE"      ? "Click the layer to take from the shape"
+                           : p.verb == "KEEP_ONLY"   ? "Click the layer to keep only what's inside it"
                            : p.mode == "SUBTRACT"   ? "Click the layer to hide it inside of (Subtract)"
                                                     : "Click the layer to show it inside of (Add)";
         return std::string(what) + "  |  Esc cancels";

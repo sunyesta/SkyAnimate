@@ -53,7 +53,7 @@ layers.active = head
 assert oanim.ops.mask.add(sources="hole", outside="1") == {'FINISHED'}
 assert rows(head) == [{"outside": True, "layers": ["hole"], "enabled": True, "render": True, "expand": False, "fills_only": False, "filled": False, "extend": "NONE"}]
 assert hole.masking == ["head"]
-assert oanim.wm.undo_history()[0][-1] == "Mask head: Subtract hole", "the undo step says what happened"
+assert oanim.wm.undo_history()[0][-1] == "Mask head: Hide: + hole", "the undo step says what happened"
 assert oanim.ops.mask.add(sources="hole", outside="1") == {'CANCELLED'}, "the same mask twice is one mask"
 assert oanim.ops.mask.add(sources="head") == {'CANCELLED'}, "a layer can't be its own mask"
 assert oanim.ops.mask.add(sources="nothing here") == {'CANCELLED'}

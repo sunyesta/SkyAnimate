@@ -8,6 +8,7 @@
 #include <string>
 
 #include "anim/draw_order.hh"
+#include "anim/drivers.hh"
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
@@ -262,8 +263,10 @@ std::string mask_label(const Document &doc, const LayerMask &m)
   std::string text;
   for (const MaskStep &s : m.steps) {
     const std::string names = layer_names(doc, s.layers, s.combine == MaskCombine::Union ? ", " : mask_combine_joiner(s.combine));
-    text += std::string(text.empty() ? "" : ", ") + (s.mode == MaskMode::Add ? "Add " : "Subtract ") +
-            (s.invert ? "outside " : "") + (names.empty() ? std::string("nothing") : names) + BEYOND[int(s.extend)];
+    const MaskVerb verb = mask_step_verb(m, s);
+    text += std::string(text.empty() ? (m.start_shown ? "Hide: " : "Show: ") : ", ") +
+            (verb == MaskVerb::KeepOnly ? "Keep Only " : verb == MaskVerb::Remove ? "- " : s.invert ? "+ outside " : "+ ") +
+            (names.empty() ? std::string("nothing") : names) + BEYOND[int(s.extend)];
   }
   return text.empty() ? std::string("Empty mask") : text;
 }
@@ -276,6 +279,22 @@ std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &laye
     if (!m.enabled) {
       phrases.push_back(text);
       continue;
+    }
+    /* A shape hidden whole, when it's built by more than adding: "everything but (mouth, minus cut, within lip)". */
+    bool nested = false;
+    bool first = true;
+    for (const MaskStep &s : m.steps) {
+      if (std::none_of(s.layers.begin(), s.layers.end(), [&](uint64_t id) { return layer_find(doc, id) != nullptr; })) {
+        continue;
+      }
+      if (first && !(m.start_shown && mask_step_cuts(s))) {
+        break;
+      }
+      nested = !first && s.mode == MaskMode::Add;
+      first = false;
+      if (nested) {
+        break;
+      }
     }
     bool any = false;
     for (const MaskStep &s : m.steps) {
@@ -302,7 +321,9 @@ std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &laye
       if (!any && add != m.start_shown) {
         /* The first step on everything cuts from it ("everything but head"; hiding what's outside
          * leaves "inside head"); on nothing it shows ("inside head", "outside head"). */
-        text = add ? (s.invert ? "outside " : in) + names : s.invert ? in + names : "everything but " + names;
+        text = add ? (s.invert ? "outside " : in) + names
+               : s.invert ? in + names
+                          : (nested ? "everything but (" : "everything but ") + names;
       }
       else {
         if (!any) {
@@ -312,10 +333,14 @@ std::vector<std::string> mask_row_phrases(const Document &doc, const Layer &laye
         else {
           text += ", ";
         }
-        /* Hiding what's outside: "within mouth". */
-        text += add ? "plus " + where : s.invert ? "within " + names : "minus " + where;
+        /* Hiding what's outside: "within mouth". Inside a shape hidden whole, each paint means its opposite. */
+        const bool adds = nested ? !add : add;
+        text += adds ? "plus " + where : s.invert ? "within " + names : "minus " + where;
       }
       any = true;
+    }
+    if (nested) {
+      text += ")";
     }
     if (!any) {
       phrases.push_back(std::string());
@@ -348,6 +373,41 @@ std::string mask_summary(const Document &doc, const Layer &layer)
     }
   }
   return text.empty() ? "Shows everything" : "Shows: " + text;
+}
+
+/* verb=: what the step does to the shape the card builds, ADD, REMOVE or KEEP_ONLY, whichever way the card is
+ * saved. */
+static bool mask_step_verb_arg(Context &C, const LayerMask &card, MaskStep &step)
+{
+  if (!op_has_arg(C, "verb")) {
+    return true;
+  }
+  MaskVerb verb;
+  if (!mask_verb_from_identifier(op_arg(C, "verb"), &verb)) {
+    report(ReportType::Error, "verb is ADD, REMOVE or KEEP_ONLY");
+    return false;
+  }
+  mask_step_set_verb(card, step, verb);
+  return true;
+}
+
+/* Whether a driver keeps the card's Start With or a step's paint, which Show and Hide would fight. */
+static bool mask_card_driven(Document &doc, const Layer &layer, int index, const LayerMask &card)
+{
+  DriverRef ref;
+  ref.layer = layer.id;
+  const std::string base = "masks[" + std::to_string(index) + "]";
+  ref.path = base + ".start";
+  if (driver_find(doc, ref)) {
+    return true;
+  }
+  for (size_t i = 0; i < card.steps.size(); i++) {
+    ref.path = base + ".steps[" + std::to_string(i) + "].mode";
+    if (driver_find(doc, ref)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /* The card `index=` (and its step `step=`, default 0) of a layer, or null. */
@@ -398,6 +458,9 @@ void mask_operators_register()
           mask_step_from_old_mode("", false, first, &own);
         }
         if (!mask_step_args(C, &own, first)) {
+          return OpStatus::Cancelled;
+        }
+        if (card && !mask_step_verb_arg(C, *card, own)) {
           return OpStatus::Cancelled;
         }
         std::erase(own.layers, layer->id);
@@ -485,8 +548,10 @@ void mask_operators_register()
     ot.description = "Change one of a layer's mask cards (index=): name=, start= (EVERYTHING, NOTHING), cuts= (ALL, FILLS, "
                      "LINES: what of the layer it masks; lines_only=1 as before), end_lines=0/1 (the layer's lines "
                      "end at its shape's edge), ends=BRUSH or FLAT, reach= (line widths past the edge, -2 to 2), "
-                     "enabled=0/1 (in the viewport), render=0/1, toggle=1 (on or off in the viewport); and its step "
-                     "step= (0 without it): mode= (ADD, SUBTRACT; a lone step's mode sets Start With too), invert=0/1, "
+                     "enabled=0/1 (in the viewport), render=0/1, toggle=1 (on or off in the viewport), result=SHOW or "
+                     "HIDE (the exact opposite mask: Start With and every step's paint swapped, so the steps read the "
+                     "same); and its step step= (0 without it): verb= (ADD, REMOVE, KEEP_ONLY: what it does to the "
+                     "shape the card builds), mode= (ADD, SUBTRACT; a lone step's mode sets Start With too), invert=0/1, "
                      "grow=, shape= (AS_DRAWN, FILLS_ONLY, STROKES_ONLY), filled=0/1, inside_stroke=0/1, extend= "
                      "(NONE, UP, DOWN, LEFT, RIGHT), sources= (| between layers' ids or names), outside= and expand= "
                      "as before rows";
@@ -509,12 +574,29 @@ void mask_operators_register()
         }
         MaskStep &step = card->steps[size_t(step_index)];
         const MaskMode was = step.mode;
-        if (!mask_step_args(C, &step, step_index == 0) || !mask_card_args(C, card)) {
+        if (!mask_step_args(C, &step, step_index == 0) || !mask_card_args(C, card) ||
+            !mask_step_verb_arg(C, *card, step))
+        {
           return OpStatus::Cancelled;
         }
         /* A lone step's mode is the whole card's: Subtract alone starts from everything. */
-        if (step.mode != was && card->steps.size() == 1 && !op_has_arg(C, "start")) {
+        if (step.mode != was && card->steps.size() == 1 && !op_has_arg(C, "start") && !op_has_arg(C, "verb")) {
           mask_card_start_from_steps(*card);
+        }
+        if (op_has_arg(C, "result")) {
+          const std::string result = op_arg(C, "result");
+          if (result != "SHOW" && result != "HIDE") {
+            report(ReportType::Error, "result is SHOW or HIDE");
+            return OpStatus::Cancelled;
+          }
+          if ((result == "HIDE") != card->start_shown) {
+            if (mask_card_driven(doc, *layer, index, *card)) {
+              report(ReportType::Warning, "A driver sets this mask's Start With or a step's mode: take it off to swap "
+                                          "Show and Hide");
+              continue;
+            }
+            mask_card_flip(*card);
+          }
         }
         if (op_has_arg(C, "sources")) {
           step.layers = sources;
@@ -763,7 +845,7 @@ void mask_operators_register()
     ot.name = "Pick Mask Layer";
     ot.description = "Click the layer to mask with (a new card, mode=ADD or SUBTRACT; INSIDE is Add, OUTSIDE is "
                      "Subtract), in the viewport or the Layers editor; with index=, a new step of that card "
-                     "instead, and with step= too, it joins that step. Esc cancels";
+                     "instead (verb=ADD, REMOVE or KEEP_ONLY), and with step= too, it joins that step. Esc cancels";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = mask_poll;
     ot.exec = [](Context &C) {
@@ -779,6 +861,7 @@ void mask_operators_register()
       WindowManager::MaskPick &pick = C.wm->mask_pick;
       pick = {};
       pick.mode = mode == "INSIDE" ? std::string() : mode;
+      pick.verb = op_arg(C, "verb");
       pick.index = op_arg_int(C, "index", -1);
       pick.step = op_arg_int(C, "step", -1);
       for (const Layer *l : mask_targets(C)) {
