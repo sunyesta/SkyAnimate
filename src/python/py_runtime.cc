@@ -2516,7 +2516,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["range_auto"] = c.range_auto;
       d["look_range"] = py::make_tuple(c.look_range.x, c.look_range.y);
       d["look_auto_range"] = py::make_tuple(c.look_auto_range.x, c.look_auto_range.y);
-      d["squash"] = c.squash;
       d["eyeball_auto"] = c.eyeball_auto;
       {
         const Bone *middle = bone_find(layer, c.eyeball_center);
@@ -2528,15 +2527,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["max_side"] = c.max_side;
       d["max_up"] = c.max_up;
       d["max_down"] = c.max_down;
-      {
-        py::list round;
-        for (const uint64_t kept : c.keep_round) {
-          if (const Layer *l = layer_find(*current_context().document, kept)) {
-            round.append(l->name);
-          }
-        }
-        d["keep_round"] = round;
-      }
       d["divergence"] = c.divergence;
       d["shape_region"] = c.shape_region.size();
       d["weight"] = c.weight;
@@ -2753,9 +2743,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           c.look_range = {std::max(0.0f, r.first), std::max(0.0f, r.second)};
         }
       }
-      else if (key == "squash") {
-        c.squash = std::clamp(value.cast<float>(), 0.0f, 1.0f);
-      }
       else if (key == "eyeball_auto") {
         c.eyeball_auto = value.cast<bool>();
       }
@@ -2784,29 +2771,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "max_side" || key == "max_up" || key == "max_down") {
         (key == "max_side" ? c.max_side : key == "max_up" ? c.max_up : c.max_down) =
             std::clamp(value.cast<float>(), 0.0f, 3.1415927f);
-      }
-      else if (key == "keep_round") {
-        /* Layers by name or id. */
-        c.keep_round.clear();
-        for (const py::handle item : value) {
-          uint64_t found = 0;
-          if (py::isinstance<py::str>(item)) {
-            const std::string wanted = item.cast<std::string>();
-            for (const Layer *l : document_layers_flat(*current_context().document)) {
-              if (l->name == wanted) {
-                found = l->id;
-                break;
-              }
-            }
-            if (!found) {
-              throw py::key_error("no layer named '" + wanted + "'");
-            }
-          }
-          else {
-            found = item.cast<uint64_t>();
-          }
-          c.keep_round.push_back(found);
-        }
       }
       else if (key == "divergence") {
         c.divergence = value.cast<float>();

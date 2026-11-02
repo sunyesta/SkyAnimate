@@ -4800,8 +4800,8 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::TextDisabled("Pick the eye's shape below for Auto");
           }
           modifier_row_label("Facing", column, "Which way the front of the eye points (yaw, pitch): 0 at the camera, 90\xC2\xB0 in\n"
-                                               "profile. Key it in a head turn so the pupil sits and foreshortens as the\n"
-                                               "turned eye shows it");
+                                               "profile. Key it in a head turn so the pupil sits where the turned eye\n"
+                                               "shows it");
           {
             const std::string facing_path = constraint_path + "facing";
             const auto k = keyed_begin(facing_path);
@@ -4823,18 +4823,6 @@ static void constraints_panel(Context &C, Layer &armature)
             }
             done("Look At");
           }
-          modifier_row_label("Warp", column, "How much the layers following the pupil wrap round the eyeball as it\n"
-                                             "turns, each part foreshortening by where it is on the ball: 100% as a\n"
-                                             "real eyeball, 0% not at all (they only move)");
-          float percent = c.squash * 100.0f;
-          const std::string squash_path = constraint_path + "squash";
-          const int driven_squash = ui_driver_field_begin(C, armature.id, squash_path, -1);
-          if (ui_drag_float("##squash", &percent, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
-            c.squash = percent / 100.0f;
-          }
-          done("Look At");
-          ui_driver_typed(C, armature.id, squash_path, -1);
-          ui_driver_field_end(C, armature.id, squash_path, -1, driven_squash);
           modifier_row_label("Divergence", column, "How far each eye turns outward from the target: real eyes don't\n"
                                                    "quite meet on what they look at, a few degrees apart");
           float degrees = c.divergence * 180.0f / PI;
@@ -4850,32 +4838,8 @@ static void constraints_panel(Context &C, Layer &armature)
             modifier_row_label("", column);
             ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
           }
-          /* The layers following this bone, each warped onto the eyeball (pupil, iris) or left as drawn
-           * (a shine). Unticked ones are the constraint's keep_round. */
-          bool first_warped = true;
-          for (const Layer *l : document_layers_flat(doc)) {
-            if (!(l->has_drawing() || l->is_group()) || l->parent_bone != bone->id) {
-              continue;
-            }
-            modifier_row_label(first_warped ? "Warp Layers" : "", column,
-                               "Layers following this bone that wrap round the eyeball. Untick a shine: it is a\n"
-                               "reflection, it stays as drawn");
-            first_warped = false;
-            bool on = std::find(c.keep_round.begin(), c.keep_round.end(), l->id) == c.keep_round.end();
-            ImGui::PushID(int(l->id));
-            if (ImGui::Checkbox(l->name.c_str(), &on)) {
-              if (!on) {
-                c.keep_round.push_back(l->id);
-              }
-              else {
-                std::erase(c.keep_round, l->id);
-              }
-              C.undo->push("Look At", doc);
-            }
-            ImGui::PopID();
-          }
-          /* The eye: the shape the pupil stays inside, which also tells Range Auto and Squash how far
-           * across the eye it is. */
+          /* The eye: the shape the pupil stays inside, which also tells Range Auto how far across the eye
+           * it is. */
           ImGui::Spacing();
           modifier_row_label("", column);
           ImGui::TextDisabled("Eye Shape");

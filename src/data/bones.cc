@@ -235,58 +235,6 @@ float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 ta
   return {std::atan2(d.x, z) + out * c.divergence, std::atan2(d.y, std::sqrt(d.x * d.x + z * z))};
 }
 
-bool bone_look_warps(const Layer &armature, const BonePose &p, uint64_t layer, uint64_t group)
-{
-  if (!p.look) {
-    return false;
-  }
-  if (const Bone *b = bone_find(armature, p.id)) {
-    for (const BoneConstraint &c : b->constraints) {
-      if (c.type == BoneConstraintType::LookAt && c.enabled) {
-        const auto kept = [&](uint64_t id) {
-          return id != 0 && std::find(c.keep_round.begin(), c.keep_round.end(), id) != c.keep_round.end();
-        };
-        return !kept(layer) && !kept(group);
-      }
-    }
-  }
-  return false;
-}
-
-float2 bone_look_warp(const BonePose &p, float2 point)
-{
-  /* The iris is a flat disc on the ball (behind the cornea), so it foreshortens evenly: the pupil stays
-   * in the middle of the iris. Where the pupil points, the ball's front F(way) = size * (sin yaw cos
-   * pitch, sin pitch) turns a step across it (yaw) or up it (pitch) by F's derivative there; at the
-   * camera that is the step itself, so the eye at rest is as drawn.
-   *
-   * A cartoon pupil is painted on its eye: it foreshortens as the turned eye does (its Facing) in full,
-   * as the drawn eye white does, and looking further round from the camera than that adds Warp's share
-   * of the rest. Looking back toward the camera it never gets rounder than its eye. */
-  const float2 size = {std::max(p.look_size.x, 1e-6f), std::max(p.look_size.y, 1e-6f)};
-  const auto on_disc = [&](float2 way, float2 o) {
-    const float cy = std::cos(way.x), sy = std::sin(way.x), cp = std::cos(way.y), sp = std::sin(way.y);
-    return float2{cy * cp * o.x - sy * sp * (size.x / size.y) * o.y, cp * o.y};
-  };
-  /* As drawn, the pupil already points its rest way (off the front of the ball, with an Eyeball
-   * Center): taken back to the front first, so the eye at rest is as drawn. */
-  float2 o = rotate(point - p.look_center, -p.look_face);
-  {
-    const float cy = std::cos(p.look_rest.x), sy = std::sin(p.look_rest.x), cp = std::cos(p.look_rest.y),
-                sp = std::sin(p.look_rest.y);
-    const float a = std::max(cy * cp, 0.05f), b = -sy * sp * (size.x / size.y), d = std::max(cp, 0.05f);
-    const float y = o.y / d;
-    o = {(o.x - b * y) / a, y};
-  }
-  /* How much each way faces the camera: the pupil counts as looking further round once it faces it
-   * less than its eye does, fading in over a short way so its shape never jumps. */
-  const auto toward = [](float2 way) { return std::cos(way.x) * std::cos(way.y); };
-  const float further = std::clamp((toward(p.look_facing) - toward(p.look_dir)) / 0.1f, 0.0f, 1.0f);
-  const float2 painted = on_disc(p.look_facing, o);
-  const float2 shown = painted + (on_disc(p.look_dir, o) - painted) * (further * p.look_warp);
-  return p.look_center + rotate(shown, p.look_face);
-}
-
 float2 bone_shape_limit(const BoneConstraint &c, float2 head)
 {
   if (c.shape_region.size() < 3) {
@@ -468,10 +416,10 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float angle = bone.angle;
     float2 scale = bone.scale;
     float sx = 1.0f, sy = 1.0f;
-    /* Look At's eyeball, for the warp of what follows the bone (BonePose::look_warp). */
+    /* Look At's eyeball, for its guide (BonePose::look). */
     bool looks = false;
-    float look_warp = 0.0f, look_face = 0.0f;
-    float2 look_eye, look_size, look_rest, look_facing, look_dir;
+    float look_face = 0.0f;
+    float2 look_eye, look_size, look_facing;
     if (!setup_frame) {
       if (extras.ik_angle) {
         angle += (*extras.ik_angle)[i];
@@ -607,15 +555,10 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
                   shift = bone_shape_limit(c, tested + shift) - tested;
                 }
                 position += parent_pose.inverted().apply_vector(shift) * w;
-                /* The bone only moves: the drawings following it are laid on the ball where the pupil
-                 * points (bone_look_warp). */
                 looks = w > 0.0f;
-                look_warp = std::clamp(c.squash, 0.0f, 1.0f);
                 look_eye = eye;
                 look_size = size;
-                look_rest = rest;
                 look_facing = rest + c.facing * w;
-                look_dir = rest + (c.facing + turn) * w;
                 look_face = face;
               }
             }
@@ -720,13 +663,9 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
     p.look = looks;
-    p.look_warp = look_warp;
     p.look_facing = look_facing;
     p.look_eye = look_eye;
-    p.look_center = p.head;
-    p.look_rest = look_rest;
     p.look_size = look_size;
-    p.look_dir = look_dir;
     p.look_face = look_face;
     state[i] = 2;
   };

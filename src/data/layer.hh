@@ -469,18 +469,16 @@ struct BoneConstraint {
   bool child_rotation = true;
   bool child_scale = true;
   /* LookAt: how far the pupil moves looking fully sideways and up or down (bone layer units: the eye's
-   * radius), worked out from the Limit to Shape below it when `range_auto`; `squash`, shown as Warp: how
-   * much the layers following the bone wrap round the eyeball (0-1, data/bones.hh bone_look_warp); and how far each eye turns outward
-   * from the target (radians), as real eyes don't quite meet on it. */
+   * radius), worked out from the Limit to Shape below it when `range_auto`; and how far each eye turns
+   * outward from the target (radians), as real eyes don't quite meet on it. */
   bool range_auto = true;
   float2 look_range = {0.05f, 0.05f};
-  float squash = 1.0f;
   float divergence = 0.0f;
   /* LookAt, the eyeball: its size (half its width and height, bone layer units: a cartoon eye is a
    * stretched ball), from its Eye Shape at frame 0 when `eyeball_auto`; which way its front faces (yaw
    * and pitch, radians: 0 at the camera, a quarter turn in profile), keyed in a head turn so the pupil
-   * sits and foreshortens as the turned eye shows it; how far the eye turns from there to look, sideways,
-   * up and down (a real eye turns least upward); and the layers following the bone left unwarped (a shine). */
+   * sits as the turned eye shows it; and how far the eye turns from there to look, sideways, up and down
+   * (a real eye turns least upward). */
   bool eyeball_auto = true;
   float2 eyeball_size = {0.05f, 0.05f};
   float2 facing;
@@ -488,7 +486,6 @@ struct BoneConstraint {
   float max_side = 0.7853982f;
   float max_up = 0.5235988f;
   float max_down = 0.7853982f;
-  std::vector<uint64_t> keep_round;
   /* LookAt: a bone whose head (as rigged) is the middle of the eyeball (0: the ball's front is the
    * pupil as rigged). The pupil drawn off its front already points that way at rest. */
   uint64_t eyeball_center = 0;

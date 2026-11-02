@@ -873,13 +873,11 @@ static json layer_to_json(const Layer &layer)
                      {"child_scale", c.child_scale},
                      {"range_auto", c.range_auto},
                      {"look_range", {num(c.look_range.x), num(c.look_range.y)}},
-                     {"squash", num(c.squash)},
                      {"eyeball_auto", c.eyeball_auto},
                      {"eyeball_center", c.eyeball_center},
                      {"eyeball_size", {num(c.eyeball_size.x), num(c.eyeball_size.y)}},
                      {"facing", {num(c.facing.x), num(c.facing.y)}},
                      {"look_max_turn", json::array({num(c.max_side), num(c.max_up), num(c.max_down)})},
-                     {"keep_round", c.keep_round},
                      {"divergence", num(c.divergence)},
                      {"weight", num(c.weight)},
                      {"wind_catch", num(c.wind_catch)},
@@ -2644,7 +2642,6 @@ static Layer layer_from_json(const json &j, int depth)
       if (const auto it = cj.find("look_range"); it != cj.end() && it->is_array() && it->size() == 2) {
         c.look_range = {std::max(0.0f, (*it)[0].get<float>()), std::max(0.0f, (*it)[1].get<float>())};
       }
-      c.squash = std::clamp(get_float(cj, "squash", 1.0f), 0.0f, 1.0f);
       c.eyeball_auto = get_bool(cj, "eyeball_auto", true);
       /* Saved for a day as "pupil_center", picked as the eyeball's middle. */
       c.eyeball_center = cj.contains("eyeball_center") ? get_id(cj, "eyeball_center") : get_id(cj, "pupil_center");
@@ -2659,12 +2656,6 @@ static Layer layer_from_json(const json &j, int depth)
         c.max_side = (*it)[0].get<float>();
         c.max_up = (*it)[1].get<float>();
         c.max_down = (*it)[2].get<float>();
-      }
-      c.keep_round.clear();
-      for (const json &id : get_array(cj, "keep_round")) {
-        if (id.is_number_unsigned()) {
-          c.keep_round.push_back(id.get<uint64_t>());
-        }
       }
       get_keys(cj, "facing_keys", c.facing_keys);
       c.divergence = get_float(cj, "divergence", 0.0f);

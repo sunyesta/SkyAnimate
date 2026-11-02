@@ -28,12 +28,10 @@ struct BonePose {
   Transform2D pose;
   /* Setup to now, in bone layer space. */
   Transform2D skin;
-  /* Look At's eyeball, for warping the layers following the bone onto it (when `look`). Bone layer
-   * space: Warp, the pupil's middle, the ball's middle and half size, which way the pupil points as
-   * drawn, as the eye faces and now (yaw, pitch) and how far the face has turned. */
+  /* Look At's eyeball, for its guide (when `look`). Bone layer space: the ball's middle and half size,
+   * which way the eye faces (yaw, pitch) and how far the face has turned. */
   bool look = false;
-  float look_warp = 0.0f;
-  float2 look_center, look_eye, look_size, look_rest, look_facing, look_dir;
+  float2 look_eye, look_size, look_facing;
   float look_face = 0.0f;
   /* Where the bone runs in the setup pose and now (bone layer space). */
   float2 setup_head, setup_tail;
@@ -76,14 +74,6 @@ void bone_shape_limit_affect(const Layer &armature, Bone &bone);
  * target stands at rest (between the eyes), which way is outward for Divergence. */
 float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 target, float2 target_rest,
                       float target_depth);
-/* The skin a layer is moved by from bone pose `p` of `armature`: without Look At's foreshortening when
- * the bone's Look At keeps that layer round. */
-/* Whether `layer` (or the group it follows the bone with) is warped onto the eyeball of the Look At
- * on `p`'s bone: unless that Look At leaves it as drawn (a shine, a reflection). */
-bool bone_look_warps(const Layer &armature, const BonePose &p, uint64_t layer, uint64_t group = 0);
-/* Where `point` (bone layer space) of a drawing following the pupil shows: laid on the eyeball
- * around where the pupil points and seen from the front, so it foreshortens as the ball turns it. */
-float2 bone_look_warp(const BonePose &p, float2 point);
 Bone *bone_find(Layer &armature, uint64_t id);
 const Bone *bone_find(const Layer &armature, uint64_t id);
 const Bone *bone_find_by_name(const Layer &armature, const std::string &name);

@@ -490,9 +490,6 @@ static const Layer *matched_original(const Document &doc, const Layer &layer)
   return layer_find(doc, layer.reference_source);
 }
 
-static bool look_warp_find(const Document &doc, const Layer &layer, BonePose *r_pose = nullptr,
-                           Transform2D *r_to_armature = nullptr, bool *r_carried = nullptr);
-
 /* --- Deforms on groups ---------------------------------------------------------------------- */
 
 /* The drawings reading another as a deform's shape, while they do. */
@@ -577,9 +574,6 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
   if (layer.type == LayerType::Vector && merge_takes_from(doc, layer, render)) {
     return true;
   }
-  if (layer.type == LayerType::Vector && look_warp_find(doc, layer)) {
-    return true;
-  }
   for (const Modifier &m : layer.modifiers) {
     if (!modifier_on(m, render)) {
       continue;
@@ -600,153 +594,6 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
     }
   }
   return false;
-}
-
-/* Look At's warp: a layer following a pupil bone (or in a group that does) is laid on its eyeball
- * (bone_look_warp); `r_carried`: one left as drawn (a shine) rides on it whole, keeping its shape.
- * Without `r_pose`, only whether the bone has a Look At. */
-static bool look_warp_find(const Document &doc, const Layer &layer, BonePose *r_pose, Transform2D *r_to_armature,
-                           bool *r_carried)
-{
-  /* Following it as a whole or point by point (Deform: Points), or in a group that follows it. */
-  const uint64_t own = layer.followed_bone() != 0 ? layer.followed_bone() : layer.points_follow_bone() ? layer.parent_bone : 0;
-  const Layer *group = own != 0 ? nullptr : layer_binding_group(doc, layer.id);
-  const uint64_t bone_id = group ? group->followed_bone() : own;
-  const Layer *armature = bone_id != 0 ? layer_armature(doc, layer.id) : nullptr;
-  const Bone *bone = armature ? bone_find(*armature, bone_id) : nullptr;
-  if (!bone || std::none_of(bone->constraints.begin(), bone->constraints.end(), [](const BoneConstraint &c) {
-        return c.type == BoneConstraintType::LookAt && c.enabled;
-      }))
-  {
-    return false;
-  }
-  if (!r_pose) {
-    return true;
-  }
-  const std::vector<BonePose> poses = armature_pose(*armature, doc.frame_current == 0);
-  const BonePose *p = bone_pose_find(poses, bone_id);
-  if (!p || !p->look) {
-    return false;
-  }
-  *r_carried = !bone_look_warps(*armature, *p, layer.id, group ? group->id : 0);
-  *r_pose = *p;
-  *r_to_armature = layer_relative_transform(doc, armature->id, layer.id);
-  return true;
-}
-
-/* The warp onto the eyeball `p` about one point (layer space, moved to bone layer space by
- * `to_armature`), as a skin: where the point goes, and how its handles turn and shorten there. */
-static Transform2D look_warp_skin(const BonePose &p, const Transform2D &to_armature, float2 point)
-{
-  const Transform2D from_armature = to_armature.inverted();
-  const auto warp = [&](float2 q) { return from_armature.apply(bone_look_warp(p, to_armature.apply(q))); };
-  const float step = std::max(p.look_size.x, p.look_size.y) * 1e-3f / std::max(to_armature.scale(), 1e-9f);
-  const float2 at = warp(point);
-  const float2 dx = (warp(point + float2{step, 0}) - warp(point - float2{step, 0})) / (2.0f * step);
-  const float2 dy = (warp(point + float2{0, step}) - warp(point - float2{0, step})) / (2.0f * step);
-  const Transform2D local{dx.x, dx.y, dy.x, dy.y, 0.0f, 0.0f};
-  return Transform2D::translate(at) * local * Transform2D::translate(float2{} - point);
-}
-
-static std::vector<Transform2D> layer_point_skins_bones(const Document &doc, const Layer &layer);
-
-/* The oval the warped drawings following the eye's bone (pupil, iris) make of themselves: the
- * affine map from where their points are before the warp to after it that fits best (least squares,
- * bone layer space). Identity when there are none. */
-static Transform2D look_oval(const Document &doc, const BonePose &eye)
-{
-  std::vector<std::pair<float2, float2>> pairs;
-  for (const Layer *l : document_layers_flat(doc)) {
-    BonePose e;
-    Transform2D to_armature;
-    bool carried = false;
-    if (l->type != LayerType::Vector || !look_warp_find(doc, *l, &e, &to_armature, &carried) || carried ||
-        e.id != eye.id)
-    {
-      continue;
-    }
-    const VectorDrawing &drawing = layer_drawing(doc, *l);
-    const std::vector<Transform2D> skins = layer_point_skins_bones(doc, *l);
-    for (size_t i = 0; i < drawing.points.size() && i < skins.size(); i++) {
-      const float2 before = to_armature.apply(skins[i].apply(drawing.points[i].pos));
-      pairs.emplace_back(before, bone_look_warp(eye, before));
-    }
-  }
-  if (pairs.size() < 3) {
-    return Transform2D();
-  }
-  float2 mb, ma;
-  for (const auto &[b, a] : pairs) {
-    mb += b;
-    ma += a;
-  }
-  mb = mb / float(pairs.size());
-  ma = ma / float(pairs.size());
-  /* A = (sum a b^T) (sum b b^T)^-1, about the middles. */
-  float bxx = 0, bxy = 0, byy = 0, axbx = 0, axby = 0, aybx = 0, ayby = 0;
-  for (const auto &[b0, a0] : pairs) {
-    const float2 b = b0 - mb, a = a0 - ma;
-    bxx += b.x * b.x;
-    bxy += b.x * b.y;
-    byy += b.y * b.y;
-    axbx += a.x * b.x;
-    axby += a.x * b.y;
-    aybx += a.y * b.x;
-    ayby += a.y * b.y;
-  }
-  const float det = bxx * byy - bxy * bxy;
-  if (std::abs(det) < 1e-20f) {
-    return Transform2D::translate(ma - mb);
-  }
-  const float ixx = byy / det, ixy = -bxy / det, iyy = bxx / det;
-  const Transform2D linear{axbx * ixx + axby * ixy, aybx * ixx + ayby * ixy, axbx * ixy + axby * iyy,
-                           aybx * ixy + ayby * iyy, 0.0f, 0.0f};
-  return Transform2D::translate(ma) * linear * Transform2D::translate(float2{} - mb);
-}
-
-/* How a layer carried on the eye (a shine) moves, layer space: its middle stays at the same place in
- * the pupil's oval as the pupil narrows (look_oval), and it keeps its own shape. */
-static float2 look_carry(const Document &doc, const BonePose &p, const Transform2D &to_armature,
-                         const std::vector<float2> &points)
-{
-  if (points.empty()) {
-    return {};
-  }
-  float2 middle;
-  for (const float2 q : points) {
-    middle += q;
-  }
-  middle = to_armature.apply(middle / float(points.size()));
-  return to_armature.inverted().apply_vector(look_oval(doc, p).apply(middle) - middle);
-}
-
-static void look_warp_drawing(const Document &doc, VectorDrawing &drawing, const BonePose &p,
-                              const Transform2D &to_armature, bool carried)
-{
-  if (carried) {
-    std::vector<float2> at;
-    for (const MeshPoint &mp : drawing.points) {
-      at.push_back(mp.pos);
-    }
-    const float2 move = look_carry(doc, p, to_armature, at);
-    for (MeshPoint &mp : drawing.points) {
-      mp.pos += move;
-    }
-    return;
-  }
-  std::vector<Transform2D> skins(drawing.points.size());
-  for (size_t i = 0; i < drawing.points.size(); i++) {
-    skins[i] = look_warp_skin(p, to_armature, drawing.points[i].pos);
-    drawing.points[i].pos = skins[i].apply(drawing.points[i].pos);
-  }
-  for (Curve &curve : drawing.curves) {
-    for (CurvePoint &cp : curve.points) {
-      if (cp.point >= 0 && size_t(cp.point) < skins.size()) {
-        cp.handle_in = skins[size_t(cp.point)].apply_vector(cp.handle_in);
-        cp.handle_out = skins[size_t(cp.point)].apply_vector(cp.handle_out);
-      }
-    }
-  }
 }
 
 /* Moves a drawing's points and handles by `t`. */
@@ -974,12 +821,7 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
   const auto flip = [armature](uint64_t bone) { return armature ? bone_mirror_id(*armature, bone) : bone; };
   /* The bones' move can be left out (for the caller to draw with) only when nothing else in the stack
    * works on where the points are. */
-  BonePose eye;
-  Transform2D eye_to_armature;
-  bool eye_carried = false;
-  const bool on_eye = layer.type == LayerType::Vector &&
-                      look_warp_find(doc, layer, &eye, &eye_to_armature, &eye_carried);
-  const bool only_bones = !on_eye && around.empty() &&
+  const bool only_bones = around.empty() &&
                           std::all_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &m) {
                             return !modifier_on(m, render) || m.type == ModifierType::Armature;
                           });
@@ -1034,10 +876,6 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
       merge_modifier_apply(doc, layer, m, drawing, render);
     }
     mark_new();
-  }
-  /* A pupil's drawings on its eyeball, as the Look At turns it (after the stack: on what it shows). */
-  if (on_eye) {
-    look_warp_drawing(doc, drawing, eye, eye_to_armature, eye_carried);
   }
   group_deforms_run(doc, layer, around, drawing, render);
   if (probe) {
@@ -1263,6 +1101,8 @@ void layer_handles_settle(const Document &doc, Layer &layer, const std::vector<H
   }
 }
 
+static std::vector<Transform2D> layer_point_skins_bones(const Document &doc, const Layer &layer);
+
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer)
 {
   std::vector<Transform2D> skins = layer_point_skins_bones(doc, layer);
@@ -1286,27 +1126,6 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
     return skins;
   }
   const VectorDrawing &drawing = layer_drawing(doc, layer);
-  /* Following a pupil: on its eyeball too. */
-  BonePose eye;
-  Transform2D to_armature;
-  bool carried = false;
-  if (layer.type == LayerType::Vector && look_warp_find(doc, layer, &eye, &to_armature, &carried)) {
-    if (carried) {
-      std::vector<float2> at;
-      for (size_t i = 0; i < drawing.points.size(); i++) {
-        at.push_back(skins[i].apply(drawing.points[i].pos));
-      }
-      const Transform2D move = Transform2D::translate(look_carry(doc, eye, to_armature, at));
-      for (Transform2D &skin : skins) {
-        skin = move * skin;
-      }
-    }
-    else {
-      for (size_t i = 0; i < drawing.points.size(); i++) {
-        skins[i] = look_warp_skin(eye, to_armature, skins[i].apply(drawing.points[i].pos)) * skins[i];
-      }
-    }
-  }
   /* Bent by a deform modifier: on to where it shows. */
   if (layer.type == LayerType::Vector && layer_is_deformed(doc, layer)) {
     /* Turned and stretched as they do there, so a drag lands under the cursor. (Nothing bends on the setup frame.) */
@@ -1318,7 +1137,7 @@ std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &lay
   return skins;
 }
 
-/* What the bones alone make of each point (layer_point_skins without the eyeball warp). */
+/* What the bones alone make of each point. */
 static std::vector<Transform2D> layer_point_skins_bones(const Document &doc, const Layer &layer)
 {
   const VectorDrawing &drawing = layer_drawing(doc, layer);

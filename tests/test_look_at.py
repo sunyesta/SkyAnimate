@@ -1,8 +1,8 @@
 """An eye rig: Look At turns each eyeball toward a look target standing in front of the face at its Depth
 (close, the eyes cross), from the rest pose, no further than Max Turn; the pupil a disc on the (stretched)
-ball, seen from the front, foreshortening as it turns from the camera; Facing (keyable) turns the whole eye,
-as a head turn does; Eyeball Auto takes its size from the Eye Shape at frame 0; the layers following the
-pupil warp onto the ball (Warp), but not a shine. Child Of carries the target with the head (keyed Influence drops it). Saved.
+ball, seen from the front, its drawings going with it as drawn; Facing (keyable) turns the whole eye, as a head
+turn does; Eyeball Auto takes its size from the Eye Shape at frame 0. Child Of carries the target with the head
+(keyed Influence drops it). Saved.
 
 Run with:  OpenAnimate --background --python tests/test_look_at.py
 """
@@ -42,7 +42,8 @@ def look_at(name, **settings):
 for eye in ("eye_L", "eye_R"):
     look_at(eye)
 c = rig.bone_constraints("eye_L")[0]
-assert c["type"] == "LOOK_AT" and c["name"] == "Look At" and abs(c["squash"] - 1.0) < 1e-6, c  # Warp 100%
+assert c["type"] == "LOOK_AT" and c["name"] == "Look At", c
+assert "squash" not in c and "keep_round" not in c, "nothing warps any more"
 assert abs(math.degrees(c["max_side"]) - 45) < 1e-3 and abs(math.degrees(c["max_up"]) - 30) < 1e-3, c
 assert abs(bone("look")["depth"] - 1.0) < 1e-6
 
@@ -96,8 +97,7 @@ rig.bone_constraint_set("eye_L", 0, divergence=0.0)
 at(18, look=dict(depth=1.0))
 
 # The eye's own shape: Eyeball Auto takes half its size at frame 0; the pupil stays inside it; Facing turns
-# the eye (a head turn): the pupil moves toward the turned front and foreshortens along that way; a Keep
-# Round layer (the shine) doesn't.
+# the eye (a head turn): the pupil moves toward the turned front, keeping its shape.
 doc.frame_current = 0
 
 
@@ -127,12 +127,10 @@ white_R = drawing(ellipse(-0.3, 1.0, 0.2, 0.1), "head")
 pupil_R = drawing(ellipse(-0.3, 1.0, 0.03, 0.03), "eye_R")
 shine_R = drawing(ellipse(-0.3 + 0.015, 1.0 + 0.01, 0.01, 0.01), "eye_R")
 layers.active = rig
-rig.bone_constraint_set("eye_R", 0, shape_layer=white_R.name, fit="WHOLE", eyeball_auto=True, squash=1.0,
-                        keep_round=[shine_R.name])
+rig.bone_constraint_set("eye_R", 0, shape_layer=white_R.name, fit="WHOLE", eyeball_auto=True)
 at(40, look=dict(position=(0.0, 1.0)))
 c = rig.bone_constraints("eye_R")[0]
 assert c["shape_region"] > 3 and math.dist(c["eyeball_auto_size"], (0.2, 0.1)) < 0.01, c["eyeball_auto_size"]
-assert c["keep_round"] == [shine_R.name]
 assert max(map(abs, shift("eye_R"))) < 1e-5 and abs(spread(pupil_R.shown()[0], (1, 0)) - 0.06) < 1e-3, "at rest: as drawn"
 # Facing 60 degrees to the side (the head turning). With the target where it rests the eye looks back at
 # the camera, as far as Max Turn lets it: 60 - 45 = 15 degrees across.
@@ -140,22 +138,24 @@ rig.bone_constraint_set("eye_R", 0, facing=(math.radians(60), 0.0))
 at(40)
 assert abs(shift("eye_R")[0] - 0.2 * math.sin(math.radians(15))) < 2e-3, ("turned back toward the camera", shift("eye_R"))
 # The target out that way (60 degrees from the camera, as the eye sees it): it looks along its facing, the
-# pupil toward that side, flattened across by cos 60.
+# pupil toward that side, its drawings moving and nothing else.
 at(40, look=dict(position=(-0.3 + math.tan(math.radians(60) + math.atan(0.3)), 1.0)))
 assert abs(shift("eye_R")[0] - 0.2 * math.sin(math.radians(60))) < 0.03, ("toward the turned front", shift("eye_R"))
-across = spread(pupil_R.shown()[0], (1, 0))
-assert abs(across - 0.06 * math.cos(math.radians(60))) < 0.004, ("foreshortened across by cos 60", across)
-assert abs(spread(pupil_R.shown()[0], (0, 1)) - 0.06) < 1e-3, "full height"
-assert abs(spread(shine_R.shown()[0], (1, 0)) - 0.02) < 1e-3, "the shine stays round"
-# ...but rides on the narrowed pupil: at the same place in its oval as drawn (three quarters across, two
-# thirds up).
 def middle(points):
     return (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
-pts, shine_mid = pupil_R.shown()[0], middle(shine_R.shown()[0])
-xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-place = ((shine_mid[0] - min(xs)) / (max(xs) - min(xs)), (shine_mid[1] - min(ys)) / (max(ys) - min(ys)))
-assert abs(place[0] - 0.75) < 0.02 and abs(place[1] - 2 / 3) < 0.02, ("in place on the pupil", place)
-# The iris a flat disc: foreshortened evenly, so what is drawn in its middle (the pupil) stays there.
+
+
+def as_drawn(*layers_following):
+    for layer, size in layers_following:
+        points = layer.shown()[0]
+        assert abs(spread(points, (1, 0)) - size) < 1e-3 and abs(spread(points, (0, 1)) - size) < 1e-3, ("keeps its shape", layer.name)
+
+
+as_drawn((pupil_R, 0.06), (shine_R, 0.02))
+place = middle(shine_R.shown()[0])
+pupil_at = middle(pupil_R.shown()[0])
+assert math.dist((place[0] - pupil_at[0], place[1] - pupil_at[1]), (0.015, 0.01)) < 1e-3, "and its place on the pupil"
+# What's drawn in the iris's middle (the pupil) stays there.
 doc.frame_current = 0
 iris_R = drawing(ellipse(-0.3, 1.0, 0.05, 0.05), "eye_R")
 layers.active = rig
@@ -177,35 +177,16 @@ assert max(map(abs, shift("eye_R"))) < 1e-4, "facing the camera, the target at r
 rig.bone_constraint_set("eye_R", 0, facing=(math.radians(-60), 0.0))
 at(46, look=dict(position=(5.0, 1.0)))
 assert abs(shift("eye_R")[0] + 0.2 * math.sin(math.radians(15))) < 0.03, ("the far eye looks right as far as it can", shift("eye_R"))
-# Looking back toward the camera it stays as narrow as the turned eye (painted on it): cos 60 across, at any
-# Warp.
-narrow = spread(pupil_R.shown()[0], (1, 0))
-assert abs(narrow - 0.06 * math.cos(math.radians(60))) < 0.004, ("never rounder than the eye's facing", narrow)
-rig.bone_constraint_set("eye_R", 0, squash=0.3)
-at(46)
-narrow = spread(pupil_R.shown()[0], (1, 0))
-assert abs(narrow - 0.06 * math.cos(math.radians(60))) < 0.004, ("never rounder than the eye's facing, Warp 30%", narrow)
-rig.bone_constraint_set("eye_R", 0, squash=1.0)
+as_drawn((pupil_R, 0.06))
 rig.bone_constraint_set("eye_R", 0, facing=(0.0, 0.0))
 
-# Looking diagonally (down and to the right) the pupil is one oval, flattened along the way it sits on
-# the ball and about full size across that: not squashed across and down separately (a skewed shape).
+# Looking diagonally the pupil moves that way, as drawn.
 rig.bone_constraint_set("eye_R", 0, facing=(math.radians(-30), 0.0))
 at(48, look=dict(position=(1.0, 0.0)))
 way = shift("eye_R")
-n = math.hypot(*way)
 assert way[0] > 0.01 and way[1] < -0.01, ("down and right", way)
-pts = pupil_R.shown()[0]
-spreads = [spread(pts, (math.cos(math.radians(a)), math.sin(math.radians(a)))) for a in range(0, 180, 2)]
-assert min(spreads) < max(spreads) * 0.97, ("flattened", min(spreads), max(spreads))
-print("diagonal", way, min(spreads), max(spreads))
-assert abs(max(spreads) - 0.06) < 0.003, ("one oval: about full size across its flattening", max(spreads))
+as_drawn((pupil_R, 0.06), (shine_R, 0.02))
 rig.bone_constraint_set("eye_R", 0, facing=(0.0, 0.0))
-# Warp 0: the pupil only moves.
-rig.bone_constraint_set("eye_R", 0, squash=0.0)
-at(48)
-assert abs(spread(pupil_R.shown()[0], (1, 0)) - 0.06) < 1e-4, "Warp 0: as drawn"
-rig.bone_constraint_set("eye_R", 0, squash=1.0)
 
 # Eyeball Center: the ball's middle at a bone off the pupil (the pupil drawn looking a little right at
 # rest). At rest the eye is as drawn; looking far right it goes round the ball about that middle.
@@ -257,7 +238,7 @@ assert c["type"] == "LOOK_AT" and not c["eyeball_auto"] and abs(c["eyeball_size"
 assert abs(math.degrees(c["max_side"]) - 45) < 1e-3 and abs(math.degrees(c["max_up"]) - 30) < 1e-3
 c = rig.bone_constraints("eye_R")[0]
 assert [round(math.degrees(c[k])) for k in ("max_side", "max_up", "max_down")] == [90, 20, 50], c
-assert c["keep_round"] and {40, 44} <= {k["frame"] for k in rig.keyframes('bones["eye_R"].constraints[0].facing')}
+assert {40, 44} <= {k["frame"] for k in rig.keyframes('bones["eye_R"].constraints[0].facing')}
 assert rig.bone_constraints("look")[0]["type"] == "CHILD_OF"
 assert rig.bone_constraints("eye_R")[0]["eyeball_center"] == "ball_R", "Eyeball Center saved"
 assert [k["frame"] for k in rig.keyframes('bones["look"].depth')][-2:] == [16, 18]
