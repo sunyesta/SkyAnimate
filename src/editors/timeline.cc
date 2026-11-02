@@ -351,7 +351,7 @@ static void action_menu(Context &C, float width)
         }
       }
       if (count < 2) {
-        if (ImGui::Selectable(count == 0 ? "+ New Action Bone Action" : "+ New Action Bone Action (other way)")) {
+        if (ImGui::Selectable(count == 0 ? "+ New Bone Action" : "+ New Bone Action (other way)")) {
           operator_call(C, "anim.action_new", {{"name", single->name}, {"action_bone", "1"}, {"layer", std::to_string(owner->id)}});
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
