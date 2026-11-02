@@ -108,6 +108,11 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer = nullptr);
  * the active layer. */
 std::vector<Layer *> editable_layers(Context &C);
 std::vector<Layer *> document_editable_layers(Document &doc);
+/* What the weight tools work on, so only one bone layer's bones are ever in play: the active drawing alone, whatever
+ * else is picked; or on an active bone layer, or group with Edit Descendants, the drawings inside it that go by those
+ * bones. A bone layer inside has its own, and a Parent Bone moves what has one as a whole, so those stay out, and
+ * nothing under a Parent Bone is weighed at all. The weight tools' editable_layers. */
+std::vector<Layer *> document_weight_layers(Document &doc);
 /* Their ids, for KeyFilter::point_layers: the points whose selection counts now. */
 std::shared_ptr<const std::set<uint64_t>> editable_layer_ids(Document &doc);
 

@@ -37,7 +37,43 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer)
 
 std::vector<Layer *> editable_layers(Context &C)
 {
-  return C.document ? document_editable_layers(*C.document) : std::vector<Layer *>();
+  if (!C.document) {
+    return {};
+  }
+  const bool weights = C.wm && (C.wm->tool_settings.tool == Tool::WeightPaint || C.wm->tool_settings.tool == Tool::WeightSelect);
+  return weights ? document_weight_layers(*C.document) : document_editable_layers(*C.document);
+}
+
+std::vector<Layer *> document_weight_layers(Document &doc)
+{
+  std::vector<Layer *> layers;
+  Layer *active = document_active_layer(doc);
+  if (!active || active->locked) {
+    return layers;
+  }
+  if (active->has_drawing()) {
+    layers.push_back(active);
+    return layers;
+  }
+  /* A bone layer's Edit Descendants is off by default, for its bones' sake: a weight tool on it means its drawings. */
+  if (!active->is_group() || (!active->edit_descendants && !active->is_bone_layer()) || active->parent_bone != 0 ||
+      layer_binding_group(doc, active->id) || (!active->is_bone_layer() && !layer_armature(doc, active->id)))
+  {
+    return layers;
+  }
+  const auto take = [&](auto &&self, Layer &group) -> void {
+    for (Layer &child : group.children) {
+      if (!child.shown() || child.is_bone_layer() || child.parent_bone != 0) {
+        continue;
+      }
+      if (child.type == LayerType::Vector && !child.locked && !(child.is_reference() && child.reference.match_original)) {
+        layers.push_back(&child);
+      }
+      self(self, child);
+    }
+  };
+  take(take, *active);
+  return layers;
 }
 
 std::shared_ptr<const std::set<uint64_t>> editable_layer_ids(Document &doc)

@@ -437,6 +437,9 @@ static void transform_points_header(Context &C);
 static void sculpt_header(Context &C);
 static void draw_header(Context &C);
 static OpArgs weight_args();
+static OpArgs weight_automatic_args(Context &C, bool selected_bones);
+static Layer *weight_armature(Context &C);
+static bool bone_picked(const Bone &bone);
 static std::vector<uint64_t> editable_layer_ids(Context &C);
 
 /* A layer's own drawing where its points show: moved by the bones (Blender's "on cage"). Points
@@ -1109,6 +1112,17 @@ static ToolState tool_state(Context &C, Tool tool)
   const bool drawing = active && active->has_drawing();
   const bool group = active && active->type == LayerType::Group;
   const bool in_bone_layer = active && layer_armature(*C.document, active->id) != nullptr;
+  /* A group or bone layer the weight tools can work inside. */
+  const bool weighs_inside = active && active->is_group() && (bones || in_bone_layer);
+  /* Weights do nothing under a Parent Bone (or, for a drawing, it would stop having one: that's its choice). */
+  const auto weight_reason = [&]() -> const char * {
+    if (layer_binding_group(doc, active->id) || (active->is_group() && active->parent_bone != 0)) {
+      return "A Parent Bone moves this as a whole: weights do nothing here";
+    }
+    return weighs_inside && document_weight_layers(*C.document).empty()
+               ? "No drawings to weigh here: turn on Edit Descendants, or pick a drawing"
+               : "";
+  };
   ToolState state;
   switch (tool) {
     /* Select: where there is something to pick (points, bones); not text or a picture. */
@@ -1154,17 +1168,27 @@ static ToolState tool_state(Context &C, Tool tool)
     case Tool::TransformBones:
       state.shown = bones;
       break;
-    /* Weights: a drawing's points, for the bones of the bone layer it is in. */
+    /* Weights: the active drawing's points, or those of the drawings in the active group, for the bones of the bone
+     * layer they are in. */
     case Tool::WeightSelect:
-      state.shown = drawing && in_bone_layer;
+      state.shown = (drawing && in_bone_layer) || weighs_inside;
+      if (state.shown && *weight_reason()) {
+        state.reason = weight_reason();
+        return state;
+      }
       break;
     /* Weight Paint also paints a drawing's deform modifiers' weights. */
-    case Tool::WeightPaint:
-      state.shown = drawing && (in_bone_layer || std::any_of(active->modifiers.begin(), active->modifiers.end(),
-                                                             [](const Modifier &m) {
-                                                               return modifier_is_deform(m.type);
-                                                             }));
+    case Tool::WeightPaint: {
+      const bool deforms = drawing && std::any_of(active->modifiers.begin(), active->modifiers.end(), [](const Modifier &m) {
+        return modifier_is_deform(m.type);
+      });
+      state.shown = (drawing && in_bone_layer) || weighs_inside || deforms;
+      if (state.shown && !deforms && *weight_reason()) {
+        state.reason = weight_reason();
+        return state;
+      }
       break;
+    }
   }
   if (state.shown && tool_setup_only(tool) && doc.frame_current != 0) {
     state.reason = "Setup frame only: press Tab to go to frame 0";
@@ -1437,7 +1461,9 @@ static float toolbar_draw(Context &C, ImVec2 origin, float top, float max_height
       ts.tool_for_layer_kind[ts.tool_layer_kind] = ts.tool_temporary ? ts.tool_return : ts.tool;
     }
     ts.tool_layer_kind = kind;
-    ts.tool = ts.tool_for_layer_kind[kind];
+    /* Weighing goes from a drawing to its group and back: the weight tools stay wherever they work. */
+    const bool weighing = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect) && tool_state(C, ts.tool).shown;
+    ts.tool = weighing ? ts.tool : ts.tool_for_layer_kind[kind];
     ts.tool_temporary = false;
   }
   if (!tool_state(C, ts.tool).shown) {
@@ -3402,13 +3428,24 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip("Take the selected points out of every bone: they follow no bone");
       }
+      menu_operator(C, "Clear Weights", "weight.clear", weight_args());
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Take every point of the active layer, or of the drawings in the active group, out of "
+                          "every bone");
+      }
       menu_operator(C, "Clean", "weight.clean", weight_args());
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip("Take the selected points (all when none are selected) out of bones that move them "
                           "less than 2%");
       }
       ImGui::Separator();
-      menu_operator(C, "Automatic Weights", "weight.automatic", weight_args());
+      menu_operator(C, "Automatic Weights", "weight.automatic", weight_automatic_args(C, false));
+      {
+        const Layer *armature = weight_armature(C);
+        ImGui::BeginDisabled(!armature || std::none_of(armature->bones.begin(), armature->bones.end(), bone_picked));
+        menu_operator(C, "Automatic: Selected Bones", "weight.automatic", weight_automatic_args(C, true));
+        ImGui::EndDisabled();
+      }
       menu_operator(C, "Assign", "weight.assign", weight_args());
       menu_operator(C, "Remove", "weight.remove", weight_args());
       menu_operator(C, "Normalize", "weight.normalize", weight_args());
@@ -5419,8 +5456,41 @@ static ImU32 weight_color(float w, int alpha = 255)
 static Layer *weight_armature(Context &C)
 {
   Layer *active = document_active_layer(*C.document);
+  if (active && active->is_bone_layer()) {
+    return active;
+  }
   const Layer *armature = active ? layer_armature(*C.document, active->id) : nullptr;
   return armature ? layer_find(*C.document, armature->id) : nullptr;
+}
+
+static bool bone_picked(const Bone &bone)
+{
+  return bone.selected || bone.select_head || bone.select_tail;
+}
+
+/* Ctrl-click in the weight tools: that bone alone. With Shift it joins the selected ones, or leaves them if it was
+ * one, for Automatic: Selected Bones; the last one added is the one painted with. */
+static void weight_bone_pick(Layer &armature, uint64_t id, bool add)
+{
+  Bone *bone = bone_find(armature, id);
+  if (!add) {
+    armature.active_bone = id;
+    for (Bone &b : armature.bones) {
+      bone_select(b, b.id == id);
+    }
+    return;
+  }
+  const bool leaves = bone_picked(*bone);
+  bone_select(*bone, !leaves);
+  if (!leaves) {
+    armature.active_bone = id;
+  }
+  else if (armature.active_bone == id) {
+    armature.active_bone = 0;
+    for (const Bone &b : armature.bones) {
+      armature.active_bone = bone_picked(b) ? b.id : armature.active_bone;
+    }
+  }
 }
 
 /* The deform modifier Weight Paint paints on the active layer: the one the tool settings name, or with
@@ -5428,7 +5498,8 @@ static Layer *weight_armature(Context &C)
 static Modifier *weight_deform(Context &C)
 {
   Layer *layer = document_active_layer(*C.document);
-  if (!layer) {
+  /* A group's deforms have no weights: Automatic, every point fully. */
+  if (!layer || layer->is_group()) {
     return nullptr;
   }
   Modifier *first = nullptr;
@@ -5449,7 +5520,7 @@ static Modifier *weight_deform(Context &C)
 static void weight_target_combo(Context &C)
 {
   Layer *layer = document_active_layer(*C.document);
-  if (!layer) {
+  if (!layer || layer->is_group()) {
     return;
   }
   const bool bones = layer_armature(*C.document, layer->id) != nullptr;
@@ -5519,6 +5590,32 @@ static OpArgs weight_args()
   return {{"keep_animation", g_weight_keep_animation ? "1" : "0"}};
 }
 
+/* Weight Paint shows no point selection without its Selection Mask, so a selection left by Weight Select doesn't count. */
+static OpArgs weight_automatic_args(Context &C, bool selected_bones)
+{
+  OpArgs args = weight_args();
+  args["bones"] = selected_bones ? "SELECTED" : "ALL";
+  const ToolSettings &ts = C.wm->tool_settings;
+  if (ts.tool == Tool::WeightPaint && !ts.weight_mask) {
+    args["points"] = "ALL";
+  }
+  return args;
+}
+
+static void weight_automatic_selected_button(Context &C, const Layer &armature)
+{
+  const bool any = std::any_of(armature.bones.begin(), armature.bones.end(), bone_picked);
+  ImGui::BeginDisabled(!any);
+  if (ImGui::Button("Automatic: Selected Bones")) {
+    operator_call(C, "weight.automatic", weight_automatic_args(C, true));
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Bind the points to the selected bones only: nearer bones pull harder, and what they followed "
+                      "before is replaced.\nCtrl-click a bone to pick it, Ctrl+Shift-click to add more");
+  }
+}
+
 static void weight_select_header(Context &C)
 {
   ToolSettings &ts = C.wm->tool_settings;
@@ -5529,12 +5626,14 @@ static void weight_select_header(Context &C)
   weight_bone_combo(armature);
   ImGui::SameLine();
   if (ImGui::Button("Automatic Weights")) {
-    operator_call(C, "weight.automatic", weight_args());
+    operator_call(C, "weight.automatic", weight_automatic_args(C, false));
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Bind the selected points (all when none are selected) to every bone: nearer bones pull "
                       "harder, as Blender's Automatic Weights");
   }
+  ImGui::SameLine();
+  weight_automatic_selected_button(C, *armature);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(ImGui::GetFrameHeight() * 4.0f);
   ui_slider_float("##assign_weight", &ts.weight_value, 0.0f, 1.0f, "Weight %.2f");
@@ -6000,6 +6099,8 @@ static void weight_paint_header(Context &C)
   }
   if (!deform) {
     weight_bone_combo(armature);
+    ImGui::SameLine();
+    weight_automatic_selected_button(C, *armature);
   }
   const float w = ImGui::GetFrameHeight() * 4.0f;
   ImGui::SameLine();
@@ -6081,8 +6182,18 @@ static bool g_weight_painting = false;
 /* Keep Animation: where the drawing showed on the keyed frames of every action when the stroke began. */
 static DrawingsShownAll g_weight_paint_kept;
 
-/* Paints while the left button is down; Ctrl-click picks the bone. */
-static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view, bool hovered, ImDrawList *dl)
+/* What the brush paints: under a Parent Bone, only a drawing's own deform weights. */
+static std::vector<Layer *> weight_tool_layers(Context &C)
+{
+  std::vector<Layer *> layers = document_weight_layers(*C.document);
+  if (!weight_deform(C)) {
+    std::erase_if(layers, [&](const Layer *l) { return layer_binding_group(*C.document, l->id) != nullptr; });
+  }
+  return layers;
+}
+
+/* Paints while the left button is down; Ctrl-click picks the bone, Ctrl+Shift-click adds one. */
+static void weight_paint_input(Context &C, const ViewMapping &view, bool hovered, ImDrawList *dl)
 {
   Document &doc = *C.document;
   const ToolSettings &ts = C.wm->tool_settings;
@@ -6103,16 +6214,18 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
   }
   if (armature && !deform && hovered && io.KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (const uint64_t bone = pick_bone(doc, *armature, view, io.MousePos)) {
-      armature->active_bone = bone;
-      for (Bone &b : armature->bones) {
-        bone_select(b, b.id == bone);
-      }
+      weight_bone_pick(*armature, bone, io.KeyShift);
+      push_undo(C, "Select Bone");
       return;
     }
   }
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     g_weight_painting = true;
-    g_weight_paint_kept = g_weight_keep_animation ? drawings_shown_capture_all(doc, {layer.id}) : DrawingsShownAll();
+    std::vector<uint64_t> ids;
+    for (const Layer *l : weight_tool_layers(C)) {
+      ids.push_back(l->id);
+    }
+    g_weight_paint_kept = g_weight_keep_animation ? drawings_shown_capture_all(doc, ids) : DrawingsShownAll();
   }
   if (!g_weight_painting) {
     return;
@@ -6129,34 +6242,37 @@ static void weight_paint_input(Context &C, Layer &layer, const ViewMapping &view
     g_weight_painting = false;
     return;
   }
-  /* The brush works where points show (posed), in the layer's space. */
-  const Transform2D to_document = layer_world_transform(doc, layer.id);
-  const Transform2D to_layer = to_document.inverted();
-  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
-  const float2 mouse = to_layer.apply(view.to_document(io.MousePos));
-  const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
-  WeightPaintBrush brush;
-  /* Pen pressure scales what its toggles say (a mouse presses fully). */
-  const float pen = std::clamp(C.wm->pen_pressure, 0.0f, 1.0f);
-  brush.radius = ts.weight_radius * (ts.weight_pressure_radius ? pen : 1.0f) * pixel;
-  brush.bone = armature ? armature->active_bone : 0;
-  brush.weight = ts.weight_value * (ts.weight_pressure_weight ? pen : 1.0f);
-  brush.strength = ts.weight_strength * (ts.weight_pressure_strength ? pen : 1.0f) * std::min(1.0f, io.DeltaTime * 10.0f);
-  brush.mode = io.KeyCtrl ? WeightPaintMode::Subtract : WeightPaintMode(std::clamp(ts.weight_mode, 0, 2));
-  brush.normalize = ts.weight_normalize;
-  brush.selected_only = ts.weight_mask;
-  /* Brush at the mouse, in each point's stored space: inverse of its skin. */
-  brush.center = mouse;
-  std::vector<float2> shown(layer.drawing.points.size());
-  for (size_t i = 0; i < shown.size(); i++) {
-    shown[i] = skins[i].apply(layer.drawing.points[i].pos);
-  }
-  brush.positions = &shown;
-  if (deform) {
-    vector_deform_paint(doc, layer, *deform, brush);
-  }
-  else {
-    layer_weight_paint(doc, layer, brush);
+  for (Layer *weighed : weight_tool_layers(C)) {
+    Layer &layer = *weighed;
+    /* The brush works where points show (posed), in the layer's space. */
+    const Transform2D to_document = layer_world_transform(doc, layer.id);
+    const Transform2D to_layer = to_document.inverted();
+    const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+    const float2 mouse = to_layer.apply(view.to_document(io.MousePos));
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    WeightPaintBrush brush;
+    /* Pen pressure scales what its toggles say (a mouse presses fully). */
+    const float pen = std::clamp(C.wm->pen_pressure, 0.0f, 1.0f);
+    brush.radius = ts.weight_radius * (ts.weight_pressure_radius ? pen : 1.0f) * pixel;
+    brush.bone = armature ? armature->active_bone : 0;
+    brush.weight = ts.weight_value * (ts.weight_pressure_weight ? pen : 1.0f);
+    brush.strength = ts.weight_strength * (ts.weight_pressure_strength ? pen : 1.0f) * std::min(1.0f, io.DeltaTime * 10.0f);
+    brush.mode = io.KeyCtrl ? WeightPaintMode::Subtract : WeightPaintMode(std::clamp(ts.weight_mode, 0, 2));
+    brush.normalize = ts.weight_normalize;
+    brush.selected_only = ts.weight_mask;
+    /* Brush at the mouse, in each point's stored space: inverse of its skin. */
+    brush.center = mouse;
+    std::vector<float2> shown(layer.drawing.points.size());
+    for (size_t i = 0; i < shown.size(); i++) {
+      shown[i] = skins[i].apply(layer.drawing.points[i].pos);
+    }
+    brush.positions = &shown;
+    if (deform) {
+      vector_deform_paint(doc, layer, *deform, brush);
+    }
+    else {
+      layer_weight_paint(doc, layer, brush);
+    }
   }
 }
 
@@ -6180,10 +6296,7 @@ static void weight_select_input(Context &C, Area &area, const ViewMapping &view,
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (io.KeyCtrl) {
       if (const uint64_t bone = pick_bone(doc, *armature, view, io.MousePos)) {
-        armature->active_bone = bone;
-        for (Bone &b : armature->bones) {
-          bone_select(b, b.id == bone);
-        }
+        weight_bone_pick(*armature, bone, io.KeyShift);
         push_undo(C, "Select Bone");
         return;
       }
@@ -13305,6 +13418,9 @@ static void viewport_draw_contents(Area &area, Context &C)
                           ts.tool == Tool::TransformPoints || ts.tool == Tool::Sculpt;
   const auto points_to_edit = [&]() { return drawing || (point_tool && !editable_layers(C).empty()); };
   bool points_editable = points_to_edit();
+  /* The weight tools, on the active drawing or the drawings in the active group or bone layer. */
+  const bool weighing = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect) &&
+                        (drawing || (document_active_layer(doc) && document_active_layer(doc)->is_group()));
   const Transform2D to_document = layer ? layer_world_transform(doc, layer->id) : Transform2D();
   const Transform2D to_layer = to_document.inverted();
   const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
@@ -13422,14 +13538,14 @@ static void viewport_draw_contents(Area &area, Context &C)
   else if (ts.tool == Tool::Draw && points_editable && !g_modal.active && draw_adjust_input(C, area, pixel, hovered, dl)) {
     /* F or Shift F: the line's width or opacity, until a click. */
   }
+  else if (ts.tool == Tool::WeightPaint && weighing && !g_modal.active) {
+    weight_paint_input(C, view, hovered, dl);
+  }
+  else if (ts.tool == Tool::WeightSelect && weighing && !g_modal.active) {
+    weight_select_input(C, area, view, hovered, dl);
+  }
   else if (armature_active && !g_modal.active) {
     bone_tool_input(C, area, *armature_active, view, hovered, dl);
-  }
-  else if (ts.tool == Tool::WeightPaint && drawing && !g_modal.active) {
-    weight_paint_input(C, *layer, view, hovered, dl);
-  }
-  else if (ts.tool == Tool::WeightSelect && drawing && !g_modal.active) {
-    weight_select_input(C, area, view, hovered, dl);
   }
   else if (g_modal.active && g_modal.area == area.id) {
     modal_info = modal_update(C, view);
@@ -13685,8 +13801,10 @@ static void viewport_draw_contents(Area &area, Context &C)
    * drawing finds its place, masks and bones), not by searching the tree each time. */
   std::optional<LayerIndexScope> overlay_index;
   overlay_index.emplace(doc);
-  if (drawing && (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect)) {
-    draw_weight_overlay(dl, C, *layer, view, std::clamp(doc.viewport_quality, 1, 64));
+  if (weighing) {
+    for (const Layer *weighed : document_weight_layers(doc)) {
+      draw_weight_overlay(dl, C, *weighed, view, std::clamp(doc.viewport_quality, 1, 64));
+    }
   }
   else if (!drawing && ov.show && (ov.wireframe || ov.points)) {
     /* A bone layer being worked in: the wires and points of the drawings in its shown bone
@@ -13743,11 +13861,11 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   overlay_index.reset();
   /* Bones, as the Armature overlay says: every visible bone layer's, or only selected ones'. Unless
-   * it's Off, the weight tools show the bones they work with, the selected (active) bone solid. */
+   * it's Off, the weight tools show only the bones they work with, the selected ones solid: no others can be used. */
   if (ov.show) {
     const Layer *painting = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect) &&
                                     ov.armature != ArmatureDisplay::Off
-                                ? active_armature(C)
+                                ? weight_armature(C)
                                 : nullptr;
     /* With the active bone layer, the rest of its family: the bone layer around it and the sub bone
      * groups shown inside (anim/bone_family.hh), drawn as other bone layers are. */
@@ -13764,9 +13882,10 @@ static void viewport_draw_contents(Area &area, Context &C)
       for (const Layer &l : list) {
         const bool visible = shown && l.shown();
         if (l.is_bone_layer() && visible &&
-            (ov.armature == ArmatureDisplay::On ||
-             (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer || family.contains(l.id))) ||
-             &l == painting))
+            (painting ? &l == painting
+                      : ov.armature == ArmatureDisplay::On ||
+                            (ov.armature == ArmatureDisplay::Selected &&
+                             (l.selected || l.id == doc.active_layer || family.contains(l.id)))))
         {
           /* The bone layer being worked in and the sub bone groups inside it, worked with it, are drawn solid. */
           g_plain_armature = doc.frame_current != 0 ? 0

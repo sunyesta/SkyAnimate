@@ -351,9 +351,12 @@ static void layers_below(Layer &layer, std::vector<Layer *> &r)
 static std::vector<Layer *> weight_layers(Context &C)
 {
   std::vector<Layer *> r;
-  for (Layer *layer : editable_layers(C)) {
+  if (!C.document) {
+    return r;
+  }
+  for (Layer *layer : document_weight_layers(*C.document)) {
     const Layer *armature = layer_armature(*C.document, layer->id);
-    if (armature && !armature->bones.empty()) {
+    if (armature && !armature->bones.empty() && !layer_binding_group(*C.document, layer->id)) {
       r.push_back(layer);
     }
   }
@@ -938,14 +941,15 @@ void rig_operators_register()
   const OpProperty weight_property = op_float_property("weight", "Weight", "The active bone's weight on the selected points",
                                                        "1", 0.0f, 1.0f, 0.01f);
   rig_operator("weight.automatic", "Automatic Weights",
-               "Give the selected points (all points when none are selected) of the layers being edited "
-               "weights from every bone: nearer bones pull harder, as Blender's Automatic Weights. "
-               "bones=SELECTED uses only the selected bones",
+               "Give the selected points (all points when none are selected, or with points=ALL) of the active "
+               "layer or group weights from every bone: nearer bones pull harder, as Blender's Automatic Weights. "
+               "bones=SELECTED uses only the selected bones of the bone layer they are in",
                weight_poll, [](Context &C) {
                  const DrawingsShownAll kept = weight_keep_begin(C);
                  /* Every bone by default: the weight tools keep the bone being painted selected, so going
                   * by the selection would hand that one bone everything. */
                  const bool selected_bones = op_arg(C, "bones", "ALL") == "SELECTED";
+                 const bool all_points = op_arg(C, "points") == "ALL";
                  int changed = 0;
                  for (Layer *layer : weight_layers(C)) {
                    const Layer &armature = *layer_armature(*C.document, layer->id);
@@ -963,7 +967,12 @@ void rig_operators_register()
                        }
                      }
                    }
-                   changed += layer_automatic_weights(*C.document, *layer, bones, any_point_selected(*layer));
+                   /* None selected isn't all of them. */
+                   if (selected_bones && bones.empty()) {
+                     report(ReportType::Warning, "Select the bones first: Ctrl-click one, Ctrl+Shift-click to add more");
+                     break;
+                   }
+                   changed += layer_automatic_weights(*C.document, *layer, bones, !all_points && any_point_selected(*layer));
                  }
                  return weight_keep_end(C, kept, changed > 0);
                },
@@ -1108,34 +1117,24 @@ void rig_operators_register()
                {keep_animation_property});
 
   rig_operator("weight.clear", "Clear Weights",
-               "Take every point of the active and selected layers, and of the drawings in those that are groups, "
-               "out of every bone: they follow no bone. Bone layers inside are left out, and any Parent Bone stays",
+               "Take every point of the active layer, or of the drawings the weight tools work on in the active "
+               "group, out of every bone: they follow no bone",
+               weight_poll,
                [](Context &C) {
-                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
-                 return l && !l->is_bone_layer() && layer_armature(*C.document, l->id);
-               },
-               [](Context &C) {
+                 const DrawingsShownAll kept = weight_keep_begin(C);
                  int changed = 0;
-                 const auto clear = [&](auto &&self, Layer &layer) -> void {
-                   if (layer.is_bone_layer()) {
-                     return;
-                   }
-                   for (MeshPoint &p : layer.drawing.points) {
+                 for (Layer *layer : weight_layers(C)) {
+                   for (MeshPoint &p : layer->drawing.points) {
                      changed += std::any_of(p.weights.begin(), p.weights.end(),
                                             [](const BoneWeight &w) { return w.bone != 0 && w.weight > 0.0f; })
                                     ? 1
                                     : 0;
                      p.weights = {{0, 0.0f}};
                    }
-                   for (Layer &child : layer.children) {
-                     self(self, child);
-                   }
-                 };
-                 for (Layer *layer : keyed_layers(C)) {
-                   clear(clear, *layer);
                  }
-                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
-               });
+                 return weight_keep_end(C, kept, changed > 0);
+               },
+               {keep_animation_property});
 
   rig_operator("weight.clean", "Clean",
                "Take the selected points (all points when none are selected) out of the bones that move them less "

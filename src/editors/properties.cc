@@ -2044,27 +2044,21 @@ static void reference_tab(Context &C)
 
 /* What Custom Weights comes to for a layer, or for a group the drawings in it: the bones its points are weighted to
  * and those that move what's inside as a whole. Bone layers inside follow their own bones. */
-struct CustomWeights {
-  std::set<uint64_t> bones;
-  bool weighted = false;
-};
-
-static void custom_weights_in(const Layer &layer, CustomWeights &r)
+static void custom_weights_in(const Layer &layer, std::set<uint64_t> &r_bones)
 {
   for (const MeshPoint &p : layer.drawing.points) {
     for (const BoneWeight &w : p.weights) {
       if (w.bone != 0 && w.weight > 0.0f) {
-        r.bones.insert(w.bone);
-        r.weighted = true;
+        r_bones.insert(w.bone);
       }
     }
   }
   for (const Layer &child : layer.children) {
     if (child.parent_bone != 0) {
-      r.bones.insert(child.parent_bone);
+      r_bones.insert(child.parent_bone);
     }
     if (!child.is_bone_layer()) {
-      custom_weights_in(child, r);
+      custom_weights_in(child, r_bones);
     }
   }
 }
@@ -2097,20 +2091,20 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
    * bone nothing shows. Images, video and text have no points to weigh. */
   const bool weighable = layer.type == LayerType::Vector || layer.is_group();
   const char *const no_bone = weighable ? "Custom Weights" : "None";
-  CustomWeights custom;
-  custom_weights_in(layer, custom);
+  std::set<uint64_t> weighted;
+  custom_weights_in(layer, weighted);
   std::string shown = no_bone;
   if (parent) {
     shown = parent->name;
   }
-  else if (weighable && custom.bones.empty()) {
+  else if (weighable && weighted.empty()) {
     shown += " (no weights)";
   }
-  else if (const Bone *only = custom.bones.size() == 1 ? bone_find(armature, *custom.bones.begin()) : nullptr) {
+  else if (const Bone *only = weighted.size() == 1 ? bone_find(armature, *weighted.begin()) : nullptr) {
     shown += ": " + only->name;
   }
   else if (weighable) {
-    shown += ": " + std::to_string(custom.bones.size()) + " bones";
+    shown += ": " + std::to_string(weighted.size()) + " bones";
   }
   if (ImGui::BeginCombo("##parent_bone", shown.c_str(), ImGuiComboFlags_HeightLarge)) {
     /* A search field on top, focused as it opens: typing narrows the list (any part of the name, any
@@ -2256,40 +2250,14 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
                         "head turn. Keep Offset and Fit (Move & Turn, Move, Turn & Scale) in Adjust Last Operation");
     }
   }
-  /* Custom Weights: on a drawing, what makes them; on a group, only clearing what's inside it. */
-  if (layer.type == LayerType::Vector && !parent) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(1);
-    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    if (ImGui::Button("Automatic Weights", ImVec2(half, 0))) {
-      operator_call(C, "weight.automatic");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Normalize", ImVec2(half, 0))) {
-      operator_call(C, "weight.normalize");
-    }
-  }
-  if (weighable && !parent) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(1);
-    ImGui::BeginDisabled(!custom.weighted);
-    if (ImGui::Button("Clear Weights", ImVec2(-1, 0))) {
-      operator_call(C, "weight.clear");
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("%s", layer.is_group() ? "Take every drawing inside out of every bone"
-                                               : "Take every point out of every bone");
-    }
-  }
   if (layer.type == LayerType::Vector) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
     ImGui::TextWrapped(parent ? "The layer follows its parent bone. Giving its points weights switches it to Custom "
                                 "Weights."
                               : "Points follow the bones by their weights, and a new point takes the average of the "
-                                "points next to it. Select points with the Weight Select tool to assign weights, or "
-                                "paint them with Weight Paint.");
+                                "points next to it. Make and change them with the Weight Select and Weight Paint "
+                                "tools.");
   }
   ui_panel_end();
 }
