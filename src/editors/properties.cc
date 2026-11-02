@@ -2040,6 +2040,24 @@ static void reference_tab(Context &C)
   }
 }
 
+/* Follow Deform's choices: every deform but `layer`'s own and those it's the shape of. Picking one makes it follow. */
+static void follow_deform_items(Context &C, const Layer &layer)
+{
+  for (const Layer *l : document_layers_flat(*C.document)) {
+    for (const Modifier &m : l->modifiers) {
+      if (!modifier_is_deform(m.type) || l->id == layer.id || m.deform_layer == layer.id) {
+        continue;
+      }
+      const std::string label = l->name + ": " + m.name;
+      ImGui::PushID(&m);
+      if (ImGui::Selectable(label.c_str())) {
+        operator_call(C, "layer.follow_deform", {{"deform_layer", std::to_string(l->id)}, {"modifier", m.name}});
+      }
+      ImGui::PopID();
+    }
+  }
+}
+
 static void binding_panel(Context &C, Layer &layer, Layer &armature)
 {
   Document &doc = *C.document;
@@ -2198,19 +2216,7 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     ImGui::SetNextItemWidth(-1);
     ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original);
     if (ImGui::BeginCombo("##follow_deform_layer", "Add...", ImGuiComboFlags_HeightLarge)) {
-      for (const Layer *l : document_layers_flat(doc)) {
-        for (const Modifier &m : l->modifiers) {
-          if (!modifier_is_deform(m.type) || l->id == layer.id || m.deform_layer == layer.id) {
-            continue;
-          }
-          const std::string label = l->name + ": " + m.name;
-          ImGui::PushID(&m);
-          if (ImGui::Selectable(label.c_str())) {
-            operator_call(C, "layer.follow_deform", {{"deform_layer", std::to_string(l->id)}, {"modifier", m.name}});
-          }
-          ImGui::PopID();
-        }
-      }
+      follow_deform_items(C, layer);
       ImGui::EndCombo();
     }
     ImGui::EndDisabled();
@@ -3585,6 +3591,22 @@ static void modifiers_panel(Context &C, Layer &layer)
       ImGui::SetTooltip("Bend the drawing with a grid, or a mesh of cells you drew, on another layer: each cell "
                         "bends what is in it, as Blender's Lattice and Moho's Smart Warp. Animate it and the "
                         "drawing follows");
+    }
+    /* Not a modifier of its own: a bone with a Follow Point carries the layer, so it stays rigid on the shape. */
+    if (!layer.is_bone_layer()) {
+      ImGui::TextDisabled("Follow");
+      const bool inside_rig = layer_armature(doc, layer.id) != nullptr;
+      const bool usable = inside_rig && doc.frame_current == 0 && !layer_binding_group(doc, layer.id);
+      if (ImGui::BeginMenu("Follow Deform", usable)) {
+        follow_deform_items(C, layer);
+        ImGui::EndMenu();
+      }
+      /* Only to say why not: over the open list, a tooltip would hide its choices. */
+      if (!usable && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", !inside_rig              ? "Stays on a deform without bending: the layer has to be inside a bone layer"
+                                : doc.frame_current != 0 ? "Switch to Setup (frame 0)"
+                                                         : "A group above it has a Parent Bone that moves it");
+      }
     }
     ImGui::EndPopup();
   }
