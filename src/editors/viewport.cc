@@ -6648,60 +6648,13 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
         continue;
       }
       for (const BoneConstraint &c : bone.constraints) {
-        /* Look At: a faint line from the eye to its target; the eyeball as a wire globe turned the way
-         * the eye faces (its front half: lines of longitude and latitude, the outline all round); and its
-         * Eye Shape outlined in red, as Limit to Shape's. */
+        /* Look At: a faint line from the eye to its target, and its Eye Shape outlined in red, as Limit
+         * to Shape's. */
         if (c.type == BoneConstraintType::LookAt && c.enabled) {
           const BonePose &p = poses[i];
           if (const BonePose *tp = bone_pose_find(poses, c.target)) {
             dl->AddLine(view.to_screen(to_document.apply(p.head)), view.to_screen(to_document.apply(tp->head)),
                         IM_COL32(0x60, 0xc0, 0xff, 140), 1.0f);
-          }
-          if (p.look) {
-            const auto shown = [&](float lon, float lat, bool *r_front) {
-              /* A point of the ball's own grid, turned by Facing (pitch, then yaw), seen from the front. */
-              const float x0 = std::sin(lon) * std::cos(lat), y0 = std::sin(lat), z0 = std::cos(lon) * std::cos(lat);
-              const float cp = std::cos(p.look_facing.y), sp = std::sin(p.look_facing.y);
-              const float y1 = y0 * cp + z0 * sp, z1 = z0 * cp - y0 * sp;
-              const float cy = std::cos(p.look_facing.x), sy = std::sin(p.look_facing.x);
-              const float x2 = x0 * cy + z1 * sy, z2 = z1 * cy - x0 * sy;
-              *r_front = z2 >= -1e-4f;
-              return view.to_screen(
-                  to_document.apply(p.look_eye + rotate(float2{p.look_size.x * x2, p.look_size.y * y1}, p.look_face)));
-            };
-            const ImU32 globe = IM_COL32(0x60, 0xc0, 0xff, 110);
-            const auto curve = [&](auto &&at) {
-              /* A grid line, drawn only where it is on the front of the ball. */
-              const int n = 48;
-              ImVec2 last;
-              bool last_front = false;
-              for (int k = 0; k <= n; k++) {
-                bool front = false;
-                const ImVec2 q = at(float(k) / float(n), &front);
-                if (k > 0 && front && last_front) {
-                  dl->AddLine(last, q, globe, 1.0f);
-                }
-                last = q;
-                last_front = front;
-              }
-            };
-            const float pi = 3.14159265f;
-            for (int m = -5; m <= 6; m++) {
-              const float lon = float(m) * pi / 6.0f;
-              curve([&](float t, bool *f) { return shown(lon, -pi / 2 + t * pi, f); });
-            }
-            for (int m = -2; m <= 2; m++) {
-              const float lat = float(m) * pi / 6.0f;
-              curve([&](float t, bool *f) { return shown(-pi + t * 2.0f * pi, lat, f); });
-            }
-            /* The outline: what the ball covers in the picture, whichever way it turns. */
-            std::vector<ImVec2> rim;
-            for (int k = 0; k < 64; k++) {
-              const float a = float(k) / 64.0f * 2.0f * pi;
-              rim.push_back(view.to_screen(to_document.apply(
-                  p.look_eye + rotate(float2{p.look_size.x * std::cos(a), p.look_size.y * std::sin(a)}, p.look_face))));
-            }
-            dl->AddPolyline(rim.data(), int(rim.size()), IM_COL32(0x60, 0xc0, 0xff, 170), ImDrawFlags_Closed, 1.5f);
           }
           if (c.shape_region.size() >= 3) {
             std::vector<ImVec2> line;

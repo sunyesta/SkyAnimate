@@ -86,7 +86,6 @@ static void close_bones(const Document &doc, BoneSets &sets)
           grew |= add(b.parent);
           for (const BoneConstraint &c : b.constraints) {
             grew |= add(c.target);
-            grew |= add(c.eyeball_center);
           }
         }
         for (const BoneConstraint &c : b.constraints) {

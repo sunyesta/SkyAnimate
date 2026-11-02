@@ -28,11 +28,6 @@ struct BonePose {
   Transform2D pose;
   /* Setup to now, in bone layer space. */
   Transform2D skin;
-  /* Look At's eyeball, for its guide (when `look`). Bone layer space: the ball's middle and half size,
-   * which way the eye faces (yaw, pitch) and how far the face has turned. */
-  bool look = false;
-  float2 look_eye, look_size, look_facing;
-  float look_face = 0.0f;
   /* Where the bone runs in the setup pose and now (bone layer space). */
   float2 setup_head, setup_tail;
   float2 head, tail;

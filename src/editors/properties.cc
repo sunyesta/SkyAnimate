@@ -4467,7 +4467,8 @@ static void constraints_panel(Context &C, Layer &armature)
                       Layer *rig = layer_find(d, rig_id);
                       Bone *b = rig ? bone_find(*rig, bone_id) : nullptr;
                       if (!b || uid_index >= b->constraints.size() ||
-                          b->constraints[uid_index].type != BoneConstraintType::LimitShape)
+                          (b->constraints[uid_index].type != BoneConstraintType::LimitShape &&
+                           b->constraints[uid_index].type != BoneConstraintType::LookAt))
                       {
                         return true;
                       }
@@ -4776,52 +4777,18 @@ static void constraints_panel(Context &C, Layer &armature)
         }
         case BoneConstraintType::LookAt: {
           target_row();
-          bone_row("Eyeball Center",
-                   "A bone at the middle of the eyeball: the ball turns about it, and a pupil drawn off its\n"
-                   "front already points that way at rest (None: the ball's front is the pupil as rigged)",
-                   &BoneConstraint::eyeball_center, "eyeball_center", "Click the bone at the eyeball's middle  |  Esc cancels");
-          /* The eyeball: its size, which way it faces (keyable: a head turn turns it), how far it turns. */
-          modifier_row_label("Eyeball", column, "Half the eyeball's width and height. Auto: half the Eye Shape's, as drawn\n"
-                                                "on frame 0 (a cartoon eye is a stretched ball)");
-          if (ImGui::Checkbox("Auto##eyeball_auto", &c.eyeball_auto)) {
-            C.undo->push("Look At", doc);
-          }
-          ImGui::SameLine();
-          ImGui::BeginDisabled(c.eyeball_auto);
-          float2 size = c.eyeball_auto && c.eyeball_auto_size.x > 0.0f ? c.eyeball_auto_size : c.eyeball_size;
-          ImGui::SetNextItemWidth(-4.0f);
-          if (ui_drag_float2("##eyeball_size", &size.x, 0.001f, 0.0001f, 1000.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
-            c.eyeball_size = size;
-          }
-          done("Look At");
-          ImGui::EndDisabled();
-          if (c.eyeball_auto && c.eyeball_auto_size.x <= 0.0f) {
+          if (const Bone *target = bone_find(armature, c.target)) {
             modifier_row_label("", column);
-            ImGui::TextDisabled("Pick the eye's shape below for Auto");
+            ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
           }
-          modifier_row_label("Facing", column, "Which way the front of the eye points (yaw, pitch): 0 at the camera, 90\xC2\xB0 in\n"
-                                               "profile. Key it in a head turn so the pupil sits where the turned eye\n"
-                                               "shows it");
-          {
-            const std::string facing_path = constraint_path + "facing";
-            const auto k = keyed_begin(facing_path);
-            float degrees2[2] = {c.facing.x * 180.0f / PI, c.facing.y * 180.0f / PI};
-            if (ui_drag_float2("##facing", degrees2, 0.5f, -180.0f, 180.0f, "%.1f\xC2\xB0")) {
-              c.facing = {degrees2[0] * PI / 180.0f, degrees2[1] * PI / 180.0f};
-            }
-            done("Look At Facing");
-            keyed_end(facing_path, k);
-          }
-          modifier_row_label("Max Turn", column, "How far the eye turns from where it faces to look: sideways, up and down\n"
-                                                 "(a real eye turns about 45\xC2\xB0 to the side and down, 30\xC2\xB0 up)");
-          {
-            float turns[3] = {c.max_side * 180.0f / PI, c.max_up * 180.0f / PI, c.max_down * 180.0f / PI};
-            if (ui_drag_float3("##max_turn", turns, 0.5f, 0.0f, 90.0f, "%.0f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
-              c.max_side = turns[0] * PI / 180.0f;
-              c.max_up = turns[1] * PI / 180.0f;
-              c.max_down = turns[2] * PI / 180.0f;
-            }
-            done("Look At");
+          /* The eye: the shape the pupil stays inside, which also says how big the eye is. */
+          ImGui::Spacing();
+          modifier_row_label("", column);
+          ImGui::TextDisabled("Eye Shape");
+          shape_rows();
+          if (c.enabled && c.shape_layer == 0) {
+            modifier_row_label("", column);
+            ImGui::TextDisabled("Pick the eye's shape: Look At needs it");
           }
           modifier_row_label("Divergence", column, "How far each eye turns outward from the target: real eyes don't\n"
                                                    "quite meet on what they look at, a few degrees apart");
@@ -4834,16 +4801,6 @@ static void constraints_panel(Context &C, Layer &armature)
           done("Look At");
           ui_driver_typed(C, armature.id, divergence_path, -1);
           ui_driver_field_end(C, armature.id, divergence_path, -1, driven_divergence);
-          if (const Bone *target = bone_find(armature, c.target)) {
-            modifier_row_label("", column);
-            ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
-          }
-          /* The eye: the shape the pupil stays inside, which also tells Range Auto how far across the eye
-           * it is. */
-          ImGui::Spacing();
-          modifier_row_label("", column);
-          ImGui::TextDisabled("Eye Shape");
-          shape_rows();
           break;
         }
         case BoneConstraintType::MaintainVolume: {

@@ -468,32 +468,11 @@ struct BoneConstraint {
   bool child_position = true;
   bool child_rotation = true;
   bool child_scale = true;
-  /* LookAt: how far the pupil moves looking fully sideways and up or down (bone layer units: the eye's
-   * radius), worked out from the Limit to Shape below it when `range_auto`; and how far each eye turns
-   * outward from the target (radians), as real eyes don't quite meet on it. */
-  bool range_auto = true;
-  float2 look_range = {0.05f, 0.05f};
+  /* LookAt: how far each eye turns outward from the target (radians), as real eyes don't quite meet on it. */
   float divergence = 0.0f;
-  /* LookAt, the eyeball: its size (half its width and height, bone layer units: a cartoon eye is a
-   * stretched ball), from its Eye Shape at frame 0 when `eyeball_auto`; which way its front faces (yaw
-   * and pitch, radians: 0 at the camera, a quarter turn in profile), keyed in a head turn so the pupil
-   * sits as the turned eye shows it; and how far the eye turns from there to look, sideways, up and down
-   * (a real eye turns least upward). */
-  bool eyeball_auto = true;
-  float2 eyeball_size = {0.05f, 0.05f};
-  float2 facing;
-  Channel<float2> facing_keys = Channel<float2>::by_hand();
-  float max_side = 0.7853982f;
-  float max_up = 0.5235988f;
-  float max_down = 0.7853982f;
-  /* LookAt: a bone whose head (as rigged) is the middle of the eyeball (0: the ball's front is the
-   * pupil as rigged). The pupil drawn off its front already points that way at rest. */
-  uint64_t eyeball_center = 0;
-  /* LookAt with Eyeball Auto, worked out every frame and never saved: from the Eye Shape at frame 0. */
-  float2 eyeball_auto_size;
-  /* LookAt with Range Auto, worked out every frame and never saved (anim/shape_limit.hh): the reach
-   * inside the bone's Limit to Shape (0 when it has none). */
-  float2 look_auto_range;
+  /* LookAt, worked out every frame and never saved (anim/shape_limit.hh): half its Eye Shape's width and
+   * height at frame 0, the size of the ball the pupil sits on (0 with no Eye Shape: it does nothing). */
+  float2 look_reach;
   /* LimitShape, worked out every frame and never saved (anim/shape_limit.hh): the shape's outline
    * and the carried drawing's outline around the head, both in the bone layer's space; empty when
    * there is nothing to stay inside. */

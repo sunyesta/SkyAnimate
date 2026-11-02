@@ -416,10 +416,6 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float angle = bone.angle;
     float2 scale = bone.scale;
     float sx = 1.0f, sy = 1.0f;
-    /* Look At's eyeball, for its guide (BonePose::look). */
-    bool looks = false;
-    float look_face = 0.0f;
-    float2 look_eye, look_size, look_facing;
     if (!setup_frame) {
       if (extras.ik_angle) {
         angle += (*extras.ik_angle)[i];
@@ -498,68 +494,31 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
             }
             break;
           case BoneConstraintType::LookAt:
-            if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
+            if (t && c.look_reach.x > 0.0f && c.shape_region.size() >= 3 && !bone_is_descendant_in(bones, index, bone.id, ti)) {
               self(self, ti, depth + 1);
               if (state[ti] == 2) {
-                /* The eye a (stretched) ball facing `facing`, turning from there to look: by how much
-                 * the look at the target has turned from its rest (target where it rests, at its setup
-                 * Depth: the eye looks as drawn), no further than Max Turn. The pupil a disc on the ball
-                 * where it points, seen from the front: shifted across, flattened along that way as it
-                 * turns from the camera. */
+                /* The eye a (stretched) ball as big as its Eye Shape, turning by how much the look at the
+                 * target has turned from its rest (target where it rests, at its setup Depth: the eye looks
+                 * as drawn), never past the side of the ball. The pupil a disc on the ball where it points,
+                 * seen from the front: slid across, as drawn. */
                 const float face = transform_angle(parent_pose) - transform_angle(parent_setup);
-                const float2 size = c.eyeball_auto && c.eyeball_auto_size.x > 0.0f ? c.eyeball_auto_size : c.eyeball_size;
                 /* The pupil where it is rigged, carried by the eye's parent, and its own keys' move on top:
                  * they move the pupil on the ball, not the ball. */
                 const float2 rigged = parent_pose.apply(bone.setup_position);
                 const float2 keyed = parent_pose.apply_vector(position - bone.setup_position);
-                /* The ball's middle. Eyeball Center: that bone's head as rigged, carried as the eye's
-                 * parent has moved, the pupil drawn off its front already pointing that way at rest (so
-                 * the eye at rest is as drawn). None: the ball's front is the pupil as rigged. */
-                float2 eye = rigged, rest_eye = parent_setup.apply(bone.setup_position), rest;
-                if (const int ci = find(c.eyeball_center); ci >= 0 && ci != i) {
-                  const auto setup_of = [&](auto &&me, int k, int guard) -> Transform2D {
-                    const Bone &bk = bones[k];
-                    const int pk = find(bk.parent);
-                    const Transform2D up = pk >= 0 && pk != k && guard < 256 ? me(me, pk, guard + 1) : Transform2D();
-                    return up * bone_local(bk.setup_position, bk.setup_angle, setup_value(bk.scale_keys, bk.scale, false));
-                  };
-                  const float2 middle = setup_of(setup_of, ci, 0).apply({0, 0});
-                  const float2 off = rest_eye - middle;
-                  rest.y = std::asin(std::clamp(off.y / std::max(size.y, 1e-6f), -1.0f, 1.0f));
-                  rest.x = std::asin(std::clamp(off.x / std::max(size.x * std::cos(rest.y), 1e-6f), -1.0f, 1.0f));
-                  eye = rigged - (parent_pose * parent_setup.inverted()).apply_vector(off);
-                  rest_eye = middle;
-                }
-                const float2 gaze = bone_look_gaze(c, face, eye, poses[ti].head, poses[ti].setup_head, t->depth);
-                const float2 rest_gaze = bone_look_gaze(c, 0.0f, rest_eye, poses[ti].setup_head, poses[ti].setup_head,
+                const float2 gaze = bone_look_gaze(c, face, rigged, poses[ti].head, poses[ti].setup_head, t->depth);
+                const float2 rest_gaze = bone_look_gaze(c, 0.0f, parent_setup.apply(bone.setup_position),
+                                                        poses[ti].setup_head, poses[ti].setup_head,
                                                         value_at(t->depth_keys, t->depth, 0));
-                /* Where it looks, from the camera (the eye drawn at rest looks as drawn), turned from where
-                 * the eye faces no further than Max Turn, and never past the side of the ball. */
-                const float2 look = gaze - rest_gaze;
                 const float half_turn = 1.5707964f;
-                const float2 base = rest + c.facing;
-                const float2 turn = {
-                    std::clamp(std::clamp(look.x - c.facing.x, -c.max_side, c.max_side), -half_turn - base.x,
-                               half_turn - base.x),
-                    std::clamp(std::clamp(look.y - c.facing.y, -c.max_down, c.max_up), -half_turn - base.y,
-                               half_turn - base.y)};
-                /* Where a disc pointing `way` sits on the ball, seen from the front. */
-                const auto front = [&](float2 way) {
-                  return float2{size.x * std::sin(way.x) * std::cos(way.y), size.y * std::sin(way.y)};
-                };
-                float2 shift = eye + rotate(front(base + turn), face) - rigged;
-                if (c.shape_region.size() >= 3) {
-                  /* Where the pupil is (its own keys too) stays inside: Center its head, Whole Drawing what
-                   * it carries about its head. */
-                  const float2 tested = rigged + keyed;
-                  shift = bone_shape_limit(c, tested + shift) - tested;
-                }
-                position += parent_pose.inverted().apply_vector(shift) * w;
-                looks = w > 0.0f;
-                look_eye = eye;
-                look_size = size;
-                look_facing = rest + c.facing * w;
-                look_face = face;
+                const float2 look = gaze - rest_gaze;
+                const float2 turn = {std::clamp(look.x, -half_turn, half_turn), std::clamp(look.y, -half_turn, half_turn)};
+                const float2 shift = rotate(
+                    float2{c.look_reach.x * std::sin(turn.x) * std::cos(turn.y), c.look_reach.y * std::sin(turn.y)}, face);
+                /* Where the pupil is (its own keys too) stays inside: Center its head, Whole Drawing what it
+                 * carries about its head. */
+                const float2 tested = rigged + keyed;
+                position += parent_pose.inverted().apply_vector(bone_shape_limit(c, tested + shift) - tested) * w;
               }
             }
             break;
@@ -662,11 +621,6 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
-    p.look = looks;
-    p.look_facing = look_facing;
-    p.look_eye = look_eye;
-    p.look_size = look_size;
-    p.look_face = look_face;
     state[i] = 2;
   };
   for (int i = 0; i < int(n); i++) {

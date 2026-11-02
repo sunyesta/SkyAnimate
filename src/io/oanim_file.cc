@@ -871,13 +871,6 @@ static json layer_to_json(const Layer &layer)
                      {"child_position", c.child_position},
                      {"child_rotation", c.child_rotation},
                      {"child_scale", c.child_scale},
-                     {"range_auto", c.range_auto},
-                     {"look_range", {num(c.look_range.x), num(c.look_range.y)}},
-                     {"eyeball_auto", c.eyeball_auto},
-                     {"eyeball_center", c.eyeball_center},
-                     {"eyeball_size", {num(c.eyeball_size.x), num(c.eyeball_size.y)}},
-                     {"facing", {num(c.facing.x), num(c.facing.y)}},
-                     {"look_max_turn", json::array({num(c.max_side), num(c.max_up), num(c.max_down)})},
                      {"divergence", num(c.divergence)},
                      {"weight", num(c.weight)},
                      {"wind_catch", num(c.wind_catch)},
@@ -895,7 +888,6 @@ static json layer_to_json(const Layer &layer)
                      {"position_spring", spring(c.position_spring)},
                      {"scale_spring", spring(c.scale_spring)}};
           put_keys(cj, "influence_keys", c.influence_keys);
-          put_keys(cj, "facing_keys", c.facing_keys);
           put_keys(cj, "follow_shift_keys", c.follow_shift_keys);
           put_keys(cj, "follow_shift2_keys", c.follow_shift2_keys);
           put_keys(cj, "weight_keys", c.weight_keys);
@@ -2638,26 +2630,6 @@ static Layer layer_from_json(const json &j, int depth)
       c.child_position = get_bool(cj, "child_position", true);
       c.child_rotation = get_bool(cj, "child_rotation", true);
       c.child_scale = get_bool(cj, "child_scale", true);
-      c.range_auto = get_bool(cj, "range_auto", true);
-      if (const auto it = cj.find("look_range"); it != cj.end() && it->is_array() && it->size() == 2) {
-        c.look_range = {std::max(0.0f, (*it)[0].get<float>()), std::max(0.0f, (*it)[1].get<float>())};
-      }
-      c.eyeball_auto = get_bool(cj, "eyeball_auto", true);
-      /* Saved for a day as "pupil_center", picked as the eyeball's middle. */
-      c.eyeball_center = cj.contains("eyeball_center") ? get_id(cj, "eyeball_center") : get_id(cj, "pupil_center");
-      if (const auto it = cj.find("eyeball_size"); it != cj.end() && it->is_array() && it->size() == 2) {
-        c.eyeball_size = {std::max(1e-4f, (*it)[0].get<float>()), std::max(1e-4f, (*it)[1].get<float>())};
-      }
-      if (const auto it = cj.find("facing"); it != cj.end() && it->is_array() && it->size() == 2) {
-        c.facing = {(*it)[0].get<float>(), (*it)[1].get<float>()};
-      }
-      /* "max_turn" is Limit Angle's (its Max as a turn): Look At's Max Turn has its own key. */
-      if (const auto it = cj.find("look_max_turn"); it != cj.end() && it->is_array() && it->size() == 3) {
-        c.max_side = (*it)[0].get<float>();
-        c.max_up = (*it)[1].get<float>();
-        c.max_down = (*it)[2].get<float>();
-      }
-      get_keys(cj, "facing_keys", c.facing_keys);
       c.divergence = get_float(cj, "divergence", 0.0f);
       /* Saved with one Own Gravity & Wind for both. */
       const bool own_forces = get_bool(cj, "own_forces", false);

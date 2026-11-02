@@ -2513,20 +2513,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["child_position"] = c.child_position;
       d["child_rotation"] = c.child_rotation;
       d["child_scale"] = c.child_scale;
-      d["range_auto"] = c.range_auto;
-      d["look_range"] = py::make_tuple(c.look_range.x, c.look_range.y);
-      d["look_auto_range"] = py::make_tuple(c.look_auto_range.x, c.look_auto_range.y);
-      d["eyeball_auto"] = c.eyeball_auto;
-      {
-        const Bone *middle = bone_find(layer, c.eyeball_center);
-        d["eyeball_center"] = middle ? middle->name : std::string();
-      }
-      d["eyeball_size"] = py::make_tuple(c.eyeball_size.x, c.eyeball_size.y);
-      d["eyeball_auto_size"] = py::make_tuple(c.eyeball_auto_size.x, c.eyeball_auto_size.y);
-      d["facing"] = py::make_tuple(c.facing.x, c.facing.y);
-      d["max_side"] = c.max_side;
-      d["max_up"] = c.max_up;
-      d["max_down"] = c.max_down;
+      d["look_reach"] = py::make_tuple(c.look_reach.x, c.look_reach.y);
       d["divergence"] = c.divergence;
       d["shape_region"] = c.shape_region.size();
       d["weight"] = c.weight;
@@ -2729,48 +2716,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "child_position" || key == "child_rotation" || key == "child_scale") {
         (key == "child_position" ? c.child_position : key == "child_rotation" ? c.child_rotation : c.child_scale) =
             value.cast<bool>();
-      }
-      else if (key == "range_auto") {
-        c.range_auto = value.cast<bool>();
-      }
-      else if (key == "look_range") {
-        if (py::isinstance<py::float_>(value) || py::isinstance<py::int_>(value)) {
-          const float v = std::max(0.0f, value.cast<float>());
-          c.look_range = {v, v};
-        }
-        else {
-          const auto r = value.cast<std::pair<float, float>>();
-          c.look_range = {std::max(0.0f, r.first), std::max(0.0f, r.second)};
-        }
-      }
-      else if (key == "eyeball_auto") {
-        c.eyeball_auto = value.cast<bool>();
-      }
-      else if (key == "eyeball_center") {
-        const std::string t = value.cast<std::string>();
-        const Bone *middle = t.empty() ? nullptr : bone_find_by_name(layer, t);
-        if (!t.empty() && !middle) {
-          throw py::key_error("no bone named '" + t + "'");
-        }
-        c.eyeball_center = middle ? middle->id : 0;
-      }
-      else if (key == "eyeball_size") {
-        if (py::isinstance<py::float_>(value) || py::isinstance<py::int_>(value)) {
-          const float v = std::max(1e-4f, value.cast<float>());
-          c.eyeball_size = {v, v};
-        }
-        else {
-          const auto r = value.cast<std::pair<float, float>>();
-          c.eyeball_size = {std::max(1e-4f, r.first), std::max(1e-4f, r.second)};
-        }
-      }
-      else if (key == "facing") {
-        const auto r = value.cast<std::pair<float, float>>();
-        c.facing = {r.first, r.second};
-      }
-      else if (key == "max_side" || key == "max_up" || key == "max_down") {
-        (key == "max_side" ? c.max_side : key == "max_up" ? c.max_up : c.max_down) =
-            std::clamp(value.cast<float>(), 0.0f, 3.1415927f);
       }
       else if (key == "divergence") {
         c.divergence = value.cast<float>();

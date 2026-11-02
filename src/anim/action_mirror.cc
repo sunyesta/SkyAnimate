@@ -497,7 +497,6 @@ void mirror_bone_keys(Layer &target, const Layer &source_layer, const Transform2
     if (source->constraints.size() == bone.constraints.size()) {
       for (size_t i = 0; i < bone.constraints.size(); i++) {
         BoneConstraint mine = source->constraints[i];
-        mirror_keys(mine.facing_keys, bone.constraints[i].facing_keys, from, to, [](float2 v) { return float2(-v.x, v.y); });
         mirror_keys(mine.follow_shift_keys, bone.constraints[i].follow_shift_keys, from, to,
                     [](float2 v) { return float2(-v.x, v.y); });
         mirror_keys(mine.follow_shift2_keys, bone.constraints[i].follow_shift2_keys, from, to,
