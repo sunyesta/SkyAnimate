@@ -3711,20 +3711,18 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     detail_header(C);
   }
 
-  /* On the right, as in Blender: snapping, then the overlays toggle and its dropdown, then Viewport Shading's. */
+  /* In the middle, as Blender's: mirror, snapping and proportional editing. Proportional's room is kept with no
+   * points to edit, so the others stay put as the active layer changes. */
   const ImGuiStyle &style = ImGui::GetStyle();
   const float snap_w = ImGui::CalcTextSize("Snap").x + style.FramePadding.x * 2.0f;
   const float arrow_w = h * 0.75f;
   const float axis_w = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
   const float mirror_w = h + 2.0f + axis_w * 2.0f + 1.0f + h * 0.6f;
-  /* Proportional editing, with points to edit. */
-  const float proportional_w = editable_points ? h + 1.0f + h + arrow_w * 0.6f + h * 0.6f : 0.0f;
-  const float shading_w = h * 0.3f + h + 1.0f + arrow_w;
-  const float right_w = mirror_w + snap_w + proportional_w + h * 0.6f + h + 1.0f + arrow_w + shading_w;
+  const float proportional_w = h + 1.0f + h + arrow_w * 0.6f + h * 0.6f;
   ImGui::SameLine();
-  const float right = origin.x + width - right_w - 6.0f;
-  if (ImGui::GetCursorScreenPos().x < right) {
-    ImGui::SetCursorScreenPos(ImVec2(right, ImGui::GetCursorScreenPos().y));
+  const float middle = origin.x + (width - mirror_w - snap_w - proportional_w) * 0.5f;
+  if (ImGui::GetCursorScreenPos().x < middle) {
+    ImGui::SetCursorScreenPos(ImVec2(middle, ImGui::GetCursorScreenPos().y));
   }
   /* Blender's mesh symmetry: a butterfly, then X and Y. */
   {
@@ -3772,7 +3770,13 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     ImGui::SameLine(0.0f, h * 0.6f);
     proportional_buttons(ts, h, arrow_w);
   }
+  /* On the right, as in Blender: the overlays toggle and its dropdown, then Viewport Shading's. */
+  const float shading_w = h * 0.3f + h + 1.0f + arrow_w;
+  const float right = origin.x + width - (h + 1.0f + arrow_w + shading_w) - 6.0f;
   ImGui::SameLine(0.0f, h * 0.6f);
+  if (ImGui::GetCursorScreenPos().x < right) {
+    ImGui::SetCursorScreenPos(ImVec2(right, ImGui::GetCursorScreenPos().y));
+  }
   overlays_buttons(C.document->overlays, ts, h, arrow_w);
   ImGui::SameLine(0.0f, h * 0.3f);
   shading_buttons(C, C.document->shading, h, arrow_w);
