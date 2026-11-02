@@ -2665,7 +2665,45 @@ static Modifier follow_for_build(const Modifier &m)
   run.deform_shift_keys = {};
   run.deform_shift2_keys = {};
   run.deform_show_point = false;
+  run.deform_point_id = run.deform_point2_id = 0;
   return run;
+}
+
+/* Where its two points rest and are now, in the layer's space: one picked on the shape exactly as the shape has it, its
+ * own through the deform. `posed` is what the bones have done to a rest that moves with them. A picked point that's gone
+ * stays where it was. False with nothing to read. */
+static bool follow_places(const Document &doc, const Layer &layer, const Modifier &m, float2 posed, bool render,
+                          std::array<float2, 2> &r_rest, std::array<float2, 2> &r_now)
+{
+  r_rest = {m.deform_point + posed, m.deform_point2 + posed};
+  r_now = r_rest;
+  if (vector_deform_loops(doc, layer, m)) {
+    return false;
+  }
+  const std::array<uint64_t, 2> ids = {m.deform_point_id, m.deform_point2_id};
+  const std::array<float2, 2> shifts = {m.deform_shift, m.deform_shift2};
+  VectorDrawing rest, bent;
+  const bool read = (ids[0] != 0 || ids[1] != 0) && deform_shape_inputs(doc, layer, m, true, render, rest, bent);
+  std::shared_ptr<const DeformShape> built;
+  uint64_t build = 0;
+  if (doc.frame_current != 0 && m.deform_strength > 0.0f && (ids[0] == 0 || (m.deform_two && ids[1] == 0))) {
+    built = deform_shape_kept(doc, layer, follow_for_build(m), render, build);
+  }
+  std::vector<float> scratch;
+  for (const int i : {0, 1}) {
+    if (ids[size_t(i)] != 0) {
+      const int at_rest = read ? drawing_point_index(rest, ids[size_t(i)]) : -1;
+      const int at_now = read ? drawing_point_index(bent, ids[size_t(i)]) : -1;
+      if (at_rest >= 0 && at_now >= 0) {
+        r_rest[size_t(i)] = rest.points[size_t(at_rest)].pos;
+        r_now[size_t(i)] = bent.points[size_t(at_now)].pos;
+      }
+    }
+    else if (built) {
+      r_now[size_t(i)] = deform_map(*built, r_rest[size_t(i)] + shifts[size_t(i)], scratch);
+    }
+  }
+  return read || built;
 }
 
 Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const Modifier &m, float2 carry, bool render)
@@ -2674,20 +2712,16 @@ Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const 
   if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {
     return t;
   }
-  uint64_t build = 0;
-  const std::shared_ptr<const DeformShape> built = deform_shape_kept(doc, layer, follow_for_build(m), render, build);
-  if (!built) {
+  std::array<float2, 2> rest, now;
+  if (!follow_places(doc, layer, m, m.deform_rest_posed ? carry : float2(), render, rest, now)) {
     return t;
   }
-  std::vector<float> scratch;
   const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
-  const float2 posed = m.deform_rest_posed ? carry : float2();
-  const float2 here = deform_map(*built, m.deform_point + m.deform_shift + posed, scratch);
-  const float2 move = (here - (m.deform_point + posed)) * strength;
+  const float2 move = (now[0] - rest[0]) * strength;
   float angle = 0.0f, size = 1.0f;
   if (m.deform_two) {
-    const float2 was = m.deform_point2 - m.deform_point;
-    const float2 is = deform_map(*built, m.deform_point2 + m.deform_shift2 + posed, scratch) - here;
+    const float2 was = rest[1] - rest[0];
+    const float2 is = now[1] - now[0];
     if (length(was) > 1e-6f && length(is) > 1e-6f) {
       if (m.deform_rotation) {
         angle = std::atan2(was.x * is.y - was.y * is.x, dot(was, is)) * strength;
@@ -2698,7 +2732,7 @@ Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const 
     }
   }
   /* Round the point, where the bones have put it. */
-  const float2 pivot = m.deform_point + carry;
+  const float2 pivot = rest[0] + (m.deform_rest_posed ? float2() : carry);
   t.a = std::cos(angle) * size;
   t.b = std::sin(angle) * size;
   t.c = -t.b;
@@ -2709,11 +2743,18 @@ Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const 
   return t;
 }
 
-float2 vector_deform_follow_at(const Document &doc, const Layer &layer, const Modifier &m, float2 at)
+float2 vector_deform_follow_rest(const Document &doc, const Layer &layer, const Modifier &m, bool second)
 {
-  const std::shared_ptr<const DeformShape> built = vector_deform_shape(doc, layer, follow_for_build(m));
-  std::vector<float> scratch;
-  return built ? deform_map(*built, at, scratch) : at;
+  std::array<float2, 2> rest, now;
+  follow_places(doc, layer, m, {}, false, rest, now);
+  return rest[second ? 1 : 0];
+}
+
+float2 vector_deform_follow_now(const Document &doc, const Layer &layer, const Modifier &m, bool second)
+{
+  std::array<float2, 2> rest, now;
+  follow_places(doc, layer, m, {}, false, rest, now);
+  return now[second ? 1 : 0];
 }
 
 float2 vector_deform_follow_shift(const Document &doc, const Layer &layer, const Modifier &m, bool second, float2 to)
@@ -2754,6 +2795,15 @@ void vector_deform_follow_two(Modifier &m, bool on)
   m.deform_two = on;
   if (on && length(m.deform_point2 - m.deform_point) < 1e-6f) {
     m.deform_point2 = m.deform_point + float2(0.1f, 0.0f);
+  }
+}
+
+void vector_deform_follow_pick(const Document &doc, const Layer &layer, Modifier &m, bool second, uint64_t id)
+{
+  (second ? m.deform_point2 : m.deform_point) = vector_deform_follow_rest(doc, layer, m, second);
+  (second ? m.deform_point2_id : m.deform_point_id) = id;
+  if (id != 0) {
+    (second ? m.deform_point2 : m.deform_point) = vector_deform_follow_rest(doc, layer, m, second);
   }
 }
 

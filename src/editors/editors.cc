@@ -1500,6 +1500,9 @@ struct LayerEyedropper {
   std::string hover_shape;
   /* A shape eyedropper that also takes a row clicked in the Layers editor (the layer, its shape left to it). */
   std::function<bool(Context &, uint64_t)> pick_shape_row;
+  /* Picking a point of shape `shape` of layer `armature` (ui_point_eyedropper_start). */
+  std::function<bool(Context &, uint64_t)> pick_point;
+  uint64_t shape = 0;
 };
 LayerEyedropper g_layer_eyedropper;
 /* The document the eyedropper's cue names layers from. */
@@ -1578,6 +1581,44 @@ void ui_bone_eyedropper_start(uint64_t armature, std::function<bool(Context &, u
   g_layer_eyedropper = {true, armature, 0, {}, {}, std::move(pick), {}, std::move(cue), {}, false};
 }
 
+void ui_point_eyedropper_start(uint64_t layer, uint64_t shape, std::function<bool(Context &, uint64_t)> pick,
+                               std::function<std::string()> cue, const char *tag)
+{
+  g_layer_eyedropper = {};
+  g_layer_eyedropper.active = true;
+  g_layer_eyedropper.armature = layer;
+  g_layer_eyedropper.shape = shape;
+  g_layer_eyedropper.pick_point = std::move(pick);
+  g_layer_eyedropper.cue = std::move(cue);
+  g_layer_eyedropper.tag = tag;
+}
+
+uint64_t ui_point_eyedropper_layer(uint64_t *r_shape)
+{
+  const LayerEyedropper &e = g_layer_eyedropper;
+  if (r_shape) {
+    *r_shape = e.shape;
+  }
+  return e.active && e.pick_point ? e.armature : 0;
+}
+
+bool ui_point_eyedropper_active(const char *tag)
+{
+  return ui_point_eyedropper_layer() != 0 && g_layer_eyedropper.tag == tag;
+}
+
+void ui_point_eyedropper_pick(Context &C, uint64_t point)
+{
+  LayerEyedropper &e = g_layer_eyedropper;
+  if (!e.active || !e.pick_point) {
+    return;
+  }
+  e.took_click = true;
+  if (point != 0 && e.pick_point(C, point)) {
+    e.active = false;
+  }
+}
+
 void ui_bone_eyedropper_hover(const std::string &bone_name)
 {
   g_layer_eyedropper.hover = bone_name;
@@ -1640,7 +1681,7 @@ bool ui_pick_button(const char *id, const char *tooltip, bool active)
     ImGui::PopStyleColor();
   }
   if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("%s", active ? "Picking: click a shape in the viewport (Esc stops)" : tooltip);
+    ImGui::SetTooltip("%s", active ? "Picking: click it in the viewport (Esc stops)" : tooltip);
   }
   ui_eyedropper_icon(ImGui::GetWindowDrawList(), ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.32f,
                      ImGui::GetColorU32(ImGuiCol_Text));
@@ -2162,8 +2203,8 @@ void ui_layer_eyedropper_pick(Context &C, uint64_t layer_id)
     }
     return;
   }
-  /* A shape or bone is picked in the viewport: a layer row says nothing about which. */
-  if (layer_id == 0 || g_layer_eyedropper.pick_shape || g_layer_eyedropper.pick_bone) {
+  /* A shape, bone or point is picked in the viewport: a layer row says nothing about which. */
+  if (layer_id == 0 || g_layer_eyedropper.pick_shape || g_layer_eyedropper.pick_bone || g_layer_eyedropper.pick_point) {
     return;
   }
   if (g_layer_eyedropper.pick) {

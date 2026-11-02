@@ -870,6 +870,9 @@ struct Modifier {
   float2 deform_shift;
   float2 deform_shift2;
   Channel<float2> deform_shift_keys, deform_shift2_keys;
+  /* Or a point of the shape itself (its id; 0: the place above): the drawing goes exactly as that point does, so there
+   * is nothing to drag or shift. The place above is kept where it rests, for letting go of it. */
+  uint64_t deform_point_id = 0, deform_point2_id = 0;
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;

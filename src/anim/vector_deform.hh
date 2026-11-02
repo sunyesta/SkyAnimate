@@ -70,13 +70,17 @@ float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 a
 /* Follow Deform `m` on `layer` now: what moves the whole drawing. `carry` is what its bones moved it by: with
  * `m.deform_rest_posed` the shape's rest is posed by them too, so only its change of shape is added to it. */
 Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const Modifier &m, float2 carry, bool render);
-/* Where its shape puts `at` now, in the layer's space (`at` itself on frame 0, or with nothing to read). */
-float2 vector_deform_follow_at(const Document &doc, const Layer &layer, const Modifier &m, float2 at);
+/* Where its point (`second`: its second) rests on the drawing, and where it is now, in the layer's space. */
+float2 vector_deform_follow_rest(const Document &doc, const Layer &layer, const Modifier &m, bool second);
+float2 vector_deform_follow_now(const Document &doc, const Layer &layer, const Modifier &m, bool second);
 /* What its point (`second`: its second) has to be shifted by to show at `to` (layer space) on this frame, through the
  * bend. */
 float2 vector_deform_follow_shift(const Document &doc, const Layer &layer, const Modifier &m, bool second, float2 to);
 /* Its second point on or off: on for the first time, it starts beside the first. */
 void vector_deform_follow_two(Modifier &m, bool on);
+/* Its point (`second`: its second) goes as point `id` of the shape does (0: its own place, where the shape's point
+ * rested). Nothing jumps unless the shape's point is somewhere else. */
+void vector_deform_follow_pick(const Document &doc, const Layer &layer, Modifier &m, bool second, uint64_t id);
 
 /* The modifier on `drawing`, the stack's drawing so far. `before_bones` is that drawing as it was before the
  * Armature modifier moved it (the drawing itself when none did): where the deform measures each point from,

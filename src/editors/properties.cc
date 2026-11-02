@@ -3140,6 +3140,9 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
           return false;
         }
         Modifier &m = own->modifiers[size_t(index)];
+        if (m.deform_layer != clicked->id || m.deform_shape != shown.shapes[size_t(shape_index)].id) {
+          m.deform_point_id = m.deform_point2_id = 0;
+        }
         m.deform_layer = clicked->id;
         m.deform_shape = shown.shapes[size_t(shape_index)].id;
         C.undo->push(std::string(deform_type_name(m.type)) + " Shape", doc);
@@ -3172,12 +3175,31 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
         }
         if (m.deform_layer != clicked->id || m.deform_shape != shape) {
           m.deform_part_from = m.deform_part_to = 0;
+          m.deform_point_id = m.deform_point2_id = 0;
         }
         m.deform_layer = clicked->id;
         m.deform_shape = shape;
         C.undo->push(std::string(deform_type_name(m.type)) + " Shape", doc);
         return true;
       });
+}
+
+/* A Follow Deform's point eyedropper: a click on a point of its shape puts its point (`second`: its second) on it. */
+static void follow_point_eyedropper_start(uint64_t owner, int index, bool second, const std::string &tag, uint64_t shape_layer,
+                                          uint64_t shape)
+{
+  ui_point_eyedropper_start(
+      shape_layer, shape,
+      [owner, index, second](Context &C, uint64_t point) {
+        Document &doc = *C.document;
+        Layer *own = layer_find(doc, owner);
+        if (own && index < int(own->modifiers.size()) && own->modifiers[size_t(index)].type == ModifierType::FollowDeform) {
+          vector_deform_follow_pick(doc, *own, own->modifiers[size_t(index)], second, point);
+          C.undo->push("Follow Deform", doc);
+        }
+        return true;
+      },
+      [] { return std::string("Click a point of the shape  |  Esc cancels"); }, tag.c_str());
 }
 
 static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
@@ -3202,6 +3224,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     /* Its only shape, or its first grid's, picked for you. */
     m.deform_shape = target && target->drawing.shapes.size() == 1 ? target->drawing.shapes[0].id : 0;
     m.deform_part_from = m.deform_part_to = 0;
+    m.deform_point_id = m.deform_point2_id = 0;
     done = true;
   }
 
@@ -3234,6 +3257,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       if (ImGui::Selectable(label.c_str(), s.id == m.deform_shape) && s.id != m.deform_shape) {
         m.deform_shape = s.id;
         m.deform_part_from = m.deform_part_to = 0;
+        m.deform_point_id = m.deform_point2_id = 0;
         done = true;
       }
       ImGui::EndDisabled();
@@ -3478,6 +3502,44 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   ui_flash_row(layer.id, path);
 
   if (follows) {
+    /* Its own place, or a point the shape already has: from the list, or clicked in the viewport. */
+    Layer *shape_layer = layer_find(doc, m.deform_layer);
+    const int on_shape = shape_layer ? drawing_shape_index(shape_layer->drawing, m.deform_shape) : -1;
+    const auto point_row = [&](bool second) {
+      const uint64_t id = second ? m.deform_point2_id : m.deform_point_id;
+      modifier_row_label(second ? "Second" : "Point", column,
+                         "Own Place is a point of its own, which you can put anywhere on the shape, drag and key.\n"
+                         "Or pick a point the shape already has: the drawing goes exactly as that point does");
+      ImGui::SetNextItemWidth(width() - pick_w - 2.0f);
+      const int picked = shape_layer ? drawing_point_index(shape_layer->drawing, id) : -1;
+      const std::string name = id == 0 ? "Own Place" : picked >= 0 ? "Point " + std::to_string(picked) : "Point gone";
+      ImGui::BeginDisabled(on_shape < 0);
+      if (ImGui::BeginCombo(second ? "##follow_point2" : "##follow_point", name.c_str())) {
+        if (ImGui::Selectable("Own Place", id == 0) && id != 0) {
+          vector_deform_follow_pick(doc, layer, m, second, 0);
+          done = true;
+        }
+        drawing_ensure_ids(shape_layer->drawing);
+        for (const int p : shape_points(shape_layer->drawing, shape_layer->drawing.shapes[size_t(on_shape)])) {
+          const uint64_t point = shape_layer->drawing.points[size_t(p)].id;
+          if (ImGui::Selectable(("Point " + std::to_string(p)).c_str(), point == id) && point != id) {
+            vector_deform_follow_pick(doc, layer, m, second, point);
+            done = true;
+          }
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine(0, 2);
+      const std::string tag = "FOLLOW:" + std::to_string(layer.id) + ":" + std::to_string(index) + (second ? ":2" : ":1");
+      if (ui_pick_button(second ? "##follow_pick2" : "##follow_pick", "Eyedropper: click a point of the shape in the viewport",
+                         ui_point_eyedropper_active(tag.c_str())))
+      {
+        drawing_ensure_ids(shape_layer->drawing);
+        follow_point_eyedropper_start(layer.id, index, second, tag, shape_layer->id, m.deform_shape);
+      }
+      ImGui::EndDisabled();
+    };
+    point_row(false);
     modifier_row_label("", column);
     if (ImGui::Checkbox("Show Point", &m.deform_show_point)) {
       done = true;
@@ -3496,9 +3558,13 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       ImGui::SetTooltip("A second place on the shape: the way from the first to it can turn the drawing, and how far\n"
                         "apart they are can scale it. Further apart gives a steadier angle");
     }
+    if (m.deform_two) {
+      point_row(true);
+    }
     ImGui::BeginDisabled(doc.frame_current == 0);
     for (const bool second : {false, true}) {
-      if (second && !m.deform_two) {
+      /* A point of the shape goes as it does: there's nothing to shift. */
+      if ((second && !m.deform_two) || (second ? m.deform_point2_id : m.deform_point_id) != 0) {
         continue;
       }
       const std::string shift_path = "modifiers[" + std::to_string(index) + (second ? "].shift2" : "].shift");

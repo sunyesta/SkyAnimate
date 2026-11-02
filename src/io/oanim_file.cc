@@ -731,6 +731,12 @@ static json layer_to_json(const Layer &layer)
           mj["shift2"] = {num(m.deform_shift2.x), num(m.deform_shift2.y)};
           put_keys(mj, "shift_keys", m.deform_shift_keys);
           put_keys(mj, "shift2_keys", m.deform_shift2_keys);
+          if (m.deform_point_id != 0) {
+            mj["point_id"] = m.deform_point_id;
+          }
+          if (m.deform_point2_id != 0) {
+            mj["point2_id"] = m.deform_point2_id;
+          }
         }
         if (m.type == ModifierType::MeshDeform || m.type == ModifierType::FollowDeform) {
           mj["mesh_method"] = mesh_method_id(m.deform_mesh_method);
@@ -2353,6 +2359,8 @@ static Layer layer_from_json(const json &j, int depth)
         m.deform_scale = get_bool(mj, "scale", false);
         get_keys(mj, "shift_keys", m.deform_shift_keys);
         get_keys(mj, "shift2_keys", m.deform_shift2_keys);
+        m.deform_point_id = get_id(mj, "point_id");
+        m.deform_point2_id = get_id(mj, "point2_id");
       }
       m.deform_shape = get_id(mj, "shape");
       m.deform_custom = get_string(mj, "weights", "AUTOMATIC") == "CUSTOM";

@@ -3293,6 +3293,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["scale"] = mod.deform_scale;
           d["shift"] = pair(mod.deform_shift);
           d["shift2"] = pair(mod.deform_shift2);
+          /* A point of the shape it sits on, by its number on the shape's layer: None for its own place. */
+          for (const bool second : {false, true}) {
+            const int at = target ? drawing_point_index(target->drawing, second ? mod.deform_point2_id : mod.deform_point_id) : -1;
+            d[second ? "shape_point2" : "shape_point"] = at >= 0 ? py::object(py::int_(at)) : py::object(py::none());
+          }
         }
       }
       if (mod.type == ModifierType::Resample) {
@@ -3507,6 +3512,25 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         const float2 to = layer_world_transform(doc, id).inverted().apply({v.first, v.second});
         (second ? mod.deform_shift2 : mod.deform_shift) = vector_deform_follow_shift(doc, self, mod, second, to);
       }
+      else if (mod.type == ModifierType::FollowDeform && (key == "shape_point" || key == "shape_point2")) {
+        Document &doc = *current_context().document;
+        Layer *target = layer_find(doc, mod.deform_layer);
+        const int shape = target ? drawing_shape_index(target->drawing, mod.deform_shape) : -1;
+        uint64_t point_id = 0;
+        if (!value.is_none()) {
+          if (shape < 0) {
+            throw py::value_error("Pick its shape first");
+          }
+          drawing_ensure_ids(target->drawing);
+          const int point = value.cast<int>();
+          const std::vector<int> on = shape_points(target->drawing, target->drawing.shapes[size_t(shape)]);
+          if (std::find(on.begin(), on.end(), point) == on.end()) {
+            throw py::value_error("point " + std::to_string(point) + " isn't on the shape");
+          }
+          point_id = target->drawing.points[size_t(point)].id;
+        }
+        vector_deform_follow_pick(doc, layer_or_raise(id), mod, key == "shape_point2", point_id);
+      }
       else if (mod.type == ModifierType::FollowDeform && key == "show_point") {
         mod.deform_show_point = value.cast<bool>();
       }
@@ -3549,6 +3573,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         mod.deform_layer = target ? target->id : 0;
         mod.deform_shape = 0;
         mod.deform_part_from = mod.deform_part_to = 0;
+        mod.deform_point_id = mod.deform_point2_id = 0;
       }
       else if (modifier_is_deform(mod.type) && key == "shape") {
         const std::string name = value.cast<std::string>();
@@ -3566,6 +3591,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         mod.deform_part_from = found == mod.deform_shape ? mod.deform_part_from : 0;
         mod.deform_part_to = found == mod.deform_shape ? mod.deform_part_to : 0;
+        mod.deform_point_id = found == mod.deform_shape ? mod.deform_point_id : 0;
+        mod.deform_point2_id = found == mod.deform_shape ? mod.deform_point2_id : 0;
         mod.deform_shape = found;
       }
       else if (modifier_is_deform(mod.type) && key == "weights") {

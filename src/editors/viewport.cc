@@ -12143,10 +12143,10 @@ static bool follow_deform_shown(const Document &doc, const Layer &layer, const M
     return false;
   }
   const Transform2D to_document = layer_world_transform(doc, layer.id);
-  const float2 first = layer_places_shown(doc, layer, {{0, m.deform_point}})[0];
-  const float2 above = first - vector_deform_follow_at(doc, layer, m, m.deform_point + m.deform_shift);
+  const float2 first = layer_places_shown(doc, layer, {{0, vector_deform_follow_rest(doc, layer, m, false)}})[0];
+  const float2 above = first - vector_deform_follow_now(doc, layer, m, false);
   r_first = to_document.apply(first);
-  r_second = to_document.apply(vector_deform_follow_at(doc, layer, m, m.deform_point2 + m.deform_shift2) + above);
+  r_second = to_document.apply(vector_deform_follow_now(doc, layer, m, true) + above);
   return true;
 }
 
@@ -12161,9 +12161,54 @@ template<typename Fn> static void for_each_shown_follow_deform(Document &doc, Fn
   }
 }
 
+/* The point eyedropper's points, where they show: the nearest within reach of the mouse is what a click picks (its id, its
+ * number in `r_number`). Drawn when `dl` is given. */
+static uint64_t follow_pick_points(const Document &doc, const ViewMapping &view, ImDrawList *dl, int *r_number)
+{
+  uint64_t shape_id = 0;
+  const Layer *layer = layer_find(doc, ui_point_eyedropper_layer(&shape_id));
+  const int shape = layer ? drawing_shape_index(layer->drawing, shape_id) : -1;
+  if (shape < 0) {
+    return 0;
+  }
+  const VectorDrawing shown = layer_evaluated_drawing(doc, *layer, false);
+  const Transform2D to_document = layer_world_transform(doc, layer->id);
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
+  uint64_t under = 0;
+  ImVec2 under_at;
+  for (const int p : shape_points(layer->drawing, layer->drawing.shapes[size_t(shape)])) {
+    const uint64_t id = layer->drawing.points[size_t(p)].id;
+    const int at = drawing_point_index(shown, id);
+    if (at < 0) {
+      continue;
+    }
+    const ImVec2 place = view.to_screen(to_document.apply(shown.points[size_t(at)].pos));
+    if (dl) {
+      dl->AddCircleFilled(place, 4.5f, IM_COL32(0x10, 0x10, 0x10, 255));
+      dl->AddCircleFilled(place, 3.0f, IM_COL32(255, 255, 255, 255));
+    }
+    const float distance = ImLengthSqr(place - mouse);
+    if (distance < best) {
+      best = distance;
+      under = id;
+      under_at = place;
+      if (r_number) {
+        *r_number = p;
+      }
+    }
+  }
+  if (dl && under != 0) {
+    dl->AddCircleFilled(under_at, FOLLOW_POINT_RADIUS + 1.5f, IM_COL32(0x10, 0x10, 0x10, 255));
+    dl->AddCircleFilled(under_at, FOLLOW_POINT_RADIUS, IM_COL32(0x6f, 0xc8, 0xff, 255));
+  }
+  return under;
+}
+
 static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &view)
 {
   Document &doc = *C.document;
+  follow_pick_points(doc, view, dl, nullptr);
   if (!doc.overlays.show) {
     return;
   }
@@ -12322,7 +12367,8 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
       return;
     }
     for (const bool is_second : {false, true}) {
-      if (is_second && !m.deform_two) {
+      /* A point of the shape goes as it does: there's nothing to drag. */
+      if ((is_second && !m.deform_two) || (is_second ? m.deform_point2_id : m.deform_point_id) != 0) {
         continue;
       }
       const float distance = ImLengthSqr(view.to_screen(is_second ? second : first) - mouse);
@@ -12607,6 +12653,13 @@ static void viewport_draw_contents(Area &area, Context &C)
       ui_bone_eyedropper_hover(under->name);
     }
   }
+  /* The point eyedropper names the point under the mouse. */
+  if (mouse_here && ui_point_eyedropper_layer() != 0) {
+    int number = 0;
+    if (follow_pick_points(doc, view, nullptr, &number) != 0) {
+      ui_bone_eyedropper_hover("Point " + std::to_string(number));
+    }
+  }
   /* The shape eyedropper names the shape under the mouse, and its layer. */
   if (mouse_here && ui_shape_eyedropper_active()) {
     int shape = -1;
@@ -12623,6 +12676,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (mouse_here && ui_layer_eyedropper_active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (const Layer *picking = layer_find(doc, ui_bone_eyedropper_armature())) {
       ui_bone_eyedropper_pick(C, pick_bone(doc, *picking, view, io.MousePos));
+    }
+    else if (ui_point_eyedropper_layer() != 0) {
+      ui_point_eyedropper_pick(C, follow_pick_points(doc, view, nullptr, nullptr));
     }
     else if (ui_shape_eyedropper_active()) {
       int shape = -1;

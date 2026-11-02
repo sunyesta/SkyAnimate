@@ -263,6 +263,16 @@ uint64_t ui_bone_eyedropper_armature();
 void ui_bone_eyedropper_pick(Context &C, uint64_t bone);
 /* The bone under the mouse this frame, named at the mouse (the viewport says, each frame). */
 void ui_bone_eyedropper_hover(const std::string &bone_name);
+/* The point eyedropper: the same, for a point of shape `shape` on `layer` clicked in the viewport, which shows them
+ * (a Follow Deform's). `pick` gets its id and returns true when it's done. */
+void ui_point_eyedropper_start(uint64_t layer, uint64_t shape, std::function<bool(Context &, uint64_t)> pick,
+                               std::function<std::string()> cue, const char *tag);
+/* The layer it picks from while it's on (0: it isn't on), and its shape. */
+uint64_t ui_point_eyedropper_layer(uint64_t *r_shape = nullptr);
+/* Whether `tag` started it. */
+bool ui_point_eyedropper_active(const char *tag);
+/* A click on point `point` while it is on (0: on no point, which keeps it on). */
+void ui_point_eyedropper_pick(Context &C, uint64_t point);
 /* Its cue at the mouse, and stopping it; once a frame, after the editors drew. */
 void ui_layer_eyedropper_overlay();
 /* A pipette icon, as on Blender's eyedropper buttons. */

@@ -267,6 +267,14 @@ static void symmetrize_contents(Layer &l, const std::map<uint64_t, uint64_t> &bo
   /* A Mirror modifier's axis goes across with the drawing. */
   for (Modifier &mod : l.modifiers) {
     mod.center.x = -mod.center.x;
+    /* A Follow Deform's points too, each its own place across from where it was: a picked point is on the far side, and
+     * as a drawing's, its keys don't come. */
+    mod.deform_point.x = -mod.deform_point.x;
+    mod.deform_point2.x = -mod.deform_point2.x;
+    mod.deform_point_id = mod.deform_point2_id = 0;
+    mod.deform_shift = mod.deform_shift2 = {};
+    mod.deform_shift_keys = {};
+    mod.deform_shift2_keys = {};
   }
   if (!top) {
     l.position.x = -l.position.x;
