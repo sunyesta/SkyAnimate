@@ -3233,8 +3233,9 @@ static void resample_fit(const DeformShape &d, const VectorDrawing &base, const 
   });
 }
 
-/* A deform's Custom weights go by point: the points Resample Self cut take theirs from their segment's two ends, eased
- * between, as far as `own` (the drawing's points before it). */
+/* A deform's Custom weights go by point, and points made since they were painted have none: those cut into a segment
+ * (by a Resample modifier above, Resample Self or Precision) take theirs from its two ends, eased between. `own`: how
+ * many of the drawing's points were there before the cuts. */
 static PointGroup group_with_cuts(const PointGroup &group, const VectorDrawing &split, size_t own)
 {
   PointGroup r = group;
@@ -3451,9 +3452,16 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
   std::vector<float> scratch;
   const bool resample = m.deform_resample_self;
-  /* What the weights go by, with the cuts' own once Resample Self has made them. */
+  /* What the weights go by, with the cuts' own as they are made. */
   const PointGroup *weighed = group;
   PointGroup cut_group;
+  const auto weigh_cuts = [&](const VectorDrawing &cut, size_t own) {
+    if (weighed && cut.points.size() > own) {
+      cut_group = group_with_cuts(*weighed, cut, own);
+      weighed = &cut_group;
+    }
+  };
+  weigh_cuts(drawing, layer_drawing(doc, layer).points.size());
   if (cut_self) {
     const size_t own = drawing.points.size();
     const bool alike = &before_bones == &drawing;
@@ -3464,10 +3472,7 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
     if (!same || alike || base.points.size() != drawing.points.size()) {
       base = drawing;
     }
-    if (group) {
-      cut_group = group_with_cuts(*group, drawing, own);
-      weighed = &cut_group;
-    }
+    weigh_cuts(drawing, own);
   }
   /* Precision's cuts, how far each has faded in, and the drawing before them (precision_fade). */
   std::vector<std::vector<int>> pieces;
@@ -3482,7 +3487,7 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
      * drawing as it was and as it is alike (the same cuts). */
     std::vector<float> share(base.points.size());
     for (size_t i = 0; i < base.points.size(); i++) {
-      share[i] = point_weight(group, base.points[i]) * strength;
+      share[i] = point_weight(weighed, base.points[i]) * strength;
     }
     bool any = false;
     pieces = precision_pieces(d, base, share, m.deform_precision, scratch, &any, fade);
@@ -3507,6 +3512,13 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   if (fit && !resample) {
     handles_explicit(base);
     handles_explicit(drawing);
+  }
+  const PointGroup *before_precision = weighed;
+  PointGroup kept_group;
+  if (weighed && !whole.points.empty()) {
+    kept_group = *weighed;
+    before_precision = &kept_group;
+    weigh_cuts(drawing, whole_drawing.points.size());
   }
   bend_drawing(d, weighed, strength, fit, base, drawing, scratch, resample && !cut_self,
                cut_self ? 0.0f : m.deform_precision);
@@ -3533,7 +3545,12 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
           handles_explicit(coarse_base);
           handles_explicit(coarse);
         }
-        bend_drawing(d, weighed, strength, fit, coarse_base, coarse, scratch, false, m.deform_precision);
+        PointGroup coarse_group;
+        if (before_precision) {
+          coarse_group = group_with_cuts(*before_precision, coarse, whole_drawing.points.size());
+        }
+        bend_drawing(d, before_precision ? &coarse_group : nullptr, strength, fit, coarse_base, coarse, scratch, false,
+                     m.deform_precision);
         precision_fade(whole, pieces, coarse_pieces, fade, coarse, drawing);
       }
     }

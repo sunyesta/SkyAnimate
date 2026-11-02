@@ -133,6 +133,42 @@ assert len(pts) == 9
 assert all(abs(p[1]) < 1e-5 for p in pts), ("weight 0 at both ends: its cuts stay too", pts)
 doc.frame_current = 0
 
+# And those a Resample modifier above the deform cut, or Precision.
+above = new_layer("Above")
+above.add_curve([(-0.5, 0.0), (0.0, 0.0), (0.5, 0.0)])
+assert ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
+above.modifier_set(0, split="COUNT", pieces=4)
+a = add_deform(above, cage, resample_self=False, precision=0.0)
+above.modifier_set(a, weights="CUSTOM")
+ops.mesh.select_none()
+above.select_points([0, 1, 2])
+assert ops.mesh.point_group_assign(weight="0") == {'FINISHED'}
+doc.frame_current = 10
+pts = above.evaluated()[0]
+assert len(pts) == 9 and all(abs(p[1]) < 1e-5 for p in pts), ("the modifier's cuts stay too", pts)
+doc.frame_current = 0
+
+ops.layer.new()
+half = layers.active
+half.name = "Half"
+half.add_curve([(-0.5, -0.8), (0.5, -0.8)])
+full = new_layer("Full")
+full.add_curve([(-0.5, -0.8), (0.5, -0.8)])
+add_deform(full, cage, resample_self=False, precision=0.0005)
+h = add_deform(half, cage, resample_self=False, precision=0.0005)
+half.modifier_set(h, weights="CUSTOM")
+ops.mesh.select_none()
+half.select_points([0, 1])
+assert ops.mesh.point_group_assign(weight="0.5") == {'FINISHED'}
+doc.frame_current = 10
+half_pts, full_pts = half.evaluated()[0], full.evaluated()[0]
+assert len(half_pts) > 2 and len(full_pts) == len(half_pts), (len(half_pts), len(full_pts))
+for own, (p, q) in enumerate(zip(half_pts, full_pts)):
+    # Half way from where it was on the line to where the whole deform puts it, the cuts as the two ends.
+    moved, whole = abs(p[1] + 0.8), abs(q[1] + 0.8)
+    assert moved <= whole * 0.6 + 1e-3, ("half weight: its cuts move half way too", own, p, q)
+doc.frame_current = 0
+
 # --- A group's cage splits the drawings inside --------------------------------------------------------------------------
 ops.layer.new_group()
 group = layers.active
