@@ -17,6 +17,7 @@
 #include <set>
 #include <string>
 
+#include "anim/controller.hh"
 #include "anim/animation.hh"
 #include "anim/follow_point.hh"
 #include "anim/deform.hh"
@@ -480,6 +481,81 @@ static bool *relations_set_keep_flag()
 {
   static bool keep = false;
   return &keep;
+}
+
+/* A side of a 2 Axis Controller: its action, a list of the bone layer's, + to make one, and Left and Right can be made
+ * from each other. Picking an action whose bone has keys where the knob has too asks whose stay. */
+static void controller_side_row(Context &C, Layer &armature, const Bone &knob, int side)
+{
+  static int pending_side = -1;
+  static std::string pending_action;
+  const std::string now = knob.controller_actions[side];
+  const char *id = controller_side_id(side);
+  ImGui::PushID(id);
+  const bool can_mirror = (side == CONTROLLER_LEFT || side == CONTROLLER_RIGHT) && now.empty() &&
+                          !knob.controller_actions[controller_side_opposite(side)].empty();
+  const float buttons = ImGui::GetFrameHeight() * (can_mirror ? 2.0f : 1.0f) + ImGui::GetStyle().ItemSpacing.x * (can_mirror ? 2.0f : 1.0f);
+  ImGui::SetNextItemWidth(-buttons);
+  const auto pick = [&](const std::string &action) {
+    if (!action.empty() && controller_side_keys_clash(armature, knob, side, action)) {
+      pending_side = side;
+      pending_action = action;
+      ImGui::OpenPopup("##controller_keep");
+      return;
+    }
+    operator_call(C, "armature.controller_side", {{"side", id}, {"action", action}});
+  };
+  if (ImGui::BeginCombo("##action", now.empty() ? "None" : now.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::Selectable("None", now.empty())) {
+      pick("");
+    }
+    for (const std::string &action : armature.actions) {
+      if (fix_action_find(armature, action)) {
+        continue;
+      }
+      int in_side = 0;
+      const Bone *in = controller_of_action(armature, action, &in_side);
+      const bool taken = in && !(in == &knob && in_side == side);
+      if (ImGui::Selectable(action.c_str(), action == now, taken ? ImGuiSelectableFlags_Disabled : 0)) {
+        pick(action);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The action the knob plays on this side. Its last key is the edge of the box. An action bone action "
+                      "stays its bone's: the bone and the knob are linked, one set of keys");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("+", ImVec2(ImGui::GetFrameHeight(), 0))) {
+    operator_call(C, "armature.controller_action_new", {{"side", id}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Make a new action for this side and open it");
+  }
+  if (can_mirror) {
+    ImGui::SameLine();
+    if (ImGui::Button("M", ImVec2(ImGui::GetFrameHeight(), 0))) {
+      operator_call(C, "armature.controller_mirror", {{"side", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make this side from the other, as a mirrored action");
+    }
+  }
+  if (pending_side == side && ImGui::BeginPopup("##controller_keep")) {
+    ImGui::TextDisabled("Both have keys, and the knob has one place on an axis");
+    ImGui::Separator();
+    if (ImGui::Selectable(("Keep " + pending_action + "'s keys").c_str())) {
+      operator_call(C, "armature.controller_side", {{"side", id}, {"action", pending_action}, {"keep", "THIS"}});
+      pending_side = -1;
+    }
+    if (ImGui::Selectable("Keep the knob's keys")) {
+      operator_call(C, "armature.controller_side", {{"side", id}, {"action", pending_action}, {"keep", "OTHER"}});
+      pending_side = -1;
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopID();
 }
 
 /* Blender's bone Relations, for the active bone: its parent (a searchable list and an eyedropper; on the
@@ -1214,6 +1290,25 @@ static void bone_panel(Context &C, Layer &armature)
       ui_panel_end();
       return;
     }
+    label("Type");
+    if (ImGui::BeginCombo("##bone_type", bone_is_controller(*active) ? "2 Axis Controller" : "Regular")) {
+      if (ImGui::Selectable("Regular", !bone_is_controller(*active))) {
+        operator_call(C, "armature.bone_convert", {{"type", "REGULAR"}});
+      }
+      if (ImGui::Selectable("2 Axis Controller", bone_is_controller(*active))) {
+        operator_call(C, "armature.bone_convert", {{"type", "CONTROLLER_2D"}});
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("What the bone is. A 2 Axis Controller is a box with a knob whose four sides play actions. "
+                        "Changed in the setup pose");
+    }
+    active = bone_find(armature, armature.active_bone);
+    if (!active) {
+      ui_panel_end();
+      return;
+    }
     float degrees = active->angle * 180.0f / PI;
     const std::string bone_path = "bones[\"" + active->name + "\"].";
     /* A bone field with its keyframe button. */
@@ -1241,6 +1336,53 @@ static void bone_panel(Context &C, Layer &armature)
       }
       ImGui::PopID();
     };
+    if (const Bone *knob = controller_of_dial(armature, *active)) {
+      label("");
+      ImGui::TextDisabled("Linked to %s%s", knob->name.c_str(),
+                          controller_dial_held(armature, *active) ? ": held, the knob is on the other side" : "");
+    }
+    if (bone_is_controller(*active)) {
+      if (doc.frame_current != 0) {
+        const bool held = bone_held_by_fix(doc, armature, *active);
+        if (held) {
+          ImGui::BeginDisabled();
+        }
+        keyed_field("Knob", "position", [&] {
+          float2 frames = controller_knob(*active);
+          if (ui_drag_float2("##knob", &frames.x, 0.5f, -100000.0f, 100000.0f, "%.1f")) {
+            controller_knob_set(*active, frames);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Where the knob is, in frames of its actions: right and up are positive");
+          }
+          if (ImGui::IsItemDeactivatedAfterEdit()) {
+            C.undo->push("Move Knob", doc);
+          }
+        });
+        if (held) {
+          ImGui::EndDisabled();
+        }
+      }
+      for (int side = 0; side < CONTROLLER_SIDES; side++) {
+        label(controller_side_name(side));
+        controller_side_row(C, armature, *active, side);
+      }
+      label("Frame Size");
+      float2 size = active->controller_frame_size;
+      if (ui_drag_float2("##controller_frame_size", &size.x, 0.0001f, 0.00001f, 10.0f, "%.4f")) {
+        active->controller_frame_size = size;
+        active->controller_size_auto = false;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How far one action frame is along X and Y. The box is its actions' lengths times this; on the "
+                          "setup frame its corners drag it too");
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        C.undo->push("Controller Frame Size", doc);
+      }
+      ui_panel_end();
+      return;
+    }
     if (doc.frame_current == 0) {
       /* The setup frame edits the rig, as Blender's edit mode: where the bone's ends are (in the
        * bone layer's space). A connected bone's head is its parent's tail, so it moves that too. */
@@ -8732,7 +8874,12 @@ void properties_draw(Area &area, Context &C)
     }
     if (bones) {
       tabs.push_back({"Bone", TAB_BONE});
-      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
+      /* A controller rests where it is: there is nothing for them to act on. */
+      if (const Bone *shown = active_layer ? bone_find(*active_layer, active_layer->active_bone) : nullptr;
+          !shown || !bone_is_controller(*shown))
+      {
+        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
+      }
     }
     if (reference) {
       tabs.push_back({"Reference", TAB_REFERENCE});

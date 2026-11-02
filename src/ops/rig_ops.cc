@@ -15,6 +15,7 @@
 #include "anim/vector_deform.hh"
 #include "anim/action_mirror.hh"
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/deform.hh"
 #include "anim/follow_point.hh"
 #include "anim/bevel.hh"
@@ -892,6 +893,9 @@ void rig_operators_register()
                        doomed.push_back(other);
                      }
                    }
+                 }
+                 for (const uint64_t id : doomed) {
+                   controller_release(*C.document, armature.id, id);
                  }
                  const std::vector<BonePose> poses = armature_pose(armature);
                  const auto gone = [&](uint64_t id) { return std::find(doomed.begin(), doomed.end(), id) != doomed.end(); };
@@ -1940,6 +1944,146 @@ void rig_operators_register()
                  return OpStatus::Finished;
                });
 
+  rig_operator("armature.bone_convert", "Convert Bone",
+               "Make the selected bones Regular or 2 Axis Controllers, in the setup pose (type=REGULAR or CONTROLLER_2D). "
+               "A controller is a box with a knob whose four sides play actions",
+               bone_layer_active, [](Context &C) {
+                 if (!on_setup_frame(C)) {
+                   return OpStatus::Cancelled;
+                 }
+                 Document &doc = *C.document;
+                 if (!doc.action.empty()) {
+                   report_banner(ReportType::Warning, "Go back to the mainline to convert bones");
+                   return OpStatus::Cancelled;
+                 }
+                 const bool to_controller = op_arg(C, "type", "CONTROLLER_2D") == "CONTROLLER_2D";
+                 Layer &armature = *active_armature(C);
+                 std::vector<uint64_t> picked;
+                 for (const Bone &b : armature.bones) {
+                   if (b.selected || b.select_head || b.select_tail) {
+                     picked.push_back(b.id);
+                   }
+                 }
+                 if (picked.empty()) {
+                   report(ReportType::Warning, "Select bones to convert");
+                   return OpStatus::Cancelled;
+                 }
+                 for (const uint64_t id : picked) {
+                   const std::string note = to_controller ? bone_convert_to_controller(doc, armature.id, id)
+                                                          : bone_convert_to_regular(doc, armature.id, id);
+                   if (!note.empty()) {
+                     report(ReportType::Warning, note);
+                   }
+                 }
+                 return OpStatus::Finished;
+               },
+               [] {
+                 OpProperty type;
+                 type.name = "type";
+                 type.label = "Type";
+                 type.description = "What the bones become";
+                 type.items = {{"REGULAR", "Regular"}, {"CONTROLLER_2D", "2 Axis Controller"}};
+                 type.fallback = "CONTROLLER_2D";
+                 return std::vector<OpProperty>{type};
+               }());
+
+  /* The active bone when it is a controller; a report when not. */
+  const auto active_controller = [](Context &C) -> Bone * {
+    Layer *armature = active_armature(C);
+    Bone *knob = armature ? bone_find(*armature, armature->active_bone) : nullptr;
+    if (!knob || !bone_is_controller(*knob)) {
+      report(ReportType::Warning, "The active bone isn't a 2 Axis Controller");
+      return nullptr;
+    }
+    return knob;
+  };
+
+  rig_operator("armature.controller_side", "Set Controller Action",
+               "Put an action in a side of the active 2 Axis Controller (side=RIGHT, LEFT, UP or DOWN; action=\"\" empties "
+               "it). An action bone action's bone is linked to the knob, its keys moved there; keep=THIS or OTHER says "
+               "whose keys stay when both have them",
+               bone_layer_active, [active_controller](Context &C) {
+                 Bone *knob = active_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 const int side = controller_side_from_id(op_arg(C, "side", "RIGHT"));
+                 std::string why, note;
+                 if (!controller_side_set(*C.document, active_armature(C)->id, knob->id, side, op_arg(C, "action"),
+                                          op_arg(C, "keep"), &why, &note))
+                 {
+                   report(ReportType::Warning, why);
+                   return OpStatus::Cancelled;
+                 }
+                 if (!note.empty()) {
+                   report(ReportType::Info, note);
+                 }
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_action_new", "New Controller Action",
+               "Make a new action for a side of the active 2 Axis Controller (side=RIGHT, LEFT, UP or DOWN) and open it",
+               bone_layer_active, [active_controller](Context &C) {
+                 Bone *knob = active_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 const int side = controller_side_from_id(op_arg(C, "side", "RIGHT"));
+                 Document &doc = *C.document;
+                 if (side < 0 || !doc.action.empty()) {
+                   report(ReportType::Warning, "Go back to the mainline to make a controller's actions");
+                   return OpStatus::Cancelled;
+                 }
+                 const uint64_t owner = active_armature(C)->id, id = knob->id;
+                 const std::string name = document_action_new(doc, owner, knob->name + " " + controller_side_name(side));
+                 if (name.empty()) {
+                   return OpStatus::Cancelled;
+                 }
+                 bone_find(*layer_find(doc, owner), id)->controller_actions[side] = name;
+                 controllers_update(doc);
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_mirror", "Mirror Controller Side",
+               "Make a side of the active 2 Axis Controller from the side across from it, as a mirrored action "
+               "(side=LEFT makes Left from Right)",
+               bone_layer_active, [active_controller](Context &C) {
+                 Bone *knob = active_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 const int side = controller_side_from_id(op_arg(C, "side", "LEFT"));
+                 Document &doc = *C.document;
+                 if (side != CONTROLLER_LEFT && side != CONTROLLER_RIGHT) {
+                   report(ReportType::Warning, "Only Left and Right mirror into each other");
+                   return OpStatus::Cancelled;
+                 }
+                 if (!doc.action.empty()) {
+                   report(ReportType::Warning, "Go back to the mainline to mirror a controller's actions");
+                   return OpStatus::Cancelled;
+                 }
+                 const std::string from = knob->controller_actions[controller_side_opposite(side)];
+                 if (from.empty()) {
+                   report(ReportType::Warning, std::string("Pick an action for ") +
+                                                   controller_side_name(controller_side_opposite(side)) + " first");
+                   return OpStatus::Cancelled;
+                 }
+                 const uint64_t owner = active_armature(C)->id, id = knob->id;
+                 std::string to = bone_mirror_name(from);
+                 to = to != from ? to : knob->name + " " + controller_side_name(side);
+                 std::string text = "Mirrored " + from + " into " + to;
+                 for (const std::string &note : document_action_mirror(doc, owner, from, to)) {
+                   text += "; " + note;
+                 }
+                 std::string why, note;
+                 if (!controller_side_set(doc, owner, id, side, to, "THIS", &why, &note)) {
+                   report(ReportType::Warning, why);
+                   return OpStatus::Cancelled;
+                 }
+                 report(ReportType::Info, text);
+                 return OpStatus::Finished;
+               });
+
   rig_operator("armature.duplicate_move", "Duplicate Bones",
                "Copy the selected bones, then move the copies (Shift D, as in Blender)", bone_layer_active,
                [](Context &C) {
@@ -1969,6 +2113,9 @@ void rig_operators_register()
                    Bone copy = armature.bones[i];
                    copy.id = copies[copy.id];
                    copy.name = armature_unique_bone_name(armature, copy.name);
+                   /* An action has one controller. */
+                   copy.controller_actions = {};
+                   copy.controller_keys = {};
                    /* A copied child hangs from its parent's copy, as in Blender. */
                    if (auto it = copies.find(copy.parent); it != copies.end()) {
                      copy.parent = it->second;
@@ -3205,6 +3352,15 @@ void rig_operators_register()
                      copy.position_keys = {};
                      copy.angle_keys = {};
                      copy.scale_keys = {};
+                     /* Left and Right swap, reading the other side's actions where they're there. */
+                     for (int side = 0; side < CONTROLLER_SIDES; side++) {
+                       const std::string from = src->controller_actions[side < 2 ? side ^ 1 : side];
+                       const std::string name = from.empty() ? from : bone_mirror_name(from);
+                       copy.controller_actions[side] =
+                           name != from && std::find(armature.actions.begin(), armature.actions.end(), name) != armature.actions.end()
+                               ? name
+                               : "";
+                     }
                      const float length = src->length;
                      bone_place(copy, parent_setup, reflect(sp->setup_head), reflect(sp->setup_tail));
                      copy.length = length;
@@ -3217,6 +3373,10 @@ void rig_operators_register()
                        existing->length = copy.length;
                        existing->scale = copy.scale;
                        existing->strength = copy.strength;
+                       existing->type = copy.type;
+                       existing->controller_actions = copy.controller_actions;
+                       existing->controller_frame_size = copy.controller_frame_size;
+                       existing->controller_size_auto = copy.controller_size_auto;
                      }
                      else {
                        copy.id = armature.next_bone_id++;

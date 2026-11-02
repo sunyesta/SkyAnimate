@@ -21,6 +21,7 @@
 #include <miniz.h>
 #include <nlohmann/json.hpp>
 
+#include "anim/controller.hh"
 #include "anim/animation.hh"
 #include "data/material.hh"
 #include "core/log.hh"
@@ -827,6 +828,20 @@ static json layer_to_json(const Layer &layer)
       }
       if (!b.collections.empty()) {
         bj["collections"] = b.collections;
+      }
+      if (b.type == BoneType::Controller2D) {
+        bj["type"] = "CONTROLLER_2D";
+        json actions = json::object();
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          if (!b.controller_actions[side].empty()) {
+            actions[controller_side_id(side)] = b.controller_actions[side];
+          }
+        }
+        bj["controller_actions"] = std::move(actions);
+        bj["controller_frame_size"] = float2_to_json(b.controller_frame_size);
+        if (!b.controller_size_auto) {
+          bj["controller_size_auto"] = false;
+        }
       }
       if (!b.constraints.empty()) {
         json constraints = json::array();
@@ -2524,6 +2539,16 @@ static Layer layer_from_json(const json &j, int depth)
     b.shape = shape == "PIN" ? BoneShape::Pin : shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
     b.pin_size = std::clamp(get_float(bj, "pin_size", 1.0f), 0.1f, 20.0f);
     b.shape_layer = bj.value("shape_layer", uint64_t(0));
+    if (bj.value("type", std::string()) == "CONTROLLER_2D") {
+      b.type = BoneType::Controller2D;
+      if (const json actions = bj.value("controller_actions", json()); actions.is_object()) {
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          b.controller_actions[side] = actions.value(controller_side_id(side), std::string());
+        }
+      }
+      b.controller_frame_size = get_float2(bj, "controller_frame_size", b.controller_frame_size);
+      b.controller_size_auto = get_bool(bj, "controller_size_auto", true);
+    }
     for (const json &c : get_array(bj, "collections")) {
       if (c.is_number_unsigned()) {
         b.collections.push_back(c.get<uint64_t>());

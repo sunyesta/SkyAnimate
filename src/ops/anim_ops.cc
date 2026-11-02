@@ -9,6 +9,7 @@
 
 #include "anim/switch.hh"
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/keep_poses.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
@@ -735,11 +736,11 @@ void anim_operators_register()
       if (!owner) {
         return OpStatus::Cancelled;
       }
-      if (action_bone_of(*owner, name)) {
+      if (controller_dial_of_action(*owner, name)) {
         report(ReportType::Warning, "An action bone action is named after its bone: rename the bone");
         return OpStatus::Cancelled;
       }
-      if (to.empty() || action_bone_of(*owner, to)) {
+      if (to.empty() || controller_dial_of_action(*owner, to)) {
         report(ReportType::Warning, to.empty() ? "Give it a name" : "That name is a bone's: it would make an action bone action");
         return OpStatus::Cancelled;
       }

@@ -15,6 +15,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
 #include "anim/onion.hh"
@@ -303,7 +304,8 @@ static void action_menu(Context &C, float width)
         ImGui::OpenPopup("##action_menu");
       }
       if (ui_menu_begin("##action_menu")) {
-        const bool is_action_bone_action = action_bone_of(rig, name) != nullptr;
+        /* A controller's own actions aren't named after anything. */
+        const bool is_action_bone_action = controller_dial_of_action(rig, name) != nullptr;
         if (ui_menu_item("Rename...", nullptr, false, !is_action_bone_action)) {
           renaming = name;
           renaming_layer = rig.id;

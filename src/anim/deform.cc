@@ -1,5 +1,7 @@
 #include "anim/deform.hh"
 
+#include "anim/controller.hh"
+
 #include <algorithm>
 #include <cmath>
 
@@ -309,6 +311,10 @@ static std::vector<BoneWeight> automatic_weights(const Deformer &d, const MeshPo
     const BonePose &bp = d.poses[i];
     const Bone &bone = d.armature->bones[i];
     if (!bones.empty() && std::find(bones.begin(), bones.end(), bone.id) == bones.end()) {
+      continue;
+    }
+    /* A controller moves no drawing. */
+    if (bone_is_controller(bone)) {
       continue;
     }
     const float reach = std::max(bone.strength * std::max(distance(bp.setup_head, bp.setup_tail), 1e-3f), 1e-4f);

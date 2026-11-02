@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "anim/controller.hh"
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
@@ -2292,6 +2293,33 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["active"] = b.id == layer.active_bone;
       d["head"] = py::make_tuple(poses[i].head.x, poses[i].head.y);
       d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
+      d["type"] = bone_is_controller(b) ? "CONTROLLER_2D" : "REGULAR";
+      if (const Bone *knob = controller_of_dial(layer, b)) {
+        d["controller"] = knob->name;
+        d["held"] = controller_dial_held(layer, b);
+      }
+      if (bone_is_controller(b)) {
+        py::dict actions;
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          actions[controller_side_id(side)] = b.controller_actions[side];
+        }
+        float2 lo, hi;
+        controller_box(b, lo, hi);
+        const float2 knob = controller_knob(b);
+        const float2 shown = controller_knob_shown(*current_context().document, layer, b);
+        const float2 playing = controller_knob_playing(layer, b);
+        d["controller_actions"] = actions;
+        d["controller_frame_size"] = py::make_tuple(b.controller_frame_size.x, b.controller_frame_size.y);
+        d["controller_box"] = py::make_tuple(py::make_tuple(lo.x, lo.y), py::make_tuple(hi.x, hi.y));
+        d["knob"] = py::make_tuple(knob.x, knob.y);
+        d["knob_shown"] = py::make_tuple(shown.x, shown.y);
+        d["knob_playing"] = py::make_tuple(playing.x, playing.y);
+        py::list fix_poses;
+        for (const float2 &p : controller_fix_poses(layer, b)) {
+          fix_poses.append(py::make_tuple(p.x, p.y));
+        }
+        d["controller_fix_poses"] = fix_poses;
+      }
       result.append(d);
     }
     return result;
@@ -2325,6 +2353,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "length") {
         bone.length = std::max(0.0f, value.cast<float>());
+      }
+      else if (key == "controller_frame_size") {
+        const auto s = value.cast<std::pair<float, float>>();
+        bone.controller_frame_size = {std::max(s.first, 1e-5f), std::max(s.second, 1e-5f)};
+        bone.controller_size_auto = false;
+      }
+      else if (key == "knob") {
+        const auto s = value.cast<std::pair<float, float>>();
+        controller_knob_set(bone, {s.first, s.second});
       }
       else if (key == "strength") {
         bone.strength = std::max(0.0f, value.cast<float>());

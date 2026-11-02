@@ -396,8 +396,13 @@ class _Layer:
         """A bone layer's bones: dicts with name, parent, position, angle (radians), setup_position
         and setup_angle (the setup pose, frame 0: their keys hold the change from it), length,
         scale, strength, selected, select_head, select_tail, connected, shape, pin_size, shape_layer,
-        color_set, colors (its regular, selected and active shades), active, and head and tail (where it runs now, in the bone
-        layer's space)."""
+        color_set, colors (its regular, selected and active shades), active, head and tail (where it runs now, in the bone
+        layer's space), type ("REGULAR" or "CONTROLLER_2D"), and controller and held for a bone linked to a controller. A
+        controller also has controller_actions (by side, "RIGHT", "LEFT", "UP", "DOWN"), controller_frame_size,
+        controller_box (its lowest and highest corners, in frames from the rest point), knob (in frames), knob_shown
+        (inside its own actions), knob_playing (where its actions really are) and controller_fix_poses. Convert with
+        oanim.ops.armature.bone_convert, fill the sides with controller_side, controller_action_new and
+        controller_mirror."""
         return _oanim.layer_bones(self._id, False)
 
     @property
@@ -408,7 +413,8 @@ class _Layer:
 
     def bone_set(self, name, **values):
         """Pose or edit a bone: position=(x, y), angle, scale=(x, y) (x across the bone, y along
-        it; one number sets both), length, strength, name; and how it is drawn: shape ("BONE",
+        it; one number sets both), length, strength, name; a controller's knob=(x, y) in frames and
+        controller_frame_size=(x, y); and how it is drawn: shape ("BONE",
         "PIN" or "CUSTOM", while the viewport shows custom bone shapes), pin_size, shape_layer (a
         vector layer's name, "" for none), color_set ("DEFAULT", "THEME01" to "THEME15" or
         "CUSTOM") and custom_colors (three (r, g, b): regular, selected, active; makes it Custom)."""

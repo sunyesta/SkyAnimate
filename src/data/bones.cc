@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 
+#include "anim/controller.hh"
 #include "data/document.hh"
 
 namespace oanim {
@@ -419,7 +420,14 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float angle = bone.angle;
     float2 scale = bone.scale;
     float sx = 1.0f, sy = 1.0f;
-    if (!setup_frame) {
+    /* A controller stays where it rests, on its parent: only its knob moves (its position keys hold frames). */
+    const bool rests = !setup_frame && bone_is_controller(bone);
+    if (rests) {
+      position = setup_position;
+      angle = setup_angle;
+      scale = setup_scale;
+    }
+    if (!setup_frame && !rests) {
       if (extras.ik_angle) {
         angle += (*extras.ik_angle)[i];
       }
@@ -1168,7 +1176,8 @@ bool armature_clear_pose(Layer &armature, bool position, bool angle, bool scale)
       b.position = bone_position_from_transform(b, b.position_keys.from_action_bones);
     }
     if (angle) {
-      b.angle = b.setup_angle + b.angle_keys.from_action_bones;
+      /* What a controller's knob gives a dial is added the same way, and that does go back. */
+      b.angle = b.setup_angle + (controller_of_dial(armature, b) ? 0.0f : b.angle_keys.from_action_bones);
     }
     if (scale) {
       b.scale = setup_value(b.scale_keys, b.scale, false) + b.scale_keys.from_action_bones;
@@ -1229,6 +1238,10 @@ void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, 
     Bone &b = armature.bones[i];
     const BonePose *parent = bone_pose_find(poses, b.parent);
     const Transform2D to_parent = parent ? parent->pose.inverted() : bone_outer_frame(b, setup_frame).inverted();
+    if (whole && bone_is_controller(b) && !setup_frame) {
+      controller_knob_move(b, poses[i], delta);
+      continue;
+    }
     if (whole) {
       b.position += to_parent.apply_vector(delta);
       continue;
@@ -1270,7 +1283,8 @@ void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original
   std::vector<bool> turns(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
-    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);
+    /* A controller has no turn: its box stays upright. */
+    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves) && !bone_is_controller(b);
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (turns[i]) {
@@ -1310,7 +1324,7 @@ void armature_scale_selected(Layer &armature, const std::vector<Bone> &original,
   std::vector<bool> scales(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
-    scales[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);
+    scales[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves) && !bone_is_controller(b);
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (scales[i]) {
@@ -1402,7 +1416,8 @@ static void armature_map_selected_by(Layer &armature, const std::vector<Bone> &o
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     const bool picked = bone_moves(original[i]);
     const bool child_of_picked = has_parent && bone_moves(original[parent->second]);
-    if (picked || child_of_picked) {
+    /* A controller's position holds its knob while posing, and the box rides on its parent. */
+    if ((picked || child_of_picked) && (setup_frame || !bone_is_controller(b))) {
       /* Where the base and a point along the bone go: through the map when picked; an unpicked
        * child of a picked bone stays where it was. */
       const float reach = b.length > 1e-4f ? b.length : 1.0f;
@@ -1472,7 +1487,8 @@ void armature_keep_children(Layer &armature, const std::vector<Bone> &original, 
     const Transform2D parent_frame = has_parent ? frame[parent->second] : bone_outer_frame(b, setup_frame);
     const Transform2D parent_rest = has_parent ? rest[parent->second] : bone_outer_frame(b, true);
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
-    if (has_parent && !moved(original[i]) && moved(original[parent->second])) {
+    /* A controller's box stays on its parent, its position holding its knob. */
+    if (has_parent && !moved(original[i]) && moved(original[parent->second]) && !bone_is_controller(b)) {
       const float reach = b.length > 1e-4f ? b.length : 1.0f;
       const float2 head = was[i].pose.apply({0, 0}), tip = was[i].pose.apply({reach, 0});
       const Transform2D to_parent = parent_frame.inverted();
