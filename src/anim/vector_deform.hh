@@ -67,6 +67,17 @@ std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, cons
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
 
+/* What an Envelope's Range reaches, in `layer`'s space where it shows now: lines running in from the cage's outline,
+ * each place with how much say the sides have there (1 at the outline, 0 at the limit); `quads` joins them. A place in
+ * `limit` is where a line got as far as the limit, so the limit is drawn from one to the next. */
+struct DeformRangeView {
+  std::vector<float2> at;
+  std::vector<float> say;
+  std::vector<std::array<int, 4>> quads;
+  std::vector<std::array<int, 2>> limit;
+};
+bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
+
 /* `m`'s shape at rest and now, in `layer`'s space, as its build reads it: to read a point of the shape by. False with
  * nothing to read. */
 bool vector_deform_shape_read(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &r_rest,

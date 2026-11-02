@@ -9,6 +9,8 @@
 #include <optional>
 #include <memory>
 #include <mutex>
+#include <numeric>
+#include <queue>
 
 #include "anim/deform.hh"
 #include "anim/subdivide.hh"
@@ -130,6 +132,8 @@ static const DrawingGrid *shape_grid(const VectorDrawing &drawing, const Shape &
   return nullptr;
 }
 
+struct RigidLattice;
+
 /* A modifier's shape at rest and as it is now, both in the bent layer's space. */
 struct DeformShape {
   DeformKind kind = DeformKind::None;
@@ -191,12 +195,19 @@ struct DeformShape {
      * between its ends gives it. */
     float2 lo, hi;
     float stays = 1.0f;
+    /* With a Range: how far each sample has moved from where the cage as a whole puts it. */
+    std::vector<float> moved;
   };
   std::vector<EnvelopeSide> envelope_sides;
   /* How sharply the nearest side leads (the power its nearness is raised to), from Blend; and how far from the
    * outline a side's say is down to half, the cage as a whole (Rigid's) taking the rest. */
   float envelope_power = 8.0f;
   float envelope_reach = 1.0f;
+  /* On a cage with dents, how far each side really is from a place, by the lattice (RigidLattice::detours). */
+  std::shared_ptr<const RigidLattice> envelope_walks;
+  /* Range (Modifier::deform_range; 1, the whole cage), and how far that reaches from a side that has moved. */
+  float envelope_range = 1.0f;
+  float envelope_far = 1.0f;
   /* Mesh Deform's Envelope (mesh_envelope): these are a mesh's outline, and the mesh inside its outer cells at rest, its
    * lines and the nodes off the outline, where the sides' say has faded out. */
   bool envelope_mesh = false;
@@ -215,6 +226,12 @@ struct DeformShape {
   float2 lattice_origin = float2(0.0f, 0.0f);
   float lattice_step = 1.0f;
   int lattice_nx = 0, lattice_ny = 0;
+  /* Where the cage has a narrow gap: the lattice cut along it, and the nodes each side of it reads (rigid_offset). */
+  std::shared_ptr<const RigidLattice> lattice_cut;
+  std::vector<std::array<float2, 16>> lattice_stencils;
+  /* How the cage has moved as a whole, taken by most of its outline (cage_whole_fit): `whole_from` goes to `whole_to`,
+   * and what is around it turns and scales by `whole_turn`, a complex number. */
+  float2 whole_from = float2(0.0f, 0.0f), whole_to = float2(0.0f, 0.0f), whole_turn = float2(1.0f, 0.0f);
 };
 
 /* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
@@ -879,6 +896,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   if (closed && now) {
     r.cage_method = m.deform_cage_method;
     r.envelope_power = envelope_power_of(m.deform_blend);
+    r.envelope_range = m.deform_range;
     cage_method_build(r);
   }
   if (!closed) {
@@ -1717,15 +1735,21 @@ static float2 outline_carry(const std::vector<float2> &v, const std::vector<floa
  * along them, so two sides meeting at a corner never pull a point two ways (which in Harmony's own, where each side
  * has the part of the drawing nearest it, tears the art there). */
 static float2 rigid_offset(const DeformShape &d, float2 p);
+static float2 cage_whole_at(const DeformShape &d, float2 p);
+static bool envelope_walk_at(const DeformShape &d, float2 p, std::array<int, 4> &r_node, std::array<float, 4> &r_share);
+static float envelope_detour(const DeformShape &d, size_t side, const std::array<int, 4> &node,
+                             const std::array<float, 4> &share);
 
 /* How far beyond the nearest place, as shares of its distance, other places on a side still have a say, and how far is
  * looked along it to see how straight it runs there. */
 static constexpr float SIDE_SAY = 0.5f, SIDE_LOOK = 6.0f;
 
-/* A place on a side, the way the side runs there, and its share of the say. */
+/* A place on a side, the way the side runs there, its share of the say, and how far along which piece of the side it is. */
 struct SidePlace {
   float2 at, way;
   float say;
+  size_t piece;
+  float t;
 };
 
 /* The places on a side with a say at `p`: on each piece its nearest, sharing by how near each is, down to none at
@@ -1771,7 +1795,7 @@ static float side_places(const std::vector<float2> &v, const std::vector<float2>
     looked += far * far;
     if (x < soft) {
       const float w = (1.0f - x / soft) * (1.0f - x / soft);
-      r.push_back({near[k].at, way, w});
+      r.push_back({near[k].at, way, w, k, t});
       total += w;
     }
   }
@@ -1805,10 +1829,19 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
 {
   const size_t n = d.envelope_sides.size();
   float near = FLT_MAX;
-  thread_local std::vector<float> dist;
+  thread_local std::vector<float> dist, across, within;
   thread_local std::vector<float2> fix;
+  thread_local std::vector<SidePlace> places;
   dist.resize(n);
+  across.resize(n);
+  within.resize(n);
   fix.resize(n);
+  /* A side is only near what it can get to through the cage (envelope_detour). */
+  std::array<int, 4> walk_node;
+  std::array<float, 4> walk_share;
+  const bool walked = envelope_walk_at(d, p, walk_node, walk_share);
+  const bool ranged = d.envelope_range < 1.0f && !d.envelope_mesh;
+  float beyond_all = 1.0f;
   /* On a mesh a side has its say within reach of the outer cell here, so one edge cut into many sides counts as it does
    * in few, and the others needn't be measured: past how near some side surely is, and that reach again. */
   float ring = FLT_MAX, beyond = FLT_MAX;
@@ -1829,14 +1862,35 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
     /* Its distance from the side at rest and where the cage put it from the side now, each measured from the side's
      * near places, each by its say (side_places), so a place never jumps from one to another as the side moves, and
      * the point with it; at rest and now alike, so a side that hasn't moved sets nothing. */
-    thread_local std::vector<SidePlace> places;
     float straight = 1.0f;
     dist[s] = side_places(side.rest, side.rest_way, side.rest_at.back(), p, places, &straight);
     near = std::min(near, dist[s]);
-    float across = 0.0f;
+    across[s] = 0.0f;
+    float moved = 0.0f;
     for (const SidePlace &place : places) {
-      across += cross(place.way, p - place.at) * place.say;
+      across[s] += cross(place.way, p - place.at) * place.say;
+      if (ranged) {
+        moved += (side.moved[place.piece] * (1.0f - place.t) + side.moved[place.piece + 1] * place.t) * place.say;
+      }
     }
+    if (ranged) {
+      /* Range: a side bends what lies within it of the places that have moved. A place moved further than half that
+       * takes its reach with it: what lies near it has to get out of the way of what stays, or it folds through it. */
+      const float far = std::max(d.envelope_far, moved * 2.0f);
+      within[s] = 1.0f - smooth01(dist[s] / far);
+      beyond_all *= 1.0f - smooth01(moved / (d.cage_band * 5.0f)) * within[s];
+    }
+  }
+  if (ranged) {
+    const float2 whole = cage_whole_at(d, p);
+    q = whole + (q - whole) * (1.0f - beyond_all);
+  }
+  for (size_t s = 0; s < n; s++) {
+    if (dist[s] == FLT_MAX) {
+      continue;
+    }
+    const DeformShape::EnvelopeSide &side = d.envelope_sides[s];
+    float straight = 1.0f;
     side_places(side.now, side.now_way, side.now_at.back(), q, places, &straight);
     /* Set back to it in full at the side and less further off, as reach / (reach + distance): the distance it ends
      * at then always grows with the distance it had, however hard the cage squeezes there, so nothing folds. The way
@@ -1848,17 +1902,20 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
       now_across += cross(place.way, q - place.at) * place.say;
       push = push + float2(-place.way.y, place.way.x) * place.say;
     }
-    push = push * (across - now_across);
+    push = push * (across[s] - now_across);
     float keep = d.envelope_reach / (d.envelope_reach + dist[s]);
     /* A side doubling back around here can't be kept a distance from: what lies in a hook narrower than twice that
      * distance would have to cross itself. It lets go, and the cage as a whole carries the point. */
     keep *= smooth01((straight - 0.6f) / 0.35f);
+    if (ranged) {
+      keep *= within[s];
+    }
     if (d.envelope_mesh) {
       /* A stretch can't fold, whatever sets it back. Where a cell squeezes what is in it, though, setting that back as it
        * fades out by the ring (below) can bring what lies further from the side nearer to it, and a curved cell squeezes
        * hardest in its middle: held back as the square of the squeeze, so nothing folds. A side shrinking to nothing has
        * no way it runs left to measure across, so it lets go first. */
-      const float squeeze = std::fabs(across) > 1e-9f ? std::clamp(now_across / across, 0.0f, 1.0f) : 1.0f;
+      const float squeeze = std::fabs(across[s]) > 1e-9f ? std::clamp(now_across / across[s], 0.0f, 1.0f) : 1.0f;
       keep *= squeeze * squeeze * side.stays;
     }
     fix[s] = push * keep;
@@ -1881,6 +1938,11 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
       const float t = std::clamp(1.0f - (dist[s] - near) / reach, 0.0f, 1.0f);
       w *= t * t * (3.0f - 2.0f * t);
     }
+    /* Across a gap a side has no say, however close it stands. */
+    if (walked) {
+      const float detour = envelope_detour(d, s, walk_node, walk_share);
+      w *= 1.0f - smooth01(detour / (0.5f * dist[s] + d.lattice_step));
+    }
     fx += w * fix[s].x;
     fy += w * fix[s].y;
     ws += w;
@@ -1888,10 +1950,20 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
   return ws > 0.0 ? q + float2(float(fx / ws), float(fy / ws)) * fade : q;
 }
 
+/* Where the cage moving as a whole puts `p`. */
+static float2 cage_whole_at(const DeformShape &d, float2 p)
+{
+  const float2 e = p - d.whole_from, t = d.whole_turn;
+  return d.whole_to + float2(t.x * e.x - t.y * e.y, t.y * e.x + t.x * e.y);
+}
+
 static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
 {
   float2 q = p;
-  if (mean_value(d.rest, p, scratch)) {
+  if (d.lattice_cut) {
+    q = cage_whole_at(d, p);
+  }
+  else if (mean_value(d.rest, p, scratch)) {
     q = float2(0.0f, 0.0f);
     for (size_t i = 0; i < d.now.size(); i++) {
       q = q + d.now[i] * scratch[i];
@@ -1911,43 +1983,17 @@ static float2 mesh_envelope(const DeformShape &d, float2 p, float2 q, bool outer
   return outer && d.envelope_mesh ? envelope_sides_apply(d, p, q) : q;
 }
 
-/* Rigid: how far the inside moves from mean value coordinates there (a cubic B-spline over the lattice). */
-static float2 rigid_offset(const DeformShape &d, float2 p)
-{
-  const float2 u = (p - d.lattice_origin) / d.lattice_step;
-  const int i0 = int(std::floor(u.x)), j0 = int(std::floor(u.y));
-  const float fx = u.x - float(i0), fy = u.y - float(j0);
-  const auto basis = [](float t, float r_w[4]) {
-    const float s = 1.0f - t;
-    r_w[0] = s * s * s / 6.0f;
-    r_w[1] = (3.0f * t * t * t - 6.0f * t * t + 4.0f) / 6.0f;
-    r_w[2] = (-3.0f * t * t * t + 3.0f * t * t + 3.0f * t + 1.0f) / 6.0f;
-    r_w[3] = t * t * t / 6.0f;
-  };
-  float wx[4], wy[4];
-  basis(fx, wx);
-  basis(fy, wy);
-  float2 sum(0.0f, 0.0f);
-  for (int b = 0; b < 4; b++) {
-    const int j = j0 - 1 + b;
-    if (j < 0 || j >= d.lattice_ny) {
-      continue;
-    }
-    for (int a = 0; a < 4; a++) {
-      const int i = i0 - 1 + a;
-      if (i >= 0 && i < d.lattice_nx) {
-        sum = sum + d.lattice[size_t(j * d.lattice_nx + i)] * (wx[a] * wy[b]);
-      }
-    }
-  }
-  return sum;
-}
-
 /* What a Cage Deform's Method needs, worked out once per frame from the outline at rest and now. */
 /* Rigid's lattice over a cage at rest, and all of the solve that depends only on the rest: which cells are used, the
  * nodes and their links, where the outline's samples sit among the nodes, the system's diagonal, and each node's mean
  * value coordinates. Kept by the outline at rest (the same cage drawn on many frames, or several layers bent by it), so
- * a frame only starts from where the cage is now and solves. */
+ * a frame only starts from where the cage is now and solves.
+ *
+ * Square cells can't see a gap narrower than a few of them: both its sides fall in the same cells and whatever moves one
+ * drags the other. So a cell is cut into pieces, one for each stretch of the cage in it that isn't joined to the others
+ * inside the cell, and pieces in neighbouring cells only share nodes where the cage runs from one to the other: the two
+ * sides of a gap have nodes of their own, even where they stand at the same place. Cells outside the cage between two
+ * sides of it are left out. A cage with no such gap is cut nowhere, and has the plain lattice. */
 struct RigidLattice {
   static constexpr float FIRM = 200.0f, HOLD = 1e-4f;
   struct Link {
@@ -1975,7 +2021,272 @@ struct RigidLattice {
   std::vector<double> factor;
   /* x with A x = b, A the system above (b and x two columns, x and y). */
   void solve(const std::vector<float2> &b, std::vector<float2> &x) const;
+
+  /* A piece of a cell: its nodes (corner c at i + (c & 1), j + (c >> 1)), places in it, and the pieces next to it it is
+   * joined to. A piece outside the cage, in a cell along the outline, has its middle for a place. */
+  struct Piece {
+    int i = 0, j = 0;
+    bool outside = false;
+    std::array<int, 4> corner{};
+    std::vector<float2> at;
+    std::vector<int> joined;
+    /* The nodes around it a B-spline reads, -1 where none of its side is there, and which stencil they are. */
+    std::array<int, 16> nodes{};
+    int stencil = -1;
+  };
+  std::vector<Piece> pieces;
+  /* Which pieces a place may be on, for the cells where it matters (none on a lattice with no cuts). */
+  std::vector<int> zone_of;
+  std::vector<std::vector<int>> zones;
+  /* The pieces that are read from stencils, and which of the lattice's places have nodes standing apart. */
+  std::vector<int> stencil_pieces;
+  std::vector<char> cut_at;
+  /* The outline, and which of its pieces are in each cell. */
+  std::vector<float2> outline;
+  std::vector<std::vector<int>> outline_cells;
+  /* Each cell's first piece, -1 where it has none. */
+  std::vector<int> cell_piece;
+  /* Whether a line between two places crosses the outline. */
+  bool crosses(float2 a, float2 b) const;
+  /* The piece in a zone that `p` is on: the nearest it can reach without crossing the outline, else the nearest. */
+  int piece_at(const std::vector<int> &zone, float2 p) const;
+  /* Envelope's sides, as each one's first sample and how many samples: how much further than straight each is from
+   * each node, walking through the cage (`detours`, side by side, empty for a side nothing is behind anything from).
+   * Worked out once, the first time they are asked for; a cage with no dents has none. */
+  mutable std::once_flag walked;
+  mutable std::vector<std::vector<float>> detours;
+  void walk_sides(const std::vector<std::pair<size_t, size_t>> &sides, float size) const;
+  /* The nodes around `p`, each with its share. False where there are none. */
+  bool nodes_at(float2 p, std::array<int, 4> &r_node, std::array<float, 4> &r_share) const;
 };
+
+bool RigidLattice::crosses(float2 a, float2 b) const
+{
+  const int columns = nx - 1, rows = ny - 1;
+  const float2 ua = (a - origin) / step, ub = (b - origin) / step;
+  const int i0 = std::clamp(int(std::floor(std::min(ua.x, ub.x))), 0, columns - 1);
+  const int i1 = std::clamp(int(std::floor(std::max(ua.x, ub.x))), 0, columns - 1);
+  const int j0 = std::clamp(int(std::floor(std::min(ua.y, ub.y))), 0, rows - 1);
+  const int j1 = std::clamp(int(std::floor(std::max(ua.y, ub.y))), 0, rows - 1);
+  const size_t n = outline.size();
+  const float2 ab = b - a;
+  for (int j = j0; j <= j1; j++) {
+    for (int i = i0; i <= i1; i++) {
+      for (const int k : outline_cells[size_t(j * columns + i)]) {
+        const float2 c = outline[size_t(k)], d = outline[(size_t(k) + 1) % n];
+        const float2 cd = d - c;
+        if ((cross(ab, c - a) > 0.0f) != (cross(ab, d - a) > 0.0f) &&
+            (cross(cd, a - c) > 0.0f) != (cross(cd, b - c) > 0.0f))
+        {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+int RigidLattice::piece_at(const std::vector<int> &zone, float2 p) const
+{
+  if (zone.size() == 1) {
+    return zone[0];
+  }
+  /* Each piece's nearest place to it, nearest first. */
+  thread_local std::vector<std::tuple<float, int, float2>> near;
+  near.clear();
+  for (const int k : zone) {
+    float best = FLT_MAX;
+    float2 place = p;
+    for (const float2 &q : pieces[size_t(k)].at) {
+      const float dist = length(q - p);
+      if (dist < best) {
+        best = dist;
+        place = q;
+      }
+    }
+    near.emplace_back(best, k, place);
+  }
+  std::sort(near.begin(), near.end(), [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
+  for (const auto &[dist, k, place] : near) {
+    if (!crosses(p, place)) {
+      return k;
+    }
+  }
+  return std::get<1>(near[0]);
+}
+
+bool RigidLattice::nodes_at(float2 p, std::array<int, 4> &r_node, std::array<float, 4> &r_share) const
+{
+  const float2 u = (p - origin) / step;
+  const int i = int(std::floor(u.x)), j = int(std::floor(u.y));
+  if (i < 0 || i + 1 >= nx || j < 0 || j + 1 >= ny) {
+    return false;
+  }
+  const size_t c = size_t(j * (nx - 1) + i);
+  const int zone = zone_of.empty() ? -1 : zone_of[c];
+  const int k = zone >= 0 ? piece_at(zones[size_t(zone)], p) : cell_piece[c];
+  if (k < 0) {
+    return false;
+  }
+  const Piece &piece = pieces[size_t(k)];
+  const float fx = std::clamp(u.x - float(piece.i), 0.0f, 1.0f), fy = std::clamp(u.y - float(piece.j), 0.0f, 1.0f);
+  r_node = piece.corner;
+  r_share = {(1.0f - fx) * (1.0f - fy), fx * (1.0f - fy), (1.0f - fx) * fy, fx * fy};
+  return true;
+}
+
+void RigidLattice::walk_sides(const std::vector<std::pair<size_t, size_t>> &sides, float size) const
+{
+  std::call_once(walked, [&]() {
+    /* A cage with no dents has nothing behind anything. */
+    const size_t n = outline.size();
+    int left = 0, right = 0;
+    for (size_t k = 0; k < n; k++) {
+      const float turn = cross(outline[(k + 1) % n] - outline[k], outline[(k + 2) % n] - outline[(k + 1) % n]);
+      left += turn > 1e-12f ? 1 : 0;
+      right += turn < -1e-12f ? 1 : 0;
+    }
+    if (left == 0 || right == 0) {
+      return;
+    }
+    /* From each node to the others of each piece it is in. */
+    const size_t count = rest.size();
+    std::vector<std::vector<std::pair<int, float>>> ways(count);
+    for (const Piece &piece : pieces) {
+      for (int a = 0; a < 4; a++) {
+        for (int b = 0; b < 4; b++) {
+          if (a != b) {
+            const int from = piece.corner[size_t(a)], to = piece.corner[size_t(b)];
+            ways[size_t(from)].emplace_back(to, length(rest[size_t(from)] - rest[size_t(to)]));
+          }
+        }
+      }
+    }
+    std::vector<int> side_of(n, -1);
+    for (size_t s = 0; s < sides.size(); s++) {
+      for (size_t k = 0; k < sides[s].second; k++) {
+        side_of[(sides[s].first + k) % n] = int(s);
+      }
+    }
+    detours.resize(sides.size());
+    parallel_for(sides.size(), 1, [&](size_t begin, size_t end) {
+      for (size_t s = begin; s < end; s++) {
+        std::vector<float> walk(count, FLT_MAX);
+        using Step = std::pair<float, int>;
+        std::priority_queue<Step, std::vector<Step>, std::greater<Step>> open;
+        for (const Hold &hold : holds) {
+          if (side_of[hold.sample] != int(s)) {
+            continue;
+          }
+          for (const int node : hold.node) {
+            const float dist = length(rest[size_t(node)] - outline[hold.sample]);
+            if (dist < walk[size_t(node)]) {
+              walk[size_t(node)] = dist;
+              open.emplace(dist, node);
+            }
+          }
+        }
+        while (!open.empty()) {
+          const auto [dist, node] = open.top();
+          open.pop();
+          if (dist > walk[size_t(node)]) {
+            continue;
+          }
+          for (const auto &[to, len] : ways[size_t(node)]) {
+            if (dist + len < walk[size_t(to)]) {
+              walk[size_t(to)] = dist + len;
+              open.emplace(dist + len, to);
+            }
+          }
+        }
+        std::vector<float2> samples;
+        for (size_t k = 0; k < sides[s].second; k++) {
+          samples.push_back(outline[(sides[s].first + k) % n]);
+        }
+        /* Walking from node to node runs up to 8% long, and starts a step away from anywhere. */
+        std::vector<float> detour(count, 0.0f);
+        bool any = false;
+        for (size_t k = 0; k < count; k++) {
+          const float straight = polyline_distance(samples, false, rest[k]);
+          detour[k] = std::max(std::min(walk[k], size * 8.0f) - straight * 1.08f - step, 0.0f);
+          any = any || detour[k] > 0.0f;
+        }
+        if (any) {
+          detours[s] = std::move(detour);
+        }
+      }
+    });
+  });
+}
+
+static bool envelope_walk_at(const DeformShape &d, float2 p, std::array<int, 4> &r_node, std::array<float, 4> &r_share)
+{
+  return d.envelope_walks && d.envelope_walks->nodes_at(p, r_node, r_share);
+}
+
+static float envelope_detour(const DeformShape &d, size_t side, const std::array<int, 4> &node,
+                             const std::array<float, 4> &share)
+{
+  const std::vector<float> &detour = d.envelope_walks->detours[side];
+  if (detour.empty()) {
+    return 0.0f;
+  }
+  float sum = 0.0f;
+  for (size_t c = 0; c < 4; c++) {
+    sum += detour[size_t(node[c])] * share[c];
+  }
+  return sum;
+}
+
+/* Rigid: how far the inside moves from mean value coordinates there (a cubic B-spline over the lattice). */
+static float2 rigid_offset(const DeformShape &d, float2 p)
+{
+  const float2 u = (p - d.lattice_origin) / d.lattice_step;
+  const int i0 = int(std::floor(u.x)), j0 = int(std::floor(u.y));
+  const float fx = u.x - float(i0), fy = u.y - float(j0);
+  const auto basis = [](float t, float r_w[4]) {
+    const float s = 1.0f - t;
+    r_w[0] = s * s * s / 6.0f;
+    r_w[1] = (3.0f * t * t * t - 6.0f * t * t + 4.0f) / 6.0f;
+    r_w[2] = (-3.0f * t * t * t + 3.0f * t * t + 3.0f * t + 1.0f) / 6.0f;
+    r_w[3] = t * t * t / 6.0f;
+  };
+  float wx[4], wy[4];
+  /* By a gap: only what is on this side of it. */
+  if (d.lattice_cut && i0 >= 0 && i0 + 1 < d.lattice_nx && j0 >= 0 && j0 + 1 < d.lattice_ny) {
+    const RigidLattice &L = *d.lattice_cut;
+    const int zone = L.zone_of[size_t(j0 * (d.lattice_nx - 1) + i0)];
+    if (zone >= 0) {
+      const RigidLattice::Piece &piece = L.pieces[size_t(L.piece_at(L.zones[size_t(zone)], p))];
+      basis(std::clamp(u.x - float(piece.i), 0.0f, 1.0f), wx);
+      basis(std::clamp(u.y - float(piece.j), 0.0f, 1.0f), wy);
+      const std::array<float2, 16> &stencil = d.lattice_stencils[size_t(piece.stencil)];
+      float2 sum(0.0f, 0.0f);
+      for (int b = 0; b < 4; b++) {
+        for (int a = 0; a < 4; a++) {
+          sum = sum + stencil[size_t(b * 4 + a)] * (wx[a] * wy[b]);
+        }
+      }
+      return sum;
+    }
+  }
+  basis(fx, wx);
+  basis(fy, wy);
+  float2 sum(0.0f, 0.0f);
+  for (int b = 0; b < 4; b++) {
+    const int j = j0 - 1 + b;
+    if (j < 0 || j >= d.lattice_ny) {
+      continue;
+    }
+    for (int a = 0; a < 4; a++) {
+      const int i = i0 - 1 + a;
+      if (i >= 0 && i < d.lattice_nx) {
+        sum = sum + d.lattice[size_t(j * d.lattice_nx + i)] * (wx[a] * wy[b]);
+      }
+    }
+  }
+  return sum;
+}
 
 void RigidLattice::solve(const std::vector<float2> &b, std::vector<float2> &x) const
 {
@@ -2042,59 +2353,365 @@ static std::shared_ptr<const RigidLattice> rigid_lattice(const std::vector<float
       used[size_t(j * (nx - 1) + i)] = inside(outline, c) || polyline_distance(outline, true, c) < 0.75f * h;
     }
   }
-  const auto cell_used = [&](int i, int j) {
-    return i >= 0 && i + 1 < nx && j >= 0 && j + 1 < ny && used[size_t(j * (nx - 1) + i)];
-  };
-  std::vector<int> node_of(static_cast<size_t>(nx * ny), -1);
-  for (int j = 0; j < ny; j++) {
-    for (int i = 0; i < nx; i++) {
-      if (cell_used(i - 1, j - 1) || cell_used(i, j - 1) || cell_used(i - 1, j) || cell_used(i, j)) {
-        node_of[size_t(j * nx + i)] = int(L.rest.size());
-        L.rest.push_back(lattice_at(i, j));
-        L.cell.push_back(j * nx + i);
+  const int columns = nx - 1, rows = ny - 1;
+  const size_t cells = size_t(columns) * size_t(rows);
+  /* Which of the outline's pieces are in each cell. */
+  L.outline = outline;
+  L.outline_cells.resize(cells);
+  for (size_t k = 0; k < n; k++) {
+    const float2 a = (outline[k] - L.origin) / h, b = (outline[(k + 1) % n] - L.origin) / h;
+    const int i0 = std::clamp(int(std::floor(std::min(a.x, b.x))), 0, columns - 1);
+    const int i1 = std::clamp(int(std::floor(std::max(a.x, b.x))), 0, columns - 1);
+    const int j0 = std::clamp(int(std::floor(std::min(a.y, b.y))), 0, rows - 1);
+    const int j1 = std::clamp(int(std::floor(std::max(a.y, b.y))), 0, rows - 1);
+    for (int j = j0; j <= j1; j++) {
+      for (int i = i0; i <= i1; i++) {
+        L.outline_cells[size_t(j * columns + i)].push_back(int(k));
       }
     }
+  }
+  /* A cell outside the cage with its outline near on two sides, facing each other. */
+  const auto between_sides = [&](float2 c) {
+    std::vector<char> near(n, 0);
+    size_t start = n;
+    for (size_t k = 0; k < n; k++) {
+      const float2 a = outline[k], e = outline[(k + 1) % n] - a;
+      const float ee = dot(e, e);
+      const float t = ee > 1e-20f ? std::clamp(dot(c - a, e) / ee, 0.0f, 1.0f) : 0.0f;
+      near[k] = length(a + e * t - c) < 2.0f * h;
+      start = !near[k] ? k : start;
+    }
+    if (start == n) {
+      return false;
+    }
+    /* Each run of near pieces around the outline, that the cell can see the nearest place of. */
+    int facing = 0;
+    for (size_t step = 1; step <= n;) {
+      size_t k = (start + step) % n;
+      if (!near[k]) {
+        step++;
+        continue;
+      }
+      float best = FLT_MAX;
+      float2 place = c;
+      for (; step <= n && near[(start + step) % n]; step++) {
+        k = (start + step) % n;
+        const float2 a = outline[k], e = outline[(k + 1) % n] - a;
+        const float ee = dot(e, e);
+        const float t = ee > 1e-20f ? std::clamp(dot(c - a, e) / ee, 0.0f, 1.0f) : 0.0f;
+        const float dist = length(a + e * t - c);
+        if (dist < best) {
+          best = dist;
+          place = a + e * t;
+        }
+      }
+      facing += L.crosses(c, place + (c - place) * 1e-3f) ? 0 : 1;
+    }
+    return facing >= 2;
+  };
+  /* The pieces of each cell in use. */
+  std::vector<std::vector<int>> in_cell(cells);
+  std::vector<char> whole(cells, 0);
+  constexpr int ACROSS = 4;
+  for (int j = 0; j < rows; j++) {
+    for (int i = 0; i < columns; i++) {
+      const size_t c = size_t(j * columns + i);
+      if (!used[c]) {
+        continue;
+      }
+      const float2 corner = lattice_at(i, j);
+      const float2 middle = corner + float2(0.5f * h, 0.5f * h);
+      std::vector<float2> places;
+      bool all_in = true;
+      if (!L.outline_cells[c].empty() || inside(outline, middle)) {
+        for (int b = 0; b < ACROSS; b++) {
+          for (int a = 0; a < ACROSS; a++) {
+            const float2 q = corner + float2((float(a) + 0.5f) / ACROSS * h, (float(b) + 0.5f) / ACROSS * h);
+            if (L.outline_cells[c].empty() || inside(outline, q)) {
+              places.push_back(q);
+            }
+            else {
+              all_in = false;
+            }
+          }
+        }
+      }
+      const auto add_piece = [&](bool outside, std::vector<float2> at) {
+        RigidLattice::Piece piece;
+        piece.i = i;
+        piece.j = j;
+        piece.outside = outside;
+        piece.at = std::move(at);
+        in_cell[c].push_back(int(L.pieces.size()));
+        L.pieces.push_back(std::move(piece));
+      };
+      if (places.empty()) {
+        if (!between_sides(middle)) {
+          add_piece(true, {middle});
+        }
+        continue;
+      }
+      whole[c] = all_in && L.outline_cells[c].empty();
+      if (whole[c]) {
+        add_piece(false, std::move(places));
+        continue;
+      }
+      /* Places a straight line joins are one piece. */
+      std::vector<char> taken(places.size(), 0);
+      for (size_t first = 0; first < places.size(); first++) {
+        if (taken[first]) {
+          continue;
+        }
+        std::vector<float2> at{places[first]};
+        taken[first] = 1;
+        for (size_t reached = 0; reached < at.size(); reached++) {
+          for (size_t k = first + 1; k < places.size(); k++) {
+            if (!taken[k] && !L.crosses(at[reached], places[k])) {
+              taken[k] = 1;
+              at.push_back(places[k]);
+            }
+          }
+        }
+        add_piece(false, std::move(at));
+      }
+    }
+  }
+  /* Pieces either side of a side of a cell share that side's two nodes if the cage runs from one to the other. */
+  std::vector<int> root(L.pieces.size() * 4);
+  std::iota(root.begin(), root.end(), 0);
+  const auto find = [&](int k) {
+    while (root[size_t(k)] != k) {
+      root[size_t(k)] = root[size_t(root[size_t(k)])];
+      k = root[size_t(k)];
+    }
+    return k;
+  };
+  const auto nearest_piece = [&](const std::vector<int> &of, float2 p) {
+    return *std::min_element(of.begin(), of.end(), [&](int a, int b) {
+      const auto near = [&](int k) {
+        float best = FLT_MAX;
+        for (const float2 &q : L.pieces[size_t(k)].at) {
+          best = std::min(best, length(q - p));
+        }
+        return best;
+      };
+      return near(a) < near(b);
+    });
+  };
+  const auto cage_runs_between = [&](int a, int b, bool plain) {
+    const RigidLattice::Piece &p = L.pieces[size_t(a)], &q = L.pieces[size_t(b)];
+    if (plain || (p.outside && q.outside)) {
+      return true;
+    }
+    if (p.outside != q.outside) {
+      return false;
+    }
+    for (const float2 &from : p.at) {
+      for (const float2 &to : q.at) {
+        if (!L.crosses(from, to)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  const auto join_cells = [&](size_t c, size_t e, int corner_c0, int corner_e0, int corner_c1, int corner_e1) {
+    const bool plain = whole[c] && whole[e];
+    for (const int a : in_cell[c]) {
+      for (const int b : in_cell[e]) {
+        const RigidLattice::Piece &p = L.pieces[size_t(a)], &q = L.pieces[size_t(b)];
+        /* What lies outside the cage goes with the stretch of the cage next to it, in the cell beside it. */
+        const bool to_nearest = p.outside != q.outside &&
+                                (p.outside ? b == nearest_piece(in_cell[e], p.at[0]) :
+                                             a == nearest_piece(in_cell[c], q.at[0]));
+        if (to_nearest || cage_runs_between(a, b, plain)) {
+          root[size_t(find(a * 4 + corner_c0))] = find(b * 4 + corner_e0);
+          root[size_t(find(a * 4 + corner_c1))] = find(b * 4 + corner_e1);
+          L.pieces[size_t(a)].joined.push_back(b);
+          L.pieces[size_t(b)].joined.push_back(a);
+        }
+      }
+    }
+  };
+  for (int j = 0; j < rows; j++) {
+    for (int i = 0; i < columns; i++) {
+      const size_t c = size_t(j * columns + i);
+      if (i + 1 < columns) {
+        join_cells(c, c + 1, 1, 0, 3, 2);
+      }
+      if (j + 1 < rows) {
+        join_cells(c, c + size_t(columns), 2, 0, 3, 1);
+      }
+    }
+  }
+  /* The nodes, row by row along the lattice (however many stand at a place). */
+  std::vector<std::array<int, 3>> corners;
+  corners.reserve(L.pieces.size() * 4);
+  for (size_t k = 0; k < L.pieces.size(); k++) {
+    const RigidLattice::Piece &piece = L.pieces[k];
+    for (int c = 0; c < 4; c++) {
+      corners.push_back({(piece.j + (c >> 1)) * nx + piece.i + (c & 1), find(int(k) * 4 + c), int(k) * 4 + c});
+    }
+  }
+  std::sort(corners.begin(), corners.end());
+  bool cut = false;
+  L.cut_at.assign(static_cast<size_t>(nx * ny), 0);
+  for (size_t k = 0; k < corners.size(); k++) {
+    if (k == 0 || corners[k][0] != corners[k - 1][0] || corners[k][1] != corners[k - 1][1]) {
+      if (k > 0 && corners[k][0] == corners[k - 1][0]) {
+        L.cut_at[size_t(corners[k][0])] = 1;
+        cut = true;
+      }
+      const int at = corners[k][0];
+      L.rest.push_back(lattice_at(at % nx, at / nx));
+      L.cell.push_back(at);
+    }
+    L.pieces[size_t(corners[k][2] / 4)].corner[size_t(corners[k][2] % 4)] = int(L.rest.size()) - 1;
   }
   const int count = int(L.rest.size());
   /* Each side of a cell weighs a half for each cell in use it is a side of. */
   L.links.resize(static_cast<size_t>(count));
-  const auto link = [&](int a, int b, float weight) {
-    if (weight > 0.0f) {
-      L.links[size_t(a)].push_back({b, weight});
-      L.links[size_t(b)].push_back({a, weight});
+  std::map<std::pair<int, int>, float> sides;
+  for (const RigidLattice::Piece &piece : L.pieces) {
+    for (const auto &[a, b] : {std::pair(0, 1), std::pair(2, 3), std::pair(0, 2), std::pair(1, 3)}) {
+      sides[std::minmax(piece.corner[size_t(a)], piece.corner[size_t(b)])] += 0.5f;
     }
-  };
-  for (int j = 0; j < ny; j++) {
-    for (int i = 0; i < nx; i++) {
-      const int k = node_of[size_t(j * nx + i)];
-      if (k < 0) {
-        continue;
-      }
-      if (i + 1 < nx && node_of[size_t(j * nx + i + 1)] >= 0) {
-        link(k, node_of[size_t(j * nx + i + 1)], 0.5f * float(int(cell_used(i, j - 1)) + int(cell_used(i, j))));
-      }
-      if (j + 1 < ny && node_of[size_t((j + 1) * nx + i)] >= 0) {
-        link(k, node_of[size_t((j + 1) * nx + i)], 0.5f * float(int(cell_used(i - 1, j)) + int(cell_used(i, j))));
+  }
+  for (const auto &[pair, weight] : sides) {
+    L.links[size_t(pair.first)].push_back({pair.second, weight});
+    L.links[size_t(pair.second)].push_back({pair.first, weight});
+  }
+  /* Cells left out between two sides: nothing is known at their corners. */
+  for (int j = 0; j < rows; j++) {
+    for (int i = 0; i < columns; i++) {
+      if (used[size_t(j * columns + i)] && in_cell[size_t(j * columns + i)].empty()) {
+        cut = true;
+        for (int c = 0; c < 4; c++) {
+          L.cut_at[size_t((j + (c >> 1)) * nx + i + (c & 1))] = 1;
+        }
       }
     }
   }
-  /* The outline's samples, each between the four nodes round it. */
+  /* The outline's samples, each between the four nodes round it, of the piece on its side of a gap. */
+  double twice_area = 0.0;
+  for (size_t k = 0; k < n; k++) {
+    twice_area += double(cross(outline[k], outline[(k + 1) % n]));
+  }
   for (size_t k = 0; k < n; k++) {
     const float2 u = (outline[k] - L.origin) / h;
     const int i = int(std::floor(u.x)), j = int(std::floor(u.y));
-    const float fx = u.x - float(i), fy = u.y - float(j);
+    if (i < 0 || i >= columns || j < 0 || j >= rows) {
+      continue;
+    }
+    std::vector<int> choices = in_cell[size_t(j * columns + i)];
+    const float2 way = outline[(k + 1) % n] - outline[(k + n - 1) % n];
+    const float2 in = normalize(twice_area > 0.0 ? float2(-way.y, way.x) : float2(way.y, -way.x));
+    const float2 just_in = outline[k] + in * (h * 1e-3f);
+    /* The only piece in its cell can be across a gap from it, its own side too thin there to have a piece. */
+    const auto on_its_side = [&](const RigidLattice::Piece &piece) {
+      if (piece.outside) {
+        return true;
+      }
+      const float2 place = *std::min_element(piece.at.begin(), piece.at.end(), [&](const float2 &a, const float2 &b) {
+        return length(a - just_in) < length(b - just_in);
+      });
+      return !L.crosses(just_in, place);
+    };
+    if (choices.size() != 1 || !on_its_side(L.pieces[size_t(choices[0])])) {
+      choices.clear();
+      for (int b = std::max(j - 1, 0); b <= std::min(j + 1, rows - 1); b++) {
+        for (int a = std::max(i - 1, 0); a <= std::min(i + 1, columns - 1); a++) {
+          const std::vector<int> &around = in_cell[size_t(b * columns + a)];
+          choices.insert(choices.end(), around.begin(), around.end());
+        }
+      }
+      if (choices.empty()) {
+        continue;
+      }
+      choices = {L.piece_at(choices, just_in)};
+    }
+    const RigidLattice::Piece &piece = L.pieces[size_t(choices[0])];
+    const float fx = u.x - float(piece.i), fy = u.y - float(piece.j);
     RigidLattice::Hold hold;
     hold.sample = k;
-    bool all = true;
     for (int c = 0; c < 4; c++) {
-      const int a = i + (c & 1), b = j + (c >> 1);
-      const int node = a >= 0 && a < nx && b >= 0 && b < ny ? node_of[size_t(b * nx + a)] : -1;
-      all = all && node >= 0;
-      hold.node[size_t(c)] = node;
+      hold.node[size_t(c)] = piece.corner[size_t(c)];
       hold.weight[size_t(c)] = ((c & 1) ? fx : 1.0f - fx) * ((c >> 1) ? fy : 1.0f - fy);
     }
-    if (all) {
-      L.holds.push_back(hold);
+    L.holds.push_back(hold);
+  }
+  if (cut) {
+    /* Cells whose B-spline reads a place that is cut: what is there reads its own side's nodes. */
+    L.zone_of.assign(cells, -1);
+    for (int j = 0; j < rows; j++) {
+      for (int i = 0; i < columns; i++) {
+        bool near_cut = false;
+        for (int b = std::max(j - 1, 0); b <= std::min(j + 2, ny - 1); b++) {
+          for (int a = std::max(i - 1, 0); a <= std::min(i + 2, nx - 1); a++) {
+            near_cut = near_cut || L.cut_at[size_t(b * nx + a)];
+          }
+        }
+        if (!near_cut) {
+          continue;
+        }
+        std::vector<int> zone = in_cell[size_t(j * columns + i)];
+        if (zone.empty()) {
+          for (int b = std::max(j - 2, 0); b <= std::min(j + 2, rows - 1); b++) {
+            for (int a = std::max(i - 2, 0); a <= std::min(i + 2, columns - 1); a++) {
+              const std::vector<int> &around = in_cell[size_t(b * columns + a)];
+              zone.insert(zone.end(), around.begin(), around.end());
+            }
+          }
+        }
+        if (!zone.empty()) {
+          L.zone_of[size_t(j * columns + i)] = int(L.zones.size());
+          for (const int k : zone) {
+            RigidLattice::Piece &piece = L.pieces[size_t(k)];
+            if (piece.stencil < 0) {
+              piece.stencil = int(L.stencil_pieces.size());
+              L.stencil_pieces.push_back(k);
+            }
+          }
+          L.zones.push_back(std::move(zone));
+        }
+      }
+    }
+    /* The nodes around each, walking from it through the pieces it is joined to. */
+    for (const int k : L.stencil_pieces) {
+      RigidLattice::Piece &piece = L.pieces[size_t(k)];
+      piece.nodes.fill(-1);
+      std::vector<int> reached{k};
+      for (size_t at = 0; at < reached.size(); at++) {
+        const RigidLattice::Piece &there = L.pieces[size_t(reached[at])];
+        for (int c = 0; c < 4; c++) {
+          const int a = there.i + (c & 1) - (piece.i - 1), b = there.j + (c >> 1) - (piece.j - 1);
+          if (a >= 0 && a < 4 && b >= 0 && b < 4 && piece.nodes[size_t(b * 4 + a)] < 0) {
+            piece.nodes[size_t(b * 4 + a)] = there.corner[size_t(c)];
+          }
+        }
+        for (const int next : there.joined) {
+          const RigidLattice::Piece &other = L.pieces[size_t(next)];
+          if (std::abs(other.i - piece.i) <= 2 && std::abs(other.j - piece.j) <= 2 &&
+              std::find(reached.begin(), reached.end(), next) == reached.end())
+          {
+            reached.push_back(next);
+          }
+        }
+      }
+    }
+  }
+  else {
+    L.outline_cells.clear();
+    L.cut_at.clear();
+    for (RigidLattice::Piece &piece : L.pieces) {
+      piece.at.clear();
+      piece.joined.clear();
+    }
+  }
+  L.cell_piece.assign(cells, -1);
+  for (size_t c = 0; c < cells; c++) {
+    if (!in_cell[c].empty()) {
+      L.cell_piece[c] = in_cell[c][0];
     }
   }
   /* The system where the nodes go to sit (each node held a little where it is, pulled by its links and by the outline's
@@ -2301,6 +2918,39 @@ static void mesh_envelope_build(DeformShape &r, float blend)
   }
 }
 
+/* How the cage has moved as a whole: the turn, scale and move that takes most of its outline from rest to now, each
+ * sample's say going as one over how far it ends from there (iteratively reweighted, so least absolute distance): the
+ * part of a cage that is being pushed about doesn't drag that along, as a least squares fit would. */
+static void cage_whole_fit(DeformShape &r, float size)
+{
+  const size_t n = r.rest.size();
+  std::vector<double> say(n, 1.0);
+  for (int round = 0; round < 40; round++) {
+    double total = 0.0, fx = 0.0, fy = 0.0, tx = 0.0, ty = 0.0;
+    for (size_t k = 0; k < n; k++) {
+      total += say[k];
+      fx += say[k] * r.rest[k].x;
+      fy += say[k] * r.rest[k].y;
+      tx += say[k] * r.now[k].x;
+      ty += say[k] * r.now[k].y;
+    }
+    fx /= total, fy /= total, tx /= total, ty /= total;
+    double c = 0.0, s = 0.0, ee = 0.0;
+    for (size_t k = 0; k < n; k++) {
+      const double ex = r.rest[k].x - fx, ey = r.rest[k].y - fy, gx = r.now[k].x - tx, gy = r.now[k].y - ty;
+      c += say[k] * (ex * gx + ey * gy);
+      s += say[k] * (ex * gy - ey * gx);
+      ee += say[k] * (ex * ex + ey * ey);
+    }
+    r.whole_from = float2(float(fx), float(fy));
+    r.whole_to = float2(float(tx), float(ty));
+    r.whole_turn = ee > 1e-20 ? float2(float(c / ee), float(s / ee)) : float2(1.0f, 0.0f);
+    for (size_t k = 0; k < n; k++) {
+      say[k] = 1.0 / std::max(double(length(r.now[k] - cage_whole_at(r, r.rest[k]))), double(size) * 1e-4);
+    }
+  }
+}
+
 static void cage_method_build(DeformShape &r)
 {
   const size_t n = r.rest.size();
@@ -2316,6 +2966,7 @@ static void cage_method_build(DeformShape &r)
   if (size < 1e-6f) {
     return;
   }
+  std::vector<std::pair<size_t, size_t>> side_samples;
   if (r.cage_method == CageMethod::Envelope) {
     /* The sides: the outline cut at its points (OUTLINE_STEPS samples to a segment). */
     const size_t steps = n % size_t(OUTLINE_STEPS) == 0 ? size_t(OUTLINE_STEPS) : n;
@@ -2327,11 +2978,23 @@ static void cage_method_build(DeformShape &r)
       }
       if (envelope_side_finish(side, size)) {
         r.envelope_sides.push_back(std::move(side));
+        side_samples.emplace_back(first, steps + 1);
       }
     }
     /* As far as the cage is big: a band along a side keeps nearly all its width (one a tenth as wide as the cage, 90%
      * or more), and what is deep inside still mostly follows the cage as a whole. */
     r.envelope_reach = size;
+    /* Range runs to no limit at all at its top, so nothing jumps as it gets there: half way, as far as the cage is big. */
+    r.envelope_far = std::max(size * r.envelope_range / std::max(1.0f - r.envelope_range, 1e-4f), size * 2e-3f);
+    if (r.envelope_range < 1.0f) {
+      cage_whole_fit(r, size);
+      for (DeformShape::EnvelopeSide &side : r.envelope_sides) {
+        side.moved.resize(side.rest.size());
+        for (size_t k = 0; k < side.rest.size(); k++) {
+          side.moved[k] = length(side.now[k] - cage_whole_at(r, side.rest[k]));
+        }
+      }
+    }
     /* On to the rest: the cage as a whole, under the sides, is Rigid's. */
   }
   /* Past the outline: how each corner turns (its two sides' turns, as lengths of 1: a band along the outline keeps its
@@ -2372,12 +3035,26 @@ static void cage_method_build(DeformShape &r)
   const std::vector<float2> &rest = L.rest;
   const std::vector<std::vector<RigidLattice::Link>> &links = L.links;
   const std::vector<RigidLattice::Hold> &holds = L.holds;
+  /* By a narrow gap mean value coordinates turn wild (weights of opposite signs on two sides nearly at one place, so
+   * what lies there can be thrown off by many times the move) and change too fast for offsets over a lattice to take
+   * back: a lattice that has been cut starts from the cage as a whole instead. */
+  const bool cut = !L.stencil_pieces.empty();
+  if (cut) {
+    r.lattice_cut = lattice;
+    cage_whole_fit(r, size);
+  }
+  if (!side_samples.empty()) {
+    L.walk_sides(side_samples, size);
+    if (!L.detours.empty()) {
+      r.envelope_walks = lattice;
+    }
+  }
   /* Starting from mean value coordinates (what the offsets are measured from). */
   std::vector<float2> start(static_cast<size_t>(count)), pos(static_cast<size_t>(count));
   for (int k = 0; k < count; k++) {
-    float2 q = rest[size_t(k)];
+    float2 q = cut ? cage_whole_at(r, rest[size_t(k)]) : rest[size_t(k)];
     const std::vector<float> &w = L.mean_value[size_t(k)];
-    if (!w.empty()) {
+    if (!cut && !w.empty()) {
       q = float2(0.0f, 0.0f);
       for (size_t i = 0; i < n; i++) {
         q = q + r.now[i] * w[i];
@@ -2425,8 +3102,11 @@ static void cage_method_build(DeformShape &r)
   r.lattice.assign(static_cast<size_t>(nx * ny), float2(0.0f, 0.0f));
   std::vector<char> known(static_cast<size_t>(nx * ny), 0);
   for (int k = 0; k < count; k++) {
-    r.lattice[size_t(cell[size_t(k)])] = pos[size_t(k)] - start[size_t(k)];
-    known[size_t(cell[size_t(k)])] = 1;
+    /* Where nodes stand apart they are read from the stencils below. */
+    if (L.cut_at.empty() || !L.cut_at[size_t(cell[size_t(k)])]) {
+      r.lattice[size_t(cell[size_t(k)])] = pos[size_t(k)] - start[size_t(k)];
+      known[size_t(cell[size_t(k)])] = 1;
+    }
   }
   for (int ring = 0; ring < int(fade / h); ring++) {
     const std::vector<char> was = known;
@@ -2448,6 +3128,61 @@ static void cage_method_build(DeformShape &r)
         if (around > 0) {
           r.lattice[size_t(j * nx + i)] = sum * (0.92f / float(around));
           known[size_t(j * nx + i)] = 1;
+        }
+      }
+    }
+  }
+  if (L.stencil_pieces.empty()) {
+    return;
+  }
+  /* What each piece by a gap reads: its side's nodes, the plain lattice where nothing stands apart, and where neither
+   * is there, carried on from around it as past the nodes above. */
+  r.lattice_stencils.resize(L.stencil_pieces.size());
+  std::vector<char> has_node(static_cast<size_t>(nx * ny), 0);
+  for (const int at : cell) {
+    has_node[size_t(at)] = 1;
+  }
+  for (size_t s = 0; s < L.stencil_pieces.size(); s++) {
+    const RigidLattice::Piece &piece = L.pieces[size_t(L.stencil_pieces[s])];
+    std::array<float2, 16> &stencil = r.lattice_stencils[s];
+    std::array<char, 16> have{};
+    for (int b = 0; b < 4; b++) {
+      for (int a = 0; a < 4; a++) {
+        const size_t k = size_t(b * 4 + a);
+        const int i = piece.i - 1 + a, j = piece.j - 1 + b;
+        stencil[k] = float2(0.0f, 0.0f);
+        if (piece.nodes[k] >= 0) {
+          stencil[k] = pos[size_t(piece.nodes[k])] - start[size_t(piece.nodes[k])];
+          have[k] = 1;
+        }
+        /* A node there it isn't joined to is the other side's. */
+        else if (i >= 0 && i < nx && j >= 0 && j < ny && !L.cut_at[size_t(j * nx + i)] && !has_node[size_t(j * nx + i)]) {
+          stencil[k] = r.lattice[size_t(j * nx + i)];
+          have[k] = 1;
+        }
+      }
+    }
+    for (int ring = 0; ring < 3; ring++) {
+      const std::array<char, 16> was = have;
+      for (int b = 0; b < 4; b++) {
+        for (int a = 0; a < 4; a++) {
+          if (was[size_t(b * 4 + a)]) {
+            continue;
+          }
+          float2 sum(0.0f, 0.0f);
+          int around = 0;
+          for (int y = std::max(b - 1, 0); y <= std::min(b + 1, 3); y++) {
+            for (int x = std::max(a - 1, 0); x <= std::min(a + 1, 3); x++) {
+              if (was[size_t(y * 4 + x)]) {
+                sum = sum + stencil[size_t(y * 4 + x)];
+                around++;
+              }
+            }
+          }
+          if (around > 0) {
+            stencil[size_t(b * 4 + a)] = sum * (0.92f / float(around));
+            have[size_t(b * 4 + a)] = 1;
+          }
         }
       }
     }
@@ -2488,6 +3223,9 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
       }
       if (!d.cage_turn.empty() && !inside(d.rest, p)) {
         return outline_carry(d.rest, d.now, d.cage_turn, p, polyline_distance(d.rest, true, p), d.cage_band);
+      }
+      if (d.lattice_cut) {
+        return cage_whole_at(d, p) + rigid_offset(d, p);
       }
       if (!mean_value(d.rest, p, scratch)) {
         return p;
@@ -2895,6 +3633,85 @@ float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 a
   }
   std::vector<float> scratch;
   return at + (deform_map(*shape, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
+}
+
+bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r)
+{
+  r = {};
+  uint64_t build = 0;
+  const std::shared_ptr<const DeformShape> shape =
+      vector_deform_loops(doc, layer, m) ? nullptr : deform_shape_kept(doc, layer, m, false, build);
+  if (!shape || shape->kind != DeformKind::Cage || shape->cage_method != CageMethod::Envelope) {
+    return false;
+  }
+  const DeformShape &d = *shape;
+  const bool bent = doc.frame_current != 0 && m.deform_strength > 0.0f;
+  const std::vector<float2> &v = d.rest;
+  const size_t n = v.size();
+  double twice_area = 0.0;
+  float2 lo = v[0], hi = v[0];
+  for (size_t k = 0; k < n; k++) {
+    twice_area += double(cross(v[k], v[(k + 1) % n]));
+    lo = float2(std::min(lo.x, v[k].x), std::min(lo.y, v[k].y));
+    hi = float2(std::max(hi.x, v[k].x), std::max(hi.y, v[k].y));
+  }
+  const float size = std::max(hi.x - lo.x, hi.y - lo.y);
+  const auto inward = [&](float2 way) {
+    way = normalize(way);
+    return twice_area > 0.0 ? float2(-way.y, way.x) : float2(way.y, -way.x);
+  };
+  /* A line in from each sample, and more at a corner, or they would leave a wedge between them. */
+  struct Line {
+    size_t sample;
+    float2 way;
+  };
+  std::vector<Line> lines;
+  for (size_t k = 0; k < n; k++) {
+    const float2 before = inward(v[k] - v[(k + n - 1) % n]), after = inward(v[(k + 1) % n] - v[k]);
+    const float turn = std::atan2(cross(before, after), dot(before, after));
+    const int fans = std::clamp(int(std::fabs(turn) / 0.25f), 1, 8);
+    for (int f = 0; f < fans; f++) {
+      const float t = turn * (float(f) + 0.5f) / float(fans);
+      const float c = std::cos(t), s = std::sin(t);
+      lines.push_back({k, float2(before.x * c - before.y * s, before.y * c + before.x * s)});
+    }
+  }
+  constexpr int STEPS = 16;
+  std::vector<std::vector<int>> rows(lines.size());
+  std::vector<char> at_limit(lines.size(), 0);
+  std::vector<float> scratch;
+  for (size_t l = 0; l < lines.size(); l++) {
+    const float2 from = v[lines[l].sample];
+    /* As Range bends: further where a place has moved further. */
+    const float moved = d.envelope_range < 1.0f ?
+                            length(d.now[lines[l].sample] - cage_whole_at(d, from)) :
+                            0.0f;
+    const float far = std::max(d.envelope_far, moved * 2.0f), go = std::min(far, size);
+    for (int step = 0; step <= STEPS; step++) {
+      const float t = go * float(step) / float(STEPS);
+      const float2 p = from + lines[l].way * t;
+      /* Each line stops where another side is nearer: what it would reach past there isn't this side's to reach, and
+       * this way it can't run out of the cage or over a gap. */
+      if (step > 0 && (!inside(v, p) || polyline_distance(v, true, p) < t * 0.95f)) {
+        break;
+      }
+      rows[l].push_back(int(r.at.size()));
+      r.at.push_back(bent ? vector_deform_point(&d, m, p) : p);
+      r.say.push_back(1.0f - smooth01(t / far));
+      at_limit[l] = step == STEPS && far <= size;
+    }
+  }
+  for (size_t l = 0; l < lines.size(); l++) {
+    const size_t next = (l + 1) % lines.size();
+    const size_t both = std::min(rows[l].size(), rows[next].size());
+    for (size_t k = 0; k + 1 < both; k++) {
+      r.quads.push_back({rows[l][k], rows[next][k], rows[next][k + 1], rows[l][k + 1]});
+    }
+    if (at_limit[l] && at_limit[next]) {
+      r.limit.push_back({rows[l].back(), rows[next].back()});
+    }
+  }
+  return true;
 }
 
 bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m)

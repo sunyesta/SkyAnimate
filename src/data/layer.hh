@@ -845,6 +845,10 @@ struct Modifier {
   /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how
    * near it is); 1, gently (as how near it is). */
   float deform_blend = 0.5f;
+  /* Envelope's Range: how far through the cage a side that has moved bends what lies around it, as a share: 1, the
+   * whole cage; half way, as far as the cage is big; less, less. Past it, what lies inside goes as the cage does as a
+   * whole. */
+  float deform_range = 1.0f;
   /* Follow Deform: the place on the shape that carries the drawing, in this layer's space at rest, shown light blue when
    * `deform_show_point`; with `deform_two` a second one, whose way from the first turns the drawing (`deform_rotation`)
    * and whose distance from it scales it (`deform_scale`). Each can be keyed along the shape (`deform_shift`, the change

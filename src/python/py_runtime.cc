@@ -3242,6 +3242,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["mesh_method"] = mesh_method_id(mod.deform_mesh_method);
         d["smooth"] = mod.deform_smooth;
         d["blend"] = mod.deform_blend;
+        d["range"] = mod.deform_range;
         if (mod.type == ModifierType::FollowDeform) {
           const auto pair = [](float2 v) { return py::make_tuple(v.x, v.y); };
           d["point"] = pair(mod.deform_point);
@@ -3348,6 +3349,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         return vector_deform_weights(doc, layer, layer.modifiers[size_t(index)]);
       },
       py::arg("id"), py::arg("index"), py::arg("reset") = false);
+  m.def("layer_deform_range_view", [layer_or_raise](uint64_t id, int index) -> py::object {
+    Layer &layer = layer_or_raise(id);
+    if (index < 0 || index >= int(layer.modifiers.size()) || !modifier_is_deform(layer.modifiers[size_t(index)].type)) {
+      throw py::index_error("no deform modifier (Curve, Cage or Mesh Deform) " + std::to_string(index));
+    }
+    DeformRangeView view;
+    if (!vector_deform_range_view(*current_context().document, layer, layer.modifiers[size_t(index)], view)) {
+      return py::none();
+    }
+    py::list at;
+    for (size_t k = 0; k < view.at.size(); k++) {
+      at.append(py::make_tuple(view.at[k].x, view.at[k].y, view.say[k]));
+    }
+    return py::make_tuple(at, view.quads.size(), view.limit.size());
+  });
   m.def("layer_modifier_set", [layer_or_raise](uint64_t id, int index, py::dict values) {
     Layer &layer = layer_or_raise(id);
     if (index < 0 || index >= int(layer.modifiers.size())) {
@@ -3631,6 +3647,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "blend") {
         mod.deform_blend = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "range") {
+        mod.deform_range = std::clamp(value.cast<float>(), 0.0f, 1.0f);
       }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");

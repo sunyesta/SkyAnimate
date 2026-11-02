@@ -579,6 +579,12 @@ class _Layer:
         reset=True first fills its Custom group with the automatic weights (Reset to Automatic)."""
         return _oanim.layer_deform_weights(self._id, index, reset)
 
+    def deform_range_view(self, index):
+        """What Cage Deform `index`'s Range reaches, as the viewport tints it while its slider is dragged: places
+        [(x, y, say)] where they show now, say 1 at the cage's outline and 0 at the limit, and how many quads join them
+        and how many lines draw the limit. None if it isn't an Envelope."""
+        return _oanim.layer_deform_range_view(self._id, index)
+
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
         shapes [(name, closed, connected, merged, area, fill)]): merged, what another layer's Boolean

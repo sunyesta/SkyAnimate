@@ -3517,6 +3517,18 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       factor_slider("##deform_blend", &m.deform_blend);
       done |= ImGui::IsItemDeactivatedAfterEdit();
+      if (!follows) {
+        modifier_row_label("Range", column, "How far through the cage a side that has moved bends what lies around "
+                                            "it. Past that, what lies inside stays with the cage as a whole, so "
+                                            "pushing one side leaves the far side alone. At the top, the whole cage. "
+                                            "The viewport shows it while you drag");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+        factor_slider("##deform_range", &m.deform_range);
+        if (ImGui::IsItemActive()) {
+          C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount()};
+        }
+        done |= ImGui::IsItemDeactivatedAfterEdit();
+      }
     }
   }
   else if (kind == DeformKind::Mesh) {
