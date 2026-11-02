@@ -5,6 +5,8 @@
 - Mirroring an action takes in the bone layers inside it: one with no side mirrors its own bones, and a pair (Arm_L,
   Arm_R) take each other's.
 
+- A, Alt A and Ctrl I from a bone layer take in the sub bone groups shown inside it, not those around it.
+
 Clicking and boxing bones through a family needs a viewport: that was checked on a private copy of a real rig.
 
 Run with:  OpenAnimate --background --python tests/test_nested_bone_groups.py
@@ -148,5 +150,52 @@ assert ops.anim.action_set(name="") == {'FINISHED'}
 at(0)
 for name, place in rest.items():
     assert close(tip(inner, name), place), ("the original is as it was", name)
+
+# --- Picking all from the bone layer around them --------------------------------------------------------------------------
+def picked(rig):
+    return [b["name"] for b in rig.bones if b["selected"]]
+
+
+def press(key, **mods):
+    assert oanim.wm.event_simulate(key, area="Viewport", **mods)
+
+
+at(0)
+layers.active = outer
+press("A", alt=True)
+assert picked(outer) == [] and picked(inner) == []
+press("A")
+assert "Turn_L" in picked(outer) and sorted(picked(inner)) == ["Cheek_L", "Cheek_R", "Jaw_X"], (picked(outer), picked(inner))
+assert sorted(picked(arm_l)) == ["Upper"] and sorted(picked(arm_r)) == ["Upper"], "every sub bone group inside, however deep"
+assert layers.active.id == outer.id, "still worked from the outside"
+press("A", alt=True)
+assert picked(outer) == [] and picked(inner) == [] and picked(arm_l) == []
+# Ctrl I turns them over along with its own.
+layers.active = inner
+inner.select_bone("Jaw_X")
+layers.active = outer
+press("I", ctrl=True)
+assert "Jaw_X" not in picked(inner) and sorted(picked(inner)) == ["Cheek_L", "Cheek_R"], picked(inner)
+assert "Turn_L" in picked(outer) and picked(arm_l) == ["Upper"]
+press("A", alt=True)
+
+# From inside, the bone layers around it stay out of it.
+layers.active = inner
+press("A")
+assert sorted(picked(inner)) == ["Cheek_L", "Cheek_R", "Jaw_X"] and picked(outer) == [] and picked(arm_l) == []
+press("A", alt=True)
+
+# A bone layer that isn't a sub bone group, or that's hidden, isn't worked from outside.
+inner.sub_bone_group = False
+layers.active = outer
+press("A")
+assert picked(inner) == [] and "Turn_L" in picked(outer)
+press("A", alt=True)
+inner.sub_bone_group = True
+arm_r.visible = False
+press("A")
+assert picked(arm_r) == [] and picked(arm_l) == ["Upper"]
+press("A", alt=True)
+arm_r.visible = True
 
 print("nested_bone_groups: ok")

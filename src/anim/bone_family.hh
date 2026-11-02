@@ -5,7 +5,9 @@
  *
  * A sub bone group is a bone layer inside another (Layer::sub_bone_group, on by default), hung from one
  * of the outer bones with Parent Bone. Its bones show, and a click on one picks it, while the bone layer
- * around it is worked in, and the other way round: the bone layers worked in together are a family. A
+ * around it is worked in, and the other way round: the bone layers worked in together are a family. Worked
+ * in from the outside, A, Alt A, Ctrl I and a box take in the bones of those inside as well. Moving bones
+ * still moves the active bone layer's alone. A
  * sub bone group inside a switch belongs only while the switch shows it, so its bones come and go with
  * its drawing (as Spine's skin bones). Drawings still follow only their nearest bone layer (Moho's
  * rule), so a drawing can never be bound to another child's bones.
@@ -28,6 +30,9 @@ struct Layer;
 /* The bone layers worked in together with `armature`: out through sub bone groups to the outermost,
  * then it and every sub bone group inside it the viewport shows; `armature` itself always. */
 std::vector<Layer *> armature_family(Document &doc, uint64_t armature);
+/* `armature`, then the bone layers of its family inside it: what picking all or a box takes in from it, since a character's
+ * bones are worked from the bone layer around them. */
+std::vector<Layer *> armature_and_inside(Document &doc, uint64_t armature);
 
 /* What a bone's swaps lead to: the (layer, bone) at the end of its chain of swaps, itself for none. */
 std::pair<uint64_t, uint64_t> bone_swap_root(const Document &doc, uint64_t layer, uint64_t bone);

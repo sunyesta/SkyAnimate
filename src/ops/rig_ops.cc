@@ -12,6 +12,7 @@
 #include "anim/switch.hh"
 #include "anim/bone_family.hh"
 #include "anim/action_mirror.hh"
+#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/follow_point.hh"
@@ -729,12 +730,14 @@ void rig_operators_register()
                });
   rig_operator("armature.select_all", "Select All Bones", "Select every bone of the bone layer (A)",
                bone_layer_active, [](Context &C) {
-                 Layer &armature = *document_active_layer(*C.document);
-                 for (Bone &b : armature.bones) {
-                   bone_select(b, bone_shown(armature, b));
-                 }
-                 if (!bone_find(armature, armature.active_bone) && !armature.bones.empty()) {
-                   armature.active_bone = armature.bones.front().id;
+                 for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
+                   Layer &armature = *layer;
+                   for (Bone &b : armature.bones) {
+                     bone_select(b, bone_shown(armature, b));
+                   }
+                   if (!bone_find(armature, armature.active_bone) && !armature.bones.empty()) {
+                     armature.active_bone = armature.bones.front().id;
+                   }
                  }
                  return OpStatus::Finished;
                });
@@ -742,18 +745,20 @@ void rig_operators_register()
                "Select the bones that aren't selected and deselect those that are (Ctrl I), as Blender's Invert; "
                "hidden bones stay unselected",
                bone_layer_active, [](Context &C) {
-                 Layer &armature = *document_active_layer(*C.document);
-                 for (Bone &b : armature.bones) {
-                   /* A bone with only one end picked counts as picked, as it shows. */
-                   const bool picked = b.selected || b.select_head || b.select_tail;
-                   bone_select(b, !picked && bone_shown(armature, b));
-                 }
-                 const Bone *active = bone_find(armature, armature.active_bone);
-                 if (!active || !active->selected) {
-                   for (const Bone &b : armature.bones) {
-                     if (b.selected) {
-                       armature.active_bone = b.id;
-                       break;
+                 for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
+                   Layer &armature = *layer;
+                   for (Bone &b : armature.bones) {
+                     /* A bone with only one end picked counts as picked, as it shows. */
+                     const bool picked = b.selected || b.select_head || b.select_tail;
+                     bone_select(b, !picked && bone_shown(armature, b));
+                   }
+                   const Bone *active = bone_find(armature, armature.active_bone);
+                   if (!active || !active->selected) {
+                     for (const Bone &b : armature.bones) {
+                       if (b.selected) {
+                         armature.active_bone = b.id;
+                         break;
+                       }
                      }
                    }
                  }
@@ -761,7 +766,9 @@ void rig_operators_register()
                });
   rig_operator("armature.select_none", "Deselect All Bones", "Deselect every bone of the bone layer (Alt A)",
                bone_layer_active, [](Context &C) {
-                 armature_deselect_all(*document_active_layer(*C.document));
+                 for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
+                   armature_deselect_all(*layer);
+                 }
                  return OpStatus::Finished;
                });
 

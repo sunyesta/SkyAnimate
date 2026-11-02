@@ -4,6 +4,7 @@
 #include <cmath>
 #include <set>
 
+#include "anim/draw_order.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 
@@ -55,6 +56,20 @@ std::vector<Layer *> armature_family(Document &doc, uint64_t armature)
     family.push_back(self);
   }
   return family;
+}
+
+std::vector<Layer *> armature_and_inside(Document &doc, uint64_t armature)
+{
+  std::vector<Layer *> layers;
+  if (Layer *self = layer_find(doc, armature)) {
+    layers.push_back(self);
+  }
+  for (Layer *l : armature_family(doc, armature)) {
+    if (l->id != armature && layer_inside(doc, l->id, armature)) {
+      layers.push_back(l);
+    }
+  }
+  return layers;
 }
 
 std::pair<uint64_t, uint64_t> bone_swap_root(const Document &doc, uint64_t layer, uint64_t bone)

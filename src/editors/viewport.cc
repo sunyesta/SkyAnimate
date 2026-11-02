@@ -7006,19 +7006,32 @@ static FamilyHit pick_family_cycling(Document &doc, Layer &armature, const ViewM
   return hit;
 }
 
-/* A box dragged on `armature`: `select` picks in it what the box holds; when that's none of its own bones, the first of
- * its family with bones in the box is worked in instead, so a character's bones all answer boxes as they do clicks. */
-static void box_select_family(Document &doc, Layer &armature, const std::function<void(Layer &)> &select)
+/* A click that starts again: nothing stays picked in `armature`'s family. */
+static void family_deselect_all(Document &doc, const Layer &armature)
+{
+  for (Layer *l : armature_family(doc, armature.id)) {
+    armature_deselect_all(*l);
+  }
+}
+
+/* A box dragged on `armature`: `select` picks in a bone layer what the box holds. It takes in the bone layers inside
+ * `armature` too; unless `extending`, when that's no bones at all, the first of the family around it with bones in the
+ * box is worked in instead, so a character's bones all answer boxes as they do clicks. */
+static void box_select_family(Document &doc, Layer &armature, bool extending, const std::function<void(Layer &)> &select)
 {
   const auto any_picked = [](const Layer &l) { 
     return std::any_of(l.bones.begin(), l.bones.end(), [](const Bone &b) { return b.selected || b.select_head || b.select_tail; });
   };
-  select(armature);
-  if (any_picked(armature)) {
+  bool caught = false;
+  for (Layer *l : armature_and_inside(doc, armature.id)) {
+    select(*l);
+    caught = caught || any_picked(*l);
+  }
+  if (caught || extending) {
     return;
   }
   for (Layer *l : armature_family(doc, armature.id)) {
-    if (l->id == armature.id) {
+    if (l->id == armature.id || layer_inside(doc, l->id, armature.id)) {
       continue;
     }
     select(*l);
@@ -9135,12 +9148,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
                   },
                   io.KeyShift, io.KeyAlt);
             };
-            if (io.KeyShift || io.KeyAlt) {
-              box(armature);
-            }
-            else {
-              box_select_family(doc, armature, box);
-            }
+            box_select_family(doc, armature, io.KeyShift || io.KeyAlt, box);
           }
           else if (io.KeyAlt) {
             /* Alt-drag takes bones out of the selection; an Alt-click picks the layer. */
@@ -9156,18 +9164,17 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
             Layer *other = best.layer && best.layer->id != armature.id ? best.layer : nullptr;
             const uint64_t picked = other ? 0 : best.hit.bone;
             const uint64_t other_bone = other ? best.hit.bone : 0;
-            if (!io.KeyShift || other) {
-              armature_deselect_all(armature);
+            if (!io.KeyShift) {
+              family_deselect_all(doc, armature);
             }
             if (other) {
-              if (!io.KeyShift) {
-                armature_deselect_all(*other);
-              }
               if (Bone *b = bone_find(*other, other_bone)) {
                 bone_select(*b, true);
                 other->active_bone = other_bone;
               }
-              doc.active_layer = other->id;
+              if (!io.KeyShift) {
+                doc.active_layer = other->id;
+              }
             }
             else if (Bone *b = bone_find(armature, picked)) {
               bone_select(*b, true);
@@ -11343,12 +11350,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
               },
               io.KeyShift, io.KeyCtrl);
         };
-        if (io.KeyShift || io.KeyCtrl) {
-          box(armature);
-        }
-        else {
-          box_select_family(doc, armature, box);
-        }
+        box_select_family(doc, armature, io.KeyShift || io.KeyCtrl, box);
         if (!point_layers.empty()) {
           select_box(C, view, a, b, handles);
         }
@@ -11365,19 +11367,23 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
                                pick_handle(C, view, g_bone_box.start, handles).layer);
         if (on_point) {
           if (!io.KeyShift) {
-            armature_deselect_all(armature);
+            family_deselect_all(doc, armature);
           }
           select_click(C, view, view.to_document(g_bone_box.start), handles);
           push_undo(C, "Select");
         }
         else {
           /* One of its family's under the click (the bone layer around it, a shown sub bone group,
-           * anim/bone_family.hh) is worked in instead. */
+           * anim/bone_family.hh) is worked in instead; with Shift it joins what's picked. */
           Layer *other = under.layer && under.layer->id != armature.id ? under.layer : nullptr;
+          if (!io.KeyShift) {
+            family_deselect_all(doc, armature);
+          }
           if (other) {
-            armature_deselect_all(armature);
-            bone_click_select(*other, hit, false);
-            doc.active_layer = other->id;
+            bone_click_select(*other, hit, io.KeyShift);
+            if (!io.KeyShift) {
+              doc.active_layer = other->id;
+            }
           }
           else {
             bone_click_select(armature, hit, io.KeyShift);
@@ -13674,7 +13680,8 @@ static void viewport_draw_contents(Area &area, Context &C)
                              : g_bone_modal.active               ? g_bone_modal.armature
                              : g_gizmo.mode != GizmoMode::None  ? g_gizmo.armature
                                                                  : 0;
-          draw_bones(dl, doc, l, view, l.id != doc.active_layer, &l == painting);
+          /* Faint, but what's picked in the family shows: A from the outside picks bones here too. */
+          draw_bones(dl, doc, l, view, l.id != doc.active_layer, &l == painting || family.contains(l.id));
         }
         self(self, l.children, visible);
       }
