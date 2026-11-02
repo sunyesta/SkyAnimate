@@ -65,10 +65,14 @@ bool animation_follow_playback(std::vector<Bone> &start, std::vector<Bone> &drag
 
 /* The bone layer whose actions a layer can use: itself, or the one it sits in; null if neither. */
 Layer *action_owner(Document &doc, uint64_t layer_id);
+/* Every bone layer whose actions reach a layer, nearest first: action_owner, then those around it, since an action
+ * animates everything inside its bone layer. */
+std::vector<Layer *> action_owners(Document &doc, uint64_t layer_id);
 /* Edits action `name` of bone layer `owner` ("" for the mainline). Returns false when there is
  * no such action. */
 bool document_set_action(Document &doc, uint64_t owner, const std::string &name);
-/* By name alone: the bone layer is found from the active layer, else any bone layer that has it. */
+/* By name alone: the bone layer is found from the active layer (the nearest around it that has it), else any bone layer
+ * that has it. */
 bool document_set_action_by_name(Document &doc, const std::string &name);
 /* Adds an action to `owner` (named uniquely from `name`) and starts editing it. Returns its name. */
 std::string document_action_new(Document &doc, uint64_t owner, const std::string &name);

@@ -228,8 +228,8 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
   }
 }
 
-/* Which timeline is edited: the mainline, or an action of the bone layer the active layer is in,
- * like Moho's switch between the mainline and an action. The + next to it adds an action.
+/* Which timeline is edited: the mainline, or an action of the bone layer the active layer is in or of
+ * one around it, like Moho's switch between the mainline and an action. The + next to it adds an action.
  *
  * The list, top to bottom: what the moment calls for first (the selected bone's smart actions; the smart
  * actions playing together now, with the fix for them or a new one), then Mainline, Actions, Smart
@@ -275,20 +275,23 @@ static void action_menu(Context &C, float width)
                         where.c_str());
     }
     else {
-      ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in (a separate "
-                        "animation for it and everything inside)\n\nPython: oanim.data.document.action");
+      ImGui::SetTooltip("Timeline being edited: the mainline, or an action of the bone layer you're in or one around it "
+                        "(a separate animation for it and everything inside)\n\nPython: oanim.data.document.action");
     }
   }
   /* Right-click Rename: the action, and the name being typed. */
   static std::string renaming, rename_to;
+  static uint64_t renaming_layer = 0;
   if (open) {
     std::string doomed;
-    const auto action_item = [&](const std::string &name, const std::string &label, const std::string &right,
+    uint64_t doomed_layer = 0;
+    const auto action_item = [&](const Layer &rig, const std::string &name, const std::string &label, const std::string &right,
                                  ImU32 right_col) {
+      ImGui::PushID(int(rig.id));
       ImGui::PushID(name.c_str());
-      const bool here = in_action && doc.action == name && owner && doc.action_layer == owner->id;
+      const bool here = in_action && doc.action == name && doc.action_layer == rig.id;
       if (ImGui::Selectable(label.c_str(), here)) {
-        operator_call(C, "anim.action_set", {{"name", name}});
+        operator_call(C, "anim.action_set", {{"name", name}, {"layer", std::to_string(rig.id)}});
       }
       if (!right.empty()) {
         const float rw = ImGui::CalcTextSize(right.c_str()).x;
@@ -300,9 +303,10 @@ static void action_menu(Context &C, float width)
         ImGui::OpenPopup("##action_menu");
       }
       if (ui_menu_begin("##action_menu")) {
-        const bool smart = owner && smart_action_bone(*owner, name);
+        const bool smart = smart_action_bone(rig, name) != nullptr;
         if (ui_menu_item("Rename...", nullptr, false, !smart)) {
           renaming = name;
+          renaming_layer = rig.id;
           rename_to = name;
         }
         if (smart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -310,9 +314,11 @@ static void action_menu(Context &C, float width)
         }
         if (ui_menu_item("Delete")) {
           doomed = name;
+          doomed_layer = rig.id;
         }
         ui_menu_end();
       }
+      ImGui::PopID();
       ImGui::PopID();
     };
     const auto percent = [](float share) { return std::to_string(int(std::lround(share * 100.0f))) + "%"; };
@@ -340,13 +346,13 @@ static void action_menu(Context &C, float width)
       for (const std::string &name : owner->actions) {
         if (smart_action_bone(*owner, name) == single) {
           /* A 360 smart action (its bone keyed a whole turn) goes round and round: say so. */
-          action_item(name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
+          action_item(*owner, name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
           count++;
         }
       }
       if (count < 2) {
         if (ImGui::Selectable(count == 0 ? "+ New Smart Action" : "+ New Smart Action (other way)")) {
-          operator_call(C, "anim.action_new", {{"name", single->name}, {"smart", "1"}});
+          operator_call(C, "anim.action_new", {{"name", single->name}, {"smart", "1"}, {"layer", std::to_string(owner->id)}});
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
           ImGui::SetTooltip("An action named after the bone: key the bone turning, and what it should move. Then "
@@ -442,33 +448,42 @@ static void action_menu(Context &C, float width)
     if (ImGui::Selectable("Mainline", !in_action)) {
       operator_call(C, "anim.action_set", {{"name", ""}});
     }
-    if (owner && !owner->actions.empty()) {
+    /* The bone layer it's in, and those around it: their actions animate this one too. */
+    std::vector<Layer *> rigs = action_owners(doc, doc.active_layer);
+    if (owner && std::find(rigs.begin(), rigs.end(), owner) == rigs.end()) {
+      rigs.insert(rigs.begin(), owner);
+    }
+    for (Layer *rig : rigs) {
+      if (rig->actions.empty()) {
+        continue;
+      }
+      const std::string above = rig == rigs.front() ? "" : rig->name + ": ";
       const auto section = [&](const char *title, auto &&wanted, auto &&item) {
         bool any = false;
-        for (const std::string &name : owner->actions) {
+        for (const std::string &name : rig->actions) {
           if (!wanted(name)) {
             continue;
           }
           if (!any) {
-            ImGui::SeparatorText(title);
+            ImGui::SeparatorText((above + title).c_str());
             any = true;
           }
           item(name);
         }
       };
-      const auto plain = [&](const std::string &name) { action_item(name, name, "", 0); };
-      section("Actions", [&](const std::string &n) { return !action_adds(*owner, n); }, plain);
-      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*owner, n) != nullptr; },
+      const auto plain = [&](const std::string &name) { action_item(*rig, name, name, "", 0); };
+      section("Actions", [&](const std::string &n) { return !action_adds(*rig, n); }, plain);
+      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*rig, n) != nullptr; },
               [&](const std::string &name) {
-                action_item(name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
+                action_item(*rig, name, name, smart_action_full_turn(*rig, name) ? "360Â°" : "", dim);
               });
-      const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(*owner);
-      section("Fix Actions", [&](const std::string &n) { return fix_action_find(*owner, n) != nullptr; },
+      const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(*rig);
+      section("Fix Actions", [&](const std::string &n) { return fix_action_find(*rig, n) != nullptr; },
               [&](const std::string &name) {
-                const FixAction &f = *fix_action_find(*owner, name);
-                const std::string broken = fix_action_broken(*owner, f);
-                const float strength = broken.empty() ? fix_action_strength(*owner, f, playing) : 0.0f;
-                action_item(name, name, !broken.empty() ? "broken" : strength > 0.0f ? percent(strength) : "",
+                const FixAction &f = *fix_action_find(*rig, name);
+                const std::string broken = fix_action_broken(*rig, f);
+                const float strength = broken.empty() ? fix_action_strength(*rig, f, playing) : 0.0f;
+                action_item(*rig, name, name, !broken.empty() ? "broken" : strength > 0.0f ? percent(strength) : "",
                             !broken.empty() ? COL_BROKEN : strength > 0.0f ? COL_FIX_TEXT : dim);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                   std::string drivers;
@@ -491,7 +506,7 @@ static void action_menu(Context &C, float width)
     }
     /* After drawing the list, which the deletion changes. */
     if (!doomed.empty()) {
-      operator_call(C, "anim.action_delete", {{"name", doomed}});
+      operator_call(C, "anim.action_delete", {{"name", doomed}, {"layer", std::to_string(doomed_layer)}});
     }
     ImGui::EndCombo();
   }
@@ -507,7 +522,7 @@ static void action_menu(Context &C, float width)
     const bool entered = ImGui::InputText("##rename_to", &rename_to,
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     if ((entered || ImGui::Button("Rename")) && !rename_to.empty()) {
-      operator_call(C, "anim.action_rename", {{"name", renaming}, {"to", rename_to}});
+      operator_call(C, "anim.action_rename", {{"name", renaming}, {"to", rename_to}, {"layer", std::to_string(renaming_layer)}});
       renaming.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -537,7 +552,7 @@ static void action_menu(Context &C, float width)
     const bool entered = ImGui::InputText("##action_name", new_name, sizeof(new_name),
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     if ((entered || ImGui::Button("Create")) && new_name[0] != '\0') {
-      operator_call(C, "anim.action_new", {{"name", new_name}});
+      operator_call(C, "anim.action_new", {{"name", new_name}, {"layer", std::to_string(owner->id)}});
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

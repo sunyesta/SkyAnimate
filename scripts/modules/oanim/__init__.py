@@ -355,6 +355,12 @@ class _Layer:
         return [dict(a) for a in _oanim.layer_actions(self._id)]
 
     @property
+    def action_owners(self):
+        """The bone layers whose actions reach this layer, as the action menu lists them: the one it is or is in, then
+        those around it."""
+        return [_Layer(i) for i in _oanim.layer_action_owners(self._id)]
+
+    @property
     def smart_actions_playing(self):
         """The smart actions playing now, their bones turned: [(name, frame, share of its length 0-1)]."""
         return [tuple(p) for p in _oanim.layer_smart_actions_playing(self._id)]

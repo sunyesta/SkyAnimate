@@ -22,6 +22,17 @@
 
 namespace oanim {
 
+/* The bone layer of action `name`: `layer` when given (the action menu lists the bone layers around the active layer too),
+ * else the one being edited if it's that action, else the active layer's. */
+static Layer *named_action_owner(Context &C, const std::string &name)
+{
+  Document &doc = *C.document;
+  if (op_has_arg(C, "layer")) {
+    return layer_find(doc, std::strtoull(op_arg(C, "layer").c_str(), nullptr, 10));
+  }
+  return !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer) : action_owner(doc, doc.active_layer);
+}
+
 std::vector<Layer *> keyed_layers(Context &C)
 {
   std::vector<Layer *> layers;
@@ -546,12 +557,16 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.action_new";
     ot.name = "New Action";
-    ot.description = "Add an action named `name` to the bone layer the active layer is in (or is), and start "
-                     "editing it: a separate animation for that bone layer and everything inside it";
+    ot.description = "Add an action named `name` to the bone layer the active layer is in (or is; layer=id: that one), "
+                     "and start editing it: a separate animation for that bone layer and everything inside it";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
-      Layer *owner = action_owner(*C.document, C.document->active_layer);
+      Layer *owner = op_has_arg(C, "layer") ? layer_find(*C.document, std::strtoull(op_arg(C, "layer").c_str(), nullptr, 10))
+                                            : action_owner(*C.document, C.document->active_layer);
+      if (!owner || !owner->is_bone_layer()) {
+        return OpStatus::Cancelled;
+      }
       std::string name = op_arg(C, "name", "Action");
       if (op_arg_bool(C, "smart")) {
         /* A smart action is named after its bone; a second one (" 2") turns the other way. */
@@ -582,16 +597,15 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.action_delete";
     ot.name = "Delete Action";
-    ot.description = "Delete action `name` of the bone layer the active layer is in (or is), with its keys "
-                     "(right-click an action in the timeline's action menu)";
+    ot.description = "Delete action `name` of the bone layer the active layer is in (or is; layer=id: that one), with "
+                     "its keys (right-click an action in the timeline's action menu)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       const std::string name = op_arg(C, "name");
       /* The action being edited may belong to another bone layer than the active one. */
-      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
-                                                                 : action_owner(doc, doc.active_layer);
+      Layer *owner = named_action_owner(C, name);
       if (!owner || !document_action_delete(doc, owner->id, name)) {
         report(ReportType::Warning, "No action named " + name);
         return OpStatus::Cancelled;
@@ -710,15 +724,14 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.action_rename";
     ot.name = "Rename Action";
-    ot.description = "Rename action `name` of the bone layer the active layer is in (or is) to `to`; fixes it drives "
-                     "follow (a smart action is named after its bone: rename the bone instead)";
+    ot.description = "Rename action `name` of the bone layer the active layer is in (or is; layer=id: that one) to "
+                     "`to`; fixes it drives follow (a smart action is named after its bone: rename the bone instead)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       const std::string name = op_arg(C, "name"), to = op_arg(C, "to");
-      Layer *owner = !doc.action.empty() && doc.action == name ? layer_find(doc, doc.action_layer)
-                                                                 : action_owner(doc, doc.active_layer);
+      Layer *owner = named_action_owner(C, name);
       if (!owner) {
         return OpStatus::Cancelled;
       }
@@ -742,28 +755,32 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.action_set";
     ot.name = "Edit Action";
-    ot.description = "Edit action `name` in the timeline (\"\" for the mainline); frame=N: on that frame. A fix "
-                     "opens on its pose nearest the pose now";
+    ot.description = "Edit action `name` in the timeline (\"\" for the mainline); layer=id: that bone layer's; frame=N: "
+                     "on that frame. A fix opens on its pose nearest the pose now";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       const std::string name = op_arg(C, "name");
       const bool frame_given = op_has_arg(C, "frame");
-      if (name == doc.action && !(frame_given && !name.empty())) {
+      const Layer *on = op_has_arg(C, "layer") && !name.empty() ? named_action_owner(C, name) : nullptr;
+      const bool same = name == doc.action && (!on || on->id == doc.action_layer);
+      if (same && !(frame_given && !name.empty())) {
         return OpStatus::Cancelled;
       }
       /* A fix opens on the pose nearest the one now (its first, with none near), worked out before leaving it. */
       int frame = frame_given ? op_arg_int(C, "frame", doc.frame_current) : -1;
       if (!frame_given && !name.empty()) {
         for (const Layer *flat : document_layers_flat(doc)) {
-          if (const FixAction *f = flat->is_bone_layer() ? fix_action_find(*flat, name) : nullptr; f && !f->poses.empty()) {
+          if (const FixAction *f = flat->is_bone_layer() && (!on || flat->id == on->id) ? fix_action_find(*flat, name) : nullptr;
+              f && !f->poses.empty())
+          {
             const int nearest = fix_action_mix(*flat, *f, smart_actions_playing(*flat)).nearest;
             frame = f->poses[size_t(std::max(nearest, 0))].frame;
           }
         }
       }
-      if (name != doc.action && !document_set_action_by_name(doc, name)) {
+      if (!same && !(on ? document_set_action(doc, on->id, name) : document_set_action_by_name(doc, name))) {
         report(ReportType::Warning, "No action named " + name);
         return OpStatus::Cancelled;
       }

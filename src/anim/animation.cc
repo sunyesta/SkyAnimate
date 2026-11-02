@@ -938,6 +938,17 @@ Layer *action_owner(Document &doc, uint64_t layer_id)
   return armature ? layer_find(doc, armature->id) : nullptr;
 }
 
+std::vector<Layer *> action_owners(Document &doc, uint64_t layer_id)
+{
+  std::vector<Layer *> owners;
+  for (Layer *owner = action_owner(doc, layer_id); owner;) {
+    owners.push_back(owner);
+    const Layer *around = layer_armature(doc, owner->id);
+    owner = around ? layer_find(doc, around->id) : nullptr;
+  }
+  return owners;
+}
+
 /* Calls f(channel, value) for every channel of a bone layer and everything inside it. */
 template<typename F> static void owner_for_each_channel(Layer &owner, F &&f)
 {
@@ -1038,7 +1049,7 @@ bool document_set_action_by_name(Document &doc, const std::string &name)
   if (name.empty()) {
     return document_set_action(doc, 0, "");
   }
-  if (Layer *owner = action_owner(doc, doc.active_layer)) {
+  for (Layer *owner : action_owners(doc, doc.active_layer)) {
     if (std::find(owner->actions.begin(), owner->actions.end(), name) != owner->actions.end()) {
       return document_set_action(doc, owner->id, name);
     }

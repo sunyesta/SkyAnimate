@@ -12,6 +12,8 @@
  * - A drawing in a switch that can't pair up (a nose drawn side on, facing one way) has no keys that could turn it
  *   round: it gets a flipped copy beside it ("Front_Nose_X Flipped"), which the new action's switch keys pick.
  * - Draw Order and switch keys name their layers' partners.
+ * - Bone layers inside go the same way: a sub bone group with no side mirrors its own bones, and one with a partner
+ *   (Arm_L, Arm_R) takes its partner's bones' keys, bone for bone.
  *
  * Masks aren't keys and stay as they are, nor are references' offsets mirrored. Runs on the mainline, on frame 0. */
 

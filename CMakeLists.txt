@@ -237,6 +237,8 @@ add_test(NAME follow_point
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point.py)
 add_test(NAME follow_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_deform.py)
+add_test(NAME nested_bone_groups
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_nested_bone_groups.py)
 add_test(NAME follow_point_stress
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point_stress.py)
 add_test(NAME annotations

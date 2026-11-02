@@ -6837,7 +6837,7 @@ struct BoneHit {
  * it isn't listed again. Clicking again in the same spot goes down this list. Posing (away from the
  * setup frame, as Blender's pose mode) a bone is picked whole: its ends pick the bone. */
 static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &armature, const ViewMapping &view,
-                                            ImVec2 mouse)
+                                            ImVec2 mouse, std::vector<std::pair<int, float>> *r_ranks = nullptr)
 {
   const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
   const float2 m(mouse.x, mouse.y);
@@ -6926,6 +6926,9 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
       continue;
     }
     hits.push_back(c.hit);
+    if (r_ranks) {
+      r_ranks->push_back({c.phase, c.d});
+    }
   }
   return hits;
 }
@@ -6940,24 +6943,90 @@ static BoneHit pick_bone_part(const Document &doc, const Layer &armature, const 
  * under it, round to the first again, as clicking again picks the layer below. */
 static struct {
   ImVec2 pos{-1e9f, -1e9f};
+  uint64_t layer = 0;
   BoneHit last;
 } g_bone_cycle;
 
-static BoneHit pick_bone_cycling(const Document &doc, const Layer &armature, const ViewMapping &view, ImVec2 mouse)
+/* A hit among a bone layer and the rest of its family (anim/bone_family.hh). */
+struct FamilyHit {
+  Layer *layer = nullptr;
+  BoneHit hit;
+};
+
+/* Everything a click at `mouse` hits in `armature` and the rest of its family, the best first, ranked together: a sub
+ * bone group's small bone isn't hidden by a long bone of the layer around it running past. At the same rank, `armature`'s
+ * own. */
+static std::vector<FamilyHit> pick_family_parts(Document &doc, Layer &armature, const ViewMapping &view, ImVec2 mouse)
 {
-  const std::vector<BoneHit> hits = pick_bone_parts(doc, armature, view, mouse);
-  BoneHit hit = hits.empty() ? BoneHit() : hits.front();
+  struct Ranked {
+    FamilyHit at;
+    std::pair<int, float> rank;
+  };
+  std::vector<Ranked> found;
+  const auto gather = [&](Layer &l) {
+    std::vector<std::pair<int, float>> ranks;
+    const std::vector<BoneHit> hits = pick_bone_parts(doc, l, view, mouse, &ranks);
+    for (size_t i = 0; i < hits.size(); i++) {
+      found.push_back({{&l, hits[i]}, ranks[i]});
+    }
+  };
+  gather(armature);
+  for (Layer *l : armature_family(doc, armature.id)) {
+    if (l->id != armature.id) {
+      gather(*l);
+    }
+  }
+  std::stable_sort(found.begin(), found.end(), [](const Ranked &a, const Ranked &b) {
+    if (a.rank.first != b.rank.first) {
+      return a.rank.first < b.rank.first;
+    }
+    return std::abs(a.rank.second - b.rank.second) > 0.01f && a.rank.second < b.rank.second;
+  });
+  std::vector<FamilyHit> hits;
+  for (const Ranked &r : found) {
+    hits.push_back(r.at);
+  }
+  return hits;
+}
+
+static FamilyHit pick_family_cycling(Document &doc, Layer &armature, const ViewMapping &view, ImVec2 mouse)
+{
+  const std::vector<FamilyHit> hits = pick_family_parts(doc, armature, view, mouse);
+  FamilyHit hit = hits.empty() ? FamilyHit() : hits.front();
   const ImVec2 d = mouse - g_bone_cycle.pos;
   if (!hits.empty() && d.x * d.x + d.y * d.y <= 16.0f) {
-    const auto at = std::find_if(hits.begin(), hits.end(), [&](const BoneHit &h) {
-      return h.bone == g_bone_cycle.last.bone && h.part == g_bone_cycle.last.part;
+    const auto at = std::find_if(hits.begin(), hits.end(), [&](const FamilyHit &h) {
+      return h.layer->id == g_bone_cycle.layer && h.hit.bone == g_bone_cycle.last.bone && h.hit.part == g_bone_cycle.last.part;
     });
     if (at != hits.end()) {
       hit = std::next(at) != hits.end() ? *std::next(at) : hits.front();
     }
   }
-  g_bone_cycle = {mouse, hit};
+  g_bone_cycle = {mouse, hit.layer ? hit.layer->id : 0, hit.hit};
   return hit;
+}
+
+/* A box dragged on `armature`: `select` picks in it what the box holds; when that's none of its own bones, the first of
+ * its family with bones in the box is worked in instead, so a character's bones all answer boxes as they do clicks. */
+static void box_select_family(Document &doc, Layer &armature, const std::function<void(Layer &)> &select)
+{
+  const auto any_picked = [](const Layer &l) { 
+    return std::any_of(l.bones.begin(), l.bones.end(), [](const Bone &b) { return b.selected || b.select_head || b.select_tail; });
+  };
+  select(armature);
+  if (any_picked(armature)) {
+    return;
+  }
+  for (Layer *l : armature_family(doc, armature.id)) {
+    if (l->id == armature.id) {
+      continue;
+    }
+    select(*l);
+    if (any_picked(*l)) {
+      doc.active_layer = l->id;
+      return;
+    }
+  }
 }
 
 /* The bone under the mouse (screen pixels), or 0. */
@@ -9056,13 +9125,22 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
           if (dragged) {
             const ImVec2 a = g.start_screen, b = io.MousePos;
             const ImVec2 lo_s(std::min(a.x, b.x), std::min(a.y, b.y)), hi_s(std::max(a.x, b.x), std::max(a.y, b.y));
-            armature_select_bones_in(
-                armature, setup,
-                [&](float2 p) {
-                  const ImVec2 s = view.to_screen(to_document.apply(p));
-                  return s.x >= lo_s.x && s.x <= hi_s.x && s.y >= lo_s.y && s.y <= hi_s.y;
-                },
-                io.KeyShift, io.KeyAlt);
+            const auto box = [&](Layer &l) {
+              const Transform2D l_to_document = layer_world_transform(doc, l.id);
+              armature_select_bones_in(
+                  l, setup,
+                  [&](float2 p) {
+                    const ImVec2 s = view.to_screen(l_to_document.apply(p));
+                    return s.x >= lo_s.x && s.x <= hi_s.x && s.y >= lo_s.y && s.y <= hi_s.y;
+                  },
+                  io.KeyShift, io.KeyAlt);
+            };
+            if (io.KeyShift || io.KeyAlt) {
+              box(armature);
+            }
+            else {
+              box_select_family(doc, armature, box);
+            }
           }
           else if (io.KeyAlt) {
             /* Alt-drag takes bones out of the selection; an Alt-click picks the layer. */
@@ -9071,19 +9149,13 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
             break;
           }
           else {
-            const uint64_t picked = pick_bone(doc, armature, view, io.MousePos);
-            /* Missed its own bones: one of its family's (the bone layer around it, a shown sub bone
-             * group) under the click is worked in instead, so a character's bones all answer clicks. */
-            Layer *other = nullptr;
-            uint64_t other_bone = 0;
-            if (!picked) {
-              for (Layer *l : armature_family(doc, armature.id)) {
-                if (l->id != armature.id && (other_bone = pick_bone(doc, *l, view, io.MousePos)) != 0) {
-                  other = l;
-                  break;
-                }
-              }
-            }
+            /* The best under the click: one of its family's (the bone layer around it, a shown sub bone
+             * group) is worked in instead, so a character's bones all answer clicks. */
+            const std::vector<FamilyHit> hits = pick_family_parts(doc, armature, view, io.MousePos);
+            const FamilyHit best = hits.empty() ? FamilyHit() : hits.front();
+            Layer *other = best.layer && best.layer->id != armature.id ? best.layer : nullptr;
+            const uint64_t picked = other ? 0 : best.hit.bone;
+            const uint64_t other_bone = other ? best.hit.bone : 0;
             if (!io.KeyShift || other) {
               armature_deselect_all(armature);
             }
@@ -11259,16 +11331,24 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       const std::vector<Layer *> point_layers = editable_layers(C);
       const HandleDisplay handles = handles_shown(C.document->overlays, C.wm->tool_settings);
       if (dragged) {
-        const Transform2D to_document = layer_world_transform(doc, armature.id);
         const ImVec2 a = g_bone_box.start, b = io.MousePos;
         const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y)), hi(std::max(a.x, b.x), std::max(a.y, b.y));
-        armature_select_joints_in(
-            armature, doc.frame_current == 0,
-            [&](float2 p) {
-              const ImVec2 s = view.to_screen(to_document.apply(p));
-              return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
-            },
-            io.KeyShift, io.KeyCtrl);
+        const auto box = [&](Layer &l) {
+          const Transform2D to_document = layer_world_transform(doc, l.id);
+          armature_select_joints_in(
+              l, doc.frame_current == 0,
+              [&](float2 p) {
+                const ImVec2 s = view.to_screen(to_document.apply(p));
+                return s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y;
+              },
+              io.KeyShift, io.KeyCtrl);
+        };
+        if (io.KeyShift || io.KeyCtrl) {
+          box(armature);
+        }
+        else {
+          box_select_family(doc, armature, box);
+        }
         if (!point_layers.empty()) {
           select_box(C, view, a, b, handles);
         }
@@ -11277,7 +11357,8 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       else {
         /* A point under the mouse wins over a bone's body (points are the smaller targets); a
          * bone's ball wins over a point. */
-        const BoneHit hit = pick_bone_cycling(doc, armature, view, g_bone_box.start);
+        const FamilyHit under = pick_family_cycling(doc, armature, view, g_bone_box.start);
+        const BoneHit hit = under.hit;
         /* A handle counts as a point here (Shift-click picks it as on the layer itself). */
         const bool on_point = !point_layers.empty() && (hit.part == BonePart::Body || !hit.bone) &&
                               (point_under(C, view, g_bone_box.start) ||
@@ -11290,21 +11371,12 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
           push_undo(C, "Select");
         }
         else {
-          /* Missed its own bones: one of its family's under the click (the bone layer around it, a
-           * shown sub bone group, anim/bone_family.hh) is worked in instead. */
-          Layer *other = nullptr;
-          BoneHit other_hit;
-          if (!hit.bone) {
-            for (Layer *l : armature_family(doc, armature.id)) {
-              if (l->id != armature.id && (other_hit = pick_bone_part(doc, *l, view, g_bone_box.start)).bone) {
-                other = l;
-                break;
-              }
-            }
-          }
+          /* One of its family's under the click (the bone layer around it, a shown sub bone group,
+           * anim/bone_family.hh) is worked in instead. */
+          Layer *other = under.layer && under.layer->id != armature.id ? under.layer : nullptr;
           if (other) {
             armature_deselect_all(armature);
-            bone_click_select(*other, other_hit, false);
+            bone_click_select(*other, hit, false);
             doc.active_layer = other->id;
           }
           else {
@@ -11315,7 +11387,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
               deselect_all(l->drawing);
             }
           }
-          push_undo(C, hit.bone || other ? "Select Bone" : "Deselect");
+          push_undo(C, hit.bone ? "Select Bone" : "Deselect");
         }
       }
       g_bone_box = {};

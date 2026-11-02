@@ -462,16 +462,30 @@ std::vector<Channel<float> *> constraint_channels(BoneConstraint &c)
   return channels;
 }
 
-/* A bone's Transform is along its own rest axes, so it goes through both bones' setup frames. */
-void mirror_bone_keys(Layer &owner, const std::string &from, const std::string &to)
+/* The bone of `source` that `bone` of `target` takes its keys from: its other side in the same bone layer, and in a
+ * partner bone layer its other side there, else the one of its own name. */
+uint64_t bone_mirror_source(const Layer &target, const Bone &bone, const Layer &source)
 {
-  const std::vector<BonePose> poses = armature_pose(owner);
-  const Transform2D flip{-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
-  const std::vector<Bone> sources = owner.bones;
-  for (Bone &bone : owner.bones) {
-    const uint64_t other = bone_mirror_id(owner, bone.id);
+  if (target.id == source.id) {
+    return bone_mirror_id(target, bone.id);
+  }
+  const Bone *other = bone_find_by_name(source, bone_mirror_name(bone.name));
+  other = other ? other : bone_find_by_name(source, bone.name);
+  return other ? other->id : 0;
+}
+
+/* `target`'s bones take the keys of `source`'s, `flip` reflecting the one bone layer's space into the other's; the two are
+ * one for a bone layer with no side. A bone's Transform is along its own rest axes, so it goes through both bones' setup
+ * frames. */
+void mirror_bone_keys(Layer &target, const Layer &source_layer, const Transform2D &flip, const std::string &from,
+                      const std::string &to)
+{
+  const std::vector<BonePose> from_poses = armature_pose(source_layer), to_poses = armature_pose(target);
+  const std::vector<Bone> sources = source_layer.bones;
+  for (Bone &bone : target.bones) {
+    const uint64_t other = bone_mirror_source(target, bone, source_layer);
     const auto source = std::find_if(sources.begin(), sources.end(), [&](const Bone &b) { return b.id == other; });
-    const BonePose *from_pose = bone_pose_find(poses, other), *to_pose = bone_pose_find(poses, bone.id);
+    const BonePose *from_pose = bone_pose_find(from_poses, other), *to_pose = bone_pose_find(to_poses, bone.id);
     if (source == sources.end() || !from_pose || !to_pose) {
       continue;
     }
@@ -657,6 +671,9 @@ std::vector<std::string> document_action_mirror(Document &doc, uint64_t owner_id
     }
     Layer &source = *layer_find(doc, source_id);
     mirror_layer_keys(source, target, partner, from, to);
+    if (source.is_bone_layer() && target.is_bone_layer()) {
+      mirror_bone_keys(target, source, layer_mirror_to_partner(doc, source.id, target.id), from, to);
+    }
     if (!source.has_drawing() || !target.has_drawing() || source.is_reference() || target.is_reference()) {
       continue;
     }
@@ -669,7 +686,8 @@ std::vector<std::string> document_action_mirror(Document &doc, uint64_t owner_id
       }
     }
   }
-  mirror_bone_keys(*layer_find(doc, owner_id), from, to);
+  Layer &mirrored = *layer_find(doc, owner_id);
+  mirror_bone_keys(mirrored, mirrored, Transform2D{-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f}, from, to);
   animation_evaluate(doc, doc.frame_current);
   return notes;
 }

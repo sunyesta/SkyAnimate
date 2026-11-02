@@ -3964,6 +3964,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return out;
   });
+  m.def("layer_action_owners", [layer_or_raise](uint64_t id) {
+    layer_or_raise(id);
+    py::list out;
+    for (const Layer *owner : action_owners(*current_context().document, id)) {
+      out.append(owner->id);
+    }
+    return out;
+  });
   m.def("layer_smart_actions_playing", [layer_or_raise](uint64_t id) {
     Layer &layer = layer_or_raise(id);
     py::list out;
