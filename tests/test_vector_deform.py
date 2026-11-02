@@ -338,8 +338,7 @@ true_area = box.evaluated()[2][0][4]
 assert abs(fitted_area - true_area) < 0.003 * true_area, (fitted_area, true_area)
 assert box.modifiers[n]["resample_self"] is False
 # Resample Self: the same, whatever Precision says, by splitting each side.
-assert box.modifiers[n]["split"] == "COUNT" and box.modifiers[n]["pieces"] == 4
-box.modifier_set(n, resample_self=True)
+box.modifier_set(n, resample_self=True, split="COUNT", pieces=4)
 pts, _, shapes = box.evaluated()
 assert len(pts) == 16, ("each side in 4 pieces, whatever Precision says", len(pts))
 assert abs(shapes[0][4] - true_area) < 0.003 * true_area, (shapes[0][4], true_area)
@@ -396,7 +395,7 @@ assert twin.modifiers[tw]["kind"] == "Grid", twin.modifiers[tw]
 top = max(range(twin_warp.point_count), key=lambda k: twin_warp.points[k][1])
 key_point(twin_warp, top, (3.55, 3.6))
 for resample in (False, True):
-    twin.modifier_set(tw, resample_self=resample)
+    twin.modifier_set(tw, resample_self=resample, split="COUNT", pieces=4)
     got, _, got_shapes = twin.evaluated()
     want, _, want_shapes = twin_warp.evaluated()
     assert len(got) == (len(want) * 4 if resample else len(want)), ("no points added", resample, len(got))

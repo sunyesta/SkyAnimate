@@ -29,7 +29,7 @@ def add_deform(layer, target, kind="CAGE_DEFORM", **settings):
     layers.active = layer
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
     index = len(layer.modifiers) - 1
-    layer.modifier_set(index, layer=target.name, shape=target.shapes[0][0], **settings)
+    layer.modifier_set(index, layer=target.name, shape=target.shapes[0][0], **{"split": "COUNT", **settings})
     return index
 
 
@@ -47,10 +47,13 @@ line.add_curve([(0, 0.5), (1, 0.5)])
 art = new_layer("Art")
 art.add_curve([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)], closed=True, fill=True)
 stored = [tuple(p[:2]) for p in art.points]
-i = add_deform(art, cage)
+layers.active = art
+assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
+i = len(art.modifiers) - 1
 m = art.modifiers[i]
 assert m["cage_method"] == "ENVELOPE" and m["resample_self"] is True, m
-assert m["split"] == "COUNT" and m["pieces"] == 4, m
+assert m["split"] == "LENGTH" and abs(m["spacing"] - 0.009) < 1e-6, m
+art.modifier_set(i, layer=cage.name, shape=cage.shapes[0][0], split="COUNT")
 for kind in ("CURVE_DEFORM", "MESH_DEFORM"):
     layers.active = art
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}

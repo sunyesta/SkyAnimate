@@ -3343,8 +3343,9 @@ void rig_operators_register()
                      std::snprintf(name, sizeof(name), "%s.%03d", deform_type_name(m.type), k);
                      m.name = name;
                    }
-                   /* Resample Self's pieces start as the Resample modifier's do. */
-                   m.subdiv_by_length = false;
+                   /* Resample Self's pieces: fine enough for a line to follow a bend, however long it is. */
+                   m.subdiv_by_length = true;
+                   m.subdiv_spacing = 0.009f;
                    /* A Follow Deform goes where the cage it rides on puts things. */
                    if (m.type == ModifierType::CageDeform || m.type == ModifierType::FollowDeform) {
                      m.deform_cage_method = CageMethod::Envelope;

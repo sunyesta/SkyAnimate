@@ -153,10 +153,10 @@ def hausdorff(a, b, closed):
 
 
 VARIANTS = [
-    ("resample_self", None, {"resample_self": True, "precision": 0.0}),
+    ("resample_self", None, {"resample_self": True, "precision": 0.0, "split": "COUNT", "pieces": 4}),
     ("sub4", {"split": "COUNT", "pieces": 4}, {"resample_self": False, "precision": 0.0}),
     ("sublen", {"split": "LENGTH", "spacing": 0.15}, {"resample_self": False, "precision": 0.0}),
-    ("sub4_rs", {"split": "COUNT", "pieces": 4}, {"resample_self": True, "precision": 0.0}),
+    ("sub4_rs", {"split": "COUNT", "pieces": 4}, {"resample_self": True, "precision": 0.0, "split": "COUNT", "pieces": 4}),
 ]
 # What fitting each whole segment back to its bent samples made of the worst shape, when Resample Self did that.
 FIT = {"grid": 0.0296, "cell": 0.0114, "mesh": 0.0200, "wire": 0.0633, "curve_stretch": 0.0854, "box_mv": 0.0320,
