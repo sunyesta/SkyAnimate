@@ -871,7 +871,6 @@ static json layer_to_json(const Layer &layer)
                      {"child_position", c.child_position},
                      {"child_rotation", c.child_rotation},
                      {"child_scale", c.child_scale},
-                     {"divergence", num(c.divergence)},
                      {"weight", num(c.weight)},
                      {"wind_catch", num(c.wind_catch)},
                      {"own_gravity", c.own_gravity},
@@ -2630,7 +2629,6 @@ static Layer layer_from_json(const json &j, int depth)
       c.child_position = get_bool(cj, "child_position", true);
       c.child_rotation = get_bool(cj, "child_rotation", true);
       c.child_scale = get_bool(cj, "child_scale", true);
-      c.divergence = get_float(cj, "divergence", 0.0f);
       /* Saved with one Own Gravity & Wind for both. */
       const bool own_forces = get_bool(cj, "own_forces", false);
       c.own_gravity = get_bool(cj, "own_gravity", own_forces);

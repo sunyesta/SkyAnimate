@@ -224,15 +224,13 @@ static float2 shape_fit_head(const std::vector<float2> &region, const std::vecto
   return middle + (head - middle) * lo;
 }
 
-float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 target, float2 target_rest,
-                      float target_depth)
+float2 bone_look_gaze(float face, float2 eye, float2 target, float target_depth)
 {
   /* Along the face's axes (the bone layer's, turned as the head has turned in the picture), the target
-   * stands `target_depth` in front; outward is away from where it rests, between the eyes. */
+   * stands `target_depth` in front. */
   const float2 d = rotate(target - eye, -face);
   const float z = std::max(target_depth, 1e-4f);
-  const float out = rotate(eye - target_rest, -face).x >= 0.0f ? 1.0f : -1.0f;
-  return {std::atan2(d.x, z) + out * c.divergence, std::atan2(d.y, std::sqrt(d.x * d.x + z * z))};
+  return {std::atan2(d.x, z), std::atan2(d.y, std::sqrt(d.x * d.x + z * z))};
 }
 
 float2 bone_shape_limit(const BoneConstraint &c, float2 head)
@@ -506,9 +504,8 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
                  * they move the pupil on the ball, not the ball. */
                 const float2 rigged = parent_pose.apply(bone.setup_position);
                 const float2 keyed = parent_pose.apply_vector(position - bone.setup_position);
-                const float2 gaze = bone_look_gaze(c, face, rigged, poses[ti].head, poses[ti].setup_head, t->depth);
-                const float2 rest_gaze = bone_look_gaze(c, 0.0f, parent_setup.apply(bone.setup_position),
-                                                        poses[ti].setup_head, poses[ti].setup_head,
+                const float2 gaze = bone_look_gaze(face, rigged, poses[ti].head, t->depth);
+                const float2 rest_gaze = bone_look_gaze(0.0f, parent_setup.apply(bone.setup_position), poses[ti].setup_head,
                                                         value_at(t->depth_keys, t->depth, 0));
                 const float half_turn = 1.5707964f;
                 const float2 look = gaze - rest_gaze;

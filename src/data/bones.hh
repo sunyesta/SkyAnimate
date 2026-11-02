@@ -65,10 +65,8 @@ float2 bone_shape_limit(const BoneConstraint &c, float2 head);
  * Shape edge is put back where the limit holds it, on a posed frame, before the move is recorded. */
 void bone_shape_limit_affect(const Layer &armature, Bone &bone);
 /* Look At: the way an eye at `eye` looks at `target` standing `target_depth` in front of the face (yaw
- * and pitch, radians, from the camera), the face turned `face` in the picture; `target_rest` is where the
- * target stands at rest (between the eyes), which way is outward for Divergence. */
-float2 bone_look_gaze(const BoneConstraint &c, float face, float2 eye, float2 target, float2 target_rest,
-                      float target_depth);
+ * and pitch, radians, from the camera), the face turned `face` in the picture. */
+float2 bone_look_gaze(float face, float2 eye, float2 target, float target_depth);
 Bone *bone_find(Layer &armature, uint64_t id);
 const Bone *bone_find(const Layer &armature, uint64_t id);
 const Bone *bone_find_by_name(const Layer &armature, const std::string &name);

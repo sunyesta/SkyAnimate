@@ -261,7 +261,6 @@ Setting constraint_setting(BoneConstraint &c, const std::string &rest)
   if (rest == "chain") return int_setting(named("Chain"), &c.chain, 0, 64);
   if (rest == "max_stretch") return float_setting(named("Max Stretch"), &c.max_stretch, 1.0f, 10.0f);
   if (rest == "overlap") return float_setting(named("Overlap"), &c.overlap, 0.0f, 1.0f);
-  if (rest == "divergence") return float_setting(named("Divergence"), &c.divergence, -1.0f, 1.0f);
   if (rest == "softness") return float_setting(named("Softness"), &c.softness, 0.0f, 1000.0f);
   if (rest == "own_gravity") return bool_setting(named("Own Gravity"), &c.own_gravity);
   if (rest == "own_wind") return bool_setting(named("Own Wind"), &c.own_wind);

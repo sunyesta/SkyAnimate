@@ -468,8 +468,6 @@ struct BoneConstraint {
   bool child_position = true;
   bool child_rotation = true;
   bool child_scale = true;
-  /* LookAt: how far each eye turns outward from the target (radians), as real eyes don't quite meet on it. */
-  float divergence = 0.0f;
   /* LookAt, worked out every frame and never saved (anim/shape_limit.hh): half its Eye Shape's width and
    * height at frame 0, the size of the ball the pupil sits on (0 with no Eye Shape: it does nothing). */
   float2 look_reach;

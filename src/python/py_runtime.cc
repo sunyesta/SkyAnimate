@@ -2514,7 +2514,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["child_rotation"] = c.child_rotation;
       d["child_scale"] = c.child_scale;
       d["look_reach"] = py::make_tuple(c.look_reach.x, c.look_reach.y);
-      d["divergence"] = c.divergence;
       d["shape_region"] = c.shape_region.size();
       d["weight"] = c.weight;
       d["wind_catch"] = c.wind_catch;
@@ -2716,9 +2715,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "child_position" || key == "child_rotation" || key == "child_scale") {
         (key == "child_position" ? c.child_position : key == "child_rotation" ? c.child_rotation : c.child_scale) =
             value.cast<bool>();
-      }
-      else if (key == "divergence") {
-        c.divergence = value.cast<float>();
       }
       else if (key == "own_gravity" || key == "own_wind" || key == "own_forces") {
         /* own_forces: both. */

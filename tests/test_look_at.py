@@ -66,7 +66,7 @@ for eye in ("eye_L", "eye_R"):
 c = rig.bone_constraints("eye_L")[0]
 assert c["type"] == "LOOK_AT" and c["name"] == "Look At", c
 assert "squash" not in c and "keep_round" not in c, "nothing warps any more"
-for gone in ("facing", "max_side", "max_up", "max_down", "eyeball_size", "eyeball_auto", "eyeball_center", "look_range", "range_auto"):
+for gone in ("facing", "max_side", "max_up", "max_down", "eyeball_size", "eyeball_auto", "eyeball_center", "look_range", "range_auto", "divergence"):
     assert gone not in c, gone
     try:
         rig.bone_constraint_set("eye_L", 0, **{gone: 0.1})
@@ -206,14 +206,13 @@ rig.bone_constraint_set("look", 0, influence=0.0)
 at(30)
 assert math.dist(bone("look")["head"], (0.0, 1.0)) < 1e-4
 
-# Saved with the file, with its Eye Shape and Divergence.
-rig.bone_constraint_set("eye_R", 0, divergence=0.05)
+# Saved with the file, with its Eye Shape.
 path = str(pathlib.Path(tempfile.mkdtemp()) / "look_at.oanim")
 assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in layers.all() if l.type == "BONE")
 c = rig.bone_constraints("eye_R")[0]
-assert c["type"] == "LOOK_AT" and c["target"] == "look" and abs(c["divergence"] - 0.05) < 1e-6, c
+assert c["type"] == "LOOK_AT" and c["target"] == "look", c
 doc.frame_current = 30
 assert c["shape_layer"] == white_R.name or rig.bone_constraints("eye_R")[0]["shape_region"] > 3, c
 assert rig.bone_constraints("look")[0]["type"] == "CHILD_OF"

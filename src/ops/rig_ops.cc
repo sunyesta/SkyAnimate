@@ -437,9 +437,6 @@ static std::vector<std::string> bone_constraint_driven_fields(BoneConstraintType
     case BoneConstraintType::LimitShape:
       fields.insert(fields.end(), {"overlap", "softness"});
       break;
-    case BoneConstraintType::LookAt:
-      fields.insert(fields.end(), {"divergence"});
-      break;
     case BoneConstraintType::Dynamics:
       fields.insert(fields.end(), {"weight", "wind_catch", "own_gravity", "own_wind", "gravity", "wind",
                                    "wind_direction", "wind_gusts", "wind_gust_speed", "wind_turbulence"});
@@ -455,6 +452,7 @@ static std::vector<std::string> bone_constraint_driven_fields(BoneConstraintType
     case BoneConstraintType::IndependentAngle:
     case BoneConstraintType::TrackTo:
     case BoneConstraintType::StretchTo:
+    case BoneConstraintType::LookAt:
     case BoneConstraintType::FollowPoint:
       break;
   }

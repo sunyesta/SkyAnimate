@@ -4790,17 +4790,6 @@ static void constraints_panel(Context &C, Layer &armature)
             modifier_row_label("", column);
             ImGui::TextDisabled("Pick the eye's shape: Look At needs it");
           }
-          modifier_row_label("Divergence", column, "How far each eye turns outward from the target: real eyes don't\n"
-                                                   "quite meet on what they look at, a few degrees apart");
-          float degrees = c.divergence * 180.0f / PI;
-          const std::string divergence_path = constraint_path + "divergence";
-          const int driven_divergence = ui_driver_field_begin(C, armature.id, divergence_path, -1);
-          if (ui_drag_float("##divergence", &degrees, 0.1f, -30.0f, 30.0f, "%.1f\xC2\xB0", ImGuiSliderFlags_AlwaysClamp)) {
-            c.divergence = degrees * PI / 180.0f;
-          }
-          done("Look At");
-          ui_driver_typed(C, armature.id, divergence_path, -1);
-          ui_driver_field_end(C, armature.id, divergence_path, -1, driven_divergence);
           break;
         }
         case BoneConstraintType::MaintainVolume: {
