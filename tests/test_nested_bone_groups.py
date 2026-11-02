@@ -6,6 +6,7 @@
   Arm_R) take each other's.
 
 - A, Alt A and Ctrl I from a bone layer take in the sub bone groups shown inside it, not those around it.
+- G, R and S move what's picked in them, each by the same move in the document, unless a picked bone carries them already.
 
 Clicking and boxing bones through a family needs a viewport: that was checked on a private copy of a real rig.
 
@@ -197,5 +198,126 @@ press("A")
 assert picked(arm_r) == [] and picked(arm_l) == ["Upper"]
 press("A", alt=True)
 arm_r.visible = True
+
+# --- Moving them from the bone layer around them ---------------------------------------------------------------------------
+import math
+
+at(0)
+ops.layer.new_bone()
+top = layers.active
+top.name = "Top"
+bone(top, "Root", (0.0, 3.0), (0.0, 3.5))
+bone(top, "Arm", (1.0, 3.0), (1.5, 3.0))
+sub = rig_in("Sub", top)
+bone(sub, "Ear", (0.5, 3.0), (0.5, 3.4))
+# Its own space turned a quarter: a move is in the document's, whatever each bone layer's is.
+turned = rig_in("Turned", top)
+bone(turned, "Tuft", (0.0, 0.0), (0.0, 0.4))
+turned.rotation = math.pi / 2
+at(5)
+
+
+def head(rig, name):
+    return rig.to_document(rig.bone_pose(name)[:2])
+
+
+def angle_of(rig, name):
+    pose = rig.bone_pose(name)
+    a, b = rig.to_document(pose[:2]), rig.to_document(pose[2:4])
+    return math.atan2(b[1] - a[1], b[0] - a[0])
+
+
+def pick_all():
+    layers.active = top
+    press("A", alt=True)
+    press("A")
+
+
+def state():
+    return head(top, "Arm"), head(sub, "Ear"), head(turned, "Tuft"), angle_of(top, "Arm"), angle_of(sub, "Ear"), angle_of(turned, "Tuft")
+
+
+pick_all()
+before = state()
+assert ops.armature.translate(move_x="0.2", move_y="0.1", only_bones="0") == {'FINISHED'}
+at(5)
+after = state()
+for was, now in zip(before[:3], after[:3]):
+    assert close(now, (was[0] + 0.2, was[1] + 0.1)), ("every picked bone by the same move", was, now)
+assert layers.active.id == top.id
+
+before = after
+assert ops.armature.rotate(angle="30", only_bones="0") == {'FINISHED'}
+at(5)
+after = state()
+for was, now in zip(before[3:], after[3:]):
+    assert abs(math.remainder(now - was - math.radians(30), math.tau)) < 1e-3, ("every picked bone turns", was, now)
+
+before = sub.bone_pose("Ear")
+assert ops.armature.resize(scale="2", only_bones="0") == {'FINISHED'}
+at(5)
+assert sub.bones[0]["scale"][0] > 1.5 and top.bones[1]["scale"][0] > 1.5, (sub.bones[0], top.bones[1])
+assert ops.armature.resize(scale="0.5", only_bones="0") == {'FINISHED'}
+
+# One undo step for the lot.
+before = state()
+assert ops.armature.translate(move_x="0.3", only_bones="0") == {'FINISHED'}
+assert ops.ed.undo() == {'FINISHED'}
+at(5)
+assert all(close(a, b) for a, b in zip(before[:3], state()[:3])), "undone together"
+
+# Only the nested bones picked, the bone layer around them active.
+layers.active = top
+press("A", alt=True)
+layers.active = sub
+sub.select_bone("Ear")
+layers.active = top
+before = state()
+assert ops.armature.translate(move_x="0.1", only_bones="0") == {'FINISHED'}
+at(5)
+after = state()
+assert close(after[1], (before[1][0] + 0.1, before[1][1])) and close(after[0], before[0]) and close(after[2], before[2]), (before, after)
+
+# Keys go on each: the frame after holds the move.
+at(10)
+assert close(head(sub, "Ear"), after[1]), "keyed where it moved"
+
+# A bone layer hung from a picked bone comes along, once.
+at(0)
+layers.active = top
+press("A", alt=True)
+top.select_bone("Arm")
+layers.active = sub
+assert ops.layer.new_group() == {'FINISHED'}
+hung = layers.active
+hung.name = "Hung"
+if hung.parent is None or hung.parent.id != top.id:
+    assert ops.layer.move_to_group(group=str(top.id)) == {'FINISHED'}
+layers.active = sub
+if sub.parent.id != hung.id:
+    assert ops.layer.move_to_group(group=str(hung.id)) == {'FINISHED'}
+layers.active = hung
+assert ops.layer.parent_bone_set(bone="Arm") == {'FINISHED'}
+at(15)
+pick_all()
+before = state()
+assert ops.armature.translate(move_x="0.2", only_bones="0") == {'FINISHED'}
+at(15)
+after = state()
+assert close(after[0], (before[0][0] + 0.2, before[0][1]))
+assert close(after[1], (before[1][0] + 0.2, before[1][1])), ("carried, not moved twice", before[1], after[1])
+assert close(after[2], (before[2][0] + 0.2, before[2][1]))
+
+# From inside, the bone layer around it doesn't move.
+at(20)
+layers.active = top
+press("A", alt=True)
+pick_all()
+layers.active = sub
+before = state()
+assert ops.armature.translate(move_x="0.1", only_bones="0") == {'FINISHED'}
+at(20)
+after = state()
+assert close(after[1], (before[1][0] + 0.1, before[1][1])) and close(after[0], before[0]), (before, after)
 
 print("nested_bone_groups: ok")

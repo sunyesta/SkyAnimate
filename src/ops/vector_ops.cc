@@ -1,6 +1,7 @@
 /* Operators that edit the active vector layer's drawing: selection, delete, shapes, curvature,
  * and the start of modal transforms (G, R, S, E). */
 
+#include "anim/bone_family.hh"
 #include "anim/deform.hh"
 #include "ops/edit_ops.hh"
 
@@ -1407,9 +1408,14 @@ void vector_operators_register()
         return !active->locked;
       }
       if (active && active->is_bone_layer()) {
-        /* A bone picked by its body or by either ball, or points of its layers marked Editable in
-         * Bone Group. */
-        return armature_any_picked(*active) || editable_with_selection_poll(C);
+        /* A bone picked by its body or by either ball, here or in a sub bone group inside, or points of
+         * its layers marked Editable in Bone Group. */
+        for (const Layer *l : armature_and_inside(*C.document, active->id)) {
+          if (armature_any_picked(*l)) {
+            return true;
+          }
+        }
+        return editable_with_selection_poll(C);
       }
       return editable_with_selection_poll(C);
     };

@@ -6385,6 +6385,15 @@ struct BoneModal {
    * Off where it can't know: bone dynamics simulating. */
   bool edits_known = false;
   std::vector<Layer *> touch;
+  /* The other bone layers moving with it (sub bone groups inside the active one, bones_moving): their own `armature`,
+   * `bones`, `to_armature` and `counter`. */
+  struct Also {
+    uint64_t armature = 0;
+    std::vector<Bone> bones;
+    Transform2D to_armature;
+    BoneCounter counter;
+  };
+  std::vector<Also> also;
 };
 static BoneModal g_bone_modal;
 
@@ -7493,6 +7502,11 @@ static void bone_modal_find_touched(Document &doc)
   for (const BoneCounter::LayerState &st : bm.counter.layers) {
     wanted.insert(st.id);
   }
+  for (const BoneModal::Also &also : bm.also) {
+    for (const BoneCounter::LayerState &st : also.counter.layers) {
+      wanted.insert(st.id);
+    }
+  }
   const std::unordered_set<uint64_t> smart = animation_smart_drag_layers();
   const auto walk = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &l : layers) {
@@ -7615,13 +7629,46 @@ static Transform2D picked_bones_shown(const Document &doc, const Layer &armature
   return layer_world_transform(doc, armature.id) * layer_group_deform_at(doc, armature, middle);
 }
 
+/* Whether something picked carries bone layer `inner` whole, in the bone layers up to `outer`: it comes along then, as a
+ * picked bone's child does, and moving its own bones as well would count twice. */
+static bool carried_by_picked(Document &doc, const Layer &inner, uint64_t outer)
+{
+  for (const Layer *l = &inner; l && l->id != outer; l = layer_parent(doc, l->id)) {
+    const Layer *rig = l->followed_bone() != 0 ? layer_armature(doc, l->id) : nullptr;
+    for (const Bone *b = rig ? bone_find(*rig, l->followed_bone()) : nullptr; b; b = bone_find(*rig, b->parent)) {
+      if (b->selected || b->select_head || b->select_tail) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* The bone layers G, R and S move working in `armature`: it and the bone layers of its family inside it that have bones
+ * picked (armature_and_inside), its own first. */
+static std::vector<Layer *> bones_moving(Document &doc, const Layer &armature)
+{
+  std::vector<Layer *> moving;
+  for (Layer *l : armature_and_inside(doc, armature.id)) {
+    if (armature_any_picked(*l) && !carried_by_picked(doc, *l, armature.id)) {
+      moving.push_back(l);
+    }
+  }
+  return moving;
+}
+
 static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_document)
 {
   Document &doc = *C.document;
-  Layer *armature = document_active_layer(doc);
-  if (!armature || !armature->is_bone_layer() || kind == 'E' || !armature_any_picked(*armature)) {
+  Layer *active = document_active_layer(doc);
+  if (!active || !active->is_bone_layer() || kind == 'E') {
     return false;
   }
+  const std::vector<Layer *> moving = bones_moving(doc, *active);
+  if (moving.empty()) {
+    return false;
+  }
+  Layer *armature = moving.front();
   BoneModal modal;
   modal.area = area.id;
   modal.kind = kind;
@@ -7631,8 +7678,26 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   float2 middle;
   const Transform2D shown = picked_bones_shown(doc, *armature, modal.setup_frame, &middle);
   modal.to_armature = shown.inverted();
-  modal.pivot = shown.apply(middle);
   modal.bones = armature->bones;
+  /* The middle of everything moving. */
+  float2 heads_sum = shown.apply(middle) * float(armature_picked_heads(*armature, modal.setup_frame).size());
+  size_t heads = armature_picked_heads(*armature, modal.setup_frame).size();
+  for (size_t i = 1; i < moving.size(); i++) {
+    BoneModal::Also also;
+    also.armature = moving[i]->id;
+    also.bones = moving[i]->bones;
+    float2 also_middle;
+    const Transform2D also_shown = picked_bones_shown(doc, *moving[i], modal.setup_frame, &also_middle);
+    also.to_armature = also_shown.inverted();
+    const size_t count = armature_picked_heads(*moving[i], modal.setup_frame).size();
+    heads_sum += also_shown.apply(also_middle) * float(count);
+    heads += count;
+    if (!modal.setup_frame && move_only_bones_on(doc)) {
+      also.counter = bone_counter_capture(doc, moving[i]->id);
+    }
+    modal.also.push_back(std::move(also));
+  }
+  modal.pivot = heads_sum / float(std::max<size_t>(heads, 1));
   if (kind == 'R') {
     modal.turn_snap = bone_turn_snap_begin(*armature, modal.setup_frame, to_document, true);
   }
@@ -7668,6 +7733,7 @@ static void bone_modal_end(Context &C, bool confirm)
   g_bone_modal.snapshot = Document();
   g_bone_modal.bones.clear();
   g_bone_modal.counter = {};
+  g_bone_modal.also.clear();
   g_bone_modal.touch.clear();
   g_bone_modal.edits_known = false;
   C.wm->modal_running = false;
@@ -7690,6 +7756,7 @@ static void bone_modal_confirm(Context &C, float2 delta, float degrees, float fa
   g_bone_modal.snapshot = Document();
   g_bone_modal.bones.clear();
   g_bone_modal.counter = {};
+  g_bone_modal.also.clear();
   C.wm->modal_running = false;
   C.wm->modal_keys.clear();
   OpArgs args{{"only_bones", move_only_bones_on(*C.document) ? "1" : "0"}, {"posing", bm.setup_frame ? "0" : "1"},
@@ -7762,6 +7829,14 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   char text[160];
   float2 delta;
   float degrees = 0.0f, factor = 1.0f;
+  /* The same for the other bone layers moving with it. */
+  const auto for_also = [&](auto &&fn) {
+    for (BoneModal::Also &also : bm.also) {
+      if (Layer *l = layer_find(*C.document, also.armature)) {
+        fn(*l, also);
+      }
+    }
+  };
   if (g_bone_modal.kind == 'G') {
     delta = mouse - g_bone_modal.start_mouse;
     if (snap) {
@@ -7780,6 +7855,9 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     }
     armature_grab_selected(*armature, g_bone_modal.bones, g_bone_modal.to_armature.apply_vector(delta),
                            g_bone_modal.setup_frame, C.wm->tool_settings.auto_ik);
+    for_also([&](Layer &l, BoneModal::Also &also) {
+      armature_grab_selected(l, also.bones, also.to_armature.apply_vector(delta), bm.setup_frame, C.wm->tool_settings.auto_ik);
+    });
     if (bm.axis == 0) {
       std::snprintf(text, sizeof(text), "Move Bones  X: %s  Y: %s", num.shown(0, delta.x, "%.3f").c_str(),
                     num.shown(1, delta.y, "%.3f").c_str());
@@ -7800,6 +7878,9 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
       snapped = nullptr;
     }
     armature_rotate_selected(*armature, g_bone_modal.bones, degrees * PI / 180.0f, g_bone_modal.setup_frame);
+    for_also([&](Layer &l, BoneModal::Also &also) {
+      armature_rotate_selected(l, also.bones, degrees * PI / 180.0f, bm.setup_frame);
+    });
     std::snprintf(text, sizeof(text), "Rotate Bones  %s\xC2\xB0%s%s", num.shown(0, degrees, "%.1f").c_str(),
                   snapped ? "  snapped to " : "", snapped ? snapped : "");
   }
@@ -7813,6 +7894,9 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
       factor = num.value(0, 1.0f);
     }
     armature_scale_selected(*armature, g_bone_modal.bones, factor, bm.setup_frame, bm.axis, bm.squash);
+    for_also([&](Layer &l, BoneModal::Also &also) {
+      armature_scale_selected(l, also.bones, factor, bm.setup_frame, bm.axis, bm.squash);
+    });
     std::snprintf(text, sizeof(text), "%s  %s%s",
                   bm.setup_frame ? "Resize Bones" : bm.squash ? "Squash & Stretch" : "Scale Bones",
                   num.shown(0, factor, "%.3f").c_str(),
@@ -7822,9 +7906,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   }
   if (!g_bone_modal.setup_frame && move_without_children_on(*C.document)) {
     armature_keep_children(*armature, g_bone_modal.bones, false);
+    for_also([](Layer &l, BoneModal::Also &also) { armature_keep_children(l, also.bones, false); });
   }
   if (C.wm->tool_settings.mirror_x) {
     armature_mirror_edits(*armature, g_bone_modal.bones, g_bone_modal.setup_frame);
+    for_also([&](Layer &l, BoneModal::Also &also) { armature_mirror_edits(l, also.bones, bm.setup_frame); });
   }
   /* Each update starts the bones again from how they were, which undoes what smart actions did to
    * the bones they drive: play them again from the bones as they are now, so a smart bone being
@@ -7833,6 +7919,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   if (!g_bone_modal.counter.layers.empty()) {
     bone_counter_apply(*C.document, g_bone_modal.counter);
   }
+  for_also([&](Layer &, BoneModal::Also &also) {
+    if (!also.counter.layers.empty()) {
+      bone_counter_apply(*C.document, also.counter);
+    }
+  });
   if (g_bone_modal.edits_known) {
     for (Layer *l : g_bone_modal.touch) {
       layer_touch(*l);
@@ -9748,8 +9839,19 @@ static OpProperty without_children_option()
 static OpStatus bones_transform_exec(Context &C, char kind)
 {
   Document &doc = *C.document;
-  Layer *armature = document_active_layer(doc);
-  if (!armature || !armature->is_bone_layer() || !armature_any_picked(*armature)) {
+  Layer *active = document_active_layer(doc);
+  if (!active || !active->is_bone_layer()) {
+    return OpStatus::Cancelled;
+  }
+  /* G, R and S take in the sub bone groups inside it; the Transform Bones tool's box is around the active one's. */
+  std::vector<Layer *> moving = bones_moving(doc, *active);
+  if (kind == 'T' || kind == 'C') {
+    moving.clear();
+    if (armature_any_picked(*active)) {
+      moving.push_back(active);
+    }
+  }
+  if (moving.empty()) {
     return OpStatus::Cancelled;
   }
   const bool setup = doc.frame_current == 0;
@@ -9766,49 +9868,65 @@ static OpStatus bones_transform_exec(Context &C, char kind)
   }
   /* On the setup frame bones move without their children anyway, as in Blender's edit mode. */
   const bool without_children = kind != 'T' && kind != 'C' && !setup && op_arg_bool(C, "without_children");
-  BoneCounter counter;
-  if (!setup && op_arg_bool(C, "only_bones")) {
-    counter = bone_counter_capture(doc, armature->id);
+  struct Moved {
+    Layer *armature;
+    std::vector<Bone> start;
+    Transform2D to_armature;
+    BoneCounter counter;
+  };
+  std::vector<Moved> moved;
+  std::vector<uint64_t> moved_ids;
+  for (Layer *l : moving) {
+    Moved m{l, l->bones, picked_bones_shown(doc, *l, setup).inverted(), {}};
+    if (!setup && op_arg_bool(C, "only_bones")) {
+      m.counter = bone_counter_capture(doc, l->id);
+    }
+    moved.push_back(std::move(m));
+    moved_ids.push_back(l->id);
   }
-  const SetupSnapshot kept = keep_poses_begin(C, {armature->id});
-  const std::vector<Bone> start = armature->bones;
+  const SetupSnapshot kept = keep_poses_begin(C, moved_ids);
   const float2 move(op_arg_float(C, "move_x", 0.0f), op_arg_float(C, "move_y", 0.0f));
   const float degrees = op_arg_float(C, "angle", 0.0f);
-  if (kind == 'G') {
-    const Transform2D to_armature = picked_bones_shown(doc, *armature, setup).inverted();
-    armature_grab_selected(*armature, start, to_armature.apply_vector(move), setup, C.wm->tool_settings.auto_ik);
-  }
-  else if (kind == 'R') {
-    armature_rotate_selected(*armature, start, degrees * PI / 180.0f, setup);
-  }
-  else if (kind == 'S') {
-    const int axis = std::clamp(op_arg_int(C, "axis", 0), 0, 2);
-    const bool squash = op_arg_bool(C, "squash") && !setup;
-    armature_scale_selected(*armature, start, op_arg_float(C, "scale", 1.0f), setup, axis, squash);
-    C.undo_name = setup ? "Resize Bones" : squash ? "Squash & Stretch" : "Scale Bones";
-  }
-  else if (kind == 'C') {
-    const Transform2D turn = Transform2D::rotate(op_arg_float(C, "box_angle", 0.0f) * PI / 180.0f);
-    const Transform2D unturn = turn.inverted();
-    armature_map_selected(*armature, start,
-                          std::function<float2(float2)>([&](float2 p) { return turn.apply(cage.map(unturn.apply(p))); }),
-                          setup);
-    C.undo_name = op_arg(C, "name", "Distort Bones");
-  }
-  else {
-    const float2 origin(op_arg_float(C, "origin_x", 0.0f), op_arg_float(C, "origin_y", 0.0f));
-    const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
-    armature_map_selected(*armature, start, map_about(origin, move, scale, degrees * PI / 180.0f), setup);
-  }
-  if (without_children) {
-    armature_keep_children(*armature, start, setup);
-  }
-  if (C.wm->tool_settings.mirror_x) {
-    armature_mirror_edits(*armature, start, setup);
+  for (const Moved &m : moved) {
+    Layer *armature = m.armature;
+    const std::vector<Bone> &start = m.start;
+    if (kind == 'G') {
+      armature_grab_selected(*armature, start, m.to_armature.apply_vector(move), setup, C.wm->tool_settings.auto_ik);
+    }
+    else if (kind == 'R') {
+      armature_rotate_selected(*armature, start, degrees * PI / 180.0f, setup);
+    }
+    else if (kind == 'S') {
+      const int axis = std::clamp(op_arg_int(C, "axis", 0), 0, 2);
+      const bool squash = op_arg_bool(C, "squash") && !setup;
+      armature_scale_selected(*armature, start, op_arg_float(C, "scale", 1.0f), setup, axis, squash);
+      C.undo_name = setup ? "Resize Bones" : squash ? "Squash & Stretch" : "Scale Bones";
+    }
+    else if (kind == 'C') {
+      const Transform2D turn = Transform2D::rotate(op_arg_float(C, "box_angle", 0.0f) * PI / 180.0f);
+      const Transform2D unturn = turn.inverted();
+      armature_map_selected(*armature, start,
+                            std::function<float2(float2)>([&](float2 p) { return turn.apply(cage.map(unturn.apply(p))); }),
+                            setup);
+      C.undo_name = op_arg(C, "name", "Distort Bones");
+    }
+    else {
+      const float2 origin(op_arg_float(C, "origin_x", 0.0f), op_arg_float(C, "origin_y", 0.0f));
+      const float2 scale(op_arg_float(C, "scale_x", 1.0f), op_arg_float(C, "scale_y", 1.0f));
+      armature_map_selected(*armature, start, map_about(origin, move, scale, degrees * PI / 180.0f), setup);
+    }
+    if (without_children) {
+      armature_keep_children(*armature, start, setup);
+    }
+    if (C.wm->tool_settings.mirror_x) {
+      armature_mirror_edits(*armature, start, setup);
+    }
   }
   animation_refresh_smart(doc);
-  if (!counter.layers.empty()) {
-    bone_counter_apply(doc, counter);
+  for (const Moved &m : moved) {
+    if (!m.counter.layers.empty()) {
+      bone_counter_apply(doc, m.counter);
+    }
   }
   keep_poses_end(C, kept);
   return OpStatus::Finished;
@@ -10458,7 +10576,7 @@ static void transform_operators_register()
   const auto points_poll = [](Context &C) { return C.document && C.wm && !editable_layers(C).empty(); };
   const auto bones_poll = [](Context &C) {
     const Layer *a = C.document ? document_active_layer(*C.document) : nullptr;
-    return C.wm && a && a->is_bone_layer() && armature_any_picked(*a);
+    return C.wm && a && a->is_bone_layer() && !bones_moving(*C.document, *a).empty();
   };
   const OpProperty move_x = panel_float("move_x", "Move X", "How far across", "0", -1e6f, 1e6f, 0.01f);
   const OpProperty move_y = panel_float("move_y", "Move Y", "How far up", "0", -1e6f, 1e6f, 0.01f);
@@ -12615,6 +12733,11 @@ void viewport_drag_follow_playback(Document &dragged, Document &now)
     /* Each update starts the bones from these. */
     if (const Layer *armature = layer_find(g_bone_modal.snapshot, g_bone_modal.armature)) {
       g_bone_modal.bones = armature->bones;
+    }
+    for (BoneModal::Also &also : g_bone_modal.also) {
+      if (const Layer *armature = layer_find(g_bone_modal.snapshot, also.armature)) {
+        also.bones = armature->bones;
+      }
     }
   }
   if (gizmo_moving(g_gizmo.mode)) {
