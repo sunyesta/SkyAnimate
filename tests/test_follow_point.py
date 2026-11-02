@@ -9,6 +9,7 @@
 - Chains go in order, whatever order the layers are in. Saved with the file; a deleted deform says so.
 - A second point turns and scales the bone, each switchable, counting a bone above it once.
 - Its points can be keyed, as their change from setup: a follower slides along the shape, through the bend.
+- Or a point can be one the shape already has: the bone takes exactly that point's change.
 
 Run with:  OpenAnimate --background --python tests/test_follow_point.py
 """
@@ -480,6 +481,147 @@ at(10)
 pose = slide_rig.bone_pose("turner")
 assert abs(math.atan2(pose[3] - pose[1], pose[2] - pose[0]) - math.pi / 2) < 0.05, ("turned", pose)
 
+# --- A point the shape already has --------------------------------------------------------------------------------
+at(0)
+pick_cage = box("PickCage")
+pick_skin = box("PickSkin", (-0.5, -0.5), (0.5, 0.5))
+pick_deform = add_deform(pick_skin, pick_cage)
+pick_rig = new_rig("PickRig")
+add_bone(pick_rig, "on_point", (0.3, 0.3))
+index = follow(pick_rig, "on_point", pick_skin, pick_deform)
+corner = next(k for k in range(len(pick_cage.points)) if close(pick_cage.points[k], (1, 1)))
+pick_rig.bone_constraint_set("on_point", index, follow_shape_point=corner)
+c = constraint(pick_rig, "on_point", index)
+assert c["follow_shape_point"] == corner and c["follow_shape_point2"] is None, c
+assert close(c["follow_point"], (1, 1), 1e-6), ("it rests where the shape's point does", c["follow_point"])
+rest_head = head(pick_rig, "on_point")
+assert close(rest_head, (0.3, 0.3)), "nothing jumps"
+# Exactly the point's change, where a place of its own there would stop short on a method that strays: and it never shifts.
+doc.frame_current = 10
+pick_cage.set_point(corner, (1.4, 1.2))
+at(10)
+assert close(head(pick_rig, "on_point"), (0.7, 0.5), 1e-5), head(pick_rig, "on_point")
+assert close(constraint(pick_rig, "on_point", index)["follow_now"], (1.4, 1.2), 1e-5)
+pick_rig.bone_constraint_set("on_point", index, follow_shift=(0.2, 0.2))
+at(10)
+assert close(head(pick_rig, "on_point"), (0.7, 0.5), 1e-5), "a picked point has no shift"
+pick_rig.bone_constraint_set("on_point", index, follow_shift=(0.0, 0.0))
+# A deform's Strength and the constraint's Influence as for any place.
+pick_skin.modifier_set(0, strength=0.5)
+at(10)
+assert close(head(pick_rig, "on_point"), (0.5, 0.4), 1e-5), head(pick_rig, "on_point")
+pick_skin.modifier_set(0, strength=1.0)
+# Moved on frame 0 the point rests there, and only the change counts.
+at(0)
+pick_cage.set_point(corner, (1.1, 1.0))
+at(0)
+assert close(constraint(pick_rig, "on_point", index)["follow_point"], (1.1, 1.0), 1e-6)
+assert close(head(pick_rig, "on_point"), (0.3, 0.3)), "frame 0 is the rest"
+at(10)
+now = pick_cage.evaluated()[0][corner]
+assert close(head(pick_rig, "on_point"), (0.3 + now[0] - 1.1, 0.3 + now[1] - 1.0), 1e-5), (head(pick_rig, "on_point"), now)
+# Back to its own place, from where the point rests.
+at(0)
+pick_rig.bone_constraint_set("on_point", index, follow_shape_point=None)
+assert constraint(pick_rig, "on_point", index)["follow_shape_point"] is None
+assert close(constraint(pick_rig, "on_point", index)["follow_point"], (1.1, 1.0), 1e-6)
+# Only the shape's own points, and a new deform lets go of it.
+for bad in (999, -1):
+    try:
+        pick_rig.bone_constraint_set("on_point", index, follow_shape_point=bad)
+    except ValueError:
+        continue
+    raise AssertionError(("a point off the shape", bad))
+pick_rig.bone_constraint_set("on_point", index, follow_shape_point=corner)
+pick_rig.bone_constraint_set("on_point", index, follow_deform=("Art", deform))
+assert constraint(pick_rig, "on_point", index)["follow_shape_point"] is None, "its id means nothing on another shape"
+pick_rig.bone_constraint_set("on_point", index, follow_deform=None)
+try:
+    pick_rig.bone_constraint_set("on_point", index, follow_shape_point=corner)
+except ValueError:
+    pass
+else:
+    raise AssertionError("no deform")
+
+# Two of the shape's points turn it.
+at(0)
+turn_cage = box("TurnCage")
+turn_skin = box("TurnSkin", (-0.5, -0.5), (0.5, 0.5))
+turn_deform = add_deform(turn_skin, turn_cage)
+add_bone(pick_rig, "turned", (0.0, 0.0))
+index = follow(pick_rig, "turned", turn_skin, turn_deform)
+points = [p[:2] for p in turn_cage.points]
+pick_rig.bone_constraint_set("turned", index, follow_second=True, follow_shape_point=0, follow_shape_point2=1)
+doc.frame_current = 10
+for k, p in enumerate(points):
+    turn_cage.set_point(k, (-p[1], p[0]))
+at(10)
+c = constraint(pick_rig, "turned", index)
+assert c["follow_shape_point"] == 0 and c["follow_shape_point2"] == 1
+assert abs(math.remainder(c["follow_turn"] - math.pi / 2, math.tau)) < 1e-5, c["follow_turn"]
+pose = pick_rig.bone_pose("turned")
+assert close((pose[2] - pose[0], pose[3] - pose[1]), (0.0, 0.2), 1e-4), ("the bone turned by it", pose)
+
+# On a group's deform, as the mouth cage is: the same.
+at(0)
+group_cage = box("PickGroupCage")
+inside = box("PickInside", (-0.5, -0.5), (0.5, 0.5))
+outer = new_group("PickGroup", inside)
+group_deform = add_deform(outer, group_cage)
+add_bone(pick_rig, "grouped", (0.2, 0.2))
+index = follow(pick_rig, "grouped", outer, group_deform)
+corner = next(k for k in range(len(group_cage.points)) if close(group_cage.points[k], (1, 1)))
+pick_rig.bone_constraint_set("grouped", index, follow_shape_point=corner)
+doc.frame_current = 10
+group_cage.set_point(corner, (1.25, 1.0))
+at(10)
+assert close(head(pick_rig, "grouped"), (0.45, 0.2), 1e-5), head(pick_rig, "grouped")
+# What moves the group stays on top of it.
+doc.frame_current = 10
+outer.location_y = 0.3
+at(10)
+assert close(head(pick_rig, "grouped"), (0.45, 0.5), 1e-5), head(pick_rig, "grouped")
+doc.frame_current = 10
+outer.location_y = 0.0
+at(10)
+
+# A bone above it moving the shape counts once.
+at(0)
+carry_rig = new_rig("CarryRig")
+add_bone(carry_rig, "carrier", (0.0, 0.0))
+add_bone(carry_rig, "rider", (0.3, 0.3), parent="carrier")
+carry_cage = box("CarryCage")
+carry_skin = box("CarrySkin", (-0.5, -0.5), (0.5, 0.5))
+for layer in (carry_cage, carry_skin):
+    layers.active = layer
+    assert ops.layer.move_to_group(group=str(carry_rig.id)) == {'FINISHED'}
+    assert ops.layer.parent_bone_set(bone="carrier") == {'FINISHED'}
+carry_deform = add_deform(carry_skin, carry_cage)
+index = follow(carry_rig, "rider", carry_skin, carry_deform)
+corner = next(k for k in range(len(carry_cage.points)) if close(carry_cage.points[k], (1, 1)))
+carry_rig.bone_constraint_set("rider", index, follow_shape_point=corner)
+doc.frame_current = 10
+carry_rig.bone_set("carrier", position=(carry_rig.bones[0]["position"][0] + 0.5, carry_rig.bones[0]["position"][1]))
+at(10)
+assert close(head(carry_rig, "rider"), (0.8, 0.3), 1e-5), ("once", head(carry_rig, "rider"))
+carry_cage.set_point(corner, (1.2, 1.1))
+at(10)
+assert close(head(carry_rig, "rider"), (1.0, 0.4), 1e-5), ("its change of shape on top", head(carry_rig, "rider"))
+
+# Symmetrized, the copy's point is across from the first, its own place.
+at(0)
+add_bone(pick_rig, "side_L", (0.4, 0.0))
+index = follow(pick_rig, "side_L", pick_skin, pick_deform)
+corner = next(k for k in range(len(pick_cage.points)) if close(pick_cage.points[k], (1.1, 1.0)))
+pick_rig.bone_constraint_set("side_L", index, follow_shape_point=corner)
+layers.active = pick_rig
+assert ops.armature.select_none() == {'FINISHED'}
+pick_rig.select_bone("side_L")
+assert ops.armature.symmetrize() == {'FINISHED'}
+mirrored = constraint(pick_rig, "side_R", index)
+assert mirrored["follow_shape_point"] is None and close(mirrored["follow_point"], (-1.1, 1.0), 1e-5), mirrored
+at(0)
+
 # --- Saved, and a deleted deform says so -------------------------------------------------------------------------
 at(0)
 rig.bone_constraint_set("eye", i, show_follow_point=True)
@@ -504,6 +646,22 @@ try:
     assert close(constraint(slide_rig, "slider")["follow_shift"], (0.4, 0.0)), "the keys are saved"
     at(0)
     assert close(constraint(slide_rig, "slider")["follow_shift"], (0.0, 0.0))
+    carry_rig = next(l for l in layers.all() if l.name == "CarryRig")
+    carry_cage = next(l for l in layers.all() if l.name == "CarryCage")
+    corner = next(k for k in range(len(carry_cage.points)) if close(carry_cage.points[k], (1, 1)))
+    assert constraint(carry_rig, "rider")["follow_shape_point"] == corner
+    at(10)
+    assert close(head(carry_rig, "rider"), (1.0, 0.4), 1e-5), head(carry_rig, "rider")
+    # Its point deleted from the shape: the bone just stays where its parent has it.
+    at(0)
+    layers.active = carry_cage
+    carry_cage.select_points(range(len(carry_cage.points)), False)
+    carry_cage.select_points([corner])
+    assert ops.mesh.delete() == {'FINISHED'}
+    at(10)
+    assert constraint(carry_rig, "rider")["follow_shape_point"] is None
+    assert close(head(carry_rig, "rider"), (0.8, 0.3), 1e-5), head(carry_rig, "rider")
+    ops.ed.undo()
     at(10)
     layers.active = art
     assert ops.object.modifier_remove(index="0") == {'FINISHED'}

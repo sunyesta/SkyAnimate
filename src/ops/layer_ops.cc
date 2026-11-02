@@ -214,6 +214,7 @@ static void symmetrize_bones(Layer &armature)
         c.follow_point2.x = -c.follow_point2.x;
         c.follow_rest.x = -c.follow_rest.x;
         c.follow_rest2.x = -c.follow_rest2.x;
+        c.follow_point_id = c.follow_point2_id = 0;
         c.follow_shift = c.follow_shift2 = {};
         c.follow_shift_keys = {};
         c.follow_shift2_keys = {};

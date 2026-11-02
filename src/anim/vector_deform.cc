@@ -2807,6 +2807,12 @@ void vector_deform_follow_pick(const Document &doc, const Layer &layer, Modifier
   }
 }
 
+bool vector_deform_shape_read(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &r_rest,
+                              VectorDrawing &r_bent)
+{
+  return !vector_deform_loops(doc, layer, m) && deform_shape_inputs(doc, layer, m, true, false, r_rest, r_bent);
+}
+
 std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, const Layer &layer, const Modifier &m)
 {
   if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {

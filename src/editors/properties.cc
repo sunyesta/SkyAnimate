@@ -3184,22 +3184,41 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
       });
 }
 
-/* A Follow Deform's point eyedropper: a click on a point of its shape puts its point (`second`: its second) on it. */
-static void follow_point_eyedropper_start(uint64_t owner, int index, bool second, const std::string &tag, uint64_t shape_layer,
-                                          uint64_t shape)
+/* A Follow Deform's or Follow Point's point, past its label: Own Place or a point of `shape` on `shape_layer`, from the list
+ * or with the eyedropper. `pick` takes the point's id (0: its own place) and finds what it's for by itself, as the
+ * eyedropper calls it later. `id`, what it is now; `tag` says who's asking. */
+static void follow_point_row(Context &C, Layer *shape_layer, uint64_t shape, uint64_t id, float width, const std::string &tag,
+                             const std::function<bool(Context &, uint64_t)> &pick)
 {
-  ui_point_eyedropper_start(
-      shape_layer, shape,
-      [owner, index, second](Context &C, uint64_t point) {
-        Document &doc = *C.document;
-        Layer *own = layer_find(doc, owner);
-        if (own && index < int(own->modifiers.size()) && own->modifiers[size_t(index)].type == ModifierType::FollowDeform) {
-          vector_deform_follow_pick(doc, *own, own->modifiers[size_t(index)], second, point);
-          C.undo->push("Follow Deform", doc);
-        }
-        return true;
-      },
-      [] { return std::string("Click a point of the shape  |  Esc cancels"); }, tag.c_str());
+  const int on_shape = shape_layer ? drawing_shape_index(shape_layer->drawing, shape) : -1;
+  const int picked = shape_layer && id != 0 ? drawing_point_index(shape_layer->drawing, id) : -1;
+  const std::string name = id == 0 ? "Own Place" : picked >= 0 ? "Point " + std::to_string(picked) : "Point gone";
+  ImGui::PushID(tag.c_str());
+  ImGui::SetNextItemWidth(width - ImGui::GetFrameHeight() - 2.0f);
+  ImGui::BeginDisabled(on_shape < 0);
+  if (ImGui::BeginCombo("##follow_point", name.c_str())) {
+    if (ImGui::Selectable("Own Place", id == 0) && id != 0) {
+      pick(C, 0);
+    }
+    drawing_ensure_ids(shape_layer->drawing);
+    for (const int p : shape_points(shape_layer->drawing, shape_layer->drawing.shapes[size_t(on_shape)])) {
+      const uint64_t point = shape_layer->drawing.points[size_t(p)].id;
+      if (ImGui::Selectable(("Point " + std::to_string(p)).c_str(), point == id) && point != id) {
+        pick(C, point);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine(0, 2);
+  if (ui_pick_button("##follow_pick", "Eyedropper: click a point of the shape in the viewport",
+                     ui_point_eyedropper_active(tag.c_str())))
+  {
+    drawing_ensure_ids(shape_layer->drawing);
+    ui_point_eyedropper_start(shape_layer->id, shape, pick, [] { return std::string("Click a point of the shape  |  Esc cancels"); },
+                              tag.c_str());
+  }
+  ImGui::EndDisabled();
+  ImGui::PopID();
 }
 
 static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
@@ -3502,42 +3521,25 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   ui_flash_row(layer.id, path);
 
   if (follows) {
-    /* Its own place, or a point the shape already has: from the list, or clicked in the viewport. */
-    Layer *shape_layer = layer_find(doc, m.deform_layer);
-    const int on_shape = shape_layer ? drawing_shape_index(shape_layer->drawing, m.deform_shape) : -1;
+    /* Its own place, or a point the shape already has. */
     const auto point_row = [&](bool second) {
-      const uint64_t id = second ? m.deform_point2_id : m.deform_point_id;
       modifier_row_label(second ? "Second" : "Point", column,
                          "Own Place is a point of its own, which you can put anywhere on the shape, drag and key.\n"
                          "Or pick a point the shape already has: the drawing goes exactly as that point does");
-      ImGui::SetNextItemWidth(width() - pick_w - 2.0f);
-      const int picked = shape_layer ? drawing_point_index(shape_layer->drawing, id) : -1;
-      const std::string name = id == 0 ? "Own Place" : picked >= 0 ? "Point " + std::to_string(picked) : "Point gone";
-      ImGui::BeginDisabled(on_shape < 0);
-      if (ImGui::BeginCombo(second ? "##follow_point2" : "##follow_point", name.c_str())) {
-        if (ImGui::Selectable("Own Place", id == 0) && id != 0) {
-          vector_deform_follow_pick(doc, layer, m, second, 0);
-          done = true;
-        }
-        drawing_ensure_ids(shape_layer->drawing);
-        for (const int p : shape_points(shape_layer->drawing, shape_layer->drawing.shapes[size_t(on_shape)])) {
-          const uint64_t point = shape_layer->drawing.points[size_t(p)].id;
-          if (ImGui::Selectable(("Point " + std::to_string(p)).c_str(), point == id) && point != id) {
-            vector_deform_follow_pick(doc, layer, m, second, point);
-            done = true;
-          }
-        }
-        ImGui::EndCombo();
-      }
-      ImGui::SameLine(0, 2);
-      const std::string tag = "FOLLOW:" + std::to_string(layer.id) + ":" + std::to_string(index) + (second ? ":2" : ":1");
-      if (ui_pick_button(second ? "##follow_pick2" : "##follow_pick", "Eyedropper: click a point of the shape in the viewport",
-                         ui_point_eyedropper_active(tag.c_str())))
-      {
-        drawing_ensure_ids(shape_layer->drawing);
-        follow_point_eyedropper_start(layer.id, index, second, tag, shape_layer->id, m.deform_shape);
-      }
-      ImGui::EndDisabled();
+      const uint64_t owner = layer.id;
+      follow_point_row(C, layer_find(doc, m.deform_layer), m.deform_shape, second ? m.deform_point2_id : m.deform_point_id,
+                       width(), "FOLLOW:" + std::to_string(owner) + ":" + std::to_string(index) + (second ? ":2" : ":1"),
+                       [owner, index, second](Context &C, uint64_t point) {
+                         Document &doc = *C.document;
+                         Layer *own = layer_find(doc, owner);
+                         if (own && index < int(own->modifiers.size()) &&
+                             own->modifiers[size_t(index)].type == ModifierType::FollowDeform)
+                         {
+                           vector_deform_follow_pick(doc, *own, own->modifiers[size_t(index)], second, point);
+                           C.undo->push("Follow Deform", doc);
+                         }
+                         return true;
+                       });
     };
     point_row(false);
     modifier_row_label("", column);
@@ -4668,6 +4670,31 @@ static void constraints_panel(Context &C, Layer &armature)
             }
             ImGui::EndCombo();
           }
+          /* Its own place, or a point the shape already has. */
+          const auto point_row = [&](bool second) {
+            modifier_row_label(second ? "Second" : "Point", column,
+                               "Own Place is a point of its own, which you can put anywhere on the shape, drag and key.\n"
+                               "Or pick a point the shape already has: the bone takes that point's move");
+            const uint64_t rig_id = armature.id, bone_id = bone->id;
+            const int index = i;
+            follow_point_row(C, followed ? layer_find(doc, followed->deform_layer) : nullptr, followed ? followed->deform_shape : 0,
+                             second ? c.follow_point2_id : c.follow_point_id, ImGui::GetContentRegionAvail().x - 4.0f,
+                             "FOLLOWBONE:" + std::to_string(rig_id) + ":" + std::to_string(bone_id) + ":" + std::to_string(i) +
+                                 (second ? ":2" : ":1"),
+                             [rig_id, bone_id, index, second](Context &C, uint64_t point) {
+                               Document &doc = *C.document;
+                               Layer *rig = layer_find(doc, rig_id);
+                               Bone *b = rig ? bone_find(*rig, bone_id) : nullptr;
+                               if (b && index < int(b->constraints.size()) &&
+                                   b->constraints[size_t(index)].type == BoneConstraintType::FollowPoint)
+                               {
+                                 follow_point_pick(doc, *rig, b->constraints[size_t(index)], second, point);
+                                 C.undo->push("Follow Point", doc);
+                               }
+                               return true;
+                             });
+          };
+          point_row(false);
           modifier_row_label("", column);
           if (ImGui::Checkbox("Show Follow Point", &c.follow_show)) {
             C.undo->push("Follow Point", doc);
@@ -4688,9 +4715,13 @@ static void constraints_panel(Context &C, Layer &armature)
                                 "apart they are can scale it. Further apart gives a steadier angle");
             }
           }
+          if (c.follow_two) {
+            point_row(true);
+          }
           ImGui::BeginDisabled(doc.frame_current == 0);
           for (const bool second : {false, true}) {
-            if (second && !c.follow_two) {
+            /* A point of the shape goes as it does: there's nothing to shift. */
+            if ((second && !c.follow_two) || (second ? c.follow_point2_id : c.follow_point_id) != 0) {
               continue;
             }
             modifier_row_label(second ? "Second Shift" : "Shift", column,

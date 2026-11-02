@@ -861,6 +861,8 @@ static json layer_to_json(const Layer &layer)
                      {"follow_scale", c.follow_scale},
                      {"follow_shift", {num(c.follow_shift.x), num(c.follow_shift.y)}},
                      {"follow_shift2", {num(c.follow_shift2.x), num(c.follow_shift2.y)}},
+                     {"follow_point_id", c.follow_point_id},
+                     {"follow_point2_id", c.follow_point2_id},
                      {"fit", c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER"},
                      {"fit_layer", c.fit_layer},
                      {"overlap", num(c.overlap)},
@@ -2628,6 +2630,8 @@ static Layer layer_from_json(const json &j, int depth)
       }
       get_keys(cj, "follow_shift_keys", c.follow_shift_keys);
       get_keys(cj, "follow_shift2_keys", c.follow_shift2_keys);
+      c.follow_point_id = get_id(cj, "follow_point_id");
+      c.follow_point2_id = get_id(cj, "follow_point2_id");
       c.shape_fit = get_string(cj, "fit", "WHOLE") == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
       c.fit_layer = get_id(cj, "fit_layer");
       c.overlap = std::clamp(get_float(cj, "overlap", 0.0f), 0.0f, 1.0f);

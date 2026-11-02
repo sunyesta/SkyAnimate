@@ -522,6 +522,9 @@ struct BoneConstraint {
   float2 follow_shift;
   float2 follow_shift2;
   Channel<float2> follow_shift_keys, follow_shift2_keys;
+  /* FollowPoint: or a point of the deform's shape (its id; 0: the place above): the bone takes that point's change, so
+   * there is nothing to drag or shift. The place above is kept where it rests, for letting go of it. */
+  uint64_t follow_point_id = 0, follow_point2_id = 0;
   /* FollowPoint, worked out every frame and never saved (anim/follow_point.hh): the move, in the bone layer's space;
    * where the point is now (document space); and why it can't follow (empty when it can). */
   float2 follow_offset;

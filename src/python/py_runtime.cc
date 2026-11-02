@@ -180,6 +180,32 @@ static std::string to_upper(std::string text)
   return text;
 }
 
+/* The id of the point numbered `value` on shape `shape` of `target`, as a Follow takes it: 0 for None. */
+static uint64_t follow_shape_point(Layer *target, uint64_t shape, const py::handle value)
+{
+  if (value.is_none()) {
+    return 0;
+  }
+  const int index = target ? drawing_shape_index(target->drawing, shape) : -1;
+  if (index < 0) {
+    throw py::value_error("Pick its shape first");
+  }
+  drawing_ensure_ids(target->drawing);
+  const int point = value.cast<int>();
+  const std::vector<int> on = shape_points(target->drawing, target->drawing.shapes[size_t(index)]);
+  if (std::find(on.begin(), on.end(), point) == on.end()) {
+    throw py::value_error("point " + std::to_string(point) + " isn't on the shape");
+  }
+  return target->drawing.points[size_t(point)].id;
+}
+
+/* That point's number, None when there's none (or it's gone). */
+static py::object follow_shape_point_number(const Layer *target, uint64_t id)
+{
+  const int at = target && id != 0 ? drawing_point_index(target->drawing, id) : -1;
+  return at >= 0 ? py::object(py::int_(at)) : py::object(py::none());
+}
+
 static const char *draw_mode_id(DrawMode mode)
 {
   return mode == DrawMode::Pen            ? "PEN"
@@ -2461,6 +2487,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         const Modifier *deform = follow_point_modifier(*current_context().document, c, &owner);
         d["follow_layer"] = deform ? owner->name : std::string();
         d["follow_modifier"] = deform ? deform->name : std::string();
+        const Layer *follow_shape = deform ? layer_find(*current_context().document, deform->deform_layer) : nullptr;
+        d["follow_shape_point"] = follow_shape_point_number(follow_shape, c.follow_point_id);
+        d["follow_shape_point2"] = follow_shape_point_number(follow_shape, c.follow_point2_id);
       }
       d["follow_point"] = py::make_tuple(c.follow_point.x, c.follow_point.y);
       d["show_follow_point"] = c.follow_show;
@@ -2665,6 +2694,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         if (follow_point_modifier(*current_context().document, c, &owner)) {
           follow_point_place(*current_context().document, layer, c, *owner, {point.first, point.second}, true);
         }
+      }
+      else if (key == "follow_shape_point" || key == "follow_shape_point2") {
+        Document &doc = *current_context().document;
+        Layer *owner = nullptr;
+        const Modifier *deform = follow_point_modifier(doc, c, &owner);
+        const uint64_t point_id = deform ? follow_shape_point(layer_find(doc, deform->deform_layer), deform->deform_shape, value)
+                                         : follow_shape_point(nullptr, 0, value);
+        follow_point_pick(doc, layer, c, key == "follow_shape_point2", point_id);
       }
       else if (key == "follow_rotation") {
         c.follow_rotation = value.cast<bool>();
@@ -3294,10 +3331,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["shift"] = pair(mod.deform_shift);
           d["shift2"] = pair(mod.deform_shift2);
           /* A point of the shape it sits on, by its number on the shape's layer: None for its own place. */
-          for (const bool second : {false, true}) {
-            const int at = target ? drawing_point_index(target->drawing, second ? mod.deform_point2_id : mod.deform_point_id) : -1;
-            d[second ? "shape_point2" : "shape_point"] = at >= 0 ? py::object(py::int_(at)) : py::object(py::none());
-          }
+          d["shape_point"] = follow_shape_point_number(target, mod.deform_point_id);
+          d["shape_point2"] = follow_shape_point_number(target, mod.deform_point2_id);
         }
       }
       if (mod.type == ModifierType::Resample) {
@@ -3514,21 +3549,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (mod.type == ModifierType::FollowDeform && (key == "shape_point" || key == "shape_point2")) {
         Document &doc = *current_context().document;
-        Layer *target = layer_find(doc, mod.deform_layer);
-        const int shape = target ? drawing_shape_index(target->drawing, mod.deform_shape) : -1;
-        uint64_t point_id = 0;
-        if (!value.is_none()) {
-          if (shape < 0) {
-            throw py::value_error("Pick its shape first");
-          }
-          drawing_ensure_ids(target->drawing);
-          const int point = value.cast<int>();
-          const std::vector<int> on = shape_points(target->drawing, target->drawing.shapes[size_t(shape)]);
-          if (std::find(on.begin(), on.end(), point) == on.end()) {
-            throw py::value_error("point " + std::to_string(point) + " isn't on the shape");
-          }
-          point_id = target->drawing.points[size_t(point)].id;
-        }
+        const uint64_t point_id = follow_shape_point(layer_find(doc, mod.deform_layer), mod.deform_shape, value);
         vector_deform_follow_pick(doc, layer_or_raise(id), mod, key == "shape_point2", point_id);
       }
       else if (mod.type == ModifierType::FollowDeform && key == "show_point") {

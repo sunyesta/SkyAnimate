@@ -12348,7 +12348,8 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
   float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
   for_each_shown_follow_point(doc, [&](Layer &rig, Bone &bone, BoneConstraint &c) {
     for (const bool second : {false, true}) {
-      if (second && !c.follow_two) {
+      /* A point of the shape goes as it does: there's nothing to drag. */
+      if ((second && !c.follow_two) || (second ? c.follow_point2_id : c.follow_point_id) != 0) {
         continue;
       }
       const float distance = ImLengthSqr(view.to_screen(second ? c.follow_now2 : c.follow_now) - mouse);

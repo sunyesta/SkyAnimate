@@ -150,6 +150,8 @@ struct PointReader {
   std::shared_ptr<const DeformShape> shape;
   Transform2D now, rest, skin;
   bool carried = false;
+  /* The shape at rest and now, when a point of it is followed. */
+  const std::pair<VectorDrawing, VectorDrawing> *points = nullptr;
 
   /* Where the bones above put a place: the shape's rest is posed by them too, so only its change of shape is left. */
   float2 carried_at(float2 at) const
@@ -161,11 +163,25 @@ struct PointReader {
   {
     return now.apply(vector_deform_point(shape.get(), run, carried_at(at)));
   }
+  /* The same for a follower resting at `at` that goes by point `id` of the shape: that point's change, as the deform's
+   * Strength says. A point that's gone changes nothing. */
+  float2 shown_picked(float2 at, uint64_t id) const
+  {
+    const int was = points ? drawing_point_index(points->first, id) : -1;
+    const int is = points ? drawing_point_index(points->second, id) : -1;
+    const float2 change = was >= 0 && is >= 0 ? points->second.points[size_t(is)].pos - points->first.points[size_t(was)].pos
+                                              : float2();
+    return now.apply(carried_at(at) + change * std::clamp(run.deform_strength, 0.0f, 1.0f));
+  }
 };
 
 /* Deforms read so far in this pass: followers usually share them, and a read is what costs. Each reads after whatever
  * moves its shape, so all those sharing one see it the same. */
-using ShapesRead = std::map<std::pair<uint64_t, std::string>, std::shared_ptr<const DeformShape>>;
+struct ShapesRead {
+  using Key = std::pair<uint64_t, std::string>;
+  std::map<Key, std::shared_ptr<const DeformShape>> shapes;
+  std::map<Key, std::pair<VectorDrawing, VectorDrawing>> points;
+};
 
 static PointReader point_reader(Document &doc, const Follower &f, ShapesRead &read)
 {
@@ -198,8 +214,15 @@ static PointReader point_reader(Document &doc, const Follower &f, ShapesRead &re
     }
   }
   const auto key = std::make_pair(f.owner->id, r.run.name);
-  const auto kept = read.find(key);
-  r.shape = kept != read.end() ? kept->second : (read[key] = vector_deform_shape(doc, *f.owner, r.run));
+  const auto kept = read.shapes.find(key);
+  r.shape = kept != read.shapes.end() ? kept->second : (read.shapes[key] = vector_deform_shape(doc, *f.owner, r.run));
+  if (f.c->follow_point_id != 0 || f.c->follow_point2_id != 0) {
+    const auto [at, fresh] = read.points.try_emplace(key);
+    if (fresh) {
+      vector_deform_shape_read(doc, *f.owner, r.run, at->second.first, at->second.second);
+    }
+    r.points = &at->second;
+  }
   return r;
 }
 
@@ -208,20 +231,42 @@ static void follower_update(Document &doc, Follower &f, ShapesRead &read)
   BoneConstraint &c = *f.c;
   const PointReader r = point_reader(doc, f, read);
   const Transform2D to_world = layer_world_transform(doc, f.rig->id);
-  const float2 here = r.shown(c.follow_point + c.follow_shift);
+  const auto shown = [&](float2 point, float2 shift, uint64_t id) {
+    return id != 0 ? r.shown_picked(point, id) : r.shown(point + shift);
+  };
+  const float2 here = shown(c.follow_point, c.follow_shift, c.follow_point_id);
   const float2 start = r.now.apply(r.carried_at(c.follow_point));
   c.follow_offset = here - (r.carried ? start : c.follow_rest);
   c.follow_now = to_world.apply(here);
   if (!c.follow_two) {
     return;
   }
-  const float2 here2 = r.shown(c.follow_point2 + c.follow_shift2);
+  const float2 here2 = shown(c.follow_point2, c.follow_shift2, c.follow_point2_id);
   c.follow_now2 = to_world.apply(here2);
   const float2 was = r.carried ? r.now.apply(r.carried_at(c.follow_point2)) - start : c.follow_rest2 - c.follow_rest;
   const float2 is = here2 - here;
   if (length(was) > 1e-6f && length(is) > 1e-6f) {
     c.follow_turn = std::atan2(was.x * is.y - was.y * is.x, dot(was, is));
     c.follow_stretch = length(is) / length(was);
+  }
+}
+
+/* Points of the shape rest where the shape has them. */
+static void follow_picked_rest(const Document &doc, BoneConstraint &c, const Layer &owner, const Modifier &m)
+{
+  if (c.follow_point_id == 0 && c.follow_point2_id == 0) {
+    return;
+  }
+  VectorDrawing rest, bent;
+  if (!vector_deform_shape_read(doc, owner, m, rest, bent)) {
+    return;
+  }
+  for (const bool second : {false, true}) {
+    const uint64_t id = second ? c.follow_point2_id : c.follow_point_id;
+    const int at = id != 0 ? drawing_point_index(rest, id) : -1;
+    if (at >= 0) {
+      (second ? c.follow_point2 : c.follow_point) = rest.points[size_t(at)].pos;
+    }
   }
 }
 
@@ -270,8 +315,11 @@ void follow_points_update(Document &doc)
           }
           continue;
         }
-        c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point + c.follow_shift);
-        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2 + c.follow_shift2);
+        if (doc.frame_current == 0) {
+          follow_picked_rest(doc, c, *owner, *m);
+        }
+        c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point + (c.follow_point_id != 0 ? float2() : c.follow_shift));
+        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2 + (c.follow_point2_id != 0 ? float2() : c.follow_shift2));
         /* Layers' setup is what they are now (only the bones rest), so frame 0's place is kept from frame 0. */
         if (doc.frame_current == 0) {
           c.follow_rest = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point);
@@ -381,6 +429,7 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
 {
   c.follow_layer = 0;
   c.follow_modifier = 0;
+  c.follow_point_id = c.follow_point2_id = 0;
   if (!owner || !m) {
     return;
   }
@@ -448,6 +497,17 @@ void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c
   (second ? c.follow_rest2 : c.follow_rest) = layer_setup_relative_transform(doc, rig.id, owner.id).apply(point);
 }
 
+void follow_point_pick(Document &doc, const Layer &rig, BoneConstraint &c, bool second, uint64_t id)
+{
+  (second ? c.follow_point2_id : c.follow_point_id) = id;
+  Layer *owner = nullptr;
+  const Modifier *m = follow_point_modifier(doc, c, &owner);
+  if (m && id != 0) {
+    follow_picked_rest(doc, c, *owner, *m);
+    follow_point_place(doc, rig, c, *owner, second ? c.follow_point2 : c.follow_point, second);
+  }
+}
+
 void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c)
 {
   Layer *owner = nullptr;
@@ -455,6 +515,8 @@ void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c)
   if (!m) {
     return;
   }
+  /* A point of the shape is on the far side: the copy has its own place across from it. */
+  c.follow_point_id = c.follow_point2_id = 0;
   const float2 rest(-c.follow_rest.x, c.follow_rest.y), rest2(-c.follow_rest2.x, c.follow_rest2.y);
   const std::string partner = bone_mirror_name(owner->name);
   if (partner != owner->name) {

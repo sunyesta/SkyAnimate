@@ -67,6 +67,11 @@ std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, cons
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
 
+/* `m`'s shape at rest and now, in `layer`'s space, as its build reads it: to read a point of the shape by. False with
+ * nothing to read. */
+bool vector_deform_shape_read(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &r_rest,
+                              VectorDrawing &r_bent);
+
 /* Follow Deform `m` on `layer` now: what moves the whole drawing. `carry` is what its bones moved it by: with
  * `m.deform_rest_posed` the shape's rest is posed by them too, so only its change of shape is added to it. */
 Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const Modifier &m, float2 carry, bool render);
