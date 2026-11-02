@@ -31,6 +31,23 @@ get the new build). Run the build output directly only for tests.
 Python is embedded from `C:/Python314` (`OANIM_PYTHON_ROOT`), isolated from PYTHONPATH and user
 site-packages. Scripts load from the source tree's `scripts/` while developing.
 
+## Two chats at once
+
+Unrelated features can run side by side in separate chats, each in its own worktree. Two chats must never share
+a folder: their edits and builds collide, and mutation checks temporarily change the source.
+
+- Start the second chat in a new worktree (the Code tab offers it when starting a session), on a branch of its own
+  made from `milestone-3-animation`. That folder has its own `build/`; its first configure and build take a while.
+- Everything happens in that folder: edit, build, test, and run private copies from its `build/`.
+- Commit on the branch. Don't push it, and don't merge it without being told.
+- Merge one feature at a time: the user says when, it goes into `milestone-3-animation`, then rebuild and run every
+  test there. The other chat then brings that branch in before it merges.
+- `docs/SPEC.md` is where two features clash, because a section is one long line. Update it and the live Doc last, in
+  small edits, and on a conflict keep both changes.
+- The desktop shortcut runs the main folder's build, so a feature only shows there after merging. To try one sooner,
+  run `tools/run_openanimate.ps1` from its own folder.
+- The user's open app stays read-only from every chat. Only push from `milestone-3-animation`, when told.
+
 ## Layout
 
 - `src/core` logging and reports (shown in the Info editor)
