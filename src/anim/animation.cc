@@ -70,10 +70,16 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
   f(layer.scale_keys, layer.scale);
   f(layer.shear_keys, layer.shear);
   f(layer.opacity_keys, layer.opacity);
+  /* Before any bone's channels are touched: taking smart actions off goes bone by bone, and a limit read halfway would
+   * see the bone's parent without what they add, the shape with it. */
+  if constexpr (sync) {
+    for (Bone &bone : layer.bones) {
+      bone_shape_limit_affect(layer, bone);
+    }
+  }
   for (Bone &bone : layer.bones) {
     /* A bone's keys are its Transform and Angle: the change from its setup pose. */
     if constexpr (sync) {
-      bone_shape_limit_affect(layer, bone);
       bone_changes_from_values(bone);
     }
     f(bone.position_keys, bone.transform);
