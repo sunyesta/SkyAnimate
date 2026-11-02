@@ -37,7 +37,8 @@ Unrelated features can run side by side in separate chats, each in its own workt
 a folder: their edits and builds collide, and mutation checks temporarily change the source.
 
 - Start the second chat in a new worktree (the Code tab offers it when starting a session), on a branch of its own
-  made from `milestone-3-animation`. That folder has its own `build/`; its first configure and build take a while.
+  made from `milestone-3-animation`. That folder has its own `build/`; its first configure and build take about
+  5 minutes. Keep it off very long paths: a first configure that fails is worth one more try before looking further.
 - Everything happens in that folder: edit, build, test, and run private copies from its `build/`.
 - Commit on the branch. Don't push it, and don't merge it without being told.
 - Merge one feature at a time: the user says when, it goes into `milestone-3-animation`, then rebuild and run every
