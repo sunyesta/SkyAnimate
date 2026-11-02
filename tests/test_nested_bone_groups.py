@@ -320,4 +320,28 @@ at(20)
 after = state()
 assert close(after[1], (before[1][0] + 0.1, before[1][1])) and close(after[0], before[0]), (before, after)
 
+# --- Working on a nested bone, its group staying the bone layer around it --------------------------------------------------
+at(0)
+layers.active = top
+press("A", alt=True)
+layers.active = sub
+sub.select_bone("Ear")
+layers.active = top
+assert ops.armature.constraint_add(type="LIMIT_ANGLE", bone="Ear") == {'FINISHED'}, "commands on the bone find it"
+assert [c["type"] for c in sub.bone_constraints("Ear")] == ["LIMIT_ANGLE"]
+assert top.bone_constraints("Arm") == [] and layers.active.id == top.id
+# A bone of its own picked too, and commands are on its own.
+top.select_bone("Root", extend=True)
+assert ops.armature.constraint_add(type="LIMIT_ANGLE", bone="Root") == {'FINISHED'}
+assert [c["type"] for c in top.bone_constraints("Root")] == ["LIMIT_ANGLE"]
+# Delete: X on the picked nested bone, the bone layer around it active.
+press("A", alt=True)
+layers.active = sub
+sub.select_bone("Ear")
+layers.active = top
+kept = len(top.bones)
+assert ops.armature.bone_delete() == {'FINISHED'}
+assert [b["name"] for b in sub.bones] == [] and len(top.bones) == kept, "the nested bone, none of its own"
+layers.active = top
+
 print("nested_bone_groups: ok")

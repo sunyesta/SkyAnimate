@@ -72,6 +72,17 @@ std::vector<Layer *> armature_and_inside(Document &doc, uint64_t armature)
   return layers;
 }
 
+Layer *armature_worked_on(Document &doc, uint64_t armature)
+{
+  const std::vector<Layer *> layers = armature_and_inside(doc, armature);
+  for (Layer *l : layers) {
+    if (armature_any_picked(*l)) {
+      return l;
+    }
+  }
+  return layers.empty() ? nullptr : layers.front();
+}
+
 std::pair<uint64_t, uint64_t> bone_swap_root(const Document &doc, uint64_t layer, uint64_t bone)
 {
   std::set<std::pair<uint64_t, uint64_t>> seen;

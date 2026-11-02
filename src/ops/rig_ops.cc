@@ -12,7 +12,6 @@
 #include "anim/switch.hh"
 #include "anim/bone_family.hh"
 #include "anim/action_mirror.hh"
-#include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
 #include "anim/follow_point.hh"
@@ -53,7 +52,7 @@ Layer *active_armature(Context &C)
     return nullptr;
   }
   if (active->is_bone_layer()) {
-    return active;
+    return armature_worked_on(doc, active->id);
   }
   const Layer *armature = layer_armature(doc, active->id);
   return armature ? layer_find(doc, armature->id) : nullptr;
@@ -804,7 +803,7 @@ void rig_operators_register()
                  /* With no bone picked, X goes on to delete points (of layers marked Editable in Bone
                   * Group). */
                  const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
-                 return active && active->is_bone_layer() && armature_any_picked(*active);
+                 return active && active->is_bone_layer() && armature_any_picked(*active_armature(C));
                },
                [](Context &C) {
                  Layer &armature = *active_armature(C);
@@ -1319,7 +1318,7 @@ void rig_operators_register()
                  return l && l->is_bone_layer() && bone_find(*l, l->active_bone);
                },
                [](Context &C) {
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const Bone from = *bone_find(armature, armature.active_bone);
                  int changed = 0;
                  for (Bone &b : armature.bones) {
@@ -1339,12 +1338,13 @@ void rig_operators_register()
                });
 
   /* --- Bone constraints ------------------------------------------------------------------- */
-  /* The bone named `bone` (default: the active one) of the active bone layer. */
+  /* The bone named `bone` (default: the active one) of the bone layer worked on. */
   const auto constraint_bone = [](Context &C) -> Bone * {
-    Layer *armature = C.document ? document_active_layer(*C.document) : nullptr;
-    if (!armature || !armature->is_bone_layer()) {
+    const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
+    if (!active || !active->is_bone_layer()) {
       return nullptr;
     }
+    Layer *armature = active_armature(C);
     const std::string name = op_arg(C, "bone");
     return name.empty() ? bone_find(*armature, armature->active_bone)
                         : const_cast<Bone *>(bone_find_by_name(*armature, name));
@@ -1390,7 +1390,7 @@ void rig_operators_register()
                "the original changes the copies",
                bone_layer_active, [](Context &C) {
                  const bool drive = op_arg_bool(C, "drivers");
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const Bone *active = bone_find(armature, armature.active_bone);
                  if (!active) {
                    report(ReportType::Warning, "Click a bone to make it the active one, then select the bones to "
@@ -1508,7 +1508,7 @@ void rig_operators_register()
                "did (its angle and scale keyed back) after an Inherit change",
                bone_layer_active, [](Context &C) {
                  Document &doc = *C.document;
-                 Layer &rig = *document_active_layer(doc);
+                 Layer &rig = *active_armature(C);
                  const std::string bone_name = op_arg(C, "bone");
                  Bone *bone = bone_name.empty() ? bone_find(rig, rig.active_bone)
                                                 : const_cast<Bone *>(bone_find_by_name(rig, bone_name));
@@ -1690,7 +1690,7 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const std::vector<BonePose> poses = armature_pose(armature);
                  struct Grow {
                    uint64_t from;
@@ -1758,7 +1758,7 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const int pieces = std::clamp(op_arg_int(C, "number_cuts", 1), 1, 100) + 1;
                  std::vector<uint64_t> picked;
                  for (const Bone &b : armature.bones) {
@@ -1825,7 +1825,7 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  std::map<uint64_t, uint64_t> copies;
                  for (const Bone &b : armature.bones) {
                    if (b.selected) {
@@ -1869,7 +1869,7 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const Bone *parent = bone_find(armature, armature.active_bone);
                  if (!parent) {
                    report(ReportType::Warning, "Make a bone active to parent to");
@@ -1925,7 +1925,7 @@ void rig_operators_register()
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *document_active_layer(*C.document);
+                 Layer &armature = *active_armature(C);
                  const bool clear = op_arg(C, "type", "CLEAR") == "CLEAR";
                  const std::vector<BonePose> poses = armature_pose(armature);
                  int done = 0;

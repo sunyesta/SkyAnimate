@@ -8632,7 +8632,7 @@ void properties_draw(Area &area, Context &C)
         properties_text_tab(C);
         break;
       case TAB_CONSTRAINTS:
-        constraints_panel(C, *document_active_layer(*C.document));
+        constraints_panel(C, *armature_worked_on(*C.document, C.document->active_layer));
         break;
       case TAB_DRAWING:
         if (bones) {
@@ -8656,7 +8656,7 @@ void properties_draw(Area &area, Context &C)
         break;
       case TAB_BONE: {
         /* The active bone alone; with none, the tab stays and says how to get one. */
-        Layer &armature = *document_active_layer(*C.document);
+        Layer &armature = *armature_worked_on(*C.document, C.document->active_layer);
         if (!bone_find(armature, armature.active_bone)) {
           ImGui::TextDisabled("No active bone: click a bone to edit it.");
           break;

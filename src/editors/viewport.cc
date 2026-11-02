@@ -9263,7 +9263,8 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
                 bone_select(*b, true);
                 other->active_bone = other_bone;
               }
-              if (!io.KeyShift) {
+              /* Inside the bone layer worked in, it stays the one worked in. */
+              if (!io.KeyShift && !layer_inside(doc, other->id, armature.id)) {
                 doc.active_layer = other->id;
               }
             }
@@ -11499,7 +11500,8 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
           }
           if (other) {
             bone_click_select(*other, hit, io.KeyShift);
-            if (!io.KeyShift) {
+            /* Inside the bone layer worked in, it stays the one worked in. */
+            if (!io.KeyShift && !layer_inside(doc, other->id, armature.id)) {
               doc.active_layer = other->id;
             }
           }
@@ -11523,7 +11525,7 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) &&
       !g_right_click_spent)
   {
-    if (armature_any_picked(armature)) {
+    if (!bones_moving(doc, armature).empty()) {
       ImGui::OpenPopup("##bone_menu");
     }
     else {
