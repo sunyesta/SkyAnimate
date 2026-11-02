@@ -5,6 +5,7 @@ keeping only what's inside it, and a group's areas build a shape of their own fo
 - a group works directly on the base whatever is in it; higher up only if it makes one shape, and otherwise does nothing
   rather than guess;
 - a group's areas are moved, removed and changed like any;
+- Inverse takes the outside of any area or group, turning a - area into Keep Only;
 - a global area, as a shared material: its layers and settings are shared, each use keeping its own + or -; it saves,
   and unlinks looking the same;
 - groups survive saving and copying, and a copy that changes a global area's layers is its own from then on.
@@ -203,6 +204,52 @@ above_patch("REMOVE", ("cut", "REMOVE"))
 assert "needs a + area" in head.masks[0]["steps"][1]["problem"], head.masks[0]["steps"][1]["problem"]
 shown = seen()
 assert shown["hole"] and shown["side cut"], ("an empty group paints nothing", shown)
+
+# --- Inverse: the outside of any area -----------------------------------------------------------------------------------
+# On a - area it hides what's outside, which is Keep Only, and off again it's a - area.
+clear()
+assert ops.mask.add(sources="inside", mode="SUBTRACT") == {'FINISHED'}
+shown = seen()
+assert not shown["hole"] and shown["outside"], shown
+assert ops.mask.set(index="0", step="0", invert="1") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["verb"] == "KEEP_ONLY"
+shown = seen()
+assert shown["hole"] and not shown["outside"], shown
+assert ops.mask.set(index="0", step="0", invert="0") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["verb"] == "REMOVE"
+# On a + area it shows everything but the shape.
+clear()
+assert ops.mask.add(sources="inside", mode="ADD") == {'FINISHED'}
+assert ops.mask.set(index="0", step="0", invert="1") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["verb"] == "ADD"
+shown = seen()
+assert not shown["hole"] and shown["outside"], shown
+# On a group, whatever is in it. Directly on the base, shown on black, it's the shape's opposite.
+mouth_group("ADD", "NOTHING")
+assert ops.mask.set(index="0", step="0", invert="1") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["group"] and head.masks[0]["steps"][0]["verb"] == "ADD"
+assert seen() == HOLE, seen()
+assert head.mask_summary == "Shows: outside (inside, minus cut, within lip)", head.mask_summary
+# Taken from white it becomes Keep Only.
+mouth_group("REMOVE", "EVERYTHING")
+assert ops.mask.set(index="0", step="0", invert="1") == {'FINISHED'}
+assert head.masks[0]["steps"][0]["verb"] == "KEEP_ONLY"
+assert seen() == {k: not v for k, v in HOLE.items()}, seen()
+# Higher up: Hide All, + inside, then all but a group of two + areas, where the plain group would add them.
+above_patch("ADD", ("lip", "ADD"), ("cut", "ADD"))
+assert ops.mask.set(index="0", step="1", invert="1") == {'FINISHED'}
+shown = seen()
+assert shown["hole"] and shown["far"] and not shown["outside"], shown
+# And one that makes one shape another way: all but lip minus cut.
+above_patch("ADD", ("lip", "ADD"), ("cut", "REMOVE"))
+assert ops.mask.set(index="0", step="1", invert="1") == {'FINISHED'}
+shown = seen()
+assert shown["hole"] and shown["far"] and not shown["outside"], shown
+# And one of three kinds, that stays a group.
+above_patch("ADD", ("inside", "ADD"), ("cut", "REMOVE"), ("lip", "KEEP_ONLY"))
+assert ops.mask.set(index="0", step="1", invert="1") == {'FINISHED'}
+shown = seen()
+assert shown["hole"] and shown["far"] and shown["outside"], shown
 
 # --- Areas in a group change, move and go ----------------------------------------------------------------------------
 mouth_group("REMOVE", "EVERYTHING")

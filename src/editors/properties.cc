@@ -5470,6 +5470,21 @@ static void mask_area_panel(Context &C, Layer &layer, const WindowManager::MaskA
       operator_call(C, "mask.area_global", global_at);
     }
   }
+  /* Inverse: the outside of the shape. On a - area that's Keep Only, which the row then is. */
+  const auto inverse_row = [&] {
+    modifier_row_label("", column);
+    const std::string driven_invert_path = step_path + "invert";
+    const int driven_invert = driven_begin(driven_invert_path);
+    bool invert = st.invert;
+    if (ImGui::Checkbox("Inverse (use the outside)", &invert)) {
+      operator_call(C, "mask.set", with_step("invert", invert ? "1" : "0"));
+    }
+    driven_end(driven_invert_path, driven_invert);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Use what's outside the shape instead of what's inside. A - area then hides what's outside "
+                        "it, which is Keep Only");
+    }
+  };
   if (st.group) {
     if (st.global == 0) {
       modifier_row_label("Name", column, "The group's name");
@@ -5479,6 +5494,7 @@ static void mask_area_panel(Context &C, Layer &layer, const WindowManager::MaskA
         operator_call(C, "mask.set", with_step("area_name", edited));
       }
     }
+    inverse_row();
     modifier_row_label("", column);
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("The areas in a group build a shape of their own, starting from nothing.");
@@ -5605,20 +5621,7 @@ static void mask_area_panel(Context &C, Layer &layer, const WindowManager::MaskA
     }
     driven_end(driven_combine_path, driven_combine);
   }
-  /* Invert: adding the outside (taking it away is what Keep Only does). */
-  if (mask_step_verb(st) == MaskVerb::Add) {
-    modifier_row_label("", column);
-    const std::string driven_invert_path = step_path + "invert";
-    const int driven_invert = driven_begin(driven_invert_path);
-    bool invert = st.invert;
-    if (ImGui::Checkbox("Invert (use the outside)", &invert)) {
-      operator_call(C, "mask.set", with_step("invert", invert ? "1" : "0"));
-    }
-    driven_end(driven_invert_path, driven_invert);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Use what's outside the shape instead of what's inside");
-    }
-  }
+  inverse_row();
   /* An outline-only layer masks with just its line, which is seldom what's wanted. */
   if (const Layer *outline = mask_step_outline_layer(doc, st)) {
     modifier_row_label("", column);

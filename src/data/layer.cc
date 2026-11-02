@@ -248,7 +248,9 @@ LayerMask mask_card_flatten(const LayerMask &card)
       continue;
     }
     const MaskVerb verb = mask_step_verb(s);
-    if (mask_step_on_base(card, i)) {
+    /* A + group with Inverse paints all but its shape, which its own steps don't. */
+    const bool outside = verb == MaskVerb::Add && s.invert;
+    if (!outside && mask_step_on_base(card, i)) {
       /* Built on the base, the group's own steps paint it: taking it from white is each of them the other way
        * (de Morgan), and keeping only it is the same steps on black. */
       if (verb == MaskVerb::Add && !card.start_shown) {
@@ -264,7 +266,7 @@ LayerMask mask_card_flatten(const LayerMask &card)
       continue;
     }
     MaskCombine combine;
-    if (verb != MaskVerb::KeepOnly &&
+    if (!outside && verb != MaskVerb::KeepOnly &&
         std::all_of(s.children.begin(), s.children.end(), [](const MaskStep &c) { return mask_step_verb(c) == MaskVerb::Add; }))
     {
       inline_children(s, i, verb == MaskVerb::Remove);
