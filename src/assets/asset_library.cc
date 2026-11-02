@@ -80,6 +80,7 @@ void preferences_load()
   for (const auto &[key, flag] : {std::pair{"status_statistics", &Preferences::status_statistics},
                                  std::pair{"status_frame", &Preferences::status_frame},
                                  std::pair{"status_version", &Preferences::status_version},
+                                 std::pair{"viewport_tool_settings", &Preferences::viewport_tool_settings},
                                  std::pair{"layers_auto_focus", &Preferences::layers_auto_focus}})
   {
     if (auto it = j.find(key); it != j.end() && it->is_boolean()) {
@@ -146,6 +147,7 @@ void preferences_save()
                   {"status_statistics", preferences().status_statistics},
                   {"status_frame", preferences().status_frame},
                   {"status_version", preferences().status_version},
+                  {"viewport_tool_settings", preferences().viewport_tool_settings},
                   {"layers_auto_focus", preferences().layers_auto_focus},
                   {"new_keys", new_keys}};
   std::ofstream out(preferences_path(), std::ios::trunc);

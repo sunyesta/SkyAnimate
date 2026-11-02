@@ -177,6 +177,9 @@ void ui_prop_pair(Context &C, const rna::PointerRNA &ptr, const char *label, con
  * ones. At its right the statistics, the frame and `version` (editors/statistics.hh), chosen from its
  * right-click menu. Drawn before the docking space, which then sits above it. */
 void ui_status_bar_draw(Context &C, const char *version);
+/* The text at the status bar's left, for this frame: what the mouse does with the tool in hand. `hint` is a
+ * string literal. */
+void ui_status_hint_set(const char *hint);
 /* A square revert button (a curved arrow turning back), `tooltip` on hover. True when clicked. */
 bool ui_revert_button(const char *id, const char *tooltip);
 /* How much room a revert button takes after a field (its width and the gap before it). */

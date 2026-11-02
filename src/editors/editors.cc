@@ -975,6 +975,13 @@ static void report_icon(ImDrawList *dl, ImVec2 c, float size, ReportType type, I
   dl->AddLine(ImVec2(c.x, c.y - r * 0.15f), ImVec2(c.x, c.y + r * 0.6f), cut, 1.8f);
 }
 
+static const char *g_status_hint = "";
+
+void ui_status_hint_set(const char *hint)
+{
+  g_status_hint = hint;
+}
+
 void ui_status_bar_draw(Context &C, const char *version)
 {
   /* As tall as Blender's (a button and a margin), so the banner's boxes fit with room round them. */
@@ -1007,6 +1014,7 @@ void ui_status_bar_draw(Context &C, const char *version)
   ImDrawList *dl = ImGui::GetWindowDrawList();
   /* Where the banner ends: the statistics keep to the right of it. */
   float banner_right = at.x;
+  float banner_left = bar_right;
   if (r.serial != 0 && alpha > 0.0f) {
     std::string text = r.message;
     if (!r.title.empty()) {
@@ -1023,6 +1031,7 @@ void ui_status_bar_draw(Context &C, const char *version)
     const float left = at.x + std::max(0.0f, (ImGui::GetContentRegionAvail().x - box_w) * 0.5f);
     const ImVec2 min(left, at.y + 2.0f), max(left + box_w, at.y + h - 2.0f);
     banner_right = max.x;
+    banner_left = min.x;
     const auto a = [&](int v) { return int(float(v) * alpha); };
     /* Blender's colours: the icon's box in the report's colour, the message's the same at a quarter
      * over the bar, a grey outline round both; a new report brightens the icon's box briefly. */
@@ -1074,6 +1083,7 @@ void ui_status_bar_draw(Context &C, const char *version)
   const Statistics stats = document_statistics(C);
   const std::vector<std::string> parts =
       statistics_parts(stats, prefs.status_statistics, prefs.status_frame, prefs.status_version ? version : nullptr);
+  float stats_left = bar_right;
   if (!parts.empty()) {
     const char *separator = " | ";
     const float separator_w = ImGui::CalcTextSize(separator).x;
@@ -1083,6 +1093,7 @@ void ui_status_bar_draw(Context &C, const char *version)
     }
     const float right = bar_right - 4.0f;
     float x = right - width;
+    stats_left = x;
     const float y = at.y + (h - ImGui::GetFontSize()) * 0.5f;
     /* Too long to fit beside the banner: cut off on the left. */
     dl->PushClipRect(ImVec2(std::max(at.x, banner_right + 12.0f), at.y), ImVec2(bar_right, at.y + h), true);
@@ -1096,6 +1107,13 @@ void ui_status_bar_draw(Context &C, const char *version)
     }
     dl->PopClipRect();
   }
+  /* At the left, as Blender's: what the mouse does, cut off short of the rest. Set by the viewport, which draws
+   * after this: a frame late, and gone with it. */
+  dl->PushClipRect(at, ImVec2(std::min(banner_left, stats_left) - 12.0f, at.y + h), true);
+  dl->AddText(ImVec2(at.x + 4.0f, at.y + (h - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+              g_status_hint);
+  dl->PopClipRect();
+  g_status_hint = "";
   /* Right-click: what shows at the right (Blender's status bar menu), kept in the preferences. */
   if (ImGui::BeginPopupContextWindow("##status_bar_menu", ImGuiPopupFlags_MouseButtonRight)) {
     bool changed = false;

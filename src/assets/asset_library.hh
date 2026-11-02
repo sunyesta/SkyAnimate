@@ -32,6 +32,8 @@ struct Preferences {
   bool status_statistics = true;
   bool status_frame = false;
   bool status_version = true;
+  /* The viewport's Tool Settings bar (its View menu). */
+  bool viewport_tool_settings = true;
   /* Layers editor settings: Auto Focus keeps the list folded down to the selected layers. */
   bool layers_auto_focus = false;
 };

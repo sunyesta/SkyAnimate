@@ -38,6 +38,7 @@
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
+#include "assets/asset_library.hh"
 #include "assets/draw_presets.hh"
 #include "assets/sculpt_presets.hh"
 #include "anim/layer_pick.hh"
@@ -2776,10 +2777,6 @@ static void annotate_header(Context &C)
       ui_drag_float("##eraser_radius", &ts.annotate_eraser_radius, 0.5f, 2.0f, 200.0f, "Radius %.0f px",
                        ImGuiSliderFlags_AlwaysClamp);
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled(mode == AnnotateMode::Eraser ? "Drag to rub out notes"
-                        : mode == AnnotateMode::Line ? "Drag to draw a line"
-                                                     : "Drag to draw a note  |  Ctrl: erase");
   }
   else {
     DrawingGuide *picked = doc.active_guide >= 0 && doc.active_guide < int(doc.guides.size())
@@ -2888,8 +2885,6 @@ static void annotate_header(Context &C)
       }
       ImGui::SameLine();
     }
-    ImGui::TextDisabled("Drag to make a guide  |  Drag an end or its line  |  Beside the picked one: turn  |  Ctrl: snap  "
-                        "|  Double-click: copy  |  Right-click or X: delete");
   }
   if (g_annotate_header_changed && !ImGui::IsAnyItemActive()) {
     push_undo(C, "Change Annotation");
@@ -3325,8 +3320,6 @@ static void draw_header(Context &C)
     if (header_toggle("Auto Fill", ts.draw_fill, "Fill curves closed on their first point")) {
       ts.draw_fill = !ts.draw_fill;
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Click to add points, drag to place  |  Click the first point to close  |  Ctrl: grid");
     return;
   }
   if (eraser) {
@@ -3364,6 +3357,185 @@ static void draw_header(Context &C)
   }
 }
 
+/* The header, and under it the Tool Settings bar unless it was hidden. */
+static float header_rows_height()
+{
+  const float row = ImGui::GetFrameHeight() + 8.0f;
+  return preferences().viewport_tool_settings ? row * 2.0f : row;
+}
+
+/* What the mouse does with the tool in hand, for the status bar. */
+static const char *tool_hint(const ToolSettings &ts)
+{
+  switch (ts.tool) {
+    case Tool::TransformLayer:
+      return "Inside: move  |  corners, outside: turn  |  handle: scale (Shift: proportions)  |  edge: shear  |  "
+             "Alt: about the pivot (drag it; double-click puts it back)";
+    case Tool::SelectLayer:
+      return "Click: select  |  again: the one below  |  Shift: add  |  Ctrl: remove  |  Alt-click from any tool";
+    case Tool::Draw:
+      return ts.draw_mode == DrawMode::Pen ? "Click to add points, drag to place  |  Click the first point to close  |  "
+                                             "Ctrl: grid"
+                                           : "";
+    case Tool::Shape:
+      return ts.shape == PrimitiveKind::Grid ? "Drag to draw  |  Shift: square  |  Alt: from centre  |  Ctrl: snap"
+                                             : "Drag to draw  |  Shift: even  |  Alt: from centre  |  Ctrl: grid";
+    case Tool::Annotate:
+      if (annotate_mode_is_guide(ts.annotate_mode)) {
+        return "Drag to make a guide  |  Drag an end or its line  |  Beside the picked one: turn  |  Ctrl: snap  |  "
+               "Double-click: copy  |  Right-click or X: delete";
+      }
+      return ts.annotate_mode == AnnotateMode::Eraser ? "Drag to rub out notes"
+             : ts.annotate_mode == AnnotateMode::Line ? "Drag to draw a line"
+                                                      : "Drag to draw a note  |  Ctrl: erase";
+    case Tool::SplitCurve:
+      return ts.tool_temporary ? "Split once (K): click a line, then back to your tool  |  Shift: middle  |  Esc: cancel"
+                               : "Click a line to add a point  |  Shift: middle  |  Ctrl-click a point: delete it";
+    case Tool::Cursor:
+      return "Click to place the cursor  |  Shift right-click places it from any tool";
+    default:
+      return "";
+  }
+}
+
+/* Under the header, Blender's Tool Settings: only what belongs to the tool in hand, on a strip just wide enough
+ * for it, the drawing showing beside it. Its row stays when a tool has nothing to show, so switching tools moves
+ * nothing below it. The wheel scrolls the strip when it doesn't fit. */
+static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float width)
+{
+  Document &doc = *C.document;
+  ToolSettings &ts = C.wm->tool_settings;
+  const float row = ImGui::GetFrameHeight() + 8.0f;
+  /* Over the viewport's button, so a click between the settings doesn't reach the drawing under them. It has to
+   * come before them, so it takes last frame's width. */
+  if (area.tool_settings_width > 0.0f) {
+    const ImVec2 strip(std::min(area.tool_settings_width, width), row);
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##tool_settings", strip);
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(origin, origin + strip, false)) {
+      area.tool_settings_scroll -= ImGui::GetIO().MouseWheel * row * 2.0f;
+    }
+  }
+  /* The strip's width is known once the settings are drawn: it goes in the channel under them. */
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->ChannelsSplit(2);
+  dl->ChannelsSetCurrent(1);
+  ImGui::PushClipRect(origin, origin + ImVec2(width, row), true);
+  ImGui::SetCursorScreenPos(origin + ImVec2(8.0f - area.tool_settings_scroll, 4.0f));
+  ImGui::BeginGroup();
+  /* A group with no items would measure out to the last item before it, the header's. */
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::SameLine(0.0f, 0.0f);
+  /* On a bone layer: Auto IK, for posing by a bone's tip. */
+  if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer() &&
+                                                       (ts.tool == Tool::Select || ts.tool == Tool::TransformBones))
+  {
+    if (header_toggle("Auto IK", ts.auto_ik,
+                      "Posing a bone by its tip turns its parents too, so the tip reaches the mouse (Moho's IK). "
+                      "The chain stops at a bone Ignored by IK")) {
+      ts.auto_ik = !ts.auto_ik;
+    }
+    ImGui::SameLine();
+  }
+  switch (ts.tool) {
+    case Tool::TransformLayer:
+      ImGui::Checkbox("Show Grid Lines", &ts.layer_grid);
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Show the active layer's own grid across the viewport: squashed, turned and placed as the "
+                          "layer is, its X axis red and its Y axis green through its origin");
+      }
+      break;
+    case Tool::SelectLayer:
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Pick");
+      ImGui::SameLine();
+      if (header_toggle("Layer", !ts.layer_pick_group, "Pick the layer clicked")) {
+        ts.layer_pick_group = false;
+      }
+      ImGui::SameLine(0, 1);
+      if (header_toggle("Group", ts.layer_pick_group,
+                        "Pick the outermost group holding the layer clicked (to move a whole character)")) {
+        ts.layer_pick_group = true;
+      }
+      break;
+    case Tool::Select:
+      break;
+    case Tool::Draw:
+    case Tool::Shape:
+      if (ts.tool == Tool::Draw) {
+        draw_header(C);
+        break;
+      }
+      ImGui::TextUnformatted(primitive_name(ts.shape));
+      ImGui::SameLine();
+      color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
+      ImGui::SameLine();
+      width_field(doc, ts, ts.style.line_width, false);
+      ImGui::SameLine();
+      color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
+      ImGui::SameLine();
+      tool_brush_button(C);
+      ImGui::SameLine();
+      if (ts.shape == PrimitiveKind::Grid) {
+        /* A grid's cells: its lines are outlines only. */
+        const float w = ImGui::GetFrameHeight() * 3.4f;
+        ImGui::SetNextItemWidth(w);
+        ui_drag_int("##grid_columns", &ts.grid_columns, 0.1f, 1, GRID_CELLS_MAX, "Columns %d");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("How many cells across a new grid has");
+        }
+        ImGui::SameLine(0, 1);
+        ImGui::SetNextItemWidth(w);
+        ui_drag_int("##grid_rows", &ts.grid_rows, 0.1f, 1, GRID_CELLS_MAX, "Rows %d");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("How many cells up a new grid has");
+        }
+        ts.grid_columns = std::clamp(ts.grid_columns, 1, GRID_CELLS_MAX);
+        ts.grid_rows = std::clamp(ts.grid_rows, 1, GRID_CELLS_MAX);
+      }
+      else {
+        if (header_toggle("Fill", ts.draw_fill, "Fill boxes and circles")) {
+          ts.draw_fill = !ts.draw_fill;
+        }
+      }
+      break;
+    case Tool::Annotate:
+      annotate_header(C);
+      break;
+    case Tool::SplitCurve:
+    case Tool::Cursor:
+      break;
+    case Tool::WeightSelect:
+      weight_select_header(C);
+      break;
+    case Tool::WeightPaint:
+      weight_paint_header(C);
+      break;
+    case Tool::TransformBones:
+      transform_bones_header(C);
+      break;
+    case Tool::TransformPoints:
+      transform_points_header(C);
+      break;
+    case Tool::Sculpt:
+      sculpt_header(C);
+      break;
+  }
+  ImGui::EndGroup();
+  ImGui::PopClipRect();
+  const float settings_w = ImGui::GetItemRectSize().x;
+  area.tool_settings_width = settings_w > 0.0f ? settings_w + 16.0f : 0.0f;
+  area.tool_settings_scroll = std::clamp(area.tool_settings_scroll, 0.0f,
+                                         std::max(area.tool_settings_width - width, 0.0f));
+  dl->ChannelsSetCurrent(0);
+  if (area.tool_settings_width > 0.0f) {
+    dl->AddRectFilled(origin, origin + ImVec2(std::min(area.tool_settings_width, width), row), COL_HEADER, 6.0f,
+                      ImDrawFlags_RoundCornersBottomRight);
+  }
+  dl->ChannelsMerge();
+}
+
 static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
 {
   Document &doc = *C.document;
@@ -3373,6 +3545,17 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   ImGui::SetCursorScreenPos(origin + ImVec2(0.0f, 4.0f));
   area_editor_type_menu(area);
 
+  ImGui::SameLine();
+  if (header_menu("View")) {
+    Preferences &prefs = preferences();
+    if (ImGui::MenuItem("Tool Settings", nullptr, &prefs.viewport_tool_settings)) {
+      preferences_save();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("The bar under the header, with the settings of the tool in hand");
+    }
+    ImGui::EndPopup();
+  }
   ImGui::SameLine();
   if (header_menu("Select")) {
     const Layer *active_layer = document_active_layer(doc);
@@ -3470,17 +3653,6 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   }
 
   ImGui::SameLine(0.0f, h);
-  /* On a bone layer: Auto IK, for posing by a bone's tip. */
-  if (const Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer() &&
-                                                       (ts.tool == Tool::Select || ts.tool == Tool::TransformBones))
-  {
-    if (header_toggle("Auto IK", ts.auto_ik,
-                      "Posing a bone by its tip turns its parents too, so the tip reaches the mouse (Moho's IK). "
-                      "The chain stops at a bone Ignored by IK")) {
-      ts.auto_ik = !ts.auto_ik;
-    }
-    ImGui::SameLine();
-  }
   /* Points, Edges and Strokes only mean something with points to pick (not on a bone layer with
    * no layers editable in it, nor an empty drawing). */
   bool editable_points = false;
@@ -3520,119 +3692,20 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
     hdl->PathStroke(col, 0, 1.6f);
     ImGui::SameLine(0, 4);
   }
-  switch (ts.tool) {
-    case Tool::TransformLayer:
-      ImGui::Checkbox("Show Grid Lines", &ts.layer_grid);
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Show the active layer's own grid across the viewport: squashed, turned and placed as the "
-                          "layer is, its X axis red and its Y axis green through its origin");
-      }
-      ImGui::SameLine();
-      ImGui::TextDisabled("Inside: move  |  corners, outside: turn  |  handle: scale (Shift: proportions)  |  edge: "
-                          "shear  |  Alt: about the pivot (drag it; double-click puts it back)");
-      break;
-    case Tool::SelectLayer:
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("Pick");
-      ImGui::SameLine();
-      if (header_toggle("Layer", !ts.layer_pick_group, "Pick the layer clicked")) {
-        ts.layer_pick_group = false;
-      }
-      ImGui::SameLine(0, 1);
-      if (header_toggle("Group", ts.layer_pick_group,
-                        "Pick the outermost group holding the layer clicked (to move a whole character)")) {
-        ts.layer_pick_group = true;
-      }
-      ImGui::SameLine();
-      ImGui::TextDisabled("Click: select  |  again: the one below  |  Shift: add  |  Ctrl: remove  |  Alt-click from any tool");
-      break;
-    case Tool::Select:
-      if (!editable_points) {
-        break;
-      }
-      if (header_toggle("Points", ts.select_mode == SelectMode::Point, "Select points (1)")) {
-        operator_call(C, "mesh.select_mode_point");
-      }
-      ImGui::SameLine(0, 1);
-      if (header_toggle("Edges", ts.select_mode == SelectMode::Edge,
-                        "Select edges: clicking a line selects the segment between two points (2)"))
-      {
-        operator_call(C, "mesh.select_mode_edge");
-      }
-      ImGui::SameLine(0, 1);
-      if (header_toggle("Strokes", ts.select_mode == SelectMode::Stroke, "Select whole strokes (3)")) {
-        operator_call(C, "mesh.select_mode_stroke");
-      }
-      break;
-    case Tool::Draw:
-    case Tool::Shape:
-      if (ts.tool == Tool::Draw) {
-        draw_header(C);
-        break;
-      }
-      ImGui::TextUnformatted(primitive_name(ts.shape));
-      ImGui::SameLine();
-      color_swatch("##line_color", ts.style.line, "Line colour for new strokes");
-      ImGui::SameLine();
-      width_field(doc, ts, ts.style.line_width, false);
-      ImGui::SameLine();
-      color_swatch("##fill_color", ts.style.fill, "Fill colour for new shapes");
-      ImGui::SameLine();
-      tool_brush_button(C);
-      ImGui::SameLine();
-      if (ts.shape == PrimitiveKind::Grid) {
-        /* A grid's cells: its lines are outlines only. */
-        const float w = ImGui::GetFrameHeight() * 3.4f;
-        ImGui::SetNextItemWidth(w);
-        ui_drag_int("##grid_columns", &ts.grid_columns, 0.1f, 1, GRID_CELLS_MAX, "Columns %d");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("How many cells across a new grid has");
-        }
-        ImGui::SameLine(0, 1);
-        ImGui::SetNextItemWidth(w);
-        ui_drag_int("##grid_rows", &ts.grid_rows, 0.1f, 1, GRID_CELLS_MAX, "Rows %d");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("How many cells up a new grid has");
-        }
-        ts.grid_columns = std::clamp(ts.grid_columns, 1, GRID_CELLS_MAX);
-        ts.grid_rows = std::clamp(ts.grid_rows, 1, GRID_CELLS_MAX);
-        ImGui::SameLine();
-        ImGui::TextDisabled("Drag to draw  |  Shift: square  |  Alt: from centre  |  Ctrl: snap");
-      }
-      else {
-        if (header_toggle("Fill", ts.draw_fill, "Fill boxes and circles")) {
-          ts.draw_fill = !ts.draw_fill;
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("Drag to draw  |  Shift: even  |  Alt: from centre  |  Ctrl: grid");
-      }
-      break;
-    case Tool::Annotate:
-      annotate_header(C);
-      break;
-    case Tool::SplitCurve:
-      ImGui::TextDisabled(ts.tool_temporary
-                              ? "Split once (K): click a line, then back to your tool  |  Shift: middle  |  Esc: cancel"
-                              : "Click a line to add a point  |  Shift: middle  |  Ctrl-click a point: delete it");
-      break;
-    case Tool::Cursor:
-      ImGui::TextDisabled("Click to place the cursor  |  Shift right-click places it from any tool");
-      break;
-    case Tool::WeightSelect:
-      weight_select_header(C);
-      break;
-    case Tool::WeightPaint:
-      weight_paint_header(C);
-      break;
-    case Tool::TransformBones:
-      transform_bones_header(C);
-      break;
-    case Tool::TransformPoints:
-      transform_points_header(C);
-      break;
-    case Tool::Sculpt:
-      sculpt_header(C);
-      break;
+  if (ts.tool == Tool::Select && editable_points) {
+    if (header_toggle("Points", ts.select_mode == SelectMode::Point, "Select points (1)")) {
+      operator_call(C, "mesh.select_mode_point");
+    }
+    ImGui::SameLine(0, 1);
+    if (header_toggle("Edges", ts.select_mode == SelectMode::Edge,
+                      "Select edges: clicking a line selects the segment between two points (2)"))
+    {
+      operator_call(C, "mesh.select_mode_edge");
+    }
+    ImGui::SameLine(0, 1);
+    if (header_toggle("Strokes", ts.select_mode == SelectMode::Stroke, "Select whole strokes (3)")) {
+      operator_call(C, "mesh.select_mode_stroke");
+    }
   }
   if (editable_points) {
     detail_header(C);
@@ -14162,9 +14235,13 @@ static void viewport_draw_contents(Area &area, Context &C)
     ui_menu_end();
   }
 
-  /* Header, tool bar, and the info line in the corner. */
+  /* Header, tool settings, tool bar, and the info line in the corner. */
   header_draw(area, C, origin, size.x);
-  const float header_h = ImGui::GetFrameHeight() + 8.0f;
+  if (preferences().viewport_tool_settings) {
+    tool_settings_draw(area, C, origin + ImVec2(0.0f, ImGui::GetFrameHeight() + 8.0f), size.x);
+  }
+  ui_status_hint_set(tool_hint(ts));
+  const float header_h = header_rows_height();
   toolbar_draw(C, origin, header_h + 6.0f, size.y - header_h - 16.0f);
 
   const Layer *active = document_active_layer(doc);

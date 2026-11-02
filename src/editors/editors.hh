@@ -89,6 +89,10 @@ struct Area {
    * 1 Move, 2 Shape, 3 Mine. */
   ShelfState sculpt_shelf;
   ShelfState draw_shelf;
+  /* Viewport: the Tool Settings strip's width last frame (0: the tool has no settings), and how far it is
+   * scrolled when it doesn't fit, in pixels. */
+  float tool_settings_width = 0.0f;
+  float tool_settings_scroll = 0.0f;
 
   /* Asset Shelf (asset_shelf.cc): the tab (0 Context, 1 All Switches), pinned and its rows (switch ids),
    * the rows that fitted last (kept while nothing fits), the search, the tiles' size and whether hovering
