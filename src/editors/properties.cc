@@ -2040,24 +2040,6 @@ static void reference_tab(Context &C)
   }
 }
 
-/* Follow Deform's choices: every deform but `layer`'s own and those it's the shape of. Picking one makes it follow. */
-static void follow_deform_items(Context &C, const Layer &layer)
-{
-  for (const Layer *l : document_layers_flat(*C.document)) {
-    for (const Modifier &m : l->modifiers) {
-      if (!modifier_is_deform(m.type) || l->id == layer.id || m.deform_layer == layer.id) {
-        continue;
-      }
-      const std::string label = l->name + ": " + m.name;
-      ImGui::PushID(&m);
-      if (ImGui::Selectable(label.c_str())) {
-        operator_call(C, "layer.follow_deform", {{"deform_layer", std::to_string(l->id)}, {"modifier", m.name}});
-      }
-      ImGui::PopID();
-    }
-  }
-}
-
 static void binding_panel(Context &C, Layer &layer, Layer &armature)
 {
   Document &doc = *C.document;
@@ -2206,26 +2188,6 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     ImGui::PopStyleVar();
     ImGui::EndDisabled();
   }
-  /* Follow Deform: the layer stays on a deform without bending, by a bone of its own. */
-  if (!layer.is_bone_layer()) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Follow Deform");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::SetNextItemWidth(-1);
-    ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original);
-    if (ImGui::BeginCombo("##follow_deform_layer", "Add...", ImGuiComboFlags_HeightLarge)) {
-      follow_deform_items(C, layer);
-      ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0)"
-                                               : "Keeps this layer on a Curve, Cage or Mesh Deform without bending it: a new bone at\n"
-                                                 "its middle gets a Follow Point there, and the layer goes on that bone");
-    }
-  }
   /* Bone Follows Selection: the parent bone keyed onto the selection on each of its keyed frames. */
   if (layer.has_drawing() || layer.is_group()) {
     ImGui::TableNextRow();
@@ -2343,6 +2305,12 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
     for (const int k : {0, 4, 8}) {
       dl->AddCircleFilled(pts[k], s * 0.2f, COL_MOD_ICON);
     }
+  }
+  else if (type == ModifierType::FollowDeform) {
+    /* A curve, and a point riding it. */
+    dl->AddBezierCubic(ImVec2(c.x - s, c.y + s * 0.6f), ImVec2(c.x - s * 0.4f, c.y - s * 0.9f), ImVec2(c.x + s * 0.4f, c.y + s * 0.9f),
+                       ImVec2(c.x + s, c.y - s * 0.6f), COL_MOD_ICON, 1.3f);
+    dl->AddCircleFilled(c, s * 0.38f, COL_MOD_ICON);
   }
   else if (type == ModifierType::CageDeform) {
     /* A closed, pulled outline, its points on it. */
@@ -3223,7 +3191,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   merge_drawing_layers(doc.layers, drawings);
   std::erase_if(drawings, [&](const Layer *l) { return l->id == layer.id; });
   const Layer *target = layer_find(doc, m.deform_layer);
-  modifier_row_label("Layer", column, "The layer whose shape bends this one");
+  const bool follows = m.type == ModifierType::FollowDeform;
+  modifier_row_label("Layer", column, follows ? "The layer whose shape carries this one" : "The layer whose shape bends this one");
   ImGui::SetNextItemWidth(width());
   if (const uint64_t picked = layer_search_combo("##deform_layer", target ? target->name.c_str() : "Pick a layer",
                                                  drawings, m.deform_layer))
@@ -3237,7 +3206,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   }
 
   /* The shape: one of that layer's. */
-  modifier_row_label("Shape", column, m.type == ModifierType::CurveDeform  ? "The line that bends it, or the shape with "
+  modifier_row_label("Shape", column, follows ? "The line, closed shape, grid or mesh that carries it"
+                                       : m.type == ModifierType::CurveDeform ? "The line that bends it, or the shape with "
                                                                               "the Part of it that does"
                                        : m.type == ModifierType::CageDeform ? "The closed shape (a cage) that bends it"
                                                                              : "The grid, mesh of cells drawn by hand, or "
@@ -3318,7 +3288,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "A loop: this layer bends that shape, so neither bends");
   }
   else if (kind == DeformKind::Grid) {
-    ImGui::TextDisabled("Grid: each cell bends what is in it");
+    ImGui::TextDisabled(follows ? "Grid: the point goes as its cell does" : "Grid: each cell bends what is in it");
     static const char *const METHOD_NAMES[] = {"Cells", "Envelope"};
     static const char *const METHOD_TIPS[] = {
         "Each cell bends what is in it, so the drawing fits the mesh exactly, and a line along the edge stretches with "
@@ -3362,7 +3332,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   }
   else if (kind == DeformKind::Cage) {
-    ImGui::TextDisabled("Cage: what is in the shape bends with it");
+    ImGui::TextDisabled(follows ? "Cage: the point goes as the shape does" : "Cage: what is in the shape bends with it");
     static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Envelope"};
     static const char *const METHOD_TIPS[] = {
         "Smooth, and your drawing's outline stays exactly on the cage, but the inside squashes where a side bulges "
@@ -3397,13 +3367,13 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   }
   else if (kind == DeformKind::Mesh) {
-    ImGui::TextDisabled("Mesh: each cell bends what is in it");
+    ImGui::TextDisabled(follows ? "Mesh: the point goes as its cell does" : "Mesh: each cell bends what is in it");
   }
   else if (kind == DeformKind::Wire) {
-    ImGui::TextDisabled("Wire: everything moves with the line, pinned to it (a bendy bone)");
+    ImGui::TextDisabled(follows ? "Wire: the point is pinned to the line" : "Wire: everything moves with the line, pinned to it (a bendy bone)");
   }
   else if (kind == DeformKind::Line) {
-    ImGui::TextDisabled("Line: what lies along it bends with it");
+    ImGui::TextDisabled(follows ? "Line: the point goes along it" : "Line: what lies along it bends with it");
     modifier_row_label("", column);
     if (ImGui::Checkbox("Stretch", &m.deform_stretch)) {
       done = true;
@@ -3413,7 +3383,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                         "(Illustrator's Art Brush). Off, it keeps its length and slides along the line, as "
                         "Blender's Curve modifier does");
     }
-    if (vector_deform_takes_part(doc, m)) {
+    if (!follows && vector_deform_takes_part(doc, m)) {
       Modifier whole = m;
       whole.deform_part_from = whole.deform_part_to = 0;
       part_row(vector_deform_kind(doc, layer, whole) != DeformKind::Line);
@@ -3443,11 +3413,11 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   }
   else {
-    ImGui::TextDisabled(target ? "Pick the shape that bends it" : "Pick a layer, then its shape");
+    ImGui::TextDisabled(!target ? "Pick a layer, then its shape" : follows ? "Pick the shape it follows" : "Pick the shape that bends it");
   }
 
   /* Weights: a group's deform has the automatic ones, every drawing inside following it fully. */
-  if (!layer.is_group()) {
+  if (!layer.is_group() && !follows) {
     static const char *const WEIGHT_NAMES[] = {"Automatic", "Custom"};
     static const char *const WEIGHT_TIPS[] = {
         "Every point of the drawing follows it fully, past the shape too (as Blender's deform modifiers bend the "
@@ -3487,8 +3457,9 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   /* Strength: keyable, with its key button. */
   const std::string path = "modifiers[" + std::to_string(index) + "].strength";
   const int key_state = layer_key_state(layer, {path}, doc.frame_current);
-  modifier_row_label("Strength", column, "How much of the deform shows: 0 none, 1 all of it. It can be keyed, to fade "
-                                         "a deform in or out");
+  modifier_row_label("Strength", column, follows ? "How much of the shape's move it takes: 0 none, 1 all of it. It can be keyed"
+                                                  : "How much of the deform shows: 0 none, 1 all of it. It can be keyed, to fade "
+                                                    "a deform in or out");
   ImGui::SetNextItemWidth(width());
   const int tint = ui_key_tint_push(key_state | layer_smart_state(layer, {path}));
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
@@ -3505,6 +3476,67 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(layer.id)}, {"paths", path}});
   }
   ui_flash_row(layer.id, path);
+
+  if (follows) {
+    modifier_row_label("", column);
+    if (ImGui::Checkbox("Show Point", &m.deform_show_point)) {
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Shows the point in the viewport, light blue. Drag it on frame 0 to choose the place on the shape\n"
+                        "that carries the drawing; drag it on any other frame to key it along the shape. Hiding it changes nothing");
+    }
+    modifier_row_label("", column);
+    bool two = m.deform_two;
+    if (ImGui::Checkbox("Second Point", &two)) {
+      vector_deform_follow_two(m, two);
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("A second place on the shape: the way from the first to it can turn the drawing, and how far\n"
+                        "apart they are can scale it. Further apart gives a steadier angle");
+    }
+    ImGui::BeginDisabled(doc.frame_current == 0);
+    for (const bool second : {false, true}) {
+      if (second && !m.deform_two) {
+        continue;
+      }
+      const std::string shift_path = "modifiers[" + std::to_string(index) + (second ? "].shift2" : "].shift");
+      const int shift_state = layer_key_state(layer, {shift_path}, doc.frame_current);
+      modifier_row_label(second ? "Second Shift" : "Shift", column,
+                         "How far the point is moved from where it rests, on this frame: key it for a drawing that slides\n"
+                         "along the shape. Dragging the light blue point does the same");
+      ImGui::SetNextItemWidth(width());
+      const int shift_tint = ui_key_tint_push(shift_state | layer_smart_state(layer, {shift_path}));
+      float2 &shift = second ? m.deform_shift2 : m.deform_shift;
+      float values[2] = {shift.x, shift.y};
+      if (ui_drag_float2(second ? "##deform_shift2" : "##deform_shift", values, 0.001f, -100.0f, 100.0f, "%.3f")) {
+        shift = {values[0], values[1]};
+      }
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+      ImGui::PopStyleColor(shift_tint);
+      ImGui::SameLine(0, 4);
+      if (ui_key_button(second ? "##deform_shift2_key" : "##deform_shift_key", shift_state)) {
+        operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(layer.id)}, {"paths", shift_path}});
+      }
+      ui_flash_row(layer.id, shift_path);
+    }
+    ImGui::EndDisabled();
+    if (m.deform_two) {
+      modifier_row_label("", column);
+      if (ImGui::Checkbox("Rotation", &m.deform_rotation)) {
+        done = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Scale", &m.deform_scale)) {
+        done = true;
+      }
+    }
+    if (done) {
+      C.undo->push("Follow Deform", doc);
+    }
+    return;
+  }
 
   modifier_row_label("Precision", column, "How far a bent line may stray from the true bend: where the deform bends "
                                           "a segment more than its points and handles can follow, points are added "
@@ -3592,20 +3624,13 @@ static void modifiers_panel(Context &C, Layer &layer)
                         "bends what is in it, as Blender's Lattice and Moho's Smart Warp. Animate it and the "
                         "drawing follows");
     }
-    /* Not a modifier of its own: a bone with a Follow Point carries the layer, so it stays rigid on the shape. */
-    if (!layer.is_bone_layer()) {
-      ImGui::TextDisabled("Follow");
-      const bool inside_rig = layer_armature(doc, layer.id) != nullptr;
-      const bool usable = inside_rig && doc.frame_current == 0 && !layer_binding_group(doc, layer.id);
-      if (ImGui::BeginMenu("Follow Deform", usable)) {
-        follow_deform_items(C, layer);
-        ImGui::EndMenu();
+    if (!layer.is_group()) {
+      if (ImGui::MenuItem("Follow Deform")) {
+        operator_call(C, "object.modifier_add", {{"type", "FOLLOW_DEFORM"}});
       }
-      /* Only to say why not: over the open list, a tooltip would hide its choices. */
-      if (!usable && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", !inside_rig              ? "Stays on a deform without bending: the layer has to be inside a bone layer"
-                                : doc.frame_current != 0 ? "Switch to Setup (frame 0)"
-                                                         : "A group above it has a Parent Bone that moves it");
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Keep the drawing on a shape on another layer without bending it (an eye, a button, a stud), as "
+                          "Toon Boom's Point Kinematic Output: a point on the shape carries it");
       }
     }
     ImGui::EndPopup();
@@ -3700,7 +3725,7 @@ static void modifiers_panel(Context &C, Layer &layer)
       if (ImGui::MenuItem("Duplicate", "Shift D", false, !armature)) {
         duplicate = i;
       }
-      if (modifier_is_deform(m.type) && ImGui::BeginMenu("Change Type")) {
+      if (modifier_bends(m.type) && ImGui::BeginMenu("Change Type")) {
         /* Another deform, keeping its settings and painted weights. */
         for (const ModifierType type :
              {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})

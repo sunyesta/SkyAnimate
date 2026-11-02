@@ -119,6 +119,10 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
     if (modifier_is_deform(m.type)) {
       f(m.deform_strength_keys, m.deform_strength);
     }
+    if (m.type == ModifierType::FollowDeform) {
+      f(m.deform_shift_keys, m.deform_shift);
+      f(m.deform_shift2_keys, m.deform_shift2);
+    }
   }
   /* A reference's drawing is built from its original's: its own channels are its offsets. */
   for (auto &[id, o] : layer.reference.points) {
@@ -2283,6 +2287,10 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
     if (modifier_is_deform(layer.modifiers[i].type)) {
       add("modifiers[" + std::to_string(i) + "].strength", layer.modifiers[i].deform_strength_keys,
           layer.modifiers[i].deform_strength);
+    }
+    if (layer.modifiers[i].type == ModifierType::FollowDeform) {
+      add("modifiers[" + std::to_string(i) + "].shift", layer.modifiers[i].deform_shift_keys, layer.modifiers[i].deform_shift);
+      add("modifiers[" + std::to_string(i) + "].shift2", layer.modifiers[i].deform_shift2_keys, layer.modifiers[i].deform_shift2);
     }
   }
   if (!drawing) {

@@ -716,11 +716,23 @@ static json layer_to_json(const Layer &layer)
           mj["part_to"] = m.deform_part_to;
         }
         mj["resample_self"] = m.deform_resample_self;
-        if (m.type == ModifierType::CageDeform) {
+        if (m.type == ModifierType::CageDeform || m.type == ModifierType::FollowDeform) {
           mj["cage_method"] = cage_method_id(m.deform_cage_method);
           mj["blend"] = num(m.deform_blend);
         }
-        if (m.type == ModifierType::MeshDeform) {
+        if (m.type == ModifierType::FollowDeform) {
+          mj["point"] = {num(m.deform_point.x), num(m.deform_point.y)};
+          mj["point2"] = {num(m.deform_point2.x), num(m.deform_point2.y)};
+          mj["show_point"] = m.deform_show_point;
+          mj["two"] = m.deform_two;
+          mj["rotation"] = m.deform_rotation;
+          mj["scale"] = m.deform_scale;
+          mj["shift"] = {num(m.deform_shift.x), num(m.deform_shift.y)};
+          mj["shift2"] = {num(m.deform_shift2.x), num(m.deform_shift2.y)};
+          put_keys(mj, "shift_keys", m.deform_shift_keys);
+          put_keys(mj, "shift2_keys", m.deform_shift2_keys);
+        }
+        if (m.type == ModifierType::MeshDeform || m.type == ModifierType::FollowDeform) {
           mj["mesh_method"] = mesh_method_id(m.deform_mesh_method);
           mj["smooth"] = m.deform_smooth;
           mj["blend"] = num(m.deform_blend);
@@ -2305,6 +2317,7 @@ static Layer layer_from_json(const json &j, int depth)
              : type == "RESAMPLE" || type == "SUBDIVIDE" ? ModifierType::Resample
              : type == "CURVE_DEFORM"               ? ModifierType::CurveDeform
              : type == "CAGE_DEFORM"                ? ModifierType::CageDeform
+             : type == "FOLLOW_DEFORM"              ? ModifierType::FollowDeform
              : type == "MESH_DEFORM" || type == "VECTOR_DEFORM" ? ModifierType::MeshDeform
                                                     : ModifierType::Mirror;
     m.name = get_string(mj, "name", m.type == ModifierType::Armature ? "Armature"
@@ -2324,6 +2337,23 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_legacy = type == "VECTOR_DEFORM";
       m.deform_layer = get_id(mj, "layer");
       m.id = get_id(mj, "id");
+      if (m.type == ModifierType::FollowDeform) {
+        const auto pair = [&](const char *key, float2 &value) {
+          if (const auto it = mj.find(key); it != mj.end() && it->is_array() && it->size() == 2) {
+            value = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+          }
+        };
+        pair("point", m.deform_point);
+        pair("point2", m.deform_point2);
+        pair("shift", m.deform_shift);
+        pair("shift2", m.deform_shift2);
+        m.deform_show_point = get_bool(mj, "show_point", false);
+        m.deform_two = get_bool(mj, "two", false);
+        m.deform_rotation = get_bool(mj, "rotation", true);
+        m.deform_scale = get_bool(mj, "scale", false);
+        get_keys(mj, "shift_keys", m.deform_shift_keys);
+        get_keys(mj, "shift2_keys", m.deform_shift2_keys);
+      }
       m.deform_shape = get_id(mj, "shape");
       m.deform_custom = get_string(mj, "weights", "AUTOMATIC") == "CUSTOM";
       m.deform_group = get_string(mj, "group", "");

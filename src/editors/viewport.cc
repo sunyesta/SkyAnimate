@@ -5421,7 +5421,7 @@ static Modifier *weight_deform(Context &C)
   }
   Modifier *first = nullptr;
   for (Modifier &m : layer->modifiers) {
-    if (!modifier_is_deform(m.type)) {
+    if (!modifier_bends(m.type)) {
       continue;
     }
     if (m.name == C.wm->tool_settings.weight_target) {
@@ -5444,7 +5444,7 @@ static void weight_target_combo(Context &C)
   const Modifier *picked = weight_deform(C);
   int deforms = 0;
   for (const Modifier &m : layer->modifiers) {
-    deforms += modifier_is_deform(m.type) ? 1 : 0;
+    deforms += modifier_bends(m.type) ? 1 : 0;
   }
   if (deforms == 0) {
     return;
@@ -5455,7 +5455,7 @@ static void weight_target_combo(Context &C)
       C.wm->tool_settings.weight_target.clear();
     }
     for (const Modifier &m : layer->modifiers) {
-      if (modifier_is_deform(m.type) && ImGui::Selectable(m.name.c_str(), &m == picked)) {
+      if (modifier_bends(m.type) && ImGui::Selectable(m.name.c_str(), &m == picked)) {
         C.wm->tool_settings.weight_target = m.name;
       }
     }
@@ -12136,12 +12136,53 @@ template<typename Fn> static void for_each_shown_follow_point(Document &doc, Fn 
   }
 }
 
+/* Where a Follow Deform's points show now (document space). False when the layer has nothing to go by. */
+static bool follow_deform_shown(const Document &doc, const Layer &layer, const Modifier &m, float2 &r_first, float2 &r_second)
+{
+  if (layer.drawing.points.empty()) {
+    return false;
+  }
+  const Transform2D to_document = layer_world_transform(doc, layer.id);
+  const float2 first = layer_places_shown(doc, layer, {{0, m.deform_point}})[0];
+  const float2 above = first - vector_deform_follow_at(doc, layer, m, m.deform_point + m.deform_shift);
+  r_first = to_document.apply(first);
+  r_second = to_document.apply(vector_deform_follow_at(doc, layer, m, m.deform_point2 + m.deform_shift2) + above);
+  return true;
+}
+
+template<typename Fn> static void for_each_shown_follow_deform(Document &doc, Fn &&fn)
+{
+  for (const Layer *flat : document_layers_flat(doc)) {
+    for (const Modifier &m : flat->modifiers) {
+      if (m.type == ModifierType::FollowDeform && m.deform_show_point && m.show_viewport) {
+        fn(*layer_find(doc, flat->id), *const_cast<Modifier *>(&m));
+      }
+    }
+  }
+}
+
 static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &view)
 {
   Document &doc = *C.document;
   if (!doc.overlays.show) {
     return;
   }
+  for_each_shown_follow_deform(doc, [&](Layer &layer, Modifier &m) {
+    float2 first, second;
+    if (!follow_deform_shown(doc, layer, m, first, second)) {
+      return;
+    }
+    const ImU32 blue = IM_COL32(0x6f, 0xc8, 0xff, 255), dark = IM_COL32(0x10, 0x10, 0x10, 255);
+    const ImVec2 at = view.to_screen(first);
+    if (m.deform_two) {
+      const ImVec2 other = view.to_screen(second);
+      dl->AddLine(at, other, blue, 1.0f);
+      dl->AddCircleFilled(other, FOLLOW_POINT_RADIUS + 1.5f, dark);
+      dl->AddCircleFilled(other, FOLLOW_POINT_RADIUS, blue);
+    }
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, dark);
+    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, blue);
+  });
   for_each_shown_follow_point(doc, [&](Layer &, Bone &, BoneConstraint &c) {
     const ImU32 blue = IM_COL32(0x6f, 0xc8, 0xff, 255), dark = IM_COL32(0x10, 0x10, 0x10, 255);
     const ImVec2 at = view.to_screen(c.follow_now);
@@ -12166,6 +12207,8 @@ struct FollowPointDrag {
   float2 start;
   float2 pressed;
   bool moved = false;
+  /* A Follow Deform's: its layer and modifier (`index`), in place of a bone's constraint. */
+  uint64_t layer = 0;
 };
 static FollowPointDrag g_follow_drag;
 
@@ -12174,6 +12217,39 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
 {
   Document &doc = *C.document;
   FollowPointDrag &d = g_follow_drag;
+  if (d.active && d.layer != 0) {
+    if (d.area != area.id) {
+      return false;
+    }
+    Layer *layer = layer_find(doc, d.layer);
+    Modifier *m = layer && d.index < int(layer->modifiers.size()) ? &layer->modifiers[size_t(d.index)] : nullptr;
+    if (!m || m->type != ModifierType::FollowDeform) {
+      d = {};
+      return false;
+    }
+    const bool rest = doc.frame_current == 0;
+    float2 &value = rest ? (d.second ? m->deform_point2 : m->deform_point) : (d.second ? m->deform_shift2 : m->deform_shift);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      value = d.start;
+      g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      d = {};
+      return true;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (d.moved) {
+        push_undo(C, rest ? "Move Follow Point" : "Shift Follow Point");
+      }
+      d = {};
+      return true;
+    }
+    const float2 to = view.to_document(ImGui::GetIO().MousePos);
+    if (length(to - d.pressed) > 1e-6f) {
+      const float2 here = layer_world_transform(doc, layer->id).inverted().apply(to);
+      value = rest ? here : vector_deform_follow_shift(doc, *layer, *m, d.second, here);
+      d.moved = d.moved || length(value - d.start) > 1e-6f;
+    }
+    return true;
+  }
   if (d.active) {
     if (d.area != area.id) {
       return false;
@@ -12237,6 +12313,30 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
         d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), second,
              rest ? (second ? c.follow_point2 : c.follow_point) : (second ? c.follow_shift2 : c.follow_shift),
              view.to_document(mouse), false};
+      }
+    }
+  });
+  for_each_shown_follow_deform(doc, [&](Layer &layer, Modifier &m) {
+    float2 first, second;
+    if (!follow_deform_shown(doc, layer, m, first, second)) {
+      return;
+    }
+    for (const bool is_second : {false, true}) {
+      if (is_second && !m.deform_two) {
+        continue;
+      }
+      const float distance = ImLengthSqr(view.to_screen(is_second ? second : first) - mouse);
+      if (distance < best) {
+        best = distance;
+        const bool rest = doc.frame_current == 0;
+        d = {};
+        d.active = true;
+        d.area = area.id;
+        d.layer = layer.id;
+        d.index = int(&m - layer.modifiers.data());
+        d.second = is_second;
+        d.start = rest ? (is_second ? m.deform_point2 : m.deform_point) : (is_second ? m.deform_shift2 : m.deform_shift);
+        d.pressed = view.to_document(mouse);
       }
     }
   });

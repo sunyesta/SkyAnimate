@@ -7,7 +7,7 @@ namespace oanim {
 bool modifier_makes_points(const Modifier &m)
 {
   return m.type == ModifierType::Mirror || m.type == ModifierType::Bevel || m.type == ModifierType::Resample ||
-         m.type == ModifierType::Boolean || modifier_is_deform(m.type);
+         m.type == ModifierType::Boolean || modifier_bends(m.type);
 }
 
 static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "ENVELOPE"};

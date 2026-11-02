@@ -3283,6 +3283,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["mesh_method"] = mesh_method_id(mod.deform_mesh_method);
         d["smooth"] = mod.deform_smooth;
         d["blend"] = mod.deform_blend;
+        if (mod.type == ModifierType::FollowDeform) {
+          const auto pair = [](float2 v) { return py::make_tuple(v.x, v.y); };
+          d["point"] = pair(mod.deform_point);
+          d["point2"] = pair(mod.deform_point2);
+          d["show_point"] = mod.deform_show_point;
+          d["second"] = mod.deform_two;
+          d["rotation"] = mod.deform_rotation;
+          d["scale"] = mod.deform_scale;
+          d["shift"] = pair(mod.deform_shift);
+          d["shift2"] = pair(mod.deform_shift2);
+        }
       }
       if (mod.type == ModifierType::Resample) {
         d["split"] = mod.subdiv_by_length ? "LENGTH" : "COUNT";
@@ -3478,6 +3489,38 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (mod.type == ModifierType::Resample && key == "group") {
         mod.subdiv_group = value.cast<std::string>();
+      }
+      else if (mod.type == ModifierType::FollowDeform &&
+               (key == "point" || key == "point2" || key == "shift" || key == "shift2")) {
+        const auto v = value.cast<std::pair<float, float>>();
+        (key == "point"    ? mod.deform_point
+         : key == "point2" ? mod.deform_point2
+         : key == "shift"  ? mod.deform_shift
+                           : mod.deform_shift2) = {v.first, v.second};
+      }
+      else if (mod.type == ModifierType::FollowDeform && (key == "point_to" || key == "point2_to")) {
+        /* Where it's to show now, in document space: as a drag does. */
+        const auto v = value.cast<std::pair<float, float>>();
+        const Document &doc = *current_context().document;
+        const Layer &self = layer_or_raise(id);
+        const bool second = key == "point2_to";
+        const float2 to = layer_world_transform(doc, id).inverted().apply({v.first, v.second});
+        (second ? mod.deform_shift2 : mod.deform_shift) = vector_deform_follow_shift(doc, self, mod, second, to);
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "show_point") {
+        mod.deform_show_point = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "second") {
+        vector_deform_follow_two(mod, value.cast<bool>());
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "rotation") {
+        mod.deform_rotation = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "scale") {
+        mod.deform_scale = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "type") {
+        throw py::value_error("Follow Deform stays Follow Deform");
       }
       else if (modifier_is_deform(mod.type) && key == "type") {
         /* Change Type: another deform, keeping its settings and painted weights. */

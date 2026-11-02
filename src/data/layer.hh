@@ -685,23 +685,36 @@ struct Bone {
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature, Boolean, Bevel, Resample, CurveDeform, CageDeform, MeshDeform };
+enum class ModifierType { Mirror, Armature, Boolean, Bevel, Resample, CurveDeform, CageDeform, MeshDeform, FollowDeform };
 
 /* The deform modifiers (anim/vector_deform.hh): a shape on another layer bends this one. Curve Deform follows an
  * open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh of cells drawn by hand. They share their
- * settings (the deform_* fields). */
+ * settings (the deform_* fields). Follow Deform (Harmony's Point Kinematic Output) reads any of those shapes at a point
+ * of its own and carries the whole drawing by that, without bending it. */
 inline bool modifier_is_deform(ModifierType type)
 {
-  return type == ModifierType::CurveDeform || type == ModifierType::CageDeform || type == ModifierType::MeshDeform;
+  return type == ModifierType::CurveDeform || type == ModifierType::CageDeform || type == ModifierType::MeshDeform ||
+         type == ModifierType::FollowDeform;
+}
+/* The deforms that bend a drawing point by point, by weights. */
+inline bool modifier_bends(ModifierType type)
+{
+  return modifier_is_deform(type) && type != ModifierType::FollowDeform;
 }
 /* "Curve Deform", "Cage Deform", "Mesh Deform"; and as files and Python name them, "CURVE_DEFORM"... */
 inline const char *deform_type_name(ModifierType type)
 {
-  return type == ModifierType::CurveDeform ? "Curve Deform" : type == ModifierType::CageDeform ? "Cage Deform" : "Mesh Deform";
+  return type == ModifierType::FollowDeform ? "Follow Deform"
+         : type == ModifierType::CurveDeform ? "Curve Deform"
+         : type == ModifierType::CageDeform  ? "Cage Deform"
+                                             : "Mesh Deform";
 }
 inline const char *deform_type_id(ModifierType type)
 {
-  return type == ModifierType::CurveDeform ? "CURVE_DEFORM" : type == ModifierType::CageDeform ? "CAGE_DEFORM" : "MESH_DEFORM";
+  return type == ModifierType::FollowDeform ? "FOLLOW_DEFORM"
+         : type == ModifierType::CurveDeform ? "CURVE_DEFORM"
+         : type == ModifierType::CageDeform  ? "CAGE_DEFORM"
+                                             : "MESH_DEFORM";
 }
 
 /* Bevel: which corners it cuts (Blender's Limit Method): every one, those the outline turns sharply
@@ -844,6 +857,19 @@ struct Modifier {
   /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how
    * near it is); 1, gently (as how near it is). */
   float deform_blend = 0.5f;
+  /* Follow Deform: the place on the shape that carries the drawing, in this layer's space at rest, shown light blue when
+   * `deform_show_point`; with `deform_two` a second one, whose way from the first turns the drawing (`deform_rotation`)
+   * and whose distance from it scales it (`deform_scale`). Each can be keyed along the shape (`deform_shift`, the change
+   * from setup), so what follows can slide. */
+  float2 deform_point;
+  float2 deform_point2;
+  bool deform_show_point = false;
+  bool deform_two = false;
+  bool deform_rotation = true;
+  bool deform_scale = false;
+  float2 deform_shift;
+  float2 deform_shift2;
+  Channel<float2> deform_shift_keys, deform_shift2_keys;
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;

@@ -67,6 +67,17 @@ std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, cons
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
 
+/* Follow Deform `m` on `layer` now: what moves the whole drawing. `carry` is what its bones moved it by: with
+ * `m.deform_rest_posed` the shape's rest is posed by them too, so only its change of shape is added to it. */
+Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const Modifier &m, float2 carry, bool render);
+/* Where its shape puts `at` now, in the layer's space (`at` itself on frame 0, or with nothing to read). */
+float2 vector_deform_follow_at(const Document &doc, const Layer &layer, const Modifier &m, float2 at);
+/* What its point (`second`: its second) has to be shifted by to show at `to` (layer space) on this frame, through the
+ * bend. */
+float2 vector_deform_follow_shift(const Document &doc, const Layer &layer, const Modifier &m, bool second, float2 to);
+/* Its second point on or off: on for the first time, it starts beside the first. */
+void vector_deform_follow_two(Modifier &m, bool on);
+
 /* The modifier on `drawing`, the stack's drawing so far. `before_bones` is that drawing as it was before the
  * Armature modifier moved it (the drawing itself when none did): where the deform measures each point from,
  * and what its weight shares between the deform and the bones. */

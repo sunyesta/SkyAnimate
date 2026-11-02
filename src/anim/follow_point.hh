@@ -44,9 +44,5 @@ void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c);
 /* Turns `c`'s second point on or off. On for the first time it starts along the bone, far enough off for a steady
  * angle. */
 void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on);
-/* Makes `layer` follow `m`, a deform on `owner`, in one go: a new bone at its middle (hanging from the bone it had) with a
- * Follow Point there, and the layer on that bone, left out of `owner`'s deform when it's inside it so it isn't bent as
- * well. False, with a reason in `r_why`, when it can't. */
-bool follow_point_layer(Document &doc, Layer &layer, Layer &owner, Modifier &m, std::string &r_why);
 
 }  // namespace oanim

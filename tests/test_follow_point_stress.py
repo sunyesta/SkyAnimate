@@ -599,42 +599,7 @@ for web in range(4):
         assert webs[n][0].bone_pose("b") == pose, "a held frame doesn't drift"
 print("webs: %d in loops, %d in chains" % (loops, chains))
 
-# --- Follow Deform, in awkward places ---------------------------------------------------------------------------------
-at(0)
-scene_rig = new_rig("SceneRig")
-add_bone(scene_rig, "root", (0.0, -1.0))
-scene_cage = box("SceneCage")
-outer_art = box("OuterArt", (0.3, 0.3), (0.5, 0.5))
-inner_art = box("InnerArt", (-0.5, 0.3), (-0.3, 0.5))
-inner = new_group("Inner", inner_art)
-outer = new_group("Outer", outer_art, inner)
-into(scene_rig, outer)
-outer_deform = add_deform(outer, scene_cage)
-# A whole group: its bone at the middle of all it draws, nothing in it bent.
-layers.active = inner
-assert ops.layer.follow_deform(deform_layer="Outer", modifier=outer_deform) == {'FINISHED'}
-assert inner.parent_bone == "Inner_Follow" and inner_art.ignore_group_deforms, (inner.parent_bone, inner_art.ignore_group_deforms)
-assert close(constraint(scene_rig, "Inner_Follow")["follow_point"], (-0.4, 0.4)), constraint(scene_rig, "Inner_Follow")
-# A layer already on a bone hangs its new one from that bone.
-layers.active = outer_art
-assert ops.layer.parent_bone_set(bone="root") == {'FINISHED'}
-assert ops.layer.follow_deform(deform_layer="Outer", modifier=outer_deform) == {'FINISHED'}
-assert outer_art.parent_bone == "OuterArt_Follow"
-parents = {b["name"]: b["parent"] for b in scene_rig.bones}
-assert parents["OuterArt_Follow"] == "root", parents
-# Twice on one layer: a second bone, hanging from the first, nothing lost.
-assert ops.layer.follow_deform(deform_layer="Outer", modifier=outer_deform) == {'FINISHED'}
-assert outer_art.parent_bone == "OuterArt_Follow.001" or outer_art.parent_bone.startswith("OuterArt_Follow"), outer_art.parent_bone
-place(scene_cage, lambda p: (p[0] + 0.2, p[1]))
-for name in [b["name"] for b in scene_rig.bones if "Follow" in b["name"]]:
-    assert constraint(scene_rig, name)["follow_error"] == "", (name, constraint(scene_rig, name))
-    assert finite(scene_rig.bone_pose(name))
-# Not on a bone layer itself.
-at(0)
-layers.active = scene_rig
-assert ops.layer.follow_deform(deform_layer="Outer", modifier=outer_deform) == {'CANCELLED'}
-
-# A group and a drawing with one name: each deform is found, by name or by id.
+# A group and a drawing with one name: each deform is found.
 at(0)
 twin_cage = box("TwinCage")
 twin_line = line("TwinLine", [(-1, 0), (1, 0)])
@@ -648,14 +613,6 @@ add_bone(twin_rig, "b", (0.1, 0.1))
 follow(twin_rig, "a", twin_art, twin_deform)
 follow(twin_rig, "b", twin_art, group_deform)
 assert constraint(twin_rig, "a")["follow_modifier"] == twin_deform and constraint(twin_rig, "b")["follow_modifier"] == group_deform
-at(0)
-into(twin_rig, new_group("Holds"))
-holds = next(l for l in layers.all() if l.name == "Holds")
-stud = box("TwinStud", (0.0, 0.0), (0.1, 0.1))
-into(holds, stud)
-layers.active = stud
-assert ops.layer.follow_deform(deform_layer=str(twin_group.id), modifier=group_deform) == {'FINISHED'}
-assert ops.layer.follow_deform(deform_layer=str(twin_art.id), modifier=twin_deform) == {'FINISHED'}
 
 # Smart actions mirrored: keys on the point go across with the rest.
 at(0)

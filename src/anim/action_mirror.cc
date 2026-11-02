@@ -440,6 +440,8 @@ void mirror_layer_keys(const Layer &source, Layer &target, const std::map<uint64
         mirror_keys(s.merge_smoothing_keys, t.merge_smoothing_keys, from, to, copy);
         mirror_keys(s.bevel_amount_keys, t.bevel_amount_keys, from, to, copy);
         mirror_keys(s.deform_strength_keys, t.deform_strength_keys, from, to, copy);
+        mirror_keys(s.deform_shift_keys, t.deform_shift_keys, from, to, [](float2 v) { return float2(-v.x, v.y); });
+        mirror_keys(s.deform_shift2_keys, t.deform_shift2_keys, from, to, [](float2 v) { return float2(-v.x, v.y); });
       }
     }
   }

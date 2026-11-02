@@ -537,8 +537,13 @@ static std::vector<GroupDeform> group_deforms(const Document &doc, const Layer &
       }
       for (const Modifier &m : group->modifiers) {
         /* The shape itself, kept inside the group, stays as it is drawn. */
-        if (modifier_is_deform(m.type) && modifier_on(m, render) && m.deform_layer != 0 && m.deform_layer != layer.id &&
-            !(original && m.deform_layer == original->id))
+        /* A drawing following this shape with a Follow Deform stays rigid on it: the group doesn't bend it as well. */
+        const bool followed = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [&](const Modifier &own) {
+          return own.type == ModifierType::FollowDeform && modifier_on(own, render) &&
+                 own.deform_layer == m.deform_layer && own.deform_shape == m.deform_shape;
+        });
+        if (modifier_bends(m.type) && modifier_on(m, render) && m.deform_layer != 0 && m.deform_layer != layer.id &&
+            !(original && m.deform_layer == original->id) && !followed)
         {
           found.push_back({group, &m});
         }
@@ -781,6 +786,25 @@ void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &
   }
 }
 
+/* Follow Deform: the whole drawing goes where the deform puts its point. What the bones have done stays; those that move
+ * the shape as well count once, the shape's rest posed by them as for a group's deform. */
+static void follow_deform_run(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
+                              const VectorDrawing *before_bones, bool render)
+{
+  Modifier run = m;
+  const Layer *shape = layer_find(doc, m.deform_layer);
+  const Layer *armature = shape ? layer_armature(doc, shape->id) : nullptr;
+  run.deform_rest_posed = armature && !armature->bones.empty() && bones_carry(doc, layer, *armature);
+  float2 carry;
+  if (before_bones && !drawing.points.empty() && before_bones->points.size() == drawing.points.size()) {
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      carry = carry + (drawing.points[i].pos - before_bones->points[i].pos);
+    }
+    carry = carry / float(drawing.points.size());
+  }
+  transform_drawing(drawing, vector_deform_follow(doc, layer, run, carry, render));
+}
+
 /* What the groups around it make of the drawing as its own stack left it. Each runs as a copy of the group's modifier,
  * for this drawing: its automatic weights, and what it keeps apart from the other drawings' under its own name. */
 static void group_deforms_run(const Document &doc, const Layer &layer, const std::vector<GroupDeform> &deforms,
@@ -911,6 +935,9 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
           deform(d, drawing);
         }
       }
+      else if (m.type == ModifierType::FollowDeform) {
+        follow_deform_run(doc, *original, m, drawing, bones_moved ? &before_bones : nullptr, render);
+      }
       else if (modifier_is_deform(m.type)) {
         vector_deform_apply(doc, *original, m, drawing, bones_moved ? before_bones : drawing, render);
       }
@@ -993,6 +1020,9 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
         }
         deform(d, drawing, only_bones ? r_rigid : nullptr);
       }
+    }
+    else if (m.type == ModifierType::FollowDeform) {
+      follow_deform_run(doc, layer, m, drawing, bones_moved ? &before_bones : nullptr, render);
     }
     else if (modifier_is_deform(m.type)) {
       vector_deform_apply(doc, layer, m, drawing, bones_moved ? before_bones : drawing, render);

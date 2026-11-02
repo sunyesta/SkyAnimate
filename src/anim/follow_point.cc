@@ -8,12 +8,9 @@
 #include <string>
 #include <vector>
 
-#include "anim/deform.hh"
-#include "anim/draw_order.hh"
 #include "anim/vector_deform.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
-#include "ops/edit_ops.hh"
 
 namespace oanim {
 
@@ -509,69 +506,6 @@ void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone
   const float2 to = c.follow_rest + (length(along) > 1e-6f ? normalize(along) : float2(1.0f, 0.0f)) *
                                         std::max(length(along), FOLLOW_SECOND_REACH);
   follow_point_place(doc, rig, c, *owner, layer_setup_relative_transform(doc, rig.id, owner->id).inverted().apply(to), true);
-}
-
-/* The middle of what `layer` draws at rest, in `rig`'s space, and how many points that took. */
-static int rest_middle(const Document &doc, const Layer &layer, const Layer &rig, float2 &r_lo, float2 &r_hi)
-{
-  int count = 0;
-  if (layer.has_drawing()) {
-    const Transform2D to = layer_setup_relative_transform(doc, rig.id, layer.id);
-    for (const MeshPoint &p : layer_setup_drawing(doc, layer, false).points) {
-      const float2 q = to.apply(p.pos);
-      r_lo = {std::min(r_lo.x, q.x), std::min(r_lo.y, q.y)};
-      r_hi = {std::max(r_hi.x, q.x), std::max(r_hi.y, q.y)};
-      count++;
-    }
-  }
-  for (const Layer &child : layer.children) {
-    count += rest_middle(doc, child, rig, r_lo, r_hi);
-  }
-  return count;
-}
-
-/* Leaves `layer` and the drawings in it out of the group deforms around them: the bone carries them now. */
-static void ignore_group_deforms(Layer &layer)
-{
-  layer.ignore_group_deforms = true;
-  for (Layer &child : layer.children) {
-    ignore_group_deforms(child);
-  }
-}
-
-bool follow_point_layer(Document &doc, Layer &layer, Layer &owner, Modifier &m, std::string &r_why)
-{
-  const Layer *found = layer_armature(doc, layer.id);
-  Layer *rig = found ? layer_find(doc, found->id) : nullptr;
-  if (!rig || layer.is_bone_layer()) {
-    r_why = "\"" + layer.name + "\" needs to be inside a bone layer to follow a deform";
-    return false;
-  }
-  if (owner.id == layer.id || m.deform_layer == layer.id) {
-    r_why = "\"" + layer.name + "\" can't follow its own deform";
-    return false;
-  }
-  if (layer_binding_group(doc, layer.id)) {
-    r_why = "A group above \"" + layer.name + "\" has a Parent Bone that moves it";
-    return false;
-  }
-  float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
-  const float2 middle = rest_middle(doc, layer, *rig, lo, hi) > 0 ? (lo + hi) * 0.5f : float2();
-  Bone *bone = armature_add_bone(*rig, layer.name + "_Follow", middle, middle + float2(0.0f, 0.05f), layer.parent_bone);
-  if (!bone) {
-    r_why = "No bone could be added";
-    return false;
-  }
-  BoneConstraint c;
-  c.type = BoneConstraintType::FollowPoint;
-  c.name = bone_constraint_name(c.type);
-  bone->constraints.push_back(c);
-  follow_point_aim(doc, *rig, *bone, bone->constraints.back(), &owner, &m);
-  layer.parent_bone = bone->id;
-  if (owner.id != layer.id && layer_inside(doc, layer.id, owner.id)) {
-    ignore_group_deforms(layer);
-  }
-  return true;
 }
 
 }  // namespace oanim

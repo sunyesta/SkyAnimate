@@ -791,41 +791,6 @@ void rig_operators_register()
                  return OpStatus::Finished;
                });
 
-  rig_operator("layer.follow_deform", "Follow Deform",
-               "Make the active layer stay on a deform without bending: a new bone at its middle, with a Follow Point on "
-               "modifier= of layer deform_layer= (its id, or its name), and the layer on that bone. The layer has to be "
-               "inside a bone layer",
-               [](Context &C) {
-                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
-                 return l && layer_armature(*C.document, l->id) != nullptr;
-               },
-               [](Context &C) {
-                 if (!on_setup_frame(C)) {
-                   return OpStatus::Cancelled;
-                 }
-                 Document &doc = *C.document;
-                 Layer &layer = *document_active_layer(doc);
-                 const std::string owner_name = op_arg(C, "deform_layer"), modifier_name = op_arg(C, "modifier");
-                 Layer *owner = nullptr;
-                 Modifier *deform = follow_point_find(doc, owner_name, modifier_name, &owner);
-                 if (!deform) {
-                   report(ReportType::Warning, "No deform \"" + modifier_name + "\" on a layer named \"" + owner_name + "\"");
-                   return OpStatus::Cancelled;
-                 }
-                 std::string why;
-                 if (!follow_point_layer(doc, layer, *owner, *deform, why)) {
-                   report(ReportType::Warning, why);
-                   return OpStatus::Cancelled;
-                 }
-                 follow_points_update(doc);
-                 const Layer *rig = layer_armature(doc, layer.id);
-                 const Bone *bone = rig ? bone_find(*rig, layer.parent_bone) : nullptr;
-                 if (bone && !bone->constraints.back().follow_error.empty()) {
-                   report(ReportType::Warning, bone->constraints.back().follow_error);
-                 }
-                 return OpStatus::Finished;
-               });
-
   rig_operator("armature.bone_delete", "Delete Bones",
                "Delete the selected bones; their children move up to the deleted bone's parent",
                [](Context &C) {
@@ -3140,7 +3105,8 @@ void rig_operators_register()
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
                  const std::string type = op_arg(C, "type", "MIRROR");
-                 const bool deform = type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM";
+                 const bool deform = type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM" ||
+                                     type == "FOLLOW_DEFORM";
                  if (modifier_layer(C)->is_group() && !deform) {
                    report(ReportType::Warning, "A group takes Curve, Cage and Mesh Deform: pick a drawing layer for the others");
                    return OpStatus::Cancelled;
@@ -3184,9 +3150,23 @@ void rig_operators_register()
                  if (deform) {
                    Layer &layer = *modifier_layer(C);
                    Modifier m;
-                   m.type = type == "CURVE_DEFORM" ? ModifierType::CurveDeform
-                            : type == "CAGE_DEFORM" ? ModifierType::CageDeform
-                                                    : ModifierType::MeshDeform;
+                   m.type = type == "CURVE_DEFORM"    ? ModifierType::CurveDeform
+                            : type == "CAGE_DEFORM"   ? ModifierType::CageDeform
+                            : type == "FOLLOW_DEFORM" ? ModifierType::FollowDeform
+                                                      : ModifierType::MeshDeform;
+                   if (m.type == ModifierType::FollowDeform) {
+                     if (layer.type != LayerType::Vector) {
+                       report(ReportType::Warning, "Follow Deform moves a drawing: pick a drawing layer");
+                       return OpStatus::Cancelled;
+                     }
+                     /* Its point starts at the middle of the drawing. */
+                     float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+                     for (const MeshPoint &p : layer_setup_drawing(*C.document, layer, false).points) {
+                       lo = {std::min(lo.x, p.pos.x), std::min(lo.y, p.pos.y)};
+                       hi = {std::max(hi.x, p.pos.x), std::max(hi.y, p.pos.y)};
+                     }
+                     m.deform_point = hi.x >= lo.x ? (lo + hi) * 0.5f : float2();
+                   }
                    if (layer.type != LayerType::Vector && !layer.is_group()) {
                      report(ReportType::Warning, std::string(deform_type_name(m.type)) +
                                                      " bends drawings: pick a drawing layer or a group");

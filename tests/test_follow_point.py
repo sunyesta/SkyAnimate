@@ -9,7 +9,6 @@
 - Chains go in order, whatever order the layers are in. Saved with the file; a deleted deform says so.
 - A second point turns and scales the bone, each switchable, counting a bone above it once.
 - Its points can be keyed, as their change from setup: a follower slides along the shape, through the bend.
-- layer.follow_deform does it for a layer in one undo step: two eyes on one cage stay rigid, each by its own place.
 
 Run with:  OpenAnimate --background --python tests/test_follow_point.py
 """
@@ -399,69 +398,6 @@ c = constraint(face, "stud2")
 assert c["follow_error"] == "" and abs(c["follow_turn"]) < 1e-2, c
 pose = face.bone_pose("stud2")
 assert close(pose[:2], (-0.5, 0.5), 1e-2), pose
-
-# --- One command for a layer ------------------------------------------------------------------------------------
-at(0)
-face_rig = new_rig("FaceRig")
-add_bone(face_rig, "neck", (0.0, -1.0))
-eye_cage = box("EyeCage")
-eye_l = box("Eye_L", (0.3, 0.3), (0.5, 0.5))
-eye_r = box("Eye_R", (-0.5, 0.3), (-0.3, 0.5))
-face_group = new_group("FaceGroup", eye_l, eye_r)
-layers.active = face_group
-assert ops.layer.move_to_group(group=str(face_rig.id)) == {'FINISHED'}
-face_deform = add_deform(face_group, eye_cage)
-loose = box("Loose", (0.0, 0.0), (0.1, 0.1))
-before = len(face_rig.bones)
-doc.frame_current = 5
-layers.active = eye_l
-assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}, "frame 0 only"
-at(0)
-for eye, name, middle in ((eye_l, "Eye_L_Follow", (0.4, 0.4)), (eye_r, "Eye_R_Follow", (-0.4, 0.4))):
-    layers.active = eye
-    assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'FINISHED'}
-    assert eye.parent_bone == name and eye.ignore_group_deforms, (eye.parent_bone, eye.ignore_group_deforms)
-    c = constraint(face_rig, name)
-    assert c["type"] == "FOLLOW_POINT" and c["follow_layer"] == "FaceGroup" and c["follow_error"] == "", c
-    assert close(c["follow_point"], middle), c
-assert len(face_rig.bones) == before + 2
-
-def spread(layer):
-    points = layer.evaluated()[0]
-    return points[0][0] - points[2][0], points[0][1] - points[2][1]
-
-
-rest = [spread(eye_l), spread(eye_r)]
-assert close(eye_l.evaluated()[0][0][:2], eye_l.points[0][:2]), "nothing jumps"
-# One corner of the cage pulled up: each eye goes by its own place, and stays the shape it was.
-doc.frame_current = 0
-pulled = max(range(len(eye_cage.points)), key=lambda i: eye_cage.points[i][0] + eye_cage.points[i][1])
-start = eye_cage.points[pulled][:2]
-doc.frame_current = 10
-eye_cage.set_point(pulled, (start[0], start[1] + 0.6))
-at(10)
-left, right = head(face_rig, "Eye_L_Follow"), head(face_rig, "Eye_R_Follow")
-assert left[1] - 0.4 > right[1] - 0.4 + 0.05, ("each by its own place", left, right)
-assert close(spread(eye_l), rest[0]) and close(spread(eye_r), rest[1]), ("rigid", spread(eye_l), rest)
-shown = eye_l.to_document(eye_l.evaluated()[0][0][:2])
-assert abs((shown[1] - 0.3) - (left[1] - 0.4)) < 0.2, (shown, left)
-
-# One undo takes all of it back.
-at(0)
-layers.active = eye_r
-names = [b["name"] for b in face_rig.bones]
-assert ops.ed.undo() == {'FINISHED'}
-assert "Eye_R_Follow" not in [b["name"] for b in face_rig.bones] and eye_r.parent_bone == "" and not eye_r.ignore_group_deforms
-assert ops.ed.redo() == {'FINISHED'}
-assert [b["name"] for b in face_rig.bones] == names
-
-# A layer it can't do says why and changes nothing.
-layers.active = loose
-assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}, "not in a bone layer"
-layers.active = eye_cage
-assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier=face_deform) == {'CANCELLED'}
-layers.active = eye_l
-assert ops.layer.follow_deform(deform_layer="FaceGroup", modifier="Nothing") == {'CANCELLED'}
 
 # --- The point keyed: a follower sliding along the shape ---------------------------------------------------------------
 at(0)
