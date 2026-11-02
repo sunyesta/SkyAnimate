@@ -1,10 +1,10 @@
-"""Turning bones with Ctrl, and 360 smart actions (Moho 14.4's 360 smart bone).
+"""Turning bones with Ctrl, and 360 action bone actions (Moho 14.4's 360 action bone).
 
 Ctrl while turning (R, or the Transform Bones tool's turn) lands the turn on the nearest of: the reference bone
 (the active one) pointing a multiple of 45 degrees on screen, its angle when the turn began, and posing its setup
 angle, each with whole turns more or less.
 
-A smart action whose bone is keyed exactly one whole turn from its setup goes round and round: the bone's turn
+An action bone action whose bone is keyed exactly one whole turn from its setup goes round and round: the bone's turn
 counts modulo a turn, so turning past the end starts it over and turning back past the setup plays it from the
 end.
 
@@ -77,14 +77,14 @@ d, what = snap(-97.0)
 assert near(d, -100.0) and what == "setup", ("the active bone, dial", d, what)
 doc.frame_current = 0
 
-# --- 360 smart actions --------------------------------------------------------------------------------------
+# --- 360 action bone actions --------------------------------------------------------------------------------------
 ops.layer.new()
 face = layers.active
 ops.layer.move_to_group(group=str(rig.id))
 layers.active = rig
 ops.armature.select_none()
 rig.select_bone("dial")
-assert ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
+assert ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'} and doc.action == "dial"
 # Once round over 36 frames, the face going out and back: x = 0, 1, 2, 1 and 0 (at frames 0, 9, 18, 27, 36).
 for frame, x in ((9, 1.0), (18, 2.0), (27, 1.0), (36, 0.0)):
     doc.frame_current = frame
@@ -122,7 +122,7 @@ layers.active = rig
 doc.frame_current = 0
 ops.armature.select_none()
 rig.select_bone("knob")
-assert ops.anim.action_new(name="knob", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="knob", action_bone="1") == {'FINISHED'}
 doc.frame_current = 10
 rig.bone_set("knob", angle=math.radians(300.0))
 lamp.location_y = 3.0

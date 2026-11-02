@@ -2,7 +2,7 @@
 -var or var * 0.5 made 2-Way Linked. Its expression becomes a Factor and a Flip; the keys are stored
 once, the variable's; either side can be edited, an edit to the driven side going back into the
 variable; each side keeps its own rest (the change from it is shared). Only drivers that can run
-backwards can link; a property is in one group only; a smart bone can't link with what its own action
+backwards can link; a property is in one group only; an action bone can't link with what its own action
 moves. Unlink gives the driven side keys of its own. Saved with the file. Link All Channels links a
 bone swap's angle, position and scale at factor 1.
 

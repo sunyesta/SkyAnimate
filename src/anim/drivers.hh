@@ -1,6 +1,6 @@
 #pragma once
 
-/* Working drivers out (data/driver.hh): every frame, after keys and smart actions and before the
+/* Working drivers out (data/driver.hh): every frame, after keys and action bone actions and before the
  * bones bend the drawings, in the order they depend on each other (a driver reading a driven value
  * goes after its driver). Each sets its number and the channel's recorded value alike, so recording
  * never takes a driven value for an edit. A driver that can't be worked out (a missing layer, a bad
@@ -17,7 +17,7 @@ namespace oanim {
 
 struct Document;
 
-/* Works out every driver at the document's current frame. True when one posed a bone (smart
+/* Works out every driver at the document's current frame. True when one posed a bone (action bone
  * actions then follow it; see animation_evaluate). On the setup frame (0) drivers leave bones and
  * shapes at rest, as constraints do. */
 bool drivers_evaluate(Document &doc);
@@ -54,7 +54,7 @@ bool driver_two_way_factor(const Driver &d, float *r_factor, std::string *r_why)
 /* Makes `d` 2-Way Linked: its factor from its expression (a Flip for a minus), each side's rest, and the
  * keys stored once: the variable's, or with `keep_target` the driven property's turned into the
  * variable's. `r_dropped`: how many keys went. False with why when it can't be: not one variable times a
- * number, a side that is linked already in another way, a loop through a smart action. */
+ * number, a side that is linked already in another way, a loop through an action bone action. */
 bool driver_two_way_link(Document &doc, Driver &d, bool keep_target, std::string *r_why, int *r_dropped);
 /* A field's rest: a bone's pose part at rest (no change from the setup pose, a scale of 1), else its value
  * on frame 0 (its key there, or its value now). */

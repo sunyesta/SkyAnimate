@@ -168,21 +168,21 @@ assert c["shape_layer"] == white.id and c["fit"] == "WHOLE" and abs(c["softness"
 doc.frame_current = 10
 assert math.dist(head(), soft) < 1e-4, "it holds the same after opening"
 
-# A smart action moving the pupil's parent (a head turn moving the eye): Affect Transform reads the parent where it shows,
+# An action bone action moving the pupil's parent (a head turn moving the eye): Affect Transform reads the parent where it shows,
 # with the shape, so a move lands where it's asked for. The eye comes first in the bone layer's list, as on a real rig.
 doc.frame_current = 0
 assert ops.layer.new_bone() == {'FINISHED'}
 rig2 = layers.active
-rig2.name = "SmartRig"
+rig2.name = "ActionBoneRig"
 ops.armature.bone_add(name="turn", head_x="3", head_y="0", tail_x="3.5", tail_y="0", parent="")
 ops.armature.bone_add(name="eye", head_x="0", head_y="0", tail_x="0", tail_y="0.4", parent="")
 ops.armature.bone_add(name="iris", head_x="0", head_y="0", tail_x="0", tail_y="0.05", parent="eye")
 rig2.select_bone("turn")
 ops.layer.new()
 eye_white = layers.active
-eye_white.name = "SmartWhite"
+eye_white.name = "ActionBoneWhite"
 assert ops.layer.move_to_group(group=str(rig2.id)) == {'FINISHED'}
-eye_white = next(x for x in layers.all() if x.name == "SmartWhite")
+eye_white = next(x for x in layers.all() if x.name == "ActionBoneWhite")
 eye_white.add_curve(ring(0.0, 0.0, 0.5, 0.5, 48), closed=True, fill=True)
 layers.active = eye_white
 assert ops.layer.parent_bone_set(bone="eye") == {'FINISHED'}
@@ -193,7 +193,7 @@ assert ops.armature.constraint_add(type="LIMIT_SHAPE", bone="iris") == {'FINISHE
 rig2.bone_constraint_set("iris", 0, shape_layer=eye_white.name, fit="CENTER", affect_transform=True)
 ops.armature.select_none()
 rig2.select_bone("turn")
-assert ops.anim.action_new(name="turn", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="turn", action_bone="1") == {'FINISHED'}
 doc.frame_current = 10
 rig2.bone_set("turn", angle=1.0)
 rig2.bone_set("eye", position=(0.0, 2.0))  # the eye goes up by 2
@@ -225,7 +225,7 @@ def nudged(x, y):
 
 
 was, _ = nudged(0.0, 0.0)
-assert abs(was[1] - 2.0) < 1e-3, ("the smart action has the eye up there", was)
+assert abs(was[1] - 2.0) < 1e-3, ("the action bone action has the eye up there", was)
 for move, wanted in (((0.1, 0.0), (0.1, 2.0)), ((0.0, -0.1), (0.0, 1.9)), ((-0.1, 0.1), (-0.1, 2.1))):
     _, now = nudged(*move)
     assert math.dist(now, wanted) < 1e-3, ("inside the shape it goes where it's put", move, now)

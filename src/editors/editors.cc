@@ -641,8 +641,8 @@ void ui_pinned_row()
 
 int ui_key_tint_push(int state)
 {
-  if (state & KEY_STATE_SMART) {
-    /* A smart bone is moving it now: pink, whatever its own keys (the value shown has the action in). */
+  if (state & KEY_STATE_ACTION_BONE) {
+    /* An action bone is moving it now: pink, whatever its own keys (the value shown has the action in). */
     const ImVec4 c(0.62f, 0.27f, 0.47f, 1.0f), hover(0.71f, 0.31f, 0.54f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, c);
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
@@ -2054,7 +2054,7 @@ void ui_switch_menu_items(Context &C, uint64_t sw_id)
     pick("RIG");
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip(doc.frame_current != 0 ? "From this frame, its smart actions pick (or the default does)"
+    ImGui::SetTooltip(doc.frame_current != 0 ? "From this frame, its action bones pick (or the default does)"
                                              : "Frame 0 is the default: there's nothing to hand back");
   }
   ImGui::Separator();

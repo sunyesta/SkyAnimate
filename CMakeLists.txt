@@ -264,8 +264,8 @@ add_test(NAME layer_mirror
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_mirror.py)
 add_test(NAME action_mirror
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_mirror.py)
-add_test(NAME smart_nested
-  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_smart_nested.py)
+add_test(NAME action_bones_nested
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_bones_nested.py)
 add_test(NAME group_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_group_deform.py)
 add_test(NAME deform_drag
@@ -326,8 +326,8 @@ add_test(NAME bone_editing
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_editing.py)
 add_test(NAME actions
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_actions.py)
-add_test(NAME smart_actions
-  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_smart_actions.py)
+add_test(NAME action_bone_actions
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_bone_actions.py)
 add_test(NAME bone_constraints
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_constraints.py)
 add_test(NAME dynamics_squash

@@ -106,9 +106,9 @@ void bone_values_from_changes(Bone &bone);
 /* Frame 0's edits become the setup pose (the bone's changes there are none). */
 void bone_take_setup(Bone &bone);
 /* The bone's position and angle as its keys have them on `frame` (the setup plus its Transform or
- * Angle there); not animated, as they are now. `without_smart`: less what smart actions add. */
-float2 bone_position_at(const Bone &bone, int frame, bool without_smart);
-float bone_angle_at(const Bone &bone, int frame, bool without_smart);
+ * Angle there); not animated, as they are now. `without_action_bones`: less what action bone actions add. */
+float2 bone_position_at(const Bone &bone, int frame, bool without_action_bones);
+float bone_angle_at(const Bone &bone, int frame, bool without_action_bones);
 /* The bases of the picked bones (bone layer space), for the pivot shown while turning. */
 std::vector<float2> armature_picked_heads(const Layer &armature, bool setup_frame);
 void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, float2 delta, bool setup_frame,

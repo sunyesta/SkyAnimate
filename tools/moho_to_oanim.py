@@ -11,7 +11,7 @@ curvature, weights and offsets, hidden edges, shapes with their fill, line colou
 brush), bones (place, angle, length, scale, strength, parents; pin bones get the Pin shape; bone tags become bone collections), point binding (a point bound to one
 bone, not bound, or flexi-bound), layers bound to a bone, reference layers (linked to their
 originals, with their differences kept as the reference's own changes), and every channel's keys
-in the mainline and in each action (a smart bone's action plays from its bone's angle in
+in the mainline and in each action (an action bone's action plays from its bone's angle in
 Open Animate as in Moho). Moho features Open Animate doesn't have (3D, physics, layer effects,
 switch layers' extras...) are left out and listed at the end.
 

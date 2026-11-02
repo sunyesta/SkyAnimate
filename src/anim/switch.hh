@@ -7,9 +7,9 @@
  *
  * Choices never add (one child can't be added to another), so each frame has one winner, highest
  * first: a key made by hand after frame 0 (held until the next key; a Rig key hands the switch back
- * to what is below it, as Cartoon Animator's Release); a smart action whose bone has turned past
+ * to what is below it, as Cartoon Animator's Release); an action bone action whose bone has turned past
  * one of its switch keys (the one listed first among its bone layer's actions when several have a
- * say); the default. Moho lets the smart bone win over hand keys; here the hand wins. */
+ * say); the default. Moho lets the action bone win over hand keys; here the hand wins. */
 
 #include <cstdint>
 #include <map>
@@ -22,7 +22,7 @@ struct Document;
 struct Layer;
 struct SwitchLink;
 
-/* A key that hands the switch back to the rig (smart actions, then the default). */
+/* A key that hands the switch back to the rig (action bone actions, then the default). */
 constexpr float SWITCH_RIG = -1.0f;
 
 /* The child of `sw` a value names, or null (None, Rig, or a child that is gone). */
@@ -35,8 +35,8 @@ std::string switch_value_label(const Layer &sw, float value);
  * has that name. */
 bool switch_value_from_name(const Layer &sw, const std::string &name, float *r_value);
 
-/* Who wins on every switch at `frame` (smart actions have put their picks in switch_rig), which
- * child each shows, and which layers are switched out. Run after smart actions. While the active
+/* Who wins on every switch at `frame` (action bone actions have put their picks in switch_rig), which
+ * child each shows, and which layers are switched out. Run after action bone actions. While the active
  * layer is inside a child a switch isn't showing, the viewport shows that child instead, for
  * editing, without keying it (Layer::edit_out; renders and exports keep the pick), on the frame it
  * became active: scrubbing or playing shows the picks again. */
@@ -50,11 +50,11 @@ void switch_set_hold(Document &doc, Layer &sw, float value);
 /* Points every key holding `from` (frame 0, the timeline's and actions') at `to`; how many. */
 int switch_replace_keys(Document &doc, Layer &sw, float from, float to, bool from_entry = false);
 
-/* Who decides at a frame: a hand key, a smart action, or the default (nothing else). */
+/* Who decides at a frame: a hand key, an action bone action, or the default (nothing else). */
 enum class SwitchSource { Hand, Rig, Default };
-/* Who decides now (smart actions as they last played). */
+/* Who decides now (action bone actions as they last played). */
 SwitchSource switch_source(const Document &doc, const Layer &sw, int frame);
-/* Whether any smart action keys the switch. */
+/* Whether any action bone action keys the switch. */
 bool switch_keyed_by_actions(const Layer &sw);
 /* The switch a layer belongs to: itself when it is one, else the nearest switch holding it; null. */
 Layer *switch_of(Document &doc, uint64_t layer);
@@ -88,7 +88,7 @@ std::vector<Layer *> switch_link_members(Document &doc, uint64_t link);
 std::string switch_key_label(const Document &doc, const Layer &sw, float value);
 bool switch_key_missing(const Document &doc, const Layer &sw, float value);
 std::string switch_key_held(const Document &doc, const Layer &sw, float value, int frame);
-/* The child `sw` shows by default (frame 0), and by its keys at `frame` (holds included; not smart actions). */
+/* The child `sw` shows by default (frame 0), and by its keys at `frame` (holds included; not action bone actions). */
 uint64_t switch_default_child(const Document &doc, const Layer &sw);
 uint64_t switch_child_at(const Document &doc, const Layer &sw, int frame);
 /* Links `members` (keys from `keep_from`, else the first keyed, else the first; `r_dropped`: the others'

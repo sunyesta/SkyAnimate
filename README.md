@@ -1,6 +1,6 @@
 # Open Animate
 
-A 2D animation app inspired by Moho and Blender: Moho's animation model (layers, bones, smart
+A 2D animation app inspired by Moho and Blender: Moho's animation model (layers, bones, action
 bones, actions) inside Blender's interface and editing habits. Windows only for now.
 
 See [docs/SPEC.md](docs/SPEC.md) for the feature spec and roadmap, and [CLAUDE.md](CLAUDE.md) for

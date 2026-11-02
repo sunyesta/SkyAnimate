@@ -5,7 +5,8 @@
 /* Bone dynamics: bones with a Dynamics constraint hang like weighted strands. When what they hang
  * from moves or turns, a strand's tip stays behind (Angle), a head lags behind (Position) and a
  * bone stretches or squashes along its length (Squash & Stretch; Maintain Volume thins it);
- * springs (Settle Speed, Bounce) bring them back to where their keys, smart actions and constraints put them, and the document's gravity
+ * springs (Settle Speed, Bounce) bring them back to where their keys, action bone actions and constraints put them,
+ * and the document's gravity
  * and wind push them (gravity by the bone's Weight, the wind by its Wind Catch). Each bone aims from where the dynamic bones above it have swung
  * to, so a wave runs down a strand. Max Swing, Max Distance and Max Stretch are soft limits.
  *

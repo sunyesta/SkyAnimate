@@ -1,5 +1,5 @@
 """Drivers on a rig: driven bones really turn and move, the setup frame (0) stays at rest (no driven pose
-leaks into the setup), keys come back when a driver goes, a driven smart bone plays its smart action at
+leaks into the setup), keys come back when a driver goes, a driven action bone plays its action bone action at
 once, loops and long chains, references, the camera, the simulation, and speed.
 
 Every check runs and the failures are listed together at the end.
@@ -136,12 +136,12 @@ def keys_then_driver():
     ops.driver_remove(layer=L, path="opacity")
 
 
-def smart_action():
+def action_bone_action():
     layers.active = rig
     rig.select_bone("dial")
     doc.frame_current = 0
     doc.auto_key = True
-    assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'}
+    assert oanim.ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'}
     doc.frame_current = 10
     rig.bone_set("dial", angle=1.0)
     face.location_x = 2.0
@@ -151,7 +151,7 @@ def smart_action():
     doc.frame_current = 20
     ops.driver_add(layer=R, path='bones["dial"].angle', expression="1.0")
     doc.frame_current = 21
-    check("a driven smart bone drives its smart action", abs(face.location_x - 2.0) < 1e-3, face.location_x)
+    check("a driven action bone drives its action bone action", abs(face.location_x - 2.0) < 1e-3, face.location_x)
     ops.driver_set(layer=R, path='bones["dial"].angle', expression="0.5")
     sync()
     sync()
@@ -261,7 +261,7 @@ def speed():
     check("300+ drivers: frame change under 100 ms (was %.1f ms)" % dt, dt < 100, dt)
 
 
-for fn in (bones_really_move, setup_frame, keys_then_driver, smart_action, loops_and_chains, reference_layer,
+for fn in (bones_really_move, setup_frame, keys_then_driver, action_bone_action, loops_and_chains, reference_layer,
            camera_and_simulation, speed):
     section(fn)
 

@@ -1,8 +1,8 @@
-"""Fix actions (correctives, Maya's combination shapes): one per set of smart actions playing together, fixing
+"""Fix actions (correctives, Maya's combination shapes): one per set of action bone actions playing together, fixing
 one or more of their poses, each on a frame of its own. Exactly at a pose its keys play; between poses they
 blend by closeness; toward rest each fades as its drivers do. Fixing a pose near one it has opens that one,
 elsewhere adds one starting from what played there. A fix for three is keyed on top of the one for two of
-them, and fades out while any of its own rests. Smart actions turned less than 5% don't count.
+them, and fades out while any of its own rests. Action bone actions turned less than 5% don't count.
 
 Run with:  OpenAnimate --background --python tests/test_fix_actions.py
 """
@@ -38,7 +38,7 @@ def bone(name):
 
 
 def turn(**amounts):
-    """Turn smart bones by a share of their action (each action turns its bone 1 over 10 frames)."""
+    """Turn action bones by a share of their action (each action turns its bone 1 over 10 frames)."""
     for name, a in amounts.items():
         find(rig.id).bone_set(name, angle=bone(name)["setup_angle"] + a)
     doc.frame_current = doc.frame_current  # a sync, as the app does every frame
@@ -57,10 +57,10 @@ def rot():
     return find(face.id).rotation
 
 
-# Smart actions, linear so shares are easy: "a" moves the face right by 2, "b" up by 1, "c" right by 1 more.
+# Action bone actions, linear so shares are easy: "a" moves the face right by 2, "b" up by 1, "c" right by 1 more.
 layers.active = rig
 for name, axis, amount in (("a", "location_x", 2.0), ("b", "location_y", 1.0), ("c", "location_x", 1.0)):
-    assert ops.anim.action_new(name=name, smart="1") == {'FINISHED'}
+    assert ops.anim.action_new(name=name, action_bone="1") == {'FINISHED'}
     doc.frame_current = 10
     find(rig.id).bone_set(name, angle=bone(name)["setup_angle"] + 1.0)
     f = find(face.id)
@@ -110,7 +110,7 @@ assert close(rot(), 30.0) and close(fix()["strength"], 1.0), rot()
 assert find(face.id).field_state("rotation")[1], "pink while the fix plays"
 turn(b=0.0)
 assert close(rot(), 0.0) and close(fix()["strength"], 0.0), ("one alone: no fix", rot())
-assert close(bone("b")["angle"], bone("b")["setup_angle"]), "a fix never turns a smart bone"
+assert close(bone("b")["angle"], bone("b")["setup_angle"]), "a fix never turns an action bone"
 turn(a=0.5, b=0.5)
 assert close(fix()["strength"], 0.25) and close(rot(), 7.5), (fix()["strength"], rot())
 
@@ -162,7 +162,7 @@ assert len(fix()["poses"]) == 3 and doc.frame_current == 30 and doc.action == na
 assert ops.anim.fix_pose_remove(name=name, pose="3") == {'FINISHED'} and len(fix()["poses"]) == 2
 ops.anim.action_set(name="")
 
-# A third smart bone: a fix for all three is keyed on top of the one for two of them.
+# A third action bone: a fix for all three is keyed on top of the one for two of them.
 doc.frame_current = 20
 turn(a=1.0, b=1.0, c=1.0)
 assert close(rot(), 30.0), "the pair's fix plays with c turned too"
@@ -186,13 +186,13 @@ turn(a=1.0, b=1.0, c=1.0)
 assert ops.anim.fix_action_new(drivers="a,b") == {'FINISHED'}
 assert doc.action == name and doc.frame_current == 10
 ops.anim.action_set(name="")
-# A smart bone turned less than 5% doesn't count.
+# An action bone turned less than 5% doesn't count.
 turn(a=1.0, b=1.0, c=0.02)
-assert [p[0] for p in find(rig.id).smart_actions_playing if p[2] >= 0.05] == ["a", "b"]
+assert [p[0] for p in find(rig.id).action_bone_actions_playing if p[2] >= 0.05] == ["a", "b"]
 assert ops.anim.fix_action_new() == {'FINISHED'} and doc.action == name, doc.action
 ops.anim.action_set(name="")
 
-# While a fix is edited its smart bones are held: picking them lets them go again.
+# While a fix is edited its action bones are held: picking them lets them go again.
 turn(a=1.0, b=1.0, c=1.0)
 assert ops.anim.action_set(name=triple) == {'FINISHED'} and doc.frame_current == 10
 layers.active = find(rig.id)
@@ -251,7 +251,7 @@ doc.frame_current = 20
 turn(a=1.0, b=1.0, c=0.0)
 assert close(rot(), 30.0), ("an older fix plays as it did", rot())
 
-# Renaming a driver's bone renames its smart action, and the fixes named after their drivers follow.
+# Renaming a driver's bone renames its action bone action, and the fixes named after their drivers follow.
 layers.active = rig
 import _oanim
 _oanim.layer_bone_set(rig.id, "a", {"name": "arm"})  # bone_set's own first argument is called name

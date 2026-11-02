@@ -648,7 +648,7 @@ void layer_operators_register()
   layer_operator("layer.switch_set", "Set Switch",
                  "Show one child of a switch (layer=, else the active layer or the switch holding it): child= its "
                  "name, empty for none, RIG to hand it back to the rig. On frame 0 it's the default; on other "
-                 "frames it's keyed, and a key made by hand wins over smart actions until a Rig key. hold=1 "
+                 "frames it's keyed, and a key made by hand wins over action bones until a Rig key. hold=1 "
                  "(Alt) picks it for the whole hold the frame is in instead; default=1 makes it the default (frame 0's)",
                  [](Context &C) { return C.document != nullptr; }, [](Context &C) {
                    Document &doc = *C.document;
@@ -726,7 +726,7 @@ void layer_operators_register()
     ot.name = "Duplicate";
     ot.description = "Copy a child of a switch (child=, else the one holding the active layer) to change into another "
                      "drawing: placed after it, picked and keyed at this frame (on frame 0 only added). Without "
-                     "keys= its timeline keys are left out; its smart actions' keys, its bones' swaps and its "
+                     "keys= its timeline keys are left out; its action bone actions' keys, its bones' swaps and its "
                      "drivers come along";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && switch_of(*C.document, C.document->active_layer); };
@@ -746,7 +746,7 @@ void layer_operators_register()
           };
           return p;
         }(),
-        op_bool_property("smart_keys", "Smart Action Keys", "Keep the keys its smart actions hold", "1"),
+        op_bool_property("action_bone_keys", "Action Bone Keys", "Keep the keys its action bone actions hold", "1"),
     };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -771,7 +771,7 @@ void layer_operators_register()
       };
       const bool keys = truthy("keys", "0");
       const bool from_now = op_arg(C, "start_from", "SETUP") == "THIS_FRAME" && !keys && doc.frame_current != 0;
-      const bool smart_keys = truthy("smart_keys", "1");
+      const bool action_bone_keys = truthy("action_bone_keys", "1");
       animation_record(doc);
       const uint64_t sw_id = sw->id;
       int index = 0;
@@ -828,7 +828,7 @@ void layer_operators_register()
           }
           doc.active_layer = was_active;
         }
-        layer_strip_keys(*layer_find(doc, copy_id), from_now, smart_keys);
+        layer_strip_keys(*layer_find(doc, copy_id), from_now, action_bone_keys);
       }
       Layer &now_sw = *layer_find(doc, sw_id);
       const int frame = doc.frame_current;

@@ -1,4 +1,4 @@
-"""Playing past drawings a switch hides: one with no keys, no action data and nothing smart actions added comes
+"""Playing past drawings a switch hides: one with no keys, no action data and nothing action bone actions added comes
 out the same on every frame, so while no edit could have reached it (the main loop's stamp of edits holds) it is
 neither recorded nor evaluated; one with keys always is; and a new stamp (an edit the app saw coming) looks at
 everything again.

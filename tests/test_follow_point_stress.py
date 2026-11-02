@@ -614,7 +614,7 @@ follow(twin_rig, "a", twin_art, twin_deform)
 follow(twin_rig, "b", twin_art, group_deform)
 assert constraint(twin_rig, "a")["follow_modifier"] == twin_deform and constraint(twin_rig, "b")["follow_modifier"] == group_deform
 
-# Smart actions mirrored: keys on the point go across with the rest.
+# Action bone actions mirrored: keys on the point go across with the rest.
 at(0)
 turner = new_rig("Turner")
 add_bone(turner, "Turn_L", (1.5, 1.5))
@@ -623,7 +623,7 @@ follow(turner, "m_L", art_l, patch_deform)
 layers.active = turner
 turner.select_bone("Turn_L")
 setup = {b["name"]: b["setup_angle"] for b in turner.bones}
-assert ops.anim.action_new(name="Turn_L", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="Turn_L", action_bone="1") == {'FINISHED'}
 doc.frame_current = 10
 turner.bone_set("Turn_L", angle=setup["Turn_L"] + 0.8)
 turner.bone_constraint_set("m_L", 0, follow_shift=(0.1, 0.05))
@@ -633,7 +633,7 @@ doc.action = ""
 layers.active = turner
 ops.armature.select_none()
 assert ops.armature.symmetrize() == {'FINISHED'}
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
 doc.action = "Turn_R"
 at(10)
 c = constraint(turner, "m_R")

@@ -1,7 +1,7 @@
 /* Keep Poses: a move on the setup frame (frame 0) that leaves the other frames' keyed poses where
  * they are. Keys hold changes from the setup pose, so moving the setup moves every pose with it; this
  * takes the setup's change back off every key on another frame, in the mainline and every action
- * (a smart action's keys, offsets added as its bone turns, stay as they are): points' positions,
+ * (an action bone action's keys, offsets added as its bone turns, stay as they are): points' positions,
  * handles' turn and length, bones' position, angle and length. */
 
 #pragma once
@@ -104,7 +104,7 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
 /* After the change: on each of those frames each bone's angle and scale keyed back so it shows as it did
  * (parents first, actions before the mainline). Returns how many keys it set. */
 int bones_shown_keep_all(Document &doc, const BonesShownAll &before);
-/* The actions first, the mainline last: a smart action's keys add to the mainline, so the mainline is put
+/* The actions first, the mainline last: an action bone action's keys add to the mainline, so the mainline is put
  * right with them already in place (nothing is put right twice). Returns how many keys it set. */
 int drawings_shown_keep_all(Document &doc, const DrawingsShownAll &before);
 

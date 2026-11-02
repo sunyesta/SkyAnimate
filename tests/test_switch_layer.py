@@ -1,6 +1,6 @@
 """Switch layers: a group that shows one of its children, or none. Its keys hold the child's layer
 id (so renaming and reordering never break them) and only hold; frame 0 is the default. Who wins:
-a key made by hand after frame 0, until a Rig key; then a smart action whose bone has turned past
+a key made by hand after frame 0, until a Rig key; then an action bone action whose bone has turned past
 one of its switch keys (the first listed); then the default. Copies key their copied children; a
 child that is gone shows the default. Files keep it all; exports draw only the child shown.
 
@@ -98,10 +98,10 @@ oanim.ops.layer.move_up()
 goto(12)
 assert sw.switch_active == "C"
 
-# --- Smart actions pick, hand keys win, Rig hands back ---------------------------------------------
-# A smart action on the dial keys the switch to C at its frame 10.
+# --- Action bone actions pick, hand keys win, Rig hands back ---------------------------------------------
+# An action bone action on the dial keys the switch to C at its frame 10.
 goto(0)
-assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
+assert oanim.ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'} and doc.action == "dial"
 goto(10)
 rig.bone_set("dial", angle=1.0)
 assert oanim.ops.layer.switch_set(layer=sw.name, child="C") == {'FINISHED'}
@@ -132,10 +132,10 @@ assert sw.switch_active is None, ("a hand None wins too", sw.switch_active)
 goto(25)
 assert oanim.ops.layer.switch_set(layer=sw.name, child="RIG") == {'FINISHED'}
 dial(1.0, 25)
-assert sw.switch_active == "C", ("Rig: the smart action again", sw.switch_active)
+assert sw.switch_active == "C", ("Rig: the action bone action again", sw.switch_active)
 dial(0.0, 25)
 assert sw.switch_active == "B", ("Rig, the dial at rest: the default", sw.switch_active)
-# The smart action's pick is never data: the frame-0 default stays B, and no key appeared.
+# The action bone action's pick is never data: the frame-0 default stays B, and no key appeared.
 assert sw.switch_default == "B"
 assert keyed(sw) == [0, 10, 20, 25, 30], keyed(sw)
 # Frame 0 is the rig at rest: the default.
@@ -172,7 +172,7 @@ for frame, want in ((0, "B"), (12, "C"), (22, None), (30, "A")):
     assert sw.switch_active == want, (frame, sw.switch_active)
 rig = next(l for l in layers.all() if l.type == "BONE")
 dial(1.0, 25)
-assert sw.switch_active == "C", "the smart action came back with the file"
+assert sw.switch_active == "C", "the action bone action came back with the file"
 dial(0.0, 25)
 
 # --- Copies key their copied children; a child that is gone shows the default ----------------------

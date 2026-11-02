@@ -1147,9 +1147,9 @@ static bool file_write_bytes(const std::filesystem::path &path, const void *data
 
 std::function<bool(std::string *r_error)> oanim_file_writer(const Document &doc, const std::string &path)
 {
-  /* What smart actions add isn't data: it is worked out again on opening. */
+  /* What action bone actions add isn't data: it is worked out again on opening. */
   auto data = std::make_shared<Document>(doc);
-  animation_strip_smart(*data);
+  animation_strip_action_bones(*data);
   /* Packed media beside it, as media/<id>/<name>: the bytes are shared, not copied. */
   std::vector<std::pair<std::string, std::shared_ptr<const std::string>>> media;
   for (const std::string &id : media_packed_used(*data)) {

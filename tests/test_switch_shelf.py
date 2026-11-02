@@ -1,6 +1,6 @@
 """Switch layers stage 4: what the asset shelf does to a switch's children. Duplicate copies a child
 to change into another drawing (after it, picked and keyed at this frame), without its timeline keys
-(from its setup, or with This Frame from how it looks now), keeping its smart actions' keys; Duplicate
+(from its setup, or with This Frame from how it looks now), keeping its action bone actions' keys; Duplicate
 with Keys keeps them all. Add to Switch adds an empty drawing. A hover preview shows a child in the
 viewport without keying it, while exports keep the pick.
 

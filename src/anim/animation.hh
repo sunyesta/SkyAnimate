@@ -80,43 +80,43 @@ std::string document_action_new(Document &doc, uint64_t owner, const std::string
  * false when there is no such action. */
 bool document_action_delete(Document &doc, uint64_t owner, const std::string &name);
 
-/* Smart actions (Moho's smart bones): an action named after a bone of its bone layer (or the
+/* Action bone actions (Moho's smart bones): an action named after a bone of its bone layer (or the
  * name plus " 2", for turning the other way). In it the bone's angle is keyed from its setup
  * angle onwards; elsewhere the bone's angle picks the matching frame of the action, and every
- * other channel the action keys gets that frame's change from frame 0 added on top. Several smart
+ * other channel the action keys gets that frame's change from frame 0 added on top. Several action bone
  * actions add together. Returns the driving bone, or null for an ordinary action. */
-const Bone *smart_action_bone(const Layer &owner, const std::string &action);
-/* What the smart actions of bone layer `owner` add to its bones on `frame`, as apply_smart_actions plays
- * them on the frame shown: `bones` (owner's, in its order) hold the keyed values there, without smart
- * actions, and get the smart actions' amounts added. For working out other frames than the one shown
+const Bone *action_bone_of(const Layer &owner, const std::string &action);
+/* What the action bone actions of bone layer `owner` add to its bones on `frame`, as apply_action_bone_actions plays
+ * them on the frame shown: `bones` (owner's, in its order) hold the keyed values there, without action bone
+ * actions, and get the action bone actions' amounts added. For working out other frames than the one shown
  * (dynamics simulate every frame up to it). */
-void smart_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bones);
-/* --- Fix actions (correctives): see FixAction (data/layer.hh). A fix plays after the smart actions, never
- * moving a smart bone itself. Fixes add up: one for three smart actions is keyed on top of those for two of
+void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bones);
+/* --- Fix actions (correctives): see FixAction (data/layer.hh). A fix plays after the action bone actions, never
+ * moving an action bone itself. Fixes add up: one for three action bone actions is keyed on top of those for two of
  * them (they play while it is edited), and fades out whenever any of its own is at rest. --------------- */
 
-/* Fix action `name` of `owner`, or null (an ordinary or smart action). */
+/* Fix action `name` of `owner`, or null (an ordinary or action bone action). */
 const FixAction *fix_action_find(const Layer &owner, const std::string &name);
-/* Why it can't play (a driver deleted, or not a smart action any more), or "" when it can. */
+/* Why it can't play (a driver deleted, or not an action bone action any more), or "" when it can. */
 std::string fix_action_broken(const Layer &owner, const FixAction &fix);
-/* The smart actions of `owner` playing now, its bones as they are: each with the frame its bone's turn
+/* The action bone actions of `owner` playing now, its bones as they are: each with the frame its bone's turn
  * picks (more than 0). */
-std::vector<std::pair<std::string, float>> smart_actions_playing(const Layer &owner);
-/* A smart action's length: its driving bone's last key there (0 with none). */
-float smart_action_length(const Layer &owner, const std::string &name);
-/* A 360 smart action (Moho's 360 smart bone): its bone's last key is exactly one whole turn from the setup,
+std::vector<std::pair<std::string, float>> action_bone_actions_playing(const Layer &owner);
+/* An action bone action's length: its driving bone's last key there (0 with none). */
+float action_bone_action_length(const Layer &owner, const std::string &name);
+/* A 360 action bone action (Moho's 360 action bone): its bone's last key is exactly one whole turn from the setup,
  * so the bone's turn counts round and round (modulo a turn). */
-bool smart_action_full_turn(const Layer &owner, const std::string &name);
-/* Turned less than this share of its length, a smart action doesn't count toward a fix being made or
+bool action_bone_action_full_turn(const Layer &owner, const std::string &name);
+/* Turned less than this share of its length, an action bone action doesn't count toward a fix being made or
  * offered (a bone nudged by accident); fixes still play from any amount. */
 inline constexpr float FIX_COUNTS_FROM = 0.05f;
-/* The smart actions playing now that count for fixes (FIX_COUNTS_FROM of their length or more). */
-std::vector<std::pair<std::string, float>> smart_actions_counting(const Layer &owner);
-/* Where pose `pose` of a fix has each driver, as a share of that smart action's length (0 to 1). */
+/* The action bone actions playing now that count for fixes (FIX_COUNTS_FROM of their length or more). */
+std::vector<std::pair<std::string, float>> action_bone_actions_counting(const Layer &owner);
+/* Where pose `pose` of a fix has each driver, as a share of that action bone action's length (0 to 1). */
 std::vector<float> fix_pose_shares(const Layer &owner, const FixAction &fix, const FixPose &pose);
 /* "head_turn 52% · HeadTurnUp 30%": a pose of a fix, for labels. */
 std::string fix_pose_label(const Layer &owner, const FixAction &fix, const FixPose &pose);
-/* How a fix plays with `playing` (smart action frames, as smart_actions_playing gives): each pose with how
+/* How a fix plays with `playing` (action bone action frames, as action_bone_actions_playing gives): each pose with how
  * much of its correction is added (its keys on its frame, as offsets from the setup), `strength` how much
  * of the fix plays (0 to 1: 1 at or past one of its poses, 0 while any of its drivers rests), `nearest` the
  * pose it is closest to (-1 with none). Exact at each pose; between poses they blend by inverse distance in
@@ -135,10 +135,10 @@ int fix_pose_near(const Layer &owner, const FixAction &fix, const std::vector<st
 int fix_pose_held(const FixAction &fix, int frame);
 /* The pose on frame `frame` exactly, or -1 (a frame between poses: keys there don't play). */
 int fix_pose_on_frame(const FixAction &fix, int frame);
-/* Whether action `name` adds onto the pose rather than being a timeline of its own (a smart or fix action):
+/* Whether action `name` adds onto the pose rather than being a timeline of its own (an action bone or fix action):
  * its keys are offsets that pose changes elsewhere leave as they are. */
 bool action_adds(const Layer &owner, const std::string &name);
-/* Opens the fix for this pose: for `drivers` (smart action names; empty: every one counting now), the fix of
+/* Opens the fix for this pose: for `drivers` (action bone action names; empty: every one counting now), the fix of
  * exactly those, made if there is none ("head_turn × head_up"), at its pose here (one within FIX_COUNTS_FROM
  * of each driver's share), added if there is none, keyed to start from what the fix played here before.
  * Edited at once on that pose's frame. */
@@ -150,45 +150,45 @@ struct FixOpened {
   std::string error;
 };
 FixOpened document_fix_pose_here(Document &doc, uint64_t owner, const std::vector<std::string> &drivers = {});
-/* Adds a pose to fix `name` of `owner` with its drivers at `shares` (0 to 1 of each smart action), keyed to
+/* Adds a pose to fix `name` of `owner` with its drivers at `shares` (0 to 1 of each action bone action), keyed to
  * start from what the fix played there before, and opens it. Returns its index, or -1. */
 int document_fix_pose_add(Document &doc, uint64_t owner, const std::string &name, const std::vector<float> &shares);
 /* Removes pose `pose` of fix `name` (its keys on its frame with it); never the last one. */
 bool document_fix_pose_remove(Document &doc, uint64_t owner, const std::string &name, size_t pose);
-/* Whether `bone` of `armature` is held by the fix being edited (one of its smart bones: they show the pose,
+/* Whether `bone` of `armature` is held by the fix being edited (one of its action bones: they show the pose,
  * so they can't be picked or changed until it's left). */
 bool bone_held_by_fix(const Document &doc, const Layer &armature, const Bone &bone);
-/* After every change (each undo step): a fix's smart bones picked while it is edited are let go (saying
+/* After every change (each undo step): a fix's action bones picked while it is edited are let go (saying
  * why), and a pose whose keys have all been deleted goes, the fix with its last one. */
 void fix_actions_tidy(Document &doc);
 /* Renames action `from` of `owner`: its keys, the fixes it drives and, edited, the timeline's name. */
 bool document_action_rename(Document &doc, uint64_t owner, const std::string &from, const std::string &to);
-/* Bone `from` of `owner` renamed `to`: its smart actions take the new name, and the fixes they drive with
+/* Bone `from` of `owner` renamed `to`: its action bone actions take the new name, and the fixes they drive with
  * them. */
 void armature_bone_renamed(Document &doc, uint64_t owner, const std::string &from, const std::string &to);
 
-/* Takes what smart actions add off every plain value, leaving the data (for saving). */
-void animation_strip_smart(Document &doc);
+/* Takes what action bone actions add off every plain value, leaving the data (for saving). */
+void animation_strip_action_bones(Document &doc);
 
 /* A layer and everything inside it without timeline keys (Duplicate in a switch): each channel keeps
  * its setup value (frame 0), or with `from_now` the value it has now, its drawings then taking that as
- * their setup pose. With `keep_actions` its actions' keys (smart actions) stay. */
+ * their setup pose. With `keep_actions` its actions' keys (action bone actions) stay. */
 void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
-/* Works smart actions out again for the bones as they are now (a bone turned without changing
+/* Works action bone actions out again for the bones as they are now (a bone turned without changing
  * frame). animation_sync does this when the frame hasn't moved. */
 /* As animation_sync, for the main loop's own frame changes (playing): `edits` stamps every edit the app can see
  * coming (Python runs, undo steps, operators run, edits in the UI). While it and the keys stay as they were, a
- * drawing a switch hides that comes out the same on every frame (no keys, no action data, nothing smart actions
+ * drawing a switch hides that comes out the same on every frame (no keys, no action data, nothing action bone actions
  * added) is neither recorded nor evaluated again: on a rig with many views, most of the document. */
 void animation_sync_playing(Document &doc, uint64_t edits);
-void animation_refresh_smart(Document &doc);
-/* A bone drag on `doc` begins: until it ends, the layers smart actions play into are the ones found now (it
- * changes no layers, only bones), and the drag works smart actions out again itself every update, so
+void animation_refresh_action_bones(Document &doc);
+/* A bone drag on `doc` begins: until it ends, the layers action bone actions play into are the ones found now (it
+ * changes no layers, only bones), and the drag works action bone actions out again itself every update, so
  * animation_sync leaves them. End it before the document is put back or replaced. */
-void animation_smart_drag_begin(Document &doc);
-void animation_smart_drag_end();
-/* The layers smart actions play into during the bone drag going on (their ids). */
-std::unordered_set<uint64_t> animation_smart_drag_layers();
+void animation_action_bone_drag_begin(Document &doc);
+void animation_action_bone_drag_end();
+/* The layers action bone actions play into during the bone drag going on (their ids). */
+std::unordered_set<uint64_t> animation_action_bone_drag_layers();
 
 /* The document's Simulation settings (gravity, wind, wind_direction, wind_gusts, wind_gust_speed,
  * wind_turbulence) as channels of Document::simulation, made ready. */
@@ -232,11 +232,11 @@ bool channel_delete_key(Channel<float2> &ch, float2 &value, int frame);
 int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int frame, int mode = 0);
 /* 0: none of them animated; 1: animated; 2: keyed at `frame`. */
 int layer_key_state(Layer &layer, const std::vector<std::string> &paths, int frame);
-/* Added to a key state: a smart action plays into one of them now (its field shows the value with it,
+/* Added to a key state: an action bone action plays into one of them now (its field shows the value with it,
  * pink; ui_key_tint_push). */
-inline constexpr int KEY_STATE_SMART = 4;
-/* KEY_STATE_SMART when a smart action is playing into any of them now, else 0. */
-int layer_smart_state(Layer &layer, const std::vector<std::string> &paths);
+inline constexpr int KEY_STATE_ACTION_BONE = 4;
+/* KEY_STATE_ACTION_BONE when an action bone action is playing into any of them now, else 0. */
+int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths);
 /* Frames where the layer (or its drawing) has keys, sorted, each once. */
 std::vector<int> layer_key_frames(const Layer &layer);
 /* Whether any of the layer's channels has a key (cheaper than layer_key_frames). */

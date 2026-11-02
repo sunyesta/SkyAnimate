@@ -6351,7 +6351,7 @@ static void bone_counter_apply(Document &doc, const BoneCounter &counter)
 /* Ctrl while turning bones (R, and the Transform Bones tool's turn): the turn lands on the nearest of the
  * reference bone (the active one if picked, else the first picked) pointing a multiple of 45 degrees on
  * screen, its angle when the turn began, and posing its setup angle, each of those with whole turns more or
- * less (so a 360 smart bone's full turn is one Ctrl away). */
+ * less (so a 360 action bone's full turn is one Ctrl away). */
 struct BoneTurnSnap {
   bool valid = false;
   /* The reference bone's direction on screen when the turn began (radians), and which way a turn of its
@@ -6770,13 +6770,13 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
       }
     }
   }
-  /* Editing a fix: its smart bones are held where it was made (turning them changes nothing it plays), so
+  /* Editing a fix: its action bones are held where it was made (turning them changes nothing it plays), so
    * they're outlined in the fix's violet and say so. */
   if (const FixAction *fix = doc.action_layer == armature.id && !doc.action.empty() ? fix_action_find(armature, doc.action)
                                                                                     : nullptr)
   {
     for (const std::string &driver : fix->drivers) {
-      const Bone *held = smart_action_bone(armature, driver);
+      const Bone *held = action_bone_of(armature, driver);
       if (!held || !bone_shown(armature, *held)) {
         continue;
       }
@@ -7450,7 +7450,7 @@ static void bone_counter_restore(Document &doc, const BoneCounter &counter)
 }
 
 /* The layers a bone drag can change, for one that knows its edits (BoneModal::touch): bone layers (their bones),
- * what smart actions play into, what bones bend point by point (and every other worked-out drawing: references,
+ * what action bone actions play into, what bones bend point by point (and every other worked-out drawing: references,
  * look-at warps), driven layers, switches, and what Move Only Bones puts back. Layers moving whole with a bone
  * change nothing of their own: the viewport finds where they are each frame. */
 static void bone_modal_find_touched(Document &doc)
@@ -7472,7 +7472,7 @@ static void bone_modal_find_touched(Document &doc)
       wanted.insert(st.id);
     }
   }
-  const std::unordered_set<uint64_t> smart = animation_smart_drag_layers();
+  const std::unordered_set<uint64_t> action_bone_layers = animation_action_bone_drag_layers();
   const auto walk = [&](auto &&self, std::vector<Layer> &layers) -> void {
     for (Layer &l : layers) {
       for (const Bone &b : l.bones) {
@@ -7480,7 +7480,7 @@ static void bone_modal_find_touched(Document &doc)
           bm.edits_known = bm.edits_known && c.type != BoneConstraintType::Dynamics;
         }
       }
-      if (l.is_bone_layer() || l.is_switch() || wanted.contains(l.id) || smart.contains(l.id) ||
+      if (l.is_bone_layer() || l.is_switch() || wanted.contains(l.id) || action_bone_layers.contains(l.id) ||
           (l.has_drawing() && layer_has_modifier_effect(doc, l, false)))
       {
         bm.touch.push_back(&l);
@@ -7675,8 +7675,8 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
   modal.last_mouse = mouse_document;
   modal.active = true;
   g_bone_modal = std::move(modal);
-  /* Smart actions follow every update: the layers they play into found once, now. */
-  animation_smart_drag_begin(doc);
+  /* Action bone actions follow every update: the layers they play into found once, now. */
+  animation_action_bone_drag_begin(doc);
   bone_modal_find_touched(doc);
   C.wm->modal_running = true;
   C.wm->modal_keys.clear();
@@ -7685,7 +7685,7 @@ static bool bone_modal_start(Context &C, Area &area, char kind, float2 mouse_doc
 
 static void bone_modal_end(Context &C, bool confirm)
 {
-  animation_smart_drag_end();
+  animation_action_bone_drag_end();
   if (confirm) {
     push_undo(C, g_bone_modal.kind == 'R' ? "Rotate Bones" : g_bone_modal.kind == 'S' ? "Scale Bones" : "Move Bones");
   }
@@ -7712,7 +7712,7 @@ static void bone_modal_confirm(Context &C, float2 delta, float degrees, float fa
 {
   /* Taken, not copied: the snapshot is a whole document (on a big rig, copying it twice was most of the pause as
    * the drag ended). */
-  animation_smart_drag_end();
+  animation_action_bone_drag_end();
   BoneModal bm = std::move(g_bone_modal);
   const int frame = C.document->frame_current;
   *C.document = std::move(bm.snapshot);
@@ -7877,10 +7877,10 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     armature_mirror_edits(*armature, g_bone_modal.bones, g_bone_modal.setup_frame);
     for_also([&](Layer &l, BoneModal::Also &also) { armature_mirror_edits(l, also.bones, bm.setup_frame); });
   }
-  /* Each update starts the bones again from how they were, which undoes what smart actions did to
-   * the bones they drive: play them again from the bones as they are now, so a smart bone being
+  /* Each update starts the bones again from how they were, which undoes what action bone actions did to
+   * the bones they drive: play them again from the bones as they are now, so an action bone being
    * turned moves its bones (and their points) as it turns. */
-  animation_refresh_smart(*C.document);
+  animation_refresh_action_bones(*C.document);
   if (!g_bone_modal.counter.layers.empty()) {
     bone_counter_apply(*C.document, g_bone_modal.counter);
   }
@@ -9325,7 +9325,7 @@ static void transform_bones_input(Context &C, Area &area, Layer &armature, const
           armature_mirror_edits(armature, g.bones, setup);
         }
         if (!g.counter.layers.empty()) {
-          animation_refresh_smart(doc);
+          animation_refresh_action_bones(doc);
           bone_counter_apply(doc, g.counter);
         }
         g.changed |= dragged;
@@ -9888,7 +9888,7 @@ static OpStatus bones_transform_exec(Context &C, char kind)
       armature_mirror_edits(*armature, start, setup);
     }
   }
-  animation_refresh_smart(doc);
+  animation_refresh_action_bones(doc);
   for (const Moved &m : moved) {
     if (!m.counter.layers.empty()) {
       bone_counter_apply(doc, m.counter);
@@ -9970,7 +9970,7 @@ static OpStatus bones_clear_exec(Context &C, int kind)
   if (without_children) {
     armature_keep_children(*armature, start, false);
   }
-  animation_refresh_smart(doc);
+  animation_refresh_action_bones(doc);
   if (!counter.layers.empty()) {
     bone_counter_apply(doc, counter);
   }

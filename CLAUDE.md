@@ -49,7 +49,7 @@ site-packages. Scripts load from the source tree's `scripts/` while developing.
   `OPTYPE_REGISTER`/`OPTYPE_UNDO` flags); keymaps are data; properties are described through RNA.
 - Blender's file style: `.hh`/`.cc`, `snake_case` functions, `CamelCase` types, two-space indent,
   `/* */` comments that explain why. Compile clean at `/W4`.
-- Moho decides data-model behaviour (layers, channels, actions, smart bones, interpolation, frame 0
+- Moho decides data-model behaviour (layers, channels, actions, action bones, interpolation, frame 0
   as the setup pose); Blender decides interaction (tools, keymaps, editors, UI).
 - Use ImGui wherever it can do the job; write custom widgets on top of it only where Blender's look
   or behaviour differs.
@@ -82,7 +82,7 @@ points, radius, curvature and stored handles; edits become keys through `src/ani
 audio stream; Sync to Audio, scrubbing), clips and packing in `src/data/media_layer.*`, operators in
 `src/ops/media_ops.cc`, the timeline's clip bars in `src/editors/timeline_media.*`; test media in
 `tests/data/media`. Switch layers stage 1 (`LayerType::Switch`, `src/anim/switch.*`: keys hold the
-child's id, hand keys win over smart actions until a Rig key, switched-out children via
+child's id, hand keys win over action bone actions until a Rig key, switched-out children via
 `Layer::shown()`) and stage 2 (picking: Layers editor dots, [ ], Switch menus, timeline bars,
 editing a hidden child via `Layer::edit_out`, Replace Keys With, Wrap in Switch) and stage 3 (sub bone
 groups and bone swaps, `src/anim/bone_family.*`: families of bone layers drawn and clicked together,
@@ -99,8 +99,8 @@ Weight Select / Weight Paint tools) and Parent to Bone; the modifier stack (`src
 layer inside a bone layer gets, kept by `document_sync_armature_modifiers`, and on groups the deforms, `group_deforms` in `deform.cc`, which bend every drawing inside); rig operators in
 `src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,
 Shift D, Ctrl P / Alt P; `armature_move_selected_joints` for G R S on frame 0); Weight Paint tool. Actions (bone layer
-timelines swapped into the channels) and smart actions (`apply_smart_actions` in
-`src/anim/animation.cc`; offsets live in `Channel::smart`, mirrored by `src/anim/action_mirror.*`). Bone constraints (`BoneConstraint` stack solved in `armature_pose`, IK targets and
+timelines swapped into the channels) and action bone actions (`apply_action_bone_actions` in
+`src/anim/animation.cc`; offsets live in `Channel::from_action_bones`, mirrored by `src/anim/action_mirror.*`). Bone constraints (`BoneConstraint` stack solved in `armature_pose`, IK targets and
 `armature_reach` for Auto IK) and dynamics (`src/anim/dynamics.*`, simulated and cached). Not yet: local
 armature viewport, copy/paste poses.
 

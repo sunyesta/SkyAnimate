@@ -30,10 +30,10 @@ assert ops.layer.parent_bone_set(bone="eye") == {'FINISHED'}
 eye = next(l for l in layers.all() if l.id == eye.id)
 middle0 = (0.5, 1.0)
 
-# A smart action: as the dial turns, the eye slides and turns (its points keyed, Linear).
+# An action bone action: as the dial turns, the eye slides and turns (its points keyed, Linear).
 layers.active = rig
 rig.select_bone("dial")
-assert ops.anim.action_new(name="dial", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'}
 doc.auto_key = True
 moves = {10: ((0.3, 0.1), 0.4), 20: ((0.6, -0.2), 0.8)}
 for frame, ((dx, dy), turn) in moves.items():

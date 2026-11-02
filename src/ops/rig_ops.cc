@@ -67,10 +67,12 @@ static bool on_setup_frame(Context &C)
   return false;
 }
 
-/* Bone Symmetrize's Mirror Smart Actions: the smart actions of the bones it made the other side of go there too, each as
+/* Bone Symmetrize's Mirror Action Bone Actions: the action bone actions of the bones it made the other side of go
+ * there too, each as
  * the action of its bone's partner, replacing what that had. With both sides picked and both actions there, `left_to_right`
  * says which is the source. */
-static void mirror_smart_actions(Context &C, uint64_t owner_id, const std::vector<uint64_t> &picked, bool left_to_right)
+static void mirror_action_bone_actions(Context &C, uint64_t owner_id, const std::vector<uint64_t> &picked,
+                                       bool left_to_right)
 {
   Document &doc = *C.document;
   const std::string was_action = doc.action;
@@ -81,13 +83,13 @@ static void mirror_smart_actions(Context &C, uint64_t owner_id, const std::vecto
     return std::find(owner.actions.begin(), owner.actions.end(), name) != owner.actions.end();
   };
   const auto picks = [&](const std::string &action) {
-    const Bone *bone = smart_action_bone(owner, action);
+    const Bone *bone = action_bone_of(owner, action);
     return bone && std::find(picked.begin(), picked.end(), bone->id) != picked.end();
   };
   std::vector<std::pair<std::string, std::string>> jobs;
   std::vector<std::string> centred;
   for (const std::string &name : owner.actions) {
-    if (!smart_action_bone(owner, name) || fix_action_find(owner, name)) {
+    if (!action_bone_of(owner, name) || fix_action_find(owner, name)) {
       continue;
     }
     const std::string other = bone_mirror_name(name);
@@ -114,7 +116,7 @@ static void mirror_smart_actions(Context &C, uint64_t owner_id, const std::vecto
     document_set_action(doc, was_owner, was_action);
   }
   if (text.empty()) {
-    report(ReportType::Warning, "No smart actions of these bones to mirror");
+    report(ReportType::Warning, "No action bone actions of these bones to mirror");
   }
   else {
     report(ReportType::Info, text);
@@ -1272,7 +1274,7 @@ void rig_operators_register()
                      changed++;
                    }
                  }
-                 /* The actions first, the mainline last: a smart action's keys add to the mainline, so the
+                 /* The actions first, the mainline last: an action bone action's keys add to the mainline, so the
                   * mainline is put right with them already in place. */
                  for (auto action = actions.rbegin(); keep && changed > 0 && action != actions.rend(); ++action) {
                    use_action(action->owner, action->name);
@@ -1987,11 +1989,11 @@ void rig_operators_register()
 
   /* Blender's Apply Pose as Rest Pose and Apply Selected as Rest Pose (Ctrl A): the bones' pose on
    * the frame shown, in the action shown, becomes the setup pose (frame 0). Their position and angle
-   * do (a scale stays a pose: the setup has none); what smart actions add stays out, as they still
+   * do (a scale stays a pose: the setup has none); what action bone actions add stays out, as they still
    * add it. Unlike Blender's, the drawings come along (the setup drawing is bent to the new rest),
    * and every keyed pose, in the mainline and every action, shows as it did: the bones' keys are
    * worked out again against the new rest (keep_poses), and with Keep Animation the points the new
-   * rest bends differently are keyed back where they showed. A smart bone keeps its rest, so its
+   * rest bends differently are keyed back where they showed. An action bone keeps its rest, so its
    * actions play from the same turns; other bones left out keep where they rest. */
   const OpProperty keep_rest_property = op_bool_property(
       "keep_animation", "Keep Animation",
@@ -2016,32 +2018,32 @@ void rig_operators_register()
             return OpStatus::Cancelled;
           }
           animation_record(doc);
-          std::set<uint64_t> smart;
+          std::set<uint64_t> action_bones;
           for (const std::string &action : armature->actions) {
-            if (const Bone *b = smart_action_bone(*armature, action)) {
-              smart.insert(b->id);
+            if (const Bone *b = action_bone_of(*armature, action)) {
+              action_bones.insert(b->id);
             }
           }
-          /* The new rest of the bones applied (in their parents' space): the pose shown, less what smart
+          /* The new rest of the bones applied (in their parents' space): the pose shown, less what action bone
            * actions add. */
           std::map<uint64_t, std::pair<float2, float>> rest;
-          int left_smart = 0;
+          int left_action_bones = 0;
           for (const Bone &b : armature->bones) {
             if (only_selected && !b.selected) {
               continue;
             }
-            if (smart.count(b.id)) {
-              left_smart++;
+            if (action_bones.count(b.id)) {
+              left_action_bones++;
               continue;
             }
-            const float2 position = b.position - rotate(b.position_keys.smart, b.setup_angle);
-            const float angle = b.angle - b.angle_keys.smart;
+            const float2 position = b.position - rotate(b.position_keys.from_action_bones, b.setup_angle);
+            const float angle = b.angle - b.angle_keys.from_action_bones;
             if (length(position - b.setup_position) > 1e-7f || std::fabs(angle - b.setup_angle) > 1e-7f) {
               rest[b.id] = {position, angle};
             }
           }
-          if (left_smart > 0) {
-            report(ReportType::Info, std::to_string(left_smart) + (left_smart == 1 ? " smart bone keeps" : " smart bones keep") +
+          if (left_action_bones > 0) {
+            report(ReportType::Info, std::to_string(left_action_bones) + (left_action_bones == 1 ? " action bone keeps" : " action bones keep") +
                                          " its rest, so its actions play from the same turns");
           }
           if (rest.empty()) {
@@ -2087,7 +2089,7 @@ void rig_operators_register()
           for (const Bone &b : armature->bones) {
             deepest = std::max(deepest, depth_of(b));
           }
-          /* Parents first: an applied bone takes its new rest; a bone left out (not a smart one) whose
+          /* Parents first: an applied bone takes its new rest; a bone left out (not an action bone) whose
            * parent's rest moved keeps where it rests, its rest worked out again in its parent's space. */
           std::set<uint64_t> moved;
           for (int depth = 0; depth <= deepest; depth++) {
@@ -2101,7 +2103,7 @@ void rig_operators_register()
                 b.setup_position = it->second.first;
                 b.setup_angle = it->second.second;
               }
-              else if (moved.count(b.parent) && !smart.count(b.id)) {
+              else if (moved.count(b.parent) && !action_bones.count(b.id)) {
                 const Transform2D local = bone_pose_find(now, b.parent)->setup.inverted() *
                                           bone_pose_find(old_poses, b.id)->setup;
                 b.setup_position = {local.tx, local.ty};
@@ -2229,7 +2231,7 @@ void rig_operators_register()
   /* Bone Follows Selection (the Layer tab's Bones panel): on every frame the selected points (all of
    * the layer's when none are) are keyed in the timeline being edited, the layer's parent bone is
    * keyed where the selection shows, with Move Only Bones (the drawings it bends are keyed back where
-   * they showed). For a bone that follows a feature through a smart action, as an eye through a head
+   * they showed). For a bone that follows a feature through an action bone action, as an eye through a head
    * turn. Keep Offset moves it by the selection's move from frame 0 (off: its head onto the
    * selection's middle); Fit also keys the selection's turn, or its turn and size (a best fit). */
   const OpProperty follow_offset_property = op_bool_property(
@@ -3094,15 +3096,15 @@ void rig_operators_register()
                      it = sources.erase(it);
                    }
                  }
-                 if (made > 0 && op_arg_bool(C, "smart_actions")) {
-                   mirror_smart_actions(C, armature.id, picked, op_arg(C, "direction", "L_TO_R") != "R_TO_L");
+                 if (made > 0 && op_arg_bool(C, "action_bone_actions")) {
+                   mirror_action_bone_actions(C, armature.id, picked, op_arg(C, "direction", "L_TO_R") != "R_TO_L");
                  }
                  return made > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                },
                [] {
-                 OpProperty smart_actions = op_bool_property(
-                     "smart_actions", "Mirror Smart Actions",
-                     "Make each of these bones' smart actions on the other side too, replacing what is there: _L and _R "
+                 OpProperty action_bone_actions = op_bool_property(
+                     "action_bone_actions", "Mirror Action Bone Actions",
+                     "Make each of these bones' action bone actions on the other side too, replacing what is there: _L and _R "
                      "bones and layers swap their keys, reflected, and _X ones swap them inside themselves",
                      "0");
                  OpProperty direction;
@@ -3113,10 +3115,10 @@ void rig_operators_register()
                  direction.items = {{"L_TO_R", "_L to _R"}, {"R_TO_L", "_R to _L"}};
                  direction.fallback = "L_TO_R";
                  direction.visible = [](const OpArgs &args) {
-                   const auto it = args.find("smart_actions");
+                   const auto it = args.find("action_bone_actions");
                    return it != args.end() && (it->second == "1" || it->second == "True" || it->second == "true");
                  };
-                 return std::vector<OpProperty>{smart_actions, direction};
+                 return std::vector<OpProperty>{action_bone_actions, direction};
                }());
 
   /* --- Modifiers ----------------------------------------------------------------------- */

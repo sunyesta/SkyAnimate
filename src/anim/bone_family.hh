@@ -15,7 +15,7 @@
  *
  * A bone swap says one bone stands in for another across a switch's children (Bone::swap_layer,
  * swap_bone): the bent leg's shin for the straight leg's. Swaps don't share poses (a front view's head
- * tilt can be a smart bone while the side view's is the head bone's angle); they say which bone is
+ * tilt can be an action bone while the side view's is the head bone's angle); they say which bone is
  * which, for carrying the selection across a pick and for Match Pose from Previous Drawing. Bones that
  * stand in for the same bone, directly or along a chain of swaps, are counterparts. */
 

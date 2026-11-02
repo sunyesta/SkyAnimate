@@ -339,7 +339,7 @@ struct LayerMask {
 enum class LabelColor { None, Red, Orange, Yellow, Green, Blue, Purple, Gray };
 
 /* Bone constraints, Blender's stack with Moho's kinds: run top to bottom on posed frames (never
- * on the setup frame, frame 0), after keys and smart actions. Dynamics, a simulation, always
+ * on the setup frame, frame 0), after keys and action bone actions. Dynamics, a simulation, always
  * comes last. */
 enum class BoneConstraintType {
   /* Moho's angle constraints: the angle (relative to the parent) stays between min and max. */
@@ -877,7 +877,7 @@ struct CustomChannel {
   bool operator==(const CustomChannel &) const = default;
 };
 
-/* One pose a fix action corrects: where each of its drivers is (that smart action's frame), and the fix's
+/* One pose a fix action corrects: where each of its drivers is (that action bone action's frame), and the fix's
  * frame holding the correction for it (its keys there). */
 struct FixPose {
   std::vector<float> at;
@@ -887,7 +887,7 @@ struct FixPose {
   bool operator==(const FixPose &) const = default;
 };
 /* A fix action (a corrective, Maya's combination shapes): an action of a bone layer that plays by itself
- * when the smart actions it names (its drivers) play together. It corrects one or more poses of theirs, each
+ * when the action bone actions it names (its drivers) play together. It corrects one or more poses of theirs, each
  * on a frame of its own (10, 20, ...): exactly at a pose its keys there play, between poses they blend by
  * how close the pose is to each, and it fades out toward rest as its drivers do (anim/animation.hh). */
 struct FixAction {
@@ -964,7 +964,7 @@ struct Layer {
     return c;
   }();
   /* Runtime, worked out every frame (switches_resolve): the child a switch shows (0: none), what its
-   * smart actions pick (switch_rig, when switch_rig_set), and for every layer whether a switch above
+   * action bone actions pick (switch_rig, when switch_rig_set), and for every layer whether a switch above
    * it shows another child, which hides it without touching its own visibility. */
   /* Switch layers linked by name (Document::switch_links): the group, 0 for none; `switch_link_off`:
    * unlinked by hand, so same-named switches don't link it again. `link_same_named`: on a switch, the

@@ -1,5 +1,5 @@
-"""Bone Symmetrize's Mirror Smart Actions: an action's mirror image as a new action, the original left as it is. Turning the
-new smart bone one way must draw the mirror image of turning the old one the other way, layer by layer.
+"""Bone Symmetrize's Mirror Action Bone Actions: an action's mirror image as a new action, the original left as it is. Turning the
+new action bone one way must draw the mirror image of turning the old one the other way, layer by layer.
 
 Run with:  OpenAnimate --background --python tests/test_action_mirror.py
 """
@@ -47,7 +47,7 @@ def drawing(name, points, rig, closed=False):
 
 
 def build():
-    """A rig with a smart action that does a bit of everything."""
+    """A rig with an action bone action that does a bit of everything."""
     ops.wm.read_homefile(confirmed="1")
     global doc, layers
     doc, layers = oanim.data.document, oanim.data.layers
@@ -61,7 +61,7 @@ def build():
     ops.armature.bone_add(name="Arm_L", head_x="0.6", head_y="-1.0", tail_x="1.0", tail_y="-0.7")
     rig.select_bone("Spine_X")
     ops.armature.bone_add(name="Arm_R", head_x="-0.6", head_y="-1.0", tail_x="-1.0", tail_y="-0.7")
-    # It only drives its action: nothing is weighted to it, as a smart bone off to the side of a rig.
+    # It only drives its action: nothing is weighted to it, as an action bone off to the side of a rig.
     rig.bone_set("Turn_L", strength=0.0)
     ear_l = drawing("Ear_L", EAR_L, rig)
     ear_r = drawing("Ear_R", EAR_R, rig)
@@ -87,7 +87,7 @@ def build():
     layers.active = rig
     rig.select_bone("Turn_L")
     setup = {b["name"]: b["setup_angle"] for b in rig.bones}
-    assert ops.anim.action_new(name="Turn_L", smart="1") == {'FINISHED'} and doc.action == "Turn_L"
+    assert ops.anim.action_new(name="Turn_L", action_bone="1") == {'FINISHED'} and doc.action == "Turn_L"
     doc.frame_current = 10
     rig.bone_set("Turn_L", angle=setup["Turn_L"] + TURN)
     rig.bone_set("Arm_L", angle=setup["Arm_L"] + 0.4, position=(0.7, -0.9))
@@ -144,10 +144,10 @@ rig = build()
 assert ops.armature.symmetrize() == {'FINISHED'}
 assert "Turn_R" in [b["name"] for b in rig.bones] and actions(rig) == ["Turn_L"]
 args = wm.last_operation()[1]
-assert args["smart_actions"] == "0", args
+assert args["action_bone_actions"] == "0", args
 
 # Turned on in the ViewportActionPanel, it runs again in place of the first run.
-assert wm.redo_last(smart_actions=True) == "FINISHED"
+assert wm.redo_last(action_bone_actions=True) == "FINISHED"
 rig = rig_layer()
 assert actions(rig) == ["Turn_L", "Turn_R"], actions(rig)
 assert "Mirrored Turn_L into Turn_R" in wm.banner_report()[3], wm.banner_report()
@@ -236,7 +236,7 @@ rig.bone_set("Arm_R", angle=9.0)
 doc.frame_current = 11
 doc.frame_current = 0
 doc.action = ""
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
 rig = rig_layer()
 assert "(replaced it)" in wm.banner_report()[3], wm.banner_report()
 assert actions(rig) == ["Turn_L", "Turn_R"], actions(rig)
@@ -253,7 +253,7 @@ layer("Ear_R").set_point(1, (-1.4, 0.6))
 doc.frame_current = 11
 doc.frame_current = 0
 doc.action = ""
-assert ops.armature.symmetrize(smart_actions="1", direction="R_TO_L") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1", direction="R_TO_L") == {'FINISHED'}
 rig = rig_layer()
 assert "Mirrored Turn_R into Turn_L" in wm.banner_report()[3], wm.banner_report()
 doc.action = "Turn_L"
@@ -268,7 +268,7 @@ assert close(layer("Side_X").points[2][:2], SIDE[2])
 
 # --- One undo step, and it leaves no copy behind ---------------------------------------------------------------------
 rig = build()
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
 assert actions(rig_layer()) == ["Turn_L", "Turn_R"]
 ops.ed.undo()
 assert actions(rig_layer()) == ["Turn_L"]
@@ -279,18 +279,18 @@ doc.action = "Turn_L"
 rig = rig_layer()
 layers.active = rig
 rig.select_bone("Turn_L")
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
 assert doc.action == "Turn_L"
 doc.action = ""
 
 # Only on frame 0, as bone Symmetrize always was.
 doc.frame_current = 5
-assert ops.armature.symmetrize(smart_actions="1") == {'CANCELLED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'CANCELLED'}
 doc.frame_current = 0
 
-# Bones with no smart action: the option has nothing to do, and says so.
+# Bones with no action bone action: the option has nothing to do, and says so.
 rig = rig_layer()
 layers.active = rig
 rig.select_bone("Arm_L")
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
-assert "No smart actions" in wm.banner_report()[3], wm.banner_report()
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
+assert "No action bone actions" in wm.banner_report()[3], wm.banner_report()

@@ -115,7 +115,7 @@ void ui_subpanel_end();
 /* Drag-and-drop reordering, as the Layers editor shows it: no yellow box, a blue line where the
  * dragged item will go. */
 inline constexpr unsigned int UI_DROP_LINE_COLOR = 0xFFFFB86Fu; /* IM_COL32(0x6f, 0xb8, 0xff, 255) */
-/* Fix actions: violet, apart from an action's amber and the pink of what smart bones move. The text
+/* Fix actions: violet, apart from an action's amber and the pink of what action bones move. The text
  * colour, the strong fill (the timeline while one is edited), and red for one that can't play. */
 inline constexpr unsigned int UI_FIX_COLOR = 0xFFF0A4B9u;        /* IM_COL32(0xb9, 0xa4, 0xf0, 255) */
 inline constexpr unsigned int UI_FIX_ACTIVE_COLOR = 0xFF96485Eu; /* IM_COL32(0x5e, 0x48, 0x96, 255) */

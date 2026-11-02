@@ -7,7 +7,7 @@
  * a two-number channel ("position" X or Y), or one component of a shape's colour
  * ("shapes[12].fill", R G B A). Its variables read other such numbers (or the frame), and its type
  * combines them: an expression (anim/expression.hh), or their average, sum, smallest or largest.
- * Remap then maps a range of the result onto another, as a smart bone maps an angle to an action. */
+ * Remap then maps a range of the result onto another, as an action bone maps an angle to an action. */
 
 #include <cstdint>
 #include <string>

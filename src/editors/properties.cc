@@ -755,7 +755,7 @@ static void bone_relations_panel(Context &C, Layer &armature)
   ui_panel_end();
 }
 
-/* A two-driver fix's poses as a map (Live2D's linked parameter grid): its first smart action across, its
+/* A two-driver fix's poses as a map (Live2D's linked parameter grid): its first action bone action across, its
  * second up, each from rest (0%) to all of it (100%); a dot per pose (ringed while it's edited), a cross where
  * the pose is now. Click a dot to edit that pose, right-click it to remove it, click elsewhere to add a pose
  * there. */
@@ -782,7 +782,7 @@ static void fix_pose_map(Context &C, const Layer &owner, const FixAction &fix, c
     dl->AddLine(to_screen(0.0f, t), to_screen(1.0f, t), grid);
   }
   dl->AddRect(a, b, ImGui::GetColorU32(ImGuiCol_Border));
-  /* Its two smart actions along the edges; rest is the bottom-left corner. */
+  /* Its two action bone actions along the edges; rest is the bottom-left corner. */
   const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
   const ImVec2 x_size = ImGui::CalcTextSize(fix.drivers[0].c_str());
   dl->AddText(ImVec2(b.x - x_size.x - 2.0f, b.y - font - 2.0f), dim, fix.drivers[0].c_str());
@@ -864,17 +864,18 @@ static void fix_pose_map(Context &C, const Layer &owner, const FixAction &fix, c
 }
 
 /* Fix actions (correctives: Maya's combination shapes, Blender's corrective shape keys), for the bone layer
- * that owns them. While one is edited: what it fixes, its poses (a map for two smart actions), the pose
+ * that owns them. While one is edited: what it fixes, its poses (a map for two action bone actions), the pose
  * shown, and how to key it. Otherwise each fix with how strongly it plays now, and fixing the pose now. */
 static void fix_actions_panel(Context &C, Layer &owner)
 {
   Document &doc = *C.document;
   const FixAction *editing = doc.action_layer == owner.id && !doc.action.empty() ? fix_action_find(owner, doc.action)
                                                                                  : nullptr;
-  if (!editing && owner.fix_actions.empty() && smart_actions_counting(owner).size() < 2 &&
-      std::none_of(owner.actions.begin(), owner.actions.end(), [&](const std::string &n) { return smart_action_bone(owner, n); }))
+  if (!editing && owner.fix_actions.empty() && action_bone_actions_counting(owner).size() < 2 &&
+      std::none_of(owner.actions.begin(), owner.actions.end(),
+                   [&](const std::string &n) { return action_bone_of(owner, n); }))
   {
-    return; /* No smart actions to fix: nothing to show. */
+    return; /* No action bone actions to fix: nothing to show. */
   }
   const std::string header = editing ? "Fix Action: editing " + editing->name : "Fix Actions";
   if (!ui_panel_begin("Fix Actions", header, editing ? UI_FIX_COLOR : 0u)) {
@@ -905,7 +906,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     }
     return fix_pose_shares(owner, f, probe);
   };
-  /* Its poses: a map for two smart actions, a list for more. */
+  /* Its poses: a map for two action bone actions, a list for more. */
   const auto poses_ui = [&](const FixAction &f, const std::vector<float> &now, int edited) {
     if (f.drivers.size() == 2) {
       label("Poses");
@@ -931,7 +932,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     label("");
     ImGui::PushTextWrapPos(0.0f);
     if (pose >= 0) {
-      ImGui::TextColored(fix_col, "Pose %d of %d. Its smart bones are held at it: key what should change. Exactly here "
+      ImGui::TextColored(fix_col, "Pose %d of %d. Its action bones are held at it: key what should change. Exactly here "
                          "it plays as keyed; between poses they blend.", pose + 1, int(editing->poses.size()));
     }
     else {
@@ -946,7 +947,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
       drivers += (drivers.empty() ? "" : " \xC3\x97 ") + d;
     }
     ImGui::TextUnformatted(drivers.c_str());
-    tip("The smart actions this fixes playing together. Fixes for fewer of them play under it while you key it");
+    tip("The action bones this fixes playing together. Fixes for fewer of them play under it while you key it");
 
     const int held = fix_pose_held(*editing, doc.frame_current);
     const std::vector<float> now = held >= 0 ? fix_pose_shares(owner, *editing, editing->poses[size_t(held)]) : std::vector<float>();
@@ -968,15 +969,16 @@ static void fix_actions_panel(Context &C, Layer &owner)
     if (ImGui::Button("Back to Mainline", ImVec2(-1, 0))) {
       operator_call(C, "anim.action_set", {{"name", ""}});
     }
-    tip("Stop editing the fix. On the mainline it plays by itself whenever its smart bones turn together");
+    tip("Stop editing the fix. On the mainline it plays by itself whenever its action bones turn together");
     ui_panel_end();
     return;
   }
 
   /* Not editing one: each fix, how strongly it plays now, and what to do with it. */
-  const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(owner);
-  const std::vector<std::pair<std::string, float>> counting = smart_actions_counting(owner);
-  const bool in_smart = !doc.action.empty() && doc.action_layer == owner.id && action_adds(owner, doc.action);
+  const std::vector<std::pair<std::string, float>> playing = action_bone_actions_playing(owner);
+  const std::vector<std::pair<std::string, float>> counting = action_bone_actions_counting(owner);
+  const bool in_action_bone_action = !doc.action.empty() && doc.action_layer == owner.id &&
+                                     action_adds(owner, doc.action);
   std::string doomed;
   for (const FixAction &f : owner.fix_actions) {
     ImGui::PushID(f.name.c_str());
@@ -1011,7 +1013,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
       ImGui::ProgressBar(0.0f, ImVec2(bar_w, 0), "can't play");
       ImGui::PopStyleColor();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("Can't play: %s. Its keys are kept; delete it, or bring the smart action back", broken.c_str());
+        ImGui::SetTooltip("Can't play: %s. Its keys are kept; delete it, or bring the action bone action back", broken.c_str());
       }
     }
     else {
@@ -1028,7 +1030,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     if (ImGui::Button("Edit")) {
       operator_call(C, "anim.action_set", {{"name", f.name}});
     }
-    tip("Open it in the timeline on its pose nearest the pose now, its smart bones held there");
+    tip("Open it in the timeline on its pose nearest the pose now, its action bones held there");
     ImGui::SameLine();
     if (ImGui::ArrowButton("##more", ImGuiDir_Down)) {
       ImGui::OpenPopup("##fix_more");
@@ -1044,14 +1046,14 @@ static void fix_actions_panel(Context &C, Layer &owner)
   }
 
   /* Fixing the pose now: here as in the timeline's Actions menu, under what plays. */
-  const bool can_fix = counting.size() >= 2 && !in_smart && doc.frame_current != 0;
+  const bool can_fix = counting.size() >= 2 && !in_action_bone_action && doc.frame_current != 0;
   const FixAction *for_all = nullptr;
-  if (counting.size() >= 2 && !in_smart) {
+  if (counting.size() >= 2 && !in_action_bone_action) {
     label("Playing Now");
     std::string line;
     std::vector<std::string> names;
     for (const auto &[n, t] : counting) {
-      const float l = smart_action_length(owner, n);
+      const float l = action_bone_action_length(owner, n);
       line += (line.empty() ? "" : "   \xC2\xB7   ") + n + " " + percent(l > 0.0f ? std::min(t / l, 1.0f) : 0.0f);
       names.push_back(n);
     }
@@ -1064,7 +1066,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("%s", line.c_str());
     ImGui::PopTextWrapPos();
-    tip("The smart actions playing on this frame (turned at least 5%), each as far as its bone has turned");
+    tip("The action bones playing on this frame (turned at least 5%), each as far as it has turned");
   }
   const int near_pose = for_all ? fix_pose_near(owner, *for_all, counting) : -1;
   label("");
@@ -1085,9 +1087,9 @@ static void fix_actions_panel(Context &C, Layer &owner)
                                       "correction. Each pose is exact; between them they blend");
     }
     else {
-      ImGui::SetTooltip(in_smart ? "Fix a pose from the mainline, not inside a smart action"
+      ImGui::SetTooltip(in_action_bone_action ? "Fix a pose from the mainline, not inside an action bone action"
                         : doc.frame_current == 0 ? "Frame 0 is the rest pose: go to another frame"
-                                                 : "Turn two or more smart bones at once (each at least 5%, on the "
+                                                 : "Turn two or more action bones at once (each at least 5%, on the "
                                                    "mainline) where the result doesn't look right, then fix that pose");
     }
   }
@@ -1098,7 +1100,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
   if (owner.fix_actions.empty() && !can_fix) {
     label("");
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("Turn two smart bones together where they don't look right, then fix that pose.");
+    ImGui::TextDisabled("Turn two action bones together where they don't look right, then fix that pose.");
     ImGui::PopTextWrapPos();
   }
   ui_panel_end();
@@ -1168,7 +1170,7 @@ static void bone_panel(Context &C, Layer &armature)
       ImGui::SetNextItemWidth(-1);
     };
     label("Name");
-    /* Its smart actions are named after it: they (and the fixes they drive) follow a rename. */
+    /* Its action bone actions are named after it: they (and the fixes they drive) follow a rename. */
     static std::string renaming_from;
     const std::string name_before = active->name;
     ImGui::InputText("##bone_name", &active->name);
@@ -1191,7 +1193,7 @@ static void bone_panel(Context &C, Layer &armature)
       const int state = layer_key_state(armature, {bone_path + channel}, doc.frame_current);
       label(name);
       ImGui::SetNextItemWidth(-ui_key_button_width());
-      const int pushed = ui_key_tint_push(state | layer_smart_state(armature, {bone_path + channel}));
+      const int pushed = ui_key_tint_push(state | layer_action_bone_state(armature, {bone_path + channel}));
       const int driven = ui_driver_field_begin(C, armature.id, bone_path + channel, -1);
       field();
       ui_driver_typed(C, armature.id, bone_path + channel, -1);
@@ -1255,7 +1257,7 @@ static void bone_panel(Context &C, Layer &armature)
       /* Any other frame poses it, as Blender's pose mode: Transform and Angle are the change from
        * the setup pose (0 at rest), Scale its scale; the keys keep the bone's own values, as Moho's. */
       const float setup_angle = bone_setup_angle(*active);
-      /* A smart bone of the fix being edited is held at the fix's pose: shown, not changed. */
+      /* An action bone of the fix being edited is held at the fix's pose: shown, not changed. */
       const bool held = bone_held_by_fix(doc, armature, *active);
       if (held) {
         label("");
@@ -1622,14 +1624,14 @@ static void key_next(Context &C, Layer &layer, std::vector<std::string> paths)
 {
   const int state = layer_key_state(layer, paths, C.document->frame_current);
   const int pin = pin_state(layer, paths, state);
-  const int smart = layer_smart_state(layer, paths);
+  const int action_bone_state = layer_action_bone_state(layer, paths);
   std::string joined;
   for (const std::string &p : paths) {
     joined += (joined.empty() ? "" : "|") + p;
   }
   const uint64_t id = layer.id;
   ui_key_next(
-      state | smart,
+      state | action_bone_state,
       [&C, id, joined]() {
         operator_call(C, "anim.keyframe_toggle", {{"layer", std::to_string(id)}, {"paths", joined}});
       },
@@ -1977,7 +1979,7 @@ static void reference_tab(Context &C)
   if (!ref->is_group()) {
     if (ui_collapsing_header("Pose", true)) {
       const int pose = choice_buttons("Same as Original", "Own Bones", rs.match_original ? 0 : 1,
-                                      "Posed by the original's bones (smart bones and dynamics too), wherever this copy sits",
+                                      "Posed by the original's bones (action bones and dynamics too), wherever this copy sits",
                                       "Posed by this copy's own bone layer, with its own weights (starting as the "
                                       "original's, by bone name)");
       if (pose >= 0) {
@@ -2201,7 +2203,7 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
       ImGui::SetTooltip("%s", !parent ? "With a Parent Bone: key it where the selection shows"
                               : "On every frame the selected points (all, when none are) are keyed in this timeline,\n"
                                 "key the parent bone where they show, keeping the drawings where they are (Move Only\n"
-                                "Bones). For a bone that follows a feature through a smart action, as an eye through a\n"
+                                "Bones). For a bone that follows a feature through an action bone action, as an eye through a\n"
                                 "head turn. Keep Offset and Fit (Move & Turn, Move, Turn & Scale) in Adjust Last Operation");
     }
   }
@@ -2713,12 +2715,12 @@ static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   /* Smoothing: keyable, with its key button, as a mask's Reach. */
   const std::string path = "modifiers[" + idx + "].smoothing";
   const int key_state = layer_key_state(layer, {path}, doc.frame_current);
-  const int smart_smoothing = layer_smart_state(layer, {path});
+  const int action_bone_smoothing = layer_action_bone_state(layer, {path});
   modifier_row_label("Smoothing", column,
                      "Rounds the corners where the outlines meet, as a radius: 0 keeps them sharp. Only there: the "
                      "shapes' own corners stay as drawn. It can be keyed");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-  const int tint = ui_key_tint_push(key_state | smart_smoothing);
+  const int tint = ui_key_tint_push(key_state | action_bone_smoothing);
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   float smoothing = m.merge_smoothing;
   if (ui_drag_float("##smoothing", &smoothing, 0.001f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
@@ -2795,7 +2797,7 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   const int key_state = layer_key_state(layer, {path}, doc.frame_current);
   modifier_row_label("Amount", column, "How big the cuts are (Width Type says how it's measured). It can be keyed");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-  const int tint = ui_key_tint_push(key_state | layer_smart_state(layer, {path}));
+  const int tint = ui_key_tint_push(key_state | layer_action_bone_state(layer, {path}));
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   const bool percent = m.bevel_width == BevelWidth::Percent;
   float amount = m.bevel_amount;
@@ -3504,7 +3506,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                                                   : "How much of the deform shows: 0 none, 1 all of it. It can be keyed, to fade "
                                                     "a deform in or out");
   ImGui::SetNextItemWidth(width());
-  const int tint = ui_key_tint_push(key_state | layer_smart_state(layer, {path}));
+  const int tint = ui_key_tint_push(key_state | layer_action_bone_state(layer, {path}));
   const int driven = ui_driver_field_begin(C, layer.id, path, -1);
   float strength = m.deform_strength;
   if (ui_slider_float("##deform_strength", &strength, 0.0f, 1.0f, "%.3f")) {
@@ -3575,7 +3577,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                          "How far the point is moved from where it rests, on this frame: key it for a drawing that slides\n"
                          "along the shape. Dragging the light blue point does the same");
       ImGui::SetNextItemWidth(width());
-      const int shift_tint = ui_key_tint_push(shift_state | layer_smart_state(layer, {shift_path}));
+      const int shift_tint = ui_key_tint_push(shift_state | layer_action_bone_state(layer, {shift_path}));
       float2 &shift = second ? m.deform_shift2 : m.deform_shift;
       float values[2] = {shift.x, shift.y};
       if (ui_drag_float2(second ? "##deform_shift2" : "##deform_shift", values, 0.001f, -100.0f, 100.0f, "%.3f")) {
@@ -4248,7 +4250,7 @@ static void constraints_panel(Context &C, Layer &armature)
       const auto keyed_begin = [&](const std::string &p) {
         const int state = layer_key_state(armature, {p}, doc.frame_current);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-        const int tint = ui_key_tint_push(state | layer_smart_state(armature, {p}));
+        const int tint = ui_key_tint_push(state | layer_action_bone_state(armature, {p}));
         /* The driver tint over the key's: pushed last, popped first. */
         return std::pair<int, int>(state, tint | (ui_driver_field_begin(C, armature.id, p, -1) << 8));
       };
@@ -4755,7 +4757,7 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", c.follow_error.c_str());
           }
           else {
-            ImGui::TextDisabled("Smart actions, drivers, Dynamics and Delay don't see this move.");
+            ImGui::TextDisabled("Action bone actions, drivers, Dynamics and Delay don't see this move.");
           }
           ImGui::PopTextWrapPos();
           break;
@@ -4975,7 +4977,7 @@ static void constraints_panel(Context &C, Layer &armature)
       const int state = layer_key_state(armature, {path}, doc.frame_current);
       modifier_row_label("Influence", column, "How much of the constraint's effect is used: 0 none, 1 all. It can be keyed");
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-      const int tint = ui_key_tint_push(state | layer_smart_state(armature, {path}));
+      const int tint = ui_key_tint_push(state | layer_action_bone_state(armature, {path}));
       const int driven = ui_driver_field_begin(C, armature.id, path, -1);
       ui_slider_float("##influence", &c.influence, 0.0f, 1.0f, "%.3f");
       ui_driver_typed(C, armature.id, path, -1);
@@ -6108,7 +6110,7 @@ static void mask_cards(Context &C, Layer &layer)
                            "puts their last dab's middle on it, below 0 leaves a gap. It can be keyed");
         ImGui::BeginDisabled(!reach_used);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-        const int reach_tint = ui_key_tint_push(reach_state | layer_smart_state(layer, {reach_path}));
+        const int reach_tint = ui_key_tint_push(reach_state | layer_action_bone_state(layer, {reach_path}));
         const int driven_reach = ui_driver_field_begin(C, layer.id, reach_path, -1);
         float reach = m.line_reach;
         if (ui_drag_float("##reach", &reach, 0.01f, -2.0f, 2.0f, "%.2f line widths",

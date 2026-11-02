@@ -119,7 +119,7 @@ arm_r = rig_in("Arm_R", outer)
 bone(arm_r, "Upper", (-1.0, 0.0), (-1.5, 0.0))
 layers.active = outer
 outer.select_bone("Turn_L")
-assert ops.anim.action_new(name="Turn_L", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="Turn_L", action_bone="1") == {'FINISHED'}
 doc.frame_current = 10
 outer.bone_set("Turn_L", angle=TURN)
 inner.bone_set("Cheek_L", angle=0.5)
@@ -136,7 +136,7 @@ rest = {name: tip(inner, name) for name in ("Cheek_L", "Cheek_R", "Jaw_X")}
 layers.active = outer
 ops.armature.select_none()
 outer.select_bone("Turn_L")
-assert ops.armature.symmetrize(smart_actions="1") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
 assert "Turn_R" in names(outer), names(outer)
 assert ops.anim.action_set(name="Turn_R", layer=str(outer.id)) == {'FINISHED'}
 at(10)

@@ -301,8 +301,8 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   }
   if (undo_step && C.undo && C.document) {
     C.undo->push(undo_name, *C.document);
-    /* Recording may have keyed a bone that drives a smart action. */
-    animation_refresh_smart(*C.document);
+    /* Recording may have keyed a bone that drives an action bone action. */
+    animation_refresh_action_bones(*C.document);
     /* Run by the user (not inside another operator) with options: it can be adjusted now. */
     if (!ot.props.empty() && !outer_args) {
       g_last_redo.idname = ot.idname;

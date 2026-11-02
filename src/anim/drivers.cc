@@ -23,13 +23,13 @@ namespace oanim {
 
 namespace {
 
-/* Where a referenced number lives: the value, and for a channel what it last recorded and what smart
+/* Where a referenced number lives: the value, and for a channel what it last recorded and what action bone
  * actions add, so a driven value never reads as an edit. */
 struct Slot {
   float *value = nullptr;
   float *last = nullptr;
   bool *has_last = nullptr;
-  float *smart = nullptr;
+  float *from_action_bones = nullptr;
 };
 
 /* "shapes[12].fill": the shape's id and what of it (".fill", ".line" or ".position"). */
@@ -129,7 +129,7 @@ void shape_position_set(const Document &doc, Layer &layer, const std::vector<int
     MeshPoint &p = drawing.points[size_t(i)];
     p.pos_keys.last = p.transform;
     p.pos_keys.has_last = true;
-    p.pos_keys.smart = float2();
+    p.pos_keys.from_action_bones = float2();
   }
 }
 
@@ -458,13 +458,13 @@ bool slot_find(Document &doc, const DriverRef &ref, Slot *r_slot)
     if (ref.component > 0) {
       return false;
     }
-    *r_slot = {ch.scalar_value, &ch.scalar->last, &ch.scalar->has_last, &ch.scalar->smart};
+    *r_slot = {ch.scalar_value, &ch.scalar->last, &ch.scalar->has_last, &ch.scalar->from_action_bones};
     return true;
   }
   if (ch.vector && (ref.component == 0 || ref.component == 1)) {
     const bool x = ref.component == 0;
     *r_slot = {x ? &ch.vector_value->x : &ch.vector_value->y, x ? &ch.vector->last.x : &ch.vector->last.y,
-               &ch.vector->has_last, x ? &ch.vector->smart.x : &ch.vector->smart.y};
+               &ch.vector->has_last, x ? &ch.vector->from_action_bones.x : &ch.vector->from_action_bones.y};
     return true;
   }
   return false;
@@ -698,7 +698,7 @@ static void shape_points_rest(Layer &layer, const std::vector<int> &points)
     p.transform = float2();
     p.pos_keys.last = p.transform;
     p.pos_keys.has_last = true;
-    p.pos_keys.smart = float2();
+    p.pos_keys.from_action_bones = float2();
   }
   drawing_values_from_changes(drawing);
 }
@@ -1163,8 +1163,8 @@ int driver_two_way_drop_count(Document &doc, const Driver &d, bool keep_target)
   return int(field_keys(doc, keep_target ? d.vars.front().source : d.target).size());
 }
 
-/* The smart action named after the bone a field poses, or "". */
-static std::string smart_action_of(Document &doc, const DriverRef &ref)
+/* The action bone action named after the bone a field poses, or "". */
+static std::string action_bone_action_of(Document &doc, const DriverRef &ref)
 {
   if (!bone_pose_part(ref.path)) {
     return "";
@@ -1234,10 +1234,11 @@ bool driver_two_way_link(Document &doc, Driver &d, bool keep_target, std::string
       return false;
     }
   }
-  /* A loop through a smart action: a smart bone linked with something its own action moves. */
-  const std::string source_action = smart_action_of(doc, source), target_action = smart_action_of(doc, d.target);
+  /* A loop through an action bone action: an action bone linked with something its own action moves. */
+  const std::string source_action = action_bone_action_of(doc, source);
+  const std::string target_action = action_bone_action_of(doc, d.target);
   if (action_keys_field(doc, source_action, d.target) || action_keys_field(doc, target_action, source)) {
-    *r_why = "A smart bone and something its own action moves would move each other round in a loop";
+    *r_why = "An action bone and something its own action moves would move each other round in a loop";
     return false;
   }
   d.factor = std::fabs(factor);
@@ -1413,8 +1414,8 @@ bool drivers_evaluate(Document &doc)
     }
     *slot.value = v;
     if (slot.last) {
-      /* Recorded as evaluated, with nothing of smart actions in it: never an edit, never keyed. */
-      *slot.smart = 0.0f;
+      /* Recorded as evaluated, with nothing of action bone actions in it: never an edit, never keyed. */
+      *slot.from_action_bones = 0.0f;
       *slot.last = v;
       *slot.has_last = true;
     }

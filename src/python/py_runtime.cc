@@ -565,7 +565,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const bool setup = C.document->frame_current == 0;
     for (const float d : degrees) {
       armature_rotate_selected(*armature, original, d * PI / 180.0f, setup);
-      animation_refresh_smart(*C.document);
+      animation_refresh_action_bones(*C.document);
       /* The frame after it, as the main loop does. */
       animation_sync(*C.document);
     }
@@ -2823,7 +2823,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return true;
   });
   /* One G drag through several mouse offsets (each from the drag's start), as the viewport's modal
-   * does it: every step starts again from the bones as the drag found them, and smart actions
+   * does it: every step starts again from the bones as the drag found them, and action bone actions
    * follow between steps. */
   m.def("layer_drag_bone_ends", [layer_or_raise](uint64_t id, const std::vector<std::pair<float, float>> &offsets) {
     Layer &layer = layer_or_raise(id);
@@ -2835,7 +2835,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const bool setup = doc.frame_current == 0;
     for (const auto &[dx, dy] : offsets) {
       armature_grab_selected(layer, original, {dx, dy}, setup, current_context().wm->tool_settings.auto_ik);
-      animation_refresh_smart(doc);
+      animation_refresh_action_bones(doc);
     }
     current_context().undo->mark_changed();
     return true;
@@ -3851,13 +3851,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return clips;
   });
   /* What a Media layer shows on a frame: (clip id, seconds into its file), or None. */
-  /* How a property's field shows now (oanim layer.field_state): its key state and whether a smart
+  /* How a property's field shows now (oanim layer.field_state): its key state and whether an action bone
    * action plays into it. */
   m.def("layer_field_state", [layer_or_raise](uint64_t id, const std::string &path) {
     Layer &layer = layer_or_raise(id);
     const int key = layer_key_state(layer, {path}, current_context().document->frame_current);
     static const char *const keys[] = {"NONE", "ANIMATED", "KEYED"};
-    return py::make_tuple(std::string(keys[std::clamp(key, 0, 2)]), layer_smart_state(layer, {path}) != 0);
+    return py::make_tuple(std::string(keys[std::clamp(key, 0, 2)]), layer_action_bone_state(layer, {path}) != 0);
   });
   /* A bone layer's actions, and what of them plays now. */
   m.def("layer_actions", [layer_or_raise](uint64_t id) {
@@ -3866,8 +3866,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     for (const std::string &name : layer.actions) {
       py::dict d;
       d["name"] = name;
-      d["kind"] = smart_action_bone(layer, name) ? "SMART" : fix_action_find(layer, name) ? "FIX" : "ACTION";
-      d["full_turn"] = smart_action_full_turn(layer, name);
+      d["kind"] = action_bone_of(layer, name) ? "ACTION_BONE" : fix_action_find(layer, name) ? "FIX" : "ACTION";
+      d["full_turn"] = action_bone_action_full_turn(layer, name);
       out.append(d);
     }
     return out;
@@ -3880,18 +3880,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return out;
   });
-  m.def("layer_smart_actions_playing", [layer_or_raise](uint64_t id) {
+  m.def("layer_action_bone_actions_playing", [layer_or_raise](uint64_t id) {
     Layer &layer = layer_or_raise(id);
     py::list out;
-    for (const auto &[name, t] : smart_actions_playing(layer)) {
-      const float length = smart_action_length(layer, name);
+    for (const auto &[name, t] : action_bone_actions_playing(layer)) {
+      const float length = action_bone_action_length(layer, name);
       out.append(py::make_tuple(name, t, length > 0.0f ? std::min(t / length, 1.0f) : 0.0f));
     }
     return out;
   });
   m.def("layer_fix_actions", [layer_or_raise](uint64_t id) {
     Layer &layer = layer_or_raise(id);
-    const auto playing = smart_actions_playing(layer);
+    const auto playing = action_bone_actions_playing(layer);
     py::list out;
     for (const FixAction &f : layer.fix_actions) {
       py::dict d;

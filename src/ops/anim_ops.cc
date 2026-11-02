@@ -568,8 +568,8 @@ void anim_operators_register()
         return OpStatus::Cancelled;
       }
       std::string name = op_arg(C, "name", "Action");
-      if (op_arg_bool(C, "smart")) {
-        /* A smart action is named after its bone; a second one (" 2") turns the other way. */
+      if (op_arg_bool(C, "action_bone")) {
+        /* An action bone action is named after its bone; a second one (" 2") turns the other way. */
         const auto has = [&](const std::string &n) {
           return std::find(owner->actions.begin(), owner->actions.end(), n) != owner->actions.end();
         };
@@ -581,7 +581,7 @@ void anim_operators_register()
           name += " 2";
         }
         if (has(name)) {
-          report(ReportType::Warning, "That bone has both smart actions already");
+          report(ReportType::Warning, "That bone has both action bone actions already");
           return OpStatus::Cancelled;
         }
         owner->actions.push_back(name);
@@ -618,7 +618,7 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.fix_action_new";
     ot.name = "Fix This Pose";
-    ot.description = "Fix the pose of the smart actions playing now (two or more, each turned at least 5%): the fix "
+    ot.description = "Fix the pose of the action bones playing now (two or more, each turned at least 5%): the fix "
                      "action for them (made if there is none) opens at this pose (added if it has none this close), to "
                      "key the correction. It plays by itself whenever they play together. drivers=\"a,b\": fix only "
                      "these of them";
@@ -631,7 +631,7 @@ void anim_operators_register()
         owner = action_owner(doc, doc.active_layer);
       }
       if (!doc.action.empty() && action_adds(*owner, doc.action)) {
-        report(ReportType::Warning, "Fix a pose from the mainline (or an ordinary action), with its smart bones turned");
+        report(ReportType::Warning, "Fix a pose from the mainline (or an ordinary action), with its action bones turned");
         return OpStatus::Cancelled;
       }
       std::vector<std::string> drivers;
@@ -655,7 +655,7 @@ void anim_operators_register()
     OperatorType ot;
     ot.idname = "anim.fix_pose_add";
     ot.name = "Add Fix Pose";
-    ot.description = "Add a pose to fix action `name`, its smart actions at `shares` (\"0.5,0.3\": each one's share of "
+    ot.description = "Add a pose to fix action `name`, its action bones at `shares` (\"0.5,0.3\": each one's share of "
                      "its length, in the fix's order), starting from what the fix plays there now, and edit it";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
@@ -676,7 +676,7 @@ void anim_operators_register()
       if (shares.size() != fix->drivers.size() ||
           std::any_of(shares.begin(), shares.end(), [](float v) { return v < FIX_COUNTS_FROM - 1e-6f; }))
       {
-        report(ReportType::Warning, "Give a share for each of its smart actions, each at least 0.05");
+        report(ReportType::Warning, "Give a share for each of its action bones, each at least 0.05");
         return OpStatus::Cancelled;
       }
       const int pose = document_fix_pose_add(doc, owner->id, name, shares);
@@ -725,7 +725,7 @@ void anim_operators_register()
     ot.idname = "anim.action_rename";
     ot.name = "Rename Action";
     ot.description = "Rename action `name` of the bone layer the active layer is in (or is; layer=id: that one) to "
-                     "`to`; fixes it drives follow (a smart action is named after its bone: rename the bone instead)";
+                     "`to`; fixes it drives follow (an action bone action is named after its bone: rename the bone instead)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
     ot.exec = [](Context &C) {
@@ -735,12 +735,12 @@ void anim_operators_register()
       if (!owner) {
         return OpStatus::Cancelled;
       }
-      if (smart_action_bone(*owner, name)) {
-        report(ReportType::Warning, "A smart action is named after its bone: rename the bone");
+      if (action_bone_of(*owner, name)) {
+        report(ReportType::Warning, "An action bone action is named after its bone: rename the bone");
         return OpStatus::Cancelled;
       }
-      if (to.empty() || smart_action_bone(*owner, to)) {
-        report(ReportType::Warning, to.empty() ? "Give it a name" : "That name is a bone's: it would make a smart action");
+      if (to.empty() || action_bone_of(*owner, to)) {
+        report(ReportType::Warning, to.empty() ? "Give it a name" : "That name is a bone's: it would make an action bone action");
         return OpStatus::Cancelled;
       }
       if (!document_action_rename(doc, owner->id, name, to)) {
@@ -775,7 +775,7 @@ void anim_operators_register()
           if (const FixAction *f = flat->is_bone_layer() && (!on || flat->id == on->id) ? fix_action_find(*flat, name) : nullptr;
               f && !f->poses.empty())
           {
-            const int nearest = fix_action_mix(*flat, *f, smart_actions_playing(*flat)).nearest;
+            const int nearest = fix_action_mix(*flat, *f, action_bone_actions_playing(*flat)).nearest;
             frame = f->poses[size_t(std::max(nearest, 0))].frame;
           }
         }

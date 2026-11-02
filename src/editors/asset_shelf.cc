@@ -1,7 +1,7 @@
 /* The Asset Shelf: a view of its own (as Properties or the Timeline) showing what fits what you are
  * working on (Blender's asset shelf): for a layer in a switch, that switch's children as thumbnails,
  * the switches it sits in as rows above; for a bone, the switches its counterparts are in and those it
- * drives through smart actions. A click picks and keys (Alt: the whole hold); hovering previews in the
+ * drives through action bone actions. A click picks and keys (Alt: the whole hold); hovering previews in the
  * viewport, nothing keyed; dragging across the tiles scrubs and picks where it lets go (Esc cancels);
  * arrows preview, Enter picks, Ctrl F searches, F2 renames. Pin keeps the rows; All Switches lists every
  * switch. A tile's right-click menu has Duplicate, Duplicate with Keys, Rename, Set as Default, Replace
@@ -105,7 +105,7 @@ std::vector<uint64_t> context_switches(Document &doc)
           add_once(rows, id);
         }
       }
-      /* Driven by its smart action: the switch keyed in the action named after the bone. */
+      /* Driven by its action bone action: the switch keyed in the action named after the bone. */
       const auto it = sw.switch_keys.actions.find(bone->name);
       if (it != sw.switch_keys.actions.end() && !it->second.empty() && layer_inside(doc, id, active->id)) {
         add_once(rows, id);
@@ -151,7 +151,7 @@ void tile_menu(Context &C, Area &area, uint64_t sw_id, uint64_t child_id)
     operator_call(C, "layer.switch_set", {{"layer", std::to_string(sw_id)}, {"child", name}, {"default", "1"}});
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Shown on frame 0, and wherever no key or smart action picks another");
+    ImGui::SetTooltip("Shown on frame 0, and wherever no key or action bone picks another");
   }
   if (ui_submenu_begin("Aliases")) {
     /* The other names it answers to in a linked switch, separated by commas. */

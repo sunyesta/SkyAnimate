@@ -231,8 +231,8 @@ static void frame_field(Context &C, const char *id, int *value, const char *form
 /* Which timeline is edited: the mainline, or an action of the bone layer the active layer is in or of
  * one around it, like Moho's switch between the mainline and an action. The + next to it adds an action.
  *
- * The list, top to bottom: what the moment calls for first (the selected bone's smart actions; the smart
- * actions playing together now, with the fix for them or a new one), then Mainline, Actions, Smart
+ * The list, top to bottom: what the moment calls for first (the selected bone's action bone actions; the action bone
+ * actions playing together now, with the fix for them or a new one), then Mainline, Actions, Action Bone
  * Actions and Fix Actions. Right-click an action to rename or delete it. */
 static void action_menu(Context &C, float width)
 {
@@ -303,14 +303,14 @@ static void action_menu(Context &C, float width)
         ImGui::OpenPopup("##action_menu");
       }
       if (ui_menu_begin("##action_menu")) {
-        const bool smart = smart_action_bone(rig, name) != nullptr;
-        if (ui_menu_item("Rename...", nullptr, false, !smart)) {
+        const bool is_action_bone_action = action_bone_of(rig, name) != nullptr;
+        if (ui_menu_item("Rename...", nullptr, false, !is_action_bone_action)) {
           renaming = name;
           renaming_layer = rig.id;
           rename_to = name;
         }
-        if (smart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::SetTooltip("A smart action is named after its bone: rename the bone (its fixes follow)");
+        if (is_action_bone_action && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip("An action bone action is named after its bone: rename the bone (its fixes follow)");
         }
         if (ui_menu_item("Delete")) {
           doomed = name;
@@ -324,7 +324,7 @@ static void action_menu(Context &C, float width)
     const auto percent = [](float share) { return std::to_string(int(std::lround(share * 100.0f))) + "%"; };
     const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
-    /* At the top, with one bone selected: its smart actions, and a new one while it has fewer
+    /* At the top, with one bone selected: its action bone actions, and a new one while it has fewer
      * than two (the second turns the other way). */
     const Bone *single = nullptr;
     if (owner) {
@@ -344,15 +344,15 @@ static void action_menu(Context &C, float width)
       ImGui::SeparatorText(("Selected: " + single->name).c_str());
       int count = 0;
       for (const std::string &name : owner->actions) {
-        if (smart_action_bone(*owner, name) == single) {
-          /* A 360 smart action (its bone keyed a whole turn) goes round and round: say so. */
-          action_item(*owner, name, name, smart_action_full_turn(*owner, name) ? "360Â°" : "", dim);
+        if (action_bone_of(*owner, name) == single) {
+          /* A 360 action bone action (its bone keyed a whole turn) goes round and round: say so. */
+          action_item(*owner, name, name, action_bone_action_full_turn(*owner, name) ? "360Â°" : "", dim);
           count++;
         }
       }
       if (count < 2) {
-        if (ImGui::Selectable(count == 0 ? "+ New Smart Action" : "+ New Smart Action (other way)")) {
-          operator_call(C, "anim.action_new", {{"name", single->name}, {"smart", "1"}, {"layer", std::to_string(owner->id)}});
+        if (ImGui::Selectable(count == 0 ? "+ New Action Bone Action" : "+ New Action Bone Action (other way)")) {
+          operator_call(C, "anim.action_new", {{"name", single->name}, {"action_bone", "1"}, {"layer", std::to_string(owner->id)}});
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
           ImGui::SetTooltip("An action named after the bone: key the bone turning, and what it should move. Then "
@@ -363,17 +363,17 @@ static void action_menu(Context &C, float width)
       ImGui::PopID();
     }
 
-    /* Smart actions playing together now (each turned at least 5%): fixing this pose, in the fix for all of
-     * them or one for some of them. Not while one is edited (a smart action shows alone; a fix holds its
+    /* Action bone actions playing together now (each turned at least 5%): fixing this pose, in the fix for all of
+     * them or one for some of them. Not while one is edited (an action bone action shows alone; a fix holds its
      * drivers). */
     if (owner && (!in_action || !action_adds(*owner, doc.action)) && doc.frame_current != 0) {
-      const std::vector<std::pair<std::string, float>> counting = smart_actions_counting(*owner);
+      const std::vector<std::pair<std::string, float>> counting = action_bone_actions_counting(*owner);
       if (counting.size() >= 2) {
         ImGui::PushID("playing");
         ImGui::SeparatorText("Playing now");
         std::string line;
         for (const auto &[name, t] : counting) {
-          const float length = smart_action_length(*owner, name);
+          const float length = action_bone_action_length(*owner, name);
           line += (line.empty() ? "" : "   \xC2\xB7   ") + name + " " + percent(length > 0.0f ? std::min(t / length, 1.0f) : 0.0f);
         }
         ImGui::Indent();
@@ -408,7 +408,7 @@ static void action_menu(Context &C, float width)
           }
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             if (!fix) {
-              ImGui::SetTooltip("These smart actions together don't look right? Make a fix for them: it opens with them "
+              ImGui::SetTooltip("These action bones together don't look right? Make a fix for them: it opens with them "
                                 "held right here, to key the correction, and then plays by itself whenever they play "
                                 "together. Fix more poses of theirs in the same fix later");
             }
@@ -418,7 +418,7 @@ static void action_menu(Context &C, float width)
             else {
               ImGui::SetTooltip(all ? "Add this pose to the fix, starting from what it plays here now, and key the "
                                       "correction. Each pose is exact; between them they blend"
-                                    : "Fix this pose in the fix for these smart actions only, leaving the others out "
+                                    : "Fix this pose in the fix for these action bones only, leaving the others out "
                                       "(when they aren't what looks wrong)");
             }
           }
@@ -473,11 +473,11 @@ static void action_menu(Context &C, float width)
       };
       const auto plain = [&](const std::string &name) { action_item(*rig, name, name, "", 0); };
       section("Actions", [&](const std::string &n) { return !action_adds(*rig, n); }, plain);
-      section("Smart Actions", [&](const std::string &n) { return smart_action_bone(*rig, n) != nullptr; },
+      section("Action Bone Actions", [&](const std::string &n) { return action_bone_of(*rig, n) != nullptr; },
               [&](const std::string &name) {
-                action_item(*rig, name, name, smart_action_full_turn(*rig, name) ? "360Â°" : "", dim);
+                action_item(*rig, name, name, action_bone_action_full_turn(*rig, name) ? "360Â°" : "", dim);
               });
-      const std::vector<std::pair<std::string, float>> playing = smart_actions_playing(*rig);
+      const std::vector<std::pair<std::string, float>> playing = action_bone_actions_playing(*rig);
       section("Fix Actions", [&](const std::string &n) { return fix_action_find(*rig, n) != nullptr; },
               [&](const std::string &name) {
                 const FixAction &f = *fix_action_find(*rig, name);
@@ -496,9 +496,9 @@ static void action_menu(Context &C, float width)
                 }
               });
     }
-    if (owner && !single && (in_action || smart_actions_playing(*owner).size() < 2)) {
+    if (owner && !single && (in_action || action_bone_actions_playing(*owner).size() < 2)) {
       ImGui::Separator();
-      ImGui::TextDisabled("Select one bone for its smart actions.\nTurn two smart bones together to fix them.");
+      ImGui::TextDisabled("Select one bone for its actions.\nTurn two action bones together to fix them.");
     }
     else if (!owner) {
       ImGui::Separator();
@@ -2716,7 +2716,7 @@ static void timeline_body(Area &area, Context &C)
     const bool switch_row = rows[r].filter.path == "switch" && rows[r].layers.size() == 1 && rows[r].layers[0]->is_switch();
     if (switch_row) {
       /* Switch: between keys, a bar naming the child shown, coloured by who decides there: a key made by
-       * hand (teal), the rig (orange: a Rig key, or the stretch from frame 0 when smart actions key it),
+       * hand (teal), the rig (orange: a Rig key, or the stretch from frame 0 when action bone actions key it),
        * the default (grey); red for a child that is gone. */
       const Layer &sw = *rows[r].layers[0];
       const std::vector<Key<float>> &keys = sw.switch_keys.keys;
@@ -2767,8 +2767,8 @@ static void timeline_body(Area &area, Context &C)
         {
           const int last = i + 1 < keys.size() ? keys[i + 1].frame - 1 : -1;
           const char *who = missing ? " (a child that is gone: the default shows)"
-                            : rig   ? " (its smart actions pick, else the default)"
-                            : by_hand ? " (keyed by hand: wins over smart actions)"
+                            : rig   ? " (its action bones pick, else the default)"
+                            : by_hand ? " (keyed by hand: wins over action bones)"
                                       : " (the default)";
           ImGui::SetTooltip("%s shows %s, frame %d%s%s\nDrag a key to retime; Replace Keys With... is in its "
                             "right-click Switch menu",

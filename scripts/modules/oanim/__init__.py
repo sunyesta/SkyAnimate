@@ -272,7 +272,7 @@ class _Layer:
     @property
     def switch_active(self):
         """A switch layer: the name of the child it shows now, or None. Who wins: a key made by hand
-        (after frame 0) until a Rig key, then smart actions, then the default. Set it with
+        (after frame 0) until a Rig key, then action bone actions, then the default. Set it with
         oanim.ops.layer.switch_set(child=name) (keyed on frames other than 0)."""
         return _oanim.layer_switch(self._id)[0]
 
@@ -349,7 +349,7 @@ class _Layer:
 
     @property
     def actions(self):
-        """A bone layer's actions: [{"name", "kind": "ACTION", "SMART" or "FIX", "full_turn": a 360 smart action
+        """A bone layer's actions: [{"name", "kind": "ACTION", "ACTION_BONE" or "FIX", "full_turn": a 360 action bone action
         (its bone keyed exactly a whole turn, so it goes round and round)}]. Make them with
         oanim.ops.anim.action_new / fix_action_new, edit one with action_set, rename with action_rename."""
         return [dict(a) for a in _oanim.layer_actions(self._id)]
@@ -361,15 +361,18 @@ class _Layer:
         return [_Layer(i) for i in _oanim.layer_action_owners(self._id)]
 
     @property
-    def smart_actions_playing(self):
-        """The smart actions playing now, their bones turned: [(name, frame, share of its length 0-1)]."""
-        return [tuple(p) for p in _oanim.layer_smart_actions_playing(self._id)]
+    def action_bone_actions_playing(self):
+        """The action bone actions playing now, their bones turned: [(name, frame, share of its length 0-1)]."""
+        return [tuple(p) for p in _oanim.layer_action_bone_actions_playing(self._id)]
+
+    # The name from before smart bones became action bones: old scripts keep working.
+    smart_actions_playing = action_bone_actions_playing
 
     @property
     def fix_actions(self):
-        """A bone layer's fix actions (correctives): [{"name", "drivers" (smart action names), "poses" (the
+        """A bone layer's fix actions (correctives): [{"name", "drivers" (action bone action names), "poses" (the
         poses it fixes: [{"frame" (its frame in the fix, keyed with the correction), "at" (each driver's frame
-        in its smart action), "shares" (the same as shares of their lengths, 0-1), "label"}]), "strength" (how
+        in its action bone action), "shares" (the same as shares of their lengths, 0-1), "label"}]), "strength" (how
         much of it plays now, 0-1), "nearest_pose" (index of the pose nearest now, -1), "broken" (why it can't
         play, or "")}]. Fix a pose with oanim.ops.anim.fix_action_new (it adds a pose, or opens the one here),
         fix_pose_add(name=, shares="0.5,0.3") and fix_pose_remove(name=, pose=N)."""
@@ -377,7 +380,7 @@ class _Layer:
 
     def field_state(self, path):
         """How the field of channel `path` ("location", 'bones["arm"].angle') shows now: (key state:
-        "NONE", "ANIMATED" or "KEYED" on this frame, smart: True while a smart action plays into it,
+        "NONE", "ANIMATED" or "KEYED" on this frame, action bone: True while an action bone action plays into it,
         drawn pink, its value shown with the action in)."""
         return tuple(_oanim.layer_field_state(self._id, path))
 

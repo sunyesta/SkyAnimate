@@ -127,8 +127,8 @@ struct Document {
   std::string action;
   /* The bone layer the action being edited belongs to. */
   uint64_t action_layer = 0;
-  /* Runtime: some plain value has a smart action's amount added (see Channel::smart). */
-  bool smart_applied = false;
+  /* Runtime: some plain value has an action bone action's amount added (see Channel::from_action_bones). */
+  bool action_bones_applied = false;
   /* Bone dynamics for the whole document (Moho's): gravity and wind push every dynamic bone (by
    * its weight; the wind pushes them all the same); simulating starts at `simulation_start`. */
   float gravity = 0.0f;

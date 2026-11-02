@@ -1,7 +1,7 @@
-"""Smart actions driving smart actions: a dial's action keys other smart bones, so a 360 head turn can be made of a left and a
+"""Action bone actions driving action bone actions: a dial's action keys other action bones, so a 360 head turn can be made of a left and a
 right turn. They play while the dial's action is edited, and on the mainline each plays after what turns its bone.
 
-Run with:  OpenAnimate --background --python tests/test_smart_nested.py
+Run with:  OpenAnimate --background --python tests/test_action_bones_nested.py
 """
 
 import math
@@ -44,10 +44,10 @@ def turn(name, angle):
     doc.frame_current = doc.frame_current - 1
 
 
-def smart(name, angle, moved):
-    """Smart action `name`: its bone turns `angle` by frame 10, taking the face's first point to `moved`."""
+def action_bone(name, angle, moved):
+    """Action bone action `name`: its bone turns `angle` by frame 10, taking the face's first point to `moved`."""
     rig.select_bone(name)
-    assert ops.anim.action_new(name=name, smart="1") == {'FINISHED'} and doc.action == name
+    assert ops.anim.action_new(name=name, action_bone="1") == {'FINISHED'} and doc.action == name
     doc.frame_current = 10
     rig.bone_set(name, angle=angle)
     face.set_point(0, moved)
@@ -56,12 +56,12 @@ def smart(name, angle, moved):
     doc.action = ""
 
 
-smart("left", 1.0, (1.0, 0.0))
-smart("right", -1.0, (0.0, 1.0))
+action_bone("left", 1.0, (1.0, 0.0))
+action_bone("right", -1.0, (0.0, 1.0))
 
 # --- The dial's action keys the two other bones ---------------------------------------------------------------------
 rig.select_bone("dial")
-assert ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
+assert ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'} and doc.action == "dial"
 doc.frame_current = 10
 rig.bone_set("dial", angle=-FULL * 0.25)
 rig.bone_set("left", angle=1.0)
@@ -138,7 +138,7 @@ assert close(where(), (1.0, 0.0)), where()
 doc.frame_current = 0
 doc.action = ""
 
-# --- Two smart actions that turn each other don't hang, and each plays once ------------------------------------------
+# --- Two action bone actions that turn each other don't hang, and each plays once ------------------------------------------
 ops.wm.read_homefile(confirmed="1")
 doc, layers = oanim.data.document, oanim.data.layers
 doc.auto_key = True
@@ -149,7 +149,7 @@ for name, y in (("a", 1.0), ("b", 2.0)):
     ops.armature.bone_add(name=name, head_x="5.0", head_y=str(y), tail_x="6.0", tail_y=str(y))
 for name, other in (("a", "b"), ("b", "a")):
     rig.select_bone(name)
-    assert ops.anim.action_new(name=name, smart="1") == {'FINISHED'}
+    assert ops.anim.action_new(name=name, action_bone="1") == {'FINISHED'}
     doc.frame_current = 10
     rig.bone_set(name, angle=1.0)
     rig.bone_set(other, angle=0.5)

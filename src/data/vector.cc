@@ -2891,12 +2891,12 @@ void drawing_take_setup(VectorDrawing &drawing)
   drawing_detail_sync(drawing, true);
   for (MeshPoint &p : drawing.points) {
     if (p.detail.level > 0) {
-      p.detail.setup_pos = p.detail.pos - p.pos_keys.smart;
+      p.detail.setup_pos = p.detail.pos - p.pos_keys.from_action_bones;
       p.transform = p.detail.pos - p.detail.setup_pos;
       p.setup_pos = p.pos;
       continue;
     }
-    p.setup_pos = p.pos - p.pos_keys.smart;
+    p.setup_pos = p.pos - p.pos_keys.from_action_bones;
     p.transform = p.pos - p.setup_pos;
   }
   for (Curve &curve : drawing.curves) {
@@ -2914,8 +2914,8 @@ void drawing_take_setup(VectorDrawing &drawing)
 
 int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool handles)
 {
-  /* Back to the setup pose plus what smart actions add now (their part of the channel), so a cleared
-   * point lands where the smart bones put it rather than keying a change that cancels them. */
+  /* Back to the setup pose plus what action bone actions add now (their part of the channel), so a cleared
+   * point lands where the action bones put it rather than keying a change that cancels them. */
   int changed = 0;
   /* Detail goes back to its setup offsets, and rides its curve from there. */
   drawing_detail_sync(drawing, true);
@@ -2927,7 +2927,7 @@ int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool han
       if (dt.level == 0) {
         continue;
       }
-      const float2 rest = dt.setup_pos + p.pos_keys.smart;
+      const float2 rest = dt.setup_pos + p.pos_keys.from_action_bones;
       if (positions && p.selected && dt.pos != rest && (p.pos_keys.has_last || p.pos_keys.animated())) {
         dt.pos = rest;
         changed++;
@@ -2936,7 +2936,7 @@ int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool han
       for (const bool in : {true, false}) {
         const Channel<float2> &ch = in ? cp.handle_in_keys : cp.handle_out_keys;
         float2 &offset = in ? dt.in : dt.out;
-        const float2 setup = (in ? dt.setup_in : dt.setup_out) + ch.smart;
+        const float2 setup = (in ? dt.setup_in : dt.setup_out) + ch.from_action_bones;
         if (handles && (p.selected || (in ? cp.select_in : cp.select_out)) && offset != setup &&
             (ch.has_last || ch.animated()))
         {
@@ -2954,7 +2954,7 @@ int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool han
     if (p.detail.level > 0) {
       continue;
     }
-    const float2 rest = point_setup_pos(p) + p.pos_keys.smart;
+    const float2 rest = point_setup_pos(p) + p.pos_keys.from_action_bones;
     if (positions && p.selected && p.pos != rest) {
       p.pos = rest;
       changed++;
@@ -2971,8 +2971,8 @@ int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool han
       }
       for (const bool in : {true, false}) {
         float2 &handle = in ? cp.handle_in : cp.handle_out;
-        /* A handle's smart part is a change of its Angle and Length. */
-        const float2 rest = handle_from_change(handle_setup(cp, in), (in ? cp.handle_in_keys : cp.handle_out_keys).smart);
+        /* A handle's action bone part is a change of its Angle and Length. */
+        const float2 rest = handle_from_change(handle_setup(cp, in), (in ? cp.handle_in_keys : cp.handle_out_keys).from_action_bones);
         if (cp.handles_set && (point || (in ? cp.select_in : cp.select_out)) && handle != rest) {
           handle = rest;
           changed++;

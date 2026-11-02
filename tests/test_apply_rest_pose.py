@@ -1,6 +1,6 @@
 """Apply Pose as Rest Pose and Apply Selected as Rest Pose (Ctrl A, Blender's): the pose on the frame
 shown becomes the setup pose, the drawings come along, and every keyed frame of the mainline and every
-action shows as it did. Smart bones keep their rest; bones left out keep where they rest.
+action shows as it did. Action bones keep their rest; bones left out keep where they rest.
 
 Run with:  OpenAnimate --background --python tests/test_apply_rest_pose.py
 """
@@ -41,9 +41,9 @@ def pose(frame, **bones):
     doc.frame_current = frame
 
 
-# A smart action: turning the dial bends b.
+# An action bone action: turning the dial bends b.
 rig.select_bone("dial")
-assert ops.anim.action_new(name="dial", smart="1") == {'FINISHED'}
+assert ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'}
 pose(10, dial=dict(angle=1.0), b=dict(angle=0.4))
 doc.frame_current = 0
 assert ops.anim.action_set(name="") == {'FINISHED'}
@@ -115,13 +115,13 @@ limit = rig.bone_constraints("a")[0]
 assert abs(limit["min_angle"] + 2.5) < 1e-5 and abs(limit["max_angle"] - 1.5) < 1e-5, limit
 now0 = look("", 0)
 target = before[("", 10)]
-# Frame 10 had the dial turned 0.3: the smart action's share of b stays out of the rest.
+# Frame 10 had the dial turned 0.3: the action bone action's share of b stays out of the rest.
 assert math.dist(now0[0]["a"][1], target[0]["a"][1]) < 1e-4, "frame 0 is frame 10's pose"
 for f in frames:
     w = worst(look(*f), before[f])
     assert w < tolerance(f), ("kept", f, w)
 dial_now = next(b for b in rig.bones if b["name"] == "dial")
-assert abs(dial_now["angle"] - dial_rest["angle"]) < 1e-5, "the smart bone keeps its rest"
+assert abs(dial_now["angle"] - dial_rest["angle"]) < 1e-5, "the action bone keeps its rest"
 assert worst(look("", 0), rest) > 0.1, "the rest moved"
 
 

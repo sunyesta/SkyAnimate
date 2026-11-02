@@ -1,9 +1,9 @@
-"""Smart actions, as Moho's smart bones: an action named after a bone. Its keyed angle maps the
+"""Action bone actions, as Moho's smart bones: an action named after a bone. Its keyed angle maps the
 bone's angle anywhere else to a frame of the action, whose changes from frame 0 are added on top.
 A " 2" action covers turning the other way. The added amounts never become data: saving, undo
 and keying keep the plain values.
 
-Run with:  OpenAnimate --background --python tests/test_smart_actions.py
+Run with:  OpenAnimate --background --python tests/test_action_bone_actions.py
 """
 
 import pathlib
@@ -31,8 +31,8 @@ def dial(angle):
     doc.frame_current = doc.frame_current - 1
 
 
-# --- Make the smart action: the dial turns to 1.0 by frame 10, moving the face to x = 2 ----------
-assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial"
+# --- Make the action bone action: the dial turns to 1.0 by frame 10, moving the face to x = 2 ----------
+assert oanim.ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'} and doc.action == "dial"
 doc.frame_current = 10
 rig.bone_set("dial", angle=1.0)
 face.location_x = 2.0
@@ -66,7 +66,7 @@ rig.bone_set("dial", angle=0.75)
 doc.frame_current = doc.frame_current
 assert abs(face.location_x - 1.5) < 1e-3, face.location_x
 
-# Its fields show the live value, pink while the smart action plays into them.
+# Its fields show the live value, pink while the action bone action plays into them.
 assert face.field_state("position")[1], face.field_state("position")
 assert not face.field_state("opacity")[1], "the action doesn't touch its opacity"
 rig.bone_set("dial", angle=0.0)
@@ -77,8 +77,8 @@ doc.frame_current = doc.frame_current
 
 # The added amount isn't data: the face's own position is still 0.
 dial(0.5)
-assert face.keyframes("position") == [], "no keys from smart actions"
-path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_smart_")) / "smart.oanim")
+assert face.keyframes("position") == [], "no keys from action bone actions"
+path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_action_bones_")) / "action_bones.oanim")
 assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 doc = oanim.data.document
@@ -95,7 +95,7 @@ oanim.ops.anim.keys_select_all()
 oanim.ops.ed.undo()
 assert abs(face.location_x - 1.0) < 1e-3, face.location_x
 
-# Keying the face while the dial is turned keys its own value, not the smart part.
+# Keying the face while the dial is turned keys its own value, not the action bone part.
 oanim.data.layers.active = face
 face.location_y = 0.5
 doc.frame_current = 21
@@ -107,7 +107,7 @@ assert abs(face.location_x - 1.0) < 1e-3
 # --- " 2": the other direction ------------------------------------------------------------------
 oanim.data.layers.active = rig
 doc.frame_current = 0
-assert oanim.ops.anim.action_new(name="dial", smart="1") == {'FINISHED'} and doc.action == "dial 2"
+assert oanim.ops.anim.action_new(name="dial", action_bone="1") == {'FINISHED'} and doc.action == "dial 2"
 doc.frame_current = 10
 rig.bone_set("dial", angle=-1.0)
 face.location_x = -4.0
@@ -116,7 +116,7 @@ oanim.ops.anim.action_set(name="")
 doc.frame_current = 30
 dial(-0.5)
 assert abs(face.location_x + 2.0) < 1e-3, face.location_x
-assert oanim.ops.anim.action_new(name="dial", smart="1") == {'CANCELLED'}, "both directions exist"
+assert oanim.ops.anim.action_new(name="dial", action_bone="1") == {'CANCELLED'}, "both directions exist"
 
 # --- A bone the action moves, with no keys of its own, moves its points too --------------------------
 doc.frame_current = 0
@@ -141,7 +141,7 @@ dial(1.0)
 jaw = next(b for b in rig.bones if b["name"] == "jaw")
 assert abs(jaw["head"][1] + 2.0) < 1e-3, jaw["head"]
 assert abs(lip.evaluated()[0][0][1] + 2.0) < 1e-3, ("its point follows", lip.evaluated()[0])
-# Dragging that bone moves it at once, even the first time, before it has keys: the smart action's
+# Dragging that bone moves it at once, even the first time, before it has keys: the action bone action's
 # offset must not take in the move.
 rig.select_bone("jaw")
 assert rig.move_bone_ends((0.3, 0.0))
@@ -152,7 +152,7 @@ doc.frame_current = 41  # records the move
 doc.frame_current = 40
 jaw = next(b for b in rig.bones if b["name"] == "jaw")
 assert abs(jaw["head"][0] - 0.3) < 1e-3 and abs(jaw["head"][1] + 2.0) < 1e-3, ("kept", jaw["head"])
-# On the setup frame a smart bone plays nothing: it is the rig at rest.
+# On the setup frame an action bone plays nothing: it is the rig at rest.
 doc.frame_current = 0
 rig.bone_set("dial", angle=1.0)
 doc.frame_current = doc.frame_current
@@ -160,7 +160,7 @@ jaw = next(b for b in rig.bones if b["name"] == "jaw")
 assert abs(jaw["head"][1] + 1.0) < 1e-3, ("frame 0: the jaw stays at rest", jaw["head"])
 rig.bone_set("dial", angle=0.0)
 
-# --- Dragged past its last frame, a smart bone holds that frame --------------------------------------
+# --- Dragged past its last frame, an action bone holds that frame --------------------------------------
 # A half-turn action (as a mouth's open bone, pointing up and turned down): one drag of the tip round
 # past the end keeps turning that way, so the action holds its end instead of flipping to the start.
 import math
@@ -170,7 +170,7 @@ slider = layers.active
 oanim.ops.layer.move_to_group(group=str(rig.id))
 layers.active = rig
 rig.select_bone("knob")
-assert oanim.ops.anim.action_new(name="knob", smart="1") == {'FINISHED'} and doc.action == "knob"
+assert oanim.ops.anim.action_new(name="knob", action_bone="1") == {'FINISHED'} and doc.action == "knob"
 doc.frame_current = 10
 rig.bone_set("knob", angle=-math.pi)
 slider.location_x = 3.0
@@ -188,9 +188,9 @@ assert abs(knob["angle"] - steps[-1]) < 1e-3, ("kept turning the same way", knob
 assert abs(slider.location_x - 3.0) < 1e-3, ("holds the last frame", slider.location_x)
 
 # --- R past the action's end, then back the other way: the bones it drives come back -----------------
-# A drag puts the bones back as they were when it began every update, their smart offsets too; the
+# A drag puts the bones back as they were when it began every update, their action bone offsets too; the
 # replay takes those off first, so turning back past the start doesn't keep the end pose. Alone in a
-# new file: with another smart action playing, its offsets were taken off anyway.
+# new file: with another action bone action playing, its offsets were taken off anyway.
 import _oanim
 
 assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
@@ -202,7 +202,7 @@ oanim.ops.armature.bone_add(name="lever", head_x="0", head_y="0", tail_x="1", ta
 oanim.ops.armature.bone_add(name="chin", head_x="0", head_y="-2", tail_x="1", tail_y="-2", parent="")
 oanim.ops.armature.select_none()
 rig.select_bone("lever")
-assert oanim.ops.anim.action_new(name="lever", smart="1") == {'FINISHED'} and doc.action == "lever"
+assert oanim.ops.anim.action_new(name="lever", action_bone="1") == {'FINISHED'} and doc.action == "lever"
 doc.frame_current = 10
 rig.bone_set("lever", angle=1.0)
 rig.bone_set("chin", position=(0.0, -2.5))
@@ -224,8 +224,8 @@ _oanim.debug_rotate_bones(rig.id, [-30, -150, -170])  # back past the start, the
 assert abs(chin_y() + 2.0) < 1e-4, ("clamped at the start, not left at the end", chin_y())
 
 # --- Clear (Alt G / R / S) takes away a bone's own change only ------------------------------------------
-# A bone a smart bone moves goes back to where the smart bone puts it, not to its setup (which would key
-# a change cancelling the smart action); the smart bone itself goes back to its rest.
+# A bone an action bone moves goes back to where the action bone puts it, not to its setup (which would key
+# a change cancelling the action bone action); the action bone itself goes back to its rest.
 
 
 def chin_pos():
@@ -248,7 +248,7 @@ oanim.ops.armature.select_none()
 rig.select_bone("lever")
 assert oanim.ops.armature.clear_rotation() == {'FINISHED'}
 doc.frame_current = doc.frame_current
-assert abs(chin_y() + 2.0) < 1e-4, ("the smart bone back at rest plays nothing", chin_y())
+assert abs(chin_y() + 2.0) < 1e-4, ("the action bone back at rest plays nothing", chin_y())
 
 # --- Visibility (a yes/no setting) switches where its key is, never a blend ----------------------------
 # A head turn that hides an eye at its last frame: on the mainline the eye shows until the bone turns
@@ -263,7 +263,7 @@ oanim.ops.layer.move_to_group(group=str(rig.id))
 eye = next(l for l in layers.all() if l.id == eye.id)
 eye.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
 layers.active = rig
-assert oanim.ops.anim.action_new(name="turn", smart="1") == {'FINISHED'} and doc.action == "turn"
+assert oanim.ops.anim.action_new(name="turn", action_bone="1") == {'FINISHED'} and doc.action == "turn"
 doc.frame_current = 10
 rig.bone_set("turn", angle=1.0)
 layers.active = eye
@@ -284,23 +284,23 @@ for k in range(0, 13):
     shown.append(eye.visible)
 assert shown == [True] * 10 + [False] * 3, shown
 
-# Clear Location (Alt G) takes away a point's own change only: back where the smart action puts it.
+# Clear Location (Alt G) takes away a point's own change only: back where the action bone action puts it.
 rig.bone_set("turn", angle=1.0)
 doc.frame_current = doc.frame_current
 layers.active = eye
 oanim.ops.mesh.select_none()
 eye.select_points([0])
-smart_pos = eye.points[0][:2]
-assert abs(smart_pos[0] - 0.5) < 1e-4, ("the smart action moves the point", smart_pos)
+action_bones_pos = eye.points[0][:2]
+assert abs(action_bones_pos[0] - 0.5) < 1e-4, ("the action bone action moves the point", action_bones_pos)
 assert oanim.ops.mesh.transform_selected(move_x="0.2", move_y="0.1") == {'FINISHED'}
 assert oanim.ops.mesh.clear_location() == {'FINISHED'}
-assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), eye.points[0]
+assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], action_bones_pos)), eye.points[0]
 doc.frame_current = 31
 doc.frame_current = 30
-assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], smart_pos)), ("and it stays there", eye.points[0])
+assert all(abs(a - b) < 1e-4 for a, b in zip(eye.points[0][:2], action_bones_pos)), ("and it stays there", eye.points[0])
 
-# --- A dynamic bone hanging from bones a smart action moves follows them on every frame --------------
-# (the simulation works each frame's pose out with the smart actions playing, not from keys alone).
+# --- A dynamic bone hanging from bones an action bone action moves follows them on every frame --------------
+# (the simulation works each frame's pose out with the action bone actions playing, not from keys alone).
 oanim.ops.wm.read_homefile(confirmed="1")
 layers = oanim.data.layers
 doc = oanim.data.document
@@ -312,9 +312,9 @@ oanim.ops.armature.bone_add(name="strand", head_x="0", head_y="1", tail_x="0", t
 oanim.ops.armature.bone_add(name="turn", head_x="3", head_y="0", tail_x="4", tail_y="0", parent="")
 rig.select_bone("strand")
 assert oanim.ops.armature.constraint_add(type="DYNAMICS") == {'FINISHED'}
-# The smart action: turning "turn" by 1 turns the head by 1.2 (frame 10 of the action).
+# The action bone action: turning "turn" by 1 turns the head by 1.2 (frame 10 of the action).
 rig.select_bone("turn")
-assert oanim.ops.anim.action_new(name="turn", smart="1") == {'FINISHED'}
+assert oanim.ops.anim.action_new(name="turn", action_bone="1") == {'FINISHED'}
 doc.frame_current = 10
 rig.bone_set("turn", angle=1.0)
 rig.bone_set("head", angle=1.2)
@@ -327,7 +327,7 @@ assert oanim.ops.armature.rotate(angle=str(math.degrees(1.0)), posing="1") == {'
 
 
 def strand_off(frame):
-    """How far dynamics put the strand's tip from where its keys (and the smart action) put it."""
+    """How far dynamics put the strand's tip from where its keys (and the action bone action) put it."""
     doc.frame_current = frame
     live = next(b for b in rig.bones if b["name"] == "strand")["tail"]
     keyed = next(b for b in rig.bones_keyed if b["name"] == "strand")["tail"]
@@ -338,4 +338,14 @@ swing = [strand_off(f) for f in range(1, 61)]
 assert max(swing[:12]) > 0.05, ("it swings as the head turns", swing[:12])
 assert swing[-1] < 0.02, ("and settles back onto the turned head once it stops", swing[-10:])
 
-print("Smart action tests passed")
+# --- Scripts from before smart bones became action bones keep working -------------------------------
+doc.frame_current = 0
+oanim.ops.anim.action_set(name="")
+rig = next(l for l in layers.all() if l.type == "BONE")
+layers.active = rig
+oanim.ops.armature.bone_add(name="old_dial", head_x="5", head_y="5", tail_x="6", tail_y="5", parent="")
+assert oanim.ops.anim.action_new(name="old_dial", smart="1") == {'FINISHED'} and doc.action == "old_dial"
+assert next(a for a in rig.actions if a["name"] == "old_dial")["kind"] == "ACTION_BONE"
+assert rig.smart_actions_playing == rig.action_bone_actions_playing
+
+print("Action bone action tests passed")

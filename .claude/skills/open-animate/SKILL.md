@@ -1,6 +1,6 @@
 ---
 name: open-animate
-description: Use when working in the user's Open Animate projects - animating (a head turn, mouth shapes, a walk, an action or smart action, from a reference video or image), posing, rigging or editing drawings through its Python API and remote control. Covers how to animate (bones first, points to fine-tune), working on a private copy, matching a reference and getting the result rated.
+description: Use when working in the user's Open Animate projects - animating (a head turn, mouth shapes, a walk, an action or action bone action, from a reference video or image), posing, rigging or editing drawings through its Python API and remote control. Covers how to animate (bones first, points to fine-tune), working on a private copy, matching a reference and getting the result rated.
 ---
 
 # Open Animate
@@ -34,7 +34,7 @@ level can't make the shape. Fewer points keyed means smoother motion and less to
   it, rather than fighting it with keys on every frame.
 - Bone positions are in the parent bone's space (a child of a bone pointing up has its x axis up). Read
   `rig.bones` (setup_position, setup_angle, parent) before moving anything.
-- Smart actions: an action named after a bone (`HeadTurn_L`) is driven by that bone's angle. Inside the
+- Action bone actions: an action named after a bone (`HeadTurn_L`) is driven by that bone's angle. Inside the
   action, key the driving bone's angle from its setup angle (frame 0) to the full turn (the last frame),
   and key the poses on those frames. On the mainline, animating the bone's angle plays the action.
 - Detail levels: a shape can hide fine points (`layer.detail`); set `oanim.ops.mesh.detail_level_set`

@@ -1,6 +1,7 @@
 #pragma once
 
-/* Mirror Smart Actions (bone Symmetrize's option): an action's mirror image, as a new action, the original left as it
+/* Mirror Action Bone Actions (bone Symmetrize's option): an action's mirror image, as a new action, the original left
+ * as it
  * is. _L and _R bones and layers take each other's keys, reflected, since a turn's near and far sides differ; _X bones and
  * layers, and those with no side at all, take them inside themselves, each point its partner's across the axis. Keys
  * hold the change from the setup pose, so a setup that isn't exact on one side doesn't matter.

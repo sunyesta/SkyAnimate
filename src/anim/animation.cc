@@ -70,7 +70,8 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
   f(layer.scale_keys, layer.scale);
   f(layer.shear_keys, layer.shear);
   f(layer.opacity_keys, layer.opacity);
-  /* Before any bone's channels are touched: taking smart actions off goes bone by bone, and a limit read halfway would
+  /* Before any bone's channels are touched: taking action bone actions off goes bone by bone, and a limit read halfway
+   * would
    * see the bone's parent without what they add, the shape with it. */
   if constexpr (sync) {
     for (Bone &bone : layer.bones) {
@@ -168,17 +169,18 @@ template<typename F> static void layers_for_each_channel(std::vector<Layer> &lay
   }
 }
 
-/* While smart actions are worked out again (animation_refresh_smart), the layers with any smart action
+/* While action bone actions are worked out again (animation_refresh_action_bones), the layers with any action bone
+ * action
  * data, found once: the rest are passed over without a look. */
-static const std::unordered_set<const Layer *> *g_smart_layers = nullptr;
+static const std::unordered_set<const Layer *> *g_action_bone_layers = nullptr;
 
 /* As layers_for_each_channel, but only on the layers having a channel `wanted` says yes to. Looking costs
  * little; the walk itself turns every drawing's points into their changes from the setup pose and back,
- * which on a big rig is most of what smart actions cost each time a smart bone turns. */
+ * which on a big rig is most of what action bone actions cost each time an action bone turns. */
 template<typename P, typename F> static void layers_for_each_channel_if(std::vector<Layer> &layers, P &&wanted, F &&f)
 {
   for (Layer &layer : layers) {
-    if (g_smart_layers && !g_smart_layers->contains(&layer)) {
+    if (g_action_bone_layers && !g_action_bone_layers->contains(&layer)) {
       layers_for_each_channel_if(layer.children, wanted, f);
       continue;
     }
@@ -191,39 +193,39 @@ template<typename P, typename F> static void layers_for_each_channel_if(std::vec
   }
 }
 
-/* A channel with something a smart action added to take off (or marked as played into). */
-static constexpr auto smart_added = [](const auto &ch) {
-  return ch.smart_live || !(ch.smart == std::decay_t<decltype(ch.smart)>{});
+/* A channel with something an action bone action added to take off (or marked as played into). */
+static constexpr auto action_bones_added = [](const auto &ch) {
+  return ch.action_bone_live || !(ch.from_action_bones == std::decay_t<decltype(ch.from_action_bones)>{});
 };
 
-/* The layers with smart action data: something added to take off, or keys in an action. A smart bone being
+/* The layers with action bone action data: something added to take off, or keys in an action. An action bone being
  * turned has its actions worked out again every update, and a big rig's thousands of other layers have
  * nothing to do with them. */
-static void find_smart_layers(std::vector<Layer> &layers, std::unordered_set<const Layer *> &r_found)
+static void find_action_bone_layers(std::vector<Layer> &layers, std::unordered_set<const Layer *> &r_found)
 {
   for (Layer &layer : layers) {
     bool any = false;
     layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
-      any = any || smart_added(ch) || !ch.actions.empty();
+      any = any || action_bones_added(ch) || !ch.actions.empty();
     });
     if (any) {
       r_found.insert(&layer);
     }
-    find_smart_layers(layer.children, r_found);
+    find_action_bone_layers(layer.children, r_found);
   }
 }
 
-static void find_smart_layers(Document &doc, std::unordered_set<const Layer *> &r_found)
+static void find_action_bone_layers(Document &doc, std::unordered_set<const Layer *> &r_found)
 {
-  find_smart_layers(doc.layers, r_found);
+  find_action_bone_layers(doc.layers, r_found);
 }
 
-/* While a bone drag runs (animation_smart_drag_begin): its document and the layers found as it began. The
- * drag works smart actions out again itself every update, its layers staying where they are. */
+/* While a bone drag runs (animation_action_bone_drag_begin): its document and the layers found as it began. The
+ * drag works action bone actions out again itself every update, its layers staying where they are. */
 static const Document *g_drag_doc = nullptr;
 static std::unordered_set<const Layer *> g_drag_layers;
 
-/* Drawings a switch hides that come out the same on every frame (still): no keys, no action data, nothing smart
+/* Drawings a switch hides that come out the same on every frame (still): no keys, no action data, nothing action bone
  * actions added, no edit waiting, nothing in them worked out from elsewhere (bones, references, drivers, media,
  * switches). Found after a frame is evaluated, and kept while the edits the app can see coming (its stamp) and the
  * keys stay as they were: a frame change of the main loop's (playing) then neither records nor evaluates them,
@@ -253,7 +255,7 @@ static bool layer_still(const Layer &layer, const std::unordered_set<uint64_t> &
   }
   bool still = true;
   layer_for_each_channel<false>(const_cast<Layer &>(layer), [&](auto &ch, auto &value) {
-    still = still && !ch.animated() && ch.actions.empty() && !smart_added(ch) && ch.has_last && ch.last == value;
+    still = still && !ch.animated() && ch.actions.empty() && !action_bones_added(ch) && ch.has_last && ch.last == value;
   });
   if (!still) {
     return false;
@@ -301,8 +303,8 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
      * setup key if it gets keyed by hand now. */
     return false;
   }
-  /* Keys hold the value without what smart actions add. */
-  const T base = value - ch.smart;
+  /* Keys hold the value without what action bone actions add. */
+  const T base = value - ch.from_action_bones;
   if (frame == 0) {
     /* The setup frame: the frame-0 key, or the value itself while it isn't animated. */
     if (ch.animated()) {
@@ -311,7 +313,7 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
   }
   else if (auto_key && (ch.animated() || !ch.keyed_by_hand) && (!replace || ch.key_at(frame))) {
     if (!ch.animated()) {
-      ch.set_key(0, ch.last - ch.smart);
+      ch.set_key(0, ch.last - ch.from_action_bones);
     }
     ch.set_key(frame, base);
     ch.last = value;
@@ -327,7 +329,7 @@ template<typename T> static void freeze(Channel<T> &ch, const T &value, int fram
   if (ch.key_at(frame)) {
     return;
   }
-  const T base = value - ch.smart;
+  const T base = value - ch.from_action_bones;
   if (!ch.animated()) {
     ch.set_key(0, base);
   }
@@ -342,16 +344,16 @@ template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
     value = ch.evaluate(frame);
   }
   else {
-    /* Unkeyed, the plain value is the data: take off what smart actions added last time. */
-    value -= ch.smart;
+    /* Unkeyed, the plain value is the data: take off what action bone actions added last time. */
+    value -= ch.from_action_bones;
   }
-  ch.smart = T{};
-  ch.smart_live = false;
+  ch.from_action_bones = T{};
+  ch.action_bone_live = false;
   ch.last = value;
   ch.has_last = true;
 }
 
-static void apply_smart_actions(Document &doc, int frame);
+static void apply_action_bone_actions(Document &doc, int frame);
 
 /* --- The document's Simulation settings, animatable --------------------------------------------- */
 
@@ -626,12 +628,12 @@ void animation_record(Document &doc)
 }
 
 /* Every layer's channels evaluated on `frame`. Just after animation_record (`recorded`: every value is as the
- * edits left it, and recorded), a layer it would change nothing on is left as it is: no keys, nothing a smart
+ * edits left it, and recorded), a layer it would change nothing on is left as it is: no keys, nothing an action bone
  * action added, each channel's value its last recorded one. Most of a big rig's layers are like that, and
  * evaluating one turns its drawing's points into their changes from the setup pose and back. Bone layers always,
  * as evaluating also settles their bones. Otherwise every layer: evaluating also drops edits not recorded. */
 static void evaluate_layers(std::vector<Layer> &layers, int frame, bool recorded,
-                            std::unordered_set<const Layer *> *r_smart)
+                            std::unordered_set<const Layer *> *r_action_bones)
 {
   for (Layer &layer : layers) {
     if (recorded && still_skipped(layer)) {
@@ -639,20 +641,20 @@ static void evaluate_layers(std::vector<Layer> &layers, int frame, bool recorded
     }
     bool needed = !recorded || layer.is_bone_layer();
     bool actions = false;
-    if (!needed || r_smart) {
+    if (!needed || r_action_bones) {
       layer_for_each_channel<false>(layer, [&](auto &ch, auto &value) {
-        needed = needed || ch.animated() || smart_added(ch) || !ch.has_last || !(ch.last == value);
+        needed = needed || ch.animated() || action_bones_added(ch) || !ch.has_last || !(ch.last == value);
         actions = actions || !ch.actions.empty();
       });
     }
     if (needed) {
       layer_for_each_channel(layer, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
     }
-    /* What smart actions play into, found on the way (evaluating took off what they had added). */
-    if (r_smart && actions) {
-      r_smart->insert(&layer);
+    /* What action bone actions play into, found on the way (evaluating took off what they had added). */
+    if (r_action_bones && actions) {
+      r_action_bones->insert(&layer);
     }
-    evaluate_layers(layer.children, frame, recorded, r_smart);
+    evaluate_layers(layer.children, frame, recorded, r_action_bones);
   }
 }
 
@@ -665,25 +667,25 @@ void animation_evaluate(Document &doc, int frame)
 
 static void evaluate_frame(Document &doc, int frame, bool recorded)
 {
-  std::unordered_set<const Layer *> smart;
-  evaluate_layers(doc.layers, frame, recorded, recorded ? &smart : nullptr);
+  std::unordered_set<const Layer *> action_bone_layers;
+  evaluate_layers(doc.layers, frame, recorded, recorded ? &action_bone_layers : nullptr);
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   simulation_out(doc);
   layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
-  doc.smart_applied = false;
-  g_smart_layers = recorded ? &smart : nullptr;
-  apply_smart_actions(doc, frame);
-  g_smart_layers = nullptr;
-  /* Drivers on top of keys and smart actions, before references copy their originals. A driven
-   * smart bone plays its smart action, and drivers reading what that moves see it. */
+  doc.action_bones_applied = false;
+  g_action_bone_layers = recorded ? &action_bone_layers : nullptr;
+  apply_action_bone_actions(doc, frame);
+  g_action_bone_layers = nullptr;
+  /* Drivers on top of keys and action bone actions, before references copy their originals. A driven
+   * action bone plays its action bone action, and drivers reading what that moves see it. */
   if (drivers_evaluate(doc)) {
-    animation_refresh_smart(doc);
+    animation_refresh_action_bones(doc);
     drivers_evaluate(doc);
   }
   /* References show their originals as they now are. */
   references_build(doc);
-  /* Bone dynamics swing from the pose the keys and smart actions give (and set each bone layer's
+  /* Bone dynamics swing from the pose the keys and action bone actions give (and set each bone layer's
    * shown frame, for constraints' delays). */
   const int shown = doc.frame_current;
   doc.frame_current = frame;
@@ -699,7 +701,7 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
 {
   layer_for_each_channel(layer, [&](auto &ch, auto &value) {
     using T = std::decay_t<decltype(value)>;
-    value -= ch.smart;
+    value -= ch.from_action_bones;
     if (ch.animated() && !from_now) {
       value = ch.evaluate(0);
     }
@@ -707,8 +709,8 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
     if (!keep_actions) {
       ch.actions.clear();
     }
-    ch.smart = T{};
-    ch.smart_live = false;
+    ch.from_action_bones = T{};
+    ch.action_bone_live = false;
     ch.last = value;
     ch.has_last = true;
   });
@@ -726,22 +728,23 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
   }
 }
 
-void animation_strip_smart(Document &doc)
+void animation_strip_action_bones(Document &doc)
 {
-  layers_for_each_channel_if(doc.layers, smart_added, [&](auto &ch, auto &value) {
-    value -= ch.smart;
-    ch.last -= ch.smart;
-    ch.smart = {};
-    ch.smart_live = false;
+  layers_for_each_channel_if(doc.layers, action_bones_added, [&](auto &ch, auto &value) {
+    value -= ch.from_action_bones;
+    ch.last -= ch.from_action_bones;
+    ch.from_action_bones = {};
+    ch.action_bone_live = false;
   });
-  doc.smart_applied = false;
+  doc.action_bones_applied = false;
 }
 
 static uint64_t g_frame_changes = 0;
 
-/* What smart actions are worked out from, as one number: the frame, the timeline being edited, each layer as it is
- * (its revision: an edit the app can't follow touches every layer), and the smart bones' angles. */
-static uint64_t smart_inputs(const Document &doc)
+/* What action bone actions are worked out from, as one number: the frame, the timeline being edited, each layer as it
+ * is
+ * (its revision: an edit the app can't follow touches every layer), and the action bones' angles. */
+static uint64_t action_bone_inputs(const Document &doc)
 {
   uint64_t h = 0xcbf29ce484222325ull;
   const auto mix = [&](uint64_t v) { h = (h ^ v) * 0x100000001b3ull; };
@@ -749,14 +752,14 @@ static uint64_t smart_inputs(const Document &doc)
   mix(uint64_t(uint32_t(doc.frame_current)));
   mix(std::hash<std::string>()(doc.action));
   mix(doc.action_layer);
-  mix(doc.smart_applied ? 1 : 2);
+  mix(doc.action_bones_applied ? 1 : 2);
   const auto walk = [&](auto &&self, const std::vector<Layer> &layers) -> void {
     for (const Layer &layer : layers) {
       mix(layer.id);
       mix(layer.revision.value);
       if (layer.is_bone_layer()) {
         for (const std::string &name : layer.actions) {
-          if (const Bone *b = smart_action_bone(layer, name)) {
+          if (const Bone *b = action_bone_of(layer, name)) {
             mix(uint64_t(std::bit_cast<uint32_t>(b->angle)));
             mix(uint64_t(std::bit_cast<uint32_t>(b->turn)));
           }
@@ -772,7 +775,7 @@ static uint64_t smart_inputs(const Document &doc)
 void animation_sync(Document &doc)
 {
   if (doc.evaluated_frame == doc.frame_current) {
-    /* Same frame, but bones may have turned: smart actions and dynamics follow at once (and a
+    /* Same frame, but bones may have turned: action bone actions and dynamics follow at once (and a
      * setting whose keys just went shows its value). Not when nothing they are worked out from has
      * changed since: on a big rig that is most of what an idle frame costs. */
     simulation_in(doc);
@@ -781,14 +784,14 @@ void animation_sync(Document &doc)
       /* A bone drag works them out itself, every update. */
       refreshed = 0;
     }
-    else if (const uint64_t inputs = smart_inputs(doc); inputs != refreshed) {
-      animation_refresh_smart(doc);
-      refreshed = smart_inputs(doc);
+    else if (const uint64_t inputs = action_bone_inputs(doc); inputs != refreshed) {
+      animation_refresh_action_bones(doc);
+      refreshed = action_bone_inputs(doc);
     }
-    /* Drivers follow what they read at once (a bone turned on this frame), and smart actions what
+    /* Drivers follow what they read at once (a bone turned on this frame), and action bone actions what
      * they pose. */
     if (drivers_evaluate(doc)) {
-      animation_refresh_smart(doc);
+      animation_refresh_action_bones(doc);
       drivers_evaluate(doc);
     }
     /* Switches follow children added, removed or picked at once. */
@@ -903,7 +906,7 @@ bool animation_follow_playback(Document &start, Document &dragged, Document &now
    * one the drag began on. */
   start.frame_current = now.frame_current;
   start.evaluated_frame = now.evaluated_frame;
-  start.smart_applied = now.smart_applied;
+  start.action_bones_applied = now.action_bones_applied;
   return true;
 }
 
@@ -1029,7 +1032,7 @@ bool document_set_action(Document &doc, uint64_t owner_id, const std::string &na
   }
   const int frame = doc.frame_current;
   animation_record(doc);
-  /* Swap on the setup pose, where smart actions add nothing. */
+  /* Swap on the setup pose, where action bone actions add nothing. */
   animation_evaluate(doc, 0);
   /* Leave the action being edited (back to the mainline), then go into the new one. */
   if (!doc.action.empty()) {
@@ -1101,9 +1104,9 @@ std::string document_action_new(Document &doc, uint64_t owner_id, const std::str
   return unique;
 }
 
-/* --- Smart actions (Moho's smart bones) ------------------------------------------------------- */
+/* --- Action bone actions (Moho's smart bones) ------------------------------------------------------- */
 
-const Bone *smart_action_bone(const Layer &owner, const std::string &action)
+const Bone *action_bone_of(const Layer &owner, const std::string &action)
 {
   if (const Bone *bone = bone_find_by_name(owner, action)) {
     return bone;
@@ -1117,7 +1120,7 @@ const Bone *smart_action_bone(const Layer &owner, const std::string &action)
 /* A channel's timeline in action `name` with its setup value at frame 0, sampled at a fractional
  * frame (between the whole frames either side). */
 template<typename T>
-static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t, bool constant = false)
+static T action_bone_sample(const std::vector<Key<T>> &keys, const T &setup, float t, bool constant = false)
 {
   const ChannelKeysQuiet scratch;
   Channel<T> c;
@@ -1142,22 +1145,22 @@ static T smart_sample(const std::vector<Key<T>> &keys, const T &setup, float t, 
 
 /* The action frame where the driving bone's keyed angle reaches `angle`: from frame 0 (its setup
  * angle) along its keys; the last frame past the end; 0 on the other side of the setup. */
-static float smart_frame(const std::vector<Key<float>> &keys, float setup, float angle)
+static float action_bone_frame(const std::vector<Key<float>> &keys, float setup, float angle)
 {
   if (keys.empty()) {
     return 0.0f;
   }
   const float last = float(keys.back().frame);
   const float step = 0.25f;
-  float prev = smart_sample(keys, setup, 0.0f);
+  float prev = action_bone_sample(keys, setup, 0.0f);
   for (float s = step; s <= last + 1e-4f; s += step) {
-    const float now = smart_sample(keys, setup, s);
+    const float now = action_bone_sample(keys, setup, s);
     if ((prev - angle) * (now - angle) <= 0.0f && now != prev) {
       return s - step + step * (angle - prev) / (now - prev);
     }
     prev = now;
   }
-  const float end = smart_sample(keys, setup, last);
+  const float end = action_bone_sample(keys, setup, last);
   const bool same_side = (end - setup) * (angle - setup) > 0.0f;
   return same_side && std::abs(angle - setup) > std::abs(end - setup) ? last : 0.0f;
 }
@@ -1181,25 +1184,25 @@ std::string fix_action_broken(const Layer &owner, const FixAction &fix)
     if (std::find(owner.actions.begin(), owner.actions.end(), d) == owner.actions.end()) {
       return "\"" + d + "\" is gone";
     }
-    if (!smart_action_bone(owner, d)) {
-      return "\"" + d + "\" isn't a smart action now";
+    if (!action_bone_of(owner, d)) {
+      return "\"" + d + "\" isn't an action bone action now";
     }
   }
   return "";
 }
 
-/* Moho's 360 smart bone: an action whose driving bone's last key is exactly one whole turn from its setup
+/* Moho's 360 action bone: an action whose driving bone's last key is exactly one whole turn from its setup
  * angle (either way) goes round and round: the bone's turn counts modulo a whole turn, so turning on past
  * the end starts it over and turning back past the setup plays it from the end (a 360 head turn on a dial).
  * Whole turns are within a tenth of a degree. */
-static bool smart_keys_full_turn(const std::vector<Key<float>> &keys)
+static bool action_bone_keys_full_turn(const std::vector<Key<float>> &keys)
 {
   return !keys.empty() && std::fabs(std::fabs(keys.back().value) - 2.0f * PI) < 0.1f * PI / 180.0f;
 }
 
-static float smart_turn_wrapped(const std::vector<Key<float>> &keys, float turn)
+static float action_bone_turn_wrapped(const std::vector<Key<float>> &keys, float turn)
 {
-  if (!smart_keys_full_turn(keys)) {
+  if (!action_bone_keys_full_turn(keys)) {
     return turn;
   }
   const float full = 2.0f * PI;
@@ -1207,22 +1210,23 @@ static float smart_turn_wrapped(const std::vector<Key<float>> &keys, float turn)
   return keys.back().value > 0.0f ? turn - std::floor(turn / full) * full : turn - std::ceil(turn / full) * full;
 }
 
-bool smart_action_full_turn(const Layer &owner, const std::string &name)
+bool action_bone_action_full_turn(const Layer &owner, const std::string &name)
 {
-  const Bone *driver = smart_action_bone(owner, name);
+  const Bone *driver = action_bone_of(owner, name);
   if (!driver) {
     return false;
   }
   const auto it = driver->angle_keys.actions.find(name);
-  return it != driver->angle_keys.actions.end() && smart_keys_full_turn(it->second);
+  return it != driver->angle_keys.actions.end() && action_bone_keys_full_turn(it->second);
 }
 
-/* What each smart action's bone picks: its frame for the bone's turn in `angles` (owner's bones, in order). */
-static std::vector<std::pair<std::string, float>> smart_frames_for(const Layer &owner, const std::vector<float> &turns)
+/* What each action bone action's bone picks: its frame for the bone's turn in `angles` (owner's bones, in order). */
+static std::vector<std::pair<std::string, float>> action_bone_frames_for(const Layer &owner,
+                                                                         const std::vector<float> &turns)
 {
   std::vector<std::pair<std::string, float>> frames;
   for (const std::string &name : owner.actions) {
-    const Bone *driver = smart_action_bone(owner, name);
+    const Bone *driver = action_bone_of(owner, name);
     if (!driver) {
       continue;
     }
@@ -1232,7 +1236,8 @@ static std::vector<std::pair<std::string, float>> smart_frames_for(const Layer &
     }
     /* The driving bone's keys are its Angle (the turn from its setup pose), so its action starts at
      * 0 and the bone's turn now picks the frame; turning an unkeyed bone plays it at once. */
-    const float t = smart_frame(it->second, 0.0f, smart_turn_wrapped(it->second, turns[size_t(driver - owner.bones.data())]));
+    const float t = action_bone_frame(it->second, 0.0f,
+                                      action_bone_turn_wrapped(it->second, turns[size_t(driver - owner.bones.data())]));
     if (t > 0.0f) {
       frames.push_back({name, t});
     }
@@ -1240,19 +1245,20 @@ static std::vector<std::pair<std::string, float>> smart_frames_for(const Layer &
   return frames;
 }
 
-std::vector<std::pair<std::string, float>> smart_actions_playing(const Layer &owner)
+std::vector<std::pair<std::string, float>> action_bone_actions_playing(const Layer &owner)
 {
   std::vector<float> turns;
   for (const Bone &b : owner.bones) {
     turns.push_back(b.angle - b.setup_angle);
   }
-  return smart_frames_for(owner, turns);
+  return action_bone_frames_for(owner, turns);
 }
 
-/* Whether smart action `by` turns the bone of smart action `name`. Actions key every bone, most held still. */
-static bool smart_action_turns(const Layer &owner, const std::string &by, const std::string &name)
+/* Whether action bone action `by` turns the bone of action bone action `name`. Actions key every bone, most held
+ * still. */
+static bool action_bone_action_turns(const Layer &owner, const std::string &by, const std::string &name)
 {
-  const Bone *bone = smart_action_bone(owner, name);
+  const Bone *bone = action_bone_of(owner, name);
   if (!bone || by == name) {
     return false;
   }
@@ -1262,17 +1268,19 @@ static bool smart_action_turns(const Layer &owner, const std::string &by, const 
          });
 }
 
-/* Plays the smart actions `frames_now` says are playing, a smart action that turns another's bone (a dial made of two
+/* Plays the action bone actions `frames_now` says are playing, an action bone action that turns another's bone (a dial
+ * made of two
  * head turns) before that one, which then picks its frame by the turn it was given. Actions turning each other play as
  * they are, each once. Returns them all with their frames, as played. */
 template<typename Frames, typename Play>
-static std::vector<std::pair<std::string, float>> smart_actions_in_order(const Layer &owner, Frames &&frames_now, Play &&play)
+static std::vector<std::pair<std::string, float>> action_bone_actions_in_order(const Layer &owner, Frames &&frames_now,
+                                                                               Play &&play)
 {
   std::vector<std::pair<std::string, float>> played;
   bool nested = false;
   for (const std::string &a : owner.actions) {
     for (const std::string &b : owner.actions) {
-      nested = nested || smart_action_turns(owner, a, b);
+      nested = nested || action_bone_action_turns(owner, a, b);
     }
   }
   const auto done = [&](const std::string &name) {
@@ -1284,7 +1292,7 @@ static std::vector<std::pair<std::string, float>> smart_actions_in_order(const L
     std::vector<std::pair<std::string, float>> now;
     for (const auto &candidate : ready) {
       const bool waits = std::any_of(ready.begin(), ready.end(), [&](const auto &other) {
-        return smart_action_turns(owner, other.first, candidate.first);
+        return action_bone_action_turns(owner, other.first, candidate.first);
       });
       if (!waits) {
         now.push_back(candidate);
@@ -1301,9 +1309,9 @@ static std::vector<std::pair<std::string, float>> smart_actions_in_order(const L
   return played;
 }
 
-float smart_action_length(const Layer &owner, const std::string &name)
+float action_bone_action_length(const Layer &owner, const std::string &name)
 {
-  const Bone *driver = smart_action_bone(owner, name);
+  const Bone *driver = action_bone_of(owner, name);
   if (!driver) {
     return 0.0f;
   }
@@ -1314,11 +1322,11 @@ float smart_action_length(const Layer &owner, const std::string &name)
   return driver->angle_keys.keys.empty() ? 0.0f : float(driver->angle_keys.keys.back().frame);
 }
 
-std::vector<std::pair<std::string, float>> smart_actions_counting(const Layer &owner)
+std::vector<std::pair<std::string, float>> action_bone_actions_counting(const Layer &owner)
 {
   std::vector<std::pair<std::string, float>> counting;
-  for (const auto &[name, t] : smart_actions_playing(owner)) {
-    const float length = smart_action_length(owner, name);
+  for (const auto &[name, t] : action_bone_actions_playing(owner)) {
+    const float length = action_bone_action_length(owner, name);
     if (length <= 0.0f || t / length >= FIX_COUNTS_FROM - 1e-6f) {
       counting.push_back({name, t});
     }
@@ -1326,10 +1334,10 @@ std::vector<std::pair<std::string, float>> smart_actions_counting(const Layer &o
   return counting;
 }
 
-/* A smart action's length to measure shares by (1 for one with no keys yet, so nothing divides by 0). */
+/* An action bone action's length to measure shares by (1 for one with no keys yet, so nothing divides by 0). */
 static float share_length(const Layer &owner, const std::string &name)
 {
-  const float length = smart_action_length(owner, name);
+  const float length = action_bone_action_length(owner, name);
   return length > 1e-6f ? length : 1.0f;
 }
 
@@ -1360,7 +1368,7 @@ FixMix fix_action_mix(const Layer &owner, const FixAction &fix, const std::vecto
   if (n == 0 || fix.poses.empty()) {
     return mix;
   }
-  /* Where the drivers are now, as shares of their smart actions. */
+  /* Where the drivers are now, as shares of their action bone actions. */
   std::vector<float> now(n, 0.0f);
   for (size_t i = 0; i < n; i++) {
     for (const auto &[name, t] : playing) {
@@ -1377,7 +1385,7 @@ FixMix fix_action_mix(const Layer &owner, const FixAction &fix, const std::vecto
       furthest[i] = std::max(furthest[i], poses.back()[i]);
     }
   }
-  /* Past the furthest pose along a driver it holds, as a smart action holds its last frame. */
+  /* Past the furthest pose along a driver it holds, as an action bone action holds its last frame. */
   for (size_t i = 0; i < n; i++) {
     now[i] = std::min(now[i], furthest[i]);
   }
@@ -1524,14 +1532,14 @@ static bool fix_delta(const std::vector<Key<T>> &keys, const T &setup, const Fix
 
 bool action_adds(const Layer &owner, const std::string &name)
 {
-  return smart_action_bone(owner, name) || fix_action_find(owner, name);
+  return action_bone_of(owner, name) || fix_action_find(owner, name);
 }
 
-/* Each channel's setup, as apply_smart_actions takes it: its key on frame 0, or (unkeyed) its value less
- * what smart actions add now. */
+/* Each channel's setup, as apply_action_bone_actions takes it: its key on frame 0, or (unkeyed) its value less
+ * what action bone actions add now. */
 template<typename C, typename V> static auto channel_setup(const C &ch, const V &value)
 {
-  return ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.smart;
+  return ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.from_action_bones;
 }
 
 /* Adds a pose to `fix` (not being edited) with its drivers at frames `at`, on the frame after its last pose,
@@ -1600,11 +1608,11 @@ FixOpened document_fix_pose_here(Document &doc, uint64_t owner_id, const std::ve
     return opened;
   }
   if (doc.frame_current == 0) {
-    opened.error = "Frame 0 is the rest pose: turn the smart bones on another frame";
+    opened.error = "Frame 0 is the rest pose: turn the action bones on another frame";
     return opened;
   }
   animation_record(doc);
-  const std::vector<std::pair<std::string, float>> counting = smart_actions_counting(*owner);
+  const std::vector<std::pair<std::string, float>> counting = action_bone_actions_counting(*owner);
   std::vector<std::pair<std::string, float>> drivers;
   if (drivers_asked.empty()) {
     drivers = counting;
@@ -1613,7 +1621,8 @@ FixOpened document_fix_pose_here(Document &doc, uint64_t owner_id, const std::ve
     for (const std::string &name : drivers_asked) {
       const auto it = std::find_if(counting.begin(), counting.end(), [&](const auto &p) { return p.first == name; });
       if (it == counting.end()) {
-        opened.error = "\"" + name + "\" isn't turned (at least " + std::to_string(int(FIX_COUNTS_FROM * 100.0f + 0.5f)) + "% of its smart action)";
+        opened.error = "\"" + name + "\" isn't turned (at least " + std::to_string(int(FIX_COUNTS_FROM * 100.0f + 0.5f)) +
+                       "% of its action bone action)";
         return opened;
       }
       if (std::none_of(drivers.begin(), drivers.end(), [&](const auto &p) { return p.first == name; })) {
@@ -1622,7 +1631,7 @@ FixOpened document_fix_pose_here(Document &doc, uint64_t owner_id, const std::ve
     }
   }
   if (drivers.size() < 2) {
-    opened.error = "A fix needs two or more smart actions playing: turn their bones first";
+    opened.error = "A fix needs two or more action bones playing: turn them first";
     return opened;
   }
   std::sort(drivers.begin(), drivers.end());
@@ -1699,12 +1708,12 @@ bool bone_held_by_fix(const Document &doc, const Layer &armature, const Bone &bo
   }
   const FixAction *fix = fix_action_find(armature, doc.action);
   return fix && std::any_of(fix->drivers.begin(), fix->drivers.end(),
-                            [&](const std::string &d) { return smart_action_bone(armature, d) == &bone; });
+                            [&](const std::string &d) { return action_bone_of(armature, d) == &bone; });
 }
 
 void fix_actions_tidy(Document &doc)
 {
-  /* The smart bones of the fix being edited: never picked. */
+  /* The action bones of the fix being edited: never picked. */
   if (Layer *owner = doc.action.empty() ? nullptr : layer_find(doc, doc.action_layer)) {
     std::string let_go;
     int count = 0;
@@ -1866,7 +1875,7 @@ void armature_bone_renamed(Document &doc, uint64_t owner_id, const std::string &
   }
 }
 
-void smart_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bones)
+void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bones)
 {
   if (frame == 0 || owner.actions.empty() || bones.size() != owner.bones.size()) {
     return;
@@ -1877,35 +1886,36 @@ void smart_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bone
     for (size_t i = 0; i < bones.size(); i++) {
       turns.push_back(bones[i].angle - owner.bones[i].setup_angle);
     }
-    return smart_frames_for(owner, turns);
+    return action_bone_frames_for(owner, turns);
   };
   const auto setup_of = [](const auto &ch, const auto &value) { return channel_setup(ch, value); };
-  const std::vector<std::pair<std::string, float>> frames = smart_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
-    const Channel<float> *driver = &smart_action_bone(owner, name)->angle_keys;
+  const std::vector<std::pair<std::string, float>> frames =
+      action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
+    const Channel<float> *driver = &action_bone_of(owner, name)->angle_keys;
     for (size_t j = 0; j < bones.size(); j++) {
       const Bone &src = owner.bones[j];
       Bone &b = bones[j];
       if (const auto it = src.position_keys.actions.find(name); it != src.position_keys.actions.end()) {
         const float2 setup = setup_of(src.position_keys, src.transform);
-        b.position += rotate(smart_sample(it->second, setup, t) - setup, src.setup_angle);
+        b.position += rotate(action_bone_sample(it->second, setup, t) - setup, src.setup_angle);
       }
       if (&src.angle_keys != driver) {
         if (const auto it = src.angle_keys.actions.find(name); it != src.angle_keys.actions.end()) {
           const float setup = setup_of(src.angle_keys, src.turn);
-          b.angle += smart_sample(it->second, setup, t) - setup;
+          b.angle += action_bone_sample(it->second, setup, t) - setup;
         }
       }
       if (const auto it = src.scale_keys.actions.find(name); it != src.scale_keys.actions.end()) {
         const float2 setup = setup_of(src.scale_keys, src.scale);
-        b.scale += smart_sample(it->second, setup, t) - setup;
+        b.scale += action_bone_sample(it->second, setup, t) - setup;
       }
     }
   });
   std::set<const void *> driving;
   for (const auto &[name, t] : frames) {
-    driving.insert(&smart_action_bone(owner, name)->angle_keys);
+    driving.insert(&action_bone_of(owner, name)->angle_keys);
   }
-  /* The fixes after them, as their drivers play together (never turning a smart bone). */
+  /* The fixes after them, as their drivers play together (never turning an action bone). */
   for (const FixAction &fix : owner.fix_actions) {
     if (!fix_action_broken(owner, fix).empty()) {
       continue;
@@ -1941,11 +1951,11 @@ void smart_actions_add_at(const Layer &owner, int frame, std::vector<Bone> &bone
   }
 }
 
-static bool has_smart_actions(const Document &doc)
+static bool has_action_bone_actions(const Document &doc)
 {
   for (const Layer *layer : document_layers_flat(doc)) {
     for (const std::string &name : layer->actions) {
-      if (layer->is_bone_layer() && smart_action_bone(*layer, name)) {
+      if (layer->is_bone_layer() && action_bone_of(*layer, name)) {
         return true;
       }
     }
@@ -1953,43 +1963,43 @@ static bool has_smart_actions(const Document &doc)
   return false;
 }
 
-void animation_refresh_smart(Document &doc)
+void animation_refresh_action_bones(Document &doc)
 {
-  if (!doc.smart_applied && !has_smart_actions(doc)) {
+  if (!doc.action_bones_applied && !has_action_bone_actions(doc)) {
     return;
   }
   /* Take off what was added (from the value and its recorded value alike), then work it out again
-   * from the bones as they are now. Always, whatever `smart_applied` says: a drag puts the bones
-   * back as they were when it began every update, their smart offsets with them (a smart bone
+   * from the bones as they are now. Always, whatever `action_bones_applied` says: a drag puts the bones
+   * back as they were when it began every update, their action bone offsets with them (an action bone
    * turned past its action's end and then back the other way kept the end pose). Only the few layers
-   * with smart action data are looked at: found now, or kept by a bone drag. */
+   * with action bone action data are looked at: found now, or kept by a bone drag. */
   std::unordered_set<const Layer *> involved;
   if (g_drag_doc == &doc) {
-    g_smart_layers = &g_drag_layers;
+    g_action_bone_layers = &g_drag_layers;
   }
   else {
-    find_smart_layers(doc, involved);
-    g_smart_layers = &involved;
+    find_action_bone_layers(doc, involved);
+    g_action_bone_layers = &involved;
   }
-  layers_for_each_channel_if(doc.layers, smart_added, [&](auto &ch, auto &value) {
-    value -= ch.smart;
-    ch.last -= ch.smart;
-    ch.smart = {};
-    ch.smart_live = false;
+  layers_for_each_channel_if(doc.layers, action_bones_added, [&](auto &ch, auto &value) {
+    value -= ch.from_action_bones;
+    ch.last -= ch.from_action_bones;
+    ch.from_action_bones = {};
+    ch.action_bone_live = false;
   });
-  doc.smart_applied = false;
-  apply_smart_actions(doc, doc.frame_current);
-  g_smart_layers = nullptr;
+  doc.action_bones_applied = false;
+  apply_action_bone_actions(doc, doc.frame_current);
+  g_action_bone_layers = nullptr;
 }
 
-void animation_smart_drag_begin(Document &doc)
+void animation_action_bone_drag_begin(Document &doc)
 {
   g_drag_layers.clear();
-  find_smart_layers(doc, g_drag_layers);
+  find_action_bone_layers(doc, g_drag_layers);
   g_drag_doc = &doc;
 }
 
-std::unordered_set<uint64_t> animation_smart_drag_layers()
+std::unordered_set<uint64_t> animation_action_bone_drag_layers()
 {
   std::unordered_set<uint64_t> ids;
   for (const Layer *l : g_drag_layers) {
@@ -1998,13 +2008,13 @@ std::unordered_set<uint64_t> animation_smart_drag_layers()
   return ids;
 }
 
-void animation_smart_drag_end()
+void animation_action_bone_drag_end()
 {
   g_drag_doc = nullptr;
   g_drag_layers.clear();
 }
 
-static void apply_smart_actions_playing(Document &doc, int frame);
+static void apply_action_bone_actions_playing(Document &doc, int frame);
 
 static void switches_clear_rig(std::vector<Layer> &layers)
 {
@@ -2014,33 +2024,33 @@ static void switches_clear_rig(std::vector<Layer> &layers)
   }
 }
 
-/* Smart actions, then who wins on every switch (anim/switch.hh): a switch's pick is never added. */
-static void apply_smart_actions(Document &doc, int frame)
+/* Action bone actions, then who wins on every switch (anim/switch.hh): a switch's pick is never added. */
+static void apply_action_bone_actions(Document &doc, int frame)
 {
   switches_clear_rig(doc.layers);
-  /* Each action plays into the layers with smart action data only, found once for them all. */
+  /* Each action plays into the layers with action bone action data only, found once for them all. */
   std::unordered_set<const Layer *> involved;
-  const bool own = g_smart_layers == nullptr;
+  const bool own = g_action_bone_layers == nullptr;
   if (own) {
-    find_smart_layers(doc, involved);
-    g_smart_layers = &involved;
+    find_action_bone_layers(doc, involved);
+    g_action_bone_layers = &involved;
   }
-  apply_smart_actions_playing(doc, frame);
+  apply_action_bone_actions_playing(doc, frame);
   if (own) {
-    g_smart_layers = nullptr;
+    g_action_bone_layers = nullptr;
   }
   switches_resolve(doc, frame);
 }
 
-static void apply_smart_actions_playing(Document &doc, int frame)
+static void apply_action_bone_actions_playing(Document &doc, int frame)
 {
-  /* The setup frame (0) is the rig at rest: turning a smart bone there sets its rest angle and plays
+  /* The setup frame (0) is the rig at rest: turning an action bone there sets its rest angle and plays
    * nothing, as in Moho (and bones don't bend the drawing there either). `frame`: the one evaluated
    * (switching timelines evaluates frame 0 while another is shown). */
   if (frame == 0) {
     return;
   }
-  /* Editing a smart action, the others play under it, for it to key their bones. Editing a fix action
+  /* Editing an action bone action, the others play under it, for it to key their bones. Editing a fix action
    * shows what it fixes: its drivers held at the pose this frame of it is for (the pose on or before it),
    * the fixes for fewer of them as they play there, its own keys the correction on top. */
   const Layer *edited_owner = doc.action.empty() ? nullptr : layer_find(doc, doc.action_layer);
@@ -2052,13 +2062,13 @@ static void apply_smart_actions_playing(Document &doc, int frame)
     Layer &owner = *layer_find(doc, flat->id);
     const bool fixing = edited_fix && owner.id == doc.action_layer;
     /* Every driving bone's angle picks its frame first, before any action moves bones (but those that
-     * turn it: see smart_actions_in_order). */
+     * turn it: see action_bone_actions_in_order). */
     std::vector<std::pair<std::string, float>> frames;
     if (fixing) {
       if (const int held = fix_pose_held(*edited_fix, frame); held >= 0) {
         const FixPose &pose = edited_fix->poses[size_t(held)];
         for (size_t k = 0; k < edited_fix->drivers.size(); k++) {
-          if (smart_action_bone(owner, edited_fix->drivers[k]) && k < pose.at.size() && pose.at[k] > 0.0f) {
+          if (action_bone_of(owner, edited_fix->drivers[k]) && k < pose.at.size() && pose.at[k] > 0.0f) {
             frames.push_back({edited_fix->drivers[k], pose.at[k]});
           }
         }
@@ -2066,18 +2076,18 @@ static void apply_smart_actions_playing(Document &doc, int frame)
     }
     const auto playing_now = [&] {
       std::vector<std::pair<std::string, float>> now;
-      for (const auto &[name, t] : smart_actions_playing(owner)) {
+      for (const auto &[name, t] : action_bone_actions_playing(owner)) {
         if (!(name == doc.action && owner.id == doc.action_layer)) {
           now.push_back({name, t});
         }
       }
       return now;
     };
-    /* The smart bones' own angles: they pick the frames, so nothing else moves them (shown turned only
+    /* The action bones' own angles: they pick the frames, so nothing else moves them (shown turned only
      * while a fix is edited, its drivers held). */
     std::set<const void *> driving;
     for (const std::string &name : owner.actions) {
-      if (const Bone *b = smart_action_bone(owner, name)) {
+      if (const Bone *b = action_bone_of(owner, name)) {
         driving.insert(&b->angle_keys);
       }
     }
@@ -2116,7 +2126,7 @@ static void apply_smart_actions_playing(Document &doc, int frame)
             if (passed && passed->value > SWITCH_RIG + 0.5f) {
               sw->second->switch_rig = passed->value;
               sw->second->switch_rig_set = true;
-              ch.smart_live = true;
+              ch.action_bone_live = true;
             }
           }
           return;
@@ -2127,14 +2137,15 @@ static void apply_smart_actions_playing(Document &doc, int frame)
         }
         /* Unkeyed, the setup is the value as last recorded, not as it is now: an edit not yet
          * recorded (a bone being dragged) stays on top instead of being taken into the offset. */
-        const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.smart;
-        const auto delta = smart_sample(it->second, setup, t, ch.constant) - setup;
+        const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.from_action_bones;
+        const auto delta = action_bone_sample(it->second, setup, t, ch.constant) - setup;
         /* The value and what it was last recorded as both move, so an edit stays an edit. */
         value += delta;
         ch.last += delta;
-        ch.smart += delta;
+        ch.from_action_bones += delta;
         /* Pink only where the action moves it somewhere: an action keys every bone, most held still. */
-        ch.smart_live = ch.smart_live || std::any_of(it->second.begin(), it->second.end(), [&](const auto &k) {
+        ch.action_bone_live = ch.action_bone_live ||
+                              std::any_of(it->second.begin(), it->second.end(), [&](const auto &k) {
           const auto off = k.value - setup;
           if constexpr (std::is_same_v<std::decay_t<decltype(off)>, float>) {
             return std::abs(off) > 1e-6f;
@@ -2143,7 +2154,7 @@ static void apply_smart_actions_playing(Document &doc, int frame)
             return std::abs(off.x) > 1e-6f || std::abs(off.y) > 1e-6f;
           }
         });
-        doc.smart_applied = true;
+        doc.action_bones_applied = true;
       });
     };
     if (fixing) {
@@ -2152,12 +2163,12 @@ static void apply_smart_actions_playing(Document &doc, int frame)
       }
     }
     else {
-      /* A smart action never moves its own bone (the bone picks its frame), unless held for a fix. */
-      frames = smart_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
-        play(name, t, static_cast<const void *>(&smart_action_bone(owner, name)->angle_keys), false);
+      /* An action bone action never moves its own bone (the bone picks its frame), unless held for a fix. */
+      frames = action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
+        play(name, t, static_cast<const void *>(&action_bone_of(owner, name)->angle_keys), false);
       });
     }
-    /* Then the fixes, after every smart action, as their drivers play together. While one is edited, the
+    /* Then the fixes, after every action bone action, as their drivers play together. While one is edited, the
      * fixes for some of its drivers only (a pair inside a three) play under it: it is keyed on top of them. */
     const auto inside_edited = [&](const FixAction &fix) {
       if (!fixing || fix.drivers.size() >= edited_fix->drivers.size()) {
@@ -2185,16 +2196,16 @@ static void apply_smart_actions_playing(Document &doc, int frame)
         if (it == ch.actions.end()) {
           return;
         }
-        const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.smart;
+        const auto setup = ch.animated() ? ch.evaluate(0) : (ch.has_last ? ch.last : value) - ch.from_action_bones;
         auto delta = setup - setup;
         if (!fix_delta(it->second, setup, fix, mix, ch.constant, delta)) {
           return;
         }
         value += delta;
         ch.last += delta;
-        ch.smart += delta;
-        ch.smart_live = ch.smart_live || !(delta == setup - setup);
-        doc.smart_applied = true;
+        ch.from_action_bones += delta;
+        ch.action_bone_live = ch.action_bone_live || !(delta == setup - setup);
+        doc.action_bones_applied = true;
       });
     }
   }
@@ -2488,10 +2499,10 @@ int layer_insert_keys(Layer &layer, int frame)
     if (ch.keyed_by_hand && !ch.animated()) {
       return;
     }
-    /* Keys hold the value without what smart actions add. */
-    const auto base = value - ch.smart;
+    /* Keys hold the value without what action bone actions add. */
+    const auto base = value - ch.from_action_bones;
     if (!ch.animated() && frame != 0) {
-      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+      ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
     ch.set_key(frame, base);
     ch.last = value;
@@ -2509,9 +2520,9 @@ int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame)
     if (ch.keyed_by_hand && !ch.animated()) {
       return;
     }
-    const auto base = value - ch.smart;
+    const auto base = value - ch.from_action_bones;
     if (!ch.animated() && frame != 0) {
-      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+      ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
     ch.set_key(frame, base);
     ch.last = value;
@@ -2534,7 +2545,7 @@ int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame)
 template<typename T> static void drop_lone_setup_key(Channel<T> &ch, T &value)
 {
   if (ch.keys.size() == 1 && ch.keys.front().frame == 0) {
-    value = ch.keys.front().value + ch.smart;
+    value = ch.keys.front().value + ch.from_action_bones;
     ch.last = value;
     ch.keys.clear();
   }
@@ -2582,10 +2593,10 @@ int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int f
       count += delete_key(ch, value, frame) ? 1 : 0;
       return;
     }
-    const auto base = value - ch.smart;
+    const auto base = value - ch.from_action_bones;
     if (!ch.animated() && frame != 0) {
       /* The setup key takes the value from before an edit not yet keyed. */
-      ch.set_key(0, ch.has_last ? ch.last - ch.smart : base);
+      ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
     ch.set_key(frame, base);
     ch.last = value;
@@ -2609,12 +2620,14 @@ int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int f
   return keyed ? -count : count;
 }
 
-int layer_smart_state(Layer &layer, const std::vector<std::string> &paths)
+int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths)
 {
   for (const std::string &path : paths) {
     ChannelRef ref;
-    if (layer_channel(layer, path, &ref) && (ref.scalar ? ref.scalar->smart_live : ref.vector->smart_live)) {
-      return KEY_STATE_SMART;
+    if (layer_channel(layer, path, &ref) &&
+        (ref.scalar ? ref.scalar->action_bone_live : ref.vector->action_bone_live))
+    {
+      return KEY_STATE_ACTION_BONE;
     }
   }
   return 0;
@@ -3282,7 +3295,7 @@ int keys_ignore_bones(Document &doc, const Document &source, const std::vector<s
         }
         const MeshPoint &shown = after->drawing.points[i];
         const float2 pos = t.apply(before->drawing.points[i].pos);
-        key->value = pos - shown.setup_pos - shown.pos_keys.smart;
+        key->value = pos - shown.setup_pos - shown.pos_keys.from_action_bones;
         changed++;
       }
       for (size_t c = 0; c < layer->drawing.curves.size(); c++) {
@@ -3310,7 +3323,7 @@ int keys_ignore_bones(Document &doc, const Document &source, const std::vector<s
             const float2 handle = t.apply_vector(in ? curve_before.points[j].handle_in : curve_before.points[j].handle_out);
             /* A handle's key is its turn and stretch from the setup (data/vector.hh). */
             key->value = handle_change(in ? shown.setup_in : shown.setup_out, handle, key->value.x) -
-                         (in ? shown.handle_in_keys.smart : shown.handle_out_keys.smart);
+                         (in ? shown.handle_in_keys.from_action_bones : shown.handle_out_keys.from_action_bones);
             changed++;
           }
         }
@@ -3377,7 +3390,7 @@ int keys_keep_place(Document &doc, const Document &before, const std::vector<uin
       const float2 at = c.to_shown.apply(shown.pos) + shift;
       const Transform2D back = c.to_shown.inverted();
       Key<float2> *key = c.layer->drawing.points[c.point].pos_keys.key_at(to);
-      key->value = back.apply(at) - shown.setup_pos - shown.pos_keys.smart;
+      key->value = back.apply(at) - shown.setup_pos - shown.pos_keys.from_action_bones;
       changed++;
     }
   }

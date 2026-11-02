@@ -51,9 +51,9 @@ template<typename T> static T setup_value(const Channel<T> &ch, const T &value, 
   if (ch.animated()) {
     return ch.evaluate(0);
   }
-  /* Unkeyed, the plain value is the setup, less what smart actions add to it now (they move the
+  /* Unkeyed, the plain value is the setup, less what action bone actions add to it now (they move the
    * bone away from its setup, so its points follow; left in, the setup would move with it). */
-  return (!setup_frame && ch.has_last ? ch.last : value) - ch.smart;
+  return (!setup_frame && ch.has_last ? ch.last : value) - ch.from_action_bones;
 }
 
 float2 bone_setup_position(const Bone &bone)
@@ -96,26 +96,27 @@ void bone_values_from_changes(Bone &bone)
 
 void bone_take_setup(Bone &bone)
 {
-  /* What smart actions add is a Transform (along the rest axes): off before the setup moves. */
-  bone.setup_position = bone.position - rotate(bone.position_keys.smart, bone.setup_angle);
-  bone.setup_angle = bone.angle - bone.angle_keys.smart;
+  /* What action bone actions add is a Transform (along the rest axes): off before the setup moves. */
+  bone.setup_position = bone.position - rotate(bone.position_keys.from_action_bones, bone.setup_angle);
+  bone.setup_angle = bone.angle - bone.angle_keys.from_action_bones;
   bone_changes_from_values(bone);
 }
 
-float2 bone_position_at(const Bone &bone, int frame, bool without_smart)
+float2 bone_position_at(const Bone &bone, int frame, bool without_action_bones)
 {
   if (bone.position_keys.animated()) {
     return bone_position_from_transform(bone, bone.position_keys.evaluate(std::max(0, frame)));
   }
-  return without_smart ? bone.position - rotate(bone.position_keys.smart, bone.setup_angle) : bone.position;
+  return without_action_bones ? bone.position - rotate(bone.position_keys.from_action_bones, bone.setup_angle)
+                              : bone.position;
 }
 
-float bone_angle_at(const Bone &bone, int frame, bool without_smart)
+float bone_angle_at(const Bone &bone, int frame, bool without_action_bones)
 {
   if (bone.angle_keys.animated()) {
     return bone.setup_angle + bone.angle_keys.evaluate(std::max(0, frame));
   }
-  return without_smart ? bone.angle - bone.angle_keys.smart : bone.angle;
+  return without_action_bones ? bone.angle - bone.angle_keys.from_action_bones : bone.angle;
 }
 
 /* The bone's frame lays it along x: its Y scale (length) goes on x, its X (thickness) on y. */
@@ -1147,20 +1148,20 @@ static void seat_connected_children(Layer &armature)
 bool armature_clear_pose(Layer &armature, bool position, bool angle, bool scale)
 {
   bool any = false;
-  /* Back to the setup pose plus what smart actions add now, so a bone a smart bone moves goes back to
-   * where that puts it (a smart bone's own turn has no smart part: it goes back to its rest). */
+  /* Back to the setup pose plus what action bone actions add now, so a bone an action bone moves goes back to
+   * where that puts it (an action bone's own turn has no action bone part: it goes back to its rest). */
   for (Bone &b : armature.bones) {
     if (!bone_picked(b)) {
       continue;
     }
     if (position) {
-      b.position = bone_position_from_transform(b, b.position_keys.smart);
+      b.position = bone_position_from_transform(b, b.position_keys.from_action_bones);
     }
     if (angle) {
-      b.angle = b.setup_angle + b.angle_keys.smart;
+      b.angle = b.setup_angle + b.angle_keys.from_action_bones;
     }
     if (scale) {
-      b.scale = setup_value(b.scale_keys, b.scale, false) + b.scale_keys.smart;
+      b.scale = setup_value(b.scale_keys, b.scale, false) + b.scale_keys.from_action_bones;
     }
     any = true;
   }

@@ -133,10 +133,10 @@ struct Hash {
       value(k.elastic_period);
     }
     if (!ch.animated()) {
-      const T base = plain - ch.smart;
+      const T base = plain - ch.from_action_bones;
       value(base);
     }
-    /* Its smart actions' keys: they move the bones on every frame the smart bone turns. */
+    /* Its action bone actions' keys: they move the bones on every frame the action bone turns. */
     for (const auto &[name, keys] : ch.actions) {
       bytes(name.data(), name.size());
       value(keys.size());
@@ -230,7 +230,7 @@ uint64_t signature(const Document &doc, const Layer &armature)
 
 template<typename T> T at_frame(const Channel<T> &ch, const T &plain, int frame)
 {
-  return ch.animated() ? ch.evaluate(frame) : plain - ch.smart;
+  return ch.animated() ? ch.evaluate(frame) : plain - ch.from_action_bones;
 }
 
 /* The bone layer as its keys have it on `frame` (`live`: the frame shown, from the bones as they
@@ -268,9 +268,9 @@ Layer keyed_layer(const Layer &armature, int frame, bool live)
       }
     }
   }
-  /* And what smart actions add there, as the frame shown has it (a head turned by a smart bone turns
+  /* And what action bone actions add there, as the frame shown has it (a head turned by an action bone turns
    * the hair hanging from it on every frame it is simulated through). */
-  smart_actions_add_at(armature, frame, at.bones);
+  action_bone_actions_add_at(armature, frame, at.bones);
   return at;
 }
 
@@ -1068,7 +1068,7 @@ int dynamics_bake(Document &doc, Layer *only)
         b.angle = bone_angle_at(b, f, true);
         b.scale = at_frame(b.scale_keys, b.scale, f);
       }
-      smart_actions_add_at(armature, f, at.bones);
+      action_bone_actions_add_at(armature, f, at.bones);
       const std::vector<BonePose> poses = armature_pose(at, false);
       for (size_t i = 0; i < at.bones.size(); i++) {
         const Bone &b = at.bones[i];
@@ -1092,7 +1092,7 @@ int dynamics_bake(Document &doc, Layer *only)
     }
     const auto key = [&](auto &ch, const auto &value, const auto &plain) {
       if (!ch.animated()) {
-        ch.set_key(0, plain - ch.smart);
+        ch.set_key(0, plain - ch.from_action_bones);
       }
       ch.set_key(k.frame, value);
       count++;

@@ -12,12 +12,16 @@ def _arg_string(value):
     return str(value)
 
 
+# Arguments from before smart bones became action bones: old scripts keep working.
+_OLD_ARGUMENTS = {"smart": "action_bone", "smart_keys": "action_bone_keys", "smart_actions": "action_bone_actions"}
+
+
 class _Operator:
     def __init__(self, idname):
         self.idname = idname
 
     def __call__(self, **kwargs):
-        args = {name: _arg_string(value) for name, value in kwargs.items()}
+        args = {_OLD_ARGUMENTS.get(name, name): _arg_string(value) for name, value in kwargs.items()}
         return {_oanim.ops_call(self.idname, args)}
 
     def poll(self):

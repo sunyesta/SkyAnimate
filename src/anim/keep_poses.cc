@@ -46,12 +46,14 @@ SetupSnapshot setup_snapshot(const Document &doc, const std::vector<uint64_t> &l
 }
 
 /* `f(key value)` for every key on another frame than the setup's, in the mainline and every action
- * but the smart ones (`smart`): a smart action's keys are added on top of the pose as its bone turns,
+ * but the action bone ones (`action_bone_actions`): an action bone action's keys are added on top of the pose as its
+ * bone turns,
  * an offset that stays the same whatever the setup is, so taking the move off them as well would take
- * it off twice where it plays. `keep_smart`: the smart action whose own keys these are taken in too (a
- * smart bone's angle in its action, which picks the frame from its turn). */
+ * it off twice where it plays. `keep_action_bones`: the action bone action whose own keys these are taken in too (a
+ * action bone's angle in its action, which picks the frame from its turn). */
 template<typename T, typename F>
-static int each_posed_key(Channel<T> &ch, const std::set<std::string> &smart, F &&f, const std::string &keep_smart = {})
+static int each_posed_key(Channel<T> &ch, const std::set<std::string> &action_bone_actions, F &&f,
+                          const std::string &keep_action_bones = {})
 {
   int n = 0;
   const auto run = [&](std::vector<Key<T>> &keys) {
@@ -64,7 +66,7 @@ static int each_posed_key(Channel<T> &ch, const std::set<std::string> &smart, F 
   };
   run(ch.keys);
   for (auto &[name, keys] : ch.actions) {
-    if (!smart.count(name) || name == keep_smart) {
+    if (!action_bone_actions.count(name) || name == keep_action_bones) {
       run(keys);
     }
   }
@@ -74,11 +76,11 @@ static int each_posed_key(Channel<T> &ch, const std::set<std::string> &smart, F 
 int keep_poses(Document &doc, const SetupSnapshot &before)
 {
   int changed = 0;
-  std::set<std::string> smart;
+  std::set<std::string> action_bone_actions;
   for (const Layer *l : document_layers_flat(doc)) {
     for (const std::string &name : l->actions) {
       if (l->is_bone_layer() && action_adds(*l, name)) {
-        smart.insert(name);
+        action_bone_actions.insert(name);
       }
     }
   }
@@ -95,7 +97,7 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
       }
       const float2 moved = p.setup_pos - it->second;
       if (length(moved) > 1e-9f) {
-        changed += each_posed_key(p.pos_keys, smart, [&](float2 &v) { v -= moved; });
+        changed += each_posed_key(p.pos_keys, action_bone_actions, [&](float2 &v) { v -= moved; });
       }
     }
     /* Handles: a key holds the turn and the length added to the setup handle; the handle it made is
@@ -111,7 +113,7 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
           if (length(now - was) <= 1e-9f) {
             continue;
           }
-          changed += each_posed_key(in ? cp.handle_in_keys : cp.handle_out_keys, smart, [&](float2 &v) {
+          changed += each_posed_key(in ? cp.handle_in_keys : cp.handle_out_keys, action_bone_actions, [&](float2 &v) {
             v = handle_change(now, handle_from_change(was, v), v.x);
           });
         }
@@ -125,25 +127,26 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
       }
       const SetupSnapshot::BoneSetup &was = it->second;
       const bool moved = length(b.setup_position - was.position) > 1e-9f || std::fabs(b.setup_angle - was.angle) > 1e-9f;
-      /* A smart bone's angle keys in its own action say which turn plays which frame: they keep
+      /* An action bone's angle keys in its own action say which turn plays which frame: they keep
        * the turn's meaning as its mainline keys do. */
-      std::string own_smart;
-      for (const std::string &name : smart) {
-        if (smart_action_bone(*layer, name) == &b) {
-          own_smart = name;
+      std::string own_action_bones;
+      for (const std::string &name : action_bone_actions) {
+        if (action_bone_of(*layer, name) == &b) {
+          own_action_bones = name;
         }
       }
       if (moved) {
-        changed += each_posed_key(b.position_keys, smart, [&](float2 &t) {
+        changed += each_posed_key(b.position_keys, action_bone_actions, [&](float2 &t) {
           const float2 where = was.position + rotate(t, was.angle);
           t = rotate(where - b.setup_position, -b.setup_angle);
         });
-        changed += each_posed_key(b.angle_keys, smart, [&](float &u) { u += was.angle - b.setup_angle; }, own_smart);
+        changed += each_posed_key(b.angle_keys, action_bone_actions, [&](float &u) { u += was.angle - b.setup_angle; },
+                                  own_action_bones);
       }
       /* Lengthened on the setup frame: its keyed scale along it shrinks to keep its posed length. */
       if (std::fabs(b.length - was.length) > 1e-9f && b.length > 1e-9f) {
         const float k = was.length / b.length;
-        changed += each_posed_key(b.scale_keys, smart, [&](float2 &v) { v.y *= k; });
+        changed += each_posed_key(b.scale_keys, action_bone_actions, [&](float2 &v) { v.y *= k; });
       }
     }
   }
