@@ -208,6 +208,16 @@ static void symmetrize_bones(Layer &armature)
       const float lo = c.min_angle;
       c.min_angle = -c.max_angle;
       c.max_angle = -lo;
+      /* A Follow Point's place on its deform goes across with the drawings, from the setup. */
+      if (c.type == BoneConstraintType::FollowPoint) {
+        c.follow_point.x = -c.follow_point.x;
+        c.follow_point2.x = -c.follow_point2.x;
+        c.follow_rest.x = -c.follow_rest.x;
+        c.follow_rest2.x = -c.follow_rest2.x;
+        c.follow_shift = c.follow_shift2 = {};
+        c.follow_shift_keys = {};
+        c.follow_shift2_keys = {};
+      }
     }
   }
   for (Bone &b : armature.bones) {

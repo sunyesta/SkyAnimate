@@ -27,6 +27,9 @@ void follow_points_update(Document &doc);
 
 /* The deform `c` names, null when it's gone; `r_owner` the layer it's on. */
 Modifier *follow_point_modifier(Document &doc, const BoneConstraint &c, Layer **r_owner);
+/* The deform named `modifier` on the layer `layer` names, by its id or (a group and a drawing can share one) by a name:
+ * the first layer of that name with such a deform. Null when there's none. */
+Modifier *follow_point_find(Document &doc, const std::string &layer, const std::string &modifier, Layer **r_owner);
 /* Aims `c` at `m`, a deform on `owner` (null for neither), its point starting at the bone's head. */
 void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstraint &c, Layer *owner, Modifier *m);
 /* Puts `c`'s point (`second`: its second point) at `point`, in `owner`'s space. */
@@ -35,6 +38,9 @@ void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c
 /* What `c`'s point (`second`: its second point) has to be shifted by to show at `to` (document space) on this frame,
  * through the bend. */
 float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, bool second, float2 to);
+/* `c` on a bone just symmetrized: its points across the bone layer's vertical axis, and on the other side's deform when
+ * the layer it's on has a partner (Brow_L, Brow_R) with a deform of that name. */
+void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c);
 /* Turns `c`'s second point on or off. On for the first time it starts along the bone, far enough off for a steady
  * angle. */
 void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on);

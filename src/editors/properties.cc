@@ -2206,7 +2206,7 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
           const std::string label = l->name + ": " + m.name;
           ImGui::PushID(&m);
           if (ImGui::Selectable(label.c_str())) {
-            operator_call(C, "layer.follow_deform", {{"deform_layer", l->name}, {"modifier", m.name}});
+            operator_call(C, "layer.follow_deform", {{"deform_layer", std::to_string(l->id)}, {"modifier", m.name}});
           }
           ImGui::PopID();
         }

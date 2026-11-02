@@ -2643,18 +2643,22 @@ DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Mod
   return deform_shape_build(doc, layer, m, false, false, d) ? d.kind : DeformKind::None;
 }
 
-float2 vector_deform_point(const Document &doc, const Layer &layer, const Modifier &m, float2 at)
+std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, const Layer &layer, const Modifier &m)
 {
   if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {
-    return at;
+    return nullptr;
   }
   uint64_t build = 0;
-  const std::shared_ptr<const DeformShape> built = deform_shape_kept(doc, layer, m, false, build);
-  if (!built) {
+  return deform_shape_kept(doc, layer, m, false, build);
+}
+
+float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at)
+{
+  if (!shape) {
     return at;
   }
   std::vector<float> scratch;
-  return at + (deform_map(*built, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
+  return at + (deform_map(*shape, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
 }
 
 bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m)

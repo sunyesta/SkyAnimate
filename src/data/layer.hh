@@ -847,7 +847,7 @@ struct Modifier {
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;
-  /* Its id on the layer, for a Follow Point constraint to name it by (0 until one does). */
+  /* Its id, for a Follow Point constraint to name it by (0 until one does): never used twice. */
   uint64_t id = 0;
   /* Not saved, set on the copy a group's deform runs as on a drawing inside it (anim/deform.cc): the group, measured
    * from as it stood at setup, so what moves the group itself moves what is in it on top of the deform. */

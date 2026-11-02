@@ -235,6 +235,8 @@ add_test(NAME export_pdf
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_export_pdf.py)
 add_test(NAME follow_point
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point.py)
+add_test(NAME follow_point_stress
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point_stress.py)
 add_test(NAME annotations
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_annotations.py)
 add_test(NAME bone_move_options

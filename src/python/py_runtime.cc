@@ -2639,18 +2639,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         Modifier *deform = nullptr;
         if (!value.is_none()) {
           const auto names = value.cast<std::pair<std::string, std::string>>();
-          for (const Layer *l : document_layers_flat(doc)) {
-            if (l->name == names.first) {
-              owner = layer_find(doc, l->id);
-              break;
-            }
-          }
-          for (size_t k = 0; owner && k < owner->modifiers.size(); k++) {
-            Modifier &candidate = owner->modifiers[k];
-            if (candidate.name == names.second && modifier_is_deform(candidate.type)) {
-              deform = &candidate;
-            }
-          }
+          deform = follow_point_find(doc, names.first, names.second, &owner);
           if (!deform) {
             throw py::key_error("no deform '" + names.second + "' on a layer named '" + names.first + "'");
           }

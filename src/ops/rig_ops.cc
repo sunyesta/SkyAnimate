@@ -793,7 +793,8 @@ void rig_operators_register()
 
   rig_operator("layer.follow_deform", "Follow Deform",
                "Make the active layer stay on a deform without bending: a new bone at its middle, with a Follow Point on "
-               "modifier= of layer deform_layer=, and the layer on that bone. The layer has to be inside a bone layer",
+               "modifier= of layer deform_layer= (its id, or its name), and the layer on that bone. The layer has to be "
+               "inside a bone layer",
                [](Context &C) {
                  const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
                  return l && layer_armature(*C.document, l->id) != nullptr;
@@ -806,18 +807,7 @@ void rig_operators_register()
                  Layer &layer = *document_active_layer(doc);
                  const std::string owner_name = op_arg(C, "deform_layer"), modifier_name = op_arg(C, "modifier");
                  Layer *owner = nullptr;
-                 for (const Layer *l : document_layers_flat(doc)) {
-                   if (l->name == owner_name) {
-                     owner = layer_find(doc, l->id);
-                     break;
-                   }
-                 }
-                 Modifier *deform = nullptr;
-                 for (size_t i = 0; owner && i < owner->modifiers.size(); i++) {
-                   if (owner->modifiers[i].name == modifier_name && modifier_is_deform(owner->modifiers[i].type)) {
-                     deform = &owner->modifiers[i];
-                   }
-                 }
+                 Modifier *deform = follow_point_find(doc, owner_name, modifier_name, &owner);
                  if (!deform) {
                    report(ReportType::Warning, "No deform \"" + modifier_name + "\" on a layer named \"" + owner_name + "\"");
                    return OpStatus::Cancelled;
@@ -3104,6 +3094,11 @@ void rig_operators_register()
                      else {
                        copy.id = armature.next_bone_id++;
                        armature.bones.push_back(copy);
+                       for (BoneConstraint &c : armature.bones.back().constraints) {
+                         if (c.type == BoneConstraintType::FollowPoint) {
+                           follow_point_mirror(*C.document, armature, c);
+                         }
+                       }
                      }
                      made++;
                      it = sources.erase(it);
