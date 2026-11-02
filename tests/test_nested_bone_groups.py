@@ -344,4 +344,75 @@ assert ops.armature.bone_delete() == {'FINISHED'}
 assert [b["name"] for b in sub.bones] == [] and len(top.bones) == kept, "the nested bone, none of its own"
 layers.active = top
 
+# --- A drawing Editable in Bone Group, from the bone groups around its own --------------------------------------------------
+doc.frame_current = 0
+
+
+def bone_group(name, inside=None):
+    assert ops.layer.new_bone() == {'FINISHED'}
+    rig = layers.active
+    rig.name = name
+    if inside:
+        assert ops.layer.move_to_group(group=str(inside.id)) == {'FINISHED'}
+    rig = next(l for l in layers.all() if l.id == rig.id)
+    layers.active = rig
+    ops.armature.bone_add(name=name + "_bone", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+    return rig
+
+
+def art(name, rig, editable=True):
+    ops.layer.new()
+    layer = layers.active
+    layer.name = name
+    layer.add_curve([(0.0, 2.0), (1.0, 2.0)])
+    assert ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
+    layer = next(l for l in layers.all() if l.id == layer.id)
+    layer.edit_with_bones = editable
+    return layer
+
+
+def picked(layer):
+    return [p[2] for p in next(l for l in layers.all() if l.id == layer.id).points]
+
+
+far = bone_group("Far")
+near = bone_group("Near", far)
+deep = bone_group("Deep", near)
+far_art = art("FarArt", far)
+near_art = art("NearArt", near)
+near_off = art("NearOff", near, False)
+deep_art = art("DeepArt", deep)
+
+layers.active = far
+assert oanim.ops.mesh.select_all(action="SELECT") == {'FINISHED'}
+assert all(picked(far_art)) and all(picked(near_art)) and all(picked(deep_art)), "from the group around it, however deep"
+assert not any(picked(near_off)), "not one that isn't Editable in Bone Group"
+assert oanim.ops.mesh.select_none() == {'FINISHED'}
+# G moves them from there.
+near_art.select_points([0])
+was = near_art.points[0]
+assert oanim.ops.mesh.translate(move_x="0.25", move_y="0") == {'FINISHED'}
+assert abs(near_art.points[0][0] - was[0] - 0.25) < 1e-5, near_art.points[0]
+assert oanim.ops.mesh.select_none() == {'FINISHED'}
+
+# From inside, it doesn't reach out: the bone group's own drawings and those inside it.
+layers.active = near
+assert oanim.ops.mesh.select_all(action="SELECT") == {'FINISHED'}
+assert all(picked(near_art)) and all(picked(deep_art)) and not any(picked(far_art))
+assert oanim.ops.mesh.select_none() == {'FINISHED'}
+
+# Not a bone layer inside that isn't a sub bone group, nor one hidden.
+near = next(l for l in layers.all() if l.id == near.id)
+near.sub_bone_group = False
+layers.active = far
+assert oanim.ops.mesh.select_all(action="SELECT") == {'FINISHED'}
+assert all(picked(far_art)) and not any(picked(near_art)) and not any(picked(deep_art))
+assert oanim.ops.mesh.select_none() == {'FINISHED'}
+near.sub_bone_group = True
+near.visible = False
+assert oanim.ops.mesh.select_all(action="SELECT") == {'FINISHED'}
+assert not any(picked(near_art)), "hidden"
+assert oanim.ops.mesh.select_none() == {'FINISHED'}
+near.visible = True
+
 print("nested_bone_groups: ok")

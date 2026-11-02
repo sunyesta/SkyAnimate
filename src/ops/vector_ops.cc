@@ -129,23 +129,27 @@ std::vector<Layer *> document_editable_layers(Document &doc)
       take_descendants(take_descendants, *layer_find(doc, flat->id));
     }
   }
-  /* A bone layer being worked in brings the drawings in its shown bone collections: those inside it, not
-   * inside another bone layer within it. Walked from the bone layer itself, as asking each layer of the
-   * document which bone layer holds it searches the whole tree each time (the toolbar asks every frame). */
+  /* A bone layer being worked in brings the drawings in its shown bone collections, and those of the sub bone groups
+   * shown inside it in theirs, as their bones are worked with it; a bone layer inside that isn't one keeps its own.
+   * Walked from the bone layer itself, as asking each layer of the document which bone layer holds it searches the
+   * whole tree each time (the toolbar asks every frame). */
   if (Layer *bones = document_active_layer(doc); bones && bones->is_bone_layer()) {
-    const auto take = [&](auto &&self, Layer &parent) -> void {
+    const auto take = [&](auto &&self, Layer &parent, const Layer &rig) -> void {
       for (Layer &layer : parent.children) {
-        if (layer.edit_with_bones && layer.type == LayerType::Vector && bone_collections_show(*bones, layer.collections) &&
+        if (layer.edit_with_bones && layer.type == LayerType::Vector && bone_collections_show(rig, layer.collections) &&
             layer.shown() && layer.has_drawing() && !layer.locked)
         {
           add(&layer);
         }
         if (!layer.is_bone_layer()) {
-          self(self, layer);
+          self(self, layer, rig);
+        }
+        else if (layer.sub_bone_group && layer.shown()) {
+          self(self, layer, layer);
         }
       }
     };
-    take(take, *bones);
+    take(take, *bones, *bones);
   }
   return layers;
 }

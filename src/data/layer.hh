@@ -1044,7 +1044,8 @@ struct Layer {
    * hip with Parent Bone); only while it is shown. */
   bool sub_bone_group = true;
   /* Inside a bone layer: its points can be picked and moved along with the bones while the bone
-   * layer is the active one (it is in All, and can be put in other collections too). */
+   * layer, or a bone layer it is a sub bone group of, is the active one (it is in All, and can be put
+   * in other collections too). */
   bool edit_with_bones = false;
   /* The deform modifiers of the groups around this drawing leave it alone. */
   bool ignore_group_deforms = false;
