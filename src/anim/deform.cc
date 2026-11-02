@@ -1384,10 +1384,7 @@ static bool weigh_new_points(const Document &doc, Layer &layer, bool exact)
     if (weighted[i]) {
       continue;
     }
-    found[i] = exact ? std::vector<BoneWeight>() : neighbour_weights(drawing, int(i), weighted);
-    if (found[i].empty()) {
-      found[i] = automatic_weights(d, drawing.points[i], {}, !exact);
-    }
+    found[i] = exact ? automatic_weights(d, drawing.points[i], {}, false) : neighbour_weights(drawing, int(i), weighted);
     if (found[i].empty()) {
       found[i].push_back({0, 0.0f});
     }

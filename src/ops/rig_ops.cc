@@ -1094,7 +1094,7 @@ void rig_operators_register()
                      any = true;
                      const bool weighted = std::any_of(p.weights.begin(), p.weights.end(),
                                                        [](const BoneWeight &w) { return w.weight > 0.0f; });
-                     /* An empty entry: weighted to nothing (new points aren't given automatic weights). */
+                     /* An empty entry: weighted to nothing, on purpose. */
                      p.weights = {{0, 0.0f}};
                      changed += weighted ? 1 : 0;
                    }
@@ -1106,6 +1106,36 @@ void rig_operators_register()
                  return weight_keep_end(C, kept, changed > 0);
                },
                {keep_animation_property});
+
+  rig_operator("weight.clear", "Clear Weights",
+               "Take every point of the active and selected layers, and of the drawings in those that are groups, "
+               "out of every bone: they follow no bone. Bone layers inside are left out, and any Parent Bone stays",
+               [](Context &C) {
+                 const Layer *l = C.document ? document_active_layer(*C.document) : nullptr;
+                 return l && !l->is_bone_layer() && layer_armature(*C.document, l->id);
+               },
+               [](Context &C) {
+                 int changed = 0;
+                 const auto clear = [&](auto &&self, Layer &layer) -> void {
+                   if (layer.is_bone_layer()) {
+                     return;
+                   }
+                   for (MeshPoint &p : layer.drawing.points) {
+                     changed += std::any_of(p.weights.begin(), p.weights.end(),
+                                            [](const BoneWeight &w) { return w.bone != 0 && w.weight > 0.0f; })
+                                    ? 1
+                                    : 0;
+                     p.weights = {{0, 0.0f}};
+                   }
+                   for (Layer &child : layer.children) {
+                     self(self, child);
+                   }
+                 };
+                 for (Layer *layer : keyed_layers(C)) {
+                   clear(clear, *layer);
+                 }
+                 return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
+               });
 
   rig_operator("weight.clean", "Clean",
                "Take the selected points (all points when none are selected) out of the bones that move them less "
@@ -1157,7 +1187,8 @@ void rig_operators_register()
 
   rig_operator("layer.parent_bone_set", "Parent to Bone",
                "Make the active and selected layers inside a bone layer follow bone `bone` as a whole, as "
-               "parenting to a bone in Blender (\"\" frees them); `deform`=LAYER moves the layer (a bone's "
+               "parenting to a bone in Blender (\"\": Custom Weights, their points following their weights; a "
+               "layer inside a group with a Parent Bone follows that group's and is left as it is); `deform`=LAYER moves the layer (a bone's "
                "squash and stretch squashes its lines too), POINTS its points (lines keep their width). "
                "Either alone, or both. keep_animation=1: the layer shows where it did on every keyed frame "
                "(its transform keyed again there), as Keep Poses does for setup moves. Setup frame only",
@@ -1176,7 +1207,7 @@ void rig_operators_register()
                    report(ReportType::Error, "deform is LAYER or POINTS");
                    return OpStatus::Cancelled;
                  }
-                 int changed = 0, same_as_original = 0;
+                 int changed = 0, same_as_original = 0, locked = 0;
                  /* Keep Animation: where each layer showed on the frames that matter, before its bone
                   * changes (worked out frame by frame, then the frame put back). */
                  Document &doc = *C.document;
@@ -1220,7 +1251,8 @@ void rig_operators_register()
                    for (Layer *layer : keyed_layers(C)) {
                      const Layer *armature = layer_armature(doc, layer->id);
                      if (!armature || layer->is_bone_layer() || (layer->points_follow_bone() && !set_bone) ||
-                         (layer->is_reference() && layer->reference.match_original))
+                         (layer->is_reference() && layer->reference.match_original) ||
+                         layer_binding_group(doc, layer->id))
                      {
                        continue;
                      }
@@ -1263,6 +1295,11 @@ void rig_operators_register()
                    if (!name.empty() && !bone) {
                      report(ReportType::Warning, "No bone named " + name);
                      return OpStatus::Cancelled;
+                   }
+                   /* A group above decides, and its bone wins: the layer's own stays for when it lets go. */
+                   if (set_bone && layer_binding_group(doc, layer->id)) {
+                     locked++;
+                     continue;
                    }
                    const uint64_t id = bone ? bone->id : 0;
                    if (set_bone && layer->parent_bone != id) {
@@ -1326,6 +1363,10 @@ void rig_operators_register()
                  if (changed == 0 && same_as_original > 0) {
                    report(ReportType::Warning, "Its pose is Same as Original: choose Own Bones in the Reference tab "
                                                "to give it a parent bone");
+                 }
+                 if (locked > 0) {
+                   report(ReportType::Warning, std::to_string(locked) + (locked == 1 ? " layer is" : " layers are") +
+                                                   " inside a group with a Parent Bone, which decides for it");
                  }
                  return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                });

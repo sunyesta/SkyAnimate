@@ -173,6 +173,7 @@ assert oanim.ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
 layers.active = rig
 assert oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0") == {'FINISHED'}
 layers.active = art
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 assert oanim.ops.layer.make_reference() == {'FINISHED'}
 twin = layers.active
 assert twin.parent == rig
@@ -306,6 +307,7 @@ assert oanim.ops.layer.move_to_group(group=str(rig3.id)) == {'FINISHED'}
 layers.active = rig3
 assert oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="3", tail_x="1", tail_y="3") == {'FINISHED'}
 layers.active = art3
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 assert oanim.ops.layer.make_reference() == {'FINISHED'}
 twin3 = layers.active
 assert twin3.reference["match_original"] and any(w for w in twin3.weights), twin3.weights

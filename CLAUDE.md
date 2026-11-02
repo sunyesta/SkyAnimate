@@ -94,7 +94,7 @@ Switch layers section. Next: key buttons in Properties, dope sheet, frame-by-fra
 and onion skins, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,
-`src/data/bones.*` for the skeleton and _L/_R names), weights (automatic for new points,
+`src/data/bones.*` for the skeleton and _L/_R names), weights (a new point averages its neighbours, one connected to nothing has none,
 Weight Select / Weight Paint tools) and Parent to Bone; the modifier stack (`src/anim/deform.*`: Mirror, and the Armature modifier every
 layer inside a bone layer gets, kept by `document_sync_armature_modifiers`, and on groups the deforms, `group_deforms` in `deform.cc`, which bend every drawing inside); rig operators in
 `src/ops/rig_ops.cc` (setup frame only for rig changes); Blender-style bone editing (head/tail joints, E, Shift A,

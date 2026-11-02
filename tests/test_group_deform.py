@@ -230,6 +230,9 @@ assert carried_cage.add_primitive("BOX", [(-1, -1), (1, 1)])
 into_group(rig, carried_cage)
 bound = new_layer("Bound", [(1.0, 0.0), (0.0, 0.0)])
 into_group(rig, bound)
+for weighed in (carried_cage, bound):
+    layers.active = weighed
+    assert ops.weight.automatic() == {'FINISHED'}
 # One group around a drawing the bones move and one around a drawing they don't, both on the shape.
 loose = new_layer("Loose", [(1.0, 0.0), (0.0, 0.0)])
 outside = new_group("Outside", loose)

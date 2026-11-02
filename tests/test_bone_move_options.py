@@ -168,6 +168,8 @@ strand = layers.active
 strand.add_curve([(0.3, 1.0), (0.8, 1.05), (1.4, 1.0)])
 ops.layer.move_to_group(group=str(rig.id))
 strand = next(l for l in layers.all() if l.id == strand.id)
+layers.active = strand
+assert ops.weight.automatic() == {'FINISHED'}
 # The head turns quickly, so on frame 12 the hair still swings behind it.
 for frame, angle in ((1, 0.0), (8, 1.2)):
     doc.frame_current = frame

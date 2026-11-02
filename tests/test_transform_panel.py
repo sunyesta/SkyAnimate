@@ -59,8 +59,8 @@ assert oanim.ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
 badge = next(l for l in layers.all() if l.id == badge.id)
 layers.active = badge
 assert oanim.ops.layer.parent_bone_set(bone="arm") == {'FINISHED'}
-doc.frame_current = 1
-doc.frame_current = 0  # weights for the new points
+layers.active = skin
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 
 layers.active = rig
 doc.frame_current = 10

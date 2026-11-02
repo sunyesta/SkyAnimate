@@ -36,9 +36,11 @@ oanim.ops.armature.bone_add(name="lower_L", head_x="0.5", head_y="0", tail_x="1"
 layers.active = art
 art.add_curve([(0.1, 0.0), (0.3, 0.0), (0.7, 0.0), (0.9, 0.0)])
 
-# New points get automatic weights at the next undo step: nearer bones pull harder.
+# A new drawing has no weights; Automatic Weights gives it some: nearer bones pull harder.
 assert art.weights == [{}, {}, {}, {}], "not weighted yet"
 oanim.ops.mesh.select_none()
+assert art.weights == [{}, {}, {}, {}], "connected to nothing, it stays so"
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 upper = art.bone_weights("upper_L")
 assert upper[0] > 0.9 and upper[3] < 0.1, upper
 assert all(abs(sum(w.values()) - 1.0) < 1e-4 for w in art.weights), art.weights
@@ -139,11 +141,11 @@ assert art.weight_paint((0.5, 0.0), 1.0, "upper_L", weight=1.0, strength=1.0, se
 after = art.weights
 assert after[:3] == before[:3] and after[3] != before[3]
 
-# A new stroke follows the bones at once.
+# A new stroke connected to nothing has no weights.
 art.add_curve([(0.2, 0.3), (0.8, 0.3)])
 oanim.ops.mesh.select_none()
-assert art.weights[-1] and art.weights[-2], "new points got weights"
-assert art.bone_weights("lower_L")[-1] > 0.5
+assert not art.weights[-1] and not art.weights[-2], "connected to nothing"
+assert art.bone_weights("lower_L")[-1] == 0.0
 
 # --- Older files: point binding and flexi-binding become weights -------------------------------
 path2 = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_weights_")) / "old.oanim")

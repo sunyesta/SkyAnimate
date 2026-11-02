@@ -73,8 +73,11 @@ assert len(points) == 8 and curves == 2 and len(shapes) == 2, "without merging: 
 art.modifier_set(0, merge=True)
 
 # --- Weights and posing --------------------------------------------------------------------------
-# New points got automatic weights. Assign the arm's points wholly to arm_L; the mirrored ones then
-# follow arm_R.
+# Automatic Weights gives a new drawing its weights. Assign the arm's points wholly to arm_L; the mirrored
+# ones then follow arm_R.
+assert not any(art.weights), "connected to nothing, new points have none"
+oanim.ops.mesh.select_none()
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 assert all(art.weights), "every point has weights"
 art.select_points([1, 2])
 rig.select_bone("arm_L")

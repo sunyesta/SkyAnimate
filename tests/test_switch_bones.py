@@ -146,6 +146,7 @@ foot.name = "Foot"
 foot.add_curve([(-0.1, -2.4), (0.1, -2.4), (0.1, -2.6), (-0.1, -2.6)], closed=True, fill=True)
 assert oanim.ops.layer.move_to_group(group=str(legs[hub].id)) == {'FINISHED'}
 layers.active = foot
+assert oanim.ops.weight.automatic() == {'FINISHED'}
 sync()
 assert oanim.ops.armature.select_used_bones() == {'FINISHED'}
 assert layers.active.name == hub

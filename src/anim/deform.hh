@@ -127,11 +127,11 @@ int layer_weight_paint(const Document &doc, Layer &layer, const WeightPaintBrush
  * harder. A layer parented to a bone stops being. Returns how many points changed. */
 int layer_automatic_weights(const Document &doc, Layer &layer, const std::vector<uint64_t> &bones,
                             bool selected_only);
-/* Points not weighted yet (new ones) in layers inside a bone layer with bones get weights: those of
- * the nearest weighted points along their curves, or automatic weights when there are none.
- * `exact`: automatic weights only, unpruned (older files' flexi-binding, unchanged). Runs before
- * every undo step, so a new stroke follows the bones at once. `skip`: layers (and what is in them) known to have no
- * new points. */
+/* Points not weighted yet (new ones) in layers inside a bone layer with bones get weights: the average
+ * of the points next to them along their curves, or none at all when they aren't connected to any
+ * (Automatic Weights gives a new drawing some). `exact`: automatic weights only, unpruned (older files'
+ * flexi-binding, unchanged). Runs before every undo step. `skip`: layers (and what is in them) known to
+ * have no new points. */
 bool document_weight_new_points(Document &doc, bool exact = false, bool (*skip)(const Layer &) = nullptr);
 
 /* The Mirror modifier on a drawing; `flip_bone` maps a point's bone to the other side's. */

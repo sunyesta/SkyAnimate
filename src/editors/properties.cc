@@ -2042,6 +2042,33 @@ static void reference_tab(Context &C)
   }
 }
 
+/* What Custom Weights comes to for a layer, or for a group the drawings in it: the bones its points are weighted to
+ * and those that move what's inside as a whole. Bone layers inside follow their own bones. */
+struct CustomWeights {
+  std::set<uint64_t> bones;
+  bool weighted = false;
+};
+
+static void custom_weights_in(const Layer &layer, CustomWeights &r)
+{
+  for (const MeshPoint &p : layer.drawing.points) {
+    for (const BoneWeight &w : p.weights) {
+      if (w.bone != 0 && w.weight > 0.0f) {
+        r.bones.insert(w.bone);
+        r.weighted = true;
+      }
+    }
+  }
+  for (const Layer &child : layer.children) {
+    if (child.parent_bone != 0) {
+      r.bones.insert(child.parent_bone);
+    }
+    if (!child.is_bone_layer()) {
+      custom_weights_in(child, r);
+    }
+  }
+}
+
 static void binding_panel(Context &C, Layer &layer, Layer &armature)
 {
   Document &doc = *C.document;
@@ -2066,7 +2093,26 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
   const std::string keep_arg = keep_animation ? "1" : "0";
   /* The eyedropper beside it: click the bone in the viewport. */
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
-  if (ImGui::BeginCombo("##parent_bone", parent ? parent->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+  /* Anything with points follows their weights unless it has a bone, and the box says which: a layer never follows a
+   * bone nothing shows. Images, video and text have no points to weigh. */
+  const bool weighable = layer.type == LayerType::Vector || layer.is_group();
+  const char *const no_bone = weighable ? "Custom Weights" : "None";
+  CustomWeights custom;
+  custom_weights_in(layer, custom);
+  std::string shown = no_bone;
+  if (parent) {
+    shown = parent->name;
+  }
+  else if (weighable && custom.bones.empty()) {
+    shown += " (no weights)";
+  }
+  else if (const Bone *only = custom.bones.size() == 1 ? bone_find(armature, *custom.bones.begin()) : nullptr) {
+    shown += ": " + only->name;
+  }
+  else if (weighable) {
+    shown += ": " + std::to_string(custom.bones.size()) + " bones";
+  }
+  if (ImGui::BeginCombo("##parent_bone", shown.c_str(), ImGuiComboFlags_HeightLarge)) {
     /* A search field on top, focused as it opens: typing narrows the list (any part of the name, any
      * case); Enter takes the first bone left. */
     static std::string search;
@@ -2084,8 +2130,11 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
       std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
       return lower.find(needle) != std::string::npos;
     };
-    if (needle.empty() && ImGui::Selectable("None", !parent)) {
-      operator_call(C, "layer.parent_bone_set", {{"bone", ""}, {"keep_animation", keep_arg}});
+    if (needle.empty()) {
+      if (ImGui::Selectable(no_bone, !parent)) {
+        operator_call(C, "layer.parent_bone_set", {{"bone", ""}, {"keep_animation", keep_arg}});
+      }
+      ImGui::Separator();
     }
     const Bone *first = nullptr;
     for (const Bone &b : armature.bones) {
@@ -2136,29 +2185,32 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     }
     else {
       ImGui::SetTooltip(doc.frame_current != 0 ? "Switch to Setup (frame 0)"
-                                               : "The whole layer follows this bone, as parenting to a bone in Blender");
+                                               : "Pick a bone and the whole layer follows it, as parenting to a bone in "
+                                                 "Blender. Custom Weights: its points follow their own weights");
     }
   }
   /* Keep Animation: changing the bone leaves the layer where it showed on every keyed frame (Keep
    * Poses' reverse: the setup frame is left alone, the poses are kept). */
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(1);
-  ImGui::BeginDisabled(doc.frame_current != 0 || binding || same_as_original || layer.points_follow_bone());
-  ImGui::Checkbox("Keep Animation##parent_keep", &keep_animation);
-  ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip("Changing the parent bone keeps the layer where it shows on every keyed frame: its position, "
-                      "rotation and scale are keyed again there against the new bone.\nOff, it follows the new "
-                      "bone's motion from its setup pose (Deform: Layer only)");
+  if (parent && !binding) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::BeginDisabled(doc.frame_current != 0 || same_as_original || layer.points_follow_bone());
+    ImGui::Checkbox("Keep Animation##parent_keep", &keep_animation);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Changing the parent bone keeps the layer where it shows on every keyed frame: its position, "
+                        "rotation and scale are keyed again there against the new bone.\nOff, it follows the new "
+                        "bone's motion from its setup pose (Deform: Layer only)");
+    }
   }
   /* Deform: what the bone moves, the layer as a whole or its points. A group moves as a whole. */
-  ImGui::TableNextRow();
-  ImGui::TableSetColumnIndex(0);
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Deform");
-  ImGui::TableSetColumnIndex(1);
-  {
-    const bool usable = parent && !binding && !same_as_original && !layer.is_group() && doc.frame_current == 0;
+  if (parent && !binding) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Deform");
+    ImGui::TableSetColumnIndex(1);
+    const bool usable = !same_as_original && !layer.is_group() && doc.frame_current == 0;
     ImGui::BeginDisabled(!usable);
     const float w = (ImGui::GetContentRegionAvail().x - 1.0f) * 0.5f;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, ImGui::GetStyle().ItemSpacing.y));
@@ -2182,32 +2234,30 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
         ImGui::PopStyleColor();
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", layer.is_group() ? "A group moves as a whole"
-                                : !parent       ? "With a Parent Bone: what the bone moves"
-                                                : TIPS[k]);
+        ImGui::SetTooltip("%s", layer.is_group() ? "A group moves as a whole" : TIPS[k]);
       }
     }
     ImGui::PopStyleVar();
     ImGui::EndDisabled();
   }
   /* Bone Follows Selection: the parent bone keyed onto the selection on each of its keyed frames. */
-  if (layer.has_drawing() || layer.is_group()) {
+  if (parent && (layer.has_drawing() || layer.is_group())) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
-    ImGui::BeginDisabled(!parent || same_as_original || (doc.frame_current == 0 && doc.action.empty()));
+    ImGui::BeginDisabled(same_as_original || (doc.frame_current == 0 && doc.action.empty()));
     if (ImGui::Button("Bone Follows Selection", ImVec2(-1, 0))) {
       operator_call(C, "layer.bone_follow_selection");
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("%s", !parent ? "With a Parent Bone: key it where the selection shows"
-                              : "On every frame the selected points (all, when none are) are keyed in this timeline,\n"
-                                "key the parent bone where they show, keeping the drawings where they are (Move Only\n"
-                                "Bones). For a bone that follows a feature through an action bone action, as an eye through a\n"
-                                "head turn. Keep Offset and Fit (Move & Turn, Move, Turn & Scale) in Adjust Last Operation");
+      ImGui::SetTooltip("On every frame the selected points (all, when none are) are keyed in this timeline,\n"
+                        "key the parent bone where they show, keeping the drawings where they are (Move Only\n"
+                        "Bones). For a bone that follows a feature through an action bone action, as an eye through a\n"
+                        "head turn. Keep Offset and Fit (Move & Turn, Move, Turn & Scale) in Adjust Last Operation");
     }
   }
-  if (layer.type == LayerType::Vector) {
+  /* Custom Weights: on a drawing, what makes them; on a group, only clearing what's inside it. */
+  if (layer.type == LayerType::Vector && !parent) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
@@ -2218,12 +2268,28 @@ static void binding_panel(Context &C, Layer &layer, Layer &armature)
     if (ImGui::Button("Normalize", ImVec2(half, 0))) {
       operator_call(C, "weight.normalize");
     }
+  }
+  if (weighable && !parent) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextWrapped(parent ? "The layer follows its parent bone. Giving its points weights sets Parent Bone to "
-                                "None."
-                              : "Points follow the bones by their weights. Select points with the Weight Select tool "
-                                "to assign weights, or paint them with Weight Paint.");
+    ImGui::BeginDisabled(!custom.weighted);
+    if (ImGui::Button("Clear Weights", ImVec2(-1, 0))) {
+      operator_call(C, "weight.clear");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", layer.is_group() ? "Take every drawing inside out of every bone"
+                                               : "Take every point out of every bone");
+    }
+  }
+  if (layer.type == LayerType::Vector) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextWrapped(parent ? "The layer follows its parent bone. Giving its points weights switches it to Custom "
+                                "Weights."
+                              : "Points follow the bones by their weights, and a new point takes the average of the "
+                                "points next to it. Select points with the Weight Select tool to assign weights, or "
+                                "paint them with Weight Paint.");
   }
   ui_panel_end();
 }

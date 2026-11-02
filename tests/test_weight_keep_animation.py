@@ -26,6 +26,8 @@ art = layers.active
 art.add_curve([(0.2, 0.1), (0.6, 0.2), (0.9, -0.2), (0.7, -0.9)])
 assert ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
 art = next(l for l in layers.all() if l.id == art.id)
+layers.active = art
+assert ops.weight.automatic() == {'FINISHED'}
 
 # Posed on frame 10 (the bones), and point 2 keyed on frame 6.
 doc.frame_current = 10
