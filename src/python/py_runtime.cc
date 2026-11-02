@@ -3227,6 +3227,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           }
         }
         d["resample_self"] = mod.deform_resample_self;
+        if (mod.type == ModifierType::FollowDeform) {
+          const VectorDrawing &own = layer_or_raise(id).drawing;
+          const int limit_shape = drawing_shape_index(own, mod.follow_limit_shape);
+          d["limit"] = mod.follow_limit == FollowLimit::Shape ? "SHAPE" : mod.follow_limit == FollowLimit::Group ? "GROUP" : "NONE";
+          d["limit_shape"] = limit_shape >= 0 ? own.shapes[size_t(limit_shape)].name : std::string();
+          d["limit_group"] = mod.follow_limit_group;
+          d["limit_invert"] = mod.follow_limit_invert;
+        }
         d["split"] = mod.subdiv_by_length ? "LENGTH" : "COUNT";
         d["spacing"] = mod.subdiv_spacing;
         d["pieces"] = mod.subdiv_pieces;
@@ -3346,10 +3354,35 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       throw py::index_error("no modifier " + std::to_string(index));
     }
     Modifier &mod = layer.modifiers[index];
+    const Modifier before = mod;
     for (const auto &[key_obj, value] : values) {
       const std::string key = py::str(key_obj);
       if (key == "show_viewport") {
         mod.show_viewport = value.cast<bool>();
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "limit") {
+        const std::string limit = value.cast<std::string>();
+        if (limit != "NONE" && limit != "SHAPE" && limit != "GROUP") {
+          throw py::value_error("limit is NONE, SHAPE or GROUP");
+        }
+        mod.follow_limit = limit == "SHAPE" ? FollowLimit::Shape : limit == "GROUP" ? FollowLimit::Group : FollowLimit::None;
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "limit_shape") {
+        const std::string name = value.cast<std::string>();
+        /* A shape just drawn from Python has no id yet. */
+        drawing_ensure_ids(layer.drawing);
+        const auto shape = std::find_if(layer.drawing.shapes.begin(), layer.drawing.shapes.end(),
+                                        [&](const Shape &s) { return s.name == name; });
+        if (!name.empty() && shape == layer.drawing.shapes.end()) {
+          throw py::value_error("no shape '" + name + "' on this layer");
+        }
+        mod.follow_limit_shape = shape == layer.drawing.shapes.end() ? 0 : shape->id;
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "limit_group") {
+        mod.follow_limit_group = value.cast<std::string>();
+      }
+      else if (mod.type == ModifierType::FollowDeform && key == "limit_invert") {
+        mod.follow_limit_invert = value.cast<bool>();
       }
       else if (key == "show_render") {
         mod.show_render = value.cast<bool>();
@@ -3602,6 +3635,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
       }
+    }
+    if (mod.type == ModifierType::FollowDeform) {
+      vector_deform_follow_limit_changed(*current_context().document, layer, before, mod);
     }
     current_context().undo->mark_changed();
   });

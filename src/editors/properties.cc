@@ -2818,6 +2818,52 @@ static void merge_modifier_body(Context &C, Layer &layer, Modifier &m, int index
 
 static bool factor_slider(const char *id, float *value);
 
+/* A dropdown of `layer`'s point groups, with a search on top, for a modifier's `name`. True when it changed. */
+static bool point_group_combo(const Layer &layer, std::string &name)
+{
+  bool changed = false;
+  const bool known = std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                                 [&](const PointGroup &g) { return g.name == name; });
+  if (ImGui::BeginCombo("##group", name.empty() ? "" : name.c_str(), ImGuiComboFlags_HeightLarge)) {
+    /* A search field on top, as Parent Bone's. */
+    static std::string search;
+    if (ImGui::IsWindowAppearing()) {
+      search.clear();
+      ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-1);
+    const bool entered = ImGui::InputTextWithHint("##search", "Search point groups", &search,
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+    std::string needle = search;
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+    const PointGroup *first = nullptr;
+    for (const PointGroup &g : layer.drawing.groups) {
+      if (!search_matches(g.name, needle)) {
+        continue;
+      }
+      first = first ? first : &g;
+      if (ImGui::Selectable(g.name.c_str(), g.name == name)) {
+        name = g.name;
+        changed = true;
+      }
+    }
+    if (!first) {
+      ImGui::TextDisabled(layer.drawing.groups.empty() ? "No point groups: add one in the Shape tab"
+                                                       : "No point group named like that");
+    }
+    if (entered && first) {
+      name = first->name;
+      changed = true;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndCombo();
+  }
+  if (!name.empty() && !known && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("This layer has no point group \"%s\"", name.c_str());
+  }
+  return changed;
+}
+
 /* Blender's Bevel modifier panel, the parts that fit curves: Width Type, Amount (keyable), Limit Method
  * with its Angle or Point Group, then Profile and Geometry folded. */
 static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
@@ -2901,45 +2947,7 @@ static void bevel_modifier_body(Context &C, Layer &layer, Modifier &m, int index
   else if (m.bevel_limit == BevelLimit::Group) {
     modifier_row_label("Point Group", column, "The point group whose points are cut (Shape tab > Point Groups)");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-    const bool known = std::any_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
-                                   [&](const PointGroup &g) { return g.name == m.bevel_group; });
-    if (ImGui::BeginCombo("##group", m.bevel_group.empty() ? "" : m.bevel_group.c_str(), ImGuiComboFlags_HeightLarge)) {
-      /* A search field on top, as Parent Bone's. */
-      static std::string search;
-      if (ImGui::IsWindowAppearing()) {
-        search.clear();
-        ImGui::SetKeyboardFocusHere();
-      }
-      ImGui::SetNextItemWidth(-1);
-      const bool entered = ImGui::InputTextWithHint("##search", "Search point groups", &search,
-                                                    ImGuiInputTextFlags_EnterReturnsTrue);
-      std::string needle = search;
-      std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
-      const PointGroup *first = nullptr;
-      for (const PointGroup &g : layer.drawing.groups) {
-        if (!search_matches(g.name, needle)) {
-          continue;
-        }
-        first = first ? first : &g;
-        if (ImGui::Selectable(g.name.c_str(), g.name == m.bevel_group)) {
-          m.bevel_group = g.name;
-          done = true;
-        }
-      }
-      if (!first) {
-        ImGui::TextDisabled(layer.drawing.groups.empty() ? "No point groups: add one in the Shape tab"
-                                                         : "No point group named like that");
-      }
-      if (entered && first) {
-        m.bevel_group = first->name;
-        done = true;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndCombo();
-    }
-    if (!m.bevel_group.empty() && !known && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("This layer has no point group \"%s\"", m.bevel_group.c_str());
-    }
+    done |= point_group_combo(layer, m.bevel_group);
   }
   ImGui::Spacing();
 
@@ -3623,6 +3631,108 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   ui_flash_row(layer.id, path);
 
   if (follows) {
+    /* What it moves. A change leaves its point at the middle of what it now moves, if it was at the middle before. */
+    const Modifier before_limit = m;
+    static const char *const LIMIT_NAMES[] = {"None", "Shape", "Point Group"};
+    static const char *const LIMIT_TIPS[] = {"The whole drawing follows", "Only one shape of this drawing follows",
+                                             "Only the points of a point group follow, each by its weight"};
+    modifier_row_label("Limit Method", column, "What it moves. The rest of the drawing stays as it is");
+    ImGui::SetNextItemWidth(width());
+    if (ImGui::BeginCombo("##follow_limit", LIMIT_NAMES[int(m.follow_limit)])) {
+      for (int k = 0; k < 3; k++) {
+        if (ImGui::Selectable(LIMIT_NAMES[k], k == int(m.follow_limit)) && k != int(m.follow_limit)) {
+          m.follow_limit = FollowLimit(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", LIMIT_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (m.follow_limit == FollowLimit::Shape) {
+      modifier_row_label("Limit Shape", column, "The shape of this drawing that follows");
+      ImGui::SetNextItemWidth(width() - pick_w - 2.0f);
+      const int limit_index = drawing_shape_index(layer.drawing, m.follow_limit_shape);
+      if (ImGui::BeginCombo("##follow_limit_shape",
+                            limit_index >= 0 ? layer.drawing.shapes[size_t(limit_index)].name.c_str() : "Pick a shape"))
+      {
+        for (const Shape &s : layer.drawing.shapes) {
+          ImGui::PushID(int(s.id));
+          if (ImGui::Selectable(s.name.c_str(), s.id == m.follow_limit_shape) && s.id != m.follow_limit_shape) {
+            m.follow_limit_shape = s.id;
+            done = true;
+          }
+          ImGui::PopID();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine(0, 2);
+      const std::string limit_tag = "FOLLOW_LIMIT:" + std::to_string(layer.id) + ":" + std::to_string(index);
+      if (ui_pick_button("##follow_limit_pick", "Eyedropper: click the shape of this drawing that follows",
+                         ui_shape_eyedropper_active(limit_tag.c_str())))
+      {
+        const uint64_t owner = layer.id;
+        ui_shape_eyedropper_start(
+            [owner, index](Context &C, uint64_t layer_id, int shape_index) {
+              Document &doc = *C.document;
+              Layer *own = layer_find(doc, owner);
+              if (!own || index >= int(own->modifiers.size()) ||
+                  own->modifiers[size_t(index)].type != ModifierType::FollowDeform)
+              {
+                return true;
+              }
+              const VectorDrawing shown = layer_evaluated_drawing(doc, *own, false);
+              if (layer_id != owner || shape_index < 0 || shape_index >= int(shown.shapes.size()) ||
+                  drawing_shape_index(own->drawing, shown.shapes[size_t(shape_index)].id) < 0)
+              {
+                return false;
+              }
+              Modifier &follow = own->modifiers[size_t(index)];
+              const Modifier was = follow;
+              follow.follow_limit_shape = shown.shapes[size_t(shape_index)].id;
+              vector_deform_follow_limit_changed(doc, *own, was, follow);
+              C.undo->push("Follow Deform", doc);
+              return true;
+            },
+            [] { return std::string("Click the shape of this drawing that follows  |  Esc cancels"); }, limit_tag.c_str());
+      }
+    }
+    else if (m.follow_limit == FollowLimit::Group) {
+      modifier_row_label("Point Group", column, "The points that follow, each by its weight (Shape tab > Point Groups)");
+      ImGui::SetNextItemWidth(width());
+      done |= point_group_combo(layer, m.follow_limit_group);
+    }
+    if (m.follow_limit != FollowLimit::None) {
+      modifier_row_label("", column);
+      if (ImGui::Checkbox("Invert", &m.follow_limit_invert)) {
+        done = true;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Everything but those points follows");
+      }
+      /* Said rather than moving the whole drawing, so nothing jumps. */
+      const ImVec4 warn(1.0f, 0.6f, 0.3f, 1.0f);
+      if (m.follow_limit == FollowLimit::Shape && drawing_shape_index(layer.drawing, m.follow_limit_shape) < 0) {
+        modifier_row_label("", column);
+        ImGui::TextColored(warn, m.follow_limit_shape == 0 ? "Moves nothing: pick a shape" : "Moves nothing: its shape is gone");
+      }
+      else if (m.follow_limit == FollowLimit::Group &&
+               std::none_of(layer.drawing.groups.begin(), layer.drawing.groups.end(),
+                            [&](const PointGroup &g) { return g.name == m.follow_limit_group; }))
+      {
+        modifier_row_label("", column);
+        if (m.follow_limit_group.empty()) {
+          ImGui::TextColored(warn, "Moves nothing: pick a point group");
+        }
+        else {
+          ImGui::TextColored(warn, "Moves nothing: no point group %s", m.follow_limit_group.c_str());
+        }
+      }
+    }
+    if (done) {
+      vector_deform_follow_limit_changed(doc, layer, before_limit, m);
+    }
     /* Its own place, or a point the shape already has. */
     const auto point_row = [&](bool second) {
       modifier_row_label(second ? "Second" : "Point", column,

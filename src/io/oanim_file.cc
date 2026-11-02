@@ -716,6 +716,12 @@ static json layer_to_json(const Layer &layer)
           mj["part_to"] = m.deform_part_to;
         }
         mj["resample_self"] = m.deform_resample_self;
+        if (m.follow_limit != FollowLimit::None) {
+          mj["limit"] = m.follow_limit == FollowLimit::Shape ? "SHAPE" : "GROUP";
+          mj["limit_shape"] = m.follow_limit_shape;
+          mj["limit_group"] = m.follow_limit_group;
+          mj["limit_invert"] = m.follow_limit_invert;
+        }
         mj["split"] = m.subdiv_by_length ? "LENGTH" : "COUNT";
         mj["spacing"] = num(m.subdiv_spacing);
         mj["pieces"] = m.subdiv_pieces;
@@ -2371,6 +2377,11 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_part_from = get_id(mj, "part_from");
       m.deform_part_to = get_id(mj, "part_to");
       m.deform_resample_self = get_bool(mj, "resample_self", false);
+      const std::string limit = get_string(mj, "limit", "NONE");
+      m.follow_limit = limit == "SHAPE" ? FollowLimit::Shape : limit == "GROUP" ? FollowLimit::Group : FollowLimit::None;
+      m.follow_limit_shape = get_id(mj, "limit_shape");
+      m.follow_limit_group = get_string(mj, "limit_group", "");
+      m.follow_limit_invert = get_bool(mj, "limit_invert", false);
       m.subdiv_by_length = get_string(mj, "split", "COUNT") != "COUNT";
       m.subdiv_spacing = std::max(1e-4f, get_float(mj, "spacing", m.subdiv_spacing));
       m.subdiv_pieces = std::clamp(get_int(mj, "pieces", m.subdiv_pieces), 1, 256);

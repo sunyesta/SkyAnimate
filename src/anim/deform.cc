@@ -649,18 +649,38 @@ void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &
 static void follow_deform_run(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                               const VectorDrawing *before_bones, bool render)
 {
+  /* With a Limit Method only the points it takes in move, each by its share. */
+  const std::vector<float> share = vector_deform_follow_share(doc, layer, m, drawing);
+  const auto share_of = [&](size_t i) { return share.empty() ? 1.0f : share[i]; };
   Modifier run = m;
   const Layer *shape = layer_find(doc, m.deform_layer);
   const Layer *armature = shape ? layer_armature(doc, shape->id) : nullptr;
   run.deform_rest_posed = armature && !armature->bones.empty() && bones_carry(doc, layer, *armature);
   float2 carry;
   if (before_bones && !drawing.points.empty() && before_bones->points.size() == drawing.points.size()) {
+    float shares = 0.0f;
     for (size_t i = 0; i < drawing.points.size(); i++) {
-      carry = carry + (drawing.points[i].pos - before_bones->points[i].pos);
+      carry = carry + (drawing.points[i].pos - before_bones->points[i].pos) * share_of(i);
+      shares += share_of(i);
     }
-    carry = carry / float(drawing.points.size());
+    carry = shares > 0.0f ? carry / shares : float2();
   }
-  transform_drawing(drawing, vector_deform_follow(doc, layer, run, carry, render));
+  const Transform2D move = vector_deform_follow(doc, layer, run, carry, render);
+  if (share.empty()) {
+    transform_drawing(drawing, move);
+    return;
+  }
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    MeshPoint &p = drawing.points[i];
+    p.pos = p.pos + (move.apply(p.pos) - p.pos) * share[i];
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      const float s = share[size_t(cp.point)];
+      cp.handle_in = cp.handle_in + (move.apply_vector(cp.handle_in) - cp.handle_in) * s;
+      cp.handle_out = cp.handle_out + (move.apply_vector(cp.handle_out) - cp.handle_out) * s;
+    }
+  }
 }
 
 /* What the groups around it make of the drawing as its own stack left it. Each runs as a copy of the group's modifier,

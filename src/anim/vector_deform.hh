@@ -75,6 +75,16 @@ bool vector_deform_shape_read(const Document &doc, const Layer &layer, const Mod
 /* Follow Deform `m` on `layer` now: what moves the whole drawing. `carry` is what its bones moved it by: with
  * `m.deform_rest_posed` the shape's rest is posed by them too, so only its change of shape is added to it. */
 Transform2D vector_deform_follow(const Document &doc, const Layer &layer, const Modifier &m, float2 carry, bool render);
+/* How much of that move each of `drawing`'s points takes, by its Limit Method: `drawing` is the layer's as the stack has
+ * it so far, so a point something above has cut into a segment takes its share from the two ends. Empty with no limit,
+ * every point taking all of it. A shape or point group that isn't there moves nothing. */
+std::vector<float> vector_deform_follow_share(const Document &doc, const Layer &layer, const Modifier &m,
+                                              const VectorDrawing &drawing);
+/* The middle of what it moves, at rest in the layer's space: where its point starts. */
+float2 vector_deform_follow_middle(const Document &doc, const Layer &layer, const Modifier &m);
+/* After its Limit Method changed from `was`: a point still at the middle of what it moved goes to the middle of what it
+ * moves now. One put somewhere stays there. */
+void vector_deform_follow_limit_changed(const Document &doc, const Layer &layer, const Modifier &was, Modifier &m);
 /* Where its point (`second`: its second) rests on the drawing, and where it is now, in the layer's space. */
 float2 vector_deform_follow_rest(const Document &doc, const Layer &layer, const Modifier &m, bool second);
 float2 vector_deform_follow_now(const Document &doc, const Layer &layer, const Modifier &m, bool second);

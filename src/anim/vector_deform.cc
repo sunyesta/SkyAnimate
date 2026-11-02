@@ -4,7 +4,9 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <mutex>
 
@@ -3236,9 +3238,9 @@ static void resample_fit(const DeformShape &d, const VectorDrawing &base, const 
 /* A deform's Custom weights go by point, and points made since they were painted have none: those cut into a segment
  * (by a Resample modifier above, Resample Self or Precision) take theirs from its two ends, eased between. `own`: how
  * many of the drawing's points were there before the cuts. */
-static PointGroup group_with_cuts(const PointGroup &group, const VectorDrawing &split, size_t own)
+static void for_each_cut(const VectorDrawing &split, size_t own,
+                         const std::function<void(size_t point, size_t from, size_t to, float along)> &cut)
 {
-  PointGroup r = group;
   for (const Curve &curve : split.curves) {
     const int n = int(curve.points.size());
     const auto point = [&](int i) { return size_t(curve.points[size_t(i % n)].point); };
@@ -3253,14 +3255,108 @@ static PointGroup group_with_cuts(const PointGroup &group, const VectorDrawing &
       if (pieces == 1 || (!curve.closed && i + pieces >= n)) {
         continue;
       }
-      const float wa = point_weight(&group, split.points[point(i)]);
-      const float wb = point_weight(&group, split.points[point(i + pieces)]);
       for (int k = 1; k < pieces; k++) {
-        r.weights[split.points[point(i + k)].id] = wa + (wb - wa) * smooth01(float(k) / float(pieces));
+        cut(point(i + k), point(i), point(i + pieces), smooth01(float(k) / float(pieces)));
       }
     }
   }
+}
+
+static PointGroup group_with_cuts(const PointGroup &group, const VectorDrawing &split, size_t own)
+{
+  PointGroup r = group;
+  for_each_cut(split, own, [&](size_t point, size_t from, size_t to, float along) {
+    const float a = point_weight(&group, split.points[from]), b = point_weight(&group, split.points[to]);
+    r.weights[split.points[point].id] = a + (b - a) * along;
+  });
   return r;
+}
+
+std::vector<float> vector_deform_follow_share(const Document &doc, const Layer &layer, const Modifier &m,
+                                              const VectorDrawing &drawing)
+{
+  if (m.follow_limit == FollowLimit::None) {
+    return {};
+  }
+  const VectorDrawing &stored = layer_drawing(doc, layer);
+  std::vector<float> own(stored.points.size(), 0.0f);
+  bool found = false;
+  if (m.follow_limit == FollowLimit::Shape) {
+    if (const int index = drawing_shape_index(stored, m.follow_limit_shape); index >= 0) {
+      found = true;
+      for (const int p : shape_points(stored, stored.shapes[size_t(index)])) {
+        own[size_t(p)] = 1.0f;
+      }
+    }
+  }
+  else {
+    for (const PointGroup &g : stored.groups) {
+      if (g.name != m.follow_limit_group) {
+        continue;
+      }
+      found = true;
+      for (size_t i = 0; i < own.size(); i++) {
+        if (auto it = g.weights.find(stored.points[i].id); it != g.weights.end()) {
+          own[i] = std::clamp(it->second, 0.0f, 1.0f);
+        }
+      }
+    }
+  }
+  std::vector<float> share(drawing.points.size(), 0.0f);
+  if (!found) {
+    return share;
+  }
+  std::map<uint64_t, float> by_id;
+  for (size_t i = 0; i < own.size(); i++) {
+    own[i] = m.follow_limit_invert ? 1.0f - own[i] : own[i];
+    if (i < share.size()) {
+      share[i] = own[i];
+    }
+    by_id[stored.points[i].id] = own[i];
+  }
+  /* The stack's copies of a point (a place worked out as the point is) go as it does. */
+  for (size_t i = own.size(); i < share.size(); i++) {
+    if (auto it = by_id.find(drawing.points[i].id); it != by_id.end()) {
+      share[i] = it->second;
+    }
+  }
+  for_each_cut(drawing, own.size(), [&](size_t point, size_t from, size_t to, float along) {
+    share[point] = share[from] + (share[to] - share[from]) * along;
+  });
+  return share;
+}
+
+float2 vector_deform_follow_middle(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  const VectorDrawing setup = layer_setup_drawing(doc, layer, false);
+  const std::vector<float> share = vector_deform_follow_share(doc, layer, m, setup);
+  const auto middle = [&](bool all) {
+    float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+    for (size_t i = 0; i < setup.points.size(); i++) {
+      if (all || share.empty() || share[i] > 0.0f) {
+        lo = {std::min(lo.x, setup.points[i].pos.x), std::min(lo.y, setup.points[i].pos.y)};
+        hi = {std::max(hi.x, setup.points[i].pos.x), std::max(hi.y, setup.points[i].pos.y)};
+      }
+    }
+    return hi.x >= lo.x ? std::optional<float2>((lo + hi) * 0.5f) : std::nullopt;
+  };
+  /* With nothing to move yet, the drawing's: not where the point happens to be, which would pass for a point that
+   * was never put anywhere. */
+  return middle(false).value_or(middle(true).value_or(float2()));
+}
+
+void vector_deform_follow_limit_changed(const Document &doc, const Layer &layer, const Modifier &was, Modifier &m)
+{
+  const float2 from = vector_deform_follow_middle(doc, layer, was);
+  if (m.deform_point_id != 0 || length(m.deform_point - from) > 1e-5f) {
+    return;
+  }
+  /* A second point keeps its way from the first. */
+  const float2 move = vector_deform_follow_middle(doc, layer, m) - from;
+  m.deform_point = m.deform_point + move;
+  if (m.deform_point2_id == 0) {
+    m.deform_point2 = m.deform_point2 + move;
+  }
 }
 
 /* The drawing bent (base: as it was before the bones, the same points): each point where the deform puts it, each

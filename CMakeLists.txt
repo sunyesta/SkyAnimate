@@ -404,6 +404,8 @@ add_test(NAME onion_skins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_onion_skins.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
+add_test(NAME follow_limit
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_limit.py)
 add_test(NAME resample_self
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_resample_self.py)
 add_test(NAME resample_deform

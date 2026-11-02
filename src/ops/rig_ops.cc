@@ -12,6 +12,7 @@
 #include "anim/switch.hh"
 #include "anim/bone_family.hh"
 #include "anim/draw_order.hh"
+#include "anim/vector_deform.hh"
 #include "anim/action_mirror.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -3321,12 +3322,7 @@ void rig_operators_register()
                        return OpStatus::Cancelled;
                      }
                      /* Its point starts at the middle of the drawing. */
-                     float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
-                     for (const MeshPoint &p : layer_setup_drawing(*C.document, layer, false).points) {
-                       lo = {std::min(lo.x, p.pos.x), std::min(lo.y, p.pos.y)};
-                       hi = {std::max(hi.x, p.pos.x), std::max(hi.y, p.pos.y)};
-                     }
-                     m.deform_point = hi.x >= lo.x ? (lo + hi) * 0.5f : float2();
+                     m.deform_point = vector_deform_follow_middle(*C.document, layer, m);
                    }
                    if (layer.type != LayerType::Vector && !layer.is_group()) {
                      report(ReportType::Warning, std::string(deform_type_name(m.type)) +

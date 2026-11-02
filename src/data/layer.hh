@@ -709,6 +709,7 @@ inline const char *deform_type_id(ModifierType type)
  * starts (Offset), how long the cut is (Width), how far it is from the corner (Depth), or how much of
  * each side it takes (Percent). */
 enum class BevelLimit { None, Angle, Group };
+enum class FollowLimit { None, Shape, Group };
 enum class BevelWidth { Offset, Width, Depth, Percent };
 
 /* Boolean: how its targets' shapes go with the layer's own. */
@@ -860,6 +861,12 @@ struct Modifier {
   /* Or a point of the shape itself (its id; 0: the place above): the drawing goes exactly as that point does, so there
    * is nothing to drag or shift. The place above is kept where it rests, for letting go of it. */
   uint64_t deform_point_id = 0, deform_point2_id = 0;
+  /* What it moves (Limit Method): the whole drawing, or only shape `follow_limit_shape` (its id) of this layer or the
+   * points of point group `follow_limit_group` (by name), each by its weight; `follow_limit_invert`: all but those. */
+  FollowLimit follow_limit = FollowLimit::None;
+  uint64_t follow_limit_shape = 0;
+  std::string follow_limit_group;
+  bool follow_limit_invert = false;
   /* Not saved: a number of its own for drivers to follow it by when the stack changes (0 until one
    * does). */
   uint64_t uid = 0;
