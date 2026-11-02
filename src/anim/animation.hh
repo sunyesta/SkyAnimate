@@ -68,6 +68,10 @@ Layer *action_owner(Document &doc, uint64_t layer_id);
 /* Every bone layer whose actions reach a layer, nearest first: action_owner, then those around it, since an action
  * animates everything inside its bone layer. */
 std::vector<Layer *> action_owners(Document &doc, uint64_t layer_id);
+struct VectorDrawing;
+/* Puts `drawing`'s keys being edited away under timeline `from` and brings out `to` ("": the mainline), for a drawing
+ * not in the document, as document_set_action does for those that are. */
+void drawing_timeline_swap(VectorDrawing &drawing, const std::string &from, const std::string &to);
 /* Edits action `name` of bone layer `owner` ("" for the mainline). Returns false when there is
  * no such action. */
 bool document_set_action(Document &doc, uint64_t owner, const std::string &name);

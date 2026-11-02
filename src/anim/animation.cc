@@ -1022,6 +1022,15 @@ template<typename T> static void swap_timeline(Channel<T> &ch, T &value, const s
   value = setup;
 }
 
+void drawing_timeline_swap(VectorDrawing &drawing, const std::string &from, const std::string &to)
+{
+  Layer holder;
+  holder.type = LayerType::Vector;
+  holder.drawing = std::move(drawing);
+  layer_for_each_channel(holder, [&](auto &ch, auto &value) { swap_timeline(ch, value, from, to); });
+  drawing = std::move(holder.drawing);
+}
+
 bool document_set_action(Document &doc, uint64_t owner_id, const std::string &name)
 {
   Layer *owner = name.empty() ? nullptr : layer_find(doc, owner_id);

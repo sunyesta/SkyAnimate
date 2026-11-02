@@ -1,6 +1,7 @@
 /* Copy and paste layers (Ctrl C and Ctrl V over the Layers editor), between files too: the copied
  * layers travel as a small document's JSON on the system clipboard, so they paste into another
- * file, or another Open Animate. */
+ * file, or another Open Animate. Shapes copied over the viewport travel the same way, as their layers
+ * holding only those shapes, so pasted over the Layers editor they make a new layer. */
 
 #include <SDL3/SDL.h>
 
@@ -12,6 +13,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "anim/animation.hh"
+#include "anim/deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/drivers.hh"
 #include "core/log.hh"
@@ -89,11 +92,13 @@ static std::vector<uint64_t> picked_layers(const Document &doc)
   return picked;
 }
 
-/* The copied layers as clipboard text: {"open_animate_layers": 1, "document": the layers as a
+/* The copied layers for the clipboard: {"open_animate_layers": 1, "document": the layers as a
  * document of their own, "wrapped": per top layer, whether it sits in a copy of its bone layer (its
  * bones, so weights and Parent Bone can find theirs by name when pasted), "external": the names of
- * layers outside the copy that masks and Draw Order name}. */
-static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &ids)
+ * layers outside the copy that masks and Draw Order name}. `pieces` (optional): each layer holds only
+ * this, by its id, and nothing inside it. */
+static json layers_copy_json(Document &doc, const std::vector<uint64_t> &ids,
+                             const std::map<uint64_t, VectorDrawing> *pieces = nullptr)
 {
   Document mini;
   mini.next_layer_id = doc.next_layer_id;
@@ -105,6 +110,12 @@ static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &
   std::set<uint64_t> materials;
   for (const uint64_t id : ids) {
     Layer copy = *layer_find(doc, id);
+    if (pieces) {
+      copy.children.clear();
+      copy.drawing = pieces->at(id);
+      copy.reference_source = 0;
+      copy.reference = {};
+    }
     tree_walk(copy, [&](Layer &l) {
       /* A reference whose original stays behind pastes as what it shows. */
       if (l.is_reference() && !inside.count(l.reference_source)) {
@@ -176,7 +187,35 @@ static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &
   root["wrapped"] = wrapped;
   root["external"] = external;
   root["document"] = json::parse(oanim_document_to_json(mini));
-  return root.dump();
+  return root;
+}
+
+/* The small document in clipboard text already parsed. False when there is none to read. */
+static bool clipboard_document(const json &root, Document &mini)
+{
+  if (root.is_discarded() || !root.is_object() || !root.contains(CLIPBOARD_KEY) || !root.contains("document")) {
+    return false;
+  }
+  std::string error;
+  if (!oanim_document_from_json(root["document"].dump(), mini, &error)) {
+    report(ReportType::Error, "Paste: " + error);
+    return false;
+  }
+  return true;
+}
+
+/* Materials: one with the same name and look is reused, otherwise it is added. */
+static std::map<uint64_t, uint64_t> clipboard_materials(Document &doc, const Document &mini)
+{
+  std::map<uint64_t, uint64_t> material_map;
+  for (const Material &m : mini.materials) {
+    const auto same = std::find_if(doc.materials.begin(), doc.materials.end(),
+                                   [&](const Material &o) { return o.name == m.name && o.style == m.style; });
+    material_map[m.id] = same != doc.materials.end()
+                             ? same->id
+                             : material_add(doc, material_unique_name(doc, m.name), m.style).id;
+  }
+  return material_map;
 }
 
 /* Pastes clipboard text above the active layer, in its group. Returns the pasted top layers' ids
@@ -184,13 +223,8 @@ static std::string layers_copy_text(Document &doc, const std::vector<uint64_t> &
 static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string &text)
 {
   const json root = json::parse(text, nullptr, false);
-  if (root.is_discarded() || !root.is_object() || !root.contains(CLIPBOARD_KEY) || !root.contains("document")) {
-    return {};
-  }
   Document mini;
-  std::string error;
-  if (!oanim_document_from_json(root["document"].dump(), mini, &error)) {
-    report(ReportType::Error, "Paste Layers: " + error);
+  if (!clipboard_document(root, mini)) {
     return {};
   }
   std::map<uint64_t, std::string> external;
@@ -227,15 +261,7 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
     }
   }
 
-  /* Materials: one with the same name and look is reused, otherwise it is added. */
-  std::map<uint64_t, uint64_t> material_map;
-  for (const Material &m : mini.materials) {
-    const auto same = std::find_if(doc.materials.begin(), doc.materials.end(),
-                                   [&](const Material &o) { return o.name == m.name && o.style == m.style; });
-    material_map[m.id] = same != doc.materials.end()
-                             ? same->id
-                             : material_add(doc, material_unique_name(doc, m.name), m.style).id;
-  }
+  const std::map<uint64_t, uint64_t> material_map = clipboard_materials(doc, mini);
 
   /* Taken out of their holders, with their bones and materials made this document's. */
   std::vector<Layer> items;
@@ -433,8 +459,412 @@ static std::vector<uint64_t> layers_paste_text(Document &doc, const std::string 
   return pasted;
 }
 
+template<typename F> static void drawing_channels(VectorDrawing &drawing, F &&f)
+{
+  for (MeshPoint &p : drawing.points) {
+    f(p.pos_keys);
+    f(p.radius_keys);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      f(cp.curvature_keys);
+      f(cp.handle_in_keys);
+      f(cp.handle_out_keys);
+    }
+  }
+}
+
+/* Leaves in `drawing` only what drawing_duplicate_selected just copied, nothing selected. */
+static void only_the_copy(VectorDrawing &drawing)
+{
+  std::vector<bool> others(drawing.points.size());
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    others[i] = !drawing.points[i].selected;
+  }
+  drawing_remove_points(drawing, others);
+  for (MeshPoint &p : drawing.points) {
+    p.selected = false;
+  }
+}
+
+/* Copies what Shift D would of each drawing being edited, as its layer holding only that, and beside each how it
+ * shows now (on this frame, bones and deforms included: "points" [x, y, radius], "curves" [in x, in y, out x, out y,
+ * curvature] per curve point, in its layer's space) and where that layer is ("world"), for a paste without keys.
+ * Its keys are kept with the mainline's out, whichever timeline is being edited. Returns how many shapes. */
+static int shapes_copy(Context &C)
+{
+  Document &doc = *C.document;
+  std::map<uint64_t, VectorDrawing> pieces;
+  std::vector<uint64_t> ids;
+  json shown = json::array();
+  int shapes = 0;
+  for (Layer *layer : editable_layers(C)) {
+    if (layer->type != LayerType::Vector) {
+      continue;
+    }
+    VectorDrawing piece = layer_drawing(doc, *layer);
+    VectorDrawing flat = piece;
+    const std::vector<Transform2D> skins = layer_point_skins(doc, *layer);
+    for (size_t i = 0; i < flat.points.size() && i < skins.size(); i++) {
+      flat.points[i].pos = skins[i].apply(flat.points[i].pos);
+    }
+    for (Curve &curve : flat.curves) {
+      for (CurvePoint &cp : curve.points) {
+        if (size_t(cp.point) < skins.size()) {
+          cp.handle_in = skins[size_t(cp.point)].apply_vector(cp.handle_in);
+          cp.handle_out = skins[size_t(cp.point)].apply_vector(cp.handle_out);
+        }
+      }
+    }
+    if (!drawing_duplicate_selected(piece)) {
+      continue;
+    }
+    drawing_duplicate_selected(flat);
+    only_the_copy(piece);
+    only_the_copy(flat);
+    const bool in_action = !doc.action.empty() &&
+                           (layer->id == doc.action_layer || layer_inside(doc, layer->id, doc.action_layer));
+    if (in_action) {
+      drawing_timeline_swap(piece, doc.action, "");
+    }
+    json points = json::array(), curves = json::array();
+    for (const MeshPoint &p : flat.points) {
+      points.push_back({p.pos.x, p.pos.y, p.radius});
+    }
+    for (const Curve &curve : flat.curves) {
+      json row = json::array();
+      for (const CurvePoint &cp : curve.points) {
+        row.push_back({cp.handle_in.x, cp.handle_in.y, cp.handle_out.x, cp.handle_out.y, cp.curvature});
+      }
+      curves.push_back(std::move(row));
+    }
+    const Transform2D world = layer_world_transform(doc, layer->id);
+    shown.push_back({{"world", {world.a, world.b, world.c, world.d, world.tx, world.ty}},
+                     {"points", std::move(points)},
+                     {"curves", std::move(curves)}});
+    shapes += int(piece.shapes.size());
+    ids.push_back(layer->id);
+    pieces[layer->id] = std::move(piece);
+  }
+  if (ids.empty()) {
+    return 0;
+  }
+  json root = layers_copy_json(doc, ids, &pieces);
+  root["shapes"] = std::move(shown);
+  clipboard_set(root.dump());
+  return std::max(shapes, 1);
+}
+
+/* `piece` with no keys, as it showed when copied: that pose is its setup. */
+static void piece_as_shown(VectorDrawing &piece, const json &shown)
+{
+  drawing_channels(piece, [](auto &ch) { ch = {}; });
+  const json &points = shown["points"];
+  for (size_t i = 0; i < piece.points.size() && i < points.size(); i++) {
+    MeshPoint &p = piece.points[i];
+    p.pos = p.setup_pos = {points[i][0].get<float>(), points[i][1].get<float>()};
+    p.transform = {};
+    p.radius = points[i][2].get<float>();
+  }
+  const json &curves = shown["curves"];
+  for (size_t c = 0; c < piece.curves.size() && c < curves.size(); c++) {
+    for (size_t k = 0; k < piece.curves[c].points.size() && k < curves[c].size(); k++) {
+      CurvePoint &cp = piece.curves[c].points[k];
+      const json &row = curves[c][k];
+      cp.handle_in = cp.setup_in = {row[0].get<float>(), row[1].get<float>()};
+      cp.handle_out = cp.setup_out = {row[2].get<float>(), row[3].get<float>()};
+      cp.change_in = cp.change_out = {};
+      cp.curvature = row[4].get<float>();
+    }
+  }
+}
+
+/* `piece` carried by `to`, keys and all: a key holds a change from setup, so it takes the turn and scale only. A
+ * handle's key is a turn and a length. */
+static void piece_transform(VectorDrawing &piece, const Transform2D &to)
+{
+  const float scale = std::sqrt(std::fabs(to.a * to.d - to.b * to.c));
+  const auto keys_along = [&](Channel<float2> &ch) {
+    const auto each = [&](std::vector<Key<float2>> &keys) {
+      for (Key<float2> &k : keys) {
+        k.value = to.apply_vector(k.value);
+      }
+    };
+    each(ch.keys);
+    for (auto &[name, keys] : ch.actions) {
+      each(keys);
+    }
+  };
+  const auto keys_scaled = [&](Channel<float2> &ch) {
+    const auto each = [&](std::vector<Key<float2>> &keys) {
+      for (Key<float2> &k : keys) {
+        k.value.y *= scale;
+      }
+    };
+    each(ch.keys);
+    for (auto &[name, keys] : ch.actions) {
+      each(keys);
+    }
+  };
+  for (MeshPoint &p : piece.points) {
+    p.pos = to.apply(p.pos);
+    p.setup_pos = to.apply(p.setup_pos);
+    p.transform = to.apply_vector(p.transform);
+    keys_along(p.pos_keys);
+  }
+  for (Curve &curve : piece.curves) {
+    for (CurvePoint &cp : curve.points) {
+      cp.handle_in = to.apply_vector(cp.handle_in);
+      cp.handle_out = to.apply_vector(cp.handle_out);
+      cp.setup_in = to.apply_vector(cp.setup_in);
+      cp.setup_out = to.apply_vector(cp.setup_out);
+      cp.change_in.y *= scale;
+      cp.change_out.y *= scale;
+      keys_scaled(cp.handle_in_keys);
+      keys_scaled(cp.handle_out_keys);
+    }
+  }
+}
+
+/* Pastes copied shapes into the active drawing, on top, and selects them. */
+static OpStatus shapes_paste(Context &C, const json &root)
+{
+  Document &doc = *C.document;
+  Layer *target = document_active_layer(doc);
+  if (!target || target->type != LayerType::Vector || target->is_reference()) {
+    report(ReportType::Warning, target && target->is_reference() ? "A copy (reference layer) can't get new shapes: pick a "
+                                                                   "drawing layer to paste into"
+                                                                 : "Pick a drawing layer to paste shapes into");
+    return OpStatus::Cancelled;
+  }
+  Document mini;
+  if (!clipboard_document(root, mini)) {
+    return OpStatus::Cancelled;
+  }
+  const bool keyframes = op_arg_bool(C, "keyframes");
+  const bool keep_place = !op_has_arg(C, "keep_place") || op_arg_bool(C, "keep_place");
+  op_arg_used(C, "keyframes", keyframes ? "1" : "0");
+  op_arg_used(C, "keep_place", keep_place ? "1" : "0");
+  animation_record(doc);
+
+  std::map<std::string, uint64_t> dest_bones;
+  if (const Layer *armature = layer_armature(doc, target->id)) {
+    for (const Bone &b : armature->bones) {
+      dest_bones[b.name] = b.id;
+    }
+  }
+  std::set<std::string> dest_actions;
+  bool in_action = false;
+  for (const Layer *owner : action_owners(doc, target->id)) {
+    dest_actions.insert(owner->actions.begin(), owner->actions.end());
+    in_action = in_action || (!doc.action.empty() && owner->id == doc.action_layer);
+  }
+  const std::map<uint64_t, uint64_t> material_map = clipboard_materials(doc, mini);
+  const json wrapped = root.value("wrapped", json::array());
+  const json &shown = root["shapes"];
+  const Transform2D here = layer_world_transform(doc, target->id).inverted();
+  std::set<std::string> skipped;
+  const size_t had_points = target->drawing.points.size();
+  int shapes = 0;
+
+  for (size_t i = 0; i < mini.layers.size() && i < shown.size(); i++) {
+    Layer &top = mini.layers[i];
+    const bool held = i < wrapped.size() && wrapped[i].is_boolean() && wrapped[i].get<bool>() && top.is_bone_layer() &&
+                      top.children.size() == 1;
+    VectorDrawing piece = std::move((held ? top.children.front() : top).drawing);
+    if (keyframes) {
+      /* Keys of actions this layer has no part in have nowhere to go. */
+      drawing_channels(piece, [&](auto &ch) {
+        std::vector<std::string> gone;
+        for (const auto &[name, keys] : ch.actions) {
+          if (!name.empty() && !dest_actions.count(name)) {
+            gone.push_back(name);
+          }
+        }
+        for (const std::string &name : gone) {
+          ch.actions.erase(name);
+          skipped.insert(name);
+        }
+      });
+      if (in_action) {
+        drawing_timeline_swap(piece, "", doc.action);
+      }
+    }
+    else {
+      piece_as_shown(piece, shown[i]);
+    }
+    if (keep_place) {
+      const json &w = shown[i]["world"];
+      Transform2D world;
+      world.a = w[0].get<float>();
+      world.b = w[1].get<float>();
+      world.c = w[2].get<float>();
+      world.d = w[3].get<float>();
+      world.tx = w[4].get<float>();
+      world.ty = w[5].get<float>();
+      piece_transform(piece, here * world);
+    }
+    /* Weights find this layer's bones by name, as a pasted layer's do; a point left with none is a new point. */
+    std::map<uint64_t, uint64_t> bone_map;
+    if (held) {
+      for (const Bone &b : top.bones) {
+        const auto it = dest_bones.find(b.name);
+        bone_map[b.id] = it != dest_bones.end() ? it->second : 0;
+      }
+    }
+    for (MeshPoint &p : piece.points) {
+      std::vector<BoneWeight> kept;
+      for (BoneWeight w : p.weights) {
+        if (const auto it = bone_map.find(w.bone); it != bone_map.end() && it->second) {
+          w.bone = it->second;
+          kept.push_back(w);
+        }
+      }
+      p.weights = std::move(kept);
+    }
+    for (Shape &s : piece.shapes) {
+      const auto it = material_map.find(s.material);
+      s.material = s.material && it != material_map.end() ? it->second : 0;
+    }
+    VectorDrawing &drawing = target->drawing;
+    const size_t first_point = drawing.points.size(), first_shape = drawing.shapes.size();
+    drawing_append_selected(drawing, piece);
+    for (size_t k = first_shape; k < drawing.shapes.size(); k++) {
+      drawing.shapes[k].id = 0;
+      /* Its own name, numbered only if this drawing has it already. */
+      const std::string &name = piece.shapes[k - first_shape].name;
+      std::string free_name = name;
+      for (int n = 2; std::any_of(drawing.shapes.begin(), drawing.shapes.begin() + long(k),
+                                  [&](const Shape &s) { return s.name == free_name; });
+           n++)
+      {
+        free_name = name + " " + std::to_string(n);
+      }
+      drawing.shapes[k].name = free_name;
+    }
+    drawing_ensure_ids(drawing);
+    /* Point groups this drawing has too keep what's in them. */
+    for (const PointGroup &group : piece.groups) {
+      const auto own = std::find_if(drawing.groups.begin(), drawing.groups.end(),
+                                    [&](const PointGroup &g) { return g.name == group.name; });
+      if (own == drawing.groups.end()) {
+        continue;
+      }
+      for (size_t k = 0; k < piece.points.size(); k++) {
+        if (const auto it = group.weights.find(piece.points[k].id); it != group.weights.end()) {
+          own->weights[drawing.points[first_point + k].id] = it->second;
+        }
+      }
+    }
+    shapes += int(piece.shapes.size());
+  }
+  VectorDrawing &drawing = target->drawing;
+  if (drawing.points.size() == had_points) {
+    report(ReportType::Warning, "Nothing to paste: copy shapes with Ctrl C over the viewport first");
+    return OpStatus::Cancelled;
+  }
+  layer_touch(*target);
+  /* Off the setup frame, under what moves the layer there: stored so that it shows where it was copied from. */
+  if (keep_place && !keyframes && doc.frame_current != 0) {
+    const std::vector<Transform2D> skins = layer_point_skins(doc, *target);
+    for (size_t i = had_points; i < drawing.points.size() && i < skins.size(); i++) {
+      MeshPoint &p = drawing.points[i];
+      p.pos = p.setup_pos = skins[i].inverted().apply(p.pos);
+    }
+    for (Curve &curve : drawing.curves) {
+      for (CurvePoint &cp : curve.points) {
+        if (size_t(cp.point) >= had_points && size_t(cp.point) < skins.size()) {
+          const Transform2D back = skins[size_t(cp.point)].inverted();
+          cp.handle_in = cp.setup_in = back.apply_vector(cp.handle_in);
+          cp.handle_out = cp.setup_out = back.apply_vector(cp.handle_out);
+        }
+      }
+    }
+  }
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    drawing.points[i].selected = i >= had_points;
+  }
+  layer_touch(*target);
+  /* Keys brought along say where the points are on this frame, not the frame they were copied on. */
+  if (keyframes) {
+    animation_evaluate(doc, doc.frame_current);
+  }
+  std::string message = "Pasted " + std::to_string(std::max(shapes, 1)) + (shapes == 1 ? " shape" : " shapes") + " into " +
+                        target->name;
+  if (!skipped.empty()) {
+    message += ". Left out the keys of ";
+    for (const std::string &name : skipped) {
+      message += (name == *skipped.begin() ? "" : ", ") + name;
+    }
+    message += ": this layer isn't in those actions";
+  }
+  report(ReportType::Info, message);
+  C.undo_name = "Paste Shapes";
+  return OpStatus::Finished;
+}
+
 void layer_clipboard_operators_register()
 {
+  {
+    OperatorType ot;
+    ot.idname = "mesh.copy";
+    ot.name = "Copy Shapes";
+    ot.description = "Copy the selected shapes and pieces of line, as Shift D would, to the clipboard, to paste into "
+                     "another layer or file (Ctrl C over the viewport)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) {
+      if (!C.document) {
+        return false;
+      }
+      const std::vector<Layer *> editing = editable_layers(C);
+      return std::any_of(editing.begin(), editing.end(), [](const Layer *l) { return l->type == LayerType::Vector; });
+    };
+    ot.exec = [](Context &C) {
+      const int shapes = shapes_copy(C);
+      if (shapes == 0) {
+        report(ReportType::Warning, "Select a shape, or at least two connected points of a line, to copy");
+        return OpStatus::Cancelled;
+      }
+      report(ReportType::Info, "Copied " + std::to_string(shapes) + (shapes == 1 ? " shape" : " shapes"));
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "mesh.paste";
+    ot.name = "Paste Shapes";
+    ot.description = "Paste copied shapes into the active drawing, on top, and select them (Ctrl V over the viewport). "
+                     "Copied layers paste as layers";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    const auto for_shapes = [](const OpArgs &args) {
+      const auto it = args.find("shapes");
+      return it != args.end() && it->second == "1";
+    };
+    OpProperty keep_place = op_bool_property(
+        "keep_place", "Keep Place",
+        "They land exactly where they looked when copied, whatever this layer's place. Off, the same numbers in this "
+        "layer's own space",
+        "1");
+    OpProperty keyframes = op_bool_property(
+        "keyframes", "Keyframes",
+        "Bring their keys too, on the mainline and on the action lines this layer has. Off, they're pasted as they looked "
+        "when copied, and that pose is their setup",
+        "0");
+    keep_place.visible = for_shapes;
+    keyframes.visible = for_shapes;
+    ot.props = {std::move(keep_place), std::move(keyframes)};
+    ot.exec = [](Context &C) {
+      const json root = json::parse(clipboard_get(), nullptr, false);
+      if (!root.is_discarded() && root.is_object() && root.contains("shapes")) {
+        op_arg_used(C, "shapes", "1");
+        return shapes_paste(C, root);
+      }
+      return operator_call(C, "layer.paste");
+    };
+    operators().add(std::move(ot));
+  }
   {
     OperatorType ot;
     ot.idname = "layer.copy";
@@ -449,7 +879,7 @@ void layer_clipboard_operators_register()
       if (ids.empty()) {
         return OpStatus::Cancelled;
       }
-      clipboard_set(layers_copy_text(doc, ids));
+      clipboard_set(layers_copy_json(doc, ids).dump());
       report(ReportType::Info, ids.size() == 1 ? "Copied " + layer_find(doc, ids.front())->name
                                                : "Copied " + std::to_string(ids.size()) + " layers");
       return OpStatus::Finished;

@@ -107,6 +107,8 @@ KEYMAP = (
     ("Viewport", "mesh.shape_lower", "PAGE_DOWN", {}),
     ("Viewport", "mesh.shape_raise_to_front", "PAGE_UP", {"shift": True}),
     ("Viewport", "mesh.shape_lower_to_back", "PAGE_DOWN", {"shift": True}),
+    ("Viewport", "mesh.copy", "C", {"ctrl": True}),
+    ("Viewport", "mesh.paste", "V", {"ctrl": True}),
     ("Viewport", "mesh.select_all", "A", {}),
     ("Viewport", "mesh.select_none", "A", {"alt": True}),
     ("Viewport", "mesh.select_invert", "I", {"ctrl": True}),
