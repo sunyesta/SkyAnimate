@@ -13784,10 +13784,13 @@ static void viewport_draw_contents(Area &area, Context &C)
                                 : nullptr;
     /* With the active bone layer, the rest of its family: the bone layer around it and the sub bone
      * groups shown inside (anim/bone_family.hh), drawn as other bone layers are. */
-    std::set<uint64_t> family;
+    std::set<uint64_t> family, worked_in;
     if (const Layer *active = document_active_layer(doc); active && active->is_bone_layer()) {
       for (const Layer *l : armature_family(doc, active->id)) {
         family.insert(l->id);
+      }
+      for (const Layer *l : armature_and_inside(doc, active->id)) {
+        worked_in.insert(l->id);
       }
     }
     const auto visit = [&](auto &&self, const std::vector<Layer> &list, bool shown) -> void {
@@ -13798,13 +13801,13 @@ static void viewport_draw_contents(Area &area, Context &C)
              (ov.armature == ArmatureDisplay::Selected && (l.selected || l.id == doc.active_layer || family.contains(l.id))) ||
              &l == painting))
         {
-          /* Only the bone layer being worked in is drawn solid. */
+          /* The bone layer being worked in and the sub bone groups inside it, worked with it, are drawn solid. */
           g_plain_armature = doc.frame_current != 0 ? 0
                              : g_bone_modal.active               ? g_bone_modal.armature
                              : g_gizmo.mode != GizmoMode::None  ? g_gizmo.armature
                                                                  : 0;
-          /* Faint, but what's picked in the family shows: A from the outside picks bones here too. */
-          draw_bones(dl, doc, l, view, l.id != doc.active_layer, &l == painting || family.contains(l.id));
+          /* Those around it are faint, but what's picked in them shows. */
+          draw_bones(dl, doc, l, view, !worked_in.contains(l.id) && l.id != doc.active_layer, &l == painting || family.contains(l.id));
         }
         self(self, l.children, visible);
       }
