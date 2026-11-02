@@ -780,6 +780,9 @@ static json layer_to_json(const Layer &layer)
       if (b.swap_layer != 0) {
         bj["swap"] = {b.swap_layer, b.swap_bone};
       }
+      if (b.outer_bone != 0) {
+        bj["outer_parent"] = {b.outer_layer, b.outer_bone};
+      }
       if (b.inherit_scale != InheritScale::Full) {
         bj["inherit_scale"] = b.inherit_scale == InheritScale::Uniform ? "UNIFORM" : "NONE";
       }
@@ -2478,6 +2481,12 @@ static Layer layer_from_json(const json &j, int depth)
     {
       b.swap_layer = (*it)[0].get<uint64_t>();
       b.swap_bone = (*it)[1].get<uint64_t>();
+    }
+    if (const auto it = bj.find("outer_parent"); it != bj.end() && it->is_array() && it->size() == 2 &&
+        (*it)[0].is_number_unsigned() && (*it)[1].is_number_unsigned())
+    {
+      b.outer_layer = (*it)[0].get<uint64_t>();
+      b.outer_bone = (*it)[1].get<uint64_t>();
     }
     b.local_location = get_bool(bj, "local_location", true);
     if (const auto it = bj.find("inherit_scale"); it != bj.end() && it->is_string()) {

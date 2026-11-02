@@ -195,6 +195,8 @@ static void symmetrize_bones(Layer &armature)
     const BonePose &bp = was[i];
     const std::vector<BonePose> now = armature_pose(armature, true);
     Bone &b = armature.bones[i];
+    /* It rests mirrored in this bone layer: nothing says which of the bones around it would hang from there. */
+    b.outer_layer = b.outer_bone = 0;
     const BonePose *parent = b.parent ? bone_pose_find(now, b.parent) : nullptr;
     const Transform2D to_parent = (parent ? parent->setup : Transform2D()).inverted();
     const float2 h = to_parent.apply(reflect(bp.setup_head)), t = to_parent.apply(reflect(bp.setup_tail));

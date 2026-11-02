@@ -592,6 +592,16 @@ struct Bone {
   std::string name;
   /* The parent bone's id, or 0 for a root. */
   uint64_t parent = 0;
+  /* A parent in a bone layer around this one: bone `outer_bone` of `outer_layer` (0: none). Inside its own bone layer
+   * the bone is a root, so nothing there can loop, and it hangs from that bone as from any parent: its position is in
+   * that bone's frame, which `outer_setup` and `outer_pose` hold in this bone layer's space, at rest and now (worked out
+   * every frame, never saved; bone_outer_parents_update). */
+  uint64_t outer_layer = 0;
+  uint64_t outer_bone = 0;
+  Transform2D outer_setup, outer_pose;
+  /* Set as a move starts (bones_mark_carried), never saved: it comes along with a bone moving in a bone layer around
+   * this one, so picked or not it isn't moved itself. */
+  bool outer_carried = false;
   /* A bone swap (anim/bone_family.hh): this bone stands in for bone `swap_bone` of bone layer
    * `swap_layer`, its counterpart in another child of a switch (a bent leg's shin for the straight
    * leg's). 0: none. Swaps don't share poses; they say which bone is which across children. */

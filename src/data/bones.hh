@@ -53,6 +53,14 @@ struct ArmaturePoseCacheScope {
 /* The pose without bone dynamics: where the keys (constraints and IK included) put the bones.
  * Editing works from it, so a dynamic bone lands where it is put, the physics swinging after. */
 std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame);
+/* A root's frame: that of its parent in a bone layer around it, or none. */
+Transform2D bone_outer_frame(const Bone &bone, bool setup_frame);
+/* Every bone with a parent in a bone layer around its own gets that parent's frame, the outermost bone layers first as
+ * those inside hang from them. One whose parent has gone, or whose bone layer has left that one, lets go and stays
+ * where it rests. */
+void bone_outer_parents_update(Document &doc);
+/* For a move of the bones picked in `moving`: marks those a bone moving in another of them carries (Bone::outer_carried). */
+void bones_mark_carried(Document &doc, const std::vector<Layer *> &moving);
 /* Interactive IK while posing (Moho's): turns the bone and its parents (up to a bone Ignored by
  * IK) so the bone's tip reaches `goal` (bone layer space); an Arc IK bone bends its chain evenly.
  * Returns false when the bone has no parent to turn with. */

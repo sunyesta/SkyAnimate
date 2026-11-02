@@ -2246,6 +2246,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::dict d;
       d["name"] = b.name;
       d["parent"] = parent ? parent->name : std::string();
+      const Layer *outer = b.outer_bone != 0 ? layer_find(*current_context().document, b.outer_layer) : nullptr;
+      const Bone *outer_bone = outer ? bone_find(*outer, b.outer_bone) : nullptr;
+      d["outer_parent"] = outer_bone ? py::object(py::make_tuple(outer->name, outer_bone->name)) : py::object(py::none());
       d["position"] = py::make_tuple(b.position.x, b.position.y);
       d["angle"] = b.angle;
       d["setup_position"] = py::make_tuple(b.setup_position.x, b.setup_position.y);

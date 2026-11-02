@@ -247,6 +247,8 @@ add_test(NAME bone_move_options
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_move_options.py)
 add_test(NAME link_data
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_link_data.py)
+add_test(NAME bone_outer_parent
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_outer_parent.py)
 add_test(NAME weight_tools_active
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_weight_tools_active.py)
 add_test(NAME parent_bone_weights

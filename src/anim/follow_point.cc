@@ -211,6 +211,9 @@ static PointReader point_reader(Document &doc, const Follower &f, ShapesRead &re
     if (const BonePose *parent = bone_pose_find(poses, f.bone->parent)) {
       r.skin = parent->skin;
     }
+    else if (f.bone->outer_bone != 0) {
+      r.skin = f.bone->outer_pose * f.bone->outer_setup.inverted();
+    }
   }
   const auto key = std::make_pair(f.owner->id, r.run.name);
   const auto kept = read.shapes.find(key);

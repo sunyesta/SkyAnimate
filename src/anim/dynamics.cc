@@ -1077,7 +1077,7 @@ int dynamics_bake(Document &doc, Layer *only)
           continue;
         }
         const BonePose *parent = bone_pose_find(poses, b.parent);
-        const Transform2D local = (parent ? parent->pose.inverted() : Transform2D()) * poses[i].pose;
+        const Transform2D local = (parent ? parent->pose : bone_outer_frame(b, false)).inverted() * poses[i].pose;
         const BoneDynamicsState &d = it->second;
         baked.push_back({&armature, b.id, f, pose_angle(local), float2(local.tx, local.ty), d.scale, d.angle_on,
                          d.position_on, d.scale_on});

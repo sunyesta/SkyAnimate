@@ -689,6 +689,7 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
    * shown frame, for constraints' delays). */
   const int shown = doc.frame_current;
   doc.frame_current = frame;
+  bone_outer_parents_update(doc);
   dynamics_update(doc);
   /* Follow Point and Limit to Shape read what's drawn now, dynamics included. */
   follow_points_update(doc);
@@ -798,6 +799,7 @@ void animation_sync(Document &doc)
     switches_resolve(doc, doc.frame_current);
     /* References follow edits to their originals at once, and edits to them become theirs. */
     references_capture(doc);
+    bone_outer_parents_update(doc);
     dynamics_update(doc);
     follow_points_update(doc);
     shape_limits_update(doc);

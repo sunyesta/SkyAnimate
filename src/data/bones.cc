@@ -283,7 +283,7 @@ void bone_shape_limit_affect(const Layer &armature, Bone &bone)
     }
     const std::vector<BonePose> poses = armature_keyed_pose(armature, false);
     const BonePose *parent = bone_pose_find(poses, bone.parent);
-    const Transform2D up = parent ? parent->pose : Transform2D();
+    const Transform2D up = parent ? parent->pose : bone_outer_frame(bone, false);
     const float2 head = up.apply(bone.position);
     bone.position = up.inverted().apply(head + (bone_shape_limit(c, head) - head) * w);
   }
@@ -405,6 +405,10 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
       self(self, pi, depth + 1);
       parent_setup = poses[pi].setup;
       parent_pose = poses[pi].pose;
+    }
+    else if (bone.outer_bone != 0) {
+      parent_setup = bone.outer_setup;
+      parent_pose = bone_outer_frame(bone, setup_frame);
     }
     BonePose &p = poses[i];
     p.id = bone.id;
@@ -1028,7 +1032,7 @@ void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<flo
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
     const bool has_parent = parent != index.end() && parent->second != i;
-    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : bone_outer_frame(b, true);
     redo[i] = changed[i] || (has_parent && redo[parent->second]);
     if (redo[i]) {
       const Transform2D to_parent = parent_frame.inverted();
@@ -1123,6 +1127,12 @@ static bool bone_picked(const Bone &b)
 }
 
 /* True when an ancestor of the bone passes the test. */
+/* What a move moves: what's picked, but for what comes along with a bone in a bone layer around it. */
+static bool bone_moves(const Bone &b)
+{
+  return bone_picked(b) && !b.outer_carried;
+}
+
 template<typename F> static bool ancestor_is(const Layer &armature, const Bone &bone, F &&test)
 {
   const Bone *p = bone_find(armature, bone.parent);
@@ -1204,7 +1214,9 @@ void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, 
   const std::vector<float> was_turned = turned_angles(armature, original);
   armature.bones = original;
   const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
-  const auto moves = [&](const Bone &b) { return grabs_whole(b) || grabs_tip(armature, b, setup_frame); };
+  const auto moves = [&](const Bone &b) {
+    return !b.outer_carried && (grabs_whole(b) || grabs_tip(armature, b, setup_frame));
+  };
   std::vector<std::pair<size_t, bool>> todo;
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
@@ -1216,7 +1228,7 @@ void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, 
   for (const auto &[i, whole] : todo) {
     Bone &b = armature.bones[i];
     const BonePose *parent = bone_pose_find(poses, b.parent);
-    const Transform2D to_parent = parent ? parent->pose.inverted() : Transform2D();
+    const Transform2D to_parent = parent ? parent->pose.inverted() : bone_outer_frame(b, setup_frame).inverted();
     if (whole) {
       b.position += to_parent.apply_vector(delta);
       continue;
@@ -1258,7 +1270,7 @@ void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original
   std::vector<bool> turns(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
-    turns[i] = bone_picked(b) && !ancestor_is(armature, b, bone_picked);
+    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (turns[i]) {
@@ -1298,7 +1310,7 @@ void armature_scale_selected(Layer &armature, const std::vector<Bone> &original,
   std::vector<bool> scales(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
-    scales[i] = bone_picked(b) && !ancestor_is(armature, b, bone_picked);
+    scales[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (scales[i]) {
@@ -1385,11 +1397,11 @@ static void armature_map_selected_by(Layer &armature, const std::vector<Bone> &o
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
     const bool has_parent = parent != index.end() && parent->second != i;
-    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
-    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : bone_outer_frame(b, setup_frame);
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : bone_outer_frame(b, true);
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
-    const bool picked = bone_picked(original[i]);
-    const bool child_of_picked = has_parent && bone_picked(original[parent->second]);
+    const bool picked = bone_moves(original[i]);
+    const bool child_of_picked = has_parent && bone_moves(original[parent->second]);
     if (picked || child_of_picked) {
       /* Where the base and a point along the bone go: through the map when picked; an unpicked
        * child of a picked bone stays where it was. */
@@ -1449,14 +1461,16 @@ void armature_keep_children(Layer &armature, const std::vector<Bone> &original, 
     index[armature.bones[i].id] = i;
   }
   /* Picked to move: a connected bone's base is its parent's tip, so that alone doesn't pick it. */
-  const auto moved = [](const Bone &b) { return b.selected || b.select_tail || (b.select_head && !b.connected); };
+  const auto moved = [](const Bone &b) {
+    return !b.outer_carried && (b.selected || b.select_tail || (b.select_head && !b.connected));
+  };
   std::vector<Transform2D> frame(n), rest(n);
   for (const int i : bones_parents_first(armature)) {
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
     const bool has_parent = parent != index.end() && parent->second != i;
-    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
-    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : bone_outer_frame(b, setup_frame);
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : bone_outer_frame(b, true);
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     if (has_parent && !moved(original[i]) && moved(original[parent->second])) {
       const float reach = b.length > 1e-4f ? b.length : 1.0f;
@@ -1599,8 +1613,8 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
     Bone &b = armature.bones[i];
     const auto parent = index.find(b.parent);
     const bool has_parent = parent != index.end() && parent->second != i;
-    const Transform2D parent_frame = has_parent ? frame[parent->second] : Transform2D();
-    const Transform2D parent_rest = has_parent ? rest[parent->second] : Transform2D();
+    const Transform2D parent_frame = has_parent ? frame[parent->second] : bone_outer_frame(b, setup_frame);
+    const Transform2D parent_rest = has_parent ? rest[parent->second] : bone_outer_frame(b, true);
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     if (source[i] >= 0) {
       const Bone &src = armature.bones[source[i]];
@@ -2020,6 +2034,89 @@ const Layer *layer_binding_group(const Document &doc, uint64_t layer_id)
     return group;
   }
   return binding_group_in(doc.layers, nullptr, layer_id);
+}
+
+Transform2D bone_outer_frame(const Bone &bone, bool setup_frame)
+{
+  return bone.outer_bone == 0 ? Transform2D() : setup_frame ? bone.outer_setup : bone.outer_pose;
+}
+
+void bones_mark_carried(Document &doc, const std::vector<Layer *> &moving)
+{
+  const auto root_of = [](const Layer &rig, const Bone *b) {
+    for (int guard = 0; guard < 256; guard++) {
+      const Bone *up = bone_find(rig, b->parent);
+      if (!up || up == b) {
+        break;
+      }
+      b = up;
+    }
+    return b;
+  };
+  for (Layer *rig : moving) {
+    for (Bone &b : rig->bones) {
+      b.outer_carried = false;
+      const Bone *root = root_of(*rig, &b);
+      /* Up through the bone layers around it, as far as bones hang there. */
+      for (int guard = 0; guard < 64 && root && root->outer_bone != 0 && !b.outer_carried; guard++) {
+        const uint64_t id = root->outer_layer;
+        const Layer *outer = std::find_if(moving.begin(), moving.end(), [&](const Layer *l) { return l->id == id; }) != moving.end()
+                                 ? layer_find(doc, id)
+                                 : nullptr;
+        const Bone *parent = outer ? bone_find(*outer, root->outer_bone) : nullptr;
+        for (const Bone *at = parent; at && !b.outer_carried; at = at->parent != at->id ? bone_find(*outer, at->parent) : nullptr) {
+          b.outer_carried = bone_picked(*at);
+        }
+        root = parent ? root_of(*outer, parent) : nullptr;
+      }
+    }
+  }
+}
+
+void bone_outer_parents_update(Document &doc)
+{
+  const bool setup_frame = doc.frame_current == 0;
+  std::map<uint64_t, std::vector<BonePose>> poses;
+  std::vector<const Layer *> around;
+  const auto visit = [&](auto &&self, std::vector<Layer> &list) -> void {
+    for (Layer &layer : list) {
+      if (!layer.is_bone_layer()) {
+        self(self, layer.children);
+        continue;
+      }
+      for (Bone &b : layer.bones) {
+        if (b.outer_bone == 0) {
+          continue;
+        }
+        const auto outer = std::find_if(around.begin(), around.end(), [&](const Layer *l) { return l->id == b.outer_layer; });
+        const BonePose *parent = nullptr;
+        if (outer != around.end()) {
+          const auto it = poses.find(b.outer_layer);
+          parent = bone_pose_find(it != poses.end() ? it->second : (poses[b.outer_layer] = armature_pose(**outer, setup_frame)),
+                                  b.outer_bone);
+        }
+        if (parent) {
+          b.outer_setup = layer_setup_relative_transform(doc, layer.id, b.outer_layer) * parent->setup;
+          b.outer_pose = layer_relative_transform(doc, layer.id, b.outer_layer) * parent->pose;
+          continue;
+        }
+        const Transform2D rest = b.outer_setup * bone_local(b.setup_position, b.setup_angle, {1.0f, 1.0f});
+        const float2 position = {rest.tx, rest.ty};
+        const float angle = transform_angle(rest);
+        b.position += position - b.setup_position;
+        b.angle += angle - b.setup_angle;
+        b.setup_position = position;
+        b.setup_angle = angle;
+        b.outer_layer = b.outer_bone = 0;
+        b.outer_setup = b.outer_pose = Transform2D();
+      }
+      around.push_back(&layer);
+      self(self, layer.children);
+      around.pop_back();
+      poses.erase(layer.id);
+    }
+  };
+  visit(visit, doc.layers);
 }
 
 static bool sync_in(std::vector<Layer> &list, bool inside)

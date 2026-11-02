@@ -6746,12 +6746,18 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
     const Bone &bone = armature.bones[i];
     const auto parent = std::find_if(armature.bones.begin(), armature.bones.end(),
                                      [&](const Bone &b) { return b.id == bone.parent; });
-    if (!g_relationship_lines || bone.connected || parent == armature.bones.end() || !bone_shown(armature, bone) ||
-        !bone_shown(armature, *parent))
+    /* A parent in a bone layer around this one, as it is here. */
+    const Layer *outer = bone.outer_bone != 0 ? layer_find(doc, bone.outer_layer) : nullptr;
+    const Bone *outer_parent = outer ? bone_find(*outer, bone.outer_bone) : nullptr;
+    if (!g_relationship_lines || bone.connected || (parent == armature.bones.end() && !outer_parent) ||
+        !bone_shown(armature, bone) || (!outer_parent && !bone_shown(armature, *parent)))
     {
       continue;
     }
-    const ImVec2 from = sbs[parent - armature.bones.begin()].tail, to = sbs[i].head;
+    const ImVec2 from = outer_parent ? view.to_screen(layer_world_transform(doc, armature.id)
+                                                          .apply(bone_outer_frame(bone, doc.frame_current == 0).apply({outer_parent->length, 0.0f})))
+                                     : sbs[parent - armature.bones.begin()].tail;
+    const ImVec2 to = sbs[i].head;
     const ImVec2 d = to - from;
     const float len = std::sqrt(d.x * d.x + d.y * d.y);
     for (float t = 0.0f; t < len; t += 8.0f) {
@@ -6801,6 +6807,10 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
           continue;
         }
         const BonePose *parent = bone_pose_find(poses, bone.parent);
+        BonePose outer;
+        outer.setup = bone.outer_setup;
+        outer.pose = bone.outer_pose;
+        parent = !parent && bone.outer_bone != 0 ? &outer : parent;
         /* From the axes its angle is measured in: its parent's, as they rest if it doesn't inherit
          * their turn (Relations). */
         const float base = bone_parent_axes_angle(bone, parent, doc.frame_current == 0);
@@ -7732,6 +7742,7 @@ static std::vector<Layer *> bones_moving(Document &doc, const Layer &armature)
       moving.push_back(l);
     }
   }
+  bones_mark_carried(doc, moving);
   return moving;
 }
 

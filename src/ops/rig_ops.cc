@@ -11,6 +11,7 @@
 
 #include "anim/switch.hh"
 #include "anim/bone_family.hh"
+#include "anim/draw_order.hh"
 #include "anim/action_mirror.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -301,6 +302,48 @@ static void bone_place(Bone &bone, const Transform2D &parent, float2 head, float
   bone.angle = std::atan2(t.y - h.y, t.x - h.x);
   bone.length = distance(h, t);
   bone.scale = {1.0f, 1.0f};
+}
+
+/* Bone `b` of `inner` hangs from bone `parent` of `outer`, a bone layer around it, staying where it rests. */
+static bool bone_outer_parent_set(Document &doc, Layer &inner, Bone &b, Layer &outer, uint64_t parent)
+{
+  const std::vector<BonePose> poses = armature_pose(inner);
+  const std::vector<BonePose> up = armature_pose(outer);
+  const BonePose *self = bone_pose_find(poses, b.id);
+  const BonePose *pp = bone_pose_find(up, parent);
+  if (!self || !pp || !layer_inside(doc, inner.id, outer.id)) {
+    return false;
+  }
+  const Transform2D frame = layer_setup_relative_transform(doc, inner.id, outer.id) * pp->setup;
+  const float length = b.length;
+  const float2 scale = b.scale;
+  bone_place(b, frame, self->setup_head, self->setup_tail);
+  b.length = length;
+  b.scale = scale;
+  b.setup_position = b.position;
+  b.setup_angle = b.angle;
+  b.parent = 0;
+  b.connected = false;
+  b.outer_layer = outer.id;
+  b.outer_bone = parent;
+  b.outer_setup = b.outer_pose = frame;
+  return true;
+}
+
+/* It lets go of a parent in a bone layer around it, staying where it rests. */
+static void bone_outer_parent_clear(const Layer &inner, Bone &b)
+{
+  const std::vector<BonePose> poses = armature_pose(inner);
+  const BonePose *self = bone_pose_find(poses, b.id);
+  const float length = b.length;
+  const float2 scale = b.scale;
+  bone_place(b, Transform2D(), self->setup_head, self->setup_tail);
+  b.length = length;
+  b.scale = scale;
+  b.setup_position = b.position;
+  b.setup_angle = b.angle;
+  b.outer_layer = b.outer_bone = 0;
+  b.outer_setup = b.outer_pose = Transform2D();
 }
 
 std::string armature_unique_bone_name(const Layer &armature, const std::string &base)
@@ -893,7 +936,7 @@ void rig_operators_register()
 
   rig_operator("armature.bone_parent_set", "Set Parent",
                "Give bone `bone` (default: the active bone) a new parent bone `parent` (\"\" for none), keeping "
-               "it where it is",
+               "it where it is. parent_layer: the id of a bone layer around this one that `parent` is in",
                armature_poll, [](Context &C) {
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
@@ -907,6 +950,17 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  const std::string parent_name = op_arg(C, "parent");
+                 if (op_has_arg(C, "parent_layer")) {
+                   Layer *outer = layer_find(*C.document, std::strtoull(op_arg(C, "parent_layer").c_str(), nullptr, 10));
+                   const Bone *up = outer && outer->is_bone_layer() ? bone_find_by_name(*outer, parent_name) : nullptr;
+                   if (!up || !layer_inside(*C.document, armature.id, outer->id)) {
+                     report(ReportType::Warning, "A parent in another bone group has to be in one around this bone's");
+                     return OpStatus::Cancelled;
+                   }
+                   return bone_outer_parent_set(*C.document, armature, *bone, *outer, up->id) ? OpStatus::Finished
+                                                                                              : OpStatus::Cancelled;
+                 }
+                 const bool had_outer = bone->outer_bone != 0;
                  const Bone *parent = parent_name.empty() ? nullptr : bone_find_by_name(armature, parent_name);
                  if (!parent_name.empty() && !parent) {
                    report(ReportType::Warning, "No bone named " + parent_name);
@@ -916,6 +970,12 @@ void rig_operators_register()
                  if (parent_id != 0 && bone_is_descendant(armature, parent_id, bone->id)) {
                    report_banner(ReportType::Warning, "A bone can't hang from itself or one of its children");
                    return OpStatus::Cancelled;
+                 }
+                 if (had_outer) {
+                   bone_outer_parent_clear(armature, *bone);
+                   if (parent_id == 0) {
+                     return OpStatus::Finished;
+                   }
                  }
                  if (parent_id == bone->parent) {
                    return OpStatus::Cancelled;
@@ -1923,13 +1983,23 @@ void rig_operators_register()
                });
 
   rig_operator("armature.parent_set", "Make Parent",
-               "Parent the selected bones to the active bone (Ctrl P). type=CONNECTED puts each one's base on "
-               "the active bone's tip; type=OFFSET keeps them where they are",
+               "Parent the selected bones to the active bone (Ctrl P), those selected in sub bone groups inside "
+               "its bone group too. type=CONNECTED puts each one's base on the active bone's tip (within a bone "
+               "group); type=OFFSET keeps them where they are",
                bone_layer_active, [](Context &C) {
                  if (!on_setup_frame(C)) {
                    return OpStatus::Cancelled;
                  }
-                 Layer &armature = *active_armature(C);
+                 Document &doc = *C.document;
+                 Layer &worked_in = *active_armature(C);
+                 /* A bone Shift-clicked in a bone layer around the one worked in leaves this one active: it is the
+                  * parent, and that's the bone layer to hang them from. */
+                 Layer *hub = &worked_in;
+                 for (Layer *up = layer_parent(doc, worked_in.id); up && hub == &worked_in; up = layer_parent(doc, up->id)) {
+                   const Bone *picked = up->is_bone_layer() ? bone_find(*up, up->active_bone) : nullptr;
+                   hub = picked && (picked->selected || picked->select_head || picked->select_tail) ? up : hub;
+                 }
+                 Layer &armature = *hub;
                  const Bone *parent = bone_find(armature, armature.active_bone);
                  if (!parent) {
                    report(ReportType::Warning, "Make a bone active to parent to");
@@ -1940,9 +2010,21 @@ void rig_operators_register()
                  const std::vector<BonePose> poses = armature_pose(armature);
                  const BonePose *pp = bone_pose_find(poses, parent_id);
                  std::map<uint64_t, std::pair<float2, float2>> targets;
+                 int across = 0;
+                 for (Layer *inner : armature_and_inside(doc, armature.id)) {
+                   if (inner == &armature) {
+                     continue;
+                   }
+                   for (Bone &b : inner->bones) {
+                     across += b.selected && bone_outer_parent_set(doc, *inner, b, armature, parent_id) ? 1 : 0;
+                   }
+                 }
                  for (Bone &b : armature.bones) {
                    if (!b.selected || b.id == parent_id) {
                      continue;
+                   }
+                   if (b.outer_bone != 0) {
+                     bone_outer_parent_clear(armature, b);
                    }
                    if (bone_is_descendant(armature, parent_id, b.id)) {
                      report_banner(ReportType::Warning, "A bone can't hang from one of its children: " + b.name);
@@ -1965,9 +2047,13 @@ void rig_operators_register()
                      targets[b.id] = {self->setup_head, self->setup_tail};
                    }
                  }
-                 if (targets.empty()) {
+                 if (targets.empty() && across == 0) {
                    report(ReportType::Warning, "Select the bones to parent, then the parent last");
                    return OpStatus::Cancelled;
+                 }
+                 if (across > 0 && connect) {
+                   report(ReportType::Warning, "Bones in another bone group hang as they are: only those in the same "
+                                               "group can connect");
                  }
                  armature_set_joints(armature, targets);
                  if (connect) {
@@ -1989,6 +2075,14 @@ void rig_operators_register()
                  const bool clear = op_arg(C, "type", "CLEAR") == "CLEAR";
                  const std::vector<BonePose> poses = armature_pose(armature);
                  int done = 0;
+                 for (Layer *inner : armature_and_inside(*C.document, armature.id)) {
+                   for (Bone &b : inner->bones) {
+                     if (clear && b.selected && b.outer_bone != 0) {
+                       bone_outer_parent_clear(*inner, b);
+                       done++;
+                     }
+                   }
+                 }
                  for (Bone &b : armature.bones) {
                    if (!b.selected || (clear ? b.parent == 0 : !b.connected)) {
                      continue;

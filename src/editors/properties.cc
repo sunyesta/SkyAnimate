@@ -513,10 +513,15 @@ static void bone_relations_panel(Context &C, Layer &armature)
 
   /* Parent: hanging it from another bone keeps it where it is. */
   const Bone *parent = bone_find(armature, active->parent);
+  const Layer *outer = active->outer_bone != 0 ? layer_find(doc, active->outer_layer) : nullptr;
+  const Bone *outer_parent = outer ? bone_find(*outer, active->outer_bone) : nullptr;
+  const std::string parent_shown = outer_parent ? outer->name + ": " + outer_parent->name
+                                   : parent     ? parent->name
+                                                : std::string("None");
   label("Parent");
   ImGui::BeginDisabled(!setup);
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
-  if (ImGui::BeginCombo("##bone_parent", parent ? parent->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+  if (ImGui::BeginCombo("##bone_parent", parent_shown.c_str(), ImGuiComboFlags_HeightLarge)) {
     static std::string search;
     if (ImGui::IsWindowAppearing()) {
       search.clear();
@@ -531,7 +536,7 @@ static void bone_relations_panel(Context &C, Layer &armature)
       std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
       return lower.find(needle) != std::string::npos;
     };
-    if (needle.empty() && ImGui::Selectable("None", parent == nullptr)) {
+    if (needle.empty() && ImGui::Selectable("None", parent == nullptr && outer_parent == nullptr)) {
       operator_call(C, "armature.bone_parent_set", {{"bone", bone_name}, {"parent", ""}});
     }
     const Bone *first = nullptr;
@@ -545,7 +550,30 @@ static void bone_relations_panel(Context &C, Layer &armature)
         operator_call(C, "armature.bone_parent_set", {{"bone", bone_name}, {"parent", b.name}});
       }
     }
-    if (!first && !needle.empty()) {
+    /* The bone layers around this one, each under its name. */
+    bool any_around = false;
+    for (const Layer *up = layer_parent(doc, armature.id); up; up = layer_parent(doc, up->id)) {
+      if (!up->is_bone_layer()) {
+        continue;
+      }
+      bool heading = false;
+      ImGui::PushID(int(up->id));
+      for (const Bone &b : up->bones) {
+        if (!matches(b.name)) {
+          continue;
+        }
+        if (!heading) {
+          ImGui::SeparatorText(up->name.c_str());
+          heading = any_around = true;
+        }
+        if (ImGui::Selectable(b.name.c_str(), outer_parent && outer->id == up->id && outer_parent->id == b.id)) {
+          operator_call(C, "armature.bone_parent_set",
+                        {{"bone", bone_name}, {"parent", b.name}, {"parent_layer", std::to_string(up->id)}});
+        }
+      }
+      ImGui::PopID();
+    }
+    if (!first && !any_around && !needle.empty()) {
       ImGui::TextDisabled("No bone named like that");
     }
     if (entered && first) {
@@ -555,7 +583,7 @@ static void bone_relations_panel(Context &C, Layer &armature)
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip(setup ? "The bone this one hangs from; it stays where it is"
+    ImGui::SetTooltip(setup ? "The bone this one hangs from, here or in a bone group around this one; it stays where it is"
                             : "Switch to Setup (frame 0) to change the parent");
   }
   ImGui::SameLine(0, 2);
