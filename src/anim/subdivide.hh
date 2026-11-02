@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "data/layer.hh"
@@ -24,6 +25,12 @@ int subdivide_pieces(const VectorDrawing &drawing, const Curve &curve, int segme
 VectorDrawing drawing_subdivide(const VectorDrawing &drawing, const Modifier &m, bool render,
                                 std::vector<int> *r_new_points = nullptr,
                                 const std::vector<std::vector<int>> *pieces = nullptr);
+
+/* The same, for the modifier called `name` on `layer` (one working on two drawings gives each a name): a drawing it has
+ * just split isn't split again, and the cuts are only worked out again when the setup pose or the settings change,
+ * since they are measured there. */
+VectorDrawing drawing_subdivide_kept(uint64_t layer, const std::string &name, VectorDrawing drawing, const Modifier &m,
+                                     bool render, std::vector<int> *r_new_points = nullptr);
 
 /* Where a segment is cut into `k` pieces (k + 1 parameters, 0 to 1): evenly along cubic `c`, which is the segment
  * as subdivide_setup_shape has it, so the cuts stay put from frame to frame. */

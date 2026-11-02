@@ -622,11 +622,11 @@ static void transform_drawing(VectorDrawing &drawing, const Transform2D &t)
 }
 
 /* Resample, with From Bones: the new points weighted from the nearest bones of `layer`'s bone layer. */
-static VectorDrawing subdivided(const Document &doc, const Layer &layer, const VectorDrawing &drawing,
-                                const Modifier &m, bool render)
+static VectorDrawing subdivided(const Document &doc, const Layer &layer, VectorDrawing drawing, const Modifier &m,
+                                bool render)
 {
   std::vector<int> fresh;
-  VectorDrawing out = drawing_subdivide(drawing, m, render, &fresh);
+  VectorDrawing out = drawing_subdivide_kept(layer.id, m.name, std::move(drawing), m, render, &fresh);
   Deformer d;
   if (m.subdiv_from_bones && !fresh.empty() && layer.type == LayerType::Vector && deformer_init(doc, layer, d)) {
     for (const int i : fresh) {
@@ -676,7 +676,13 @@ static void group_deforms_run(const Document &doc, const Layer &layer, const std
     const Layer *shape = layer_find(doc, run.deform_layer);
     const Layer *armature = shape ? layer_armature(doc, shape->id) : nullptr;
     run.deform_rest_posed = armature && !armature->bones.empty() && bones_carry(doc, layer, *armature);
+    /* Its new points are marked by the group's modifier (Show Points). */
+    const size_t had = drawing.points.size();
     vector_deform_apply(doc, layer, run, drawing, drawing, render);
+    for (size_t k = had; k < drawing.points.size(); k++) {
+      drawing.points[k].made_by = int(g.modifier - g.group->modifiers.data());
+      drawing.points[k].made_by_layer = g.group->id;
+    }
   }
 }
 
@@ -783,7 +789,7 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
         drawing = drawing_bevel(drawing, m);
       }
       else if (m.type == ModifierType::Resample) {
-        drawing = subdivided(doc, *original, drawing, m, render);
+        drawing = subdivided(doc, *original, std::move(drawing), m, render);
       }
       else if (m.type == ModifierType::Armature) {
         Deformer d;
@@ -862,7 +868,7 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
       drawing = drawing_bevel(drawing, m);
     }
     else if (m.type == ModifierType::Resample) {
-      drawing = subdivided(doc, layer, drawing, m, render);
+      drawing = subdivided(doc, layer, std::move(drawing), m, render);
     }
     else if (m.type == ModifierType::Armature) {
       Deformer d;

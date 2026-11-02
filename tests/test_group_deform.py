@@ -56,6 +56,8 @@ def add_cage(group, cage, kind="CAGE_DEFORM"):
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
     index = len(group.modifiers) - 1
     group.modifier_set(index, layer=cage.name, shape=cage.shapes[0][0])
+    if kind == "CAGE_DEFORM":
+        group.modifier_set(index, cage_method="MEAN_VALUE", resample_self=False)
     return index
 
 

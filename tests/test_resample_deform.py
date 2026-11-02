@@ -1,8 +1,9 @@
-"""The Resample modifier above the deform modifiers, against Resample Self: on every kind of deform shape (but Envelope's
-Blend extremes and Curve Deform's Stretch off, tested elsewhere), the drawing split by Resample (4 pieces a segment, or
-By Length) and bent comes out as true to the bend as Resample Self's or truer (the truth: split into 24 pieces a
-segment), both together truer still; Resample alone, and the deform on frame 0, change nothing; and dragging the
-shape's points never makes the Resampled drawing jump.
+"""The Resample modifier above the deform modifiers, and Resample Self, which does the same work inside the deform: on
+every kind of deform shape (but Envelope's Blend extremes and Curve Deform's Stretch off, tested elsewhere), the drawing
+split into 4 pieces a segment, or By Length, and bent comes out as true to the bend (the truth: split into 24 pieces a
+segment) as fitting each whole segment back to its bent samples did, or truer, the two the same with Resample Self, both
+together truer still; Resample alone, and the deform on frame 0, change nothing; and dragging the shape's points never
+makes the Resampled drawing jump.
 
 Run with:  OpenAnimate --background --python tests/test_resample_deform.py
 """
@@ -157,8 +158,11 @@ VARIANTS = [
     ("sublen", {"split": "LENGTH", "spacing": 0.15}, {"resample_self": False, "precision": 0.0}),
     ("sub4_rs", {"split": "COUNT", "pieces": 4}, {"resample_self": True, "precision": 0.0}),
 ]
-# How much worse than Resample Self the worst shape may come out (Curve Deform: where the art crosses between two
-# parts of a wiggly line its bend turns sharply, and 4 pieces a segment follow it about as well as Resample Self).
+# What fitting each whole segment back to its bent samples made of the worst shape, when Resample Self did that.
+FIT = {"grid": 0.0296, "cell": 0.0114, "mesh": 0.0200, "wire": 0.0633, "curve_stretch": 0.0854, "box_mv": 0.0320,
+       "box_rigid": 0.0268, "box_env": 0.0081, "curvy_mv": 0.0182, "curvy_rigid": 0.0141, "curvy_env": 0.0130}
+# How much worse than that it may come out (Curve Deform: where the art crosses between two parts of a wiggly line its
+# bend turns sharply, and 4 pieces a segment follow it about as well as a fit).
 ROOM = {"curve_stretch": 1.2}
 for scn, make_target, mtype, settings, kind in SCENARIOS:
     if scn in ("curvy_env_b0", "curvy_env_b1", "curve_keep"):
@@ -202,9 +206,10 @@ for scn, make_target, mtype, settings, kind in SCENARIOS:
         o = outlines(made[v], 12)
         worst[v] = max(hausdorff(a, b, c) for a, b, c in zip(o, want, closed))
     room = ROOM.get(scn, 1.05)
+    assert abs(worst["resample_self"] - worst["sub4"]) < 1e-5, ("Resample Self is Resample", scn, worst)
     for v in ("sub4", "sublen"):
-        assert worst[v] <= worst["resample_self"] * room + 1e-4, (scn, v, worst)
-    assert worst["sub4_rs"] <= min(worst["sub4"], worst["resample_self"] * room) * 1.05 + 1e-4, (scn, worst)
+        assert worst[v] <= FIT[scn] * room + 1e-4, (scn, v, worst)
+    assert worst["sub4_rs"] <= worst["sub4"] * 1.05 + 1e-4, (scn, worst)
     # Dragging the shape's points with Resample: no jumps, no points coming or going.
     size = max(p[0] for p in rest_pts) - min(p[0] for p in rest_pts)
     step = size * 0.0025

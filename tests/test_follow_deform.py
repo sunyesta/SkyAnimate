@@ -157,7 +157,7 @@ stud.modifier_set(i, point=(0.2, 0.2))
 at(0)
 gem_cage = box("GemCage")
 gem = box("Gem", (-0.1, -0.1), (0.1, 0.1))
-g = add_follow(gem, gem_cage)
+g = add_follow(gem, gem_cage, cage_method="MEAN_VALUE")  # (Envelope keeps distances from the sides, not scale.)
 gem.modifier_set(g, second=True)
 assert close(gem.modifiers[g]["point2"], (0.1, 0.0)), "beside the first"
 gem.modifier_set(g, point2=(0.5, 0.0))
@@ -432,7 +432,8 @@ for name, pick in (("Stud_L", False), ("Pin_L", True)):
     start = righty.to_document(drawn(righty)[0])
     place(middle, lambda p: (p[0] + (0.4 if p[0] < 0 and p[1] > 0 else 0.0), p[1]))
     moved = righty.to_document(drawn(righty)[0])
-    assert close((moved[0] - start[0], moved[1] - start[1]), (0.4, 0.0), 1e-3), ("its own side", name, start, moved)
+    # (Envelope holds the outline to within about a third of a per cent.)
+    assert close((moved[0] - start[0], moved[1] - start[1]), (0.4, 0.0), 3e-3), ("its own side", name, start, moved)
     place(middle, lambda p: p)
     at(0)
 

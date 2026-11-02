@@ -5366,14 +5366,33 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
   return g;
 }
 
-/* Show Points: the points `layer`'s modifiers add, for each modifier showing them, as hollow teal dots where they
+/* Show Points: the points `layer`'s modifiers and its groups' add, for each modifier showing them, as hollow teal dots where they
  * end up after the whole stack (on the line as it shows). Drawn only: nothing picks them. */
-static void draw_modifier_points(ImDrawList *dl, const Document &doc, const Layer &layer,
-                                 const Transform2D &to_document, const ViewMapping &view, float point_size)
+static void draw_modifier_points(ImDrawList *dl, Context &C, const Layer &layer, const Transform2D &to_document,
+                                 const ViewMapping &view, float point_size, bool show_points)
 {
-  const bool any = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
-    return m.show_points && m.show_viewport && modifier_makes_points(m);
-  });
+  Document &doc = *C.document;
+  const WindowManager &wm = *C.wm;
+  /* The modifier's points show: Show Points, or its Pieces or Spacing being dragged. */
+  const auto on = [&](const Layer &owner, size_t index) {
+    const Modifier &m = owner.modifiers[index];
+    const bool scrubbed = wm.scrub_layer == owner.id && wm.scrub_modifier == int(index) &&
+                          wm.scrub_frame >= ImGui::GetFrameCount() - 1;
+    return m.show_viewport && modifier_makes_points(m) && (scrubbed || (show_points && m.show_points));
+  };
+  /* Its own modifiers', and those of the groups around it. */
+  const auto any_on = [&](const Layer &owner) {
+    for (size_t i = 0; i < owner.modifiers.size(); i++) {
+      if (on(owner, i)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  bool any = any_on(layer);
+  for (const Layer *group = layer_parent(doc, layer.id); group && !any; group = layer_parent(doc, group->id)) {
+    any = any_on(*group);
+  }
   if (!any) {
     return;
   }
@@ -5381,11 +5400,8 @@ static void draw_modifier_points(ImDrawList *dl, const Document &doc, const Laye
   const ImU32 teal = IM_COL32(0x2e, 0xc4, 0xb6, 255);
   const float r = std::max(point_size * 0.5f, 2.5f);
   for (const MeshPoint &p : shown.points) {
-    if (p.made_by < 0 || size_t(p.made_by) >= layer.modifiers.size()) {
-      continue;
-    }
-    const Modifier &m = layer.modifiers[size_t(p.made_by)];
-    if (!m.show_points || !m.show_viewport) {
+    const Layer *owner = p.made_by_layer != 0 ? layer_find(doc, p.made_by_layer) : &layer;
+    if (p.made_by < 0 || !owner || size_t(p.made_by) >= owner->modifiers.size() || !on(*owner, size_t(p.made_by))) {
       continue;
     }
     const ImVec2 at = view.to_screen(to_document.apply(p.pos));
@@ -13927,9 +13943,6 @@ static void viewport_draw_contents(Area &area, Context &C)
                            points_overlay_shown(ov, ts), std::clamp(doc.viewport_quality, 1, 64), handles_shown(ov, ts),
                            ts.select_mode != SelectMode::Edge, &cut, ov.point_size, ov.handle_size);
       overlay_flush(dl);
-      if (points_overlay_shown(ov, ts)) {
-        draw_modifier_points(dl, doc, *layer, to_document, view, ov.point_size);
-      }
     }
     overlay_index.reset();
     if (hovered && ts.tool == Tool::SplitCurve && !io.KeyCtrl) {
@@ -14237,6 +14250,23 @@ static void viewport_draw_contents(Area &area, Context &C)
       }
     }
     ui_menu_end();
+  }
+
+  /* Show Points' dots, on the layer being edited; on every drawing in a group when the group is active. */
+  if (ov.show) {
+    const Layer *active_owner = document_active_layer(doc);
+    if (active_owner && active_owner->is_group()) {
+      for (const Layer *inside : document_layers_flat(doc)) {
+        if (inside->type == LayerType::Vector && inside->shown() && layer_inside(doc, inside->id, active_owner->id)) {
+          draw_modifier_points(dl, C, *inside, layer_world_transform(doc, inside->id), view, ov.point_size,
+                               points_overlay_shown(ov, ts));
+        }
+      }
+    }
+    else if (const Layer *dotted = active_owner && active_owner->type == LayerType::Vector ? active_owner : nullptr) {
+      draw_modifier_points(dl, C, *dotted, layer_world_transform(doc, dotted->id), view, ov.point_size,
+                           points_overlay_shown(ov, ts));
+    }
   }
 
   /* Header, tool settings, tool bar, and the info line in the corner. */

@@ -70,6 +70,8 @@ def add_deform(layer, shape, kind="CAGE_DEFORM"):
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
     index = len(layer.modifiers) - 1
     layer.modifier_set(index, layer=shape.name, shape=shape.shapes[0][0])
+    if kind == "CAGE_DEFORM":
+        layer.modifier_set(index, cage_method="MEAN_VALUE", resample_self=False)
     return layer.modifiers[index]["name"]
 
 

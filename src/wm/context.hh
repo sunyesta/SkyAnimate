@@ -213,6 +213,11 @@ inline float &draw_width(ToolSettings &ts, DrawMode mode)
 
 struct WindowManager {
   bool background = false;
+  /* The modifier whose Pieces or Spacing is being dragged (the layer it is on, its place there) and the UI frame it last
+   * was: Show Points' dots show for it meanwhile. */
+  uint64_t scrub_layer = 0;
+  int scrub_modifier = -1;
+  int scrub_frame = -1;
   bool quit_requested = false;
   /* Interface scale, 1.0 = 100%. */
   float ui_scale = 1.0f;

@@ -4,6 +4,9 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <tuple>
 
 #include "data/detail.hh"
 #include "data/vector.hh"
@@ -175,23 +178,19 @@ int subdivide_pieces(const VectorDrawing &drawing, const Curve &curve, int segme
   return pieces_for(drawing, &setup, curve, c, segment, m, render, group_of(drawing, m));
 }
 
-VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, bool render,
-                                std::vector<int> *r_new_points, const std::vector<std::vector<int>> *given)
+/* Where every segment is cut, by curve then segment: evenly along it as it is in the setup pose, so the cuts stay put
+ * on the line from frame to frame. A curve with nothing to cut has no entries. */
+using Cuts = std::vector<std::vector<std::vector<float>>>;
+
+static Cuts cuts_for(const VectorDrawing &drawing, const Modifier &m, bool render,
+                     const std::vector<std::vector<int>> *given)
 {
-  VectorDrawing drawing = source;
-  /* Detail final, then none: the split curve is the whole curve. */
-  if (drawing_has_detail(drawing)) {
-    drawing_detail_final_handles(drawing);
-    for (MeshPoint &p : drawing.points) {
-      p.detail = PointDetail();
-    }
-  }
   const VectorDrawing setup = setup_shape(drawing);
   const PointGroup *group = group_of(drawing, m);
+  Cuts cuts(drawing.curves.size());
   for (int c = 0; c < int(drawing.curves.size()); c++) {
-    const Curve &curve = source.curves[size_t(c)];
-    const int n = int(curve.points.size());
-    if (n < 2) {
+    const Curve &curve = drawing.curves[size_t(c)];
+    if (curve.points.size() < 2) {
       continue;
     }
     const int segments = curve.segment_count();
@@ -201,22 +200,73 @@ VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, 
       pieces[size_t(s)] = given ? (size_t(c) < given->size() && size_t(s) < (*given)[size_t(c)].size()
                                        ? std::max((*given)[size_t(c)][size_t(s)], 1)
                                        : 1)
-                                : pieces_for(drawing, &setup, drawing.curves[size_t(c)], c, s, m, render, group);
+                                : pieces_for(drawing, &setup, curve, c, s, m, render, group);
       any = any || pieces[size_t(s)] > 1;
     }
     if (!any) {
       continue;
     }
-    /* Every segment's control points as they are now (handles worked out where they aren't stored). */
-    std::vector<std::array<float2, 4>> ctrl(static_cast<size_t>(segments));
-    /* Where each segment is cut: evenly along it as it is in the setup pose, so the cuts stay put on
-     * the line from frame to frame. */
-    std::vector<std::vector<float>> cuts(static_cast<size_t>(segments));
+    cuts[size_t(c)].resize(static_cast<size_t>(segments));
     for (int s = 0; s < segments; s++) {
-      curve_segment_bezier(drawing, drawing.curves[size_t(c)], s, ctrl[size_t(s)].data());
       float2 rest[4];
       curve_segment_bezier(setup, setup.curves[size_t(c)], s, rest);
-      cuts[size_t(s)] = even_cuts(rest, pieces[size_t(s)]);
+      cuts[size_t(c)][size_t(s)] = even_cuts(rest, pieces[size_t(s)]);
+    }
+  }
+  return cuts;
+}
+
+/* Everything cuts_for reads, so that the same list means the same cuts, however the drawing is posed on this frame. */
+static std::vector<float> cuts_inputs(const VectorDrawing &drawing, const Modifier &m, bool render)
+{
+  std::vector<float> in;
+  size_t curve_points = 0;
+  for (const Curve &curve : drawing.curves) {
+    curve_points += curve.points.size() + 1;
+  }
+  in.reserve(drawing.points.size() * 2 + curve_points * 12 + 8);
+  const float spacing = render && m.subdiv_render_spacing > 0.0f ? m.subdiv_render_spacing : m.subdiv_spacing;
+  in.insert(in.end(), {m.subdiv_by_length ? 1.0f : 0.0f, spacing, float(m.subdiv_pieces), float(m.subdiv_max_pieces)});
+  for (const MeshPoint &p : drawing.points) {
+    const float2 at = point_setup_pos(p);
+    in.push_back(at.x);
+    in.push_back(at.y);
+  }
+  const PointGroup *group = group_of(drawing, m);
+  in.push_back(m.subdiv_group.empty() ? 0.0f : group ? 1.0f : 2.0f);
+  for (const Curve &curve : drawing.curves) {
+    in.push_back(float(curve.points.size()));
+    in.push_back(curve.closed ? 1.0f : 0.0f);
+    for (const CurvePoint &cp : curve.points) {
+      in.insert(in.end(), {float(cp.point), cp.handles_set ? 1.0f : 0.0f, cp.curvature, cp.weight_in, cp.weight_out,
+                           cp.offset_in, cp.offset_out, cp.setup_in.x, cp.setup_in.y, cp.setup_out.x, cp.setup_out.y});
+      if (group) {
+        in.push_back(in_group(drawing, group, cp.point) ? 1.0f : 0.0f);
+      }
+    }
+  }
+  return in;
+}
+
+/* `source` (its detail final) with `all_cuts` made. */
+static VectorDrawing split_at(const VectorDrawing &source, const Cuts &all_cuts, const Modifier &m,
+                              std::vector<int> *r_new_points)
+{
+  VectorDrawing drawing = source;
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    if (size_t(c) >= all_cuts.size() || all_cuts[size_t(c)].empty()) {
+      continue;
+    }
+    const std::vector<std::vector<float>> &cuts = all_cuts[size_t(c)];
+    const Curve &curve = source.curves[size_t(c)];
+    const int n = int(curve.points.size());
+    const int segments = curve.segment_count();
+    std::vector<int> pieces(static_cast<size_t>(segments), 1);
+    /* Every segment's control points as they are now (handles worked out where they aren't stored). */
+    std::vector<std::array<float2, 4>> ctrl(static_cast<size_t>(segments));
+    for (int s = 0; s < segments; s++) {
+      pieces[size_t(s)] = int(cuts[size_t(s)].size()) - 1;
+      curve_segment_bezier(drawing, drawing.curves[size_t(c)], s, ctrl[size_t(s)].data());
     }
     Curve out = curve;
     out.points.clear();
@@ -314,6 +364,97 @@ VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, 
     drawing.curves[size_t(c)] = std::move(out);
   }
   return drawing;
+}
+
+/* Detail final, then none: the split curve is the whole curve. */
+static VectorDrawing detail_final(const VectorDrawing &source)
+{
+  VectorDrawing drawing = source;
+  drawing_detail_final_handles(drawing);
+  for (MeshPoint &p : drawing.points) {
+    p.detail = PointDetail();
+  }
+  return drawing;
+}
+
+VectorDrawing drawing_subdivide(const VectorDrawing &source, const Modifier &m, bool render,
+                                std::vector<int> *r_new_points, const std::vector<std::vector<int>> *given)
+{
+  if (!drawing_has_detail(source)) {
+    return split_at(source, cuts_for(source, m, render, given), m, r_new_points);
+  }
+  const VectorDrawing drawing = detail_final(source);
+  return split_at(drawing, cuts_for(drawing, m, render, given), m, r_new_points);
+}
+
+namespace {
+
+/* One modifier's work on one drawing: its cuts, good while the setup pose and settings stay the same, and its split,
+ * good while the drawing does too. These go by the data itself, so no edit or undo has to say that anything changed.
+ * The split is only kept once the same drawing comes round again: a drawing changing on every update would pay for a
+ * copy nothing uses. */
+struct KeptSplit {
+  std::vector<float> inputs;
+  std::shared_ptr<const Cuts> cuts;
+  std::shared_ptr<const VectorDrawing> source;
+  bool preserve_volume = true;
+  std::shared_ptr<const VectorDrawing> result;
+  std::vector<int> fresh;
+};
+
+std::mutex g_kept_mutex;
+std::map<std::tuple<uint64_t, std::string, bool>, std::shared_ptr<const KeptSplit>> g_kept;
+
+}  // namespace
+
+VectorDrawing drawing_subdivide_kept(uint64_t layer, const std::string &name, VectorDrawing source, const Modifier &m,
+                                     bool render, std::vector<int> *r_new_points)
+{
+  /* A stack worked out on its points alone (a probe): nothing to cut, and no reason to forget the drawing's split. */
+  if (source.curves.empty()) {
+    return drawing_subdivide(source, m, render, r_new_points);
+  }
+  const auto key = std::make_tuple(layer, name, render);
+  std::shared_ptr<const KeptSplit> kept;
+  {
+    std::lock_guard lock(g_kept_mutex);
+    if (auto it = g_kept.find(key); it != g_kept.end()) {
+      kept = it->second;
+    }
+  }
+  std::vector<float> inputs = cuts_inputs(source, m, render);
+  const bool same_cuts = kept && kept->inputs == inputs;
+  const bool again = same_cuts && kept->preserve_volume == m.subdiv_preserve_volume && *kept->source == source;
+  if (again && kept->result) {
+    if (r_new_points) {
+      *r_new_points = kept->fresh;
+    }
+    return *kept->result;
+  }
+  auto now = std::make_shared<KeptSplit>();
+  const bool detail = drawing_has_detail(source);
+  const VectorDrawing finished = detail ? detail_final(source) : VectorDrawing();
+  const VectorDrawing &drawing = detail ? finished : source;
+  now->inputs = std::move(inputs);
+  now->cuts = same_cuts ? kept->cuts : std::make_shared<const Cuts>(cuts_for(drawing, m, render, nullptr));
+  now->preserve_volume = m.subdiv_preserve_volume;
+  VectorDrawing result = split_at(drawing, *now->cuts, m, &now->fresh);
+  if (r_new_points) {
+    *r_new_points = now->fresh;
+  }
+  if (again) {
+    now->source = kept->source;
+    now->result = std::make_shared<const VectorDrawing>(result);
+  }
+  else {
+    now->source = std::make_shared<const VectorDrawing>(std::move(source));
+  }
+  std::lock_guard lock(g_kept_mutex);
+  if (g_kept.size() > 512) {
+    g_kept.clear();
+  }
+  g_kept[key] = std::move(now);
+  return result;
 }
 
 }  // namespace oanim

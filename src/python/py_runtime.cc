@@ -3227,6 +3227,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           }
         }
         d["resample_self"] = mod.deform_resample_self;
+        d["split"] = mod.subdiv_by_length ? "LENGTH" : "COUNT";
+        d["spacing"] = mod.subdiv_spacing;
+        d["pieces"] = mod.subdiv_pieces;
         d["cage_method"] = cage_method_id(mod.deform_cage_method);
         d["mesh_method"] = mesh_method_id(mod.deform_mesh_method);
         d["smooth"] = mod.deform_smooth;
@@ -3409,20 +3412,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (mod.type == ModifierType::Bevel && key == "clamp") {
         mod.bevel_clamp = value.cast<bool>();
       }
-      else if (mod.type == ModifierType::Resample && key == "split") {
+      else if ((mod.type == ModifierType::Resample || modifier_is_deform(mod.type)) && key == "split") {
         const std::string split = value.cast<std::string>();
         if (split != "LENGTH" && split != "COUNT") {
           throw py::value_error("split is LENGTH or COUNT");
         }
         mod.subdiv_by_length = split == "LENGTH";
       }
-      else if (mod.type == ModifierType::Resample && key == "spacing") {
+      else if ((mod.type == ModifierType::Resample || modifier_is_deform(mod.type)) && key == "spacing") {
         mod.subdiv_spacing = std::max(1e-4f, value.cast<float>());
       }
       else if (mod.type == ModifierType::Resample && key == "render_spacing") {
         mod.subdiv_render_spacing = std::max(0.0f, value.cast<float>());
       }
-      else if (mod.type == ModifierType::Resample && key == "pieces") {
+      else if ((mod.type == ModifierType::Resample || modifier_is_deform(mod.type)) && key == "pieces") {
         mod.subdiv_pieces = std::clamp(value.cast<int>(), 1, 256);
       }
       else if (mod.type == ModifierType::Resample && key == "max_pieces") {

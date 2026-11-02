@@ -47,6 +47,8 @@ thread_local std::vector<uint64_t> g_deforming;
 
 /* VectorDeformWireScope: how many are alive on this thread. */
 thread_local int g_wire = 0;
+/* Reading a cage's or a mesh's shape: Resample Self leaves it the points it was drawn with. */
+static thread_local bool g_shape_read = false;
 
 VectorDeformWireScope::VectorDeformWireScope()
 {
@@ -697,7 +699,9 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
      * takes them, but a cage's or a mesh's shape is read sample for sample against its rest, so it gets its own points
      * only, each segment bent as near as one Bezier can be. */
     const int wire = g_wire;
+    const bool read = g_shape_read;
     g_wire = m.type == ModifierType::CurveDeform ? 0 : 1;
+    g_shape_read = m.type != ModifierType::CurveDeform;
     g_deforming.push_back(layer.id);
     {
       const GroupDeformReading reading(layer.id);
@@ -705,6 +709,7 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
     }
     g_deforming.pop_back();
     g_wire = wire;
+    g_shape_read = read;
     /* From the groups the two share down: a shared group moving (the character walked, its top group scaled) doesn't
      * change the shape bent by, so its build is kept. */
     transform_drawing(r_bent, shape_to_layer(doc, layer, m, target->id, true));
@@ -3117,14 +3122,14 @@ static float bezier_stray(float2 q0, float2 h1, float2 h2, float2 q3, const std:
   return pts.empty() ? 0.0f : float(std::sqrt(sum / double(pts.size())));
 }
 
-/* Resample Self (as a sculpt stroke fits a line back to its samples): each segment sampled evenly in its own
+/* As a sculpt stroke fits a line back to its samples: each segment sampled evenly in its own
  * parameter (on the drawing as it was, `base`, and as it is), each sample bent by the deform as far as its share
  * (its ends' weights, eased between), then each segment's handles fitted to its bent samples, the points where theirs
  * went (`mapped`). A handle keeps the way the deform turns it at its point (bent_handle; as far as the point's
  * weight), so the two handles of a smooth point stay in line and a bent line has no kinks at its points; only how
  * long each is is fitted (least squares, the samples' places along the curve refined: Schneider's fit). A point the
- * deform doesn't move keeps its handles. Only the handles are set here; the points move after. Not `always` (without
- * Resample Self): a segment whose handles as bent already follow the bend (within a thousandth of its chord, or a
+ * deform doesn't move keeps its handles. Only the handles are set here; the points move after. Not `always` (all but a
+ * shape being read, below): a segment whose handles as bent already follow the bend (within a thousandth of its chord, or a
  * quarter of Precision `tolerance`, checked at three places along it) keeps them, the fit easing in only as they stray
  * further (to fully at four times that), so it costs little where the bend is gentle and never switches on with a
  * jolt. */
@@ -3228,9 +3233,37 @@ static void resample_fit(const DeformShape &d, const VectorDrawing &base, const 
   });
 }
 
+/* A deform's Custom weights go by point: the points Resample Self cut take theirs from their segment's two ends, eased
+ * between, as far as `own` (the drawing's points before it). */
+static PointGroup group_with_cuts(const PointGroup &group, const VectorDrawing &split, size_t own)
+{
+  PointGroup r = group;
+  for (const Curve &curve : split.curves) {
+    const int n = int(curve.points.size());
+    const auto point = [&](int i) { return size_t(curve.points[size_t(i % n)].point); };
+    for (int i = 0; i < n; i++) {
+      if (point(i) >= own) {
+        continue;
+      }
+      int pieces = 1;
+      while (pieces < n && i + pieces < (curve.closed ? i + n : n) && point(i + pieces) >= own) {
+        pieces++;
+      }
+      if (pieces == 1 || (!curve.closed && i + pieces >= n)) {
+        continue;
+      }
+      const float wa = point_weight(&group, split.points[point(i)]);
+      const float wb = point_weight(&group, split.points[point(i + pieces)]);
+      for (int k = 1; k < pieces; k++) {
+        r.weights[split.points[point(i + k)].id] = wa + (wb - wa) * smooth01(float(k) / float(pieces));
+      }
+    }
+  }
+  return r;
+}
+
 /* The drawing bent (base: as it was before the bones, the same points): each point where the deform puts it, each
- * handle turned and stretched as the deform bends it there (or fitted, with Resample Self or for the wire), each as
- * far as its weight. */
+ * handle turned and stretched as the deform bends it there (or fitted), each as far as its weight. */
 static void bend_drawing(const DeformShape &d, const PointGroup *group, float strength, bool resample,
                          const VectorDrawing &base, VectorDrawing &drawing, std::vector<float> &scratch,
                          bool always_fit = true, float tolerance = 0.0f)
@@ -3335,8 +3368,12 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
 void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                          const VectorDrawing &before_bones, bool render)
 {
-  /* Resample Self fits each segment with the wire or without it alike: the same, and kept for both, or the edit wire and
-   * the render would each fit every segment each time. */
+  /* Resample Self splits the drawing as the modifier called Resample does and bends the pieces, here so that it can be
+   * left out by what reads this drawing sample for sample: a cage's or a mesh's shape gets the points it was
+   * drawn with, each segment fitted to the bend instead. */
+  const bool cut_self = m.deform_resample_self && !g_shape_read;
+  /* The same with the wire or without it, and kept for both, or the edit wire and the render would each split and bend
+   * every segment each time. */
   struct WireLeft {
     int was;
     bool off;
@@ -3346,13 +3383,17 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
         g_wire = was;
       }
     }
-  } wire_left{g_wire, m.deform_resample_self};
-  if (m.deform_resample_self) {
+  } wire_left{g_wire, cut_self};
+  if (cut_self) {
     g_wire = 0;
   }
   /* Frame 0 is the rest: nothing bends there. (While the shape is being edited there its frame-0 keys still
    * hold where it was until the edit is recorded, so measuring would bend the drawing by the edit.) */
   if (doc.frame_current == 0 || m.deform_strength <= 0.0f || vector_deform_loops(doc, layer, m)) {
+    /* Split there too, which doesn't change how it looks, so the pieces are the same on every frame. */
+    if (cut_self && m.deform_layer != 0) {
+      drawing = drawing_subdivide_kept(layer.id, m.name, std::move(drawing), m, render);
+    }
     return;
   }
   uint64_t build = 0;
@@ -3409,8 +3450,25 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   VectorDrawing base = same ? before_bones : drawing;
   const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
   std::vector<float> scratch;
-  /* Resample Self: only the drawing's own points, fitted to it bent finely (below). */
   const bool resample = m.deform_resample_self;
+  /* What the weights go by, with the cuts' own once Resample Self has made them. */
+  const PointGroup *weighed = group;
+  PointGroup cut_group;
+  if (cut_self) {
+    const size_t own = drawing.points.size();
+    const bool alike = &before_bones == &drawing;
+    drawing = drawing_subdivide_kept(layer.id, m.name, std::move(drawing), m, render);
+    if (same && !alike) {
+      base = drawing_subdivide_kept(layer.id, m.name + "\trest", std::move(base), m, render);
+    }
+    if (!same || alike || base.points.size() != drawing.points.size()) {
+      base = drawing;
+    }
+    if (group) {
+      cut_group = group_with_cuts(*group, drawing, own);
+      weighed = &cut_group;
+    }
+  }
   /* Precision's cuts, how far each has faded in, and the drawing before them (precision_fade). */
   std::vector<std::vector<int>> pieces;
   std::vector<std::vector<float>> fade;
@@ -3442,17 +3500,16 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   }
   /* With Precision off too, each segment's handles fitted to it bent where the handles as bent stray from it (each
    * handle the way the deform turns it at its point, its length fitted, blended with the length as bent by how
-   * closely each follows the bend), not only with Resample Self: the handles as bent come from how the deform
-   * stretches right at their point, and where it changes quickly along the segment they overshoot, so the pieces a
-   * Resample modifier cut were bent less truly than Resample Self bends whole segments. (With Precision on, it has cut
-   * every segment till the handles as bent follow the bend within it.) The wire, as shown while editing, fits its
-   * own (below). */
+   * closely each follows the bend): the handles as bent come from how the deform stretches right at their point, and
+   * where it changes quickly along the segment they overshoot. (With Precision on, it has cut every segment till the
+   * handles as bent follow the bend within it.) The wire, as shown while editing, fits its own (below). */
   const bool fit = resample || (g_wire == 0 && m.deform_precision <= 0.0f);
   if (fit && !resample) {
     handles_explicit(base);
     handles_explicit(drawing);
   }
-  bend_drawing(d, group, strength, fit, base, drawing, scratch, resample, m.deform_precision);
+  bend_drawing(d, weighed, strength, fit, base, drawing, scratch, resample && !cut_self,
+               cut_self ? 0.0f : m.deform_precision);
   /* A cut fading in: the drawing also bent without it, and the two eased between (precision_fade). */
   if (!whole.points.empty() && base.points.size() == drawing.points.size()) {
     std::vector<std::vector<int>> coarse_pieces = pieces;
@@ -3476,7 +3533,7 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
           handles_explicit(coarse_base);
           handles_explicit(coarse);
         }
-        bend_drawing(d, group, strength, fit, coarse_base, coarse, scratch, resample, m.deform_precision);
+        bend_drawing(d, weighed, strength, fit, coarse_base, coarse, scratch, false, m.deform_precision);
         precision_fade(whole, pieces, coarse_pieces, fade, coarse, drawing);
       }
     }

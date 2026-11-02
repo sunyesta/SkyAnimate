@@ -716,6 +716,9 @@ static json layer_to_json(const Layer &layer)
           mj["part_to"] = m.deform_part_to;
         }
         mj["resample_self"] = m.deform_resample_self;
+        mj["split"] = m.subdiv_by_length ? "LENGTH" : "COUNT";
+        mj["spacing"] = num(m.subdiv_spacing);
+        mj["pieces"] = m.subdiv_pieces;
         if (m.type == ModifierType::CageDeform || m.type == ModifierType::FollowDeform) {
           mj["cage_method"] = cage_method_id(m.deform_cage_method);
           mj["blend"] = num(m.deform_blend);
@@ -2368,6 +2371,9 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_part_from = get_id(mj, "part_from");
       m.deform_part_to = get_id(mj, "part_to");
       m.deform_resample_self = get_bool(mj, "resample_self", false);
+      m.subdiv_by_length = get_string(mj, "split", "COUNT") != "COUNT";
+      m.subdiv_spacing = std::max(1e-4f, get_float(mj, "spacing", m.subdiv_spacing));
+      m.subdiv_pieces = std::clamp(get_int(mj, "pieces", m.subdiv_pieces), 1, 256);
       if (!cage_method_from_id(get_string(mj, "cage_method", "MEAN_VALUE"), m.deform_cage_method)) {
         m.deform_cage_method = CageMethod::MeanValue;
       }

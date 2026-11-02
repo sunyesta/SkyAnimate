@@ -3023,16 +3023,34 @@ static int modifier_added_points(const Document &doc, const Layer &layer, size_t
   static std::map<uint64_t, std::vector<int>> counts;
   if (frame != ImGui::GetFrameCount()) {
     frame = ImGui::GetFrameCount();
-    counts.clear();
+    /* A group's count takes all the drawings in it, so it is left a while. */
+    for (auto it = counts.begin(); it != counts.end();) {
+      const Layer *group = layer_find(doc, it->first);
+      it = !group || !group->is_group() || frame % 20 == 0 ? counts.erase(it) : std::next(it);
+    }
   }
   auto it = counts.find(layer.id);
   if (it == counts.end()) {
     std::vector<int> made(layer.modifiers.size(), 0);
-    const VectorDrawing shown = layer_evaluated_drawing(doc, layer, false);
-    for (const MeshPoint &p : shown.points) {
-      if (p.made_by >= 0 && size_t(p.made_by) < made.size()) {
-        made[size_t(p.made_by)]++;
+    const auto count = [&](const Layer &drawn) {
+      const VectorDrawing shown = layer_evaluated_drawing(doc, drawn, false);
+      for (const MeshPoint &p : shown.points) {
+        if (p.made_by >= 0 && size_t(p.made_by) < made.size() &&
+            p.made_by_layer == (layer.is_group() ? layer.id : uint64_t(0)))
+        {
+          made[size_t(p.made_by)]++;
+        }
       }
+    };
+    if (layer.is_group()) {
+      for (const Layer *l : document_layers_flat(doc)) {
+        if (l->type == LayerType::Vector && layer_inside(doc, l->id, layer.id)) {
+          count(*l);
+        }
+      }
+    }
+    else {
+      count(layer);
     }
     it = counts.emplace(layer.id, std::move(made)).first;
   }
@@ -3042,14 +3060,22 @@ static int modifier_added_points(const Document &doc, const Layer &layer, size_t
   return layer.modifiers[index].show_viewport ? it->second[index] : -1;
 }
 
-/* Resample: how many points go between yours (Per Segment or By Length), how many that makes, and the rest folded
- * under More. */
-static void resample_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+/* How many points go between yours (Per Segment or By Length) and how many that makes, for the Resample modifier and
+ * a deform's Resample Self. True when a setting was finished changing. */
+static bool resample_rows(Context &C, const Layer &layer, Modifier &m, int index, float column)
 {
   Document &doc = *C.document;
   bool done = false;
   /* The value column's width, from where the row's label left the cursor. */
   const auto width = []() { return ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f; };
+  /* Held: the points it adds show meanwhile, Show Points or not. */
+  const auto scrubbed = [&]() {
+    if (ImGui::IsItemActive()) {
+      C.wm->scrub_layer = layer.id;
+      C.wm->scrub_modifier = index;
+      C.wm->scrub_frame = ImGui::GetFrameCount();
+    }
+  };
 
   static const char *const MODE_NAMES[] = {"Per Segment", "By Length"};
   static const char *const MODE_TIPS[] = {
@@ -3069,12 +3095,14 @@ static void resample_modifier_body(Context &C, Layer &layer, Modifier &m, int in
     ImGui::SetNextItemWidth(width());
     ui_drag_float("##spacing", &m.subdiv_spacing, 0.001f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     done |= ImGui::IsItemDeactivatedAfterEdit();
+    scrubbed();
   }
   else {
     modifier_row_label("Pieces", column, "How many pieces each segment becomes (2: one point added in the middle)");
     ImGui::SetNextItemWidth(width());
     ui_drag_int("##pieces", &m.subdiv_pieces, 0.1f, 1, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
     done |= ImGui::IsItemDeactivatedAfterEdit();
+    scrubbed();
   }
 
   /* What it adds, and why when it adds none. */
@@ -3099,6 +3127,16 @@ static void resample_modifier_body(Context &C, Layer &layer, Modifier &m, int in
   else {
     ImGui::TextColored(warn, "Adds no points");
   }
+  return done;
+}
+
+/* Resample: resample_rows, and the rest folded under More. */
+static void resample_modifier_body(Context &C, Layer &layer, Modifier &m, int index, float column)
+{
+  Document &doc = *C.document;
+  bool done = resample_rows(C, layer, m, index, column);
+  /* The value column's width, from where the row's label left the cursor. */
+  const auto width = []() { return ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f; };
 
   /* The rest, folded as Blender's subpanels. */
   ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(0, 0, 0, 0));
@@ -3675,7 +3713,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                                           "there (Illustrator's Fidelity). Smaller is truer. Off: only the points "
                                           "you drew move");
   ImGui::SetNextItemWidth(width());
-  /* Resample Self adds no points, so Precision has nothing to do with it on. */
+  /* Resample Self has cut the segments already, so Precision has nothing to do with it on. */
   ImGui::BeginDisabled(m.deform_resample_self);
   ui_drag_float("##deform_precision", &m.deform_precision, 0.0002f, 0.0f, 1.0f,
                 m.deform_precision > 0.0f && !m.deform_resample_self ? "%.4f" : "Off", ImGuiSliderFlags_AlwaysClamp);
@@ -3686,9 +3724,11 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     done = true;
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Bends a finely resampled copy of this drawing, then snaps your own points to where theirs went "
-                      "and fits each segment's handles to the bent copy (as Sculpt mode does). Truer bends with only "
-                      "your points: none are added");
+    ImGui::SetTooltip("Splits each segment of the drawing as the Resample modifier does and bends the pieces, so the "
+                      "line follows the bend. Your own points, keys and handles stay as they are");
+  }
+  if (m.deform_resample_self) {
+    done |= resample_rows(C, layer, m, index, column);
   }
 
   if (done) {
@@ -3815,7 +3855,7 @@ static void modifiers_panel(Context &C, Layer &layer)
     }
     /* Show Points, on the modifiers that add points; the others keep its place, so the buttons line up. */
     ImGui::SameLine(0, 1);
-    if (modifier_makes_points(m) && !layer.is_group()) {
+    if (modifier_makes_points(m)) {
       ImGui::BeginDisabled(!m.show_viewport);
       const int added = modifier_added_points(doc, layer, size_t(i));
       const std::string tip = "Show the points this modifier adds, as hollow teal dots where they end up (they "

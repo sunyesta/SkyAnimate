@@ -35,6 +35,8 @@ def deform(layer, target, shape, kind="MESH_DEFORM"):
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
     index = len(layer.modifiers) - 1
     layer.modifier_set(index, layer=target.name, shape=shape)
+    if kind == "CAGE_DEFORM":
+        layer.modifier_set(index, cage_method="MEAN_VALUE", resample_self=False)
     return index
 
 
@@ -335,10 +337,11 @@ box.modifier_set(n, precision=0.00005)
 true_area = box.evaluated()[2][0][4]
 assert abs(fitted_area - true_area) < 0.003 * true_area, (fitted_area, true_area)
 assert box.modifiers[n]["resample_self"] is False
-# Resample Self: the same, whatever Precision says (no points added).
+# Resample Self: the same, whatever Precision says, by splitting each side.
+assert box.modifiers[n]["split"] == "COUNT" and box.modifiers[n]["pieces"] == 4
 box.modifier_set(n, resample_self=True)
 pts, _, shapes = box.evaluated()
-assert len(pts) == 4, ("Resample Self adds no points, whatever Precision says", len(pts))
+assert len(pts) == 16, ("each side in 4 pieces, whatever Precision says", len(pts))
 assert abs(shapes[0][4] - true_area) < 0.003 * true_area, (shapes[0][4], true_area)
 box.modifier_set(n, resample_self=False, precision=0.002)
 doc.frame_current = 0
@@ -396,9 +399,13 @@ for resample in (False, True):
     twin.modifier_set(tw, resample_self=resample)
     got, _, got_shapes = twin.evaluated()
     want, _, want_shapes = twin_warp.evaluated()
-    assert len(got) == len(want), ("no points added", resample, len(got))
+    assert len(got) == (len(want) * 4 if resample else len(want)), ("no points added", resample, len(got))
     assert all(close(a, b, 1e-4) for a, b in zip(got, want)), (resample, got, want)
-    assert abs(got_shapes[0][4] - want_shapes[0][4]) < 1e-4 * want_shapes[0][4], (resample, got_shapes, want_shapes)
+    # (Resample Self's pieces follow the bend between the points, which the wire's one curve there can't.)
+    assert abs(got_shapes[0][4] - want_shapes[0][4]) < (2e-3 if resample else 1e-4) * want_shapes[0][4], (
+        resample, got_shapes, want_shapes)
+    if resample:
+        continue  # (The handles evaluated are its pieces'.)
     # The handles too, as evaluated and as the viewport shows them (a cell's corners, where two sides run on in
     # line, included).
     want_h = twin_warp.evaluated_handles(0)

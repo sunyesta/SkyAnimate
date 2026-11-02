@@ -80,9 +80,11 @@ struct MeshPoint {
    * the bones move by blending their turns and moves as rigid motions (dual complex numbers, Blender's
    * Preserve Volume) instead of their matrices, so it doesn't pinch or curl when they turn far apart. */
   bool preserve_volume = false;
-  /* Evaluated drawings only, never saved: the modifier that made the point (its place in the layer's stack), -1
-   * for the layer's own points. What Show Points marks. */
+  /* Evaluated drawings only, never saved: the modifier that made the point (its place in the layer's stack, or in the
+   * stack of group `made_by_layer` when one of the groups around it did), -1 for the layer's own points. What Show
+   * Points marks. */
   int made_by = -1;
+  uint64_t made_by_layer = 0;
   /* Detail levels: a detail point's level and offsets. */
   PointDetail detail;
   bool operator==(const MeshPoint &) const = default;
