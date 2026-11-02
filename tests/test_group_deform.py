@@ -240,10 +240,15 @@ add_cage(outside, carried_cage)
 inside = new_group("Inside")
 into_group(rig, inside)
 into_group(inside, bound)
+# And one in the bone layer with no weights: bones don't move it, wherever it sits.
+weightless = new_layer("Weightless", [(1.0, 0.0), (0.0, 0.0)])
+into_group(inside, weightless)
 add_cage(inside, carried_cage)
 doc.frame_current = 10
 rig.bone_set("head", position=(0.0, 0.5))
 at(10)
+assert not any(weightless.weights), weightless.weights
+assert close(weightless.evaluated()[0][1], (0.0, 0.5)), ("no weights: it follows the shape whole", weightless.evaluated()[0])
 assert close(carried_cage.evaluated()[0][0], (-1.0, -0.5)), carried_cage.evaluated()[0]
 assert close(loose.evaluated()[0][1], (0.0, 0.5)), ("no bones of its own: it follows the shape whole", loose.evaluated()[0])
 assert close(bound.evaluated()[0][1], (0.0, 0.5)), ("the bones move it, and once", bound.evaluated()[0])
@@ -253,6 +258,7 @@ at(10)
 bent = bound.evaluated()[0][0]
 assert close(bent, (1.25, 0.75)), ("bones first, then its change of shape", bent)
 assert close(loose.evaluated()[0][0], (1.25, 0.75)), loose.evaluated()[0]
+assert close(weightless.evaluated()[0][0], (1.25, 0.75)), weightless.evaluated()[0]
 
 # --- Moving the group itself moves what is in it ------------------------------------------------------------------
 doc.frame_current = 0

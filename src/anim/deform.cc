@@ -259,14 +259,25 @@ static std::vector<BoneWeight> point_weights(const Deformer &d, const MeshPoint 
   return weights;
 }
 
-/* Whether the bones of `armature` move this drawing: its points, or it (or a group around it) as a whole. */
+/* Whether any of a drawing's points has a bone to follow: not the empty entry a point with no weights keeps. */
+static bool points_weighted(const Layer &layer)
+{
+  return std::any_of(layer.drawing.points.begin(), layer.drawing.points.end(), [](const MeshPoint &p) {
+    return std::any_of(p.weights.begin(), p.weights.end(), [](const BoneWeight &w) { return w.bone != 0 && w.weight > 0.0f; });
+  });
+}
+
+/* Whether the bones of `armature` move this drawing: its points, or it (or a group around it) as a whole. Being inside
+ * the bone layer isn't enough: with no weights, nothing there moves it. A reference goes by its original's. */
 static bool bones_carry(const Document &doc, const Layer &layer, const Layer &armature)
 {
   if (&layer == &armature) {
     return true;
   }
   Deformer d;
-  if (deformer_init(doc, layer, d) && d.armature == &armature) {
+  if (deformer_init(doc, layer, d) && d.armature == &armature &&
+      (d.whole_bone != 0 || layer.is_reference() || points_weighted(layer)))
+  {
     return true;
   }
   Document &editable = const_cast<Document &>(doc);
