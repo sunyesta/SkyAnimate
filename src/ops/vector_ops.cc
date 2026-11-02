@@ -1299,7 +1299,8 @@ void vector_operators_register()
 
   /* P: Blender's Separate > Selection. What Duplicate would copy (the runs of selected points and the
    * shapes they fully cover) goes to a new layer above, in the same group, with the layer's settings,
-   * bones and keys; the original loses those segments (points other shapes still use stay). */
+   * bones and keys; the original loses those segments (points other shapes still use stay). The new layer
+   * becomes the active one, as Layer Duplicate's copy does. */
   vector_operator(
       "mesh.separate", "Separate",
       "Move the selected points, the curve pieces between them and the shapes they cover into a new layer of their "
@@ -1313,6 +1314,8 @@ void vector_operators_register()
           }
         }
         std::vector<std::string> made;
+        std::vector<uint64_t> copies;
+        uint64_t active_copy = 0;
         for (const uint64_t id : ids) {
           Layer *layer = layer_find(doc, id);
           VectorDrawing piece = layer->drawing;
@@ -1339,6 +1342,10 @@ void vector_operators_register()
           copy.selected = false;
           int index = 0;
           std::vector<Layer> *container = layer_container(doc, id, &index);
+          if (id == doc.active_layer) {
+            active_copy = copy.id;
+          }
+          copies.push_back(copy.id);
           made.push_back(copy.name);
           container->insert(container->begin() + index, std::move(copy));
         }
@@ -1346,6 +1353,15 @@ void vector_operators_register()
           report(ReportType::Warning, "Select at least two connected points (a shape, or a piece of a line) to separate");
           return OpStatus::Cancelled;
         }
+        for (const Layer *l : document_layers_flat(doc)) {
+          layer_find(doc, l->id)->selected = false;
+        }
+        for (const uint64_t id : copies) {
+          if (id != active_copy) {
+            layer_find(doc, id)->selected = true;
+          }
+        }
+        doc.active_layer = active_copy ? active_copy : copies.front();
         report(ReportType::Info, "Separated into " + made.front() +
                                      (made.size() > 1 ? " and " + std::to_string(made.size() - 1) + " more" : ""));
         return OpStatus::Finished;

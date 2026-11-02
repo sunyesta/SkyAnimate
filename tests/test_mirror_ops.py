@@ -106,9 +106,11 @@ ear_r1 = next(l for l in layers.all() if l.name == "Ear_R 1")
 assert sorted(p[0] for p in ear_r1.points) == [-2.0, -2.0, -1.5, -1.5]
 assert ear_r.point_count == 4 and ear_l.point_count == 4
 assert not ear_r.selected, "Ear_R is left unpicked, as it was"
-assert layers.active.name == "Ear_L"
+assert layers.active.name == "Ear_L 1" and ear_r1.selected, "both new layers are picked"
 
 # Delete in Ear_L takes Ear_R's image too.
+layers.active = ear_l
+ear_r1.selected = False
 ops.mesh.select_none()
 ear_l.select_points([0])
 assert ops.mesh.delete_points() == {'FINISHED'}
