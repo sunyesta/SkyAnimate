@@ -1718,12 +1718,24 @@ static float2 outline_carry(const std::vector<float2> &v, const std::vector<floa
  * has the part of the drawing nearest it, tears the art there). */
 static float2 rigid_offset(const DeformShape &d, float2 p);
 
-/* A side's nearest place to `p` and the way it runs there; where two parts of a curved side are nearly as near
- * (within a fiftieth of its length), the places on each blended by how much nearer each is. */
-static float side_place(const std::vector<float2> &v, const std::vector<float2> &ways, float length_of, float2 p,
-                        float2 &r_on, float2 &r_way)
+/* How far beyond the nearest place, as shares of its distance, other places on a side still have a say, and how far is
+ * looked along it to see how straight it runs there. */
+static constexpr float SIDE_SAY = 0.5f, SIDE_LOOK = 6.0f;
+
+/* A place on a side, the way the side runs there, and its share of the say. */
+struct SidePlace {
+  float2 at, way;
+  float say;
+};
+
+/* The places on a side with a say at `p`: on each piece its nearest, sharing by how near each is, down to none at
+ * half as far again as the nearest (and a fiftieth of the side's length, however close `p` is). A side bent into a hook
+ * has two stretches about as near, each running its own way, and the nearest of all jumps between them as `p` moves;
+ * each here fades instead, so nothing does. `r_straight`: how nearly the side runs one way around `p`, 1 where it does
+ * and less the more it doubles back. Returns the distance from the nearest. */
+static float side_places(const std::vector<float2> &v, const std::vector<float2> &ways, float length_of, float2 p,
+                         std::vector<SidePlace> &r, float *r_straight)
 {
-  const float soft = std::max(length_of * 0.02f, 1e-9f);
   const size_t pieces = v.size() - 1;
   /* Each piece's nearest place, worked out once for both passes (called for every point bent, several times). */
   struct Near {
@@ -1741,21 +1753,32 @@ static float side_place(const std::vector<float2> &v, const std::vector<float2> 
     near[k] = {at, t, length(at - p)};
     closest = std::min(closest, near[k].dist);
   }
-  float2 on(0.0f, 0.0f), way(0.0f, 0.0f);
-  float total = 0.0f;
+  const float least = std::max(length_of * 0.02f, 1e-9f);
+  const float soft = std::max(closest * SIDE_SAY, least), look = std::max(closest * SIDE_LOOK, least);
+  r.clear();
+  float total = 0.0f, looked = 0.0f;
+  float2 ways_near(0.0f, 0.0f);
   for (size_t k = 0; k < pieces; k++) {
-    const float x = (near[k].dist - closest) / soft;
-    if (x >= 1.0f) {
+    const float x = near[k].dist - closest;
+    if (x >= look) {
       continue;
     }
-    const float w = (1.0f - x) * (1.0f - x);
     const float t = near[k].t;
-    on = on + near[k].at * w;
-    way = way + (ways[k] * (1.0f - t) + ways[k + 1] * t) * w;
-    total += w;
+    const float2 mixed = ways[k] * (1.0f - t) + ways[k + 1] * t;
+    const float2 way = length(mixed) > 1e-12f ? normalize(mixed) : float2(1.0f, 0.0f);
+    const float far = 1.0f - x / look;
+    ways_near = ways_near + way * (far * far);
+    looked += far * far;
+    if (x < soft) {
+      const float w = (1.0f - x / soft) * (1.0f - x / soft);
+      r.push_back({near[k].at, way, w});
+      total += w;
+    }
   }
-  r_on = total > 0.0f ? on / total : v[0];
-  r_way = length(way) > 1e-12f ? normalize(way) : float2(1.0f, 0.0f);
+  for (SidePlace &place : r) {
+    place.say /= total;
+  }
+  *r_straight = looked > 0.0f ? length(ways_near) / looked : 1.0f;
   /* The distance from it (as polyline_distance's). */
   return closest;
 }
@@ -1804,18 +1827,32 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
       continue;
     }
     /* Its distance from the side at rest and where the cage put it from the side now, each measured from the side's
-     * nearest place (where two parts of a curved side are nearly as near, within a fiftieth of the side's length,
-     * the places on each blended by how much nearer each is: so the place never jumps from one to the other as the
-     * side moves, and the point with it), at rest and now alike, so a side that hasn't moved sets nothing. */
-    float2 rest_on, rest_way, now_on, now_way;
-    dist[s] = side_place(side.rest, side.rest_way, side.rest_at.back(), p, rest_on, rest_way);
+     * near places, each by its say (side_places), so a place never jumps from one to another as the side moves, and
+     * the point with it; at rest and now alike, so a side that hasn't moved sets nothing. */
+    thread_local std::vector<SidePlace> places;
+    float straight = 1.0f;
+    dist[s] = side_places(side.rest, side.rest_way, side.rest_at.back(), p, places, &straight);
     near = std::min(near, dist[s]);
-    side_place(side.now, side.now_way, side.now_at.back(), q, now_on, now_way);
-    const float across = cross(rest_way, p - rest_on);
+    float across = 0.0f;
+    for (const SidePlace &place : places) {
+      across += cross(place.way, p - place.at) * place.say;
+    }
+    side_places(side.now, side.now_way, side.now_at.back(), q, places, &straight);
     /* Set back to it in full at the side and less further off, as reach / (reach + distance): the distance it ends
-     * at then always grows with the distance it had, however hard the cage squeezes there, so nothing folds. */
-    const float now_across = cross(now_way, q - now_on);
+     * at then always grows with the distance it had, however hard the cage squeezes there, so nothing folds. The way
+     * it is set back is their ways together, left as long as they come out: where a hook's stretches run opposite ways
+     * they cancel, so the side says little there rather than turning sharply from one to the other. */
+    float now_across = 0.0f;
+    float2 push(0.0f, 0.0f);
+    for (const SidePlace &place : places) {
+      now_across += cross(place.way, q - place.at) * place.say;
+      push = push + float2(-place.way.y, place.way.x) * place.say;
+    }
+    push = push * (across - now_across);
     float keep = d.envelope_reach / (d.envelope_reach + dist[s]);
+    /* A side doubling back around here can't be kept a distance from: what lies in a hook narrower than twice that
+     * distance would have to cross itself. It lets go, and the cage as a whole carries the point. */
+    keep *= smooth01((straight - 0.6f) / 0.35f);
     if (d.envelope_mesh) {
       /* A stretch can't fold, whatever sets it back. Where a cell squeezes what is in it, though, setting that back as it
        * fades out by the ring (below) can bring what lies further from the side nearer to it, and a curved cell squeezes
@@ -1824,7 +1861,7 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
       const float squeeze = std::fabs(across) > 1e-9f ? std::clamp(now_across / across, 0.0f, 1.0f) : 1.0f;
       keep *= squeeze * squeeze * side.stays;
     }
-    fix[s] = float2(-now_way.y, now_way.x) * ((across - now_across) * keep);
+    fix[s] = push * keep;
   }
   /* On a mesh, full at the outline and none by the ring, where the mesh places everything exactly as drawn. */
   float fade = 1.0f;
