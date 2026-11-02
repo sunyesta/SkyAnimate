@@ -38,6 +38,8 @@ const char *deform_kind_name(DeformKind kind)
 /* How finely a cage's or line's outline is followed: pieces per segment (a Curve Deform's line, LINE_STEPS). */
 static constexpr int OUTLINE_STEPS = 16;
 static constexpr int LINE_STEPS = 64;
+/* Shorter at rest and a line is no shape (Stretch would spread what follows it by thousands). */
+static constexpr float MIN_LINE_LENGTH = 1e-4f;
 
 /* The layers whose deform modifiers are being worked out, innermost last: a shape bent (through others) by
  * the layer it bends is a loop, left alone. */
@@ -690,12 +692,19 @@ static bool deform_shape_inputs(const Document &doc, const Layer &layer, const M
     {
       return false;
     }
+    /* The shape as it draws, whoever is asking (the edit wire too, or a line and what follows it part ways). When it
+     * is bent by a deform of its own, that deform's Precision adds points: a line is followed by distance along it and
+     * takes them, but a cage's or a mesh's shape is read sample for sample against its rest, so it gets its own points
+     * only, each segment bent as near as one Bezier can be. */
+    const int wire = g_wire;
+    g_wire = m.type == ModifierType::CurveDeform ? 0 : 1;
     g_deforming.push_back(layer.id);
     {
       const GroupDeformReading reading(layer.id);
       r_bent = layer_evaluated_drawing(doc, *target, render);
     }
     g_deforming.pop_back();
+    g_wire = wire;
     /* From the groups the two share down: a shared group moving (the character walked, its top group scaled) doesn't
      * change the shape bent by, so its build is kept. */
     transform_drawing(r_bent, shape_to_layer(doc, layer, m, target->id, true));
@@ -849,7 +858,8 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     if (closed && r.now.size() > r.rest.size()) {
       r.now.pop_back();
     }
-    if (r.now.size() != r.rest.size() || bent_closed != closed) {
+    /* A line is measured by distance along it, at rest and now apart, so it may have more samples now. */
+    if ((closed && r.now.size() != r.rest.size()) || bent_closed != closed) {
       return false;
     }
   }
@@ -866,10 +876,20 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   }
   if (!closed) {
     r.rest_at = lengths_along(r.rest);
-    r.now_at = lengths_along(now ? r.now : r.rest);
-    if (r.rest_at.back() < 1e-6f || r.now_at.back() < 1e-6f) {
+    if (r.rest_at.back() < MIN_LINE_LENGTH) {
       return false;
     }
+    /* A line collapsed to a point has no way it runs: the line at rest, that small, where it collapsed, so what follows
+     * it stays there rather than jumping back to where it was drawn. */
+    if (now && lengths_along(r.now).back() < 1e-6f) {
+      const float2 at = r.now.front();
+      const float shrink = 2e-6f / r.rest_at.back();
+      r.now.resize(r.rest.size());
+      for (size_t i = 0; i < r.rest.size(); i++) {
+        r.now[i] = at + (r.rest[i] - r.rest.front()) * shrink;
+      }
+    }
+    r.now_at = lengths_along(now ? r.now : r.rest);
   }
   return true;
 }
@@ -2448,10 +2468,12 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
          * across it): the line's samples turn by small corners, and turning a far point by each one at once made it
          * hitch as the line moved. Near the line, exactly the way it runs there. */
         const float reach = std::min(std::fabs(place.across) * 0.5f, d.rest_at.back() * 0.25f);
-        const auto frame = [reach](const std::vector<float2> &v, const std::vector<float> &at, float here, float scale,
-                                   float2 &r_on, float2 &r_tangent, float2 &r_normal) {
+        const float rest_spacing = d.rest_at.back() / float(std::max<size_t>(d.rest.size() - 1, 1));
+        const auto frame = [reach, rest_spacing](const std::vector<float2> &v, const std::vector<float> &at, float here,
+                                                 float scale, float2 &r_on, float2 &r_tangent, float2 &r_normal) {
           line_frame_at(v, at, here, r_on, r_tangent, r_normal);
-          const float spacing = at.back() / float(std::max<size_t>(v.size() - 1, 1));
+          /* The same at rest and now, however many samples each has. */
+          const float spacing = rest_spacing * scale;
           const float h = reach * scale;
           if (h > spacing * 0.5f) {
             float2 a, b, ta, na, tb, nb;
@@ -3340,9 +3362,10 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
   }
   const DeformShape &d = *built;
   const PointGroup *group = deform_group(layer, m);
-  /* The same drawing bent by the same build as before: what it made then. */
+  /* The same drawing bent by the same build as before: what it made then. Kept apart with and without the wire, so a
+   * layer both drawn and followed as a cage's or mesh's shape doesn't bend afresh each time. */
   const std::string kept_as = m.name + std::string(size_t(g_probe), '\t');
-  const auto bend_key = std::make_tuple(layer.id, kept_as, render);
+  const auto bend_key = std::make_tuple(layer.id, g_wire > 0 ? kept_as + "\n" : kept_as, render);
   const auto same_bend = [&](const KeptBend &k) {
     return k.build == build && k.render == render && k.wire == g_wire && k.m == m && k.drawing == drawing &&
            k.before_bones == before_bones && k.grouped == (group != nullptr) && (!group || k.group == *group);

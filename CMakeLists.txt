@@ -402,6 +402,12 @@ add_test(NAME resample_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_resample_deform.py)
 add_test(NAME deform_kept
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_kept.py)
+add_test(NAME curve_deform_stress
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_curve_deform_stress.py)
+add_test(NAME layers_auto_focus
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layers_auto_focus.py)
+add_test(NAME bone_layer_select_all
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_layer_select_all.py)
 add_test(NAME deform_shared_parent
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_shared_parent.py)
 add_test(NAME viewport_shading

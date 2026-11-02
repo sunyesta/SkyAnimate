@@ -8,11 +8,13 @@
 #include "imgui_stdlib.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <cstring>
 
 #include "anim/draw_order.hh"
 #include "anim/reference.hh"
+#include "assets/asset_library.hh"
 #include "data/camera.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -128,6 +130,16 @@ static void icon_lock(ImDrawList *dl, ImVec2 c, float s, bool locked)
   const float shift = locked ? 0.0f : s * 0.45f;
   dl->PathArcTo(c + ImVec2(shift, -s * 0.15f), s * 0.38f, PI, 2.0f * PI, 8);
   dl->PathStroke(col, 0, 1.3f);
+}
+
+static void icon_gear(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
+{
+  for (int i = 0; i < 8; i++) {
+    const float a = float(i) * 0.785398f;
+    const ImVec2 way(std::cos(a), std::sin(a));
+    dl->AddLine(c + way * (s * 0.7f), c + way * (s * 1.05f), col, 2.0f);
+  }
+  dl->AddCircle(c, s * 0.55f, col, 16, 1.6f);
 }
 
 static void icon_layer_type(ImDrawList *dl, ImVec2 c, float s, const Layer &layer)
@@ -420,10 +432,19 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
     area.show_active_layer = layer.id;
     area.show_active_time = ImGui::GetTime();
     area.show_active_frames = 4;
+    area.show_active_only_if_hidden = false;
   }
   if (area.show_active_layer == layer.id && area.show_active_frames > 0) {
     area.show_active_frames--;
-    ImGui::SetScrollHereY(0.5f);
+    const float top = ImGui::GetWindowPos().y, bottom = top + ImGui::GetWindowHeight();
+    if (row_min.y < top || row_min.y + h > bottom) {
+      /* Out of sight: on to the middle like Show Active, the list's height settling over these frames. */
+      area.show_active_only_if_hidden = false;
+    }
+    if (!area.show_active_only_if_hidden) {
+      /* By its own place: SetScrollHereY goes by the last row drawn, and the rows out of sight above it aren't. */
+      ImGui::SetScrollFromPosY(row_min.y + h * 0.5f - top, 0.5f);
+    }
   }
 
   /* Scrolled out of sight: only its place is kept (a long list otherwise costs every frame), unless
@@ -1029,6 +1050,66 @@ static void draw_order_view(Context &C)
   }
 }
 
+/* Auto Focus: fold down to the selected layers when the selection changes, so a group opened by hand stays open till
+ * then. It waits while the mouse is over the list or held, or a row is being renamed: rows moving under the mouse
+ * would turn a second click or a drag into another layer's. */
+static void auto_focus_update(Area &area, Context &C)
+{
+  const Document &doc = *C.document;
+  std::vector<uint64_t> picked;
+  if (doc.active_layer) {
+    picked.push_back(doc.active_layer);
+  }
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (layer->selected && layer->id != doc.active_layer) {
+      picked.push_back(layer->id);
+    }
+  }
+  if (picked == area.auto_focus_picked || picked.empty() || area.renaming_layer != 0 ||
+      ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) || ImGui::IsAnyItemActive() || ImGui::IsAnyMouseDown() ||
+      ImGui::GetDragDropPayload())
+  {
+    return;
+  }
+  area.auto_focus_picked = std::move(picked);
+  operator_call(C, "layer.auto_focus");
+  area.show_active_layer = doc.active_layer;
+  area.show_active_frames = 4;
+  area.show_active_only_if_hidden = true;
+}
+
+/* The settings button at the right of the header, and its popup. */
+static void layers_settings_button(Area &area)
+{
+  const float size = ImGui::GetFrameHeight();
+  ImGui::SameLine(0, 8);
+  const float room = ImGui::GetContentRegionAvail().x - size;
+  if (room > 0.0f) {
+    ImGui::SetCursorScreenPos(ImGui::GetCursorScreenPos() + ImVec2(room, 0.0f));
+  }
+  Preferences &prefs = preferences();
+  if (ImGui::Button("##layers_settings", ImVec2(size, size))) {
+    ImGui::OpenPopup("##layers_settings_popup");
+  }
+  icon_gear(ImGui::GetWindowDrawList(), (ImGui::GetItemRectMin() + ImGui::GetItemRectMax()) * 0.5f, size * 0.3f,
+            prefs.layers_auto_focus ? COL_REFERENCE : COL_ICON);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Layers editor settings");
+  }
+  if (ImGui::BeginPopup("##layers_settings_popup")) {
+    if (ImGui::Checkbox("Auto Focus", &prefs.layers_auto_focus)) {
+      preferences_save();
+      /* Turned on: at once, whatever is selected already. */
+      area.auto_focus_picked.clear();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Keep the groups folded except those holding the selected layers, and scroll to the active "
+                        "layer. A group opened by hand stays open until the selection changes");
+    }
+    ImGui::EndPopup();
+  }
+}
+
 void layers_draw(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -1090,6 +1171,7 @@ void layers_draw(Area &area, Context &C)
     ImGui::SetTooltip("Show the layers in this frame's draw order (Draw Order rules applied), top first: drag one "
                       "onto another to draw it in front of or behind it");
   }
+  layers_settings_button(area);
   ImGui::Separator();
 
   if (area.layers_draw_order_view) {
@@ -1098,6 +1180,10 @@ void layers_draw(Area &area, Context &C)
     }
     ImGui::EndChild();
     return;
+  }
+
+  if (preferences().layers_auto_focus) {
+    auto_focus_update(area, C);
   }
 
   DropRequest drop;

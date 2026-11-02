@@ -202,6 +202,8 @@ assert art.edited_with_bones
 assert oanim.ops.mesh.select_all() == {'FINISHED'}
 assert all(p[2] for p in art.points), "the layer's points were selected from the bone layer"
 oanim.ops.armature.select_none()
+assert not any(p[2] for p in art.points), "Alt A deselects them with the bones"
+assert oanim.ops.mesh.select_all() == {'FINISHED'}
 assert oanim.wm.event_simulate("G", area="Viewport"), "G moves them, with no bone picked"
 oanim.ops.mesh.select_none()
 # Hiding the All collection hides them too: no longer edited with the bones.

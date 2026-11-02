@@ -741,6 +741,10 @@ class _Layer:
         (on an animated curve it takes its neighbours' motion). Returns the new point's index."""
         return _oanim.layer_split_segment(self._id, curve, segment, t)
 
+    def extrude_align(self, point):
+        """Aim the handles of the segment extruded to new point `point`, where it is now, as E does as it drags."""
+        _oanim.layer_extrude_align(self._id, point)
+
     def move_points(self, offset):
         """G on the selected points by offset=(dx, dy) (layer space), with mirror editing as in the
         viewport: each point's mirror image in the setup pose snaps to its reflection, on any frame.

@@ -725,8 +725,20 @@ void rig_operators_register()
                                               (count == 1 ? " bone" : " bones") + " of \"" + armature.name + "\"");
                  return OpStatus::Finished;
                });
-  rig_operator("armature.select_all", "Select All Bones", "Select every bone of the bone layer (A)",
-               bone_layer_active, [](Context &C) {
+  /* The curves editable along with the bones are selected and deselected with them. */
+  const auto select_editable_points = [](Context &C, bool select) {
+    for (Layer *layer : editable_layers(C)) {
+      for (MeshPoint &p : layer->drawing.points) {
+        p.selected = select && !p.detail.hidden;
+      }
+      if (!select) {
+        drawing_deselect_handles(layer->drawing);
+      }
+    }
+  };
+  rig_operator("armature.select_all", "Select All Bones",
+               "Select every bone of the bone layer and every point of the curves editable with it (A)",
+               bone_layer_active, [select_editable_points](Context &C) {
                  for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
                    Layer &armature = *layer;
                    for (Bone &b : armature.bones) {
@@ -736,11 +748,12 @@ void rig_operators_register()
                      armature.active_bone = armature.bones.front().id;
                    }
                  }
+                 select_editable_points(C, true);
                  return OpStatus::Finished;
                });
   rig_operator("armature.select_invert", "Invert Bone Selection",
-               "Select the bones that aren't selected and deselect those that are (Ctrl I), as Blender's Invert; "
-               "hidden bones stay unselected",
+               "Select the bones that aren't selected and deselect those that are (Ctrl I), as Blender's Invert, and "
+               "the same for the points of the curves editable with them; hidden ones stay unselected",
                bone_layer_active, [](Context &C) {
                  for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
                    Layer &armature = *layer;
@@ -759,13 +772,20 @@ void rig_operators_register()
                      }
                    }
                  }
+                 for (Layer *layer : editable_layers(C)) {
+                   for (MeshPoint &p : layer->drawing.points) {
+                     p.selected = !p.selected && !p.detail.hidden;
+                   }
+                 }
                  return OpStatus::Finished;
                });
-  rig_operator("armature.select_none", "Deselect All Bones", "Deselect every bone of the bone layer (Alt A)",
-               bone_layer_active, [](Context &C) {
+  rig_operator("armature.select_none", "Deselect All Bones",
+               "Deselect every bone of the bone layer and the curves editable with it (Alt A)", bone_layer_active,
+               [select_editable_points](Context &C) {
                  for (Layer *layer : armature_and_inside(*C.document, C.document->active_layer)) {
                    armature_deselect_all(*layer);
                  }
+                 select_editable_points(C, false);
                  return OpStatus::Finished;
                });
 

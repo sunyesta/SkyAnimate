@@ -516,6 +516,37 @@ void layer_operators_register()
     operators().add(std::move(ot));
   }
   {
+    OperatorType ot;
+    ot.idname = "layer.auto_focus";
+    ot.name = "Auto Focus";
+    ot.description = "Fold every group in the Layers editor except those holding the selected layers, and open "
+                     "those (a selected group stays as it is)";
+    ot.poll = [](Context &C) { return C.document && document_active_layer(*C.document); };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::set<uint64_t> holding, picked;
+      for (const Layer *layer : document_layers_flat(doc)) {
+        if (layer->selected || layer->id == doc.active_layer) {
+          picked.insert(layer->id);
+          for (const Layer *p = layer_parent(doc, layer->id); p; p = layer_parent(doc, p->id)) {
+            holding.insert(p->id);
+          }
+        }
+      }
+      /* Not marked as a change: it follows the selection, so an unsaved mark would add nothing to keep. */
+      for (const Layer *flat : document_layers_flat(doc)) {
+        if (holding.count(flat->id)) {
+          layer_find(doc, flat->id)->expanded = true;
+        }
+        else if (flat->is_group() && !picked.count(flat->id)) {
+          layer_find(doc, flat->id)->expanded = false;
+        }
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
     /* The Select Layer tool and Alt-click: the layer shown at a point. */
     OperatorType ot;
     ot.idname = "layer.select_at";

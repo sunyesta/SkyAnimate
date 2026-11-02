@@ -1792,6 +1792,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   /* G on the selected points by (dx, dy) in the layer's space, with mirror editing as in the
    * viewport (stored positions: where the points are before bones move them). */
+  m.def("layer_extrude_align", [layer_or_raise](uint64_t id, int point) {
+    drawing_extrude_align(layer_or_raise(id).drawing, point);
+  });
   m.def("layer_move_points", [layer_or_raise](uint64_t id, float dx, float dy) {
     Layer &layer = layer_or_raise(id);
     if (layer.is_reference() && !layer.reference.edit_points) {

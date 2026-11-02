@@ -335,6 +335,8 @@ struct ModalTransform {
   int area = 0;
   char kind = 'G';
   bool extrude = false;
+  /* An extrude's new points, by layer: their segments' handles follow them. */
+  std::map<uint64_t, std::vector<int>> extruded;
   Document snapshot;
   /* A point, or one handle of a curve point (curve >= 0). A handle picked on its own is
    * `direct` (dragging it may turn its partner, as in Blender); the stored handles of a moved
@@ -3755,8 +3757,11 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
   if (modal.extrude) {
     /* A new point beyond each selected curve end; they become the selection. */
     bool any = false;
+    modal.extruded.clear();
     for (Layer *layer : layers) {
-      any |= !drawing_extrude_selected(layer->drawing, C.wm->tool_settings.style).empty();
+      std::vector<int> added = drawing_extrude_selected(layer->drawing, C.wm->tool_settings.style);
+      any |= !added.empty();
+      modal.extruded[layer->id] = std::move(added);
     }
     if (!any) {
       *C.document = modal.snapshot;
@@ -4513,6 +4518,13 @@ static std::string modal_update(Context &C, const ViewMapping &view)
   }
   if (!g_modal.slide) {
     modal_apply(C, g_modal, layers, g_modal.kind, delta, angle, scale);
+    for (const auto &[id, added] : g_modal.extruded) {
+      if (Layer *layer = g_modal.extrude ? layer_find(*C.document, id) : nullptr) {
+        for (const int point : added) {
+          drawing_extrude_align(layer->drawing, point);
+        }
+      }
+    }
   }
   modal_touch(C, layers);
   info = text;

@@ -1131,6 +1131,59 @@ int drawing_extrude_branch(VectorDrawing &drawing, int point, const Style &style
   return added;
 }
 
+void drawing_extrude_align(VectorDrawing &drawing, int point)
+{
+  const CurveEnd end = drawing_curve_end_at(drawing, point);
+  if (end.curve < 0 || !end.at_end) {
+    return;
+  }
+  Curve &curve = drawing.curves[size_t(end.curve)];
+  const int n = int(curve.points.size());
+  /* A branch or a lone point has no way it was going: its new segment runs straight, worked out from the points. */
+  if (n < 3) {
+    return;
+  }
+  const CurvePoint &grew_from = curve.points[size_t(n - 2)];
+  const float2 here = drawing.points[size_t(grew_from.point)].pos;
+  const float2 before = drawing.points[size_t(curve.points[size_t(n - 3)].point)].pos;
+  const float2 chord = drawing.points[size_t(point)].pos - here;
+  const float2 in = curve_handle(drawing, curve, n - 2, true) - here;
+  const float chord_len = length(chord);
+  const bool corner = !grew_from.aligned && grew_from.curvature <= 0.0f;
+  if (chord_len < 1e-6f || (length(in) < 1e-6f && length(here - before) < 1e-6f)) {
+    return;
+  }
+  own_handles(drawing, curve, n - 2);
+  own_handles(drawing, curve, n - 1);
+  /* New shape, not an edit: without keys it is what the setup holds too. */
+  const auto set_handle = [](CurvePoint &cp, bool pre, float2 value) {
+    (pre ? cp.handle_in : cp.handle_out) = value;
+    Channel<float2> &ch = pre ? cp.handle_in_keys : cp.handle_out_keys;
+    if (!ch.animated()) {
+      (pre ? cp.setup_in : cp.setup_out) = value;
+      (pre ? cp.change_in : cp.change_out) = {};
+      ch.last = {};
+      ch.has_last = true;
+    }
+  };
+  CurvePoint &from = curve.points[size_t(n - 2)], &to = curve.points[size_t(n - 1)];
+  if (corner) {
+    /* A corner stays a corner: straight toward the new point, as a peaked point's handles run. */
+    set_handle(from, false, chord / 3.0f);
+    set_handle(to, true, chord / -3.0f);
+    return;
+  }
+  /* The way the curve is going, and at the new end that way mirrored across the chord: one even bend. */
+  const float2 way = length(in) > 1e-6f ? -normalize(in) : normalize(here - before);
+  const float2 along = chord / chord_len;
+  const float2 arrives = along * (2.0f * dot(way, along)) - way;
+  /* Shorter the further it turns (none straight back), so a sharp turn doesn't swing out in a loop first. */
+  const float reach = chord_len / 3.0f * (1.0f + dot(way, along)) * 0.5f;
+  set_handle(from, false, way * reach);
+  set_handle(to, true, arrives * -reach);
+  from.aligned = to.aligned = true;
+}
+
 std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &style)
 {
   std::vector<int> new_points;
@@ -1152,7 +1205,9 @@ std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &s
     /* The end had no handle out (nothing to lead to); now it leads on to the new point, so it takes one the way
      * the curve came in, as long as its handle in, and the curve runs on smoothly rather than turning there. */
     CurvePoint &was_end = curve.points.back();
-    if (was_end.handles_set && length(was_end.handle_out) < 1e-6f && length(was_end.handle_in) > 1e-6f) {
+    if (was_end.handles_set && (was_end.aligned || was_end.curvature > 0.0f) && length(was_end.handle_out) < 1e-6f &&
+        length(was_end.handle_in) > 1e-6f)
+    {
       was_end.handle_out = -was_end.handle_in;
     }
     curve.points.push_back({added});

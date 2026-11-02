@@ -77,6 +77,10 @@ struct Area {
   /* Frames it still scrolls to that row: groups Show Active opened only make the list taller once drawn, and a scroll
    * can't go past the list's height of the frame before, so it goes on till the list has its full height. */
   int show_active_frames = 0;
+  /* That scroll only brings the row into sight (Auto Focus): none when it is already in sight. */
+  bool show_active_only_if_hidden = false;
+  /* Layers editor, Auto Focus: the picked layers it last folded down to, active first. */
+  std::vector<uint64_t> auto_focus_picked;
   /* Layers editor: list the drawing layers in this frame's draw order (top first), to reorder by
    * dragging, instead of the tree. */
   bool layers_draw_order_view = false;

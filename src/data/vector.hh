@@ -531,6 +531,10 @@ int drawing_extrude_branch(VectorDrawing &drawing, int point, const Style &style
  * curve growing with it); any other point branches (drawing_extrude_branch). The new points, at their points'
  * places, become the selection; returned. */
 std::vector<int> drawing_extrude_selected(VectorDrawing &drawing, const Style &style);
+/* Aims the handles of the segment an extrude grew to `point` where that point is now: the end it grew from keeps
+ * going the way the curve came in, in line with its handle in, and the new end arrives in one even bend. From a corner
+ * they run straight toward each other; a segment that is a branch's or a lone point's first is left as it is. */
+void drawing_extrude_align(VectorDrawing &drawing, int point);
 /* Every curve and segment that touches a point. */
 std::vector<ShapeEdge> drawing_segments_at_point(const VectorDrawing &drawing, int point);
 /* Closest point within `radius`, or -1. */

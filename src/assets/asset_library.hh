@@ -32,6 +32,8 @@ struct Preferences {
   bool status_statistics = true;
   bool status_frame = false;
   bool status_version = true;
+  /* Layers editor settings: Auto Focus keeps the list folded down to the selected layers. */
+  bool layers_auto_focus = false;
 };
 
 /* The current preferences. Loaded at startup from %LOCALAPPDATA%\OpenAnimate\preferences.json;
