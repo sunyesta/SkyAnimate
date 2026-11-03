@@ -377,10 +377,11 @@ class _Layer:
     def fix_actions(self):
         """A bone layer's fix actions (correctives): [{"name", "drivers" (action bone action names), "poses" (the
         poses it fixes: [{"frame" (its frame in the fix, keyed with the correction), "at" (each driver's frame
-        in its action bone action), "shares" (the same as shares of their lengths, 0-1), "label"}]), "strength" (how
+        in its action bone action), "shares" (the same as shares of their lengths, 0-1), "label" (as it is kept: "turn_r 45 · look_up 20")}]), "strength" (how
         much of it plays now, 0-1), "nearest_pose" (index of the pose nearest now, -1), "broken" (why it can't
         play, or "")}]. Fix a pose with oanim.ops.anim.fix_action_new (it adds a pose, or opens the one here),
-        fix_pose_add(name=, shares="0.5,0.3") and fix_pose_remove(name=, pose=N)."""
+        fix_pose_add(name=, shares="0.5,0.3") and fix_pose_remove(name=, pose=N); fix_pose_snap(name=, pose=N) puts its
+        action bones at a pose."""
         return [dict(f) for f in _oanim.layer_fix_actions(self._id)]
 
     def field_state(self, path):

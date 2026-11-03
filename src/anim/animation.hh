@@ -173,7 +173,9 @@ inline constexpr float FIX_COUNTS_FROM = 0.05f;
 std::vector<std::pair<std::string, float>> action_bone_actions_counting(const Layer &owner);
 /* Where pose `pose` of a fix has each driver, as a share of that action bone action's length (0 to 1). */
 std::vector<float> fix_pose_shares(const Layer &owner, const FixAction &fix, const FixPose &pose);
-/* "head_turn 52% · HeadTurnUp 30%": a pose of a fix, for labels. */
+/* "12" or "12.5": an action frame as labels show it. */
+std::string action_frame_text(float frame);
+/* "head_turn 45 · HeadTurnUp 20": a pose of a fix, for labels, as it is kept (each action bone action's frame). */
 std::string fix_pose_label(const Layer &owner, const FixAction &fix, const FixPose &pose);
 /* How a fix plays with `playing` (action bone action frames, as action_bone_actions_playing gives): each pose with how
  * much of its correction is added (its keys on its frame, as offsets from the setup), `strength` how much

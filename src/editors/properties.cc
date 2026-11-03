@@ -934,9 +934,11 @@ static void fix_pose_map(Context &C, const Layer &owner, const FixAction &fix, c
     }
     else {
       const auto [x, y] = to_share(mouse);
-      ImGui::SetTooltip("%s %d%%  \xC2\xB7  %s %d%%\nClick to add a pose here", fix.drivers[0].c_str(),
-                        int(std::lround(std::max(x, FIX_COUNTS_FROM) * 100.0f)), fix.drivers[1].c_str(),
-                        int(std::lround(std::max(y, FIX_COUNTS_FROM) * 100.0f)));
+      const auto frame_of = [&](size_t k, float share) {
+        return action_frame_text(std::max(share, FIX_COUNTS_FROM) * action_bone_action_length(owner, fix.drivers[k]));
+      };
+      ImGui::SetTooltip("%s %s  \xC2\xB7  %s %s\nClick to add a pose here", fix.drivers[0].c_str(), frame_of(0, x).c_str(),
+                        fix.drivers[1].c_str(), frame_of(1, y).c_str());
     }
   }
   static int removing = -1;
@@ -1158,7 +1160,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     std::vector<std::string> names;
     for (const auto &[n, t] : counting) {
       const float l = action_bone_action_length(owner, n);
-      line += (line.empty() ? "" : "   \xC2\xB7   ") + n + " " + percent(l > 0.0f ? std::min(t / l, 1.0f) : 0.0f);
+      line += (line.empty() ? "" : "   \xC2\xB7   ") + n + " " + action_frame_text(l > 0.0f ? std::min(t, l) : t);
       names.push_back(n);
     }
     std::sort(names.begin(), names.end());
@@ -1170,7 +1172,7 @@ static void fix_actions_panel(Context &C, Layer &owner)
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("%s", line.c_str());
     ImGui::PopTextWrapPos();
-    tip("The action bones playing on this frame (turned at least 5%), each as far as it has turned");
+    tip("The action bones playing on this frame (turned at least 5%), each at the frame of its action it plays");
   }
   const int near_pose = for_all ? fix_pose_near(owner, *for_all, counting) : -1;
   label("");
@@ -1211,6 +1213,242 @@ static void fix_actions_panel(Context &C, Layer &owner)
   if (!doomed.empty()) {
     operator_call(C, "anim.action_delete", {{"name", doomed}});
   }
+}
+
+/* A 2 Axis Controller's fixes (the Bone tab): every fix one of its sides drives, linked dials' actions too, with how
+ * much plays now, Edit and its checkbox (unchecked: muted, as in the Actions panel); its poses under it, each as it
+ * is kept (each action's frame), the one nearest the knob in the fix colour. Click a pose to put the knob there,
+ * double-click it to open the fix on it. Beside the list: + fixes the pose now, - removes the picked pose (the fix
+ * with its last one). */
+static void controller_fixes_panel_body(Context &C, Layer &armature, const Bone &knob);
+
+static void controller_fixes_panel(Context &C, Layer &armature, const Bone &knob)
+{
+  if (!ui_collapsing_header("Fixes", true)) {
+    return;
+  }
+  /* Its list's widgets are named as the Actions panel's are. */
+  ImGui::PushID("##controller_fixes_panel");
+  controller_fixes_panel_body(C, armature, knob);
+  ImGui::PopID();
+}
+
+static void controller_fixes_panel_body(Context &C, Layer &armature, const Bone &knob)
+{
+  Document &doc = *C.document;
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float h = ImGui::GetFrameHeight();
+  const float row_h = h + 2.0f;
+  const uint64_t knob_id = knob.id;
+  const auto tip = [](const char *text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", text);
+    }
+  };
+  const OpArgs::value_type layer_arg = {"layer", std::to_string(armature.id)};
+  /* The pose picked last (for -), per knob; with none, the one nearest the knob. */
+  struct Picked {
+    std::string fix;
+    int pose = -1;
+  };
+  static std::map<uint64_t, Picked> picked_by_knob;
+  Picked &chosen = picked_by_knob[knob_id];
+
+  const auto driven_here = [&](const std::string &driver) {
+    const Bone *holder = nullptr;
+    return action_frame_by(armature, driver, &holder) == ActionFrameBy::Knob && holder && holder->id == knob_id;
+  };
+  std::vector<std::string> fixes;
+  for (const FixAction &f : armature.fix_actions) {
+    if (std::any_of(f.drivers.begin(), f.drivers.end(), driven_here)) {
+      fixes.push_back(f.name);
+    }
+  }
+  const std::vector<std::pair<std::string, float>> playing = action_bone_actions_playing(armature);
+  const std::vector<std::pair<std::string, float>> counting = action_bone_actions_counting(armature);
+  /* The picked pose, or the nearest while nothing is picked (or what was picked has gone). */
+  const FixAction *chosen_fix = fix_action_find(armature, chosen.fix);
+  if (!chosen_fix || std::find(fixes.begin(), fixes.end(), chosen.fix) == fixes.end() || chosen.pose < 0 ||
+      size_t(chosen.pose) >= chosen_fix->poses.size())
+  {
+    chosen = Picked();
+  }
+  Picked picked = chosen;
+  if (picked.pose < 0) {
+    float best = 0.0f;
+    for (const std::string &name : fixes) {
+      const FixAction &f = *fix_action_find(armature, name);
+      const FixMix mix = fix_action_mix(armature, f, playing);
+      if (mix.nearest >= 0 && mix.strength > best) {
+        best = mix.strength;
+        picked = {name, mix.nearest};
+      }
+    }
+  }
+
+  const float side = h + style.ItemSpacing.x;
+  const float list_w = ImGui::GetContentRegionAvail().x - side;
+  const ImVec2 list_min = ImGui::GetCursorScreenPos();
+  int rows = 0;
+  for (const std::string &name : fixes) {
+    rows += 1 + int(fix_action_find(armature, name)->poses.size());
+  }
+  const float list_rows = std::clamp(float(std::max(rows, 1)), 3.0f, 10.0f);
+  ImGui::BeginChild("##fixes", ImVec2(list_w, list_rows * row_h + style.WindowPadding.y * 2.0f + style.ItemSpacing.y),
+                    ImGuiChildFlags_Borders);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImU32 fix_col = UI_FIX_COLOR;
+  std::string doomed;
+  for (const std::string &name : fixes) {
+    const FixAction &f = *fix_action_find(armature, name);
+    ImGui::PushID(name.c_str());
+    const std::string broken = fix_action_broken(armature, f);
+    const FixMix mix = broken.empty() ? fix_action_mix(armature, f, playing) : FixMix();
+    const bool muted = action_muted(armature, name);
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float strength_w = h * 2.6f;
+    const float edit_w = ImGui::CalcTextSize("Edit").x + style.FramePadding.x * 2.0f;
+    const float right_w = strength_w + edit_w + h + style.ItemSpacing.x * 2.0f;
+
+    /* The fix: a diamond, its name, how much plays now, Edit and whether it plays. */
+    ImVec2 row = ImGui::GetCursorScreenPos();
+    const float r = h * 0.22f;
+    const ImVec2 ic(row.x + style.FramePadding.x + h * 0.3f, row.y + (row_h - 2.0f) * 0.5f);
+    dl->AddQuad(ImVec2(ic.x, ic.y - r), ImVec2(ic.x + r, ic.y), ImVec2(ic.x, ic.y + r), ImVec2(ic.x - r, ic.y), fix_col, 1.3f);
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::Selectable("##fix", false, ImGuiSelectableFlags_None, ImVec2(w - right_w, row_h - 2.0f));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      std::string drivers;
+      for (const std::string &d : f.drivers) {
+        drivers += (drivers.empty() ? "" : " and ") + d;
+      }
+      ImGui::SetTooltip(broken.empty() ? "Fixes %s turning together: %d pose%s\nRight-click for more"
+                                       : "Can't play: %s\nRight-click for more",
+                        broken.empty() ? drivers.c_str() : broken.c_str(), int(f.poses.size()),
+                        f.poses.size() == 1 ? "" : "s");
+    }
+    if (ImGui::BeginPopupContextItem("##fix_menu")) {
+      ImGui::TextDisabled("%s", name.c_str());
+      ImGui::Separator();
+      if (ImGui::MenuItem("Edit")) {
+        operator_call(C, "anim.action_set", {layer_arg, {"name", name}});
+      }
+      if (ImGui::MenuItem("Delete Fix")) {
+        doomed = name;
+      }
+      ImGui::EndPopup();
+    }
+    const ImU32 name_col = !broken.empty() ? UI_BROKEN_COLOR
+                           : muted         ? ImGui::GetColorU32(ImGuiCol_TextDisabled)
+                           : mix.strength > 0.0f ? fix_col
+                                                 : ImGui::GetColorU32(ImGuiCol_Text);
+    dl->AddText(ImVec2(ic.x + h * 0.5f, row.y + style.FramePadding.y), name_col, name.c_str());
+    ImGui::SameLine(w - right_w + style.ItemSpacing.x);
+    const std::string strength = !broken.empty() ? std::string("can't play")
+                                                 : std::to_string(int(std::lround(mix.strength * 100.0f))) + "%";
+    ImGui::BeginDisabled();
+    ImGui::Button(strength.c_str(), ImVec2(strength_w, 0.0f));
+    ImGui::EndDisabled();
+    tip("How much of the fix plays now: all of it at or past one of its poses, none while any of its action bones rests");
+    ImGui::SameLine();
+    if (ImGui::Button("Edit")) {
+      const bool on_picked = picked.fix == name && picked.pose >= 0;
+      if (on_picked) {
+        operator_call(C, "anim.action_set",
+                      {layer_arg, {"name", name}, {"frame", std::to_string(f.poses[size_t(picked.pose)].frame)}});
+      }
+      else {
+        operator_call(C, "anim.action_set", {layer_arg, {"name", name}});
+      }
+    }
+    tip("Open it in the timeline on the picked pose (else the one nearest the pose now), its action bones held there");
+    ImGui::SameLine(w - h + style.FramePadding.x);
+    bool plays = !muted;
+    if (ImGui::Checkbox("##plays", &plays)) {
+      operator_call(C, "anim.action_play_set", {layer_arg, {"name", name}, {"mute", plays ? "0" : "1"}});
+    }
+    tip("Unchecked: muted, it doesn't play whatever its action bones do, its keys kept");
+    ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + row_h));
+
+    /* Its poses, as they are kept. */
+    for (size_t k = 0; k < f.poses.size(); k++) {
+      ImGui::PushID(int(k));
+      row = ImGui::GetCursorScreenPos();
+      const bool is_picked = picked.fix == name && picked.pose == int(k);
+      const bool nearest = mix.strength > 0.0f && mix.nearest == int(k);
+      if (is_picked) {
+        dl->AddRectFilled(row, ImVec2(row.x + w, row.y + row_h - 2.0f), IM_COL32(0x33, 0x4d, 0x80, 255), 3.0f);
+      }
+      if (ImGui::Selectable("##pose", false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, row_h - 2.0f))) {
+        chosen = {name, int(k)};
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          operator_call(C, "anim.action_set", {layer_arg, {"name", name}, {"frame", std::to_string(f.poses[k].frame)}});
+        }
+        else {
+          operator_call(C, "anim.fix_pose_snap", {layer_arg, {"name", name}, {"pose", std::to_string(k + 1)}});
+        }
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Pose %d (frame %d of the fix)%s\nClick to put the knob here, double-click to edit it", int(k) + 1,
+                          f.poses[k].frame, nearest ? ", nearest the knob" : "");
+      }
+      const std::string text = std::to_string(k + 1) + "   " + fix_pose_label(armature, f, f.poses[k]);
+      dl->AddText(ImVec2(ic.x + h * 0.5f, row.y + style.FramePadding.y),
+                  nearest ? fix_col : ImGui::GetColorU32(ImGuiCol_TextDisabled), text.c_str());
+      ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + row_h));
+      ImGui::PopID();
+    }
+    ImGui::PopID();
+  }
+  if (fixes.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("No fixes yet. Put the knob where the pose looks wrong (off-centre both ways), then +.");
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::EndChild();
+  if (!doomed.empty()) {
+    operator_call(C, "anim.action_delete", {layer_arg, {"name", doomed}});
+    return;
+  }
+  const ImVec2 list_max = ImGui::GetItemRectMax();
+
+  /* Beside the list: + and -. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x + list_w + style.ItemSpacing.x, list_min.y));
+  ImGui::BeginGroup();
+  const bool in_adding = !doc.action.empty() && doc.action_layer == armature.id && action_adds(armature, doc.action);
+  const bool can_fix = counting.size() >= 2 && doc.frame_current != 0 && !in_adding &&
+                       std::any_of(counting.begin(), counting.end(), [&](const auto &c) { return driven_here(c.first); });
+  ImGui::BeginDisabled(!can_fix);
+  if (ImGui::Button("+", ImVec2(h, h))) {
+    operator_call(C, "anim.fix_action_new");
+  }
+  ImGui::EndDisabled();
+  tip(can_fix                    ? "Fix This Pose: the fix for what plays now opens at it (made, or the pose added, if "
+                                   "there is none), to key the correction"
+      : doc.frame_current == 0   ? "Frame 0 is the rest pose: go to another frame"
+      : in_adding                ? "Fix a pose from the mainline, not inside an action bone or fix action"
+                                 : "Move the knob off-centre both ways (or with another action bone turning) where the "
+                                   "pose looks wrong, then fix it");
+  const FixAction *from = fix_action_find(armature, picked.fix);
+  ImGui::BeginDisabled(!from);
+  if (ImGui::Button("-", ImVec2(h, h)) && from) {
+    if (from->poses.size() < 2) {
+      operator_call(C, "anim.action_delete", {layer_arg, {"name", picked.fix}});
+    }
+    else {
+      operator_call(C, "anim.fix_pose_remove", {layer_arg, {"name", picked.fix}, {"pose", std::to_string(picked.pose + 1)}});
+    }
+    chosen = Picked();
+  }
+  ImGui::EndDisabled();
+  tip(!from ? "Pick a pose to remove it"
+      : from->poses.size() < 2 ? "Remove the picked pose: it's the fix's only one, so the fix goes with it"
+                               : "Remove the picked pose and its keys; the fix blends between the others");
+  ImGui::EndGroup();
+  /* Below the list, however tall it is beside the buttons. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x, std::max(list_max.y, ImGui::GetItemRectMax().y) + 1.0f));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 /* A bone layer's skeleton (as a tree, active bone highlighted) and the active bone. */
@@ -9322,6 +9560,9 @@ void properties_draw(Area &area, Context &C)
           break;
         }
         bone_panel(C, armature);
+        if (const Bone *active = bone_find(armature, armature.active_bone); active && bone_is_controller(*active)) {
+          controller_fixes_panel(C, armature, *active);
+        }
         bone_relations_panel(C, armature);
         bone_display_panel(C, armature);
         break;

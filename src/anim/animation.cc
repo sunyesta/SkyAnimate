@@ -1657,12 +1657,25 @@ std::vector<float> fix_pose_shares(const Layer &owner, const FixAction &fix, con
   return shares;
 }
 
-std::string fix_pose_label(const Layer &owner, const FixAction &fix, const FixPose &pose)
+std::string action_frame_text(float frame)
 {
-  const std::vector<float> shares = fix_pose_shares(owner, fix, pose);
+  char text[32];
+  if (std::fabs(frame - std::round(frame)) < 0.05f) {
+    std::snprintf(text, sizeof(text), "%d", int(std::lround(frame)));
+  }
+  else {
+    std::snprintf(text, sizeof(text), "%.1f", frame);
+  }
+  return text;
+}
+
+std::string fix_pose_label(const Layer & /*owner*/, const FixAction &fix, const FixPose &pose)
+{
+  /* As it is kept: each action bone action's frame. */
   std::string label;
   for (size_t i = 0; i < fix.drivers.size(); i++) {
-    label += (label.empty() ? "" : " \xC2\xB7 ") + fix.drivers[i] + " " + std::to_string(int(std::lround(shares[i] * 100.0f))) + "%";
+    label += (label.empty() ? "" : " \xC2\xB7 ") + fix.drivers[i] + " " +
+             action_frame_text(i < pose.at.size() ? pose.at[i] : 0.0f);
   }
   return label;
 }
