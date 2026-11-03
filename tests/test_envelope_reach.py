@@ -240,6 +240,87 @@ assert all(inside(p) for p in at if p[2] < 0.97), "the view left the cage"
 
 circle_cage, circle_art = bent_by(circle, column, "RIGID")
 assert circle_art.deform_range_view(0) is None
+assert circle_art.deform_blend_view(0) is None
+
+# Blend's view: where the sides share. Two sides share evenly where they are as near, as on a square's diagonals, at any
+# Blend; off them, the nearer leads alone at the bottom and the two share more as Blend goes up. Never across a gap: on
+# the U, the near side of the gap and the other arm's, straight across it, share nothing.
+view = art.deform_blend_view(0)
+assert view is not None and view[1] > 100 and view[2] == 0, view[1:]
+
+
+def on_outline(p):
+    for a, b in zip(outline, outline[1:] + outline[:1]):
+        e = (b[0] - a[0], b[1] - a[1])
+        t = max(0.0, min(1.0, ((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / max(e[0] ** 2 + e[1] ** 2, 1e-12)))
+        if math.dist(p[:2], (a[0] + e[0] * t, a[1] + e[1] * t)) < 2e-3:
+            return True
+    return False
+
+
+assert all(inside(p) or on_outline(p) for p in view[0]), "the view left the cage"
+narrow_cage, narrow_art = bent_by(u_shape(0.05), column, "ENVELOPE", blend=1.0)
+# (Straight across, the other arm's side is under three times as far as the nearest: 0.38 or more shared at Blend 1. The
+# next side along this one, the most that may share here, is about five times as far.)
+near_gap = [p for p in narrow_art.deform_blend_view(0)[0] if -0.07 < p[0] < -0.033 and abs(p[1] - 0.25) < 0.1]
+assert len(near_gap) >= 5 and max(p[2] for p in near_gap) < 0.25, ("shared over the gap", near_gap)
+
+c = 0.03
+square = [(-1, -1 + c), (-1, 1 - c), (-1 + c, 1), (1 - c, 1), (1, 1 - c), (1, -1 + c), (1 - c, -1), (-1 + c, -1)]
+square_cage, square_art = bent_by(square, column, "ENVELOPE")
+square_outline = square_cage.evaluated_outline(0, 16)[0]
+# A side runs from one of the cage's points to the next.
+square_sides = [[square_outline[(k * 16 + j) % len(square_outline)] for j in range(17)] for k in range(len(square))]
+
+
+def side_distance(side, p):
+    best = math.inf
+    for a, b in zip(side, side[1:]):
+        e = (b[0] - a[0], b[1] - a[1])
+        t = max(0.0, min(1.0, ((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / max(e[0] ** 2 + e[1] ** 2, 1e-12)))
+        best = min(best, math.dist(p, (a[0] + e[0] * t, a[1] + e[1] * t)))
+    return best
+
+
+def blend_view(blend, near=False, **settings):
+    """The view's places, by how near the two nearest sides are, as a share (and with `near`, how far the nearest is)."""
+    square_art.modifier_set(0, blend=blend, **settings)
+    found = []
+    for x, y, say in square_art.deform_blend_view(0)[0]:
+        d = sorted(side_distance(side, (x, y)) for side in square_sides)
+        if d[1] > 1e-3:
+            found.append((d[0] / d[1], d[0], say) if near else (d[0] / d[1], say))
+    assert len(found) > 300, len(found)
+    return found
+
+
+def mean(values):
+    values = list(values)
+    assert len(values) > 10, len(values)
+    return sum(values) / len(values)
+
+
+sharp, gentle = blend_view(0.0), blend_view(1.0)
+for found in (sharp, gentle):
+    assert mean(s for r, s in found if r > 0.97) > 0.6, "the diagonals aren't shared"
+assert mean(s for r, s in sharp if r < 0.4) < 0.05, "Blend 0 shares far from the diagonals"
+between = (mean(s for r, s in sharp if 0.5 < r < 0.7), mean(s for r, s in gentle if 0.5 < r < 0.7))
+assert between[1] > between[0] * 2.0 and between[1] > 0.3, ("Blend doesn't widen what is shared", between)
+# Deep in the cage the sides have less say, and past Range none.
+diagonal = [(d, s) for r, d, s in blend_view(0.0, near=True) if r > 0.97]
+by_corner, deep = mean(s for d, s in diagonal if d < 0.2), mean(s for d, s in diagonal if d > 0.8)
+assert by_corner > deep + 0.15, ("the view doesn't fade inside the cage", by_corner, deep)
+diagonal = [(d, s) for r, d, s in blend_view(0.0, near=True, range=0.05) if r > 0.97]
+assert mean(s for d, s in diagonal if d > 0.3) < 0.01, "the view goes past Range"
+square_art.modifier_set(0, range=1.0)
+
+# Posed, it shows where the places are now.
+rest_view = square_art.deform_blend_view(0)[0]
+move_whole(square_cage, lambda x, y: (x + 0.5, y - 0.3))
+now_view = square_art.deform_blend_view(0)[0]
+assert len(now_view) == len(rest_view)
+assert max(math.dist((a[0] + 0.5, a[1] - 0.3), b[:2]) for a, b in zip(rest_view, now_view)) < 0.01
+doc.frame_current = 0
 
 # Range is saved with the file.
 folder = tempfile.mkdtemp()

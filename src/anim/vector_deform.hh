@@ -77,6 +77,10 @@ struct DeformRangeView {
   std::vector<std::array<int, 2>> limit;
 };
 bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
+/* Where an Envelope's Blend matters, the same way (no `limit`): `say` is how evenly the sides share each place, 1 where
+ * two have an even say, 0 where one leads alone, faded as the sides' say fades inside the cage. Lines run in until
+ * another side is nearer, so they meet where sides hand over. */
+bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
 
 /* `m`'s shape at rest and now, in `layer`'s space, as its build reads it: to read a point of the shape by. False with
  * nothing to read. */

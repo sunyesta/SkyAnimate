@@ -3513,9 +3513,13 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     if (m.deform_cage_method == CageMethod::Envelope) {
       modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
                                           "corner: low, the nearest side leads sharply (edges hug their own side "
-                                          "most); high, the sides blend gently");
+                                          "most); high, the sides blend gently. The viewport shows where sides "
+                                          "share while you drag");
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       factor_slider("##deform_blend", &m.deform_blend);
+      if (ImGui::IsItemActive() && !follows) {
+        C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(), true};
+      }
       done |= ImGui::IsItemDeactivatedAfterEdit();
       if (!follows) {
         modifier_row_label("Range", column, "How far through the cage a side that has moved bends what lies around "
@@ -3525,7 +3529,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
         factor_slider("##deform_range", &m.deform_range);
         if (ImGui::IsItemActive()) {
-          C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount()};
+          C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(), false};
         }
         done |= ImGui::IsItemDeactivatedAfterEdit();
       }

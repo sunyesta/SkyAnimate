@@ -1824,6 +1824,22 @@ static float mesh_ring_distance(const DeformShape &d, float2 p)
   return best;
 }
 
+/* Side `s`'s share of the say at a place `dist` from it, `near` from the nearest side (Blend: the nearest over its own
+ * distance, raised to envelope_power), before the sides' shares are added up. `walk_node`: the lattice's nodes around
+ * the place, on a cage with dents (envelope_walk_at), null on one without. */
+static double envelope_side_share(const DeformShape &d, size_t s, float dist, float near,
+                                  const std::array<int, 4> *walk_node, const std::array<float, 4> &walk_share)
+{
+  const double floor = std::max(double(near), double(d.cage_band) * 1e-3);
+  double w = std::pow(floor / std::max(double(dist), floor), double(d.envelope_power));
+  /* Across a gap a side has no say, however close it stands. */
+  if (walk_node) {
+    const float detour = envelope_detour(d, s, *walk_node, walk_share);
+    w *= 1.0f - smooth01(detour / (0.5f * dist + d.lattice_step));
+  }
+  return w;
+}
+
 /* The sides near `p` (where it is at rest) setting its distance from each back, from `q` (where it has been put). */
 static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
 {
@@ -1927,21 +1943,15 @@ static float2 envelope_sides_apply(const DeformShape &d, float2 p, float2 q)
     fade = 1.0f - along * along * (3.0f - 2.0f * along);
   }
   const float reach = std::max(ring < FLT_MAX ? near + ring : d.envelope_reach, 1e-12f);
-  const double floor = std::max(double(near), double(d.cage_band) * 1e-3);
   double fx = 0.0, fy = 0.0, ws = 0.0;
   for (size_t s = 0; s < n; s++) {
     if (dist[s] == FLT_MAX) {
       continue;
     }
-    double w = std::pow(floor / std::max(double(dist[s]), floor), double(d.envelope_power));
+    double w = envelope_side_share(d, s, dist[s], near, walked ? &walk_node : nullptr, walk_share);
     if (d.envelope_mesh) {
       const float t = std::clamp(1.0f - (dist[s] - near) / reach, 0.0f, 1.0f);
       w *= t * t * (3.0f - 2.0f * t);
-    }
-    /* Across a gap a side has no say, however close it stands. */
-    if (walked) {
-      const float detour = envelope_detour(d, s, walk_node, walk_share);
-      w *= 1.0f - smooth01(detour / (0.5f * dist[s] + d.lattice_step));
     }
     fx += w * fix[s].x;
     fy += w * fix[s].y;
@@ -3635,18 +3645,25 @@ float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 a
   return at + (deform_map(*shape, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
 }
 
-bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r)
+/* A line running into a cage from its outline, for the viewport's views of an Envelope: from rest sample `sample`. */
+struct EnvelopeViewLine {
+  size_t sample;
+  float2 way;
+};
+
+/* `m`'s Envelope cage, if it is one, and the lines a view of it runs in from its outline: one from each sample, and more
+ * at a corner, or they would leave a wedge between them. `r_size`: how big the cage is. */
+static std::shared_ptr<const DeformShape> envelope_view_lines(const Document &doc, const Layer &layer,
+                                                              const Modifier &m, std::vector<EnvelopeViewLine> &r,
+                                                              float &r_size)
 {
-  r = {};
   uint64_t build = 0;
-  const std::shared_ptr<const DeformShape> shape =
+  std::shared_ptr<const DeformShape> shape =
       vector_deform_loops(doc, layer, m) ? nullptr : deform_shape_kept(doc, layer, m, false, build);
   if (!shape || shape->kind != DeformKind::Cage || shape->cage_method != CageMethod::Envelope) {
-    return false;
+    return nullptr;
   }
-  const DeformShape &d = *shape;
-  const bool bent = doc.frame_current != 0 && m.deform_strength > 0.0f;
-  const std::vector<float2> &v = d.rest;
+  const std::vector<float2> &v = shape->rest;
   const size_t n = v.size();
   double twice_area = 0.0;
   float2 lo = v[0], hi = v[0];
@@ -3655,17 +3672,12 @@ bool vector_deform_range_view(const Document &doc, const Layer &layer, const Mod
     lo = float2(std::min(lo.x, v[k].x), std::min(lo.y, v[k].y));
     hi = float2(std::max(hi.x, v[k].x), std::max(hi.y, v[k].y));
   }
-  const float size = std::max(hi.x - lo.x, hi.y - lo.y);
+  r_size = std::max(hi.x - lo.x, hi.y - lo.y);
   const auto inward = [&](float2 way) {
     way = normalize(way);
     return twice_area > 0.0 ? float2(-way.y, way.x) : float2(way.y, -way.x);
   };
-  /* A line in from each sample, and more at a corner, or they would leave a wedge between them. */
-  struct Line {
-    size_t sample;
-    float2 way;
-  };
-  std::vector<Line> lines;
+  r.clear();
   for (size_t k = 0; k < n; k++) {
     const float2 before = inward(v[k] - v[(k + n - 1) % n]), after = inward(v[(k + 1) % n] - v[k]);
     const float turn = std::atan2(cross(before, after), dot(before, after));
@@ -3673,13 +3685,27 @@ bool vector_deform_range_view(const Document &doc, const Layer &layer, const Mod
     for (int f = 0; f < fans; f++) {
       const float t = turn * (float(f) + 0.5f) / float(fans);
       const float c = std::cos(t), s = std::sin(t);
-      lines.push_back({k, float2(before.x * c - before.y * s, before.y * c + before.x * s)});
+      r.push_back({k, float2(before.x * c - before.y * s, before.y * c + before.x * s)});
     }
   }
+  return shape;
+}
+
+bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r)
+{
+  r = {};
+  std::vector<EnvelopeViewLine> lines;
+  float size = 0.0f;
+  const std::shared_ptr<const DeformShape> shape = envelope_view_lines(doc, layer, m, lines, size);
+  if (!shape) {
+    return false;
+  }
+  const DeformShape &d = *shape;
+  const bool bent = doc.frame_current != 0 && m.deform_strength > 0.0f;
+  const std::vector<float2> &v = d.rest;
   constexpr int STEPS = 16;
   std::vector<std::vector<int>> rows(lines.size());
   std::vector<char> at_limit(lines.size(), 0);
-  std::vector<float> scratch;
   for (size_t l = 0; l < lines.size(); l++) {
     const float2 from = v[lines[l].sample];
     /* As Range bends: further where a place has moved further. */
@@ -3709,6 +3735,92 @@ bool vector_deform_range_view(const Document &doc, const Layer &layer, const Mod
     }
     if (at_limit[l] && at_limit[next]) {
       r.limit.push_back({rows[l].back(), rows[next].back()});
+    }
+  }
+  return true;
+}
+
+bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r)
+{
+  r = {};
+  std::vector<EnvelopeViewLine> lines;
+  float size = 0.0f;
+  const std::shared_ptr<const DeformShape> shape = envelope_view_lines(doc, layer, m, lines, size);
+  if (!shape) {
+    return false;
+  }
+  const DeformShape &d = *shape;
+  const bool bent = doc.frame_current != 0 && m.deform_strength > 0.0f;
+  const bool ranged = d.envelope_range < 1.0f;
+  const std::vector<float2> &v = d.rest;
+  const size_t n = d.envelope_sides.size();
+  std::vector<float> dist(n);
+  std::vector<SidePlace> places;
+  /* How much a place is shared: the next side's share over the leader's (1 where two have an even say: only the two,
+   * or deep in a cage, where every side is about as near, it would all be shared), as much as the sides have a say
+   * there at all (as they set a place back: by reach, and Range). */
+  const auto shared_at = [&](float2 p) {
+    std::array<int, 4> walk_node;
+    std::array<float, 4> walk_share;
+    const bool walked = envelope_walk_at(d, p, walk_node, walk_share);
+    float near = FLT_MAX, within = 1.0f;
+    for (size_t s = 0; s < n; s++) {
+      const DeformShape::EnvelopeSide &side = d.envelope_sides[s];
+      float straight = 1.0f;
+      dist[s] = side_places(side.rest, side.rest_way, side.rest_at.back(), p, places, &straight);
+      if (dist[s] < near) {
+        near = dist[s];
+        if (ranged) {
+          float moved = 0.0f;
+          for (const SidePlace &place : places) {
+            moved += (side.moved[place.piece] * (1.0f - place.t) + side.moved[place.piece + 1] * place.t) * place.say;
+          }
+          within = 1.0f - smooth01(dist[s] / std::max(d.envelope_far, moved * 2.0f));
+        }
+      }
+    }
+    double lead = 0.0, second = 0.0;
+    for (size_t s = 0; s < n; s++) {
+      const double w = envelope_side_share(d, s, dist[s], near, walked ? &walk_node : nullptr, walk_share);
+      second = std::max(second, std::min(lead, w));
+      lead = std::max(lead, w);
+    }
+    const float even = lead > 0.0 ? float(second / lead) : 0.0f;
+    return even * d.envelope_reach / (d.envelope_reach + near) * within;
+  };
+  /* Each line runs in until another side of the outline is nearer, found closely: that is where two sides hand over
+   * most evenly, so the view has to reach it from both. */
+  constexpr int SEEK = 32, STEPS = 16;
+  const auto stops = [&](size_t l, float t) {
+    const float2 p = v[lines[l].sample] + lines[l].way * t;
+    return !inside(v, p) || polyline_distance(v, true, p) < t * 0.99f;
+  };
+  std::vector<int> row_first(lines.size());
+  for (size_t l = 0; l < lines.size(); l++) {
+    float lo = 0.0f, hi = size;
+    for (int step = 1; step <= SEEK; step++) {
+      const float t = size * float(step) / float(SEEK);
+      if (stops(l, t)) {
+        hi = t;
+        break;
+      }
+      lo = t;
+    }
+    for (int halve = 0; halve < 10 && hi > lo; halve++) {
+      const float mid = 0.5f * (lo + hi);
+      (stops(l, mid) ? hi : lo) = mid;
+    }
+    row_first[l] = int(r.at.size());
+    for (int step = 0; step <= STEPS; step++) {
+      const float2 p = v[lines[l].sample] + lines[l].way * (lo * float(step) / float(STEPS));
+      r.at.push_back(bent ? vector_deform_point(&d, m, p) : p);
+      r.say.push_back(std::clamp(shared_at(p), 0.0f, 1.0f));
+    }
+  }
+  for (size_t l = 0; l < lines.size(); l++) {
+    const int a = row_first[l], b = row_first[(l + 1) % lines.size()];
+    for (int k = 0; k < STEPS; k++) {
+      r.quads.push_back({a + k, b + k, b + k + 1, a + k + 1});
     }
   }
   return true;

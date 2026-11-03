@@ -583,7 +583,13 @@ class _Layer:
         """What Cage Deform `index`'s Range reaches, as the viewport tints it while its slider is dragged: places
         [(x, y, say)] where they show now, say 1 at the cage's outline and 0 at the limit, and how many quads join them
         and how many lines draw the limit. None if it isn't an Envelope."""
-        return _oanim.layer_deform_range_view(self._id, index)
+        return _oanim.layer_deform_range_view(self._id, index, False)
+
+    def deform_blend_view(self, index):
+        """Where Cage Deform `index`'s Blend matters, as the viewport tints it while its slider is dragged: places
+        [(x, y, say)] where they show now, say 1 where two sides share a place evenly and 0 where one leads alone, and
+        how many quads join them (and 0). None if it isn't an Envelope."""
+        return _oanim.layer_deform_range_view(self._id, index, True)
 
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,

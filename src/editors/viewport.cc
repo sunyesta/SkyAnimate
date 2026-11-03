@@ -12586,7 +12586,8 @@ static uint64_t follow_pick_points(const Document &doc, const ViewMapping &view,
 }
 
 /* Envelope's Range slider, while dragged: a tint over what it reaches, strongest at the cage's outline, and a thin line
- * at the limit. */
+ * at the limit. Its Blend slider: a violet tint where the sides share, so where Blend changes anything shows even on
+ * the setup frame, where nothing bends. */
 static void draw_deform_range(ImDrawList *dl, Context &C, const ViewMapping &view)
 {
   const WindowManager::DeformRangePreview &preview = C.wm->deform_range_preview;
@@ -12598,18 +12599,24 @@ static void draw_deform_range(ImDrawList *dl, Context &C, const ViewMapping &vie
   if (!layer || preview.modifier < 0 || preview.modifier >= int(layer->modifiers.size())) {
     return;
   }
+  const Modifier &m = layer->modifiers[size_t(preview.modifier)];
   DeformRangeView range;
-  if (!vector_deform_range_view(doc, *layer, layer->modifiers[size_t(preview.modifier)], range)) {
+  if (!(preview.blend ? vector_deform_blend_view(doc, *layer, m, range) :
+                        vector_deform_range_view(doc, *layer, m, range)))
+  {
     return;
   }
+  const ImU32 tint = preview.blend ? IM_COL32(0xb0, 0x70, 0xff, 0) : IM_COL32(0xff, 0x8a, 0x20, 0);
+  const float strongest = preview.blend ? 150.0f : 110.0f;
   const Transform2D to_document = layer_world_transform(doc, layer->id);
   const ImVec2 white = ImGui::GetFontTexUvWhitePixel();
   dl->PrimReserve(int(range.quads.size()) * 6, int(range.quads.size()) * 4);
   for (const std::array<int, 4> &quad : range.quads) {
     const ImDrawIdx first = ImDrawIdx(dl->_VtxCurrentIdx);
     for (const int k : quad) {
-      const int alpha = int(std::clamp(range.say[size_t(k)], 0.0f, 1.0f) * 110.0f);
-      dl->PrimWriteVtx(view.to_screen(to_document.apply(range.at[size_t(k)])), white, IM_COL32(0xff, 0x8a, 0x20, alpha));
+      const int alpha = int(std::clamp(range.say[size_t(k)], 0.0f, 1.0f) * strongest);
+      dl->PrimWriteVtx(view.to_screen(to_document.apply(range.at[size_t(k)])), white,
+                       tint | (ImU32(alpha) << IM_COL32_A_SHIFT));
     }
     dl->PrimWriteIdx(first);
     dl->PrimWriteIdx(ImDrawIdx(first + 1));

@@ -3349,13 +3349,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         return vector_deform_weights(doc, layer, layer.modifiers[size_t(index)]);
       },
       py::arg("id"), py::arg("index"), py::arg("reset") = false);
-  m.def("layer_deform_range_view", [layer_or_raise](uint64_t id, int index) -> py::object {
+  m.def("layer_deform_range_view", [layer_or_raise](uint64_t id, int index, bool blend) -> py::object {
     Layer &layer = layer_or_raise(id);
     if (index < 0 || index >= int(layer.modifiers.size()) || !modifier_is_deform(layer.modifiers[size_t(index)].type)) {
       throw py::index_error("no deform modifier (Curve, Cage or Mesh Deform) " + std::to_string(index));
     }
+    const Document &doc = *current_context().document;
+    const Modifier &mod = layer.modifiers[size_t(index)];
     DeformRangeView view;
-    if (!vector_deform_range_view(*current_context().document, layer, layer.modifiers[size_t(index)], view)) {
+    if (!(blend ? vector_deform_blend_view(doc, layer, mod, view) : vector_deform_range_view(doc, layer, mod, view))) {
       return py::none();
     }
     py::list at;
