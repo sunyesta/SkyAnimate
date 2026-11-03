@@ -3212,6 +3212,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["shape"] = shape;
         d["kind"] = deform_kind_name(vector_deform_kind(doc, layer_or_raise(id), mod));
         d["fits"] = deform_type_id(vector_deform_fitting_type(doc, layer_or_raise(id), mod));
+        d["sparse"] = vector_deform_sparse(doc, layer_or_raise(id), mod);
         d["weights"] = mod.deform_custom ? "CUSTOM" : "AUTOMATIC";
         d["group"] = mod.deform_group;
         d["strength"] = mod.deform_strength;

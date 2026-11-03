@@ -3615,6 +3615,18 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   else {
     ImGui::TextDisabled(!target ? "Pick a layer, then its shape" : follows ? "Pick the shape it follows" : "Pick the shape that bends it");
   }
+  /* Few points on the shape: each moves a long stretch of it. */
+  if (target && kind != DeformKind::None && vector_deform_sparse(doc, layer, m)) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                       "Warning: %s has low point density. A Resample modifier on it will bend this more evenly",
+                       target->name.c_str());
+    ImGui::PopTextWrapPos();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("On the setup frame a side of the shape is longer than half its width or height, so each of its "
+                        "points moves a long stretch of it, and what lies near a side follows the whole side");
+    }
+  }
 
   /* Weights: a group's deform has the automatic ones, every drawing inside following it fully. */
   if (!layer.is_group() && !follows) {

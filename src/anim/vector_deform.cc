@@ -3927,6 +3927,46 @@ DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Mod
   return deform_shape_build(doc, layer, m, false, false, d) ? d.kind : DeformKind::None;
 }
 
+bool vector_deform_sparse(const Document &doc, const Layer &layer, const Modifier &m)
+{
+  if (m.type != ModifierType::CageDeform && m.type != ModifierType::MeshDeform) {
+    return false;
+  }
+  /* As the deform reads it on the setup frame: with its layer's own Resample (and Mirror and Bevel). */
+  VectorDrawing rest;
+  const Layer *target = nullptr;
+  if (!shape_rest(doc, layer, m, rest, &target, false)) {
+    return false;
+  }
+  const Shape &shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
+  float2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+  float longest = 0.0f;
+  for (const ShapeEdge &e : shape.edges) {
+    if (e.curve < 0 || e.curve >= int(rest.curves.size())) {
+      continue;
+    }
+    int from, to;
+    curve_segment_points(rest.curves[size_t(e.curve)], e.segment, &from, &to);
+    if (from == to) {
+      continue;
+    }
+    std::array<float2, 4> b;
+    curve_segment_bezier(rest, rest.curves[size_t(e.curve)], e.segment, b.data());
+    float along = 0.0f;
+    float2 last = b[0];
+    for (int k = 0; k <= 16; k++) {
+      const float2 q = bezier3(b, float(k) / 16.0f);
+      along += length(q - last);
+      last = q;
+      lo = float2(std::min(lo.x, q.x), std::min(lo.y, q.y));
+      hi = float2(std::max(hi.x, q.x), std::max(hi.y, q.y));
+    }
+    longest = std::max(longest, along);
+  }
+  const float size = std::max(hi.x - lo.x, hi.y - lo.y);
+  return size > 1e-9f && longest > size * 0.5f;
+}
+
 /* The deform as kept (deform_shape_kept compares modifiers): the point isn't part of what's built, so moving it builds
  * nothing. */
 static Modifier follow_for_build(const Modifier &m)
