@@ -187,8 +187,8 @@ std::string fix_pose_label(const Layer &owner, const FixAction &fix, const FixPo
 /* How a fix plays with `playing` (action bone action frames, as action_bone_actions_playing gives): each pose with how
  * much of its correction is added (its keys on its frame, as offsets from the setup), `strength` how much
  * of the fix plays (0 to 1: 1 at or past one of its poses, 0 while any of its drivers rests), `nearest` the
- * pose it is closest to (-1 with none). Exact at each pose; between poses they blend by inverse distance in
- * the drivers' shares; toward rest each pose fades with the product of its drivers' shares of it. */
+ * pose it has the most say (-1 with none). Exact at each pose; in between, a grid of the drivers' shares blends
+ * linearly from its corners (rest adds nothing), so one pose alone fades with its drivers' shares multiplied. */
 struct FixMix {
   std::vector<std::pair<size_t, float>> poses;
   float strength = 0.0f;

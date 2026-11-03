@@ -1,6 +1,7 @@
 """Fix actions (correctives, Maya's combination shapes): one per set of action bone actions playing together, fixing
 one or more of their poses, each on a frame of its own. Exactly at a pose its keys play; between poses they
-blend by closeness; toward rest each fades as its drivers do. Fixing a pose near one it has opens that one,
+blend on a grid of the drivers' shares (Live2D's keyforms), so moving one driver blends only the poses on that
+line; toward rest each fades as its drivers do. Fixing a pose near one it has opens that one,
 elsewhere adds one starting from what played there. A fix for three is keyed on top of the one for two of
 them, and fades out while any of its own rests. Action bone actions turned less than 5% don't count.
 
@@ -144,6 +145,29 @@ turn(a=0.25, b=0.5)
 assert 0.0 < fix()["strength"] < 1.0 and abs(rot()) < 30.0
 turn(a=0.0, b=0.5)
 assert close(rot(), 0.0)
+# Toward rest along one driver only the poses on that line count, so it fades in a straight line: with a held
+# half way, pose 1 (a all the way) never leaks in.
+for b in (0.9, 0.75, 0.5, 0.25):
+    turn(a=0.5, b=b)
+    assert close(rot(), -10.0 * b), ("pose 2 alone, fading with b", b, rot())
+    assert close(fix()["strength"], b), fix()["strength"]
+# A pose off the grid: where none was made, each driver's line in from its neighbours, averaged.
+turn(a=1.0, b=0.5)
+assert ops.anim.fix_action_new() == {'FINISHED'} and len(fix()["poses"]) == 3
+find(face.id).rotation = 50.0
+doc.frame_current = 29
+doc.frame_current = 30
+ops.anim.action_set(name="")
+doc.frame_current = 20
+turn(a=1.0, b=0.5)
+assert close(rot(), 50.0), rot()
+turn(a=0.5, b=0.5)
+assert close(rot(), (-10.0 / 2 + 50.0 / 2) / 2), ("a half way: from pose 2 down b, and from pose 3 along a", rot())
+turn(a=1.0, b=0.75)
+assert close(rot(), (30.0 + 50.0) / 2), ("between poses 1 and 3", rot())
+assert ops.anim.fix_pose_remove(name=name, pose="3") == {'FINISHED'} and len(fix()["poses"]) == 2
+ops.anim.action_set(name="")
+doc.frame_current = 20
 
 # Fixing a pose close to one it has (within 5% each) opens that one.
 turn(a=0.52, b=0.98)
