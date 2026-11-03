@@ -44,9 +44,9 @@ const char *deform_kind_name(DeformKind kind);
 
 /* What `m`'s shape is (None: no such layer or shape, or it is on `layer` itself). */
 DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m);
-/* Whether a Cage or Mesh Deform's shape has few points for its size on the setup frame (a side longer than half its
- * width or height, its layer's own Resample counted): each point then moves a long stretch of it, and what is near
- * a side follows the whole side. The Properties editor suggests a Resample on the shape's layer. */
+/* Whether a Mesh Deform using Points has few points on its shape for its size on the setup frame (a side longer than
+ * half its width or height, its layer's own Resample counted): each side is a bone then, and what is near it follows
+ * the whole side. The Properties editor suggests a Resample on the shape's layer. */
 bool vector_deform_sparse(const Document &doc, const Layer &layer, const Modifier &m);
 /* Whether it deforms by a grid drawn as one, what Smooth works on (not a mesh of cells drawn by hand). */
 bool vector_deform_drawn_grid(const Document &doc, const Layer &layer, const Modifier &m);

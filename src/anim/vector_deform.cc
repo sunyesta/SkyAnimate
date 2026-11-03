@@ -3929,7 +3929,9 @@ DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Mod
 
 bool vector_deform_sparse(const Document &doc, const Layer &layer, const Modifier &m)
 {
-  if (m.type != ModifierType::CageDeform && m.type != ModifierType::MeshDeform) {
+  /* Points makes each side a bone, carrying what lies near it whole: there long sides show. Cells and Envelope, and
+   * Cage Deform, follow the shape's curves as they bend and do well with few points. */
+  if (m.type != ModifierType::MeshDeform || m.deform_mesh_method != MeshMethod::Points) {
     return false;
   }
   /* As the deform reads it on the setup frame: with its layer's own Resample (and Mirror and Bevel). */

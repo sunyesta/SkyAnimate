@@ -317,10 +317,14 @@ lid.modifier_set(0, mesh_method="POINTS")
 doc.frame_current = 0
 
 # --- Low point density -------------------------------------------------------------------------------------------
-# Five points round the cage, each side longer than half its size: the modifier warns, and a Resample on the cage's
-# layer (what the deform reads on the setup frame) clears it. A 4 by 4 grid has points enough.
+# Five points round the cage, each side longer than half its size: with Points (each side a bone) the modifier warns,
+# and a Resample on the cage's layer (what the deform reads on the setup frame) clears it. A 4 by 4 grid has points
+# enough. Cells and Envelope follow the shape's curves, as Cage Deform does: no warning for those.
 assert lid.modifiers[0]["sparse"] is True, lid.modifiers[0]
 assert art.modifiers[0]["sparse"] is False, art.modifiers[0]
+lid.modifier_set(0, mesh_method="CELLS")
+assert lid.modifiers[0]["sparse"] is False, "only Points warns"
+lid.modifier_set(0, mesh_method="POINTS")
 layers.active = pentagon
 assert ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
 at(0)
@@ -334,8 +338,10 @@ loop = new_layer("Loop")
 loop.add_curve([(-1.0, -0.8), (1.0, -0.8), (0.0, 1.0)], closed=True)
 deform(lid, loop)
 assert lid.modifiers[0]["kind"] == "Mesh" and lid.modifiers[0]["fits"] == "MESH_DEFORM", lid.modifiers[0]
+assert lid.modifiers[0]["sparse"] is True, "three sides, with Points"
 lid.modifier_set(0, type="CAGE_DEFORM")
 assert lid.modifiers[0]["kind"] == "Cage" and lid.modifiers[0]["fits"] == "CAGE_DEFORM", lid.modifiers[0]
+assert lid.modifiers[0]["sparse"] is False, "Cage Deform never warns"
 
 # --- Falloff is saved -----------------------------------------------------------------------------------------------
 folder = tempfile.mkdtemp()
