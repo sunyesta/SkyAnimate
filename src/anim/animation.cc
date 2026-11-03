@@ -1657,12 +1657,25 @@ std::vector<float> fix_pose_shares(const Layer &owner, const FixAction &fix, con
   return shares;
 }
 
-std::string fix_pose_label(const Layer &owner, const FixAction &fix, const FixPose &pose)
+std::string action_frame_text(float frame)
 {
-  const std::vector<float> shares = fix_pose_shares(owner, fix, pose);
+  char text[32];
+  if (std::fabs(frame - std::round(frame)) < 0.05f) {
+    std::snprintf(text, sizeof(text), "%d", int(std::lround(frame)));
+  }
+  else {
+    std::snprintf(text, sizeof(text), "%.1f", frame);
+  }
+  return text;
+}
+
+std::string fix_pose_label(const Layer & /*owner*/, const FixAction &fix, const FixPose &pose)
+{
+  /* As it is kept: each action bone action's frame. */
   std::string label;
   for (size_t i = 0; i < fix.drivers.size(); i++) {
-    label += (label.empty() ? "" : " \xC2\xB7 ") + fix.drivers[i] + " " + std::to_string(int(std::lround(shares[i] * 100.0f))) + "%";
+    label += (label.empty() ? "" : " \xC2\xB7 ") + fix.drivers[i] + " " +
+             action_frame_text(i < pose.at.size() ? pose.at[i] : 0.0f);
   }
   return label;
 }
@@ -2972,6 +2985,65 @@ std::vector<float2> controller_fix_poses(const Layer &owner, const Bone &knob)
     }
   }
   return poses;
+}
+
+void armature_knob_snap(const Layer &armature, Bone &knob)
+{
+  controller_knob_snap(knob, controller_fix_poses(armature, knob));
+}
+
+std::vector<std::pair<size_t, size_t>> controller_fix_poses_at(const Layer &owner, const Bone &knob, float2 at)
+{
+  std::vector<std::pair<size_t, size_t>> found;
+  for (size_t f = 0; f < owner.fix_actions.size(); f++) {
+    const FixAction &fix = owner.fix_actions[f];
+    const auto side_of = [&](const std::string &driver) {
+      for (int side = 0; side < CONTROLLER_SIDES; side++) {
+        if (knob.controller_actions[side] == driver) {
+          return side;
+        }
+      }
+      return -1;
+    };
+    if (fix.drivers.empty() ||
+        std::any_of(fix.drivers.begin(), fix.drivers.end(), [&](const std::string &d) { return side_of(d) < 0; }))
+    {
+      continue;
+    }
+    for (size_t p = 0; p < fix.poses.size(); p++) {
+      float2 there;
+      for (size_t k = 0; k < fix.drivers.size() && k < fix.poses[p].at.size(); k++) {
+        const int side = side_of(fix.drivers[k]);
+        (controller_side_axis(side) == 0 ? there.x : there.y) += fix.poses[p].at[k] * controller_side_sign(side);
+      }
+      if (std::fabs(there.x - at.x) < 0.05f && std::fabs(there.y - at.y) < 0.05f) {
+        found.push_back({f, p});
+      }
+    }
+  }
+  return found;
+}
+
+bool controller_fix_pose_move(Layer &owner, const Bone &knob, size_t fix, size_t pose, float2 to)
+{
+  FixAction &f = owner.fix_actions[fix];
+  std::vector<float> at = f.poses[pose].at;
+  for (size_t k = 0; k < f.drivers.size() && k < at.size(); k++) {
+    int side = -1;
+    for (int s = 0; s < CONTROLLER_SIDES; s++) {
+      side = knob.controller_actions[s] == f.drivers[k] ? s : side;
+    }
+    if (side < 0) {
+      return false;
+    }
+    at[k] = (controller_side_axis(side) == 0 ? to.x : to.y) * controller_side_sign(side);
+    const float length = action_bone_action_length(owner, f.drivers[k]);
+    if (at[k] < FIX_COUNTS_FROM * std::max(length, 1.0f) - 1e-4f) {
+      return false;
+    }
+  }
+  f.poses[pose].at = at;
+  return true;
 }
 
 bool controller_dial_held(const Layer &owner, const Bone &dial)

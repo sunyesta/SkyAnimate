@@ -2084,6 +2084,248 @@ void rig_operators_register()
                  return OpStatus::Finished;
                });
 
+  /* --- Spots: named places for a 2 Axis Controller's knob (the Bone tab's Spots panel). ---------------------- */
+
+  /* bone=: that controller of the active bone layer, else the active bone. */
+  const auto spot_controller = [](Context &C) -> Bone * {
+    Layer *armature = active_armature(C);
+    Bone *knob = !armature                 ? nullptr
+                 : op_has_arg(C, "bone") ? const_cast<Bone *>(bone_find_by_name(*armature, op_arg(C, "bone")))
+                                         : bone_find(*armature, armature->active_bone);
+    if (!knob || !bone_is_controller(*knob)) {
+      report(ReportType::Warning, "That isn't a 2 Axis Controller");
+      return nullptr;
+    }
+    return knob;
+  };
+  const auto spot_named = [](Bone &knob, Context &C) -> ControllerSpot * {
+    ControllerSpot *spot = controller_spot_find(knob, op_arg(C, "name"));
+    if (!spot) {
+      report(ReportType::Warning, "No spot named " + op_arg(C, "name"));
+    }
+    return spot;
+  };
+  /* Moving the knob there, as by hand: not on the setup pose, nor inside an action bone or fix action (it holds them). */
+  const auto knob_can_move = [](Context &C, const Layer &armature) {
+    const Document &doc = *C.document;
+    if (doc.frame_current == 0) {
+      report(ReportType::Warning, "Nothing plays on frame 0: go to another frame");
+      return false;
+    }
+    if (!doc.action.empty() && doc.action_layer == armature.id && action_adds(armature, doc.action)) {
+      report(ReportType::Warning, "Go back to the mainline (or an ordinary action) to move the knob");
+      return false;
+    }
+    return true;
+  };
+  /* The knob to a spot. Held: its key there doesn't move on toward the next (Step), keyed even without Auto Keying. */
+  const auto knob_go = [](Document &doc, Layer &armature, Bone &knob, float2 at, bool hold) {
+    controller_knob_set(knob, at);
+    animation_refresh_action_bones(doc);
+    if (hold) {
+      /* Recorded as Auto Keying would, whether it is on or not. */
+      const bool auto_key = doc.auto_key;
+      doc.auto_key = true;
+      animation_record(doc);
+      doc.auto_key = auto_key;
+      if (Key<float2> *key = bone_find(armature, knob.id)->position_keys.key_at(doc.frame_current)) {
+        key->interp = Interp::Step;
+      }
+    }
+  };
+
+  rig_operator("armature.controller_spot_add", "Add Spot",
+               "Save where the active 2 Axis Controller's knob is (or x= and y=, in frames) as a spot named name= "
+               "(\"Spot 1\", ... without one); bone=: that controller. Spots are the rig's: never keyed",
+               bone_layer_active, [spot_controller](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 float2 at = controller_knob(*knob);
+                 if (op_has_arg(C, "x") || op_has_arg(C, "y")) {
+                   at = {std::strtof(op_arg(C, "x", "0").c_str(), nullptr), std::strtof(op_arg(C, "y", "0").c_str(), nullptr)};
+                 }
+                 std::string name = op_arg(C, "name");
+                 if (name.empty()) {
+                   int n = int(knob->controller_spots.size()) + 1;
+                   while (controller_spot_find(*knob, "Spot " + std::to_string(n))) {
+                     n++;
+                   }
+                   name = "Spot " + std::to_string(n);
+                 }
+                 knob->controller_spots.push_back({controller_spot_unique_name(*knob, name), at});
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_remove", "Remove Spot",
+               "Remove spot name= of the active 2 Axis Controller (bone=: that one)", bone_layer_active,
+               [spot_controller](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 std::vector<ControllerSpot> &spots = knob->controller_spots;
+                 const auto it = std::find_if(spots.begin(), spots.end(),
+                                              [&](const ControllerSpot &s) { return s.name == op_arg(C, "name"); });
+                 if (it == spots.end()) {
+                   report(ReportType::Warning, "No spot named " + op_arg(C, "name"));
+                   return OpStatus::Cancelled;
+                 }
+                 spots.erase(it);
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_rename", "Rename Spot",
+               "Rename spot name= of the active 2 Axis Controller (bone=: that one) to to=", bone_layer_active,
+               [spot_controller, spot_named](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 ControllerSpot *spot = knob ? spot_named(*knob, C) : nullptr;
+                 const std::string to = op_arg(C, "to");
+                 if (!spot || to == spot->name) {
+                   return OpStatus::Cancelled;
+                 }
+                 if (to.empty() || controller_spot_find(*knob, to)) {
+                   report(ReportType::Warning, to.empty() ? "Give it a name" : "Another spot is named " + to);
+                   return OpStatus::Cancelled;
+                 }
+                 spot->name = to;
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_order", "Move Spot",
+               "Move spot name= of the active 2 Axis Controller (bone=: that one) up or down its list (direction=UP or DOWN)",
+               bone_layer_active, [spot_controller](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 std::vector<ControllerSpot> &spots = knob->controller_spots;
+                 const auto it = std::find_if(spots.begin(), spots.end(),
+                                              [&](const ControllerSpot &s) { return s.name == op_arg(C, "name"); });
+                 const bool up = op_arg(C, "direction", "UP") == "UP";
+                 if (it == spots.end() || (up ? it == spots.begin() : it + 1 == spots.end())) {
+                   return OpStatus::Cancelled;
+                 }
+                 std::iter_swap(it, up ? it - 1 : it + 1);
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_go", "Go to Spot",
+               "Move the active 2 Axis Controller's knob (bone=: that one) to spot name=, keyed as any move; hold=1 keys it "
+               "held there (Step), even without Auto Keying. Not on frame 0",
+               bone_layer_active, [spot_controller, spot_named, knob_can_move, knob_go](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 ControllerSpot *spot = knob ? spot_named(*knob, C) : nullptr;
+                 Layer &armature = *active_armature(C);
+                 if (!spot || !knob_can_move(C, armature)) {
+                   return OpStatus::Cancelled;
+                 }
+                 knob_go(*C.document, armature, *knob, spot->at, op_arg_bool(C, "hold"));
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_move", "Move Spot Here",
+               "Move spot name= of the active 2 Axis Controller (bone=: that one) to where the knob is. A fix pose on the "
+               "spot moves with it with fix=FOLLOW (where its actions still turn at least 5%), stays with fix=KEEP "
+               "(the default)",
+               bone_layer_active, [spot_controller, spot_named](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 ControllerSpot *spot = knob ? spot_named(*knob, C) : nullptr;
+                 if (!spot) {
+                   return OpStatus::Cancelled;
+                 }
+                 Layer &armature = *active_armature(C);
+                 const float2 from = spot->at, to = controller_knob(*knob);
+                 if (op_arg(C, "fix", "KEEP") == "FOLLOW") {
+                   for (const auto &[fix, pose] : controller_fix_poses_at(armature, *knob, from)) {
+                     if (!controller_fix_pose_move(armature, *knob, fix, pose, to)) {
+                       report(ReportType::Warning, "The fix pose of " + armature.fix_actions[fix].name +
+                                                       " stays: here one of its actions isn't turned enough");
+                     }
+                   }
+                 }
+                 spot->at = to;
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spot_fix", "Fix This Pose Here",
+               "Move the active 2 Axis Controller's knob (bone=: that one) to spot name= and fix the pose there (Fix This "
+               "Pose for its actions turned there): the fix opens on that pose, to key the correction",
+               bone_layer_active, [spot_controller, spot_named, knob_can_move, knob_go](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 ControllerSpot *spot = knob ? spot_named(*knob, C) : nullptr;
+                 Layer &armature = *active_armature(C);
+                 if (!spot || !knob_can_move(C, armature)) {
+                   return OpStatus::Cancelled;
+                 }
+                 Document &doc = *C.document;
+                 const float2 at = spot->at;
+                 const uint64_t owner = armature.id;
+                 std::vector<std::string> drivers;
+                 for (int side = 0; side < CONTROLLER_SIDES; side++) {
+                   const float along = (controller_side_axis(side) == 0 ? at.x : at.y) * controller_side_sign(side);
+                   if (along > 0.0f && !knob->controller_actions[side].empty()) {
+                     drivers.push_back(knob->controller_actions[side]);
+                   }
+                 }
+                 if (drivers.size() < 2) {
+                   report(ReportType::Warning, "The spot is on one side only: a fix is for two actions turned together");
+                   return OpStatus::Cancelled;
+                 }
+                 knob_go(doc, armature, *knob, at, false);
+                 const FixOpened opened = document_fix_pose_here(doc, owner, drivers);
+                 if (!opened.error.empty()) {
+                   report(ReportType::Warning, opened.error);
+                   return OpStatus::Cancelled;
+                 }
+                 return OpStatus::Finished;
+               });
+
+  rig_operator("armature.controller_spots_corners", "Add Corners",
+               "Add spots to the active 2 Axis Controller (bone=: that one) at the rest point, each side's end and each "
+               "corner, named after its actions; none where a spot is already",
+               bone_layer_active, [spot_controller](Context &C) {
+                 Bone *knob = spot_controller(C);
+                 if (!knob) {
+                   return OpStatus::Cancelled;
+                 }
+                 std::vector<std::pair<std::string, float2>> places = {{"Rest", {0.0f, 0.0f}}};
+                 const auto end = [&](int side) {
+                   const float frames = controller_side_frames(*knob, side) * controller_side_sign(side);
+                   return controller_side_axis(side) == 0 ? float2(frames, 0.0f) : float2(0.0f, frames);
+                 };
+                 for (int side = 0; side < CONTROLLER_SIDES; side++) {
+                   if (!knob->controller_actions[side].empty()) {
+                     places.push_back({knob->controller_actions[side], end(side)});
+                   }
+                 }
+                 for (const int x : {CONTROLLER_RIGHT, CONTROLLER_LEFT}) {
+                   for (const int y : {CONTROLLER_UP, CONTROLLER_DOWN}) {
+                     if (!knob->controller_actions[x].empty() && !knob->controller_actions[y].empty()) {
+                       places.push_back({knob->controller_actions[x] + " + " + knob->controller_actions[y], end(x) + end(y)});
+                     }
+                   }
+                 }
+                 int added = 0;
+                 for (const auto &[name, at] : places) {
+                   const bool taken = std::any_of(knob->controller_spots.begin(), knob->controller_spots.end(),
+                                                  [&](const ControllerSpot &s) {
+                                                    return std::fabs(s.at.x - at.x) < 0.5f && std::fabs(s.at.y - at.y) < 0.5f;
+                                                  });
+                   if (!taken) {
+                     knob->controller_spots.push_back({controller_spot_unique_name(*knob, name), at});
+                     added++;
+                   }
+                 }
+                 if (added == 0) {
+                   report(ReportType::Info, "Every corner has a spot already");
+                   return OpStatus::Cancelled;
+                 }
+                 report(ReportType::Info, "Added " + std::to_string(added) + " spot" + (added == 1 ? "" : "s"));
+                 return OpStatus::Finished;
+               });
+
   rig_operator("armature.duplicate_move", "Duplicate Bones",
                "Copy the selected bones, then move the copies (Shift D, as in Blender)", bone_layer_active,
                [](Context &C) {
@@ -3365,6 +3607,11 @@ void rig_operators_register()
                          sides_later.emplace_back(other, side, name);
                        }
                      }
+                     /* Its spots too, Left and Right swapped. */
+                     for (ControllerSpot &spot : copy.controller_spots) {
+                       spot.name = bone_mirror_name(spot.name);
+                       spot.at.x = -spot.at.x;
+                     }
                      const float length = src->length;
                      bone_place(copy, parent_setup, reflect(sp->setup_head), reflect(sp->setup_tail));
                      copy.length = length;
@@ -3381,6 +3628,7 @@ void rig_operators_register()
                        existing->controller_actions = copy.controller_actions;
                        existing->controller_frame_size = copy.controller_frame_size;
                        existing->controller_size_auto = copy.controller_size_auto;
+                       existing->controller_spots = copy.controller_spots;
                      }
                      else {
                        copy.id = armature.next_bone_id++;

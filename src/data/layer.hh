@@ -587,6 +587,14 @@ inline constexpr int BONE_COLOR_CUSTOM = BONE_COLOR_THEME_SETS + 1;
  * and stretch too), only its overall size (Uniform), or none of it. */
 enum class InheritScale { Full, Uniform, None };
 
+/* A named place for a 2 Axis Controller's knob (its frames, right and up positive): a pose to go back to, part of the
+ * rig, never keyed. */
+struct ControllerSpot {
+  std::string name;
+  float2 at;
+  bool operator==(const ControllerSpot &) const = default;
+};
+
 /* What a bone is. A 2 Axis Controller is a joystick, not a bone (anim/controller.hh). */
 enum class BoneType : uint8_t { Regular, Controller2D };
 /* A 2 Axis Controller's sides, each with an action of its own. */
@@ -677,6 +685,8 @@ struct Bone {
    * its shape is how long they are. Fitted to the box's actions as they're picked, until it is set by hand. */
   float controller_frame_size = 0.02f;
   bool controller_size_auto = true;
+  /* Its spots, in the Spots panel's order. */
+  std::vector<ControllerSpot> controller_spots;
   /* The frames each side's action has keys on, sorted, its last one its length (worked out, never saved). */
   std::array<std::vector<int>, CONTROLLER_SIDES> controller_keys;
   bool operator==(const Bone &) const = default;

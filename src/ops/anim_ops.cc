@@ -723,6 +723,46 @@ void anim_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.fix_pose_snap";
+    ot.name = "Snap to Fix Pose";
+    ot.description = "Put fix action `name`'s action bones at its pose `pose` (1 is the first; layer=id: that bone "
+                     "layer's): each one's knob moved or bone turned to the frame the pose keeps, keyed as any move is";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_arg(C, "name");
+      Layer *owner = named_action_owner(C, name);
+      const FixAction *fix = owner ? fix_action_find(*owner, name) : nullptr;
+      if (!fix) {
+        report(ReportType::Warning, "No fix action named " + name);
+        return OpStatus::Cancelled;
+      }
+      const int pose = op_arg_int(C, "pose", 0) - 1;
+      if (pose < 0 || size_t(pose) >= fix->poses.size()) {
+        report(ReportType::Warning, "It has poses 1 to " + std::to_string(fix->poses.size()));
+        return OpStatus::Cancelled;
+      }
+      /* As moving the knob by hand: not on the setup pose, nor inside an action bone or fix action (it holds them). */
+      if (doc.frame_current == 0) {
+        report(ReportType::Warning, "Nothing plays on frame 0: go to another frame");
+        return OpStatus::Cancelled;
+      }
+      if (!doc.action.empty() && doc.action_layer == owner->id && action_adds(*owner, doc.action)) {
+        report(ReportType::Warning, "Go back to the mainline (or an ordinary action) to pose its action bones");
+        return OpStatus::Cancelled;
+      }
+      const FixPose at = fix->poses[size_t(pose)];
+      const std::vector<std::string> drivers = fix->drivers;
+      for (size_t k = 0; k < drivers.size() && k < at.at.size(); k++) {
+        action_frame_set(*owner, drivers[k], at.at[k]);
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.action_rename";
     ot.name = "Rename Action";
     ot.description = "Rename action `name` of the bone layer the active layer is in (or is; layer=id: that one) to "
