@@ -27,6 +27,7 @@
 
 #include "core/log.hh"
 #include "anim/controller.hh"
+#include "anim/controller_preview.hh"
 #include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -6802,12 +6803,12 @@ static void draw_custom_shape(ImDrawList *dl, const std::vector<ShapeLoop> &loop
   }
 }
 
-/* Ctrl lands a picked controller's knob on its actions' keys: where the poses are. */
+/* Ctrl lands a picked controller's knob where the poses are: its spots, fix poses, rest, or where its keys cross. */
 static void armature_snap_knobs(Layer &armature)
 {
   for (Bone &b : armature.bones) {
     if (bone_is_controller(b) && b.selected) {
-      controller_knob_snap(b);
+      armature_knob_snap(armature, b);
     }
   }
 }
@@ -6822,9 +6823,12 @@ static ImVec2 controller_screen(const Document &doc, const Layer &armature, cons
 }
 
 static constexpr float CONTROLLER_KNOB_RADIUS = 7.0f;
+/* Half a spot's square, and how near the mouse picks one. */
+static constexpr float CONTROLLER_SPOT_HALF = 3.5f, CONTROLLER_SPOT_PICK = 6.0f;
 
 /* A 2 Axis Controller: its box (the frames of its actions either way from the rest point), a tick on the edge for each
- * of their keys, a dot at each pose a fix made, a ring where its actions really are if not at the knob, and the knob. */
+ * of their keys, a dot at each pose a fix made, a square at each spot (named under the mouse), a ring where its
+ * actions really are if not at the knob, and the knob. */
 static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &armature, const Bone &bone,
                             const BonePose &pose, const ScreenBone &sb, const ViewMapping &view, bool picked, bool active,
                             bool faint, ImU32 fill, ImU32 edge)
@@ -6862,6 +6866,19 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
   }
   for (const float2 &p : controller_fix_poses(armature, bone)) {
     dl->AddCircleFilled(at(p), 3.0f, UI_FIX_COLOR);
+  }
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  for (const ControllerSpot &spot : bone.controller_spots) {
+    const ImVec2 s = at(spot.at);
+    const ImVec2 half(CONTROLLER_SPOT_HALF, CONTROLLER_SPOT_HALF);
+    dl->AddRect(s - half, s + half, IM_COL32(0xff, 0xff, 0xff, 210), 0.0f, 0, 1.2f);
+    if (std::abs(mouse.x - s.x) <= CONTROLLER_SPOT_PICK && std::abs(mouse.y - s.y) <= CONTROLLER_SPOT_PICK) {
+      const float font = ImGui::GetFontSize();
+      const ImVec2 text = s + ImVec2(CONTROLLER_SPOT_PICK + 2.0f, -font - 2.0f);
+      const ImVec2 size = ImGui::CalcTextSize(spot.name.c_str());
+      dl->AddRectFilled(text - ImVec2(3.0f, 1.0f), text + size + ImVec2(3.0f, 1.0f), IM_COL32(0x18, 0x18, 0x18, 200), 3.0f);
+      dl->AddText(text, IM_COL32(0xff, 0xff, 0xff, 230), spot.name.c_str());
+    }
   }
   const float2 knob = controller_knob_shown(doc, armature, bone);
   const ImVec2 knob_at = at(knob);
@@ -11810,6 +11827,37 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
         }
       }
     }
+    /* Clicking a spot of a controller (not under its knob) puts the knob there; Shift keys it held there. */
+    if (doc.frame_current != 0 && !io.KeyCtrl) {
+      const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
+      const std::vector<BonePose> poses = armature_pose(armature, false);
+      std::string knob_name, spot_name;
+      float best = CONTROLLER_SPOT_PICK + 1.0f;
+      for (size_t i = 0; i < armature.bones.size() && i < poses.size() && i < sbs.size(); i++) {
+        const Bone &knob = armature.bones[i];
+        if (!bone_is_controller(knob) || !bone_shown(armature, knob) || bone_held_by_fix(doc, armature, knob)) {
+          continue;
+        }
+        const ImVec2 k = controller_screen(doc, armature, view, knob, poses[i], sbs[i], controller_knob_shown(doc, armature, knob));
+        if (std::hypot(k.x - io.MousePos.x, k.y - io.MousePos.y) <= CONTROLLER_KNOB_RADIUS) {
+          continue;
+        }
+        for (const ControllerSpot &spot : knob.controller_spots) {
+          const ImVec2 s = controller_screen(doc, armature, view, knob, poses[i], sbs[i], spot.at);
+          const float d = std::max(std::abs(s.x - io.MousePos.x), std::abs(s.y - io.MousePos.y));
+          if (d <= CONTROLLER_SPOT_PICK && d < best) {
+            best = d;
+            knob_name = knob.name;
+            spot_name = spot.name;
+          }
+        }
+      }
+      if (!spot_name.empty()) {
+        operator_call(C, "armature.controller_spot_go",
+                      {{"bone", knob_name}, {"name", spot_name}, {"hold", io.KeyShift ? "1" : "0"}});
+        return;
+      }
+    }
     /* Pressing on a controller's knob, or on the setup frame its box, drags it at once (Ctrl: onto its keys). */
     if (!io.KeyShift) {
       const std::vector<FamilyHit> under = pick_family_parts(doc, armature, view, io.MousePos);
@@ -13444,6 +13492,8 @@ static void viewport_draw_contents(Area &area, Context &C)
     uint64_t revision = 0;
     bool media_view = false;
     bool complete = false;
+    /* A knob shown somewhere by the Spots panel (anim/controller_preview.hh). */
+    uint64_t preview = 0;
   };
   static std::map<int, LastRender> last_renders;
   LastRender &last = last_renders[area.id];
@@ -13455,7 +13505,8 @@ static void viewport_draw_contents(Area &area, Context &C)
                     last.samples == doc.viewport_samples && last.changes == C.undo->change_count() &&
                     last.media == media_generation() && last.guides == show_guides &&
                     last.local_view == wm.local_view && last.mask_preview == mask_preview_key &&
-                    last.revision == revision_latest() && last.media_view == wm.media_view && last.complete;
+                    last.revision == revision_latest() && last.media_view == wm.media_view && last.complete &&
+                    last.preview == controller_preview_stamp();
   /* Live bone physics moves bones without new revisions; a text typed on the canvas is safest drawn anew. */
   const bool still = same_content && !wm.playing && order_preview.empty() && !dynamics_live_running() &&
                      !wm.text_editing;
@@ -13608,14 +13659,18 @@ static void viewport_draw_contents(Area &area, Context &C)
       for (const uint64_t id : wm.local_view) {
         mix(id);
       }
+      mix(controller_preview_stamp());
       content |= 1;
     }
     renderer->set_content(content);
-    rendered = renderer->render(doc, width_px, height_px, document_to_pixels, doc.viewport_quality, doc.viewport_samples);
+    /* Hovering a spot in the Spots panel: the drawing posed there, from a copy (nothing in the document moves). */
+    const Document *previewed = controller_preview_document(doc);
+    rendered = renderer->render(previewed ? *previewed : doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
+                                doc.viewport_samples);
     last = {rendered,         width_px,          height_px,          document_to_pixels,
             doc.frame_current, doc.viewport_quality, doc.viewport_samples, C.undo->change_count(),
             media_generation(), show_guides,       wm.local_view,      mask_preview_key,
-            revision_latest(), wm.media_view,     renderer->complete()};
+            revision_latest(), wm.media_view,     renderer->complete(), controller_preview_stamp()};
   }
   if (const unsigned int texture = rendered) {
     dl->AddCallback(premultiplied_blend, nullptr);

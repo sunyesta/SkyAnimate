@@ -13,6 +13,7 @@
 #include <stdexcept>
 
 #include "anim/controller.hh"
+#include "anim/controller_preview.hh"
 #include "anim/keep_poses.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
@@ -2319,6 +2320,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           fix_poses.append(py::make_tuple(p.x, p.y));
         }
         d["controller_fix_poses"] = fix_poses;
+        py::list spots;
+        for (const ControllerSpot &spot : b.controller_spots) {
+          spots.append(py::make_tuple(spot.name, py::make_tuple(spot.at.x, spot.at.y)));
+        }
+        d["controller_spots"] = spots;
       }
       result.append(d);
     }
@@ -2365,6 +2371,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "knob") {
         const auto s = value.cast<std::pair<float, float>>();
         controller_knob_set(bone, {s.first, s.second});
+      }
+      else if (key == "knob_snap") {
+        /* As Ctrl does while dragging it. */
+        if (value.cast<bool>()) {
+          armature_knob_snap(*layer_find(*current_context().document, id), bone);
+        }
       }
       else if (key == "strength") {
         bone.strength = std::max(0.0f, value.cast<float>());
@@ -4217,6 +4229,34 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Document &doc = *current_context().document;
     doc.frame_current = frame;
     animation_sync_playing(doc, edits);
+  });
+  /* The Spots panel's hover: knob `bone` of bone layer `armature` shown at (x, y) frames from a copy ("" clears it). */
+  m.def("controller_preview", [](uint64_t armature, const std::string &bone, float x, float y) {
+    const Layer *layer = layer_find(*current_context().document, armature);
+    const Bone *knob = layer && !bone.empty() ? bone_find_by_name(*layer, bone) : nullptr;
+    if (!knob) {
+      controller_preview_clear();
+      return;
+    }
+    controller_preview_set(armature, knob->id, {x, y});
+  });
+  /* Where a layer's points show (document space) in what the viewport draws during a preview; None without one. */
+  m.def("controller_preview_points", [](uint64_t id) -> py::object {
+    const Document *shown = controller_preview_document(*current_context().document);
+    const Layer *layer = shown ? layer_find(*shown, id) : nullptr;
+    if (!layer) {
+      return py::none();
+    }
+    const VectorDrawing &drawing = layer_drawing(*shown, *layer);
+    std::vector<Transform2D> skins = layer_point_skins(*shown, *layer);
+    skins.resize(drawing.points.size());
+    const Transform2D world = layer_world_transform(*shown, layer->id);
+    py::list points;
+    for (size_t i = 0; i < drawing.points.size(); i++) {
+      const float2 q = world.apply(skins[i].apply(drawing.points[i].pos));
+      points.append(py::make_tuple(q.x, q.y));
+    }
+    return points;
   });
   m.def("switch_preview", [](uint64_t sw, uint64_t child) {
     if (sw == 0) {

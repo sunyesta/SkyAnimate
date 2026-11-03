@@ -18,6 +18,7 @@
 #include <string>
 
 #include "anim/controller.hh"
+#include "anim/controller_preview.hh"
 #include "anim/animation.hh"
 #include "anim/follow_point.hh"
 #include "anim/deform.hh"
@@ -38,6 +39,7 @@
 #include "editors/editors.hh"
 #include "assets/brushes.hh"
 #include "editors/brush_editor.hh"
+#include "editors/controller_thumbnails.hh"
 #include "editors/ui.hh"
 #include "editors/text_panel.hh"
 #include "ops/edit_ops.hh"
@@ -1447,6 +1449,270 @@ static void controller_fixes_panel_body(Context &C, Layer &armature, const Bone 
                                : "Remove the picked pose and its keys; the fix blends between the others");
   ImGui::EndGroup();
   /* Below the list, however tall it is beside the buttons. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x, std::max(list_max.y, ImGui::GetItemRectMax().y) + 1.0f));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
+/* "turn_r 30 · look_up 10": where a knob place is, as it is kept (each side's action and its frame); "rest" at rest. */
+static std::string controller_place_label(const Bone &knob, float2 at)
+{
+  std::string label;
+  for (const int axis : {0, 1}) {
+    const float v = axis == 0 ? at.x : at.y;
+    if (std::fabs(v) < 1e-3f) {
+      continue;
+    }
+    const int side = axis * 2 + (v > 0.0f ? 0 : 1);
+    const std::string &action = knob.controller_actions[side];
+    label += (label.empty() ? "" : " \xC2\xB7 ") + (action.empty() ? std::string(controller_side_name(side)) : action) +
+             " " + action_frame_text(std::fabs(v));
+  }
+  return label.empty() ? "rest" : label;
+}
+
+/* A 2 Axis Controller's spots (the Bone tab): named places for its knob, each with a picture of the pose there and
+ * where it is as kept. Hover one to see its pose in the viewport (nothing moves); click it to put the knob there
+ * (Shift: keyed held there), double-click to rename it; right-click for Move Here, Fix This Pose Here, Rename and
+ * Delete. Beside the list: + saves where the knob is, - removes the picked spot, the menu's Add Corners, and up and
+ * down. */
+static void controller_spots_panel_body(Context &C, Layer &armature, const Bone &knob);
+
+static void controller_spots_panel(Context &C, Layer &armature, const Bone &knob)
+{
+  if (!ui_collapsing_header("Spots", true)) {
+    controller_preview_clear();
+    return;
+  }
+  ImGui::PushID("##controller_spots_panel");
+  controller_spots_panel_body(C, armature, knob);
+  ImGui::PopID();
+}
+
+static void controller_spots_panel_body(Context &C, Layer &armature, const Bone &knob)
+{
+  Document &doc = *C.document;
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float h = ImGui::GetFrameHeight();
+  const float thumb = std::round(h * 1.9f);
+  const float row_h = thumb + 4.0f;
+  const auto tip = [](const char *text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", text);
+    }
+  };
+  const OpArgs::value_type bone_arg = {"bone", knob.name};
+  struct SpotsState {
+    std::string picked;
+    std::string renaming, rename_text;
+    std::string hovering;
+    double hover_since = 0.0;
+    /* Move Here asking about the fix pose on the spot. */
+    std::string moving;
+  };
+  static std::map<std::pair<uint64_t, uint64_t>, SpotsState> states;
+  SpotsState &st = states[{armature.id, knob.id}];
+  if (!controller_spot_find(knob, st.picked)) {
+    st.picked.clear();
+  }
+  const bool can_move = doc.frame_current != 0 && !(!doc.action.empty() && doc.action_layer == armature.id &&
+                                                    action_adds(armature, doc.action));
+  const std::vector<ControllerSpot> spots = knob.controller_spots;
+
+  const float side = h + style.ItemSpacing.x;
+  const float list_w = ImGui::GetContentRegionAvail().x - side;
+  const ImVec2 list_min = ImGui::GetCursorScreenPos();
+  const float list_rows = std::clamp(float(std::max<size_t>(spots.size(), 1)), 2.0f, 6.0f);
+  ImGui::BeginChild("##spots", ImVec2(list_w, list_rows * row_h + style.WindowPadding.y * 2.0f + style.ItemSpacing.y),
+                    ImGuiChildFlags_Borders);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  std::string hovered, doomed, menu_spot;
+  for (const ControllerSpot &spot : spots) {
+    ImGui::PushID(spot.name.c_str());
+    const ImVec2 row = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    if (spot.name == st.picked) {
+      dl->AddRectFilled(row, ImVec2(row.x + w, row.y + row_h - 2.0f), IM_COL32(0x33, 0x4d, 0x80, 255), 3.0f);
+    }
+    /* The pose there, small. */
+    const ImVec2 t0(row.x + 2.0f, row.y + 1.0f), t1(t0.x + thumb, t0.y + thumb);
+    dl->AddRectFilled(t0, t1, IM_COL32(0x20, 0x20, 0x20, 255), 3.0f);
+    if (const unsigned int texture = controller_spot_thumbnail(doc, armature, knob, spot, int(thumb))) {
+      dl->AddImage(ImTextureID(uintptr_t(texture)), t0, t1);
+    }
+    const float text_x = t1.x + style.ItemSpacing.x;
+    if (st.renaming == spot.name) {
+      ImGui::SetCursorScreenPos(ImVec2(text_x, row.y + 2.0f));
+      ImGui::SetNextItemWidth(w - (text_x - row.x) - style.FramePadding.x);
+      if (!ImGui::IsAnyItemActive()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+      ImGui::InputText("##rename", &st.rename_text, ImGuiInputTextFlags_AutoSelectAll);
+      if (ImGui::IsItemDeactivated()) {
+        if (!st.rename_text.empty() && st.rename_text != spot.name) {
+          operator_call(C, "armature.controller_spot_rename", {bone_arg, {"name", spot.name}, {"to", st.rename_text}});
+          st.picked = st.picked == spot.name ? st.rename_text : st.picked;
+        }
+        st.renaming.clear();
+      }
+    }
+    else {
+      if (ImGui::Selectable("##spot", false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, row_h - 2.0f))) {
+        st.picked = spot.name;
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          st.renaming = spot.name;
+          st.rename_text = spot.name;
+        }
+        else if (can_move) {
+          controller_preview_clear();
+          operator_call(C, "armature.controller_spot_go",
+                        {bone_arg, {"name", spot.name}, {"hold", ImGui::GetIO().KeyShift ? "1" : "0"}});
+        }
+      }
+      if (ImGui::IsItemHovered()) {
+        hovered = spot.name;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(can_move ? "Click to put the knob here (Shift: keyed held here), double-click to rename; "
+                                     "right-click for more"
+                                   : doc.frame_current == 0 ? "Nothing plays on frame 0: go to another frame to use it"
+                                                            : "Go back to the mainline (or an ordinary action) to use it");
+      }
+      if (ImGui::BeginPopupContextItem("##spot_menu")) {
+        ImGui::TextDisabled("%s", spot.name.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Move Here")) {
+          menu_spot = spot.name;
+        }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Move the spot to where the knob is");
+        }
+        if (ImGui::MenuItem("Fix This Pose Here", nullptr, false, can_move)) {
+          controller_preview_clear();
+          operator_call(C, "armature.controller_spot_fix", {bone_arg, {"name", spot.name}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip("Put the knob here and fix the pose: the fix opens on it, to key the correction");
+        }
+        if (ImGui::MenuItem("Rename")) {
+          st.renaming = spot.name;
+          st.rename_text = spot.name;
+        }
+        if (ImGui::MenuItem("Delete")) {
+          doomed = spot.name;
+        }
+        ImGui::EndPopup();
+      }
+      const ImU32 text_col = ImGui::GetColorU32(ImGuiCol_Text);
+      dl->AddText(ImVec2(text_x, row.y + style.FramePadding.y), text_col, spot.name.c_str());
+      dl->AddText(ImVec2(text_x, row.y + style.FramePadding.y + ImGui::GetFontSize() + 2.0f),
+                  ImGui::GetColorU32(ImGuiCol_TextDisabled), controller_place_label(knob, spot.at).c_str());
+    }
+    ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + row_h));
+    ImGui::PopID();
+  }
+  if (spots.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("No spots yet: + saves where the knob is, or the menu's Add Corners.");
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::EndChild();
+  const ImVec2 list_max = ImGui::GetItemRectMax();
+
+  /* Hovering a spot a moment shows its pose in the viewport; moving off puts it back. */
+  if (hovered != st.hovering) {
+    st.hovering = hovered;
+    st.hover_since = ImGui::GetTime();
+  }
+  const ControllerSpot *shown = controller_spot_find(knob, st.hovering);
+  if (shown && st.renaming.empty() && ImGui::GetTime() - st.hover_since > 0.3) {
+    controller_preview_set(armature.id, knob.id, shown->at);
+  }
+  else {
+    uint64_t prev_armature = 0, prev_bone = 0;
+    if (controller_preview_active(&prev_armature, &prev_bone) && prev_armature == armature.id && prev_bone == knob.id) {
+      controller_preview_clear();
+    }
+  }
+
+  if (!doomed.empty()) {
+    operator_call(C, "armature.controller_spot_remove", {bone_arg, {"name", doomed}});
+  }
+  /* Move Here: a fix pose on the spot may go with it. */
+  if (!menu_spot.empty()) {
+    const ControllerSpot *spot = controller_spot_find(knob, menu_spot);
+    if (spot && !controller_fix_poses_at(armature, knob, spot->at).empty()) {
+      st.moving = menu_spot;
+      ImGui::OpenPopup("##spot_move_fix");
+    }
+    else {
+      operator_call(C, "armature.controller_spot_move", {bone_arg, {"name", menu_spot}});
+    }
+  }
+  if (ImGui::BeginPopup("##spot_move_fix")) {
+    ImGui::TextUnformatted(("A fix pose sits on " + st.moving + ". Move it with the spot?").c_str());
+    if (ImGui::Button("Move Both")) {
+      operator_call(C, "armature.controller_spot_move", {bone_arg, {"name", st.moving}, {"fix", "FOLLOW"}});
+      ImGui::CloseCurrentPopup();
+    }
+    tip("The fix's pose moves too: its correction then plays where the spot is now");
+    ImGui::SameLine();
+    if (ImGui::Button("Only the Spot")) {
+      operator_call(C, "armature.controller_spot_move", {bone_arg, {"name", st.moving}, {"fix", "KEEP"}});
+      ImGui::CloseCurrentPopup();
+    }
+    tip("The fix pose stays where it is");
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  /* Beside the list: +, -, the menu, and up and down. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x + list_w + style.ItemSpacing.x, list_min.y));
+  ImGui::BeginGroup();
+  if (ImGui::Button("+", ImVec2(h, h))) {
+    const size_t before = knob.controller_spots.size();
+    operator_call(C, "armature.controller_spot_add", {bone_arg});
+    const Bone *now = bone_find(armature, knob.id);
+    if (now && now->controller_spots.size() > before) {
+      st.picked = now->controller_spots.back().name;
+    }
+  }
+  tip("Save where the knob is as a spot");
+  ImGui::BeginDisabled(st.picked.empty());
+  if (ImGui::Button("-", ImVec2(h, h))) {
+    operator_call(C, "armature.controller_spot_remove", {bone_arg, {"name", st.picked}});
+    st.picked.clear();
+  }
+  ImGui::EndDisabled();
+  tip(st.picked.empty() ? "Pick a spot to remove it" : "Remove the picked spot");
+  if (ImGui::ArrowButton("##spots_menu", ImGuiDir_Down)) {
+    ImGui::OpenPopup("##spots_more");
+  }
+  tip("More: Add Corners");
+  if (ui_menu_begin("##spots_more")) {
+    if (ui_menu_item("Add Corners")) {
+      operator_call(C, "armature.controller_spots_corners", {bone_arg});
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Spots at the rest point, each side's end and each corner, named after their actions");
+    }
+    ui_menu_end();
+  }
+  const auto picked_at = std::find_if(spots.begin(), spots.end(), [&](const ControllerSpot &s) { return s.name == st.picked; });
+  ImGui::BeginDisabled(picked_at == spots.end() || picked_at == spots.begin());
+  if (ImGui::ArrowButton("##spot_up", ImGuiDir_Up)) {
+    operator_call(C, "armature.controller_spot_order", {bone_arg, {"name", st.picked}, {"direction", "UP"}});
+  }
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(picked_at == spots.end() || picked_at + 1 == spots.end());
+  if (ImGui::ArrowButton("##spot_down", ImGuiDir_Down)) {
+    operator_call(C, "armature.controller_spot_order", {bone_arg, {"name", st.picked}, {"direction", "DOWN"}});
+  }
+  ImGui::EndDisabled();
+  ImGui::EndGroup();
   ImGui::SetCursorScreenPos(ImVec2(list_min.x, std::max(list_max.y, ImGui::GetItemRectMax().y) + 1.0f));
   ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
@@ -9562,6 +9828,12 @@ void properties_draw(Area &area, Context &C)
         bone_panel(C, armature);
         if (const Bone *active = bone_find(armature, armature.active_bone); active && bone_is_controller(*active)) {
           controller_fixes_panel(C, armature, *active);
+          if (const Bone *still = bone_find(armature, armature.active_bone); still && bone_is_controller(*still)) {
+            controller_spots_panel(C, armature, *still);
+          }
+        }
+        else {
+          controller_preview_clear();
         }
         bone_relations_panel(C, armature);
         bone_display_panel(C, armature);

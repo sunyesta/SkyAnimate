@@ -842,6 +842,13 @@ static json layer_to_json(const Layer &layer)
         if (!b.controller_size_auto) {
           bj["controller_size_auto"] = false;
         }
+        if (!b.controller_spots.empty()) {
+          json spots = json::array();
+          for (const ControllerSpot &spot : b.controller_spots) {
+            spots.push_back({{"name", spot.name}, {"at", {num(spot.at.x), num(spot.at.y)}}});
+          }
+          bj["controller_spots"] = std::move(spots);
+        }
       }
       if (!b.constraints.empty()) {
         json constraints = json::array();
@@ -2572,6 +2579,12 @@ static Layer layer_from_json(const json &j, int depth)
       }
       b.controller_frame_size = std::max(get_float(bj, "controller_frame_size", b.controller_frame_size), 1e-5f);
       b.controller_size_auto = get_bool(bj, "controller_size_auto", true);
+      for (const json &sj : get_array(bj, "controller_spots")) {
+        const json at = sj.value("at", json());
+        if (sj.is_object() && at.is_array() && at.size() == 2 && at[0].is_number() && at[1].is_number()) {
+          b.controller_spots.push_back({sj.value("name", std::string("Spot")), {at[0].get<float>(), at[1].get<float>()}});
+        }
+      }
     }
     for (const json &c : get_array(bj, "collections")) {
       if (c.is_number_unsigned()) {

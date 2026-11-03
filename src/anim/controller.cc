@@ -136,7 +136,7 @@ void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
   controller_knob_set(knob, controller_knob(knob) + local / std::max(knob.controller_frame_size, 1e-6f));
 }
 
-void controller_knob_snap(Bone &knob)
+void controller_knob_snap(Bone &knob, const std::vector<float2> &also)
 {
   const auto nearest = [&](float at, int plus, int minus) {
     float best = 0.0f;
@@ -155,7 +155,40 @@ void controller_knob_snap(Bone &knob)
     return best;
   };
   const float2 at = controller_knob(knob);
-  controller_knob_set(knob, {nearest(at.x, CONTROLLER_RIGHT, CONTROLLER_LEFT), nearest(at.y, CONTROLLER_UP, CONTROLLER_DOWN)});
+  /* The nearest crossing of keys is the nearest along each axis; a spot or fix pose nearer than that wins. */
+  float2 best(nearest(at.x, CONTROLLER_RIGHT, CONTROLLER_LEFT), nearest(at.y, CONTROLLER_UP, CONTROLLER_DOWN));
+  const auto dist = [&](float2 p) { return std::hypot(p.x - at.x, p.y - at.y); };
+  for (const ControllerSpot &spot : knob.controller_spots) {
+    best = dist(spot.at) < dist(best) ? spot.at : best;
+  }
+  for (const float2 &p : also) {
+    best = dist(p) < dist(best) ? p : best;
+  }
+  controller_knob_set(knob, best);
+}
+
+ControllerSpot *controller_spot_find(Bone &knob, const std::string &name)
+{
+  for (ControllerSpot &spot : knob.controller_spots) {
+    if (spot.name == name) {
+      return &spot;
+    }
+  }
+  return nullptr;
+}
+
+const ControllerSpot *controller_spot_find(const Bone &knob, const std::string &name)
+{
+  return controller_spot_find(const_cast<Bone &>(knob), name);
+}
+
+std::string controller_spot_unique_name(const Bone &knob, const std::string &name)
+{
+  std::string unique = name;
+  for (int n = 2; controller_spot_find(knob, unique); n++) {
+    unique = name + " " + std::to_string(n);
+  }
+  return unique;
 }
 
 void controller_fit_size(Bone &knob)

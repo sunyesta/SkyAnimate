@@ -102,6 +102,13 @@ float2 controller_knob_shown(const Document &doc, const Layer &owner, const Bone
 float2 controller_knob_playing(const Layer &owner, const Bone &knob);
 /* The poses of the fixes of its actions, in frames, as the box marks them. */
 std::vector<float2> controller_fix_poses(const Layer &owner, const Bone &knob);
+/* Ctrl on a knob: onto its nearest spot, fix pose, rest, or crossing of keys (controller_knob_snap). */
+void armature_knob_snap(const Layer &armature, Bone &knob);
+/* The poses of fixes on `at` of the knob (every driver of the fix one of its sides'): {fix, pose} indices. */
+std::vector<std::pair<size_t, size_t>> controller_fix_poses_at(const Layer &owner, const Bone &knob, float2 at);
+/* Moves pose `pose` of fix `fix` to the knob at `to` (its keys stay on the pose's frame). False, leaving it, where `to`
+ * would have one of its drivers turned less than FIX_COUNTS_FROM. */
+bool controller_fix_pose_move(Layer &owner, const Bone &knob, size_t fix, size_t pose, float2 to);
 /* Whether a dial is held at rest because the knob is on the other side's. */
 bool controller_dial_held(const Layer &owner, const Bone &dial);
 /* What the sides' actions key, found again after keys change (Bone::controller_keys). */
