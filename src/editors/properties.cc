@@ -17,6 +17,7 @@
 #include <set>
 #include <string>
 
+#include "anim/controller.hh"
 #include "anim/animation.hh"
 #include "anim/follow_point.hh"
 #include "anim/deform.hh"
@@ -480,6 +481,81 @@ static bool *relations_set_keep_flag()
 {
   static bool keep = false;
   return &keep;
+}
+
+/* A side of a 2 Axis Controller: its action, a list of the bone layer's, + to make one, and Left and Right can be made
+ * from each other. Picking an action whose bone has keys where the knob has too asks whose stay. */
+static void controller_side_row(Context &C, Layer &armature, const Bone &knob, int side)
+{
+  static int pending_side = -1;
+  static std::string pending_action;
+  const std::string now = knob.controller_actions[side];
+  const char *id = controller_side_id(side);
+  ImGui::PushID(id);
+  const bool can_mirror = (side == CONTROLLER_LEFT || side == CONTROLLER_RIGHT) && now.empty() &&
+                          !knob.controller_actions[controller_side_opposite(side)].empty();
+  const float buttons = ImGui::GetFrameHeight() * (can_mirror ? 2.0f : 1.0f) + ImGui::GetStyle().ItemSpacing.x * (can_mirror ? 2.0f : 1.0f);
+  ImGui::SetNextItemWidth(-buttons);
+  const auto pick = [&](const std::string &action) {
+    if (!action.empty() && controller_side_keys_clash(armature, knob, side, action)) {
+      pending_side = side;
+      pending_action = action;
+      ImGui::OpenPopup("##controller_keep");
+      return;
+    }
+    operator_call(C, "armature.controller_side", {{"side", id}, {"action", action}});
+  };
+  if (ImGui::BeginCombo("##action", now.empty() ? "None" : now.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::Selectable("None", now.empty())) {
+      pick("");
+    }
+    for (const std::string &action : armature.actions) {
+      if (fix_action_find(armature, action)) {
+        continue;
+      }
+      int in_side = 0;
+      const Bone *in = controller_of_action(armature, action, &in_side);
+      const bool taken = in && !(in == &knob && in_side == side);
+      if (ImGui::Selectable(action.c_str(), action == now, taken ? ImGuiSelectableFlags_Disabled : 0)) {
+        pick(action);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("The action the knob plays on this side. Its last key is the edge of the box. An action bone action "
+                      "stays its bone's: the bone and the knob are linked, one set of keys");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("+", ImVec2(ImGui::GetFrameHeight(), 0))) {
+    operator_call(C, "armature.controller_action_new", {{"side", id}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Make a new action for this side and open it");
+  }
+  if (can_mirror) {
+    ImGui::SameLine();
+    if (ImGui::Button("M", ImVec2(ImGui::GetFrameHeight(), 0))) {
+      operator_call(C, "armature.controller_mirror", {{"side", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make this side from the other, as a mirrored action");
+    }
+  }
+  if (pending_side == side && ImGui::BeginPopup("##controller_keep")) {
+    ImGui::TextDisabled("Both have keys, and the knob has one place on an axis");
+    ImGui::Separator();
+    if (ImGui::Selectable(("Keep " + pending_action + "'s keys").c_str())) {
+      operator_call(C, "armature.controller_side", {{"side", id}, {"action", pending_action}, {"keep", "THIS"}});
+      pending_side = -1;
+    }
+    if (ImGui::Selectable("Keep the knob's keys")) {
+      operator_call(C, "armature.controller_side", {{"side", id}, {"action", pending_action}, {"keep", "OTHER"}});
+      pending_side = -1;
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopID();
 }
 
 /* Blender's bone Relations, for the active bone: its parent (a searchable list and an eyedropper; on the
@@ -1214,6 +1290,25 @@ static void bone_panel(Context &C, Layer &armature)
       ui_panel_end();
       return;
     }
+    label("Type");
+    if (ImGui::BeginCombo("##bone_type", bone_is_controller(*active) ? "2 Axis Controller" : "Regular")) {
+      if (ImGui::Selectable("Regular", !bone_is_controller(*active))) {
+        operator_call(C, "armature.bone_convert", {{"type", "REGULAR"}});
+      }
+      if (ImGui::Selectable("2 Axis Controller", bone_is_controller(*active))) {
+        operator_call(C, "armature.bone_convert", {{"type", "CONTROLLER_2D"}});
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("What the bone is. A 2 Axis Controller is a box with a knob whose four sides play actions. "
+                        "Changed in the setup pose");
+    }
+    active = bone_find(armature, armature.active_bone);
+    if (!active) {
+      ui_panel_end();
+      return;
+    }
     float degrees = active->angle * 180.0f / PI;
     const std::string bone_path = "bones[\"" + active->name + "\"].";
     /* A bone field with its keyframe button. */
@@ -1241,6 +1336,51 @@ static void bone_panel(Context &C, Layer &armature)
       }
       ImGui::PopID();
     };
+    if (const Bone *knob = controller_of_dial(armature, *active)) {
+      label("");
+      ImGui::TextDisabled("Linked to %s%s", knob->name.c_str(),
+                          controller_dial_held(armature, *active) ? ": held, the knob is on the other side" : "");
+    }
+    if (bone_is_controller(*active)) {
+      if (doc.frame_current != 0) {
+        const bool held = bone_held_by_fix(doc, armature, *active);
+        if (held) {
+          ImGui::BeginDisabled();
+        }
+        keyed_field("Knob", "position", [&] {
+          float2 frames = controller_knob(*active);
+          if (ui_drag_float2("##knob", &frames.x, 0.5f, -100000.0f, 100000.0f, "%.1f")) {
+            controller_knob_set(*active, frames);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Where the knob is, in frames of its actions: right and up are positive");
+          }
+          if (ImGui::IsItemDeactivatedAfterEdit()) {
+            C.undo->push("Move Knob", doc);
+          }
+        });
+        if (held) {
+          ImGui::EndDisabled();
+        }
+      }
+      for (int side = 0; side < CONTROLLER_SIDES; side++) {
+        label(controller_side_name(side));
+        controller_side_row(C, armature, *active, side);
+      }
+      label("Frame Size");
+      if (ui_drag_float("##controller_frame_size", &active->controller_frame_size, 0.0001f, 0.00001f, 10.0f, "%.4f")) {
+        active->controller_size_auto = false;
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How far one action frame is. The box is its actions' lengths times this; on the setup frame "
+                          "its corners drag it too");
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        C.undo->push("Controller Frame Size", doc);
+      }
+      ui_panel_end();
+      return;
+    }
     if (doc.frame_current == 0) {
       /* The setup frame edits the rig, as Blender's edit mode: where the bone's ends are (in the
        * bone layer's space). A connected bone's head is its parent's tail, so it moves that too. */
@@ -1730,6 +1870,357 @@ static void changed_end(Context &C, bool on, const char *id, const std::vector<O
     }
     ui_menu_end();
   }
+}
+
+/* The Actions panel, as Blender's Shape Keys: Mainline, then every action of the bone layer, each with what kind it
+ * is, its Frame (0: not playing) and its checkbox (unchecked: muted); fixes indented under the action bone action
+ * that drives them last. The row being edited is the one picked. Under the list, the picked action's Loop, length
+ * and what it is linked to. */
+static void actions_panel_body(Context &C, Layer &armature);
+
+static void actions_panel(Context &C, Layer &armature)
+{
+  if (!ui_collapsing_header("Actions", true)) {
+    return;
+  }
+  /* Its list's widgets are named as Bone Collections' are, in the same window. */
+  ImGui::PushID("##actions_panel");
+  actions_panel_body(C, armature);
+  ImGui::PopID();
+}
+
+static void actions_panel_body(Context &C, Layer &armature)
+{
+  Document &doc = *C.document;
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float h = ImGui::GetFrameHeight();
+  const float row_h = h + 2.0f;
+  struct ListState {
+    float rows = 6.0f;
+    bool filter_open = false;
+    std::string filter;
+    std::string renaming;
+    std::string rename_text;
+  };
+  static std::map<uint64_t, ListState> states;
+  ListState &st = states[armature.id];
+  const bool editing_here = !doc.action.empty() && doc.action_layer == armature.id;
+  const std::string picked = editing_here ? doc.action : std::string();
+  /* Frames are set on the mainline: inside an action every Frame channel holds that action's keys. */
+  const bool frames_editable = doc.action.empty() && doc.frame_current != 0;
+  const auto tip = [](const char *text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("%s", text);
+    }
+  };
+  const OpArgs::value_type layer_arg = {"layer", std::to_string(armature.id)};
+
+  /* Fixes go under the action bone action that drives them last; the rest in order. */
+  std::vector<std::pair<std::string, int>> rows = {{"", 0}};
+  const auto add_fixes_of = [&](const std::string &driver) {
+    for (const FixAction &f : armature.fix_actions) {
+      if (!f.drivers.empty() && f.drivers.back() == driver) {
+        rows.push_back({f.name, 1});
+      }
+    }
+  };
+  for (const std::string &name : armature.actions) {
+    if (!fix_action_find(armature, name)) {
+      rows.push_back({name, 0});
+      add_fixes_of(name);
+    }
+  }
+  for (const FixAction &f : armature.fix_actions) {
+    if (std::none_of(rows.begin(), rows.end(), [&](const auto &r) { return r.first == f.name; })) {
+      rows.push_back({f.name, 0});
+    }
+  }
+
+  const float side = h + style.ItemSpacing.x;
+  const float list_w = ImGui::GetContentRegionAvail().x - side;
+  const ImVec2 list_min = ImGui::GetCursorScreenPos();
+  ImGui::BeginChild("##actions", ImVec2(list_w, st.rows * row_h + style.WindowPadding.y), ImGuiChildFlags_Borders);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImU32 icon_col = IM_COL32(0xe6, 0xe6, 0xe6, 200);
+  const ImU32 linked_col = ImGui::ColorConvertFloat4ToU32(CHANGED_TEXT);
+  std::string doomed;
+  for (const auto &[name, indent] : rows) {
+    if (!st.filter.empty() && !name.empty() && name.find(st.filter) == std::string::npos) {
+      continue;
+    }
+    ImGui::PushID(name.empty() ? "##mainline" : name.c_str());
+    const ImVec2 row = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float frame_w = name.empty() ? 0.0f : h * 2.6f;
+    const float right_w = name.empty() ? 0.0f : frame_w + ui_key_button_width() + h + style.ItemSpacing.x;
+    const float icon_x = row.x + style.FramePadding.x + float(indent) * h * 0.8f;
+    const float text_x = icon_x + h * 0.8f;
+    const float cy = row.y + (row_h - 2.0f) * 0.5f;
+    const Bone *holder = nullptr;
+    const ActionFrameBy by = name.empty() ? ActionFrameBy::Own : action_frame_by(armature, name, &holder);
+    if (!name.empty() && st.renaming == name) {
+      ImGui::SetCursorScreenPos(ImVec2(text_x, row.y));
+      ImGui::SetNextItemWidth(w - right_w - (text_x - row.x));
+      if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemActive()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+      ImGui::InputText("##rename", &st.rename_text, ImGuiInputTextFlags_AutoSelectAll);
+      if (ImGui::IsItemDeactivated()) {
+        if (!st.rename_text.empty() && st.rename_text != name) {
+          operator_call(C, "anim.action_rename", {layer_arg, {"name", name}, {"to", st.rename_text}});
+        }
+        st.renaming.clear();
+      }
+    }
+    else {
+      /* The one being edited, in Blender's list blue (the theme's selected rows are near the background). */
+      if (name == picked) {
+        dl->AddRectFilled(row, ImVec2(row.x + w, row.y + row_h - 2.0f), IM_COL32(0x33, 0x4d, 0x80, 255), 3.0f);
+      }
+      ImGui::SetNextItemAllowOverlap();
+      if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w - right_w, row_h - 2.0f)))
+      {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !name.empty() && by != ActionFrameBy::Bone) {
+          st.renaming = name;
+          st.rename_text = name;
+        }
+        else if (name != picked) {
+          operator_call(C, "anim.action_set", {layer_arg, {"name", name}});
+        }
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        const char *kind = name.empty()               ? "The bone layer's own animation: no action edited"
+                           : by == ActionFrameBy::Own  ? "An action. It plays at its Frame, keyable on the mainline"
+                           : by == ActionFrameBy::Bone ? "An action bone action: its bone's turn plays it. Its Frame "
+                                                         "turns the bone, and the bone holds the keys"
+                           : by == ActionFrameBy::Knob ? "A controller's action: its knob plays it. Its Frame moves the "
+                                                         "knob, and the knob holds the keys"
+                                                       : "A fix: it plays by itself as its action bones turn together";
+        ImGui::SetTooltip("%s\nClick to edit it in the timeline%s; right-click for more", kind,
+                          name.empty() || by == ActionFrameBy::Bone ? "" : ", double-click to rename");
+      }
+      if (!name.empty() && ImGui::BeginPopupContextItem("##action_menu")) {
+        ImGui::TextDisabled("%s", name.c_str());
+        ImGui::Separator();
+        if (by != ActionFrameBy::Bone && ImGui::MenuItem("Rename")) {
+          st.renaming = name;
+          st.rename_text = name;
+        }
+        if (ImGui::MenuItem("Delete")) {
+          doomed = name;
+        }
+        ImGui::EndPopup();
+      }
+      const bool muted = !name.empty() && action_muted(armature, name);
+      dl->AddText(ImVec2(text_x, row.y + style.FramePadding.y),
+                  ImGui::GetColorU32(muted ? ImGuiCol_TextDisabled : ImGuiCol_Text), name.empty() ? "Mainline" : name.c_str());
+    }
+    /* What kind it is: a dot for its own Frame, a dial for a bone, a box with its knob for a controller, a diamond
+     * for a fix; the mainline a line. */
+    const ImVec2 ic(icon_x + h * 0.3f, cy);
+    const float r = h * 0.22f;
+    if (name.empty()) {
+      dl->AddLine(ImVec2(ic.x - r, ic.y), ImVec2(ic.x + r, ic.y), icon_col, 1.5f);
+    }
+    else if (by == ActionFrameBy::Own) {
+      dl->AddCircleFilled(ic, r * 0.6f, icon_col);
+    }
+    else if (by == ActionFrameBy::Bone) {
+      dl->AddCircle(ic, r, linked_col, 0, 1.3f);
+      dl->AddLine(ic, ImVec2(ic.x + r * 0.7f, ic.y - r * 0.7f), linked_col, 1.3f);
+    }
+    else if (by == ActionFrameBy::Knob) {
+      dl->AddRect(ImVec2(ic.x - r, ic.y - r), ImVec2(ic.x + r, ic.y + r), linked_col, 0.0f, 0, 1.3f);
+      dl->AddCircleFilled(ic, r * 0.35f, linked_col);
+    }
+    else {
+      dl->AddQuad(ImVec2(ic.x, ic.y - r), ImVec2(ic.x + r, ic.y), ImVec2(ic.x, ic.y + r), ImVec2(ic.x - r, ic.y),
+                  ImGui::ColorConvertFloat4ToU32(ImGui::ColorConvertU32ToFloat4(UI_FIX_COLOR)), 1.3f);
+    }
+    if (!name.empty()) {
+      /* Its Frame, the key button, and whether it plays. */
+      ImGui::SameLine(w - right_w + style.ItemSpacing.x);
+      std::string path = action_frame_path(name);
+      if (holder) {
+        path = "bones[\"" + holder->name + "\"]." + (by == ActionFrameBy::Knob ? "position" : "angle");
+      }
+      const int state = by == ActionFrameBy::Fix ? 0 : layer_key_state(armature, {path}, doc.frame_current);
+      ImGui::SetNextItemWidth(frame_w);
+      if (by == ActionFrameBy::Fix) {
+        const std::string text = std::to_string(int(std::lround(action_frame_shown(armature, name) * 100.0f))) + "%";
+        ImGui::BeginDisabled();
+        ImGui::Button(text.c_str(), ImVec2(frame_w, 0.0f));
+        ImGui::EndDisabled();
+        tip("How much of the fix plays now: it follows its action bones");
+      }
+      else {
+        const int pushed = ui_key_tint_push(state);
+        float frame = action_frame_shown(armature, name);
+        ImGui::BeginDisabled(!frames_editable);
+        if (ui_drag_float("##frame", &frame, 0.1f, 0.0f, 100000.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp)) {
+          action_frame_set(armature, name, frame);
+        }
+        ImGui::EndDisabled();
+        ImGui::PopStyleColor(pushed);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          C.undo->push("Action Frame", doc);
+        }
+        tip(!doc.action.empty()         ? "Frames are set on the mainline"
+            : doc.frame_current == 0     ? "Nothing plays on frame 0, the setup pose: go to another frame"
+            : by == ActionFrameBy::Own   ? "The frame of it that plays (0: not playing). Key it to play it over time"
+            : by == ActionFrameBy::Bone  ? "Where its bone has it. Changing it turns the bone, which holds the keys"
+                                         : "Where its knob has it. Changing it moves the knob, which holds the keys");
+        ImGui::SameLine(0.0f, 2.0f);
+        ImGui::BeginDisabled(!frames_editable);
+        if (ui_key_button("##key", state)) {
+          operator_call(C, "anim.keyframe_toggle", {layer_arg, {"paths", path}});
+        }
+        ImGui::EndDisabled();
+      }
+      ImGui::SameLine(w - h + style.FramePadding.x);
+      bool plays = !action_muted(armature, name);
+      if (ImGui::Checkbox("##plays", &plays)) {
+        operator_call(C, "anim.action_play_set", {layer_arg, {"name", name}, {"mute", plays ? "0" : "1"}});
+      }
+      tip("Unchecked: muted, it doesn't play whatever its frame, its keys kept");
+    }
+    else {
+      ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    }
+    ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + row_h));
+    ImGui::PopID();
+  }
+  if (armature.actions.empty()) {
+    ImGui::TextDisabled("No actions yet: + adds one");
+  }
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::EndChild();
+  if (!doomed.empty()) {
+    operator_call(C, "anim.action_delete", {layer_arg, {"name", doomed}});
+    return;
+  }
+  const ImVec2 list_max = ImGui::GetItemRectMax();
+
+  /* Beside the list: +, -, the menu, and up and down. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x + list_w + style.ItemSpacing.x, list_min.y));
+  ImGui::BeginGroup();
+  if (ImGui::Button("+", ImVec2(h, h))) {
+    operator_call(C, "anim.action_new", {layer_arg});
+  }
+  tip("Add an action and start editing it");
+  ImGui::BeginDisabled(picked.empty());
+  if (ImGui::Button("-", ImVec2(h, h))) {
+    operator_call(C, "anim.action_delete", {layer_arg, {"name", picked}});
+  }
+  ImGui::EndDisabled();
+  tip(picked.empty() ? "The mainline can't be deleted" : "Delete the action being edited, with its keys");
+  ImGui::Dummy(ImVec2(h, 4.0f));
+  if (ImGui::ArrowButton("##specials", ImGuiDir_Down)) {
+    ImGui::OpenPopup("##action_specials");
+  }
+  if (ui_menu_begin("##action_specials")) {
+    if (ui_menu_item("New Fix for This Pose", nullptr, false, action_bone_actions_counting(armature).size() >= 2)) {
+      operator_call(C, "anim.fix_action_new");
+    }
+    if (ui_menu_item("Mirror Action Bone Actions")) {
+      operator_call(C, "armature.symmetrize", {{"action_bone_actions", "1"}});
+    }
+    ImGui::Separator();
+    if (ui_menu_item("Clear Frames", nullptr, false, frames_editable)) {
+      operator_call(C, "anim.action_frames_clear", {layer_arg});
+    }
+    ui_menu_end();
+  }
+  ImGui::Dummy(ImVec2(h, 4.0f));
+  ImGui::BeginDisabled(picked.empty());
+  if (ImGui::ArrowButton("##up", ImGuiDir_Up)) {
+    operator_call(C, "anim.action_move", {layer_arg, {"name", picked}, {"direction", "UP"}});
+  }
+  tip("Move it up: earlier actions win on a switch");
+  if (ImGui::ArrowButton("##down", ImGuiDir_Down)) {
+    operator_call(C, "anim.action_move", {layer_arg, {"name", picked}, {"direction", "DOWN"}});
+  }
+  tip("Move it down");
+  ImGui::EndDisabled();
+  ImGui::EndGroup();
+
+  /* Under the list: the filter toggle and the grip that sizes it. */
+  ImGui::SetCursorScreenPos(ImVec2(list_min.x, list_max.y + 1.0f));
+  if (ImGui::ArrowButton("##filter", st.filter_open ? ImGuiDir_Down : ImGuiDir_Right)) {
+    st.filter_open = !st.filter_open;
+  }
+  tip("Filter the list by name");
+  ImGui::SameLine();
+  const ImVec2 grip(list_min.x + list_w * 0.5f - h, ImGui::GetCursorScreenPos().y);
+  ImGui::SetCursorScreenPos(grip);
+  ImGui::InvisibleButton("##grip", ImVec2(h * 2.0f, h * 0.6f));
+  if (ImGui::IsItemActive()) {
+    st.rows = std::clamp(st.rows + ImGui::GetIO().MouseDelta.y / row_h, 2.0f, 30.0f);
+  }
+  if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+  }
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 2; j++) {
+      ImGui::GetWindowDrawList()->AddCircleFilled(
+          ImVec2(grip.x + h * 0.55f + float(i) * h * 0.3f, grip.y + h * 0.15f + float(j) * h * 0.25f), 1.2f,
+          IM_COL32(0xa0, 0xa0, 0xa0, 200));
+    }
+  }
+  if (st.filter_open) {
+    ImGui::SetNextItemWidth(list_w);
+    ImGui::InputTextWithHint("##filter_text", "Filter by name", &st.filter);
+  }
+
+  /* The action being edited: Loop, how long it is, what plays it. */
+  if (picked.empty()) {
+    ImGui::Spacing();
+    return;
+  }
+  const Bone *holder = nullptr;
+  const ActionFrameBy by = action_frame_by(armature, picked, &holder);
+  if (ImGui::BeginTable("##action_details", 2, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+    const auto label = [](const char *text) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(text);
+      ImGui::TableSetColumnIndex(1);
+    };
+    if (by == ActionFrameBy::Own || by == ActionFrameBy::Bone) {
+      label("Loop");
+      bool loops = action_loops(armature, picked);
+      if (ImGui::Checkbox("##loop", &loops)) {
+        /* Back to Auto when it matches what Auto gives. */
+        const bool automatic = action_bone_action_full_turn(armature, picked);
+        operator_call(C, "anim.action_play_set",
+                      {layer_arg, {"name", picked}, {"loop", loops == automatic ? "AUTO" : loops ? "ON" : "OFF"}});
+      }
+      tip(by == ActionFrameBy::Bone ? "Turned on past its last key it starts over. On by itself for a bone keyed exactly "
+                                      "a whole turn (a 360 dial)"
+                                    : "Past its last frame it starts over");
+    }
+    label("Length");
+    ImGui::Text("%d frames", int(std::lround(action_length(armature, picked, true))));
+    if (holder) {
+      label("Linked To");
+      if (ImGui::Button(holder->name.c_str(), ImVec2(-1, 0))) {
+        Bone &b = *bone_find(armature, holder->id);
+        if (!ImGui::GetIO().KeyShift) {
+          armature_deselect_all(armature);
+        }
+        bone_select(b, true);
+        armature.active_bone = b.id;
+        C.undo->push("Select Bone", doc);
+      }
+      tip(by == ActionFrameBy::Knob ? "The controller whose knob plays it, and holds its frames' keys: click to select it"
+                                    : "The bone whose turn plays it, and holds its frames' keys: click to select it");
+    }
+    ImGui::EndTable();
+  }
+  ImGui::Spacing();
 }
 
 /* The settings a look changes, as a list ("Fill Color, Line Width"). */
@@ -8732,7 +9223,12 @@ void properties_draw(Area &area, Context &C)
     }
     if (bones) {
       tabs.push_back({"Bone", TAB_BONE});
-      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
+      /* A controller rests where it is: there is nothing for them to act on. */
+      if (const Bone *shown = active_layer ? bone_find(*active_layer, active_layer->active_bone) : nullptr;
+          !shown || !bone_is_controller(*shown))
+      {
+        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
+      }
     }
     if (reference) {
       tabs.push_back({"Reference", TAB_REFERENCE});
@@ -8801,6 +9297,7 @@ void properties_draw(Area &area, Context &C)
         if (bones) {
           /* The skeleton as a whole: its collections, every bone, its fixes. */
           bone_collections_panel(C, *document_active_layer(*C.document));
+          actions_panel(C, *document_active_layer(*C.document));
           bones_panel(C, *document_active_layer(*C.document));
           fix_actions_panel(C, *document_active_layer(*C.document));
         }

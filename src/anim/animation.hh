@@ -29,6 +29,7 @@
 namespace oanim {
 
 struct Bone;
+struct ActionPlay;
 struct FixAction;
 struct FixPose;
 struct Document;
@@ -88,8 +89,37 @@ bool document_action_delete(Document &doc, uint64_t owner, const std::string &na
  * name plus " 2", for turning the other way). In it the bone's angle is keyed from its setup
  * angle onwards; elsewhere the bone's angle picks the matching frame of the action, and every
  * other channel the action keys gets that frame's change from frame 0 added on top. Several action bone
- * actions add together. Returns the driving bone, or null for an ordinary action. */
+ * actions add together. Returns the driving bone, or null for an ordinary action. A 2 Axis Controller's
+ * ordinary actions are played the same way, by its knob (anim/controller.hh), and it is what this returns. */
 const Bone *action_bone_of(const Layer &owner, const std::string &action);
+
+/* --- 2 Axis Controllers (anim/controller.hh) ------------------------------------------------------- */
+
+/* Where a controller's knob shows, in frames: where it is, or inside one of its own actions the frame shown on that
+ * side, and inside a fix the pose held. */
+float2 controller_knob_shown(const Document &doc, const Layer &owner, const Bone &knob);
+/* Where its actions are really playing, in frames: not the knob where something else turns its dials. */
+float2 controller_knob_playing(const Layer &owner, const Bone &knob);
+/* The poses of the fixes of its actions, in frames, as the box marks them. */
+std::vector<float2> controller_fix_poses(const Layer &owner, const Bone &knob);
+/* Whether a dial is held at rest because the knob is on the other side's. */
+bool controller_dial_held(const Layer &owner, const Bone &dial);
+/* What the sides' actions key, found again after keys change (Bone::controller_keys). */
+void controllers_update(Document &doc);
+/* Makes the bone a controller, or regular again, on the mainline. To a controller: its own action bone actions go into
+ * Right and Left, its angle keys becoming knob keys; any other position keys are read as frames. Back: they come out
+ * the same way, and linked dials get keys of their own. Returns anything the user should hear of. */
+std::string bone_convert_to_controller(Document &doc, uint64_t owner, uint64_t bone);
+std::string bone_convert_to_regular(Document &doc, uint64_t owner, uint64_t bone);
+/* Puts `action` in a side ("" empties it), from the mainline. An action bone action's dial is linked: its keys move to
+ * the knob. Keys there too on that axis are one too many: `keep` says whose ("THIS" or "OTHER"). False with why,
+ * nothing changed. `r_note`: anything the user should hear of. */
+bool controller_side_set(Document &doc, uint64_t owner, uint64_t knob, int side, const std::string &action,
+                         const std::string &keep, std::string *r_why, std::string *r_note);
+/* Whether `action` going in `side` needs `keep`. */
+bool controller_side_keys_clash(const Layer &owner, const Bone &knob, int side, const std::string &action);
+/* Before a controller goes: its dials get keys of their own that move them as the knob did. */
+void controller_release(Document &doc, uint64_t owner, uint64_t knob);
 /* What the action bone actions of bone layer `owner` add to its bones on `frame`, as apply_action_bone_actions plays
  * them on the frame shown: `bones` (owner's, in its order) hold the keyed values there, without action bone
  * actions, and get the action bone actions' amounts added. For working out other frames than the one shown
@@ -111,6 +141,31 @@ float action_bone_action_length(const Layer &owner, const std::string &name);
 /* A 360 action bone action (Moho's 360 action bone): its bone's last key is exactly one whole turn from the setup,
  * so the bone's turn counts round and round (modulo a turn). */
 bool action_bone_action_full_turn(const Layer &owner, const std::string &name);
+
+/* --- The Actions panel (ActionPlay, data/layer.hh): every action's Frame, Mute and Loop. ---------------------- */
+
+/* "actions[\"wave\"].frame": the channel of an action's own Frame. */
+std::string action_frame_path(const std::string &name);
+const ActionPlay *action_play_find(const Layer &owner, const std::string &name);
+ActionPlay *action_play_find(Layer &owner, const std::string &name);
+/* Made the first time any of it is set. */
+ActionPlay &action_play_ensure(Layer &owner, const std::string &name);
+/* What says an action's frame: its own Frame, a bone's turn (an action bone action), a knob (a controller's side,
+ * linked dials too: the knob holds the keys) or, for a fix, its drivers. `r_holder`: the bone or knob. */
+enum class ActionFrameBy { Own, Bone, Knob, Fix };
+ActionFrameBy action_frame_by(const Layer &owner, const std::string &name, const Bone **r_holder = nullptr);
+bool action_muted(const Layer &owner, const std::string &name);
+/* Whether it starts over past its last frame (ActionPlay::loop, Auto worked out). */
+bool action_loops(const Layer &owner, const std::string &name);
+/* Its last frame: its bone's or knob's for those, else the last key in it anywhere in the bone layer. `edited`: its
+ * keys are out in the channels. */
+float action_length(const Layer &owner, const std::string &name, bool edited = false);
+/* The frame it is at, as the panel shows it: its own Frame, or where its bone or knob has it (0: not playing). A fix
+ * shows how much of it plays (0 to 1). */
+float action_frame_shown(const Layer &owner, const std::string &name);
+/* Puts it at `frame` (0: not playing): its own Frame, or its bone turned or knob moved to there (keyed as edits are).
+ * False for a fix, or a bone with no keys yet to say how far. */
+bool action_frame_set(Layer &owner, const std::string &name, float frame);
 /* Turned less than this share of its length, an action bone action doesn't count toward a fix being made or
  * offered (a bone nudged by accident); fixes still play from any amount. */
 inline constexpr float FIX_COUNTS_FROM = 0.05f;

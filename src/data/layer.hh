@@ -587,6 +587,11 @@ inline constexpr int BONE_COLOR_CUSTOM = BONE_COLOR_THEME_SETS + 1;
  * and stretch too), only its overall size (Uniform), or none of it. */
 enum class InheritScale { Full, Uniform, None };
 
+/* What a bone is. A 2 Axis Controller is a joystick, not a bone (anim/controller.hh). */
+enum class BoneType : uint8_t { Regular, Controller2D };
+/* A 2 Axis Controller's sides, each with an action of its own. */
+enum ControllerSide { CONTROLLER_RIGHT, CONTROLLER_LEFT, CONTROLLER_UP, CONTROLLER_DOWN, CONTROLLER_SIDES };
+
 struct Bone {
   uint64_t id = 0;
   std::string name;
@@ -665,6 +670,15 @@ struct Bone {
   uint64_t shape_layer = 0;
   /* The bone collections it is in (their ids, in its bone layer). */
   std::vector<uint64_t> collections;
+  BoneType type = BoneType::Regular;
+  /* A 2 Axis Controller: each side's action by ControllerSide, "" for none (a side with none isn't there). */
+  std::array<std::string, CONTROLLER_SIDES> controller_actions;
+  /* How far one action frame is (bone layer units), the same either way: the box is its actions' frames times this, so
+   * its shape is how long they are. Fitted to the box's actions as they're picked, until it is set by hand. */
+  float controller_frame_size = 0.02f;
+  bool controller_size_auto = true;
+  /* The frames each side's action has keys on, sorted, its last one its length (worked out, never saved). */
+  std::array<std::vector<int>, CONTROLLER_SIDES> controller_keys;
   bool operator==(const Bone &) const = default;
 };
 
@@ -914,6 +928,23 @@ struct FixAction {
   bool operator==(const FixAction &) const = default;
 };
 
+/* How an action of a bone layer plays (the Armature tab's Actions panel, as Blender's Shape Keys). An action with no
+ * bone or knob of its own plays at its Frame, keyable here (0: not playing, as an action bone at rest); one with a
+ * bone or a knob shows theirs, the keys theirs. Made the first time any of it is set. */
+enum class ActionLoop : uint8_t { Auto, On, Off };
+struct ActionPlay {
+  std::string name;
+  float frame = 0.0f;
+  Channel<float> frame_keys;
+  /* Muted: it doesn't play, whatever its frame or bone says, its keys kept. */
+  bool mute = false;
+  /* Past its last frame it starts over (a bone turned on past its action's end plays it again). Auto: on for an action
+   * bone action that turns its bone a whole turn (Moho's 360 dial, also played from its end turned back past the
+   * setup), off for the rest. */
+  ActionLoop loop = ActionLoop::Auto;
+  bool operator==(const ActionPlay &) const = default;
+};
+
 /* A number that changes whenever what it is on may have changed (see document_touch_all): caches of what
  * is drawn of a layer (the renderer's, the overlays') keep it while the number stays. Not saved, and never
  * part of comparing (two layers alike are alike whatever their numbers). */
@@ -1069,6 +1100,8 @@ struct Layer {
   std::vector<std::string> actions;
   /* Bone layers: which of those actions are fix actions, and what drives them. */
   std::vector<FixAction> fix_actions;
+  /* Bone layers: how its actions play, those whose Frame, Mute or Loop has been set (see ActionPlay). */
+  std::vector<ActionPlay> action_plays;
   /* Bone layers, runtime: the frame the bones show (for constraints' delays) and where dynamics put
    * them on it, by bone id. */
   int pose_frame = 0;

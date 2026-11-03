@@ -9,6 +9,7 @@
 
 #include "anim/switch.hh"
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/keep_poses.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
@@ -735,11 +736,11 @@ void anim_operators_register()
       if (!owner) {
         return OpStatus::Cancelled;
       }
-      if (action_bone_of(*owner, name)) {
+      if (controller_dial_of_action(*owner, name)) {
         report(ReportType::Warning, "An action bone action is named after its bone: rename the bone");
         return OpStatus::Cancelled;
       }
-      if (to.empty() || action_bone_of(*owner, to)) {
+      if (to.empty() || controller_dial_of_action(*owner, to)) {
         report(ReportType::Warning, to.empty() ? "Give it a name" : "That name is a bone's: it would make an action bone action");
         return OpStatus::Cancelled;
       }
@@ -789,6 +790,107 @@ void anim_operators_register()
         animation_evaluate(doc, doc.frame_current);
       }
       return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_play_set";
+    ot.name = "Set Action";
+    ot.description = "How action `name` plays (the Actions panel; layer=id: that bone layer's): frame=N puts it at that "
+                     "frame (0: not playing), turning its bone or moving its knob for those; mute=1/0; "
+                     "loop=AUTO, ON or OFF";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string name = op_arg(C, "name");
+      Layer *owner = named_action_owner(C, name);
+      if (!owner || std::find(owner->actions.begin(), owner->actions.end(), name) == owner->actions.end()) {
+        report(ReportType::Warning, "No action named " + name);
+        return OpStatus::Cancelled;
+      }
+      if (op_has_arg(C, "loop")) {
+        const std::string loop = op_arg(C, "loop");
+        if (loop != "AUTO" && loop != "ON" && loop != "OFF") {
+          report(ReportType::Warning, "Loop is AUTO, ON or OFF");
+          return OpStatus::Cancelled;
+        }
+        action_play_ensure(*owner, name).loop = loop == "ON" ? ActionLoop::On : loop == "OFF" ? ActionLoop::Off : ActionLoop::Auto;
+      }
+      if (op_has_arg(C, "mute")) {
+        action_play_ensure(*owner, name).mute = op_arg_bool(C, "mute");
+      }
+      if (op_has_arg(C, "frame")) {
+        /* Frame 0 is the setup pose, where nothing plays. */
+        if (doc.frame_current == 0) {
+          report(ReportType::Warning, "Nothing plays on frame 0: set it on another frame");
+          return OpStatus::Cancelled;
+        }
+        const std::string text = op_arg(C, "frame");
+        char *end = nullptr;
+        const float frame = std::strtof(text.c_str(), &end);
+        if (text.empty() || *end != '\0' || !std::isfinite(frame)) {
+          report(ReportType::Warning, "Frame is a number");
+          return OpStatus::Cancelled;
+        }
+        if (!action_frame_set(*owner, name, frame)) {
+          report(ReportType::Warning, fix_action_find(*owner, name) ? "A fix plays as its drivers do"
+                                                                     : "Its bone has no keys in it yet to say how far");
+          return OpStatus::Cancelled;
+        }
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_move";
+    ot.name = "Move Action";
+    ot.description = "Move action `name` up or down the list (direction=UP or DOWN; layer=id: that bone layer's): earlier "
+                     "actions win on a switch";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      const std::string name = op_arg(C, "name");
+      Layer *owner = named_action_owner(C, name);
+      if (!owner) {
+        return OpStatus::Cancelled;
+      }
+      std::vector<std::string> &list = owner->actions;
+      const auto it = std::find(list.begin(), list.end(), name);
+      const bool up = op_arg(C, "direction", "UP") == "UP";
+      if (it == list.end() || (up ? it == list.begin() : it + 1 == list.end())) {
+        return OpStatus::Cancelled;
+      }
+      std::iter_swap(it, up ? it - 1 : it + 1);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.action_frames_clear";
+    ot.name = "Clear Frames";
+    ot.description = "Every action of the bone layer the active layer is in (or is; layer=id: that one) played at its own "
+                     "Frame back to 0 on this frame (the bones and knobs of the others are left as they are)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document && action_owner(*C.document, C.document->active_layer); };
+    ot.exec = [](Context &C) {
+      Layer *owner = op_has_arg(C, "layer") ? layer_find(*C.document, std::strtoull(op_arg(C, "layer").c_str(), nullptr, 10))
+                                            : action_owner(*C.document, C.document->active_layer);
+      if (!owner || C.document->frame_current == 0) {
+        return OpStatus::Cancelled;
+      }
+      bool any = false;
+      for (ActionPlay &a : owner->action_plays) {
+        if (action_frame_by(*owner, a.name) == ActionFrameBy::Own && a.frame != 0.0f) {
+          a.frame = 0.0f;
+          any = true;
+        }
+      }
+      return any ? OpStatus::Finished : OpStatus::Cancelled;
     };
     operators().add(std::move(ot));
   }

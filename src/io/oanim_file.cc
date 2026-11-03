@@ -21,6 +21,7 @@
 #include <miniz.h>
 #include <nlohmann/json.hpp>
 
+#include "anim/controller.hh"
 #include "anim/animation.hh"
 #include "data/material.hh"
 #include "core/log.hh"
@@ -828,6 +829,20 @@ static json layer_to_json(const Layer &layer)
       if (!b.collections.empty()) {
         bj["collections"] = b.collections;
       }
+      if (b.type == BoneType::Controller2D) {
+        bj["type"] = "CONTROLLER_2D";
+        json actions = json::object();
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          if (!b.controller_actions[side].empty()) {
+            actions[controller_side_id(side)] = b.controller_actions[side];
+          }
+        }
+        bj["controller_actions"] = std::move(actions);
+        bj["controller_frame_size"] = num(b.controller_frame_size);
+        if (!b.controller_size_auto) {
+          bj["controller_size_auto"] = false;
+        }
+      }
       if (!b.constraints.empty()) {
         json constraints = json::array();
         for (const BoneConstraint &c : b.constraints) {
@@ -933,6 +948,16 @@ static json layer_to_json(const Layer &layer)
         fixes.push_back({{"name", f.name}, {"drivers", f.drivers}, {"poses", poses}});
       }
       j["fix_actions"] = std::move(fixes);
+    }
+    if (!layer.action_plays.empty()) {
+      json plays = json::array();
+      for (const ActionPlay &a : layer.action_plays) {
+        json pj = {{"name", a.name}, {"frame", num(a.frame)}, {"mute", a.mute},
+                   {"loop", a.loop == ActionLoop::On ? "ON" : a.loop == ActionLoop::Off ? "OFF" : "AUTO"}};
+        put_keys(pj, "frame_keys", a.frame_keys);
+        plays.push_back(std::move(pj));
+      }
+      j["action_plays"] = std::move(plays);
     }
     j["next_bone_id"] = layer.next_bone_id;
     j["active_bone"] = layer.active_bone;
@@ -2313,6 +2338,20 @@ static Layer layer_from_json(const json &j, int depth)
       layer.fix_actions.push_back(std::move(f));
     }
   }
+  for (const json &pj : get_array(j, "action_plays")) {
+    const std::string name = pj.is_object() ? get_string(pj, "name") : std::string();
+    if (name.empty() || std::find(layer.actions.begin(), layer.actions.end(), name) == layer.actions.end()) {
+      continue;
+    }
+    ActionPlay a;
+    a.name = name;
+    a.frame = std::max(0.0f, get_float(pj, "frame", 0.0f));
+    a.mute = get_bool(pj, "mute", false);
+    const std::string loop = get_string(pj, "loop", "AUTO");
+    a.loop = loop == "ON" ? ActionLoop::On : loop == "OFF" ? ActionLoop::Off : ActionLoop::Auto;
+    get_keys(pj, "frame_keys", a.frame_keys);
+    layer.action_plays.push_back(std::move(a));
+  }
   for (const json &mj : get_array(j, "modifiers")) {
     if (!mj.is_object()) {
       continue;
@@ -2524,6 +2563,16 @@ static Layer layer_from_json(const json &j, int depth)
     b.shape = shape == "PIN" ? BoneShape::Pin : shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
     b.pin_size = std::clamp(get_float(bj, "pin_size", 1.0f), 0.1f, 20.0f);
     b.shape_layer = bj.value("shape_layer", uint64_t(0));
+    if (bj.value("type", std::string()) == "CONTROLLER_2D") {
+      b.type = BoneType::Controller2D;
+      if (const json actions = bj.value("controller_actions", json()); actions.is_object()) {
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          b.controller_actions[side] = actions.value(controller_side_id(side), std::string());
+        }
+      }
+      b.controller_frame_size = std::max(get_float(bj, "controller_frame_size", b.controller_frame_size), 1e-5f);
+      b.controller_size_auto = get_bool(bj, "controller_size_auto", true);
+    }
     for (const json &c : get_array(bj, "collections")) {
       if (c.is_number_unsigned()) {
         b.collections.push_back(c.get<uint64_t>());
