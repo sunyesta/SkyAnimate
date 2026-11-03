@@ -949,6 +949,16 @@ static json layer_to_json(const Layer &layer)
       }
       j["fix_actions"] = std::move(fixes);
     }
+    if (!layer.action_plays.empty()) {
+      json plays = json::array();
+      for (const ActionPlay &a : layer.action_plays) {
+        json pj = {{"name", a.name}, {"frame", num(a.frame)}, {"mute", a.mute},
+                   {"loop", a.loop == ActionLoop::On ? "ON" : a.loop == ActionLoop::Off ? "OFF" : "AUTO"}};
+        put_keys(pj, "frame_keys", a.frame_keys);
+        plays.push_back(std::move(pj));
+      }
+      j["action_plays"] = std::move(plays);
+    }
     j["next_bone_id"] = layer.next_bone_id;
     j["active_bone"] = layer.active_bone;
     if (!layer.bone_collections.empty()) {
@@ -2327,6 +2337,20 @@ static Layer layer_from_json(const json &j, int depth)
     if (!f.name.empty() && std::find(layer.actions.begin(), layer.actions.end(), f.name) != layer.actions.end()) {
       layer.fix_actions.push_back(std::move(f));
     }
+  }
+  for (const json &pj : get_array(j, "action_plays")) {
+    const std::string name = pj.is_object() ? get_string(pj, "name") : std::string();
+    if (name.empty() || std::find(layer.actions.begin(), layer.actions.end(), name) == layer.actions.end()) {
+      continue;
+    }
+    ActionPlay a;
+    a.name = name;
+    a.frame = std::max(0.0f, get_float(pj, "frame", 0.0f));
+    a.mute = get_bool(pj, "mute", false);
+    const std::string loop = get_string(pj, "loop", "AUTO");
+    a.loop = loop == "ON" ? ActionLoop::On : loop == "OFF" ? ActionLoop::Off : ActionLoop::Auto;
+    get_keys(pj, "frame_keys", a.frame_keys);
+    layer.action_plays.push_back(std::move(a));
   }
   for (const json &mj : get_array(j, "modifiers")) {
     if (!mj.is_object()) {

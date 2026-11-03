@@ -42,6 +42,9 @@ template<bool sync = true, typename F> static void layer_for_each_channel(Layer 
   for (CustomChannel &c : layer.custom_channels) {
     f(c.keys, c.value);
   }
+  for (ActionPlay &a : layer.action_plays) {
+    f(a.frame_keys, a.frame);
+  }
   /* Visibility is a stepped number beside the plain `visible` flag. */
   if constexpr (sync) {
     layer.visible_value = layer.visible ? 1.0f : 0.0f;
@@ -1121,6 +1124,7 @@ bool document_action_delete(Document &doc, uint64_t owner_id, const std::string 
   }
   std::erase(owner->actions, name);
   std::erase_if(owner->fix_actions, [&](const FixAction &f) { return f.name == name; });
+  std::erase_if(owner->action_plays, [&](const ActionPlay &a) { return a.name == name; });
   for (Bone &bone : owner->bones) {
     std::replace(bone.controller_actions.begin(), bone.controller_actions.end(), name, std::string());
   }
@@ -1240,10 +1244,15 @@ static bool action_bone_keys_full_turn(const std::vector<Key<float>> &keys)
   return !keys.empty() && std::fabs(std::fabs(keys.back().value) - 2.0f * PI) < 0.1f * PI / 180.0f;
 }
 
-static float action_bone_turn_wrapped(const std::vector<Key<float>> &keys, float turn)
+static float action_bone_turn_wrapped(const std::vector<Key<float>> &keys, float turn, bool loops)
 {
-  if (!action_bone_keys_full_turn(keys)) {
+  if (!loops || keys.empty() || std::fabs(keys.back().value) < 1e-6f) {
     return turn;
+  }
+  if (!action_bone_keys_full_turn(keys)) {
+    /* Looped by hand: turned on past its end it starts over, never 0 (the end pose, not the setup). */
+    const float along = turn / keys.back().value;
+    return along <= 1.0f ? turn : turn - keys.back().value * std::ceil(along - 1.0f);
   }
   const float full = 2.0f * PI;
   /* Into [0, a turn) for an action keyed the positive way, (-a turn, 0] for one keyed the other. */
@@ -1264,12 +1273,13 @@ bool action_bone_action_full_turn(const Layer &owner, const std::string &name)
  * controller's for where its knob is in `knobs` (frames). */
 static std::vector<std::pair<std::string, float>> action_bone_frames_for(const Layer &owner,
                                                                          const std::vector<float> &turns,
-                                                                         const std::vector<float2> &knobs)
+                                                                         const std::vector<float2> &knobs,
+                                                                         bool with_muted = false)
 {
   std::vector<std::pair<std::string, float>> frames;
   for (const std::string &name : owner.actions) {
     const Bone *driver = action_bone_of(owner, name);
-    if (!driver) {
+    if (!driver || (!with_muted && action_muted(owner, name))) {
       continue;
     }
     if (bone_is_controller(*driver)) {
@@ -1304,7 +1314,8 @@ static std::vector<std::pair<std::string, float>> action_bone_frames_for(const L
     }
     /* The driving bone's keys are its Angle (the turn from its setup pose), so its action starts at
      * 0 and the bone's turn now picks the frame; turning an unkeyed bone plays it at once. */
-    const float t = action_bone_frame(it->second, 0.0f, action_bone_turn_wrapped(it->second, turn));
+    const float t = action_bone_frame(it->second, 0.0f,
+                                      action_bone_turn_wrapped(it->second, turn, action_loops(owner, name)));
     if (t > 0.0f) {
       frames.push_back({name, t});
     }
@@ -1327,6 +1338,16 @@ std::vector<std::pair<std::string, float>> action_bone_actions_playing(const Lay
  * still. */
 static bool action_bone_action_turns(const Layer &owner, const std::string &by, const std::string &name)
 {
+  /* An action played at its own Frame: `by` keys that Frame (one action playing another). */
+  if (by != name && action_frame_by(owner, name) == ActionFrameBy::Own) {
+    const ActionPlay *a = action_play_find(owner, name);
+    if (!a) {
+      return false;
+    }
+    const auto it = a->frame_keys.actions.find(by);
+    return it != a->frame_keys.actions.end() &&
+           std::any_of(it->second.begin(), it->second.end(), [](const Key<float> &k) { return std::abs(k.value) > 1e-6f; });
+  }
   const Bone *bone = action_bone_of(owner, name);
   if (!bone || by == name) {
     return false;
@@ -1411,6 +1432,179 @@ float action_bone_action_length(const Layer &owner, const std::string &name)
   }
   /* Being edited: its keys are the bone's own. */
   return driver->angle_keys.keys.empty() ? 0.0f : float(driver->angle_keys.keys.back().frame);
+}
+
+/* --- The Actions panel ------------------------------------------------------------------------------------------ */
+
+std::string action_frame_path(const std::string &name)
+{
+  return "actions[\"" + name + "\"].frame";
+}
+
+const ActionPlay *action_play_find(const Layer &owner, const std::string &name)
+{
+  for (const ActionPlay &a : owner.action_plays) {
+    if (a.name == name) {
+      return &a;
+    }
+  }
+  return nullptr;
+}
+
+ActionPlay *action_play_find(Layer &owner, const std::string &name)
+{
+  return const_cast<ActionPlay *>(action_play_find(std::as_const(owner), name));
+}
+
+ActionPlay &action_play_ensure(Layer &owner, const std::string &name)
+{
+  if (ActionPlay *a = action_play_find(owner, name)) {
+    return *a;
+  }
+  ActionPlay &a = owner.action_plays.emplace_back();
+  a.name = name;
+  /* At rest until now: setting its Frame is an edit to record (a key with auto-keying), not new data. */
+  a.frame_keys.last = 0.0f;
+  a.frame_keys.has_last = true;
+  return a;
+}
+
+ActionFrameBy action_frame_by(const Layer &owner, const std::string &name, const Bone **r_holder)
+{
+  const Bone *holder = nullptr;
+  ActionFrameBy by = ActionFrameBy::Own;
+  if (fix_action_find(owner, name)) {
+    by = ActionFrameBy::Fix;
+  }
+  else if ((holder = controller_of_action(owner, name))) {
+    by = ActionFrameBy::Knob;
+  }
+  else if ((holder = controller_dial_of_action(owner, name))) {
+    by = ActionFrameBy::Bone;
+  }
+  if (r_holder) {
+    *r_holder = holder;
+  }
+  return by;
+}
+
+bool action_muted(const Layer &owner, const std::string &name)
+{
+  const ActionPlay *a = action_play_find(owner, name);
+  return a && a->mute;
+}
+
+bool action_loops(const Layer &owner, const std::string &name)
+{
+  if (const ActionPlay *a = action_play_find(owner, name); a && a->loop != ActionLoop::Auto) {
+    return a->loop == ActionLoop::On;
+  }
+  return action_bone_action_full_turn(owner, name);
+}
+
+float action_length(const Layer &owner, const std::string &name, bool edited)
+{
+  if (const ActionFrameBy by = action_frame_by(owner, name); by == ActionFrameBy::Bone || by == ActionFrameBy::Knob) {
+    return action_bone_action_length(owner, name);
+  }
+  int last = 0;
+  owner_for_each_channel(const_cast<Layer &>(owner), [&](auto &ch, auto & /*value*/) {
+    if (edited) {
+      last = ch.keys.empty() ? last : std::max(last, ch.keys.back().frame);
+    }
+    else if (const auto it = ch.actions.find(name); it != ch.actions.end() && !it->second.empty()) {
+      last = std::max(last, it->second.back().frame);
+    }
+  });
+  return float(last);
+}
+
+/* The frame of its action an own Frame plays: past the end the last frame, or looped round (never 0, the end pose). */
+static float action_own_frame(float frame, float length, bool loops)
+{
+  if (frame <= 0.0f || length <= 0.0f) {
+    return std::max(frame, 0.0f);
+  }
+  return !loops ? std::min(frame, length) : frame - length * std::ceil(frame / length - 1.0f);
+}
+
+/* The actions playing at their own Frame, as action_bone_frames_for gives action bone actions: `at` a frame to work
+ * their Frame out on (dynamics), -1 for the value it has now. */
+static void action_own_frames(const Layer &owner, int at, std::vector<std::pair<std::string, float>> &r_frames)
+{
+  for (const ActionPlay &a : owner.action_plays) {
+    if (a.mute || action_frame_by(owner, a.name) != ActionFrameBy::Own ||
+        std::find(owner.actions.begin(), owner.actions.end(), a.name) == owner.actions.end())
+    {
+      continue;
+    }
+    const float frame = at >= 0 && a.frame_keys.animated() ? a.frame_keys.evaluate(at) : a.frame;
+    if (frame > 0.0f) {
+      r_frames.push_back({a.name, action_own_frame(frame, action_length(owner, a.name), action_loops(owner, a.name))});
+    }
+  }
+}
+
+float action_frame_shown(const Layer &owner, const std::string &name)
+{
+  switch (action_frame_by(owner, name)) {
+    case ActionFrameBy::Own: {
+      const ActionPlay *a = action_play_find(owner, name);
+      return a ? a->frame : 0.0f;
+    }
+    case ActionFrameBy::Fix:
+      return fix_action_strength(owner, *fix_action_find(owner, name), action_bone_actions_playing(owner));
+    default: {
+      /* Where its bone or knob has it, muted or not. */
+      std::vector<float> turns;
+      std::vector<float2> knobs;
+      for (const Bone &b : owner.bones) {
+        turns.push_back(b.angle - b.setup_angle);
+        knobs.push_back(controller_knob(b));
+      }
+      for (const auto &[n, t] : action_bone_frames_for(owner, turns, knobs, true)) {
+        if (n == name) {
+          return t;
+        }
+      }
+      return 0.0f;
+    }
+  }
+}
+
+bool action_frame_set(Layer &owner, const std::string &name, float frame)
+{
+  frame = std::max(frame, 0.0f);
+  const Bone *holder = nullptr;
+  switch (action_frame_by(owner, name, &holder)) {
+    case ActionFrameBy::Fix:
+      return false;
+    case ActionFrameBy::Own:
+      action_play_ensure(owner, name).frame = frame;
+      return true;
+    case ActionFrameBy::Knob: {
+      /* Along its side, the other axis left where it is (the knob keeps inside its box). */
+      Bone &knob = const_cast<Bone &>(*holder);
+      int side = 0;
+      controller_of_action(owner, name, &side);
+      float2 at = controller_knob(knob);
+      (controller_side_axis(side) == 0 ? at.x : at.y) = frame * controller_side_sign(side);
+      controller_knob_set(knob, at);
+      return true;
+    }
+    case ActionFrameBy::Bone: {
+      /* The turn its keys have on that frame. */
+      Bone &bone = const_cast<Bone &>(*holder);
+      const auto it = bone.angle_keys.actions.find(name);
+      if (it == bone.angle_keys.actions.end() || it->second.empty()) {
+        return false;
+      }
+      const float t = action_own_frame(frame, float(it->second.back().frame), action_loops(owner, name));
+      bone.angle = bone.setup_angle + action_bone_sample(it->second, 0.0f, t);
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<std::pair<std::string, float>> action_bone_actions_counting(const Layer &owner)
@@ -1923,6 +2117,9 @@ bool document_action_rename(Document &doc, uint64_t owner_id, const std::string 
   for (Bone &bone : owner->bones) {
     std::replace(bone.controller_actions.begin(), bone.controller_actions.end(), from, to);
   }
+  for (ActionPlay &a : owner->action_plays) {
+    a.name = a.name == from ? to : a.name;
+  }
   owner_for_each_channel(*owner, [&](auto &ch, auto & /*value*/) {
     if (auto it = ch.actions.find(from); it != ch.actions.end()) {
       auto keys = std::move(it->second);
@@ -1951,6 +2148,9 @@ bool document_action_rename(Document &doc, uint64_t owner_id, const std::string 
     {
       const std::string old = f.name;
       std::replace(owner->actions.begin(), owner->actions.end(), old, renamed);
+      for (ActionPlay &a : owner->action_plays) {
+        a.name = a.name == old ? renamed : a.name;
+      }
       owner_for_each_channel(*owner, [&](auto &ch, auto & /*value*/) {
         if (auto it = ch.actions.find(old); it != ch.actions.end()) {
           auto keys = std::move(it->second);
@@ -2005,12 +2205,15 @@ void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone>
       turns.push_back(bones[i].angle - owner.bones[i].setup_angle);
       knobs.push_back(bone_transform_from_position(owner.bones[i], bones[i].position));
     }
-    return action_bone_frames_for(owner, turns, knobs);
+    std::vector<std::pair<std::string, float>> now = action_bone_frames_for(owner, turns, knobs);
+    action_own_frames(owner, frame, now);
+    return now;
   };
   const auto setup_of = [](const auto &ch, const auto &value) { return channel_setup(ch, value); };
   const std::vector<std::pair<std::string, float>> frames =
       action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
-    const Channel<float> *driver = &action_bone_of(owner, name)->angle_keys;
+    const Bone *by = action_bone_of(owner, name);
+    const Channel<float> *driver = by ? &by->angle_keys : nullptr;
     for (size_t j = 0; j < bones.size(); j++) {
       const Bone &src = owner.bones[j];
       Bone &b = bones[j];
@@ -2032,11 +2235,13 @@ void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone>
   });
   std::set<const void *> driving;
   for (const auto &[name, t] : frames) {
-    driving.insert(&action_bone_of(owner, name)->angle_keys);
+    if (const Bone *by = action_bone_of(owner, name)) {
+      driving.insert(&by->angle_keys);
+    }
   }
   /* The fixes after them, as their drivers play together (never turning an action bone). */
   for (const FixAction &fix : owner.fix_actions) {
-    if (!fix_action_broken(owner, fix).empty()) {
+    if (!fix_action_broken(owner, fix).empty() || action_muted(owner, fix.name)) {
       continue;
     }
     const FixMix mix = fix_action_mix(owner, fix, frames);
@@ -2073,6 +2278,9 @@ void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone>
 static bool has_action_bone_actions(const Document &doc)
 {
   for (const Layer *layer : document_layers_flat(doc)) {
+    if (layer->is_bone_layer() && !layer->action_plays.empty() && !layer->actions.empty()) {
+      return true;
+    }
     for (const std::string &name : layer->actions) {
       if (layer->is_bone_layer() && action_bone_of(*layer, name)) {
         return true;
@@ -2200,7 +2408,9 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
     }
     const auto playing_now = [&] {
       std::vector<std::pair<std::string, float>> now;
-      for (const auto &[name, t] : action_bone_actions_playing(owner)) {
+      std::vector<std::pair<std::string, float>> all = action_bone_actions_playing(owner);
+      action_own_frames(owner, -1, all);
+      for (const auto &[name, t] : all) {
         if (!(name == doc.action && owner.id == doc.action_layer)) {
           now.push_back({name, t});
         }
@@ -2302,7 +2512,8 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
       }
       /* An action bone action never moves its own bone (the bone picks its frame), unless held for a fix. */
       frames = action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
-        play(name, t, static_cast<const void *>(&action_bone_of(owner, name)->angle_keys), false);
+        const Bone *by = action_bone_of(owner, name);
+        play(name, t, by ? static_cast<const void *>(&by->angle_keys) : nullptr, false);
         for (auto &[knob, dial, was] : given) {
           const float now = controller_dial_turn(owner, *knob, *dial, controller_knob(*knob));
           if (now != was) {
@@ -2330,7 +2541,7 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
     };
     for (const FixAction &fix : owner.fix_actions) {
       if ((fix.name == doc.action && owner.id == doc.action_layer) || !fix_action_broken(owner, fix).empty() ||
-          (fixing && !inside_edited(fix)))
+          action_muted(owner, fix.name) || (fixing && !inside_edited(fix)))
       {
         continue;
       }
@@ -2373,7 +2584,7 @@ static const std::vector<Key<float>> &controller_side_curve(const Bone &dial, co
 static float controller_frame_of_turn(const Bone &dial, const std::string &action, float turn)
 {
   const std::vector<Key<float>> &curve = controller_side_curve(dial, action);
-  return action_bone_frame(curve, 0.0f, action_bone_turn_wrapped(curve, turn));
+  return action_bone_frame(curve, 0.0f, action_bone_turn_wrapped(curve, turn, action_bone_keys_full_turn(curve)));
 }
 
 static float controller_dial_turn(const Layer &owner, const Bone &knob, const Bone &dial, float2 at)
@@ -2820,7 +3031,8 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
       const auto it = bone->angle_keys.actions.find(action);
       return it == bone->angle_keys.actions.end()
                  ? 0.0f
-                 : action_bone_frame(it->second, 0.0f, action_bone_turn_wrapped(it->second, turn));
+                 : action_bone_frame(it->second, 0.0f,
+                                     action_bone_turn_wrapped(it->second, turn, action_bone_keys_full_turn(it->second)));
     };
     controller_keys_copy(angle_keys, bone->position_keys, [&](int, float turn) {
       const float right = frame_of(own[0], turn);
@@ -3092,6 +3304,9 @@ std::vector<ChannelRef> layer_channels(Layer &layer, bool drawing)
   }
   for (CustomChannel &c : layer.custom_channels) {
     add(c.path, c.keys, c.value);
+  }
+  for (ActionPlay &a : layer.action_plays) {
+    add(action_frame_path(a.name), a.frame_keys, a.frame);
   }
   /* A mask row's End Lines at Edge Reach. */
   for (size_t i = 0; i < layer.masks.size(); i++) {

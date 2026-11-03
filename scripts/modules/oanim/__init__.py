@@ -349,9 +349,14 @@ class _Layer:
 
     @property
     def actions(self):
-        """A bone layer's actions: [{"name", "kind": "ACTION", "ACTION_BONE" or "FIX", "full_turn": a 360 action bone action
-        (its bone keyed exactly a whole turn, so it goes round and round)}]. Make them with
-        oanim.ops.anim.action_new / fix_action_new, edit one with action_set, rename with action_rename."""
+        """A bone layer's actions, in order (the Armature tab's Actions panel): [{"name", "kind": "ACTION", "ACTION_BONE"
+        or "FIX", "full_turn": a 360 action bone action (its bone keyed exactly a whole turn, so it goes round and
+        round), "frame_by": what says its frame ("OWN": its own keyable Frame, channel 'actions["name"].frame';
+        "BONE" or "KNOB": that bone's turn or knob; "FIX": its drivers), "holder" (that bone's name, or ""), "frame"
+        (the frame it is at, 0 not playing; a fix: how much of it plays, 0-1), "mute", "loop" ("AUTO", "ON" or "OFF"),
+        "loops" (what Auto comes to), "length" (its last frame)}]. Make them with oanim.ops.anim.action_new /
+        fix_action_new, edit one with action_set, rename with action_rename, set how one plays with
+        action_play_set(name=, frame=, mute=, loop=), reorder with action_move."""
         return [dict(a) for a in _oanim.layer_actions(self._id)]
 
     @property

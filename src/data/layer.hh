@@ -928,6 +928,23 @@ struct FixAction {
   bool operator==(const FixAction &) const = default;
 };
 
+/* How an action of a bone layer plays (the Armature tab's Actions panel, as Blender's Shape Keys). An action with no
+ * bone or knob of its own plays at its Frame, keyable here (0: not playing, as an action bone at rest); one with a
+ * bone or a knob shows theirs, the keys theirs. Made the first time any of it is set. */
+enum class ActionLoop : uint8_t { Auto, On, Off };
+struct ActionPlay {
+  std::string name;
+  float frame = 0.0f;
+  Channel<float> frame_keys;
+  /* Muted: it doesn't play, whatever its frame or bone says, its keys kept. */
+  bool mute = false;
+  /* Past its last frame it starts over (a bone turned on past its action's end plays it again). Auto: on for an action
+   * bone action that turns its bone a whole turn (Moho's 360 dial, also played from its end turned back past the
+   * setup), off for the rest. */
+  ActionLoop loop = ActionLoop::Auto;
+  bool operator==(const ActionPlay &) const = default;
+};
+
 /* A number that changes whenever what it is on may have changed (see document_touch_all): caches of what
  * is drawn of a layer (the renderer's, the overlays') keep it while the number stays. Not saved, and never
  * part of comparing (two layers alike are alike whatever their numbers). */
@@ -1083,6 +1100,8 @@ struct Layer {
   std::vector<std::string> actions;
   /* Bone layers: which of those actions are fix actions, and what drives them. */
   std::vector<FixAction> fix_actions;
+  /* Bone layers: how its actions play, those whose Frame, Mute or Loop has been set (see ActionPlay). */
+  std::vector<ActionPlay> action_plays;
   /* Bone layers, runtime: the frame the bones show (for constraints' delays) and where dynamics put
    * them on it, by bone id. */
   int pose_frame = 0;

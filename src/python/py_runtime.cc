@@ -3950,6 +3950,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["name"] = name;
       d["kind"] = action_bone_of(layer, name) ? "ACTION_BONE" : fix_action_find(layer, name) ? "FIX" : "ACTION";
       d["full_turn"] = action_bone_action_full_turn(layer, name);
+      const Bone *holder = nullptr;
+      const ActionFrameBy by = action_frame_by(layer, name, &holder);
+      d["frame_by"] = by == ActionFrameBy::Own ? "OWN" : by == ActionFrameBy::Bone ? "BONE" : by == ActionFrameBy::Knob ? "KNOB" : "FIX";
+      d["holder"] = holder ? holder->name : std::string();
+      d["frame"] = action_frame_shown(layer, name);
+      const ActionPlay *play = action_play_find(layer, name);
+      d["mute"] = action_muted(layer, name);
+      d["loop"] = !play || play->loop == ActionLoop::Auto ? "AUTO" : play->loop == ActionLoop::On ? "ON" : "OFF";
+      d["loops"] = action_loops(layer, name);
+      const Document &doc = *current_context().document;
+      d["length"] = action_length(layer, name, doc.action == name && doc.action_layer == layer.id);
       out.append(d);
     }
     return out;

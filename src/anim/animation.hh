@@ -29,6 +29,7 @@
 namespace oanim {
 
 struct Bone;
+struct ActionPlay;
 struct FixAction;
 struct FixPose;
 struct Document;
@@ -140,6 +141,31 @@ float action_bone_action_length(const Layer &owner, const std::string &name);
 /* A 360 action bone action (Moho's 360 action bone): its bone's last key is exactly one whole turn from the setup,
  * so the bone's turn counts round and round (modulo a turn). */
 bool action_bone_action_full_turn(const Layer &owner, const std::string &name);
+
+/* --- The Actions panel (ActionPlay, data/layer.hh): every action's Frame, Mute and Loop. ---------------------- */
+
+/* "actions[\"wave\"].frame": the channel of an action's own Frame. */
+std::string action_frame_path(const std::string &name);
+const ActionPlay *action_play_find(const Layer &owner, const std::string &name);
+ActionPlay *action_play_find(Layer &owner, const std::string &name);
+/* Made the first time any of it is set. */
+ActionPlay &action_play_ensure(Layer &owner, const std::string &name);
+/* What says an action's frame: its own Frame, a bone's turn (an action bone action), a knob (a controller's side,
+ * linked dials too: the knob holds the keys) or, for a fix, its drivers. `r_holder`: the bone or knob. */
+enum class ActionFrameBy { Own, Bone, Knob, Fix };
+ActionFrameBy action_frame_by(const Layer &owner, const std::string &name, const Bone **r_holder = nullptr);
+bool action_muted(const Layer &owner, const std::string &name);
+/* Whether it starts over past its last frame (ActionPlay::loop, Auto worked out). */
+bool action_loops(const Layer &owner, const std::string &name);
+/* Its last frame: its bone's or knob's for those, else the last key in it anywhere in the bone layer. `edited`: its
+ * keys are out in the channels. */
+float action_length(const Layer &owner, const std::string &name, bool edited = false);
+/* The frame it is at, as the panel shows it: its own Frame, or where its bone or knob has it (0: not playing). A fix
+ * shows how much of it plays (0 to 1). */
+float action_frame_shown(const Layer &owner, const std::string &name);
+/* Puts it at `frame` (0: not playing): its own Frame, or its bone turned or knob moved to there (keyed as edits are).
+ * False for a fix, or a bone with no keys yet to say how far. */
+bool action_frame_set(Layer &owner, const std::string &name, float frame);
 /* Turned less than this share of its length, an action bone action doesn't count toward a fix being made or
  * offered (a bone nudged by accident); fixes still play from any amount. */
 inline constexpr float FIX_COUNTS_FROM = 0.05f;
