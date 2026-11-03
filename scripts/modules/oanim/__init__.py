@@ -590,6 +590,24 @@ class _Layer:
         reset=True first fills its Custom group with the automatic weights (Reset to Automatic)."""
         return _oanim.layer_deform_weights(self._id, index, reset)
 
+    def deform_range_view(self, index):
+        """What Cage Deform `index`'s Range reaches, as the viewport tints it while its slider is dragged: places
+        [(x, y, say)] where they show now, say 1 at the cage's outline and 0 at the limit, and how many quads join them
+        and how many lines draw the limit. None if it isn't an Envelope."""
+        return _oanim.layer_deform_range_view(self._id, index, "RANGE")
+
+    def deform_blend_view(self, index):
+        """Where Cage Deform `index`'s Blend matters, as the viewport tints it while its slider is dragged: places
+        [(x, y, say)] where they show now, say 1 where two sides share a place evenly and 0 where one leads alone, and
+        how many quads join them (and 0). None if it isn't an Envelope."""
+        return _oanim.layer_deform_range_view(self._id, index, "BLEND")
+
+    def deform_falloff_view(self, index):
+        """Where Mesh Deform `index`'s lines share what is in the mesh (Points), as the viewport tints it while Falloff
+        is dragged: places [(x, y, say)] over the mesh's cells where they show now, say 1 where two lines share a place
+        evenly and 0 where one leads alone, how many quads join them, and 0. None if it isn't Points."""
+        return _oanim.layer_deform_range_view(self._id, index, "FALLOFF")
+
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
         shapes [(name, closed, connected, merged, area, fill)]): merged, what another layer's Boolean

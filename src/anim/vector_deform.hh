@@ -44,6 +44,10 @@ const char *deform_kind_name(DeformKind kind);
 
 /* What `m`'s shape is (None: no such layer or shape, or it is on `layer` itself). */
 DeformKind vector_deform_kind(const Document &doc, const Layer &layer, const Modifier &m);
+/* Whether a Mesh Deform using Points has few points on its shape for its size on the setup frame (a side longer than
+ * half its width or height, its layer's own Resample counted): each side is a bone then, and what is near it follows
+ * the whole side. The Properties editor suggests a Resample on the shape's layer. */
+bool vector_deform_sparse(const Document &doc, const Layer &layer, const Modifier &m);
 /* Whether it deforms by a grid drawn as one, what Smooth works on (not a mesh of cells drawn by hand). */
 bool vector_deform_drawn_grid(const Document &doc, const Layer &layer, const Modifier &m);
 /* Whether `m`'s shape is one line or loop (no grid, no branches): what a Curve Deform's Part is a stretch of. */
@@ -52,7 +56,7 @@ bool vector_deform_takes_part(const Document &doc, const Modifier &m);
  * a whole loop. False, `m` as it was, if they don't. */
 bool vector_deform_part_from_selection(Document &doc, Modifier &m);
 /* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
- * four-sided shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
+ * shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);
 /* After opening a file of the single Vector Deform modifier of before: each becomes the deform its shape fits
  * (its default name with it). */
@@ -66,6 +70,24 @@ struct DeformShape;
 std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, const Layer &layer, const Modifier &m);
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
+
+/* What an Envelope's Range reaches, in `layer`'s space where it shows now: lines running in from the cage's outline,
+ * each place with how much say the sides have there (1 at the outline, 0 at the limit); `quads` joins them. A place in
+ * `limit` is where a line got as far as the limit, so the limit is drawn from one to the next. */
+struct DeformRangeView {
+  std::vector<float2> at;
+  std::vector<float> say;
+  std::vector<std::array<int, 4>> quads;
+  std::vector<std::array<int, 2>> limit;
+};
+bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
+/* Where an Envelope's Blend matters, the same way (no `limit`): `say` is how evenly the sides share each place, 1 where
+ * two have an even say, 0 where one leads alone, faded as the sides' say fades inside the cage. Lines run in until
+ * another side is nearer, so they meet where sides hand over. */
+bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
+/* Mesh Deform's Points, the same way: places over the mesh's cells, `say` how evenly its lines share each (1 where two
+ * have an even say, 0 where one leads alone). The wider Falloff, the further they share. */
+bool vector_deform_falloff_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
 
 /* `m`'s shape at rest and now, in `layer`'s space, as its build reads it: to read a point of the shape by. False with
  * nothing to read. */

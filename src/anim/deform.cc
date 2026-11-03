@@ -975,7 +975,8 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
       drawing = drawing_bevel(drawing, m);
     }
     else if (modifier_on(m, render) && m.type == ModifierType::Resample) {
-      drawing = drawing_subdivide(drawing, m, render);
+      /* Kept: each deform bending by this layer's shape reads its setup on every update. */
+      drawing = drawing_subdivide_kept(layer.id, m.name + "\tsetup", std::move(drawing), m, render);
     }
   }
   drawing_detail_final_handles(drawing);

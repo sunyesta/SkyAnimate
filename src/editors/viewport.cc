@@ -12817,6 +12817,58 @@ static uint64_t follow_pick_points(const Document &doc, const ViewMapping &view,
   return under;
 }
 
+/* Envelope's Range slider, while dragged: a tint over what it reaches, strongest at the cage's outline, and a thin line
+ * at the limit. Its Blend slider: a violet tint where the sides share, so where Blend changes anything shows even on
+ * the setup frame, where nothing bends. A Points mesh's Falloff and Blend: violet where its lines share. */
+static void draw_deform_range(ImDrawList *dl, Context &C, const ViewMapping &view)
+{
+  const WindowManager::DeformRangePreview &preview = C.wm->deform_range_preview;
+  if (preview.frame < ImGui::GetFrameCount() - 1) {
+    return;
+  }
+  const Document &doc = *C.document;
+  const Layer *layer = layer_find(doc, preview.layer);
+  if (!layer || preview.modifier < 0 || preview.modifier >= int(layer->modifiers.size())) {
+    return;
+  }
+  using What = WindowManager::DeformRangePreview::What;
+  const Modifier &m = layer->modifiers[size_t(preview.modifier)];
+  DeformRangeView range;
+  /* Blend on a Points mesh shows where its lines share, as Falloff does. */
+  const bool lines = preview.what == What::Falloff ||
+                     (preview.what == What::Blend && m.type == ModifierType::MeshDeform);
+  if (!(lines                         ? vector_deform_falloff_view(doc, *layer, m, range) :
+        preview.what == What::Blend ? vector_deform_blend_view(doc, *layer, m, range) :
+                                      vector_deform_range_view(doc, *layer, m, range)))
+  {
+    return;
+  }
+  const bool range_tint = preview.what == What::Range;
+  const ImU32 tint = range_tint ? IM_COL32(0xff, 0x8a, 0x20, 0) : IM_COL32(0xb0, 0x70, 0xff, 0);
+  const float strongest = range_tint ? 110.0f : 150.0f;
+  const Transform2D to_document = layer_world_transform(doc, layer->id);
+  const ImVec2 white = ImGui::GetFontTexUvWhitePixel();
+  dl->PrimReserve(int(range.quads.size()) * 6, int(range.quads.size()) * 4);
+  for (const std::array<int, 4> &quad : range.quads) {
+    const ImDrawIdx first = ImDrawIdx(dl->_VtxCurrentIdx);
+    for (const int k : quad) {
+      const int alpha = int(std::clamp(range.say[size_t(k)], 0.0f, 1.0f) * strongest);
+      dl->PrimWriteVtx(view.to_screen(to_document.apply(range.at[size_t(k)])), white,
+                       tint | (ImU32(alpha) << IM_COL32_A_SHIFT));
+    }
+    dl->PrimWriteIdx(first);
+    dl->PrimWriteIdx(ImDrawIdx(first + 1));
+    dl->PrimWriteIdx(ImDrawIdx(first + 2));
+    dl->PrimWriteIdx(first);
+    dl->PrimWriteIdx(ImDrawIdx(first + 2));
+    dl->PrimWriteIdx(ImDrawIdx(first + 3));
+  }
+  for (const std::array<int, 2> &line : range.limit) {
+    dl->AddLine(view.to_screen(to_document.apply(range.at[size_t(line[0])])),
+                view.to_screen(to_document.apply(range.at[size_t(line[1])])), IM_COL32(0xff, 0xb0, 0x60, 220), 1.0f);
+  }
+}
+
 static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &view)
 {
   Document &doc = *C.document;
@@ -13782,6 +13834,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     annotate_hovered_guide = -1;
   }
   draw_annotation_overlays(dl, C, view, annotate_hovered_guide);
+  draw_deform_range(dl, C, view);
   draw_follow_points(dl, C, view);
   if (wm.overlays_toggle_request && hovered) {
     C.document->overlays.show = !C.document->overlays.show;
