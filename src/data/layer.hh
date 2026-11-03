@@ -696,16 +696,28 @@ struct Bone {
  * moving the drawing: every layer inside a bone layer has exactly one, added and removed with
  * that bone layer, never deleted by hand; where it sits in the stack decides what the bones
  * move (Mirror above it mirrors the setup drawing, so each half follows its own side's bones). */
-enum class ModifierType { Mirror, Armature, Boolean, Bevel, Resample, CurveDeform, CageDeform, MeshDeform, FollowDeform };
+enum class ModifierType {
+  Mirror,
+  Armature,
+  Boolean,
+  Bevel,
+  Resample,
+  CurveDeform,
+  CageDeform,
+  MeshDeform,
+  FollowDeform,
+  EnvelopeDeform
+};
 
 /* The deform modifiers (anim/vector_deform.hh): a shape on another layer bends this one. Curve Deform follows an
- * open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh of cells drawn by hand. They share their
- * settings (the deform_* fields). Follow Deform (Harmony's Point Kinematic Output) reads any of those shapes at a point
+ * open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh of cells drawn by hand, and Envelope Deform
+ * (Toon Boom Harmony's envelope deformer, exactly) one line or loop, each point carried by its nearest place on it.
+ * They share their settings (the deform_* fields). Follow Deform (Harmony's Point Kinematic Output) reads any of those shapes at a point
  * of its own and carries the whole drawing by that, without bending it. */
 inline bool modifier_is_deform(ModifierType type)
 {
   return type == ModifierType::CurveDeform || type == ModifierType::CageDeform || type == ModifierType::MeshDeform ||
-         type == ModifierType::FollowDeform;
+         type == ModifierType::FollowDeform || type == ModifierType::EnvelopeDeform;
 }
 /* The deforms that bend a drawing point by point, by weights. */
 inline bool modifier_bends(ModifierType type)
@@ -715,14 +727,16 @@ inline bool modifier_bends(ModifierType type)
 /* "Curve Deform", "Cage Deform", "Mesh Deform"; and as files and Python name them, "CURVE_DEFORM"... */
 inline const char *deform_type_name(ModifierType type)
 {
-  return type == ModifierType::FollowDeform ? "Follow Deform"
+  return type == ModifierType::FollowDeform     ? "Follow Deform"
+         : type == ModifierType::EnvelopeDeform ? "Envelope Deform"
          : type == ModifierType::CurveDeform ? "Curve Deform"
          : type == ModifierType::CageDeform  ? "Cage Deform"
                                              : "Mesh Deform";
 }
 inline const char *deform_type_id(ModifierType type)
 {
-  return type == ModifierType::FollowDeform ? "FOLLOW_DEFORM"
+  return type == ModifierType::FollowDeform     ? "FOLLOW_DEFORM"
+         : type == ModifierType::EnvelopeDeform ? "ENVELOPE_DEFORM"
          : type == ModifierType::CurveDeform ? "CURVE_DEFORM"
          : type == ModifierType::CageDeform  ? "CAGE_DEFORM"
                                              : "MESH_DEFORM";
@@ -756,13 +770,14 @@ bool modifier_makes_points(const Modifier &m);
 
 /* How Cage Deform bends what is in its cage: Mean Value (mean value coordinates: smooth, the outline exact, but the
  * inside squashes where a side bulges or stretches), Rigid (as rigid as possible: the inside keeps its shape as far as
- * it can, the outline still exact) or Envelope (Toon Boom Harmony's: each side of the cage carries what lies near it,
- * at its distance from it, so lines along the outline keep their width; the sides blended by nearness, as much as
- * Blend says). */
-enum class CageMethod { MeanValue, Rigid, Envelope };
+ * it can, the outline still exact) or Outline (after Toon Boom Harmony's envelopes, without their tearing: each side of
+ * the cage carries what lies near it, at its distance from it, so lines along the outline keep their width; the sides
+ * blended by nearness, as much as Blend says). Harmony's own, exactly, is Envelope Deform. */
+enum class CageMethod { MeanValue, Rigid, Outline };
 
-/* A Cage Method's name in files and Python ("MEAN_VALUE", "RIGID", "ENVELOPE"), and back (false for none: a file's
- * "GREEN", a method since removed, opens as Mean Value). */
+/* A Cage Method's name in files and Python ("MEAN_VALUE", "RIGID", "OUTLINE"), and back (false for none: a file's
+ * "GREEN", a method since removed, opens as Mean Value). Outline was called Envelope until Envelope Deform came:
+ * "ENVELOPE" still reads as Outline. */
 const char *cage_method_id(CageMethod method);
 bool cage_method_from_id(const std::string &id, CageMethod &r_method);
 

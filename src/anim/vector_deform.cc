@@ -33,6 +33,8 @@ const char *deform_kind_name(DeformKind kind)
       return "Mesh";
     case DeformKind::Wire:
       return "Wire";
+    case DeformKind::Envelope:
+      return "Envelope";
     case DeformKind::None:
       break;
   }
@@ -42,6 +44,8 @@ const char *deform_kind_name(DeformKind kind)
 /* How finely a cage's or line's outline is followed: pieces per segment (a Curve Deform's line, LINE_STEPS). */
 static constexpr int OUTLINE_STEPS = 16;
 static constexpr int LINE_STEPS = 64;
+/* Envelope Deform: pieces per segment to find a point's nearest place by, before it is refined on the curve itself. */
+static constexpr int ENVELOPE_STEPS = 32;
 /* Shorter at rest and a line is no shape (Stretch would spread what follows it by thousands). */
 static constexpr float MIN_LINE_LENGTH = 1e-4f;
 
@@ -187,8 +191,8 @@ struct DeformShape {
   std::vector<WireLine> wires;
   /* A cage's Method (Cage Deform): how what is in it follows. */
   CageMethod cage_method = CageMethod::MeanValue;
-  /* Envelope: each side (the outline from one of its points to the next), sample for sample at rest and now, how far
-   * along it each sample is, and the way it runs at each sample (rest and now). */
+  /* Outline (and Mesh Deform's Envelope): each side (the outline from one of its points to the next), sample for
+   * sample at rest and now, how far along it each sample is, and the way it runs at each sample (rest and now). */
   struct EnvelopeSide {
     std::vector<float2> rest, now, rest_way, now_way;
     std::vector<float> rest_at, now_at;
@@ -238,6 +242,11 @@ struct DeformShape {
   std::shared_ptr<const PointBones> points;
   std::vector<std::array<float2, 4>> points_now;
   float points_power = 1.0f;
+  /* Envelope Deform: the line's or loop's segments in the order it runs, each a Bezier at rest and now (Harmony's
+   * Curve nodes), and each sampled at rest (ENVELOPE_STEPS pieces, its own samples), to find a point's nearest. */
+  std::vector<std::array<float2, 4>> env_rest, env_now;
+  std::vector<float2> env_samples;
+  bool env_closed = false;
 };
 
 /* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
@@ -786,9 +795,64 @@ static bool shape_part(const VectorDrawing &drawing, const Shape &shape, uint64_
   return true;
 }
 
+/* Envelope Deform's shape: one line or loop, its segments as Beziers in the order it runs, at rest and (`bent`, the
+ * same drawing as it is now) now. Its outline is sampled for the border and the viewport, as a line's or a cage's. */
+static bool envelope_deform_make(const VectorDrawing &rest, const Shape &rest_shape, const VectorDrawing *bent,
+                                 DeformShape &r)
+{
+  std::vector<OrientedEdge> chain;
+  bool closed = false;
+  if (!shape_chain(rest, rest_shape, chain, &closed) || chain.empty()) {
+    return false;
+  }
+  const auto segment = [](const VectorDrawing &drawing, const OrientedEdge &o, std::array<float2, 4> &r_ctrl) {
+    if (o.edge.curve < 0 || size_t(o.edge.curve) >= drawing.curves.size()) {
+      return false;
+    }
+    curve_segment_bezier(drawing, drawing.curves[size_t(o.edge.curve)], o.edge.segment, r_ctrl.data());
+    if (o.reversed) {
+      std::swap(r_ctrl[0], r_ctrl[3]);
+      std::swap(r_ctrl[1], r_ctrl[2]);
+    }
+    return true;
+  };
+  for (const OrientedEdge &o : chain) {
+    std::array<float2, 4> at_rest, at_now;
+    if (!segment(rest, o, at_rest) || !segment(bent ? *bent : rest, o, at_now)) {
+      return false;
+    }
+    r.env_rest.push_back(at_rest);
+    r.env_now.push_back(at_now);
+    for (int i = 0; i <= ENVELOPE_STEPS; i++) {
+      r.env_samples.push_back(bezier_sample(at_rest.data(), i, ENVELOPE_STEPS));
+    }
+  }
+  r.env_closed = closed;
+  for (size_t s = 0; s < r.env_rest.size(); s++) {
+    for (int i = 0; i < ENVELOPE_STEPS; i++) {
+      r.rest.push_back(r.env_samples[s * (ENVELOPE_STEPS + 1) + size_t(i)]);
+      r.now.push_back(bezier_sample(r.env_now[s].data(), i, ENVELOPE_STEPS));
+    }
+  }
+  if (!closed) {
+    r.rest.push_back(r.env_rest.back()[3]);
+    r.now.push_back(r.env_now.back()[3]);
+  }
+  if (lengths_along(r.rest).back() < MIN_LINE_LENGTH) {
+    return false;
+  }
+  r.kind = DeformKind::Envelope;
+  r.border = r.rest;
+  return true;
+}
+
 static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &rest, const VectorDrawing &bent,
                               DeformShape &r)
 {
+  if (m.type == ModifierType::EnvelopeDeform) {
+    const Shape &shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
+    return !shape_grid(rest, shape) && envelope_deform_make(rest, shape, now ? &bent : nullptr, r);
+  }
   /* Follow Deform takes whatever the shape is: as the deform that fits it. */
   if (m.type == ModifierType::FollowDeform) {
     Modifier as = m;
@@ -942,7 +1006,7 @@ static bool deform_shape_build(const Document &doc, const Layer &layer, const Mo
 }
 
 /* Builds kept: a deform's shape built again only when the shape (at rest or now) or the modifier has changed. A
- * Cage's Rigid and Envelope solve their lattice in the build, which takes several milliseconds, every frame drawn
+ * Cage's Rigid and Outline solve their lattice in the build, which takes several milliseconds, every frame drawn
  * otherwise (a frame held, the view panned, another layer edited). Each build has a serial: what was bent with it
  * can be kept too (vector_deform_apply). */
 struct KeptBuild {
@@ -1747,7 +1811,7 @@ static float2 outline_carry(const std::vector<float2> &v, const std::vector<floa
   return ws > 0.0 ? float2(float(sx / ws), float(sy / ws)) : p;
 }
 
-/* Envelope (Toon Boom Harmony's, without its tearing): every point goes where the cage as a whole puts it (Rigid's
+/* Outline (Toon Boom Harmony's envelopes, without their tearing): every point goes where the cage as a whole puts it (Rigid's
  * way, which squashes least), then each side near it sets its distance from that side back to what it was at rest, so a line along the
  * outline keeps its width and art hugs the cage however a side bends or stretches. Each side's say goes by nearness
  * (each as the nearest side's distance over its own, raised to envelope_power, from Blend), and is full at the
@@ -2006,7 +2070,7 @@ static float2 envelope_map(const DeformShape &d, float2 p, std::vector<float> &s
 }
 
 /* Mesh Deform's Envelope: `q` is where the mesh puts `p`; in the outer cells (`outer`) the outline's sides then set its
- * distance from them back, as Cage Deform's Envelope does, so lines along the edge keep their width. Their say fades out
+ * distance from them back, as Cage Deform's Outline does, so lines along the edge keep their width. Their say fades out
  * by the mesh inside the outer cells, or they would pull what its inner nodes carry back toward where it was. */
 static float2 mesh_envelope(const DeformShape &d, float2 p, float2 q, bool outer)
 {
@@ -3470,7 +3534,7 @@ static void cage_method_build(DeformShape &r)
     return;
   }
   std::vector<std::pair<size_t, size_t>> side_samples;
-  if (r.cage_method == CageMethod::Envelope) {
+  if (r.cage_method == CageMethod::Outline) {
     /* The sides: the outline cut at its points (OUTLINE_STEPS samples to a segment). */
     const size_t steps = n % size_t(OUTLINE_STEPS) == 0 ? size_t(OUTLINE_STEPS) : n;
     for (size_t first = 0; first < n; first += steps) {
@@ -3692,9 +3756,73 @@ static void cage_method_build(DeformShape &r)
   }
 }
 
+/* The way a segment runs at `t`, as a length of 1. Where a handle sits on its point the curve has no speed at that
+ * end: the way it leaves there, from a little further along. */
+static float2 envelope_way(const std::array<float2, 4> &c, float t)
+{
+  const float u = 1.0f - t;
+  const float2 d = (c[1] - c[0]) * (u * u) + (c[2] - c[1]) * (2.0f * u * t) + (c[3] - c[2]) * (t * t);
+  if (length(d) > 1e-9f) {
+    return normalize(d);
+  }
+  const float2 e = bezier_eval(c.data(), std::min(t + 1e-3f, 1.0f)) - bezier_eval(c.data(), std::max(t - 1e-3f, 0.0f));
+  return length(e) > 1e-12f ? normalize(e) : float2(1.0f, 0.0f);
+}
+
+/* Envelope Deform, as Toon Boom Harmony's envelope deformer (measured in Harmony 24): each point is carried by its
+ * single nearest place on the line or loop at rest, keeping how far it is out from there and how far along the way the
+ * curve runs there (which is nothing, except past a free end or round a corner between segments, where the way is the
+ * end's). The place is the same place on the same segment now, by the curve's own parameter, so what is along a
+ * segment spreads as it stretches. No blending: where two places are equally near the drawing tears, as Harmony's
+ * does. */
+static float2 envelope_deform_map(const DeformShape &d, float2 p)
+{
+  const size_t per = ENVELOPE_STEPS + 1;
+  float best = FLT_MAX;
+  size_t seg = 0;
+  float t = 0.0f;
+  for (size_t s = 0; s < d.env_rest.size(); s++) {
+    for (size_t i = 0; i < size_t(ENVELOPE_STEPS); i++) {
+      const float2 a = d.env_samples[s * per + i], e = d.env_samples[s * per + i + 1] - a;
+      const float ee = dot(e, e);
+      const float h = ee > 1e-20f ? std::clamp(dot(p - a, e) / ee, 0.0f, 1.0f) : 0.0f;
+      const float dd = dot(a + e * h - p, a + e * h - p);
+      if (dd < best) {
+        best = dd;
+        seg = s;
+        t = (float(i) + h) / float(ENVELOPE_STEPS);
+      }
+    }
+  }
+  /* Onto the curve itself (Newton's steps on the distance), so the place doesn't hop between samples. */
+  const std::array<float2, 4> &c = d.env_rest[seg];
+  for (int step = 0; step < 4; step++) {
+    const float u = 1.0f - t;
+    const float2 off = bezier_eval(c.data(), t) - p;
+    const float2 d1 = ((c[1] - c[0]) * (u * u) + (c[2] - c[1]) * (2.0f * u * t) + (c[3] - c[2]) * (t * t)) * 3.0f;
+    const float2 d2 = ((c[2] - c[1] * 2.0f + c[0]) * u + (c[3] - c[2] * 2.0f + c[1]) * t) * 6.0f;
+    const float slope = dot(d1, d1) + dot(off, d2);
+    if (slope <= 1e-20f) {
+      break;
+    }
+    const float next = std::clamp(t - dot(off, d1) / slope, 0.0f, 1.0f);
+    if (length(bezier_eval(c.data(), next) - p) > length(off)) {
+      break;
+    }
+    t = next;
+  }
+  const float2 at = bezier_eval(c.data(), t), way = envelope_way(c, t);
+  const float along = dot(p - at, way), out = dot(p - at, float2(-way.y, way.x));
+  const std::array<float2, 4> &now = d.env_now[seg];
+  const float2 now_at = bezier_eval(now.data(), t), now_way = envelope_way(now, t);
+  return now_at + now_way * along + float2(-now_way.y, now_way.x) * out;
+}
+
 static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
 {
   switch (d.kind) {
+    case DeformKind::Envelope:
+      return envelope_deform_map(d, p);
     case DeformKind::Grid:
     case DeformKind::Mesh:
     case DeformKind::Wire: {
@@ -3724,7 +3852,7 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
       return mesh_envelope(d, p, q, outer);
     }
     case DeformKind::Cage: {
-      if (d.cage_method == CageMethod::Envelope && !d.envelope_sides.empty()) {
+      if (d.cage_method == CageMethod::Outline && !d.envelope_sides.empty()) {
         return envelope_map(d, p, scratch);
       }
       if (!d.cage_turn.empty() && !inside(d.rest, p)) {
@@ -4183,13 +4311,13 @@ float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 a
   return at + (deform_map(*shape, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
 }
 
-/* A line running into a cage from its outline, for the viewport's views of an Envelope: from rest sample `sample`. */
+/* A line running into a cage from its outline, for the viewport's views of an Outline cage: from rest sample `sample`. */
 struct EnvelopeViewLine {
   size_t sample;
   float2 way;
 };
 
-/* `m`'s Envelope cage, if it is one, and the lines a view of it runs in from its outline: one from each sample, and more
+/* `m`'s Outline cage, if it is one, and the lines a view of it runs in from its outline: one from each sample, and more
  * at a corner, or they would leave a wedge between them. `r_size`: how big the cage is. */
 static std::shared_ptr<const DeformShape> envelope_view_lines(const Document &doc, const Layer &layer,
                                                               const Modifier &m, std::vector<EnvelopeViewLine> &r,
@@ -4198,7 +4326,7 @@ static std::shared_ptr<const DeformShape> envelope_view_lines(const Document &do
   uint64_t build = 0;
   std::shared_ptr<const DeformShape> shape =
       vector_deform_loops(doc, layer, m) ? nullptr : deform_shape_kept(doc, layer, m, false, build);
-  if (!shape || shape->kind != DeformKind::Cage || shape->cage_method != CageMethod::Envelope) {
+  if (!shape || shape->kind != DeformKind::Cage || shape->cage_method != CageMethod::Outline) {
     return nullptr;
   }
   const std::vector<float2> &v = shape->rest;

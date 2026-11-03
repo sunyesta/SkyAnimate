@@ -2374,6 +2374,7 @@ static Layer layer_from_json(const json &j, int depth)
              : type == "RESAMPLE" || type == "SUBDIVIDE" ? ModifierType::Resample
              : type == "CURVE_DEFORM"               ? ModifierType::CurveDeform
              : type == "CAGE_DEFORM"                ? ModifierType::CageDeform
+             : type == "ENVELOPE_DEFORM"            ? ModifierType::EnvelopeDeform
              : type == "FOLLOW_DEFORM"              ? ModifierType::FollowDeform
              : type == "MESH_DEFORM" || type == "VECTOR_DEFORM" ? ModifierType::MeshDeform
                                                     : ModifierType::Mirror;

@@ -572,21 +572,22 @@ class _Layer:
     @property
     def modifiers(self):
         """The modifier stack, top first: dicts with type ("MIRROR", "ARMATURE", "BEVEL", "BOOLEAN", "RESAMPLE",
-        "CURVE_DEFORM", "CAGE_DEFORM" or "MESH_DEFORM") and settings. A deform's: layer and shape (names), kind ("GRID", "CAGE",
-        "LINE" as "Grid"..., "" when it has none), weights ("AUTOMATIC": every point fully, or "CUSTOM"), group, strength,
+        "CURVE_DEFORM", "CAGE_DEFORM", "MESH_DEFORM" or "ENVELOPE_DEFORM") and settings. A deform's: layer and shape (names),
+        kind ("GRID", "CAGE", "LINE", "ENVELOPE" as "Grid"..., "" when it has none), weights ("AUTOMATIC": every point fully, or "CUSTOM"), group, strength,
         fits (the deform type that takes its shape: its own, or the one to switch to), precision (how far a bent segment may stray from the true bend before points are added; 0 off), stretch
         (a line: what lies along it spreads as it grows), part (Curve Deform: the stretch of its shape to follow, as (from,
         to) point numbers on the shape's layer, round a closed shape the way its points run, so swapped they are the other
         side; set it as those, "SELECTED" for the points selected there, or None; a closed shape needs one), resample_self (the drawing sampled evenly, bent, and its own points and handles fitted
         to that; no points added), cage_method (a cage: "MEAN_VALUE", "RIGID": the inside as rigid as possible, or
-        "ENVELOPE": Toon Boom Harmony's, each side keeping what lies near it at its distance from it),
-        blend (Envelope: 0 the nearest side leads sharply, 1 gently)."""
+        "OUTLINE": after Toon Boom Harmony's envelopes, each side keeping what lies near it at its distance from it;
+        "ENVELOPE", its old name, is read as OUTLINE), blend (Outline: 0 the nearest side leads sharply, 1 gently).
+        Envelope Deform is Harmony's envelope deformer itself: each point follows its nearest place on the shape."""
         return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):
         """Change modifier `index`'s settings by name, as modifiers lists them. A deform modifier takes layer then
         shape by name (one it takes: an open line for Curve Deform, a closed shape for Cage Deform, a grid or mesh of
-        cells for Mesh Deform); type= changes a deform's type, keeping its settings and weights; weights="CUSTOM" starts its point group from the automatic weights."""
+        cells for Mesh Deform, a line or closed shape for Envelope Deform); type= changes a deform's type, keeping its settings and weights; weights="CUSTOM" starts its point group from the automatic weights."""
         _oanim.layer_modifier_set(self._id, index, values)
 
     def deform_weights(self, index, reset=False):

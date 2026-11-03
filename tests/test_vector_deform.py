@@ -568,7 +568,7 @@ try:
     assert m["weights"] == "CUSTOM" and abs(m["precision"] - 0.05) < 1e-6, m
     assert m["resample_self"] is True, m
     saved = next(l for l in oanim.data.layers.all() if l.name == "Art2").modifiers[j]
-    assert saved["cage_method"] == "ENVELOPE" and abs(saved["blend"] - 0.25) < 1e-6, saved
+    assert saved["cage_method"] == "OUTLINE" and abs(saved["blend"] - 0.25) < 1e-6, saved
     art.modifier_set(i, resample_self=False)
     oanim.data.document.frame_current = 10
     assert abs(art.evaluated()[0][1][1] - 0.5) < 1e-3, "with Precision a point on the moved node still follows it"

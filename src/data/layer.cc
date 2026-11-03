@@ -10,7 +10,7 @@ bool modifier_makes_points(const Modifier &m)
          m.type == ModifierType::Boolean || modifier_bends(m.type);
 }
 
-static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "ENVELOPE"};
+static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "OUTLINE"};
 
 const char *cage_method_id(CageMethod method)
 {
@@ -19,6 +19,10 @@ const char *cage_method_id(CageMethod method)
 
 bool cage_method_from_id(const std::string &id, CageMethod &r_method)
 {
+  if (id == "ENVELOPE") {
+    r_method = CageMethod::Outline;
+    return true;
+  }
   for (int k = 0; k < 3; k++) {
     if (id == CAGE_METHOD_IDS[k]) {
       r_method = CageMethod(k);

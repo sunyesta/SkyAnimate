@@ -3594,10 +3594,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         const std::string type = value.cast<std::string>();
         const ModifierType to = type == "CURVE_DEFORM"  ? ModifierType::CurveDeform
                                 : type == "CAGE_DEFORM" ? ModifierType::CageDeform
+                                : type == "ENVELOPE_DEFORM" ? ModifierType::EnvelopeDeform
                                 : type == "MESH_DEFORM" ? ModifierType::MeshDeform
                                                         : ModifierType::Mirror;
         if (to == ModifierType::Mirror) {
-          throw py::value_error("a deform's type is CURVE_DEFORM, CAGE_DEFORM or MESH_DEFORM");
+          throw py::value_error("a deform's type is CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM or ENVELOPE_DEFORM");
         }
         if (mod.name.rfind(deform_type_name(mod.type), 0) == 0) {
           mod.name = deform_type_name(to) + mod.name.substr(std::string(deform_type_name(mod.type)).size());
@@ -3693,7 +3694,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "cage_method") {
         if (!cage_method_from_id(value.cast<std::string>(), mod.deform_cage_method)) {
-          throw py::value_error("cage_method is MEAN_VALUE, RIGID or ENVELOPE");
+          throw py::value_error("cage_method is MEAN_VALUE, RIGID or OUTLINE");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "smooth") {

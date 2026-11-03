@@ -3439,6 +3439,20 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
                        ImVec2(c.x + s, c.y - s * 0.6f), COL_MOD_ICON, 1.3f);
     dl->AddCircleFilled(c, s * 0.38f, COL_MOD_ICON);
   }
+  else if (type == ModifierType::EnvelopeDeform) {
+    /* An outline left open, its points on it, and a line inside keeping its distance from it. */
+    ImVec2 outer[13], inner[13];
+    for (int k = 0; k < 13; k++) {
+      const float a = 0.9f + float(k) / 12.0f * 4.5f;
+      outer[k] = ImVec2(c.x + std::cos(a) * s, c.y + std::sin(a) * s * 0.85f);
+      inner[k] = ImVec2(c.x + std::cos(a) * s * 0.55f, c.y + std::sin(a) * s * 0.45f);
+    }
+    dl->AddPolyline(outer, 13, COL_MOD_ICON, 0, 1.3f);
+    dl->AddPolyline(inner, 13, COL_MOD_ICON, 0, 1.0f);
+    for (const int k : {0, 6, 12}) {
+      dl->AddCircleFilled(outer[k], s * 0.2f, COL_MOD_ICON);
+    }
+  }
   else if (type == ModifierType::CageDeform) {
     /* A closed, pulled outline, its points on it. */
     ImVec2 pts[16];
@@ -4425,6 +4439,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                                        : m.type == ModifierType::CurveDeform ? "The line that bends it, or the shape with "
                                                                               "the Part of it that does"
                                        : m.type == ModifierType::CageDeform ? "The closed shape (a cage) that bends it"
+                                       : m.type == ModifierType::EnvelopeDeform
+                                           ? "The line or closed shape (an envelope) that bends it"
                                                                              : "The grid, mesh of cells drawn by hand, or "
                                                                                "line (each point pinned to it, as a bendy "
                                                                                "bone holds what it carries) that bends it");
@@ -4577,15 +4593,16 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   }
   else if (kind == DeformKind::Cage) {
     ImGui::TextDisabled(follows ? "Cage: the point goes as the shape does" : "Cage: what is in the shape bends with it");
-    static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Envelope"};
+    static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Outline"};
     static const char *const METHOD_TIPS[] = {
         "Smooth, and your drawing's outline stays exactly on the cage, but the inside squashes where a side bulges "
         "out or stretches (mean value coordinates)",
         "The inside keeps its shape as far as it can (as rigid as possible, as Photoshop's Puppet Warp) and the "
         "outline still stays exactly on the cage: for art drawn along the cage's edge. A little slower",
-        "Each side of the cage carries what lies near it, at the same distance from it, as Toon Boom Harmony's "
-        "envelopes do: lines along the outline keep their width and edges hug the cage, and the middle follows the "
-        "sides around it (Blend says how evenly)"};
+        "Each side of the cage carries what lies near it, at the same distance from it, after Toon Boom Harmony's "
+        "envelopes: lines along the outline keep their width and edges hug the cage, and the middle follows the "
+        "sides around it (Blend says how evenly), with no tearing where sides meet. Envelope Deform is Harmony's "
+        "own, exactly"};
     modifier_row_label("Method", column, "How what is in the cage follows it");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
     const int method = int(m.deform_cage_method);
@@ -4601,7 +4618,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       }
       ImGui::EndCombo();
     }
-    if (m.deform_cage_method == CageMethod::Envelope) {
+    if (m.deform_cage_method == CageMethod::Outline) {
       modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
                                           "corner: low, the nearest side leads sharply (edges hug their own side "
                                           "most); high, the sides blend gently. The viewport shows where sides "
@@ -4650,6 +4667,14 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       Modifier whole = m;
       whole.deform_part_from = whole.deform_part_to = 0;
       part_row(vector_deform_kind(doc, layer, whole) != DeformKind::Line);
+    }
+  }
+  else if (kind == DeformKind::Envelope) {
+    ImGui::TextDisabled("Envelope: each point follows its nearest place on the shape");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("As Toon Boom Harmony's envelope deformer, open or closed: each point keeps its distance out "
+                        "from its nearest place on the shape and goes where that place goes. Where two places are "
+                        "equally near the drawing can tear, as it does in Harmony");
     }
   }
   else if (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, m)) {
@@ -5028,6 +5053,14 @@ static void modifiers_panel(Context &C, Layer &layer)
                         "bends what is in it, as Blender's Lattice and Moho's Smart Warp. Animate it and the "
                         "drawing follows");
     }
+    if (ImGui::MenuItem("Envelope Deform")) {
+      operator_call(C, "object.modifier_add", {{"type", "ENVELOPE_DEFORM"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Toon Boom Harmony's envelope deformer, exactly: a line or closed shape on another layer, "
+                        "and each point of the drawing follows its nearest place on it, at the same distance out. "
+                        "Animate the shape and the drawing follows");
+    }
     if (!layer.is_group()) {
       if (ImGui::MenuItem("Follow Deform")) {
         operator_call(C, "object.modifier_add", {{"type", "FOLLOW_DEFORM"}});
@@ -5132,7 +5165,7 @@ static void modifiers_panel(Context &C, Layer &layer)
       if (modifier_bends(m.type) && ImGui::BeginMenu("Change Type")) {
         /* Another deform, keeping its settings and painted weights. */
         for (const ModifierType type :
-             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})
+             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform, ModifierType::EnvelopeDeform})
         {
           if (ImGui::MenuItem(deform_type_name(type), nullptr, type == m.type) && type != m.type) {
             if (m.name.rfind(deform_type_name(m.type), 0) == 0) {

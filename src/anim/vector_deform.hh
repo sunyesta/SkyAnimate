@@ -38,8 +38,8 @@ struct Modifier;
 struct WeightPaintBrush;
 enum class ModifierType;
 
-enum class DeformKind { None, Grid, Cage, Line, Mesh, Wire };
-/* "Grid", "Cage", "Line", "Mesh", "Wire" (None: ""). */
+enum class DeformKind { None, Grid, Cage, Line, Mesh, Wire, Envelope };
+/* "Grid", "Cage", "Line", "Mesh", "Wire", "Envelope" (None: ""). */
 const char *deform_kind_name(DeformKind kind);
 
 /* What `m`'s shape is (None: no such layer or shape, or it is on `layer` itself). */
@@ -55,7 +55,7 @@ bool vector_deform_takes_part(const Document &doc, const Modifier &m);
 /* Sets `m`'s Part from the points selected on its shape, which must run along it end to end, two at least and not
  * a whole loop. False, `m` as it was, if they don't. */
 bool vector_deform_part_from_selection(Document &doc, Modifier &m);
-/* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
+/* The deform type (Curve, Cage, Mesh or Envelope Deform) that takes `m`'s shape: its own when it does (a closed
  * shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);
 /* After opening a file of the single Vector Deform modifier of before: each becomes the deform its shape fits
@@ -71,7 +71,7 @@ std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, cons
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
 
-/* What an Envelope's Range reaches, in `layer`'s space where it shows now: lines running in from the cage's outline,
+/* What an Outline cage's Range reaches, in `layer`'s space where it shows now: lines running in from the cage's outline,
  * each place with how much say the sides have there (1 at the outline, 0 at the limit); `quads` joins them. A place in
  * `limit` is where a line got as far as the limit, so the limit is drawn from one to the next. */
 struct DeformRangeView {
@@ -81,7 +81,7 @@ struct DeformRangeView {
   std::vector<std::array<int, 2>> limit;
 };
 bool vector_deform_range_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
-/* Where an Envelope's Blend matters, the same way (no `limit`): `say` is how evenly the sides share each place, 1 where
+/* Where an Outline cage's Blend matters, the same way (no `limit`): `say` is how evenly the sides share each place, 1 where
  * two have an even say, 0 where one leads alone, faded as the sides' say fades inside the cage. Lines run in until
  * another side is nearer, so they meet where sides hand over. */
 bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);

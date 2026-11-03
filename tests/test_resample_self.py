@@ -51,7 +51,7 @@ layers.active = art
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
 i = len(art.modifiers) - 1
 m = art.modifiers[i]
-assert m["cage_method"] == "ENVELOPE" and m["resample_self"] is True, m
+assert m["cage_method"] == "OUTLINE" and m["resample_self"] is True, m
 assert m["split"] == "LENGTH" and abs(m["spacing"] - 0.009) < 1e-6, m
 art.modifier_set(i, layer=cage.name, shape=cage.shapes[0][0], split="COUNT")
 for kind in ("CURVE_DEFORM", "MESH_DEFORM"):
@@ -62,7 +62,7 @@ for kind in ("CURVE_DEFORM", "MESH_DEFORM"):
     assert ops.object.modifier_remove(index=str(len(art.modifiers) - 1)) == {'FINISHED'}
 layers.active = art
 assert ops.object.modifier_add(type="FOLLOW_DEFORM") == {'FINISHED'}
-assert art.modifiers[-1]["cage_method"] == "ENVELOPE", "it goes where the cage it rides on puts things"
+assert art.modifiers[-1]["cage_method"] == "OUTLINE", "it goes where the cage it rides on puts things"
 assert ops.object.modifier_remove(index=str(len(art.modifiers) - 1)) == {'FINISHED'}
 
 # --- Frame 0: split, and just the same to look at -----------------------------------------------------------------------

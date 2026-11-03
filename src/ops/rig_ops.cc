@@ -3685,16 +3685,16 @@ void rig_operators_register()
     return C.document ? document_active_layer(*C.document) : nullptr;
   };
   rig_operator("object.modifier_add", "Add Modifier",
-               "Add a modifier to the active layer (type=MIRROR, BEVEL, SUBDIVIDE, CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM "
-               "or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does). A group takes the deforms, "
+               "Add a modifier to the active layer (type=MIRROR, BEVEL, SUBDIVIDE, CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM, "
+               "ENVELOPE_DEFORM or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does). A group takes the deforms, "
                "which bend every drawing inside it",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
                  const std::string type = op_arg(C, "type", "MIRROR");
                  const bool deform = type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM" ||
-                                     type == "FOLLOW_DEFORM";
+                                     type == "ENVELOPE_DEFORM" || type == "FOLLOW_DEFORM";
                  if (modifier_layer(C)->is_group() && !deform) {
-                   report(ReportType::Warning, "A group takes Curve, Cage and Mesh Deform: pick a drawing layer for the others");
+                   report(ReportType::Warning, "A group takes Curve, Cage, Mesh and Envelope Deform: pick a drawing layer for the others");
                    return OpStatus::Cancelled;
                  }
                  if (type == "BOOLEAN") {
@@ -3738,6 +3738,7 @@ void rig_operators_register()
                    Modifier m;
                    m.type = type == "CURVE_DEFORM"    ? ModifierType::CurveDeform
                             : type == "CAGE_DEFORM"   ? ModifierType::CageDeform
+                            : type == "ENVELOPE_DEFORM" ? ModifierType::EnvelopeDeform
                             : type == "FOLLOW_DEFORM" ? ModifierType::FollowDeform
                                                       : ModifierType::MeshDeform;
                    if (m.type == ModifierType::FollowDeform) {
@@ -3768,7 +3769,7 @@ void rig_operators_register()
                    m.subdiv_spacing = 0.009f;
                    /* A Follow Deform goes where the cage it rides on puts things. */
                    if (m.type == ModifierType::CageDeform || m.type == ModifierType::FollowDeform) {
-                     m.deform_cage_method = CageMethod::Envelope;
+                     m.deform_cage_method = CageMethod::Outline;
                    }
                    m.deform_resample_self = m.type == ModifierType::CageDeform;
                    /* At the bottom, below Armature: it measures from the drawing before the bones and shares
