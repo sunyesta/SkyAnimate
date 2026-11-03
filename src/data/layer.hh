@@ -742,9 +742,12 @@ enum class CageMethod { MeanValue, Rigid, Envelope };
 const char *cage_method_id(CageMethod method);
 bool cage_method_from_id(const std::string &id, CageMethod &r_method);
 
-enum class MeshMethod { Cells, Envelope };
+/* How Mesh Deform bends what is in its mesh: Cells (each cell's patch), Envelope (the outer cells keep what lies near
+ * the outline at its distance from it) or Points (each line of the mesh carries what lies near it, as a bone, by
+ * weights fixed at rest that fade by Falloff). */
+enum class MeshMethod { Cells, Envelope, Points };
 
-/* A Mesh Method's name in files and Python ("CELLS", "ENVELOPE"), and back. */
+/* A Mesh Method's name in files and Python ("CELLS", "ENVELOPE", "POINTS"), and back. */
 const char *mesh_method_id(MeshMethod method);
 bool mesh_method_from_id(const std::string &id, MeshMethod &r_method);
 
@@ -838,8 +841,12 @@ struct Modifier {
   /* Cage Deform's Method: how what is in the cage follows it. */
   CageMethod deform_cage_method = CageMethod::MeanValue;
   /* Mesh Deform's Method: each cell bending what is in it, or with Envelope the outline's sides also keeping what lies
-   * near them at its distance from them, in the outer cells. */
+   * near them at its distance from them, in the outer cells; or with Points every line of the mesh carrying what lies
+   * near it, as a bone does, by weights fixed at rest. */
   MeshMethod deform_mesh_method = MeshMethod::Cells;
+  /* Points' Falloff: how quickly a line's say fades past the nearest line's, measured through the mesh, as a share of
+   * the mesh's size (0, only the nearest; 1, as far as the mesh is big). */
+  float deform_falloff = 0.25f;
   /* Mesh Deform on a drawn grid: its rows and columns as smooth lines through their nodes (GridSurface::smooth). */
   bool deform_smooth = false;
   /* Envelope's Blend: how evenly the sides near a place share it: 0, the nearest leads sharply (as the cube of how

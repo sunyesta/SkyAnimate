@@ -351,13 +351,14 @@ struct WindowManager {
     int frame = -10;
     int step = -1;
   } mask_preview;
-  /* Envelope's Range slider, while dragged: the viewport tints what `modifier` of `layer` reaches; `blend`, its Blend
-   * slider: where the sides share. `frame` as above. */
+  /* Envelope's Range slider, while dragged: the viewport tints what `modifier` of `layer` reaches; its Blend slider (or a
+   * Points mesh's): where the sides share; Points' Falloff: where the mesh's lines share. `frame` as above. */
   struct DeformRangePreview {
+    enum class What { Range, Blend, Falloff };
     uint64_t layer = 0;
     int modifier = -1;
     int frame = -10;
-    bool blend = false;
+    What what = What::Range;
   } deform_range_preview;
   /* The masking area under the mouse in the Masking tab, for mask.area_delete_hovered (`layer` 0: none). */
   struct MaskAreaHover {

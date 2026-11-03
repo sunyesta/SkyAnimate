@@ -752,6 +752,7 @@ static json layer_to_json(const Layer &layer)
           mj["mesh_method"] = mesh_method_id(m.deform_mesh_method);
           mj["smooth"] = m.deform_smooth;
           mj["blend"] = num(m.deform_blend);
+          mj["falloff"] = num(m.deform_falloff);
         }
       }
       modifiers.push_back(std::move(mj));
@@ -2395,6 +2396,7 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_smooth = get_bool(mj, "smooth", false);
       m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
       m.deform_range = std::clamp(get_float(mj, "range", 1.0f), 0.0f, 1.0f);
+      m.deform_falloff = std::clamp(get_float(mj, "falloff", 0.25f), 0.0f, 1.0f);
     }
     if (m.type == ModifierType::Resample) {
       m.subdiv_by_length = get_string(mj, "split", "LENGTH") != "COUNT";

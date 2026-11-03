@@ -81,6 +81,9 @@ bool vector_deform_range_view(const Document &doc, const Layer &layer, const Mod
  * two have an even say, 0 where one leads alone, faded as the sides' say fades inside the cage. Lines run in until
  * another side is nearer, so they meet where sides hand over. */
 bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
+/* Mesh Deform's Points, the same way: places over the mesh's cells, `say` how evenly its lines share each (1 where two
+ * have an even say, 0 where one leads alone). The wider Falloff, the further they share. */
+bool vector_deform_falloff_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r);
 
 /* `m`'s shape at rest and now, in `layer`'s space, as its build reads it: to read a point of the shape by. False with
  * nothing to read. */

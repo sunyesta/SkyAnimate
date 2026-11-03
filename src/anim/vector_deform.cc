@@ -133,6 +133,7 @@ static const DrawingGrid *shape_grid(const VectorDrawing &drawing, const Shape &
 }
 
 struct RigidLattice;
+struct PointBones;
 
 /* A modifier's shape at rest and as it is now, both in the bent layer's space. */
 struct DeformShape {
@@ -232,6 +233,11 @@ struct DeformShape {
   /* How the cage has moved as a whole, taken by most of its outline (cage_whole_fit): `whole_from` goes to `whole_to`,
    * and what is around it turns and scales by `whole_turn`, a complex number. */
   float2 whole_from = float2(0.0f, 0.0f), whole_to = float2(0.0f, 0.0f), whole_turn = float2(1.0f, 0.0f);
+  /* Mesh Deform's Points: the mesh's lines and what is worked out from them at rest (PointBones), each line now in the
+   * same order, and how sharply the nearest line leads (from Blend). */
+  std::shared_ptr<const PointBones> points;
+  std::vector<std::array<float2, 4>> points_now;
+  float points_power = 1.0f;
 };
 
 /* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
@@ -697,6 +703,9 @@ static float envelope_power_of(float blend)
 
 static void cage_method_build(DeformShape &r);
 static void mesh_envelope_build(DeformShape &r, float blend);
+static void points_build_grid(DeformShape &r, const Modifier &m);
+static void points_build_network(DeformShape &r, const Modifier &m, const VectorDrawing &rest_drawing,
+                                 const Shape &rest_shape, const VectorDrawing &bent);
 
 /* The shape at rest and (`now`) as it is, in the layer's space: what a deform is built from. */
 static bool deform_shape_inputs(const Document &doc, const Layer &layer, const Modifier &m, bool now, bool render,
@@ -819,6 +828,9 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     if (now && m.deform_mesh_method == MeshMethod::Envelope) {
       mesh_envelope_build(r, m.deform_blend);
     }
+    if (now && m.deform_mesh_method == MeshMethod::Points) {
+      points_build_grid(r, m);
+    }
     return true;
   }
   /* A Part: one stretch of the shape, followed as an open line of its own. */
@@ -858,6 +870,9 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     gather_edge_sides(r);
     if (now && m.deform_mesh_method == MeshMethod::Envelope) {
       mesh_envelope_build(r, m.deform_blend);
+    }
+    if (now && m.deform_mesh_method == MeshMethod::Points) {
+      points_build_network(r, m, rest, rest_shape, bent);
     }
     return true;
   }
@@ -2928,6 +2943,348 @@ static void mesh_envelope_build(DeformShape &r, float blend)
   }
 }
 
+/* Mesh Deform's Points: every line of the mesh (each segment between two of its points) is a bone. What lies near a
+ * line keeps its place by it, turned as the line turns there, so a point's handles turn what lies by the point and a
+ * curved line carries what lies along it. Each place is shared by the lines near it: the nearest leads (by Blend, as
+ * Envelope's sides), and a line's say fades out by Falloff past the nearest one's distance. Distances are measured
+ * through the mesh, from the cell a place is in across cells and along lines, so a line never reaches across a gap
+ * in the mesh. All of it is worked out from the mesh at rest: the weights never change as it moves. */
+struct PointBones {
+  /* Samples along each line that distances are measured between: line `s` has nodes s * (STEPS + 1) on. */
+  static constexpr int STEPS = 8;
+  std::vector<std::array<float2, 4>> rest;
+  /* Each cell's lines, its outline at rest and its bounds. */
+  std::vector<std::vector<int>> cell_lines;
+  std::vector<std::vector<float2>> cell_outline;
+  std::vector<float2> cell_lo, cell_hi;
+  float size = 1.0f, reach = 1.0f;
+  std::vector<float2> nodes;
+  /* From each node, the lines within reach through the mesh and how far the nearest of their nodes is. */
+  std::vector<std::vector<std::pair<int, float>>> near;
+};
+
+/* The mesh at rest for Points: its lines, each cell's lines (indices into `lines`) and its outline. Kept by the lines,
+ * the cells and the reach: the same mesh at rest bends many frames. */
+static std::shared_ptr<const PointBones> point_bones(const std::vector<std::array<float2, 4>> &lines,
+                                                     const std::vector<std::vector<int>> &cell_lines,
+                                                     const std::vector<std::vector<float2>> &cell_outlines,
+                                                     float falloff)
+{
+  static std::mutex mutex;
+  static std::vector<std::shared_ptr<const PointBones>> kept;
+  float2 lo = lines[0][0], hi = lo;
+  for (const std::array<float2, 4> &line : lines) {
+    for (const float2 &q : line) {
+      lo = float2(std::min(lo.x, q.x), std::min(lo.y, q.y));
+      hi = float2(std::max(hi.x, q.x), std::max(hi.y, q.y));
+    }
+  }
+  const float size = std::max(std::max(hi.x - lo.x, hi.y - lo.y), 1e-6f);
+  /* Never quite none: a place half way between two lines would jump from one to the other. */
+  const float reach = size * std::max(std::clamp(falloff, 0.0f, 1.0f), 0.01f);
+  {
+    std::lock_guard lock(mutex);
+    for (const std::shared_ptr<const PointBones> &b : kept) {
+      if (b->rest == lines && b->cell_lines == cell_lines && b->reach == reach) {
+        return b;
+      }
+    }
+  }
+  auto made = std::make_shared<PointBones>();
+  PointBones &B = *made;
+  B.rest = lines;
+  B.cell_lines = cell_lines;
+  B.size = size;
+  B.reach = reach;
+  constexpr int per = PointBones::STEPS + 1;
+  const size_t count = lines.size() * per;
+  B.nodes.resize(count);
+  for (size_t s = 0; s < lines.size(); s++) {
+    for (int k = 0; k < per; k++) {
+      B.nodes[s * per + size_t(k)] = bezier3(lines[s], float(k) / float(PointBones::STEPS));
+    }
+  }
+  float widest = 0.0f;
+  for (const std::vector<float2> &outline : cell_outlines) {
+    float2 c_lo = outline.empty() ? lo : outline[0], c_hi = c_lo;
+    for (const float2 &q : outline) {
+      c_lo = float2(std::min(c_lo.x, q.x), std::min(c_lo.y, q.y));
+      c_hi = float2(std::max(c_hi.x, q.x), std::max(c_hi.y, q.y));
+    }
+    widest = std::max(widest, length(c_hi - c_lo));
+    B.cell_outline.push_back(outline);
+    B.cell_lo.push_back(c_lo);
+    B.cell_hi.push_back(c_hi);
+  }
+  /* The links: along each line, where lines meet, and straight across each cell between the nodes round it. */
+  std::vector<std::vector<std::pair<int, float>>> links(count);
+  const auto link = [&](size_t a, size_t b) {
+    const float d = length(B.nodes[a] - B.nodes[b]);
+    links[a].emplace_back(int(b), d);
+    links[b].emplace_back(int(a), d);
+  };
+  for (size_t s = 0; s < lines.size(); s++) {
+    for (int k = 0; k + 1 < per; k++) {
+      link(s * per + size_t(k), s * per + size_t(k) + 1);
+    }
+  }
+  for (size_t a = 0; a < lines.size(); a++) {
+    for (size_t b = a + 1; b < lines.size(); b++) {
+      for (const int ea : {0, per - 1}) {
+        for (const int eb : {0, per - 1}) {
+          if (length(B.nodes[a * per + size_t(ea)] - B.nodes[b * per + size_t(eb)]) < size * 1e-5f) {
+            link(a * per + size_t(ea), b * per + size_t(eb));
+          }
+        }
+      }
+    }
+  }
+  for (const std::vector<int> &cell : cell_lines) {
+    for (size_t i = 0; i < cell.size(); i++) {
+      for (size_t j = i + 1; j < cell.size(); j++) {
+        for (int a = 0; a < per; a++) {
+          for (int b = 0; b < per; b++) {
+            link(size_t(cell[i]) * per + size_t(a), size_t(cell[j]) * per + size_t(b));
+          }
+        }
+      }
+    }
+  }
+  /* From each node, as far as a line can still have a say: the reach past the nearest line, which is at most a cell
+   * across (a little more for what lies outside the mesh). */
+  const float cutoff = reach + widest + size * 0.05f;
+  B.near.resize(count);
+  parallel_for(count, 16, [&](size_t begin, size_t end) {
+    std::vector<float> best(count, FLT_MAX);
+    std::vector<float> line_best(lines.size(), FLT_MAX);
+    std::vector<int> reached;
+    using Item = std::pair<float, int>;
+    for (size_t from = begin; from < end; from++) {
+      std::priority_queue<Item, std::vector<Item>, std::greater<>> todo;
+      best[from] = 0.0f;
+      reached.assign(1, int(from));
+      todo.emplace(0.0f, int(from));
+      while (!todo.empty()) {
+        const auto [d, n] = todo.top();
+        todo.pop();
+        if (d > best[size_t(n)]) {
+          continue;
+        }
+        line_best[size_t(n) / per] = std::min(line_best[size_t(n) / per], d);
+        for (const auto &[to, step] : links[size_t(n)]) {
+          const float further = d + step;
+          if (further < best[size_t(to)] && further <= cutoff) {
+            if (best[size_t(to)] == FLT_MAX) {
+              reached.push_back(to);
+            }
+            best[size_t(to)] = further;
+            todo.emplace(further, to);
+          }
+        }
+      }
+      for (size_t s = 0; s < lines.size(); s++) {
+        if (line_best[s] < FLT_MAX) {
+          B.near[from].emplace_back(int(s), line_best[s]);
+          line_best[s] = FLT_MAX;
+        }
+      }
+      for (const int n : reached) {
+        best[size_t(n)] = FLT_MAX;
+      }
+    }
+  });
+  std::lock_guard lock(mutex);
+  if (kept.size() >= 16) {
+    kept.erase(kept.begin());
+  }
+  kept.push_back(made);
+  return made;
+}
+
+/* What each line has to say at `p` (at rest): (line, share before they are added up, where along the line). The
+ * nearest line leads as Blend says, and each line's say fades out by Falloff past the nearest one's distance. */
+struct PointShare {
+  int line;
+  double weight;
+  float t;
+};
+static void point_shares(const PointBones &B, float power, float2 p, std::vector<PointShare> &r)
+{
+  r.clear();
+  constexpr int per = PointBones::STEPS + 1;
+  const size_t lines = B.rest.size();
+  thread_local std::vector<float> dist, place;
+  dist.assign(lines, FLT_MAX);
+  place.assign(lines, -1.0f);
+  /* The cell it is in: its lines are as near as they are, and the others as far as from those through the mesh. */
+  int cell = -1;
+  for (size_t c = 0; c < B.cell_outline.size() && cell < 0; c++) {
+    if (p.x >= B.cell_lo[c].x && p.y >= B.cell_lo[c].y && p.x <= B.cell_hi[c].x && p.y <= B.cell_hi[c].y &&
+        inside(B.cell_outline[c], p))
+    {
+      cell = int(c);
+    }
+  }
+  thread_local std::vector<int> from;
+  from.clear();
+  if (cell >= 0) {
+    for (const int s : B.cell_lines[size_t(cell)]) {
+      dist[size_t(s)] = bezier_nearest(B.rest[size_t(s)], p, place[size_t(s)]);
+      from.push_back(s);
+    }
+  }
+  else {
+    /* Outside every cell (past the mesh's outline, or by a line of a mesh with no cells): from the nearest lines. */
+    float nearest = FLT_MAX;
+    for (size_t s = 0; s < lines; s++) {
+      dist[s] = bezier_nearest(B.rest[s], p, place[s]);
+      nearest = std::min(nearest, dist[s]);
+    }
+    for (size_t s = 0; s < lines; s++) {
+      if (dist[s] <= nearest * 1.5f + B.size * 1e-4f) {
+        from.push_back(int(s));
+      }
+    }
+  }
+  for (const int s : from) {
+    for (int k = 0; k < per; k++) {
+      const size_t node = size_t(s) * per + size_t(k);
+      const float there = length(p - B.nodes[node]);
+      for (const auto &[line, d] : B.near[node]) {
+        dist[size_t(line)] = std::min(dist[size_t(line)], there + d);
+      }
+    }
+  }
+  const float nearest = *std::min_element(dist.begin(), dist.end());
+  const double floor = std::max(double(nearest), double(B.size) * 1e-5);
+  for (size_t s = 0; s < lines; s++) {
+    if (dist[s] >= nearest + B.reach) {
+      continue;
+    }
+    const double w = (1.0 - double(smooth01((dist[s] - nearest) / B.reach))) *
+                     std::pow(floor / std::max(double(dist[s]), floor), double(power));
+    if (w < 1e-9) {
+      continue;
+    }
+    if (place[s] < 0.0f) {
+      bezier_nearest(B.rest[s], p, place[s]);
+    }
+    r.push_back({int(s), w, place[s]});
+  }
+}
+
+/* Where Points puts `p`: each line near it carrying it from its place by the line, turned as the line is there, never
+ * stretched (as sides_follow). */
+static float2 point_bones_map(const DeformShape &d, float2 p)
+{
+  const PointBones &B = *d.points;
+  thread_local std::vector<PointShare> shares;
+  point_shares(B, d.points_power, p, shares);
+  const auto way = [](const std::array<float2, 4> &b, float t) {
+    const float u = 1.0f - t;
+    const float2 w = (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
+    if (length(w) >= 1e-10f) {
+      return w;
+    }
+    /* No handles: as it runs just along from there. */
+    const float s = std::clamp(t, 0.05f, 0.95f), v = 1.0f - s;
+    return (b[1] - b[0]) * (3.0f * v * v) + (b[2] - b[1]) * (6.0f * v * s) + (b[3] - b[2]) * (3.0f * s * s);
+  };
+  double x = 0.0, y = 0.0, total = 0.0;
+  for (const PointShare &share : shares) {
+    const std::array<float2, 4> &rest = B.rest[size_t(share.line)], &now = d.points_now[size_t(share.line)];
+    const float2 rest_way = way(rest, share.t), now_way = way(now, share.t);
+    const float rest_len = length(rest_way), now_len = length(now_way);
+    const float2 on = bezier3(now, share.t);
+    float2 q = on;
+    if (rest_len > 1e-10f && now_len > 1e-10f) {
+      const float2 off = p - bezier3(rest, share.t), rest_dir = rest_way / rest_len, now_dir = now_way / now_len;
+      q = on + now_dir * dot(off, rest_dir) + float2(-now_dir.y, now_dir.x) * cross(rest_dir, off);
+    }
+    x += share.weight * q.x;
+    y += share.weight * q.y;
+    total += share.weight;
+  }
+  return total > 0.0 ? float2(float(x / total), float(y / total)) : p;
+}
+
+/* Points on a drawn grid: its rows' and columns' segments, each cell's four. */
+static void points_build_grid(DeformShape &r, const Modifier &m)
+{
+  const GridSurface &g = r.rest_grid, &n = r.now_grid.across.empty() ? r.rest_grid : r.now_grid;
+  const int cols = g.columns, rows = g.rows;
+  if (cols <= 0 || rows <= 0 || n.columns != cols || n.rows != rows) {
+    return;
+  }
+  std::vector<std::array<float2, 4>> rest = g.across, now = n.across;
+  rest.insert(rest.end(), g.up.begin(), g.up.end());
+  now.insert(now.end(), n.up.begin(), n.up.end());
+  const int up = int(g.across.size());
+  std::vector<std::vector<int>> cell_lines;
+  std::vector<std::vector<float2>> outlines;
+  for (int row = 0; row < rows; row++) {
+    for (int c = 0; c < cols; c++) {
+      /* Round it: along the bottom, up the right, back along the top, down the left. */
+      const int bottom = row * cols + c, top = (row + 1) * cols + c;
+      const int left = up + c * rows + row, right = up + (c + 1) * rows + row;
+      cell_lines.push_back({bottom, right, top, left});
+      std::vector<float2> outline;
+      for (const auto &[line, forward] : {std::pair{bottom, true}, {right, true}, {top, false}, {left, false}}) {
+        for (int k = 0; k < PointBones::STEPS; k++) {
+          const float t = float(k) / float(PointBones::STEPS);
+          outline.push_back(bezier3(rest[size_t(line)], forward ? t : 1.0f - t));
+        }
+      }
+      outlines.push_back(std::move(outline));
+    }
+  }
+  r.points = point_bones(rest, cell_lines, outlines, m.deform_falloff);
+  r.points_now = std::move(now);
+  r.points_power = envelope_power_of(m.deform_blend);
+}
+
+/* Points on a network drawn by hand: its segments (as the shape has them), and each cell's, the segments its outline
+ * runs along. */
+static void points_build_network(DeformShape &r, const Modifier &m, const VectorDrawing &rest_drawing,
+                                 const Shape &rest_shape, const VectorDrawing &bent)
+{
+  /* As network_cells reads them: the bent drawing has the same curves. */
+  std::vector<std::array<float2, 4>> rest, now;
+  for (const ShapeEdge &e : rest_shape.edges) {
+    if (e.curve < 0 || e.curve >= int(rest_drawing.curves.size()) || e.curve >= int(bent.curves.size())) {
+      return;
+    }
+    int from, to;
+    curve_segment_points(rest_drawing.curves[size_t(e.curve)], e.segment, &from, &to);
+    if (from == to) {
+      continue;
+    }
+    std::array<float2, 4> a, b;
+    curve_segment_bezier(rest_drawing, rest_drawing.curves[size_t(e.curve)], e.segment, a.data());
+    curve_segment_bezier(bent, bent.curves[size_t(e.curve)], e.segment, b.data());
+    rest.push_back(a);
+    now.push_back(b);
+  }
+  if (rest.empty()) {
+    return;
+  }
+  std::vector<std::vector<int>> cell_lines;
+  std::vector<std::vector<float2>> outlines;
+  for (const DeformShape::Cell &c : r.cells) {
+    std::vector<int> lines;
+    for (size_t s = 0; s < rest.size(); s++) {
+      if (polyline_distance(c.rest, true, bezier3(rest[s], 0.5f)) < c.size * 1e-3f) {
+        lines.push_back(int(s));
+      }
+    }
+    cell_lines.push_back(std::move(lines));
+    outlines.push_back(c.rest);
+  }
+  r.points = point_bones(rest, cell_lines, outlines, m.deform_falloff);
+  r.points_now = std::move(now);
+  r.points_power = envelope_power_of(m.deform_blend);
+}
+
 /* How the cage has moved as a whole: the turn, scale and move that takes most of its outline from rest to now, each
  * sample's say going as one over how far it ends from there (iteratively reweighted, so least absolute distance): the
  * part of a cage that is being pushed about doesn't drag that along, as a least squares fit would. */
@@ -3205,6 +3562,9 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
     case DeformKind::Grid:
     case DeformKind::Mesh:
     case DeformKind::Wire: {
+      if (d.points) {
+        return point_bones_map(d, p);
+      }
       if (!d.wires.empty() && (d.cells.empty() || outside_mesh(d, p))) {
         return wires_follow(d, p, scratch);
       }
@@ -3826,6 +4186,63 @@ bool vector_deform_blend_view(const Document &doc, const Layer &layer, const Mod
   return true;
 }
 
+bool vector_deform_falloff_view(const Document &doc, const Layer &layer, const Modifier &m, DeformRangeView &r)
+{
+  r = {};
+  uint64_t build = 0;
+  const std::shared_ptr<const DeformShape> shape =
+      vector_deform_loops(doc, layer, m) ? nullptr : deform_shape_kept(doc, layer, m, false, build);
+  if (!shape || !shape->points || shape->points->cell_outline.empty()) {
+    return false;
+  }
+  const DeformShape &d = *shape;
+  const PointBones &B = *d.points;
+  const bool bent = doc.frame_current != 0 && m.deform_strength > 0.0f;
+  float2 lo = B.cell_lo[0], hi = B.cell_hi[0];
+  for (size_t c = 0; c < B.cell_lo.size(); c++) {
+    lo = float2(std::min(lo.x, B.cell_lo[c].x), std::min(lo.y, B.cell_lo[c].y));
+    hi = float2(std::max(hi.x, B.cell_hi[c].x), std::max(hi.y, B.cell_hi[c].y));
+  }
+  /* A grid of places over the mesh, those in its cells shaded by how evenly the lines share them (the next line's share
+   * over the leader's, as Blend's view): the wider Falloff, the further they share. */
+  constexpr int ACROSS = 64;
+  const float step = std::max(hi.x - lo.x, hi.y - lo.y) / float(ACROSS);
+  const int nx = int((hi.x - lo.x) / step) + 2, ny = int((hi.y - lo.y) / step) + 2;
+  std::vector<int> index(size_t(nx * ny), -1);
+  std::vector<PointShare> shares;
+  for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) {
+      const float2 p = lo + float2(float(i), float(j)) * step;
+      bool in = false;
+      for (size_t c = 0; c < B.cell_outline.size() && !in; c++) {
+        in = inside(B.cell_outline[c], p);
+      }
+      if (!in) {
+        continue;
+      }
+      point_shares(B, d.points_power, p, shares);
+      double lead = 0.0, second = 0.0;
+      for (const PointShare &share : shares) {
+        second = std::max(second, std::min(lead, share.weight));
+        lead = std::max(lead, share.weight);
+      }
+      index[size_t(j * nx + i)] = int(r.at.size());
+      r.at.push_back(bent ? vector_deform_point(&d, m, p) : p);
+      r.say.push_back(lead > 0.0 ? float(second / lead) : 0.0f);
+    }
+  }
+  for (int j = 0; j + 1 < ny; j++) {
+    for (int i = 0; i + 1 < nx; i++) {
+      const int a = index[size_t(j * nx + i)], b = index[size_t(j * nx + i + 1)],
+                c = index[size_t((j + 1) * nx + i + 1)], e = index[size_t((j + 1) * nx + i)];
+      if (a >= 0 && b >= 0 && c >= 0 && e >= 0) {
+        r.quads.push_back({a, b, c, e});
+      }
+    }
+  }
+  return true;
+}
+
 bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m)
 {
   /* Follow the shapes' layers' own deform modifiers back; reaching `layer` is a loop. */
@@ -3864,7 +4281,9 @@ static float2 bent_handle(const DeformShape &d, float2 p0, float2 q0, float2 han
   /* At a point in a four-sided cell or on its sides: turned and stretched as the cell's patch does there, from its
    * own derivatives (a step either way would leave the cell at its sides and corners), so a line drawn on a side
    * leaves its points exactly as the bent side does. */
-  for (const DeformShape::Cell &c : d.cells) {
+  /* (Points carries by the lines, not the cells' patches.) */
+  static const std::vector<DeformShape::Cell> no_cells;
+  for (const DeformShape::Cell &c : d.points ? no_cells : d.cells) {
     float2 st;
     if (!c.quad || !quad_cell_at(c, p0, st)) {
       continue;

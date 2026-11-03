@@ -28,7 +28,7 @@ bool cage_method_from_id(const std::string &id, CageMethod &r_method)
   return false;
 }
 
-static constexpr const char *MESH_METHOD_IDS[] = {"CELLS", "ENVELOPE"};
+static constexpr const char *MESH_METHOD_IDS[] = {"CELLS", "ENVELOPE", "POINTS"};
 
 const char *mesh_method_id(MeshMethod method)
 {
@@ -37,7 +37,7 @@ const char *mesh_method_id(MeshMethod method)
 
 bool mesh_method_from_id(const std::string &id, MeshMethod &r_method)
 {
-  for (int k = 0; k < 2; k++) {
+  for (int k = 0; k < 3; k++) {
     if (id == MESH_METHOD_IDS[k]) {
       r_method = MeshMethod(k);
       return true;

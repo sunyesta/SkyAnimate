@@ -3434,26 +3434,26 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   };
 
-  /* What it makes of the shape. */
-  const DeformKind kind = vector_deform_kind(doc, layer, m);
-  modifier_row_label("", column);
-  if (vector_deform_loops(doc, layer, m)) {
-    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "A loop: this layer bends that shape, so neither bends");
-  }
-  else if (kind == DeformKind::Grid) {
-    ImGui::TextDisabled(follows ? "Grid: the point goes as its cell does" : "Grid: each cell bends what is in it");
-    static const char *const METHOD_NAMES[] = {"Cells", "Envelope"};
+  /* A mesh's Method, and its settings: Envelope only where every cell has four sides. */
+  const auto mesh_method_rows = [&](bool envelope) {
+    static const char *const METHOD_NAMES[] = {"Cells", "Envelope", "Points"};
     static const char *const METHOD_TIPS[] = {
         "Each cell bends what is in it, so the drawing fits the mesh exactly, and a line along the edge stretches with "
         "its cell",
         "As Cage Deform's Envelope: the outer cells keep what lies near the outline at its distance from it, so lines "
         "along the edge keep their width. This eases off toward the next cells in, whose points and lines are still "
-        "exactly where the mesh puts them (Blend says how evenly the sides share a corner)"};
+        "exactly where the mesh puts them (Blend says how evenly the sides share a corner)",
+        "Every line of the mesh is a bone: what lies near it keeps its place by it, turned as the line turns there, so "
+        "a point's handles turn what lies by the point. Falloff says how far a line's say reaches past the nearest "
+        "line's, through the mesh, and the weights are set at rest, so they never change as the mesh moves"};
     modifier_row_label("Method", column, "How what is in the mesh follows it");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
     const int method = int(m.deform_mesh_method);
     if (ImGui::BeginCombo("##mesh_method", METHOD_NAMES[method])) {
-      for (int k = 0; k < 2; k++) {
+      for (int k = 0; k < 3; k++) {
+        if (k == int(MeshMethod::Envelope) && !envelope) {
+          continue;
+        }
         if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
           m.deform_mesh_method = MeshMethod(k);
           done = true;
@@ -3464,14 +3464,42 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       }
       ImGui::EndCombo();
     }
-    if (m.deform_mesh_method == MeshMethod::Envelope) {
+    if (m.deform_mesh_method == MeshMethod::Points) {
+      modifier_row_label("Falloff", column, "How far each line of the mesh reaches past the nearest line, measured "
+                                            "through the mesh: low, everything follows only the lines nearest it; "
+                                            "high, a line moving drags a wide area with it. The viewport shows where "
+                                            "lines share while you drag");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      factor_slider("##mesh_falloff", &m.deform_falloff);
+      if (ImGui::IsItemActive()) {
+        C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(),
+                                      WindowManager::DeformRangePreview::What::Falloff};
+      }
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+    if (m.deform_mesh_method == MeshMethod::Envelope || m.deform_mesh_method == MeshMethod::Points) {
       modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
                                           "corner: low, the nearest side leads sharply (edges hug their own side "
                                           "most); high, the sides blend gently");
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       factor_slider("##mesh_blend", &m.deform_blend);
+      if (ImGui::IsItemActive() && m.deform_mesh_method == MeshMethod::Points) {
+        C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(),
+                                      WindowManager::DeformRangePreview::What::Blend};
+      }
       done |= ImGui::IsItemDeactivatedAfterEdit();
     }
+  };
+
+  /* What it makes of the shape. */
+  const DeformKind kind = vector_deform_kind(doc, layer, m);
+  modifier_row_label("", column);
+  if (vector_deform_loops(doc, layer, m)) {
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "A loop: this layer bends that shape, so neither bends");
+  }
+  else if (kind == DeformKind::Grid) {
+    ImGui::TextDisabled(follows ? "Grid: the point goes as its cell does" : "Grid: each cell bends what is in it");
+    mesh_method_rows(true);
     if (vector_deform_drawn_grid(doc, layer, m)) {
       modifier_row_label("", column);
       if (ImGui::Checkbox("Smooth", &m.deform_smooth)) {
@@ -3518,7 +3546,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
       factor_slider("##deform_blend", &m.deform_blend);
       if (ImGui::IsItemActive() && !follows) {
-        C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(), true};
+        C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(),
+                                      WindowManager::DeformRangePreview::What::Blend};
       }
       done |= ImGui::IsItemDeactivatedAfterEdit();
       if (!follows) {
@@ -3529,7 +3558,8 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
         factor_slider("##deform_range", &m.deform_range);
         if (ImGui::IsItemActive()) {
-          C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(), false};
+          C.wm->deform_range_preview = {layer.id, index, ImGui::GetFrameCount(),
+                                        WindowManager::DeformRangePreview::What::Range};
         }
         done |= ImGui::IsItemDeactivatedAfterEdit();
       }
@@ -3537,6 +3567,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   }
   else if (kind == DeformKind::Mesh) {
     ImGui::TextDisabled(follows ? "Mesh: the point goes as its cell does" : "Mesh: each cell bends what is in it");
+    mesh_method_rows(false);
   }
   else if (kind == DeformKind::Wire) {
     ImGui::TextDisabled(follows ? "Wire: the point is pinned to the line" : "Wire: everything moves with the line, pinned to it (a bendy bone)");

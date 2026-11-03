@@ -3243,6 +3243,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["smooth"] = mod.deform_smooth;
         d["blend"] = mod.deform_blend;
         d["range"] = mod.deform_range;
+        d["falloff"] = mod.deform_falloff;
         if (mod.type == ModifierType::FollowDeform) {
           const auto pair = [](float2 v) { return py::make_tuple(v.x, v.y); };
           d["point"] = pair(mod.deform_point);
@@ -3349,7 +3350,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         return vector_deform_weights(doc, layer, layer.modifiers[size_t(index)]);
       },
       py::arg("id"), py::arg("index"), py::arg("reset") = false);
-  m.def("layer_deform_range_view", [layer_or_raise](uint64_t id, int index, bool blend) -> py::object {
+  m.def("layer_deform_range_view", [layer_or_raise](uint64_t id, int index, const std::string &what) -> py::object {
     Layer &layer = layer_or_raise(id);
     if (index < 0 || index >= int(layer.modifiers.size()) || !modifier_is_deform(layer.modifiers[size_t(index)].type)) {
       throw py::index_error("no deform modifier (Curve, Cage or Mesh Deform) " + std::to_string(index));
@@ -3357,7 +3358,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const Document &doc = *current_context().document;
     const Modifier &mod = layer.modifiers[size_t(index)];
     DeformRangeView view;
-    if (!(blend ? vector_deform_blend_view(doc, layer, mod, view) : vector_deform_range_view(doc, layer, mod, view))) {
+    const bool made = what == "BLEND"   ? vector_deform_blend_view(doc, layer, mod, view) :
+                      what == "FALLOFF" ? vector_deform_falloff_view(doc, layer, mod, view) :
+                                          vector_deform_range_view(doc, layer, mod, view);
+    if (!made) {
       return py::none();
     }
     py::list at;
@@ -3644,7 +3648,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "mesh_method") {
         if (!mesh_method_from_id(value.cast<std::string>(), mod.deform_mesh_method)) {
-          throw py::value_error("mesh_method is CELLS or ENVELOPE");
+          throw py::value_error("mesh_method is CELLS, ENVELOPE or POINTS");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "blend") {
@@ -3652,6 +3656,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "range") {
         mod.deform_range = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "falloff") {
+        mod.deform_falloff = std::clamp(value.cast<float>(), 0.0f, 1.0f);
       }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
