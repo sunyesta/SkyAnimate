@@ -1272,7 +1272,12 @@ static float bezier_nearest(const std::array<float2, 4> &b, float2 p, float &r_t
       if (std::fabs(df) < 1e-20f) {
         break;
       }
-      t = std::clamp(t - f / df, 0.0f, 1.0f);
+      /* Settled: every step from here would land on it again. */
+      const float next = std::clamp(t - f / df, 0.0f, 1.0f);
+      if (next == t) {
+        break;
+      }
+      t = next;
     }
     const float dist = length(at(t) - p);
     if (dist < best) {
@@ -2967,6 +2972,8 @@ struct PointBones {
   /* Samples along each line that distances are measured between: line `s` has nodes s * (STEPS + 1) on. */
   static constexpr int STEPS = 8;
   std::vector<std::array<float2, 4>> rest;
+  /* Each line's bounds (its control points'). */
+  std::vector<float2> line_lo, line_hi;
   /* Each cell's lines, its outline at rest and its bounds. */
   std::vector<std::vector<int>> cell_lines;
   std::vector<std::vector<float2>> cell_outline;
@@ -3019,6 +3026,15 @@ static std::shared_ptr<const PointBones> point_bones(const std::vector<std::arra
   B.cell_lines = cell_lines;
   B.size = size;
   B.reach = reach;
+  for (const std::array<float2, 4> &line : lines) {
+    float2 l_lo = line[0], l_hi = l_lo;
+    for (const float2 &q : line) {
+      l_lo = float2(std::min(l_lo.x, q.x), std::min(l_lo.y, q.y));
+      l_hi = float2(std::max(l_hi.x, q.x), std::max(l_hi.y, q.y));
+    }
+    B.line_lo.push_back(l_lo);
+    B.line_hi.push_back(l_hi);
+  }
   constexpr int per = PointBones::STEPS + 1;
   const size_t count = lines.size() * per;
   B.nodes.resize(count);
@@ -3136,6 +3152,9 @@ static std::shared_ptr<const PointBones> point_bones(const std::vector<std::arra
           line_best[s] = FLT_MAX;
         }
       }
+      /* Nearest first, so a place far from this node stops early (point_shares). */
+      std::sort(B.near[from].begin(), B.near[from].end(),
+                [](const auto &a, const auto &b) { return a.second < b.second; });
       for (const int n : reached) {
         best[size_t(n)] = FLT_MAX;
       }
@@ -3173,32 +3192,52 @@ static void point_shares(const PointBones &B, float power, float2 p, std::vector
       cell = int(c);
     }
   }
-  thread_local std::vector<int> from;
-  from.clear();
+  /* Only the lines that can still have a say are measured: no way through the mesh to a line is shorter than straight
+   * to it, so one whose bounds already lie past the nearest line's distance and the reach has none, and neither does
+   * anything reached through it. (A mesh drawn as one closed shape is one cell of every line, and measuring them all
+   * from every node of every one for every place bent was most of the time a frame took.) */
+  thread_local std::vector<std::pair<float, int>> order;
+  order.clear();
+  const auto consider = [&](int s) {
+    order.emplace_back(box_distance(B.line_lo[size_t(s)], B.line_hi[size_t(s)], p), s);
+  };
   if (cell >= 0) {
     for (const int s : B.cell_lines[size_t(cell)]) {
-      dist[size_t(s)] = bezier_nearest(B.rest[size_t(s)], p, place[size_t(s)]);
-      from.push_back(s);
+      consider(s);
     }
   }
   else {
-    /* Outside every cell (past the mesh's outline, or by a line of a mesh with no cells): from the nearest lines. */
-    float nearest = FLT_MAX;
     for (size_t s = 0; s < lines; s++) {
-      dist[s] = bezier_nearest(B.rest[s], p, place[s]);
-      nearest = std::min(nearest, dist[s]);
-    }
-    for (size_t s = 0; s < lines; s++) {
-      if (dist[s] <= nearest * 1.5f + B.size * 1e-4f) {
-        from.push_back(int(s));
-      }
+      consider(int(s));
     }
   }
+  std::sort(order.begin(), order.end());
+  float measured = FLT_MAX;
+  size_t count = 0;
+  for (; count < order.size() && order[count].first < measured + B.reach; count++) {
+    const size_t s = size_t(order[count].second);
+    dist[s] = bezier_nearest(B.rest[s], p, place[s]);
+    measured = std::min(measured, dist[s]);
+  }
+  /* In a cell, from its lines; outside every cell (past the mesh's outline, or by a line of a mesh with no cells),
+   * from the nearest lines. */
+  thread_local std::vector<int> from;
+  from.clear();
+  for (size_t i = 0; i < count; i++) {
+    const int s = order[i].second;
+    if (cell >= 0 || dist[size_t(s)] <= measured * 1.5f + B.size * 1e-4f) {
+      from.push_back(s);
+    }
+  }
+  const float bound = measured + B.reach;
   for (const int s : from) {
     for (int k = 0; k < per; k++) {
       const size_t node = size_t(s) * per + size_t(k);
       const float there = length(p - B.nodes[node]);
       for (const auto &[line, d] : B.near[node]) {
+        if (there + d >= bound) {
+          break;
+        }
         dist[size_t(line)] = std::min(dist[size_t(line)], there + d);
       }
     }
@@ -4934,12 +4973,21 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
   if (g_wire > 0 && !resample) {
     /* The wire: each deformed segment's handles fitted to the bent segment itself (their directions as
      * the deform turned them, their lengths by least squares), the nearest one Bezier comes to it, unless the
-     * handles as bent already follow it closer (on a cell's sides they are exact). */
+     * handles as bent already follow it closer (on a cell's sides they are exact). Each segment on its own (its first
+     * point's out handle, its last's in): shared over the cores. */
+    std::vector<std::pair<size_t, int>> segments;
     for (size_t c = 0; c < drawing.curves.size(); c++) {
-      Curve &curve = drawing.curves[c];
-      const Curve &was = base.curves[c];
-      const int n = int(curve.points.size());
-      for (int s = 0; s < curve.segment_count() && s < was.segment_count(); s++) {
+      for (int s = 0; s < drawing.curves[c].segment_count() && s < base.curves[c].segment_count(); s++) {
+        segments.emplace_back(c, s);
+      }
+    }
+    parallel_for(segments.size(), 4, [&](size_t begin, size_t end) {
+      std::vector<float> own;
+      for (size_t i = begin; i < end; i++) {
+        const auto [c, s] = segments[i];
+        Curve &curve = drawing.curves[c];
+        const Curve &was = base.curves[c];
+        const int n = int(curve.points.size());
         CurvePoint &from = curve.points[size_t(s)], &to = curve.points[size_t((s + 1) % n)];
         const float w = std::min(weights[size_t(from.point)], weights[size_t(to.point)]);
         if (w <= 0.0f) {
@@ -4953,12 +5001,12 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
         curve_segment_bezier(base, was, s, ctrl);
         std::vector<float2> samples;
         for (int k = 1; k < 12; k++) {
-          samples.push_back(deform_map(d, bezier_point(ctrl, float(k) / 12.0f), scratch));
+          samples.push_back(deform_map(d, bezier_point(ctrl, float(k) / 12.0f), own));
         }
         /* The bent segment's own directions at its ends (a long handle's mapped end lies inside a bend). */
-        const float2 q0 = deform_map(d, ctrl[0], scratch), q3 = deform_map(d, ctrl[3], scratch);
-        const float2 d1 = deform_map(d, bezier_point(ctrl, 1e-3f), scratch) - q0;
-        const float2 d2 = deform_map(d, bezier_point(ctrl, 1.0f - 1e-3f), scratch) - q3;
+        const float2 q0 = deform_map(d, ctrl[0], own), q3 = deform_map(d, ctrl[3], own);
+        const float2 d1 = deform_map(d, bezier_point(ctrl, 1e-3f), own) - q0;
+        const float2 d2 = deform_map(d, bezier_point(ctrl, 1.0f - 1e-3f), own) - q3;
         if (length(d1) < 1e-12f || length(d2) < 1e-12f) {
           continue;
         }
@@ -4977,7 +5025,7 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
         from.handle_out = from.handle_out + (f1 - from.handle_out) * fitted;
         to.handle_in = to.handle_in + (f2 - to.handle_in) * fitted;
       }
-    }
+    });
   }
   for (size_t i = 0; i < drawing.points.size(); i++) {
     if (weights[i] > 0.0f) {
