@@ -1876,12 +1876,22 @@ static void changed_end(Context &C, bool on, const char *id, const std::vector<O
  * is, its Frame (0: not playing) and its checkbox (unchecked: muted); fixes indented under the action bone action
  * that drives them last. The row being edited is the one picked. Under the list, the picked action's Loop, length
  * and what it is linked to. */
+static void actions_panel_body(Context &C, Layer &armature);
+
 static void actions_panel(Context &C, Layer &armature)
 {
-  Document &doc = *C.document;
   if (!ui_collapsing_header("Actions", true)) {
     return;
   }
+  /* Its list's widgets are named as Bone Collections' are, in the same window. */
+  ImGui::PushID("##actions_panel");
+  actions_panel_body(C, armature);
+  ImGui::PopID();
+}
+
+static void actions_panel_body(Context &C, Layer &armature)
+{
+  Document &doc = *C.document;
   const ImGuiStyle &style = ImGui::GetStyle();
   const float h = ImGui::GetFrameHeight();
   const float row_h = h + 2.0f;
@@ -1963,8 +1973,12 @@ static void actions_panel(Context &C, Layer &armature)
       }
     }
     else {
+      /* The one being edited, in Blender's list blue (the theme's selected rows are near the background). */
+      if (name == picked) {
+        dl->AddRectFilled(row, ImVec2(row.x + w, row.y + row_h - 2.0f), IM_COL32(0x33, 0x4d, 0x80, 255), 3.0f);
+      }
       ImGui::SetNextItemAllowOverlap();
-      if (ImGui::Selectable("##row", name == picked, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w - right_w, row_h - 2.0f)))
+      if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w - right_w, row_h - 2.0f)))
       {
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !name.empty() && by != ActionFrameBy::Bone) {
           st.renaming = name;
