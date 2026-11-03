@@ -94,11 +94,32 @@ at(10)
 low = rows_moved()
 assert low[-0.9] > 0.4 and low[-0.7] > 0.1, ("the bottom row's art goes with it", low)
 assert all(low[y] < 1e-5 for y in ys if y > -0.5), ("what lies past the next line stays", low)
-# A wider Falloff lets the bottom line reach further in, less the further.
+
+
+def row_heights(y):
+    return [b[1] for a, b in zip(rest, shown(art)) if abs(a[1] - y) < 1e-6]
+
+
+# The bottom cells, three times as tall now, take what is in them along as their sides now run: each row stays a
+# straight row, where Cells puts it. Each line beside a row would otherwise hold it as far off as at rest (waves: the
+# side lines holding it high, the bottom one low), or as far off as its neighbours have stretched end to end (the
+# moved points' handles leave those running unevenly: smaller waves).
+art.modifier_set(0, mesh_method="CELLS")
+at(10)
+by_cells = {y: row_heights(y) for y in (-0.9, -0.7)}
+art.modifier_set(0, mesh_method="POINTS")
+for falloff in (0.1, 0.25):
+    art.modifier_set(0, falloff=falloff)
+    at(10)
+    for y, cells in by_cells.items():
+        heights = row_heights(y)
+        assert max(abs(h - c) for h, c in zip(heights, cells)) < 1e-3, ("the row stays even", falloff, y, heights, cells)
+# However far Falloff reaches, a stretch stays in the cells that stretched: the bottom line carries what lies past them
+# as far off them as it was.
 art.modifier_set(0, falloff=1.0)
 at(10)
 wide = rows_moved()
-assert wide[-0.4] > 0.01 and wide[-0.2] > 0.002 and wide[-0.4] > wide[-0.2], ("a wide Falloff reaches further", wide)
+assert all(wide[y] < 1e-4 for y in ys if y > -0.5), ("a stretch reaches out of its cells", wide)
 art.modifier_set(0, falloff=0.25)
 
 # Falloff's view: where lines share what is in the mesh; more of it shared the wider Falloff is.
@@ -116,6 +137,25 @@ assert shared(0.05) + 0.05 < shared(0.25) < shared(0.8), (shared(0.05), shared(0
 art.modifier_set(0, falloff=0.25, mesh_method="CELLS")
 assert art.deform_falloff_view(0) is None, "only Points has lines to share"
 art.modifier_set(0, mesh_method="POINTS")
+doc.frame_current = 0
+
+# --- A cell sheared ---------------------------------------------------------------------------------------------------
+# The bottom row slides across: what is in the bottom cells slides with their sides, as far as it was up them, its
+# height kept (Cells as the reference; the slanted sides, S-shaped by their points' handles, turn what lies by them a
+# little, so the heights only nearly). Each line beside it would otherwise hold it where it was.
+sheared = new_grid("Sheared")
+slid = new_layer("Slid")
+for y in (-0.9, -0.7):
+    slid.add_curve([(x, y) for x in xs])
+deform(slid, sheared, falloff=0.1)
+reshape(sheared, lambda x, y: (x + 0.4, y) if y < -0.99 else None)
+slid.modifier_set(0, mesh_method="CELLS")
+at(10)
+by_cells = shown(slid)
+slid.modifier_set(0, mesh_method="POINTS")
+at(10)
+for p, c in zip(shown(slid), by_cells):
+    assert abs(p[0] - c[0]) < 0.005 and abs(p[1] - c[1]) < 0.025, ("it slides with the cell", p, c)
 doc.frame_current = 0
 
 # --- Art on a line follows it exactly -------------------------------------------------------------------------------
@@ -190,6 +230,11 @@ for a, b in zip(near_rest[:2], near_now[:2]):
     assert b[1] - a[1] > 0.01, ("what lies along the handle turns up with it", a, b)
     assert abs(math.hypot(*b) - math.hypot(*a)) < 0.4 * math.dist(a, b), ("it turns about the node", a, b)
 assert max(moved(near_rest[2:], near_now[2:])) < 0.25 * min(moved(near_rest[:2], near_now[:2])), (near_rest, near_now)
+# A wider Falloff lets the turned line reach further: across the next lines, less the further.
+near.modifier_set(0, falloff=0.6)
+at(10)
+wide_now = shown(near)
+assert min(moved(near_rest[2:], wide_now[2:])) > 2 * max(moved(near_rest[2:], near_now[2:])) + 0.002, (near_now, wide_now)
 doc.frame_current = 0
 
 # --- Never across a gap ---------------------------------------------------------------------------------------------

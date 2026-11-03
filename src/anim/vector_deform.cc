@@ -2949,6 +2949,20 @@ static void mesh_envelope_build(DeformShape &r, float blend)
  * Envelope's sides), and a line's say fades out by Falloff past the nearest one's distance. Distances are measured
  * through the mesh, from the cell a place is in across cells and along lines, so a line never reaches across a gap
  * in the mesh. All of it is worked out from the mesh at rest: the weights never change as it moves. */
+
+/* Which way a line runs at `t` (its derivative). */
+static float2 point_line_way(const std::array<float2, 4> &b, float t)
+{
+  const float u = 1.0f - t;
+  const float2 w = (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
+  if (length(w) >= 1e-10f) {
+    return w;
+  }
+  /* No handles: as it runs just along from there. */
+  const float s = std::clamp(t, 0.05f, 0.95f), v = 1.0f - s;
+  return (b[1] - b[0]) * (3.0f * v * v) + (b[2] - b[1]) * (6.0f * v * s) + (b[3] - b[2]) * (3.0f * s * s);
+}
+
 struct PointBones {
   /* Samples along each line that distances are measured between: line `s` has nodes s * (STEPS + 1) on. */
   static constexpr int STEPS = 8;
@@ -2959,6 +2973,15 @@ struct PointBones {
   std::vector<float2> cell_lo, cell_hi;
   float size = 1.0f, reach = 1.0f;
   std::vector<float2> nodes;
+  /* The lines leaving each line's start to its left, right and on beyond it, then the same at its end, each with how
+   * squarely it goes that way: what lies off the line that way is as far off now as along those (point_bones_off). */
+  struct Leaving {
+    int line;
+    /* 0 if it starts at the joint, 1 if it ends there. */
+    int at;
+    float say;
+  };
+  std::vector<std::array<std::vector<Leaving>, 6>> leaving;
   /* From each node, the lines within reach through the mesh and how far the nearest of their nodes is. */
   std::vector<std::vector<std::pair<int, float>>> near;
 };
@@ -3028,12 +3051,37 @@ static std::shared_ptr<const PointBones> point_bones(const std::vector<std::arra
       link(s * per + size_t(k), s * per + size_t(k) + 1);
     }
   }
+  std::vector<std::array<std::vector<std::pair<int, int>>, 2>> ends(lines.size());
   for (size_t a = 0; a < lines.size(); a++) {
     for (size_t b = a + 1; b < lines.size(); b++) {
       for (const int ea : {0, per - 1}) {
         for (const int eb : {0, per - 1}) {
           if (length(B.nodes[a * per + size_t(ea)] - B.nodes[b * per + size_t(eb)]) < size * 1e-5f) {
             link(a * per + size_t(ea), b * per + size_t(eb));
+            ends[a][ea == 0 ? 0 : 1].emplace_back(int(b), eb == 0 ? 0 : 1);
+            ends[b][eb == 0 ? 0 : 1].emplace_back(int(a), ea == 0 ? 0 : 1);
+          }
+        }
+      }
+    }
+  }
+  B.leaving.resize(lines.size());
+  for (size_t s = 0; s < lines.size(); s++) {
+    for (int e = 0; e < 2; e++) {
+      const float2 way = point_line_way(lines[s], float(e));
+      const float way_len = length(way);
+      if (way_len < 1e-10f) {
+        continue;
+      }
+      const float2 along = way / way_len, left = float2(-along.y, along.x);
+      const float2 sides[3] = {left, left * -1.0f, e == 0 ? along * -1.0f : along};
+      for (const auto &[other, at] : ends[s][size_t(e)]) {
+        float2 leaves = point_line_way(lines[size_t(other)], float(at));
+        leaves = (at == 0 ? leaves : leaves * -1.0f) / std::max(length(leaves), 1e-10f);
+        for (int k = 0; k < 3; k++) {
+          const float say = dot(leaves, sides[k]);
+          if (say > 1e-3f) {
+            B.leaving[s][size_t(e * 3 + k)].push_back({other, at, say});
           }
         }
       }
@@ -3173,33 +3221,82 @@ static void point_shares(const PointBones &B, float power, float2 p, std::vector
   }
 }
 
-/* Where Points puts `p`: each line near it carrying it from its place by the line, turned as the line is there, never
- * stretched (as sides_follow). */
+/* Where what lay `off` from line `s` at rest, one way (`k`: left, right or on beyond) at its end `e`, is now: (how
+ * far off that way, how far it has slid across that way), in the line's own frame, end to end, at rest and now. It is
+ * where the lines leaving that end that way now have what was as far off along them: a cell pulled three times as tall
+ * takes what is in it along as its sides now run, evenly from both, not each side holding it where it was; a sheared
+ * one slides it across with them, its height kept. A line turned whole, or bent by its handles, leaves it as it was.
+ * With nothing leaving that way (the mesh's outline), as at rest. */
+static float2 point_bones_off(const DeformShape &d, size_t s, int e, int k, float off)
+{
+  const PointBones &B = *d.points;
+  const std::array<float2, 4> &line = B.rest[s], &line_now = d.points_now[s];
+  const float2 chord = line[3] - line[0], chord_now = line_now[3] - line_now[0];
+  if (length(chord) < 1e-10f || length(chord_now) < 1e-10f) {
+    return float2(off, 0.0f);
+  }
+  /* Each frame: the way out (`k`) and the way across it. */
+  const auto frame = [&](const float2 c, float2 &out, float2 &across) {
+    const float2 along = c / length(c), left = float2(-along.y, along.x);
+    out = k == 0 ? left : k == 1 ? left * -1.0f : e == 0 ? along * -1.0f : along;
+    across = k == 2 ? left : along;
+  };
+  float2 out, across, out_now, across_now;
+  frame(chord, out, across);
+  frame(chord_now, out_now, across_now);
+  double far = 0.0, slid = 0.0, total = 0.0;
+  for (const PointBones::Leaving &l : B.leaving[s][size_t(e * 3 + k)]) {
+    const std::array<float2, 4> &o = B.rest[size_t(l.line)], &o_now = d.points_now[size_t(l.line)];
+    const float2 joint = o[l.at == 0 ? 0 : 3], joint_now = o_now[l.at == 0 ? 0 : 3];
+    const float2 end = o[l.at == 0 ? 3 : 0], end_now = o_now[l.at == 0 ? 3 : 0];
+    const float reach = dot(end - joint, out);
+    if (reach < 1e-10f) {
+      continue;
+    }
+    /* Past that line's far end, as far again as at rest: only what that line spans has stretched. */
+    const float u = off / reach;
+    const float2 at = u <= 1.0f ? bezier3(o, l.at == 0 ? u : 1.0f - u) - joint : end - joint;
+    const float2 at_now = u <= 1.0f ? bezier3(o_now, l.at == 0 ? u : 1.0f - u) - joint_now : end_now - joint_now;
+    far += double(l.say) * double(dot(at_now, out_now) + (off - dot(at, out)));
+    slid += double(l.say) * double(dot(at_now, across_now) - dot(at, across));
+    total += double(l.say);
+  }
+  return total > 0.0 ? float2(float(far / total), float(slid / total)) : float2(off, 0.0f);
+}
+
+/* Where Points puts `p`: each line near it carrying it from its place by the line, turned as the line is there (as
+ * sides_follow), and as far off it as the cells beside it have stretched (point_bones_off). */
 static float2 point_bones_map(const DeformShape &d, float2 p)
 {
   const PointBones &B = *d.points;
   thread_local std::vector<PointShare> shares;
   point_shares(B, d.points_power, p, shares);
-  const auto way = [](const std::array<float2, 4> &b, float t) {
-    const float u = 1.0f - t;
-    const float2 w = (b[1] - b[0]) * (3.0f * u * u) + (b[2] - b[1]) * (6.0f * u * t) + (b[3] - b[2]) * (3.0f * t * t);
-    if (length(w) >= 1e-10f) {
-      return w;
-    }
-    /* No handles: as it runs just along from there. */
-    const float s = std::clamp(t, 0.05f, 0.95f), v = 1.0f - s;
-    return (b[1] - b[0]) * (3.0f * v * v) + (b[2] - b[1]) * (6.0f * v * s) + (b[3] - b[2]) * (3.0f * s * s);
-  };
   double x = 0.0, y = 0.0, total = 0.0;
   for (const PointShare &share : shares) {
     const std::array<float2, 4> &rest = B.rest[size_t(share.line)], &now = d.points_now[size_t(share.line)];
-    const float2 rest_way = way(rest, share.t), now_way = way(now, share.t);
+    const float2 rest_way = point_line_way(rest, share.t), now_way = point_line_way(now, share.t);
     const float rest_len = length(rest_way), now_len = length(now_way);
     const float2 on = bezier3(now, share.t);
     float2 q = on;
     if (rest_len > 1e-10f && now_len > 1e-10f) {
       const float2 off = p - bezier3(rest, share.t), rest_dir = rest_way / rest_len, now_dir = now_way / now_len;
-      q = on + now_dir * dot(off, rest_dir) + float2(-now_dir.y, now_dir.x) * cross(rest_dir, off);
+      const size_t s = size_t(share.line);
+      float a = dot(off, rest_dir), c = cross(rest_dir, off);
+      const int side = c >= 0.0f ? 0 : 1;
+      const float2 beside = point_bones_off(d, s, 0, side, std::fabs(c)) * (1.0f - share.t) +
+                            point_bones_off(d, s, 1, side, std::fabs(c)) * share.t;
+      /* Beyond an end of the line: on as the lines carrying on from there. */
+      float2 beyond = float2(a, 0.0f);
+      if (share.t < 1e-4f && a < 0.0f) {
+        beyond = point_bones_off(d, s, 0, 2, -a);
+        beyond.x = -beyond.x;
+      }
+      else if (share.t > 1.0f - 1e-4f && a > 0.0f) {
+        beyond = point_bones_off(d, s, 1, 2, a);
+      }
+      a = beyond.x + beside.y;
+      c = std::copysign(beside.x, c) + beyond.y;
+      q = on + now_dir * a + float2(-now_dir.y, now_dir.x) * c;
     }
     x += share.weight * q.x;
     y += share.weight * q.y;
