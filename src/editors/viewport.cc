@@ -11774,13 +11774,16 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
     const float2 d = layer_world_transform(doc, owner->id).inverted().apply(view.to_document(io.MousePos)) - pose->head;
     float2 lo, hi;
     controller_box(*knob, lo, hi);
+    /* One size for both ways, so the box keeps its shape: the corner goes with whichever way the mouse is further. */
     const float2 frames(g_controller_resize.corner.x > 0.0f ? hi.x : -lo.x, g_controller_resize.corner.y > 0.0f ? hi.y : -lo.y);
+    float size = 1e-5f;
     if (frames.x > 0.0f) {
-      knob->controller_frame_size.x = std::max(std::abs(d.x) / frames.x, 1e-5f);
+      size = std::max(size, std::abs(d.x) / frames.x);
     }
     if (frames.y > 0.0f) {
-      knob->controller_frame_size.y = std::max(std::abs(d.y) / frames.y, 1e-5f);
+      size = std::max(size, std::abs(d.y) / frames.y);
     }
+    knob->controller_frame_size = size;
     knob->controller_size_auto = false;
     return;
   }

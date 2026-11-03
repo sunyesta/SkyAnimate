@@ -121,9 +121,9 @@ assert side("RIGHT", "nothing here") == {'CANCELLED'}
 
 # A wider action, a wider box, and the frame size is what says how far a frame is.
 size = bone("stick")["controller_frame_size"]
-assert close(size[0], size[1]) and close(size[0], 0.5 / 40.0, 1e-5), ("fitted to the longest side", size)
-rig.bone_set("stick", controller_frame_size=(0.01, 0.02))
-assert close(bone("stick")["controller_frame_size"], (0.01, 0.02), 1e-6)
+assert close(size, 0.5 / 40.0, 1e-5), ("fitted to the longest side", size)
+rig.bone_set("stick", controller_frame_size=0.01)
+assert close(bone("stick")["controller_frame_size"], 0.01, 1e-6)
 
 doc.frame_current = 10
 rig.select_bone("stick")
@@ -213,7 +213,7 @@ doc.frame_current = 0
 doc.frame_current = 12
 rig.select_bone("stick")
 assert rig.drag_bone_ends([(0.05, 0.0), (0.1, 0.1)])
-assert close(bone("stick")["knob"], (10.0, 5.0)), ("0.1 at 0.01 a frame, 0.1 at 0.02", bone("stick")["knob"])
+assert close(bone("stick")["knob"], (10.0, 10.0)), ("0.1 at 0.01 a frame, both ways", bone("stick")["knob"])
 assert close(bone("stick")["head"], head)
 doc.frame_current = 0
 
@@ -624,7 +624,7 @@ assert ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
 rig = next(l for l in oanim.data.layers if l.bones)
 assert bone("stick")["type"] == "CONTROLLER_2D"
 assert bone("stick")["controller_actions"]["RIGHT"] == "Look Right"
-assert close(bone("stick")["controller_frame_size"], (0.01, 0.02), 1e-6)
+assert close(bone("stick")["controller_frame_size"], 0.01, 1e-6)
 assert bone("stick")["controller_box"] == ((-30.0, 0.0), (15.0, 20.0)), bone("stick")
 assert any(k["frame"] == 22 and close(k["value"], (10.0, 0.0)) for k in rig.keyframes('bones["stick"].position'))
 

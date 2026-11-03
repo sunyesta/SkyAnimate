@@ -2760,10 +2760,9 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
   else {
     /* Moves it was keyed with stay, as frames, and come back the same: its size stays as it is for that. */
     bone->angle_keys.keys = std::move(angle_keys);
-    const float2 size = bone->controller_frame_size;
     bone->controller_size_auto = bone->position_keys.keys.empty();
     for (Key<float2> &k : bone->position_keys.keys) {
-      k.value = {k.value.x / size.x, k.value.y / size.y};
+      k.value = k.value / bone->controller_frame_size;
     }
   }
   bone->angle = bone->setup_angle;
@@ -2816,9 +2815,8 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
     bone->position_keys.keys.clear();
   }
   else {
-    const float2 size = bone->controller_frame_size;
     for (Key<float2> &k : bone->position_keys.keys) {
-      k.value = {k.value.x * size.x, k.value.y * size.y};
+      k.value = k.value * bone->controller_frame_size;
     }
   }
   bone->type = BoneType::Regular;

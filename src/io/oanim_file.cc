@@ -838,7 +838,7 @@ static json layer_to_json(const Layer &layer)
           }
         }
         bj["controller_actions"] = std::move(actions);
-        bj["controller_frame_size"] = float2_to_json(b.controller_frame_size);
+        bj["controller_frame_size"] = num(b.controller_frame_size);
         if (!b.controller_size_auto) {
           bj["controller_size_auto"] = false;
         }
@@ -2546,7 +2546,7 @@ static Layer layer_from_json(const json &j, int depth)
           b.controller_actions[side] = actions.value(controller_side_id(side), std::string());
         }
       }
-      b.controller_frame_size = get_float2(bj, "controller_frame_size", b.controller_frame_size);
+      b.controller_frame_size = std::max(get_float(bj, "controller_frame_size", b.controller_frame_size), 1e-5f);
       b.controller_size_auto = get_bool(bj, "controller_size_auto", true);
     }
     for (const json &c : get_array(bj, "collections")) {

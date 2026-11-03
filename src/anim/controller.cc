@@ -127,15 +127,13 @@ void controller_knob_set(Bone &knob, float2 frames)
 
 float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frames)
 {
-  const float2 size = knob.controller_frame_size;
-  return pose.head + pose.skin.apply_vector({frames.x * size.x, frames.y * size.y});
+  return pose.head + pose.skin.apply_vector(frames * knob.controller_frame_size);
 }
 
 void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
 {
   const float2 local = pose.skin.inverted().apply_vector(delta);
-  const float2 size = knob.controller_frame_size;
-  controller_knob_set(knob, controller_knob(knob) + float2(local.x / std::max(size.x, 1e-6f), local.y / std::max(size.y, 1e-6f)));
+  controller_knob_set(knob, controller_knob(knob) + local / std::max(knob.controller_frame_size, 1e-6f));
 }
 
 void controller_knob_snap(Bone &knob)
@@ -166,8 +164,7 @@ void controller_fit_size(Bone &knob)
   for (int side = 0; side < CONTROLLER_SIDES; side++) {
     longest = std::max(longest, controller_side_frames(knob, side));
   }
-  const float size = 0.5f / longest;
-  knob.controller_frame_size = {size, size};
+  knob.controller_frame_size = 0.5f / longest;
 }
 
 }  // namespace oanim

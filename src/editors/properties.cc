@@ -1368,14 +1368,12 @@ static void bone_panel(Context &C, Layer &armature)
         controller_side_row(C, armature, *active, side);
       }
       label("Frame Size");
-      float2 size = active->controller_frame_size;
-      if (ui_drag_float2("##controller_frame_size", &size.x, 0.0001f, 0.00001f, 10.0f, "%.4f")) {
-        active->controller_frame_size = size;
+      if (ui_drag_float("##controller_frame_size", &active->controller_frame_size, 0.0001f, 0.00001f, 10.0f, "%.4f")) {
         active->controller_size_auto = false;
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("How far one action frame is along X and Y. The box is its actions' lengths times this; on the "
-                          "setup frame its corners drag it too");
+        ImGui::SetTooltip("How far one action frame is. The box is its actions' lengths times this; on the setup frame "
+                          "its corners drag it too");
       }
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         C.undo->push("Controller Frame Size", doc);

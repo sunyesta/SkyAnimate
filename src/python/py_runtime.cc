@@ -2309,7 +2309,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         const float2 shown = controller_knob_shown(*current_context().document, layer, b);
         const float2 playing = controller_knob_playing(layer, b);
         d["controller_actions"] = actions;
-        d["controller_frame_size"] = py::make_tuple(b.controller_frame_size.x, b.controller_frame_size.y);
+        d["controller_frame_size"] = b.controller_frame_size;
         d["controller_box"] = py::make_tuple(py::make_tuple(lo.x, lo.y), py::make_tuple(hi.x, hi.y));
         d["knob"] = py::make_tuple(knob.x, knob.y);
         d["knob_shown"] = py::make_tuple(shown.x, shown.y);
@@ -2355,8 +2355,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         bone.length = std::max(0.0f, value.cast<float>());
       }
       else if (key == "controller_frame_size") {
-        const auto s = value.cast<std::pair<float, float>>();
-        bone.controller_frame_size = {std::max(s.first, 1e-5f), std::max(s.second, 1e-5f)};
+        bone.controller_frame_size = std::max(value.cast<float>(), 1e-5f);
         bone.controller_size_auto = false;
       }
       else if (key == "knob") {

@@ -673,9 +673,9 @@ struct Bone {
   BoneType type = BoneType::Regular;
   /* A 2 Axis Controller: each side's action by ControllerSide, "" for none (a side with none isn't there). */
   std::array<std::string, CONTROLLER_SIDES> controller_actions;
-  /* How far one action frame is along X and Y (bone layer units): the box is its actions' frames times this. Fitted to
-   * the box's actions as they're picked, until it is set by hand. */
-  float2 controller_frame_size = {0.02f, 0.02f};
+  /* How far one action frame is (bone layer units), the same either way: the box is its actions' frames times this, so
+   * its shape is how long they are. Fitted to the box's actions as they're picked, until it is set by hand. */
+  float controller_frame_size = 0.02f;
   bool controller_size_auto = true;
   /* The frames each side's action has keys on, sorted, its last one its length (worked out, never saved). */
   std::array<std::vector<int>, CONTROLLER_SIDES> controller_keys;
