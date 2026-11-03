@@ -1708,50 +1708,139 @@ FixMix fix_action_mix(const Layer &owner, const FixAction &fix, const std::vecto
   for (size_t i = 0; i < n; i++) {
     now[i] = std::min(now[i], furthest[i]);
   }
-  /* How much each pose has come in: its drivers' shares of it multiplied (Maya's Multiplication), each
-   * at most all of it, so the fix is 0 while any driver rests and all there at or past a pose. */
-  float strength = 0.0f;
+  /* A grid (Live2D's keyforms): along each driver its rest and every share a pose has. Inside a cell the
+   * correction blends linearly from the cell's corners, so moving one driver only ever blends the poses on that
+   * line, and one pose alone fades as its drivers' shares multiplied (Maya's Multiplication). */
+  constexpr float SAME = 1e-5f;
+  std::vector<std::vector<float>> axes(n, std::vector<float>{0.0f});
   for (const std::vector<float> &pose : poses) {
-    float in = 1.0f;
     for (size_t i = 0; i < n; i++) {
-      in *= pose[i] > 1e-6f ? std::min(now[i] / pose[i], 1.0f) : 1.0f;
+      axes[i].push_back(pose[i]);
     }
-    strength = std::max(strength, in);
   }
-  if (strength <= 0.0f) {
+  for (std::vector<float> &axis : axes) {
+    std::sort(axis.begin(), axis.end());
+    axis.erase(std::unique(axis.begin(), axis.end(), [&](float a, float b) { return b - a < SAME; }), axis.end());
+  }
+  /* A corner as weights of the poses: 0 where any driver rests, a pose where one was made (several on one
+   * corner share it). */
+  const auto made = [&](const std::vector<size_t> &node, std::vector<float> &r_weights) {
+    for (size_t i = 0; i < n; i++) {
+      if (node[i] == 0) {
+        return true;
+      }
+    }
+    std::vector<size_t> on;
+    for (size_t k = 0; k < poses.size(); k++) {
+      bool here = true;
+      for (size_t i = 0; i < n && here; i++) {
+        here = std::abs(poses[k][i] - axes[i][node[i]]) < SAME;
+      }
+      if (here) {
+        on.push_back(k);
+      }
+    }
+    for (const size_t k : on) {
+      r_weights[k] += 1.0f / float(on.size());
+    }
+    return !on.empty();
+  };
+  /* A corner no pose was made on: along each driver, in between the nearest made corners either side (holding
+   * the one below past the last), averaging the drivers that have both sides (or, with none, all of them). */
+  const auto corner = [&](const std::vector<size_t> &node) {
+    std::vector<float> weights(poses.size(), 0.0f);
+    if (made(node, weights)) {
+      return weights;
+    }
+    std::vector<std::vector<float>> between, held;
+    for (size_t i = 0; i < n; i++) {
+      std::vector<size_t> lo = node, hi = node;
+      std::vector<float> below(poses.size(), 0.0f), above(poses.size(), 0.0f);
+      do {
+        lo[i]--;
+      } while (!made(lo, below));
+      bool found = false;
+      while (!found && hi[i] + 1 < axes[i].size()) {
+        hi[i]++;
+        found = made(hi, above);
+      }
+      if (!found) {
+        held.push_back(below);
+        continue;
+      }
+      const float t = (axes[i][node[i]] - axes[i][lo[i]]) / (axes[i][hi[i]] - axes[i][lo[i]]);
+      for (size_t k = 0; k < poses.size(); k++) {
+        below[k] += (above[k] - below[k]) * t;
+      }
+      between.push_back(below);
+    }
+    const std::vector<std::vector<float>> &from = between.empty() ? held : between;
+    for (const std::vector<float> &w : from) {
+      for (size_t k = 0; k < poses.size(); k++) {
+        weights[k] += w[k] / float(from.size());
+      }
+    }
+    return weights;
+  };
+  /* The cell `now` is in, and how far across it along each driver. */
+  std::vector<size_t> cell(n, 0);
+  std::vector<float> across(n, 0.0f);
+  for (size_t i = 0; i < n; i++) {
+    const std::vector<float> &axis = axes[i];
+    size_t j = 0;
+    while (j + 2 < axis.size() && now[i] >= axis[j + 1]) {
+      j++;
+    }
+    cell[i] = j;
+    across[i] = axis.size() < 2 ? 0.0f : std::clamp((now[i] - axis[j]) / (axis[j + 1] - axis[j]), 0.0f, 1.0f);
+  }
+  std::vector<float> weight(poses.size(), 0.0f);
+  for (size_t bits = 0; bits < (size_t(1) << n); bits++) {
+    std::vector<size_t> node = cell;
+    float part = 1.0f;
+    for (size_t i = 0; i < n; i++) {
+      const bool up = (bits >> i) & 1;
+      if (up && axes[i].size() < 2) {
+        part = 0.0f;
+        break;
+      }
+      node[i] += up ? 1 : 0;
+      part *= up ? across[i] : 1.0f - across[i];
+    }
+    if (part <= 0.0f) {
+      continue;
+    }
+    const std::vector<float> w = corner(node);
+    for (size_t k = 0; k < poses.size(); k++) {
+      weight[k] += w[k] * part;
+    }
+  }
+  float strength = 0.0f;
+  for (size_t k = 0; k < poses.size(); k++) {
+    strength += weight[k];
+    if (weight[k] > 1e-6f) {
+      mix.poses.push_back({k, weight[k]});
+    }
+  }
+  if (strength <= 1e-6f) {
+    mix.poses.clear();
     return mix;
   }
-  /* Which pose's correction: inverse-distance weights (Shepard's), exact at a pose. */
-  std::vector<float> weight(poses.size(), 0.0f);
-  float total = 0.0f;
-  int exact = -1;
+  /* The nearest: the pose with the most say, the closer one on a tie. */
+  float best_d2 = 0.0f;
   for (size_t k = 0; k < poses.size(); k++) {
     float d2 = 0.0f;
     for (size_t i = 0; i < n; i++) {
       d2 += (now[i] - poses[k][i]) * (now[i] - poses[k][i]);
     }
-    if (d2 < 1e-10f) {
-      exact = int(k);
-      break;
-    }
-    weight[k] = 1.0f / d2;
-    total += weight[k];
-  }
-  if (exact >= 0) {
-    std::fill(weight.begin(), weight.end(), 0.0f);
-    weight[size_t(exact)] = 1.0f;
-    total = 1.0f;
-  }
-  for (size_t k = 0; k < poses.size(); k++) {
-    const float share = weight[k] / total;
-    if (share > 1e-6f) {
-      mix.poses.push_back({k, strength * share});
-    }
-    if (mix.nearest < 0 || share > weight[size_t(mix.nearest)] / total) {
+    if (mix.nearest < 0 || weight[k] > weight[size_t(mix.nearest)] + 1e-6f ||
+        (std::abs(weight[k] - weight[size_t(mix.nearest)]) <= 1e-6f && d2 < best_d2))
+    {
       mix.nearest = int(k);
+      best_d2 = d2;
     }
   }
-  mix.strength = strength;
+  mix.strength = std::min(strength, 1.0f);
   return mix;
 }
 
