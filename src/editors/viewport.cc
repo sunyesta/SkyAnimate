@@ -26,6 +26,7 @@
 #include <unordered_set>
 
 #include "core/log.hh"
+#include "anim/controller.hh"
 #include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
@@ -6573,6 +6574,10 @@ struct BoneModal {
   /* The mouse with Shift's precision (G, R and S follow this). */
   PreciseMouse precise;
   bool active = false;
+  /* Started by pressing on a controller's knob: it ends as the mouse comes up (Blender's tweak). */
+  bool tweak = false;
+  /* Ctrl on a controller's knob, as it stood when the drag ended. */
+  bool knob_snap = false;
   int area = 0;
   char kind = 'G';
   uint64_t armature = 0;
@@ -6797,6 +6802,87 @@ static void draw_custom_shape(ImDrawList *dl, const std::vector<ShapeLoop> &loop
   }
 }
 
+/* Ctrl lands a picked controller's knob on its actions' keys: where the poses are. */
+static void armature_snap_knobs(Layer &armature)
+{
+  for (Bone &b : armature.bones) {
+    if (bone_is_controller(b) && b.selected) {
+      controller_knob_snap(b);
+    }
+  }
+}
+
+/* Frames of a controller's box to the screen, through what screen_bones did to its rest point. */
+static ImVec2 controller_screen(const Document &doc, const Layer &armature, const ViewMapping &view, const Bone &knob,
+                                const BonePose &pose, const ScreenBone &sb, float2 frames)
+{
+  const Transform2D to_document = layer_world_transform(doc, armature.id);
+  return sb.head + view.to_screen(to_document.apply(controller_box_point(knob, pose, frames))) -
+         view.to_screen(to_document.apply(pose.head));
+}
+
+static constexpr float CONTROLLER_KNOB_RADIUS = 7.0f;
+
+/* A 2 Axis Controller: its box (the frames of its actions either way from the rest point), a tick on the edge for each
+ * of their keys, a dot at each pose a fix made, a ring where its actions really are if not at the knob, and the knob. */
+static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &armature, const Bone &bone,
+                            const BonePose &pose, const ScreenBone &sb, const ViewMapping &view, bool picked, bool active,
+                            bool faint, ImU32 fill, ImU32 edge)
+{
+  float2 lo, hi;
+  controller_box(bone, lo, hi);
+  const auto at = [&](float2 frames) { return controller_screen(doc, armature, view, bone, pose, sb, frames); };
+  const ImVec2 corners[4] = {at({lo.x, lo.y}), at({hi.x, lo.y}), at({hi.x, hi.y}), at({lo.x, hi.y})};
+  if (!faint) {
+    dl->AddConvexPolyFilled(corners, 4, IM_COL32(0x10, 0x10, 0x10, 60));
+  }
+  dl->AddPolyline(corners, 4, edge, ImDrawFlags_Closed, active ? 1.6f : 1.2f);
+  if (faint) {
+    return;
+  }
+  const ImU32 guide = IM_COL32(0xff, 0xff, 0xff, 70);
+  dl->AddLine(at({lo.x, 0.0f}), at({hi.x, 0.0f}), guide);
+  dl->AddLine(at({0.0f, lo.y}), at({0.0f, hi.y}), guide);
+  const auto tick = [&](ImVec2 from, ImVec2 toward) {
+    const ImVec2 d = toward - from;
+    const float n = std::sqrt(d.x * d.x + d.y * d.y);
+    dl->AddLine(from, n > 1e-3f ? from + d * (5.0f / n) : from, IM_COL32(0xff, 0xff, 0xff, 170), 1.0f);
+  };
+  for (int side = 0; side < CONTROLLER_SIDES; side++) {
+    const float sign = controller_side_sign(side);
+    for (const int frame : bone.controller_keys[side]) {
+      const float v = float(frame) * sign;
+      if (controller_side_axis(side) == 0) {
+        tick(at({v, lo.y}), at({v, hi.y}));
+      }
+      else {
+        tick(at({lo.x, v}), at({hi.x, v}));
+      }
+    }
+  }
+  for (const float2 &p : controller_fix_poses(armature, bone)) {
+    dl->AddCircleFilled(at(p), 3.0f, UI_FIX_COLOR);
+  }
+  const float2 knob = controller_knob_shown(doc, armature, bone);
+  const ImVec2 knob_at = at(knob);
+  if (doc.frame_current != 0 && doc.action.empty()) {
+    const ImVec2 playing = at(controller_knob_playing(armature, bone));
+    const ImVec2 d = playing - knob_at;
+    if (d.x * d.x + d.y * d.y > 9.0f) {
+      dl->AddCircle(playing, CONTROLLER_KNOB_RADIUS, IM_COL32(0xff, 0xff, 0xff, 200), 0, 1.5f);
+    }
+  }
+  dl->AddCircleFilled(knob_at, CONTROLLER_KNOB_RADIUS, fill == 0 ? edge : fill);
+  dl->AddCircle(knob_at, CONTROLLER_KNOB_RADIUS, edge, 0, active ? 1.6f : 1.2f);
+  /* Frame 0 sizes it: its corners are handles. */
+  if (doc.frame_current == 0 && picked && (hi.x > lo.x || hi.y > lo.y)) {
+    for (const ImVec2 &c : corners) {
+      dl->AddRectFilled(c - ImVec2(3.5f, 3.5f), c + ImVec2(3.5f, 3.5f), edge);
+    }
+  }
+  dl->AddText(corners[3] + ImVec2(2.0f, -ImGui::GetFontSize() - 2.0f), IM_COL32(0xff, 0xff, 0xff, 170), bone.name.c_str());
+}
+
 static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armature, const ViewMapping &view,
                        bool ghost = false, bool highlight_selected = false)
 {
@@ -6936,6 +7022,14 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
                   col_active = bone_shade(shades.active, 220);
       const ImU32 col_ghost = plain ? COL_BONE_GHOST : bone_shade(shades.regular, 130);
       const bool faint = ghost && !(highlight_selected && picked);
+      if (bone_is_controller(bone)) {
+        const std::vector<BonePose> poses = g_keyed_bones ? armature_keyed_pose(armature, doc.frame_current == 0)
+                                                          : armature_pose(armature, doc.frame_current == 0);
+        draw_controller(dl, doc, armature, bone, poses[i], sbs[i], view, picked, active, faint,
+                        active ? col_active : picked ? col_select : col_regular,
+                        faint ? col_ghost : active ? col_active : COL_BONE_EDGE);
+        continue;
+      }
       if (!as_bone && shows_pin(bone)) {
         if (faint) {
           draw_pin(dl, sbs[i], pin_radius(bone), 0, col_ghost, 1.0f);
@@ -7012,6 +7106,18 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
       dl->AddText(at, UI_FIX_COLOR, text);
     }
   }
+  /* A dial held at rest while a controller's knob is on the other side's. */
+  if (!ghost && doc.frame_current != 0 && doc.action.empty()) {
+    for (size_t i = 0; i < armature.bones.size(); i++) {
+      const Bone &bone = armature.bones[i];
+      if (bone_shown(armature, bone) && controller_dial_held(armature, bone)) {
+        const char *text = "held";
+        const ImVec2 at = sbs[i].tail + ImVec2(6.0f, -ImGui::GetFontSize() * 0.5f);
+        dl->AddText(at + ImVec2(1, 1), IM_COL32(0, 0, 0, 200), text);
+        dl->AddText(at, IM_COL32(0x60, 0xd0, 0xd0, 255), text);
+      }
+    }
+  }
 }
 
 /* What a click hits: a bone's head or tail circle (tried first), or its body. */
@@ -7041,6 +7147,33 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &bone = armature.bones[i];
     if (!bone_shown(armature, bone)) {
+      continue;
+    }
+    /* A controller answers at its knob, so the box can sit over anything. On the setup frame, where the box is moved,
+     * its edges too. */
+    if (bone_is_controller(bone)) {
+      const std::vector<BonePose> poses = g_keyed_bones ? armature_keyed_pose(armature, doc.frame_current == 0)
+                                                        : armature_pose(armature, doc.frame_current == 0);
+      const auto at = [&](float2 frames) {
+        const ImVec2 s = controller_screen(doc, armature, view, bone, poses[i], sbs[i], frames);
+        return float2(s.x, s.y);
+      };
+      const float d = distance(m, at(controller_knob_shown(doc, armature, bone)));
+      if (d <= CONTROLLER_KNOB_RADIUS + 3.0f) {
+        found.push_back({{bone.id, BonePart::Body}, 0, d, 0});
+      }
+      else if (doc.frame_current == 0) {
+        float2 lo, hi;
+        controller_box(bone, lo, hi);
+        const float2 c[4] = {at({lo.x, lo.y}), at({hi.x, lo.y}), at({hi.x, hi.y}), at({lo.x, hi.y})};
+        float edge = 1e30f;
+        for (int k = 0; k < 4; k++) {
+          edge = std::min(edge, distance_to_segment(m, c[k], c[(k + 1) % 4]));
+        }
+        if (edge < PICK_PIXELS * 1.5f) {
+          found.push_back({{bone.id, BonePart::Body}, 1, edge, 0});
+        }
+      }
       continue;
     }
     /* A pin is one round thing: clicking it picks the whole bone. */
@@ -7947,6 +8080,7 @@ static void bone_modal_confirm(Context &C, float2 delta, float degrees, float fa
   if (bm.kind == 'G') {
     args["move_x"] = num_arg(delta.x);
     args["move_y"] = num_arg(delta.y);
+    args["knob_snap"] = bm.knob_snap ? "1" : "0";
     operator_call(C, "armature.translate", args);
   }
   else if (bm.kind == 'R') {
@@ -7974,7 +8108,9 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     return {};
   }
   const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
-                       modal_key_take(C, "SPACE", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                       modal_key_take(C, "SPACE", true) ||
+                       (g_bone_modal.tweak ? !ImGui::IsMouseDown(ImGuiMouseButton_Left)
+                                           : ImGui::IsMouseClicked(ImGuiMouseButton_Left));
   /* Keys while transforming, as in Blender: X or Y for an axis (again: none), S again (while
    * scaling) for squash and stretch, and a typed number. */
   BoneModal &bm = g_bone_modal;
@@ -8021,7 +8157,11 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   };
   if (g_bone_modal.kind == 'G') {
     delta = mouse - g_bone_modal.start_mouse;
-    if (snap) {
+    /* A controller's knob snaps to its actions' keys instead (below), which aren't on any grid. */
+    const bool knobs = !bm.setup_frame && std::any_of(armature->bones.begin(), armature->bones.end(), [](const Bone &b) {
+      return bone_is_controller(b) && b.selected;
+    });
+    if (snap && !knobs) {
       delta = snap_to_grid(delta, C.wm->tool_settings.grid_size);
     }
     if (num.any()) {
@@ -8040,6 +8180,10 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
     for_also([&](Layer &l, BoneModal::Also &also) {
       armature_grab_selected(l, also.bones, also.to_armature.apply_vector(delta), bm.setup_frame, C.wm->tool_settings.auto_ik);
     });
+    bm.knob_snap = snap && !bm.setup_frame;
+    if (bm.knob_snap) {
+      armature_snap_knobs(*armature);
+    }
     if (bm.axis == 0) {
       std::snprintf(text, sizeof(text), "Move Bones  X: %s  Y: %s", num.shown(0, delta.x, "%.3f").c_str(),
                     num.shown(1, delta.y, "%.3f").c_str());
@@ -8119,6 +8263,14 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   }
   return text;
 }
+
+/* A corner of a controller being dragged on the setup frame (its signs along X and Y). */
+static struct {
+  bool active = false;
+  uint64_t layer = 0;
+  uint64_t bone = 0;
+  float2 corner;
+} g_controller_resize;
 
 /* Selects what a click hit, as Blender's edit-bone picking does. Shift adds to the selection and
  * makes the bone active; Shift on the active bone's selected part deselects it. */
@@ -10075,6 +10227,9 @@ static OpStatus bones_transform_exec(Context &C, char kind)
     const std::vector<Bone> &start = m.start;
     if (kind == 'G') {
       armature_grab_selected(*armature, start, m.to_armature.apply_vector(move), setup, C.wm->tool_settings.auto_ik);
+      if (op_arg_bool(C, "knob_snap")) {
+        armature_snap_knobs(*armature);
+      }
     }
     else if (kind == 'R') {
       armature_rotate_selected(*armature, start, degrees * PI / 180.0f, setup);
@@ -11605,7 +11760,71 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
     transform_bones_input(C, area, armature, view, hovered, dl);
     return;
   }
+  /* Dragging a controller's corner on the setup frame: how far a frame is, so the corner stays under the mouse. */
+  if (g_controller_resize.active) {
+    Layer *owner = layer_find(doc, g_controller_resize.layer);
+    Bone *knob = owner ? bone_find(*owner, g_controller_resize.bone) : nullptr;
+    if (!knob || !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      g_controller_resize.active = false;
+      push_undo(C, "Resize Controller");
+      return;
+    }
+    const std::vector<BonePose> poses = armature_pose(*owner, true);
+    const BonePose *pose = bone_pose_find(poses, knob->id);
+    const float2 d = layer_world_transform(doc, owner->id).inverted().apply(view.to_document(io.MousePos)) - pose->head;
+    float2 lo, hi;
+    controller_box(*knob, lo, hi);
+    /* One size for both ways, so the box keeps its shape: the corner goes with whichever way the mouse is further. */
+    const float2 frames(g_controller_resize.corner.x > 0.0f ? hi.x : -lo.x, g_controller_resize.corner.y > 0.0f ? hi.y : -lo.y);
+    float size = 1e-5f;
+    if (frames.x > 0.0f) {
+      size = std::max(size, std::abs(d.x) / frames.x);
+    }
+    if (frames.y > 0.0f) {
+      size = std::max(size, std::abs(d.y) / frames.y);
+    }
+    knob->controller_frame_size = size;
+    knob->controller_size_auto = false;
+    return;
+  }
   if (hovered && C.wm->tool_settings.tool == Tool::Select && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (doc.frame_current == 0 && !io.KeyShift && !io.KeyCtrl) {
+      const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
+      const std::vector<BonePose> poses = armature_pose(armature, true);
+      for (size_t i = 0; i < armature.bones.size(); i++) {
+        const Bone &knob = armature.bones[i];
+        if (!bone_is_controller(knob) || !knob.selected) {
+          continue;
+        }
+        float2 lo, hi;
+        controller_box(knob, lo, hi);
+        for (const float2 corner : {float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)}) {
+          const ImVec2 at = controller_screen(doc, armature, view, knob, poses[i], sbs[i],
+                                              {corner.x > 0.0f ? hi.x : lo.x, corner.y > 0.0f ? hi.y : lo.y});
+          if (hi.x > lo.x + 1e-3f && hi.y > lo.y + 1e-3f && std::abs(at.x - io.MousePos.x) <= 6.0f &&
+              std::abs(at.y - io.MousePos.y) <= 6.0f)
+          {
+            g_controller_resize = {true, armature.id, knob.id, corner};
+            return;
+          }
+        }
+      }
+    }
+    /* Pressing on a controller's knob, or on the setup frame its box, drags it at once (Ctrl: onto its keys). */
+    if (!io.KeyShift) {
+      const std::vector<FamilyHit> under = pick_family_parts(doc, armature, view, io.MousePos);
+      const Bone *knob = !under.empty() && under.front().layer->id == armature.id ? bone_find(armature, under.front().hit.bone) : nullptr;
+      if (knob && bone_is_controller(*knob) && !bone_held_by_fix(doc, armature, *knob)) {
+        if (!knob->selected) {
+          family_deselect_all(doc, armature);
+          bone_click_select(armature, under.front().hit, false);
+        }
+        if (bone_modal_start(C, area, 'G', view.to_document(io.MousePos))) {
+          g_bone_modal.tweak = true;
+        }
+        return;
+      }
+    }
     /* A shown handle of a drawing in a shown bone collection: pressing on it drags it at once, as on the
      * layer itself (Blender's tweak). */
     const HandleHit handle = io.KeyShift || io.KeyCtrl
@@ -11750,6 +11969,19 @@ static void bone_parent_menus(Context &C, bool hovered)
     menu_operator(C, "Clear Parent...", "armature.parent_clear_menu");
     ImGui::Separator();
     menu_operator(C, "Symmetrize", "armature.symmetrize");
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Convert To", C.document->frame_current == 0)) {
+      const Layer *armature = document_active_layer(*C.document);
+      const Bone *active = armature ? bone_find(*armature, armature->active_bone) : nullptr;
+      const bool controller = active && bone_is_controller(*active);
+      if (ImGui::MenuItem("Regular", nullptr, active && !controller)) {
+        operator_call(C, "armature.bone_convert", {{"type", "REGULAR"}});
+      }
+      if (ImGui::MenuItem("2 Axis Controller", nullptr, controller)) {
+        operator_call(C, "armature.bone_convert", {{"type", "CONTROLLER_2D"}});
+      }
+      ImGui::EndMenu();
+    }
     ImGui::Separator();
     menu_operator(C, "Delete", "armature.bone_delete");
     ui_menu_end();
