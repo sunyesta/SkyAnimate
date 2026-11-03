@@ -581,7 +581,10 @@ class _Layer:
         to that; no points added), cage_method (a cage: "MEAN_VALUE", "RIGID": the inside as rigid as possible, or
         "OUTLINE": after Toon Boom Harmony's envelopes, each side keeping what lies near it at its distance from it;
         "ENVELOPE", its old name, is read as OUTLINE), blend (Outline: 0 the nearest side leads sharply, 1 gently).
-        Envelope Deform is Harmony's envelope deformer itself: each point follows its nearest place on the shape."""
+        Envelope Deform is Harmony's envelope deformer itself: envelope_method "STANDARD", each point follows its nearest
+        place on the shape; or "WEIGHTED", Harmony's Weighted Deform: each point moves (never turns) by a smooth blend of
+        the moves of places all along the shape, with pre_blend (0 or more: evens the blend out) and post_blend
+        (above 0 sharpens it, below 0 softens it)."""
         return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):

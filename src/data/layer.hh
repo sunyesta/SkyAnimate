@@ -790,6 +790,15 @@ enum class MeshMethod { Cells, Envelope, Points };
 const char *mesh_method_id(MeshMethod method);
 bool mesh_method_from_id(const std::string &id, MeshMethod &r_method);
 
+/* How Envelope Deform carries what is around its shape, both as Toon Boom Harmony does: Standard (its envelope
+ * deformer: each point by its single nearest place, turning with the shape there) or Weighted (its Weighted Deform
+ * node: each point moved, never turned, by a smooth blend of the moves of places all along the shape). */
+enum class EnvelopeMethod { Standard, Weighted };
+
+/* An Envelope Method's name in files and Python ("STANDARD", "WEIGHTED"), and back. */
+const char *envelope_method_id(EnvelopeMethod method);
+bool envelope_method_from_id(const std::string &id, EnvelopeMethod &r_method);
+
 struct Modifier {
   ModifierType type = ModifierType::Mirror;
   std::string name = "Mirror";
@@ -895,6 +904,12 @@ struct Modifier {
    * whole cage; half way, as far as the cage is big; less, less. Past it, what lies inside goes as the cage does as a
    * whole. */
   float deform_range = 1.0f;
+  /* Envelope Deform's Method, and Weighted's Pre-Blend and Post-Blend (Harmony's Weighted Deform's): Pre-Blend, 0 or
+   * more, evens out how the places share a point, the most near the shape (ln(1 + it) is added to every distance);
+   * Post-Blend sharpens that sharing (above 0, each share to the power 1 + it) or softens it (below 0). */
+  EnvelopeMethod deform_envelope_method = EnvelopeMethod::Standard;
+  float deform_pre_blend = 0.0f;
+  float deform_post_blend = 0.0f;
   /* Follow Deform: the place on the shape that carries the drawing, in this layer's space at rest, shown light blue when
    * `deform_show_point`; with `deform_two` a second one, whose way from the first turns the drawing (`deform_rotation`)
    * and whose distance from it scales it (`deform_scale`). Each can be keyed along the shape (`deform_shift`, the change

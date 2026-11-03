@@ -50,6 +50,24 @@ bool mesh_method_from_id(const std::string &id, MeshMethod &r_method)
   return false;
 }
 
+static constexpr const char *ENVELOPE_METHOD_IDS[] = {"STANDARD", "WEIGHTED"};
+
+const char *envelope_method_id(EnvelopeMethod method)
+{
+  return ENVELOPE_METHOD_IDS[int(method)];
+}
+
+bool envelope_method_from_id(const std::string &id, EnvelopeMethod &r_method)
+{
+  for (int k = 0; k < 2; k++) {
+    if (id == ENVELOPE_METHOD_IDS[k]) {
+      r_method = EnvelopeMethod(k);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool modifier_can_apply(const Modifier &m)
 {
   /* A deform modifier does nothing on the setup frame, where Apply works. */

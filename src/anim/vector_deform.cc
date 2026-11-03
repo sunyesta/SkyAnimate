@@ -4,6 +4,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <optional>
@@ -11,6 +12,8 @@
 #include <mutex>
 #include <numeric>
 #include <queue>
+#include <shared_mutex>
+#include <unordered_map>
 
 #include "anim/deform.hh"
 #include "anim/subdivide.hh"
@@ -247,6 +250,12 @@ struct DeformShape {
   std::vector<std::array<float2, 4>> env_rest, env_now;
   std::vector<float2> env_samples;
   bool env_closed = false;
+  /* Its Method's Weighted (Harmony's Weighted Deform), with Pre-Blend as the length added to every distance and
+   * Post-Blend. */
+  bool env_weighted = false;
+  float env_pre = 0.0f;
+  float env_post = 0.0f;
+  std::shared_ptr<struct WeightedSolver> env_solver;
 };
 
 /* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
@@ -795,6 +804,10 @@ static bool shape_part(const VectorDrawing &drawing, const Shape &shape, uint64_
   return true;
 }
 
+struct WeightedSolver;
+static std::shared_ptr<WeightedSolver> weighted_solver_get(const std::vector<std::array<float2, 4>> &rest, bool closed,
+                                                           float pre, float post);
+
 /* Envelope Deform's shape: one line or loop, its segments as Beziers in the order it runs, at rest and (`bent`, the
  * same drawing as it is now) now. Its outline is sampled for the border and the viewport, as a line's or a cage's. */
 static bool envelope_deform_make(const VectorDrawing &rest, const Shape &rest_shape, const VectorDrawing *bent,
@@ -851,7 +864,16 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
 {
   if (m.type == ModifierType::EnvelopeDeform) {
     const Shape &shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
-    return !shape_grid(rest, shape) && envelope_deform_make(rest, shape, now ? &bent : nullptr, r);
+    if (shape_grid(rest, shape) || !envelope_deform_make(rest, shape, now ? &bent : nullptr, r)) {
+      return false;
+    }
+    r.env_weighted = m.deform_envelope_method == EnvelopeMethod::Weighted;
+    r.env_pre = m.deform_pre_blend > 0.0f ? std::log1p(m.deform_pre_blend) : 0.0f;
+    r.env_post = m.deform_post_blend;
+    if (r.env_weighted) {
+      r.env_solver = weighted_solver_get(r.env_rest, r.env_closed, r.env_pre, r.env_post);
+    }
+    return true;
   }
   /* Follow Deform takes whatever the shape is: as the deform that fits it. */
   if (m.type == ModifierType::FollowDeform) {
@@ -3818,11 +3840,475 @@ static float2 envelope_deform_map(const DeformShape &d, float2 p)
   return now_at + now_way * along + float2(-now_way.y, now_way.x) * out;
 }
 
+/* Weighted's pieces to a segment: Harmony's Weighted Deform cuts each segment of a curve into 6, evenly by its own
+ * parameter, and every piece offers its nearest place to what it moves. */
+static constexpr int WEIGHTED_PIECES = 6;
+
+/* The parameter of the place on segment `c` between `t0` and `t1` nearest to `p`: the nearest on a few chords, then
+ * onto the curve itself by Newton's steps on the distance, kept in the piece. */
+static float bezier_nearest_in(const std::array<float2, 4> &c, float t0, float t1, float2 p)
+{
+  constexpr int STEPS = 8;
+  float best = FLT_MAX, t = t0;
+  float2 a = bezier_eval(c.data(), t0);
+  for (int i = 1; i <= STEPS; i++) {
+    const float tb = t0 + (t1 - t0) * float(i) / float(STEPS);
+    const float2 b = bezier_eval(c.data(), tb), e = b - a;
+    const float ee = dot(e, e);
+    const float h = ee > 1e-20f ? std::clamp(dot(p - a, e) / ee, 0.0f, 1.0f) : 0.0f;
+    const float dd = dot(a + e * h - p, a + e * h - p);
+    if (dd < best) {
+      best = dd;
+      t = tb - (t1 - t0) / float(STEPS) * (1.0f - h);
+    }
+    a = b;
+  }
+  for (int step = 0; step < 4; step++) {
+    const float u = 1.0f - t;
+    const float2 off = bezier_eval(c.data(), t) - p;
+    const float2 d1 = ((c[1] - c[0]) * (u * u) + (c[2] - c[1]) * (2.0f * u * t) + (c[3] - c[2]) * (t * t)) * 3.0f;
+    const float2 d2 = ((c[2] - c[1] * 2.0f + c[0]) * u + (c[3] - c[2] * 2.0f + c[1]) * t) * 6.0f;
+    const float slope = dot(d1, d1) + dot(off, d2);
+    if (slope <= 1e-20f) {
+      break;
+    }
+    const float next = std::clamp(t - dot(off, d1) / slope, t0, t1);
+    if (length(bezier_eval(c.data(), next) - p) > length(off)) {
+      break;
+    }
+    t = next;
+  }
+  return t;
+}
+
+/* Gaussian elimination with partial pivoting: solves `a` (n by n, row-major; overwritten) times x = `b` (n by `m`,
+ * row-major) for all m columns at once, x left in `b`. False when `a` is singular. */
+static bool dense_solve(std::vector<double> &a, size_t n, std::vector<double> &b, size_t m)
+{
+  for (size_t col = 0; col < n; col++) {
+    size_t pivot = col;
+    for (size_t r = col + 1; r < n; r++) {
+      if (std::abs(a[r * n + col]) > std::abs(a[pivot * n + col])) {
+        pivot = r;
+      }
+    }
+    if (std::abs(a[pivot * n + col]) < 1e-15) {
+      return false;
+    }
+    if (pivot != col) {
+      for (size_t j = 0; j < n; j++) {
+        std::swap(a[col * n + j], a[pivot * n + j]);
+      }
+      for (size_t j = 0; j < m; j++) {
+        std::swap(b[col * m + j], b[pivot * m + j]);
+      }
+    }
+    const double inv = 1.0 / a[col * n + col];
+    for (size_t r = col + 1; r < n; r++) {
+      const double f = a[r * n + col] * inv;
+      if (f == 0.0) {
+        continue;
+      }
+      for (size_t j = col; j < n; j++) {
+        a[r * n + j] -= f * a[col * n + j];
+      }
+      for (size_t j = 0; j < m; j++) {
+        b[r * m + j] -= f * b[col * m + j];
+      }
+    }
+  }
+  for (size_t i = n; i-- > 0;) {
+    const double inv = 1.0 / a[i * n + i];
+    for (size_t j = 0; j < m; j++) {
+      double sum = b[i * m + j];
+      for (size_t k = i + 1; k < n; k++) {
+        sum -= a[i * n + k] * b[k * m + j];
+      }
+      b[i * m + j] = sum * inv;
+    }
+  }
+  return true;
+}
+
+/* Two places' distance in Weighted's solve, at least `floor` squared (WeightedSolver::floor_sq). */
+static double weighted_apart(float2 a, float2 b, double floor_sq)
+{
+  return std::sqrt(std::max(double(dot(a - b, a - b)), floor_sq));
+}
+
+/* Envelope Deform's Weighted, as Toon Boom Harmony's Weighted Deform node (decoded from its plugin and checked against
+ * its renders): every piece of the shape at rest offers its nearest place to `p`, and that place's move (where the
+ * same place on the same segment is now, less where it was). The places share `p` by cardinal interpolation with a
+ * linear radial basis: weights w with sum_j w_j |place_i - place_j| = |p - place_i| + Pre-Blend for every i, so each
+ * place alone would take all of what is on it. Negative weights are dropped, Post-Blend raises the rest to the power
+ * 1 + it (below 0: 1 - (1 - w) to the power 1 - it), and `p` moves by the moves so weighted, as shares of their sum. A
+ * point never turns: what is drawn around the shape keeps its way, the moves only blend.
+ *
+ * The shares depend only on the shape at rest and where `p` is at rest, so each point's are worked out once and kept
+ * (as weights on each segment's four control points, which a move is linear in): moving or animating the shape only
+ * blends the kept weights. Working them out is quick even on a shape of many segments (a resampled one): most pieces
+ * offer one of their ends, and the pieces' ends are fixed at rest, so their distances' inverse is worked out once per
+ * shape; at each point only the few ends no piece offers (where the distance peaks) are taken out of it and the few
+ * places inside pieces (where it dips) added, rather than the whole system solved again. */
+struct WeightedSolver {
+  std::vector<std::array<float2, 4>> rest;
+  bool closed = false;
+  float pre = 0.0f, post = 0.0f;
+  /* The pieces' ends at rest: end b is piece b's start (WEIGHTED_PIECES pieces to a segment), and an open shape's last
+   * end is its end; and the inverse of their distances (row-major), if they have one. */
+  std::vector<float2> ends;
+  std::vector<double> inverse;
+  bool inverted = false;
+  /* The least two places are apart in the solve, squared: a millionth of the shape's size, only so places that all but
+   * coincide can't make it singular. Harmony keeps them a hundredth of a unit apart (0.12 of a field), which never
+   * shows on an envelope of its size, but on a small shape of many segments (an eye's warp, resampled) it flattens
+   * most of the solve and the drawing no longer follows the shape; so the floor goes with the shape's size, and
+   * Weighted has no size of its own. */
+  double floor_sq = 0.0;
+  /* Each point's weights, by its place at rest (its coordinates' bits), shared out by those bits to take turns. */
+  struct Shard {
+    std::shared_mutex mutex;
+    std::unordered_map<uint64_t, std::vector<float>> kept;
+    size_t floats = 0;
+  };
+  std::array<Shard, 16> shards;
+
+  size_t end_count() const
+  {
+    return rest.size() * WEIGHTED_PIECES + (closed ? 0 : 1);
+  }
+  /* End `b`'s segment and its parameter there. */
+  std::pair<size_t, float> end_at(size_t b) const
+  {
+    if (b >= rest.size() * WEIGHTED_PIECES) {
+      return {rest.size() - 1, 1.0f};
+    }
+    return {b / WEIGHTED_PIECES, float(b % WEIGHTED_PIECES) / float(WEIGHTED_PIECES)};
+  }
+};
+
+static std::shared_ptr<WeightedSolver> weighted_solver_get(const std::vector<std::array<float2, 4>> &rest, bool closed,
+                                                           float pre, float post)
+{
+  static std::mutex mutex;
+  static std::vector<std::shared_ptr<WeightedSolver>> solvers;
+  std::lock_guard lock(mutex);
+  for (const std::shared_ptr<WeightedSolver> &s : solvers) {
+    if (s->closed == closed && s->pre == pre && s->post == post && s->rest == rest) {
+      return s;
+    }
+  }
+  auto s = std::make_shared<WeightedSolver>();
+  s->rest = rest;
+  s->closed = closed;
+  s->pre = pre;
+  s->post = post;
+  const size_t nb = s->end_count();
+  for (size_t b = 0; b < nb; b++) {
+    const auto [seg, t] = s->end_at(b);
+    s->ends.push_back(bezier_eval(rest[seg].data(), t));
+  }
+  float2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+  for (const std::array<float2, 4> &c : rest) {
+    for (const float2 &q : c) {
+      lo = float2(std::min(lo.x, q.x), std::min(lo.y, q.y));
+      hi = float2(std::max(hi.x, q.x), std::max(hi.y, q.y));
+    }
+  }
+  const double size = std::max(double(length(hi - lo)), 1e-12);
+  s->floor_sq = (size * 1e-6) * (size * 1e-6);
+  std::vector<double> a(nb * nb, 0.0);
+  s->inverse.assign(nb * nb, 0.0);
+  for (size_t i = 0; i < nb; i++) {
+    for (size_t j = 0; j < nb; j++) {
+      a[i * nb + j] = i == j ? 0.0 : weighted_apart(s->ends[i], s->ends[j], s->floor_sq);
+    }
+    s->inverse[i * nb + i] = 1.0;
+  }
+  s->inverted = dense_solve(a, nb, s->inverse, nb);
+  if (solvers.size() >= 8) {
+    solvers.erase(solvers.begin());
+  }
+  solvers.push_back(s);
+  return s;
+}
+
+/* `p`'s weights on each segment's control points (4 to a segment, in `r_w`). */
+static void weighted_shares(const WeightedSolver &s, float2 p, std::vector<float> &r_w)
+{
+  struct Inner {
+    size_t seg;
+    float t;
+    float2 at;
+  };
+  const size_t nb = s.end_count();
+  thread_local std::vector<char> used;
+  thread_local std::vector<Inner> inner;
+  used.assign(nb, 0);
+  inner.clear();
+  r_w.assign(s.rest.size() * 4, 0.0f);
+  const auto add = [&](size_t seg, float t, double share) {
+    const float u = 1.0f - t;
+    const float b[4] = {u * u * u, 3.0f * u * u * t, 3.0f * u * t * t, t * t * t};
+    for (int k = 0; k < 4; k++) {
+      r_w[seg * 4 + size_t(k)] += float(share) * b[k];
+    }
+  };
+  /* Each piece's offer: one of its ends, or a place inside it. */
+  for (size_t seg = 0; seg < s.rest.size(); seg++) {
+    for (int k = 0; k < WEIGHTED_PIECES; k++) {
+      const size_t from = seg * WEIGHTED_PIECES + size_t(k), to = (from + 1) % nb;
+      const float t = bezier_nearest_in(s.rest[seg], float(k) / WEIGHTED_PIECES, float(k + 1) / WEIGHTED_PIECES, p);
+      const float2 at = bezier_eval(s.rest[seg].data(), t);
+      if (dot(at - s.ends[from], at - s.ends[from]) < 1e-12f) {
+        used[from] = 1;
+      }
+      else if (dot(at - s.ends[to], at - s.ends[to]) < 1e-12f) {
+        used[to] = 1;
+      }
+      else {
+        inner.push_back({seg, t, at});
+      }
+    }
+  }
+  /* On a place: all of that place's move. */
+  for (size_t b = 0; b < nb; b++) {
+    if (used[b] && length(p - s.ends[b]) < 1e-7f) {
+      const auto [seg, t] = s.end_at(b);
+      add(seg, t, 1.0);
+      return;
+    }
+  }
+  for (const Inner &in : inner) {
+    if (length(p - in.at) < 1e-7f) {
+      add(in.seg, in.t, 1.0);
+      return;
+    }
+  }
+  const size_t ni = inner.size();
+  const double pre = double(s.pre);
+  thread_local std::vector<double> w_end, w_inner;
+  w_end.assign(nb, 0.0);
+  w_inner.assign(ni, 0.0);
+  bool solved = false;
+  if (s.inverted) {
+    /* x: a column for the right side, then one for each inner place's distances, in the ends' rows (nothing in the
+     * rows of the ends left out). */
+    const size_t m = 1 + ni;
+    thread_local std::vector<double> x, y, rr, lam, k, rhs;
+    thread_local std::vector<size_t> out;
+    x.assign(nb * m, 0.0);
+    out.clear();
+    for (size_t b = 0; b < nb; b++) {
+      if (!used[b]) {
+        out.push_back(b);
+        continue;
+      }
+      x[b * m] = length(p - s.ends[b]) + pre;
+      for (size_t j = 0; j < ni; j++) {
+        x[b * m + 1 + j] = weighted_apart(s.ends[b], inner[j].at, s.floor_sq);
+      }
+    }
+    /* y = inverse x, then the ends left out taken out: their rows of y brought to nothing by adding their columns of
+     * the inverse, as much as their block of it says. */
+    y.assign(nb * m, 0.0);
+    for (size_t i = 0; i < nb; i++) {
+      const double *row = &s.inverse[i * nb];
+      double *yi = &y[i * m];
+      for (size_t c = 0; c < nb; c++) {
+        if (used[c]) {
+          const double *xc = &x[c * m];
+          for (size_t j = 0; j < m; j++) {
+            yi[j] += row[c] * xc[j];
+          }
+        }
+      }
+    }
+    const size_t no = out.size();
+    bool ok = true;
+    if (no > 0) {
+      rr.assign(no * no, 0.0);
+      lam.assign(no * m, 0.0);
+      for (size_t a = 0; a < no; a++) {
+        for (size_t c = 0; c < no; c++) {
+          rr[a * no + c] = s.inverse[out[a] * nb + out[c]];
+        }
+        for (size_t j = 0; j < m; j++) {
+          lam[a * m + j] = -y[out[a] * m + j];
+        }
+      }
+      ok = dense_solve(rr, no, lam, m);
+      if (ok) {
+        for (size_t i = 0; i < nb; i++) {
+          if (!used[i]) {
+            continue;
+          }
+          for (size_t a = 0; a < no; a++) {
+            const double f = s.inverse[i * nb + out[a]];
+            for (size_t j = 0; j < m; j++) {
+              y[i * m + j] += f * lam[a * m + j];
+            }
+          }
+        }
+      }
+    }
+    if (ok) {
+      /* The inner places, by their block's Schur complement; then the ends. */
+      k.assign(ni * ni, 0.0);
+      rhs.assign(ni, 0.0);
+      for (size_t j = 0; j < ni; j++) {
+        rhs[j] = length(p - inner[j].at) + pre;
+        for (size_t l = 0; l < ni; l++) {
+          k[j * ni + l] = j == l ? 0.0 : weighted_apart(inner[j].at, inner[l].at, s.floor_sq);
+        }
+        for (size_t b = 0; b < nb; b++) {
+          if (used[b]) {
+            const double ajb = x[b * m + 1 + j];
+            rhs[j] -= ajb * y[b * m];
+            for (size_t l = 0; l < ni; l++) {
+              k[j * ni + l] -= ajb * y[b * m + 1 + l];
+            }
+          }
+        }
+      }
+      if (ni == 0 || dense_solve(k, ni, rhs, 1)) {
+        for (size_t j = 0; j < ni; j++) {
+          w_inner[j] = rhs[j];
+        }
+        for (size_t b = 0; b < nb; b++) {
+          if (used[b]) {
+            double wb = y[b * m];
+            for (size_t j = 0; j < ni; j++) {
+              wb -= y[b * m + 1 + j] * w_inner[j];
+            }
+            w_end[b] = wb;
+          }
+        }
+        solved = true;
+      }
+    }
+  }
+  if (!solved) {
+    /* The whole system, as it stands. */
+    thread_local std::vector<float2> place;
+    thread_local std::vector<double> a, v;
+    place.clear();
+    for (size_t b = 0; b < nb; b++) {
+      if (used[b]) {
+        place.push_back(s.ends[b]);
+      }
+    }
+    for (const Inner &in : inner) {
+      place.push_back(in.at);
+    }
+    const size_t n = place.size();
+    a.assign(n * n, 0.0);
+    v.resize(n);
+    for (size_t i = 0; i < n; i++) {
+      for (size_t j = 0; j < n; j++) {
+        a[i * n + j] = i == j ? 0.0 : weighted_apart(place[i], place[j], s.floor_sq);
+      }
+      v[i] = length(p - place[i]) + pre;
+    }
+    if (!dense_solve(a, n, v, 1)) {
+      return;
+    }
+    size_t i = 0;
+    for (size_t b = 0; b < nb; b++) {
+      if (used[b]) {
+        w_end[b] = v[i++];
+      }
+    }
+    for (size_t j = 0; j < ni; j++) {
+      w_inner[j] = v[i++];
+    }
+  }
+  /* Post-Blend on the weights as solved (before they are made shares, as Harmony does: so below 0, far from the shape
+   * where weights grow past 1, the shares can swing wide, as in Harmony). */
+  const auto blended = [&](double w) {
+    w = std::max(w, 0.0);
+    if (s.post > 0.0f) {
+      w = std::pow(w, 1.0 + double(s.post));
+    }
+    else if (s.post < 0.0f) {
+      w = 1.0 - std::pow(1.0 - w, 1.0 - double(s.post));
+    }
+    /* A weight past 1 under a Post-Blend below 0 that is not whole has no power (nothing in Harmony either): left
+     * out. */
+    return std::isfinite(w) ? w : 0.0;
+  };
+  double total = 0.0;
+  for (size_t b = 0; b < nb; b++) {
+    if (used[b]) {
+      w_end[b] = blended(w_end[b]);
+      total += w_end[b];
+    }
+  }
+  for (size_t j = 0; j < ni; j++) {
+    w_inner[j] = blended(w_inner[j]);
+    total += w_inner[j];
+  }
+  if (std::abs(total) < 1e-12) {
+    return;
+  }
+  for (size_t b = 0; b < nb; b++) {
+    if (used[b] && w_end[b] != 0.0) {
+      const auto [seg, t] = s.end_at(b);
+      add(seg, t, w_end[b] / total);
+    }
+  }
+  for (size_t j = 0; j < ni; j++) {
+    add(inner[j].seg, inner[j].t, w_inner[j] / total);
+  }
+}
+
+static float2 envelope_weighted_map(const DeformShape &d, float2 p)
+{
+  WeightedSolver &s = *d.env_solver;
+  uint32_t bx, by;
+  std::memcpy(&bx, &p.x, 4);
+  std::memcpy(&by, &p.y, 4);
+  const uint64_t key = (uint64_t(bx) << 32) | by;
+  WeightedSolver::Shard &shard = s.shards[size_t((key * 0x9E3779B97F4A7C15ull) >> 60)];
+  thread_local std::vector<float> w;
+  bool found = false;
+  {
+    std::shared_lock lock(shard.mutex);
+    auto it = shard.kept.find(key);
+    if (it != shard.kept.end()) {
+      w = it->second;
+      found = true;
+    }
+  }
+  if (!found) {
+    weighted_shares(s, p, w);
+    std::unique_lock lock(shard.mutex);
+    /* Kept up to about 64 MB a shape (all its shards), then begun again. */
+    if (shard.floats + w.size() > (size_t(1) << 20)) {
+      shard.kept.clear();
+      shard.floats = 0;
+    }
+    if (shard.kept.emplace(key, w).second) {
+      shard.floats += w.size();
+    }
+  }
+  float2 move(0.0f, 0.0f);
+  for (size_t seg = 0; seg < d.env_rest.size() && seg * 4 + 3 < w.size(); seg++) {
+    for (size_t k = 0; k < 4; k++) {
+      const float f = w[seg * 4 + k];
+      if (f != 0.0f) {
+        move = move + (d.env_now[seg][k] - d.env_rest[seg][k]) * f;
+      }
+    }
+  }
+  return p + move;
+}
+
 static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
 {
   switch (d.kind) {
     case DeformKind::Envelope:
-      return envelope_deform_map(d, p);
+      return d.env_solver ? envelope_weighted_map(d, p) : envelope_deform_map(d, p);
     case DeformKind::Grid:
     case DeformKind::Mesh:
     case DeformKind::Wire: {

@@ -731,6 +731,11 @@ static json layer_to_json(const Layer &layer)
           mj["blend"] = num(m.deform_blend);
           mj["range"] = num(m.deform_range);
         }
+        if (m.type == ModifierType::EnvelopeDeform) {
+          mj["envelope_method"] = envelope_method_id(m.deform_envelope_method);
+          mj["pre_blend"] = num(m.deform_pre_blend);
+          mj["post_blend"] = num(m.deform_post_blend);
+        }
         if (m.type == ModifierType::FollowDeform) {
           mj["point"] = {num(m.deform_point.x), num(m.deform_point.y)};
           mj["point2"] = {num(m.deform_point2.x), num(m.deform_point2.y)};
@@ -2444,6 +2449,11 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
       m.deform_range = std::clamp(get_float(mj, "range", 1.0f), 0.0f, 1.0f);
       m.deform_falloff = std::clamp(get_float(mj, "falloff", 0.25f), 0.0f, 1.0f);
+      if (!envelope_method_from_id(get_string(mj, "envelope_method", "STANDARD"), m.deform_envelope_method)) {
+        m.deform_envelope_method = EnvelopeMethod::Standard;
+      }
+      m.deform_pre_blend = std::max(get_float(mj, "pre_blend", 0.0f), 0.0f);
+      m.deform_post_blend = get_float(mj, "post_blend", 0.0f);
     }
     if (m.type == ModifierType::Resample) {
       m.subdiv_by_length = get_string(mj, "split", "LENGTH") != "COUNT";

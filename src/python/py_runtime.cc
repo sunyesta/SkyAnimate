@@ -3297,6 +3297,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["blend"] = mod.deform_blend;
         d["range"] = mod.deform_range;
         d["falloff"] = mod.deform_falloff;
+        d["envelope_method"] = envelope_method_id(mod.deform_envelope_method);
+        d["pre_blend"] = mod.deform_pre_blend;
+        d["post_blend"] = mod.deform_post_blend;
         if (mod.type == ModifierType::FollowDeform) {
           const auto pair = [](float2 v) { return py::make_tuple(v.x, v.y); };
           d["point"] = pair(mod.deform_point);
@@ -3713,6 +3716,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "falloff") {
         mod.deform_falloff = std::clamp(value.cast<float>(), 0.0f, 1.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "envelope_method") {
+        if (!envelope_method_from_id(value.cast<std::string>(), mod.deform_envelope_method)) {
+          throw py::value_error("envelope_method is STANDARD or WEIGHTED");
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "pre_blend") {
+        mod.deform_pre_blend = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "post_blend") {
+        mod.deform_post_blend = value.cast<float>();
       }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");

@@ -4670,11 +4670,48 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   }
   else if (kind == DeformKind::Envelope) {
-    ImGui::TextDisabled("Envelope: each point follows its nearest place on the shape");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("As Toon Boom Harmony's envelope deformer, open or closed: each point keeps its distance out "
-                        "from its nearest place on the shape and goes where that place goes. Where two places are "
-                        "equally near the drawing can tear, as it does in Harmony");
+    const bool weighted = m.deform_envelope_method == EnvelopeMethod::Weighted;
+    ImGui::TextDisabled(weighted ? "Envelope: each point moves by a blend of the shape's moves"
+                                 : "Envelope: each point follows its nearest place on the shape");
+    static const char *const METHOD_NAMES[] = {"Standard", "Weighted"};
+    static const char *const METHOD_TIPS[] = {
+        "As Toon Boom Harmony's envelope deformer, open or closed: each point keeps its distance out from its nearest "
+        "place on the shape and goes where that place goes, turning with it, so lines along the shape bend round its "
+        "corners. Where two places are equally near the drawing can tear, as it does in Harmony",
+        "As Toon Boom Harmony's Weighted Deform: each point moves (never turns) by a smooth blend of how places all "
+        "along the shape have moved, the nearer ones counting most. Nothing tears, and the drawing far away moves by "
+        "about the shape's average move. Pre-Blend and Post-Blend shape the blend"};
+    modifier_row_label("Method", column, "How what is around the shape follows it");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const int method = int(m.deform_envelope_method);
+    if (ImGui::BeginCombo("##envelope_method", METHOD_NAMES[method])) {
+      for (int k = 0; k < 2; k++) {
+        if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
+          m.deform_envelope_method = EnvelopeMethod(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", METHOD_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (weighted) {
+      modifier_row_label("Pre-Blend", column, "Evens out how the places along the shape share a point, most near "
+                                              "the shape: 0, a point on the shape goes exactly as its place does; "
+                                              "higher, nearby places share in it too (Harmony's Pre-Blend Amount)");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      if (ui_drag_float("##pre_blend", &m.deform_pre_blend, 0.01f, 0.0f, 100.0f, "%.2f")) {
+        m.deform_pre_blend = std::max(m.deform_pre_blend, 0.0f);
+      }
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+      modifier_row_label("Post-Blend", column, "Sharpens or softens the blend: above 0 the nearest places lead "
+                                               "more strongly; below 0 the far ones count more, and far from the "
+                                               "shape the drawing can swing wide, as in Harmony (its Post-Blend "
+                                               "Amount)");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      ui_drag_float("##post_blend", &m.deform_post_blend, 0.01f, -10.0f, 10.0f, "%.2f");
+      done |= ImGui::IsItemDeactivatedAfterEdit();
     }
   }
   else if (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, m)) {

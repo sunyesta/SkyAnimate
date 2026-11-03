@@ -423,6 +423,8 @@ add_test(NAME envelope_hook
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_hook.py)
 add_test(NAME envelope_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_deform.py)
+add_test(NAME envelope_weighted
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_weighted.py)
 add_test(NAME envelope_reach
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_reach.py)
 add_test(NAME mesh_points
