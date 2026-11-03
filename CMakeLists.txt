@@ -279,6 +279,8 @@ add_test(NAME controller_edges
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_edges.py)
 add_test(NAME action_panel
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_panel.py)
+add_test(NAME action_panel_edges
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_panel_edges.py)
 add_test(NAME group_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_group_deform.py)
 add_test(NAME deform_drag

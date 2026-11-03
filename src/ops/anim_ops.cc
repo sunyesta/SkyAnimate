@@ -827,7 +827,14 @@ void anim_operators_register()
           report(ReportType::Warning, "Nothing plays on frame 0: set it on another frame");
           return OpStatus::Cancelled;
         }
-        if (!action_frame_set(*owner, name, float(std::atof(op_arg(C, "frame").c_str())))) {
+        const std::string text = op_arg(C, "frame");
+        char *end = nullptr;
+        const float frame = std::strtof(text.c_str(), &end);
+        if (text.empty() || *end != '\0' || !std::isfinite(frame)) {
+          report(ReportType::Warning, "Frame is a number");
+          return OpStatus::Cancelled;
+        }
+        if (!action_frame_set(*owner, name, frame)) {
           report(ReportType::Warning, fix_action_find(*owner, name) ? "A fix plays as its drivers do"
                                                                      : "Its bone has no keys in it yet to say how far");
           return OpStatus::Cancelled;

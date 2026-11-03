@@ -1528,9 +1528,17 @@ static float action_own_frame(float frame, float length, bool loops)
   return !loops ? std::min(frame, length) : frame - length * std::ceil(frame / length - 1.0f);
 }
 
+/* The lengths of the actions playing at their own Frame, found in one pass over the bone layer when first asked for
+ * (a big rig's channels are many, and the actions are played in rounds). */
+struct ActionOwnLengths {
+  bool found = false;
+  std::map<std::string, float> of;
+};
+
 /* The actions playing at their own Frame, as action_bone_frames_for gives action bone actions: `at` a frame to work
  * their Frame out on (dynamics), -1 for the value it has now. */
-static void action_own_frames(const Layer &owner, int at, std::vector<std::pair<std::string, float>> &r_frames)
+static void action_own_frames(const Layer &owner, int at, ActionOwnLengths &lengths,
+                              std::vector<std::pair<std::string, float>> &r_frames)
 {
   for (const ActionPlay &a : owner.action_plays) {
     if (a.mute || action_frame_by(owner, a.name) != ActionFrameBy::Own ||
@@ -1539,9 +1547,22 @@ static void action_own_frames(const Layer &owner, int at, std::vector<std::pair<
       continue;
     }
     const float frame = at >= 0 && a.frame_keys.animated() ? a.frame_keys.evaluate(at) : a.frame;
-    if (frame > 0.0f) {
-      r_frames.push_back({a.name, action_own_frame(frame, action_length(owner, a.name), action_loops(owner, a.name))});
+    if (frame <= 0.0f) {
+      continue;
     }
+    if (!lengths.found) {
+      lengths.found = true;
+      owner_for_each_channel(const_cast<Layer &>(owner), [&](auto &ch, auto & /*value*/) {
+        for (const auto &[name, keys] : ch.actions) {
+          if (!keys.empty()) {
+            float &last = lengths.of[name];
+            last = std::max(last, float(keys.back().frame));
+          }
+        }
+      });
+    }
+    const auto it = lengths.of.find(a.name);
+    r_frames.push_back({a.name, action_own_frame(frame, it == lengths.of.end() ? 0.0f : it->second, action_loops(owner, a.name))});
   }
 }
 
@@ -2198,6 +2219,7 @@ void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone>
     }
   }
   /* Every driving bone's angle on that frame picks its action's frame first, as on the frame shown. */
+  ActionOwnLengths lengths;
   const auto playing_now = [&] {
     std::vector<float> turns;
     std::vector<float2> knobs;
@@ -2206,7 +2228,7 @@ void action_bone_actions_add_at(const Layer &owner, int frame, std::vector<Bone>
       knobs.push_back(bone_transform_from_position(owner.bones[i], bones[i].position));
     }
     std::vector<std::pair<std::string, float>> now = action_bone_frames_for(owner, turns, knobs);
-    action_own_frames(owner, frame, now);
+    action_own_frames(owner, frame, lengths, now);
     return now;
   };
   const auto setup_of = [](const auto &ch, const auto &value) { return channel_setup(ch, value); };
@@ -2406,10 +2428,11 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
         }
       }
     }
+    ActionOwnLengths lengths;
     const auto playing_now = [&] {
       std::vector<std::pair<std::string, float>> now;
       std::vector<std::pair<std::string, float>> all = action_bone_actions_playing(owner);
-      action_own_frames(owner, -1, all);
+      action_own_frames(owner, -1, lengths, all);
       for (const auto &[name, t] : all) {
         if (!(name == doc.action && owner.id == doc.action_layer)) {
           now.push_back({name, t});

@@ -639,6 +639,11 @@ std::vector<std::string> document_action_mirror(Document &doc, uint64_t owner_id
   }
   owner = layer_find(doc, owner_id);
   owner->actions.push_back(to);
+  /* The other side loops as this one does (muting stays each side's own). */
+  if (const ActionPlay *play = action_play_find(*owner, from); play && play->loop != ActionLoop::Auto) {
+    const ActionLoop loop = play->loop;
+    action_play_ensure(*owner, to).loop = loop;
+  }
 
   const std::vector<uint64_t> ids = layers_inside(doc, owner_id);
   std::map<uint64_t, uint64_t> partner = layer_partners(doc, ids, notes);
