@@ -2038,7 +2038,7 @@ static void actions_panel_body(Context &C, Layer &armature)
                   ImGui::ColorConvertFloat4ToU32(ImGui::ColorConvertU32ToFloat4(UI_FIX_COLOR)), 1.3f);
     }
     if (!name.empty()) {
-      /* Its Frame (teal: its bone's or knob's), the key button, and whether it plays. */
+      /* Its Frame, the key button, and whether it plays. */
       ImGui::SameLine(w - right_w + style.ItemSpacing.x);
       std::string path = action_frame_path(name);
       if (holder) {
@@ -2054,7 +2054,6 @@ static void actions_panel_body(Context &C, Layer &armature)
         tip("How much of the fix plays now: it follows its action bones");
       }
       else {
-        const bool linked = changed_begin(by != ActionFrameBy::Own);
         const int pushed = ui_key_tint_push(state);
         float frame = action_frame_shown(armature, name);
         ImGui::BeginDisabled(!frames_editable);
@@ -2063,9 +2062,6 @@ static void actions_panel_body(Context &C, Layer &armature)
         }
         ImGui::EndDisabled();
         ImGui::PopStyleColor(pushed);
-        if (linked) {
-          ImGui::PopStyleColor(6);
-        }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
           C.undo->push("Action Frame", doc);
         }
@@ -2210,7 +2206,6 @@ static void actions_panel_body(Context &C, Layer &armature)
     ImGui::Text("%d frames", int(std::lround(action_length(armature, picked, true))));
     if (holder) {
       label("Linked To");
-      changed_begin(true);
       if (ImGui::Button(holder->name.c_str(), ImVec2(-1, 0))) {
         Bone &b = *bone_find(armature, holder->id);
         if (!ImGui::GetIO().KeyShift) {
@@ -2220,7 +2215,6 @@ static void actions_panel_body(Context &C, Layer &armature)
         armature.active_bone = b.id;
         C.undo->push("Select Bone", doc);
       }
-      ImGui::PopStyleColor(6);
       tip(by == ActionFrameBy::Knob ? "The controller whose knob plays it, and holds its frames' keys: click to select it"
                                     : "The bone whose turn plays it, and holds its frames' keys: click to select it");
     }
