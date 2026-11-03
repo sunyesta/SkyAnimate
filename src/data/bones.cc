@@ -456,7 +456,8 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
             }
             break;
           case BoneConstraintType::CopyPosition:
-            if (t && c.follow_move) {
+            /* A controller rests: its position keys are its knob's frames, no move to follow. */
+            if (t && c.follow_move && !bone_is_controller(*t)) {
               const float2 now = c.delay > 0 ? bone_position_at(*t, then, false) : t->position;
               position += (now - t->setup_position) * (c.factor * w);
             }
@@ -1102,15 +1103,16 @@ static std::vector<std::pair<bool, bool>> picked_joints(const Layer &armature)
 }
 
 /* Whether the bone is picked for G as a whole (its body or its base), or by its tip alone. A
- * connected bone's base is its parent's tip, so picking it aims the parent instead. */
-static bool grabs_whole(const Bone &b)
+ * connected bone's base is its parent's tip, so picking it aims the parent instead; but posed, a controller's G
+ * moves its knob, wherever its box sits. */
+static bool grabs_whole(const Bone &b, bool setup_frame)
 {
-  return (b.selected || b.select_head) && !b.connected;
+  return (b.selected || b.select_head) && (!b.connected || (!setup_frame && bone_is_controller(b)));
 }
 
 static bool grabs_tip(const Layer &armature, const Bone &b, bool setup_frame)
 {
-  if (grabs_whole(b)) {
+  if (grabs_whole(b, setup_frame)) {
     return false;
   }
   if (b.select_tail) {
@@ -1224,14 +1226,14 @@ void armature_grab_selected(Layer &armature, const std::vector<Bone> &original, 
   armature.bones = original;
   const std::vector<BonePose> poses = armature_keyed_pose(armature, setup_frame);
   const auto moves = [&](const Bone &b) {
-    return !b.outer_carried && (grabs_whole(b) || grabs_tip(armature, b, setup_frame));
+    return !b.outer_carried && (grabs_whole(b, setup_frame) || grabs_tip(armature, b, setup_frame));
   };
   std::vector<std::pair<size_t, bool>> todo;
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
     /* Children come along with a parent that moves or turns, as in Moho. */
     if (moves(b) && !ancestor_is(armature, b, moves)) {
-      todo.push_back({i, grabs_whole(b)});
+      todo.push_back({i, grabs_whole(b, setup_frame)});
     }
   }
   for (const auto &[i, whole] : todo) {

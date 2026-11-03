@@ -275,6 +275,8 @@ add_test(NAME action_bones_nested
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_action_bones_nested.py)
 add_test(NAME controller
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller.py)
+add_test(NAME controller_edges
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_edges.py)
 add_test(NAME group_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_group_deform.py)
 add_test(NAME deform_drag

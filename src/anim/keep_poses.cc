@@ -6,6 +6,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/deform.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
@@ -122,7 +123,8 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
     /* Bones: a key holds the position along the setup's axes and the angle added to the setup's. */
     for (Bone &b : layer->bones) {
       const auto it = s.bones.find(b.id);
-      if (it == s.bones.end()) {
+      /* A controller's keys are its knob's frames in its box, wherever the box is put. */
+      if (it == s.bones.end() || bone_is_controller(b)) {
         continue;
       }
       const SetupSnapshot::BoneSetup &was = it->second;

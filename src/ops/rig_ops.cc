@@ -2311,7 +2311,8 @@ void rig_operators_register()
           std::map<uint64_t, std::pair<float2, float>> rest;
           int left_action_bones = 0;
           for (const Bone &b : armature->bones) {
-            if (only_selected && !b.selected) {
+            /* A controller's pose is its knob's frames, not a place: its box stays where it rests. */
+            if ((only_selected && !b.selected) || bone_is_controller(b)) {
               continue;
             }
             if (action_bones.count(b.id)) {
@@ -2464,7 +2465,7 @@ void rig_operators_register()
           /* A timeline without keys for a bone shows it at rest: where the rest moved, it gets one key
            * (frame 1 on) holding the old rest, so it shows as it did. */
           for (Bone &b : armature->bones) {
-            if (!moved.count(b.id)) {
+            if (!moved.count(b.id) || bone_is_controller(b)) {
               continue;
             }
             const auto &[was_position, was_angle] = old_rest[b.id];
@@ -3328,6 +3329,8 @@ void rig_operators_register()
                  const std::vector<uint64_t> picked = sources;
                  const auto reflect = [](float2 p) { return float2(-p.x, p.y); };
                  int made = 0;
+                 /* Controller sides whose other side's action isn't there yet: Mirror Action Bone Actions makes it. */
+                 std::vector<std::tuple<std::string, int, std::string>> sides_later;
                  /* Parents before children, so a mirrored child finds its mirrored parent. */
                  for (size_t pass = 0; pass < armature.bones.size() && !sources.empty(); pass++) {
                    for (auto it = sources.begin(); it != sources.end();) {
@@ -3356,10 +3359,11 @@ void rig_operators_register()
                      for (int side = 0; side < CONTROLLER_SIDES; side++) {
                        const std::string from = src->controller_actions[side < 2 ? side ^ 1 : side];
                        const std::string name = from.empty() ? from : bone_mirror_name(from);
-                       copy.controller_actions[side] =
-                           name != from && std::find(armature.actions.begin(), armature.actions.end(), name) != armature.actions.end()
-                               ? name
-                               : "";
+                       const bool there = std::find(armature.actions.begin(), armature.actions.end(), name) != armature.actions.end();
+                       copy.controller_actions[side] = name != from && there ? name : "";
+                       if (name != from && !there) {
+                         sides_later.emplace_back(other, side, name);
+                       }
                      }
                      const float length = src->length;
                      bone_place(copy, parent_setup, reflect(sp->setup_head), reflect(sp->setup_tail));
@@ -3392,7 +3396,19 @@ void rig_operators_register()
                    }
                  }
                  if (made > 0 && op_arg_bool(C, "action_bone_actions")) {
-                   mirror_action_bone_actions(C, armature.id, picked, op_arg(C, "direction", "L_TO_R") != "R_TO_L");
+                   const uint64_t armature_id = armature.id;
+                   mirror_action_bone_actions(C, armature_id, picked, op_arg(C, "direction", "L_TO_R") != "R_TO_L");
+                   Document &doc = *C.document;
+                   for (const auto &[bone_name, side, action] : sides_later) {
+                     const Layer *rig = layer_find(doc, armature_id);
+                     const Bone *knob = rig ? bone_find_by_name(*rig, bone_name) : nullptr;
+                     std::string why, note;
+                     if (knob && bone_is_controller(*knob) && knob->controller_actions[side].empty() &&
+                         std::find(rig->actions.begin(), rig->actions.end(), action) != rig->actions.end())
+                     {
+                       controller_side_set(doc, armature_id, knob->id, side, action, "", &why, &note);
+                     }
+                   }
                  }
                  return made > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                },

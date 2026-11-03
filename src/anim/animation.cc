@@ -360,6 +360,7 @@ static void apply_action_bone_actions(Document &doc, int frame);
 static void controllers_rest(Document &doc);
 static void controllers_link(Document &doc, Layer &owner);
 static float controller_dial_turn(const Layer &owner, const Bone &knob, const Bone &dial, float2 at);
+static bool controller_in_action(const Document &doc, const Layer &owner);
 
 /* --- The document's Simulation settings, animatable --------------------------------------------- */
 
@@ -629,6 +630,11 @@ void animation_record(Document &doc)
             }
             bone_changes_from_values(bone);
             freeze(bone.position_keys, bone.transform, frame);
+            /* A linked dial's turn is its knob's key (a key of its own would be folded onto the knob, at rest), and a
+             * controller has nothing to turn or scale. */
+            if (bone_is_controller(bone) || controller_of_dial(layer, bone)) {
+              continue;
+            }
             freeze(bone.angle_keys, bone.turn, frame);
             freeze(bone.scale_keys, bone.scale, frame);
           }
@@ -1280,10 +1286,25 @@ static std::vector<std::pair<std::string, float>> action_bone_frames_for(const L
     if (it == driver->angle_keys.actions.end()) {
       continue;
     }
+    const float turn = turns[size_t(driver - owner.bones.data())];
+    /* A linked bone turned only by its knob plays the knob's frame: a turn can stand for more than one frame of
+     * an action that turns out and back, and the knob says which. */
+    int side = 0;
+    if (const Bone *knob = controller_of_action(owner, name, &side);
+        knob && controller_side_dial(owner, *knob, side) == driver)
+    {
+      const float2 at = knobs[size_t(knob - owner.bones.data())];
+      if (std::fabs(turn - controller_dial_turn(owner, *knob, *driver, at)) < 1e-5f) {
+        const float along = (controller_side_axis(side) == 0 ? at.x : at.y) * controller_side_sign(side);
+        if (const float t = std::min(along, controller_side_frames(*knob, side)); t > 0.0f) {
+          frames.push_back({name, t});
+        }
+        continue;
+      }
+    }
     /* The driving bone's keys are its Angle (the turn from its setup pose), so its action starts at
      * 0 and the bone's turn now picks the frame; turning an unkeyed bone plays it at once. */
-    const float t = action_bone_frame(it->second, 0.0f,
-                                      action_bone_turn_wrapped(it->second, turns[size_t(driver - owner.bones.data())]));
+    const float t = action_bone_frame(it->second, 0.0f, action_bone_turn_wrapped(it->second, turn));
     if (t > 0.0f) {
       frames.push_back({name, t});
     }
@@ -1310,12 +1331,22 @@ static bool action_bone_action_turns(const Layer &owner, const std::string &by, 
   if (!bone || by == name) {
     return false;
   }
-  if (bone_is_controller(*bone)) {
-    const auto it = bone->position_keys.actions.find(by);
-    return it != bone->position_keys.actions.end() &&
+  const auto moves_knob = [&](const Bone &knob) {
+    const auto it = knob.position_keys.actions.find(by);
+    return it != knob.position_keys.actions.end() &&
            std::any_of(it->second.begin(), it->second.end(), [](const Key<float2> &k) {
              return std::abs(k.value.x) > 1e-6f || std::abs(k.value.y) > 1e-6f;
            });
+  };
+  if (bone_is_controller(*bone)) {
+    return moves_knob(*bone);
+  }
+  /* A linked bone turns as its knob moves: an action moving the knob turns it. */
+  int side = 0;
+  if (const Bone *knob = controller_of_action(owner, name, &side);
+      knob && controller_side_dial(owner, *knob, side) == bone && moves_knob(*knob))
+  {
+    return true;
   }
   const auto it = bone->angle_keys.actions.find(by);
   return it != bone->angle_keys.actions.end() && std::any_of(it->second.begin(), it->second.end(), [](const Key<float> &k) {
@@ -2256,9 +2287,35 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
       }
     }
     else {
+      /* What each linked bone's knob gave it as linked: an action that moves a knob (one a master controller plays)
+       * turns its bones on from there, before they pick their frames. */
+      std::vector<std::tuple<Bone *, Bone *, float>> given;
+      if (!controller_in_action(doc, owner)) {
+        for (Bone &knob : owner.bones) {
+          for (int side = 0; side < CONTROLLER_SIDES && bone_is_controller(knob); side++) {
+            Bone *dial = controller_side_dial(owner, knob, side);
+            if (dial && std::none_of(given.begin(), given.end(), [&](const auto &g) { return std::get<1>(g) == dial; })) {
+              given.emplace_back(&knob, dial, controller_dial_turn(owner, knob, *dial, controller_knob(knob)));
+            }
+          }
+        }
+      }
       /* An action bone action never moves its own bone (the bone picks its frame), unless held for a fix. */
       frames = action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
         play(name, t, static_cast<const void *>(&action_bone_of(owner, name)->angle_keys), false);
+        for (auto &[knob, dial, was] : given) {
+          const float now = controller_dial_turn(owner, *knob, *dial, controller_knob(*knob));
+          if (now != was) {
+            Channel<float> &ch = dial->angle_keys;
+            ch.last += now - was;
+            ch.from_action_bones += now - was;
+            ch.has_last = true;
+            dial->turn += now - was;
+            dial->angle += now - was;
+            was = now;
+            doc.action_bones_applied = true;
+          }
+        }
       });
     }
     /* Then the fixes, after every action bone action, as their drivers play together. While one is edited, the
@@ -2726,6 +2783,19 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
   }
   std::string note;
   const std::array<std::string, 2> own = own_actions(*owner, *bone);
+  /* Its actions are about to be its own sides: another controller playing them lets go first, its keys for them
+   * becoming the bone's (and then its knob's), so nothing stops playing. An action has one controller. */
+  for (const Bone &other : owner->bones) {
+    for (int side = 0; side < CONTROLLER_SIDES; side++) {
+      const std::string &action = other.controller_actions[side];
+      if (&other != bone && bone_is_controller(other) && !action.empty() && (action == own[0] || action == own[1])) {
+        std::string why, moved;
+        controller_side_set(doc, owner_id, other.id, side, "", "", &why, &moved);
+        note = action + " is no longer " + other.name + "'s " + controller_side_name(side) + ": it is " + bone->name +
+               "'s now";
+      }
+    }
+  }
   /* Actions that turn it have nothing left to turn. */
   for (const auto &[action, keys] : bone->angle_keys.actions) {
     if (action != own[0] && action != own[1] &&
@@ -2798,6 +2868,10 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
   if (!bone || !bone_is_controller(*bone)) {
     return "";
   }
+  std::array<bool, CONTROLLER_SIDES> linked{};
+  for (int side = 0; side < CONTROLLER_SIDES; side++) {
+    linked[side] = controller_side_dial(*owner, *bone, side) != nullptr;
+  }
   controller_release(doc, owner_id, bone_id);
   const std::array<std::string, 2> own = own_actions(*owner, *bone);
   const bool own_right = !own[0].empty() && bone->controller_actions[CONTROLLER_RIGHT] == own[0];
@@ -2815,8 +2889,22 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
     bone->position_keys.keys.clear();
   }
   else {
+    /* What the knob did to linked bones is their keys now: only the frames of the other sides stay, as moves. */
+    bool dropped = false;
     for (Key<float2> &k : bone->position_keys.keys) {
+      for (int side = 0; side < CONTROLLER_SIDES; side++) {
+        float &along = controller_side_axis(side) == 0 ? k.value.x : k.value.y;
+        if (linked[side] && along * controller_side_sign(side) > 0.0f) {
+          along = 0.0f;
+          dropped = true;
+        }
+      }
       k.value = k.value * bone->controller_frame_size;
+    }
+    if (dropped && std::all_of(bone->position_keys.keys.begin(), bone->position_keys.keys.end(),
+                               [](const Key<float2> &k) { return length(k.value) < 1e-9f; }))
+    {
+      bone->position_keys.keys.clear();
     }
   }
   bone->type = BoneType::Regular;

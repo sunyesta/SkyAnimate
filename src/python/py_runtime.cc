@@ -2328,6 +2328,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
    * frames other than 0 they key with auto-keying). */
   m.def("layer_bone_set", [bone_or_raise](uint64_t id, const std::string &name, py::dict values) {
     Bone &bone = bone_or_raise(id, name);
+    /* Frame 0 is the rig at rest: a knob set there would be read as the box's move. */
+    if (values.contains("knob") && current_context().document->frame_current == 0) {
+      throw py::value_error("On frame 0 a knob is at rest: set it on another frame");
+    }
     for (const auto &[key_obj, value] : values) {
       const std::string key = py::str(key_obj);
       if (key == "position") {
