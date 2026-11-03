@@ -804,8 +804,8 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   }
   const Shape &rest_shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
   const Shape *bent_shape = now ? &bent.shapes[size_t(drawing_shape_index(bent, m.deform_shape))] : nullptr;
-  /* Each deform takes its own shapes: Mesh Deform a grid or a network of cells (or a closed four-sided shape, as
-   * one cell), Cage Deform one closed shape, Curve Deform one open line. */
+  /* Each deform takes its own shapes: Mesh Deform a grid or a network of cells (or one closed shape, as one cell, or
+   * open lines), Cage Deform one closed shape, Curve Deform one open line. */
   const bool mesh = m.type == ModifierType::MeshDeform;
   if (const DrawingGrid *grid = shape_grid(rest, rest_shape)) {
     if (!mesh || !r.rest_grid.build(rest, *grid) || (now && !r.now_grid.build(bent, *grid))) {
@@ -856,9 +856,9 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   }
   bool closed = false;
   const bool one_run = !branches && shape_outline(rest, line, OUTLINE_STEPS, r.rest, nullptr, &closed);
-  if (!one_run || (mesh && closed && rest_shape.edges.size() == 4) || (mesh && !closed)) {
-    /* A network drawn by hand (or a closed four-sided shape, one cell): its cells; a Grid when every one has four
-     * sides. */
+  if (!one_run || mesh) {
+    /* A network drawn by hand (or one closed shape of any sides, one cell; or open lines, wires): its cells; a Grid
+     * when every one has four sides. */
     r.rest.clear();
     if (!mesh || !network_cells(rest, rest_shape, now ? &bent : nullptr, r.cells, r)) {
       return false;

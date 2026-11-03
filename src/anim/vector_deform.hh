@@ -52,7 +52,7 @@ bool vector_deform_takes_part(const Document &doc, const Modifier &m);
  * a whole loop. False, `m` as it was, if they don't. */
 bool vector_deform_part_from_selection(Document &doc, Modifier &m);
 /* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
- * four-sided shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
+ * shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);
 /* After opening a file of the single Vector Deform modifier of before: each becomes the deform its shape fits
  * (its default name with it). */

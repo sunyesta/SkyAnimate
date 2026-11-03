@@ -294,6 +294,35 @@ assert abs(along - bent_way) < math.radians(0.2), ("the handle turns as the defo
                                                     math.degrees(bent_way))
 doc.frame_current = 0
 
+# --- One closed shape of any sides ----------------------------------------------------------------------------------
+# Mesh Deform takes a lone closed shape as one cell, whatever its sides (as Cage Deform takes it, its own way): its sides
+# are the bones. Pulling the bottom of a five-sided cage down leaves what lies by its top sides where it was.
+pentagon = new_layer("Pentagon")
+corners = [(math.sin(math.radians(a)), math.cos(math.radians(a))) for a in range(180, 540, 72)]
+pentagon.add_curve(corners, closed=True)
+lid = new_layer("Lid")
+lid.add_curve([(-0.4, 0.75), (0.0, 0.85), (0.4, 0.75)])
+lid.add_curve([(-0.3, -0.7), (0.3, -0.7)])
+deform(lid, pentagon, falloff=0.1)
+assert lid.modifiers[0]["kind"] == "Mesh" and lid.modifiers[0]["fits"] == "MESH_DEFORM", lid.modifiers[0]
+lid_rest = shown(lid)
+reshape(pentagon, lambda x, y: (x, y - 0.5) if y < -0.5 else None)
+lid_now = shown(lid)
+assert max(moved(lid_rest[:3], lid_now[:3])) < 1e-5, ("what lies by the top stays", lid_rest[:3], lid_now[:3])
+assert min(moved(lid_rest[3:], lid_now[3:])) > 0.2, ("what lies by the bottom goes with it", lid_now[3:])
+lid.modifier_set(0, mesh_method="CELLS")
+at(10)
+assert min(moved(lid_rest[3:], shown(lid)[3:])) > 0.2, "Cells bends it too"
+lid.modifier_set(0, mesh_method="POINTS")
+doc.frame_current = 0
+# A loop of three points (one curve, three sides), and Cage Deform still takes a closed shape as before.
+loop = new_layer("Loop")
+loop.add_curve([(-1.0, -0.8), (1.0, -0.8), (0.0, 1.0)], closed=True)
+deform(lid, loop)
+assert lid.modifiers[0]["kind"] == "Mesh" and lid.modifiers[0]["fits"] == "MESH_DEFORM", lid.modifiers[0]
+lid.modifier_set(0, type="CAGE_DEFORM")
+assert lid.modifiers[0]["kind"] == "Cage" and lid.modifiers[0]["fits"] == "CAGE_DEFORM", lid.modifiers[0]
+
 # --- Falloff is saved -----------------------------------------------------------------------------------------------
 folder = tempfile.mkdtemp()
 try:

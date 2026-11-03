@@ -544,7 +544,7 @@ m = wrong.modifiers[w]
 assert m["type"] == "MESH_DEFORM" and m["name"] == "Mesh Deform" and m["kind"] == "Grid", m
 assert not close(wrong.evaluated()[0][0], (-0.5, 0.0)), "switched, it bends"
 doc.frame_current = 0
-# A closed four-sided shape fits both: a cage to Cage Deform, one grid cell to Mesh Deform.
+# A closed shape fits both: a cage to Cage Deform, one cell to Mesh Deform (a grid cell when it has four sides).
 c = deform(wrong, cage, cage.shapes[0][0], "CAGE_DEFORM")
 assert wrong.modifiers[c]["kind"] == "Cage" and wrong.modifiers[c]["fits"] == "CAGE_DEFORM"
 wrong.modifier_set(c, type="MESH_DEFORM")
