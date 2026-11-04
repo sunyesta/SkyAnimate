@@ -4209,6 +4209,7 @@ KeyShape interp_key_shape(Interp interp)
     case Interp::Cycle:
     case Interp::Bezier:
     case Interp::Pose:
+    case Interp::Custom:
       break;
   }
   return KEY_SHAPE_SPECIAL;

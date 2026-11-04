@@ -389,6 +389,128 @@ void motion_path_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_brush_set";
+    ot.name = "Set Motion Path Brush";
+    ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or "
+                     "BLEND_SPEED), and set radius= (screen pixels), strength= and speed= (Paint Speed's)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      ToolSettings &ts = C.wm->tool_settings;
+      if (op_has_arg(C, "brush")) {
+        PathBrush brush;
+        if (!path_brush_from_id(op_arg(C, "brush"), &brush)) {
+          report(ReportType::Error, "Unknown path brush '" + op_arg(C, "brush") + "'");
+          return OpStatus::Cancelled;
+        }
+        ts.path_brush = brush;
+      }
+      if (op_has_arg(C, "radius")) {
+        ts.path_radius = std::clamp(op_arg_float(C, "radius", ts.path_radius), 2.0f, 1000.0f);
+      }
+      if (op_has_arg(C, "strength")) {
+        ts.path_strength = std::clamp(op_arg_float(C, "strength", ts.path_strength), 0.0f, 1.0f);
+      }
+      if (op_has_arg(C, "speed")) {
+        ts.path_speed = std::clamp(op_arg_float(C, "speed", ts.path_speed), 0.05f, 20.0f);
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  for (const char *which : {"radius", "strength"}) {
+    OperatorType ot;
+    const bool radius = std::string(which) == "radius";
+    ot.idname = radius ? "anim.motion_path_radius_adjust" : "anim.motion_path_strength_adjust";
+    ot.name = radius ? "Adjust Path Brush Radius" : "Adjust Path Brush Strength";
+    ot.description = radius ? "Size the Motion Path tool's brush with the mouse (F); click to keep it"
+                            : "Set the Motion Path tool's brush strength with the mouse (Shift F); click to keep it";
+    ot.flag = 0;
+    ot.poll = [](Context &C) {
+      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath && C.wm->tool_settings.path_brush != PathBrush::Edit;
+    };
+    ot.exec = [radius](Context &C) {
+      C.wm->path_adjust_request = radius ? 'R' : 'S';
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_stroke";
+    ot.name = "Motion Path Brush Stroke";
+    ot.description = "A stroke of a path brush (brush=GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or BLEND_SPEED; "
+                     "else the tool's) through points=\"x,y;x,y\" (document space), with radius= in document units, "
+                     "strength=, speed= and invert=1 (Ctrl), on the paths traced (or layer=, bone=, point=): Grab "
+                     "moves what was under the first point by the move to the last; the others dab at every point";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const ToolSettings &ts = C.wm->tool_settings;
+      PathBrush brush = ts.path_brush;
+      if (op_has_arg(C, "brush") && !path_brush_from_id(op_arg(C, "brush"), &brush)) {
+        report(ReportType::Error, "Unknown path brush '" + op_arg(C, "brush") + "'");
+        return OpStatus::Cancelled;
+      }
+      if (brush == PathBrush::Edit) {
+        report(ReportType::Warning, "Edit isn't a brush: drag the path's dots and handles");
+        return OpStatus::Cancelled;
+      }
+      std::vector<float2> points;
+      const std::string text = op_arg(C, "points");
+      for (size_t at = 0; at < text.size();) {
+        const size_t end = std::min(text.find(';', at), text.size());
+        const std::string pair = text.substr(at, end - at);
+        char *rest = nullptr;
+        const float x = std::strtof(pair.c_str(), &rest);
+        if (rest != pair.c_str() && *rest == ',') {
+          char *end_y = nullptr;
+          const float y = std::strtof(rest + 1, &end_y);
+          if (end_y != rest + 1) {
+            points.push_back({x, y});
+          }
+        }
+        at = end + 1;
+      }
+      std::vector<MotionPathTarget> targets;
+      if (points.empty() || !op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      int first = 0, last = 0;
+      if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last) &&
+          !motion_path_range(doc, targets, first, last))
+      {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      PathDab dab;
+      dab.radius = op_arg_float(C, "radius", 0.1f);
+      dab.strength = op_arg_float(C, "strength", ts.path_strength);
+      dab.speed = op_arg_float(C, "speed", ts.path_speed);
+      dab.invert = op_arg_bool(C, "invert");
+      int changed = 0;
+      if (brush == PathBrush::Grab) {
+        const std::vector<PathGrabKey> keys = motion_path_grab_keys(doc, targets, first, last, points.front(), dab.radius);
+        changed = motion_path_grab(doc, keys, points.back() - points.front(), dab.strength);
+      }
+      else {
+        for (const float2 p : points) {
+          dab.center = p;
+          changed += brush == PathBrush::Smooth ? motion_path_smooth_dab(doc, targets, first, last, dab)
+                                                : motion_path_speed_dab(doc, targets, first, last, brush, dab);
+        }
+      }
+      if (changed == 0) {
+        report(ReportType::Info, "Nothing under the brush");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
 }
 
 }  // namespace oanim

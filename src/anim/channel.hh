@@ -35,8 +35,11 @@ enum class Interp : uint8_t {
   Cycle,
   /* Holds a pose from an action; until actions arrive (milestone 4) it holds like Step. */
   Pose,
+  /* Painted with the Motion Path tool's speed brushes: a speed for each frame of the stretch (Key::speeds), the
+   * value going along the same way (a position along its path) at that speed, arriving on the key's frame. */
+  Custom,
 };
-inline constexpr int INTERP_COUNT = 13;
+inline constexpr int INTERP_COUNT = 14;
 
 const char *interp_identifier(Interp interp);
 const char *interp_name(Interp interp);
@@ -86,6 +89,9 @@ template<typename T> struct Key {
    * as it always has (key_path_handles works out what they would be). */
   PathHandles path_handles = PathHandles::Auto;
   T path_in{}, path_out{};
+  /* Custom: how fast the stretch arriving at this key goes on each of its frames (any scale: only how they compare
+   * counts; one for each frame from the key before, after its hold). Empty: evenly. */
+  std::vector<float> speeds;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
   bool operator==(const Key &) const = default;
@@ -216,6 +222,18 @@ void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_
 /* Sets one of key `i`'s handles (`out`, else in) to `handle`: an Auto key takes its Auto handles first; Aligned turns
  * the other one to stay in line, keeping its length; `broken` breaks them for good. */
 void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken);
+/* Whether a stretch arriving at a key with `interp` runs along a curve through the keys (Smooth, Bezier, Custom, a
+ * Cycle's lead-in) rather than straight, while its handles are Auto. */
+bool interp_path_smooth(Interp interp);
+/* Gives key `i` its Auto handles as its own (Broken), so its path stays as it is whatever the stretches either side
+ * become. */
+void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i);
+
+/* Custom's progress (0..1) `t` of the way through a stretch of `speeds`, each frame's taking its share. */
+float custom_progress(const std::vector<float> &speeds, float t);
+/* Makes the stretch arriving at key `i` Custom with `speeds`. */
+template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds);
+
 /* "AUTO", "ALIGNED", "BROKEN". */
 const char *path_handles_identifier(PathHandles mode);
 bool path_handles_from_identifier(const std::string &identifier, PathHandles *r_mode);

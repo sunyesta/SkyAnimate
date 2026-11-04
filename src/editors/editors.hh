@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "anim/path_brush.hh"
 #include "anim/sculpt.hh"
 #include "editors/tool_shelf.hh"
 
@@ -89,6 +90,8 @@ struct Area {
    * 1 Move, 2 Shape, 3 Mine. */
   ShelfState sculpt_shelf;
   ShelfState draw_shelf;
+  /* The Motion Path tool's brushes: 0 All, 1 Shape, 2 Speed. */
+  ShelfState path_shelf;
   /* Viewport: the Tool Settings strip's width last frame (0: the tool has no settings), and how far it is
    * scrolled when it doesn't fit, in pixels. */
   float tool_settings_width = 0.0f;
@@ -145,6 +148,11 @@ void sculpt_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
 float draw_shelf_height(const Context &C, const Area &area);
 void draw_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
 void draw_presets_popup(Context &C);
+/* The Motion Path tool's brush shelf (motion_path_shelf.cc), the same way. */
+float path_shelf_height(const Context &C, const Area &area);
+void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size);
+/* A path brush's picture (the shelf's tiles). */
+void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 center, float size, unsigned int col);
 void ink_line_draw(ImDrawList *dl, const std::vector<float2> &points, const std::vector<float> &half_widths, Color color);
 /* A sculpt brush's picture: a line before and after it (the shelf's tiles, the tool bar). */
 void sculpt_brush_icon(ImDrawList *dl, SculptBrush brush, ImVec2 center, float size, unsigned int col,

@@ -74,6 +74,7 @@ set(OANIM_SOURCES
   src/editors/number_field.cc
   src/editors/screen_eyedropper.cc
   src/editors/draw_shelf.cc
+  src/editors/motion_path_shelf.cc
   src/editors/sculpt_shelf.cc
   src/editors/tool_shelf.cc
   src/wm/clipboard_image.cc
@@ -427,6 +428,8 @@ add_test(NAME motion_path_tool
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_tool.py)
 add_test(NAME motion_path_handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_handles.py)
+add_test(NAME motion_path_brushes
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_brushes.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
 add_test(NAME envelope_hook

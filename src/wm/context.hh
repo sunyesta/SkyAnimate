@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "anim/path_brush.hh"
 #include "anim/sculpt.hh"
 #include "core/math.hh"
 #include "data/annotations.hh"
@@ -196,6 +197,12 @@ struct ToolSettings {
   bool sculpt_selected_only = false;
   /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
   float sculpt_surface_sensitivity = 0.25f;
+  /* The Motion Path tool's brush (its shelf), its radius in screen pixels, strength, and Paint Speed's speed (1 a
+   * stretch's even speed). */
+  PathBrush path_brush = PathBrush::Edit;
+  float path_radius = 50.0f;
+  float path_strength = 0.5f;
+  float path_speed = 2.0f;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
@@ -438,6 +445,8 @@ struct WindowManager {
   /* F or Shift F with the Sculpt tool: the viewport sizes the brush's radius ('R') or strength ('S')
    * with the mouse until a click. */
   char sculpt_adjust_request = 0;
+  /* The same for the Motion Path tool's brushes ('R' radius, 'S' strength). */
+  char path_adjust_request = 0;
   /* The same for the Draw tool: the line's width ('R') or opacity ('S'). */
   char draw_adjust_request = 0;
   /* Shift Space or the header's pen button: the viewport shows the pens at the mouse. */

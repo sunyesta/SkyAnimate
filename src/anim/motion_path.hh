@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "anim/animation.hh"
+#include "anim/path_brush.hh"
 #include "core/math.hh"
 #include "data/document.hh"
 
@@ -95,5 +96,42 @@ bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int f
                             bool broken);
 /* Puts `target`'s selected position keys back to Auto handles. Returns how many changed. */
 int motion_path_handles_auto(Document &doc, const MotionPathTarget &target);
+
+/* --- Path brushes (anim/path_brush.hh), on the paths of `targets` over frames first..last, in document units. Every
+ * brush keys what it changes whatever auto-key says. */
+
+struct PathDab {
+  float2 center;
+  float radius = 0.1f;
+  float strength = 0.5f;
+  /* Paint Speed's speed (1: the stretch's even speed). */
+  float speed = 2.0f;
+  /* Ctrl: the opposite (Paint Speed 1 / speed, Faster as Slower and Slower as Faster, Blend Speed sharpening). */
+  bool invert = false;
+};
+/* 1 at the centre, easing to 0 at `radius`. */
+float path_brush_falloff(float distance, float radius);
+
+/* Grab: the targets' own keys whose dots are inside the brush when it is pressed, where they were, and how much each
+ * follows the mouse. */
+struct PathGrabKey {
+  MotionPathTarget target;
+  int frame = 0;
+  float2 start;
+  float weight = 0.0f;
+};
+std::vector<PathGrabKey> motion_path_grab_keys(const Document &doc, const std::vector<MotionPathTarget> &targets,
+                                               int first, int last, float2 center, float radius);
+/* Moves each grabbed key from where it was by `offset` times its weight and `strength`. Returns how many moved. */
+int motion_path_grab(Document &doc, const std::vector<PathGrabKey> &keys, float2 offset, float strength);
+/* Smooth: each of the targets' own keys under the dab toward the curve through the keys either side (Smooth Arc's),
+ * and its dragged handles toward Auto. Returns how many keys changed. */
+int motion_path_smooth_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                           const PathDab &dab);
+/* Paint Speed, Faster, Slower or Blend Speed: the speeds of the frames under the dab, on the channel that moves each
+ * target's dot, its stretches becoming Custom (each still arriving on its key's frame). Returns how many stretches
+ * changed. */
+int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                          PathBrush brush, const PathDab &dab);
 
 }  // namespace oanim

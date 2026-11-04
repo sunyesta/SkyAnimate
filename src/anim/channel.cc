@@ -10,10 +10,10 @@ namespace oanim {
 
 static constexpr const char *INTERP_IDS[INTERP_COUNT] = {"LINEAR", "SMOOTH", "EASE_IN_OUT", "EASE_IN", "EASE_OUT",
                                                          "STEP",   "BEZIER", "BACK",        "BOUNCE",  "ELASTIC",
-                                                         "NOISY",  "CYCLE",  "POSE"};
+                                                         "NOISY",  "CYCLE",  "POSE",        "CUSTOM"};
 static constexpr const char *INTERP_NAMES[INTERP_COUNT] = {
     "Linear", "Smooth", "Ease In/Out", "Ease In", "Ease Out", "Step", "Bezier",
-    "Back",   "Bounce", "Elastic",     "Noisy",   "Cycle",    "Pose"};
+    "Back",   "Bounce", "Elastic",     "Noisy",   "Cycle",    "Pose",     "Custom"};
 
 const char *interp_identifier(Interp interp)
 {
@@ -167,6 +167,7 @@ float interp_curve(const KeySettings &s, float t)
       return t >= 1.0f ? 1.0f : 0.0f;
     case Interp::Linear:
     case Interp::Noisy:
+    case Interp::Custom:
       return t;
     case Interp::EaseIn:
     case Interp::EaseOut:
@@ -284,10 +285,72 @@ static Interp stretch_interp(Interp arriving)
   return arriving == Interp::Cycle ? Interp::Smooth : arriving;
 }
 
+/* Timed by the curve's own parameter, as Smooth's Hermite is. */
 static bool interp_smooth(Interp interp)
 {
   return interp == Interp::Smooth || interp == Interp::Bezier;
 }
+
+/* Shaped as Smooth (Auto handles from the slopes): Custom goes along the path Smooth makes, at its own speeds. */
+static bool interp_smooth_shape(Interp interp)
+{
+  return interp_smooth(interp) || interp == Interp::Custom;
+}
+
+bool interp_path_smooth(Interp interp)
+{
+  return interp_smooth_shape(stretch_interp(interp));
+}
+
+void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i)
+{
+  if (i >= keys.size() || keys[i].path_handles != PathHandles::Auto) {
+    return;
+  }
+  float2 in, out;
+  key_path_handles(keys, i, in, out);
+  keys[i].path_in = in;
+  keys[i].path_out = out;
+  keys[i].path_handles = PathHandles::Broken;
+  keys_changed();
+}
+
+float custom_progress(const std::vector<float> &speeds, float t)
+{
+  const size_t n = speeds.size();
+  if (n == 0) {
+    return t;
+  }
+  float total = 0.0f;
+  for (const float s : speeds) {
+    total += std::max(s, 0.0f);
+  }
+  if (total <= 0.0f) {
+    return t;
+  }
+  const float x = std::clamp(t, 0.0f, 1.0f) * float(n);
+  float done = 0.0f;
+  size_t i = 0;
+  for (; i < n && float(i + 1) <= x; i++) {
+    done += std::max(speeds[i], 0.0f);
+  }
+  if (i < n) {
+    done += std::max(speeds[i], 0.0f) * (x - float(i));
+  }
+  return done / total;
+}
+
+template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds)
+{
+  if (i >= keys.size()) {
+    return;
+  }
+  keys[i].interp = Interp::Custom;
+  keys[i].speeds = std::move(speeds);
+  keys_changed();
+}
+template void key_speeds_set(std::vector<Key<float>> &keys, size_t i, std::vector<float> speeds);
+template void key_speeds_set(std::vector<Key<float2>> &keys, size_t i, std::vector<float> speeds);
 
 void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_in, float2 &r_out)
 {
@@ -303,12 +366,12 @@ void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_
   }
   if (i > 0) {
     const Key<float2> &a = keys[i - 1];
-    r_in = interp_smooth(stretch_interp(k.interp)) ? key_slope(keys, int(i)) * (-stretch_span(a, k) / 3.0f)
+    r_in = interp_smooth_shape(stretch_interp(k.interp)) ? key_slope(keys, int(i)) * (-stretch_span(a, k) / 3.0f)
                                                     : (a.value - k.value) / 3.0f;
   }
   if (i + 1 < keys.size()) {
     const Key<float2> &b = keys[i + 1];
-    r_out = interp_smooth(stretch_interp(b.interp)) ? key_slope(keys, int(i)) * (stretch_span(k, b) / 3.0f)
+    r_out = interp_smooth_shape(stretch_interp(b.interp)) ? key_slope(keys, int(i)) * (stretch_span(k, b) / 3.0f)
                                                      : (b.value - k.value) / 3.0f;
   }
 }
@@ -464,8 +527,8 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   if constexpr (std::is_same_v<T, float2>) {
     /* A dragged path handle at either end: the stretch runs along the Bezier the handles make, Smooth by the curve's
      * own timing (as without handles), any other mode by its progress along the curve's length. */
-    if ((a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto) && interp != Interp::Step &&
-        interp != Interp::Pose)
+    if ((a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto || interp == Interp::Custom) &&
+        interp != Interp::Step && interp != Interp::Pose)
     {
       float2 in, out, unused;
       key_path_handles(keys, size_t(k), unused, out);
@@ -489,6 +552,9 @@ template<typename T> T Channel<T>::evaluate(int frame) const
           break;
         case Interp::Elastic:
           u = ease_elastic(t, b.elastic_amplitude, b.elastic_period);
+          break;
+        case Interp::Custom:
+          u = custom_progress(b.speeds, t);
           break;
         default:
           break;
@@ -515,6 +581,8 @@ template<typename T> T Channel<T>::evaluate(int frame) const
       return a.value + (b.value - a.value) * ease_elastic(t, b.elastic_amplitude, b.elastic_period);
     case Interp::Noisy:
       return a.value + (b.value - a.value) * t + noise_of(a.value, b, float(frame));
+    case Interp::Custom:
+      return a.value + (b.value - a.value) * custom_progress(b.speeds, t);
     case Interp::Smooth:
     case Interp::Bezier:
     case Interp::Cycle:

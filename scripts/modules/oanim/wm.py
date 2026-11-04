@@ -361,6 +361,13 @@ def set_onion_colors(before=None, after=None):
     _oanim.set_onion_colors(before, after)
 
 
+def path_brush_settings():
+    """The Motion Path tool's brush: {"brush": "EDIT", "GRAB", "SMOOTH", "PAINT_SPEED", "FASTER", "SLOWER" or
+    "BLEND_SPEED", "radius" (screen pixels), "strength", "speed" (Paint Speed's)}. Set with
+    oanim.ops.anim.motion_path_brush_set(brush=..., radius=..., strength=..., speed=...)."""
+    return _oanim.path_brush_settings()
+
+
 def sculpt_settings():
     """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST,
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),

@@ -580,7 +580,383 @@ bool key_jacobian(const Document &doc, const MotionPathTarget &t, int frame, flo
   return ok;
 }
 
+/* The target's own keyed frames (after frame 0, the setup). */
+std::vector<int> own_key_frames(const Document &doc, const MotionPathTarget &t)
+{
+  std::vector<int> frames;
+  if (Layer *layer = layer_find(const_cast<Document &>(doc), t.layer)) {
+    for (const auto &[frame, summary] : layers_key_summary({layer}, motion_path_key_filter(doc, t))) {
+      if (frame > 0) {
+        frames.push_back(frame);
+      }
+    }
+  }
+  return frames;
+}
+
+/* Smooth Arc's curve: where key `keys[i]` would be on a curve over time (a parabola, or a line through two) fitted
+ * to up to two keys either side of it. */
+bool arc_fit(const Document &doc, const MotionPathTarget &target, const std::vector<int> &keys, size_t i,
+             float2 &r_at)
+{
+  const int k = keys[i];
+  std::vector<std::pair<double, float2>> near;
+  for (size_t j = (i >= 2 ? i - 2 : 0); j < std::min(keys.size(), i + 3); j++) {
+    float2 at;
+    if (j != i && motion_path_position_at(doc, target, keys[j], at)) {
+      near.push_back({double(keys[j] - k), at});
+    }
+  }
+  if (near.size() < 2) {
+    return false;
+  }
+  /* Least squares p(t) = c0 + c1 t + c2 t^2 with t = 0 on the key: c0 is where it goes. */
+  const int terms = near.size() >= 3 ? 3 : 2;
+  double m[3][3] = {}, rx[3] = {}, ry[3] = {};
+  for (const auto &[t, p] : near) {
+    const double basis[3] = {1.0, t, t * t};
+    for (int r = 0; r < terms; r++) {
+      for (int c = 0; c < terms; c++) {
+        m[r][c] += basis[r] * basis[c];
+      }
+      rx[r] += basis[r] * p.x;
+      ry[r] += basis[r] * p.y;
+    }
+  }
+  for (int c = 0; c < terms; c++) {
+    int pivot = c;
+    for (int r = c + 1; r < terms; r++) {
+      if (std::abs(m[r][c]) > std::abs(m[pivot][c])) {
+        pivot = r;
+      }
+    }
+    for (int cc = 0; cc < 3; cc++) {
+      std::swap(m[c][cc], m[pivot][cc]);
+    }
+    std::swap(rx[c], rx[pivot]);
+    std::swap(ry[c], ry[pivot]);
+    if (std::abs(m[c][c]) < 1e-12) {
+      return false;
+    }
+    for (int r = 0; r < terms; r++) {
+      if (r != c) {
+        const double f = m[r][c] / m[c][c];
+        for (int cc = 0; cc < terms; cc++) {
+          m[r][cc] -= f * m[c][cc];
+        }
+        rx[r] -= f * rx[c];
+        ry[r] -= f * ry[c];
+      }
+    }
+  }
+  r_at = float2{float(rx[0] / m[0][0]), float(ry[0] / m[0][0])};
+  return true;
+}
+
+/* A stretch's speeds as it moves now: one for each frame from `start`, the change since the frame before (along the
+ * path for a position), as a share of the even speed. */
+template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, size_t i, int start, int n)
+{
+  const Key<T> &b = ch.keys[i];
+  std::vector<float> s(size_t(n), 1.0f);
+  if (b.interp == Interp::Custom && !b.speeds.empty()) {
+    /* Painted for a stretch of another length: each frame takes the one it falls in. */
+    for (int j = 0; j < n; j++) {
+      s[size_t(j)] = b.speeds[std::min(b.speeds.size() - 1, size_t((float(j) + 0.5f) * float(b.speeds.size()) / float(n)))];
+    }
+  }
+  else {
+    T before = ch.evaluate(start);
+    for (int j = 0; j < n; j++) {
+      const T now = ch.evaluate(start + j + 1);
+      if constexpr (std::is_same_v<T, float>) {
+        s[size_t(j)] = std::abs(now - before);
+      }
+      else {
+        s[size_t(j)] = length(now - before);
+      }
+      before = now;
+    }
+  }
+  float total = 0.0f;
+  for (float &v : s) {
+    v = std::max(v, 0.0f);
+    total += v;
+  }
+  if (total <= 1e-9f) {
+    std::fill(s.begin(), s.end(), 1.0f);
+    return s;
+  }
+  for (float &v : s) {
+    v = std::max(v * float(n) / total, 0.02f);
+  }
+  return s;
+}
+
+/* The brush on one channel: each stretch with frames under it becomes Custom, the speeds of those frames changed and
+ * the rest of the stretch taking up the difference, so it still arrives on its key's frame. */
+template<typename T>
+int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush brush, const PathDab &dab)
+{
+  int changed = 0;
+  for (size_t i = 1; i < ch.keys.size(); i++) {
+    const Key<T> &a = ch.keys[i - 1], &b = ch.keys[i];
+    const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+    const int n = b.frame - start;
+    if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+      continue;
+    }
+    std::vector<float> w(size_t(n), 0.0f);
+    bool any = false;
+    for (int j = 0; j < n; j++) {
+      if (const auto it = falloff.find(start + j + 1); it != falloff.end() && it->second > 0.0f) {
+        w[size_t(j)] = it->second;
+        any = true;
+      }
+    }
+    if (!any) {
+      continue;
+    }
+    std::vector<float> s = stretch_speeds(ch, i, start, n);
+    if constexpr (std::is_same_v<T, float2>) {
+      /* A straight stretch keeps its shape as Custom (which runs along Smooth's curve while Auto). */
+      if (!interp_path_smooth(b.interp)) {
+        key_path_handles_freeze(ch.keys, i - 1);
+        key_path_handles_freeze(ch.keys, i);
+      }
+    }
+    const std::vector<float> was = s;
+    PathBrush mode = brush;
+    if (dab.invert && brush == PathBrush::Faster) {
+      mode = PathBrush::Slower;
+    }
+    else if (dab.invert && brush == PathBrush::Slower) {
+      mode = PathBrush::Faster;
+    }
+    const float strength = std::max(dab.strength, 0.0f);
+    for (int j = 0; j < n; j++) {
+      const float f = w[size_t(j)];
+      if (f <= 0.0f) {
+        continue;
+      }
+      float &v = s[size_t(j)];
+      const float neighbours =
+          0.5f * (was[size_t(std::max(j - 1, 0))] + was[size_t(std::min(j + 1, n - 1))]);
+      switch (mode) {
+        case PathBrush::PaintSpeed: {
+          const float want = dab.invert ? 1.0f / std::max(dab.speed, 0.02f) : std::max(dab.speed, 0.0f);
+          v += (want - v) * std::min(f * strength, 1.0f);
+          break;
+        }
+        case PathBrush::Faster:
+          v *= std::pow(1.0f + 0.5f * strength, f);
+          break;
+        case PathBrush::Slower:
+          v /= std::pow(1.0f + 0.5f * strength, f);
+          break;
+        case PathBrush::BlendSpeed:
+          v += (dab.invert ? (v - neighbours) : (neighbours - v)) * std::min(f * strength, 1.0f);
+          break;
+        default:
+          break;
+      }
+      v = std::max(v, 0.02f);
+    }
+    /* Arriving on its frame: the frames not under the brush take up the difference, or all of them where those can't
+     * (the brushed ones would leave them next to nothing). */
+    float brushed = 0.0f, rest = 0.0f;
+    for (int j = 0; j < n; j++) {
+      (w[size_t(j)] > 0.0f ? brushed : rest) += s[size_t(j)];
+    }
+    if (rest > 1e-6f && float(n) - brushed > 0.05f * rest) {
+      const float scale = (float(n) - brushed) / rest;
+      for (int j = 0; j < n; j++) {
+        if (w[size_t(j)] <= 0.0f) {
+          s[size_t(j)] = std::max(s[size_t(j)] * scale, 0.02f);
+        }
+      }
+    }
+    else {
+      const float scale = float(n) / std::max(brushed + rest, 1e-9f);
+      for (float &v : s) {
+        v = std::max(v * scale, 0.02f);
+      }
+    }
+    key_speeds_set(ch.keys, i, std::move(s));
+    changed++;
+  }
+  return changed;
+}
+
 }  // namespace
+
+const char *path_brush_id(PathBrush brush)
+{
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",        "GRAB",   "SMOOTH",     "PAINT_SPEED",
+                                                    "FASTER",      "SLOWER", "BLEND_SPEED"};
+  return IDS[int(brush)];
+}
+
+const char *path_brush_name(PathBrush brush)
+{
+  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit",   "Grab",   "Smooth",     "Paint Speed",
+                                                      "Faster", "Slower", "Blend Speed"};
+  return NAMES[int(brush)];
+}
+
+bool path_brush_from_id(const std::string &id, PathBrush *r_brush)
+{
+  for (int i = 0; i < PATH_BRUSH_COUNT; i++) {
+    if (id == path_brush_id(PathBrush(i))) {
+      *r_brush = PathBrush(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+float path_brush_falloff(float distance, float radius)
+{
+  if (radius <= 0.0f || distance >= radius) {
+    return 0.0f;
+  }
+  const float x = distance / radius;
+  return 1.0f - x * x * (3.0f - 2.0f * x);
+}
+
+std::vector<PathGrabKey> motion_path_grab_keys(const Document &doc, const std::vector<MotionPathTarget> &targets,
+                                               int first, int last, float2 center, float radius)
+{
+  std::vector<PathGrabKey> keys;
+  for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+    for (const int f : own_key_frames(doc, p.target)) {
+      if (f < p.first || f - p.first >= int(p.points.size())) {
+        continue;
+      }
+      const float w = path_brush_falloff(length(p.points[size_t(f - p.first)] - center), radius);
+      float2 start;
+      if (w > 0.0f && motion_path_position_at(doc, p.target, f, start)) {
+        keys.push_back({p.target, f, start, w});
+      }
+    }
+  }
+  return keys;
+}
+
+int motion_path_grab(Document &doc, const std::vector<PathGrabKey> &keys, float2 offset, float strength)
+{
+  const int shown = doc.frame_current;
+  int moved = 0;
+  for (const PathGrabKey &k : keys) {
+    doc.frame_current = k.frame;
+    animation_sync(doc);
+    if (motion_path_place(doc, k.target, k.start + offset * (k.weight * strength))) {
+      motion_path_record(doc);
+      moved++;
+    }
+  }
+  doc.frame_current = shown;
+  animation_sync(doc);
+  return moved;
+}
+
+int motion_path_smooth_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                           const PathDab &dab)
+{
+  struct Move {
+    MotionPathTarget target;
+    int frame;
+    float2 to;
+    float weight;
+  };
+  std::vector<Move> moves;
+  for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+    const std::vector<int> keys = motion_path_keys(doc, p.target);
+    for (const int f : own_key_frames(doc, p.target)) {
+      if (f < p.first || f - p.first >= int(p.points.size())) {
+        continue;
+      }
+      const float w =
+          std::min(path_brush_falloff(length(p.points[size_t(f - p.first)] - dab.center), dab.radius) * dab.strength,
+                   1.0f);
+      const auto at = std::find(keys.begin(), keys.end(), f);
+      float2 now, fit;
+      if (w <= 0.0f || at == keys.end() || !motion_path_position_at(doc, p.target, f, now)) {
+        continue;
+      }
+      if (!arc_fit(doc, p.target, keys, size_t(at - keys.begin()), fit)) {
+        fit = now;
+      }
+      moves.push_back({p.target, f, now + (fit - now) * w, w});
+    }
+  }
+  const int shown = doc.frame_current;
+  int changed = 0;
+  for (const Move &m : moves) {
+    doc.frame_current = m.frame;
+    animation_sync(doc);
+    if (motion_path_place(doc, m.target, m.to)) {
+      motion_path_record(doc);
+      changed++;
+    }
+  }
+  /* Dragged handles ease back toward Auto, becoming Auto once there. */
+  for (const Move &m : moves) {
+    Channel<float2> *ch = handle_channel(doc, m.target);
+    Key<float2> *key = ch ? ch->key_at(m.frame) : nullptr;
+    if (!key || key->path_handles == PathHandles::Auto) {
+      continue;
+    }
+    const size_t i = size_t(key - ch->keys.data());
+    std::vector<Key<float2>> automatic = ch->keys;
+    automatic[i].path_handles = PathHandles::Auto;
+    float2 in, out;
+    key_path_handles(automatic, i, in, out);
+    key->path_in = key->path_in + (in - key->path_in) * m.weight;
+    key->path_out = key->path_out + (out - key->path_out) * m.weight;
+    if (length(key->path_in - in) + length(key->path_out - out) < 1e-4f) {
+      key->path_handles = PathHandles::Auto;
+    }
+  }
+  doc.frame_current = shown;
+  animation_evaluate(doc, shown);
+  return changed;
+}
+
+int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                          PathBrush brush, const PathDab &dab)
+{
+  if (!path_brush_is_speed(brush)) {
+    return 0;
+  }
+  int changed = 0;
+  for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+    std::map<int, float> falloff;
+    for (size_t k = 0; k < p.points.size(); k++) {
+      const float w = path_brush_falloff(length(p.points[k] - dab.center), dab.radius);
+      if (w > 0.0f) {
+        falloff[p.first + int(k)] = w;
+      }
+    }
+    if (falloff.empty()) {
+      continue;
+    }
+    /* The channel that moves the dot: a bone's angle for its tip, else the position. */
+    Layer *layer = layer_find(doc, p.target.layer);
+    if (layer && p.target.bone && !p.target.head) {
+      for (Bone &b : layer->bones) {
+        if (b.id == p.target.bone) {
+          changed += paint_speeds(b.angle_keys, falloff, brush, dab);
+        }
+      }
+    }
+    else if (Channel<float2> *ch = handle_channel(doc, p.target)) {
+      changed += paint_speeds(*ch, falloff, brush, dab);
+    }
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
+}
 
 bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target)
 {
@@ -752,67 +1128,12 @@ void motion_path_record(Document &doc)
 int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int first, int last)
 {
   const std::vector<int> keys = motion_path_keys(doc, target);
-  /* Where each in-between key should be: on a curve over time (a parabola, or a line through two) fitted to up to two
-   * keys either side of it, all worked out before any moves. */
+  /* Where each in-between key should be, all worked out before any moves. */
   std::vector<std::pair<int, float2>> moves;
   for (size_t i = 0; i < keys.size(); i++) {
-    const int k = keys[i];
-    if (k <= first || k >= last) {
-      continue;
-    }
-    std::vector<std::pair<double, float2>> near;
-    for (size_t j = (i >= 2 ? i - 2 : 0); j < std::min(keys.size(), i + 3); j++) {
-      float2 at;
-      if (j != i && motion_path_position_at(doc, target, keys[j], at)) {
-        near.push_back({double(keys[j] - k), at});
-      }
-    }
-    if (near.size() < 2) {
-      continue;
-    }
-    /* Least squares p(t) = c0 + c1 t + c2 t^2 with t = 0 on the key: c0 is where it goes. */
-    const int terms = near.size() >= 3 ? 3 : 2;
-    double m[3][3] = {}, rx[3] = {}, ry[3] = {};
-    for (const auto &[t, p] : near) {
-      const double basis[3] = {1.0, t, t * t};
-      for (int r = 0; r < terms; r++) {
-        for (int c = 0; c < terms; c++) {
-          m[r][c] += basis[r] * basis[c];
-        }
-        rx[r] += basis[r] * p.x;
-        ry[r] += basis[r] * p.y;
-      }
-    }
-    bool solved = true;
-    for (int c = 0; c < terms && solved; c++) {
-      int pivot = c;
-      for (int r = c + 1; r < terms; r++) {
-        if (std::abs(m[r][c]) > std::abs(m[pivot][c])) {
-          pivot = r;
-        }
-      }
-      for (int cc = 0; cc < 3; cc++) {
-        std::swap(m[c][cc], m[pivot][cc]);
-      }
-      std::swap(rx[c], rx[pivot]);
-      std::swap(ry[c], ry[pivot]);
-      if (std::abs(m[c][c]) < 1e-12) {
-        solved = false;
-        break;
-      }
-      for (int r = 0; r < terms; r++) {
-        if (r != c) {
-          const double f = m[r][c] / m[c][c];
-          for (int cc = 0; cc < terms; cc++) {
-            m[r][cc] -= f * m[c][cc];
-          }
-          rx[r] -= f * rx[c];
-          ry[r] -= f * ry[c];
-        }
-      }
-    }
-    if (solved) {
-      moves.push_back({k, float2{float(rx[0] / m[0][0]), float(ry[0] / m[0][0])}});
+    float2 at;
+    if (keys[i] > first && keys[i] < last && arc_fit(doc, target, keys, i, at)) {
+      moves.push_back({keys[i], at});
     }
   }
   const int shown = doc.frame_current;

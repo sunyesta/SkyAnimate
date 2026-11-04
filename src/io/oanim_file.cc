@@ -194,6 +194,13 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.color != 0) {
       key["color"] = k.color;
     }
+    if (!k.speeds.empty()) {
+      json speeds = json::array();
+      for (const float s : k.speeds) {
+        speeds.push_back(num(s));
+      }
+      key["speeds"] = std::move(speeds);
+    }
     if constexpr (std::is_same_v<T, float2>) {
       /* Path handles (the Motion Path tool's), once dragged. */
       if (k.path_handles != PathHandles::Auto) {
@@ -1665,6 +1672,11 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.cycle_absolute = get_bool(k, "cycle_absolute", false);
     key.cycle_frame = std::max(0, get_int(k, "cycle_frame", 0));
     key.color = get_int(k, "color", 0);
+    for (const json &s : get_array(k, "speeds")) {
+      if (s.is_number()) {
+        key.speeds.push_back(std::max(0.0f, s.get<float>()));
+      }
+    }
     if constexpr (std::is_same_v<T, float2>) {
       const auto in = k.find("path_in"), out = k.find("path_out");
       if (path_handles_from_identifier(get_string(k, "path_handles", "AUTO"), &key.path_handles) &&

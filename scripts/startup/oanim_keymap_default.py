@@ -177,6 +177,8 @@ KEYMAP = (
     ("Sculpt", "sculpt.brush_twist", "W", {}),
     ("Sculpt", "sculpt.radius_adjust", "F", {}),
     ("Sculpt", "sculpt.strength_adjust", "F", {"shift": True}),
+    ("Motion Path", "anim.motion_path_radius_adjust", "F", {}),
+    ("Motion Path", "anim.motion_path_strength_adjust", "F", {"shift": True}),
     ("Draw", "draw.width_adjust", "F", {}),
     ("Draw", "draw.opacity_adjust", "F", {"shift": True}),
     ("Draw", "draw.presets_popup", "SPACE", {"shift": True}),

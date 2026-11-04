@@ -1249,6 +1249,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       C.undo->mark_changed();
     }
   });
+  /* The Motion Path tool's brush and its settings (anim/path_brush.hh). */
+  m.def("path_brush_settings", []() {
+    const ToolSettings &ts = current_context().wm->tool_settings;
+    py::dict d;
+    d["brush"] = path_brush_id(ts.path_brush);
+    d["radius"] = ts.path_radius;
+    d["strength"] = ts.path_strength;
+    d["speed"] = ts.path_speed;
+    return d;
+  });
   /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */
   m.def("sculpt_settings", []() {
     const ToolSettings &ts = current_context().wm->tool_settings;
@@ -2152,6 +2162,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["noise_amplitude"] = k.noise_amplitude;
         d["noise_frequency"] = k.noise_frequency;
         d["cycle_back"] = k.cycle_back;
+        if (!k.speeds.empty()) {
+          py::list speeds;
+          for (const float s : k.speeds) {
+            speeds.append(s);
+          }
+          d["speeds"] = speeds;
+        }
         result.append(d);
       }
     };
@@ -2266,6 +2283,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         else if (name == "cycle_back") {
           key->cycle_back = std::max(0, value.cast<int>());
+        }
+        else if (name == "speeds") {
+          std::vector<float> speeds;
+          for (const py::handle s : value) {
+            speeds.push_back(std::max(0.0f, s.cast<float>()));
+          }
+          key_speeds_set(ch.keys, size_t(key - ch.keys.data()), std::move(speeds));
         }
         else if (name == "path_handles" || name == "path_in" || name == "path_out") {
           if constexpr (std::is_same_v<std::decay_t<decltype(key->value)>, float2>) {
