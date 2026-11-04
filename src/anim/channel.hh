@@ -99,6 +99,10 @@ template<typename T> struct Key {
    * (filler_self; 0 until taken, as when opened), or the timing of the stretch after it while the key after is the one it had (filler_next: its
    * frame, filler_out: its timing). */
   bool filler = false;
+  /* Added inside motion the channel already had (before its last key of its own): it holds nothing the curve
+   * doesn't, so the curve is worked out without it, as is one after its last key of its own (Channel::evaluate).
+   * Turning Key Together on moves nothing. */
+  bool filler_inside = false;
   int filler_next = 0;
   uint32_t filler_self = 0, filler_out = 0;
   bool operator==(const Key &) const = default;

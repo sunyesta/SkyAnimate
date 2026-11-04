@@ -488,10 +488,38 @@ bool path_handles_from_identifier(const std::string &identifier, PathHandles *r_
   return false;
 }
 
+/* A filler key that shapes nothing (Key::filler_inside, or no key of the channel's own after it; frame 0, the setup,
+ * always counts), given whether a key of its own comes after it. */
+template<typename T> static bool filler_quiet(const Key<T> &k, bool own_after)
+{
+  return k.filler && k.frame != 0 && (k.filler_inside || !own_after);
+}
+
 template<typename T> T Channel<T>::evaluate(int frame) const
 {
   if (keys.empty()) {
     return last;
+  }
+  {
+    /* Worked out without the fillers that shape nothing: the curve through the rest is as it was. */
+    bool own_after = false, quiet = false;
+    for (size_t i = keys.size(); i-- > 0 && !quiet;) {
+      quiet = filler_quiet(keys[i], own_after);
+      own_after = own_after || !keys[i].filler;
+    }
+    if (quiet) {
+      Channel<T> real;
+      real.last = last;
+      own_after = false;
+      for (size_t i = keys.size(); i-- > 0;) {
+        if (!filler_quiet(keys[i], own_after)) {
+          real.keys.push_back(keys[i]);
+        }
+        own_after = own_after || !keys[i].filler;
+      }
+      std::reverse(real.keys.begin(), real.keys.end());
+      return real.evaluate(frame);
+    }
   }
   if (frame <= keys.front().frame) {
     return keys.front().value;

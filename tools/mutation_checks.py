@@ -44,6 +44,13 @@ PENDING = [
     ("src/anim/motion_path.cc", "  if (!target.bone && !target.point) {\n    /* A layer's path:",
      "  if (false) {\n    /* A layer's path:", "a layer's diamonds only its path keys",
      "tests/test_motion_path_key_menu.py"),
+    ("src/anim/animation.cc", "      k.filler_inside = fillers && was_animated && frame < own_last;",
+     "      k.filler_inside = false;", "a filler inside motion shapes nothing", "tests/test_key_together.py"),
+    ("src/anim/channel.cc", "  return k.filler && k.frame != 0 && (k.filler_inside || !own_after);",
+     "  return k.filler && k.frame != 0 && k.filler_inside;", "a filler after the last key shapes nothing",
+     "tests/test_key_together.py"),
+    ("src/anim/channel.cc", "  return k.filler && k.frame != 0 && (k.filler_inside || !own_after);",
+     "  return k.filler && k.frame != 0;", "a filler before a new key still holds", "tests/test_key_together.py"),
 ]
 
 

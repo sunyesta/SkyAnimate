@@ -235,4 +235,52 @@ assert 6 not in frames(rig, 'bones["leg"].angle') and 6 not in frames(hat, "posi
     "the action's fillers let go", frames(rig, 'bones["leg"].angle'), frames(hat, "position"))
 assert ops.anim.action_set(name="") == {'FINISHED'}
 
+
+# --- Turned on, nothing moves: fillers inside motion already there, or after a layer's last key, shape no curve -------
+def poses(ls, at=(0, 3, 5, 7, 10, 13, 15, 17, 20, 25, 30)):
+    now = doc.frame_current
+    out = []
+    for f in at:
+        doc.frame_current = f
+        out.append([tuple(round(c, 5) for p in l.points for c in p) for l in ls])
+    doc.frame_current = now
+    return out
+
+
+assert ops.wm.read_homefile() == {'FINISHED'}
+doc = oanim.data.document
+layers = oanim.data.layers
+doc.auto_key = True
+doc.auto_freeze_keys = False
+sa = new_vec([(0.0, 0.0), (1.0, 0.0)])
+sb = new_vec([(0.0, 3.0), (1.0, 3.0)])
+sgroup = group_of([sa, sb])
+# Smooth keys: a filler on 20 after a's last key would bend a's curve into 10, one on 10 inside b's 0-20 would bend b's.
+doc.frame_current = 10
+sa.set_point(1, (1.0, 1.0))
+doc.frame_current = 20
+sb.set_point(0, (0.0, 4.0))
+# A third key, so b's stretch into 20 isn't even (a filler at its middle would then bend it).
+doc.frame_current = 24
+sb.set_point(0, (0.0, 7.0))
+doc.frame_current = 0
+assert key(sa, "points[1].pos", 10)["interp"] == "SMOOTH" and key(sb, "points[0].pos", 20)["interp"] == "SMOOTH"
+before = poses([sa, sb])
+sgroup.key_together = True
+settle()
+assert frames(sa, "points[1].pos") == [0, 10, 20, 24] and frames(sb, "points[0].pos") == [0, 10, 20, 24]
+assert poses([sa, sb]) == before, "turned on, nothing moves"
+
+# Keyed while on, a layer still waits for the rest: its fillers before its new key hold it.
+doc.frame_current = 30
+sa.set_point(1, (1.0, 3.0))
+doc.frame_current = 0
+doc.frame_current = 15
+assert abs(sa.points[1][1] - 1.0) < 1e-4, ("a holds its pose from 10 to 24, then moves", sa.points[1])
+doc.frame_current = 22
+assert abs(sa.points[1][1] - 1.0) < 1e-4, sa.points[1]
+doc.frame_current = 27
+assert sa.points[1][1] > 1.2, sa.points[1]
+doc.frame_current = 0
+
 print("Key Together tests passed")

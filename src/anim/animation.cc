@@ -659,6 +659,13 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
       channel_delete_key(ch, value, frame);
     }
     const bool was_animated = ch.animated();
+    /* Its last key of its own: a filler before it is inside motion it already has. */
+    int own_last = INT32_MIN;
+    for (const auto &k : ch.keys) {
+      if (!k.filler) {
+        own_last = std::max(own_last, k.frame);
+      }
+    }
     for (const auto &[frame, timing] : most) {
       if (auto *k = ch.key_at(frame)) {
         if (settle && key_timing(*k) != *timing) {
@@ -672,6 +679,7 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
       auto &k = ch.set_key(frame, held);
       key_timing_set(k, *timing);
       k.filler = fillers;
+      k.filler_inside = fillers && was_animated && frame < own_last;
     }
   });
   changes(false);
