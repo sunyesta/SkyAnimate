@@ -1142,6 +1142,28 @@ std::string oanim_document_to_json(const Document &doc)
            {"onion_all_layers", doc.onion_all_layers},
            {"onion_color_before", color_to_json(doc.onion_color_before)},
            {"onion_color_after", color_to_json(doc.onion_color_after)},
+           {"motion_paths", doc.motion_paths},
+           {"path_before", doc.path_before},
+           {"path_after", doc.path_after},
+           {"path_all", doc.path_all},
+           {"path_step", doc.path_step},
+           {"path_lines", doc.path_lines},
+           {"path_speed_colors", doc.path_speed_colors},
+           {"path_relative", Document::rna().find("path_relative")->items[size_t(doc.path_relative)].identifier},
+           {"path_relative_layer", doc.path_relative_layer},
+           {"path_relative_bone", doc.path_relative_bone},
+           {"path_targets", [&] {
+              json targets = json::array();
+              for (const MotionPathTarget &t : doc.path_targets) {
+                json tj = {{"layer", t.layer}, {"bone", t.bone}, {"point", t.point}, {"head", t.head},
+                           {"pinned", t.pinned}};
+                if (t.has_color) {
+                  tj["color"] = color_to_json(t.color);
+                }
+                targets.push_back(std::move(tj));
+              }
+              return targets;
+            }()},
            {"sync_mode", Document::rna().find("sync_mode")->items[size_t(doc.sync)].identifier},
            {"play_audio", doc.play_audio},
            {"use_audio_scrub", doc.audio_scrub},
@@ -3415,6 +3437,30 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.onion_all_layers = get_bool(j, "onion_all_layers", false);
   doc.onion_color_before = get_color(j, "onion_color_before", doc.onion_color_before);
   doc.onion_color_after = get_color(j, "onion_color_after", doc.onion_color_after);
+  doc.motion_paths = get_bool(j, "motion_paths", false);
+  doc.path_before = std::clamp(get_int(j, "path_before", 1), 0, 20);
+  doc.path_after = std::clamp(get_int(j, "path_after", 1), 0, 20);
+  doc.path_all = get_bool(j, "path_all", false);
+  doc.path_step = std::clamp(get_int(j, "path_step", 1), 1, 100);
+  doc.path_lines = get_bool(j, "path_lines", true);
+  doc.path_speed_colors = get_bool(j, "path_speed_colors", true);
+  if (const int rel = Document::rna().find("path_relative")->enum_index(get_string(j, "path_relative", "")); rel >= 0) {
+    doc.path_relative = PathRelative(rel);
+  }
+  doc.path_relative_layer = get_id(j, "path_relative_layer");
+  doc.path_relative_bone = get_id(j, "path_relative_bone");
+  doc.path_targets.clear();
+  for (const json &tj : get_array(j, "path_targets")) {
+    MotionPathTarget t;
+    t.layer = get_id(tj, "layer");
+    t.bone = get_id(tj, "bone");
+    t.point = get_id(tj, "point");
+    t.head = get_bool(tj, "head", false);
+    t.pinned = get_bool(tj, "pinned", false);
+    t.has_color = tj.contains("color");
+    t.color = get_color(tj, "color", t.color);
+    doc.path_targets.push_back(t);
+  }
   if (const int sync = Document::rna().find("sync_mode")->enum_index(get_string(j, "sync_mode", "")); sync >= 0) {
     doc.sync = PlaybackSync(sync);
   }

@@ -79,6 +79,26 @@ const rna::StructRNA &Document::rna()
                            &Document::onion_fade),
         def_bool<Document>("onion_all_layers", "All Layers",
                            "Ghost every shown drawing, not just the ones being edited", &Document::onion_all_layers),
+        def_bool<Document>("motion_paths", "Motion Paths",
+                           "Show where the selected bones' tips, points or layers go, a dot per frame, red where "
+                           "they move fast and blue where they are still. Never rendered",
+                           &Document::motion_paths),
+        def_int<Document>("path_before", "Keys Before", "How many keys back the paths reach",
+                          &Document::path_before, 0, 20),
+        def_int<Document>("path_after", "Keys After", "How many keys ahead the paths reach", &Document::path_after,
+                          0, 20),
+        def_bool<Document>("path_all", "All", "The paths reach over the whole animation", &Document::path_all),
+        def_int<Document>("path_step", "Step", "A dot every so many frames (2 for animating on twos)",
+                          &Document::path_step, 1, 100),
+        def_bool<Document>("path_lines", "Lines", "Join the dots with a line in the path's colour",
+                           &Document::path_lines),
+        def_bool<Document>("path_speed_colors", "Speed Colours",
+                           "Colour the dots by speed: red fast, blue still (off: the path's colour)",
+                           &Document::path_speed_colors),
+        def_enum<Document, PathRelative>(
+            "path_relative", "Relative To",
+            "Draw the paths as they are, as the camera sees them, or as a parent sees them, so it stands still",
+            &Document::path_relative, {{"WORLD", "World"}, {"CAMERA", "Camera"}, {"PARENT", "Parent"}}),
         def_enum<Document, PlaybackSync>(
             "sync_mode", "Sync",
             "How playback keeps time: every frame (slower than the frame rate if drawing can't keep up), "

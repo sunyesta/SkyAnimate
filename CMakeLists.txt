@@ -34,6 +34,7 @@ set(OANIM_SOURCES
   src/anim/dynamics.cc
   src/anim/sculpt.cc
   src/anim/onion.cc
+  src/anim/motion_path.cc
   src/anim/reference.cc
   src/assets/asset_library.cc
   src/assets/brushes.cc
@@ -99,6 +100,7 @@ set(OANIM_SOURCES
   src/media/audio.cc
   src/media/media.cc
   src/ops/anim_ops.cc
+  src/ops/motion_path_ops.cc
   src/ops/draw_order_ops.cc
   src/ops/mask_ops.cc
   src/ops/material_ops.cc
@@ -419,6 +421,8 @@ add_test(NAME sculpt
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt.py)
 add_test(NAME onion_skins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_onion_skins.py)
+add_test(NAME motion_paths
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_paths.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
 add_test(NAME envelope_hook

@@ -18,6 +18,7 @@
 #include "anim/controller.hh"
 #include "anim/draw_order.hh"
 #include "anim/switch.hh"
+#include "anim/motion_path.hh"
 #include "anim/onion.hh"
 #include "assets/asset_library.hh"
 #include "data/bones.hh"
@@ -1357,6 +1358,105 @@ static void timeline_header(Area &area, Context &C)
       ui_prop_check(C, ptr, "onion_fade", path, "Display");
       ui_prop_check(C, ptr, "onion_all_layers", path);
       ImGui::EndTable();
+    }
+    /* Motion paths (anim/motion_path.hh): where the selected things go, under the ghosts they go with. */
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled("Motion Paths");
+    if (ImGui::BeginTable("##paths", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(seg_w * 2.0f, 0.0f))) {
+      ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+      const rna::PointerRNA ptr{&doc, &Document::rna()};
+      const char *path = "oanim.data.document";
+      ui_prop_check(C, ptr, "motion_paths", path, "Show");
+      ImGui::BeginDisabled(!doc.motion_paths);
+      ImGui::BeginDisabled(doc.path_all);
+      ui_prop(C, ptr, "path_before", path);
+      ui_prop(C, ptr, "path_after", path);
+      ImGui::EndDisabled();
+      ui_prop_check(C, ptr, "path_all", path, "Range");
+      ui_prop(C, ptr, "path_step", path);
+      ui_prop_check(C, ptr, "path_lines", path, "Display");
+      ui_prop_check(C, ptr, "path_speed_colors", path);
+      ui_prop(C, ptr, "path_relative", path);
+      if (doc.path_relative == PathRelative::Parent) {
+        ui_row("Parent", [&](float width) {
+          const Layer *parent = layer_find(doc, doc.path_relative_layer);
+          std::string name = parent ? parent->name : "(none)";
+          if (parent && doc.path_relative_bone) {
+            for (const Bone &b : parent->bones) {
+              if (b.id == doc.path_relative_bone) {
+                name += " / " + b.name;
+              }
+            }
+          }
+          if (ImGui::Button((name + "##path_parent").c_str(), ImVec2(width, 0.0f))) {
+            operator_call(C, "anim.motion_path_relative", {{"to", "PARENT"}});
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Click to use the active layer (and its active bone)");
+          }
+        });
+      }
+      ImGui::EndDisabled();
+      ImGui::EndTable();
+    }
+    if (doc.motion_paths) {
+      /* Each path traced now: its colour, a pin, and for a bone which end. */
+      const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+      for (size_t i = 0; i < targets.size() && i < 12; i++) {
+        const MotionPathTarget &t = targets[i];
+        ImGui::PushID(int(i));
+        OpArgs args = {{"layer", std::to_string(t.layer)}};
+        if (const Layer *l = layer_find(doc, t.layer)) {
+          for (const Bone &b : l->bones) {
+            if (b.id == t.bone) {
+              args["bone"] = b.name;
+            }
+          }
+        }
+        if (t.point) {
+          args["point"] = std::to_string(t.point);
+        }
+        const Color c = motion_path_color(doc, t, i);
+        float rgba[4] = {c.r, c.g, c.b, 1.0f};
+        bool finished = false;
+        if (ui_color_edit("##path_color", rgba, false, &finished, 0.0f, h * 1.3f) && finished) {
+          OpArgs set = args;
+          set["color"] = std::to_string(rgba[0]) + "," + std::to_string(rgba[1]) + "," + std::to_string(rgba[2]);
+          operator_call(C, "anim.motion_path_style", set);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(t.pinned ? "Pinned" : "Pin")) {
+          OpArgs set = args;
+          set["pinned"] = t.pinned ? "0" : "1";
+          operator_call(C, "anim.motion_path_pin", set);
+        }
+        if (t.bone) {
+          ImGui::SameLine();
+          if (ImGui::SmallButton(t.head ? "Head" : "Tip")) {
+            OpArgs set = args;
+            set["head"] = t.head ? "0" : "1";
+            operator_call(C, "anim.motion_path_style", set);
+          }
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(motion_path_label(doc, t).c_str());
+        ImGui::PopID();
+      }
+      if (ImGui::Button(wm.path_snapshot.empty() ? "Snapshot" : "New Snapshot", ImVec2(seg_w, 0.0f))) {
+        operator_call(C, "anim.motion_path_snapshot");
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Keep a faint copy of the paths as they are, to compare an edit against");
+      }
+      ImGui::SameLine(0.0f, 0.0f);
+      ImGui::BeginDisabled(wm.path_snapshot.empty());
+      if (ImGui::Button("Clear Snapshot", ImVec2(seg_w, 0.0f))) {
+        operator_call(C, "anim.motion_path_snapshot", {{"clear", "1"}});
+      }
+      ImGui::EndDisabled();
+      ImGui::TextDisabled("Alt Space plays just the paths' range");
     }
     ImGui::EndPopup();
   }
@@ -2904,6 +3004,26 @@ static void timeline_body(Area &area, Context &C)
                         ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.22f * onion_ghost_alpha(doc, g))));
     }
     dl->PopClipRect();
+  }
+
+  /* The frames motion paths cover (or Alt Space plays), shaded under the keys with edges at both ends. */
+  if (doc.motion_paths || (C.wm->playing && C.wm->play_range_first > 0)) {
+    int first = 0, last = 0;
+    if ((C.wm->playing && C.wm->play_range_first > 0)) {
+      first = C.wm->play_range_first;
+      last = C.wm->play_range_last;
+    }
+    else {
+      motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last);
+    }
+    if (last > first) {
+      const float half = (frame_x(1.0f) - frame_x(0.0f)) * 0.5f;
+      const float x0 = frame_x(float(first)) - half, x1 = frame_x(float(last)) + half;
+      dl->PushClipRect(ImVec2(k0.x, p0.y), p1, true);
+      dl->AddRectFilled(ImVec2(x0, p0.y + ruler_h), ImVec2(x1, p1.y), IM_COL32(255, 200, 80, 18));
+      dl->AddRectFilled(ImVec2(x0, p0.y + ruler_h - 3.0f), ImVec2(x1, p0.y + ruler_h), IM_COL32(255, 200, 80, 150));
+      dl->PopClipRect();
+    }
   }
 
   /* Playhead: a blue line with the frame number in a box on the ruler; red on the setup frame (0),

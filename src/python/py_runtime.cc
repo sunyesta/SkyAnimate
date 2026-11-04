@@ -15,6 +15,7 @@
 #include "anim/controller.hh"
 #include "anim/controller_preview.hh"
 #include "anim/keep_poses.hh"
+#include "anim/motion_path.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
 #include "assets/draw_presets.hh"
@@ -1148,6 +1149,78 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       out.append(d);
     }
     return out;
+  });
+  /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
+  m.def("motion_paths", []() {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    py::list out;
+    int first = 0, last = 0;
+    if (!doc.motion_paths || !motion_path_range(doc, targets, first, last)) {
+      return out;
+    }
+    for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+      py::dict d;
+      d["label"] = motion_path_label(doc, p.target);
+      d["layer"] = p.target.layer;
+      d["pinned"] = p.target.pinned;
+      d["head"] = p.target.head;
+      d["color"] = py::make_tuple(p.color.r, p.color.g, p.color.b);
+      d["first"] = p.first;
+      py::list pts, speed;
+      for (size_t i = 0; i < p.points.size(); i++) {
+        pts.append(py::make_tuple(p.points[i].x, p.points[i].y));
+        speed.append(p.speed[i]);
+      }
+      d["points"] = pts;
+      d["speed"] = speed;
+      d["keys"] = p.keys;
+      const Color fast = motion_path_speed_color(1.0f), still = motion_path_speed_color(0.0f);
+      d["speed_colors"] = py::make_tuple(py::make_tuple(still.r, still.g, still.b), py::make_tuple(fast.r, fast.g, fast.b));
+      out.append(d);
+    }
+    return out;
+  });
+  m.def("motion_path_range", []() -> py::object {
+    Context &C = current_context();
+    int first = 0, last = 0;
+    if (!motion_path_range(*C.document, motion_path_targets(*C.document, editable_layers(C)), first, last)) {
+      return py::none();
+    }
+    return py::make_tuple(first, last);
+  });
+  /* The ghost a hovered dot shows: the traced drawings' wires on `frame`. */
+  m.def("motion_path_ghost", [](int frame) {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, motion_path_targets(doc, editable_layers(C)));
+    py::list lines;
+    for (const OnionWires &w : onion_wires(doc, layers, {OnionGhost{frame, frame > doc.frame_current, 1}})) {
+      for (const std::vector<float2> &line : w.lines) {
+        py::list pts;
+        for (const float2 p : line) {
+          pts.append(py::make_tuple(p.x, p.y));
+        }
+        lines.append(pts);
+      }
+    }
+    return lines;
+  });
+  m.def("motion_path_snapshot", []() {
+    py::list out;
+    for (const std::vector<float2> &line : current_context().wm->path_snapshot) {
+      py::list pts;
+      for (const float2 p : line) {
+        pts.append(py::make_tuple(p.x, p.y));
+      }
+      out.append(pts);
+    }
+    return out;
+  });
+  m.def("play_range", []() {
+    const WindowManager &wm = *current_context().wm;
+    return py::make_tuple(wm.playing, wm.play_range_first, wm.play_range_last);
   });
   m.def("onion_colors", []() {
     const Document &doc = *current_context().document;

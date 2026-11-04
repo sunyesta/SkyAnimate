@@ -242,6 +242,11 @@ struct WindowManager {
   bool play_loop = true;
   /* Frame to return to when playback is cancelled with Esc. */
   int play_start_frame = 1;
+  /* Play Path Range (Alt Space): playback loops over these frames instead of the animation's (0: not on). */
+  int play_range_first = 0;
+  int play_range_last = 0;
+  /* Motion paths' Snapshot: their lines as they were, drawn faintly to compare an edit against (not saved). */
+  std::vector<std::vector<float2>> path_snapshot;
   /* The frame Tab left for the setup frame (0), to go back to with Tab again. */
   int frame_before_setup = 0;
   uint64_t play_last_ns = 0;

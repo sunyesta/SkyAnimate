@@ -23,6 +23,7 @@ KEYMAP = (
     # Frames and playback, as in Blender's "Frames" keymap.
     ("Window", "screen.animation_play", "SPACE", {}),
     ("Window", "screen.animation_play_reverse", "SPACE", {"ctrl": True, "shift": True}),
+    ("Window", "screen.animation_play_path_range", "SPACE", {"alt": True}),
     ("Window", "screen.animation_cancel", "ESC", {}),
     ("Window", "screen.frame_offset_backward", "LEFT_ARROW", {}),
     ("Window", "screen.frame_offset_forward", "RIGHT_ARROW", {}),

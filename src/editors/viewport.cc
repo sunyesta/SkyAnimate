@@ -39,6 +39,7 @@
 #include "anim/dynamics.hh"
 #include "data/driver.hh"
 #include "anim/keep_poses.hh"
+#include "anim/motion_path.hh"
 #include "anim/onion.hh"
 #include "anim/sculpt.hh"
 #include "assets/asset_library.hh"
@@ -652,6 +653,160 @@ static void draw_onion_skins(Context &C, const ViewMapping &view, ImDrawList *dl
       }
       dl->AddPolyline(screen.data(), int(screen.size()), col, ImDrawFlags_None, 1.4f);
     }
+  }
+}
+
+/* Motion paths (anim/motion_path.hh): a dot per frame, red where fast and blue where still, keys as diamonds and a
+ * ring on the frame shown; hovering a dot shows the drawing there as a ghost. Worked out again only when the
+ * document, the range or what is traced changes. */
+static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *dl, bool hovered)
+{
+  const Document &doc = *C.document;
+  WindowManager &wm = *C.wm;
+  for (const std::vector<float2> &line : wm.path_snapshot) {
+    std::vector<ImVec2> screen;
+    for (const float2 p : line) {
+      screen.push_back(view.to_screen(p));
+    }
+    dl->AddPolyline(screen.data(), int(screen.size()), IM_COL32(220, 220, 220, 90), ImDrawFlags_None, 1.2f);
+    for (const ImVec2 &s : screen) {
+      dl->AddCircleFilled(s, 1.6f, IM_COL32(220, 220, 220, 90));
+    }
+  }
+  if (!doc.motion_paths) {
+    return;
+  }
+  const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+  int first = 0, last = 0;
+  if (wm.playing && wm.play_range_first > 0) {
+    first = wm.play_range_first;
+    last = wm.play_range_last;
+  }
+  else if (!motion_path_range(doc, targets, first, last)) {
+    return;
+  }
+  static struct {
+    const Document *doc = nullptr;
+    uint64_t changes = ~uint64_t(0);
+    int first = 0, last = 0, frame = 0;
+    std::vector<MotionPathTarget> targets;
+    PathRelative relative = PathRelative::World;
+    uint64_t relative_layer = 0, relative_bone = 0;
+    std::vector<MotionPath> paths;
+  } cache;
+  const uint64_t changes = C.undo ? C.undo->change_count() : 0;
+  /* Drawn relative to something, a path depends on where that is now too. */
+  const int frame = doc.path_relative == PathRelative::World ? 0 : doc.frame_current;
+  if (cache.doc != &doc || cache.changes != changes || cache.first != first || cache.last != last ||
+      cache.frame != frame || cache.targets != targets || cache.relative != doc.path_relative ||
+      cache.relative_layer != doc.path_relative_layer || cache.relative_bone != doc.path_relative_bone)
+  {
+    cache.doc = &doc;
+    cache.changes = changes;
+    cache.first = first;
+    cache.last = last;
+    cache.frame = frame;
+    cache.targets = targets;
+    cache.relative = doc.path_relative;
+    cache.relative_layer = doc.path_relative_layer;
+    cache.relative_bone = doc.path_relative_bone;
+    cache.paths = motion_paths_make(doc, targets, first, last);
+  }
+  const auto u32 = [](const Color &c, float alpha) {
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a * alpha));
+  };
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const bool hovering = hovered && !ImGui::IsAnyMouseDown();
+  float best = 7.0f * 7.0f;
+  const MotionPath *hover_path = nullptr;
+  int hover_frame = 0;
+  const int step = std::max(1, doc.path_step);
+  for (const MotionPath &p : cache.paths) {
+    std::vector<ImVec2> screen;
+    for (const float2 q : p.points) {
+      screen.push_back(view.to_screen(q));
+    }
+    if (doc.path_lines && screen.size() > 1) {
+      dl->AddPolyline(screen.data(), int(screen.size()), u32(p.color, 0.55f), ImDrawFlags_None, 1.5f);
+    }
+    /* A dot every `step` frames (and on every key); frames it holds still over make one dot with how many. */
+    for (size_t i = 0; i < screen.size();) {
+      size_t run = i + 1;
+      while (run < screen.size() && length(p.points[run] - p.points[i]) < 1e-6f) {
+        run++;
+      }
+      bool shown = false, key = false;
+      for (size_t k = i; k < run; k++) {
+        const int f = p.first + int(k);
+        const bool on_key = std::binary_search(p.keys.begin(), p.keys.end(), f);
+        key |= on_key;
+        shown |= on_key || (f - p.first) % step == 0;
+      }
+      if (shown) {
+        const ImVec2 s = screen[i];
+        const Color dot = doc.path_speed_colors ? motion_path_speed_color(p.speed[i]) : p.color;
+        if (key) {
+          const float r = 4.5f;
+          const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
+          dl->AddConvexPolyFilled(d, 4, u32(p.color, 1.0f));
+          dl->AddPolyline(d, 4, IM_COL32(20, 20, 20, 220), ImDrawFlags_Closed, 1.0f);
+        }
+        else {
+          dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, 200));
+          dl->AddCircleFilled(s, 2.8f, u32(dot, 1.0f));
+        }
+        if (run - i > 1) {
+          const std::string held = "x" + std::to_string(run - i);
+          dl->AddText(ImVec2(s.x + 5.0f, s.y - 14.0f), u32(dot, 0.9f), held.c_str());
+        }
+        for (size_t k = i; k < run; k++) {
+          const float dx = screen[k].x - mouse.x, dy = screen[k].y - mouse.y;
+          if (hovering && dx * dx + dy * dy < best) {
+            best = dx * dx + dy * dy;
+            hover_path = &p;
+            hover_frame = p.first + int(k);
+          }
+        }
+      }
+      i = run;
+    }
+    const int now = doc.frame_current - p.first;
+    if (now >= 0 && now < int(screen.size())) {
+      dl->AddCircle(screen[size_t(now)], 7.0f, IM_COL32(20, 20, 20, 200), 0, 3.2f);
+      dl->AddCircle(screen[size_t(now)], 7.0f, IM_COL32(255, 255, 255, 240), 0, 1.6f);
+    }
+  }
+  /* The hovered dot's frame as a ghost of the drawing there, with its number. */
+  if (hover_path) {
+    static struct {
+      const Document *doc = nullptr;
+      uint64_t changes = ~uint64_t(0);
+      int frame = 0;
+      std::vector<uint64_t> layers;
+      std::vector<OnionWires> wires;
+    } ghost;
+    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, {hover_path->target});
+    if (ghost.doc != &doc || ghost.changes != changes || ghost.frame != hover_frame || ghost.layers != layers) {
+      ghost.doc = &doc;
+      ghost.changes = changes;
+      ghost.frame = hover_frame;
+      ghost.layers = layers;
+      ghost.wires = onion_wires(doc, layers, {OnionGhost{hover_frame, hover_frame > doc.frame_current, 1}});
+    }
+    std::vector<ImVec2> screen;
+    for (const OnionWires &w : ghost.wires) {
+      for (const std::vector<float2> &line : w.lines) {
+        screen.clear();
+        for (const float2 q : line) {
+          screen.push_back(view.to_screen(q));
+        }
+        dl->AddPolyline(screen.data(), int(screen.size()), u32(hover_path->color, 0.7f), ImDrawFlags_None, 1.3f);
+      }
+    }
+    const ImVec2 s = view.to_screen(hover_path->points[size_t(hover_frame - hover_path->first)]);
+    dl->AddCircle(s, 5.0f, u32(hover_path->color, 1.0f), 0, 1.5f);
+    const std::string label = std::to_string(hover_frame);
+    dl->AddText(ImVec2(s.x + 7.0f, s.y + 2.0f), IM_COL32(255, 255, 255, 230), label.c_str());
   }
 }
 
@@ -14503,6 +14658,9 @@ static void viewport_draw_contents(Area &area, Context &C)
       }
       draw_mask_outline(dl, doc, *source, view, outside, true);
     }
+  }
+  if (ov.show) {
+    draw_motion_paths(C, view, dl, hovered);
   }
   /* Whoever showed a mask set it this frame or the last. */
   wm.mask_hover.clear();

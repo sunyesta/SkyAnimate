@@ -30,6 +30,7 @@ void layer_clipboard_operators_register();
 void vector_operators_register();
 void asset_operators_register();
 void anim_operators_register();
+void motion_path_operators_register();
 void draw_order_operators_register();
 void mask_operators_register();
 void material_operators_register();

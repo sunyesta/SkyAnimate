@@ -132,6 +132,7 @@ int App::run(const LaunchOptions &options)
   viewport_operators_register();
   asset_operators_register();
   anim_operators_register();
+  motion_path_operators_register();
   draw_order_operators_register();
   mask_operators_register();
   material_operators_register();
@@ -551,12 +552,13 @@ void App::playback_update()
     return;
   }
 
-  const int start = doc_.frame_start;
-  const int end = std::max(doc_.frame_start, doc_.frame_end);
+  const bool ranged = wm_.play_range_first > 0;
+  const int start = ranged ? wm_.play_range_first : doc_.frame_start;
+  const int end = ranged ? std::max(start, wm_.play_range_last) : std::max(doc_.frame_start, doc_.frame_end);
   const int length = end - start + 1;
   int frame = doc_.frame_current + (wm_.play_reverse ? -frames : frames);
   if (frame > end || frame < start) {
-    if (wm_.play_loop) {
+    if (wm_.play_loop || ranged) {  /* Play Path Range always loops */
       frame = start + (((frame - start) % length) + length) % length;
     }
     else {

@@ -37,6 +37,24 @@ enum class PlaybackSync { EveryFrame, FrameDropping, Audio };
 enum class AutoKeyMode { AddReplace, Replace };
 /* Onion skins step back and forward by keys (of the layers being edited) or by frames. */
 enum class OnionMode { Keyframes, Frames };
+/* What a motion path is drawn relative to: as it is, as the camera sees it, or as a parent layer (or a bone of it)
+ * sees it, so that thing stands still. */
+enum class PathRelative { World, Camera, Parent };
+
+/* Something a motion path traces (anim/motion_path.hh): a bone's tip (or head) when `bone` is set, a point when
+ * `point` is, else the layer's origin. Kept in Document::path_targets once it is pinned or given its own colour
+ * or end, so the path is drawn that way whenever it shows. */
+struct MotionPathTarget {
+  uint64_t layer = 0;
+  uint64_t bone = 0;
+  uint64_t point = 0;
+  bool head = false;
+  bool pinned = false;
+  bool has_color = false;
+  Color color;
+  bool operator==(const MotionPathTarget &) const = default;
+  bool same(const MotionPathTarget &o) const { return layer == o.layer && bone == o.bone && point == o.point; }
+};
 
 /* Switches linked by name (anim/switch.hh): one set of keys for the group, on its lead member's Switch
  * channel, holding entries of `names` (their ids; 0 none, -1 Rig) rather than layer ids; each member
@@ -101,6 +119,20 @@ struct Document {
   bool onion_all_layers = false;
   Color onion_color_before = {0.88f, 0.29f, 0.25f, 1.0f};
   Color onion_color_after = {0.25f, 0.72f, 0.36f, 1.0f};
+  /* Motion paths (the onion popover's Motion Paths, anim/motion_path.hh): where the selected bones' tips, points or
+   * layers go, a dot per frame from `path_before` keys back to `path_after` keys ahead (or the whole range with
+   * `path_all`), a dot every `path_step` frames, red where fast and blue where still. Never rendered. */
+  bool motion_paths = false;
+  int path_before = 1;
+  int path_after = 1;
+  bool path_all = false;
+  int path_step = 1;
+  bool path_lines = true;
+  bool path_speed_colors = true;
+  PathRelative path_relative = PathRelative::World;
+  uint64_t path_relative_layer = 0;
+  uint64_t path_relative_bone = 0;
+  std::vector<MotionPathTarget> path_targets;
   /* The timeline's Playback popover (Blender's scene settings). The audio ones are kept for when the
    * document has sound: playing it with the animation, and short bits of it while scrubbing. */
   PlaybackSync sync = PlaybackSync::FrameDropping;

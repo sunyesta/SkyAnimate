@@ -7,9 +7,11 @@
 #include <functional>
 
 #include "core/log.hh"
+#include "anim/motion_path.hh"
 #include "data/document.hh"
 #include "io/pdf_export.hh"
 #include "io/svg_export.hh"
+#include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "python/py_runtime.hh"
@@ -147,6 +149,7 @@ static void animation_play_toggle(Context &C, bool reverse)
   }
   if (!wm.playing) {
     wm.play_start_frame = C.document->frame_current;
+    wm.play_range_first = wm.play_range_last = 0;
   }
   wm.playing = true;
   wm.play_reverse = reverse;
@@ -166,6 +169,33 @@ static void playback_operators_register()
                             animation_play_toggle(C, true);
                             return OpStatus::Finished;
                           });
+
+  /* Alt Space: loop over just the motion paths' range, taken as playing starts so it holds still. */
+  frame_operator_register(
+      "screen.animation_play_path_range", "Play Path Range",
+      "Play over and over just the frames the motion paths cover (the keys before and after this frame), or pause",
+      [](Context &C) {
+        WindowManager &wm = *C.wm;
+        Document &doc = *C.document;
+        if (wm.playing) {
+          wm.playing = false;
+          return OpStatus::Finished;
+        }
+        int first = 0, last = 0;
+        if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last) || last <= first) {
+          report(ReportType::Warning, "No range to play: select something with keys around this frame");
+          return OpStatus::Cancelled;
+        }
+        wm.play_start_frame = doc.frame_current;
+        wm.play_range_first = first;
+        wm.play_range_last = last;
+        doc.frame_current = first;
+        wm.playing = true;
+        wm.play_reverse = false;
+        wm.play_last_ns = 0;
+        wm.play_frames_due = 0.0;
+        return OpStatus::Finished;
+      });
 
   OperatorType cancel;
   cancel.idname = "screen.animation_cancel";

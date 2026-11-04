@@ -316,6 +316,35 @@ def onion_frames():
     return _oanim.onion_frames()
 
 
+def motion_paths():
+    """The motion paths drawn now (none with doc.motion_paths off): dicts with label, layer, pinned, head, color,
+    first (the frame of points[0]), points (where it is on each frame, as drawn: relative to doc.path_relative),
+    speed (0 still to 1 its fastest, per frame), keys and speed_colors ((still, fast) rgb). They trace the selected
+    bones (tip, or head) or points of the layers being edited, else those layers' origins, and pinned ones."""
+    return _oanim.motion_paths()
+
+
+def motion_path_range():
+    """(first, last): the frames the paths cover, path_before keys back to path_after keys ahead (or all with
+    path_all); what Alt Space plays. None with nothing to trace."""
+    return _oanim.motion_path_range()
+
+
+def motion_path_ghost(frame):
+    """The wires (lists of (x, y)) of the ghost hovering a path's dot on `frame` shows."""
+    return _oanim.motion_path_ghost(frame)
+
+
+def motion_path_snapshot():
+    """The kept paths (lists of (x, y)) drawn faintly to compare against (anim.motion_path_snapshot)."""
+    return _oanim.motion_path_snapshot()
+
+
+def play_range():
+    """(playing, first, last): the frames Play Path Range loops (0, 0 when playing everything)."""
+    return tuple(_oanim.play_range())
+
+
 def onion_wires():
     """The ghosts as they would be drawn: dicts with frame, after and lines (each a list of (x, y) in
     document space, one per curve)."""
