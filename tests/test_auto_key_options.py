@@ -16,6 +16,7 @@ assert doc.auto_key and doc.auto_key_mode == "ADD_REPLACE" and not doc.auto_free
 doc.frame_current = 0
 oanim.ops.layer.new_bone()
 rig = oanim.data.layers.active
+rig.key_whole_drawing = False  # keyed point by point here
 oanim.ops.armature.bone_add(name="a", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
 oanim.ops.armature.bone_add(name="b", head_x="0", head_y="1", tail_x="1", tail_y="1", parent="")
 oanim.ops.armature.bone_add(name="c", head_x="0", head_y="2", tail_x="1", tail_y="2", parent="")
@@ -73,6 +74,7 @@ doc.auto_key_mode = "ADD_REPLACE"
 # A point keyed keys every point of its drawing on that frame, so the whole shape holds.
 oanim.ops.layer.new()
 drawing = oanim.data.layers.active
+drawing.key_whole_drawing = False  # keyed point by point here
 drawing.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 oanim.ops.mesh.select_none()
 doc.frame_current = 70

@@ -46,6 +46,12 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
     }
   }
   t.point = uint64_t(std::stoull(op_arg(C, "point", "0")));
+  /* A Key Whole Drawing layer's drawing as a whole (its timing). */
+  t.drawing = op_arg_bool(C, "drawing");
+  if (t.drawing && !layer->key_whole_drawing) {
+    report(ReportType::Warning, layer->name + " isn't keyed as a whole drawing");
+    return false;
+  }
   /* As it is traced: by its head, say. */
   if (const MotionPathTarget *style = motion_path_style(doc, t)) {
     t = *style;
@@ -789,7 +795,7 @@ void motion_path_operators_register()
       WindowManager &wm = *C.wm;
       MotionPathTarget t;
       MotionPathStretch shown;
-      if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), wm.path_timing_target,
+      if (!motion_path_timing_stretch(doc, motion_path_timing_targets(doc, editable_layers(C)), wm.path_timing_target,
                                       wm.path_timing_end, wm.path_timing_frame, t, shown))
       {
         return OpStatus::Cancelled;

@@ -31,6 +31,7 @@ assert doc.path_lines and doc.path_dot_colors == "TIMING_CURRENT" and doc.path_r
 doc.auto_key = True
 oanim.ops.layer.new()
 box = layers.active
+box.key_whole_drawing = False  # paths of single points here
 box.add_curve([(0.0, 0.0), (1.0, 0.0)])
 for frame, x in ((10, 1.0), (20, 2.0), (40, 4.0)):
     doc.frame_current = frame
@@ -72,6 +73,7 @@ assert fast[0] > fast[2] and still[2] > still[0], "red where fast, blue where st
 doc.frame_current = 0
 oanim.ops.layer.new_bone()
 rig = layers.active
+rig.key_whole_drawing = False  # paths of single points here
 assert oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="2", tail_y="0", parent="") == {'FINISHED'}
 doc.frame_current = 10
 rig.bone_set("arm", angle=0.2)

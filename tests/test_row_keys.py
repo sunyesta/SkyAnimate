@@ -10,6 +10,7 @@ layers = oanim.data.layers
 doc = oanim.data.document
 doc.frame_current = 0
 art = layers.active
+art.key_whole_drawing = False  # keyed point by point here
 art.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)])
 
 KEY_LAYER_TRANSFORM = 1 << 1

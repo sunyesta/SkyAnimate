@@ -1295,7 +1295,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Context &C = current_context();
     const Document &doc = *C.document;
     py::list out;
-    for (const MotionPathTarget &t : motion_path_targets(doc, editable_layers(C))) {
+    for (const MotionPathTarget &t : motion_path_timing_targets(doc, editable_layers(C))) {
       py::list stretches;
       for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
         py::dict d;
@@ -1321,7 +1321,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const Document &doc = *C.document;
     MotionPathTarget t;
     MotionPathStretch s;
-    if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), C.wm->path_timing_target,
+    if (!motion_path_timing_stretch(doc, motion_path_timing_targets(doc, editable_layers(C)), C.wm->path_timing_target,
                                     C.wm->path_timing_end, C.wm->path_timing_frame, t, s))
     {
       return py::none();

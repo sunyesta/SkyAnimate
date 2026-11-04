@@ -561,6 +561,12 @@ const rna::StructRNA &Layer::rna()
         def_bool<Layer>("ignore_group_deforms", "Ignore Group Deforms",
                         "The deform modifiers of the groups around this drawing leave it alone",
                         &Layer::ignore_group_deforms),
+        def_bool<Layer>("key_whole_drawing", "Key Whole Drawing",
+                        "The drawing is keyed as a whole: an edit on a frame keys every point there, and all its "
+                        "points share their keys' frames and timing, edited together in the timeline's Drawing row and "
+                        "the Motion Path tool's timing chart and Path Timing graph. Turned on, every point is keyed "
+                        "where any is, where it already is",
+                        &Layer::key_whole_drawing),
         def_bool<Layer>("link_same_named", "Link Same-Named Switches",
                         "A switch: the switches of the same name at the same place inside its different drawings "
                         "(a Mouth in each view of a Heads switch) are linked by name: picking a mouth in one picks "

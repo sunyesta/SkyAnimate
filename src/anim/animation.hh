@@ -305,6 +305,13 @@ int layer_key_state(Layer &layer, const std::vector<std::string> &paths, int fra
 inline constexpr int KEY_STATE_ACTION_BONE = 4;
 /* KEY_STATE_ACTION_BONE when an action bone action is playing into any of them now, else 0. */
 int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths);
+/* Key Whole Drawing: every channel of the drawing's shape (each point's position and width, each curve point's
+ * curvature and handles) keyed on every frame any of them is, each new key holding what the channel has there and
+ * taking the timing (interpolation, hold, speeds...) most keys on that frame have. A frame that lost a key since the
+ * last call (in the same `action`) more than the others did is deleted from them all. With `settle`, keys already there
+ * take that timing too (once, as it is turned on). Returns how many keys already there had their timing changed. */
+int drawing_key_whole(Layer &layer, bool settle, const std::string &action);
+
 /* Frames where the layer (or its drawing) has keys, sorted, each once. */
 std::vector<int> layer_key_frames(const Layer &layer);
 /* Whether any of the layer's channels has a key (cheaper than layer_key_frames). */

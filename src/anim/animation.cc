@@ -452,6 +452,158 @@ float simulation_value_at(const Document &doc, const char *path, float plain, in
   return plain;
 }
 
+/* The channels of a drawing's shape, with the values recording keys (changes from the setup pose). */
+template<typename F> static void drawing_shape_channels(VectorDrawing &drawing, F &&f)
+{
+  /* Detail points (data/detail.hh) ride their segments: no keys of their own. */
+  for (MeshPoint &p : drawing.points) {
+    if (p.detail.level > 0) {
+      continue;
+    }
+    f(p.pos_keys, p.transform);
+    f(p.radius_keys, p.radius);
+  }
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      if (cp.point >= 0 && size_t(cp.point) < drawing.points.size() && drawing.points[size_t(cp.point)].detail.level > 0) {
+        continue;
+      }
+      f(cp.curvature_keys, cp.curvature);
+      f(cp.handle_in_keys, cp.change_in);
+      f(cp.handle_out_keys, cp.change_out);
+    }
+  }
+}
+
+/* A key's timing (all but its value, path handles, colour and selection). */
+struct KeyTiming {
+  Interp interp = Interp::Smooth;
+  int hold = 0, interval = 1;
+  Ease ease = Ease::Quad;
+  float overshoot = 0.0f, elastic_amplitude = 0.0f, elastic_period = 0.0f, noise_amplitude = 0.0f,
+        noise_frequency = 0.0f;
+  int cycle_back = 0, cycle_frame = 0;
+  bool cycle_absolute = false;
+  std::vector<float> speeds;
+  bool operator==(const KeyTiming &) const = default;
+};
+
+template<typename T> static KeyTiming key_timing(const Key<T> &k)
+{
+  return {k.interp,         k.hold,           k.interval,        k.ease,       k.overshoot,
+          k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency, k.cycle_back,
+          k.cycle_frame,    k.cycle_absolute, k.speeds};
+}
+
+template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
+{
+  k.interp = t.interp;
+  k.hold = t.hold;
+  k.interval = t.interval;
+  k.ease = t.ease;
+  k.overshoot = t.overshoot;
+  k.elastic_amplitude = t.elastic_amplitude;
+  k.elastic_period = t.elastic_period;
+  k.noise_amplitude = t.noise_amplitude;
+  k.noise_frequency = t.noise_frequency;
+  k.cycle_back = t.cycle_back;
+  k.cycle_frame = t.cycle_frame;
+  k.cycle_absolute = t.cycle_absolute;
+  k.speeds = t.speeds;
+}
+
+int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
+{
+  if (!layer.has_drawing() || layer.is_reference()) {
+    return 0;
+  }
+  VectorDrawing &drawing = layer.drawing;
+  /* Each frame keyed anywhere: how many channels have it, and the timings its keys have there (how many of each, in
+   * the order first met). */
+  struct Frame {
+    int count = 0;
+    std::vector<std::pair<KeyTiming, int>> votes;
+  };
+  std::map<int, Frame> frames;
+  bool all_alike = true;
+  size_t keyed_count = 0, channels = 0;
+  drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+    channels++;
+    keyed_count += ch.keys.size();
+    for (const auto &k : ch.keys) {
+      Frame &f = frames[k.frame];
+      f.count++;
+      const KeyTiming t = key_timing(k);
+      auto it = std::find_if(f.votes.begin(), f.votes.end(), [&](const auto &v) { return v.first == t; });
+      if (it == f.votes.end()) {
+        f.votes.push_back({t, 1});
+        all_alike = all_alike && f.votes.size() == 1;
+      }
+      else {
+        it->second++;
+      }
+    }
+  });
+  /* Counts from another action's channels (or none yet) say nothing about what was deleted here. */
+  const std::map<int, int> before = settle || layer.key_whole_action != action ? std::map<int, int>{} :
+                                                                                  layer.key_whole_counts;
+  const auto remember = [&] {
+    layer.key_whole_action = action;
+    layer.key_whole_channels = int(channels);
+    layer.key_whole_counts.clear();
+    drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+      for (const auto &k : ch.keys) {
+        layer.key_whole_counts[k.frame]++;
+      }
+    });
+  };
+  /* Nothing keyed, or every channel already keyed on every frame alike: nothing to do (the usual case, kept cheap). */
+  if (frames.empty() || (all_alike && keyed_count == frames.size() * channels)) {
+    remember();
+    return 0;
+  }
+  /* A frame fewer channels have than last time, by more than the channels gone (a point deleted takes its own), had
+   * a key deleted: it goes from them all. Frame 0 is the setup, never. */
+  const int channels_gone = std::max(0, layer.key_whole_channels - int(channels));
+  std::vector<int> deleted;
+  for (const auto &[frame, count] : before) {
+    const auto it = frames.find(frame);
+    if (frame != 0 && it != frames.end() && count - it->second.count > channels_gone) {
+      deleted.push_back(frame);
+      frames.erase(it);
+    }
+  }
+  std::map<int, const KeyTiming *> most;
+  for (const auto &[frame, f] : frames) {
+    const auto best = std::max_element(f.votes.begin(), f.votes.end(),
+                                       [](const auto &a, const auto &b) { return a.second < b.second; });
+    most[frame] = &best->first;
+  }
+  int settled = 0;
+  drawing_changes_from_values(drawing);
+  drawing_shape_channels(drawing, [&](auto &ch, auto &value) {
+    for (const int frame : deleted) {
+      channel_delete_key(ch, value, frame);
+    }
+    const bool was_animated = ch.animated();
+    for (const auto &[frame, timing] : most) {
+      if (auto *k = ch.key_at(frame)) {
+        if (settle && key_timing(*k) != *timing) {
+          key_timing_set(*k, *timing);
+          settled++;
+        }
+        continue;
+      }
+      /* What it has there now: between its keys, or (not keyed) the value it holds everywhere. */
+      const auto held = was_animated ? ch.evaluate(frame) : value - ch.from_action_bones;
+      key_timing_set(ch.set_key(frame, held), *timing);
+    }
+  });
+  drawing_values_from_changes(drawing);
+  remember();
+  return settled;
+}
+
 void animation_record(Document &doc)
 {
   /* Switches linked by name: new same-named switches join, renames reach partners. */
@@ -565,6 +717,26 @@ void animation_record(Document &doc)
   });
   for (const std::vector<const void *> &list : keyed_by_layer) {
     keyed_list.insert(keyed_list.end(), list.begin(), list.end());
+  }
+  /* Key Whole Drawing: a point keyed here keys every point here; turned on, the keys agree from then on (their
+   * timing once). */
+  std::vector<int> settled(flat.size(), 0);
+  parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++) {
+      Layer &layer = *flat[i];
+      if (!layer.key_whole_drawing || layer.type != LayerType::Vector) {
+        layer.key_whole_settled = false;
+        continue;
+      }
+      settled[i] = drawing_key_whole(layer, !layer.key_whole_settled, doc.action);
+      layer.key_whole_settled = true;
+    }
+  });
+  for (size_t i = 0; i < flat.size(); i++) {
+    if (settled[i] > 0) {
+      report(ReportType::Info, flat[i]->name + ": Key Whole Drawing gave " + std::to_string(settled[i]) +
+                                   " keys the timing most of its points have on their frame");
+    }
   }
   simulation_in(doc);
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });

@@ -117,7 +117,10 @@ Switch layers section. Motion paths stage 1 (`src/anim/motion_path.*`: targets, 
 through their stretch, `PathDotColors` and `motion_path_dot_colors` in `motion_path.cc`; the timeline's timing chart and its N
 sidebar's Path Timing tab in `src/editors/timeline_path.*`, stretches from `motion_path_stretches`; overshoot is signed
 `Key::speeds`, `custom_progress` in `channel.cc`; Shift swaps in a brush, `path_brush_shifted` in `src/anim/path_brush.hh`;
-the chart and graph have always-on proportional editing and Shift click's `motion_path_timing_blend`). Next: key buttons in Properties, dope sheet, frame-by-frame layers
+the chart and graph have always-on proportional editing and Shift click's `motion_path_timing_blend`). Key Whole Drawing (`Layer::key_whole_drawing`, on for new vector layers:
+`drawing_key_whole` in `animation.cc` keys every shape channel on every keyed frame and takes a deleted key's frame from them
+all; drawing targets, `MotionPathTarget::drawing`, in the timing chart via `motion_path_timing_targets` and
+`with_path_channels` in `motion_path.cc`). Next: key buttons in Properties, dope sheet, frame-by-frame layers
 and onion skins, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,

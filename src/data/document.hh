@@ -52,11 +52,17 @@ struct MotionPathTarget {
   uint64_t bone = 0;
   uint64_t point = 0;
   bool head = false;
+  /* A Key Whole Drawing layer's drawing as a whole: no path, only its timing (the timeline's timing chart and Path
+   * Timing graph), on all its points' channels at once. */
+  bool drawing = false;
   bool pinned = false;
   bool has_color = false;
   Color color;
   bool operator==(const MotionPathTarget &) const = default;
-  bool same(const MotionPathTarget &o) const { return layer == o.layer && bone == o.bone && point == o.point; }
+  bool same(const MotionPathTarget &o) const
+  {
+    return layer == o.layer && bone == o.bone && point == o.point && drawing == o.drawing;
+  }
 };
 
 /* Switches linked by name (anim/switch.hh): one set of keys for the group, on its lead member's Switch

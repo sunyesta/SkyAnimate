@@ -51,7 +51,41 @@ bool target_exists(const Document &doc, const MotionPathTarget &t)
   if (t.point) {
     return point_index(*layer, t.point) >= 0;
   }
-  return true;
+  return !t.drawing || layer->has_drawing();
+}
+
+/* A Key Whole Drawing layer's shape channels (every point's position and width, every curve point's curvature and
+ * handles), the animated ones; `f` returns false to stop. */
+template<typename F> static void drawing_channels(Layer &layer, F &&f)
+{
+  if (!layer.has_drawing() || layer.is_reference()) {
+    return;
+  }
+  for (MeshPoint &p : layer.drawing.points) {
+    if ((p.pos_keys.animated() && !f(p.pos_keys)) || (p.radius_keys.animated() && !f(p.radius_keys))) {
+      return;
+    }
+  }
+  for (Curve &curve : layer.drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      if ((cp.curvature_keys.animated() && !f(cp.curvature_keys)) ||
+          (cp.handle_in_keys.animated() && !f(cp.handle_in_keys)) ||
+          (cp.handle_out_keys.animated() && !f(cp.handle_out_keys)))
+      {
+        return;
+      }
+    }
+  }
+}
+
+static bool drawing_animated(const Layer &layer)
+{
+  bool any = false;
+  drawing_channels(const_cast<Layer &>(layer), [&](auto &) {
+    any = true;
+    return false;
+  });
+  return any;
 }
 
 /* Where `t` is in document space, as `doc` shows it now. */
@@ -112,6 +146,9 @@ Transform2D relative_space(const Document &doc)
 }
 
 }  // namespace
+
+template<typename F> static bool with_path_channel(Document &doc, const MotionPathTarget &t, F &&f);
+template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f);
 
 const MotionPathTarget *motion_path_style(const Document &doc, const MotionPathTarget &target)
 {
@@ -181,7 +218,7 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
         }
       }
     }
-    else if (layer->has_drawing()) {
+    else if (layer->has_drawing() && !layer->key_whole_drawing) {
       for (const MeshPoint &p : layer->drawing.points) {
         if (p.selected && p.id && points < MAX_POINTS) {
           add({layer->id, 0, p.id});
@@ -202,8 +239,50 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   return out;
 }
 
+std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing)
+{
+  std::vector<MotionPathTarget> out = motion_path_targets(doc, editing);
+  std::vector<const Layer *> layers;
+  if (const Layer *active = layer_find(doc, doc.active_layer)) {
+    layers.push_back(active);
+  }
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (layer->selected && layer->shown()) {
+      layers.push_back(layer);
+    }
+  }
+  layers.insert(layers.end(), editing.begin(), editing.end());
+  for (const Layer *layer : layers) {
+    if (!layer || !layer->key_whole_drawing || !drawing_animated(*layer)) {
+      continue;
+    }
+    MotionPathTarget t;
+    t.layer = layer->id;
+    t.drawing = true;
+    if (std::none_of(out.begin(), out.end(), [&](const MotionPathTarget &o) { return o.same(t); })) {
+      out.push_back(t);
+    }
+  }
+  return out;
+}
+
 std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &target)
 {
+  if (target.drawing) {
+    /* The drawing's own keys: its points share them. */
+    std::vector<int> keys;
+    if (Layer *layer = layer_find(const_cast<Document &>(doc), target.layer)) {
+      drawing_channels(*layer, [&](auto &ch) {
+        for (const auto &k : ch.keys) {
+          if (k.frame > 0) {
+            keys.push_back(k.frame);
+          }
+        }
+        return false;
+      });
+    }
+    return keys;
+  }
   /* Everything that moves it: its own layer's keys (a bone's moved by its knob's actions, too) and those of the
    * layers above. Frame 0 is the setup, not a key of the animation. */
   std::set<int> keys;
@@ -366,6 +445,9 @@ std::string motion_path_label(const Document &doc, const MotionPathTarget &targe
   }
   if (target.point) {
     return layer->name + " point " + std::to_string(point_index(*layer, target.point));
+  }
+  if (target.drawing) {
+    return layer->name + " drawing";
   }
   return layer->name;
 }
@@ -610,7 +692,7 @@ void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v
 Channel<float2> *handle_channel(Document &doc, const MotionPathTarget &t)
 {
   Layer *layer = layer_find(doc, t.layer);
-  if (!layer) {
+  if (!layer || t.drawing) {
     return nullptr;
   }
   if (t.bone) {
@@ -1304,6 +1386,18 @@ bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int
   }
   size_t i = 0;
   int start = 0, n = 0;
+  if (target.drawing) {
+    bool done = false;
+    with_path_channels(doc, target, [&](auto &ch) {
+      if (stretch_of(ch, frame, i, start, n)) {
+        stretch_make_custom(ch, i, start, n);
+        key_speeds_set(ch.keys, i, std::vector<float>(size_t(n), 1.0f));
+        done = true;
+      }
+    });
+    animation_evaluate(doc, doc.frame_current);
+    return done;
+  }
   if (target.bone && !target.head) {
     const int b = bone_index(*layer, target.bone);
     if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
@@ -1334,7 +1428,15 @@ int motion_path_scale_spacing(Document &doc, const MotionPathTarget &target, int
   }
   factor = std::max(factor, 0.0f);
   int changed = 0;
-  if (target.bone && !target.head) {
+  if (target.drawing) {
+    bool first = true;
+    with_path_channels(doc, target, [&](auto &ch) {
+      const int c = scale_stretches(ch, frame, factor, slide);
+      changed = first ? c : changed;
+      first = false;
+    });
+  }
+  else if (target.bone && !target.head) {
     const int b = bone_index(*layer, target.bone);
     if (b < 0) {
       return 0;
@@ -1357,7 +1459,17 @@ float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target,
   size_t i = 0;
   int start = 0, n = 0;
   std::vector<float> s;
-  if (target.bone && !target.head) {
+  if (target.drawing) {
+    with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+      if (stretch_of(ch, frame, i, start, n)) {
+        s = stretch_speeds(ch, i, start, n);
+      }
+    });
+    if (s.empty()) {
+      return 0.0f;
+    }
+  }
+  else if (target.bone && !target.head) {
     const int b = bone_index(*layer, target.bone);
     if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
       return 0.0f;
@@ -1382,6 +1494,16 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
   Layer *layer = layer_find(doc, t.layer);
   if (!layer) {
     return false;
+  }
+  if (t.drawing) {
+    /* The drawing: its first animated channel stands for all (they share their keys' frames and timing). */
+    bool found = false;
+    drawing_channels(*layer, [&](auto &ch) {
+      f(ch);
+      found = true;
+      return false;
+    });
+    return found;
   }
   if (t.bone && !t.head) {
     const int b = bone_index(*layer, t.bone);
@@ -1551,6 +1673,24 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
   return changed;
 }
 
+/* As with_path_channel, but a timing change to the drawing goes to every channel of it alike. */
+template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f)
+{
+  if (!t.drawing) {
+    return with_path_channel(doc, t, f);
+  }
+  Layer *layer = layer_find(doc, t.layer);
+  bool found = false;
+  if (layer) {
+    drawing_channels(*layer, [&](auto &ch) {
+      f(ch);
+      found = true;
+      return true;
+    });
+  }
+  return found;
+}
+
 std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const MotionPathTarget &target)
 {
   std::vector<MotionPathStretch> out;
@@ -1591,7 +1731,7 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
   PathSlide slide = slide_in;
   slide.keep_order = false;
   bool slid = false;
-  with_path_channel(doc, target, [&](auto &ch) {
+  with_path_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {
@@ -1612,7 +1752,11 @@ int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int 
   smoothing = std::clamp(smoothing, 0.0f, 1.0f);
   repeat = std::clamp(repeat, 1, 100);
   radius = std::max(radius, 0.0f);
-  with_path_channel(doc, target, [&](auto &ch) {
+  bool counted = false;
+  with_path_channels(doc, target, [&](auto &ch) {
+    /* The drawing's channels each change alike: counted once. */
+    const bool count = !counted;
+    counted = true;
     for (size_t i = 1; i < ch.keys.size(); i++) {
       const int start = std::min(ch.keys[i - 1].frame + std::max(ch.keys[i - 1].hold, 0), ch.keys[i].frame);
       const int n = ch.keys[i].frame - start;
@@ -1639,7 +1783,7 @@ int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int 
         }
       }
       key_speeds_set(ch.keys, i, progress_speeds(u));
-      changed++;
+      changed += count ? 1 : 0;
     }
   });
   animation_evaluate(doc, doc.frame_current);
@@ -1712,7 +1856,7 @@ static float path_shape_progress(PathShape shape, float t)
 bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape)
 {
   bool done = false;
-  with_path_channel(doc, target, [&](auto &ch) {
+  with_path_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {
@@ -1735,7 +1879,7 @@ bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, in
 bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, int frame, float speed)
 {
   bool done = false;
-  with_path_channel(doc, target, [&](auto &ch) {
+  with_path_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {

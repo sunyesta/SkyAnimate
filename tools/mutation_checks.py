@@ -32,6 +32,28 @@ PENDING = [
     ("src/anim/motion_path.cc", "  for (const int frame : frames) {\n    changed += motion_path_timing_blend(",
      "  for (const int frame : std::vector<int>{frames.front()}) {\n    changed += motion_path_timing_blend(",
      "a blend on each frame of the stroke", "tests/test_motion_path_timing.py"),
+    # Key Whole Drawing (2026-11-04).
+    ("src/anim/animation.cc", "      key_timing_set(ch.set_key(frame, held), *timing);", "      (void)held;",
+     "every channel keyed where any is", "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "        if (settle && key_timing(*k) != *timing) {", "        if (false) {",
+     "turned on, a frame's keys take the timing most have", "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "count - it->second.count > channels_gone) {", "false) {",
+     "one key deleted takes the frame from all", "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "count - it->second.count > channels_gone) {", "count - it->second.count > 0) {",
+     "a point's channels gone delete no frames", "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "    if (p.detail.level > 0) {\n      continue;\n    }\n    f(p.pos_keys",
+     "    f(p.pos_keys", "detail points keep no keys", "tests/test_detail_levels.py"),
+    ("src/anim/motion_path.cc", "    else if (layer->has_drawing() && !layer->key_whole_drawing) {",
+     "    else if (layer->has_drawing()) {", "no point paths for a whole drawing", "tests/test_key_whole_drawing.py"),
+    ("src/anim/motion_path.cc", "      f(ch);\n      found = true;\n      return true;",
+     "      f(ch);\n      found = true;\n      return false;", "timing edits reach every channel",
+     "tests/test_key_whole_drawing.py"),
+    ("src/data/layer.hh", "  bool key_whole_drawing = true;", "  bool key_whole_drawing = false;",
+     "on for new vector layers", "tests/test_key_whole_drawing.py"),
+    ("src/io/oanim_file.cc", '      {"key_whole_drawing", layer.key_whole_drawing},\n', "",
+     "saved with the file", "tests/test_key_whole_drawing.py"),
+    ("src/editors/timeline.cc", 'add(whole ? "Drawing" : "Points", owned', 'add("Points", owned',
+     "one Drawing row", "tests/test_key_whole_drawing.py"),
 ]
 
 

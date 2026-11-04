@@ -1216,6 +1216,16 @@ struct Layer {
   bool edit_with_bones = false;
   /* The deform modifiers of the groups around this drawing leave it alone. */
   bool ignore_group_deforms = false;
+  /* Key Whole Drawing (a vector layer; on for new ones, off for those opened from files made before it): the
+   * drawing's shape is keyed as a whole, every point's position, width, curvature and handles keyed on the same
+   * frames with the same timing, so an edit on a frame keys every point there (drawing_key_whole). */
+  bool key_whole_drawing = true;
+  /* Not saved: its keys have been made to agree since it was turned on (their timing too, once); and how many of its
+   * shape's channels were keyed on each frame then (one fewer since: a key deleted, deleted from them all). */
+  bool key_whole_settled = false;
+  std::map<int, int> key_whole_counts;
+  std::string key_whole_action;
+  int key_whole_channels = 0;
   /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
    * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
    * with their bone collections instead). */

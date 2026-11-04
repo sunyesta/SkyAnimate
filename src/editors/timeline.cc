@@ -1983,7 +1983,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
         const KeyFilter points{KEY_POINTS, false};
         if (keyed({l}, points)) {
-          add("Points", {l}, points, 2, "", false, false, 0);
+          add(l->key_whole_drawing ? "Drawing" : "Points", {l}, points, 2, "", false, false, 0);
         }
       }
     }
@@ -1999,9 +1999,11 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
             property_rows(l, one, 2, false, true);
           }
         }
-        const KeyFilter points{KEY_POINTS, true};
+        /* Keyed as a whole drawing: all its points, whichever are selected. */
+        const KeyFilter points{KEY_POINTS, !l->key_whole_drawing};
+        const char *what = l->key_whole_drawing ? "Drawing" : "Points";
         if (keyed({l}, points)) {
-          add(owned.size() > 1 ? l->name + ": Points" : std::string("Points"), {l}, points, 1, "", false, true, 0);
+          add(owned.size() > 1 ? l->name + ": " + what : std::string(what), {l}, points, 1, "", false, true, 0);
         }
       }
     }
@@ -2061,7 +2063,11 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     }
     const KeyFilter points{KEY_POINTS, selected};
     if (keyed(owned, points)) {
-      add("Points", owned, points, depth, "", false, selected, 0);
+      /* Drawings keyed as a whole (Key Whole Drawing) keep their points' keys together: one Drawing row. */
+      const bool whole = std::all_of(owned.begin(), owned.end(), [](const Layer *l) {
+        return !l->has_drawing() || l->key_whole_drawing;
+      });
+      add(whole ? "Drawing" : "Points", owned, points, depth, "", false, selected, 0);
     }
   };
   if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {

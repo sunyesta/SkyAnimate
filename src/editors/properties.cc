@@ -8349,6 +8349,9 @@ static void layer_tab(Context &C)
     if (layer->type == LayerType::Vector && (layer->ignore_group_deforms || layer_has_group_deforms(doc, *layer, false))) {
       ui_prop(C, ptr, "ignore_group_deforms", path);
     }
+    if (layer->type == LayerType::Vector) {
+      ui_prop(C, ptr, "key_whole_drawing", path);
+    }
     if (layer->is_group()) {
       /* Picking the group edits what's inside it. */
       ui_prop(C, ptr, "edit_descendants", path);

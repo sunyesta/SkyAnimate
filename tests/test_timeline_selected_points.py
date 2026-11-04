@@ -18,6 +18,7 @@ ops.armature.bone_add(name="root", head_x="0", head_y="0", tail_x="0", tail_y="1
 
 ops.layer.new()
 drawing = layers.active
+drawing.key_whole_drawing = False  # keyed point by point here
 assert ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
 drawing = next(x for x in layers.all() if x.id == drawing.id)
 drawing.add_curve([(0, 0), (1, 0), (1, 1)], closed=False)
