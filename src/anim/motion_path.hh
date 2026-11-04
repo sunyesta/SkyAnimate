@@ -156,6 +156,13 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
  * changed. */
 int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int frame, float smoothing, int repeat,
                              float radius);
+/* A Shift drag's stroke: a blend on each of `frames` in turn (a frame gone over again blends again). Returns how many
+ * blends changed something. */
+int motion_path_timing_blend_stroke(Document &doc, const MotionPathTarget &target, const std::vector<int> &frames,
+                                    float smoothing, int repeat, float radius);
+/* "15,16,17": a stroke's frames, as the operator takes them. */
+std::string path_frames_string(const std::vector<int> &frames);
+std::vector<int> path_frames_parse(const std::string &text);
 /* The timing shapes the Path Timing panel's buttons give a stretch, by how far along it each frame has got (t the
  * share of its time): Even t, Ease In t^2, Ease Out 1-(1-t)^2, Ease In-Out 3t^2-2t^3. */
 enum class PathShape { Even, EaseIn, EaseOut, EaseInOut };

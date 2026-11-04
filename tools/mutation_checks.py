@@ -26,6 +26,12 @@ EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
 PENDING = [
+    # Motion paths: the Shift drag blend stroke (2026-11-04).
+    ("src/ops/motion_path_ops.cc", 'std::vector<int> frames = path_frames_parse(op_arg(C, "frames"));',
+     "std::vector<int> frames;", "blend takes a stroke's frames", "tests/test_motion_path_timing.py"),
+    ("src/anim/motion_path.cc", "  for (const int frame : frames) {\n    changed += motion_path_timing_blend(",
+     "  for (const int frame : std::vector<int>{frames.front()}) {\n    changed += motion_path_timing_blend(",
+     "a blend on each frame of the stroke", "tests/test_motion_path_timing.py"),
 ]
 
 

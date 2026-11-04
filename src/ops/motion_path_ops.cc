@@ -710,8 +710,8 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_timing_blend";
     ot.name = "Blend Timing";
-    ot.description = "Shift click in the timing chart or the Path Timing graph: even out the spacing around frame=N, "
-                     "each dot within radius= frames moving smoothing= (0-1) of the way to the midpoint of its "
+    ot.description = "Shift click or drag in the timing chart or the Path Timing graph: even out the spacing around "
+                     "frame=N (a drag's stroke: frames=\"15,16,17\", a blend on each in turn), each dot within radius= frames moving smoothing= (0-1) of the way to the midpoint of its "
                      "neighbours, repeat= times, the keys staying; of what a path traces (layer=, bone=, point=, or "
                      "the first traced). Left out, the settings of the last blend";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
@@ -731,8 +731,13 @@ void motion_path_operators_register()
       op_arg_used(C, "repeat", std::to_string(ts.path_blend_repeat));
       op_arg_used(C, "radius", std::to_string(ts.path_blend_radius));
       animation_sync(doc);
-      if (motion_path_timing_blend(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current),
-                                   ts.path_blend_smoothing, ts.path_blend_repeat, ts.path_blend_radius) == 0)
+      /* A Shift drag's stroke gives its frames, a blend on each in turn; a click one frame. */
+      std::vector<int> frames = path_frames_parse(op_arg(C, "frames"));
+      if (frames.empty()) {
+        frames.push_back(op_arg_int(C, "frame", doc.frame_current));
+      }
+      if (motion_path_timing_blend_stroke(doc, targets.front(), frames, ts.path_blend_smoothing,
+                                          ts.path_blend_repeat, ts.path_blend_radius) == 0)
       {
         report(ReportType::Warning, "No dots between keys there");
         return OpStatus::Cancelled;

@@ -3,6 +3,7 @@
 #include "imgui_internal.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -58,9 +59,22 @@ static struct {
   Document snapshot;
 } g_tick;
 
+/* A Shift drag's blend, in the chart (0) or the graph (1): painted live from the document as it was pressed, a blend
+ * each time the mouse reaches a new frame (every frame between too, so it doesn't matter how fast), then run as
+ * anim.motion_path_timing_blend with the stroke's frames, one undo step the panel can run again. */
+static struct {
+  bool active = false;
+  int owner = 0;
+  MotionPathTarget target;
+  int lo = 0, hi = 0, last = 0;
+  std::vector<int> frames;
+  Document snapshot;
+} g_blend;
+
 bool timeline_path_strip_busy()
 {
-  return g_tick.active;
+  /* Shift over the chart: the wheel sizes the blend. */
+  return g_tick.active || g_blend.active || ImGui::GetIO().KeyShift;
 }
 
 static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int frame)
@@ -126,9 +140,57 @@ static void reach_label(ImDrawList *dl, ImVec2 at, float size, ImU32 col)
   dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.8f, at, col, text);
 }
 
-static void blend_click(Context &C, const MotionPathTarget &t, int frame)
+static void blend_apply(Context &C)
 {
-  operator_call(C, "anim.motion_path_timing_blend", target_args(*C.document, t, frame));
+  const ToolSettings &ts = C.wm->tool_settings;
+  *C.document = g_blend.snapshot;
+  motion_path_timing_blend_stroke(*C.document, g_blend.target, g_blend.frames, ts.path_blend_smoothing,
+                                  ts.path_blend_repeat, ts.path_blend_radius);
+  C.undo->mark_changed();
+}
+
+static void blend_begin(Context &C, int owner, const MotionPathTarget &t, int frame, int lo, int hi)
+{
+  auto &b = g_blend;
+  animation_sync(*C.document);
+  b.active = true;
+  b.owner = owner;
+  b.target = t;
+  b.lo = lo;
+  b.hi = hi;
+  b.last = std::clamp(frame, lo, hi);
+  b.frames = {b.last};
+  b.snapshot = *C.document;
+  blend_apply(C);
+}
+
+/* The stroke going on: the mouse at `frame`. */
+static void blend_update(Context &C, float frame)
+{
+  auto &b = g_blend;
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    *C.document = std::move(b.snapshot);
+    b = {};
+    return;
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    *C.document = std::move(b.snapshot);
+    OpArgs args = target_args(*C.document, b.target, b.frames.front());
+    args["frames"] = path_frames_string(b.frames);
+    b = {};
+    operator_call(C, "anim.motion_path_timing_blend", args);
+    return;
+  }
+  bool changed = reach_wheel(C.wm->tool_settings.path_blend_radius);
+  const int to = std::clamp(int(std::lround(frame)), b.lo, b.hi);
+  while (b.last != to) {
+    b.last += to > b.last ? 1 : -1;
+    b.frames.push_back(b.last);
+    changed = true;
+  }
+  if (changed) {
+    blend_apply(C);
+  }
 }
 
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
@@ -169,8 +231,18 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
       }
     }
   }
-  /* Shift: a click blends the timing there instead of picking a dot. */
-  const bool blending = !g_tick.active && io.KeyShift && !io.KeyCtrl && !io.KeyAlt && lane.has_value();
+  /* Shift: a click or drag blends the timing there instead of picking a dot. */
+  const bool stroke = g_blend.active && g_blend.owner == 0;
+  if (stroke) {
+    lane.reset();
+    for (size_t r = 0; r < targets.size(); r++) {
+      if (targets[r].same(g_blend.target)) {
+        lane = r;
+      }
+    }
+  }
+  const bool blending = stroke || (!g_tick.active && !g_blend.active && io.KeyShift && !io.KeyCtrl && !io.KeyAlt &&
+                                   lane.has_value());
 
   /* The tick under the mouse: its target, frame and stretch. */
   struct Hit {
@@ -259,7 +331,7 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     dl->AddLine(ImVec2(xb, top), ImVec2(xb, bottom), edge);
     reach_label(dl, ImVec2(xb + 3.0f, top), reach, edge);
   };
-  if (blending) {
+  if (blending && lane) {
     band(*lane, std::round(frame_of(io.MousePos.x)), ts.path_blend_radius, BLEND_FILL, BLEND_EDGE);
   }
   else if (g_tick.active && g_tick.dragging) {
@@ -283,13 +355,21 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     wm.path_hover_tick = ImGui::GetFrameCount();
     ImGui::SetTooltip("Frame %d", hover->frame);
   }
+  if (stroke) {
+    blend_update(C, frame_of(io.MousePos.x));
+    return;
+  }
+  /* Shift held: the wheel sizes the blend. */
+  if (blending) {
+    reach_wheel(ts.path_blend_radius);
+  }
   auto &g = g_tick;
   if (!g.active) {
     if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
     }
     if (blending) {
-      blend_click(C, targets[*lane], int(std::lround(frame_of(io.MousePos.x))));
+      blend_begin(C, 0, targets[*lane], int(std::lround(frame_of(io.MousePos.x))), INT32_MIN / 2, INT32_MAX / 2);
       return;
     }
     if (!edit) {
@@ -456,8 +536,10 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
   const bool hovered = ImGui::IsItemHovered();
 
-  /* Navigation, as the viewport's: not while a dot is dragged, when the wheel sizes its reach instead. */
-  if (!g_graph.active && !g_graph_scale.active) {
+  /* Navigation, as the viewport's: not while a dot is dragged, when the wheel sizes its reach instead, nor with
+   * Shift held, when it sizes the blend. */
+  const bool stroke = g_blend.active && g_blend.owner == 1;
+  if (!g_graph.active && !g_graph_scale.active && !stroke && !io.KeyShift) {
     if (hovered && io.MouseWheel != 0.0f) {
       const float factor = std::pow(0.85f, io.MouseWheel);
       const float mf = frame_at(io.MousePos.x), mu = u_at(io.MousePos.y);
@@ -556,8 +638,8 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     dl->AddLine(to_screen(float(s.start + k), s.progress[size_t(k)]),
                 to_screen(float(s.start + k + 1), s.progress[size_t(k + 1)]), IM_COL32(110, 110, 110, 255), 1.5f);
   }
-  const bool blending = hovered && !g_graph.active && !g_graph_scale.active && !v.nav && io.KeyShift &&
-                        !io.KeyCtrl && !io.KeyAlt;
+  const bool blending = stroke || (hovered && !g_graph.active && !g_graph_scale.active && !g_blend.active && !v.nav &&
+                                   io.KeyShift && !io.KeyCtrl && !io.KeyAlt);
   const float size = ts.path_graph_size;
   std::optional<int> hover;
   float best = 9.0f;
@@ -636,6 +718,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     ImGui::SetTooltip("Frame %d: %.0f%% along", *hover, u * 100.0f);
   }
 
+  if (stroke) {
+    blend_update(C, frame_at(io.MousePos.x));
+    return;
+  }
+  /* Shift held: the wheel sizes the blend. */
+  if (blending) {
+    reach_wheel(ts.path_blend_radius);
+  }
   /* Alt S: scale the spacing around the selected dots, as in the viewport, with the graph's reach. */
   auto &sc = g_graph_scale;
   if (!sc.active && hovered && !g_graph.active && io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
@@ -703,7 +793,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       return;
     }
     if (blending) {
-      blend_click(C, t, int(std::lround(frame_at(io.MousePos.x))));
+      blend_begin(C, 1, t, int(std::lround(frame_at(io.MousePos.x))), s.start, s.end);
       return;
     }
     if (!hover) {

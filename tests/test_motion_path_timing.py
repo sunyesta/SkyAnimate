@@ -309,6 +309,22 @@ assert close(progress(line, 10), blended(once, 10, 15, 1.0, 3, 3.0))
 ops.ed.undo()
 assert close(progress(line, 10), once), "one undo step"
 
+# A Shift drag is a brush: a blend on each frame the mouse reached, in turn (gone over again, again), one undo step.
+stroke = once
+for f in (14, 15, 16, 15):
+    stroke = blended(stroke, 10, f, 1.0, 3, 3.0)
+assert ops.anim.motion_path_timing_blend(frames="14,15,16,15", **args) == {'FINISHED'}
+assert close(progress(line, 10), stroke), (progress(line, 10), stroke)
+last = oanim.wm.last_operation()
+assert last[1]["frames"] == "14,15,16,15", last
+assert oanim.wm.redo_last(smoothing="0.25") == "FINISHED"
+again = once
+for f in (14, 15, 16, 15):
+    again = blended(again, 10, f, 0.25, 3, 3.0)
+assert close(progress(line, 10), again), "the panel runs the whole stroke again"
+ops.ed.undo()
+assert close(progress(line, 10), once), "the stroke is one undo step"
+
 # Radius 0: the clicked dot alone. On a key with nothing in reach, nothing to do.
 assert ops.anim.motion_path_timing_blend(frame="17", smoothing="0.5", repeat="1", radius="0", **args) == {'FINISHED'}
 u = progress(line, 10)

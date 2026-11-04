@@ -1646,6 +1646,39 @@ int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int 
   return changed;
 }
 
+int motion_path_timing_blend_stroke(Document &doc, const MotionPathTarget &target, const std::vector<int> &frames,
+                                    float smoothing, int repeat, float radius)
+{
+  int changed = 0;
+  for (const int frame : frames) {
+    changed += motion_path_timing_blend(doc, target, frame, smoothing, repeat, radius) > 0 ? 1 : 0;
+  }
+  return changed;
+}
+
+std::string path_frames_string(const std::vector<int> &frames)
+{
+  std::string text;
+  for (const int f : frames) {
+    text += (text.empty() ? "" : ",") + std::to_string(f);
+  }
+  return text;
+}
+
+std::vector<int> path_frames_parse(const std::string &text)
+{
+  std::vector<int> frames;
+  for (size_t at = 0; at < text.size();) {
+    const size_t end = std::min(text.find(',', at), text.size());
+    const std::string part = text.substr(at, end - at);
+    if (!part.empty()) {
+      frames.push_back(std::atoi(part.c_str()));
+    }
+    at = end + 1;
+  }
+  return frames;
+}
+
 bool path_shape_from_identifier(const std::string &id, PathShape &r_shape)
 {
   static const std::pair<const char *, PathShape> ids[] = {{"EVEN", PathShape::Even},
