@@ -77,6 +77,59 @@ bool timeline_path_strip_busy()
   return g_tick.active || g_blend.active || ImGui::GetIO().KeyShift;
 }
 
+static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int frame);
+
+/* A key's diamond right-clicked (in the chart or the graph): its menu, the interpolation of the key behind it. */
+static struct {
+  MotionPathTarget target;
+  int frame = 0;
+} g_key_menu;
+
+static void key_menu_open(const MotionPathTarget &t, int frame, const char *name)
+{
+  g_key_menu.target = t;
+  g_key_menu.frame = frame;
+  ImGui::OpenPopup(name);
+}
+
+static void key_menu(Context &C, const char *name)
+{
+  if (!ui_menu_begin(name)) {
+    return;
+  }
+  Document &doc = *C.document;
+  const MotionPathTarget t = g_key_menu.target;
+  const int frame = g_key_menu.frame;
+  ImGui::TextDisabled("Key on frame %d", frame);
+  KeySettings current;
+  const int count = motion_path_key_settings(doc, t, frame, nullptr, &current);
+  if (count == 0) {
+    ImGui::TextDisabled("No key here now");
+    ui_menu_end();
+    return;
+  }
+  bool mixed_interp = false, mixed_ease = false;
+  motion_path_key_settings(doc, t, frame, [&](KeySettings &s) {
+    mixed_interp |= s.interp != current.interp;
+    mixed_ease |= s.ease != current.ease;
+  });
+  if (ui_submenu_begin("Interpolation")) {
+    timeline_interp_modes(current, mixed_interp, mixed_ease, false, [&](const OpArgs &set) {
+      OpArgs args = target_args(doc, t, frame);
+      for (const auto &[k, v] : set) {
+        args[k] = v;
+      }
+      operator_call(C, "anim.motion_path_key_interp", args);
+    });
+    ui_submenu_end();
+  }
+  ImGui::Separator();
+  if (ui_menu_item("Delete Key")) {
+    operator_call(C, "anim.motion_path_key_delete", target_args(doc, t, frame));
+  }
+  ui_menu_end();
+}
+
 static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int frame)
 {
   OpArgs args = {{"layer", std::to_string(t.layer)}, {"frame", std::to_string(frame)}};
@@ -247,6 +300,8 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   const bool blending = stroke || (!g_tick.active && !g_blend.active && io.KeyShift && !io.KeyCtrl && !io.KeyAlt &&
                                    lane.has_value());
 
+  /* The key diamond under the mouse, for its right-click menu. */
+  std::optional<std::pair<MotionPathTarget, int>> key_hit;
   /* The tick under the mouse: its target, frame and stretch. */
   struct Hit {
     MotionPathTarget target;
@@ -320,7 +375,12 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     for (const int k : motion_path_keys(doc, t)) {
       const float x = x_of(float(k));
       if (x >= keys_x - 8.0f && x <= max.x + 8.0f) {
-        diamond(dl, ImVec2(x, cy), row_h * 0.28f, IM_COL32(240, 240, 240, 255), IM_COL32(20, 20, 20, 220));
+        const bool sel = motion_path_key_selected(doc, t, k);
+        diamond(dl, ImVec2(x, cy), row_h * 0.28f, sel ? IM_COL32(255, 160, 40, 255) : IM_COL32(240, 240, 240, 255),
+                IM_COL32(20, 20, 20, 220));
+        if (hovered && std::fabs(io.MousePos.x - x) < 6.0f && std::fabs(io.MousePos.y - cy) < lane_h * 0.5f) {
+          key_hit = std::pair{t, k};
+        }
       }
     }
   }
@@ -358,6 +418,12 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     wm.path_hover_tick = ImGui::GetFrameCount();
     ImGui::SetTooltip("Frame %d", hover->frame);
   }
+  if (key_hit && !g_tick.active && !stroke && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+      !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right))
+  {
+    key_menu_open(key_hit->first, key_hit->second, "##path_key_menu_chart");
+  }
+  key_menu(C, "##path_key_menu_chart");
   if (stroke) {
     blend_update(C, frame_of(io.MousePos.x));
     return;
@@ -373,6 +439,15 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     }
     if (blending) {
       blend_begin(C, 0, targets[*lane], int(std::lround(frame_of(io.MousePos.x))), INT32_MIN / 2, INT32_MAX / 2);
+      return;
+    }
+    if (key_hit && !hover && motion_path_is_key(doc, key_hit->first, key_hit->second)) {
+      /* A key: selected as on the path (Ctrl adds or takes out), so X deletes it and the menus act on it. */
+      OpArgs args = target_args(doc, key_hit->first, key_hit->second);
+      if (io.KeyCtrl) {
+        args["extend"] = "1";
+      }
+      operator_call(C, "anim.motion_path_select", args);
       return;
     }
     if (!edit) {
@@ -689,9 +764,15 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       hover = frame;
     }
   }
+  std::optional<int> key_hit;
   for (const int k : {s.start, s.end}) {
     const ImVec2 p = to_screen(float(k), k == s.start ? 0.0f : 1.0f);
-    diamond(dl, p, 5.5f, IM_COL32(240, 240, 240, 255), IM_COL32(20, 20, 20, 220));
+    const bool sel = k > 0 && motion_path_key_selected(doc, t, k);
+    diamond(dl, p, 5.5f, sel ? IM_COL32(255, 160, 40, 255) : IM_COL32(240, 240, 240, 255),
+            IM_COL32(20, 20, 20, 220));
+    if (hovered && k > 0 && std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y) < 8.0f) {
+      key_hit = k;
+    }
   }
   /* The reach as a circle: Shift's blend in blue around the mouse; else the proportional circle around the dot
    * dragged or under the mouse. */
@@ -763,8 +844,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   if (hovered && !g_graph.active && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
       !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right))
   {
-    ImGui::OpenPopup("##path_timing_menu");
+    if (key_hit) {
+      key_menu_open(t, *key_hit, "##path_key_menu_graph");
+    }
+    else {
+      ImGui::OpenPopup("##path_timing_menu");
+    }
   }
+  key_menu(C, "##path_key_menu_graph");
   if (ui_menu_begin("##path_timing_menu")) {
     ImGui::TextDisabled("Path Timing");
     ImGui::Separator();
@@ -789,6 +876,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   auto &g = g_graph;
   if (!g.active) {
     if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      return;
+    }
+    if (key_hit && !blending && motion_path_is_key(doc, t, *key_hit)) {
+      OpArgs args = target_args(doc, t, *key_hit);
+      if (io.KeyCtrl) {
+        args["extend"] = "1";
+      }
+      operator_call(C, "anim.motion_path_select", args);
       return;
     }
     if (on_arrow) {

@@ -8,6 +8,7 @@
  * alone, as onion skins are; deforms are left out (bones and transforms only), so paths stay quick. */
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -126,6 +127,13 @@ std::vector<std::pair<MotionPathTarget, int>> motion_path_selected_keys(const Do
                                                                         const std::vector<MotionPathTarget> &targets);
 /* Whether `frame` holds a key of the channel that moves the target's dot. */
 bool motion_path_is_key(const Document &doc, const MotionPathTarget &target, int frame);
+/* The keys behind the target's diamond on `frame` (a timing row's): its own channel's key there (a drawing's: every
+ * channel's), else the key that moves it there, its layer's or a group's above (turn, move or size). With `change`,
+ * each one's settings are changed by it; `r_first` gets the first one's settings before. Returns how many. */
+int motion_path_key_settings(Document &doc, const MotionPathTarget &target, int frame,
+                             const std::function<void(KeySettings &)> &change, KeySettings *r_first = nullptr);
+/* Deletes those keys. Returns how many. */
+int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int frame);
 /* Selects (or deselects) the key on `frame` of the channel that moves the dot; whether it is selected now. */
 bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame);
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);

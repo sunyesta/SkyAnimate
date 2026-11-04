@@ -714,6 +714,66 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.motion_path_key_interp";
+    ot.name = "Path Key Interpolation";
+    ot.description = "Right-click a key's diamond in the timing chart or Path Timing graph: the interpolation of the "
+                     "key on frame=N of what a path traces (layer=, bone=, point=, drawing=1, or the first traced): its "
+                     "own key there (a drawing's: all its channels'), else its layer's or a group's that moves it "
+                     "there. interp=, ease=, hold= and the rest as anim.keys_interpolation_set takes them";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_record(doc);
+      bool ok = true;
+      std::string what;
+      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      const int count = motion_path_key_settings(doc, targets.front(), frame,
+                                                 [&](KeySettings &s) { ok &= interp_args_apply(C, s, &what); });
+      if (!ok) {
+        return OpStatus::Cancelled;
+      }
+      if (count == 0) {
+        report(ReportType::Warning, "No key on frame " + std::to_string(frame));
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_key_delete";
+    ot.name = "Delete Path Key";
+    ot.description = "Delete the key on frame=N of what a path traces (layer=, bone=, point=, drawing=1), the one "
+                     "anim.motion_path_key_interp sets";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_record(doc);
+      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      if (motion_path_key_delete(doc, targets.front(), frame) == 0) {
+        report(ReportType::Warning, "No key on frame " + std::to_string(frame));
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      animation_evaluate(doc, doc.frame_current);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.motion_path_timing_blend";
     ot.name = "Blend Timing";
     ot.description = "Shift click or drag in the timing chart or the Path Timing graph: even out the spacing around "

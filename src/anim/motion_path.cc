@@ -1520,6 +1520,77 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
   return false;
 }
 
+/* Calls `f` with each channel holding a key behind the target's diamond on `frame` (see motion_path_key_settings). */
+template<typename F> static int with_diamond_channels(Document &doc, const MotionPathTarget &t, int frame, F &&f)
+{
+  int count = 0;
+  const auto visit = [&](auto &ch) {
+    if (ch.key_at(frame)) {
+      f(ch);
+      count++;
+    }
+  };
+  with_path_channels(doc, t, visit);
+  if (count > 0 || t.drawing) {
+    return count;
+  }
+  /* Not its own key: what moves it there, its layer's turn, move or size, else a group's above. */
+  KeyFilter filter;
+  filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
+  for (Layer *l = layer_find(doc, t.layer); l && count == 0; l = layer_parent(doc, l->id)) {
+    for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
+      if (ref.scalar) {
+        visit(*ref.scalar);
+      }
+      if (ref.vector) {
+        visit(*ref.vector);
+      }
+    }
+  }
+  return count;
+}
+
+int motion_path_key_settings(Document &doc, const MotionPathTarget &target, int frame,
+                             const std::function<void(KeySettings &)> &change, KeySettings *r_first)
+{
+  bool first = true;
+  return with_diamond_channels(doc, target, frame, [&](auto &ch) {
+    auto &key = *ch.key_at(frame);
+    KeySettings s = key_settings(key);
+    if (first && r_first) {
+      *r_first = s;
+    }
+    first = false;
+    if (!change) {
+      return;
+    }
+    change(s);
+    s.hold = std::max(0, s.hold);
+    s.interval = std::max(1, s.interval);
+    s.cycle_back = std::max(0, s.cycle_back);
+    s.elastic_period = std::max(0.02f, s.elastic_period);
+    if (ch.constant) {
+      s.interp = Interp::Step;
+    }
+    key_settings_apply(key, s);
+  });
+}
+
+int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int frame)
+{
+  if (frame == 0) {
+    return 0;
+  }
+  std::vector<std::function<void()>> removals;
+  const int count = with_diamond_channels(doc, target, frame, [&](auto &ch) {
+    removals.push_back([&ch, frame] { ch.remove_key(frame); });
+  });
+  for (const auto &remove : removals) {
+    remove();
+  }
+  return count;
+}
+
 std::vector<std::pair<MotionPathTarget, int>> motion_path_selected_keys(const Document &doc,
                                                                         const std::vector<MotionPathTarget> &targets)
 {
@@ -2134,6 +2205,10 @@ KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &ta
   else if (layer && target.point) {
     filter.kinds = KEY_POINTS;
     filter.path = "points[" + std::to_string(std::max(0, point_index(*layer, target.point))) + "].";
+  }
+  else if (target.drawing) {
+    /* A drawing keyed as a whole: all its points' keys there. */
+    filter.kinds = KEY_POINTS;
   }
   else {
     filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;

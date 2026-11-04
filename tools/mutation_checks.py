@@ -54,6 +54,15 @@ PENDING = [
      "saved with the file", "tests/test_key_whole_drawing.py"),
     ("src/editors/timeline.cc", 'add(whole ? "Drawing" : "Points", owned', 'add("Points", owned',
      "one Drawing row", "tests/test_key_whole_drawing.py"),
+    # Motion paths: the timing views' key diamonds, clicked and right-clicked (2026-11-04).
+    ("src/anim/motion_path.cc", "    key_settings_apply(key, s);\n  });", "    (void)s;\n  });",
+     "the menu sets the key's interpolation", "tests/test_motion_path_key_menu.py"),
+    ("src/anim/motion_path.cc", "  if (count > 0 || t.drawing) {\n    return count;", "  if (true) {\n    return count;",
+     "a group's key moves it there", "tests/test_motion_path_key_menu.py"),
+    ("src/anim/motion_path.cc", "    removals.push_back([&ch, frame] { ch.remove_key(frame); });", "    (void)ch;",
+     "Delete Key deletes it", "tests/test_motion_path_key_menu.py"),
+    ("src/anim/motion_path.cc", "    /* A drawing keyed as a whole: all its points' keys there. */\n    filter.kinds = KEY_POINTS;",
+     "    filter.kinds = 0;", "a click selects a whole drawing's keys", "tests/test_motion_path_key_menu.py"),
 ]
 
 

@@ -13,11 +13,20 @@
  * Operation panel; its reach a blue band, sized by the wheel while Shift is held); Ctrl click adds a dot to the
  * selection. Over the strip, the wheel zooms the timeline. */
 
+#include <functional>
+
 #include "imgui.h"
+#include "ops/operator.hh"
 
 namespace oanim {
 
 struct Context;
+struct KeySettings;
+
+/* The timeline's Interpolation menu's modes (with their curves and Strength), `current` ticked unless `mixed`; a
+ * choice calls `set` with anim.keys_interpolation_set's arguments for it (interp= or ease=). In timeline.cc. */
+void timeline_interp_modes(const KeySettings &current, bool mixed, bool mixed_ease, bool separators,
+                           const std::function<void(const OpArgs &)> &set);
 
 /* How tall the strip is (0 when it isn't shown), for rows `row_h` tall. */
 float timeline_path_strip_height(Context &C, float row_h);

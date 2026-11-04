@@ -660,6 +660,45 @@ static KeySettings interp_shown(const SelectedKeys &sel)
   return sel.count > 0 ? sel.first : new_key_settings().settings;
 }
 
+void timeline_interp_modes(const KeySettings &current, bool mixed, bool mixed_ease, bool separators,
+                           const std::function<void(const OpArgs &)> &set)
+{
+  for (const InterpGroup &group : INTERP_GROUPS) {
+    if (group.heading) {
+      ImGui::SeparatorText(group.heading);
+    }
+    else if (separators) {
+      ImGui::Separator();
+    }
+    for (int i = 0; i < group.count; i++) {
+      const Interp mode = group.modes[i];
+      KeySettings shape = current;
+      shape.interp = mode;
+      if (interp_item(interp_name(mode), shape, !mixed && current.interp == mode, true, interp_tooltip(mode))) {
+        set({{"interp", interp_identifier(mode)}});
+      }
+    }
+    if (group.modes[0] == Interp::EaseIn) {
+      const std::string label = curve_room() + "Strength";
+      if (ui_submenu_begin(label.c_str())) {
+        for (int e = 0; e < EASE_COUNT; e++) {
+          KeySettings shape = current;
+          if (shape.interp != Interp::EaseIn && shape.interp != Interp::EaseOut) {
+            shape.interp = Interp::EaseInOut;
+          }
+          shape.ease = Ease(e);
+          if (interp_item(ease_name(Ease(e)), shape, !mixed_ease && current.ease == Ease(e), true,
+                          "How strongly the Ease modes slow down"))
+          {
+            set({{"ease", ease_identifier(Ease(e))}});
+          }
+        }
+        ui_submenu_end();
+      }
+    }
+  }
+}
+
 /* The Interpolation menu's items. `prepare` (right-click on a key) selects the keys clicked
  * before anything is set. */
 static void interp_menu_items(Context &C, const std::function<void()> &prepare)
@@ -681,40 +720,8 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
       ImGui::TextDisabled("New keys (no keys selected)");
     }
   }
-  for (const InterpGroup &group : INTERP_GROUPS) {
-    if (group.heading) {
-      ImGui::SeparatorText(group.heading);
-    }
-    else if (!prepare) {
-      ImGui::Separator();
-    }
-    for (int i = 0; i < group.count; i++) {
-      const Interp mode = group.modes[i];
-      KeySettings shape = current;
-      shape.interp = mode;
-      if (interp_item(interp_name(mode), shape, !sel.mixed && current.interp == mode, true, interp_tooltip(mode))) {
-        run("anim.keys_interpolation_set", {{"interp", interp_identifier(mode)}});
-      }
-    }
-    if (group.modes[0] == Interp::EaseIn) {
-      const std::string label = curve_room() + "Strength";
-      if (ui_submenu_begin(label.c_str())) {
-        for (int e = 0; e < EASE_COUNT; e++) {
-          KeySettings shape = current;
-          if (shape.interp != Interp::EaseIn && shape.interp != Interp::EaseOut) {
-            shape.interp = Interp::EaseInOut;
-          }
-          shape.ease = Ease(e);
-          if (interp_item(ease_name(Ease(e)), shape, !sel.mixed_ease && current.ease == Ease(e), true,
-                          "How strongly the Ease modes slow down"))
-          {
-            run("anim.keys_interpolation_set", {{"ease", ease_identifier(Ease(e))}});
-          }
-        }
-        ui_submenu_end();
-      }
-    }
-  }
+  timeline_interp_modes(current, sel.mixed, sel.mixed_ease, !prepare,
+                        [&](const OpArgs &args) { run("anim.keys_interpolation_set", args); });
   ImGui::Separator();
   if (ui_menu_item("Copy Previous Key", nullptr, new_key_settings().copy_previous)) {
     operator_call(C, "anim.interpolation_copy_previous");

@@ -362,7 +362,7 @@ static bool g_interp_copied = false;
 
 /* The settings an operator's arguments name, over `s`: only those given change. False (and a
  * report) for an unknown mode or strength. */
-static bool interp_args_apply(Context &C, KeySettings &s, std::string *r_what)
+bool interp_args_apply(Context &C, KeySettings &s, std::string *r_what)
 {
   if (op_has_arg(C, "interp")) {
     Interp interp;
