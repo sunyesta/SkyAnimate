@@ -584,6 +584,60 @@ void motion_path_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_scale_spacing";
+    ot.name = "Scale Path Spacing";
+    ot.description = "S with Edit Speed: the dots around frame=N brought factor= as far from it along the path (under "
+                     "1 closer: slower there; on a key, easing into and out of it), the keys staying on their frames; "
+                     "the dots within size= frames, by falloff= with proportional=1, else all alike (the tool's "
+                     "settings when left out). Of what a path traces (layer=, bone=, point=, or the first traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const ToolSettings &ts = C.wm->tool_settings;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      PathSlide slide;
+      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : ts.proportional;
+      slide.size = std::max(op_arg_float(C, "size", ts.path_proportional_size), 1.0f);
+      slide.falloff = ts.proportional_falloff;
+      if (op_has_arg(C, "falloff") && !proportional_falloff_from_identifier(op_arg(C, "falloff"), &slide.falloff)) {
+        report(ReportType::Error, "Unknown falloff '" + op_arg(C, "falloff") + "'");
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      if (motion_path_scale_spacing(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current),
+                                    op_arg_float(C, "factor", 1.0f), slide) == 0)
+      {
+        report(ReportType::Warning, "No moving stretch there to scale");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_scale_spacing_modal";
+    ot.name = "Scale Path Spacing";
+    ot.description = "S with Edit Speed, over a path's dot: scale the spacing around it with the mouse (toward the dot "
+                     "closer, away further; numbers typed; Ctrl snaps to 0.1, Shift is finer, the wheel sizes the "
+                     "reach; click or Enter keeps it, Esc or a right click cancels)";
+    ot.flag = 0;
+    ot.poll = [](Context &C) {
+      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath &&
+             C.wm->tool_settings.path_brush == PathBrush::EditSpeed;
+    };
+    ot.exec = [](Context &C) {
+      C.wm->path_scale_request = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
 }
 
 }  // namespace oanim

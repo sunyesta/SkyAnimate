@@ -864,6 +864,24 @@ static struct {
   Document snapshot;
 } g_path_slide;
 
+/* S with Edit Speed: the spacing around a dot (or a key) scaled, the mouse going right spreading the dots out
+ * (faster), left bringing them closer (slower); the mouse starts on the dot, so its distance from it couldn't say
+ * which. Numbers typed set the factor, as Blender's S. */
+static struct {
+  bool active = false;
+  bool again = false;
+  MotionPathTarget target;
+  int frame = 0;
+  ImVec2 pivot;
+  float press_x = 0.0f;
+  float factor = 1.0f;
+  NumInput num;
+  PreciseMouse precise;
+  Document snapshot;
+} g_path_scale;
+/* Screen pixels to the right for twice the spacing. */
+static constexpr float PATH_SCALE_PX = 150.0f;
+
 static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawList *dl, const MotionPath *hover_path,
                                     int hover_frame, int first, int last, const std::vector<MotionPath> &paths)
 {
@@ -871,6 +889,7 @@ static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawL
   ToolSettings &ts = C.wm->tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_slide;
+  auto &sc = g_path_scale;
   const auto finish = [&]() {
     const uint64_t serial = g_path_drag.serial + 1;
     g_path_drag = {};
@@ -878,6 +897,101 @@ static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawL
     g.active = false;
     g.snapshot = Document();
   };
+  if (C.wm->path_scale_request) {
+    C.wm->path_scale_request = false;
+    if (!sc.active && !g.active && hover_path) {
+      sc.active = true;
+      sc.again = false;
+      sc.target = hover_path->target;
+      sc.frame = hover_frame;
+      sc.pivot = view.to_screen(hover_path->points[size_t(hover_frame - hover_path->first)]);
+      sc.press_x = io.MousePos.x;
+      sc.factor = 1.0f;
+      sc.num = NumInput();
+      sc.precise.reset(float2{io.MousePos.x, io.MousePos.y});
+      sc.snapshot = doc;
+      C.wm->modal_running = true;
+      C.wm->modal_keys.clear();
+      g_path_drag.active = true;
+      g_path_drag.first = first;
+      g_path_drag.last = last;
+    }
+    else if (!sc.active) {
+      report(ReportType::Info, "S: with the mouse over a dot or a key of a path");
+    }
+  }
+  if (sc.active) {
+    const auto end = [&](bool keep) {
+      if (keep) {
+        push_undo(C, "Scale Path Spacing");
+      }
+      else {
+        doc = std::move(sc.snapshot);
+      }
+      sc.active = false;
+      sc.snapshot = Document();
+      C.wm->modal_running = false;
+      C.wm->modal_keys.clear();
+      finish();
+    };
+    if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      end(false);
+      return;
+    }
+    const bool typed = num_input_keys(C, sc.num, 1);
+    const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
+                         ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    const float2 m = sc.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
+    float f = std::pow(2.0f, (m.x - sc.press_x) / PATH_SCALE_PX);
+    if (io.KeyCtrl) {
+      f = std::round(f * 10.0f) / 10.0f;
+    }
+    if (sc.num.any()) {
+      f = sc.num.value(0, 1.0f);
+    }
+    f = std::max(f, 0.0f);
+    if (f != sc.factor || typed || sc.again) {
+      sc.factor = f;
+      sc.again = false;
+      PathSlide slide;
+      slide.proportional = ts.proportional;
+      slide.size = ts.path_proportional_size;
+      slide.falloff = ts.proportional_falloff;
+      doc = sc.snapshot;
+      motion_path_scale_spacing(doc, sc.target, sc.frame, f, slide);
+      g_path_drag.serial++;
+    }
+    /* The dots it scales, tinted by how much; a dashed line from the dot to the mouse, and the factor. */
+    for (const MotionPath &p : paths) {
+      if (!p.target.same(sc.target)) {
+        continue;
+      }
+      for (size_t k = 0; k < p.points.size(); k++) {
+        const int fr = p.first + int(k);
+        const float d = float(std::abs(fr - sc.frame));
+        const float w = ts.proportional ? proportional_weight(ts.proportional_falloff, d, ts.path_proportional_size, fr)
+                                        : (d < ts.path_proportional_size ? 1.0f : 0.0f);
+        if (w > 0.0f && fr != sc.frame) {
+          dl->AddCircle(view.to_screen(p.points[k]), 5.5f, IM_COL32(255, 160, 40, int(60.0f + 195.0f * w)), 0, 1.5f);
+        }
+      }
+    }
+    dl->AddCircle(sc.pivot, 6.5f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
+    const ImVec2 to = io.MousePos;
+    const float len = std::sqrt((to.x - sc.pivot.x) * (to.x - sc.pivot.x) + (to.y - sc.pivot.y) * (to.y - sc.pivot.y));
+    for (float t = 0.0f; t < len; t += 12.0f) {
+      const float a = t / std::max(len, 1e-3f), b = std::min(t + 6.0f, len) / std::max(len, 1e-3f);
+      dl->AddLine(sc.pivot + (to - sc.pivot) * a, sc.pivot + (to - sc.pivot) * b, IM_COL32(20, 20, 20, 200), 1.5f);
+    }
+    const std::string text = "Scale " + sc.num.shown(0, sc.factor, "%.2f") + "   (left: closer, right: further)";
+    dl->AddText(to + ImVec2(15.0f, 9.0f), IM_COL32(20, 20, 20, 220), text.c_str());
+    dl->AddText(to + ImVec2(14.0f, 8.0f), IM_COL32(255, 255, 255, 255), text.c_str());
+    if (confirm) {
+      end(true);
+    }
+    return;
+  }
   /* The dot under the mouse (or dragged): a ring, and how fast it goes. */
   const MotionPathTarget *shown_target = g.active ? &g.target : hover_path ? &hover_path->target : nullptr;
   const int shown_frame = g.active ? g.frame : hover_frame;
@@ -4380,8 +4494,8 @@ static const char *tool_hint(const ToolSettings &ts)
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::EditSpeed:
-          return "Drag a dot along its path  |  O: proportional  |  Wheel while dragging: its reach  |  Ctrl click: "
-                 "even spacing  |  Alt click: its frame  |  Esc: cancel";
+          return "Drag a dot along its path  |  S: scale the spacing around it  |  O: proportional  |  Wheel while "
+                 "dragging: its reach  |  Ctrl click: even spacing  |  Alt click: its frame  |  Esc: cancel";
       }
       return "Click a dot: its key  |  Alt click: its frame too  |  Drag a key: move it  |  Drag between keys: add a key  |  Shift: "
              "breakdown along the arc  |  Ctrl: straight  |  Esc: cancel";
@@ -14523,11 +14637,12 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (proportional_sizing && io.MouseWheel != 0.0f) {
     ts.proportional_size = std::clamp(ts.proportional_size * std::pow(1.1f, io.MouseWheel), 1e-4f, 1e6f);
   }
-  else if (g_path_slide.active && ts.proportional && io.MouseWheel != 0.0f) {
+  else if ((g_path_slide.active && ts.proportional || g_path_scale.active) && io.MouseWheel != 0.0f) {
     /* Edit Speed's reach, in whole frames (up for more). */
     ts.path_proportional_size =
         std::clamp(ts.path_proportional_size + (io.MouseWheel > 0.0f ? 1.0f : -1.0f), 1.0f, 500.0f);
     g_path_slide.again = true;
+    g_path_scale.again = true;
   }
   else if (hovered && io.MouseWheel != 0.0f) {
     const float2 under_mouse = view.to_document(io.MousePos);

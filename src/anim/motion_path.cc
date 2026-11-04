@@ -823,29 +823,11 @@ template<typename T> std::vector<float> stretch_make_custom(Channel<T> &ch, size
   return s;
 }
 
-/* Speeds `s` (a stretch of n frames) with dot `k0` slid to progress `want` (0-1 of the way along), the dots around it
- * following by the falloff, all kept in order and off the keys. */
-std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, const PathSlide &slide)
+/* Progress `u` (0 at the stretch's start to 1 at its key, a value a frame) put back in order around dot `k0`, which
+ * stays: none passing another or a key, each frame at least `gap` on. */
+void order_progress(std::vector<float> &u, int k0, float gap)
 {
-  const int n = int(s.size());
-  std::vector<float> u(size_t(n + 1), 0.0f);
-  for (int k = 1; k <= n; k++) {
-    u[size_t(k)] = u[size_t(k - 1)] + s[size_t(k - 1)];
-  }
-  for (float &v : u) {
-    v /= std::max(u[size_t(n)], 1e-9f);
-  }
-  /* Each frame keeps at least the speed brushes' least. */
-  const float gap = 0.02f / float(n);
-  want = std::clamp(want, float(k0) * gap, 1.0f - float(n - k0) * gap);
-  const float d = want - u[size_t(k0)];
-  for (int k = 1; k < n; k++) {
-    const float w = k == k0                ? 1.0f
-                    : slide.proportional ? proportional_weight(slide.falloff, float(std::abs(k - k0)), slide.size, k)
-                                         : 0.0f;
-    u[size_t(k)] += d * w;
-  }
-  u[size_t(k0)] = want;
+  const int n = int(u.size()) - 1;
   for (int k = k0 + 1; k < n; k++) {
     u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
   }
@@ -858,11 +840,93 @@ std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, 
   for (int k = 1; k < k0; k++) {
     u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
   }
+}
+
+/* A stretch's progress at each of its frames from its speeds, and back. */
+std::vector<float> speeds_progress(const std::vector<float> &s)
+{
+  const int n = int(s.size());
+  std::vector<float> u(size_t(n + 1), 0.0f);
+  for (int k = 1; k <= n; k++) {
+    u[size_t(k)] = u[size_t(k - 1)] + s[size_t(k - 1)];
+  }
+  for (float &v : u) {
+    v /= std::max(u[size_t(n)], 1e-9f);
+  }
+  return u;
+}
+
+std::vector<float> progress_speeds(const std::vector<float> &u)
+{
+  const int n = int(u.size()) - 1;
   std::vector<float> out(static_cast<size_t>(n), 0.0f);
   for (int k = 0; k < n; k++) {
     out[size_t(k)] = std::max((u[size_t(k + 1)] - u[size_t(k)]) * float(n), 0.0f);
   }
   return out;
+}
+
+/* Speeds `s` (a stretch of n frames) with dot `k0` slid to progress `want` (0-1 of the way along), the dots around it
+ * following by the falloff, all kept in order and off the keys. */
+std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, const PathSlide &slide)
+{
+  const int n = int(s.size());
+  std::vector<float> u = speeds_progress(s);
+  /* Each frame keeps at least the speed brushes' least. */
+  const float gap = 0.02f / float(n);
+  want = std::clamp(want, float(k0) * gap, 1.0f - float(n - k0) * gap);
+  const float d = want - u[size_t(k0)];
+  for (int k = 1; k < n; k++) {
+    const float w = k == k0                ? 1.0f
+                    : slide.proportional ? proportional_weight(slide.falloff, float(std::abs(k - k0)), slide.size, k)
+                                         : 0.0f;
+    u[size_t(k)] += d * w;
+  }
+  u[size_t(k0)] = want;
+  order_progress(u, k0, gap);
+  return progress_speeds(u);
+}
+
+/* S with Edit Speed on one channel: the dots around `pivot` (a dot, or a key: the stretches either side) brought
+ * `factor` as far from it along the path, those within the reach (by the falloff with proportional editing, else
+ * all alike), never past the keys. Returns how many stretches changed. */
+template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor, const PathSlide &slide)
+{
+  int changed = 0;
+  for (size_t i = 1; i < ch.keys.size(); i++) {
+    const int a_frame = ch.keys[i - 1].frame, b_frame = ch.keys[i].frame;
+    const int start = std::min(a_frame + std::max(ch.keys[i - 1].hold, 0), b_frame);
+    const int n = b_frame - start;
+    const Interp interp = ch.keys[i].interp;
+    if (n < 1 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle) {
+      continue;
+    }
+    int k0 = 0;
+    if (pivot > start && pivot < b_frame) {
+      k0 = pivot - start;
+    }
+    else if (pivot == b_frame) {
+      k0 = n;
+    }
+    else if (pivot == a_frame) {
+      k0 = 0;
+    }
+    else {
+      continue;
+    }
+    std::vector<float> u = speeds_progress(stretch_make_custom(ch, i, start, n));
+    const float at = u[size_t(k0)];
+    for (int k = 1; k < n; k++) {
+      const float d = float(std::abs(start + k - pivot));
+      const float w = slide.proportional ? proportional_weight(slide.falloff, d, slide.size, k)
+                                         : (d < slide.size ? 1.0f : 0.0f);
+      u[size_t(k)] = at + (u[size_t(k)] - at) * (1.0f + (factor - 1.0f) * w);
+    }
+    order_progress(u, k0, 0.02f / float(n));
+    key_speeds_set(ch.keys, i, progress_speeds(u));
+    changed++;
+  }
+  return changed;
 }
 
 /* How `t` shows on `frame` as the value of its position channel there changes (as key_jacobian, for a frame with or
@@ -1182,6 +1246,29 @@ bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int
   }
   animation_evaluate(doc, doc.frame_current);
   return true;
+}
+
+int motion_path_scale_spacing(Document &doc, const MotionPathTarget &target, int frame, float factor,
+                              const PathSlide &slide)
+{
+  Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return 0;
+  }
+  factor = std::max(factor, 0.0f);
+  int changed = 0;
+  if (target.bone && !target.head) {
+    const int b = bone_index(*layer, target.bone);
+    if (b < 0) {
+      return 0;
+    }
+    changed = scale_stretches(layer->bones[size_t(b)].angle_keys, frame, factor, slide);
+  }
+  else if (Channel<float2> *ch = handle_channel(doc, target)) {
+    changed = scale_stretches(*ch, frame, factor, slide);
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
 }
 
 float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target, int frame)

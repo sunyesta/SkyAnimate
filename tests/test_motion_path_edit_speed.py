@@ -111,6 +111,34 @@ assert ops.anim.motion_path_even_spacing(frame="15", **args) == {'FINISHED'}
 assert close([where(line, f)[0] for f in range(10, 21)], [i / 10 for i in range(11)]), "even"
 assert ops.anim.motion_path_slide(frame="20", x="1", y="0", **args) == {'CANCELLED'}, "a key doesn't slide"
 
+# --- S: the spacing around a dot scaled --------------------------------------------------------------------------
+even = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)}, interp="LINEAR")
+sargs = dict(layer=str(even.id))
+# Half as far from frame 15, the dots within 3 frames alike (proportional off); 12, 3 away, stays.
+assert ops.anim.motion_path_scale_spacing(frame="15", factor="0.5", proportional="0", size="3", **sargs) == {
+    'FINISHED'}
+xs = [where(even, f)[0] for f in range(10, 21)]
+assert close(xs, [0.0, 0.1, 0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.8, 0.9, 1.0]), xs
+ops.ed.undo()
+# Proportional, Linear: 14 (2/3 in) goes 2/3 of the way to 15, 13 (1/3) a third.
+assert ops.anim.motion_path_scale_spacing(frame="15", factor="0", proportional="1", size="3", falloff="LINEAR",
+                                          **sargs) == {'FINISHED'}
+assert close(where(even, 14)[0], 0.5 - 0.1 / 3) and close(where(even, 13)[0], 0.5 - 0.2 * 2 / 3), where(even, 13)
+assert close(where(even, 12)[0], 0.2) and close(where(even, 20)[0], 1.0)
+ops.ed.undo()
+assert ops.anim.motion_path_scale_spacing(frame="40", factor="0.5", **sargs) == {'CANCELLED'}, "no stretch there"
+
+# On a key: the dots either side come in toward it, easing into and out of the pose.
+eased = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0), 30: (2.0, 0.0)}, interp="LINEAR")
+assert ops.anim.motion_path_scale_spacing(frame="20", factor="0.5", proportional="0", size="3",
+                                          layer=str(eased.id)) == {'FINISHED'}
+xs = [round(where(eased, f)[0], 4) for f in range(16, 25)]
+assert close(xs, [0.6, 0.7, 0.9, 0.95, 1.0, 1.05, 1.1, 1.3, 1.4]), xs
+assert key(eased, "position", 20)["interp"] == "CUSTOM" and key(eased, "position", 30)["interp"] == "CUSTOM"
+
+# S starts it in the viewport with Edit Speed (the keymap's), not with Edit.
+assert oanim.wm.event_simulate("S", area="Viewport")
+
 # --- A curve: the dot stays on it ---------------------------------------------------------------------------------
 curve = fresh_layer({10: (0.0, 0.0), 20: (1.0, 1.0), 30: (2.0, 0.0)})
 shape = {f: where(curve, f) for f in range(10, 21)}

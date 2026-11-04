@@ -89,6 +89,12 @@ struct PathSlide {
   ProportionalFalloff falloff = ProportionalFalloff::Smooth;
 };
 bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide);
+/* S with Edit Speed: the dots around the one on `frame` brought `factor` as far from it along the path (under 1
+ * closer, so slower there; over 1 further, faster), the keys staying on their frames. On a key, the dots either
+ * side of it: under 1 it eases into and out of that pose. The dots within `slide.size` frames scale, by the falloff
+ * with proportional editing, else all alike; never past a key or each other. Returns how many stretches changed. */
+int motion_path_scale_spacing(Document &doc, const MotionPathTarget &target, int frame, float factor,
+                              const PathSlide &slide);
 /* Ctrl click with Edit Speed: the stretch `frame` is in goes along its path at an even speed (Custom, every speed 1). */
 bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame);
 /* How fast the dot on `frame` goes, as a share of its stretch's even speed (1 between keys moving evenly); 0 off any

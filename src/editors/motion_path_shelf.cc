@@ -184,7 +184,8 @@ static const char *brush_tip(PathBrush brush)
     case PathBrush::EditSpeed:
       return "Drag a dot between keys along its path: the keys stay on their frames, the rest of the stretch making "
              "up for it. Proportional editing (O; Shift O: falloff; the wheel while dragging: its size in frames) "
-             "slides the dots around it too. Ctrl click: even spacing. Alt click: go to its frame";
+             "slides the dots around it too. S: scale the spacing around a dot or key (left closer, right further). "
+             "Ctrl click: even spacing. Alt click: go to its frame";
   }
   return "";
 }

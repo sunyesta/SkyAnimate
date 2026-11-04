@@ -179,6 +179,7 @@ KEYMAP = (
     ("Sculpt", "sculpt.strength_adjust", "F", {"shift": True}),
     ("Motion Path", "anim.motion_path_radius_adjust", "F", {}),
     ("Motion Path", "anim.motion_path_strength_adjust", "F", {"shift": True}),
+    ("Motion Path", "anim.motion_path_scale_spacing_modal", "S", {}),
     ("Draw", "draw.width_adjust", "F", {}),
     ("Draw", "draw.opacity_adjust", "F", {"shift": True}),
     ("Draw", "draw.presets_popup", "SPACE", {"shift": True}),

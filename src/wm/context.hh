@@ -449,6 +449,8 @@ struct WindowManager {
    * with the mouse until a click. */
   char sculpt_adjust_request = 0;
   /* The same for the Motion Path tool's brushes ('R' radius, 'S' strength). */
+  /* S with Edit Speed: the viewport starts scaling the spacing around the dot under the mouse. */
+  bool path_scale_request = false;
   char path_adjust_request = 0;
   /* The same for the Draw tool: the line's width ('R') or opacity ('S'). */
   char draw_adjust_request = 0;
