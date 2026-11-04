@@ -103,6 +103,9 @@ struct PathSlide {
   bool proportional = false;
   float size = 3.0f;
   ProportionalFalloff falloff = ProportionalFalloff::Smooth;
+  /* Dots kept in order between the keys (the viewport's drag along the path); off, a dot can go past its key or back
+   * before its start (the timing chart's and Path Timing panel's, for overshoot). */
+  bool keep_order = true;
 };
 bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide);
 /* Alt S with Edit: the dots around the one on `frame` brought `factor` as far from it along the path (under 1
@@ -137,10 +140,14 @@ struct MotionPathStretch {
   int start = 0, end = 0;
   std::vector<float> progress;
 };
-/* Each stretch that moves (not stepped, posed or cycling). */
+/* Each stretch that moves (not stepped, posed or cycling). Progress can go over 1 (past its key: overshoot) or under 0
+ * (backing up first). */
 std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const MotionPathTarget &target);
-/* The dot on `frame` (between keys) slid to `progress` (0-1 of the way along its stretch's path), as dragging a tick
- * in the timing chart does; the dots around it by proportional editing, as motion_path_slide. */
+/* The frames between keys where the dot is past the key it arrives at or back before its stretch's start. */
+std::vector<int> motion_path_overshoot_frames(const Document &doc, const MotionPathTarget &target);
+/* The dot on `frame` (between keys) slid to `progress` (0-1 of the way along its stretch's path; over 1 past the key,
+ * as far as 2, under 0 back before the start, as far as -1), as dragging a tick in the timing chart does; the dots
+ * around it by proportional editing, as motion_path_slide, but free to pass each other and the keys. */
 bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
                                 const PathSlide &slide);
 /* The timing shapes the Path Timing panel's buttons give a stretch, by how far along it each frame has got (t the
@@ -149,15 +156,16 @@ enum class PathShape { Even, EaseIn, EaseOut, EaseInOut };
 bool path_shape_from_identifier(const std::string &id, PathShape &r_shape);
 /* The stretch `frame` is strictly inside made Custom with that shape, the keys staying on their frames. */
 bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape);
-/* The dot on `frame` made to go `speed` (as motion_path_dot_speed gives it: 1 even), the rest of its stretch taking up
- * the time it gains or loses, each frame by its share; false off a stretch, or when the rest can't (the most it can
- * go is less than the stretch's frames). */
+/* The dot on `frame` made to go `speed` (as motion_path_dot_speed gives it: 1 even, under 0 going back), the rest of
+ * its stretch taking up the time it gains or loses, each frame by its share; false off a stretch, or when the rest
+ * can't (the most it can go is less than the stretch's frames). */
 bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, int frame, float speed);
 /* The stretch the Path Timing panel shows: of `want` (the last thing a dot or key was picked on) when it is one of
- * `targets`, else the first; the one ending on `want_end`, else the one the frame shown is in (or ends), else the
- * first. False when nothing traced moves. */
+ * `targets`, else the first; the one the frame shown is in (or ends), except the one ending on `want_end` while the
+ * frame shown is still `picked_on` (where it was picked, or stepped to with the arrows); else the first. False when
+ * nothing traced moves. */
 bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPathTarget> &targets,
-                                const MotionPathTarget &want, int want_end, MotionPathTarget &r_target,
+                                const MotionPathTarget &want, int want_end, int picked_on, MotionPathTarget &r_target,
                                 MotionPathStretch &r_stretch);
 /* A key on `frame` of the channel that moves the target's dot, where it is now (the path unchanged); false if there
  * is one already. */

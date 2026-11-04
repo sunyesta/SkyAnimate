@@ -1177,6 +1177,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["points"] = pts;
       d["speed"] = speed;
       d["keys"] = p.keys;
+      /* The frames past their key or back before their start, drawn dashed. */
+      d["overshoot"] = motion_path_overshoot_frames(doc, p.target);
       /* Each key's path handles as the Motion Path tool shows them once it's selected (as drawn; None for a side
        * not shown). */
       py::list handles;
@@ -1320,7 +1322,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     MotionPathTarget t;
     MotionPathStretch s;
     if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), C.wm->path_timing_target,
-                                    C.wm->path_timing_end, t, s))
+                                    C.wm->path_timing_end, C.wm->path_timing_frame, t, s))
     {
       return py::none();
     }

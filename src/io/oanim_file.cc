@@ -1674,7 +1674,7 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.color = get_int(k, "color", 0);
     for (const json &s : get_array(k, "speeds")) {
       if (s.is_number()) {
-        key.speeds.push_back(std::max(0.0f, s.get<float>()));
+        key.speeds.push_back(s.get<float>());
       }
     }
     if constexpr (std::is_same_v<T, float2>) {

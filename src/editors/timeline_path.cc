@@ -138,14 +138,22 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
         const bool ringed = (g_tick.active && g_tick.target.same(t) && g_tick.frame == frame) ||
                             (hover_fresh && wm.path_hover_target.same(t) && wm.path_hover_frame == frame);
         const Color c = lit ? motion_path_time_color(float(k) / float(n)) : motion_path_unlit_color();
-        const float half = lane_h * (picked ? 0.36f : 0.26f);
+        /* Past its key or back before its start: on a raised lane, short, so it doesn't sit on the next stretch's. */
+        const float u = s.progress[size_t(k)];
+        const bool over = u > 1.0f + 1e-4f || u < -1e-4f;
+        const float half = lane_h * (over ? 0.14f : picked ? 0.36f : 0.26f);
+        const float ty = over ? cy - lane_h * 0.3f : cy;
+        if (over) {
+          const float kx = u > 1.0f ? xb : xa;
+          dl->AddLine(ImVec2(kx, ty), ImVec2(x, ty), IM_COL32(0x90, 0x90, 0x90, 160), 1.0f);
+        }
         if (picked || ringed) {
-          dl->AddRectFilled(ImVec2(x - 3.0f, cy - half - 2.0f), ImVec2(x + 3.0f, cy + half + 2.0f),
+          dl->AddRectFilled(ImVec2(x - 3.0f, ty - half - 2.0f), ImVec2(x + 3.0f, ty + half + 2.0f),
                             picked ? IM_COL32(255, 160, 40, 255) : IM_COL32(255, 255, 255, 220));
         }
-        dl->AddLine(ImVec2(x, cy - half), ImVec2(x, cy + half),
+        dl->AddLine(ImVec2(x, ty - half), ImVec2(x, ty + half),
                     ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a)), 2.5f);
-        if (hovered && edit && !g_tick.active && std::fabs(io.MousePos.y - cy) < lane_h * 0.5f &&
+        if (hovered && edit && !g_tick.active && std::fabs(io.MousePos.y - ty) < lane_h * 0.5f &&
             std::fabs(io.MousePos.x - x) < best)
         {
           best = std::fabs(io.MousePos.x - x);
@@ -288,7 +296,13 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   /* A sliver of the stretches either side, in grey, at the edges. */
   const float pad = std::max(0.5f, float(n) * 0.12f);
   const float f0 = float(s.start) - pad, f1 = float(s.end) + pad;
-  const float y0 = -0.06f, y1 = 1.06f;
+  /* Room above the key and below the start to drag a dot past them (overshoot, backing up), more as it goes. */
+  float lo = 0.0f, hi = 1.0f;
+  for (const float u : s.progress) {
+    lo = std::min(lo, u);
+    hi = std::max(hi, u);
+  }
+  const float y0 = std::max(lo - 0.12f, -1.06f), y1 = std::min(hi + 0.25f, 2.06f);
   const auto to_screen = [&](float frame, float u) {
     return ImVec2(min.x + (frame - f0) / (f1 - f0) * (max.x - min.x), max.y - (u - y0) / (y1 - y0) * (max.y - min.y));
   };
@@ -303,9 +317,12 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     const float x = to_screen(float(f), 0.0f).x;
     dl->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), IM_COL32(0x2a, 0x2a, 0x2a, 255));
   }
+  /* Past the key and before the start: shaded, the 0 and 100% lines bright. */
+  dl->AddRectFilled(min, ImVec2(max.x, to_screen(0.0f, 1.0f).y), IM_COL32(0x2a, 0x24, 0x18, 255));
+  dl->AddRectFilled(ImVec2(min.x, to_screen(0.0f, 0.0f).y), max, IM_COL32(0x2a, 0x24, 0x18, 255));
   for (const float u : {0.0f, 1.0f}) {
     const float y = to_screen(0.0f, u).y;
-    dl->AddLine(ImVec2(min.x, y), ImVec2(max.x, y), IM_COL32(0x3a, 0x3a, 0x3a, 255));
+    dl->AddLine(ImVec2(min.x, y), ImVec2(max.x, y), IM_COL32(0x60, 0x60, 0x60, 255));
   }
   /* Even speed: the dashed diagonal. */
   const ImVec2 da = to_screen(float(s.start), 0.0f), db = to_screen(float(s.end), 1.0f);
@@ -538,7 +555,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   MotionPathTarget t;
   MotionPathStretch s;
   if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), wm.path_timing_target,
-                                  wm.path_timing_end, t, s))
+                                  wm.path_timing_end, wm.path_timing_frame, t, s))
   {
     ImGui::TextWrapped("Trace something with keys a few frames apart: its stretches show here.");
     ImGui::EndChild();
@@ -548,6 +565,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   if (ImGui::ArrowButton("##stretch_prev", ImGuiDir_Left)) {
     wm.path_timing_target = t;
     wm.path_timing_end = s.end;
+    wm.path_timing_frame = doc.frame_current;
     operator_call(C, "anim.motion_path_timing_step", {{"step", "-1"}});
   }
   ImGui::SameLine();
@@ -562,6 +580,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   if (ImGui::ArrowButton("##stretch_next", ImGuiDir_Right)) {
     wm.path_timing_target = t;
     wm.path_timing_end = s.end;
+    wm.path_timing_frame = doc.frame_current;
     operator_call(C, "anim.motion_path_timing_step", {{"step", "1"}});
   }
   /* The graph: as tall as there is room for, under the fields and buttons. */
@@ -591,7 +610,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
     }
     ImGui::Text("Frame %d", dot);
     ImGui::SetNextItemWidth(w);
-    ImGui::DragFloat("##along", &along_edit, 0.25f, 0.0f, 100.0f, "Along %.1f%%");
+    ImGui::DragFloat("##along", &along_edit, 0.25f, -100.0f, 200.0f, "Along %.1f%%");
     along_live = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       OpArgs args = target_args(doc, t, dot);
@@ -599,7 +618,8 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
       operator_call(C, "anim.motion_path_slide", args);
     }
     ImGui::SetNextItemWidth(w);
-    ImGui::DragFloat("##speed", &speed_edit, 0.01f, 0.02f, float(s.end - s.start) * 0.5f, "Speed %.2f");
+    ImGui::DragFloat("##speed", &speed_edit, 0.01f, -float(s.end - s.start), float(s.end - s.start) * 0.5f,
+                     "Speed %.2f");
     speed_live = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
       OpArgs args = target_args(doc, t, dot);

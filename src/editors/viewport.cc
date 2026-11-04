@@ -1560,7 +1560,32 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       screen.push_back(view.to_screen(q));
     }
     if (doc.path_lines && screen.size() > 1) {
-      dl->AddPolyline(screen.data(), int(screen.size()), u32(p.color, 0.55f), ImDrawFlags_None, 1.5f);
+      /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over
+       * the path's continuation; the rest solid. */
+      const std::vector<int> over = motion_path_overshoot_frames(doc, p.target);
+      const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
+      const ImU32 col = u32(p.color, 0.55f);
+      std::vector<ImVec2> run = {screen[0]};
+      for (size_t i = 1; i < screen.size(); i++) {
+        const int f = p.first + int(i);
+        if (!is_over(f) && !is_over(f - 1)) {
+          run.push_back(screen[i]);
+          continue;
+        }
+        if (run.size() > 1) {
+          dl->AddPolyline(run.data(), int(run.size()), col, ImDrawFlags_None, 1.5f);
+        }
+        const ImVec2 a = screen[i - 1], b = screen[i];
+        for (int d = 0; d < 6; d += 2) {
+          dl->AddLine(ImVec2(a.x + (b.x - a.x) * float(d) / 6.0f, a.y + (b.y - a.y) * float(d) / 6.0f),
+                      ImVec2(a.x + (b.x - a.x) * float(d + 1) / 6.0f, a.y + (b.y - a.y) * float(d + 1) / 6.0f), col,
+                      1.5f);
+        }
+        run = {screen[i]};
+      }
+      if (run.size() > 1) {
+        dl->AddPolyline(run.data(), int(run.size()), col, ImDrawFlags_None, 1.5f);
+      }
     }
     /* With the tool, its selected keys (as the timeline has them) outlined. */
     std::map<int, KeyFrameSummary> picked;

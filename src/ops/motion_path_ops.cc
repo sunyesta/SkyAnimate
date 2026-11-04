@@ -287,11 +287,13 @@ void motion_path_operators_register()
           const bool was = motion_path_key_selected(doc, t, frame);
           C.wm->path_timing_target = t;
           C.wm->path_timing_end = frame;
+          C.wm->path_timing_frame = doc.frame_current;
           layers_select_keys({layer}, frame, frame, !(was && op_arg_bool(C, "extend")), motion_path_key_filter(doc, t));
           continue;
         }
         /* The Path Timing panel shows the stretch picked on. */
         C.wm->path_timing_target = t;
+        C.wm->path_timing_frame = doc.frame_current;
         for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
           if (frame > s.start && frame < s.end) {
             C.wm->path_timing_end = s.end;
@@ -733,7 +735,7 @@ void motion_path_operators_register()
       MotionPathTarget t;
       MotionPathStretch shown;
       if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), wm.path_timing_target,
-                                      wm.path_timing_end, t, shown))
+                                      wm.path_timing_end, wm.path_timing_frame, t, shown))
       {
         return OpStatus::Cancelled;
       }
@@ -744,6 +746,7 @@ void motion_path_operators_register()
         if (stretches[i].end == shown.end && j >= 0 && j < int(stretches.size())) {
           wm.path_timing_target = t;
           wm.path_timing_end = stretches[size_t(j)].end;
+          wm.path_timing_frame = doc.frame_current;
           return OpStatus::Finished;
         }
       }

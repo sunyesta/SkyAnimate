@@ -321,21 +321,23 @@ float custom_progress(const std::vector<float> &speeds, float t)
   if (n == 0) {
     return t;
   }
+  /* Speeds are signed: a negative one goes back along the path, so the dot can pass its key and come back to it
+   * (overshoot) or back up before setting off (anticipation); over the stretch they still add up to arriving. */
   float total = 0.0f;
   for (const float s : speeds) {
-    total += std::max(s, 0.0f);
+    total += s;
   }
-  if (total <= 0.0f) {
+  if (total <= 1e-9f) {
     return t;
   }
   const float x = std::clamp(t, 0.0f, 1.0f) * float(n);
   float done = 0.0f;
   size_t i = 0;
   for (; i < n && float(i + 1) <= x; i++) {
-    done += std::max(speeds[i], 0.0f);
+    done += speeds[i];
   }
   if (i < n) {
-    done += std::max(speeds[i], 0.0f) * (x - float(i));
+    done += speeds[i] * (x - float(i));
   }
   return done / total;
 }

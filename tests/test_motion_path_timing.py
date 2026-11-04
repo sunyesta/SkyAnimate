@@ -226,6 +226,19 @@ assert ops.anim.motion_path_timing_step(step="1") == {'CANCELLED'}, "none after 
 assert ops.anim.motion_path_select(frame="20", **args) == {'FINISHED'}
 assert oanim.wm.motion_path_timing_panel()["end"] == 20, "a key picked: the stretch arriving at it"
 
+# Once the frame changes it follows the frame shown again.
+assert ops.anim.motion_path_select(frame="25", **args) == {'FINISHED'}
+assert oanim.wm.motion_path_timing_panel()["end"] == 30
+doc.frame_current = 16
+assert oanim.wm.motion_path_timing_panel()["end"] == 20, "the playhead's stretch"
+assert ops.anim.motion_path_timing_step(step="1") == {'FINISHED'}
+assert oanim.wm.motion_path_timing_panel()["end"] == 30, "stepped to: shown while the frame stays"
+doc.frame_current = 5
+assert oanim.wm.motion_path_timing_panel()["end"] == 10
+doc.frame_current = 22
+assert oanim.wm.motion_path_timing_panel()["end"] == 30
+assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
+
 # N opens the timeline's sidebar; O there turns proportional editing on and off.
 assert not oanim.wm.motion_path_timing_panel()["sidebar"]
 assert oanim.wm.event_simulate("N", area="Timeline")
@@ -237,5 +250,48 @@ assert oanim.wm.event_simulate("O", area="Timeline")
 assert oanim.wm.path_brush_settings()["proportional"] != was
 assert oanim.wm.event_simulate("O", area="Timeline")
 assert oanim.wm.path_brush_settings()["proportional"] == was
+
+# --- Overshoot: past the key and back, or backing up before the start --------------------------------------------
+doc.frame_current = 12
+assert ops.anim.motion_path_slide(frame="18", progress="1.15", **args) == {'FINISHED'}
+u = progress(line, 10)
+assert close(u[8], 1.15), u
+assert close(where(line, 18), (1.15, 0.0)), ("past the key, on along the way it arrives", where(line, 18))
+assert close(where(line, 20), (1.0, 0.0)), "it still arrives on its key"
+assert close(where(line, 17), (0.7, 0.0)) and close(where(line, 19), (0.9, 0.0)), "only that dot"
+assert path_of(line)["overshoot"] == [18], path_of(line)["overshoot"]
+assert ops.anim.motion_path_slide(frame="12", progress="-0.1", **args) == {'FINISHED'}
+assert close(where(line, 12), (-0.1, 0.0)), ("back before its start", where(line, 12))
+assert path_of(line)["overshoot"] == [12, 18]
+assert ops.anim.motion_path_slide(frame="18", progress="5", **args) == {'FINISHED'}
+assert close(progress(line, 10)[8], 2.0), "at most twice the way"
+
+# Alt S keeps an overshoot as it scales.
+assert ops.anim.motion_path_slide(frame="18", progress="1.15", **args) == {'FINISHED'}
+assert ops.anim.motion_path_scale_spacing(frame="15", factor="0.5", **args) == {'FINISHED'}
+assert close(progress(line, 10)[8], 1.15), progress(line, 10)
+
+# Saved with the file.
+folder = tempfile.mkdtemp()
+try:
+    path = os.path.join(folder, "over.oanim")
+    assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+    assert ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
+    doc = oanim.data.document
+    line = next(l for l in oanim.data.layers if l.id == line.id)
+    assert close(where(line, 18), (1.15, 0.0)) and close(where(line, 12), (-0.1, 0.0)), "kept"
+finally:
+    shutil.rmtree(folder, ignore_errors=True)
+for other in oanim.data.layers:
+    other.selected = other.id == line.id
+oanim.data.layers.active = line
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+
+# A dot's speed under 0 goes back: past the key on 18 and 19, coming back to it.
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="15", **args) == {'FINISHED'}
+assert ops.anim.motion_path_dot_speed(frame="19", speed="-0.5", **args) == {'FINISHED'}
+u = progress(line, 10)
+assert close(u[8], 1.1) and close(u[9], 1.05) and close(u[10], 1.0), u
+assert close(where(line, 19), (1.05, 0.0))
 
 print("Motion path timing tests passed")

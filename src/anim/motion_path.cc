@@ -753,9 +753,13 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
       before = now;
     }
   }
+  /* A Custom stretch's speeds keep their signs (going back past a key); measured ones are how far it went. */
+  const bool custom = b.interp == Interp::Custom && !b.speeds.empty();
   float total = 0.0f;
   for (float &v : s) {
-    v = std::max(v, 0.0f);
+    if (!custom) {
+      v = std::max(v, 0.0f);
+    }
     total += v;
   }
   if (total <= 1e-9f) {
@@ -763,7 +767,7 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
     return s;
   }
   for (float &v : s) {
-    v = std::max(v * float(n) / total, 0.02f);
+    v = v < 0.0f ? v * float(n) / total : std::max(v * float(n) / total, 0.02f);
   }
   return s;
 }
@@ -936,7 +940,7 @@ std::vector<float> progress_speeds(const std::vector<float> &u)
   const int n = int(u.size()) - 1;
   std::vector<float> out(static_cast<size_t>(n), 0.0f);
   for (int k = 0; k < n; k++) {
-    out[size_t(k)] = std::max((u[size_t(k + 1)] - u[size_t(k)]) * float(n), 0.0f);
+    out[size_t(k)] = (u[size_t(k + 1)] - u[size_t(k)]) * float(n);
   }
   return out;
 }
@@ -947,6 +951,19 @@ std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, 
 {
   const int n = int(s.size());
   std::vector<float> u = speeds_progress(s);
+  if (!slide.keep_order) {
+    /* Free: past the key and back (overshoot), or back before the start. */
+    want = std::clamp(want, -1.0f, 2.0f);
+    const float d = want - u[size_t(k0)];
+    for (int k = 1; k < n; k++) {
+      const float w = k == k0                ? 1.0f
+                      : slide.proportional ? proportional_weight(slide.falloff, float(std::abs(k - k0)), slide.size, k)
+                                           : 0.0f;
+      u[size_t(k)] += d * w;
+    }
+    u[size_t(k0)] = want;
+    return progress_speeds(u);
+  }
   /* Each frame keeps at least the speed brushes' least. */
   const float gap = 0.02f / float(n);
   want = std::clamp(want, float(k0) * gap, 1.0f - float(n - k0) * gap);
@@ -990,6 +1007,8 @@ template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor
       continue;
     }
     std::vector<float> u = speeds_progress(stretch_make_custom(ch, i, start, n));
+    /* An overshoot (dots out of order) is kept as it is scaled. */
+    const bool ordered = std::is_sorted(u.begin(), u.end());
     const float at = u[size_t(k0)];
     for (int k = 1; k < n; k++) {
       const float d = float(std::abs(start + k - pivot));
@@ -997,7 +1016,9 @@ template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor
                                          : (d < slide.size ? 1.0f : 0.0f);
       u[size_t(k)] = at + (u[size_t(k)] - at) * (1.0f + (factor - 1.0f) * w);
     }
-    order_progress(u, k0, 0.02f / float(n));
+    if (ordered) {
+      order_progress(u, k0, 0.02f / float(n));
+    }
     key_speeds_set(ch.keys, i, progress_speeds(u));
     changed++;
   }
@@ -1570,9 +1591,24 @@ std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const 
   return out;
 }
 
-bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
-                                const PathSlide &slide)
+std::vector<int> motion_path_overshoot_frames(const Document &doc, const MotionPathTarget &target)
 {
+  std::vector<int> out;
+  for (const MotionPathStretch &s : motion_path_stretches(doc, target)) {
+    for (size_t k = 1; k + 1 < s.progress.size(); k++) {
+      if (s.progress[k] > 1.0f + 1e-4f || s.progress[k] < -1e-4f) {
+        out.push_back(s.start + int(k));
+      }
+    }
+  }
+  return out;
+}
+
+bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
+                                const PathSlide &slide_in)
+{
+  PathSlide slide = slide_in;
+  slide.keep_order = false;
   bool slid = false;
   with_path_channel(doc, target, [&](auto &ch) {
     size_t i = 0;
@@ -1581,7 +1617,7 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
       return;
     }
     const std::vector<float> s = stretch_make_custom(ch, i, start, n);
-    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, std::clamp(progress, 0.0f, 1.0f), slide));
+    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, progress, slide));
     slid = true;
   });
   animation_evaluate(doc, doc.frame_current);
@@ -1660,13 +1696,14 @@ bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, in
     }
     const float least = 0.02f;
     const float most = (float(n) - least * float(n - 2)) * 0.5f;
-    speed = std::clamp(speed, least, std::max(most, least));
+    /* Under 0 it goes back (past its key, say), as far as the stretch's frames. */
+    speed = std::clamp(speed, -float(n), std::max(most, least));
     const float left = float(n) - 2.0f * speed;
     if (rest <= 1e-6f || left <= 0.0f) {
       return;
     }
     for (size_t k = 0; k < s.size(); k++) {
-      s[k] = k == a || k == b ? speed : std::max(s[k] * left / rest, least);
+      s[k] = k == a || k == b ? speed : s[k] > 0.0f ? std::max(s[k] * left / rest, least) : s[k] * left / rest;
     }
     key_speeds_set(ch.keys, i, s);
     done = true;
@@ -1676,7 +1713,7 @@ bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, in
 }
 
 bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPathTarget> &targets,
-                                const MotionPathTarget &want, int want_end, MotionPathTarget &r_target,
+                                const MotionPathTarget &want, int want_end, int picked_on, MotionPathTarget &r_target,
                                 MotionPathStretch &r_stretch)
 {
   if (targets.empty()) {
@@ -1693,8 +1730,9 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
     return false;
   }
   const MotionPathStretch *pick = nullptr;
+  /* Picked or stepped to: shown till the frame changes, then it follows the frame again. */
   for (const MotionPathStretch &s : stretches) {
-    if (s.end == want_end) {
+    if (s.end == want_end && doc.frame_current == picked_on) {
       pick = &s;
     }
   }

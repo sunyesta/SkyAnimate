@@ -463,6 +463,8 @@ struct WindowManager {
    * `path_timing_end` (0: the one the frame shown is in); see motion_path_timing_stretch. */
   MotionPathTarget path_timing_target;
   int path_timing_end = 0;
+  /* The frame shown when it was picked or stepped to: once the frame changes the panel follows it again. */
+  int path_timing_frame = 0;
   /* The timeline's sidebar (N), with its Path Timing tab. */
   bool timeline_sidebar = false;
   bool path_scale_request = false;
