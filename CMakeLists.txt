@@ -238,6 +238,8 @@ add_test(NAME export_pdf
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_export_pdf.py)
 add_test(NAME follow_point
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point.py)
+add_test(NAME follow_point_modes
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_point_modes.py)
 add_test(NAME follow_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_follow_deform.py)
 add_test(NAME nested_bone_groups
@@ -425,6 +427,16 @@ add_test(NAME envelope_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_deform.py)
 add_test(NAME envelope_weighted
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_weighted.py)
+add_test(NAME envelope_stress
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_stress.py)
+add_test(NAME envelope_edges
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_edges.py)
+add_test(NAME envelope_retired
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_retired.py)
+add_test(NAME deform_show_mesh
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_show_mesh.py)
+add_test(NAME curve_influence
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_curve_influence.py)
 add_test(NAME envelope_reach
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_envelope_reach.py)
 add_test(NAME mesh_points

@@ -1491,6 +1491,10 @@ void rig_operators_register()
                  BoneConstraint c;
                  c.type = type;
                  c.name = bone_constraint_name(type);
+                 /* One point moves the bone; turning it with the shape there is asked for. */
+                 if (type == BoneConstraintType::FollowPoint) {
+                   c.follow_rotation = false;
+                 }
                  const auto dynamics = std::find_if(bone->constraints.begin(), bone->constraints.end(), [](const auto &x) {
                    return x.type == BoneConstraintType::Dynamics;
                  });
@@ -3686,7 +3690,7 @@ void rig_operators_register()
   };
   rig_operator("object.modifier_add", "Add Modifier",
                "Add a modifier to the active layer (type=MIRROR, BEVEL, SUBDIVIDE, CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM, "
-               "ENVELOPE_DEFORM or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does). A group takes the deforms, "
+               "ENVELOPE_DEFORM (a Curve Deform with the Envelope method, a Cage Deform once its shape is a closed one) or BOOLEAN; a Boolean takes the settings object.modifier_boolean_set does). A group takes the deforms, "
                "which bend every drawing inside it",
                [modifier_layer](Context &C) { return modifier_layer(C) != nullptr; },
                [modifier_layer](Context &C) {
@@ -3694,7 +3698,7 @@ void rig_operators_register()
                  const bool deform = type == "CURVE_DEFORM" || type == "CAGE_DEFORM" || type == "MESH_DEFORM" ||
                                      type == "ENVELOPE_DEFORM" || type == "FOLLOW_DEFORM";
                  if (modifier_layer(C)->is_group() && !deform) {
-                   report(ReportType::Warning, "A group takes Curve, Cage, Mesh and Envelope Deform: pick a drawing layer for the others");
+                   report(ReportType::Warning, "A group takes Curve, Cage and Mesh Deform: pick a drawing layer for the others");
                    return OpStatus::Cancelled;
                  }
                  if (type == "BOOLEAN") {
@@ -3736,11 +3740,12 @@ void rig_operators_register()
                  if (deform) {
                    Layer &layer = *modifier_layer(C);
                    Modifier m;
-                   m.type = type == "CURVE_DEFORM"    ? ModifierType::CurveDeform
-                            : type == "CAGE_DEFORM"   ? ModifierType::CageDeform
-                            : type == "ENVELOPE_DEFORM" ? ModifierType::EnvelopeDeform
-                            : type == "FOLLOW_DEFORM" ? ModifierType::FollowDeform
-                                                      : ModifierType::MeshDeform;
+                   /* Envelope Deform was a modifier of its own: now Curve Deform's and Cage Deform's Envelope
+                    * method, the one that takes the shape it is given. */
+                   m.type = type == "CURVE_DEFORM" || type == "ENVELOPE_DEFORM" ? ModifierType::CurveDeform
+                            : type == "CAGE_DEFORM"                             ? ModifierType::CageDeform
+                            : type == "FOLLOW_DEFORM"                           ? ModifierType::FollowDeform
+                                                                                : ModifierType::MeshDeform;
                    if (m.type == ModifierType::FollowDeform) {
                      if (layer.type != LayerType::Vector) {
                        report(ReportType::Warning, "Follow Deform moves a drawing: pick a drawing layer");
@@ -3767,11 +3772,11 @@ void rig_operators_register()
                    /* Resample Self's pieces: fine enough for a line to follow a bend, however long it is. */
                    m.subdiv_by_length = true;
                    m.subdiv_spacing = 0.009f;
-                   /* A Follow Deform goes where the cage it rides on puts things. */
-                   if (m.type == ModifierType::CageDeform || m.type == ModifierType::FollowDeform) {
-                     m.deform_cage_method = CageMethod::Outline;
-                   }
-                   m.deform_resample_self = m.type == ModifierType::CageDeform;
+                   /* New Curve and Cage Deforms bend by Envelope (Harmony's envelope deformer); files and Python
+                    * that say no method keep Smooth and Mean Value, as they were made with. A Follow Deform goes
+                    * where an Outline cage it rides on puts things. */
+                   m.deform_curve_method = m.type == ModifierType::FollowDeform ? CurveMethod::Smooth : CurveMethod::Envelope;
+                   m.deform_cage_method = m.type == ModifierType::FollowDeform ? CageMethod::Outline : CageMethod::Envelope;
                    /* At the bottom, below Armature: it measures from the drawing before the bones and shares
                     * each point between them by its weight. */
                    layer.modifiers.push_back(m);

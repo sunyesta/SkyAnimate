@@ -572,25 +572,37 @@ class _Layer:
     @property
     def modifiers(self):
         """The modifier stack, top first: dicts with type ("MIRROR", "ARMATURE", "BEVEL", "BOOLEAN", "RESAMPLE",
-        "CURVE_DEFORM", "CAGE_DEFORM", "MESH_DEFORM" or "ENVELOPE_DEFORM") and settings. A deform's: layer and shape (names),
+        "CURVE_DEFORM", "CAGE_DEFORM", "MESH_DEFORM" or "FOLLOW_DEFORM") and settings. A deform's: layer and shape (names),
         kind ("GRID", "CAGE", "LINE", "ENVELOPE" as "Grid"..., "" when it has none), weights ("AUTOMATIC": every point fully, or "CUSTOM"), group, strength,
         fits (the deform type that takes its shape: its own, or the one to switch to), precision (how far a bent segment may stray from the true bend before points are added; 0 off), stretch
         (a line: what lies along it spreads as it grows), part (Curve Deform: the stretch of its shape to follow, as (from,
         to) point numbers on the shape's layer, round a closed shape the way its points run, so swapped they are the other
         side; set it as those, "SELECTED" for the points selected there, or None; a closed shape needs one), resample_self (the drawing sampled evenly, bent, and its own points and handles fitted
         to that; no points added), cage_method (a cage: "MEAN_VALUE", "RIGID": the inside as rigid as possible, or
-        "OUTLINE": after Toon Boom Harmony's envelopes, each side keeping what lies near it at its distance from it;
-        "ENVELOPE", its old name, is read as OUTLINE), blend (Outline: 0 the nearest side leads sharply, 1 gently).
-        Envelope Deform is Harmony's envelope deformer itself: envelope_method "STANDARD", each point follows its nearest
-        place on the shape; or "WEIGHTED", Harmony's Weighted Deform: each point moves (never turns) by a smooth blend of
+        "OUTLINE": after Toon Boom Harmony's envelopes, each side keeping what lies near it at its distance from it; or
+        "ENVELOPE", below), blend (Outline: 0 the nearest side leads sharply, 1 gently); mesh_method ("CELLS",
+        "OUTLINE", once "ENVELOPE", or "POINTS"). The Envelope method (Curve Deform's curve_method and Cage Deform's
+        cage_method "ENVELOPE", what new ones start with) is Harmony's envelope deformer itself, on a line or a loop:
+        envelope_method "STANDARD", each point follows its nearest
+        place on the shape; or "BLENDED", Harmony's Weighted Deform: each point moves (never turns) by a smooth blend of
         the moves of places all along the shape, with pre_blend (0 or more: evens the blend out) and post_blend
-        (above 0 sharpens it, below 0 softens it)."""
+        (above 0 sharpens it, below 0 softens it). With STANDARD, influence (Harmony's region of influence):
+        "EVERYWHERE" (Harmony's Infinite), or "CAPSULE" (its Elliptic): each segment of the shape reaches
+        influence_left out on its left (looking the way it runs) and influence_right on its right, influence_begin past
+        its start and influence_end past its end (a half ellipse), fading out over influence_fade beyond, all in layer
+        units; with influence_symmetric (True), right is left and begin is end. Where segments' capsules overlap the
+        later segment leads, and they blend half and half where they meet. Curve Deform's curve_method: "SMOOTH" (the
+        nearest places blended, far points following the line smoothed) or "ENVELOPE" (Standard is Harmony's Curve
+        deformer). Envelope Deform was a modifier of its own until 2026-11-03: "ENVELOPE_DEFORM" (adding one, or as
+        type=) gives the Curve or Cage Deform, by its shape, with Envelope."""
         return _oanim.layer_modifiers(self._id)
 
     def modifier_set(self, index, **values):
         """Change modifier `index`'s settings by name, as modifiers lists them. A deform modifier takes layer then
         shape by name (one it takes: an open line for Curve Deform, a closed shape for Cage Deform, a grid or mesh of
-        cells for Mesh Deform, a line or closed shape for Envelope Deform); type= changes a deform's type, keeping its settings and weights; weights="CUSTOM" starts its point group from the automatic weights."""
+        cells for Mesh Deform; a Curve or Cage Deform with Envelope becomes whichever of the two takes the shape it is given,
+        unless type= comes with it); type= changes a deform's type, keeping its settings and weights (and Envelope,
+        between Curve and Cage; "ENVELOPE_DEFORM" picks the one that takes the shape); weights="CUSTOM" starts its point group from the automatic weights."""
         _oanim.layer_modifier_set(self._id, index, values)
 
     def deform_weights(self, index, reset=False):
@@ -616,6 +628,14 @@ class _Layer:
         evenly and 0 where one leads alone, how many quads join them, and 0. None if it isn't Points."""
         return _oanim.layer_deform_range_view(self._id, index, "FALLOFF")
 
+    def deform_grid_view(self, index):
+        """Show Mesh's grid for Curve, Cage or Mesh Deform `index`, in the layer's space: (lines, columns, rows, start,
+        cell, bent). lines are polylines [(x, y)], the columns + 1 upright ones first, then the rows + 1 across, each
+        sampled 6 times a cell and bent as the deform bends a place now by its Strength (no weights); start is the
+        grid's corner at rest and cell its square cells' size. bent is False on the setup frame, where nothing bends.
+        None with no shape to read."""
+        return _oanim.layer_deform_grid_view(self._id, index)
+
     def evaluated(self, render=False):
         """The drawing as it shows after its modifiers: (points [(x, y)], curve count,
         shapes [(name, closed, connected, merged, area, fill)]): merged, what another layer's Boolean
@@ -629,6 +649,11 @@ class _Layer:
         curve segment."""
         points, closed = _oanim.layer_evaluated_outline(self._id, shape, steps, render)
         return [tuple(p) for p in points], closed
+
+    def evaluated_line_edges(self, shape, render=False):
+        """Shape `shape`'s line as Envelope Deform bent it by its edges, as Harmony does: a list of rings [(x, y)],
+        filled where they wind round (Nonzero) in the line's colour; empty when the line is drawn along its curves."""
+        return [[tuple(p) for p in ring] for ring in _oanim.layer_evaluated_line_edges(self._id, shape, render)]
 
     def channel_pinned(self, path):
         """Whether channel `path` is pinned to the timeline (its pin button)."""

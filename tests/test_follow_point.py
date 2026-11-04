@@ -344,7 +344,9 @@ g = follow(gem_rig, "gem", gem_art, gem_deform)
 gem_rig.bone_constraint_set("gem", g, follow_second=True)
 c = constraint(gem_rig, "gem")
 assert c["follow_second"] and close(c["follow_point2"], (0.2, 0.0)), ("along the bone", c)
-gem_rig.bone_constraint_set("gem", g, follow_point2=(0.5, 0.0))
+# New constraints start with Rotation off: one point only moves the bone.
+assert not c["follow_rotation"], c
+gem_rig.bone_constraint_set("gem", g, follow_point2=(0.5, 0.0), follow_rotation=True)
 
 
 def transform_box(cage, fn, frame=10):
@@ -475,7 +477,7 @@ assert close(head(face_key, "sticker"), (-0.7, 0.5), 2e-2), ("a quarter turn and
 at(0)
 add_bone(slide_rig, "turner", (0.0, 0.0))
 u = follow(slide_rig, "turner", slide_art, slide_deform)
-slide_rig.bone_constraint_set("turner", u, follow_second=True)
+slide_rig.bone_constraint_set("turner", u, follow_second=True, follow_rotation=True)
 slide_rig.bone_constraint_set("turner", u, follow_point2=(0.3, 0.0))
 doc.frame_current = 10
 slide_rig.bone_constraint_set("turner", u, follow_shift2=(-0.3, 0.3))
@@ -553,7 +555,8 @@ turn_deform = add_deform(turn_skin, turn_cage)
 add_bone(pick_rig, "turned", (0.0, 0.0))
 index = follow(pick_rig, "turned", turn_skin, turn_deform)
 points = [p[:2] for p in turn_cage.points]
-pick_rig.bone_constraint_set("turned", index, follow_second=True, follow_shape_point=0, follow_shape_point2=1)
+pick_rig.bone_constraint_set("turned", index, follow_second=True, follow_rotation=True, follow_shape_point=0,
+                            follow_shape_point2=1)
 doc.frame_current = 10
 for k, p in enumerate(points):
     turn_cage.set_point(k, (-p[1], p[0]))

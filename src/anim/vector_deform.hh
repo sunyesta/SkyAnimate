@@ -55,12 +55,15 @@ bool vector_deform_takes_part(const Document &doc, const Modifier &m);
 /* Sets `m`'s Part from the points selected on its shape, which must run along it end to end, two at least and not
  * a whole loop. False, `m` as it was, if they don't. */
 bool vector_deform_part_from_selection(Document &doc, Modifier &m);
-/* The deform type (Curve, Cage, Mesh or Envelope Deform) that takes `m`'s shape: its own when it does (a closed
+/* The deform type (Curve, Cage or Mesh Deform) that takes `m`'s shape: its own when it does (a closed
  * shape fits Cage and Mesh Deform both), else the one that would; its own when none would. */
 ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer, const Modifier &m);
 /* After opening a file of the single Vector Deform modifier of before: each becomes the deform its shape fits
  * (its default name with it). */
 void vector_deform_resolve_legacy(Document &doc);
+/* A Curve or Cage Deform with Envelope works on a line or a loop alike, as Envelope Deform did: it becomes the one of
+ * the two (Envelope still) that takes its shape. False, `m` as it was, if neither does or it isn't Envelope. */
+bool vector_deform_envelope_retype(const Document &doc, const Layer &layer, Modifier &m);
 
 /* Whether `m`'s shape is bent, through other deforms, by `layer` itself: such a loop does nothing. */
 bool vector_deform_loops(const Document &doc, const Layer &layer, const Modifier &m);
@@ -70,6 +73,21 @@ struct DeformShape;
 std::shared_ptr<const DeformShape> vector_deform_shape(const Document &doc, const Layer &layer, const Modifier &m);
 /* Where that shape puts place `at`, by `m`'s Strength alone (no drawing point, so no weights). `at` itself with none. */
 float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 at);
+
+/* Show Mesh: an even grid over what a Curve, Cage or Mesh Deform reaches (its shape and the drawing, at rest, and a
+ * margin), each line bent as `m` bends a place now, by its Strength (vector_deform_point: no weights, nothing else in
+ * the stack). In `layer`'s space. Lines come columns first, then rows, each DEFORM_GRID_STEPS samples a cell, so a tear
+ * shows as a jump. Unbent on the setup frame, where nothing bends (`bent` false). False with no shape to read. */
+constexpr int DEFORM_GRID_CELLS = 16;
+constexpr int DEFORM_GRID_STEPS = 6;
+struct DeformGridView {
+  std::vector<std::vector<float2>> lines;
+  int columns = 0, rows = 0;
+  float cell = 0.0f;
+  float2 start;
+  bool bent = false;
+};
+bool vector_deform_grid_view(const Document &doc, const Layer &layer, const Modifier &m, DeformGridView &r);
 
 /* What an Outline cage's Range reaches, in `layer`'s space where it shows now: lines running in from the cage's outline,
  * each place with how much say the sides have there (1 at the outline, 0 at the limit); `quads` joins them. A place in
@@ -124,6 +142,10 @@ void vector_deform_follow_pick(const Document &doc, const Layer &layer, Modifier
  * and what its weight shares between the deform and the bones. */
 void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                          const VectorDrawing &before_bones, bool render);
+
+/* Draws `drawing`'s lines along their curves again, forgetting the edges an Envelope Deform bent (Shape::line_edges):
+ * for what moves the points but can't carry those edges with them (bones, Mirror, Bevel, Follow Deform, Boolean). */
+void drawing_line_edges_drop(VectorDrawing &drawing);
 
 /* While one is alive, deform modifiers leave out Precision and bend every handle, those still worked out from
  * the neighbours too (made explicit first): each segment stays one Bezier, bent as near as one can be. What the

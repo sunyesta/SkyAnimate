@@ -613,11 +613,18 @@ bool layer_has_modifier_effect(const Document &doc, const Layer &layer, bool ren
   return false;
 }
 
-/* Moves a drawing's points and handles by `t`. */
+/* Moves a drawing's points and handles by `t`, and the edges an Envelope Deform drew its lines by. */
 static void transform_drawing(VectorDrawing &drawing, const Transform2D &t)
 {
   for (MeshPoint &p : drawing.points) {
     p.pos = t.apply(p.pos);
+  }
+  for (Shape &shape : drawing.shapes) {
+    for (std::vector<float2> &ring : shape.line_edges) {
+      for (float2 &p : ring) {
+        p = t.apply(p);
+      }
+    }
   }
   for (Curve &curve : drawing.curves) {
     for (CurvePoint &cp : curve.points) {
@@ -808,6 +815,10 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
       if (!modifier_on(m, render)) {
         continue;
       }
+      /* Only a deform carries the edges an Envelope Deform above drew its lines by (vector_deform_apply). */
+      if (m.type != ModifierType::Resample && !modifier_bends(m.type)) {
+        drawing_line_edges_drop(drawing);
+      }
       if (m.type == ModifierType::Mirror) {
         drawing = drawing_mirror(drawing, m, flip);
       }
@@ -879,6 +890,10 @@ static VectorDrawing stack_evaluated(const Document &doc, const Layer &layer, bo
     const Modifier &m = layer.modifiers[index];
     if (!modifier_on(m, render)) {
       continue;
+    }
+    /* Only a deform carries the edges an Envelope Deform above drew its lines by (vector_deform_apply). */
+    if (m.type != ModifierType::Resample && !modifier_bends(m.type)) {
+      drawing_line_edges_drop(drawing);
     }
     /* A modifier's new points come after the drawing's (Show Points marks them by it). */
     const size_t had = drawing.points.size();

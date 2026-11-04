@@ -3412,6 +3412,26 @@ static void icon_points(ImDrawList *dl, ImVec2 c, float s)
   }
 }
 
+/* Show Mesh: a grid bent sideways, in the orange the viewport draws it in. */
+static void icon_grid(ImDrawList *dl, ImVec2 c, float s)
+{
+  const ImU32 orange = IM_COL32(0xe8, 0x9a, 0x3c, 255);
+  const auto at = [&](float u, float v) {
+    /* u, v in -1..1; the middle bows to the right. */
+    return ImVec2(c.x + s * (u + 0.35f * (1.0f - v * v)), c.y + s * v);
+  };
+  for (const float u : {-1.0f, 0.0f, 1.0f}) {
+    ImVec2 pts[7];
+    for (int k = 0; k < 7; k++) {
+      pts[k] = at(u, -1.0f + float(k) / 3.0f);
+    }
+    dl->AddPolyline(pts, 7, orange, ImDrawFlags_None, 1.2f);
+  }
+  for (const float v : {-1.0f, 0.0f, 1.0f}) {
+    dl->AddLine(at(-1.0f, v), at(1.0f, v), orange, 1.2f);
+  }
+}
+
 /* The modifier's type icon: two mirrored halves, or a bone. */
 static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType type)
 {
@@ -3438,20 +3458,6 @@ static void modifier_type_icon(ImDrawList *dl, ImVec2 c, float s, ModifierType t
     dl->AddBezierCubic(ImVec2(c.x - s, c.y + s * 0.6f), ImVec2(c.x - s * 0.4f, c.y - s * 0.9f), ImVec2(c.x + s * 0.4f, c.y + s * 0.9f),
                        ImVec2(c.x + s, c.y - s * 0.6f), COL_MOD_ICON, 1.3f);
     dl->AddCircleFilled(c, s * 0.38f, COL_MOD_ICON);
-  }
-  else if (type == ModifierType::EnvelopeDeform) {
-    /* An outline left open, its points on it, and a line inside keeping its distance from it. */
-    ImVec2 outer[13], inner[13];
-    for (int k = 0; k < 13; k++) {
-      const float a = 0.9f + float(k) / 12.0f * 4.5f;
-      outer[k] = ImVec2(c.x + std::cos(a) * s, c.y + std::sin(a) * s * 0.85f);
-      inner[k] = ImVec2(c.x + std::cos(a) * s * 0.55f, c.y + std::sin(a) * s * 0.45f);
-    }
-    dl->AddPolyline(outer, 13, COL_MOD_ICON, 0, 1.3f);
-    dl->AddPolyline(inner, 13, COL_MOD_ICON, 0, 1.0f);
-    for (const int k : {0, 6, 12}) {
-      dl->AddCircleFilled(outer[k], s * 0.2f, COL_MOD_ICON);
-    }
   }
   else if (type == ModifierType::CageDeform) {
     /* A closed, pulled outline, its points on it. */
@@ -4351,9 +4357,12 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
         Modifier test = m;
         test.deform_layer = clicked->id;
         uint64_t shape = clicked->drawing.shapes.size() == 1 ? clicked->drawing.shapes[0].id : 0;
+        test.deform_part_from = test.deform_part_to = 0;
         for (const Shape &s : clicked->drawing.shapes) {
           test.deform_shape = s.id;
+          Modifier as = test;
           if (vector_deform_kind(doc, *own, test) != DeformKind::None ||
+              vector_deform_envelope_retype(doc, *own, as) ||
               (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, test)))
           {
             shape = s.id;
@@ -4366,6 +4375,8 @@ static void deform_eyedropper_start(uint64_t owner, int index, const std::string
         }
         m.deform_layer = clicked->id;
         m.deform_shape = shape;
+        /* Envelope takes a line or a loop alike: the Curve or Cage Deform that takes this one. */
+        vector_deform_envelope_retype(doc, *own, m);
         C.undo->push(std::string(deform_type_name(m.type)) + " Shape", doc);
         return true;
       });
@@ -4439,8 +4450,6 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
                                        : m.type == ModifierType::CurveDeform ? "The line that bends it, or the shape with "
                                                                               "the Part of it that does"
                                        : m.type == ModifierType::CageDeform ? "The closed shape (a cage) that bends it"
-                                       : m.type == ModifierType::EnvelopeDeform
-                                           ? "The line or closed shape (an envelope) that bends it"
                                                                              : "The grid, mesh of cells drawn by hand, or "
                                                                                "line (each point pinned to it, as a bendy "
                                                                                "bone holds what it carries) that bends it");
@@ -4455,7 +4464,10 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       /* Only the shapes this deform takes; the others say which one does. */
       Modifier test = m;
       test.deform_shape = s.id;
+      test.deform_part_from = test.deform_part_to = 0;
+      Modifier as = test;
       const bool fits = vector_deform_kind(doc, layer, test) != DeformKind::None ||
+                        vector_deform_envelope_retype(doc, layer, as) ||
                         (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, test));
       const ModifierType other = fits ? m.type : vector_deform_fitting_type(doc, layer, test);
       const std::string label = fits || other == m.type ? s.name
@@ -4466,6 +4478,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
         m.deform_shape = s.id;
         m.deform_part_from = m.deform_part_to = 0;
         m.deform_point_id = m.deform_point2_id = 0;
+        vector_deform_envelope_retype(doc, layer, m);
         done = true;
       }
       ImGui::EndDisabled();
@@ -4513,13 +4526,13 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   };
 
-  /* A mesh's Method, and its settings: Envelope only where every cell has four sides. */
-  const auto mesh_method_rows = [&](bool envelope) {
-    static const char *const METHOD_NAMES[] = {"Cells", "Envelope", "Points"};
+  /* A mesh's Method, and its settings: Outline only where every cell has four sides. */
+  const auto mesh_method_rows = [&](bool outline) {
+    static const char *const METHOD_NAMES[] = {"Cells", "Outline", "Points"};
     static const char *const METHOD_TIPS[] = {
         "Each cell bends what is in it, so the drawing fits the mesh exactly, and a line along the edge stretches with "
         "its cell",
-        "As Cage Deform's Envelope: the outer cells keep what lies near the outline at its distance from it, so lines "
+        "As Cage Deform's Outline: the outer cells keep what lies near the outline at its distance from it, so lines "
         "along the edge keep their width. This eases off toward the next cells in, whose points and lines are still "
         "exactly where the mesh puts them (Blend says how evenly the sides share a corner)",
         "Every line of the mesh is a bone: what lies near it keeps its place by it, turned as the line turns there, so "
@@ -4530,7 +4543,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     const int method = int(m.deform_mesh_method);
     if (ImGui::BeginCombo("##mesh_method", METHOD_NAMES[method])) {
       for (int k = 0; k < 3; k++) {
-        if (k == int(MeshMethod::Envelope) && !envelope) {
+        if (k == int(MeshMethod::Outline) && !outline) {
           continue;
         }
         if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
@@ -4556,7 +4569,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       }
       done |= ImGui::IsItemDeactivatedAfterEdit();
     }
-    if (m.deform_mesh_method == MeshMethod::Envelope || m.deform_mesh_method == MeshMethod::Points) {
+    if (m.deform_mesh_method == MeshMethod::Outline || m.deform_mesh_method == MeshMethod::Points) {
       modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
                                           "corner: low, the nearest side leads sharply (edges hug their own side "
                                           "most); high, the sides blend gently");
@@ -4570,8 +4583,124 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     }
   };
 
+  /* Influence (Harmony's region of influence): Everywhere, or a capsule round each segment of the shape. */
+  const auto influence_rows = [&]() {
+    static const char *const TYPE_NAMES[] = {"Everywhere", "Capsule"};
+    static const char *const TYPE_TIPS[] = {
+        "Every point follows its nearest place on the shape, however far off it is (Harmony's Infinite)",
+        "Each segment of the shape reaches only so far: a band out to each side, a rounded cap past each end, and a "
+        "fade beyond. Points past the fade stay where they are. Where two segments' capsules overlap the later one "
+        "leads, and they blend half and half where they meet (Harmony's Elliptic)"};
+    modifier_row_label("Influence", column, "How far round the shape it reaches");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const int type = int(m.deform_influence);
+    if (ImGui::BeginCombo("##influence", TYPE_NAMES[type])) {
+      for (int k = 0; k < 2; k++) {
+        if (ImGui::Selectable(TYPE_NAMES[k], k == type) && k != type) {
+          m.deform_influence = InfluenceType(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", TYPE_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (m.deform_influence != InfluenceType::Capsule) {
+      return;
+    }
+    modifier_row_label("", column);
+    if (ImGui::Checkbox("Symmetric", &m.deform_influence_symmetric)) {
+      done = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("The same width on both sides and the same length past both ends");
+    }
+    const auto row = [&](const char *label, const char *id, float *value, const char *tip) {
+      modifier_row_label(label, column, tip);
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      if (ui_drag_float(id, value, 0.001f, 0.0f, 100.0f, "%.4f")) {
+        *value = std::max(*value, 0.0f);
+      }
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    };
+    const bool sym = m.deform_influence_symmetric;
+    row(sym ? "Width" : "Left", "##influence_left", &m.deform_influence_left,
+        sym ? "How far out from the shape it reaches, on each side"
+            : "How far out from the shape it reaches on its left, looking the way the shape runs");
+    if (!sym) {
+      row("Right", "##influence_right", &m.deform_influence_right,
+          "How far out from the shape it reaches on its right, looking the way the shape runs");
+      row("Begin", "##influence_begin", &m.deform_influence_begin,
+          "How far past each segment's start it reaches (a rounded cap)");
+    }
+    row(sym ? "Length" : "End", "##influence_end", &m.deform_influence_end,
+        sym ? "How far past each segment's ends it reaches (a rounded cap)"
+            : "How far past each segment's end it reaches (a rounded cap)");
+    row("Fade", "##influence_fade", &m.deform_influence_fade,
+        "Past the capsule, how far its pull eases out to nothing");
+  };
+
+  /* The Envelope method's own Method (Curve and Cage Deform's Envelope alike) and what goes with it. */
+  const auto envelope_rows = [&](const bool weighted) {
+    static const char *const METHOD_NAMES[] = {"Standard", "Blended"};
+    static const char *const METHOD_TIPS[] = {
+        "As Toon Boom Harmony's envelope deformer, open or closed: each point keeps its distance out from its nearest "
+        "place on the shape and goes where that place goes, turning with it, so lines along the shape bend round its "
+        "corners. Where two places are equally near the drawing can tear, as it does in Harmony",
+        "As Toon Boom Harmony's Weighted Deform node: each point moves (never turns) by a smooth blend of how places all "
+        "along the shape have moved, the nearer ones counting most. Nothing tears, and the drawing far away moves by "
+        "about the shape's average move. Pre-Blend and Post-Blend shape the blend"};
+    modifier_row_label("Envelope", column, "How what is around the shape follows it");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+    const int method = int(m.deform_envelope_method);
+    if (ImGui::BeginCombo("##envelope_method", METHOD_NAMES[method])) {
+      for (int k = 0; k < 2; k++) {
+        if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
+          m.deform_envelope_method = EnvelopeMethod(k);
+          done = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", METHOD_TIPS[k]);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (weighted) {
+      modifier_row_label("Pre-Blend", column, "Evens out how the places along the shape share a point, most near "
+                                              "the shape: 0, a point on the shape goes exactly as its place does; "
+                                              "higher, nearby places share in it too (Harmony's Pre-Blend Amount)");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      if (ui_drag_float("##pre_blend", &m.deform_pre_blend, 0.01f, 0.0f, 100.0f, "%.2f")) {
+        m.deform_pre_blend = std::max(m.deform_pre_blend, 0.0f);
+      }
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+      modifier_row_label("Post-Blend", column, "Sharpens or softens the blend: above 0 the nearest places lead "
+                                               "more strongly; below 0 the far ones count more, and far from the "
+                                               "shape the drawing can swing wide, as in Harmony (its Post-Blend "
+                                               "Amount)");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
+      ui_drag_float("##post_blend", &m.deform_post_blend, 0.01f, -10.0f, 10.0f, "%.2f");
+      done |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+    else if (!follows) {
+      influence_rows();
+    }
+  };
+
   /* What it makes of the shape. */
   const DeformKind kind = vector_deform_kind(doc, layer, m);
+  /* The Envelope method bends a line (Curve Deform's) or a loop (Cage Deform's); a Follow Deform takes its shape as
+   * the first of them that does. */
+  const bool envelope_line = kind == DeformKind::Envelope && [&] {
+    if (m.type != ModifierType::FollowDeform) {
+      return m.type == ModifierType::CurveDeform;
+    }
+    Modifier as = m;
+    as.type = ModifierType::CurveDeform;
+    return vector_deform_kind(doc, layer, as) == DeformKind::Envelope;
+  }();
+  const bool envelope_cage = kind == DeformKind::Envelope && !envelope_line;
   modifier_row_label("", column);
   if (vector_deform_loops(doc, layer, m)) {
     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "A loop: this layer bends that shape, so neither bends");
@@ -4591,9 +4720,11 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       }
     }
   }
-  else if (kind == DeformKind::Cage) {
-    ImGui::TextDisabled(follows ? "Cage: the point goes as the shape does" : "Cage: what is in the shape bends with it");
-    static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Outline"};
+  else if (kind == DeformKind::Cage || envelope_cage) {
+    ImGui::TextDisabled(follows         ? "Cage: the point goes as the shape does"
+                        : envelope_cage ? "Cage: each point follows its nearest place on the outline"
+                                        : "Cage: what is in the shape bends with it");
+    static const char *const METHOD_NAMES[] = {"Mean Value", "Rigid", "Outline", "Envelope"};
     static const char *const METHOD_TIPS[] = {
         "Smooth, and your drawing's outline stays exactly on the cage, but the inside squashes where a side bulges "
         "out or stretches (mean value coordinates)",
@@ -4601,13 +4732,15 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
         "outline still stays exactly on the cage: for art drawn along the cage's edge. A little slower",
         "Each side of the cage carries what lies near it, at the same distance from it, after Toon Boom Harmony's "
         "envelopes: lines along the outline keep their width and edges hug the cage, and the middle follows the "
-        "sides around it (Blend says how evenly), with no tearing where sides meet. Envelope Deform is Harmony's "
-        "own, exactly"};
+        "sides around it (Blend says how evenly), with no tearing where sides meet",
+        "Toon Boom Harmony's envelope deformer, exactly: each point keeps its distance from its nearest place on the "
+        "outline and goes where that place goes, turning with it, inside the cage and out. Its own Envelope "
+        "setting picks Standard (as Harmony's Curve deformer, with an Influence) or Blended (as its Weighted Deform)"};
     modifier_row_label("Method", column, "How what is in the cage follows it");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
     const int method = int(m.deform_cage_method);
     if (ImGui::BeginCombo("##cage_method", METHOD_NAMES[method])) {
-      for (int k = 0; k < 3; k++) {
+      for (int k = 0; k < 4; k++) {
         if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
           m.deform_cage_method = CageMethod(k);
           done = true;
@@ -4617,6 +4750,9 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
         }
       }
       ImGui::EndCombo();
+    }
+    if (envelope_cage && !follows) {
+      envelope_rows(m.deform_envelope_method == EnvelopeMethod::Blended);
     }
     if (m.deform_cage_method == CageMethod::Outline) {
       modifier_row_label("Blend", column, "How evenly the sides share what lies near more than one of them, as at a "
@@ -4652,42 +4788,25 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
   else if (kind == DeformKind::Wire) {
     ImGui::TextDisabled(follows ? "Wire: the point is pinned to the line" : "Wire: everything moves with the line, pinned to it (a bendy bone)");
   }
-  else if (kind == DeformKind::Line) {
-    ImGui::TextDisabled(follows ? "Line: the point goes along it" : "Line: what lies along it bends with it");
-    modifier_row_label("", column);
-    if (ImGui::Checkbox("Stretch", &m.deform_stretch)) {
-      done = true;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("As the line grows or shrinks, what lies along it spreads or bunches to fit, end to end "
-                        "(Illustrator's Art Brush). Off, it keeps its length and slides along the line, as "
-                        "Blender's Curve modifier does");
-    }
-    if (!follows && vector_deform_takes_part(doc, m)) {
-      Modifier whole = m;
-      whole.deform_part_from = whole.deform_part_to = 0;
-      part_row(vector_deform_kind(doc, layer, whole) != DeformKind::Line);
-    }
-  }
-  else if (kind == DeformKind::Envelope) {
-    const bool weighted = m.deform_envelope_method == EnvelopeMethod::Weighted;
-    ImGui::TextDisabled(weighted ? "Envelope: each point moves by a blend of the shape's moves"
-                                 : "Envelope: each point follows its nearest place on the shape");
-    static const char *const METHOD_NAMES[] = {"Standard", "Weighted"};
+  else if (kind == DeformKind::Line || envelope_line) {
+    const bool envelope = envelope_line;
+    ImGui::TextDisabled(follows     ? "Line: the point goes along it"
+                        : envelope ? "Line: each point follows its nearest place on the line"
+                                   : "Line: what lies along it bends with it");
+    static const char *const METHOD_NAMES[] = {"Smooth", "Envelope"};
     static const char *const METHOD_TIPS[] = {
-        "As Toon Boom Harmony's envelope deformer, open or closed: each point keeps its distance out from its nearest "
-        "place on the shape and goes where that place goes, turning with it, so lines along the shape bend round its "
-        "corners. Where two places are equally near the drawing can tear, as it does in Harmony",
-        "As Toon Boom Harmony's Weighted Deform: each point moves (never turns) by a smooth blend of how places all "
-        "along the shape have moved, the nearer ones counting most. Nothing tears, and the drawing far away moves by "
-        "about the shape's average move. Pre-Blend and Post-Blend shape the blend"};
-    modifier_row_label("Method", column, "How what is around the shape follows it");
+        "What lies near more than one place on the line follows them blended, and points far off follow the line "
+        "smoothed, so a sharp bend is a gentle one to them and nothing tears",
+        "Toon Boom Harmony's envelope deformer, exactly, as Cage Deform's Envelope on a closed shape. Its Standard is "
+        "Harmony's Curve deformer: each point keeps its distance out from its single nearest place on the line and goes where "
+        "that place goes, turning with it, creasing where two places are about equally near, as in Harmony"};
+    modifier_row_label("Method", column, "How what is around the line follows it");
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-    const int method = int(m.deform_envelope_method);
-    if (ImGui::BeginCombo("##envelope_method", METHOD_NAMES[method])) {
+    const int method = int(m.deform_curve_method);
+    if (ImGui::BeginCombo("##curve_method", METHOD_NAMES[method])) {
       for (int k = 0; k < 2; k++) {
         if (ImGui::Selectable(METHOD_NAMES[k], k == method) && k != method) {
-          m.deform_envelope_method = EnvelopeMethod(k);
+          m.deform_curve_method = CurveMethod(k);
           done = true;
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -4696,22 +4815,25 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
       }
       ImGui::EndCombo();
     }
-    if (weighted) {
-      modifier_row_label("Pre-Blend", column, "Evens out how the places along the shape share a point, most near "
-                                              "the shape: 0, a point on the shape goes exactly as its place does; "
-                                              "higher, nearby places share in it too (Harmony's Pre-Blend Amount)");
-      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-      if (ui_drag_float("##pre_blend", &m.deform_pre_blend, 0.01f, 0.0f, 100.0f, "%.2f")) {
-        m.deform_pre_blend = std::max(m.deform_pre_blend, 0.0f);
+    if (!envelope) {
+      modifier_row_label("", column);
+      if (ImGui::Checkbox("Stretch", &m.deform_stretch)) {
+        done = true;
       }
-      done |= ImGui::IsItemDeactivatedAfterEdit();
-      modifier_row_label("Post-Blend", column, "Sharpens or softens the blend: above 0 the nearest places lead "
-                                               "more strongly; below 0 the far ones count more, and far from the "
-                                               "shape the drawing can swing wide, as in Harmony (its Post-Blend "
-                                               "Amount)");
-      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ui_key_button_width() - 4.0f);
-      ui_drag_float("##post_blend", &m.deform_post_blend, 0.01f, -10.0f, 10.0f, "%.2f");
-      done |= ImGui::IsItemDeactivatedAfterEdit();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("As the line grows or shrinks, what lies along it spreads or bunches to fit, end to end "
+                          "(Illustrator's Art Brush). Off, it keeps its length and slides along the line, as "
+                          "Blender's Curve modifier does");
+      }
+    }
+    else if (!follows) {
+      envelope_rows(m.deform_envelope_method == EnvelopeMethod::Blended);
+    }
+    if (!follows && vector_deform_takes_part(doc, m)) {
+      Modifier whole = m;
+      whole.deform_part_from = whole.deform_part_to = 0;
+      const DeformKind whole_kind = vector_deform_kind(doc, layer, whole);
+      part_row(whole_kind != DeformKind::Line && whole_kind != DeformKind::Envelope);
     }
   }
   else if (m.type == ModifierType::CurveDeform && vector_deform_takes_part(doc, m)) {
@@ -4727,10 +4849,7 @@ static void vector_deform_modifier_body(Context &C, Layer &layer, Modifier &m, i
     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "This shape needs %s", deform_type_name(fit));
     modifier_row_label("", column);
     if (ImGui::Button((std::string("Switch to ") + deform_type_name(fit)).c_str())) {
-      if (m.name.rfind(deform_type_name(m.type), 0) == 0) {
-        m.name = deform_type_name(fit) + m.name.substr(std::string(deform_type_name(m.type)).size());
-      }
-      m.type = fit;
+      deform_type_set(m, fit);
       done = true;
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -5096,7 +5215,8 @@ static void modifiers_panel(Context &C, Layer &layer)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Toon Boom Harmony's envelope deformer, exactly: a line or closed shape on another layer, "
                         "and each point of the drawing follows its nearest place on it, at the same distance out. "
-                        "Animate the shape and the drawing follows");
+                        "Animate the shape and the drawing follows. It is Curve Deform with the Envelope method, or "
+                        "Cage Deform with it once you pick a closed shape");
     }
     if (!layer.is_group()) {
       if (ImGui::MenuItem("Follow Deform")) {
@@ -5139,7 +5259,10 @@ static void modifiers_panel(Context &C, Layer &layer)
     ImGui::Dummy(ImVec2(h, h));
     modifier_type_icon(dl, ImVec2(icon_at.x + h * 0.5f, icon_at.y + h * 0.5f), h * 0.3f, m.type);
     ImGui::SameLine(0, 2);
-    const float right_w = h * 5.0f + h * 0.8f + style.ItemSpacing.x * 3.0f + 9.0f;
+    /* Show Mesh's button, on the deforms that bend, takes one more place. */
+    const bool mesh_button = modifier_bends(m.type);
+    const float right_w = h * (mesh_button ? 6.0f : 5.0f) + h * 0.8f + style.ItemSpacing.x * 3.0f +
+                          (mesh_button ? 10.0f : 9.0f);
     ImGui::SetNextItemWidth(std::max(40.0f, inner_w - (ImGui::GetCursorScreenPos().x - box_min.x) - right_w));
     ImGui::InputText("##name", &m.name);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -5174,6 +5297,20 @@ static void modifiers_panel(Context &C, Layer &layer)
     else {
       ImGui::Dummy(ImVec2(h, h));
     }
+    if (mesh_button) {
+      ImGui::SameLine(0, 1);
+      ImGui::BeginDisabled(!m.show_viewport);
+      if (icon_toggle("##mesh", m.show_mesh && m.show_viewport,
+                      "Show Mesh: an even grid over what this deform reaches, bent as it bends that space now, so "
+                      "where it stretches, squeezes or tears shows between the lines (Toon Boom Harmony's Show "
+                      "Deformation Mesh shows the same). Grey on Setup (frame 0), where nothing bends",
+                      icon_grid))
+      {
+        m.show_mesh = !m.show_mesh;
+        C.undo->push("Modifier Show Mesh", doc);
+      }
+      ImGui::EndDisabled();
+    }
     /* Blender's header menu: Apply, Duplicate, Move to First / Last. */
     ImGui::SameLine(0, 4);
     const ImVec2 menu_at = ImGui::GetCursorScreenPos();
@@ -5202,13 +5339,10 @@ static void modifiers_panel(Context &C, Layer &layer)
       if (modifier_bends(m.type) && ImGui::BeginMenu("Change Type")) {
         /* Another deform, keeping its settings and painted weights. */
         for (const ModifierType type :
-             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform, ModifierType::EnvelopeDeform})
+             {ModifierType::CurveDeform, ModifierType::CageDeform, ModifierType::MeshDeform})
         {
           if (ImGui::MenuItem(deform_type_name(type), nullptr, type == m.type) && type != m.type) {
-            if (m.name.rfind(deform_type_name(m.type), 0) == 0) {
-              m.name = deform_type_name(type) + m.name.substr(std::string(deform_type_name(m.type)).size());
-            }
-            m.type = type;
+            deform_type_set(m, type);
             C.undo->push("Change Modifier Type", doc);
           }
         }
@@ -6078,81 +6212,146 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::EndCombo();
           }
           /* Its own place, or a point the shape already has. */
-          const auto point_row = [&](bool second) {
-            modifier_row_label(second ? "Second" : "Point", column,
-                               "Own Place is a point of its own, which you can put anywhere on the shape, drag and key.\n"
+          const char *const point_names[3] = {"Point", "Second", "Third"};
+          const auto point_row = [&](int which) {
+            modifier_row_label(point_names[which], column,
+                               "Own Place is a point of its own, which you can put anywhere on the shape, drag and key\n"
+                               "(hold Ctrl while dragging it on frame 0 to snap it to a point of the shape).\n"
                                "Or pick a point the shape already has: the bone takes that point's move");
             const uint64_t rig_id = armature.id, bone_id = bone->id;
             const int index = i;
             follow_point_row(C, followed ? layer_find(doc, followed->deform_layer) : nullptr, followed ? followed->deform_shape : 0,
-                             second ? c.follow_point2_id : c.follow_point_id, ImGui::GetContentRegionAvail().x - 4.0f,
+                             c.follow_id_at(which), ImGui::GetContentRegionAvail().x - 4.0f,
                              "FOLLOWBONE:" + std::to_string(rig_id) + ":" + std::to_string(bone_id) + ":" + std::to_string(i) +
-                                 (second ? ":2" : ":1"),
-                             [rig_id, bone_id, index, second](Context &C, uint64_t point) {
+                                 ":" + std::to_string(which + 1),
+                             [rig_id, bone_id, index, which](Context &C, uint64_t point) {
                                Document &doc = *C.document;
                                Layer *rig = layer_find(doc, rig_id);
                                Bone *b = rig ? bone_find(*rig, bone_id) : nullptr;
                                if (b && index < int(b->constraints.size()) &&
                                    b->constraints[size_t(index)].type == BoneConstraintType::FollowPoint)
                                {
-                                 follow_point_pick(doc, *rig, b->constraints[size_t(index)], second, point);
+                                 follow_point_pick(doc, *rig, b->constraints[size_t(index)], which, point);
                                  C.undo->push("Follow Point", doc);
                                }
                                return true;
                              });
           };
-          point_row(false);
+          const int count = c.follow_count();
+          modifier_row_label("Points", column,
+                             "How many places on the shape the bone goes by (Harmony's Sampling Type).\n"
+                             "One: it moves as its point does, and with Rotation turns as the shape turns there.\n"
+                             "Two: the way from the first to the second can turn it, and how far apart they are scale it.\n"
+                             "Three: the three set its turn, both its scales and its skew");
+          {
+            const char *const counts[3] = {"One Point", "Two Points", "Three Points"};
+            if (ImGui::BeginCombo("##follow_points", counts[count - 1])) {
+              for (int k = 1; k <= 3; k++) {
+                if (ImGui::Selectable(counts[k - 1], k == count)) {
+                  follow_point_count(doc, armature, *bone, c, k);
+                  C.undo->push("Follow Point", doc);
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+          for (int k = 0; k < count; k++) {
+            point_row(k);
+          }
           modifier_row_label("", column);
           if (ImGui::Checkbox("Show Follow Point", &c.follow_show)) {
             C.undo->push("Follow Point", doc);
           }
           if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip("Shows the point in the viewport, light blue. Drag it on frame 0 to choose the place this\n"
-                              "bone follows. Hiding it changes nothing");
-          }
-          modifier_row_label("", column);
-          {
-            bool two = c.follow_two;
-            if (ImGui::Checkbox("Second Point", &two)) {
-              follow_point_second(doc, armature, *bone, c, two);
-              C.undo->push("Follow Point", doc);
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-              ImGui::SetTooltip("A second place on the shape: the way from the first to it can turn the bone, and how far\n"
-                                "apart they are can scale it. Further apart gives a steadier angle");
-            }
-          }
-          if (c.follow_two) {
-            point_row(true);
+            ImGui::SetTooltip("Shows the points in the viewport, light blue. Drag one on frame 0 to choose the place this\n"
+                              "bone follows (Ctrl snaps it to a point of the shape). Hiding them changes nothing");
           }
           ImGui::BeginDisabled(doc.frame_current == 0);
-          for (const bool second : {false, true}) {
+          for (int k = 0; k < count; k++) {
             /* A point of the shape goes as it does: there's nothing to shift. */
-            if ((second && !c.follow_two) || (second ? c.follow_point2_id : c.follow_point_id) != 0) {
+            if (c.follow_id_at(k) != 0) {
               continue;
             }
-            modifier_row_label(second ? "Second Shift" : "Shift", column,
+            const char *const shift_names[3] = {"Shift", "Second Shift", "Third Shift"};
+            modifier_row_label(shift_names[k], column,
                                "How far the point is moved from where it rests, on this frame: key it for a follower that\n"
                                "slides along the shape. Dragging the light blue point does the same");
-            const std::string shift_path = constraint_path + (second ? "follow_shift2" : "follow_shift");
-            const auto k = keyed_begin(shift_path);
-            float2 &shift = second ? c.follow_shift2 : c.follow_shift;
+            const char *const shift_fields[3] = {"follow_shift", "follow_shift2", "follow_shift3"};
+            const std::string shift_path = constraint_path + shift_fields[k];
+            const auto keyed = keyed_begin(shift_path);
+            float2 &shift = c.follow_shift_at(k);
             float values[2] = {shift.x, shift.y};
-            if (ui_drag_float2(second ? "##follow_shift2" : "##follow_shift", values, 0.001f, -100.0f, 100.0f, "%.3f")) {
+            ImGui::PushID(k);
+            if (ui_drag_float2("##follow_shift", values, 0.001f, -100.0f, 100.0f, "%.3f")) {
               shift = {values[0], values[1]};
             }
+            ImGui::PopID();
             done("Follow Point");
-            keyed_end(shift_path, k);
+            keyed_end(shift_path, keyed);
           }
           ImGui::EndDisabled();
-          if (c.follow_two) {
-            modifier_row_label("", column);
-            if (ImGui::Checkbox("Rotation", &c.follow_rotation)) {
-              C.undo->push("Follow Point", doc);
+          modifier_row_label("", column);
+          /* Three points always turn and scale it. */
+          ImGui::BeginDisabled(count == 3);
+          bool rotation = c.follow_rotation || count == 3;
+          if (ImGui::Checkbox("Rotation", &rotation)) {
+            c.follow_rotation = rotation;
+            C.undo->push("Follow Point", doc);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip(count == 1 ? "Turns the bone as the shape turns at its point (along the curve, for a point of the shape)"
+                                         : count == 2 ? "Turns the bone as the way from the first point to the second turns"
+                                                      : "Three points always turn the bone");
+          }
+          ImGui::SameLine();
+          ImGui::BeginDisabled(count == 1);
+          bool scale = c.follow_scale || count == 3;
+          if (ImGui::Checkbox("Scale", &scale)) {
+            c.follow_scale = scale;
+            C.undo->push("Follow Point", doc);
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip(count == 1 ? "Scale needs a second point" : count == 2 ? "Scales the bone as the two points grow apart"
+                                                                             : "Three points always scale the bone");
+          }
+          ImGui::EndDisabled();
+          ImGui::EndDisabled();
+          if (count == 2 && c.follow_scale) {
+            modifier_row_label("Scale", column,
+                               "Uniform: the whole bone grows as the points grow apart.\n"
+                               "Along Line: stretched along the line through the points and squashed across it, by Volume\n"
+                               "(Harmony's Two-Point Sampling with Scaling)");
+            const char *const modes[2] = {"Uniform", "Along Line"};
+            const int mode = c.follow_scale_mode == FollowScaleMode::AlongLine ? 1 : 0;
+            if (ImGui::BeginCombo("##follow_scale_mode", modes[mode])) {
+              for (int k = 0; k < 2; k++) {
+                if (ImGui::Selectable(modes[k], k == mode)) {
+                  c.follow_scale_mode = k == 1 ? FollowScaleMode::AlongLine : FollowScaleMode::Uniform;
+                  C.undo->push("Follow Point", doc);
+                }
+              }
+              ImGui::EndCombo();
             }
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Scale", &c.follow_scale)) {
-              C.undo->push("Follow Point", doc);
+            if (c.follow_scale_mode == FollowScaleMode::AlongLine) {
+              modifier_row_label("Volume", column,
+                                 "How much it squashes across the line as it stretches along it: 1 keeps its area, 0 doesn't\n"
+                                 "squash, more than 1 squashes further");
+              ui_drag_float("##follow_volume", &c.follow_volume, 0.01f, 0.0f, 10.0f, "%.2f");
+              done("Follow Point");
+            }
+          }
+          if (count == 3) {
+            /* As Harmony's Three-Point Sampling: on a line it doesn't follow at all, nearly on one it skews a lot. */
+            const float2 v = c.follow_rest2 - c.follow_rest, v2 = c.follow_rest3 - c.follow_rest;
+            const float cross = std::abs(v.x * v2.y - v.y * v2.x);
+            if (cross <= 0.02f * length(v) * length(v2)) {
+              modifier_row_label("", column);
+              ImGui::PushTextWrapPos(0.0f);
+              ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "%s",
+                                 cross == 0.0f ? "The three points are on a line: the bone doesn't follow them at all."
+                                               : "The three points are nearly on a line: a small bend skews the bone a "
+                                                 "lot.");
+              ImGui::PopTextWrapPos();
             }
           }
           modifier_row_label("", column);

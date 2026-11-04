@@ -34,20 +34,19 @@ Modifier *follow_point_modifier(Document &doc, const BoneConstraint &c, Layer **
 Modifier *follow_point_find(Document &doc, const std::string &layer, const std::string &modifier, Layer **r_owner);
 /* Aims `c` at `m`, a deform on `owner` (null for neither), its point starting at the bone's head. */
 void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstraint &c, Layer *owner, Modifier *m);
-/* Puts `c`'s point (`second`: its second point) at `point`, in `owner`'s space. */
+/* Puts `c`'s point `which` (0 the first, 1 the second, 2 the third) at `point`, in `owner`'s space. */
 void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point,
-                        bool second = false);
-/* What `c`'s point (`second`: its second point) has to be shifted by to show at `to` (document space) on this frame,
- * through the bend. */
-float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, bool second, float2 to);
-/* `c`'s point (`second`: its second point) goes as point `id` of the deform's shape does (0: its own place, where the
- * shape's point rested). */
-void follow_point_pick(Document &doc, const Layer &rig, BoneConstraint &c, bool second, uint64_t id);
+                        int which = 0);
+/* What `c`'s point `which` has to be shifted by to show at `to` (document space) on this frame, through the bend. */
+float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, int which, float2 to);
+/* `c`'s point `which` goes as point `id` of the deform's shape does (0: its own place, where the shape's point
+ * rested). */
+void follow_point_pick(Document &doc, const Layer &rig, BoneConstraint &c, int which, uint64_t id);
 /* `c` on a bone just symmetrized: its points across the bone layer's vertical axis, each its own place, and on the other
  * side's deform when the layer it's on has a partner (Brow_L, Brow_R) with a deform of that name. */
 void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c);
-/* Turns `c`'s second point on or off. On for the first time it starts along the bone, far enough off for a steady
- * angle. */
-void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on);
+/* How many points `c` goes by (1-3). A point used for the first time starts along the bone (the second) or square to it
+ * (the third), far enough off for a steady angle. Those left out are kept. */
+void follow_point_count(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, int count);
 
 }  // namespace oanim

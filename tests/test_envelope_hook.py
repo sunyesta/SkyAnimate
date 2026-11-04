@@ -42,7 +42,7 @@ ring = new_layer("Ring")
 ring.add_curve([(CENTER[0] + RADIUS * math.cos(k * 2 * math.pi / N), CENTER[1] + RADIUS * math.sin(k * 2 * math.pi / N))
                 for k in range(N)], closed=True)
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
-ring.modifier_set(0, layer="Cage", shape=cage.shapes[0][0], cage_method="ENVELOPE", resample_self=False, precision=0.0)
+ring.modifier_set(0, layer="Cage", shape=cage.shapes[0][0], cage_method="OUTLINE", resample_self=False, precision=0.0)
 doc.frame_current = 1
 doc.frame_current = 0
 rest = [tuple(p[:2]) for p in ring.evaluated()[0]]
@@ -124,7 +124,7 @@ assert round_cage.add_primitive("CIRCLE", [(-1, -1), (1, 1)])
 art = new_layer("Art")
 art.add_curve([(-0.5, 0.45), (0.0, 0.5), (0.5, 0.45)])
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
-art.modifier_set(0, layer="Round", shape=round_cage.shapes[0][0], cage_method="ENVELOPE", resample_self=False, precision=0.0)
+art.modifier_set(0, layer="Round", shape=round_cage.shapes[0][0], cage_method="OUTLINE", resample_self=False, precision=0.0)
 doc.frame_current = 1
 doc.frame_current = 0
 at_rest = [tuple(p[:2]) for p in art.evaluated()[0]]

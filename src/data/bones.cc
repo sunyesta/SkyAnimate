@@ -379,6 +379,12 @@ static Transform2D bone_on_parent(const Bone &b, const Transform2D &parent_now, 
   return out;
 }
 
+/* Follow Point's change of shape, `w` of the way from none. */
+static Transform2D follow_shape_part(const Transform2D &k, float w)
+{
+  return {1.0f + (k.a - 1.0f) * w, k.b * w, k.c * w, 1.0f + (k.d - 1.0f) * w, 0.0f, 0.0f};
+}
+
 static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool setup_frame, const PoseExtras &extras)
 {
   const size_t n = bones.size();
@@ -475,16 +481,25 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
               }
             }
             break;
-          case BoneConstraintType::FollowPoint:
-            /* On top of what its parent gives it (anim/follow_point.hh). */
-            position += parent_pose.inverted().apply_vector(c.follow_offset) * w;
-            if (c.follow_two && c.follow_rotation) {
-              angle += c.follow_turn * w;
-            }
-            if (c.follow_two && c.follow_scale) {
-              scale = scale * (1.0f + (c.follow_stretch - 1.0f) * w);
-            }
+          case BoneConstraintType::FollowPoint: {
+            /* On top of what its parent gives it (anim/follow_point.hh). Three points always turn it; one or two as
+             * Rotation says (one turns as the shape does there). */
+            const float turn = c.follow_rotation || c.follow_three ? c.follow_turn * w : 0.0f;
+            const float grow = c.follow_two && !c.follow_three && c.follow_scale &&
+                                       c.follow_scale_mode == FollowScaleMode::Uniform ?
+                                   1.0f + (c.follow_stretch - 1.0f) * w :
+                                   1.0f;
+            /* The turn, scale and change of shape go round the first point where it rested, as Harmony's do round its
+             * first pivot: a head away from it swings round it. The bone itself turns and scales round its head (the
+             * shape last, below), so the head is carried here. */
+            const Transform2D change = follow_shape_part(c.follow_shape, w) * Transform2D::rotate(turn) *
+                                       Transform2D{grow, 0.0f, 0.0f, grow, 0.0f, 0.0f};
+            const float2 around = parent_pose.apply(position) - c.follow_pivot;
+            position += parent_pose.inverted().apply_vector(c.follow_offset * w + change.apply_vector(around) - around);
+            angle += turn;
+            scale = scale * grow;
             break;
+          }
           case BoneConstraintType::ChildOf:
             if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
               /* The target's change from its setup, carrying the bone as a parent would. */
@@ -622,6 +637,19 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
           sy *= std::pow(across, -a) * std::pow(along, -a);
           p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
         }
+      }
+    }
+    /* Follow Point's change of shape (Along Line's stretch, three points' skew), last, around the head: a bone's own
+     * move, turn and scale can't hold it, so what it carries takes it from its pose. */
+    if (!setup_frame && !rests) {
+      for (const BoneConstraint &c : bone.constraints) {
+        const float w = std::clamp(c.influence, 0.0f, 1.0f);
+        if (c.type != BoneConstraintType::FollowPoint || !c.enabled || w <= 0.0f || c.follow_shape == Transform2D()) {
+          continue;
+        }
+        const float2 head = p.pose.apply({0, 0});
+        p.pose = Transform2D::translate(head) * follow_shape_part(c.follow_shape, w) * Transform2D::translate(-head) *
+                 p.pose;
       }
     }
     /* On frame 0 the bones are the setup pose, even mid-drag before the edit is recorded:

@@ -655,6 +655,9 @@ static json layer_to_json(const Layer &layer)
                  {"show_render", m.show_render},
                  {"show_points", m.show_points},
                  {"show_expanded", m.show_expanded}};
+      if (modifier_bends(m.type)) {
+        mj["show_mesh"] = m.show_mesh;
+      }
       if (m.type == ModifierType::Mirror) {
         mj["axis_x"] = m.axis_x;
         mj["axis_y"] = m.axis_y;
@@ -731,10 +734,22 @@ static json layer_to_json(const Layer &layer)
           mj["blend"] = num(m.deform_blend);
           mj["range"] = num(m.deform_range);
         }
-        if (m.type == ModifierType::EnvelopeDeform) {
+        if (m.type == ModifierType::CurveDeform || m.type == ModifierType::CageDeform) {
           mj["envelope_method"] = envelope_method_id(m.deform_envelope_method);
           mj["pre_blend"] = num(m.deform_pre_blend);
           mj["post_blend"] = num(m.deform_post_blend);
+        }
+        if (m.type == ModifierType::CurveDeform) {
+          mj["curve_method"] = curve_method_id(m.deform_curve_method);
+        }
+        if (m.type == ModifierType::CurveDeform || m.type == ModifierType::CageDeform) {
+          mj["influence"] = influence_type_id(m.deform_influence);
+          mj["influence_symmetric"] = m.deform_influence_symmetric;
+          mj["influence_left"] = num(m.deform_influence_left);
+          mj["influence_right"] = num(m.deform_influence_right);
+          mj["influence_begin"] = num(m.deform_influence_begin);
+          mj["influence_end"] = num(m.deform_influence_end);
+          mj["influence_fade"] = num(m.deform_influence_fade);
         }
         if (m.type == ModifierType::FollowDeform) {
           mj["point"] = {num(m.deform_point.x), num(m.deform_point.y)};
@@ -904,6 +919,13 @@ static json layer_to_json(const Layer &layer)
                      {"follow_shift2", {num(c.follow_shift2.x), num(c.follow_shift2.y)}},
                      {"follow_point_id", c.follow_point_id},
                      {"follow_point2_id", c.follow_point2_id},
+                     {"follow_three", c.follow_three},
+                     {"follow_point3", {num(c.follow_point3.x), num(c.follow_point3.y)}},
+                     {"follow_rest3", {num(c.follow_rest3.x), num(c.follow_rest3.y)}},
+                     {"follow_shift3", {num(c.follow_shift3.x), num(c.follow_shift3.y)}},
+                     {"follow_point3_id", c.follow_point3_id},
+                     {"follow_scale_mode", c.follow_scale_mode == FollowScaleMode::AlongLine ? "ALONG_LINE" : "UNIFORM"},
+                     {"follow_volume", num(c.follow_volume)},
                      {"fit", c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER"},
                      {"fit_layer", c.fit_layer},
                      {"overlap", num(c.overlap)},
@@ -930,6 +952,7 @@ static json layer_to_json(const Layer &layer)
           put_keys(cj, "influence_keys", c.influence_keys);
           put_keys(cj, "follow_shift_keys", c.follow_shift_keys);
           put_keys(cj, "follow_shift2_keys", c.follow_shift2_keys);
+          put_keys(cj, "follow_shift3_keys", c.follow_shift3_keys);
           put_keys(cj, "weight_keys", c.weight_keys);
           put_keys(cj, "wind_catch_keys", c.wind_catch_keys);
           put_keys(cj, "gravity_keys", c.gravity_keys);
@@ -2379,7 +2402,7 @@ static Layer layer_from_json(const json &j, int depth)
              : type == "RESAMPLE" || type == "SUBDIVIDE" ? ModifierType::Resample
              : type == "CURVE_DEFORM"               ? ModifierType::CurveDeform
              : type == "CAGE_DEFORM"                ? ModifierType::CageDeform
-             : type == "ENVELOPE_DEFORM"            ? ModifierType::EnvelopeDeform
+             : type == "ENVELOPE_DEFORM"            ? ModifierType::CurveDeform
              : type == "FOLLOW_DEFORM"              ? ModifierType::FollowDeform
              : type == "MESH_DEFORM" || type == "VECTOR_DEFORM" ? ModifierType::MeshDeform
                                                     : ModifierType::Mirror;
@@ -2439,7 +2462,12 @@ static Layer layer_from_json(const json &j, int depth)
       m.subdiv_by_length = get_string(mj, "split", "COUNT") != "COUNT";
       m.subdiv_spacing = std::max(1e-4f, get_float(mj, "spacing", m.subdiv_spacing));
       m.subdiv_pieces = std::clamp(get_int(mj, "pieces", m.subdiv_pieces), 1, 256);
-      if (!cage_method_from_id(get_string(mj, "cage_method", "MEAN_VALUE"), m.deform_cage_method)) {
+      /* Before format 5 Cage Deform had no Envelope method: "ENVELOPE" was Outline's first name. */
+      const std::string cage_method = get_string(mj, "cage_method", "MEAN_VALUE");
+      if (g_loading_version < 5 && cage_method == "ENVELOPE") {
+        m.deform_cage_method = CageMethod::Outline;
+      }
+      else if (!cage_method_from_id(cage_method, m.deform_cage_method)) {
         m.deform_cage_method = CageMethod::MeanValue;
       }
       if (!mesh_method_from_id(get_string(mj, "mesh_method", "CELLS"), m.deform_mesh_method)) {
@@ -2449,11 +2477,37 @@ static Layer layer_from_json(const json &j, int depth)
       m.deform_blend = std::clamp(get_float(mj, "blend", 0.5f), 0.0f, 1.0f);
       m.deform_range = std::clamp(get_float(mj, "range", 1.0f), 0.0f, 1.0f);
       m.deform_falloff = std::clamp(get_float(mj, "falloff", 0.25f), 0.0f, 1.0f);
-      if (!envelope_method_from_id(get_string(mj, "envelope_method", "STANDARD"), m.deform_envelope_method)) {
+      /* Blended was called Weighted until 2026-11-03. */
+      const std::string envelope_method = get_string(mj, "envelope_method", "STANDARD");
+      if (envelope_method == "WEIGHTED") {
+        m.deform_envelope_method = EnvelopeMethod::Blended;
+      }
+      else if (!envelope_method_from_id(envelope_method, m.deform_envelope_method)) {
         m.deform_envelope_method = EnvelopeMethod::Standard;
       }
       m.deform_pre_blend = std::max(get_float(mj, "pre_blend", 0.0f), 0.0f);
       m.deform_post_blend = get_float(mj, "post_blend", 0.0f);
+      if (!curve_method_from_id(get_string(mj, "curve_method", "SMOOTH"), m.deform_curve_method)) {
+        m.deform_curve_method = CurveMethod::Smooth;
+      }
+      if (!influence_type_from_id(get_string(mj, "influence", "EVERYWHERE"), m.deform_influence)) {
+        m.deform_influence = InfluenceType::Everywhere;
+      }
+      m.deform_influence_symmetric = get_bool(mj, "influence_symmetric", true);
+      const Modifier fresh;
+      m.deform_influence_left = std::max(get_float(mj, "influence_left", fresh.deform_influence_left), 0.0f);
+      m.deform_influence_right = std::max(get_float(mj, "influence_right", fresh.deform_influence_right), 0.0f);
+      m.deform_influence_begin = std::max(get_float(mj, "influence_begin", fresh.deform_influence_begin), 0.0f);
+      m.deform_influence_end = std::max(get_float(mj, "influence_end", fresh.deform_influence_end), 0.0f);
+      m.deform_influence_fade = std::max(get_float(mj, "influence_fade", fresh.deform_influence_fade), 0.0f);
+      /* Envelope Deform, a modifier of its own until 2026-11-03: Curve Deform on an open line, Cage Deform on a
+       * closed shape, either with the Envelope method and every setting it had (vector_deform_resolve_legacy picks
+       * which once all is read). */
+      if (type == "ENVELOPE_DEFORM") {
+        m.deform_curve_method = CurveMethod::Envelope;
+        m.deform_cage_method = CageMethod::Envelope;
+        m.deform_legacy = true;
+      }
     }
     if (m.type == ModifierType::Resample) {
       m.subdiv_by_length = get_string(mj, "split", "LENGTH") != "COUNT";
@@ -2489,6 +2543,7 @@ static Layer layer_from_json(const json &j, int depth)
     m.show_viewport = get_bool(mj, "show_viewport", true);
     m.show_render = get_bool(mj, "show_render", true);
     m.show_points = get_bool(mj, "show_points", false);
+    m.show_mesh = get_bool(mj, "show_mesh", false);
     m.show_expanded = get_bool(mj, "show_expanded", true);
     m.axis_x = get_bool(mj, "axis_x", true);
     m.axis_y = get_bool(mj, "axis_y", false);
@@ -2713,6 +2768,10 @@ static Layer layer_from_json(const json &j, int depth)
         c.follow_rest2 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
       }
       c.follow_rotation = get_bool(cj, "follow_rotation", true);
+      /* Before one point could turn, Rotation was saved on with nothing to do: such a bone stays still. */
+      if (!c.follow_two && !cj.contains("follow_scale_mode")) {
+        c.follow_rotation = false;
+      }
       c.follow_scale = get_bool(cj, "follow_scale", false);
       if (const auto it = cj.find("follow_shift"); it != cj.end() && it->is_array() && it->size() == 2) {
         c.follow_shift = {(*it)[0].get<float>(), (*it)[1].get<float>()};
@@ -2724,6 +2783,21 @@ static Layer layer_from_json(const json &j, int depth)
       get_keys(cj, "follow_shift2_keys", c.follow_shift2_keys);
       c.follow_point_id = get_id(cj, "follow_point_id");
       c.follow_point2_id = get_id(cj, "follow_point2_id");
+      c.follow_three = c.follow_two && get_bool(cj, "follow_three", false);
+      if (const auto it = cj.find("follow_point3"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_point3 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      if (const auto it = cj.find("follow_rest3"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_rest3 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      if (const auto it = cj.find("follow_shift3"); it != cj.end() && it->is_array() && it->size() == 2) {
+        c.follow_shift3 = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+      }
+      get_keys(cj, "follow_shift3_keys", c.follow_shift3_keys);
+      c.follow_point3_id = get_id(cj, "follow_point3_id");
+      c.follow_scale_mode =
+          get_string(cj, "follow_scale_mode", "UNIFORM") == "ALONG_LINE" ? FollowScaleMode::AlongLine : FollowScaleMode::Uniform;
+      c.follow_volume = get_float(cj, "follow_volume", 1.0f);
       c.shape_fit = get_string(cj, "fit", "WHOLE") == "CENTER" ? ShapeFit::Center : ShapeFit::Whole;
       c.fit_layer = get_id(cj, "fit_layer");
       c.overlap = std::clamp(get_float(cj, "overlap", 0.0f), 0.0f, 1.0f);

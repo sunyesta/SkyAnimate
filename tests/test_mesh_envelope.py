@@ -173,7 +173,7 @@ assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
 shutil.rmtree(folder, ignore_errors=True)
 art = next(l for l in layers.all() if l.name == "Art")
-assert art.modifiers[0]["mesh_method"] == "ENVELOPE" and art.modifiers[0]["blend"] == 1.0, art.modifiers[0]
+assert art.modifiers[0]["mesh_method"] == "OUTLINE" and art.modifiers[0]["blend"] == 1.0, art.modifiers[0]
 at(10)
 assert close(art.evaluated()[0][0], kept), (art.evaluated()[0][0], kept)
 

@@ -28,6 +28,7 @@ def new_layer(name):
 def add_deform(layer, target, kind="CAGE_DEFORM", **settings):
     layers.active = layer
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    layer.modifier_set(len(layer.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
     index = len(layer.modifiers) - 1
     layer.modifier_set(index, layer=target.name, shape=target.shapes[0][0], **{"split": "COUNT", **settings})
     return index
@@ -51,14 +52,15 @@ layers.active = art
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
 i = len(art.modifiers) - 1
 m = art.modifiers[i]
-assert m["cage_method"] == "OUTLINE" and m["resample_self"] is True, m
+# Envelope since 2026-11-03, which bends the drawing's own points and handles as Harmony does: no Resample Self.
+assert m["cage_method"] == "ENVELOPE" and m["resample_self"] is False, m
 assert m["split"] == "LENGTH" and abs(m["spacing"] - 0.009) < 1e-6, m
-art.modifier_set(i, layer=cage.name, shape=cage.shapes[0][0], split="COUNT")
+art.modifier_set(i, layer=cage.name, shape=cage.shapes[0][0], split="COUNT", cage_method="OUTLINE", resample_self=True)
 for kind in ("CURVE_DEFORM", "MESH_DEFORM"):
     layers.active = art
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
     other = art.modifiers[-1]
-    assert other["resample_self"] is False and other["cage_method"] == "MEAN_VALUE", other
+    assert other["resample_self"] is False, other
     assert ops.object.modifier_remove(index=str(len(art.modifiers) - 1)) == {'FINISHED'}
 layers.active = art
 assert ops.object.modifier_add(type="FOLLOW_DEFORM") == {'FINISHED'}

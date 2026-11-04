@@ -34,6 +34,7 @@ def new_layer(name, points, closed=False):
 def deform(layer, target, **settings):
     layers.active = layer
     assert ops.object.modifier_add(type="CURVE_DEFORM") == {'FINISHED'}
+    layer.modifier_set(len(layer.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get("CURVE_DEFORM", {}))
     layer.modifier_set(len(layer.modifiers) - 1, layer=target.name, shape=target.shapes[0][0], precision=0.0, **settings)
     return len(layer.modifiers) - 1
 
@@ -102,7 +103,7 @@ doc.frame_current = 0
 layers.active = caged
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
 caged.modifier_set(0 if caged.modifiers[0]["type"] == "CAGE_DEFORM" else 1, layer="mouth", shape=mouth.shapes[0][0], precision=0.0,
-                   cage_method="ENVELOPE")
+                   cage_method="OUTLINE")
 doc.frame_current = 10
 print("METRIC whole loop as a cage", shown(caged)[1], "the Part", shown(top_lip)[1])
 assert not near(shown(caged)[1], (0.0, 0.11), 0.05), "no longer needed? the cage carried the lip"

@@ -213,10 +213,10 @@ def bent_by(shape, name, cases, **settings):
     art = new_layer(name)
     art.add_curve([to_layer(c[:2]) for c in cases])
     assert ops.object.modifier_add(type="ENVELOPE_DEFORM") == {'FINISHED'}
-    art.modifier_set(0, layer=shape.name, shape=shape.shapes[0][0], precision=0.0, envelope_method="WEIGHTED",
+    art.modifier_set(0, layer=shape.name, shape=shape.shapes[0][0], precision=0.0, envelope_method="BLENDED",
                      **settings)
     m = art.modifiers[0]
-    assert m["envelope_method"] == "WEIGHTED" and m["kind"] == "Envelope", m
+    assert m["envelope_method"] == "BLENDED" and m["kind"] == "Envelope", m
     for key, value in settings.items():
         assert abs(m[key] - value) < 1e-6, (key, m[key])
     return art
@@ -236,7 +236,7 @@ def check(art, cases, what):
     # The Standard method (Harmony's envelope deformer) is something else: the test tells them apart.
     art.modifier_set(0, envelope_method="STANDARD")
     standard = statistics.median(errors(art, cases))
-    art.modifier_set(0, envelope_method="WEIGHTED")
+    art.modifier_set(0, envelope_method="BLENDED")
     assert standard > 0.05, (what, "Standard is not Weighted", standard)
     print(what, "median %.4f, worst %.4f (Standard %.3f)" % (statistics.median(e), e[worst], standard))
 
@@ -278,7 +278,7 @@ def small_and_large(scale):
     art = new_layer("Eye %g" % scale)
     art.add_curve(inside)
     assert ops.object.modifier_add(type="ENVELOPE_DEFORM") == {'FINISHED'}
-    art.modifier_set(0, layer=shape.name, shape=shape.shapes[0][0], precision=0.0, envelope_method="WEIGHTED")
+    art.modifier_set(0, layer=shape.name, shape=shape.shapes[0][0], precision=0.0, envelope_method="BLENDED")
     return shape, ring, art, inside
 
 
@@ -298,6 +298,18 @@ worst = max(math.dist((q[0] * 25.0, q[1] * 25.0), g) for q, g in zip(got_small, 
 assert worst < 1e-3 * moved, ("the small rig bends as the large one, scaled", worst, moved)
 print("small shape: worst %.6f of a %.3f move" % (worst, moved))
 
+# Its name until 2026-11-03, WEIGHTED, isn't taken from Python (old files still open with it as Blended:
+# test_envelope_retired).
+probe = new_layer("Old name")
+probe.add_curve([(0.0, 0.0), (0.1, 0.1)])
+assert ops.object.modifier_add(type="CURVE_DEFORM") == {'FINISHED'}
+try:
+    probe.modifier_set(0, envelope_method="WEIGHTED")
+    raise AssertionError("WEIGHTED was taken")
+except ValueError:
+    pass
+assert probe.modifiers[0]["envelope_method"] == "STANDARD", probe.modifiers[0]
+
 # Saved and opened again, the method and blends come back.
 folder = tempfile.mkdtemp()
 try:
@@ -305,7 +317,7 @@ try:
     assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
     assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
     m = next(l for l in oanim.data.layers.all() if l.name == "Pre 4").modifiers[0]
-    assert m["envelope_method"] == "WEIGHTED" and m["pre_blend"] == 4.0 and m["post_blend"] == 0.0, m
+    assert m["envelope_method"] == "BLENDED" and m["pre_blend"] == 4.0 and m["post_blend"] == 0.0, m
     m = next(l for l in oanim.data.layers.all() if l.name == "Post -2").modifiers[0]
     assert m["post_blend"] == -2.0, m
 finally:

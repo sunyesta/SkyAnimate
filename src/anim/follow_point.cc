@@ -143,6 +143,9 @@ static void order_followers(std::vector<Follower> &all, int i, std::vector<int> 
   r_order.push_back(i);
 }
 
+/* How far each way from a place the deform is read to see how it turns there. */
+static constexpr float FOLLOW_TURN_STEP = 0.002f;
+
 /* How a follower reads its deform on this frame. */
 struct PointReader {
   Modifier run;
@@ -171,6 +174,64 @@ struct PointReader {
     const float2 change = was >= 0 && is >= 0 ? points->second.points[size_t(is)].pos - points->first.points[size_t(was)].pos
                                               : float2();
     return now.apply(carried_at(at) + change * std::clamp(run.deform_strength, 0.0f, 1.0f));
+  }
+  /* A way `v` from place `at` as it rested, in the bone layer's space. */
+  float2 rested(float2 at, float2 v) const
+  {
+    return carried ? now.apply_vector(carried_at(at + v) - carried_at(at)) : rest.apply_vector(v);
+  }
+  /* How the shape has turned at place `at`, from how the deform turns two short ways from it (radians). */
+  float turned(float2 at) const
+  {
+    const float h = FOLLOW_TURN_STEP;
+    const float2 x = shown(at + float2(h, 0.0f)) - shown(at - float2(h, 0.0f));
+    const float2 y = shown(at + float2(0.0f, h)) - shown(at - float2(0.0f, h));
+    const float2 rx = rested(at, float2(2.0f * h, 0.0f)), ry = rested(at, float2(0.0f, 2.0f * h));
+    const Transform2D bent{x.x, x.y, y.x, y.y, 0.0f, 0.0f}, was{rx.x, rx.y, ry.x, ry.y, 0.0f, 0.0f};
+    const Transform2D a = bent * was.inverted();
+    return std::atan2(a.b - a.c, a.a + a.d);
+  }
+  /* The same at point `id` of the shape: how the curve's way through it has turned, as the deform's Strength says
+   * (Harmony's Kinematic Output). A point that's gone, or on no curve, doesn't turn. */
+  float turned_picked(float2 at, uint64_t id) const
+  {
+    float2 was, is;
+    if (!points || !point_way(points->first, id, was) || !point_way(points->second, id, is)) {
+      return 0.0f;
+    }
+    was = rested(at, was);
+    is = now.apply_vector(is);
+    return std::atan2(was.x * is.y - was.y * is.x, dot(was, is)) * std::clamp(run.deform_strength, 0.0f, 1.0f);
+  }
+  /* Which way the curve runs through point `id` of `drawing`: from its incoming handle to its outgoing one, or from the
+   * point before to the point after where those sit on it. */
+  static bool point_way(const VectorDrawing &drawing, uint64_t id, float2 &r_way)
+  {
+    const int index = drawing_point_index(drawing, id);
+    if (index < 0) {
+      return false;
+    }
+    for (const Curve &curve : drawing.curves) {
+      const int n = int(curve.points.size());
+      for (int i = 0; i < n; i++) {
+        if (curve.points[size_t(i)].point != index) {
+          continue;
+        }
+        float2 way = curve_handle(drawing, curve, i, false) - curve_handle(drawing, curve, i, true);
+        if (length(way) < 1e-7f) {
+          const int before = i > 0 ? i - 1 : (curve.closed ? n - 1 : i);
+          const int after = i < n - 1 ? i + 1 : (curve.closed ? 0 : i);
+          way = drawing.points[size_t(curve.points[size_t(after)].point)].pos -
+                drawing.points[size_t(curve.points[size_t(before)].point)].pos;
+        }
+        if (length(way) < 1e-7f) {
+          return false;
+        }
+        r_way = way;
+        return true;
+      }
+    }
+    return false;
   }
 };
 
@@ -218,7 +279,7 @@ static PointReader point_reader(Document &doc, const Follower &f, ShapesRead &re
   const auto key = std::make_pair(f.owner->id, r.run.name);
   const auto kept = read.shapes.find(key);
   r.shape = kept != read.shapes.end() ? kept->second : (read.shapes[key] = vector_deform_shape(doc, *f.owner, r.run));
-  if (f.c->follow_point_id != 0 || f.c->follow_point2_id != 0) {
+  if (f.c->follow_point_id != 0 || f.c->follow_point2_id != 0 || f.c->follow_point3_id != 0) {
     const auto [at, fresh] = read.points.try_emplace(key);
     if (fresh) {
       vector_deform_shape_read(doc, *f.owner, r.run, at->second.first, at->second.second);
@@ -228,46 +289,113 @@ static PointReader point_reader(Document &doc, const Follower &f, ShapesRead &re
   return r;
 }
 
+/* Harmony's guards (its Point Kinematic Output, DeformTransformOut.dll): a point within this squared distance of the first
+ * is moved by FOLLOW_NUDGE before the bend is read, so two points never sit on one place. */
+static constexpr float FOLLOW_CLOSE_SQ = 1e-5f;
+static constexpr float FOLLOW_NUDGE = 1e-4f;
+/* How short the line between two points is taken to be at least, as it rested and as it is now; a line bent to
+ * nothing points along x, this long. */
+static constexpr float FOLLOW_REST_MIN = 1e-4f;
+static constexpr float FOLLOW_NOW_MIN = 1e-5f;
+static constexpr float FOLLOW_NOW_NONE = 1e-3f;
+
+static float length_sq(float2 v)
+{
+  return v.x * v.x + v.y * v.y;
+}
+
 static void follower_update(Document &doc, Follower &f, ShapesRead &read)
 {
   BoneConstraint &c = *f.c;
   const PointReader r = point_reader(doc, f, read);
   const Transform2D to_world = layer_world_transform(doc, f.rig->id);
-  const auto shown = [&](float2 point, float2 shift, uint64_t id) {
-    return id != 0 ? r.shown_picked(point, id) : r.shown(point + shift);
-  };
-  const float2 here = shown(c.follow_point, c.follow_shift, c.follow_point_id);
-  const float2 start = r.now.apply(r.carried_at(c.follow_point));
-  c.follow_offset = here - (r.carried ? start : c.follow_rest);
-  c.follow_now = to_world.apply(here);
-  if (!c.follow_two) {
+  const int n = c.follow_count();
+  /* Where each point rested, in the bone layer's space. */
+  float2 was[3];
+  for (int i = 0; i < n; i++) {
+    was[i] = r.carried ? r.now.apply(r.carried_at(c.follow_point_at(i))) : c.follow_rest_at(i);
+  }
+  /* Points too close to the first are moved apart, as Harmony does: the second along x, the third up and then across. */
+  float2 nudge[3];
+  if (n >= 2 && length_sq(was[1] - was[0]) < FOLLOW_CLOSE_SQ) {
+    nudge[1] = {FOLLOW_NUDGE, 0.0f};
+  }
+  if (n == 3) {
+    if (length_sq(was[2] - was[0]) < FOLLOW_CLOSE_SQ) {
+      nudge[2] = {0.0f, FOLLOW_NUDGE};
+    }
+    if (length_sq(was[2] + nudge[2] - was[0]) < FOLLOW_CLOSE_SQ) {
+      nudge[2] = nudge[2] + float2(FOLLOW_NUDGE, FOLLOW_NUDGE);
+    }
+  }
+  /* Each point where it is now, in the bone layer's space. */
+  const Transform2D to_owner = (r.carried ? r.now : r.rest).inverted();
+  float2 here[3];
+  for (int i = 0; i < n; i++) {
+    const uint64_t id = c.follow_id_at(i);
+    const float2 at = c.follow_point_at(i) + to_owner.apply_vector(nudge[i]);
+    here[i] = id != 0 ? r.shown_picked(at, id) : r.shown(at + c.follow_shift_at(i));
+    was[i] = was[i] + nudge[i];
+    c.follow_now_at(i) = to_world.apply(here[i]);
+  }
+  c.follow_pivot = was[0];
+  c.follow_offset = here[0] - was[0];
+  if (n == 1) {
+    if (c.follow_rotation) {
+      c.follow_turn = c.follow_point_id != 0 ? r.turned_picked(c.follow_point, c.follow_point_id)
+                                             : r.turned(c.follow_point + c.follow_shift);
+    }
     return;
   }
-  const float2 here2 = shown(c.follow_point2, c.follow_shift2, c.follow_point2_id);
-  c.follow_now2 = to_world.apply(here2);
-  const float2 was = r.carried ? r.now.apply(r.carried_at(c.follow_point2)) - start : c.follow_rest2 - c.follow_rest;
-  const float2 is = here2 - here;
-  if (length(was) > 1e-6f && length(is) > 1e-6f) {
-    c.follow_turn = std::atan2(was.x * is.y - was.y * is.x, dot(was, is));
-    c.follow_stretch = length(is) / length(was);
+  const float2 v = was[1] - was[0];
+  float2 w = here[1] - here[0];
+  if (n == 3) {
+    const float2 v2 = was[2] - was[0], w2 = here[2] - here[0];
+    /* Three on a line give Harmony no change at all: it doesn't follow them, not even their move. */
+    const double cross = double(v.x) * double(v2.y) - double(v.y) * double(v2.x);
+    if (cross == 0.0 || length_sq(was[2] - was[1]) == 0.0f) {
+      c.follow_offset = {};
+      return;
+    }
+    /* The change that takes the three as they rested to where they are: the bone's angle takes its turn, its shape the
+     * rest (both scales and the skew). Nearly on a line, that's a big skew, as in Harmony. */
+    const Transform2D bent{w.x, w.y, w2.x, w2.y, 0.0f, 0.0f}, rested{v.x, v.y, v2.x, v2.y, 0.0f, 0.0f};
+    const Transform2D a = bent * rested.inverted();
+    c.follow_turn = std::atan2(a.b - a.c, a.a + a.d);
+    c.follow_shape = a * Transform2D::rotate(-c.follow_turn);
+    return;
+  }
+  if (length_sq(w) == 0.0f) {
+    w = {FOLLOW_NOW_NONE, 0.0f};
+  }
+  const float rested = std::max(length(v), FOLLOW_REST_MIN), now = std::max(length(w), FOLLOW_NOW_MIN);
+  c.follow_turn = std::atan2(v.x * w.y - v.y * w.x, dot(v, w));
+  c.follow_stretch = now / rested;
+  if (c.follow_scale && c.follow_scale_mode == FollowScaleMode::AlongLine) {
+    /* Stretched along the line as it is now, squashed across it. */
+    const float along = c.follow_stretch;
+    const float across = std::max((rested / now - 1.0f) * c.follow_volume + 1.0f, 1e-4f);
+    const float2 d = normalize(w);
+    const float k = along - across;
+    c.follow_shape = {across + k * d.x * d.x, k * d.x * d.y, k * d.x * d.y, across + k * d.y * d.y, 0.0f, 0.0f};
   }
 }
 
 /* Points of the shape rest where the shape has them. */
 static void follow_picked_rest(const Document &doc, BoneConstraint &c, const Layer &owner, const Modifier &m)
 {
-  if (c.follow_point_id == 0 && c.follow_point2_id == 0) {
+  if (c.follow_point_id == 0 && c.follow_point2_id == 0 && c.follow_point3_id == 0) {
     return;
   }
   VectorDrawing rest, bent;
   if (!vector_deform_shape_read(doc, owner, m, rest, bent)) {
     return;
   }
-  for (const bool second : {false, true}) {
-    const uint64_t id = second ? c.follow_point2_id : c.follow_point_id;
+  for (int i = 0; i < 3; i++) {
+    const uint64_t id = c.follow_id_at(i);
     const int at = id != 0 ? drawing_point_index(rest, id) : -1;
     if (at >= 0) {
-      (second ? c.follow_point2 : c.follow_point) = rest.points[size_t(at)].pos;
+      c.follow_point_at(i) = rest.points[size_t(at)].pos;
     }
   }
 }
@@ -308,6 +436,7 @@ void follow_points_update(Document &doc)
         c.follow_offset = {};
         c.follow_turn = 0.0f;
         c.follow_stretch = 1.0f;
+        c.follow_shape = {};
         c.follow_error.clear();
         Layer *owner = nullptr;
         const Modifier *m = follow_point_modifier(doc, c, &owner);
@@ -320,12 +449,13 @@ void follow_points_update(Document &doc)
         if (doc.frame_current == 0) {
           follow_picked_rest(doc, c, *owner, *m);
         }
-        c.follow_now = layer_world_transform(doc, owner->id).apply(c.follow_point + (c.follow_point_id != 0 ? float2() : c.follow_shift));
-        c.follow_now2 = layer_world_transform(doc, owner->id).apply(c.follow_point2 + (c.follow_point2_id != 0 ? float2() : c.follow_shift2));
-        /* Layers' setup is what they are now (only the bones rest), so frame 0's place is kept from frame 0. */
-        if (doc.frame_current == 0) {
-          c.follow_rest = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point);
-          c.follow_rest2 = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point2);
+        for (int k = 0; k < 3; k++) {
+          c.follow_now_at(k) = layer_world_transform(doc, owner->id)
+                                   .apply(c.follow_point_at(k) + (c.follow_id_at(k) != 0 ? float2() : c.follow_shift_at(k)));
+          /* Layers' setup is what they are now (only the bones rest), so frame 0's place is kept from frame 0. */
+          if (doc.frame_current == 0) {
+            c.follow_rest_at(k) = layer_relative_transform(doc, rig.id, owner->id).apply(c.follow_point_at(k));
+          }
         }
         if (!c.enabled || !m->show_viewport) {
           continue;
@@ -431,7 +561,7 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
 {
   c.follow_layer = 0;
   c.follow_modifier = 0;
-  c.follow_point_id = c.follow_point2_id = 0;
+  c.follow_point_id = c.follow_point2_id = c.follow_point3_id = 0;
   if (!owner || !m) {
     return;
   }
@@ -444,11 +574,10 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
   const std::vector<BonePose> poses = armature_pose(rig, true);
   if (const BonePose *pose = bone_pose_find(poses, bone.id)) {
     follow_point_place(doc, rig, c, *owner, layer_setup_relative_transform(doc, rig.id, owner->id).inverted().apply(pose->head));
-    c.follow_point2 = c.follow_point;
-    if (c.follow_two) {
-      c.follow_two = false;
-      follow_point_second(doc, rig, bone, c, true);
-    }
+    c.follow_point2 = c.follow_point3 = c.follow_point;
+    const int count = c.follow_count();
+    c.follow_two = c.follow_three = false;
+    follow_point_count(doc, rig, bone, c, count);
   }
 }
 
@@ -456,9 +585,9 @@ void follow_point_aim(Document &doc, Layer &rig, const Bone &bone, BoneConstrain
 static constexpr float FOLLOW_SOLVE_STEP = 0.002f;
 static constexpr float FOLLOW_SOLVE_REACH = 0.2f;
 
-float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, bool second, float2 to)
+float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstraint &c, int which, float2 to)
 {
-  const float2 shift = second ? c.follow_shift2 : c.follow_shift;
+  const float2 shift = c.follow_shift_at(which);
   Follower f;
   f.rig = &rig;
   f.bone = &bone;
@@ -471,7 +600,7 @@ float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstrai
   ShapesRead read;
   const PointReader r = point_reader(doc, f, read);
   const float2 target = layer_world_transform(doc, rig.id).inverted().apply(to);
-  const float2 base = second ? c.follow_point2 : c.follow_point;
+  const float2 base = c.follow_point_at(which);
   float2 at = base + shift;
   /* Newton's method through the deform: it has no inverse, and a point moved by hand stays close to where it was. */
   for (int i = 0; i < 8; i++) {
@@ -493,20 +622,20 @@ float2 follow_point_shift_to(Document &doc, Layer &rig, Bone &bone, BoneConstrai
 }
 
 void follow_point_place(const Document &doc, const Layer &rig, BoneConstraint &c, const Layer &owner, float2 point,
-                        bool second)
+                        int which)
 {
-  (second ? c.follow_point2 : c.follow_point) = point;
-  (second ? c.follow_rest2 : c.follow_rest) = layer_setup_relative_transform(doc, rig.id, owner.id).apply(point);
+  c.follow_point_at(which) = point;
+  c.follow_rest_at(which) = layer_setup_relative_transform(doc, rig.id, owner.id).apply(point);
 }
 
-void follow_point_pick(Document &doc, const Layer &rig, BoneConstraint &c, bool second, uint64_t id)
+void follow_point_pick(Document &doc, const Layer &rig, BoneConstraint &c, int which, uint64_t id)
 {
-  (second ? c.follow_point2_id : c.follow_point_id) = id;
+  c.follow_id_at(which) = id;
   Layer *owner = nullptr;
   const Modifier *m = follow_point_modifier(doc, c, &owner);
   if (m && id != 0) {
     follow_picked_rest(doc, c, *owner, *m);
-    follow_point_place(doc, rig, c, *owner, second ? c.follow_point2 : c.follow_point, second);
+    follow_point_place(doc, rig, c, *owner, c.follow_point_at(which), which);
   }
 }
 
@@ -518,8 +647,9 @@ void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c)
     return;
   }
   /* A point of the shape is on the far side: the copy has its own place across from it. */
-  c.follow_point_id = c.follow_point2_id = 0;
-  const float2 rest(-c.follow_rest.x, c.follow_rest.y), rest2(-c.follow_rest2.x, c.follow_rest2.y);
+  c.follow_point_id = c.follow_point2_id = c.follow_point3_id = 0;
+  /* As they rested, before the deform changes. */
+  const float2 rests[3] = {c.follow_rest, c.follow_rest2, c.follow_rest3};
   const std::string partner = bone_mirror_name(owner->name);
   if (partner != owner->name) {
     const std::vector<const Layer *> flat = document_layers_flat(doc);
@@ -542,23 +672,23 @@ void follow_point_mirror(Document &doc, const Layer &rig, BoneConstraint &c)
     }
   }
   const Transform2D to_owner = layer_setup_relative_transform(doc, rig.id, owner->id).inverted();
-  follow_point_place(doc, rig, c, *owner, to_owner.apply(rest));
-  follow_point_place(doc, rig, c, *owner, to_owner.apply(rest2), true);
-  c.follow_shift = c.follow_shift2 = {};
-  c.follow_shift_keys = {};
-  c.follow_shift2_keys = {};
+  for (int i = 0; i < 3; i++) {
+    follow_point_place(doc, rig, c, *owner, to_owner.apply(float2(-rests[i].x, rests[i].y)), i);
+    c.follow_shift_at(i) = {};
+    c.follow_shift_keys_at(i) = {};
+  }
 }
 
-/* How far from the first a second point starts, in the bone layer: spread out, the angle stays steady. */
+/* How far from the first a second or third point starts, in the bone layer: spread out, the angle stays steady. */
 static constexpr float FOLLOW_SECOND_REACH = 0.1f;
 
-void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, bool on)
+void follow_point_count(const Document &doc, const Layer &rig, const Bone &bone, BoneConstraint &c, int count)
 {
-  c.follow_two = on;
+  count = std::clamp(count, 1, 3);
+  c.follow_two = count >= 2;
+  c.follow_three = count >= 3;
   Layer *owner = nullptr;
-  if (!on || length(c.follow_point2 - c.follow_point) > 1e-6f ||
-      !follow_point_modifier(const_cast<Document &>(doc), c, &owner))
-  {
+  if (!follow_point_modifier(const_cast<Document &>(doc), c, &owner)) {
     return;
   }
   const std::vector<BonePose> poses = armature_pose(rig, true);
@@ -567,9 +697,17 @@ void follow_point_second(const Document &doc, const Layer &rig, const Bone &bone
     return;
   }
   const float2 along = pose->tail - pose->head;
-  const float2 to = c.follow_rest + (length(along) > 1e-6f ? normalize(along) : float2(1.0f, 0.0f)) *
-                                        std::max(length(along), FOLLOW_SECOND_REACH);
-  follow_point_place(doc, rig, c, *owner, layer_setup_relative_transform(doc, rig.id, owner->id).inverted().apply(to), true);
+  const float2 way = length(along) > 1e-6f ? normalize(along) : float2(1.0f, 0.0f);
+  const float reach = std::max(length(along), FOLLOW_SECOND_REACH);
+  const Transform2D to_owner = layer_setup_relative_transform(doc, rig.id, owner->id).inverted();
+  /* One never put anywhere (still on the first) starts along the bone (the second) or square to it (the third). */
+  for (int i = 1; i < count; i++) {
+    if (c.follow_id_at(i) != 0 || length(c.follow_point_at(i) - c.follow_point) > 1e-6f) {
+      continue;
+    }
+    const float2 to = c.follow_rest + (i == 1 ? way : float2(-way.y, way.x)) * reach;
+    follow_point_place(doc, rig, c, *owner, to_owner.apply(to), i);
+  }
 }
 
 }  // namespace oanim

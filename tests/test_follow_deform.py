@@ -113,6 +113,7 @@ for shape, kind, deform in ((cage, "Cage", "CAGE_DEFORM"), (line, "Line", "CURVE
     probe.add_curve([(0.2, 0.2), (0.21, 0.2)])
     layers.active = probe
     assert ops.object.modifier_add(type=deform) == {'FINISHED'}
+    probe.modifier_set(len(probe.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(deform, {}))
     probe.modifier_set(len(probe.modifiers) - 1, layer=shape.name, shape=shape.shapes[0][0], precision=0.0)
     rest = drawn(rider)
     place(shape, lambda p: (p[0] * 1.2 + 0.2 * p[1] + 0.1, p[1] + 0.3 * p[0] * p[0] - 0.1))
@@ -258,6 +259,7 @@ for layer in (eye, skin):
     assert ops.layer.move_to_group(group=str(face.id)) == {'FINISHED'}
 layers.active = face
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
+face.modifier_set(len(face.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get("CAGE_DEFORM", {}))
 face.modifier_set(0, layer=face_cage.name, shape=face_cage.shapes[0][0])
 add_follow(eye, face_cage)
 rest = drawn(eye)

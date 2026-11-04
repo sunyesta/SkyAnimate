@@ -420,6 +420,9 @@ struct BoneSpring {
   bool operator==(const BoneSpring &) const = default;
 };
 
+/* Follow Point's Scale (BoneConstraint::follow_scale_mode). */
+enum class FollowScaleMode { Uniform, AlongLine };
+
 struct BoneConstraint {
   BoneConstraintType type = BoneConstraintType::LimitAngle;
   /* Shown in its box's header; the type's name to start with. */
@@ -485,29 +488,60 @@ struct BoneConstraint {
   float2 follow_rest;
   bool follow_show = false;
   /* FollowPoint with a second point (`follow_two`, a place of its own on the shape, as the first): the way from the first
-   * to it turns the bone (Rotation) and how far apart they are scales it (Scale). */
+   * to it turns the bone (Rotation) and how far apart they are scales it (Scale). With one point, Rotation turns it as
+   * the shape turns there. With a third (`follow_three`, Harmony's Three-Point Sampling), the three set its turn, both
+   * its scales and its skew, Rotation and Scale or not. */
   bool follow_two = false;
-  float2 follow_point2;
-  float2 follow_rest2;
+  bool follow_three = false;
+  float2 follow_point2, follow_point3;
+  float2 follow_rest2, follow_rest3;
   bool follow_rotation = true;
   bool follow_scale = false;
+  /* Scale's way: the whole bone as the two points grow apart, or (Harmony's Two-Point Sampling with Scaling) stretched
+   * along the line through them and squashed across it by (1 / stretch - 1) * `follow_volume` + 1: 1 keeps the area,
+   * 0 doesn't squash. */
+  FollowScaleMode follow_scale_mode = FollowScaleMode::Uniform;
+  float follow_volume = 1.0f;
   /* FollowPoint: how far each point has been moved from where it rests on this frame, in that layer's space (keyable:
    * keys hold the change from setup, so moving the point on frame 0 moves it on every frame). */
   float2 follow_shift;
-  float2 follow_shift2;
-  Channel<float2> follow_shift_keys, follow_shift2_keys;
+  float2 follow_shift2, follow_shift3;
+  Channel<float2> follow_shift_keys, follow_shift2_keys, follow_shift3_keys;
   /* FollowPoint: or a point of the deform's shape (its id; 0: the place above): the bone takes that point's change, so
    * there is nothing to drag or shift. The place above is kept where it rests, for letting go of it. */
-  uint64_t follow_point_id = 0, follow_point2_id = 0;
+  uint64_t follow_point_id = 0, follow_point2_id = 0, follow_point3_id = 0;
   /* FollowPoint, worked out every frame and never saved (anim/follow_point.hh): the move, in the bone layer's space;
    * where the point is now (document space); and why it can't follow (empty when it can). */
   float2 follow_offset;
   float2 follow_now;
   std::string follow_error;
-  /* And with the second point: its turn from frame 0 (radians), how much further apart they are, and where it is now. */
+  /* And its turn from frame 0 (radians), how much further apart two points are, and where the others are now. */
   float follow_turn = 0.0f;
   float follow_stretch = 1.0f;
-  float2 follow_now2;
+  float2 follow_now2, follow_now3;
+  /* The change of shape that a turn and a scale can't hold (Along Line's stretch, three points' skew), in the bone
+   * layer's space: only its linear part is used. Identity with none. */
+  Transform2D follow_shape;
+  /* Where the first point rested, in the bone layer's space: the turn, scale and shape go round it, as Harmony's Point
+   * Kinematic Output's do round its first pivot. */
+  float2 follow_pivot;
+
+  /* How many points it goes by (1-3), and point `i`'s settings (0: the first). */
+  int follow_count() const { return follow_two ? (follow_three ? 3 : 2) : 1; }
+  float2 &follow_point_at(int i) { return i == 2 ? follow_point3 : i == 1 ? follow_point2 : follow_point; }
+  const float2 &follow_point_at(int i) const { return i == 2 ? follow_point3 : i == 1 ? follow_point2 : follow_point; }
+  float2 &follow_rest_at(int i) { return i == 2 ? follow_rest3 : i == 1 ? follow_rest2 : follow_rest; }
+  const float2 &follow_rest_at(int i) const { return i == 2 ? follow_rest3 : i == 1 ? follow_rest2 : follow_rest; }
+  float2 &follow_shift_at(int i) { return i == 2 ? follow_shift3 : i == 1 ? follow_shift2 : follow_shift; }
+  const float2 &follow_shift_at(int i) const { return i == 2 ? follow_shift3 : i == 1 ? follow_shift2 : follow_shift; }
+  Channel<float2> &follow_shift_keys_at(int i)
+  {
+    return i == 2 ? follow_shift3_keys : i == 1 ? follow_shift2_keys : follow_shift_keys;
+  }
+  uint64_t &follow_id_at(int i) { return i == 2 ? follow_point3_id : i == 1 ? follow_point2_id : follow_point_id; }
+  uint64_t follow_id_at(int i) const { return i == 2 ? follow_point3_id : i == 1 ? follow_point2_id : follow_point_id; }
+  float2 &follow_now_at(int i) { return i == 2 ? follow_now3 : i == 1 ? follow_now2 : follow_now; }
+  const float2 &follow_now_at(int i) const { return i == 2 ? follow_now3 : i == 1 ? follow_now2 : follow_now; }
   /* Dynamics, per channel. */
   BoneSpring angle_spring{.limit = 0.7853982f}, position_spring{.limit = 0.1f},
       scale_spring{.limit = 0.5f};
@@ -705,19 +739,19 @@ enum class ModifierType {
   CurveDeform,
   CageDeform,
   MeshDeform,
-  FollowDeform,
-  EnvelopeDeform
+  FollowDeform
 };
 
 /* The deform modifiers (anim/vector_deform.hh): a shape on another layer bends this one. Curve Deform follows an
- * open line, Cage Deform one closed shape, Mesh Deform a grid or a mesh of cells drawn by hand, and Envelope Deform
- * (Toon Boom Harmony's envelope deformer, exactly) one line or loop, each point carried by its nearest place on it.
- * They share their settings (the deform_* fields). Follow Deform (Harmony's Point Kinematic Output) reads any of those shapes at a point
+ * open line, Cage Deform one closed shape, and Mesh Deform a grid or a mesh of cells drawn by hand; Curve and Cage
+ * Deform's Envelope method (Toon Boom Harmony's envelope deformer, exactly) carries each point by its nearest place on
+ * the line or loop. Envelope Deform was a modifier of its own until 2026-11-03: files and Python saying
+ * ENVELOPE_DEFORM get Curve or Cage Deform, by the shape, with Envelope picked. They share their settings (the deform_* fields). Follow Deform (Harmony's Point Kinematic Output) reads any of those shapes at a point
  * of its own and carries the whole drawing by that, without bending it. */
 inline bool modifier_is_deform(ModifierType type)
 {
   return type == ModifierType::CurveDeform || type == ModifierType::CageDeform || type == ModifierType::MeshDeform ||
-         type == ModifierType::FollowDeform || type == ModifierType::EnvelopeDeform;
+         type == ModifierType::FollowDeform;
 }
 /* The deforms that bend a drawing point by point, by weights. */
 inline bool modifier_bends(ModifierType type)
@@ -728,7 +762,6 @@ inline bool modifier_bends(ModifierType type)
 inline const char *deform_type_name(ModifierType type)
 {
   return type == ModifierType::FollowDeform     ? "Follow Deform"
-         : type == ModifierType::EnvelopeDeform ? "Envelope Deform"
          : type == ModifierType::CurveDeform ? "Curve Deform"
          : type == ModifierType::CageDeform  ? "Cage Deform"
                                              : "Mesh Deform";
@@ -736,7 +769,6 @@ inline const char *deform_type_name(ModifierType type)
 inline const char *deform_type_id(ModifierType type)
 {
   return type == ModifierType::FollowDeform     ? "FOLLOW_DEFORM"
-         : type == ModifierType::EnvelopeDeform ? "ENVELOPE_DEFORM"
          : type == ModifierType::CurveDeform ? "CURVE_DEFORM"
          : type == ModifierType::CageDeform  ? "CAGE_DEFORM"
                                              : "MESH_DEFORM";
@@ -772,32 +804,55 @@ bool modifier_makes_points(const Modifier &m);
  * inside squashes where a side bulges or stretches), Rigid (as rigid as possible: the inside keeps its shape as far as
  * it can, the outline still exact) or Outline (after Toon Boom Harmony's envelopes, without their tearing: each side of
  * the cage carries what lies near it, at its distance from it, so lines along the outline keep their width; the sides
- * blended by nearness, as much as Blend says). Harmony's own, exactly, is Envelope Deform. */
-enum class CageMethod { MeanValue, Rigid, Outline };
+ * blended by nearness, as much as Blend says) or Envelope (Harmony's own, exactly: each point carried by its nearest
+ * place on the loop, with the Envelope settings Curve Deform's Envelope has). */
+enum class CageMethod { MeanValue, Rigid, Outline, Envelope };
 
-/* A Cage Method's name in files and Python ("MEAN_VALUE", "RIGID", "OUTLINE"), and back (false for none: a file's
- * "GREEN", a method since removed, opens as Mean Value). Outline was called Envelope until Envelope Deform came:
- * "ENVELOPE" still reads as Outline. */
+/* A Cage Method's name in files and Python ("MEAN_VALUE", "RIGID", "OUTLINE", "ENVELOPE"), and back (false for none:
+ * a file's "GREEN", a method since removed, opens as Mean Value). Outline was called Envelope until Envelope Deform
+ * came: in files before format 5, "ENVELOPE" is Outline (oanim_file.cc). */
 const char *cage_method_id(CageMethod method);
 bool cage_method_from_id(const std::string &id, CageMethod &r_method);
 
-/* How Mesh Deform bends what is in its mesh: Cells (each cell's patch), Envelope (the outer cells keep what lies near
+/* How Mesh Deform bends what is in its mesh: Cells (each cell's patch), Outline (the outer cells keep what lies near
  * the outline at its distance from it) or Points (each line of the mesh carries what lies near it, as a bone, by
  * weights fixed at rest that fade by Falloff). */
-enum class MeshMethod { Cells, Envelope, Points };
+enum class MeshMethod { Cells, Outline, Points };
 
-/* A Mesh Method's name in files and Python ("CELLS", "ENVELOPE", "POINTS"), and back. */
+/* A Mesh Method's name in files and Python ("CELLS", "OUTLINE", "POINTS"), and back. Outline was called Envelope:
+ * "ENVELOPE" still reads as Outline. */
 const char *mesh_method_id(MeshMethod method);
 bool mesh_method_from_id(const std::string &id, MeshMethod &r_method);
 
 /* How Envelope Deform carries what is around its shape, both as Toon Boom Harmony does: Standard (its envelope
- * deformer: each point by its single nearest place, turning with the shape there) or Weighted (its Weighted Deform
- * node: each point moved, never turned, by a smooth blend of the moves of places all along the shape). */
-enum class EnvelopeMethod { Standard, Weighted };
+ * deformer: each point by its single nearest place, turning with the shape there) or Blended (its Weighted Deform
+ * node: each point moved, never turned, by a smooth blend of the moves of places all along the shape). Blended was
+ * called Weighted until 2026-11-03, too like the Weights setting below it. */
+enum class EnvelopeMethod { Standard, Blended };
 
-/* An Envelope Method's name in files and Python ("STANDARD", "WEIGHTED"), and back. */
+/* An Envelope Method's name in files and Python ("STANDARD", "BLENDED"), and back. Blended's old name, "WEIGHTED", is
+ * read only from files (oanim_file.cc); Python doesn't take it. */
 const char *envelope_method_id(EnvelopeMethod method);
 bool envelope_method_from_id(const std::string &id, EnvelopeMethod &r_method);
+
+/* How Curve Deform carries what is around its line: Smooth (the nearest places blended, far points following the line
+ * smoothed, so nothing tears) or Envelope (exactly Envelope Deform on the line, with its Method, Pre-Blend, Post-Blend
+ * and Influence: Standard is Toon Boom Harmony's Curve deformer, each point by its single nearest place, so the drawing
+ * creases where two places are about equally near, as Harmony's does). */
+enum class CurveMethod { Smooth, Envelope };
+
+/* A Curve Method's name in files and Python ("SMOOTH", "ENVELOPE"), and back. */
+const char *curve_method_id(CurveMethod method);
+bool curve_method_from_id(const std::string &id, CurveMethod &r_method);
+
+/* What Envelope Deform's Standard (and Curve Deform's Envelope) reach, as Harmony's Curve nodes' region of influence:
+ * Everywhere (Harmony's Infinite) or a Capsule round each segment of the shape (Harmony's Elliptic: a band out to each
+ * side, a half ellipse past each end, and a fade outside it). */
+enum class InfluenceType { Everywhere, Capsule };
+
+/* An Influence's name in files and Python ("EVERYWHERE", "CAPSULE"), and back. */
+const char *influence_type_id(InfluenceType type);
+bool influence_type_from_id(const std::string &id, InfluenceType &r_type);
 
 struct Modifier {
   ModifierType type = ModifierType::Mirror;
@@ -806,6 +861,9 @@ struct Modifier {
   bool show_render = true;
   /* Show Points: the points it adds marked in the viewport (hollow teal dots, where they end up; never picked). */
   bool show_points = false;
+  /* Show Mesh, on the deforms that bend (Curve, Cage and Mesh Deform): an even grid over what it reaches, bent as it
+   * bends it now, so its tears and stretches show in the space between the lines (vector_deform_grid_view). */
+  bool show_mesh = false;
   /* Shown open in the Modifiers tab. */
   bool show_expanded = true;
   /* Mirror: across the layer's vertical axis (x flips) and/or its horizontal one, through
@@ -904,12 +962,26 @@ struct Modifier {
    * whole cage; half way, as far as the cage is big; less, less. Past it, what lies inside goes as the cage does as a
    * whole. */
   float deform_range = 1.0f;
-  /* Envelope Deform's Method, and Weighted's Pre-Blend and Post-Blend (Harmony's Weighted Deform's): Pre-Blend, 0 or
+  /* Envelope Deform's Method, and Blended's Pre-Blend and Post-Blend (Harmony's Weighted Deform's): Pre-Blend, 0 or
    * more, evens out how the places share a point, the most near the shape (ln(1 + it) is added to every distance);
    * Post-Blend sharpens that sharing (above 0, each share to the power 1 + it) or softens it (below 0). */
   EnvelopeMethod deform_envelope_method = EnvelopeMethod::Standard;
   float deform_pre_blend = 0.0f;
   float deform_post_blend = 0.0f;
+  /* Curve Deform's Method. */
+  CurveMethod deform_curve_method = CurveMethod::Smooth;
+  /* Influence (Envelope Deform's Standard, and Curve Deform's Envelope), in layer units: with Capsule each segment of the
+   * shape reaches `deform_influence_left` out on its left (the way it runs turned a quarter turn anticlockwise) and
+   * `_right` on its right, `_begin` past its start and `_end` past its end (a half ellipse, centred on the middle of
+   * the band), and fades out over `_fade` beyond that. With `deform_influence_symmetric` Right is Left and Begin is End.
+   * The defaults are Harmony's (1 field across, 1 along, a fade of half a field). */
+  InfluenceType deform_influence = InfluenceType::Everywhere;
+  bool deform_influence_symmetric = true;
+  float deform_influence_left = 1.0f / 12.0f;
+  float deform_influence_right = 1.0f / 12.0f;
+  float deform_influence_begin = 1.0f / 9.0f;
+  float deform_influence_end = 1.0f / 9.0f;
+  float deform_influence_fade = 0.5f / 9.0f;
   /* Follow Deform: the place on the shape that carries the drawing, in this layer's space at rest, shown light blue when
    * `deform_show_point`; with `deform_two` a second one, whose way from the first turns the drawing (`deform_rotation`)
    * and whose distance from it scales it (`deform_scale`). Each can be keyed along the shape (`deform_shift`, the change
@@ -945,6 +1017,12 @@ struct Modifier {
   bool deform_rest_posed = false;
   bool operator==(const Modifier &) const = default;
 };
+
+/* Whether `m` is a Curve or Cage Deform with the Envelope method (Toon Boom Harmony's envelope deformer). */
+bool deform_is_envelope(const Modifier &m);
+/* Change Type: `m` becomes deform `to`, keeping its settings and weights, its default name with it ("Curve
+ * Deform.001" becomes "Cage Deform.001"); a Curve or Cage Deform with Envelope stays Envelope as the other. */
+void deform_type_set(Modifier &m, ModifierType to);
 
 /* An animatable number known by its path, for things that aren't a layer's own (the document's
  * Simulation settings, on Document::simulation). */

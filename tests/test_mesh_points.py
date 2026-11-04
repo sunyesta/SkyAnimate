@@ -339,7 +339,7 @@ loop.add_curve([(-1.0, -0.8), (1.0, -0.8), (0.0, 1.0)], closed=True)
 deform(lid, loop)
 assert lid.modifiers[0]["kind"] == "Mesh" and lid.modifiers[0]["fits"] == "MESH_DEFORM", lid.modifiers[0]
 assert lid.modifiers[0]["sparse"] is True, "three sides, with Points"
-lid.modifier_set(0, type="CAGE_DEFORM")
+lid.modifier_set(0, type="CAGE_DEFORM", cage_method="MEAN_VALUE")
 assert lid.modifiers[0]["kind"] == "Cage" and lid.modifiers[0]["fits"] == "CAGE_DEFORM", lid.modifiers[0]
 assert lid.modifiers[0]["sparse"] is False, "Cage Deform never warns"
 

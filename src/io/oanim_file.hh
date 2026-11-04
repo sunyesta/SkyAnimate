@@ -19,8 +19,9 @@ namespace oanim {
 /* 2: bones' position and angle keys hold Transform and Angle (the change from their setup pose; the
  * Transform along the bone's rest axes). 3: points' keys hold their Transform and handles' their
  * Angle and Length, the change from the setup pose. 4: a key's interpolation is for the stretch
- * arriving at it (before, the stretch after it). */
-inline constexpr int OANIM_FILE_VERSION = 4;
+ * arriving at it (before, the stretch after it). 5: a Cage Deform's cage_method "ENVELOPE" is the Envelope
+ * method (before, it was Outline's old name). */
+inline constexpr int OANIM_FILE_VERSION = 5;
 
 /* Writes through a temporary file and renames it into place, so a failed save never damages
  * the existing file. Returns false and sets r_error on failure. */

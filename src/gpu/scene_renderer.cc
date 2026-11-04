@@ -1921,6 +1921,26 @@ std::vector<SceneRenderer::PaintStep> SceneRenderer::make_steps(const MakeArgs &
           (line_as_drawn || !(args.coverage && args.mask_pass.exclude_strokes)) && stage != MaskPass::Areas)
       {
         const float line_grow = line_as_drawn ? 0.0f : grow;
+        /* A line Envelope Deform bent by its edges, Harmony's way (Shape::line_edges): those rings filled where they
+         * wind round, in the line's colour, once for the whole shape. */
+        if (!whole.line_edges.empty()) {
+          if (run_index == 0) {
+            if (gpu_geometry_ && !args.coverage) {
+              std::vector<const std::vector<float2> *> rings;
+              for (const std::vector<float2> &ring : whole.line_edges) {
+                rings.push_back(&ring);
+              }
+              stencil_step(rings, shape.style.line, false);
+            }
+            else {
+              batch(!args.coverage);
+              const StatTimer stat_earcut(STAT_EARCUT);
+              tessellate_fill_pieces(fill_area(whole.line_edges, FillRule::NonZero), shape.style.line, feather,
+                                     vertices);
+            }
+          }
+          continue;
+        }
         /* A brushed line, if its brush is in the library and has images; otherwise solid. */
         brush = brush_find(shape.style.brush.name);
         images = brush ? &brush_tip_images(*brush, shape.style.brush) : nullptr;

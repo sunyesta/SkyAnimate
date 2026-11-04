@@ -38,6 +38,7 @@ def drawn(name, points, closed=False):
 def deform(layer, target, kind="CURVE_DEFORM", **settings):
     layers.active = layer
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    layer.modifier_set(len(layer.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
     settings.setdefault("precision", 0.0)
     layer.modifier_set(len(layer.modifiers) - 1, layer=target.name, shape=target.shapes[0][0], **settings)
 

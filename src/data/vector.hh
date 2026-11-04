@@ -345,6 +345,11 @@ struct Shape {
   /* Made by a Boolean modifier (evaluated drawings only, never saved): a brushed line lays its stamps
    * along it as it is, having no setup shape of its own to lay them out on. */
   bool merge_made = false;
+  /* Its line as Envelope Deform bent it, Harmony's way (evaluated drawings only, never saved): the line's two edges
+   * and round ends at rest, cut fine and each place moved on its own, as rings filled where they wind round (Nonzero)
+   * in the line's colour instead of stroking its curves. Where a line crosses a tear its edges jump apart, and the
+   * fill between them shows as a band, or cancels to a gap where they twist, as Harmony's do. */
+  std::vector<std::vector<float2>> line_edges;
   /* The material it takes its whole look from (data/material.hh), or 0 for its own look; and the
    * last one it was linked to, for naming a variant made from it ("Skin.001"). */
   uint64_t material = 0;

@@ -33,6 +33,7 @@ def new_layer(name):
 def deform(layer, target, shape, kind="MESH_DEFORM"):
     layers.active = layer
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    layer.modifier_set(len(layer.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
     index = len(layer.modifiers) - 1
     layer.modifier_set(index, layer=target.name, shape=shape)
     if kind == "CAGE_DEFORM":
@@ -154,7 +155,7 @@ def bent_cells():
 corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
 moved = [(x + 0.3, y - 0.2) for x, y in corners]
 rest_pts = [p for row in rows for p in row]
-for method in ("MEAN_VALUE", "RIGID", "ENVELOPE"):
+for method in ("MEAN_VALUE", "RIGID", "OUTLINE"):
     probe.modifier_set(k, cage_method=method)
     for c, to in enumerate(moved):
         key_point(box, c, to)
@@ -170,7 +171,7 @@ doc.frame_current = 0
 # the cage; Envelope never folds, its outline on the cage too.
 key_point(box, 1, (2.5, -0.5))
 found = {}
-for method in ("MEAN_VALUE", "RIGID", "ENVELOPE"):
+for method in ("MEAN_VALUE", "RIGID", "OUTLINE"):
     probe.modifier_set(k, cage_method=method)
     doc.frame_current = 10
     cells = bent_cells()
@@ -182,8 +183,8 @@ for method in ("MEAN_VALUE", "RIGID", "ENVELOPE"):
     doc.frame_current = 0
 print("Cage methods (least area, most one-way squash, off the side):", found)
 assert found["RIGID"][0] > found["MEAN_VALUE"][0] + 0.1, found
-assert found["MEAN_VALUE"][2] < 0.01 and found["RIGID"][2] < 0.01 and found["ENVELOPE"][2] < 0.01, found
-assert found["ENVELOPE"][0] > 0.0, ("Envelope never folds", found)
+assert found["MEAN_VALUE"][2] < 0.01 and found["RIGID"][2] < 0.01 and found["OUTLINE"][2] < 0.01, found
+assert found["OUTLINE"][0] > 0.0, ("Envelope never folds", found)
 
 # A band drawn just past the cage keeps its width as that side bends inward (it keeps its distance from the outline,
 # rather than being squeezed as mean value coordinates past the outline squeeze it).
@@ -199,7 +200,7 @@ b = deform(band, dent, dent.shapes[0][0], "CAGE_DEFORM")
 band.modifier_set(b, precision=0.0)
 key_point(dent, 1, (0.0, -0.4))
 inner = {}
-for method in ("MEAN_VALUE", "RIGID", "ENVELOPE"):
+for method in ("MEAN_VALUE", "RIGID", "OUTLINE"):
     band.modifier_set(b, cage_method=method)
     pts = band.evaluated()[0]
     widths = [math.dist(pts[a], pts[a + 7]) for a in range(7)]
@@ -207,14 +208,14 @@ for method in ("MEAN_VALUE", "RIGID", "ENVELOPE"):
     inner[method] = [math.dist(pts[14 + a], pts[21 + a]) for a in range(7)]
 # Inside, only Envelope keeps the band's width where the side pushes in; the others squeeze it.
 print("Band inside a side pushed in (width 0.1 at rest):", {m: [round(w, 3) for w in v] for m, v in inner.items()})
-assert all(abs(w - 0.1) < 0.015 for w in inner["ENVELOPE"]), inner
+assert all(abs(w - 0.1) < 0.015 for w in inner["OUTLINE"]), inner
 assert min(inner["MEAN_VALUE"]) < 0.08, inner
 # Nothing folds over at any Blend, the dent's corners closing up included.
 dent_probe = new_layer("DentProbe")
 for row in rows:
     dent_probe.add_curve(row)
 e = deform(dent_probe, dent, dent.shapes[0][0], "CAGE_DEFORM")
-dent_probe.modifier_set(e, precision=0.0, cage_method="ENVELOPE")
+dent_probe.modifier_set(e, precision=0.0, cage_method="OUTLINE")
 for blend in (0.0, 0.5, 1.0):
     dent_probe.modifier_set(e, blend=blend)
     doc.frame_current = 10
@@ -225,7 +226,7 @@ for blend in (0.0, 0.5, 1.0):
             assert (q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]) > 0.0, (blend, a, bb)
     doc.frame_current = 0
 doc.frame_current = 0
-art2.modifier_set(j, layer="Cage", shape=cage.shapes[0][0], cage_method="ENVELOPE", blend=0.25)
+art2.modifier_set(j, layer="Cage", shape=cage.shapes[0][0], cage_method="OUTLINE", blend=0.25)
 
 # --- Precision's points fade in -----------------------------------------------------------------------------
 # A band about twice Precision thin (an eyelid along an eye white): as the cage bends further, Precision adds points,

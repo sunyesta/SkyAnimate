@@ -212,7 +212,7 @@ def bent_by(cage, name, cases):
     assert ops.object.modifier_add(type="ENVELOPE_DEFORM") == {'FINISHED'}
     art.modifier_set(0, layer=cage.name, shape=cage.shapes[0][0], precision=0.0)
     m = art.modifiers[0]
-    assert m["type"] == "ENVELOPE_DEFORM" and m["kind"] == "Envelope", m
+    assert m["type"] in ("CAGE_DEFORM", "CURVE_DEFORM") and m["kind"] == "Envelope", m
     return art
 
 
@@ -277,7 +277,7 @@ try:
     assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
     assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
     art = next(l for l in oanim.data.layers.all() if l.name == "Open B")
-    assert art.modifiers[0]["type"] == "ENVELOPE_DEFORM" and art.modifiers[0]["layer"] == "Chain", art.modifiers[0]
+    assert art.modifiers[0]["type"] == "CURVE_DEFORM" and art.modifiers[0]["curve_method"] == "ENVELOPE" and art.modifiers[0]["layer"] == "Chain", art.modifiers[0]
     doc.frame_current = 16
     check(art, OPEN_B, "opened again")
 finally:

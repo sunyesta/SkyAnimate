@@ -47,8 +47,12 @@ const char *deform_kind_name(DeformKind kind)
 /* How finely a cage's or line's outline is followed: pieces per segment (a Curve Deform's line, LINE_STEPS). */
 static constexpr int OUTLINE_STEPS = 16;
 static constexpr int LINE_STEPS = 64;
-/* Envelope Deform: pieces per segment to find a point's nearest place by, before it is refined on the curve itself. */
+/* Envelope Deform: pieces per segment to find a point's nearest place by, before its frame is found among the frames
+ * there. */
 static constexpr int ENVELOPE_STEPS = 32;
+/* Harmony's frames per segment: it samples each at t = k / 256 (fitted to its envelope on 10,140 points, 2026-11-03;
+ * 255 or 257 fit 2.5 times worse). */
+static constexpr int ENVELOPE_FRAMES = 256;
 /* Shorter at rest and a line is no shape (Stretch would spread what follows it by thousands). */
 static constexpr float MIN_LINE_LENGTH = 1e-4f;
 
@@ -249,13 +253,32 @@ struct DeformShape {
    * Curve nodes), and each sampled at rest (ENVELOPE_STEPS pieces, its own samples), to find a point's nearest. */
   std::vector<std::array<float2, 4>> env_rest, env_now;
   std::vector<float2> env_samples;
+  /* Harmony's reference frames (envelope_frames_make): ENVELOPE_FRAMES + 1 per segment, in the order the line runs,
+   * each a place and the way it runs there (a length of 1), at rest and now. */
+  std::vector<float2> env_frame_rest, env_way_rest, env_frame_now, env_way_now;
   bool env_closed = false;
-  /* Its Method's Weighted (Harmony's Weighted Deform), with Pre-Blend as the length added to every distance and
+  /* Its Method's Blended (Harmony's Weighted Deform), with Pre-Blend as the length added to every distance and
    * Post-Blend. */
   bool env_weighted = false;
   float env_pre = 0.0f;
   float env_post = 0.0f;
   std::shared_ptr<struct WeightedSolver> env_solver;
+  /* Influence's Capsule (envelope_influence_build): each segment's capsule at rest, as a polygon and its box, and the
+   * capsules' outlines where they show (not under a later segment's capsule), cut in pieces each saying whose capsule
+   * it bounds and whose it borders (-1, none), in runs of ENV_EDGE_RUN with their boxes; and the fade's length. */
+  struct EnvRegion {
+    std::vector<float2> poly;
+    float2 lo, hi;
+  };
+  struct EnvEdge {
+    float2 a, b;
+    int owner, other;
+  };
+  bool env_capsule = false;
+  float env_fade = 0.0f;
+  std::vector<EnvRegion> env_regions;
+  std::vector<EnvEdge> env_edges;
+  std::vector<std::pair<float2, float2>> env_edge_boxes;
 };
 
 /* A cell's Coons patch from its four sides (corner k to k + 1 around it), as a grid's cell is: the bottom side
@@ -808,6 +831,48 @@ struct WeightedSolver;
 static std::shared_ptr<WeightedSolver> weighted_solver_get(const std::vector<std::array<float2, 4>> &rest, bool closed,
                                                            float pre, float post);
 
+/* Harmony's reference frames along the segments (ReferenceFramePathFactory): each segment sampled at t = k /
+ * ENVELOPE_FRAMES, and the way each frame runs is the chord from the sample before it to it, the first frame's the chord
+ * to the next. Not the curve's own tangent: past a turned free end that is about 0.16 degrees off Harmony's. Worked in
+ * double, as the chords are short. */
+static void envelope_frames_make(const std::vector<std::array<float2, 4>> &segments, std::vector<float2> &r_at,
+                                 std::vector<float2> &r_way)
+{
+  r_at.clear();
+  r_way.clear();
+  r_at.reserve(segments.size() * (ENVELOPE_FRAMES + 1));
+  r_way.reserve(segments.size() * (ENVELOPE_FRAMES + 1));
+  std::array<double, ENVELOPE_FRAMES + 1> xs, ys;
+  for (const std::array<float2, 4> &c : segments) {
+    for (int k = 0; k <= ENVELOPE_FRAMES; k++) {
+      const double t = double(k) / ENVELOPE_FRAMES, u = 1.0 - t;
+      const double a = u * u * u, b = 3.0 * u * u * t, e = 3.0 * u * t * t, f = t * t * t;
+      xs[size_t(k)] = a * c[0].x + b * c[1].x + e * c[2].x + f * c[3].x;
+      ys[size_t(k)] = a * c[0].y + b * c[1].y + e * c[2].y + f * c[3].y;
+    }
+    float2 last(1.0f, 0.0f);
+    for (int k = 0; k <= ENVELOPE_FRAMES; k++) {
+      const size_t from = size_t(k == 0 ? 0 : k - 1), to = size_t(k == 0 ? 1 : k);
+      const double dx = xs[to] - xs[from], dy = ys[to] - ys[from], len = std::sqrt(dx * dx + dy * dy);
+      /* A handle on its point gives no chord there: the way the segment runs anywhere else, the one before. */
+      if (len > 1e-12) {
+        last = float2(float(dx / len), float(dy / len));
+      }
+      else if (k == 0) {
+        for (size_t j = 1; j <= size_t(ENVELOPE_FRAMES); j++) {
+          const double ex = xs[j] - xs[0], ey = ys[j] - ys[0], el = std::sqrt(ex * ex + ey * ey);
+          if (el > 1e-12) {
+            last = float2(float(ex / el), float(ey / el));
+            break;
+          }
+        }
+      }
+      r_at.push_back(float2(float(xs[size_t(k)]), float(ys[size_t(k)])));
+      r_way.push_back(last);
+    }
+  }
+}
+
 /* Envelope Deform's shape: one line or loop, its segments as Beziers in the order it runs, at rest and (`bent`, the
  * same drawing as it is now) now. Its outline is sampled for the border and the viewport, as a line's or a cage's. */
 static bool envelope_deform_make(const VectorDrawing &rest, const Shape &rest_shape, const VectorDrawing *bent,
@@ -841,6 +906,8 @@ static bool envelope_deform_make(const VectorDrawing &rest, const Shape &rest_sh
     }
   }
   r.env_closed = closed;
+  envelope_frames_make(r.env_rest, r.env_frame_rest, r.env_way_rest);
+  envelope_frames_make(r.env_now, r.env_frame_now, r.env_way_now);
   for (size_t s = 0; s < r.env_rest.size(); s++) {
     for (int i = 0; i < ENVELOPE_STEPS; i++) {
       r.rest.push_back(r.env_samples[s * (ENVELOPE_STEPS + 1) + size_t(i)]);
@@ -859,22 +926,25 @@ static bool envelope_deform_make(const VectorDrawing &rest, const Shape &rest_sh
   return true;
 }
 
+static void envelope_influence_build(DeformShape &r, const Modifier &m);
+
+/* Envelope Deform's settings (and Curve Deform's Envelope's, the same): its Method, Blended's blends, Influence. */
+static void envelope_settings_apply(const Modifier &m, DeformShape &r)
+{
+  r.env_weighted = m.deform_envelope_method == EnvelopeMethod::Blended;
+  r.env_pre = m.deform_pre_blend > 0.0f ? std::log1p(m.deform_pre_blend) : 0.0f;
+  r.env_post = m.deform_post_blend;
+  if (r.env_weighted) {
+    r.env_solver = weighted_solver_get(r.env_rest, r.env_closed, r.env_pre, r.env_post);
+  }
+  else if (m.deform_influence == InfluenceType::Capsule) {
+    envelope_influence_build(r, m);
+  }
+}
+
 static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &rest, const VectorDrawing &bent,
                               DeformShape &r)
 {
-  if (m.type == ModifierType::EnvelopeDeform) {
-    const Shape &shape = rest.shapes[size_t(drawing_shape_index(rest, m.deform_shape))];
-    if (shape_grid(rest, shape) || !envelope_deform_make(rest, shape, now ? &bent : nullptr, r)) {
-      return false;
-    }
-    r.env_weighted = m.deform_envelope_method == EnvelopeMethod::Weighted;
-    r.env_pre = m.deform_pre_blend > 0.0f ? std::log1p(m.deform_pre_blend) : 0.0f;
-    r.env_post = m.deform_post_blend;
-    if (r.env_weighted) {
-      r.env_solver = weighted_solver_get(r.env_rest, r.env_closed, r.env_pre, r.env_post);
-    }
-    return true;
-  }
   /* Follow Deform takes whatever the shape is: as the deform that fits it. */
   if (m.type == ModifierType::FollowDeform) {
     Modifier as = m;
@@ -911,7 +981,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
     r.outline_rest = {r.border};
     r.outline_now = {outline_now};
     gather_edge_sides(r);
-    if (now && m.deform_mesh_method == MeshMethod::Envelope) {
+    if (now && m.deform_mesh_method == MeshMethod::Outline) {
       mesh_envelope_build(r, m.deform_blend);
     }
     if (now && m.deform_mesh_method == MeshMethod::Points) {
@@ -929,6 +999,19 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
   }
   const Shape &line = part ? rest_part : rest_shape;
   const Shape *bent_line = part ? &bent_part : bent_shape;
+  /* The Envelope method (Harmony's envelope deformer): Curve Deform's on an open line or a Part, Cage Deform's on a
+   * closed shape. */
+  const bool curve_envelope = m.type == ModifierType::CurveDeform && m.deform_curve_method == CurveMethod::Envelope;
+  const bool cage_envelope = m.type == ModifierType::CageDeform && m.deform_cage_method == CageMethod::Envelope;
+  if (curve_envelope || cage_envelope) {
+    if (shape_grid(rest, line) || !envelope_deform_make(rest, line, now ? &bent : nullptr, r) ||
+        r.env_closed != cage_envelope)
+    {
+      return false;
+    }
+    envelope_settings_apply(m, r);
+    return true;
+  }
   /* Branching (more than two of its segments meeting at a point): a network, never one line or loop. */
   std::map<int, int> meeting;
   bool branches = false;
@@ -954,7 +1037,7 @@ static bool deform_shape_make(const Modifier &m, bool now, const VectorDrawing &
                  ? DeformKind::Grid
                  : DeformKind::Mesh;
     gather_edge_sides(r);
-    if (now && m.deform_mesh_method == MeshMethod::Envelope) {
+    if (now && m.deform_mesh_method == MeshMethod::Outline) {
       mesh_envelope_build(r, m.deform_blend);
     }
     if (now && m.deform_mesh_method == MeshMethod::Points) {
@@ -3778,66 +3861,314 @@ static void cage_method_build(DeformShape &r)
   }
 }
 
-/* The way a segment runs at `t`, as a length of 1. Where a handle sits on its point the curve has no speed at that
- * end: the way it leaves there, from a little further along. */
-static float2 envelope_way(const std::array<float2, 4> &c, float t)
+/* Envelope Deform, as Toon Boom Harmony's envelope deformer (its GR_Deform engine, fitted to Harmony 24 on 10,140
+ * points to its own rounding): the line is a row of frames (envelope_frames_make), and each point binds to one, the
+ * nearest of those whose slab holds it (between the frame's normal line and the next frame's). It keeps how far out it
+ * is from that frame, and how far along, stretched as the chord to the next frame stretched, and is rebuilt from the
+ * frame now alone. Where two segments meet the wedge between their frames follows the first one's end, and past a free
+ * end the end frame, neither stretched. A loop's closing corner is two free ends too: its first frame holds what is
+ * behind it and its last what is ahead, and on a tie the first wins. No blending: where two places are about equally
+ * near the drawing tears, as Harmony's does. */
+static float2 envelope_deform_map(const DeformShape &d, float2 p, int only = -1)
 {
-  const float u = 1.0f - t;
-  const float2 d = (c[1] - c[0]) * (u * u) + (c[2] - c[1]) * (2.0f * u * t) + (c[3] - c[2]) * (t * t);
-  if (length(d) > 1e-9f) {
-    return normalize(d);
+  const size_t segs = d.env_rest.size(), per = ENVELOPE_FRAMES + 1, count = segs * per;
+  if (segs == 0 || d.env_frame_rest.size() != count || d.env_frame_now.size() != count || only >= int(segs)) {
+    return p;
   }
-  const float2 e = bezier_eval(c.data(), std::min(t + 1e-3f, 1.0f)) - bezier_eval(c.data(), std::max(t - 1e-3f, 0.0f));
-  return length(e) > 1e-12f ? normalize(e) : float2(1.0f, 0.0f);
-}
+  /* `only` (Influence's Capsule): that segment's frames alone, its ends free ends, as one Harmony Curve node's. */
+  const size_t seg_lo = only < 0 ? 0 : size_t(only), seg_hi = only < 0 ? segs : size_t(only) + 1;
+  const size_t lo = seg_lo * per, hi = seg_hi * per;
+  const std::vector<float2> &at = d.env_frame_rest, &way = d.env_way_rest;
+  /* Frame `i`'s next frame: the next one along, across a join the next segment's first; the last has none. */
+  const auto next_of = [&](size_t i) { return i + 1 < hi ? i + 1 : count; };
+  /* Whether frame `i`'s slab holds `p`, and how near it is (to the chord on to the next frame). */
+  const auto holds = [&](size_t i, float &r_dist) {
+    const float2 off = p - at[i];
+    const float u = dot(off, way[i]);
+    const size_t n = next_of(i);
+    bool ok;
+    if (n == count) {
+      ok = u >= 0.0f;
+    }
+    else {
+      ok = u >= 0.0f && dot(p - at[n], way[n]) < 0.0f;
+    }
+    if (i == lo && u < 0.0f) {
+      ok = true;
+    }
+    if (!ok) {
+      return false;
+    }
+    const float2 e = n == count ? float2(0.0f, 0.0f) : at[n] - at[i];
+    const float ee = dot(e, e);
+    const float h = ee > 1e-20f ? std::clamp(dot(off, e) / ee, 0.0f, 1.0f) : 0.0f;
+    r_dist = length(off - e * h);
+    return true;
+  };
 
-/* Envelope Deform, as Toon Boom Harmony's envelope deformer (measured in Harmony 24): each point is carried by its
- * single nearest place on the line or loop at rest, keeping how far it is out from there and how far along the way the
- * curve runs there (which is nothing, except past a free end or round a corner between segments, where the way is the
- * end's). The place is the same place on the same segment now, by the curve's own parameter, so what is along a
- * segment spreads as it stretches. No blending: where two places are equally near the drawing tears, as Harmony's
- * does. */
-static float2 envelope_deform_map(const DeformShape &d, float2 p)
-{
-  const size_t per = ENVELOPE_STEPS + 1;
+  /* Near which samples to look: each segment's nearest of its ENVELOPE_STEPS pieces, by squared distance. */
+  const size_t samples = ENVELOPE_STEPS + 1;
+  std::array<float, 64> seg_near;
+  std::array<float, 64> seg_t;
+  std::vector<float> seg_near_big, seg_t_big;
+  float *near = seg_near.data(), *near_t = seg_t.data();
+  if (segs > seg_near.size()) {
+    seg_near_big.resize(segs);
+    seg_t_big.resize(segs);
+    near = seg_near_big.data();
+    near_t = seg_t_big.data();
+  }
   float best = FLT_MAX;
-  size_t seg = 0;
-  float t = 0.0f;
-  for (size_t s = 0; s < d.env_rest.size(); s++) {
+  for (size_t s = 0; s < segs; s++) {
+    near[s] = FLT_MAX;
+    near_t[s] = 0.0f;
+    if (s < seg_lo || s >= seg_hi) {
+      continue;
+    }
     for (size_t i = 0; i < size_t(ENVELOPE_STEPS); i++) {
-      const float2 a = d.env_samples[s * per + i], e = d.env_samples[s * per + i + 1] - a;
+      const float2 a = d.env_samples[s * samples + i], e = d.env_samples[s * samples + i + 1] - a;
       const float ee = dot(e, e);
       const float h = ee > 1e-20f ? std::clamp(dot(p - a, e) / ee, 0.0f, 1.0f) : 0.0f;
       const float dd = dot(a + e * h - p, a + e * h - p);
-      if (dd < best) {
-        best = dd;
-        seg = s;
-        t = (float(i) + h) / float(ENVELOPE_STEPS);
+      if (dd < near[s]) {
+        near[s] = dd;
+        near_t[s] = (float(i) + h) / float(ENVELOPE_STEPS);
+      }
+    }
+    best = std::min(best, near[s]);
+  }
+
+  /* The frames around each near enough segment's nearest place, in the order the line runs (so a tie goes to the
+   * first); every frame if none of those holds the point. */
+  constexpr int AROUND = ENVELOPE_FRAMES / ENVELOPE_STEPS + 4;
+  /* (near and best are squared) */
+  const float reach = best * (1.25f * 1.25f) + 1e-8f;
+  size_t bound = count;
+  float bound_dist = FLT_MAX;
+  for (size_t s = 0; s < segs; s++) {
+    if (near[s] > reach) {
+      continue;
+    }
+    const int mid = int(std::lround(near_t[s] * ENVELOPE_FRAMES));
+    const int from = std::max(mid - AROUND, 0), to = std::min(mid + AROUND, ENVELOPE_FRAMES);
+    for (int k = from; k <= to; k++) {
+      float dist;
+      const size_t i = s * per + size_t(k);
+      if (holds(i, dist) && dist < bound_dist) {
+        bound_dist = dist;
+        bound = i;
+      }
+    }
+    /* The free start's half-plane belongs to the first frame wherever the nearest place is. */
+    if (s == seg_lo && from > 0) {
+      float dist;
+      if (holds(lo, dist) && dist < bound_dist) {
+        bound_dist = dist;
+        bound = lo;
       }
     }
   }
-  /* Onto the curve itself (Newton's steps on the distance), so the place doesn't hop between samples. */
-  const std::array<float2, 4> &c = d.env_rest[seg];
-  for (int step = 0; step < 4; step++) {
-    const float u = 1.0f - t;
-    const float2 off = bezier_eval(c.data(), t) - p;
-    const float2 d1 = ((c[1] - c[0]) * (u * u) + (c[2] - c[1]) * (2.0f * u * t) + (c[3] - c[2]) * (t * t)) * 3.0f;
-    const float2 d2 = ((c[2] - c[1] * 2.0f + c[0]) * u + (c[3] - c[2] * 2.0f + c[1]) * t) * 6.0f;
-    const float slope = dot(d1, d1) + dot(off, d2);
-    if (slope <= 1e-20f) {
-      break;
+  if (bound == count) {
+    for (size_t i = lo; i < hi; i++) {
+      float dist;
+      if (holds(i, dist) && dist < bound_dist) {
+        bound_dist = dist;
+        bound = i;
+      }
     }
-    const float next = std::clamp(t - dot(off, d1) / slope, 0.0f, 1.0f);
-    if (length(bezier_eval(c.data(), next) - p) > length(off)) {
-      break;
-    }
-    t = next;
   }
-  const float2 at = bezier_eval(c.data(), t), way = envelope_way(c, t);
-  const float along = dot(p - at, way), out = dot(p - at, float2(-way.y, way.x));
-  const std::array<float2, 4> &now = d.env_now[seg];
-  const float2 now_at = bezier_eval(now.data(), t), now_way = envelope_way(now, t);
-  return now_at + now_way * along + float2(-now_way.y, now_way.x) * out;
+  /* Held by no frame: Harmony leaves it where it is. */
+  if (bound == count) {
+    return p;
+  }
+  const float2 off = p - at[bound];
+  const float2 w = way[bound];
+  const float along = dot(off, w), out = dot(off, float2(-w.y, w.x));
+  const size_t n = next_of(bound);
+  const bool joined = n < count && n % per != 0;
+  float stretch = 1.0f;
+  if (joined && !(bound == lo && along < 0.0f)) {
+    const float was = length(at[n] - at[bound]);
+    if (was > 1e-12f) {
+      stretch = length(d.env_frame_now[n] - d.env_frame_now[bound]) / was;
+    }
+  }
+  const float2 now_at = d.env_frame_now[bound], now_way = d.env_way_now[bound];
+  return now_at + now_way * (along * stretch) + float2(-now_way.y, now_way.x) * out;
+}
+
+/* Influence's Capsule, as Harmony's Elliptic region of influence (measured on Harmony 24, 2026-11-03; see
+ * reports/Harmony curve deformer.md): each segment's capsule is a band out to each side of it, offset from 16 frames
+ * along it at rest (each turned as the chord into it), with a half ellipse past each end along its first and last chord,
+ * centred on the middle of the band; and a fade outside. */
+static constexpr int ENV_CAPSULE_FRAMES = 16;
+static constexpr int ENV_CAPSULE_CAP = 24;
+static constexpr size_t ENV_EDGE_RUN = 16;
+static bool inside(const std::vector<float2> &v, float2 p);
+static float box_distance(float2 lo, float2 hi, float2 p);
+
+static void envelope_influence_build(DeformShape &r, const Modifier &m)
+{
+  r.env_capsule = true;
+  r.env_fade = std::max(m.deform_influence_fade, 0.0f);
+  const float tl = m.deform_influence_left;
+  const float tr = m.deform_influence_symmetric ? tl : m.deform_influence_right;
+  const float le = m.deform_influence_end;
+  const float lb = m.deform_influence_symmetric ? le : m.deform_influence_begin;
+  const float mid = (tl - tr) * 0.5f, half = (tl + tr) * 0.5f;
+  const auto left_of = [](float2 t) { return float2(-t.y, t.x); };
+  for (const std::array<float2, 4> &c : r.env_rest) {
+    std::array<float2, ENV_CAPSULE_FRAMES + 1> at, way;
+    for (int k = 0; k <= ENV_CAPSULE_FRAMES; k++) {
+      at[size_t(k)] = bezier_eval(c.data(), float(k) / float(ENV_CAPSULE_FRAMES));
+    }
+    /* Each frame turned as the chord into it, the first as the chord out of it (the way before, where a chord has no
+     * length). */
+    float2 last(1.0f, 0.0f);
+    for (int k = ENV_CAPSULE_FRAMES; k >= 1; k--) {
+      const float2 e = at[size_t(k)] - at[size_t(k - 1)];
+      if (length(e) > 1e-12f) {
+        last = e / length(e);
+        break;
+      }
+    }
+    for (int k = 1; k <= ENV_CAPSULE_FRAMES; k++) {
+      const float2 e = at[size_t(k)] - at[size_t(k - 1)];
+      way[size_t(k)] = length(e) > 1e-12f ? e / length(e) : (k > 1 ? way[size_t(k - 1)] : last);
+    }
+    way[0] = way[1];
+    DeformShape::EnvRegion reg;
+    const float2 t1 = way[ENV_CAPSULE_FRAMES], n1 = left_of(t1), e1 = at[ENV_CAPSULE_FRAMES];
+    for (int k = 0; k <= ENV_CAPSULE_CAP; k++) {
+      const float a = -PI * 0.5f + PI * float(k) / float(ENV_CAPSULE_CAP);
+      reg.poly.push_back(e1 + n1 * (mid + half * std::sin(a)) + t1 * (le * std::cos(a)));
+    }
+    for (int k = ENV_CAPSULE_FRAMES; k >= 0; k--) {
+      reg.poly.push_back(at[size_t(k)] + left_of(way[size_t(k)]) * tl);
+    }
+    const float2 t0 = way[0], n0 = left_of(t0), e0 = at[0];
+    for (int k = 0; k <= ENV_CAPSULE_CAP; k++) {
+      const float a = PI * 0.5f + PI * float(k) / float(ENV_CAPSULE_CAP);
+      reg.poly.push_back(e0 + n0 * (mid + half * std::sin(a)) + t0 * (lb * std::cos(a)));
+    }
+    for (int k = 0; k <= ENV_CAPSULE_FRAMES; k++) {
+      reg.poly.push_back(at[size_t(k)] - left_of(way[size_t(k)]) * tr);
+    }
+    reg.lo = float2(FLT_MAX, FLT_MAX);
+    reg.hi = float2(-FLT_MAX, -FLT_MAX);
+    for (const float2 q : reg.poly) {
+      reg.lo = float2(std::min(reg.lo.x, q.x), std::min(reg.lo.y, q.y));
+      reg.hi = float2(std::max(reg.hi.x, q.x), std::max(reg.hi.y, q.y));
+    }
+    r.env_regions.push_back(std::move(reg));
+  }
+  /* Where each capsule's outline shows: cut fine, each piece under a later capsule hidden (that one leads there), and
+   * one in an earlier capsule the edge between the two. */
+  const int count = int(r.env_regions.size());
+  const auto in_region = [&](int j, float2 q) {
+    const DeformShape::EnvRegion &g = r.env_regions[size_t(j)];
+    return q.x >= g.lo.x && q.x <= g.hi.x && q.y >= g.lo.y && q.y <= g.hi.y && inside(g.poly, q);
+  };
+  for (int i = 0; i < count; i++) {
+    const std::vector<float2> &poly = r.env_regions[size_t(i)].poly;
+    float around = 0.0f;
+    for (size_t k = 0; k < poly.size(); k++) {
+      around += length(poly[(k + 1) % poly.size()] - poly[k]);
+    }
+    const float piece = std::max(around / 256.0f, 1e-7f);
+    for (size_t k = 0; k < poly.size(); k++) {
+      const float2 a = poly[k], b = poly[(k + 1) % poly.size()];
+      const int n = std::max(1, int(std::ceil(length(b - a) / piece)));
+      for (int q = 0; q < n; q++) {
+        const float2 pa = a + (b - a) * (float(q) / float(n)), pb = a + (b - a) * (float(q + 1) / float(n));
+        const float2 c = (pa + pb) * 0.5f;
+        bool hidden = false;
+        for (int j = i + 1; j < count && !hidden; j++) {
+          hidden = in_region(j, c);
+        }
+        if (hidden) {
+          continue;
+        }
+        int other = -1;
+        for (int j = i - 1; j >= 0 && other < 0; j--) {
+          other = in_region(j, c) ? j : -1;
+        }
+        r.env_edges.push_back({pa, pb, i, other});
+      }
+    }
+  }
+  for (size_t k = 0; k < r.env_edges.size(); k += ENV_EDGE_RUN) {
+    float2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+    for (size_t q = k; q < std::min(k + ENV_EDGE_RUN, r.env_edges.size()); q++) {
+      for (const float2 v : {r.env_edges[q].a, r.env_edges[q].b}) {
+        lo = float2(std::min(lo.x, v.x), std::min(lo.y, v.y));
+        hi = float2(std::max(hi.x, v.x), std::max(hi.y, v.y));
+      }
+    }
+    r.env_edge_boxes.push_back({lo, hi});
+  }
+}
+
+/* Envelope Deform's Standard (and Curve Deform's Envelope) with Influence's Capsule, as Harmony's engine weighs a point
+ * against its regions: in a capsule (the latest one holding it leads) it is carried by that segment alone, fully, but
+ * near an edge with another segment's capsule it is shared: half and half on the edge, all its own a fade's length in.
+ * Outside every capsule it is carried by the nearest one, less the further out, to nothing a fade's length out. The
+ * share is eased (Harmony's fade exponent, 3), so it holds near half across most of a seam. */
+static float2 envelope_capsule_map(const DeformShape &d, float2 p)
+{
+  const int count = int(d.env_regions.size());
+  int owner = -1;
+  for (int i = count - 1; i >= 0 && owner < 0; i--) {
+    const DeformShape::EnvRegion &g = d.env_regions[size_t(i)];
+    if (p.x >= g.lo.x && p.x <= g.hi.x && p.y >= g.lo.y && p.y <= g.hi.y && inside(g.poly, p)) {
+      owner = i;
+    }
+  }
+  /* The nearest piece of outline: of the owner's capsule where it shows, or of any, outside them all. */
+  float best = FLT_MAX;
+  const DeformShape::EnvEdge *near = nullptr;
+  for (size_t run = 0; run < d.env_edge_boxes.size(); run++) {
+    if (box_distance(d.env_edge_boxes[run].first, d.env_edge_boxes[run].second, p) >= best) {
+      continue;
+    }
+    const size_t from = run * ENV_EDGE_RUN, to = std::min(from + ENV_EDGE_RUN, d.env_edges.size());
+    for (size_t q = from; q < to; q++) {
+      const DeformShape::EnvEdge &e = d.env_edges[q];
+      if (owner >= 0 && e.owner != owner && e.other != owner) {
+        continue;
+      }
+      const float2 ab = e.b - e.a;
+      const float ll = dot(ab, ab);
+      const float h = ll > 1e-20f ? std::clamp(dot(p - e.a, ab) / ll, 0.0f, 1.0f) : 0.0f;
+      const float dist = length(e.a + ab * h - p);
+      if (dist < best) {
+        best = dist;
+        near = &e;
+      }
+    }
+  }
+  const float fade = d.env_fade;
+  float w;
+  int lead = owner, share = -1;
+  if (owner >= 0) {
+    share = near == nullptr ? -1 : near->owner == owner ? near->other : near->owner;
+    if (share < 0) {
+      return envelope_deform_map(d, p, owner);
+    }
+    w = fade > 0.0f ? std::min(1.0f, 0.5f + 0.5f * best / fade) : 1.0f;
+  }
+  else {
+    if (near == nullptr || best >= fade) {
+      return p;
+    }
+    lead = near->owner;
+    w = 1.0f - best / fade;
+  }
+  const float u = 2.0f * w - 1.0f;
+  w = w < 0.5f ? 0.5f * (2.0f * w) * (2.0f * w) * (2.0f * w) : 0.5f + 0.5f * u * u * u;
+  const float2 a = envelope_deform_map(d, p, lead);
+  const float2 b = share >= 0 ? envelope_deform_map(d, p, share) : p;
+  return a + (b - a) * (1.0f - w);
 }
 
 /* Weighted's pieces to a segment: Harmony's Weighted Deform cuts each segment of a curve into 6, evenly by its own
@@ -4308,7 +4639,9 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
 {
   switch (d.kind) {
     case DeformKind::Envelope:
-      return d.env_solver ? envelope_weighted_map(d, p) : envelope_deform_map(d, p);
+      return d.env_solver ? envelope_weighted_map(d, p)
+             : d.env_capsule ? envelope_capsule_map(d, p)
+                             : envelope_deform_map(d, p);
     case DeformKind::Grid:
     case DeformKind::Mesh:
     case DeformKind::Wire: {
@@ -4537,6 +4870,23 @@ ModifierType vector_deform_fitting_type(const Document &doc, const Layer &layer,
     }
   }
   return m.type;
+}
+
+bool vector_deform_envelope_retype(const Document &doc, const Layer &layer, Modifier &m)
+{
+  if (!deform_is_envelope(m)) {
+    return false;
+  }
+  for (const ModifierType type : {m.type, ModifierType::CurveDeform, ModifierType::CageDeform}) {
+    Modifier test = m;
+    deform_type_set(test, type);
+    DeformShape d;
+    if (deform_shape_build(doc, layer, test, false, false, d)) {
+      m = test;
+      return true;
+    }
+  }
+  return false;
 }
 
 void vector_deform_resolve_legacy(Document &doc)
@@ -4795,6 +5145,68 @@ float2 vector_deform_point(const DeformShape *shape, const Modifier &m, float2 a
   }
   std::vector<float> scratch;
   return at + (deform_map(*shape, at, scratch) - at) * std::clamp(m.deform_strength, 0.0f, 1.0f);
+}
+
+bool vector_deform_grid_view(const Document &doc, const Layer &layer, const Modifier &m, DeformGridView &r)
+{
+  r = {};
+  if (!modifier_bends(m.type)) {
+    return false;
+  }
+  VectorDrawing rest, bent;
+  if (!vector_deform_shape_read(doc, layer, m, rest, bent) || rest.points.empty()) {
+    return false;
+  }
+  /* What it reaches: its shape and the drawing it bends, at rest, and a margin round them, so how far past them it
+   * still moves things (Envelope moves everything) shows too. */
+  float2 lo = rest.points[0].pos, hi = lo;
+  const auto take = [&](float2 p) {
+    lo = float2(std::min(lo.x, p.x), std::min(lo.y, p.y));
+    hi = float2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+  };
+  for (const auto &p : rest.points) {
+    take(p.pos);
+  }
+  for (const auto &p : layer.drawing.points) {
+    take(p.pos);
+  }
+  const float size = std::max(std::max(hi.x - lo.x, hi.y - lo.y), 1e-3f);
+  const float margin = size * 0.15f;
+  lo = lo - float2(margin, margin);
+  hi = hi + float2(margin, margin);
+  /* Square cells, DEFORM_GRID_CELLS across the longer side; each line sampled DEFORM_GRID_STEPS times a cell, so a
+   * tear inside a cell shows as a kink or a jump rather than being smoothed over by a straight segment. */
+  const float cell = std::max(hi.x - lo.x, hi.y - lo.y) / float(DEFORM_GRID_CELLS);
+  r.columns = std::max(1, int(std::ceil((hi.x - lo.x) / cell - 1e-4f)));
+  r.rows = std::max(1, int(std::ceil((hi.y - lo.y) / cell - 1e-4f)));
+  const float2 start = (lo + hi) * 0.5f - float2(float(r.columns), float(r.rows)) * (cell * 0.5f);
+  r.cell = cell;
+  r.start = start;
+  const std::shared_ptr<const DeformShape> shape = vector_deform_shape(doc, layer, m);
+  const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
+  std::vector<float> scratch;
+  const auto bend = [&](float2 at) {
+    return shape ? at + (deform_map(*shape, at, scratch) - at) * strength : at;
+  };
+  const int steps = DEFORM_GRID_STEPS;
+  for (int i = 0; i <= r.columns; i++) {
+    std::vector<float2> line;
+    line.reserve(size_t(r.rows * steps + 1));
+    for (int k = 0; k <= r.rows * steps; k++) {
+      line.push_back(bend(start + float2(float(i) * cell, float(k) * cell / float(steps))));
+    }
+    r.lines.push_back(std::move(line));
+  }
+  for (int j = 0; j <= r.rows; j++) {
+    std::vector<float2> line;
+    line.reserve(size_t(r.columns * steps + 1));
+    for (int k = 0; k <= r.columns * steps; k++) {
+      line.push_back(bend(start + float2(float(k) * cell / float(steps), float(j) * cell)));
+    }
+    r.lines.push_back(std::move(line));
+  }
+  r.bent = shape != nullptr;
+  return true;
 }
 
 /* A line running into a cage from its outline, for the viewport's views of an Outline cage: from rest sample `sample`. */
@@ -5538,6 +5950,207 @@ void vector_deform_follow_limit_changed(const Document &doc, const Layer &layer,
 
 /* The drawing bent (base: as it was before the bones, the same points): each point where the deform puts it, each
  * handle turned and stretched as the deform bends it there (or fitted), each as far as its weight. */
+/* Envelope Deform's lines, Harmony's way: samples per segment for a line's edges (each place moved on its own, so a
+ * tear lands within one of them), and per half turn of a round end or join. */
+static constexpr int EDGE_STEPS = 32;
+static constexpr int EDGE_ARC_STEPS = 12;
+
+/* One run of a line's edges at rest (`rest`, the line where the deform measures from) and as posed (`posed`, the same
+ * samples where the line is before the deform), as rings: for an open stretch its left edge on, a round end, its right
+ * edge back and a round start; for a closed run fully drawn its outer edge and its inner edge, the other way round.
+ * Each place is an offset from its sample, the same at rest and posed. */
+static void line_edge_rings(const std::vector<float2> &posed, const std::vector<float2> &rest,
+                            const std::vector<float> &half, bool closed, const std::vector<bool> &visible,
+                            const std::vector<StrokeJoin> &joins, std::vector<std::vector<float2>> &r_posed,
+                            std::vector<std::vector<float2>> &r_rest)
+{
+  const size_t n = posed.size();
+  if (n < 2 || rest.size() != n || half.size() != n) {
+    return;
+  }
+  const auto runs_on = [&](size_t i) { return i >= visible.size() || visible[i]; };
+  const auto way = [&](size_t a, size_t b) {
+    const float2 e = posed[b] - posed[a];
+    const float l = length(e);
+    return l > 1e-12f ? e / l : float2(0.0f, 0.0f);
+  };
+  const auto left_of = [](float2 t) { return float2(-t.y, t.x); };
+  /* The offsets on one side (+1 left, -1 right) at sample `i`, the line arriving along `t_in` and leaving along
+   * `t_out` (either zero at an end): a round join sweeps from one normal to the other, a smooth one takes the mitre. */
+  const auto side_offsets = [&](size_t i, float2 t_in, float2 t_out, float side, std::vector<float2> &r_out) {
+    const float h = half[i];
+    if (length(t_in) == 0.0f || length(t_out) == 0.0f) {
+      r_out.push_back(left_of(length(t_in) == 0.0f ? t_out : t_in) * (h * side));
+      return;
+    }
+    const float2 n1 = left_of(t_in), n2 = left_of(t_out);
+    const float turn = std::atan2(t_in.x * t_out.y - t_in.y * t_out.x, dot(t_in, t_out));
+    if (i < joins.size() && joins[i] != StrokeJoin::Smooth && std::abs(turn) > 0.02f) {
+      const int steps = std::max(1, int(std::ceil(std::abs(turn) / PI * EDGE_ARC_STEPS)));
+      const float a0 = std::atan2(n1.y, n1.x);
+      for (int k = 0; k <= steps; k++) {
+        const float a = a0 + turn * float(k) / float(steps);
+        r_out.push_back(float2(std::cos(a), std::sin(a)) * (h * side));
+      }
+      return;
+    }
+    const float2 mid = n1 + n2;
+    const float ml = length(mid);
+    if (ml < 1e-6f) {
+      r_out.push_back(n1 * (h * side));
+      return;
+    }
+    const float2 m = mid / ml;
+    const float c = std::max(dot(m, n1), 0.25f);
+    r_out.push_back(m * (h * side / c));
+  };
+  /* A ring from offsets at samples: `at[k]` the sample each offset goes from. */
+  const auto add_ring = [&](const std::vector<size_t> &at, const std::vector<float2> &off) {
+    std::vector<float2> p, q;
+    p.reserve(at.size());
+    q.reserve(at.size());
+    for (size_t k = 0; k < at.size(); k++) {
+      p.push_back(posed[at[k]] + off[k]);
+      q.push_back(rest[at[k]] + off[k]);
+    }
+    if (p.size() >= 3) {
+      r_posed.push_back(std::move(p));
+      r_rest.push_back(std::move(q));
+    }
+  };
+  bool all_on = true;
+  for (size_t i = 0; i + (closed ? 0 : 1) < n; i++) {
+    all_on = all_on && runs_on(i);
+  }
+  if (closed && all_on) {
+    for (const float side : {1.0f, -1.0f}) {
+      std::vector<size_t> at;
+      std::vector<float2> off;
+      for (size_t j = 0; j < n; j++) {
+        const size_t i = side > 0.0f ? j : n - 1 - j;
+        const float2 t_in = way((i + n - 1) % n, i), t_out = way(i, (i + 1) % n);
+        const size_t before = off.size();
+        side_offsets(i, t_in, t_out, side, off);
+        if (side < 0.0f) {
+          std::reverse(off.begin() + std::ptrdiff_t(before), off.end());
+        }
+        at.resize(off.size(), i);
+      }
+      add_ring(at, off);
+    }
+    return;
+  }
+  /* Each drawn stretch on its own: from a sample the line runs on from, to where it stops. */
+  const size_t segments = closed ? n : n - 1;
+  size_t i = 0;
+  while (i < segments) {
+    if (!runs_on(i)) {
+      i++;
+      continue;
+    }
+    size_t j = i;
+    while (j < segments && runs_on(j)) {
+      j++;
+    }
+    /* Samples i..j (closed: modulo n). */
+    std::vector<size_t> idx;
+    for (size_t k = i; k <= j; k++) {
+      idx.push_back(k % n);
+    }
+    const size_t m = idx.size();
+    std::vector<size_t> at;
+    std::vector<float2> off;
+    const auto t_at = [&](size_t k, bool out) {
+      if (out) {
+        return k + 1 < m ? way(idx[k], idx[k + 1]) : float2(0.0f, 0.0f);
+      }
+      return k > 0 ? way(idx[k - 1], idx[k]) : float2(0.0f, 0.0f);
+    };
+    /* Left edge on. */
+    for (size_t k = 0; k < m; k++) {
+      side_offsets(idx[k], t_at(k, false), t_at(k, true), 1.0f, off);
+      at.resize(off.size(), idx[k]);
+    }
+    /* Round end: a half turn from left to right, round the front. */
+    const float2 t_end = t_at(m - 1, false);
+    if (length(t_end) > 0.0f) {
+      const float a0 = std::atan2(t_end.x, -t_end.y);
+      for (int k = 1; k < EDGE_ARC_STEPS; k++) {
+        const float a = a0 - PI * float(k) / float(EDGE_ARC_STEPS);
+        off.push_back(float2(std::cos(a), std::sin(a)) * half[idx[m - 1]]);
+        at.push_back(idx[m - 1]);
+      }
+    }
+    /* Right edge back. */
+    for (size_t k = m; k-- > 0;) {
+      const size_t before = off.size();
+      side_offsets(idx[k], t_at(k, false), t_at(k, true), -1.0f, off);
+      std::reverse(off.begin() + std::ptrdiff_t(before), off.end());
+      at.resize(off.size(), idx[k]);
+    }
+    /* Round start. */
+    const float2 t_start = t_at(0, true);
+    if (length(t_start) > 0.0f) {
+      const float a0 = std::atan2(-t_start.x, t_start.y);
+      for (int k = 1; k < EDGE_ARC_STEPS; k++) {
+        const float a = a0 - PI * float(k) / float(EDGE_ARC_STEPS);
+        off.push_back(float2(std::cos(a), std::sin(a)) * half[idx[0]]);
+        at.push_back(idx[0]);
+      }
+    }
+    add_ring(at, off);
+    i = j;
+  }
+}
+
+/* Envelope Deform's lines bent Harmony's way (Shape::line_edges): each plain line's edges built where it is before the
+ * deform (`pre`, posed; `pre_base`, at rest), cut fine, and each place moved by the deform on its own. Brushed lines
+ * keep their dabs along the bent curve. */
+static void envelope_line_edges(const DeformShape &d, float strength, const VectorDrawing &pre,
+                                const VectorDrawing &pre_base, VectorDrawing &drawing)
+{
+  const size_t count = std::min({pre.shapes.size(), pre_base.shapes.size(), drawing.shapes.size()});
+  parallel_for(count, 1, [&](size_t begin, size_t end) {
+    std::vector<float> own;
+    std::vector<float2> posed, rest;
+    std::vector<float> radii, rest_radii;
+    std::vector<bool> visible;
+    std::vector<StrokeJoin> joins;
+    for (size_t s = begin; s < end; s++) {
+      const Shape &shape = pre.shapes[s];
+      Shape &out = drawing.shapes[s];
+      out.line_edges.clear();
+      if (!shape.has_outline || shape.hidden || shape.style.line_width <= 0.0f || !shape.style.brush.name.empty()) {
+        continue;
+      }
+      std::vector<std::vector<float2>> rings_posed, rings_rest;
+      const std::vector<Shape> runs = shape_runs(pre, shape), rest_runs = shape_runs(pre_base, pre_base.shapes[s]);
+      for (size_t r = 0; r < runs.size() && r < rest_runs.size(); r++) {
+        bool closed = false, rest_closed = false;
+        if (!shape_outline(pre, runs[r], EDGE_STEPS, posed, &radii, &closed, &visible, &joins) ||
+            !shape_outline(pre_base, rest_runs[r], EDGE_STEPS, rest, &rest_radii, &rest_closed)) {
+          continue;
+        }
+        if (rest.size() != posed.size()) {
+          continue;
+        }
+        std::vector<float> half(posed.size());
+        for (size_t k = 0; k < half.size(); k++) {
+          half[k] = (k < radii.size() ? radii[k] : 1.0f) * shape.style.line_width * 0.5f;
+        }
+        line_edge_rings(posed, rest, half, closed, visible, joins, rings_posed, rings_rest);
+      }
+      for (size_t r = 0; r < rings_posed.size(); r++) {
+        std::vector<float2> &ring = rings_posed[r];
+        for (size_t k = 0; k < ring.size(); k++) {
+          ring[k] = ring[k] + (deform_map(d, rings_rest[r][k], own) - ring[k]) * strength;
+        }
+      }
+      out.line_edges = std::move(rings_posed);
+    }
+  });
+}
+
 static void bend_drawing(const DeformShape &d, const PointGroup *group, float strength, bool resample,
                          const VectorDrawing &base, VectorDrawing &drawing, std::vector<float> &scratch,
                          bool always_fit = true, float tolerance = 0.0f)
@@ -5648,6 +6261,35 @@ static void bend_drawing(const DeformShape &d, const PointGroup *group, float st
   }
 }
 
+void drawing_line_edges_drop(VectorDrawing &drawing)
+{
+  for (Shape &shape : drawing.shapes) {
+    shape.line_edges.clear();
+  }
+}
+
+/* Lines an Envelope Deform above drew by their edges (Shape::line_edges), bent by this deform too, each place on its
+ * own, as Harmony bends a stroke's outline through each deformer in turn. Only where the deform measures from the
+ * drawing as it comes in, with every point fully: else the edges can't follow the points, and the lines are drawn
+ * along their curves again, where the wire shows them. */
+static void carry_line_edges(const DeformShape &d, float strength, bool carry, VectorDrawing &drawing)
+{
+  if (!carry) {
+    drawing_line_edges_drop(drawing);
+    return;
+  }
+  parallel_for(drawing.shapes.size(), 1, [&](size_t begin, size_t end) {
+    std::vector<float> own;
+    for (size_t s = begin; s < end; s++) {
+      for (std::vector<float2> &ring : drawing.shapes[s].line_edges) {
+        for (float2 &p : ring) {
+          p = p + (deform_map(d, p, own) - p) * strength;
+        }
+      }
+    }
+  });
+}
+
 void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                          const VectorDrawing &before_bones, bool render)
 {
@@ -5732,6 +6374,38 @@ void vector_deform_apply(const Document &doc, const Layer &layer, const Modifier
                     before_bones.curves.size() == drawing.curves.size();
   VectorDrawing base = same ? before_bones : drawing;
   const float strength = std::clamp(m.deform_strength, 0.0f, 1.0f);
+  /* Envelope Deform draws its lines by their edges, as Harmony does (envelope_line_edges): from the drawing as it comes
+   * in. Not for the edit wire, a shape read as a cage's or mesh's, or weights painted or grouped (a line's places
+   * between its points have no weight of their own). */
+  const bool has_edges = std::any_of(drawing.shapes.begin(), drawing.shapes.end(),
+                                     [](const Shape &shape) { return !shape.line_edges.empty(); });
+  if (has_edges) {
+    bool from_drawing = same;
+    for (size_t i = 0; from_drawing && i < drawing.points.size(); i++) {
+      from_drawing = before_bones.points[i].pos == drawing.points[i].pos;
+    }
+    carry_line_edges(d, strength, from_drawing && g_wire == 0 && !g_shape_read && group == nullptr, drawing);
+  }
+  const bool by_edges = !has_edges && d.kind == DeformKind::Envelope && g_wire == 0 && !g_shape_read &&
+                        group == nullptr;
+  VectorDrawing edges_from, edges_rest;
+  if (by_edges) {
+    edges_from = drawing;
+    edges_rest = base;
+  }
+  struct Edges {
+    const bool on;
+    const DeformShape &d;
+    const float strength;
+    const VectorDrawing &from, &rest;
+    VectorDrawing &drawing;
+    ~Edges()
+    {
+      if (on) {
+        envelope_line_edges(d, strength, from, rest, drawing);
+      }
+    }
+  } edges{by_edges, d, strength, edges_from, edges_rest, drawing};
   std::vector<float> scratch;
   const bool resample = m.deform_resample_self;
   /* What the weights go by, with the cuts' own as they are made. */

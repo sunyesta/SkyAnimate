@@ -86,12 +86,12 @@ SCENARIOS = [
     ("curve_keep", t_line, "CURVE_DEFORM", {"stretch": False}, "Line"),
     ("box_mv", t_box, "CAGE_DEFORM", {"cage_method": "MEAN_VALUE"}, "Cage"),
     ("box_rigid", t_box, "CAGE_DEFORM", {"cage_method": "RIGID"}, "Cage"),
-    ("box_env", t_box, "CAGE_DEFORM", {"cage_method": "ENVELOPE"}, "Cage"),
+    ("box_env", t_box, "CAGE_DEFORM", {"cage_method": "OUTLINE"}, "Cage"),
     ("curvy_mv", t_curvy, "CAGE_DEFORM", {"cage_method": "MEAN_VALUE"}, "Cage"),
     ("curvy_rigid", t_curvy, "CAGE_DEFORM", {"cage_method": "RIGID"}, "Cage"),
-    ("curvy_env", t_curvy, "CAGE_DEFORM", {"cage_method": "ENVELOPE"}, "Cage"),
-    ("curvy_env_b0", t_curvy, "CAGE_DEFORM", {"cage_method": "ENVELOPE", "blend": 0.0}, "Cage"),
-    ("curvy_env_b1", t_curvy, "CAGE_DEFORM", {"cage_method": "ENVELOPE", "blend": 1.0}, "Cage"),
+    ("curvy_env", t_curvy, "CAGE_DEFORM", {"cage_method": "OUTLINE"}, "Cage"),
+    ("curvy_env_b0", t_curvy, "CAGE_DEFORM", {"cage_method": "OUTLINE", "blend": 0.0}, "Cage"),
+    ("curvy_env_b1", t_curvy, "CAGE_DEFORM", {"cage_method": "OUTLINE", "blend": 1.0}, "Cage"),
 ]
 COMBOS = [("prec", {"precision": 0.002, "resample_self": False}), ("plain", {"precision": 0.0, "resample_self": False}),
           ("resample", {"resample_self": True})]
@@ -178,6 +178,7 @@ for scn, make_target, mtype, settings, kind in SCENARIOS:
             assert ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
             a.modifier_set(len(a.modifiers) - 1, **sub)
         assert ops.object.modifier_add(type=mtype) == {'FINISHED'}
+        a.modifier_set(len(a.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(mtype, {}))
         k = len(a.modifiers) - 1
         a.modifier_set(k, layer=target.name, shape=target.shapes[0][0], **settings)
         a.modifier_set(k, **dset)

@@ -24,7 +24,7 @@ art.add_curve([(-0.6, -0.5), (0.5, -0.4), (0.4, 0.6), (-0.5, 0.5)], closed=True,
 art.add_curve([(-1.4, 0.1), (0.0, 0.2), (1.4, 0.1)])
 layers.active = art
 assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
-art.modifier_set(0, layer=cage.name, shape=cage.shapes[0][0], cage_method="ENVELOPE", precision=0.002)
+art.modifier_set(0, layer=cage.name, shape=cage.shapes[0][0], cage_method="OUTLINE", precision=0.002)
 
 # Both into one group, and that into another (the shared groups the transform is worked out below).
 layers.active = cage

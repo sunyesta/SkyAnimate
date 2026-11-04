@@ -2548,6 +2548,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         const Layer *follow_shape = deform ? layer_find(*current_context().document, deform->deform_layer) : nullptr;
         d["follow_shape_point"] = follow_shape_point_number(follow_shape, c.follow_point_id);
         d["follow_shape_point2"] = follow_shape_point_number(follow_shape, c.follow_point2_id);
+        d["follow_shape_point3"] = follow_shape_point_number(follow_shape, c.follow_point3_id);
       }
       d["follow_point"] = py::make_tuple(c.follow_point.x, c.follow_point.y);
       d["show_follow_point"] = c.follow_show;
@@ -2563,6 +2564,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["follow_turn"] = c.follow_turn;
       d["follow_stretch"] = c.follow_stretch;
       d["follow_now2"] = py::make_tuple(c.follow_now2.x, c.follow_now2.y);
+      d["follow_points"] = c.follow_count();
+      d["follow_shift3"] = py::make_tuple(c.follow_shift3.x, c.follow_shift3.y);
+      d["follow_point3"] = py::make_tuple(c.follow_point3.x, c.follow_point3.y);
+      d["follow_now3"] = py::make_tuple(c.follow_now3.x, c.follow_now3.y);
+      d["follow_scale_mode"] = c.follow_scale_mode == FollowScaleMode::AlongLine ? "ALONG_LINE" : "UNIFORM";
+      d["follow_volume"] = c.follow_volume;
+      d["follow_shape"] = py::make_tuple(c.follow_shape.a, c.follow_shape.b, c.follow_shape.c, c.follow_shape.d);
       d["fit"] = c.shape_fit == ShapeFit::Whole ? "WHOLE" : "CENTER";
       d["fit_layer"] = c.fit_layer;
       d["overlap"] = c.overlap;
@@ -2720,39 +2728,57 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         c.follow_show = value.cast<bool>();
       }
       else if (key == "follow_second") {
-        follow_point_second(*current_context().document, layer, bone, c, value.cast<bool>());
+        follow_point_count(*current_context().document, layer, bone, c, value.cast<bool>() ? 2 : 1);
       }
-      else if (key == "follow_point2") {
+      else if (key == "follow_points") {
+        const int count = value.cast<int>();
+        if (count < 1 || count > 3) {
+          throw py::value_error("follow_points is 1, 2 or 3");
+        }
+        follow_point_count(*current_context().document, layer, bone, c, count);
+      }
+      else if (key == "follow_point2" || key == "follow_point3") {
         const auto point = value.cast<std::pair<float, float>>();
         Layer *owner = nullptr;
         if (follow_point_modifier(*current_context().document, c, &owner)) {
-          follow_point_place(*current_context().document, layer, c, *owner, {point.first, point.second}, true);
+          follow_point_place(*current_context().document, layer, c, *owner, {point.first, point.second},
+                             key == "follow_point3" ? 2 : 1);
         }
       }
-      else if (key == "follow_shape_point" || key == "follow_shape_point2") {
+      else if (key == "follow_shape_point" || key == "follow_shape_point2" || key == "follow_shape_point3") {
         Document &doc = *current_context().document;
         Layer *owner = nullptr;
         const Modifier *deform = follow_point_modifier(doc, c, &owner);
         const uint64_t point_id = deform ? follow_shape_point(layer_find(doc, deform->deform_layer), deform->deform_shape, value)
                                          : follow_shape_point(nullptr, 0, value);
-        follow_point_pick(doc, layer, c, key == "follow_shape_point2", point_id);
+        follow_point_pick(doc, layer, c, key == "follow_shape_point3" ? 2 : key == "follow_shape_point2" ? 1 : 0, point_id);
       }
       else if (key == "follow_rotation") {
         c.follow_rotation = value.cast<bool>();
       }
-      else if (key == "follow_shift" || key == "follow_shift2") {
+      else if (key == "follow_shift" || key == "follow_shift2" || key == "follow_shift3") {
         const auto shift = value.cast<std::pair<float, float>>();
-        (key == "follow_shift" ? c.follow_shift : c.follow_shift2) = {shift.first, shift.second};
+        c.follow_shift_at(key == "follow_shift3" ? 2 : key == "follow_shift2" ? 1 : 0) = {shift.first, shift.second};
       }
-      else if (key == "follow_to" || key == "follow_to2") {
+      else if (key == "follow_to" || key == "follow_to2" || key == "follow_to3") {
         /* Where it's to show now, in document space: as a drag does. */
         const auto to = value.cast<std::pair<float, float>>();
-        const bool second = key == "follow_to2";
-        (second ? c.follow_shift2 : c.follow_shift) =
-            follow_point_shift_to(*current_context().document, layer, bone, c, second, {to.first, to.second});
+        const int which = key == "follow_to3" ? 2 : key == "follow_to2" ? 1 : 0;
+        c.follow_shift_at(which) =
+            follow_point_shift_to(*current_context().document, layer, bone, c, which, {to.first, to.second});
       }
       else if (key == "follow_scale") {
         c.follow_scale = value.cast<bool>();
+      }
+      else if (key == "follow_scale_mode") {
+        const std::string mode = value.cast<std::string>();
+        if (mode != "UNIFORM" && mode != "ALONG_LINE") {
+          throw py::value_error("follow_scale_mode is UNIFORM or ALONG_LINE");
+        }
+        c.follow_scale_mode = mode == "ALONG_LINE" ? FollowScaleMode::AlongLine : FollowScaleMode::Uniform;
+      }
+      else if (key == "follow_volume") {
+        c.follow_volume = value.cast<float>();
       }
       else if (key == "fit") {
         const std::string fit = value.cast<std::string>();
@@ -3300,6 +3326,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["envelope_method"] = envelope_method_id(mod.deform_envelope_method);
         d["pre_blend"] = mod.deform_pre_blend;
         d["post_blend"] = mod.deform_post_blend;
+        d["curve_method"] = curve_method_id(mod.deform_curve_method);
+        d["influence"] = influence_type_id(mod.deform_influence);
+        d["influence_symmetric"] = mod.deform_influence_symmetric;
+        d["influence_left"] = mod.deform_influence_left;
+        d["influence_right"] = mod.deform_influence_right;
+        d["influence_begin"] = mod.deform_influence_begin;
+        d["influence_end"] = mod.deform_influence_end;
+        d["influence_fade"] = mod.deform_influence_fade;
         if (mod.type == ModifierType::FollowDeform) {
           const auto pair = [](float2 v) { return py::make_tuple(v.x, v.y); };
           d["point"] = pair(mod.deform_point);
@@ -3342,6 +3376,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["show_render"] = mod.show_render;
       if (modifier_makes_points(mod)) {
         d["show_points"] = mod.show_points;
+      }
+      if (modifier_bends(mod.type)) {
+        d["show_mesh"] = mod.show_mesh;
       }
       if (mod.type == ModifierType::Mirror) {
         d["axis_x"] = mod.axis_x;
@@ -3426,6 +3463,26 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return py::make_tuple(at, view.quads.size(), view.limit.size());
   });
+  m.def("layer_deform_grid_view", [layer_or_raise](uint64_t id, int index) -> py::object {
+    Layer &layer = layer_or_raise(id);
+    if (index < 0 || index >= int(layer.modifiers.size()) || !modifier_bends(layer.modifiers[size_t(index)].type)) {
+      throw py::index_error("no Curve, Cage or Mesh Deform " + std::to_string(index));
+    }
+    DeformGridView grid;
+    if (!vector_deform_grid_view(*current_context().document, layer, layer.modifiers[size_t(index)], grid)) {
+      return py::none();
+    }
+    py::list lines;
+    for (const std::vector<float2> &line : grid.lines) {
+      py::list l;
+      for (const float2 p : line) {
+        l.append(py::make_tuple(p.x, p.y));
+      }
+      lines.append(l);
+    }
+    return py::make_tuple(lines, grid.columns, grid.rows, py::make_tuple(grid.start.x, grid.start.y), grid.cell,
+                          grid.bent);
+  });
   m.def("layer_modifier_set", [layer_or_raise](uint64_t id, int index, py::dict values) {
     Layer &layer = layer_or_raise(id);
     if (index < 0 || index >= int(layer.modifiers.size())) {
@@ -3433,6 +3490,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     Modifier &mod = layer.modifiers[index];
     const Modifier before = mod;
+    bool type_given = false;
     for (const auto &[key_obj, value] : values) {
       const std::string key = py::str(key_obj);
       if (key == "show_viewport") {
@@ -3467,6 +3525,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "show_points" && modifier_makes_points(mod)) {
         mod.show_points = value.cast<bool>();
+      }
+      else if (key == "show_mesh" && modifier_bends(mod.type)) {
+        mod.show_mesh = value.cast<bool>();
       }
       else if (key == "name") {
         mod.name = value.cast<std::string>();
@@ -3594,19 +3655,28 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "type") {
         /* Change Type: another deform, keeping its settings and painted weights. */
+        type_given = true;
         const std::string type = value.cast<std::string>();
-        const ModifierType to = type == "CURVE_DEFORM"  ? ModifierType::CurveDeform
-                                : type == "CAGE_DEFORM" ? ModifierType::CageDeform
-                                : type == "ENVELOPE_DEFORM" ? ModifierType::EnvelopeDeform
-                                : type == "MESH_DEFORM" ? ModifierType::MeshDeform
-                                                        : ModifierType::Mirror;
-        if (to == ModifierType::Mirror) {
-          throw py::value_error("a deform's type is CURVE_DEFORM, CAGE_DEFORM, MESH_DEFORM or ENVELOPE_DEFORM");
+        if (type == "ENVELOPE_DEFORM") {
+          /* Envelope Deform was a modifier of its own: now Curve or Cage Deform, by the shape, with Envelope. */
+          mod.deform_curve_method = CurveMethod::Envelope;
+          mod.deform_cage_method = CageMethod::Envelope;
+          if (mod.type != ModifierType::CurveDeform && mod.type != ModifierType::CageDeform) {
+            deform_type_set(mod, ModifierType::CurveDeform);
+          }
+          vector_deform_envelope_retype(*current_context().document, layer, mod);
         }
-        if (mod.name.rfind(deform_type_name(mod.type), 0) == 0) {
-          mod.name = deform_type_name(to) + mod.name.substr(std::string(deform_type_name(mod.type)).size());
+        else {
+          const ModifierType to = type == "CURVE_DEFORM"  ? ModifierType::CurveDeform
+                                  : type == "CAGE_DEFORM" ? ModifierType::CageDeform
+                                  : type == "MESH_DEFORM" ? ModifierType::MeshDeform
+                                                          : ModifierType::Mirror;
+          if (to == ModifierType::Mirror) {
+            throw py::value_error("a deform's type is CURVE_DEFORM, CAGE_DEFORM or MESH_DEFORM (ENVELOPE_DEFORM: "
+                                  "Curve or Cage Deform, by the shape, with the Envelope method)");
+          }
+          deform_type_set(mod, to);
         }
-        mod.type = to;
       }
       else if (modifier_is_deform(mod.type) && key == "layer") {
         const std::string name = value.cast<std::string>();
@@ -3697,7 +3767,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "cage_method") {
         if (!cage_method_from_id(value.cast<std::string>(), mod.deform_cage_method)) {
-          throw py::value_error("cage_method is MEAN_VALUE, RIGID or OUTLINE");
+          throw py::value_error("cage_method is MEAN_VALUE, RIGID, OUTLINE or ENVELOPE");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "smooth") {
@@ -3705,7 +3775,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "mesh_method") {
         if (!mesh_method_from_id(value.cast<std::string>(), mod.deform_mesh_method)) {
-          throw py::value_error("mesh_method is CELLS, ENVELOPE or POINTS");
+          throw py::value_error("mesh_method is CELLS, OUTLINE or POINTS");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "blend") {
@@ -3719,7 +3789,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (modifier_is_deform(mod.type) && key == "envelope_method") {
         if (!envelope_method_from_id(value.cast<std::string>(), mod.deform_envelope_method)) {
-          throw py::value_error("envelope_method is STANDARD or WEIGHTED");
+          throw py::value_error("envelope_method is STANDARD or BLENDED");
         }
       }
       else if (modifier_is_deform(mod.type) && key == "pre_blend") {
@@ -3728,12 +3798,47 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (modifier_is_deform(mod.type) && key == "post_blend") {
         mod.deform_post_blend = value.cast<float>();
       }
+      else if (modifier_is_deform(mod.type) && key == "curve_method") {
+        if (!curve_method_from_id(value.cast<std::string>(), mod.deform_curve_method)) {
+          throw py::value_error("curve_method is SMOOTH or ENVELOPE");
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence") {
+        if (!influence_type_from_id(value.cast<std::string>(), mod.deform_influence)) {
+          throw py::value_error("influence is EVERYWHERE or CAPSULE");
+        }
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_symmetric") {
+        mod.deform_influence_symmetric = value.cast<bool>();
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_left") {
+        mod.deform_influence_left = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_right") {
+        mod.deform_influence_right = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_begin") {
+        mod.deform_influence_begin = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_end") {
+        mod.deform_influence_end = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (modifier_is_deform(mod.type) && key == "influence_fade") {
+        mod.deform_influence_fade = std::max(value.cast<float>(), 0.0f);
+      }
       else {
         throw py::key_error("unknown modifier setting '" + key + "'");
       }
     }
     if (mod.type == ModifierType::FollowDeform) {
       vector_deform_follow_limit_changed(*current_context().document, layer, before, mod);
+    }
+    /* Envelope takes a line or a loop alike: given a new shape (or just made Envelope), it is the Curve or Cage
+     * Deform that takes it, unless the type was given too. */
+    if (!type_given && deform_is_envelope(mod) &&
+        (mod.deform_shape != before.deform_shape || mod.deform_layer != before.deform_layer || !deform_is_envelope(before)))
+    {
+      vector_deform_envelope_retype(*current_context().document, layer, mod);
     }
     current_context().undo->mark_changed();
   });
@@ -3791,6 +3896,28 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         return py::make_tuple(result, closed);
       },
       py::arg("id"), py::arg("shape"), py::arg("steps") = 16, py::arg("render") = false);
+  /* A shape's line as Envelope Deform bent it by its edges (Shape::line_edges): its rings, empty when it is drawn by its
+   * curves. */
+  m.def(
+      "layer_evaluated_line_edges",
+      [layer_or_raise](uint64_t id, int shape, bool render) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        const VectorDrawing d = layer_evaluated_drawing(doc, layer_or_raise(id), render);
+        if (shape < 0 || shape >= int(d.shapes.size())) {
+          throw py::index_error("Shape index out of range");
+        }
+        py::list rings;
+        for (const std::vector<float2> &ring : d.shapes[size_t(shape)].line_edges) {
+          py::list r;
+          for (const float2 &q : ring) {
+            r.append(py::make_tuple(q.x, q.y));
+          }
+          rings.append(r);
+        }
+        return rings;
+      },
+      py::arg("id"), py::arg("shape"), py::arg("render") = false);
   /* Weights: how the active bone (or a named one) moves each point, and painting them. */
   m.def("layer_bone_weights", [layer_or_raise](uint64_t id, const std::string &bone_name) {
     Document &doc = *current_context().document;

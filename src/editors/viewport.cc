@@ -31,6 +31,7 @@
 #include "anim/bone_family.hh"
 #include "anim/animation.hh"
 #include "anim/deform.hh"
+#include "anim/merge.hh"
 #include "anim/vector_deform.hh"
 #include "anim/draw_order.hh"
 #include "anim/follow_point.hh"
@@ -12917,6 +12918,62 @@ static void draw_deform_range(ImDrawList *dl, Context &C, const ViewMapping &vie
   }
 }
 
+/* Show Mesh: each shown Curve, Cage or Mesh Deform with it on draws an even grid over what it reaches, bent as it bends
+ * that space now, over the drawing. A grey grid on the setup frame, where nothing bends. */
+static void draw_deform_grids(ImDrawList *dl, Context &C, const ViewMapping &view)
+{
+  const Document &doc = *C.document;
+  if (!doc.overlays.show) {
+    return;
+  }
+  std::vector<ImVec2> screen;
+  for (const Layer *layer : document_layers_flat(doc)) {
+    if (!layer_shown_in_document(doc, layer->id)) {
+      continue;
+    }
+    for (const Modifier &m : layer->modifiers) {
+      if (!m.show_mesh || !m.show_viewport || !modifier_bends(m.type)) {
+        continue;
+      }
+      DeformGridView grid;
+      if (!vector_deform_grid_view(doc, *layer, m, grid)) {
+        continue;
+      }
+      const Transform2D to_document = layer_world_transform(doc, layer->id);
+      const ImU32 colour = grid.bent ? IM_COL32(0xe8, 0x9a, 0x3c, 170) : IM_COL32(0xb0, 0xb0, 0xb0, 110);
+      for (const std::vector<float2> &line : grid.lines) {
+        screen.clear();
+        for (const float2 p : line) {
+          screen.push_back(view.to_screen(to_document.apply(p)));
+        }
+        dl->AddPolyline(screen.data(), int(screen.size()), colour, ImDrawFlags_None, 1.0f);
+      }
+    }
+  }
+}
+
+/* A point dragged: on frame 0 that places its rest; on other frames it shifts it from there, keyed like any change. */
+struct FollowPointDrag {
+  bool active = false;
+  int area = -1;
+  uint64_t rig = 0, bone = 0;
+  int index = 0;
+  /* A Follow Deform's second point; a constraint's points go by `which` (0 to 2). */
+  bool second = false;
+  float2 start;
+  float2 pressed;
+  bool moved = false;
+  /* A Follow Deform's: its layer and modifier (`index`), in place of a bone's constraint. */
+  uint64_t layer = 0;
+  int which = 0;
+  /* The shape's point it was picked as, put back if the drag is cancelled. */
+  uint64_t start_id = 0;
+  /* With Ctrl on frame 0: the shape's point it snaps to, picked on release, and where that shows. */
+  uint64_t snap = 0;
+  float2 snap_at;
+};
+static FollowPointDrag g_follow_drag;
+
 static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &view)
 {
   Document &doc = *C.document;
@@ -12942,32 +12999,48 @@ static void draw_follow_points(ImDrawList *dl, Context &C, const ViewMapping &vi
   });
   for_each_shown_follow_point(doc, [&](Layer &, Bone &, BoneConstraint &c) {
     const ImU32 blue = IM_COL32(0x6f, 0xc8, 0xff, 255), dark = IM_COL32(0x10, 0x10, 0x10, 255);
-    const ImVec2 at = view.to_screen(c.follow_now);
-    if (c.follow_two) {
-      const ImVec2 second = view.to_screen(c.follow_now2);
-      dl->AddLine(at, second, blue, 1.0f);
-      dl->AddCircleFilled(second, FOLLOW_POINT_RADIUS + 1.5f, dark);
-      dl->AddCircleFilled(second, FOLLOW_POINT_RADIUS, blue);
+    const int count = c.follow_count();
+    for (int i = 1; i < count; i++) {
+      dl->AddLine(view.to_screen(c.follow_now), view.to_screen(c.follow_now_at(i)), blue, 1.0f);
     }
-    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, dark);
-    dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, blue);
+    for (int i = count - 1; i >= 0; i--) {
+      const ImVec2 at = view.to_screen(c.follow_now_at(i));
+      dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS + 1.5f, dark);
+      dl->AddCircleFilled(at, FOLLOW_POINT_RADIUS, blue);
+    }
   });
+  /* The shape's point a Ctrl drag snaps to. */
+  if (g_follow_drag.active && g_follow_drag.snap != 0) {
+    const ImVec2 at = view.to_screen(g_follow_drag.snap_at);
+    dl->AddCircle(at, FOLLOW_POINT_RADIUS + 4.0f, IM_COL32(0x10, 0x10, 0x10, 255), 0, 3.5f);
+    dl->AddCircle(at, FOLLOW_POINT_RADIUS + 4.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+  }
 }
 
-/* A point dragged: on frame 0 that places its rest; on other frames it shifts it from there, keyed like any change. */
-struct FollowPointDrag {
-  bool active = false;
-  int area = -1;
-  uint64_t rig = 0, bone = 0;
-  int index = 0;
-  bool second = false;
-  float2 start;
-  float2 pressed;
-  bool moved = false;
-  /* A Follow Deform's: its layer and modifier (`index`), in place of a bone's constraint. */
-  uint64_t layer = 0;
-};
-static FollowPointDrag g_follow_drag;
+/* The point of the followed shape nearest the mouse, within reach, as it rests (frame 0): its id, and where it shows in
+ * `r_at` (document space). 0 when none is. */
+static uint64_t follow_snap_point(const Document &doc, const Layer &owner, const Modifier &m, const ViewMapping &view,
+                                  float2 &r_at)
+{
+  VectorDrawing rest, bent;
+  if (!vector_deform_shape_read(doc, owner, m, rest, bent)) {
+    return 0;
+  }
+  const Transform2D to_document = layer_world_transform(doc, owner.id);
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
+  uint64_t under = 0;
+  for (const MeshPoint &point : rest.points) {
+    const float2 at = to_document.apply(point.pos);
+    const float distance = ImLengthSqr(view.to_screen(at) - mouse);
+    if (distance < best) {
+      best = distance;
+      under = point.id;
+      r_at = at;
+    }
+  }
+  return under;
+}
 
 /* Whether the mouse is on a point, or dragging one. */
 static bool follow_point_input(Context &C, const Area &area, const ViewMapping &view, bool hovered)
@@ -13015,24 +13088,30 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
     Bone *bone = rig ? bone_find(*rig, d.bone) : nullptr;
     BoneConstraint *c = bone && d.index < int(bone->constraints.size()) ? &bone->constraints[size_t(d.index)] : nullptr;
     Layer *owner = nullptr;
-    if (!c || !follow_point_modifier(doc, *c, &owner)) {
+    const Modifier *m = c ? follow_point_modifier(doc, *c, &owner) : nullptr;
+    if (!m || d.which >= c->follow_count()) {
       d = {};
       return false;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       if (doc.frame_current == 0) {
-        follow_point_place(doc, *rig, *c, *owner, d.start, d.second);
-        (d.second ? c->follow_now2 : c->follow_now) = layer_world_transform(doc, owner->id).apply(d.start);
+        follow_point_place(doc, *rig, *c, *owner, d.start, d.which);
+        c->follow_id_at(d.which) = d.start_id;
+        c->follow_now_at(d.which) = layer_world_transform(doc, owner->id).apply(d.start);
       }
       else {
-        (d.second ? c->follow_shift2 : c->follow_shift) = d.start;
+        c->follow_shift_at(d.which) = d.start;
       }
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       d = {};
       return true;
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      if (d.moved) {
+      /* Let go on a point of the shape with Ctrl: it becomes that point. */
+      if (d.snap != 0) {
+        follow_point_pick(doc, *rig, *c, d.which, d.snap);
+      }
+      if (d.moved || d.snap != d.start_id) {
         push_undo(C, doc.frame_current == 0 ? "Move Follow Point" : "Shift Follow Point");
       }
       d = {};
@@ -13041,16 +13120,24 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
     const float2 to = view.to_document(ImGui::GetIO().MousePos);
     if (doc.frame_current != 0) {
       if (length(to - d.pressed) > 1e-6f) {
-        const float2 shift = follow_point_shift_to(doc, *rig, *bone, *c, d.second, to);
+        const float2 shift = follow_point_shift_to(doc, *rig, *bone, *c, d.which, to);
         d.moved = d.moved || length(shift - d.start) > 1e-6f;
-        (d.second ? c->follow_shift2 : c->follow_shift) = shift;
+        c->follow_shift_at(d.which) = shift;
       }
       return true;
     }
-    const float2 point = layer_world_transform(doc, owner->id).inverted().apply(to);
+    if (!d.moved && length(to - d.pressed) <= 1e-6f) {
+      return true;
+    }
+    /* Moved off the shape's point it was, it has a place of its own (until let go on one with Ctrl). */
+    c->follow_id_at(d.which) = 0;
+    float2 at = to;
+    d.snap = ImGui::GetIO().KeyCtrl ? follow_snap_point(doc, *owner, *m, view, at) : 0;
+    d.snap_at = at;
+    const float2 point = layer_world_transform(doc, owner->id).inverted().apply(at);
     d.moved = d.moved || length(point - d.start) > 1e-6f;
-    follow_point_place(doc, *rig, *c, *owner, point, d.second);
-    (d.second ? c->follow_now2 : c->follow_now) = to;
+    follow_point_place(doc, *rig, *c, *owner, point, d.which);
+    c->follow_now_at(d.which) = at;
     return true;
   }
   if (!hovered || !doc.overlays.show || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -13059,18 +13146,26 @@ static bool follow_point_input(Context &C, const Area &area, const ViewMapping &
   const ImVec2 mouse = ImGui::GetIO().MousePos;
   float best = FOLLOW_POINT_PICK * FOLLOW_POINT_PICK;
   for_each_shown_follow_point(doc, [&](Layer &rig, Bone &bone, BoneConstraint &c) {
-    for (const bool second : {false, true}) {
-      /* A point of the shape goes as it does: there's nothing to drag. */
-      if ((second && !c.follow_two) || (second ? c.follow_point2_id : c.follow_point_id) != 0) {
+    const bool rest = doc.frame_current == 0;
+    for (int which = 0; which < c.follow_count(); which++) {
+      /* A point of the shape goes as it does: there's nothing to shift. On frame 0 dragging it gives it a place of its
+       * own. */
+      if (!rest && c.follow_id_at(which) != 0) {
         continue;
       }
-      const float distance = ImLengthSqr(view.to_screen(second ? c.follow_now2 : c.follow_now) - mouse);
+      const float distance = ImLengthSqr(view.to_screen(c.follow_now_at(which)) - mouse);
       if (distance < best) {
         best = distance;
-        const bool rest = doc.frame_current == 0;
-        d = {true, area.id, rig.id, bone.id, int(&c - bone.constraints.data()), second,
-             rest ? (second ? c.follow_point2 : c.follow_point) : (second ? c.follow_shift2 : c.follow_shift),
-             view.to_document(mouse), false};
+        d = {};
+        d.active = true;
+        d.area = area.id;
+        d.rig = rig.id;
+        d.bone = bone.id;
+        d.index = int(&c - bone.constraints.data());
+        d.which = which;
+        d.start = rest ? c.follow_point_at(which) : c.follow_shift_at(which);
+        d.start_id = rest ? c.follow_id_at(which) : 0;
+        d.pressed = view.to_document(mouse);
       }
     }
   });
@@ -13889,6 +13984,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     annotate_hovered_guide = -1;
   }
   draw_annotation_overlays(dl, C, view, annotate_hovered_guide);
+  draw_deform_grids(dl, C, view);
   draw_deform_range(dl, C, view);
   draw_follow_points(dl, C, view);
   if (wm.overlays_toggle_request && hovered) {

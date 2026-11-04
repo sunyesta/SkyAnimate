@@ -90,7 +90,7 @@ MOVE = 0.4
 # goes with it. (Square cells joined the two sides of a gap under a few of them wide; mean value coordinates threw what
 # lies by a narrow one; an Envelope's sides reached straight over.)
 for gap in (0.02, 0.05, 0.1, 0.2, 0.4):
-    for method in ("RIGID", "ENVELOPE"):
+    for method in ("RIGID", "OUTLINE"):
         for way in ((-MOVE, 0.0), (0.0, MOVE)):
             shape = u_shape(gap)
             # Some right by the still wall, wherever it falls in the lattice's cells.
@@ -126,7 +126,7 @@ for step in range(12):
 # A cage with a narrow gap moved whole carries everything whole, in the gap and past the outline too.
 shape = u_shape(0.05)
 art_at = [(0.1, 0.5), (-0.1, 0.5), (0.0, 0.5), (0.0, 0.0 - 0.6), (1.4, 0.0)]
-for method in ("RIGID", "ENVELOPE"):
+for method in ("RIGID", "OUTLINE"):
     cage, art = bent_by(shape, art_at, method)
     rest = places(art)
     turn = 0.5
@@ -144,7 +144,7 @@ column = [(0.0, y / 20) for y in (-19, -16, -12, -6, 0, 6, 12, 16)]
 top = [k for k, p in enumerate(circle) if p[1] > 0.7]
 push = lambda k, x, y: (x, y + MOVE) if k in top else None
 
-cage, art = bent_by(circle, column, "ENVELOPE")
+cage, art = bent_by(circle, column, "OUTLINE")
 assert art.modifiers[0]["range"] == 1.0, art.modifiers[0]
 rest = places(art)
 move_cage(cage, push)
@@ -153,14 +153,14 @@ assert full[4][1] - rest[4][1] > 0.3 * MOVE, ("with no Range the middle follows 
 doc.frame_current = 0
 
 # Just under the top of Range it hardly differs.
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.995)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.995)
 move_cage(cage, push)
 for a, b in zip(full, places(art)):
     assert math.dist(a, b) < 0.03 * MOVE, ("Range jumps near its top", a, b)
 doc.frame_current = 0
 
 # Range: what lies further than it from the side that moved stays, what lies by that side goes with it.
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.3)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.3)
 rest = places(art)
 move_cage(cage, push)
 now = places(art)
@@ -171,7 +171,7 @@ assert all(a[1] < b[1] for a, b in zip(now, now[1:])), ("nothing folds", now)
 doc.frame_current = 0
 
 # Pushed in further than Range, what lies by the side gets out of the way of what stays instead of folding through it.
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.05)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.05)
 move_cage(cage, lambda k, x, y: (x, y - 1.1) if k in top else None)
 now = places(art)
 assert all(a[1] < b[1] for a, b in zip(now, now[1:])), ("nothing folds when a side passes Range", now)
@@ -179,7 +179,7 @@ assert now[-1][1] < 1.0 - 1.1, ("the side went through what it pushed", now[-1])
 doc.frame_current = 0
 
 # Moving the whole cage still carries everything: Range limits bending, not the cage's own move.
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.2)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.2)
 rest = places(art)
 turn = 0.7
 c, s = math.cos(turn), math.sin(turn)
@@ -190,7 +190,7 @@ for a, b in zip(rest, places(art)):
 doc.frame_current = 0
 
 # Scaled whole too, the middle goes with it (near a side Envelope keeps a line's width, Range or no Range).
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.2)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.2)
 rest = places(art)
 whole = lambda x, y: (x * 1.3 + 0.5, y * 1.3 - 0.3)
 move_whole(cage, whole)
@@ -199,7 +199,7 @@ assert math.dist(whole(*rest[4]), middle) < 0.01, ("Range left the middle behind
 doc.frame_current = 0
 
 # Moved whole with one side pushed on top: the far side goes with the cage, and takes nothing from the push.
-cage, art = bent_by(circle, column, "ENVELOPE", range=0.3)
+cage, art = bent_by(circle, column, "OUTLINE", range=0.3)
 rest = places(art)
 move_cage(cage, lambda k, x, y: (lambda q: (q[0], q[1] + MOVE) if k in top else q)((x + 0.5, y)))
 now = places(art)
@@ -209,7 +209,7 @@ doc.frame_current = 0
 
 # Range doesn't go over a gap: the other arm of a U stays, though it is well within Range straight across.
 shape = u_shape(0.2)
-cage, art = bent_by(shape, [(0.2, 0.7), (0.3, 0.7), (-0.3, 0.8), (-0.3, 0.7)], "ENVELOPE", range=0.4)
+cage, art = bent_by(shape, [(0.2, 0.7), (0.3, 0.7), (-0.3, 0.8), (-0.3, 0.7)], "OUTLINE", range=0.4)
 rest = places(art)
 move_cage(cage, lambda k, x, y: (x - MOVE, y) if shape[k][0] < 0.0 and shape[k][1] > 0.4 else None)
 now = places(art)
@@ -259,7 +259,7 @@ def on_outline(p):
 
 
 assert all(inside(p) or on_outline(p) for p in view[0]), "the view left the cage"
-narrow_cage, narrow_art = bent_by(u_shape(0.05), column, "ENVELOPE", blend=1.0)
+narrow_cage, narrow_art = bent_by(u_shape(0.05), column, "OUTLINE", blend=1.0)
 # (Straight across, the other arm's side is under three times as far as the nearest: 0.38 or more shared at Blend 1. The
 # next side along this one, the most that may share here, is about five times as far.)
 near_gap = [p for p in narrow_art.deform_blend_view(0)[0] if -0.07 < p[0] < -0.033 and abs(p[1] - 0.25) < 0.1]
@@ -267,7 +267,7 @@ assert len(near_gap) >= 5 and max(p[2] for p in near_gap) < 0.25, ("shared over 
 
 c = 0.03
 square = [(-1, -1 + c), (-1, 1 - c), (-1 + c, 1), (1 - c, 1), (1, 1 - c), (1, -1 + c), (1 - c, -1), (-1 + c, -1)]
-square_cage, square_art = bent_by(square, column, "ENVELOPE")
+square_cage, square_art = bent_by(square, column, "OUTLINE")
 square_outline = square_cage.evaluated_outline(0, 16)[0]
 # A side runs from one of the cage's points to the next.
 square_sides = [[square_outline[(k * 16 + j) % len(square_outline)] for j in range(17)] for k in range(len(square))]

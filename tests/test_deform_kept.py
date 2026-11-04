@@ -29,7 +29,7 @@ def make_art(name):
     a.add_curve([(-1.4, 0.1), (0.0, 0.2), (1.4, 0.1)])
     layers.active = a
     assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
-    a.modifier_set(0, layer=cage.name, shape=cage.shapes[0][0], cage_method="ENVELOPE", precision=0.002,
+    a.modifier_set(0, layer=cage.name, shape=cage.shapes[0][0], cage_method="OUTLINE", precision=0.002,
                    resample_self=False)
     return a
 

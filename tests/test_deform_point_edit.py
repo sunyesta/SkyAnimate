@@ -53,6 +53,7 @@ def drawing():
 def deform(a, kind, target, **settings):
     layers.active = a
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    a.modifier_set(len(a.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
     i = len(a.modifiers) - 1
     a.modifier_set(i, layer=target.name, shape=target.shapes[0][0], **settings)
 
@@ -109,6 +110,7 @@ def with_modifier(kind):
         a = drawing()
         layers.active = a
         assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+        a.modifier_set(len(a.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
         if kind == "BEVEL":
             a.modifier_set(0, amount=0.05)
         deform(a, "CAGE_DEFORM", t)
@@ -154,7 +156,7 @@ def group():
     a = next(l for l in layers.all() if l.name == name)
     layers.active = g
     assert ops.object.modifier_add(type="CAGE_DEFORM") == {'FINISHED'}
-    g.modifier_set(0, layer=t.name, shape=t.shapes[0][0])
+    g.modifier_set(0, layer=t.name, shape=t.shapes[0][0], cage_method="OUTLINE", resample_self=True)
     bent(t)
     return a
 
@@ -194,7 +196,7 @@ def back(a, wanted):
     assert len(now) == len(wanted) and max(math.dist(p, q) for p, q in zip(now, wanted)) < 1e-5, "undone exactly"
 
 
-rigs = [("cage", cage()), ("cage rigid", cage("RIGID")), ("cage envelope", cage("ENVELOPE")), ("cage at half", cage(strength=0.5)),
+rigs = [("cage", cage()), ("cage rigid", cage("RIGID")), ("cage envelope", cage("OUTLINE")), ("cage at half", cage(strength=0.5)),
         ("custom weights", cage(weights="CUSTOM")), ("mesh", mesh("CELLS")), ("mesh envelope", mesh("ENVELOPE")), ("curve", curve),
         ("mirror", with_modifier("MIRROR")), ("resample", with_modifier("RESAMPLE")), ("bevel", with_modifier("BEVEL")),
         ("bones", bones()), ("bones at half", bones(0.5)), ("group", group)]

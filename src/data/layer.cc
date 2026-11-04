@@ -10,7 +10,7 @@ bool modifier_makes_points(const Modifier &m)
          m.type == ModifierType::Boolean || modifier_bends(m.type);
 }
 
-static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "OUTLINE"};
+static constexpr const char *CAGE_METHOD_IDS[] = {"MEAN_VALUE", "RIGID", "OUTLINE", "ENVELOPE"};
 
 const char *cage_method_id(CageMethod method)
 {
@@ -19,11 +19,7 @@ const char *cage_method_id(CageMethod method)
 
 bool cage_method_from_id(const std::string &id, CageMethod &r_method)
 {
-  if (id == "ENVELOPE") {
-    r_method = CageMethod::Outline;
-    return true;
-  }
-  for (int k = 0; k < 3; k++) {
+  for (int k = 0; k < 4; k++) {
     if (id == CAGE_METHOD_IDS[k]) {
       r_method = CageMethod(k);
       return true;
@@ -32,7 +28,32 @@ bool cage_method_from_id(const std::string &id, CageMethod &r_method)
   return false;
 }
 
-static constexpr const char *MESH_METHOD_IDS[] = {"CELLS", "ENVELOPE", "POINTS"};
+bool deform_is_envelope(const Modifier &m)
+{
+  return (m.type == ModifierType::CurveDeform && m.deform_curve_method == CurveMethod::Envelope) ||
+         (m.type == ModifierType::CageDeform && m.deform_cage_method == CageMethod::Envelope);
+}
+
+void deform_type_set(Modifier &m, ModifierType to)
+{
+  if (to == m.type) {
+    return;
+  }
+  const bool envelope = deform_is_envelope(m);
+  const std::string from_name = deform_type_name(m.type);
+  if (m.name.rfind(from_name, 0) == 0) {
+    m.name = deform_type_name(to) + m.name.substr(from_name.size());
+  }
+  m.type = to;
+  if (envelope && to == ModifierType::CurveDeform) {
+    m.deform_curve_method = CurveMethod::Envelope;
+  }
+  if (envelope && to == ModifierType::CageDeform) {
+    m.deform_cage_method = CageMethod::Envelope;
+  }
+}
+
+static constexpr const char *MESH_METHOD_IDS[] = {"CELLS", "OUTLINE", "POINTS"};
 
 const char *mesh_method_id(MeshMethod method)
 {
@@ -41,6 +62,10 @@ const char *mesh_method_id(MeshMethod method)
 
 bool mesh_method_from_id(const std::string &id, MeshMethod &r_method)
 {
+  if (id == "ENVELOPE") {
+    r_method = MeshMethod::Outline;
+    return true;
+  }
   for (int k = 0; k < 3; k++) {
     if (id == MESH_METHOD_IDS[k]) {
       r_method = MeshMethod(k);
@@ -50,7 +75,7 @@ bool mesh_method_from_id(const std::string &id, MeshMethod &r_method)
   return false;
 }
 
-static constexpr const char *ENVELOPE_METHOD_IDS[] = {"STANDARD", "WEIGHTED"};
+static constexpr const char *ENVELOPE_METHOD_IDS[] = {"STANDARD", "BLENDED"};
 
 const char *envelope_method_id(EnvelopeMethod method)
 {
@@ -62,6 +87,42 @@ bool envelope_method_from_id(const std::string &id, EnvelopeMethod &r_method)
   for (int k = 0; k < 2; k++) {
     if (id == ENVELOPE_METHOD_IDS[k]) {
       r_method = EnvelopeMethod(k);
+      return true;
+    }
+  }
+  return false;
+}
+
+static constexpr const char *CURVE_METHOD_IDS[] = {"SMOOTH", "ENVELOPE"};
+
+const char *curve_method_id(CurveMethod method)
+{
+  return CURVE_METHOD_IDS[int(method)];
+}
+
+bool curve_method_from_id(const std::string &id, CurveMethod &r_method)
+{
+  for (int k = 0; k < 2; k++) {
+    if (id == CURVE_METHOD_IDS[k]) {
+      r_method = CurveMethod(k);
+      return true;
+    }
+  }
+  return false;
+}
+
+static constexpr const char *INFLUENCE_TYPE_IDS[] = {"EVERYWHERE", "CAPSULE"};
+
+const char *influence_type_id(InfluenceType type)
+{
+  return INFLUENCE_TYPE_IDS[int(type)];
+}
+
+bool influence_type_from_id(const std::string &id, InfluenceType &r_type)
+{
+  for (int k = 0; k < 2; k++) {
+    if (id == INFLUENCE_TYPE_IDS[k]) {
+      r_type = InfluenceType(k);
       return true;
     }
   }

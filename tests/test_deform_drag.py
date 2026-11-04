@@ -39,6 +39,7 @@ def new_box(name):
 def deform(layer, target, kind="CAGE_DEFORM"):
     layers.active = layer
     assert ops.object.modifier_add(type=kind) == {'FINISHED'}
+    layer.modifier_set(len(layer.modifiers) - 1, **{"CURVE_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "MESH_DEFORM": dict(curve_method="SMOOTH", cage_method="MEAN_VALUE"), "CAGE_DEFORM": dict(cage_method="OUTLINE", resample_self=True)}.get(kind, {}))
     index = len(layer.modifiers) - 1
     layer.modifier_set(index, layer=target.name, shape=target.shapes[0][0])
     return index

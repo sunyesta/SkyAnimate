@@ -154,7 +154,7 @@ def place(shape, fn, frame=10):
 KINDS = [
     ("CAGE_DEFORM", {"cage_method": "MEAN_VALUE"}, box),
     ("CAGE_DEFORM", {"cage_method": "RIGID"}, box),
-    ("CAGE_DEFORM", {"cage_method": "ENVELOPE"}, box),
+    ("CAGE_DEFORM", {"cage_method": "OUTLINE"}, box),
     ("MESH_DEFORM", {"mesh_method": "CELLS"}, grid),
     ("MESH_DEFORM", {"mesh_method": "ENVELOPE"}, grid),
     ("MESH_DEFORM", {"mesh_method": "CELLS", "smooth": True}, grid),
