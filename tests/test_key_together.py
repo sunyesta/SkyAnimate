@@ -135,6 +135,22 @@ try:
     group.key_together = False
     settle()
     assert 40 not in frames(b, "position"), ("its fillers known after opening", frames(b, "position"))
+
+    # One point of a whole drawing edited on a frame: all its points' keys there stay (its drawing keyed whole).
+    a = next(l for l in oanim.data.layers.all() if l.name == a.name)
+    group.key_together = True
+    settle()
+    doc.frame_current = 50
+    a.set_point(0, (0.0, 2.0))
+    doc.frame_current = 51
+    doc.frame_current = 50
+    assert 50 in frames(b, "points[0].pos")
+    b.set_point(1, (1.0, 6.0))
+    doc.frame_current = 0
+    group.key_together = False
+    settle()
+    assert 50 in frames(b, "points[1].pos") and 50 in frames(b, "points[0].pos"), frames(b, "points[0].pos")
+    assert 50 not in frames(b, "position"), frames(b, "position")
 finally:
     shutil.rmtree(folder, ignore_errors=True)
 

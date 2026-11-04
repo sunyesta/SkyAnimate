@@ -102,6 +102,8 @@ line.add_curve([(5.0, 5.0), (6.0, 5.0), (7.0, 5.0)])
 doc.frame_current = 1
 doc.frame_current = 0
 line.select_points([6])
+# One key's timing set apart first, so the drawing's keys don't all agree as the point goes (the deletion is looked at).
+line.keyframe_set("points[0].pos", 10, interp="LINEAR")
 assert ops.mesh.delete_points() == {'FINISHED'}
 doc.frame_current = 1
 doc.frame_current = 0
@@ -175,6 +177,24 @@ assert close(key(line, "curves[1].points[1].handle_out", 10)["speeds"], key(line
 loose.key_whole_drawing = False
 assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="5", layer=str(loose.id), drawing="1") == {
     'CANCELLED'}, "only a whole drawing"
+
+# Nothing picked on: the graph shows the first row that has timing, not merely the first row.
+ops.layer.new()
+two = layers.active
+two.key_whole_drawing = False
+doc.frame_current = 0
+two.add_curve([(0.0, 0.0), (1.0, 0.0)])
+doc.frame_current = 10
+two.set_point(1, (1.0, 1.0))
+doc.frame_current = 0
+for other in layers:
+    other.selected = other.id == two.id
+two.select_points([0, 1])
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+labels = [t["label"] for t in oanim.wm.motion_path_timing()]
+assert labels[0] == two.name + " point 0", labels
+panel = oanim.wm.motion_path_timing_panel()
+assert panel and panel["label"] == two.name + " point 1", ("point 0 has no keys", panel)
 
 # --- Saved with the file -------------------------------------------------------------------------------------------
 folder = tempfile.mkdtemp()
