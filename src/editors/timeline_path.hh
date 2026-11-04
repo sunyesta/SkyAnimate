@@ -5,8 +5,12 @@
  * is a line from key to key with a tick for each frame, placed by how far along the path that frame has got, as an
  * animator's timing chart; ticks bunched up are slow, spread out fast. Ticks are coloured as the path's dots are (time
  * through the stretch, the stretch being worked on lit). With Edit, a tick is a dot: a click selects it (Shift adds,
- * a double click goes to its frame), a drag slides it along the path (anim.motion_path_slide with progress=,
- * proportional editing as in the viewport), Esc or a right click cancels. */
+ * a double click goes to its frame), a drag slides it along the path (anim.motion_path_slide with progress=),
+ * Esc or a right click cancels. Proportional editing is always on here, with the chart's own reach in frames
+ * (path_chart_size, 0 the dot alone): shown as a band around the dot under the mouse, sized by the wheel while
+ * dragging, the dots it pulls ringed. A Shift click blends the timing there (anim.motion_path_timing_blend, its
+ * settings in the timeline's Adjust Last Operation panel; its reach a blue band); Ctrl click adds a dot to the
+ * selection. Over the strip, the wheel zooms the timeline. */
 
 #include "imgui.h"
 
@@ -20,11 +24,16 @@ float timeline_path_strip_height(Context &C, float row_h);
  * keys' width) and takes its clicks. */
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h);
+/* A tick is being dragged in the strip: the wheel is its reach's, not the timeline's zoom. */
+bool timeline_path_strip_busy();
 
 /* The timeline's sidebar (N) and its Path Timing tab (panel B of the spec's speed editing): one stretch at a time of
  * the last thing picked on, as a progress graph (how far along its path, 0-1, against its frames, the even speed
  * dashed), its dots dragged up or down to slide them (Ctrl onto the even line), with the selected dot's % along and
- * speed, the shape buttons and arrows to the stretches either side. 0 wide while it is hidden. */
+ * speed, the shape buttons and arrows to the stretches either side. As in the chart, proportional editing is always
+ * on (its own reach, path_graph_size, an outline circle), Shift click blends and Ctrl click adds to the selection.
+ * Its view zooms with the wheel, pans with a middle drag and stretches with Ctrl middle drag; Home, an edge arrow
+ * toward a dot out of view, or showing another stretch fits it to the stretch. 0 wide while it is hidden. */
 float timeline_sidebar_width(Context &C, float avail_w);
 void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max);
 

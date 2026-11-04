@@ -1358,12 +1358,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const ToolSettings &ts = current_context().wm->tool_settings;
     py::dict d;
     d["brush"] = path_brush_id(ts.path_brush);
-    d["radius"] = ts.path_radius;
-    d["strength"] = ts.path_strength;
-    d["speed"] = ts.path_speed;
+    const PathBrush sized = path_brush_has_radius(ts.path_brush) ? ts.path_brush : path_brush_shifted(ts.path_brush);
+    d["radius"] = ts.path_brush_settings(sized).radius;
+    d["strength"] = ts.path_brush_settings(sized).strength;
+    py::dict each;
+    for (int i = 1; i < PATH_BRUSH_COUNT; i++) {
+      const PathBrushSettings &bs = ts.path_brushes[i];
+      each[path_brush_id(PathBrush(i))] = py::make_tuple(bs.radius, bs.strength);
+    }
+    d["brushes"] = each;
     d["proportional"] = ts.proportional;
     d["proportional_size"] = ts.path_proportional_size;
     d["falloff"] = proportional_falloff_identifier(ts.proportional_falloff);
+    d["chart_size"] = ts.path_chart_size;
+    d["graph_size"] = ts.path_graph_size;
+    d["blend"] = py::make_tuple(ts.path_blend_smoothing, ts.path_blend_repeat, ts.path_blend_radius);
     return d;
   });
   /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */

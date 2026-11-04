@@ -1339,27 +1339,39 @@ static struct {
   std::vector<PathGrabKey> grab;
   /* Whether the stroke has changed anything, so a stroke that touched nothing makes no undo step. */
   bool changed = false;
+  /* The brush the stroke paints with (Shift's, held when it began). */
+  PathBrush brush = PathBrush::Edit;
+  /* Edit's Shift press: no stroke till the mouse moves, and a Shift click on a dot or key (`pick`) adds it to the
+   * selection instead. */
+  bool pending = false;
+  std::optional<OpArgs> pick;
+  ImVec2 press_px;
   Document snapshot;
 } g_path_brush;
 /* Shift F: this many pixels from the anchor is full strength. */
 static constexpr float PATH_STRENGTH_PX = 200.0f;
 
-/* The Motion Path tool with a brush other than Edit: its circle, F and Shift F, and a stroke (one undo step; Esc or a
- * right click cancels). Grab moves what was under it when pressed by how far the mouse has gone; the others dab as
- * the mouse moves, a quarter of the radius apart. */
+/* The Motion Path tool with a brush other than Edit, or Edit with Shift held (its Blend Speed): its circle, F and
+ * Shift F, and a stroke (one undo step; Esc or a right click cancels). Shift swaps in Grab's Smooth and Edit's Blend
+ * Speed, each with its own settings. Grab moves what was under it when pressed by how far the mouse has gone; the
+ * others dab as the mouse moves, a quarter of the radius apart. With Edit, `pick` is the dot or key under the mouse:
+ * a Shift click there (no drag) adds it to the selection. */
 static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl, bool hovered,
-                                    int first, int last)
+                                    int first, int last, const std::optional<OpArgs> &pick = std::nullopt)
 {
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_brush;
+  /* F and Shift F size the brush picked (Edit's: Shift's, Blend Speed). */
+  PathBrushSettings &picked = ts.path_brush_settings(
+      path_brush_has_radius(ts.path_brush) ? ts.path_brush : path_brush_shifted(ts.path_brush));
   if (wm.path_adjust_request && hovered && !g.active) {
     g.adjust = wm.path_adjust_request;
     g.adjust_area = area.id;
-    g.was = g.adjust == 'R' ? ts.path_radius : ts.path_strength;
-    const float reach = g.adjust == 'R' ? ts.path_radius : ts.path_strength * PATH_STRENGTH_PX;
+    g.was = g.adjust == 'R' ? picked.radius : picked.strength;
+    const float reach = g.adjust == 'R' ? picked.radius : picked.strength * PATH_STRENGTH_PX;
     g.anchor = io.MousePos;
     g.base_x = io.MousePos.x - reach;
     g.slow = false;
@@ -1369,15 +1381,15 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     const float reach = adjust_reach(g.base_x, g.slow, g.slow_x, g.slow_reach);
     char text[64];
     if (g.adjust == 'R') {
-      ts.path_radius = std::clamp(reach, 2.0f, 1000.0f);
-      dl->AddCircle(g.anchor, ts.path_radius, IM_COL32(0xff, 0xff, 0xff, 230), 64, 1.5f);
-      std::snprintf(text, sizeof(text), "Radius %.0f px", double(ts.path_radius));
+      picked.radius = std::clamp(reach, 2.0f, 1000.0f);
+      dl->AddCircle(g.anchor, picked.radius, IM_COL32(0xff, 0xff, 0xff, 230), 64, 1.5f);
+      std::snprintf(text, sizeof(text), "Radius %.0f px", double(picked.radius));
     }
     else {
-      ts.path_strength = std::clamp(reach / PATH_STRENGTH_PX, 0.0f, 1.0f);
+      picked.strength = std::clamp(reach / PATH_STRENGTH_PX, 0.0f, 1.0f);
       dl->AddCircle(g.anchor, PATH_STRENGTH_PX, IM_COL32(0xff, 0xff, 0xff, 120), 64, 1.0f);
-      dl->AddCircleFilled(g.anchor, ts.path_strength * PATH_STRENGTH_PX, IM_COL32(0x47, 0x72, 0xb3, 90), 64);
-      std::snprintf(text, sizeof(text), "Strength %.2f", double(ts.path_strength));
+      dl->AddCircleFilled(g.anchor, picked.strength * PATH_STRENGTH_PX, IM_COL32(0x47, 0x72, 0xb3, 90), 64);
+      std::snprintf(text, sizeof(text), "Strength %.2f", double(picked.strength));
     }
     dl->AddText(g.anchor + ImVec2(-ImGui::CalcTextSize(text).x * 0.5f, -ImGui::GetFontSize() * 0.5f),
                 IM_COL32(0xff, 0xff, 0xff, 255), text);
@@ -1385,28 +1397,35 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
       g.adjust = 0;
     }
     else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-      (g.adjust == 'R' ? ts.path_radius : ts.path_strength) = g.was;
+      (g.adjust == 'R' ? picked.radius : picked.strength) = g.was;
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       g.adjust = 0;
     }
     return;
   }
-  const PathBrush brush = ts.path_brush;
-  /* The circle: red while Ctrl paints the opposite. */
+  /* Shift's brush while it is held (as the stroke began, once it has). */
+  const PathBrush brush = g.active ? g.brush : io.KeyShift ? path_brush_shifted(ts.path_brush) : ts.path_brush;
+  const PathBrushSettings &bs = ts.path_brush_settings(brush);
+  /* The circle: red while Ctrl paints the opposite; Shift's brush named under it. */
   const bool invert = io.KeyCtrl && path_brush_is_speed(brush);
   if (hovered || g.active) {
     const ImU32 ring = invert ? IM_COL32(0xff, 0x60, 0x50, 230) : IM_COL32(0xff, 0xff, 0xff, 200);
-    dl->AddCircle(io.MousePos, ts.path_radius, IM_COL32(20, 20, 20, 160), 48, 3.0f);
-    dl->AddCircle(io.MousePos, ts.path_radius, ring, 48, 1.4f);
+    dl->AddCircle(io.MousePos, bs.radius, IM_COL32(20, 20, 20, 160), 48, 3.0f);
+    dl->AddCircle(io.MousePos, bs.radius, ring, 48, 1.4f);
+    if (brush != ts.path_brush) {
+      const char *name = path_brush_name(brush);
+      const ImVec2 at(io.MousePos.x - ImGui::CalcTextSize(name).x * 0.5f, io.MousePos.y + bs.radius + 4.0f);
+      dl->AddText(at + ImVec2(1, 1), IM_COL32(20, 20, 20, 200), name);
+      dl->AddText(at, IM_COL32(255, 255, 255, 230), name);
+    }
   }
-  const float radius = ts.path_radius / std::max(view.zoom, 1e-9f);
+  const float radius = bs.radius / std::max(view.zoom, 1e-9f);
   const float2 mouse = view.to_document(io.MousePos);
   const auto dab = [&]() {
     PathDab d;
     d.center = mouse;
     d.radius = radius;
-    d.strength = ts.path_strength;
-    d.speed = ts.path_speed;
+    d.strength = bs.strength;
     d.invert = invert;
     const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
     const int n = brush == PathBrush::Smooth ? motion_path_smooth_dab(doc, targets, first, last, d)
@@ -1419,6 +1438,8 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     g_path_drag = {};
     g_path_drag.serial = serial;
     g.active = false;
+    g.pending = false;
+    g.pick.reset();
     g.grab.clear();
     g.snapshot = Document();
   };
@@ -1427,14 +1448,22 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
       return;
     }
     g.active = true;
+    g.brush = brush;
     g.changed = false;
     g.snapshot = doc;
     g.last = io.MousePos;
     g.press = mouse;
+    g.press_px = io.MousePos;
+    /* Edit's Shift: a click on a dot or key adds it to the selection; only a drag paints. */
+    g.pending = ts.path_brush == PathBrush::Edit;
+    g.pick = pick;
     /* The paths keep the range they had while the stroke goes on. */
     g_path_drag.active = true;
     g_path_drag.first = first;
     g_path_drag.last = last;
+    if (g.pending) {
+      return;
+    }
     if (brush == PathBrush::Grab) {
       g.grab = motion_path_grab_keys(doc, motion_path_targets(doc, editable_layers(C)), first, last, mouse, radius);
     }
@@ -1449,6 +1478,25 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     finish();
     return;
   }
+  if (g.pending) {
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      std::optional<OpArgs> args = g.pick;
+      finish();
+      if (args) {
+        (*args)["extend"] = "1";
+        operator_call(C, "anim.motion_path_select", *args);
+      }
+      return;
+    }
+    const float mx = io.MousePos.x - g.press_px.x, my = io.MousePos.y - g.press_px.y;
+    if (mx * mx + my * my < 9.0f) {
+      return;
+    }
+    g.pending = false;
+    g.last = io.MousePos;
+    dab();
+    return;
+  }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (g.changed) {
       push_undo(C, path_brush_name(brush));
@@ -1460,14 +1508,14 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     if (io.MousePos.x != g.last.x || io.MousePos.y != g.last.y) {
       /* From where it all was, so the keys follow the mouse wherever it goes. */
       doc = g.snapshot;
-      g.changed |= motion_path_grab(doc, g.grab, mouse - g.press, ts.path_strength) > 0;
+      g.changed |= motion_path_grab(doc, g.grab, mouse - g.press, bs.strength) > 0;
       g.last = io.MousePos;
       g_path_drag.serial++;
     }
     return;
   }
   const float dx = io.MousePos.x - g.last.x, dy = io.MousePos.y - g.last.y;
-  const float spacing = std::max(ts.path_radius * 0.25f, 2.0f);
+  const float spacing = std::max(bs.radius * 0.25f, 2.0f);
   if (dx * dx + dy * dy >= spacing * spacing) {
     dab();
     g.last = io.MousePos;
@@ -1742,6 +1790,20 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       return;
     }
     draw_selected_path_dots(C, view, dl, hover_path, hover_frame, cache.paths);
+    /* Shift held with Edit: Blend Speed's circle (a drag paints, a click on a dot or key adds it), and F sizing it.
+     * Alt Shift stays Edit's breakdown. */
+    const ImGuiIO &io = ImGui::GetIO();
+    if (g_path_brush.active || g_path_brush.adjust || wm.path_adjust_request ||
+        (io.KeyShift && !io.KeyAlt && !g_path_drag.active && !g_path_slide.active && hovered))
+    {
+      std::optional<OpArgs> pick;
+      if (hover_path) {
+        pick = motion_path_target_args(doc, hover_path->target);
+        (*pick)["frame"] = std::to_string(hover_frame);
+      }
+      motion_path_brush_input(C, area, view, dl, hovered, first, last, pick);
+      return;
+    }
   }
   if (tool && (hovered || g_path_drag.active)) {
     /* A copy: a double click goes to the dot's frame, which can make the paths again. */
@@ -4736,26 +4798,17 @@ static void motion_path_header(Context &C)
     ImGui::TextUnformatted(path_brush_name(ts.path_brush));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(h * 4.5f);
-    ImGui::DragFloat("##path_radius", &ts.path_radius, 0.5f, 2.0f, 1000.0f, "Radius %.0f px",
+    PathBrushSettings &bs = ts.path_brush_settings(ts.path_brush);
+    ImGui::DragFloat("##path_radius", &bs.radius, 0.5f, 2.0f, 1000.0f, "Radius %.0f px",
                      ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("The brush's size on screen (F)");
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(h * 4.5f);
-    ImGui::SliderFloat("##path_strength", &ts.path_strength, 0.0f, 1.0f, "Strength %.2f");
+    ImGui::SliderFloat("##path_strength", &bs.strength, 0.0f, 1.0f, "Strength %.2f");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("How much each dab does (Shift F)");
-    }
-    if (ts.path_brush == PathBrush::PaintSpeed) {
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(h * 4.0f);
-      ImGui::DragFloat("##path_speed", &ts.path_speed, 0.02f, 0.05f, 20.0f, "Speed %.2f",
-                       ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("The speed Paint Speed paints: 1 is the stretch's even speed, 2 twice as fast. Ctrl paints "
-                          "1 / Speed");
-      }
     }
   }
 }
@@ -4801,20 +4854,15 @@ static const char *tool_hint(const ToolSettings &ts)
         case PathBrush::Edit:
           break;
         case PathBrush::Grab:
-          return "Drag: the keys under the brush follow  |  F: radius  |  Shift F: strength  |  Esc: cancel";
+          return "Drag: the keys under the brush follow  |  Shift: Smooth  |  F: radius  |  Shift F: strength  |  "
+                 "Esc: cancel";
         case PathBrush::Smooth:
           return "Brush over a lumpy stretch: smooth it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
-        case PathBrush::PaintSpeed:
-          return "Paint: the Speed on the dots  |  Ctrl: 1 / Speed  |  F: radius  |  Shift F: strength  |  Esc: cancel";
-        case PathBrush::Faster:
-          return "Paint: faster  |  Ctrl: slower  |  F: radius  |  Shift F: strength  |  Esc: cancel";
-        case PathBrush::Slower:
-          return "Paint: slower  |  Ctrl: faster  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
       }
-      return "Click: select  |  Shift: add  |  Double click: its frame  |  Drag a key: move it, a dot: slide it (O: "
-             "proportional)  |  Alt click: add a key  |  Alt Shift: breakdown  |  Ctrl: straight  |  G R S  |  Alt S: "
+      return "Click: select  |  Shift: add  |  Shift drag: Blend Speed  |  Double click: its frame  |  Drag a key: "
+             "move it, a dot: slide it (O: proportional)  |  Alt click: add a key  |  Alt Shift: breakdown  |  Ctrl: straight  |  G R S  |  Alt S: "
              "timing  |  V: handles  |  X: delete";
     default:
       return "";

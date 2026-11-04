@@ -384,11 +384,12 @@ def motion_path_dots():
 
 
 def path_brush_settings():
-    """The Motion Path tool's brush: {"brush": "EDIT", "GRAB", "SMOOTH", "PAINT_SPEED", "FASTER", "SLOWER" or
-    "BLEND_SPEED", "radius" (screen pixels), "strength", "speed" (Paint Speed's), and for sliding dots with Edit
-    "proportional", "proportional_size" (frames) and "falloff"}. Set with
-    oanim.ops.anim.motion_path_brush_set(brush=..., radius=..., strength=..., speed=..., proportional=...,
-    proportional_size=..., falloff=...)."""
+    """The Motion Path tool's brush: {"brush": "EDIT", "GRAB", "SMOOTH" or "BLEND_SPEED", its "radius" (screen
+    pixels) and "strength" (Edit's: its Shift brush's, Blend Speed's), "brushes" (each brush's own (radius, strength)),
+    for sliding dots with Edit "proportional", "proportional_size" (frames) and "falloff", the timing chart's and
+    Path Timing graph's reach ("chart_size", "graph_size", frames) and the Shift click blend's last settings ("blend":
+    (smoothing, repeat, radius)). Set with oanim.ops.anim.motion_path_brush_set(brush=..., radius=..., strength=...,
+    proportional=..., proportional_size=..., falloff=..., chart_size=..., graph_size=...)."""
     return _oanim.path_brush_settings()
 
 

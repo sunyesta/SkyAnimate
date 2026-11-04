@@ -805,13 +805,7 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
       }
     }
     const std::vector<float> was = s;
-    PathBrush mode = brush;
-    if (dab.invert && brush == PathBrush::Faster) {
-      mode = PathBrush::Slower;
-    }
-    else if (dab.invert && brush == PathBrush::Slower) {
-      mode = PathBrush::Faster;
-    }
+    const PathBrush mode = brush;
     const float strength = std::max(dab.strength, 0.0f);
     for (int j = 0; j < n; j++) {
       const float f = w[size_t(j)];
@@ -822,17 +816,6 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
       const float neighbours =
           0.5f * (was[size_t(std::max(j - 1, 0))] + was[size_t(std::min(j + 1, n - 1))]);
       switch (mode) {
-        case PathBrush::PaintSpeed: {
-          const float want = dab.invert ? 1.0f / std::max(dab.speed, 0.02f) : std::max(dab.speed, 0.0f);
-          v += (want - v) * std::min(f * strength, 1.0f);
-          break;
-        }
-        case PathBrush::Faster:
-          v *= std::pow(1.0f + 0.5f * strength, f);
-          break;
-        case PathBrush::Slower:
-          v /= std::pow(1.0f + 0.5f * strength, f);
-          break;
         case PathBrush::BlendSpeed:
           v += (dab.invert ? (v - neighbours) : (neighbours - v)) * std::min(f * strength, 1.0f);
           break;
@@ -1091,15 +1074,13 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
 
 const char *path_brush_id(PathBrush brush)
 {
-  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",   "GRAB",   "SMOOTH",     "PAINT_SPEED",
-                                                    "FASTER", "SLOWER", "BLEND_SPEED"};
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT", "GRAB", "SMOOTH", "BLEND_SPEED"};
   return IDS[int(brush)];
 }
 
 const char *path_brush_name(PathBrush brush)
 {
-  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit",   "Grab",   "Smooth",     "Paint Speed",
-                                                      "Faster", "Slower", "Blend Speed"};
+  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit", "Grab", "Smooth", "Blend Speed"};
   return NAMES[int(brush)];
 }
 
@@ -1622,6 +1603,47 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
   });
   animation_evaluate(doc, doc.frame_current);
   return slid;
+}
+
+int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int frame, float smoothing, int repeat,
+                             float radius)
+{
+  int changed = 0;
+  smoothing = std::clamp(smoothing, 0.0f, 1.0f);
+  repeat = std::clamp(repeat, 1, 100);
+  radius = std::max(radius, 0.0f);
+  with_path_channel(doc, target, [&](auto &ch) {
+    for (size_t i = 1; i < ch.keys.size(); i++) {
+      const int start = std::min(ch.keys[i - 1].frame + std::max(ch.keys[i - 1].hold, 0), ch.keys[i].frame);
+      const int n = ch.keys[i].frame - start;
+      const Interp interp = ch.keys[i].interp;
+      if (n < 2 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle) {
+        continue;
+      }
+      /* The reach eases to nothing a frame past `radius`, so radius 0 is the clicked dot alone. */
+      std::vector<float> w(size_t(n + 1), 0.0f);
+      bool any = false;
+      for (int k = 1; k < n; k++) {
+        w[size_t(k)] = path_brush_falloff(float(std::abs(start + k - frame)), radius + 1.0f);
+        any |= w[size_t(k)] > 0.0f;
+      }
+      if (!any) {
+        continue;
+      }
+      std::vector<float> u = speeds_progress(stretch_make_custom(ch, i, start, n));
+      for (int r = 0; r < repeat; r++) {
+        const std::vector<float> was = u;
+        for (int k = 1; k < n; k++) {
+          const float mid = 0.5f * (was[size_t(k - 1)] + was[size_t(k + 1)]);
+          u[size_t(k)] = was[size_t(k)] + (mid - was[size_t(k)]) * smoothing * w[size_t(k)];
+        }
+      }
+      key_speeds_set(ch.keys, i, progress_speeds(u));
+      changed++;
+    }
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
 }
 
 bool path_shape_from_identifier(const std::string &id, PathShape &r_shape)

@@ -462,8 +462,9 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_brush_set";
     ot.name = "Set Motion Path Brush";
-    ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or "
-                     "BLEND_SPEED), and set radius= (screen pixels), strength=, speed= (Paint Speed's), "
+    ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH or BLEND_SPEED), and set that "
+                     "brush's own radius= (screen pixels) and strength= (Edit's are its Shift brush's, Blend Speed's), "
+                     "the timing chart's and Path Timing graph's reach (chart_size=, graph_size=, in frames), "
                      "and Edit's proportional editing of dots: proportional=0/1, proportional_size= (frames), falloff= "
                      "(SMOOTH, SPHERE, ROOT, INVERSE_SQUARE, SHARP, LINEAR, CONSTANT, RANDOM)";
     ot.flag = OPTYPE_REGISTER;
@@ -478,17 +479,23 @@ void motion_path_operators_register()
         }
         ts.path_brush = brush;
       }
+      /* Edit has no circle of its own: its settings are Shift's brush's. */
+      const PathBrush sized = path_brush_has_radius(ts.path_brush) ? ts.path_brush : path_brush_shifted(ts.path_brush);
+      PathBrushSettings &bs = ts.path_brush_settings(sized);
       if (op_has_arg(C, "radius")) {
-        ts.path_radius = std::clamp(op_arg_float(C, "radius", ts.path_radius), 2.0f, 1000.0f);
+        bs.radius = std::clamp(op_arg_float(C, "radius", bs.radius), 2.0f, 1000.0f);
       }
       if (op_has_arg(C, "strength")) {
-        ts.path_strength = std::clamp(op_arg_float(C, "strength", ts.path_strength), 0.0f, 1.0f);
-      }
-      if (op_has_arg(C, "speed")) {
-        ts.path_speed = std::clamp(op_arg_float(C, "speed", ts.path_speed), 0.05f, 20.0f);
+        bs.strength = std::clamp(op_arg_float(C, "strength", bs.strength), 0.0f, 1.0f);
       }
       if (op_has_arg(C, "proportional")) {
         ts.proportional = op_arg_bool(C, "proportional");
+      }
+      if (op_has_arg(C, "chart_size")) {
+        ts.path_chart_size = std::clamp(op_arg_float(C, "chart_size", ts.path_chart_size), 0.0f, 100.0f);
+      }
+      if (op_has_arg(C, "graph_size")) {
+        ts.path_graph_size = std::clamp(op_arg_float(C, "graph_size", ts.path_graph_size), 0.0f, 100.0f);
       }
       if (op_has_arg(C, "proportional_size")) {
         ts.path_proportional_size =
@@ -510,9 +517,8 @@ void motion_path_operators_register()
     ot.description = radius ? "Size the Motion Path tool's brush with the mouse (F); click to keep it"
                             : "Set the Motion Path tool's brush strength with the mouse (Shift F); click to keep it";
     ot.flag = 0;
-    ot.poll = [](Context &C) {
-      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath && path_brush_has_radius(C.wm->tool_settings.path_brush);
-    };
+    /* With Edit: Shift's brush's (Blend Speed). */
+    ot.poll = [](Context &C) { return C.wm && C.wm->tool_settings.tool == Tool::MotionPath; };
     ot.exec = [radius](Context &C) {
       C.wm->path_adjust_request = radius ? 'R' : 'S';
       return OpStatus::Finished;
@@ -523,9 +529,10 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_stroke";
     ot.name = "Motion Path Brush Stroke";
-    ot.description = "A stroke of a path brush (brush=GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or BLEND_SPEED; "
-                     "else the tool's) through points=\"x,y;x,y\" (document space), with radius= in document units, "
-                     "strength=, speed= and invert=1 (Ctrl), on the paths traced (or layer=, bone=, point=): Grab "
+    ot.description = "A stroke of a path brush (brush=GRAB, SMOOTH or BLEND_SPEED; else the tool's, or with shift=1 "
+                     "the brush Shift swaps in: Grab's Smooth, Edit's Blend Speed) through points=\"x,y;x,y\" "
+                     "(document space), with radius= in document units, strength= (else the brush's own) and "
+                     "invert=1 (Ctrl), on the paths traced (or layer=, bone=, point=): Grab "
                      "moves what was under the first point by the move to the last; the others dab at every point";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
@@ -536,6 +543,9 @@ void motion_path_operators_register()
       if (op_has_arg(C, "brush") && !path_brush_from_id(op_arg(C, "brush"), &brush)) {
         report(ReportType::Error, "Unknown path brush '" + op_arg(C, "brush") + "'");
         return OpStatus::Cancelled;
+      }
+      if (op_arg_bool(C, "shift")) {
+        brush = path_brush_shifted(brush);
       }
       if (!path_brush_has_radius(brush)) {
         report(ReportType::Warning, std::string(path_brush_name(brush)) + " isn't a brush: drag the path's dots");
@@ -570,8 +580,7 @@ void motion_path_operators_register()
       animation_sync(doc);
       PathDab dab;
       dab.radius = op_arg_float(C, "radius", 0.1f);
-      dab.strength = op_arg_float(C, "strength", ts.path_strength);
-      dab.speed = op_arg_float(C, "speed", ts.path_speed);
+      dab.strength = op_arg_float(C, "strength", ts.path_brush_settings(brush).strength);
       dab.invert = op_arg_bool(C, "invert");
       int changed = 0;
       if (brush == PathBrush::Grab) {
@@ -695,6 +704,47 @@ void motion_path_operators_register()
       }
       return OpStatus::Finished;
     };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_timing_blend";
+    ot.name = "Blend Timing";
+    ot.description = "Shift click in the timing chart or the Path Timing graph: even out the spacing around frame=N, "
+                     "each dot within radius= frames moving smoothing= (0-1) of the way to the midpoint of its "
+                     "neighbours, repeat= times, the keys staying; of what a path traces (layer=, bone=, point=, or "
+                     "the first traced). Left out, the settings of the last blend";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      ToolSettings &ts = C.wm->tool_settings;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      /* Each setting given is kept for the next click; each left out is the last one's (and shown as used). */
+      ts.path_blend_smoothing = std::clamp(op_arg_float(C, "smoothing", ts.path_blend_smoothing), 0.0f, 1.0f);
+      ts.path_blend_repeat = std::clamp(op_arg_int(C, "repeat", ts.path_blend_repeat), 1, 100);
+      ts.path_blend_radius = std::clamp(op_arg_float(C, "radius", ts.path_blend_radius), 0.0f, 100.0f);
+      op_arg_used(C, "smoothing", std::to_string(ts.path_blend_smoothing));
+      op_arg_used(C, "repeat", std::to_string(ts.path_blend_repeat));
+      op_arg_used(C, "radius", std::to_string(ts.path_blend_radius));
+      animation_sync(doc);
+      if (motion_path_timing_blend(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current),
+                                   ts.path_blend_smoothing, ts.path_blend_repeat, ts.path_blend_radius) == 0)
+      {
+        report(ReportType::Warning, "No dots between keys there");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    ot.props = {op_float_property("smoothing", "Smoothing", "How far each dot moves toward the midpoint of its "
+                                  "neighbours each time", "0.5", 0.0f, 1.0f, 0.01f),
+                op_float_property("repeat", "Repeat", "How many times", "1", 1.0f, 100.0f, 1.0f),
+                op_float_property("radius", "Radius", "How many frames either side of the click it reaches, "
+                                  "fading to the edge", "3", 0.0f, 100.0f, 0.1f)};
+    ot.props[1].kind = OpProperty::Kind::Int;
     operators().add(std::move(ot));
   }
   {

@@ -239,17 +239,86 @@ doc.frame_current = 22
 assert oanim.wm.motion_path_timing_panel()["end"] == 30
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 
-# N opens the timeline's sidebar; O there turns proportional editing on and off.
+# N opens the timeline's sidebar. O isn't there: proportional editing is always on in the chart and the graph.
 assert not oanim.wm.motion_path_timing_panel()["sidebar"]
 assert oanim.wm.event_simulate("N", area="Timeline")
 assert oanim.wm.motion_path_timing_panel()["sidebar"]
 assert oanim.wm.event_simulate("N", area="Timeline")
 assert not oanim.wm.motion_path_timing_panel()["sidebar"]
 was = oanim.wm.path_brush_settings()["proportional"]
-assert oanim.wm.event_simulate("O", area="Timeline")
-assert oanim.wm.path_brush_settings()["proportional"] != was
-assert oanim.wm.event_simulate("O", area="Timeline")
-assert oanim.wm.path_brush_settings()["proportional"] == was
+oanim.wm.event_simulate("O", area="Timeline")
+assert oanim.wm.path_brush_settings()["proportional"] == was, "O no longer toggles it over the timeline"
+
+# The chart's and the graph's own reach, in frames (0 the dot alone), 3 to start with.
+s = oanim.wm.path_brush_settings()
+assert close(s["chart_size"], 3.0) and close(s["graph_size"], 3.0), s
+assert ops.anim.motion_path_brush_set(chart_size="5", graph_size="0") == {'FINISHED'}
+s = oanim.wm.path_brush_settings()
+assert close(s["chart_size"], 5.0) and close(s["graph_size"], 0.0), s
+assert ops.anim.motion_path_brush_set(chart_size="500") == {'FINISHED'}
+assert close(oanim.wm.path_brush_settings()["chart_size"], 100.0), "at most 100 frames"
+assert ops.anim.motion_path_brush_set(chart_size="3", graph_size="3") == {'FINISHED'}
+
+
+# --- Shift click: blend the timing there (Blender's Smooth Vertices, on the way along) ------------------------------
+def falloff(d, radius):
+    if radius <= 0.0 or d >= radius:
+        return 0.0
+    x = d / radius
+    return 1.0 - x * x * (3.0 - 2.0 * x)
+
+
+def blended(u, start, frame, smoothing, repeat, radius):
+    u = list(u)
+    w = [falloff(abs(start + k - frame), radius + 1.0) for k in range(len(u))]
+    for _ in range(repeat):
+        was = list(u)
+        for k in range(1, len(u) - 1):
+            u[k] = was[k] + ((was[k - 1] + was[k + 1]) / 2 - was[k]) * smoothing * w[k]
+    return u
+
+
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="15", **args) == {'FINISHED'}
+assert ops.anim.motion_path_slide(frame="15", progress="0.8", proportional="0", **args) == {'FINISHED'}
+spiked = progress(line, 10)
+assert close(spiked[5], 0.8) and close(spiked[4], 0.4), spiked
+assert tuple(oanim.wm.path_brush_settings()["blend"]) == (0.5, 1, 3.0), "Smoothing 0.5, Repeat 1, Radius 3"
+assert ops.anim.motion_path_timing_blend(frame="15", **args) == {'FINISHED'}
+u = progress(line, 10)
+assert close(u, blended(spiked, 10, 15, 0.5, 1, 3.0)), (u, blended(spiked, 10, 15, 0.5, 1, 3.0))
+assert close(u[5], 0.65) and close(u[4], 0.4 + 0.15 * 0.5 * 0.84375), u
+assert close(u[2], 0.2) and close(u[8], 0.8), "nothing past the radius moves"
+assert close(u[0], 0.0) and close(u[10], 1.0), "the keys stay"
+assert close(progress(line, 20), [i / 10 for i in range(11)])
+
+# The Adjust Last Operation panel shows its settings and runs it again with them changed; they're kept.
+last = oanim.wm.last_operation()
+assert last and last[0] == "anim.motion_path_timing_blend", last
+assert close(float(last[1]["smoothing"]), 0.5) and int(last[1]["repeat"]) == 1, last
+assert close(float(last[1]["radius"]), 3.0), last
+assert oanim.wm.redo_last(smoothing="1", repeat="3") == "FINISHED"
+assert close(progress(line, 10), blended(spiked, 10, 15, 1.0, 3, 3.0)), "redone from before, not on top"
+assert tuple(oanim.wm.path_brush_settings()["blend"]) == (1.0, 3, 3.0)
+
+# Each click blends again by the same amount, with the last settings.
+once = progress(line, 10)
+assert ops.anim.motion_path_timing_blend(frame="15", **args) == {'FINISHED'}
+last = oanim.wm.last_operation()
+assert close(float(last[1]["smoothing"]), 1.0) and int(last[1]["repeat"]) == 3, ("the panel shows them", last)
+assert close(progress(line, 10), blended(once, 10, 15, 1.0, 3, 3.0))
+ops.ed.undo()
+assert close(progress(line, 10), once), "one undo step"
+
+# Radius 0: the clicked dot alone. On a key with nothing in reach, nothing to do.
+assert ops.anim.motion_path_timing_blend(frame="17", smoothing="0.5", repeat="1", radius="0", **args) == {'FINISHED'}
+u = progress(line, 10)
+assert close(u, blended(once, 10, 17, 0.5, 1, 0.0)) and not close(u[7], once[7]), u
+assert all(close(u[k], once[k]) for k in range(11) if k != 7)
+assert ops.anim.motion_path_timing_blend(frame="10", **args) == {'CANCELLED'}
+assert ops.anim.motion_path_timing_blend(frame="15", smoothing="5", repeat="0", radius="-2", **args) == {'FINISHED'}
+assert tuple(oanim.wm.path_brush_settings()["blend"]) == (1.0, 1, 0.0), "kept in range"
+assert ops.anim.motion_path_timing_blend(frame="15", smoothing="0.5", repeat="1", radius="3", **args) == {'FINISHED'}
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="15", **args) == {'FINISHED'}
 
 # --- Overshoot: past the key and back, or backing up before the start --------------------------------------------
 doc.frame_current = 12

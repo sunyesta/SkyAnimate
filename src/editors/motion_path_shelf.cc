@@ -1,4 +1,4 @@
-/* The Motion Path tool's brush shelf (editors/tool_shelf.hh), while it is the tool: tabs All, Shape and Speed; a tile
+/* The Motion Path tool's brush shelf (editors/tool_shelf.hh), while it is the tool: tabs All and Shape; a tile
  * per brush, its picture a path with what the brush does to it, its name beneath. Clicking a tile picks the brush. */
 
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -18,8 +18,6 @@ namespace oanim {
 static constexpr ImU32 COL_INK = IM_COL32(0x1e, 0x1e, 0x1e, 255);
 static constexpr ImU32 COL_FAINT = IM_COL32(0xa8, 0xa8, 0xa8, 255);
 static constexpr ImU32 COL_ARROW = IM_COL32(0xe0, 0xa0, 0x20, 255);
-static constexpr ImU32 COL_FAST = IM_COL32(0xd8, 0x40, 0x30, 255);
-static constexpr ImU32 COL_SLOW = IM_COL32(0x30, 0x60, 0xd8, 255);
 
 float path_shelf_height(const Context &C, const Area &area)
 {
@@ -83,19 +81,10 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
       arc_line(dl, c, s, col, 0.45f, t);
       break;
     }
-    case PathBrush::PaintSpeed:
-    case PathBrush::Faster:
-    case PathBrush::Slower:
     case PathBrush::BlendSpeed: {
-      /* The dots' spacing: wide (fast, red) or close (slow, blue) where the brush has been. */
+      /* The dots evenly spaced where the brush has been. */
       const int n = 9;
-      std::vector<float> step(n - 1, 1.0f);
-      if (brush == PathBrush::PaintSpeed || brush == PathBrush::Faster) {
-        step = {0.6f, 0.6f, 1.0f, 2.0f, 2.0f, 1.0f, 0.6f, 0.6f};
-      }
-      else if (brush == PathBrush::Slower) {
-        step = {1.4f, 1.4f, 1.0f, 0.4f, 0.4f, 1.0f, 1.4f, 1.4f};
-      }
+      const std::vector<float> step(n - 1, 1.0f);
       float total = 0.0f;
       for (const float v : step) {
         total += v;
@@ -106,23 +95,7 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
       }
       arc_line(dl, c, s, COL_FAINT, 0.45f, t * 0.6f);
       for (int i = 0; i < n; i++) {
-        const float v = i > 0 ? step[size_t(i - 1)] : step[0];
-        const ImU32 dot = brush == PathBrush::BlendSpeed ? col : v > 1.2f ? COL_FAST : v < 0.8f ? COL_SLOW : col;
-        dots(dl, c, s, 1, [&](int) { return at[size_t(i)]; }, dot);
-      }
-      if (brush == PathBrush::Faster || brush == PathBrush::Slower) {
-        /* A plus or a minus, top right. */
-        const ImVec2 m = c + ImVec2(0.55f * s, -0.55f * s);
-        dl->AddLine(m - ImVec2(0.15f * s, 0), m + ImVec2(0.15f * s, 0), COL_ARROW, t * 1.3f);
-        if (brush == PathBrush::Faster) {
-          dl->AddLine(m - ImVec2(0, 0.15f * s), m + ImVec2(0, 0.15f * s), COL_ARROW, t * 1.3f);
-        }
-      }
-      else if (brush == PathBrush::PaintSpeed) {
-        /* A brush tip. */
-        const ImVec2 m = c + ImVec2(0.5f * s, -0.55f * s);
-        dl->AddLine(m + ImVec2(0.15f * s, -0.15f * s), m - ImVec2(0.05f * s, -0.05f * s), COL_ARROW, t * 1.6f);
-        dl->AddCircleFilled(m - ImVec2(0.08f * s, -0.08f * s), t * 1.4f, COL_ARROW);
+        dots(dl, c, s, 1, [&](int) { return at[size_t(i)]; }, col);
       }
       break;
     }
@@ -131,15 +104,7 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
 
 static bool in_tab(PathBrush brush, int tab)
 {
-  switch (tab) {
-    case 1:
-      return !path_brush_is_speed(brush);
-    case 2:
-      /* Edit is in both: its dots set the timing too. */
-      return path_brush_is_speed(brush) || brush == PathBrush::Edit;
-    default:
-      return true;
-  }
+  return tab != 1 || !path_brush_is_speed(brush);
 }
 
 static const char *brush_tip(PathBrush brush)
@@ -150,19 +115,13 @@ static const char *brush_tip(PathBrush brush)
              "to move it, a dot along its path (proportional editing: O), a selected key's handles to bend the path "
              "(Alt breaks them). Alt click the path: a key there (Alt drag: and move it; Ctrl: onto the line between "
              "the keys; Alt Shift: a breakdown). G R S on the selected keys, V their handle types, X deletes them; "
-             "Alt S scales the timing around the selection";
+             "Alt S scales the timing around the selection. Shift drag: Blend Speed";
     case PathBrush::Grab:
-      return "Drag a soft area of the path: the keys under the brush follow the mouse, the nearest most";
+      return "Drag a soft area of the path: the keys under the brush follow the mouse, the nearest most. Shift: "
+             "Smooth";
     case PathBrush::Smooth:
       return "Brush over a lumpy stretch: each key under it moves toward the curve through the keys either side, "
              "and its dragged handles back toward Auto";
-    case PathBrush::PaintSpeed:
-      return "Paint a speed on the dots between keys (Speed in the header; 1 is the stretch's even speed). Ctrl "
-             "paints 1 / Speed. Each key still arrives on its frame, the rest of the stretch making up for it";
-    case PathBrush::Faster:
-      return "Speed up where you brush, the rest of the stretch slowing to make up for it. Ctrl: Slower";
-    case PathBrush::Slower:
-      return "Slow down where you brush, the rest of the stretch speeding up to make up for it. Ctrl: Faster";
     case PathBrush::BlendSpeed:
       return "Even out the spacing where you brush. Ctrl sharpens it: slow parts slower, fast parts faster";
   }
@@ -177,7 +136,8 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
   ToolSettings &ts = C.wm->tool_settings;
   ShelfState &shelf = area.path_shelf;
   ImGui::PushID("##path_shelf");
-  if (!shelf_frame(shelf, {{0, "All"}, {1, "Shape"}, {2, "Speed"}}, min, size)) {
+  shelf.tab = std::min(shelf.tab, 1);
+  if (!shelf_frame(shelf, {{0, "All"}, {1, "Shape"}}, min, size)) {
     ImGui::PopID();
     return;
   }
@@ -193,9 +153,7 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     const int per_row = std::max(1, int((size.x - gap) / (tile + gap)));
     const std::string search = shelf_lower(shelf.search);
     std::vector<PathBrush> shown;
-    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit,       PathBrush::Grab,
-                                                          PathBrush::Smooth,     PathBrush::PaintSpeed,
-                                                          PathBrush::Faster,     PathBrush::Slower,
+    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit, PathBrush::Grab, PathBrush::Smooth,
                                                           PathBrush::BlendSpeed};
     for (const PathBrush brush : ORDER) {
       if (in_tab(brush, shelf.tab) &&

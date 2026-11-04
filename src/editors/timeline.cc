@@ -2172,7 +2172,10 @@ static void timeline_body(Area &area, Context &C)
   /* Navigation: wheel zooms around the mouse (over the names it scrolls the rows), Ctrl+wheel or
    * middle-drag pans, Home frames all. */
   float span = area.view_end - area.view_start;
-  if (hovered) {
+  /* Over the timing chart below, the wheel zooms the timeline too, unless a tick is being dragged there. */
+  const bool over_strip = strip_h > 0.0f && !timeline_path_strip_busy() && ImGui::IsWindowHovered() &&
+                          ImGui::IsMouseHoveringRect(ImVec2(k0.x, p1.y), ImVec2(p1.x, p1.y + strip_h));
+  if (hovered || over_strip) {
     if (over_names) {
       area.channel_scroll -= io.MouseWheel * row_h * 2.0f;
     }

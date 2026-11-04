@@ -10,6 +10,7 @@
 
 #include "anim/motion_path.hh"
 #include "data/document.hh"
+#include "data/vector.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -20,6 +21,12 @@ namespace oanim {
 
 /* At most this many rows, so a big rig traced doesn't push the keys out of the timeline. */
 static constexpr int MAX_ROWS = 4;
+
+/* The proportional circle's band and outline, the dots it pulls, and Shift click's blend reach. */
+static constexpr ImU32 REACH_FILL = IM_COL32(255, 255, 255, 16);
+static constexpr ImU32 REACH_EDGE = IM_COL32(255, 255, 255, 90);
+static constexpr ImU32 BLEND_FILL = IM_COL32(80, 150, 255, 30);
+static constexpr ImU32 BLEND_EDGE = IM_COL32(90, 160, 255, 200);
 
 static std::vector<MotionPathTarget> strip_targets(Context &C)
 {
@@ -51,6 +58,11 @@ static struct {
   Document snapshot;
 } g_tick;
 
+bool timeline_path_strip_busy()
+{
+  return g_tick.active;
+}
+
 static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int frame)
 {
   OpArgs args = {{"layer", std::to_string(t.layer)}, {"frame", std::to_string(frame)}};
@@ -74,6 +86,51 @@ static void diamond(ImDrawList *dl, ImVec2 c, float r, ImU32 fill, ImU32 edge)
   dl->AddPolyline(d, 4, edge, ImDrawFlags_Closed, 1.0f);
 }
 
+/* Proportional editing is always on in the timing chart and the graph, each with its own reach in frames (0: the dot
+ * alone), sized with the wheel while dragging. Returns whether it changed. */
+static bool reach_wheel(float &size)
+{
+  const float wheel = ImGui::GetIO().MouseWheel;
+  if (wheel == 0.0f) {
+    return false;
+  }
+  const float was = size;
+  size = std::clamp(std::round(size) + (wheel > 0.0f ? 1.0f : -1.0f), 0.0f, 100.0f);
+  return size != was;
+}
+
+static PathSlide reach_slide(const ToolSettings &ts, float size)
+{
+  PathSlide slide;
+  slide.proportional = size > 0.0f;
+  slide.size = size;
+  slide.falloff = ts.proportional_falloff;
+  slide.keep_order = false;
+  return slide;
+}
+
+/* How much a dot `frames` from the dragged one follows it. */
+static float reach_weight(const ToolSettings &ts, int frames, float size)
+{
+  if (frames == 0) {
+    return 1.0f;
+  }
+  return size > 0.0f ? proportional_weight(ts.proportional_falloff, float(std::abs(frames)), size, frames) : 0.0f;
+}
+
+/* The reach's number, small, by the circle. */
+static void reach_label(ImDrawList *dl, ImVec2 at, float size, ImU32 col)
+{
+  char text[16];
+  snprintf(text, sizeof(text), "%g", size);
+  dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.8f, at, col, text);
+}
+
+static void blend_click(Context &C, const MotionPathTarget &t, int frame)
+{
+  operator_call(C, "anim.motion_path_timing_blend", target_args(*C.document, t, frame));
+}
+
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h)
 {
@@ -84,13 +141,14 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   }
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
-  const ToolSettings &ts = wm.tool_settings;
+  ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   const bool edit = ts.path_brush == PathBrush::Edit;
   const float keys_w = std::max(max.x - keys_x, 8.0f);
   const auto x_of = [&](float frame) { return keys_x + (frame - view_start) / span * keys_w; };
   const auto frame_of = [&](float x) { return view_start + (x - keys_x) / keys_w * span; };
   const float lane_h = row_h * 1.25f;
+  const auto lane_top = [&](size_t r) { return min.y + 2.0f + float(r) * lane_h; };
 
   ImGui::SetCursorScreenPos(min);
   ImGui::SetNextItemAllowOverlap();
@@ -102,17 +160,31 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   dl->AddLine(min, ImVec2(max.x, min.y), IM_COL32(0x18, 0x18, 0x18, 255), 2.0f);
   dl->AddRectFilled(min, ImVec2(keys_x, max.y), IM_COL32(0x26, 0x26, 0x26, 255));
 
+  /* The lane under the mouse, right of the names. */
+  std::optional<size_t> lane;
+  if (hovered && io.MousePos.x >= keys_x) {
+    for (size_t r = 0; r < targets.size(); r++) {
+      if (io.MousePos.y >= lane_top(r) && io.MousePos.y < lane_top(r) + lane_h) {
+        lane = r;
+      }
+    }
+  }
+  /* Shift: a click blends the timing there instead of picking a dot. */
+  const bool blending = !g_tick.active && io.KeyShift && !io.KeyCtrl && !io.KeyAlt && lane.has_value();
+
   /* The tick under the mouse: its target, frame and stretch. */
   struct Hit {
     MotionPathTarget target;
     int frame = 0, start = 0, end = 0;
+    size_t lane = 0;
   };
   std::optional<Hit> hover;
   float best = 6.0f;
   const bool hover_fresh = ImGui::GetFrameCount() - wm.path_hover_tick <= 1;
+  const float size = ts.path_chart_size;
   for (size_t r = 0; r < targets.size(); r++) {
     const MotionPathTarget &t = targets[r];
-    const float top = min.y + 2.0f + float(r) * lane_h, cy = top + lane_h * 0.5f;
+    const float top = lane_top(r), cy = top + lane_h * 0.5f;
     const std::string label = "Timing: " + motion_path_label(doc, t);
     ImGui::RenderTextEllipsis(dl, ImVec2(min.x + 8.0f, top + (lane_h - ImGui::GetFontSize()) * 0.5f),
                               ImVec2(keys_x - 6.0f, top + lane_h), keys_x - 6.0f, label.c_str(), nullptr, nullptr);
@@ -123,6 +195,7 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
       }
     }
     const bool all = doc.path_dot_colors == PathDotColors::TimingAll;
+    const bool pulling = g_tick.active && g_tick.dragging && g_tick.target.same(t);
     for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
       const float xa = x_of(float(s.start)), xb = x_of(float(s.end));
       if (xb < keys_x - 10.0f || xa > max.x + 10.0f) {
@@ -151,13 +224,21 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
           dl->AddRectFilled(ImVec2(x - 3.0f, ty - half - 2.0f), ImVec2(x + 3.0f, ty + half + 2.0f),
                             picked ? IM_COL32(255, 160, 40, 255) : IM_COL32(255, 255, 255, 220));
         }
+        /* The dots the dragged one pulls along: a faint ring, fainter as they follow less. */
+        else if (pulling && g_tick.start == s.start) {
+          const float w = reach_weight(ts, frame - g_tick.frame, size);
+          if (w > 0.0f) {
+            dl->AddRect(ImVec2(x - 3.0f, ty - half - 2.0f), ImVec2(x + 3.0f, ty + half + 2.0f),
+                        IM_COL32(255, 255, 255, int(40.0f + 110.0f * w)));
+          }
+        }
         dl->AddLine(ImVec2(x, ty - half), ImVec2(x, ty + half),
                     ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a)), 2.5f);
-        if (hovered && edit && !g_tick.active && std::fabs(io.MousePos.y - ty) < lane_h * 0.5f &&
+        if (hovered && edit && !blending && !g_tick.active && std::fabs(io.MousePos.y - ty) < lane_h * 0.5f &&
             std::fabs(io.MousePos.x - x) < best)
         {
           best = std::fabs(io.MousePos.x - x);
-          hover = Hit{t, frame, s.start, s.end};
+          hover = Hit{t, frame, s.start, s.end, r};
         }
       }
     }
@@ -167,6 +248,29 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
         diamond(dl, ImVec2(x, cy), row_h * 0.28f, IM_COL32(240, 240, 240, 255), IM_COL32(20, 20, 20, 220));
       }
     }
+  }
+  /* The reach, as a band of frames either side: Shift's blend in blue around the mouse; otherwise the proportional
+   * circle around the dot dragged or under the mouse. */
+  const auto band = [&](size_t r, float frame, float reach, ImU32 fill, ImU32 edge) {
+    const float top = lane_top(r) + 1.0f, bottom = lane_top(r) + lane_h - 1.0f;
+    const float xa = x_of(frame - reach), xb = x_of(frame + reach);
+    dl->AddRectFilled(ImVec2(xa, top), ImVec2(std::max(xb, xa + 1.0f), bottom), fill, 2.0f);
+    dl->AddLine(ImVec2(xa, top), ImVec2(xa, bottom), edge);
+    dl->AddLine(ImVec2(xb, top), ImVec2(xb, bottom), edge);
+    reach_label(dl, ImVec2(xb + 3.0f, top), reach, edge);
+  };
+  if (blending) {
+    band(*lane, std::round(frame_of(io.MousePos.x)), ts.path_blend_radius, BLEND_FILL, BLEND_EDGE);
+  }
+  else if (g_tick.active && g_tick.dragging) {
+    for (size_t r = 0; r < targets.size(); r++) {
+      if (targets[r].same(g_tick.target)) {
+        band(r, float(g_tick.frame), size, REACH_FILL, REACH_EDGE);
+      }
+    }
+  }
+  else if (hover) {
+    band(hover->lane, float(hover->frame), size, REACH_FILL, REACH_EDGE);
   }
   /* The playhead carries on down. */
   const float px = x_of(float(doc.frame_current));
@@ -181,7 +285,14 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   }
   auto &g = g_tick;
   if (!g.active) {
-    if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left) || !edit) {
+    if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      return;
+    }
+    if (blending) {
+      blend_click(C, targets[*lane], int(std::lround(frame_of(io.MousePos.x))));
+      return;
+    }
+    if (!edit) {
       return;
     }
     if (!hover) {
@@ -196,7 +307,7 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
       operator_call(C, "anim.motion_path_select", args);
       return;
     }
-    if (io.KeyShift) {
+    if (io.KeyCtrl) {
       args["extend"] = "1";
       operator_call(C, "anim.motion_path_select", args);
       return;
@@ -242,15 +353,13 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   if (!g.dragging && std::fabs(io.MousePos.x - g.press_x) < 3.0f) {
     return;
   }
-  if (!g.dragging || io.MouseDelta.x != 0.0f) {
+  /* The wheel while dragging sizes the reach, the dots around following at once. */
+  const bool resized = g.dragging && reach_wheel(ts.path_chart_size);
+  if (!g.dragging || io.MouseDelta.x != 0.0f || resized) {
     g.dragging = true;
-    PathSlide slide;
-    slide.proportional = ts.proportional;
-    slide.size = ts.path_proportional_size;
-    slide.falloff = ts.proportional_falloff;
     doc = g.snapshot;
     const float progress = (frame_of(io.MousePos.x) - float(g.start)) / float(std::max(g.end - g.start, 1));
-    g.changed = motion_path_slide_progress(doc, g.target, g.frame, progress, slide);
+    g.changed = motion_path_slide_progress(doc, g.target, g.frame, progress, reach_slide(ts, ts.path_chart_size));
     C.undo->mark_changed();
   }
   wm.path_hover_target = g.target;
@@ -285,41 +394,136 @@ static struct {
   Document snapshot;
 } g_graph_scale;
 
-static void path_timing_graph(Context &C, const MotionPathTarget &t, const MotionPathStretch &s, ImVec2 min,
-                              ImVec2 max)
+/* The graph's view: frames across, the way along up. It fits the stretch whenever a different one is shown, and is
+ * otherwise the user's (wheel zoom, middle drag pan, Ctrl middle drag stretch, Home to fit again), so edits on the
+ * stretch never move it. */
+static struct {
+  bool valid = false;
+  MotionPathTarget target;
+  int start = 0, end = 0;
+  float f0 = 0.0f, f1 = 1.0f, y0 = 0.0f, y1 = 1.0f;
+  /* A middle drag: panning, or (Ctrl) stretching the axes around where it was pressed. */
+  bool nav = false, stretch = false;
+  ImVec2 press;
+  float pf0 = 0.0f, pf1 = 1.0f, py0 = 0.0f, py1 = 1.0f;
+} g_view;
+
+static void graph_fit(const MotionPathTarget &t, const MotionPathStretch &s)
 {
-  Document &doc = *C.document;
-  WindowManager &wm = *C.wm;
-  const ToolSettings &ts = wm.tool_settings;
-  const ImGuiIO &io = ImGui::GetIO();
+  auto &v = g_view;
   const int n = s.end - s.start;
-  /* A sliver of the stretches either side, in grey, at the edges. */
+  /* A sliver of the stretches either side, and all of the stretch's overshoot, with a margin. */
   const float pad = std::max(0.5f, float(n) * 0.12f);
-  const float f0 = float(s.start) - pad, f1 = float(s.end) + pad;
-  /* Room above the key and below the start to drag a dot past them (overshoot, backing up), more as it goes. */
   float lo = 0.0f, hi = 1.0f;
   for (const float u : s.progress) {
     lo = std::min(lo, u);
     hi = std::max(hi, u);
   }
-  const float y0 = std::max(lo - 0.12f, -1.06f), y1 = std::min(hi + 0.25f, 2.06f);
+  const float margin = (hi - lo) * 0.12f;
+  v.valid = true;
+  v.target = t;
+  v.start = s.start;
+  v.end = s.end;
+  v.f0 = float(s.start) - pad;
+  v.f1 = float(s.end) + pad;
+  v.y0 = lo - margin;
+  v.y1 = hi + margin;
+  v.nav = false;
+}
+
+static void path_timing_graph(Context &C, const MotionPathTarget &t, const MotionPathStretch &s, ImVec2 min,
+                              ImVec2 max)
+{
+  Document &doc = *C.document;
+  WindowManager &wm = *C.wm;
+  ToolSettings &ts = wm.tool_settings;
+  const ImGuiIO &io = ImGui::GetIO();
+  const int n = s.end - s.start;
+  auto &v = g_view;
+  if (!v.valid || !v.target.same(t) || v.start != s.start || v.end != s.end) {
+    graph_fit(t, s);
+  }
+  const float w = max.x - min.x, h = max.y - min.y;
   const auto to_screen = [&](float frame, float u) {
-    return ImVec2(min.x + (frame - f0) / (f1 - f0) * (max.x - min.x), max.y - (u - y0) / (y1 - y0) * (max.y - min.y));
+    return ImVec2(min.x + (frame - v.f0) / (v.f1 - v.f0) * w, max.y - (u - v.y0) / (v.y1 - v.y0) * h);
   };
+  const auto frame_at = [&](float x) { return v.f0 + (x - min.x) / w * (v.f1 - v.f0); };
+  const auto u_at = [&](float y) { return v.y0 + (max.y - y) / h * (v.y1 - v.y0); };
   ImGui::SetCursorScreenPos(min);
-  ImGui::InvisibleButton("##path_graph", ImVec2(max.x - min.x, max.y - min.y), ImGuiButtonFlags_MouseButtonLeft);
+  ImGui::InvisibleButton("##path_graph", ImVec2(w, h),
+                         ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+  /* The wheel is the graph's here, not the sidebar's scroll. */
+  ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
   const bool hovered = ImGui::IsItemHovered();
+
+  /* Navigation, as the viewport's: not while a dot is dragged, when the wheel sizes its reach instead. */
+  if (!g_graph.active && !g_graph_scale.active) {
+    if (hovered && io.MouseWheel != 0.0f) {
+      const float factor = std::pow(0.85f, io.MouseWheel);
+      const float mf = frame_at(io.MousePos.x), mu = u_at(io.MousePos.y);
+      v.f0 = mf - (mf - v.f0) * factor;
+      v.f1 = mf + (v.f1 - mf) * factor;
+      v.y0 = mu - (mu - v.y0) * factor;
+      v.y1 = mu + (v.y1 - mu) * factor;
+    }
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+      v.nav = true;
+      v.stretch = io.KeyCtrl;
+      v.press = io.MousePos;
+      v.pf0 = v.f0;
+      v.pf1 = v.f1;
+      v.py0 = v.y0;
+      v.py1 = v.y1;
+    }
+    if (v.nav && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+      v.nav = false;
+    }
+    if (v.nav) {
+      const float dx = io.MousePos.x - v.press.x, dy = io.MousePos.y - v.press.y;
+      if (v.stretch) {
+        /* Right and up stretch it out (zoom in on that axis), around where it was pressed. */
+        const float sx = std::exp(-dx * 0.01f), sy = std::exp(dy * 0.01f);
+        const float pf = v.pf0 + (v.press.x - min.x) / w * (v.pf1 - v.pf0);
+        const float pu = v.py0 + (max.y - v.press.y) / h * (v.py1 - v.py0);
+        v.f0 = pf - (pf - v.pf0) * sx;
+        v.f1 = pf + (v.pf1 - pf) * sx;
+        v.y0 = pu - (pu - v.py0) * sy;
+        v.y1 = pu + (v.py1 - pu) * sy;
+      }
+      else {
+        const float df = dx / w * (v.pf1 - v.pf0), du = dy / h * (v.py1 - v.py0);
+        v.f0 = v.pf0 - df;
+        v.f1 = v.pf1 - df;
+        v.y0 = v.py0 + du;
+        v.y1 = v.py1 + du;
+      }
+    }
+    if (hovered && ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
+      graph_fit(t, s);
+    }
+    /* Not so far in or out that it stops making sense. */
+    const auto keep = [](float &a, float &b, float least, float most) {
+      const float mid = (a + b) * 0.5f, half = std::clamp(b - a, least, most) * 0.5f;
+      a = mid - half;
+      b = mid + half;
+    };
+    keep(v.f0, v.f1, 0.5f, 100000.0f);
+    keep(v.y0, v.y1, 0.01f, 100.0f);
+  }
+
   ImDrawList *dl = ImGui::GetWindowDrawList();
   dl->PushClipRect(min, max, true);
   dl->AddRectFilled(min, max, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
-  /* Frame lines and the 0 and 1 lines. */
-  for (int f = s.start; f <= s.end; f++) {
+  /* Frame lines, thinned out when zoomed far out. */
+  const float per_frame = w / (v.f1 - v.f0);
+  const int step = std::max(1, int(std::ceil(5.0f / per_frame)));
+  for (int f = int(std::ceil(v.f0 / float(step))) * step; float(f) <= v.f1; f += step) {
     const float x = to_screen(float(f), 0.0f).x;
     dl->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), IM_COL32(0x2a, 0x2a, 0x2a, 255));
   }
   /* Past the key and before the start: shaded, the 0 and 100% lines bright. */
-  dl->AddRectFilled(min, ImVec2(max.x, to_screen(0.0f, 1.0f).y), IM_COL32(0x2a, 0x24, 0x18, 255));
-  dl->AddRectFilled(ImVec2(min.x, to_screen(0.0f, 0.0f).y), max, IM_COL32(0x2a, 0x24, 0x18, 255));
+  dl->AddRectFilled(min, ImVec2(max.x, std::max(to_screen(0.0f, 1.0f).y, min.y)), IM_COL32(0x2a, 0x24, 0x18, 255));
+  dl->AddRectFilled(ImVec2(min.x, std::min(to_screen(0.0f, 0.0f).y, max.y)), max, IM_COL32(0x2a, 0x24, 0x18, 255));
   for (const float u : {0.0f, 1.0f}) {
     const float y = to_screen(0.0f, u).y;
     dl->AddLine(ImVec2(min.x, y), ImVec2(max.x, y), IM_COL32(0x60, 0x60, 0x60, 255));
@@ -341,7 +545,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     const bool before = o.end <= s.start;
     for (size_t k = 0; k < o.progress.size(); k++) {
       const float f = float(o.start + int(k));
-      if (f < f0 || f > f1) {
+      if (f < v.f0 - 1.0f || f > v.f1 + 1.0f) {
         continue;
       }
       dl->AddCircleFilled(to_screen(f, before ? o.progress[k] - 1.0f : 1.0f + o.progress[k]), 3.0f, grey_col);
@@ -352,11 +556,30 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     dl->AddLine(to_screen(float(s.start + k), s.progress[size_t(k)]),
                 to_screen(float(s.start + k + 1), s.progress[size_t(k + 1)]), IM_COL32(110, 110, 110, 255), 1.5f);
   }
+  const bool blending = hovered && !g_graph.active && !g_graph_scale.active && !v.nav && io.KeyShift &&
+                        !io.KeyCtrl && !io.KeyAlt;
+  const float size = ts.path_graph_size;
   std::optional<int> hover;
   float best = 9.0f;
+  /* Dots out of view: an arrow at the edge toward each; clicking one fits the view again. */
+  bool on_arrow = false;
   for (int k = 1; k < n; k++) {
     const int frame = s.start + k;
     const ImVec2 p = to_screen(float(frame), s.progress[size_t(k)]);
+    if (p.x < min.x || p.x > max.x || p.y < min.y || p.y > max.y) {
+      const ImVec2 e(std::clamp(p.x, min.x + 7.0f, max.x - 7.0f), std::clamp(p.y, min.y + 7.0f, max.y - 7.0f));
+      float ax = p.x - e.x, ay = p.y - e.y;
+      const float len = std::max(std::hypot(ax, ay), 1e-3f);
+      ax /= len;
+      ay /= len;
+      const Color c = motion_path_time_color(float(k) / float(n));
+      dl->AddTriangleFilled(ImVec2(e.x + ax * 6.0f, e.y + ay * 6.0f),
+                            ImVec2(e.x - ax * 3.0f - ay * 4.5f, e.y - ay * 3.0f + ax * 4.5f),
+                            ImVec2(e.x - ax * 3.0f + ay * 4.5f, e.y - ay * 3.0f - ax * 4.5f),
+                            ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.9f)));
+      on_arrow |= hovered && std::hypot(io.MousePos.x - e.x, io.MousePos.y - e.y) < 8.0f;
+      continue;
+    }
     const bool picked = std::any_of(wm.path_dots.begin(), wm.path_dots.end(),
                                     [&](const auto &d) { return d.first.same(t) && d.second == frame; });
     const bool ringed = (g_graph.active && g_graph.frame == frame) ||
@@ -368,8 +591,15 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     if (picked || ringed) {
       dl->AddCircle(p, 7.5f, picked ? IM_COL32(255, 160, 40, 255) : IM_COL32(255, 255, 255, 220), 0, 1.6f);
     }
+    /* The dots the dragged one pulls along: a faint ring, fainter as they follow less. */
+    else if (g_graph.active && g_graph.dragging) {
+      const float wt = reach_weight(ts, frame - g_graph.frame, size);
+      if (wt > 0.0f) {
+        dl->AddCircle(p, 7.5f, IM_COL32(255, 255, 255, int(40.0f + 110.0f * wt)), 0, 1.0f);
+      }
+    }
     const float d = std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y);
-    if (hovered && !g_graph.active && d < best) {
+    if (hovered && !g_graph.active && !blending && d < best) {
       best = d;
       hover = frame;
     }
@@ -377,6 +607,24 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   for (const int k : {s.start, s.end}) {
     const ImVec2 p = to_screen(float(k), k == s.start ? 0.0f : 1.0f);
     diamond(dl, p, 5.5f, IM_COL32(240, 240, 240, 255), IM_COL32(20, 20, 20, 220));
+  }
+  /* The reach as a circle: Shift's blend in blue around the mouse; else the proportional circle around the dot
+   * dragged or under the mouse. */
+  const auto circle = [&](ImVec2 c, float reach, ImU32 fill, ImU32 edge) {
+    const float r = std::max(reach * per_frame, 3.0f);
+    dl->AddCircleFilled(c, r, fill, 48);
+    dl->AddCircle(c, r, edge, 48, 1.0f);
+    reach_label(dl, ImVec2(c.x + r * 0.72f + 2.0f, c.y - r * 0.72f - ImGui::GetFontSize() * 0.8f), reach, edge);
+  };
+  if (blending) {
+    circle(io.MousePos, ts.path_blend_radius, BLEND_FILL, BLEND_EDGE);
+  }
+  else if (g_graph.active && g_graph.dragging) {
+    circle(to_screen(float(g_graph.frame), s.progress[size_t(g_graph.frame - s.start)]), size, REACH_FILL,
+           REACH_EDGE);
+  }
+  else if (hover) {
+    circle(to_screen(float(*hover), s.progress[size_t(*hover - s.start)]), size, REACH_FILL, REACH_EDGE);
   }
   dl->PopClipRect();
 
@@ -388,7 +636,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     ImGui::SetTooltip("Frame %d: %.0f%% along", *hover, u * 100.0f);
   }
 
-  /* Alt S: scale the spacing around the selected dots, as in the viewport. */
+  /* Alt S: scale the spacing around the selected dots, as in the viewport, with the graph's reach. */
   auto &sc = g_graph_scale;
   if (!sc.active && hovered && !g_graph.active && io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
       !wm.path_dots.empty())
@@ -399,10 +647,8 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   }
   if (sc.active) {
     const float factor = std::max(0.0f, 1.0f + (io.MousePos.x - sc.press_x) / 150.0f);
-    PathSlide slide;
-    slide.proportional = ts.proportional;
-    slide.size = ts.path_proportional_size;
-    slide.falloff = ts.proportional_falloff;
+    PathSlide slide = reach_slide(ts, size);
+    slide.keep_order = true;
     doc = sc.snapshot;
     for (const auto &[dt, df] : wm.path_dots) {
       motion_path_scale_spacing(doc, dt, df, factor, slide);
@@ -452,6 +698,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
     }
+    if (on_arrow) {
+      graph_fit(t, s);
+      return;
+    }
+    if (blending) {
+      blend_click(C, t, int(std::lround(frame_at(io.MousePos.x))));
+      return;
+    }
     if (!hover) {
       if (!io.KeyShift && !io.KeyCtrl) {
         operator_call(C, "anim.motion_path_select", {{"none", "1"}});
@@ -464,7 +718,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       operator_call(C, "anim.motion_path_select", args);
       return;
     }
-    if (io.KeyShift) {
+    if (io.KeyCtrl) {
       args["extend"] = "1";
       operator_call(C, "anim.motion_path_select", args);
       return;
@@ -507,18 +761,18 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   if (!g.dragging && std::fabs(io.MousePos.y - g.press_y) < 3.0f) {
     return;
   }
+  /* The wheel while dragging sizes the reach, the dots around following at once. */
+  if (g.dragging) {
+    reach_wheel(ts.path_graph_size);
+  }
   g.dragging = true;
-  PathSlide slide;
-  slide.proportional = ts.proportional;
-  slide.size = ts.path_proportional_size;
-  slide.falloff = ts.proportional_falloff;
   doc = g.snapshot;
   /* Up is further along; Ctrl puts it on the even line. */
-  float progress = y0 + (max.y - io.MousePos.y) / (max.y - min.y) * (y1 - y0);
+  float progress = u_at(io.MousePos.y);
   if (io.KeyCtrl) {
     progress = float(g.frame - s.start) / float(std::max(n, 1));
   }
-  g.changed = motion_path_slide_progress(doc, g.target, g.frame, progress, slide);
+  g.changed = motion_path_slide_progress(doc, g.target, g.frame, progress, reach_slide(ts, ts.path_graph_size));
   C.undo->mark_changed();
 }
 

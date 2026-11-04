@@ -1,6 +1,7 @@
-"""Motion paths, stages 4-6: the Motion Path tool's brushes. Shape brushes (Grab, Smooth) move keys; speed brushes
-(Paint Speed, Faster, Slower, Blend Speed) paint how fast a path is gone along, its stretches becoming Custom, each
-still arriving on its key's frame and keeping its shape. Ctrl (invert=1) paints the opposite.
+"""Motion paths, stages 4-6: the Motion Path tool's brushes. Shape brushes (Grab, Smooth) move keys; Blend Speed
+evens out how fast a path is gone along, its stretches becoming Custom, each still arriving on its key's frame and
+keeping its shape; Ctrl (invert=1) sharpens. Each brush has its own radius and strength; Shift (shift=1) swaps in
+Grab's Smooth and Edit's Blend Speed.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_brushes.py
 """
@@ -60,10 +61,20 @@ doc.auto_key = False
 # --- Picking a brush (stage 4) ---------------------------------------------------------------------------------------
 assert ops.wm.tool_motion_path() == {'FINISHED'}
 assert oanim.wm.path_brush_settings()["brush"] == "EDIT"
-assert ops.anim.motion_path_brush_set(brush="GRAB", radius="80", strength="0.7", speed="3") == {'FINISHED'}
+assert ops.anim.motion_path_brush_set(brush="GRAB", radius="80", strength="0.7") == {'FINISHED'}
 s = oanim.wm.path_brush_settings()
-assert s["brush"] == "GRAB" and close(s["radius"], 80.0) and close(s["strength"], 0.7) and close(s["speed"], 3.0), s
+assert s["brush"] == "GRAB" and close(s["radius"], 80.0) and close(s["strength"], 0.7), s
 assert ops.anim.motion_path_brush_set(brush="NOPE") == {'CANCELLED'}
+for gone in ("PAINT_SPEED", "FASTER", "SLOWER"):
+    assert ops.anim.motion_path_brush_set(brush=gone) == {'CANCELLED'}, gone + " is gone"
+# Each brush keeps its own; Edit's are its Shift brush's, Blend Speed's.
+assert ops.anim.motion_path_brush_set(brush="SMOOTH", radius="30", strength="0.2") == {'FINISHED'}
+assert ops.anim.motion_path_brush_set(brush="EDIT", radius="40", strength="0.9") == {'FINISHED'}
+s = oanim.wm.path_brush_settings()
+assert close(s["brushes"]["GRAB"], (80.0, 0.7)) and close(s["brushes"]["SMOOTH"], (30.0, 0.2)), s
+assert close(s["brushes"]["BLEND_SPEED"], (40.0, 0.9)) and close(s["radius"], 40.0), s
+assert ops.anim.motion_path_brush_set(brush="GRAB") == {'FINISHED'}
+assert close(oanim.wm.path_brush_settings()["radius"], 80.0), "Grab's own again"
 assert ops.anim.motion_path_stroke(brush="EDIT", points="0,0") == {'CANCELLED'}, "Edit isn't a brush"
 
 # --- Grab (stage 5): the keys under the brush follow the mouse by the falloff, none added ---------------------------
@@ -88,8 +99,9 @@ def arc_y(f):
 ball = fresh_layer({f: (f / 10.0, arc_y(f) + (1.0 if f == 20 else 0.0)) for f in (10, 15, 20, 25, 30)})
 doc.frame_current = 20
 bump = where(ball, 20)
-assert ops.anim.motion_path_stroke(brush="SMOOTH", points=f"{bump[0]},{bump[1]}", radius="0.2", strength="0.5") == {
-    'FINISHED'}
+# Shift with Grab is Smooth.
+assert ops.anim.motion_path_stroke(brush="GRAB", shift="1", points=f"{bump[0]},{bump[1]}", radius="0.2",
+                                   strength="0.5") == {'FINISHED'}
 assert close(where(ball, 20), (2.0, arc_y(20) + 0.5)), ("half way, at the middle of the brush", where(ball, 20))
 assert close(where(ball, 15), (1.5, arc_y(15))), "outside the brush, as it was"
 here = where(ball, 20)
@@ -104,76 +116,41 @@ assert ops.anim.motion_path_stroke(brush="SMOOTH", points=f"{here[0]},{here[1]}"
     'FINISHED'}
 assert key(ball, "position", 20)["path_handles"] == "AUTO"
 
-# --- Speed (stage 6): a straight, even stretch painted faster in the middle -----------------------------------------
-line = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)}, interp="LINEAR")
-before = [where(line, f) for f in range(10, 21)]
-assert ops.anim.motion_path_stroke(brush="PAINT_SPEED", points="0.5,0", radius="0.25", speed="2", strength="1") == {
-    'FINISHED'}
-k = key(line, "position", 20)
-assert k["interp"] == "CUSTOM" and len(k["speeds"]) == 10, k
-assert close(sum(k["speeds"]), 10.0, 1e-3), "speeds as shares of the even speed"
-assert close(where(line, 10), (0.0, 0.0)) and close(where(line, 20), (1.0, 0.0)), "still arrives on its frames"
-after = [where(line, f) for f in range(10, 21)]
-assert all(abs(p[1]) < 1e-5 for p in after), ("the same straight path", after)
-step = [after[i + 1][0] - after[i][0] for i in range(10)]
-assert step[4] > 0.15 and step[0] < 0.1 - 1e-3 and step[9] < 0.1 - 1e-3, ("faster in the middle, slower at the ends",
-                                                                            step)
-assert close(k["speeds"][4], 2.0, 1e-3), ("the step into frame 15, under the middle", k["speeds"])
-# Faster multiplies the speeds under the brush (the step into frame 13, at the centre, by 1 + strength / 2), the
-# rest of the stretch slowing evenly to make up for it; Slower divides; Ctrl swaps them.
-def stroke(brush, invert="0"):
-    assert ops.anim.motion_path_stroke(brush=brush, points=f"{centre[0]},{centre[1]}", radius="0.12", strength="0.6",
-                                       invert=invert) == {'FINISHED'}
-    got = key(line, "position", 20)["speeds"]
-    ops.ed.undo()
-    return got
-
-
-speeds = key(line, "position", 20)["speeds"]
-doc.frame_current = 13
-centre = (line.location_x, line.location_y)
-faster, slower = stroke("FASTER"), stroke("SLOWER")
-assert close(sum(faster), 10.0) and close(sum(slower), 10.0)
-far = [i for i in range(10) if i not in (1, 2, 3)]
-assert close(faster[2] / speeds[2], 1.3, 1e-4) and close(speeds[2] / slower[2], 1.3, 1e-4), (faster, slower)
-assert faster[2] > speeds[2] and slower[2] < speeds[2], (speeds, faster, slower)
-assert all(faster[i] < speeds[i] and slower[i] > speeds[i] for i in far), "the rest makes up for it"
-ratios = [faster[i] / speeds[i] for i in far]
-assert max(ratios) - min(ratios) < 1e-4, ("evenly", ratios)
-# Near the brush's edge, by the falloff: less than at its centre.
-assert 1.0 < faster[1] / speeds[1] < faster[2] / speeds[2] - 1e-3, (faster, speeds)
-assert close(stroke("SLOWER", invert="1"), faster, 1e-5), "Ctrl: Slower is Faster"
-assert close(stroke("FASTER", invert="1"), slower, 1e-5), "Ctrl: Faster is Slower"
-assert close(key(line, "position", 20)["speeds"], speeds, 1e-5)
-# Ctrl on Paint Speed paints 1 / speed.
-doc.frame_current = 15
-centre = (line.location_x, line.location_y)
-assert ops.anim.motion_path_stroke(brush="PAINT_SPEED", points=f"{centre[0]},{centre[1]}", radius="0.25", speed="2",
-                                   strength="1", invert="1") == {'FINISHED'}
-assert close(key(line, "position", 20)["speeds"][4], 0.5), key(line, "position", 20)["speeds"]
-
-# Blend Speed evens it out; Ctrl sharpens.
+# --- Speed (stage 6): Blend Speed evens out the spacing; Ctrl sharpens ----------------------------------------------
 def spread(speeds):
     return max(speeds) - min(speeds)
 
 
-def blend(strength, invert="0"):
-    """Blend Speed over the middle of a fresh Ease In/Out stretch (strength 0: just made Custom, as it was)."""
+def blend(strength, invert="0", brush="BLEND_SPEED", shift="0"):
+    """Blend Speed over the middle of a fresh Ease In/Out stretch (strength 0: just made Custom, as it was; None:
+    the brush's own)."""
     l = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)}, interp="EASE_IN_OUT")
     doc.frame_current = 15
-    assert ops.anim.motion_path_stroke(brush="BLEND_SPEED", points="0.5,0", radius="0.3", strength=strength,
-                                       invert=invert) == {'FINISHED'}
-    return key(l, "position", 20)["speeds"]
+    more = {} if strength is None else {"strength": strength}
+    assert ops.anim.motion_path_stroke(brush=brush, shift=shift, points="0.5,0", radius="0.3", invert=invert,
+                                       **more) == {'FINISHED'}
+    return l, key(l, "position", 20)["speeds"]
 
 
-assert ops.anim.motion_path_stroke(brush="FASTER", points="5,5", radius="0.3", strength="0.3") == {'CANCELLED'}
-was, blended, sharper = blend("0"), blend("0.3"), blend("0.3", invert="1")
+assert ops.anim.motion_path_stroke(brush="BLEND_SPEED", points="5,5", radius="0.3", strength="0.3") == {'CANCELLED'}
+(_, was), (line, blended), (_, sharper) = blend("0"), blend("0.3"), blend("0.3", invert="1")
 mid = slice(3, 7)
 assert spread(blended[mid]) < spread(was[mid]) < spread(sharper[mid]), (blended, was, sharper)
+k = key(line, "position", 20)
+assert k["interp"] == "CUSTOM" and len(k["speeds"]) == 10 and close(sum(k["speeds"]), 10.0), k
+assert close(where(line, 10), (0.0, 0.0)) and close(where(line, 20), (1.0, 0.0)), "still arrives on its frames"
+assert all(abs(where(line, f)[1]) < 1e-5 for f in range(10, 21)), "the same straight path"
+# Shift with Edit is Blend Speed.
+assert close(blend("0.3", brush="EDIT", shift="1")[1], blended, 1e-5)
+# Left out, a stroke's strength is its brush's own.
+held = oanim.wm.path_brush_settings()["brush"]
+assert ops.anim.motion_path_brush_set(brush="BLEND_SPEED", strength="0.3") == {'FINISHED'}
+assert ops.anim.motion_path_brush_set(brush=held) == {'FINISHED'}
+assert close(blend(None)[1], blended, 1e-5), "Blend Speed's own strength"
 
 # A straight stretch into a corner stays straight as Custom (its key's handles don't round the corner).
 corner = fresh_layer({10: (0.0, 0.0), 20: (1.0, 1.0), 30: (2.0, 0.0)}, interp="LINEAR")
-assert ops.anim.motion_path_stroke(brush="PAINT_SPEED", points="0.5,0.5", radius="0.25", speed="2", strength="1") == {
+assert ops.anim.motion_path_stroke(brush="BLEND_SPEED", points="0.5,0.5", radius="0.25", strength="1") == {
     'FINISHED'}
 assert key(corner, "position", 20)["interp"] == "CUSTOM"
 diagonal = [where(corner, f) for f in range(10, 21)]
@@ -199,7 +176,7 @@ for f, a in ((10, 0.2), (20, 1.0)):
     assert ops.anim.motion_path_move(frame=str(f), x=str(math.cos(a)), y=str(math.sin(a)), layer=str(rig.id),
                                      bone="arm") == {'FINISHED'}
 tip = (math.cos(0.6), math.sin(0.6))
-assert ops.anim.motion_path_stroke(brush="PAINT_SPEED", points=f"{tip[0]},{tip[1]}", radius="0.2", speed="3",
+assert ops.anim.motion_path_stroke(brush="BLEND_SPEED", points=f"{tip[0]},{tip[1]}", radius="0.2",
                                    strength="1", layer=str(rig.id), bone="arm") == {'FINISHED'}
 k = key(rig, 'bones["arm"].angle', 20)
 assert k["interp"] == "CUSTOM" and len(k["speeds"]) == 10, k

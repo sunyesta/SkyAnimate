@@ -150,6 +150,12 @@ std::vector<int> motion_path_overshoot_frames(const Document &doc, const MotionP
  * around it by proportional editing, as motion_path_slide, but free to pass each other and the keys. */
 bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
                                 const PathSlide &slide);
+/* Shift click in the timing chart or the Path Timing graph: the spacing around `frame` evened out, as Blender's Smooth
+ * Vertices: each dot within `radius` frames moves `smoothing` (0-1, by the falloff) of the way to the midpoint of the
+ * dots either side, `repeat` times, the keys staying (an overshoot is smoothed down too). Returns how many stretches
+ * changed. */
+int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int frame, float smoothing, int repeat,
+                             float radius);
 /* The timing shapes the Path Timing panel's buttons give a stretch, by how far along it each frame has got (t the
  * share of its time): Even t, Ease In t^2, Ease Out 1-(1-t)^2, Ease In-Out 3t^2-2t^3. */
 enum class PathShape { Even, EaseIn, EaseOut, EaseInOut };
@@ -219,9 +225,7 @@ struct PathDab {
   float2 center;
   float radius = 0.1f;
   float strength = 0.5f;
-  /* Paint Speed's speed (1: the stretch's even speed). */
-  float speed = 2.0f;
-  /* Ctrl: the opposite (Paint Speed 1 / speed, Faster as Slower and Slower as Faster, Blend Speed sharpening). */
+  /* Ctrl: the opposite (Blend Speed sharpening). */
   bool invert = false;
 };
 /* 1 at the centre, easing to 0 at `radius`. */

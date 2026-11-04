@@ -198,15 +198,23 @@ struct ToolSettings {
   bool sculpt_selected_only = false;
   /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
   float sculpt_surface_sensitivity = 0.25f;
-  /* The Motion Path tool's brush (its shelf), its radius in screen pixels, strength, and Paint Speed's speed (1 a
-   * stretch's even speed). */
+  /* The Motion Path tool's brush (its shelf), and each brush's own radius in screen pixels and strength (Shift's
+   * brush, path_brush_shifted, uses its own). */
   PathBrush path_brush = PathBrush::Edit;
-  float path_radius = 50.0f;
-  float path_strength = 0.5f;
-  float path_speed = 2.0f;
+  PathBrushSettings path_brushes[PATH_BRUSH_COUNT];
+  PathBrushSettings &path_brush_settings(PathBrush brush) { return path_brushes[int(brush)]; }
+  const PathBrushSettings &path_brush_settings(PathBrush brush) const { return path_brushes[int(brush)]; }
   /* Edit's proportional editing of dots (on/off and falloff are the points', O and Shift O): how many frames either
    * side of the dragged dot slide with it. */
   float path_proportional_size = 3.0f;
+  /* The timing chart's and the Path Timing graph's own reach (frames either side of a dragged dot that follow it,
+   * proportional editing being always on there; 0 the dot alone), sized with the wheel while dragging. */
+  float path_chart_size = 3.0f;
+  float path_graph_size = 3.0f;
+  /* Shift click's timing blend there (anim.motion_path_timing_blend), kept for the next click. */
+  float path_blend_smoothing = 0.5f;
+  int path_blend_repeat = 1;
+  float path_blend_radius = 3.0f;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
