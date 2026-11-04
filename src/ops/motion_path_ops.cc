@@ -1,14 +1,17 @@
 /* Motion path operators (anim/motion_path.hh): pinning a path, its colour and end, what paths are drawn relative to,
  * and a snapshot to compare an edit against. */
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 
+#include "anim/animation.hh"
 #include "anim/motion_path.hh"
 #include "core/log.hh"
 #include "data/document.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
+#include "ops/undo.hh"
 #include "wm/context.hh"
 
 namespace oanim {
@@ -43,6 +46,10 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
     }
   }
   t.point = uint64_t(std::stoull(op_arg(C, "point", "0")));
+  /* As it is traced: by its head, say. */
+  if (const MotionPathTarget *style = motion_path_style(doc, t)) {
+    t = *style;
+  }
   r_targets.push_back(t);
   return true;
 }
@@ -192,6 +199,135 @@ void motion_path_operators_register()
       for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
         wm.path_snapshot.push_back(p.points);
       }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_select";
+    ot.name = "Select Motion Path Dot";
+    ot.description = "Go to frame=N, as clicking a path's dot with the Motion Path tool does, and select the keys "
+                     "there of what the paths trace (on an in-between dot, the keys ending its stretch, whose "
+                     "interpolation it moves by). extend=1 keeps the keys selected already";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
+      doc.frame_current = frame;
+      animation_sync(doc);
+      if (!op_arg_bool(C, "extend")) {
+        std::vector<Layer *> all;
+        for (const Layer *l : document_layers_flat(doc)) {
+          all.push_back(layer_find(doc, l->id));
+        }
+        layers_deselect_keys(all);
+      }
+      for (const MotionPathTarget &t : targets) {
+        Layer *layer = layer_find(doc, t.layer);
+        const std::vector<int> keys = motion_path_keys(doc, t);
+        const auto key = std::lower_bound(keys.begin(), keys.end(), frame);
+        if (layer && key != keys.end()) {
+          layers_select_keys({layer}, *key, *key, true, motion_path_key_filter(doc, t));
+        }
+      }
+      C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_move";
+    ot.name = "Move Motion Path Dot";
+    ot.description = "Put what a path traces (layer=id with bone=name or point=id: that one; else the first traced) "
+                     "at x, y on frame=N, keyed there whatever auto-key says: a key moves, an in-between gets a key. "
+                     "A bone's tip turns the bone. straight=1 puts it on the line between the keys either side, "
+                     "nearest x, y";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      const MotionPathTarget t = targets.front();
+      const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
+      doc.frame_current = frame;
+      animation_sync(doc);
+      float2 at = {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
+      if (op_arg_bool(C, "straight") && !motion_path_straighten(doc, t, at)) {
+        report(ReportType::Warning, "Straight needs keys either side");
+        return OpStatus::Cancelled;
+      }
+      if (!motion_path_place(doc, t, at)) {
+        report(ReportType::Warning, "That can't be moved there (a connected bone's head goes with its parent)");
+        return OpStatus::Cancelled;
+      }
+      motion_path_record(doc);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_breakdown";
+    ot.name = "Motion Path Breakdown";
+    ot.description = "A breakdown on frame=N, as Shift-dragging an in-between dot does: what a path traces (layer=, "
+                     "bone=, point= or the first traced) keyed factor=0-1 of the way from its pose on the key "
+                     "before to the key after, staying on its arc";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      doc.frame_current = std::max(1, op_arg_int(C, "frame", doc.frame_current));
+      animation_sync(doc);
+      if (!motion_path_breakdown(doc, targets.front(), op_arg_float(C, "factor", 0.5f))) {
+        report(ReportType::Warning, "A breakdown goes between two keys");
+        return OpStatus::Cancelled;
+      }
+      motion_path_record(doc);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_smooth_arc";
+    ot.name = "Smooth Arc";
+    ot.description = "Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "
+                     "keys either side of it (layer=, bone=, point= for one path; else every path traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      int first = 0, last = 0;
+      if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last)) {
+        motion_path_range(doc, targets, first, last);
+      }
+      int moved = 0;
+      for (const MotionPathTarget &t : targets) {
+        moved += motion_path_smooth_arc(doc, t, first, last);
+      }
+      if (moved == 0) {
+        report(ReportType::Info, "No keys inside the path's range to smooth");
+        return OpStatus::Cancelled;
+      }
+      report(ReportType::Info, "Smoothed " + std::to_string(moved) + (moved == 1 ? " key" : " keys"));
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

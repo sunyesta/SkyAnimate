@@ -1593,6 +1593,7 @@ void vector_operators_register()
   tool_op("wm.tool_transform_points", "Transform Points Tool", Tool::TransformPoints);
   tool_op("wm.tool_transform_layer", "Transform Layer Tool", Tool::TransformLayer);
   tool_op("wm.tool_edit_text", "Edit Text Tool", Tool::EditText);
+  tool_op("wm.tool_motion_path", "Motion Path Tool", Tool::MotionPath);
   {
     /* oanim.ops.wm.tool_shape(shape="CIRCLE"): the Shape tool, optionally picking the shape. */
     OperatorType ot;

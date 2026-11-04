@@ -108,7 +108,7 @@ Match Pose from Previous Drawing) and stage 4 (the Asset Shelf editor, `src/edit
 thumbnails in `src/editors/switch_thumbnails.*`, hover previews via `switch_preview_set`, Duplicate and
 Duplicate with Keys) and stage 5 (2-Way Linked drivers, `Driver::two_way` in `src/anim/drivers.cc`: one
 channel of keys, edits to the driven side written back; Link All Channels); later items are in the spec's
-Switch layers section. Motion paths stage 1 (`src/anim/motion_path.*`: targets, range by keys, paths worked out on copies like onion skins; drawn by `draw_motion_paths` in `src/editors/viewport.cc`; settings in the onion popover; operators in `src/ops/motion_path_ops.cc`; Alt Space is `screen.animation_play_path_range`); stages 2 (the Motion Path tool) and 3 (handles) are in the spec. Next: key buttons in Properties, dope sheet, frame-by-frame layers
+Switch layers section. Motion paths stage 1 (`src/anim/motion_path.*`: targets, range by keys, paths worked out on copies like onion skins; drawn by `draw_motion_paths` in `src/editors/viewport.cc`; settings in the onion popover; operators in `src/ops/motion_path_ops.cc`; Alt Space is `screen.animation_play_path_range`) and stage 2 (`Tool::MotionPath`: `motion_path_tool_input` and `motion_path_header` in `src/editors/viewport.cc`; placing, breakdowns and Smooth Arc in `motion_path.cc`); stage 3 (handles) is in the spec. Next: key buttons in Properties, dope sheet, frame-by-frame layers
 and onion skins, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,

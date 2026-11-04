@@ -423,6 +423,8 @@ add_test(NAME onion_skins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_onion_skins.py)
 add_test(NAME motion_paths
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_paths.py)
+add_test(NAME motion_path_tool
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_tool.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
 add_test(NAME envelope_hook

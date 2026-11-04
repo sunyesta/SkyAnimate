@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -656,9 +657,143 @@ static void draw_onion_skins(Context &C, const ViewMapping &view, ImDrawList *dl
   }
 }
 
+static void push_undo(Context &C, const char *name);
+
+/* The Motion Path tool's drag: a dot pressed (its frame gone to, its key selected), then moved. */
+static struct {
+  bool active = false;
+  bool dragging = false;
+  /* Shift on a dot between keys: a breakdown slid along the arc. */
+  bool breakdown = false;
+  bool on_key = false;
+  MotionPathTarget target;
+  int frame = 0;
+  /* The range drawn when it started, kept while dragging so the path doesn't jump about under the mouse. */
+  int first = 0, last = 0;
+  ImVec2 press;
+  /* The arc between the keys either side (document space), for a breakdown. */
+  std::vector<float2> arc;
+  Document snapshot;
+  /* Each update changes what's drawn without an undo step: this tells the cache. */
+  uint64_t serial = 0;
+} g_path_drag;
+
+/* Where along `arc` (0 at its start, 1 at its end, by length) the nearest place to `at` is. */
+static float arc_fraction(const std::vector<float2> &arc, float2 at)
+{
+  float total = 0.0f, best = std::numeric_limits<float>::max(), best_along = 0.0f;
+  for (size_t i = 1; i < arc.size(); i++) {
+    const float2 a = arc[i - 1], ab = arc[i] - a;
+    const float len = length(ab);
+    const float t = len > 1e-9f ? std::clamp(((at.x - a.x) * ab.x + (at.y - a.y) * ab.y) / (len * len), 0.0f, 1.0f)
+                                : 0.0f;
+    const float d = length(a + ab * t - at);
+    if (d < best) {
+      best = d;
+      best_along = total + len * t;
+    }
+    total += len;
+  }
+  return total > 1e-9f ? best_along / total : 0.0f;
+}
+
+/* Arguments naming a target for the motion path operators. */
+static OpArgs motion_path_target_args(const Document &doc, const MotionPathTarget &t)
+{
+  OpArgs args = {{"layer", std::to_string(t.layer)}};
+  if (const Layer *l = layer_find(doc, t.layer)) {
+    for (const Bone &b : l->bones) {
+      if (b.id == t.bone) {
+        args["bone"] = b.name;
+      }
+    }
+  }
+  if (t.point) {
+    args["point"] = std::to_string(t.point);
+  }
+  return args;
+}
+
+/* The Motion Path tool's mouse: press a dot (go there, select its key), drag it (keyed there), Esc cancels. */
+static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
+                                   int first, int last)
+{
+  Document &doc = *C.document;
+  ImGuiIO &io = ImGui::GetIO();
+  auto &g = g_path_drag;
+  if (!g.active) {
+    if (!hover_path || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      return;
+    }
+    g.active = true;
+    g.dragging = false;
+    g.target = hover_path->target;
+    g.frame = hover_frame;
+    g.first = first;
+    g.last = last;
+    g.press = io.MousePos;
+    g.on_key = std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
+    g.breakdown = io.KeyShift && !g.on_key;
+    OpArgs args = motion_path_target_args(doc, g.target);
+    args["frame"] = std::to_string(hover_frame);
+    operator_call(C, "anim.motion_path_select", args);
+    g.snapshot = doc;
+    g.arc.clear();
+    if (g.breakdown) {
+      int before = 0, after = 0;
+      motion_path_neighbour_keys(doc, g.target, g.frame, before, after);
+      if (before && after) {
+        g.arc = motion_paths_make(doc, {g.target}, before, after).front().points;
+      }
+      else {
+        g.breakdown = false;
+      }
+    }
+    return;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    if (g.dragging) {
+      doc = std::move(g.snapshot);
+    }
+    g = {};
+    g.serial++;
+    g_right_click_spent = true;
+    return;
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (g.dragging) {
+      push_undo(C, g.breakdown ? "Motion Path Breakdown" : g.on_key ? "Move Motion Path Key" : "Add Motion Path Key");
+    }
+    const uint64_t serial = g.serial + 1;
+    g = {};
+    g.serial = serial;
+    return;
+  }
+  const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;
+  if (!g.dragging && dx * dx + dy * dy < 4.0f * 4.0f) {
+    return;
+  }
+  g.dragging = true;
+  /* On the dot's frame the path is drawn where things are then, whatever it is relative to. */
+  float2 at = view.to_document(io.MousePos);
+  if (g.breakdown) {
+    motion_path_breakdown(doc, g.target, arc_fraction(g.arc, at));
+  }
+  else {
+    if (io.KeyCtrl) {
+      motion_path_straighten(doc, g.target, at);
+    }
+    motion_path_place(doc, g.target, at);
+  }
+  /* Keyed as it goes, so the path (worked out from keys) follows the mouse. */
+  motion_path_record(doc);
+  g.serial++;
+}
+
 /* Motion paths (anim/motion_path.hh): a dot per frame, red where fast and blue where still, keys as diamonds and a
  * ring on the frame shown; hovering a dot shows the drawing there as a ghost. Worked out again only when the
- * document, the range or what is traced changes. */
+ * document, the range or what is traced changes. With the Motion Path tool they show whatever the popover says, and
+ * take its clicks. */
 static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *dl, bool hovered)
 {
   const Document &doc = *C.document;
@@ -673,7 +808,11 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
       dl->AddCircleFilled(s, 1.6f, IM_COL32(220, 220, 220, 90));
     }
   }
-  if (!doc.motion_paths) {
+  const bool tool = wm.tool_settings.tool == Tool::MotionPath;
+  if (!tool && g_path_drag.active) {
+    g_path_drag = {};
+  }
+  if (!doc.motion_paths && !tool) {
     return;
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
@@ -682,12 +821,16 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
     first = wm.play_range_first;
     last = wm.play_range_last;
   }
+  else if (g_path_drag.active) {
+    first = g_path_drag.first;
+    last = g_path_drag.last;
+  }
   else if (!motion_path_range(doc, targets, first, last)) {
     return;
   }
   static struct {
     const Document *doc = nullptr;
-    uint64_t changes = ~uint64_t(0);
+    uint64_t changes = ~uint64_t(0), serial = 0;
     int first = 0, last = 0, frame = 0;
     std::vector<MotionPathTarget> targets;
     PathRelative relative = PathRelative::World;
@@ -697,12 +840,13 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
   const uint64_t changes = C.undo ? C.undo->change_count() : 0;
   /* Drawn relative to something, a path depends on where that is now too. */
   const int frame = doc.path_relative == PathRelative::World ? 0 : doc.frame_current;
-  if (cache.doc != &doc || cache.changes != changes || cache.first != first || cache.last != last ||
-      cache.frame != frame || cache.targets != targets || cache.relative != doc.path_relative ||
+  if (cache.doc != &doc || cache.changes != changes || cache.serial != g_path_drag.serial || cache.first != first ||
+      cache.last != last || cache.frame != frame || cache.targets != targets || cache.relative != doc.path_relative ||
       cache.relative_layer != doc.path_relative_layer || cache.relative_bone != doc.path_relative_bone)
   {
     cache.doc = &doc;
     cache.changes = changes;
+    cache.serial = g_path_drag.serial;
     cache.first = first;
     cache.last = last;
     cache.frame = frame;
@@ -716,7 +860,8 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
     return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a * alpha));
   };
   const ImVec2 mouse = ImGui::GetIO().MousePos;
-  const bool hovering = hovered && !ImGui::IsAnyMouseDown();
+  const bool hovering = hovered && !g_path_drag.active &&
+                        (!ImGui::IsAnyMouseDown() || (tool && ImGui::IsMouseClicked(ImGuiMouseButton_Left)));
   float best = 7.0f * 7.0f;
   const MotionPath *hover_path = nullptr;
   int hover_frame = 0;
@@ -729,27 +874,38 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
     if (doc.path_lines && screen.size() > 1) {
       dl->AddPolyline(screen.data(), int(screen.size()), u32(p.color, 0.55f), ImDrawFlags_None, 1.5f);
     }
+    /* With the tool, its selected keys (as the timeline has them) outlined. */
+    std::map<int, KeyFrameSummary> picked;
+    if (tool) {
+      if (Layer *layer = layer_find(*C.document, p.target.layer)) {
+        picked = layers_key_summary({layer}, motion_path_key_filter(doc, p.target));
+      }
+    }
     /* A dot every `step` frames (and on every key); frames it holds still over make one dot with how many. */
     for (size_t i = 0; i < screen.size();) {
       size_t run = i + 1;
       while (run < screen.size() && length(p.points[run] - p.points[i]) < 1e-6f) {
         run++;
       }
-      bool shown = false, key = false;
+      bool shown = false, key = false, selected = false;
       for (size_t k = i; k < run; k++) {
         const int f = p.first + int(k);
         const bool on_key = std::binary_search(p.keys.begin(), p.keys.end(), f);
         key |= on_key;
         shown |= on_key || (f - p.first) % step == 0;
+        if (const auto it = picked.find(f); it != picked.end() && it->second.selected > 0) {
+          selected = true;
+        }
       }
       if (shown) {
         const ImVec2 s = screen[i];
         const Color dot = doc.path_speed_colors ? motion_path_speed_color(p.speed[i]) : p.color;
         if (key) {
-          const float r = 4.5f;
+          const float r = selected ? 6.0f : 4.5f;
           const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
           dl->AddConvexPolyFilled(d, 4, u32(p.color, 1.0f));
-          dl->AddPolyline(d, 4, IM_COL32(20, 20, 20, 220), ImDrawFlags_Closed, 1.0f);
+          dl->AddPolyline(d, 4, selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(20, 20, 20, 220),
+                          ImDrawFlags_Closed, selected ? 2.0f : 1.0f);
         }
         else {
           dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, 200));
@@ -776,8 +932,16 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
       dl->AddCircle(screen[size_t(now)], 7.0f, IM_COL32(255, 255, 255, 240), 0, 1.6f);
     }
   }
+  if (tool && (hovered || g_path_drag.active)) {
+    /* A copy: pressing a dot goes to its frame, which can make the paths again. */
+    const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
+    motion_path_tool_input(C, view, pressed ? &*pressed : nullptr, hover_frame, first, last);
+    if (g_path_drag.active) {
+      return;
+    }
+  }
   /* The hovered dot's frame as a ghost of the drawing there, with its number. */
-  if (hover_path) {
+  if (hover_path && !ImGui::IsAnyMouseDown()) {
     static struct {
       const Document *doc = nullptr;
       uint64_t changes = ~uint64_t(0);
@@ -1046,6 +1210,22 @@ static void tool_icon(ImDrawList *dl, Tool tool, ImVec2 c, float s, ImU32 col)
       dl->AddRectFilled(c - ImVec2(s * 0.35f, s * 0.35f), c + ImVec2(s * 0.35f, s * 0.35f), col, 1.0f);
       break;
     }
+    case Tool::MotionPath: {
+      /* Dots along an arc, a key's diamond in the middle. */
+      for (int i = 0; i < 7; i++) {
+        const float a = 3.14159f * (0.9f - 0.8f * float(i) / 6.0f);
+        const ImVec2 p = c + ImVec2(std::cos(a) * s * 0.85f, s * 0.55f - std::sin(a) * s * 0.95f);
+        if (i == 3) {
+          const float r = s * 0.28f;
+          const ImVec2 d[4] = {p + ImVec2(0, -r), p + ImVec2(r, 0), p + ImVec2(0, r), p + ImVec2(-r, 0)};
+          dl->AddConvexPolyFilled(d, 4, col);
+        }
+        else {
+          dl->AddCircleFilled(p, s * 0.12f, col);
+        }
+      }
+      break;
+    }
     case Tool::EditText:
       /* A T with a caret beside it. */
       dl->AddLine(c + ImVec2(-s * 0.8f, -s * 0.7f), c + ImVec2(s * 0.4f, -s * 0.7f), col, t * 1.3f);
@@ -1215,6 +1395,14 @@ static const ToolInfo TOOLS[] = {
      "Shift F sets its strength; "
      "G, P, S, T, I, W pick a brush. Away from frame 0 it poses the drawing (auto-key keys it)",
      "wm.tool_sculpt"},
+    {Tool::MotionPath, "Motion Path",
+     "Edit the motion paths of what's selected (shown with this tool even when the Onion Skin popover's Motion "
+     "Paths is off). Click a dot to go to its frame and select its key (between keys, the key ending that "
+     "stretch). Drag a key to move it there; drag a dot between keys to add a key. Shift-drag between keys: a "
+     "breakdown, sliding along the arc between the keys either side. Ctrl: onto the straight line between them. "
+     "Dragging always keys, whatever auto-key says. The header sets the selected keys' interpolation, with a "
+     "ball showing how it moves, and has Smooth Arc",
+     "wm.tool_motion_path"},
     {Tool::WeightSelect, "Weight Select",
      "Select points to give weights to: click or drag a box (Shift adds, Ctrl removes). Ctrl-click a bone to "
      "make it active. The header has Automatic Weights (as Blender's), Assign, Remove and Normalize",
@@ -1249,7 +1437,9 @@ struct ToolBox {
   std::vector<Tool> setup;
 };
 static const ToolBox TOOL_BOXES[] = {
-    {"General tools", {Tool::Select, Tool::SelectLayer, Tool::TransformLayer, Tool::Cursor, Tool::Annotate}, {}},
+    {"General tools",
+     {Tool::Select, Tool::SelectLayer, Tool::TransformLayer, Tool::MotionPath, Tool::Cursor, Tool::Annotate},
+     {}},
     {"Drawing tools", {Tool::TransformPoints, Tool::Sculpt}, {Tool::Draw, Tool::Shape, Tool::SplitCurve}},
     {"Rig tools", {Tool::TransformBones}, {Tool::WeightSelect, Tool::WeightPaint}},
     {"Text tools", {Tool::EditText}, {}},
@@ -1291,6 +1481,7 @@ static ToolState tool_state(Context &C, Tool tool)
     case Tool::SelectLayer:
     case Tool::Cursor:
     case Tool::Annotate:
+    case Tool::MotionPath:
       state.shown = true;
       break;
     case Tool::TransformLayer:
@@ -3515,6 +3706,129 @@ static void draw_header(Context &C)
   }
 }
 
+/* The Motion Path tool's header: the selected keys' interpolation, a ball moving that way beside it (hovering an
+ * option moves it that way instead), the ease's strength, and Smooth Arc. */
+static void motion_path_header(Context &C)
+{
+  const float h = ImGui::GetFrameHeight();
+  const std::vector<Layer *> layers = timeline_layers(C);
+  const SelectedKeys sel = layers_selected_keys(layers);
+  static const Interp CHOICES[] = {Interp::Linear,  Interp::Smooth, Interp::EaseIn,  Interp::EaseOut,
+                                   Interp::EaseInOut, Interp::Step,  Interp::Back,    Interp::Bounce,
+                                   Interp::Elastic, Interp::Noisy};
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Interpolation");
+  ImGui::SameLine();
+  const char *shown = sel.count == 0 ? "No key selected" : sel.mixed ? "Mixed" : interp_name(sel.first.interp);
+  /* The option the mouse is over in the open list, previewed by the ball. */
+  static int previewing = -1;
+  int hovered_now = -1;
+  ImGui::BeginDisabled(sel.count == 0);
+  ImGui::SetNextItemWidth(h * 5.5f);
+  if (ImGui::BeginCombo("##path_interp", shown)) {
+    for (int i = 0; i < int(std::size(CHOICES)); i++) {
+      const bool on = sel.count > 0 && !sel.mixed && sel.first.interp == CHOICES[i];
+      if (ImGui::Selectable(interp_name(CHOICES[i]), on)) {
+        operator_call(C, "anim.keys_interpolation_set", {{"interp", interp_identifier(CHOICES[i])}});
+      }
+      if (ImGui::IsItemHovered()) {
+        hovered_now = i;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("How the selected keys are reached from the key before (click a key, or a dot between keys, to "
+                      "select it)");
+  }
+  previewing = hovered_now;
+
+  /* The ball: across the strip and back to the start, taking as long as the selected key's stretch plays. */
+  KeySettings settings = sel.first;
+  const bool preview = previewing >= 0;
+  if (preview) {
+    settings.interp = CHOICES[previewing];
+  }
+  const bool empty = !preview && (sel.count == 0 || sel.mixed);
+  int span = 12;
+  if (sel.count > 0) {
+    const std::map<int, KeyFrameSummary> keys = layers_key_summary(layers);
+    int before = 0;
+    for (const auto &[frame, summary] : keys) {
+      if (summary.selected > 0) {
+        if (before > 0 || frame > 0) {
+          span = std::max(2, frame - before);
+        }
+        break;
+      }
+      before = frame;
+    }
+  }
+  ImGui::SameLine();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const ImVec2 size(h * 7.0f, h);
+  ImGui::Dummy(size);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How it moves: a ball crossing at that interpolation, the dots its spacing frame by frame, red "
+                      "where fast and blue where slow");
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(at, at + size, IM_COL32(0x22, 0x22, 0x22, 255), h * 0.3f);
+  if (!empty) {
+    /* Overshooting modes go past the ends: the strip keeps a margin for them. */
+    const float pad = h * 0.6f, y = at.y + size.y * 0.5f;
+    const auto x_of = [&](float v) { return at.x + pad + v * (size.x - 2.0f * pad); };
+    std::vector<float> xs;
+    float fastest = 1e-6f;
+    for (int f = 0; f <= span; f++) {
+      xs.push_back(interp_curve(settings, float(f) / float(span)));
+      if (f > 0) {
+        fastest = std::max(fastest, std::abs(xs[size_t(f)] - xs[size_t(f) - 1]));
+      }
+    }
+    for (int f = 0; f <= span; f++) {
+      const float speed = f > 0 ? std::abs(xs[size_t(f)] - xs[size_t(f) - 1]) / fastest : 0.0f;
+      const Color c = motion_path_speed_color(speed);
+      dl->AddCircleFilled(ImVec2(x_of(xs[size_t(f)]), y), 1.8f,
+                          ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.8f)));
+    }
+    const double fps = std::max(1.0, double(C.document->fps));
+    const double seconds = double(span) / fps, pause = 0.35;
+    const float t = float(std::min(1.0, std::fmod(ImGui::GetTime(), seconds + pause) / seconds));
+    /* Step jumps at the end; moving on whole frames, as the animation plays. */
+    const float frame_t = std::floor(t * float(span) + 1e-4f) / float(span);
+    dl->AddCircleFilled(ImVec2(x_of(interp_curve(settings, frame_t)), y), h * 0.28f, IM_COL32(0xf0, 0xf0, 0xf0, 255));
+  }
+  /* The ease's strength, for the modes that have one. */
+  if (sel.count > 0 && !sel.mixed &&
+      (sel.first.interp == Interp::EaseIn || sel.first.interp == Interp::EaseOut ||
+       sel.first.interp == Interp::EaseInOut))
+  {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(h * 4.0f);
+    if (ImGui::BeginCombo("##path_ease", sel.mixed_ease ? "Mixed" : ease_name(sel.first.ease))) {
+      for (int i = 0; i < EASE_COUNT; i++) {
+        if (ImGui::Selectable(ease_name(Ease(i)), !sel.mixed_ease && sel.first.ease == Ease(i))) {
+          operator_call(C, "anim.keys_interpolation_set", {{"ease", ease_identifier(Ease(i))}});
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How strongly it eases, from Sine (gentlest) to Expo (strongest)");
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Smooth Arc")) {
+    operator_call(C, "anim.motion_path_smooth_arc");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "
+                      "keys either side of it");
+  }
+}
+
 /* The header, and under it the Tool Settings bar unless it was hidden. */
 static float header_rows_height()
 {
@@ -3551,6 +3865,9 @@ static const char *tool_hint(const ToolSettings &ts)
                                : "Click a line to add a point  |  Shift: middle  |  Ctrl-click a point: delete it";
     case Tool::Cursor:
       return "Click to place the cursor  |  Shift right-click places it from any tool";
+    case Tool::MotionPath:
+      return "Click a dot: its frame, its key  |  Drag a key: move it  |  Drag between keys: add a key  |  Shift: "
+             "breakdown along the arc  |  Ctrl: straight  |  Esc: cancel";
     default:
       return "";
   }
@@ -3678,6 +3995,9 @@ static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float widt
       break;
     case Tool::Sculpt:
       sculpt_header(C);
+      break;
+    case Tool::MotionPath:
+      motion_path_header(C);
       break;
   }
   ImGui::EndGroup();
@@ -14217,6 +14537,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   else if (ts.tool == Tool::TransformLayer && !g_modal.active) {
     layer_gizmo_input(C, area, view, hovered, dl);
+  }
+  else if (ts.tool == Tool::MotionPath && !g_modal.active) {
+    /* draw_motion_paths, below, takes its clicks and drags. */
   }
   else if (tool_setup_only(ts.tool) && doc.frame_current != 0 && !g_modal.active) {
     /* A setup-only tool kept picked away from frame 0: a click says what makes it work. */

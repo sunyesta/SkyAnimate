@@ -1,6 +1,7 @@
 #include "anim/motion_path.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <set>
 #include <string>
@@ -374,6 +375,352 @@ Color motion_path_speed_color(float speed)
   const float t = std::clamp(speed, 0.0f, 1.0f);
   const Color still = {0.25f, 0.5f, 1.0f, 1.0f}, fast = {1.0f, 0.22f, 0.18f, 1.0f};
   return {still.r + (fast.r - still.r) * t, still.g + (fast.g - still.g) * t, still.b + (fast.b - still.b) * t, 1.0f};
+}
+
+/* --- Editing (the Motion Path tool) ----------------------------------------------------------------------------- */
+
+namespace {
+
+constexpr float PI_F = 3.14159265358979f;
+
+float wrap_angle(float a)
+{
+  while (a > PI_F) {
+    a -= 2.0f * PI_F;
+  }
+  while (a < -PI_F) {
+    a += 2.0f * PI_F;
+  }
+  return a;
+}
+
+/* The plain value that moves a target where it goes: a bone's position (its head; its tip turns by its angle), a
+ * point's, a layer's. Null where there is none (a connected bone's head sits on its parent's tail). */
+float2 *place_value(Document &doc, const MotionPathTarget &t, Bone **r_bone)
+{
+  *r_bone = nullptr;
+  Layer *layer = layer_find(doc, t.layer);
+  if (!layer) {
+    return nullptr;
+  }
+  if (t.bone) {
+    const int i = bone_index(*layer, t.bone);
+    if (i < 0) {
+      return nullptr;
+    }
+    *r_bone = &layer->bones[size_t(i)];
+    return (*r_bone)->connected ? nullptr : &(*r_bone)->position;
+  }
+  if (t.point) {
+    const int i = point_index(*layer, t.point);
+    return i < 0 ? nullptr : &layer->drawing.points[size_t(i)].pos;
+  }
+  return &layer->position;
+}
+
+/* Moves `value` so `t` shows at `at`: how it moves the target is found by nudging it (bones, parents and skins move
+ * a point, a head or an origin as a straight-line function of it), a few times over for anything that isn't quite. */
+bool solve_position(Document &doc, const MotionPathTarget &t, float2 &value, float2 at)
+{
+  for (int iteration = 0; iteration < 4; iteration++) {
+    float2 now;
+    if (!target_position(doc, t, now)) {
+      return false;
+    }
+    const float2 miss = at - now;
+    if (length(miss) < 1e-6f) {
+      return true;
+    }
+    const float h = 1e-2f;
+    const float2 start = value;
+    float2 dx, dy;
+    value = start + float2{h, 0.0f};
+    target_position(doc, t, dx);
+    value = start + float2{0.0f, h};
+    target_position(doc, t, dy);
+    value = start;
+    const float2 cx = (dx - now) / h, cy = (dy - now) / h;
+    const float det = cx.x * cy.y - cx.y * cy.x;
+    if (std::abs(det) < 1e-9f) {
+      return false;
+    }
+    value = start + float2{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
+  }
+  return true;
+}
+
+/* Turns a bone so its tip points at `at`. */
+bool solve_tip(Document &doc, const MotionPathTarget &t, Bone &bone, float2 at)
+{
+  MotionPathTarget head = t;
+  head.head = true;
+  for (int iteration = 0; iteration < 4; iteration++) {
+    float2 h, tip;
+    if (!target_position(doc, head, h) || !target_position(doc, t, tip)) {
+      return false;
+    }
+    const float want = wrap_angle(std::atan2(at.y - h.y, at.x - h.x) - std::atan2(tip.y - h.y, tip.x - h.x));
+    if (std::abs(want) < 1e-6f) {
+      return true;
+    }
+    /* Which way (and how far) its angle turns the tip as seen: a flipped parent turns it the other way. */
+    const float start = bone.angle, nudge = 1e-2f;
+    bone.angle = start + nudge;
+    float2 moved;
+    target_position(doc, t, moved);
+    bone.angle = start;
+    const float rate =
+        wrap_angle(std::atan2(moved.y - h.y, moved.x - h.x) - std::atan2(tip.y - h.y, tip.x - h.x)) / nudge;
+    if (std::abs(rate) < 1e-4f) {
+      return false;
+    }
+    bone.angle = start + want / rate;
+  }
+  return true;
+}
+
+/* A target's own values, which a breakdown blends. */
+struct OwnValues {
+  float2 position, scale;
+  float angle = 0.0f;
+};
+
+bool own_values(const Document &doc, const MotionPathTarget &t, OwnValues &r)
+{
+  const Layer *layer = layer_find(doc, t.layer);
+  if (!layer) {
+    return false;
+  }
+  if (t.bone) {
+    const int i = bone_index(*layer, t.bone);
+    if (i < 0) {
+      return false;
+    }
+    const Bone &b = layer->bones[size_t(i)];
+    r = {b.position, b.scale, b.angle};
+    return true;
+  }
+  if (t.point) {
+    const int i = point_index(*layer, t.point);
+    if (i < 0) {
+      return false;
+    }
+    r = {layer->drawing.points[size_t(i)].pos, {1.0f, 1.0f}, 0.0f};
+    return true;
+  }
+  r = {layer->position, layer->scale, layer->rotation};
+  return true;
+}
+
+void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v)
+{
+  Layer *layer = layer_find(doc, t.layer);
+  if (t.bone) {
+    Bone &b = layer->bones[size_t(bone_index(*layer, t.bone))];
+    b.position = v.position;
+    b.scale = v.scale;
+    b.angle = v.angle;
+  }
+  else if (t.point) {
+    layer->drawing.points[size_t(point_index(*layer, t.point))].pos = v.position;
+  }
+  else {
+    layer->position = v.position;
+    layer->scale = v.scale;
+    layer->rotation = v.angle;
+  }
+}
+
+}  // namespace
+
+bool motion_path_position(const Document &doc, const MotionPathTarget &target, float2 &r_at)
+{
+  return target_position(doc, target, r_at);
+}
+
+bool motion_path_position_at(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_at)
+{
+  Document copy = doc;
+  copy.frame_current = frame;
+  animation_evaluate(copy, frame);
+  return target_position(copy, target, r_at);
+}
+
+bool motion_path_place(Document &doc, const MotionPathTarget &target, float2 at)
+{
+  Bone *bone = nullptr;
+  float2 *value = place_value(doc, target, &bone);
+  if (bone && !target.head) {
+    return solve_tip(doc, target, *bone, at);
+  }
+  return value && solve_position(doc, target, *value, at);
+}
+
+void motion_path_neighbour_keys(const Document &doc, const MotionPathTarget &target, int frame, int &r_before,
+                                int &r_after)
+{
+  r_before = r_after = 0;
+  for (const int f : motion_path_keys(doc, target)) {
+    if (f < frame) {
+      r_before = f;
+    }
+    else if (f > frame && !r_after) {
+      r_after = f;
+    }
+  }
+}
+
+bool motion_path_straighten(const Document &doc, const MotionPathTarget &target, float2 &at)
+{
+  int before = 0, after = 0;
+  motion_path_neighbour_keys(doc, target, doc.frame_current, before, after);
+  float2 a, b;
+  if (!before || !after || !motion_path_position_at(doc, target, before, a) ||
+      !motion_path_position_at(doc, target, after, b))
+  {
+    return false;
+  }
+  const float2 ab = b - a;
+  const float len2 = ab.x * ab.x + ab.y * ab.y;
+  const float t = len2 > 1e-12f ? std::clamp(((at.x - a.x) * ab.x + (at.y - a.y) * ab.y) / len2, 0.0f, 1.0f) : 0.0f;
+  at = a + ab * t;
+  return true;
+}
+
+bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float factor)
+{
+  int before = 0, after = 0;
+  motion_path_neighbour_keys(doc, target, doc.frame_current, before, after);
+  if (!before || !after) {
+    return false;
+  }
+  OwnValues a, b;
+  Document copy = doc;
+  copy.frame_current = before;
+  animation_evaluate(copy, before);
+  const bool got_a = own_values(copy, target, a);
+  copy.frame_current = after;
+  animation_evaluate(copy, after);
+  if (!got_a || !own_values(copy, target, b)) {
+    return false;
+  }
+  const float f = std::clamp(factor, 0.0f, 1.0f);
+  own_values_set(doc, target,
+                 {a.position + (b.position - a.position) * f, a.scale + (b.scale - a.scale) * f,
+                  a.angle + (b.angle - a.angle) * f});
+  return true;
+}
+
+KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target)
+{
+  KeyFilter filter;
+  const Layer *layer = layer_find(doc, target.layer);
+  if (layer && target.bone) {
+    const int i = bone_index(*layer, target.bone);
+    filter.kinds = KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
+    filter.path = "bones[\"" + (i >= 0 ? layer->bones[size_t(i)].name : std::string()) + "\"].";
+  }
+  else if (layer && target.point) {
+    filter.kinds = KEY_POINTS;
+    filter.path = "points[" + std::to_string(std::max(0, point_index(*layer, target.point))) + "].";
+  }
+  else {
+    filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
+  }
+  return filter;
+}
+
+void motion_path_record(Document &doc)
+{
+  /* Moving a path's dot always keys it, as the tool promises, whatever auto-key says. */
+  const bool auto_key = doc.auto_key;
+  const AutoKeyMode mode = doc.auto_key_mode;
+  doc.auto_key = true;
+  doc.auto_key_mode = AutoKeyMode::AddReplace;
+  animation_record(doc);
+  doc.auto_key = auto_key;
+  doc.auto_key_mode = mode;
+}
+
+int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int first, int last)
+{
+  const std::vector<int> keys = motion_path_keys(doc, target);
+  /* Where each in-between key should be: on a curve over time (a parabola, or a line through two) fitted to up to two
+   * keys either side of it, all worked out before any moves. */
+  std::vector<std::pair<int, float2>> moves;
+  for (size_t i = 0; i < keys.size(); i++) {
+    const int k = keys[i];
+    if (k <= first || k >= last) {
+      continue;
+    }
+    std::vector<std::pair<double, float2>> near;
+    for (size_t j = (i >= 2 ? i - 2 : 0); j < std::min(keys.size(), i + 3); j++) {
+      float2 at;
+      if (j != i && motion_path_position_at(doc, target, keys[j], at)) {
+        near.push_back({double(keys[j] - k), at});
+      }
+    }
+    if (near.size() < 2) {
+      continue;
+    }
+    /* Least squares p(t) = c0 + c1 t + c2 t^2 with t = 0 on the key: c0 is where it goes. */
+    const int terms = near.size() >= 3 ? 3 : 2;
+    double m[3][3] = {}, rx[3] = {}, ry[3] = {};
+    for (const auto &[t, p] : near) {
+      const double basis[3] = {1.0, t, t * t};
+      for (int r = 0; r < terms; r++) {
+        for (int c = 0; c < terms; c++) {
+          m[r][c] += basis[r] * basis[c];
+        }
+        rx[r] += basis[r] * p.x;
+        ry[r] += basis[r] * p.y;
+      }
+    }
+    bool solved = true;
+    for (int c = 0; c < terms && solved; c++) {
+      int pivot = c;
+      for (int r = c + 1; r < terms; r++) {
+        if (std::abs(m[r][c]) > std::abs(m[pivot][c])) {
+          pivot = r;
+        }
+      }
+      for (int cc = 0; cc < 3; cc++) {
+        std::swap(m[c][cc], m[pivot][cc]);
+      }
+      std::swap(rx[c], rx[pivot]);
+      std::swap(ry[c], ry[pivot]);
+      if (std::abs(m[c][c]) < 1e-12) {
+        solved = false;
+        break;
+      }
+      for (int r = 0; r < terms; r++) {
+        if (r != c) {
+          const double f = m[r][c] / m[c][c];
+          for (int cc = 0; cc < terms; cc++) {
+            m[r][cc] -= f * m[c][cc];
+          }
+          rx[r] -= f * rx[c];
+          ry[r] -= f * ry[c];
+        }
+      }
+    }
+    if (solved) {
+      moves.push_back({k, float2{float(rx[0] / m[0][0]), float(ry[0] / m[0][0])}});
+    }
+  }
+  const int shown = doc.frame_current;
+  int moved = 0;
+  for (const auto &[k, at] : moves) {
+    doc.frame_current = k;
+    animation_sync(doc);
+    if (motion_path_place(doc, target, at)) {
+      motion_path_record(doc);
+      moved++;
+    }
+  }
+  doc.frame_current = shown;
+  animation_sync(doc);
+  return moved;
 }
 
 }  // namespace oanim

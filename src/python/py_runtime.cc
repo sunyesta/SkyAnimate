@@ -1080,8 +1080,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("tool", []() {
     static const char *const names[] = {"SELECT", "SELECT_LAYER", "CURSOR", "ANNOTATE", "DRAW", "SHAPE",
                                         "SPLIT_CURVE", "WEIGHT_SELECT", "WEIGHT_PAINT", "TRANSFORM_BONES",
-                                        "TRANSFORM_POINTS", "SCULPT", "TRANSFORM_LAYER", "EDIT_TEXT"};
-    static_assert(std::size(names) == size_t(Tool::EditText) + 1);
+                                        "TRANSFORM_POINTS", "SCULPT", "TRANSFORM_LAYER", "EDIT_TEXT",
+                                        "MOTION_PATH"};
+    static_assert(std::size(names) == size_t(Tool::MotionPath) + 1);
     return std::string(names[int(current_context().wm->tool_settings.tool)]);
   });
 

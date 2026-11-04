@@ -40,7 +40,9 @@ enum class Tool {
   /* Any layer: the box gizmo round it moves, turns and scales the layer itself (Moho's Transform Layer). */
   TransformLayer,
   /* A text layer's: typing in it, and where its lines wrap. */
-  EditText
+  EditText,
+  /* Motion paths (anim/motion_path.hh): click a dot to go to its frame, drag one to key it there. */
+  MotionPath
 };
 /* Tools that only work on the setup frame (0): drawing and rigging. */
 bool tool_setup_only(Tool tool);

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "anim/animation.hh"
 #include "core/math.hh"
 #include "data/document.hh"
 
@@ -52,5 +53,31 @@ std::vector<uint64_t> motion_path_ghost_layers(const Document &doc, const std::v
 std::string motion_path_label(const Document &doc, const MotionPathTarget &target);
 /* Red where fast, blue where still. */
 Color motion_path_speed_color(float speed);
+
+/* --- Editing, the Motion Path tool's: every edit lands on keys (motion_path_record keys it whatever auto-key says). */
+
+/* Where `target` shows now, and on `frame` (from its keys alone), in document space. */
+bool motion_path_position(const Document &doc, const MotionPathTarget &target, float2 &r_at);
+bool motion_path_position_at(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_at);
+/* Moves `target` so it shows at `at` (document space) on the frame shown, by its own values: a bone's tip by turning
+ * the bone, its head by moving it, a point or a layer's origin by moving that. False where it can't (a connected
+ * bone's head). */
+bool motion_path_place(Document &doc, const MotionPathTarget &target, float2 at);
+/* The keys of what moves `target` either side of `frame` (0 where there's none). */
+void motion_path_neighbour_keys(const Document &doc, const MotionPathTarget &target, int frame, int &r_before,
+                                int &r_after);
+/* Ctrl while moving a dot: `at` onto the straight line between where the target is on the keys either side of the
+ * frame shown (the nearest place on it). False without keys both sides. */
+bool motion_path_straighten(const Document &doc, const MotionPathTarget &target, float2 &at);
+/* A breakdown, as tweenMachine's: the target's own values on the frame shown become `factor` (0-1) of the way from
+ * those on the key before to those on the key after, so a turning bone stays on its arc. */
+bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float factor);
+/* The channels of `target` itself, for picking its keys. */
+KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target);
+/* Keys the edits on the frame shown, with auto-key on or off. */
+void motion_path_record(Document &doc);
+/* Smooth Arc: each of the target's keys strictly between `first` and `last` moves onto a smooth curve through the
+ * keys either side of it (up to two each side). Returns how many keys moved. */
+int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int first, int last);
 
 }  // namespace oanim
