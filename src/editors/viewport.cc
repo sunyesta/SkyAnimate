@@ -663,8 +663,9 @@ static void push_undo(Context &C, const char *name);
 static struct {
   bool active = false;
   bool dragging = false;
-  /* Shift on a dot between keys: a breakdown slid along the arc. */
+  /* Alt Shift on a dot between keys: a breakdown slid along the arc; Alt alone: a key added there. */
   bool breakdown = false;
+  bool adding = false;
   bool on_key = false;
   MotionPathTarget target;
   int frame = 0;
@@ -729,19 +730,139 @@ struct PathHandlesShown {
   float2 offset;
 };
 
-/* The Motion Path tool's mouse: press a dot (select its key, showing its handles; Alt also goes to its frame), drag
- * it (keyed on its frame, the frame shown staying), or press a selected key's handle and drag it (Alt breaks the
- * pair); Esc cancels. */
+/* The Edit brush's selection: the dots selected (`wm.path_dots`), then the keys selected on the paths traced. */
+static std::vector<std::pair<MotionPathTarget, int>> path_edit_selection(Context &C)
+{
+  std::vector<std::pair<MotionPathTarget, int>> all = C.wm->path_dots;
+  for (const auto &k : motion_path_selected_keys(*C.document, motion_path_targets(*C.document, editable_layers(C)))) {
+    all.push_back(k);
+  }
+  return all;
+}
+
+static bool path_dot_selected(const WindowManager &wm, const MotionPathTarget &t, int frame)
+{
+  for (const auto &[dt, df] : wm.path_dots) {
+    if (dt.same(t) && df == frame) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Where a dot is drawn on screen: on its path if shown, else where it is on its frame. */
+static ImVec2 path_dot_screen(const Document &doc, const ViewMapping &view, const std::vector<MotionPath> &paths,
+                              const MotionPathTarget &t, int frame)
+{
+  for (const MotionPath &p : paths) {
+    if (p.target.same(t) && frame >= p.first && frame - p.first < int(p.points.size())) {
+      return view.to_screen(p.points[size_t(frame - p.first)]);
+    }
+  }
+  float2 at{0.0f, 0.0f};
+  motion_path_position_at(doc, t, frame, at);
+  return view.to_screen(at);
+}
+
+/* A press on something already selected changes the selection only if it is let go of without a drag (so a drag
+ * doesn't lose the others): the select it makes then. */
+static std::optional<OpArgs> g_path_select_on_release;
+
+/* The Edit brush's dot drag: a dot between keys slid along its path, from the document as it was pressed each time
+ * the mouse moves (or the wheel sizes the proportional reach), one undo step; Esc or a right click cancels. */
+static struct {
+  bool active = false;
+  bool dragging = false;
+  bool changed = false;
+  bool again = false;
+  MotionPathTarget target;
+  int frame = 0;
+  ImVec2 press;
+  float2 offset;
+  Document snapshot;
+} g_path_slide;
+
+/* Ends a drag, a slide or a modal: the paths may take a new range again. */
+static void path_drag_finish()
+{
+  const uint64_t serial = g_path_drag.serial + 1;
+  g_path_drag = {};
+  g_path_drag.serial = serial;
+}
+
+static void motion_path_slide_update(Context &C, const ViewMapping &view)
+{
+  Document &doc = *C.document;
+  ToolSettings &ts = C.wm->tool_settings;
+  const ImGuiIO &io = ImGui::GetIO();
+  auto &g = g_path_slide;
+  const auto finish = [&]() {
+    g.active = false;
+    g.snapshot = Document();
+    path_drag_finish();
+  };
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    doc = std::move(g.snapshot);
+    g_right_click_spent = true;
+    g_path_select_on_release.reset();
+    finish();
+    return;
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    const bool clicked = !g.dragging;
+    if (g.changed) {
+      push_undo(C, "Slide Path Dot");
+    }
+    finish();
+    if (clicked && g_path_select_on_release) {
+      operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
+    }
+    g_path_select_on_release.reset();
+    return;
+  }
+  if (ts.proportional && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown))) {
+    ts.path_proportional_size = std::clamp(
+        ts.path_proportional_size + (ImGui::IsKeyPressed(ImGuiKey_PageUp) ? 1.0f : -1.0f), 1.0f, 500.0f);
+    g.again = true;
+  }
+  const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;
+  if (!g.dragging && dx * dx + dy * dy < 3.0f * 3.0f) {
+    return;
+  }
+  if (!g.dragging || io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f || g.again) {
+    g.dragging = true;
+    g.again = false;
+    PathSlide slide;
+    slide.proportional = ts.proportional;
+    slide.size = ts.path_proportional_size;
+    slide.falloff = ts.proportional_falloff;
+    doc = g.snapshot;
+    g.changed = motion_path_slide(doc, g.target, g.frame, view.to_document(io.MousePos) - g.offset, slide);
+    g_path_drag.serial++;
+  }
+}
+
+/* The Motion Path tool's mouse with Edit. A press on a key or a dot selects it (Shift adds or takes it out, a double
+ * click also goes to its frame; on empty space, nothing is selected). Dragging a key moves it, a dot between keys
+ * slides it along its path (with proportional editing), a selected key's handle bends the path (Alt breaks the
+ * pair). Alt on the path adds a key there, a drag moving it (Ctrl: onto the line between the keys; Alt Shift: a
+ * breakdown along the arc). Edits happen on the dot's own frame, the frame shown staying; Esc cancels. */
 static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
-                                   int first, int last, const PathHandlesShown *hover_handle, bool hover_out)
+                                   int first, int last, const PathHandlesShown *hover_handle, bool hover_out,
+                                   bool hovered)
 {
   Document &doc = *C.document;
   ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_drag;
+  if (g_path_slide.active) {
+    motion_path_slide_update(C, view);
+    return;
+  }
   if (!g.active && hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     g.active = true;
     g.dragging = false;
     g.breakdown = false;
+    g.adding = false;
     g.on_key = true;
     g.target = hover_handle->target;
     g.frame = hover_handle->frame;
@@ -754,33 +875,79 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     return;
   }
   if (!g.active) {
-    if (!hover_path || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
+    }
+    if (!hover_path) {
+      /* A click on nothing: nothing selected, as in Blender. */
+      if (hovered && !io.KeyShift && !io.KeyCtrl && !io.KeyAlt) {
+        operator_call(C, "anim.motion_path_select", {{"none", "1"}});
+      }
+      return;
+    }
+    const MotionPathTarget target = hover_path->target;
+    const bool on_key = std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
+    OpArgs args = motion_path_target_args(doc, target);
+    args["frame"] = std::to_string(hover_frame);
+    /* Drawn where it is relative to the frame shown: the mouse less this is where it goes on the dot's own frame. */
+    float2 offset{0.0f, 0.0f};
+    float2 own;
+    if (hover_frame != doc.frame_current && hover_frame >= hover_path->first &&
+        hover_frame - hover_path->first < int(hover_path->points.size()) &&
+        motion_path_position_at(doc, target, hover_frame, own))
+    {
+      offset = hover_path->points[size_t(hover_frame - hover_path->first)] - own;
+    }
+    if (!io.KeyAlt) {
+      if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        args["go"] = "1";
+        operator_call(C, "anim.motion_path_select", args);
+        return;
+      }
+      if (io.KeyShift) {
+        args["extend"] = "1";
+        operator_call(C, "anim.motion_path_select", args);
+        return;
+      }
+      const bool selected = on_key ? motion_path_key_selected(doc, target, hover_frame)
+                                   : path_dot_selected(*C.wm, target, hover_frame);
+      g_path_select_on_release.reset();
+      if (selected) {
+        g_path_select_on_release = args;
+      }
+      else {
+        operator_call(C, "anim.motion_path_select", args);
+      }
+      if (!on_key) {
+        auto &sl = g_path_slide;
+        sl.active = true;
+        sl.dragging = false;
+        sl.changed = false;
+        sl.again = false;
+        sl.target = target;
+        sl.frame = hover_frame;
+        sl.press = io.MousePos;
+        sl.offset = offset;
+        sl.snapshot = doc;
+        /* The paths keep the range they had while the drag goes on. */
+        g.active = true;
+        g.first = first;
+        g.last = last;
+        return;
+      }
     }
     g.active = true;
     g.dragging = false;
-    g.target = hover_path->target;
+    g.handle = 0;
+    g.target = target;
     g.frame = hover_frame;
     g.first = first;
     g.last = last;
     g.press = io.MousePos;
-    g.on_key = std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
-    g.breakdown = io.KeyShift && !g.on_key;
-    OpArgs args = motion_path_target_args(doc, g.target);
-    args["frame"] = std::to_string(hover_frame);
-    if (io.KeyAlt) {
-      args["go"] = "1";
-    }
-    operator_call(C, "anim.motion_path_select", args);
-    /* Drawn where it is relative to the frame shown: the mouse less this is where it goes on the dot's own frame. */
-    g.offset = float2{0.0f, 0.0f};
-    float2 own;
-    if (hover_frame != doc.frame_current && hover_frame >= hover_path->first &&
-        hover_frame - hover_path->first < int(hover_path->points.size()) &&
-        motion_path_position_at(doc, g.target, hover_frame, own))
-    {
-      g.offset = hover_path->points[size_t(hover_frame - hover_path->first)] - own;
-    }
+    g.on_key = on_key;
+    g.breakdown = io.KeyAlt && io.KeyShift && !on_key;
+    g.adding = io.KeyAlt && !on_key && !g.breakdown;
+    g.offset = offset;
     g.snapshot = doc;
     g.arc.clear();
     if (g.breakdown) {
@@ -791,6 +958,7 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
       }
       else {
         g.breakdown = false;
+        g.adding = true;
       }
     }
     return;
@@ -799,21 +967,36 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     if (g.dragging) {
       doc = std::move(g.snapshot);
     }
-    g = {};
-    g.serial++;
+    g_path_select_on_release.reset();
+    path_drag_finish();
     g_right_click_spent = true;
     return;
   }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    if (g.dragging) {
+    const MotionPathTarget target = g.target;
+    const int frame = g.frame;
+    const bool dragged = g.dragging, made = g.adding || g.breakdown;
+    if (dragged) {
       push_undo(C, g.handle      ? "Move Motion Path Handle"
                    : g.breakdown ? "Motion Path Breakdown"
                    : g.on_key    ? "Move Motion Path Key"
                                  : "Add Motion Path Key");
     }
-    const uint64_t serial = g.serial + 1;
-    g = {};
-    g.serial = serial;
+    path_drag_finish();
+    OpArgs args = motion_path_target_args(doc, target);
+    args["frame"] = std::to_string(frame);
+    if (made && !dragged) {
+      /* Alt click: a key there, as it is. */
+      operator_call(C, "anim.motion_path_key_add", args);
+    }
+    else if (made) {
+      /* The key just made, selected. */
+      operator_call(C, "anim.motion_path_select", args);
+    }
+    else if (!dragged && g_path_select_on_release) {
+      operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
+    }
+    g_path_select_on_release.reset();
     return;
   }
   const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;
@@ -850,29 +1033,13 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
 
 static float adjust_reach(float &base_x, bool &slow, float &slow_x, float &slow_reach);
 
-/* Edit Speed's drag: a dot slid along its path, from the document as it was pressed each time the mouse moves (or the
- * wheel sizes the proportional reach), one undo step; Esc or a right click cancels. */
-static struct {
-  bool active = false;
-  bool dragging = false;
-  bool changed = false;
-  bool again = false;
-  MotionPathTarget target;
-  int frame = 0;
-  ImVec2 press;
-  float2 offset;
-  Document snapshot;
-} g_path_slide;
-
-/* S with Edit Speed: the spacing around a dot (or a key) scaled, the mouse going right spreading the dots out
- * (faster), left bringing them closer (slower); the mouse starts on the dot, so its distance from it couldn't say
+/* Alt S with Edit: the timing around each dot and key selected scaled, the mouse going right spreading the dots out
+ * (faster), left bringing them closer (slower); the mouse starts anywhere, so its distance from a dot couldn't say
  * which. Numbers typed set the factor, as Blender's S. */
 static struct {
   bool active = false;
   bool again = false;
-  MotionPathTarget target;
-  int frame = 0;
-  ImVec2 pivot;
+  std::vector<std::pair<MotionPathTarget, int>> pivots;
   float press_x = 0.0f;
   float factor = 1.0f;
   NumInput num;
@@ -882,62 +1049,107 @@ static struct {
 /* Screen pixels to the right for twice the spacing. */
 static constexpr float PATH_SCALE_PX = 150.0f;
 
-static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawList *dl, const MotionPath *hover_path,
-                                    int hover_frame, int first, int last, const std::vector<MotionPath> &paths)
+/* G R S on the selected keys: one key's handles turned or scaled about it (G moves it), several keys moved, turned or
+ * scaled about their centre, their handles going with them. Numbers typed, Ctrl snapping, Shift finer, as Blender's
+ * transform; a click or Enter keeps it, Esc or a right click cancels. */
+static struct {
+  bool active = false;
+  char kind = 0;
+  std::vector<std::pair<MotionPathTarget, int>> keys;
+  ImVec2 pivot, press;
+  NumInput num;
+  PreciseMouse precise;
+  Document snapshot;
+} g_path_keys;
+
+/* A dashed line from `from` to `to` and `text` by the mouse, as the modals show. */
+static void path_modal_overlay(ImDrawList *dl, ImVec2 from, ImVec2 to, const std::string &text)
+{
+  const float len = std::sqrt((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y));
+  for (float t = 0.0f; t < len; t += 12.0f) {
+    const float a = t / std::max(len, 1e-3f), b = std::min(t + 6.0f, len) / std::max(len, 1e-3f);
+    dl->AddLine(from + (to - from) * a, from + (to - from) * b, IM_COL32(20, 20, 20, 200), 1.5f);
+  }
+  dl->AddText(to + ImVec2(15.0f, 9.0f), IM_COL32(20, 20, 20, 220), text.c_str());
+  dl->AddText(to + ImVec2(14.0f, 8.0f), IM_COL32(255, 255, 255, 255), text.c_str());
+}
+
+/* The Edit brush's modals, Alt S and G R S, started by their shortcuts' requests; whether one is running (it takes
+ * the mouse, and nothing else does). */
+static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawList *dl, bool hovered, int first,
+                                    int last, const std::vector<MotionPath> &paths)
 {
   Document &doc = *C.document;
-  ToolSettings &ts = C.wm->tool_settings;
+  WindowManager &wm = *C.wm;
+  ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
-  auto &g = g_path_slide;
   auto &sc = g_path_scale;
-  const auto finish = [&]() {
-    const uint64_t serial = g_path_drag.serial + 1;
-    g_path_drag = {};
-    g_path_drag.serial = serial;
-    g.active = false;
-    g.snapshot = Document();
+  auto &gk = g_path_keys;
+  const bool idle = !sc.active && !gk.active && !g_path_drag.active && !g_path_slide.active;
+  const auto start = [&]() {
+    C.wm->modal_running = true;
+    C.wm->modal_keys.clear();
+    g_path_drag.active = true;
+    g_path_drag.first = first;
+    g_path_drag.last = last;
   };
-  if (C.wm->path_scale_request) {
-    C.wm->path_scale_request = false;
-    if (!sc.active && !g.active && hover_path) {
+  const auto stop = [&]() {
+    C.wm->modal_running = false;
+    C.wm->modal_keys.clear();
+    path_drag_finish();
+  };
+  if (hovered && wm.path_scale_request) {
+    wm.path_scale_request = false;
+    std::vector<std::pair<MotionPathTarget, int>> pivots = path_edit_selection(C);
+    if (idle && !pivots.empty()) {
       sc.active = true;
       sc.again = false;
-      sc.target = hover_path->target;
-      sc.frame = hover_frame;
-      sc.pivot = view.to_screen(hover_path->points[size_t(hover_frame - hover_path->first)]);
+      sc.pivots = std::move(pivots);
       sc.press_x = io.MousePos.x;
       sc.factor = 1.0f;
       sc.num = NumInput();
       sc.precise.reset(float2{io.MousePos.x, io.MousePos.y});
       sc.snapshot = doc;
-      C.wm->modal_running = true;
-      C.wm->modal_keys.clear();
-      g_path_drag.active = true;
-      g_path_drag.first = first;
-      g_path_drag.last = last;
+      start();
     }
-    else if (!sc.active) {
-      report(ReportType::Info, "S: with the mouse over a dot or a key of a path");
+  }
+  if (hovered && wm.path_keys_request) {
+    const char kind = wm.path_keys_request;
+    wm.path_keys_request = 0;
+    std::vector<std::pair<MotionPathTarget, int>> keys =
+        motion_path_selected_keys(doc, motion_path_targets(doc, editable_layers(C)));
+    if (idle && !sc.active && !keys.empty()) {
+      gk.active = true;
+      gk.kind = kind;
+      gk.keys = std::move(keys);
+      ImVec2 c(0.0f, 0.0f);
+      for (const auto &[t, f] : gk.keys) {
+        c = c + path_dot_screen(doc, view, paths, t, f);
+      }
+      gk.pivot = c * (1.0f / float(gk.keys.size()));
+      gk.press = io.MousePos;
+      gk.num = NumInput();
+      gk.precise.reset(float2{io.MousePos.x, io.MousePos.y});
+      gk.snapshot = doc;
+      start();
     }
   }
   if (sc.active) {
     const auto end = [&](bool keep) {
       if (keep) {
-        push_undo(C, "Scale Path Spacing");
+        push_undo(C, "Scale Path Timing");
       }
       else {
         doc = std::move(sc.snapshot);
       }
       sc.active = false;
       sc.snapshot = Document();
-      C.wm->modal_running = false;
-      C.wm->modal_keys.clear();
-      finish();
+      stop();
     };
     if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       end(false);
-      return;
+      return true;
     }
     const bool typed = num_input_keys(C, sc.num, 1);
     const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
@@ -959,67 +1171,141 @@ static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawL
       slide.size = ts.path_proportional_size;
       slide.falloff = ts.proportional_falloff;
       doc = sc.snapshot;
-      motion_path_scale_spacing(doc, sc.target, sc.frame, f, slide);
+      for (const auto &[t, fr] : sc.pivots) {
+        motion_path_scale_spacing(doc, t, fr, f, slide);
+      }
       g_path_drag.serial++;
     }
-    /* The dots it scales, tinted by how much; a dashed line from the dot to the mouse, and the factor. */
-    for (const MotionPath &p : paths) {
-      if (!p.target.same(sc.target)) {
-        continue;
-      }
-      for (size_t k = 0; k < p.points.size(); k++) {
-        const int fr = p.first + int(k);
-        const float d = float(std::abs(fr - sc.frame));
-        const float w = ts.proportional ? proportional_weight(ts.proportional_falloff, d, ts.path_proportional_size, fr)
-                                        : (d < ts.path_proportional_size ? 1.0f : 0.0f);
-        if (w > 0.0f && fr != sc.frame) {
-          dl->AddCircle(view.to_screen(p.points[k]), 5.5f, IM_COL32(255, 160, 40, int(60.0f + 195.0f * w)), 0, 1.5f);
+    /* The dots it scales, tinted by how much. */
+    for (const auto &[t, pivot] : sc.pivots) {
+      for (const MotionPath &p : paths) {
+        if (!p.target.same(t)) {
+          continue;
+        }
+        for (size_t k = 0; k < p.points.size(); k++) {
+          const int fr = p.first + int(k);
+          const float d = float(std::abs(fr - pivot));
+          const float w = ts.proportional
+                              ? proportional_weight(ts.proportional_falloff, d, ts.path_proportional_size, fr)
+                              : (d < ts.path_proportional_size ? 1.0f : 0.0f);
+          if (w > 0.0f && fr != pivot) {
+            dl->AddCircle(view.to_screen(p.points[k]), 5.5f, IM_COL32(255, 160, 40, int(60.0f + 195.0f * w)), 0,
+                          1.5f);
+          }
         }
       }
+      dl->AddCircle(path_dot_screen(doc, view, paths, t, pivot), 6.5f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
     }
-    dl->AddCircle(sc.pivot, 6.5f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
-    const ImVec2 to = io.MousePos;
-    const float len = std::sqrt((to.x - sc.pivot.x) * (to.x - sc.pivot.x) + (to.y - sc.pivot.y) * (to.y - sc.pivot.y));
-    for (float t = 0.0f; t < len; t += 12.0f) {
-      const float a = t / std::max(len, 1e-3f), b = std::min(t + 6.0f, len) / std::max(len, 1e-3f);
-      dl->AddLine(sc.pivot + (to - sc.pivot) * a, sc.pivot + (to - sc.pivot) * b, IM_COL32(20, 20, 20, 200), 1.5f);
-    }
-    const std::string text = "Scale " + sc.num.shown(0, sc.factor, "%.2f") + "   (left: closer, right: further)";
-    dl->AddText(to + ImVec2(15.0f, 9.0f), IM_COL32(20, 20, 20, 220), text.c_str());
-    dl->AddText(to + ImVec2(14.0f, 8.0f), IM_COL32(255, 255, 255, 255), text.c_str());
+    path_modal_overlay(dl, ImVec2(sc.press_x, io.MousePos.y), io.MousePos,
+                       "Scale Timing " + sc.num.shown(0, sc.factor, "%.2f") + "   (left: closer, right: further)");
     if (confirm) {
       end(true);
     }
-    return;
+    return true;
   }
-  /* The dot under the mouse (or dragged): a ring, and how fast it goes. */
-  const MotionPathTarget *shown_target = g.active ? &g.target : hover_path ? &hover_path->target : nullptr;
-  const int shown_frame = g.active ? g.frame : hover_frame;
-  if (shown_target) {
+  if (gk.active) {
+    const auto end = [&](bool keep) {
+      if (keep) {
+        push_undo(C, gk.kind == 'G' ? "Move Path Keys" : gk.kind == 'R' ? "Rotate Path Keys" : "Scale Path Keys");
+      }
+      else {
+        doc = std::move(gk.snapshot);
+      }
+      gk.active = false;
+      gk.snapshot = Document();
+      stop();
+    };
+    if (modal_key_take(C, "ESC", true) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      end(false);
+      return true;
+    }
+    num_input_keys(C, gk.num, gk.kind == 'G' ? 2 : 1);
+    const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
+                         ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    const float2 m = gk.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
+    const float2 md = view.to_document(ImVec2(m.x, m.y)), pd = view.to_document(gk.press),
+                 cd = view.to_document(gk.pivot);
+    float2 offset = md - pd;
+    float angle = std::atan2(md.y - cd.y, md.x - cd.x) - std::atan2(pd.y - cd.y, pd.x - cd.x);
+    angle = std::remainder(angle, 6.2831853f);
+    const float press_r = std::max(std::sqrt((gk.press.x - gk.pivot.x) * (gk.press.x - gk.pivot.x) +
+                                             (gk.press.y - gk.pivot.y) * (gk.press.y - gk.pivot.y)),
+                                   1.0f);
+    float factor = std::sqrt((m.x - gk.pivot.x) * (m.x - gk.pivot.x) + (m.y - gk.pivot.y) * (m.y - gk.pivot.y)) /
+                   press_r;
+    if (io.KeyCtrl) {
+      const float snap = 5.0f * 3.14159265f / 180.0f;
+      angle = std::round(angle / snap) * snap;
+      factor = std::round(factor * 10.0f) / 10.0f;
+    }
+    if (gk.num.any()) {
+      offset = float2{gk.num.value(0, offset.x), gk.num.value(1, offset.y)};
+      angle = gk.num.value(0, angle * 180.0f / 3.14159265f) * 3.14159265f / 180.0f;
+      factor = gk.num.value(0, factor);
+    }
+    doc = gk.snapshot;
+    motion_path_keys_transform(doc, gk.keys, gk.kind, offset, angle, factor);
+    g_path_drag.serial++;
+    std::string text;
+    if (gk.kind == 'G') {
+      text = "Move " + gk.num.shown(0, offset.x, "%.3f") + ", " + gk.num.shown(1, offset.y, "%.3f");
+    }
+    else if (gk.kind == 'R') {
+      text = "Rotate " + gk.num.shown(0, angle * 180.0f / 3.14159265f, "%.1f") + " deg";
+    }
+    else {
+      text = "Scale " + gk.num.shown(0, factor, "%.3f");
+    }
+    text += gk.keys.size() == 1 && gk.kind != 'G' ? "   (the key's handles)" : "";
+    dl->AddCircle(gk.pivot, 4.0f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
+    path_modal_overlay(dl, gk.kind == 'G' ? gk.press : gk.pivot, io.MousePos, text);
+    if (confirm) {
+      end(true);
+    }
+    return true;
+  }
+  return false;
+}
+
+/* The dots selected with Edit, and the one under the mouse: an orange ring and how fast it goes; while one slides
+ * with proportional editing, the dots going with it tinted by how much. */
+static void draw_selected_path_dots(Context &C, const ViewMapping &view, ImDrawList *dl, const MotionPath *hover_path,
+                                    int hover_frame, const std::vector<MotionPath> &paths)
+{
+  const Document &doc = *C.document;
+  const ToolSettings &ts = C.wm->tool_settings;
+  const auto &g = g_path_slide;
+  std::vector<std::pair<MotionPathTarget, int>> shown = C.wm->path_dots;
+  if (g.active) {
+    shown.push_back({g.target, g.frame});
+  }
+  else if (hover_path && !std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame)) {
+    shown.push_back({hover_path->target, hover_frame});
+  }
+  for (const auto &[t, frame] : shown) {
     for (const MotionPath &p : paths) {
-      if (!p.target.same(*shown_target) || shown_frame < p.first || shown_frame - p.first >= int(p.points.size())) {
+      if (!p.target.same(t) || frame < p.first || frame - p.first >= int(p.points.size())) {
         continue;
       }
-      /* With proportional editing, the dots that go with it, by how much. */
-      if (g.active && ts.proportional) {
+      if (g.active && ts.proportional && t.same(g.target) && frame == g.frame) {
         int before = 0, after = 0;
-        motion_path_neighbour_keys(doc, p.target, shown_frame, before, after);
-        for (int f = std::max(before + 1, p.first); f < (after ? after : p.first + int(p.points.size())) &&
-                                                    f - p.first < int(p.points.size());
-             f++)
+        motion_path_neighbour_keys(doc, p.target, frame, before, after);
+        for (int f = std::max(before + 1, p.first);
+             f < (after ? after : p.first + int(p.points.size())) && f - p.first < int(p.points.size()); f++)
         {
-          const float w = proportional_weight(ts.proportional_falloff, float(std::abs(f - shown_frame)),
-                                              ts.path_proportional_size, f);
-          if (w > 0.0f && f != shown_frame) {
+          const float w =
+              proportional_weight(ts.proportional_falloff, float(std::abs(f - frame)), ts.path_proportional_size, f);
+          if (w > 0.0f && f != frame) {
             dl->AddCircle(view.to_screen(p.points[size_t(f - p.first)]), 5.5f,
                           IM_COL32(255, 160, 40, int(60.0f + 195.0f * w)), 0, 1.5f);
           }
         }
       }
-      const ImVec2 s = view.to_screen(p.points[size_t(shown_frame - p.first)]);
+      const ImVec2 s = view.to_screen(p.points[size_t(frame - p.first)]);
       dl->AddCircle(s, 6.5f, IM_COL32(20, 20, 20, 220), 0, 3.0f);
       dl->AddCircle(s, 6.5f, IM_COL32(255, 160, 40, 255), 0, 1.6f);
-      const float speed = motion_path_dot_speed(doc, p.target, shown_frame);
+      const float speed = motion_path_dot_speed(doc, p.target, frame);
       if (speed > 0.0f) {
         char text[32];
         std::snprintf(text, sizeof(text), "x%.2f", double(speed));
@@ -1027,74 +1313,6 @@ static void motion_path_slide_input(Context &C, const ViewMapping &view, ImDrawL
         dl->AddText(s + ImVec2(8.0f, -19.0f), IM_COL32(255, 255, 255, 255), text);
       }
     }
-  }
-  if (!g.active) {
-    if (!hover_path || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-      return;
-    }
-    OpArgs args = motion_path_target_args(doc, hover_path->target);
-    args["frame"] = std::to_string(hover_frame);
-    if (io.KeyAlt) {
-      args["go"] = "1";
-      operator_call(C, "anim.motion_path_select", args);
-      return;
-    }
-    if (io.KeyCtrl) {
-      operator_call(C, "anim.motion_path_even_spacing", args);
-      return;
-    }
-    g.active = true;
-    g.dragging = false;
-    g.changed = false;
-    g.again = false;
-    g.target = hover_path->target;
-    g.frame = hover_frame;
-    g.press = io.MousePos;
-    /* Drawn where it is relative to the frame shown: the mouse less this is where it is on the dot's own frame. */
-    g.offset = float2{0.0f, 0.0f};
-    float2 own;
-    if (hover_frame != doc.frame_current && motion_path_position_at(doc, g.target, hover_frame, own)) {
-      g.offset = hover_path->points[size_t(hover_frame - hover_path->first)] - own;
-    }
-    g.snapshot = doc;
-    /* The paths keep the range they had while the drag goes on. */
-    g_path_drag.active = true;
-    g_path_drag.first = first;
-    g_path_drag.last = last;
-    return;
-  }
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-    doc = std::move(g.snapshot);
-    g_right_click_spent = true;
-    finish();
-    return;
-  }
-  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    if (g.changed) {
-      push_undo(C, "Edit Speed");
-    }
-    finish();
-    return;
-  }
-  if (ts.proportional && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown))) {
-    ts.path_proportional_size = std::clamp(
-        ts.path_proportional_size + (ImGui::IsKeyPressed(ImGuiKey_PageUp) ? 1.0f : -1.0f), 1.0f, 500.0f);
-    g.again = true;
-  }
-  const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;
-  if (!g.dragging && dx * dx + dy * dy < 3.0f * 3.0f) {
-    return;
-  }
-  if (!g.dragging || io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f || g.again) {
-    g.dragging = true;
-    g.again = false;
-    PathSlide slide;
-    slide.proportional = ts.proportional;
-    slide.size = ts.path_proportional_size;
-    slide.falloff = ts.proportional_falloff;
-    doc = g.snapshot;
-    g.changed = motion_path_slide(doc, g.target, g.frame, view.to_document(io.MousePos) - g.offset, slide);
-    g_path_drag.serial++;
   }
 }
 
@@ -1320,9 +1538,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   const ImVec2 mouse = ImGui::GetIO().MousePos;
   /* With a brush other than Edit the dots aren't picked, and only the brush's circle shows. */
   const bool editing = !tool || wm.tool_settings.path_brush == PathBrush::Edit;
-  /* Edit Speed picks the dots between keys. */
-  const bool sliding = tool && wm.tool_settings.path_brush == PathBrush::EditSpeed;
-  const bool hovering = hovered && (editing || sliding) && !g_path_drag.active &&
+  const bool hovering = hovered && editing && !g_path_drag.active &&
                         (!ImGui::IsAnyMouseDown() || (tool && ImGui::IsMouseClicked(ImGuiMouseButton_Left)));
   float best = 7.0f * 7.0f;
   const MotionPath *hover_path = nullptr;
@@ -1475,23 +1691,23 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     /* A handle over a dot: the handle, which is only there on a selected key. */
     hover_path = nullptr;
   }
-  if (sliding) {
-    /* A copy: an Alt click goes to the dot's frame, which can make the paths again. */
-    const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
-    motion_path_slide_input(C, view, dl, pressed ? &*pressed : nullptr, hover_frame, first, last, cache.paths);
-    return;
-  }
   if (tool && !editing) {
     motion_path_brush_input(C, area, view, dl, hovered, first, last);
     return;
   }
+  if (tool) {
+    if (motion_path_edit_modals(C, view, dl, hovered, first, last, cache.paths)) {
+      return;
+    }
+    draw_selected_path_dots(C, view, dl, hover_path, hover_frame, cache.paths);
+  }
   if (tool && (hovered || g_path_drag.active)) {
-    /* A copy: Alt pressing a dot goes to its frame, which can make the paths again. */
+    /* A copy: a double click goes to the dot's frame, which can make the paths again. */
     const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
     const std::optional<PathHandlesShown> pressed_handle =
         hover_handle ? std::optional<PathHandlesShown>(*hover_handle) : std::nullopt;
     motion_path_tool_input(C, view, pressed ? &*pressed : nullptr, hover_frame, first, last,
-                           pressed_handle ? &*pressed_handle : nullptr, hover_out);
+                           pressed_handle ? &*pressed_handle : nullptr, hover_out, hovered);
     if (g_path_drag.active) {
       return;
     }
@@ -3811,6 +4027,58 @@ static bool menu_operator(Context &C, const char *label, const char *idname, con
   return false;
 }
 
+/* The Motion Path tool's Edit menus: V (handle types of the selected keys) and the right click's, for the keys and
+ * dots selected. Each item is one undo step. */
+static void motion_path_menus(Context &C, bool hovered)
+{
+  WindowManager &wm = *C.wm;
+  const ToolSettings &ts = wm.tool_settings;
+  const bool edit = C.document && ts.tool == Tool::MotionPath && ts.path_brush == PathBrush::Edit;
+  if (hovered && wm.menu_request == "motion_path_handles") {
+    ImGui::OpenPopup("##path_handles");
+    wm.menu_request.clear();
+  }
+  if (edit && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+      !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) && !g_right_click_spent && !g_path_drag.active &&
+      !path_edit_selection(C).empty())
+  {
+    ImGui::OpenPopup("##path_menu");
+  }
+  if (ui_menu_begin("##path_handles")) {
+    ImGui::TextDisabled("Path Handles");
+    ImGui::Separator();
+    menu_operator(C, "Auto", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
+    menu_operator(C, "Aligned", "anim.motion_path_handles_type", {{"mode", "ALIGNED"}});
+    menu_operator(C, "Broken", "anim.motion_path_handles_type", {{"mode", "BROKEN"}});
+    ui_menu_end();
+  }
+  if (ui_menu_begin("##path_menu")) {
+    const Document &doc = *C.document;
+    const std::vector<std::pair<MotionPathTarget, int>> picked = path_edit_selection(C);
+    const bool keys = picked.size() > wm.path_dots.size();
+    ImGui::TextDisabled(keys ? "Path Keys" : "Path Dots");
+    ImGui::Separator();
+    if (keys) {
+      menu_operator(C, "Align Handles", "anim.motion_path_handles_type", {{"mode", "ALIGNED"}});
+      menu_operator(C, "Auto Handles", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
+      menu_operator(C, "Break Handles", "anim.motion_path_handles_type", {{"mode", "BROKEN"}});
+      ImGui::Separator();
+      menu_operator(C, "Delete Keys", "anim.motion_path_keys_delete");
+    }
+    if (!wm.path_dots.empty()) {
+      menu_operator(C, "Even Spacing", "anim.motion_path_even_spacing");
+    }
+    if (!picked.empty()) {
+      ImGui::Separator();
+      OpArgs args = motion_path_target_args(doc, picked.front().first);
+      args["frame"] = std::to_string(picked.front().second);
+      args["go"] = "1";
+      menu_operator(C, "Go to Frame", "anim.motion_path_select", args);
+    }
+    ui_menu_end();
+  }
+}
+
 /* The Add menu's items (Shift A), each with its icon drawn in the room the label leaves: Blender's dots on
  * the points. They go at the 2D cursor, in the active layer's space, the size of a quarter of the frame. */
 enum class AddIcon { Point, Line, Square, Circle };
@@ -4392,12 +4660,9 @@ static void motion_path_header(Context &C)
   }
   /* The brush picked on the shelf, and its settings. */
   ToolSettings &ts = C.wm->tool_settings;
-  if (ts.path_brush == PathBrush::EditSpeed) {
+  if (ts.path_brush == PathBrush::Edit) {
     ImGui::SameLine();
     ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(path_brush_name(ts.path_brush));
     ImGui::SameLine();
     proportional_buttons(ts, h, h * 0.75f);
     ImGui::SameLine();
@@ -4405,8 +4670,18 @@ static void motion_path_header(Context &C)
     ImGui::DragFloat("##path_proportional_size", &ts.path_proportional_size, 0.1f, 1.0f, 500.0f,
                      "Influence %.0f frames", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("How many frames either side of the dragged dot slide with it, with proportional editing on "
-                        "(the wheel or Page Up / Page Down while dragging)");
+      ImGui::SetTooltip("How many frames either side of a dragged dot slide with it, with proportional editing on "
+                        "(the wheel or Page Up / Page Down while dragging), and how far Alt S reaches");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(C.wm->path_dots.empty());
+    if (ImGui::Button("Even Spacing")) {
+      operator_call(C, "anim.motion_path_even_spacing");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("The stretches the selected dots are in go along their path at an even speed, the keys "
+                        "staying on their frames");
     }
   }
   else if (ts.path_brush != PathBrush::Edit) {
@@ -4493,12 +4768,10 @@ static const char *tool_hint(const ToolSettings &ts)
           return "Paint: slower  |  Ctrl: faster  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
-        case PathBrush::EditSpeed:
-          return "Drag a dot along its path  |  S: scale the spacing around it  |  O: proportional  |  Wheel while "
-                 "dragging: its reach  |  Ctrl click: even spacing  |  Alt click: its frame  |  Esc: cancel";
       }
-      return "Click a dot: its key  |  Alt click: its frame too  |  Drag a key: move it  |  Drag between keys: add a key  |  Shift: "
-             "breakdown along the arc  |  Ctrl: straight  |  Esc: cancel";
+      return "Click: select  |  Shift: add  |  Double click: its frame  |  Drag a key: move it, a dot: slide it (O: "
+             "proportional)  |  Alt click: add a key  |  Alt Shift: breakdown  |  Ctrl: straight  |  G R S  |  Alt S: "
+             "timing  |  V: handles  |  X: delete";
     default:
       return "";
   }
@@ -14638,7 +14911,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     ts.proportional_size = std::clamp(ts.proportional_size * std::pow(1.1f, io.MouseWheel), 1e-4f, 1e6f);
   }
   else if ((g_path_slide.active && ts.proportional || g_path_scale.active) && io.MouseWheel != 0.0f) {
-    /* Edit Speed's reach, in whole frames (up for more). */
+    /* Edit's dot reach, in whole frames (up for more). */
     ts.path_proportional_size =
         std::clamp(ts.path_proportional_size + (io.MouseWheel > 0.0f ? 1.0f : -1.0f), 1.0f, 500.0f);
     g_path_slide.again = true;
@@ -15655,6 +15928,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     ImGui::OpenPopup("##draw_order");
     wm.menu_request.clear();
   }
+  motion_path_menus(C, hovered);
   /* Right-click on an active Media layer: its menu. */
   if (const Layer *active = document_active_layer(doc);
       hovered && active && active->is_media() && !g_modal.active && !g_layer_modal.active &&

@@ -72,6 +72,30 @@ bool parse_color(const std::string &text, Color &r_color)
 
 }  // namespace
 
+
+/* The Motion Path tool with Edit, its shortcuts' poll. */
+static bool path_edit_poll(Context &C)
+{
+  return C.document && C.wm && C.wm->tool_settings.tool == Tool::MotionPath &&
+         C.wm->tool_settings.path_brush == PathBrush::Edit;
+}
+
+/* The keys selected on the paths traced. */
+static std::vector<std::pair<MotionPathTarget, int>> path_selected_keys(Context &C)
+{
+  return motion_path_selected_keys(*C.document, motion_path_targets(*C.document, editable_layers(C)));
+}
+
+/* The dots selected, then the keys selected: what Alt S scales the timing around. */
+static std::vector<std::pair<MotionPathTarget, int>> path_selection(Context &C)
+{
+  std::vector<std::pair<MotionPathTarget, int>> all = C.wm ? C.wm->path_dots : std::vector<std::pair<MotionPathTarget, int>>();
+  for (const auto &k : path_selected_keys(C)) {
+    all.push_back(k);
+  }
+  return all;
+}
+
 void motion_path_operators_register()
 {
   {
@@ -207,10 +231,10 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_select";
     ot.name = "Select Motion Path Dot";
-    ot.description = "Select the keys on frame=N of what the paths trace, as clicking a path's dot with the Motion "
-                     "Path tool does, showing their path handles (on an in-between dot, the keys ending its stretch, "
-                     "whose interpolation it moves by). go=1 (Alt click) also goes to that frame. extend=1 keeps the "
-                     "keys selected already";
+    ot.description = "Select what's on frame=N of the paths traced, as clicking a path's dot with the Motion Path "
+                     "tool's Edit does: a key (showing its path handles), or a dot between keys (for its timing); "
+                     "extend=1 (Shift) adds it to the selection, or takes it out if it was in; go=1 (double click) "
+                     "also goes to that frame; none=1 deselects every key and dot";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -220,23 +244,55 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
-      if (op_arg_bool(C, "go")) {
-        doc.frame_current = frame;
-        animation_sync(doc);
+      std::vector<std::pair<MotionPathTarget, int>> &dots = C.wm->path_dots;
+      const bool none = op_arg_bool(C, "none");
+      if (op_arg_bool(C, "go") && !none) {
+        /* On something selected already (a double click's second press, Go to Frame): only the frame changes. */
+        for (const MotionPathTarget &t : targets) {
+          const bool dot = std::any_of(dots.begin(), dots.end(),
+                                       [&](const auto &d) { return d.first.same(t) && d.second == frame; });
+          if (dot || motion_path_key_selected(doc, t, frame)) {
+            doc.frame_current = frame;
+            animation_sync(doc);
+            C.undo->mark_changed();
+            return OpStatus::Finished;
+          }
+        }
       }
-      if (!op_arg_bool(C, "extend")) {
+      if (!op_arg_bool(C, "extend") || none) {
         std::vector<Layer *> all;
         for (const Layer *l : document_layers_flat(doc)) {
           all.push_back(layer_find(doc, l->id));
         }
         layers_deselect_keys(all);
+        dots.clear();
+      }
+      if (none) {
+        C.undo->mark_changed();
+        return OpStatus::Finished;
+      }
+      if (op_arg_bool(C, "go")) {
+        doc.frame_current = frame;
+        animation_sync(doc);
       }
       for (const MotionPathTarget &t : targets) {
         Layer *layer = layer_find(doc, t.layer);
-        const std::vector<int> keys = motion_path_keys(doc, t);
-        const auto key = std::lower_bound(keys.begin(), keys.end(), frame);
-        if (layer && key != keys.end()) {
-          layers_select_keys({layer}, *key, *key, true, motion_path_key_filter(doc, t));
+        if (!layer) {
+          continue;
+        }
+        if (motion_path_is_key(doc, t, frame)) {
+          /* The key, on every channel the path's keys are on (as the timeline shows them). */
+          const bool was = motion_path_key_selected(doc, t, frame);
+          layers_select_keys({layer}, frame, frame, !(was && op_arg_bool(C, "extend")), motion_path_key_filter(doc, t));
+          continue;
+        }
+        const auto it = std::find_if(dots.begin(), dots.end(),
+                                     [&](const auto &d) { return d.first.same(t) && d.second == frame; });
+        if (it != dots.end()) {
+          dots.erase(it);
+        }
+        else {
+          dots.push_back({t, frame});
         }
       }
       C.undo->mark_changed();
@@ -394,8 +450,8 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_brush_set";
     ot.name = "Set Motion Path Brush";
     ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or "
-                     "BLEND_SPEED or EDIT_SPEED), and set radius= (screen pixels), strength=, speed= (Paint Speed's), "
-                     "and Edit Speed's proportional editing: proportional=0/1, proportional_size= (frames), falloff= "
+                     "BLEND_SPEED), and set radius= (screen pixels), strength=, speed= (Paint Speed's), "
+                     "and Edit's proportional editing of dots: proportional=0/1, proportional_size= (frames), falloff= "
                      "(SMOOTH, SPHERE, ROOT, INVERSE_SQUARE, SHARP, LINEAR, CONSTANT, RANDOM)";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.wm != nullptr; };
@@ -528,7 +584,7 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_slide";
     ot.name = "Slide Motion Path Dot";
-    ot.description = "Edit Speed: slide the dot on frame=N (between keys) along its path to the place nearest x, y "
+    ot.description = "Dragging a dot with Edit: slide the dot on frame=N (between keys) along its path to the place nearest x, y "
                      "(document space on that frame), the keys staying on their frames (its stretch made Custom); "
                      "proportional=1 slides the dots within size= frames too, by falloff= (the tool's settings when "
                      "left out). Of what a path traces (layer=, bone=, point=, or the first traced); the frame shown "
@@ -564,8 +620,8 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_even_spacing";
     ot.name = "Even Spacing";
-    ot.description = "The stretch frame=N is in goes along its path at an even speed (Ctrl click with Edit Speed), "
-                     "the keys staying on their frames; of what a path traces (layer=, bone=, point=, or the first "
+    ot.description = "The stretch frame=N is in (else each selected dot's) goes along its path at an even speed, the "
+                     "keys staying on their frames; of what a path traces (layer=, bone=, point=, or the first "
                      "traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
@@ -576,7 +632,16 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       animation_sync(doc);
-      if (!motion_path_even_spacing(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current))) {
+      int changed = 0;
+      if (op_has_arg(C, "frame")) {
+        changed += motion_path_even_spacing(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current)) ? 1 : 0;
+      }
+      else {
+        for (const auto &[t, f] : C.wm->path_dots) {
+          changed += motion_path_even_spacing(doc, t, f) ? 1 : 0;
+        }
+      }
+      if (changed == 0) {
         report(ReportType::Warning, "Only between keys");
         return OpStatus::Cancelled;
       }
@@ -588,10 +653,11 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_scale_spacing";
     ot.name = "Scale Path Spacing";
-    ot.description = "S with Edit Speed: the dots around frame=N brought factor= as far from it along the path (under "
-                     "1 closer: slower there; on a key, easing into and out of it), the keys staying on their frames; "
-                     "the dots within size= frames, by falloff= with proportional=1, else all alike (the tool's "
-                     "settings when left out). Of what a path traces (layer=, bone=, point=, or the first traced)";
+    ot.description = "Alt S: the dots around frame=N (else around each dot and key selected) brought factor= as far "
+                     "from it along the path (under 1 closer: slower there; on a key, easing into and out of it), the "
+                     "keys staying on their frames; the dots within size= frames, by falloff= with proportional=1, "
+                     "else all alike (the tool's settings when left out). Of what a path traces (layer=, bone=, "
+                     "point=, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
@@ -610,8 +676,19 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       animation_sync(doc);
-      if (motion_path_scale_spacing(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current),
-                                    op_arg_float(C, "factor", 1.0f), slide) == 0)
+      /* Around frame=, or else around each dot and key selected. */
+      std::vector<std::pair<MotionPathTarget, int>> pivots;
+      if (op_has_arg(C, "frame")) {
+        pivots.push_back({targets.front(), op_arg_int(C, "frame", doc.frame_current)});
+      }
+      else {
+        pivots = path_selection(C);
+      }
+      int changed = 0;
+      for (const auto &[t, f] : pivots) {
+        changed += motion_path_scale_spacing(doc, t, f, op_arg_float(C, "factor", 1.0f), slide);
+      }
+      if (changed == 0)
       {
         report(ReportType::Warning, "No moving stretch there to scale");
         return OpStatus::Cancelled;
@@ -624,16 +701,145 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_scale_spacing_modal";
     ot.name = "Scale Path Spacing";
-    ot.description = "S with Edit Speed, over a path's dot: scale the spacing around it with the mouse (toward the dot "
-                     "closer, away further; numbers typed; Ctrl snaps to 0.1, Shift is finer, the wheel sizes the "
-                     "reach; click or Enter keeps it, Esc or a right click cancels)";
+    ot.description = "Alt S with the Motion Path tool's Edit: scale the timing around the dots and keys selected with "
+                     "the mouse (left closer, right further; numbers typed; Ctrl snaps to 0.1, Shift is finer, the "
+                     "wheel sizes the reach; click or Enter keeps it, Esc or a right click cancels)";
     ot.flag = 0;
-    ot.poll = [](Context &C) {
-      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath &&
-             C.wm->tool_settings.path_brush == PathBrush::EditSpeed;
-    };
+    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selection(C).empty(); };
     ot.exec = [](Context &C) {
       C.wm->path_scale_request = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  for (const char kind : {'G', 'R', 'S'}) {
+    OperatorType ot;
+    ot.idname = kind == 'G' ? "anim.motion_path_keys_grab" : kind == 'R' ? "anim.motion_path_keys_rotate"
+                                                                         : "anim.motion_path_keys_scale";
+    ot.name = kind == 'G' ? "Move Path Keys" : kind == 'R' ? "Rotate Path Keys" : "Scale Path Keys";
+    ot.description = kind == 'G' ? "G with the Motion Path tool's Edit: move the selected keys with the mouse"
+                     : kind == 'R'
+                         ? "R with the Motion Path tool's Edit: turn the selected key's handles about it (several "
+                           "keys: the keys about their centre, handles turning with them)"
+                         : "S with the Motion Path tool's Edit: scale the selected key's handles (several keys: the "
+                           "keys about their centre, handles scaling with them)";
+    ot.flag = 0;
+    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
+    ot.exec = [kind](Context &C) {
+      C.wm->path_keys_request = kind;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_keys_transform";
+    ot.name = "Transform Path Keys";
+    ot.description = "The selected keys of the paths traced: kind=G moves them by x=, y= (document space), R turns "
+                     "them by angle= (radians) and S scales them by factor= about their centre, their handles turning "
+                     "and scaling with them; a key on its own stays, its handles turning or scaling about it";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string kind = op_arg(C, "kind");
+      if (kind != "G" && kind != "R" && kind != "S") {
+        report(ReportType::Error, "kind= is G, R or S");
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      const int changed = motion_path_keys_transform(
+          doc, path_selected_keys(C), kind[0], float2{op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)},
+          op_arg_float(C, "angle", 0.0f), op_arg_float(C, "factor", 1.0f));
+      if (changed == 0) {
+        report(ReportType::Info, "No keys selected on the paths");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handles_type";
+    ot.name = "Set Path Handle Type";
+    ot.description = "The selected keys' path handles: mode=AUTO (as before they were dragged), ALIGNED (in line, each "
+                     "keeping its length) or BROKEN (free of each other)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      PathHandles mode;
+      if (!path_handles_from_identifier(op_arg(C, "mode"), &mode)) {
+        report(ReportType::Error, "mode= is AUTO, ALIGNED or BROKEN");
+        return OpStatus::Cancelled;
+      }
+      animation_sync(*C.document);
+      if (motion_path_handles_type(*C.document, motion_path_targets(*C.document, editable_layers(C)), mode) == 0) {
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handles_menu";
+    ot.name = "Path Handle Type";
+    ot.description = "V with the Motion Path tool's Edit: a menu of handle types for the selected keys";
+    ot.flag = 0;
+    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "motion_path_handles";
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_keys_delete";
+    ot.name = "Delete Path Keys";
+    ot.description = "Delete the selected keys of the paths traced (X with the Motion Path tool's Edit; the setup "
+                     "frame's stay)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
+    ot.exec = [](Context &C) {
+      animation_record(*C.document);
+      if (motion_path_keys_delete(*C.document, motion_path_targets(*C.document, editable_layers(C))) == 0) {
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_key_add";
+    ot.name = "Add Motion Path Key";
+    ot.description = "A key on frame=N of what a path traces (layer=, bone=, point=, or the first traced), where it is "
+                     "now, so the path stays as it is (Alt click with the Motion Path tool's Edit); it is selected";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      animation_sync(doc);
+      if (!motion_path_key_add(doc, targets.front(), frame)) {
+        report(ReportType::Info, "A key is there already");
+        return OpStatus::Cancelled;
+      }
+      std::vector<Layer *> all;
+      for (const Layer *l : document_layers_flat(doc)) {
+        all.push_back(layer_find(doc, l->id));
+      }
+      layers_deselect_keys(all);
+      C.wm->path_dots.clear();
+      if (Layer *layer = layer_find(doc, targets.front().layer)) {
+        layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, targets.front()));
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

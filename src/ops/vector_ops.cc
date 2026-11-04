@@ -1700,8 +1700,8 @@ void vector_operators_register()
       if (!C.document || !C.wm) {
         return false;
       }
-      /* Edit Speed slides path dots proportionally too. */
-      if (C.wm->tool_settings.tool == Tool::MotionPath && C.wm->tool_settings.path_brush == PathBrush::EditSpeed) {
+      /* The Motion Path tool's Edit slides path dots proportionally too. */
+      if (C.wm->tool_settings.tool == Tool::MotionPath && C.wm->tool_settings.path_brush == PathBrush::Edit) {
         return true;
       }
       for (const Layer *layer : editable_layers(C)) {

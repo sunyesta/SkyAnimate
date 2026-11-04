@@ -107,7 +107,7 @@ doc.frame_current = 15
 assert close(math.hypot(*at(path("arm tip"), 12)), 2.0), "on the arc"
 assert ops.anim.motion_path_breakdown(frame="25", factor="0.5", **bone_args) == {'CANCELLED'}, "past the last key"
 
-# --- Clicking a dot: its key (between keys, the one ending that stretch); Alt also goes to its frame ---------------
+# --- Clicking: a key selects that key, a dot between keys that dot; go=1 (double click) also goes to its frame ------
 def selected(channel):
     return [k["frame"] for k in rig.keyframes(channel) if k["selected"]]
 
@@ -115,9 +115,11 @@ def selected(channel):
 doc.frame_current = 5
 assert ops.anim.motion_path_select(frame="15", **bone_args) == {'FINISHED'}
 assert doc.frame_current == 5, "a plain click keeps the frame"
+assert selected('bones["arm"].angle') == [] and [d["frame"] for d in oanim.wm.motion_path_dots()] == [15]
 assert ops.anim.motion_path_select(frame="15", go="1", **bone_args) == {'FINISHED'}
-assert doc.frame_current == 15 and selected('bones["arm"].angle') == [20], selected('bones["arm"].angle')
+assert doc.frame_current == 15 and [d["frame"] for d in oanim.wm.motion_path_dots()] == [15]
 assert ops.anim.motion_path_select(frame="12", **bone_args) == {'FINISHED'}
+assert oanim.wm.motion_path_dots() == [], "a key: the dots let go"
 assert selected('bones["arm"].angle') == [12], "on a key: that key"
 assert ops.anim.keys_interpolation_set(interp="LINEAR") == {'FINISHED'}
 assert [k["interp"] for k in rig.keyframes('bones["arm"].angle') if k["frame"] == 12] == ["LINEAR"]

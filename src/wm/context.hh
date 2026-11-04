@@ -11,6 +11,7 @@
 #include "anim/sculpt.hh"
 #include "core/math.hh"
 #include "data/annotations.hh"
+#include "data/document.hh"
 #include "data/ink_stroke.hh"
 #include "data/vector.hh"
 #include "wm/pen_input.hh"
@@ -203,7 +204,7 @@ struct ToolSettings {
   float path_radius = 50.0f;
   float path_strength = 0.5f;
   float path_speed = 2.0f;
-  /* Edit Speed's proportional editing (on/off and falloff are the points', O and Shift O): how many frames either
+  /* Edit's proportional editing of dots (on/off and falloff are the points', O and Shift O): how many frames either
    * side of the dragged dot slide with it. */
   float path_proportional_size = 3.0f;
 };
@@ -449,8 +450,12 @@ struct WindowManager {
    * with the mouse until a click. */
   char sculpt_adjust_request = 0;
   /* The same for the Motion Path tool's brushes ('R' radius, 'S' strength). */
-  /* S with Edit Speed: the viewport starts scaling the spacing around the dot under the mouse. */
+  /* The Motion Path tool's Edit: the dots selected between keys (each its target and frame; keys selected are the
+   * timeline's), and what its shortcuts ask the viewport to start: Alt S scaling the timing around the selection,
+   * G R S on the selected keys ('G', 'R', 'S'). */
+  std::vector<std::pair<MotionPathTarget, int>> path_dots;
   bool path_scale_request = false;
+  char path_keys_request = 0;
   char path_adjust_request = 0;
   /* The same for the Draw tool: the line's width ('R') or opacity ('S'). */
   char draw_adjust_request = 0;

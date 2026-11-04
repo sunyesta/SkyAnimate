@@ -83,25 +83,6 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
       arc_line(dl, c, s, col, 0.45f, t);
       break;
     }
-    case PathBrush::EditSpeed: {
-      /* Dots along the arc, one picked out and an arrow along the path from it. */
-      arc_line(dl, c, s, COL_FAINT, 0.45f, t * 0.6f);
-      dots(dl, c, s, 9, [](int i) { return float(i) / 8.0f; }, col);
-      const float u = 0.375f;
-      const ImVec2 p = c + ImVec2((u - 0.5f) * 1.6f * s, -std::sin(u * 3.14159f) * 0.45f * s + 0.25f * s);
-      dl->AddCircleFilled(p, std::max(2.5f, s * 0.12f), COL_ARROW);
-      std::vector<ImVec2> along;
-      for (int i = 0; i <= 8; i++) {
-        const float v = u + 0.06f + float(i) * 0.03f;
-        along.push_back(c + ImVec2((v - 0.5f) * 1.6f * s, -std::sin(v * 3.14159f) * 0.45f * s + 0.25f * s - 0.2f * s));
-      }
-      dl->AddPolyline(along.data(), int(along.size()), COL_ARROW, ImDrawFlags_None, t);
-      const ImVec2 tip = along.back(), back = along[along.size() - 3];
-      const ImVec2 dir = (tip - back) * (1.0f / std::max(1e-3f, std::sqrt((tip.x - back.x) * (tip.x - back.x) + (tip.y - back.y) * (tip.y - back.y))));
-      const ImVec2 side(-dir.y, dir.x);
-      dl->AddTriangleFilled(tip + dir * (0.12f * s), tip + side * (0.09f * s), tip - side * (0.09f * s), COL_ARROW);
-      break;
-    }
     case PathBrush::PaintSpeed:
     case PathBrush::Faster:
     case PathBrush::Slower:
@@ -152,9 +133,10 @@ static bool in_tab(PathBrush brush, int tab)
 {
   switch (tab) {
     case 1:
-      return !path_brush_is_speed(brush) && brush != PathBrush::EditSpeed;
+      return !path_brush_is_speed(brush);
     case 2:
-      return path_brush_is_speed(brush) || brush == PathBrush::EditSpeed;
+      /* Edit is in both: its dots set the timing too. */
+      return path_brush_is_speed(brush) || brush == PathBrush::Edit;
     default:
       return true;
   }
@@ -164,9 +146,11 @@ static const char *brush_tip(PathBrush brush)
 {
   switch (brush) {
     case PathBrush::Edit:
-      return "Click a dot to select its key and show its handles (Alt click: go to its frame too); drag a key to move it, a dot between keys to add "
-             "one (Ctrl: onto the line between the keys, Shift: a breakdown), a selected key's handles to bend the "
-             "path (Alt breaks them)";
+      return "Click a key or a dot to select it (Shift: add or take out; double click: go to its frame). Drag a key "
+             "to move it, a dot along its path (proportional editing: O), a selected key's handles to bend the path "
+             "(Alt breaks them). Alt click the path: a key there (Alt drag: and move it; Ctrl: onto the line between "
+             "the keys; Alt Shift: a breakdown). G R S on the selected keys, V their handle types, X deletes them; "
+             "Alt S scales the timing around the selection";
     case PathBrush::Grab:
       return "Drag a soft area of the path: the keys under the brush follow the mouse, the nearest most";
     case PathBrush::Smooth:
@@ -181,11 +165,6 @@ static const char *brush_tip(PathBrush brush)
       return "Slow down where you brush, the rest of the stretch speeding up to make up for it. Ctrl: Faster";
     case PathBrush::BlendSpeed:
       return "Even out the spacing where you brush. Ctrl sharpens it: slow parts slower, fast parts faster";
-    case PathBrush::EditSpeed:
-      return "Drag a dot between keys along its path: the keys stay on their frames, the rest of the stretch making "
-             "up for it. Proportional editing (O; Shift O: falloff; the wheel while dragging: its size in frames) "
-             "slides the dots around it too. S: scale the spacing around a dot or key (left closer, right further). "
-             "Ctrl click: even spacing. Alt click: go to its frame";
   }
   return "";
 }
@@ -214,10 +193,10 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     const int per_row = std::max(1, int((size.x - gap) / (tile + gap)));
     const std::string search = shelf_lower(shelf.search);
     std::vector<PathBrush> shown;
-    /* Edit Speed first among the speed brushes: it takes dots, as Edit does. */
-    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {
-        PathBrush::Edit,       PathBrush::Grab,   PathBrush::Smooth, PathBrush::EditSpeed,
-        PathBrush::PaintSpeed, PathBrush::Faster, PathBrush::Slower, PathBrush::BlendSpeed};
+    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit,       PathBrush::Grab,
+                                                          PathBrush::Smooth,     PathBrush::PaintSpeed,
+                                                          PathBrush::Faster,     PathBrush::Slower,
+                                                          PathBrush::BlendSpeed};
     for (const PathBrush brush : ORDER) {
       if (in_tab(brush, shelf.tab) &&
           (search.empty() || shelf_lower(path_brush_name(brush)).find(search) != std::string::npos))

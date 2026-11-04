@@ -432,6 +432,8 @@ add_test(NAME motion_path_brushes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_brushes.py)
 add_test(NAME motion_path_edit_speed
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_edit_speed.py)
+add_test(NAME motion_path_edit
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_edit.py)
 add_test(NAME subdivide
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_subdivide.py)
 add_test(NAME envelope_hook

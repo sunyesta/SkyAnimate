@@ -1277,6 +1277,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       C.undo->mark_changed();
     }
   });
+  /* The Motion Path tool's Edit: the dots selected between keys. */
+  m.def("motion_path_dots", []() {
+    py::list out;
+    for (const auto &[t, frame] : current_context().wm->path_dots) {
+      py::dict d;
+      d["layer"] = t.layer;
+      d["bone"] = t.bone;
+      d["point"] = t.point;
+      d["head"] = t.head;
+      d["frame"] = frame;
+      out.append(d);
+    }
+    return out;
+  });
   /* The Motion Path tool's brush and its settings (anim/path_brush.hh). */
   m.def("path_brush_settings", []() {
     const ToolSettings &ts = current_context().wm->tool_settings;

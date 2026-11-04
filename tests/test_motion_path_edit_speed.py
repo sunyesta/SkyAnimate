@@ -1,6 +1,6 @@
-"""Motion paths: the Edit Speed brush. A dot between keys slides along its path, the keys staying on their frames (its
+"""Motion paths: sliding dots with the Edit brush. A dot between keys slides along its path, the keys staying on their frames (its
 stretch made Custom); with proportional editing the dots around it slide too, by the falloff, never past the keys or
-each other. Ctrl click evens a stretch out.
+each other. Even Spacing evens a stretch out; Alt S scales the timing around a dot or key.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_edit_speed.py
 """
@@ -57,15 +57,16 @@ doc.auto_key = False
 
 # --- Picking it, and its settings --------------------------------------------------------------------------------
 assert ops.wm.tool_motion_path() == {'FINISHED'}
-assert ops.anim.motion_path_brush_set(brush="EDIT_SPEED", proportional="0", proportional_size="3",
+assert ops.anim.motion_path_brush_set(brush="EDIT_SPEED") == {'CANCELLED'}, "Edit Speed is part of Edit now"
+assert ops.anim.motion_path_brush_set(brush="EDIT", proportional="0", proportional_size="3",
                                       falloff="LINEAR") == {'FINISHED'}
 s = oanim.wm.path_brush_settings()
-assert s["brush"] == "EDIT_SPEED" and not s["proportional"] and close(s["proportional_size"], 3.0), s
+assert s["brush"] == "EDIT" and not s["proportional"] and close(s["proportional_size"], 3.0), s
 assert s["falloff"] == "LINEAR", s
 assert ops.anim.motion_path_stroke(points="0,0") == {'CANCELLED'}, "not a circle brush"
 
 # --- A straight, even stretch: 0.1 a frame from (0, 0) on 10 to (1, 0) on 20 ----------------------------------------
-# O turns proportional editing on with Edit Speed, though the layer has no points to move.
+# O turns proportional editing on with Edit, though the layer has no points to move.
 ops.layer.new()
 empty = layers.active
 for other in layers:
@@ -136,8 +137,9 @@ xs = [round(where(eased, f)[0], 4) for f in range(16, 25)]
 assert close(xs, [0.6, 0.7, 0.9, 0.95, 1.0, 1.05, 1.1, 1.3, 1.4]), xs
 assert key(eased, "position", 20)["interp"] == "CUSTOM" and key(eased, "position", 30)["interp"] == "CUSTOM"
 
-# S starts it in the viewport with Edit Speed (the keymap's), not with Edit.
-assert oanim.wm.event_simulate("S", area="Viewport")
+# Alt S starts it in the viewport (the keymap's), with something selected.
+assert ops.anim.motion_path_select(frame="15", layer=str(eased.id)) == {'FINISHED'}
+assert oanim.wm.event_simulate("S", alt=True, area="Viewport")
 
 # --- A curve: the dot stays on it ---------------------------------------------------------------------------------
 curve = fresh_layer({10: (0.0, 0.0), 20: (1.0, 1.0), 30: (2.0, 0.0)})

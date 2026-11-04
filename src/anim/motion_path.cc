@@ -887,7 +887,7 @@ std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, 
   return progress_speeds(u);
 }
 
-/* S with Edit Speed on one channel: the dots around `pivot` (a dot, or a key: the stretches either side) brought
+/* Alt S with Edit on one channel: the dots around `pivot` (a dot, or a key: the stretches either side) brought
  * `factor` as far from it along the path, those within the reach (by the falloff with proportional editing, else
  * all alike), never past the keys. Returns how many stretches changed. */
 template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor, const PathSlide &slide)
@@ -995,15 +995,15 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
 
 const char *path_brush_id(PathBrush brush)
 {
-  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",   "GRAB",   "SMOOTH",      "PAINT_SPEED",
-                                                    "FASTER", "SLOWER", "BLEND_SPEED", "EDIT_SPEED"};
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",   "GRAB",   "SMOOTH",     "PAINT_SPEED",
+                                                    "FASTER", "SLOWER", "BLEND_SPEED"};
   return IDS[int(brush)];
 }
 
 const char *path_brush_name(PathBrush brush)
 {
   static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit",   "Grab",   "Smooth",     "Paint Speed",
-                                                      "Faster", "Slower", "Blend Speed", "Edit Speed"};
+                                                      "Faster", "Slower", "Blend Speed"};
   return NAMES[int(brush)];
 }
 
@@ -1297,6 +1297,217 @@ float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target,
   /* The steps into and out of the dot, averaged. */
   const int k = frame - start;
   return 0.5f * (s[size_t(k - 1)] + s[size_t(std::min(k, n - 1))]);
+}
+
+/* Calls `f` with the channel that moves the target's dot: a tip's bone angle, else its position. */
+template<typename F> static bool with_path_channel(Document &doc, const MotionPathTarget &t, F &&f)
+{
+  Layer *layer = layer_find(doc, t.layer);
+  if (!layer) {
+    return false;
+  }
+  if (t.bone && !t.head) {
+    const int b = bone_index(*layer, t.bone);
+    if (b < 0) {
+      return false;
+    }
+    f(layer->bones[size_t(b)].angle_keys);
+    return true;
+  }
+  if (Channel<float2> *ch = handle_channel(doc, t)) {
+    f(*ch);
+    return true;
+  }
+  return false;
+}
+
+std::vector<std::pair<MotionPathTarget, int>> motion_path_selected_keys(const Document &doc,
+                                                                        const std::vector<MotionPathTarget> &targets)
+{
+  std::vector<std::pair<MotionPathTarget, int>> out;
+  for (const MotionPathTarget &t : targets) {
+    with_path_channel(const_cast<Document &>(doc), t, [&](auto &ch) {
+      for (const auto &k : ch.keys) {
+        if (k.selected && k.frame > 0) {
+          out.push_back({t, k.frame});
+        }
+      }
+    });
+  }
+  return out;
+}
+
+bool motion_path_is_key(const Document &doc, const MotionPathTarget &target, int frame)
+{
+  bool found = false;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) { found = ch.key_at(frame) != nullptr; });
+  return found;
+}
+
+bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame)
+{
+  bool selected = false;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    const auto *k = ch.key_at(frame);
+    selected = k && k->selected;
+  });
+  return selected;
+}
+
+void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select)
+{
+  with_path_channel(doc, target, [&](auto &ch) {
+    if (auto *k = ch.key_at(frame)) {
+      k->selected = select;
+    }
+  });
+}
+
+int motion_path_keys_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys, char kind,
+                               float2 offset, float angle, float factor)
+{
+  if (keys.empty()) {
+    return 0;
+  }
+  /* Where each is on its own frame, and their centre. */
+  std::vector<float2> at(keys.size());
+  float2 centre{0.0f, 0.0f};
+  for (size_t i = 0; i < keys.size(); i++) {
+    motion_path_position_at(doc, keys[i].first, keys[i].second, at[i]);
+    centre = centre + at[i];
+  }
+  centre = centre / float(keys.size());
+  const float c = std::cos(angle), s = std::sin(angle);
+  const auto turn = [&](float2 v) {
+    if (kind == 'R') {
+      return float2{v.x * c - v.y * s, v.x * s + v.y * c};
+    }
+    if (kind == 'S') {
+      return v * factor;
+    }
+    return v;
+  };
+  int changed = 0;
+  for (size_t i = 0; i < keys.size(); i++) {
+    const MotionPathTarget &t = keys[i].first;
+    const int frame = keys[i].second;
+    const float2 to = kind == 'G' ? at[i] + offset : centre + turn(at[i] - centre);
+    if (length(to - at[i]) > 1e-7f) {
+      const MotionPathOnFrame on(doc, frame);
+      if (motion_path_place(doc, t, to)) {
+        motion_path_record(doc);
+        changed++;
+      }
+    }
+    if (kind == 'G') {
+      continue;
+    }
+    /* The handles turn and scale with it. */
+    float2 key, in, out;
+    PathHandles mode = PathHandles::Auto;
+    if (!motion_path_handles(doc, t, frame, key, in, out, &mode)) {
+      continue;
+    }
+    const bool broken = mode == PathHandles::Broken;
+    const float2 new_out = key + turn(out - key), new_in = key + turn(in - key);
+    if (length(out - key) > 1e-7f) {
+      motion_path_handle_set(doc, t, frame, true, new_out, broken);
+    }
+    if (length(in - key) > 1e-7f) {
+      motion_path_handle_set(doc, t, frame, false, new_in, true);
+      if (!broken) {
+        /* Set apart, so each keeps its own length; in line again, as they were. */
+        Channel<float2> *ch = handle_channel(doc, t);
+        if (Key<float2> *k = ch ? ch->key_at(frame) : nullptr) {
+          k->path_handles = PathHandles::Aligned;
+        }
+      }
+    }
+    changed++;
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
+}
+
+int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> &targets, PathHandles mode)
+{
+  int changed = 0;
+  for (const MotionPathTarget &t : targets) {
+    Channel<float2> *ch = handle_channel(doc, t);
+    if (!ch) {
+      continue;
+    }
+    for (size_t i = 0; i < ch->keys.size(); i++) {
+      Key<float2> &k = ch->keys[i];
+      if (!k.selected || k.frame <= 0) {
+        continue;
+      }
+      if (mode == PathHandles::Auto) {
+        if (k.path_handles != PathHandles::Auto) {
+          k.path_handles = PathHandles::Auto;
+          changed++;
+        }
+        continue;
+      }
+      float2 in, out;
+      key_path_handles(ch->keys, i, in, out);
+      if (mode == PathHandles::Aligned) {
+        /* In line across the key, along the way from the in handle's end to the out handle's. */
+        const float li = length(in), lo = length(out);
+        float2 dir = out - in;
+        if (length(dir) < 1e-9f) {
+          dir = lo > 1e-9f ? out : float2{1.0f, 0.0f};
+        }
+        dir = dir / length(dir);
+        in = dir * -li;
+        out = dir * lo;
+      }
+      if (k.path_handles != mode || length(k.path_in - in) + length(k.path_out - out) > 1e-7f) {
+        k.path_in = in;
+        k.path_out = out;
+        k.path_handles = mode;
+        changed++;
+      }
+    }
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
+}
+
+bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame)
+{
+  if (frame < 1) {
+    return false;
+  }
+  bool added = false;
+  with_path_channel(doc, target, [&](auto &ch) {
+    if (!ch.key_at(frame)) {
+      ch.set_key(frame, ch.evaluate(frame));
+      added = true;
+    }
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return added;
+}
+
+int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &targets)
+{
+  int deleted = 0;
+  for (const MotionPathTarget &t : targets) {
+    with_path_channel(doc, t, [&](auto &ch) {
+      std::vector<int> frames;
+      for (const auto &k : ch.keys) {
+        if (k.selected && k.frame > 0) {
+          frames.push_back(k.frame);
+        }
+      }
+      for (const int f : frames) {
+        deleted += ch.remove_key(f) ? 1 : 0;
+      }
+    });
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return deleted;
 }
 
 bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target)

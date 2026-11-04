@@ -78,7 +78,7 @@ bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float 
 KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target);
 /* Keys the edits on the frame shown, with auto-key on or off. */
 void motion_path_record(Document &doc);
-/* Edit Speed: the dot on `frame` (between keys) slides along its path to the place on it nearest `at` (document space
+/* Dragging a dot with Edit: the dot on `frame` (between keys) slides along its path to the place on it nearest `at` (document space
  * on that frame), the keys staying on their frames: its stretch becomes Custom (as the speed brushes make it) with
  * speeds putting the dot there. With proportional editing the dots within `size` frames of it slide too, by the
  * falloff, never past the keys either side; dots never pass each other. Returns false for a frame on a key, held, or
@@ -89,13 +89,38 @@ struct PathSlide {
   ProportionalFalloff falloff = ProportionalFalloff::Smooth;
 };
 bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide);
-/* S with Edit Speed: the dots around the one on `frame` brought `factor` as far from it along the path (under 1
+/* Alt S with Edit: the dots around the one on `frame` brought `factor` as far from it along the path (under 1
  * closer, so slower there; over 1 further, faster), the keys staying on their frames. On a key, the dots either
  * side of it: under 1 it eases into and out of that pose. The dots within `slide.size` frames scale, by the falloff
  * with proportional editing, else all alike; never past a key or each other. Returns how many stretches changed. */
 int motion_path_scale_spacing(Document &doc, const MotionPathTarget &target, int frame, float factor,
                               const PathSlide &slide);
-/* Ctrl click with Edit Speed: the stretch `frame` is in goes along its path at an even speed (Custom, every speed 1). */
+/* --- The Edit brush's selection: keys (the timeline's selection, on the channel that moves the dot) and dots. */
+
+/* The frames of the selected keys on the channel that moves each target's dot (its position, or a tip's bone
+ * angle), setup frame left out. */
+std::vector<std::pair<MotionPathTarget, int>> motion_path_selected_keys(const Document &doc,
+                                                                        const std::vector<MotionPathTarget> &targets);
+/* Whether `frame` holds a key of the channel that moves the target's dot. */
+bool motion_path_is_key(const Document &doc, const MotionPathTarget &target, int frame);
+/* Selects (or deselects) the key on `frame` of the channel that moves the dot; whether it is selected now. */
+bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame);
+void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);
+/* G R S on the selected keys: `kind` 'G' moves them by `offset` (document space), 'R' turns them by `angle` and 'S'
+ * scales them by `factor` about their centre, their handles turning and scaling with them; one key on its own stays,
+ * its handles turning or scaling about it. Each lands on its own frame. Returns how many keys changed. */
+int motion_path_keys_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys, char kind,
+                               float2 offset, float angle, float factor);
+/* The selected keys' path handles made `mode`: Auto as before they were dragged, Aligned (the two in line, each
+ * keeping its length) or Broken (free of each other, as they are). Returns how many keys changed. */
+int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> &targets, PathHandles mode);
+/* A key on `frame` of the channel that moves the target's dot, where it is now (the path unchanged); false if there
+ * is one already. */
+bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame);
+/* Deletes the selected keys of the channels that move the targets' dots (not the setup frame's). */
+int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &targets);
+
+/* The stretch `frame` is in goes along its path at an even speed (Custom, every speed 1). */
 bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame);
 /* How fast the dot on `frame` goes, as a share of its stretch's even speed (1 between keys moving evenly); 0 off any
  * stretch that moves. */
