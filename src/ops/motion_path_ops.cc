@@ -394,7 +394,9 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_brush_set";
     ot.name = "Set Motion Path Brush";
     ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH, PAINT_SPEED, FASTER, SLOWER or "
-                     "BLEND_SPEED), and set radius= (screen pixels), strength= and speed= (Paint Speed's)";
+                     "BLEND_SPEED or EDIT_SPEED), and set radius= (screen pixels), strength=, speed= (Paint Speed's), "
+                     "and Edit Speed's proportional editing: proportional=0/1, proportional_size= (frames), falloff= "
+                     "(SMOOTH, SPHERE, ROOT, INVERSE_SQUARE, SHARP, LINEAR, CONSTANT, RANDOM)";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.wm != nullptr; };
     ot.exec = [](Context &C) {
@@ -416,6 +418,17 @@ void motion_path_operators_register()
       if (op_has_arg(C, "speed")) {
         ts.path_speed = std::clamp(op_arg_float(C, "speed", ts.path_speed), 0.05f, 20.0f);
       }
+      if (op_has_arg(C, "proportional")) {
+        ts.proportional = op_arg_bool(C, "proportional");
+      }
+      if (op_has_arg(C, "proportional_size")) {
+        ts.path_proportional_size =
+            std::clamp(op_arg_float(C, "proportional_size", ts.path_proportional_size), 1.0f, 500.0f);
+      }
+      if (op_has_arg(C, "falloff") && !proportional_falloff_from_identifier(op_arg(C, "falloff"), &ts.proportional_falloff)) {
+        report(ReportType::Error, "Unknown falloff '" + op_arg(C, "falloff") + "'");
+        return OpStatus::Cancelled;
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -429,7 +442,7 @@ void motion_path_operators_register()
                             : "Set the Motion Path tool's brush strength with the mouse (Shift F); click to keep it";
     ot.flag = 0;
     ot.poll = [](Context &C) {
-      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath && C.wm->tool_settings.path_brush != PathBrush::Edit;
+      return C.wm && C.wm->tool_settings.tool == Tool::MotionPath && path_brush_has_radius(C.wm->tool_settings.path_brush);
     };
     ot.exec = [radius](Context &C) {
       C.wm->path_adjust_request = radius ? 'R' : 'S';
@@ -455,8 +468,8 @@ void motion_path_operators_register()
         report(ReportType::Error, "Unknown path brush '" + op_arg(C, "brush") + "'");
         return OpStatus::Cancelled;
       }
-      if (brush == PathBrush::Edit) {
-        report(ReportType::Warning, "Edit isn't a brush: drag the path's dots and handles");
+      if (!path_brush_has_radius(brush)) {
+        report(ReportType::Warning, std::string(path_brush_name(brush)) + " isn't a brush: drag the path's dots");
         return OpStatus::Cancelled;
       }
       std::vector<float2> points;
@@ -505,6 +518,66 @@ void motion_path_operators_register()
       }
       if (changed == 0) {
         report(ReportType::Info, "Nothing under the brush");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_slide";
+    ot.name = "Slide Motion Path Dot";
+    ot.description = "Edit Speed: slide the dot on frame=N (between keys) along its path to the place nearest x, y "
+                     "(document space on that frame), the keys staying on their frames (its stretch made Custom); "
+                     "proportional=1 slides the dots within size= frames too, by falloff= (the tool's settings when "
+                     "left out). Of what a path traces (layer=, bone=, point=, or the first traced); the frame shown "
+                     "stays";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const ToolSettings &ts = C.wm->tool_settings;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      PathSlide slide;
+      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : ts.proportional;
+      slide.size = std::max(op_arg_float(C, "size", ts.path_proportional_size), 1.0f);
+      slide.falloff = ts.proportional_falloff;
+      if (op_has_arg(C, "falloff") && !proportional_falloff_from_identifier(op_arg(C, "falloff"), &slide.falloff)) {
+        report(ReportType::Error, "Unknown falloff '" + op_arg(C, "falloff") + "'");
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      const float2 at = {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
+      if (!motion_path_slide(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), at, slide)) {
+        report(ReportType::Warning, "Only a dot between keys slides (not a key, a held frame or a stepped stretch)");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_even_spacing";
+    ot.name = "Even Spacing";
+    ot.description = "The stretch frame=N is in goes along its path at an even speed (Ctrl click with Edit Speed), "
+                     "the keys staying on their frames; of what a path traces (layer=, bone=, point=, or the first "
+                     "traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      if (!motion_path_even_spacing(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current))) {
+        report(ReportType::Warning, "Only between keys");
         return OpStatus::Cancelled;
       }
       return OpStatus::Finished;

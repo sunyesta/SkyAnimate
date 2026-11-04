@@ -422,6 +422,18 @@ static float2 bezier_along(const float2 p[4], float u)
   return bezier(p, (float(j - 1) + f) / PIECES);
 }
 
+float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u)
+{
+  if (i == 0 || i >= keys.size()) {
+    return i < keys.size() ? keys[i].value : float2{0.0f, 0.0f};
+  }
+  float2 in, out, unused;
+  key_path_handles(keys, i - 1, unused, out);
+  key_path_handles(keys, i, in, unused);
+  const float2 p[4] = {keys[i - 1].value, keys[i - 1].value + out, keys[i].value + in, keys[i].value};
+  return bezier_along(p, std::clamp(u, 0.0f, 1.0f));
+}
+
 void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken)
 {
   if (i >= keys.size()) {

@@ -203,6 +203,9 @@ struct ToolSettings {
   float path_radius = 50.0f;
   float path_strength = 0.5f;
   float path_speed = 2.0f;
+  /* Edit Speed's proportional editing (on/off and falloff are the points', O and Shift O): how many frames either
+   * side of the dragged dot slide with it. */
+  float path_proportional_size = 3.0f;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */

@@ -15,6 +15,7 @@
 #include "anim/path_brush.hh"
 #include "core/math.hh"
 #include "data/document.hh"
+#include "data/vector.hh"
 
 namespace oanim {
 
@@ -77,6 +78,23 @@ bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float 
 KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target);
 /* Keys the edits on the frame shown, with auto-key on or off. */
 void motion_path_record(Document &doc);
+/* Edit Speed: the dot on `frame` (between keys) slides along its path to the place on it nearest `at` (document space
+ * on that frame), the keys staying on their frames: its stretch becomes Custom (as the speed brushes make it) with
+ * speeds putting the dot there. With proportional editing the dots within `size` frames of it slide too, by the
+ * falloff, never past the keys either side; dots never pass each other. Returns false for a frame on a key, held, or
+ * in a stretch that doesn't move (Step, Pose, Cycle). */
+struct PathSlide {
+  bool proportional = false;
+  float size = 3.0f;
+  ProportionalFalloff falloff = ProportionalFalloff::Smooth;
+};
+bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide);
+/* Ctrl click with Edit Speed: the stretch `frame` is in goes along its path at an even speed (Custom, every speed 1). */
+bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame);
+/* How fast the dot on `frame` goes, as a share of its stretch's even speed (1 between keys moving evenly); 0 off any
+ * stretch that moves. */
+float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target, int frame);
+
 /* Editing a dot on another frame than the one shown (clicking a dot doesn't go to its frame): while it lives the
  * document is on `frame`, then back on the frame it showed, evaluated there. */
 struct MotionPathOnFrame {

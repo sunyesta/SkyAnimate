@@ -365,8 +365,10 @@ def set_onion_colors(before=None, after=None):
 
 def path_brush_settings():
     """The Motion Path tool's brush: {"brush": "EDIT", "GRAB", "SMOOTH", "PAINT_SPEED", "FASTER", "SLOWER" or
-    "BLEND_SPEED", "radius" (screen pixels), "strength", "speed" (Paint Speed's)}. Set with
-    oanim.ops.anim.motion_path_brush_set(brush=..., radius=..., strength=..., speed=...)."""
+    "BLEND_SPEED" or "EDIT_SPEED", "radius" (screen pixels), "strength", "speed" (Paint Speed's), and Edit Speed's
+    "proportional", "proportional_size" (frames) and "falloff"}. Set with
+    oanim.ops.anim.motion_path_brush_set(brush=..., radius=..., strength=..., speed=..., proportional=...,
+    proportional_size=..., falloff=...)."""
     return _oanim.path_brush_settings()
 
 

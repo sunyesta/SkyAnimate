@@ -233,6 +233,9 @@ void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i);
 float custom_progress(const std::vector<float> &speeds, float t);
 /* Makes the stretch arriving at key `i` Custom with `speeds`. */
 template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds);
+/* Where the stretch arriving at key `i` is `u` (0-1) of the way along its path by length, as Custom goes along it (in
+ * the keys' own space). */
+float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);
 
 /* "AUTO", "ALIGNED", "BROKEN". */
 const char *path_handles_identifier(PathHandles mode);

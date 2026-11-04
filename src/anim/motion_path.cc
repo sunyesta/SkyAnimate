@@ -788,19 +788,158 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
   return changed;
 }
 
+/* The stretch of `ch` that `frame` is strictly inside (after any hold): the arriving key's index, the stretch's first
+ * frame and how many frames it moves over. False on a key, while held, or in a stretch that doesn't move. */
+template<typename T> bool stretch_of(const Channel<T> &ch, int frame, size_t &r_i, int &r_start, int &r_n)
+{
+  for (size_t i = 1; i < ch.keys.size(); i++) {
+    const Key<T> &a = ch.keys[i - 1], &b = ch.keys[i];
+    if (frame >= b.frame) {
+      continue;
+    }
+    const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+    if (frame <= start || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+      return false;
+    }
+    r_i = i;
+    r_start = start;
+    r_n = b.frame - start;
+    return true;
+  }
+  return false;
+}
+
+/* The stretch made Custom as it moves now (a straight position stretch keeping its line): its speeds. */
+template<typename T> std::vector<float> stretch_make_custom(Channel<T> &ch, size_t i, int start, int n)
+{
+  std::vector<float> s = stretch_speeds(ch, i, start, n);
+  if constexpr (std::is_same_v<T, float2>) {
+    if (!interp_path_smooth(ch.keys[i].interp)) {
+      key_path_handles_freeze(ch.keys, i - 1);
+      key_path_handles_freeze(ch.keys, i);
+    }
+  }
+  key_speeds_set(ch.keys, i, s);
+  return s;
+}
+
+/* Speeds `s` (a stretch of n frames) with dot `k0` slid to progress `want` (0-1 of the way along), the dots around it
+ * following by the falloff, all kept in order and off the keys. */
+std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, const PathSlide &slide)
+{
+  const int n = int(s.size());
+  std::vector<float> u(size_t(n + 1), 0.0f);
+  for (int k = 1; k <= n; k++) {
+    u[size_t(k)] = u[size_t(k - 1)] + s[size_t(k - 1)];
+  }
+  for (float &v : u) {
+    v /= std::max(u[size_t(n)], 1e-9f);
+  }
+  /* Each frame keeps at least the speed brushes' least. */
+  const float gap = 0.02f / float(n);
+  want = std::clamp(want, float(k0) * gap, 1.0f - float(n - k0) * gap);
+  const float d = want - u[size_t(k0)];
+  for (int k = 1; k < n; k++) {
+    const float w = k == k0                ? 1.0f
+                    : slide.proportional ? proportional_weight(slide.falloff, float(std::abs(k - k0)), slide.size, k)
+                                         : 0.0f;
+    u[size_t(k)] += d * w;
+  }
+  u[size_t(k0)] = want;
+  for (int k = k0 + 1; k < n; k++) {
+    u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
+  }
+  for (int k = k0 - 1; k >= 1; k--) {
+    u[size_t(k)] = std::min(u[size_t(k)], u[size_t(k + 1)] - gap);
+  }
+  for (int k = n - 1; k > k0; k--) {
+    u[size_t(k)] = std::min(u[size_t(k)], u[size_t(k + 1)] - gap);
+  }
+  for (int k = 1; k < k0; k++) {
+    u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
+  }
+  std::vector<float> out(static_cast<size_t>(n), 0.0f);
+  for (int k = 0; k < n; k++) {
+    out[size_t(k)] = std::max((u[size_t(k + 1)] - u[size_t(k)]) * float(n), 0.0f);
+  }
+  return out;
+}
+
+/* How `t` shows on `frame` as the value of its position channel there changes (as key_jacobian, for a frame with or
+ * without a key): the channel is held at `value` on a copy and nudged. */
+bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, float2 value, float2 &r_at, float2 &r_cx,
+                    float2 &r_cy)
+{
+  Document copy = doc;
+  Channel<float2> *ch = handle_channel(copy, t);
+  if (!ch || ch->keys.empty()) {
+    return false;
+  }
+  Key<float2> held = ch->keys.front();
+  held.frame = frame;
+  held.interp = Interp::Linear;
+  held.speeds.clear();
+  held.path_handles = PathHandles::Auto;
+  ch->keys = {held};
+  copy.frame_current = frame;
+  const float h = 1e-2f;
+  float2 dx, dy;
+  ch->keys[0].value = value;
+  animation_evaluate(copy, frame);
+  bool ok = target_position(copy, t, r_at);
+  ch->keys[0].value = value + float2{h, 0.0f};
+  animation_evaluate(copy, frame);
+  ok = ok && target_position(copy, t, dx);
+  ch->keys[0].value = value + float2{0.0f, h};
+  animation_evaluate(copy, frame);
+  ok = ok && target_position(copy, t, dy);
+  r_cx = (dx - r_at) / h;
+  r_cy = (dy - r_at) / h;
+  return ok;
+}
+
+/* The progress (0-1 by length) along the stretch arriving at keys[i] nearest `v` (the keys' own space). */
+float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
+{
+  constexpr int SAMPLES = 128;
+  float best = 0.0f, best_d = 1e30f;
+  for (int j = 0; j <= SAMPLES; j++) {
+    const float u = float(j) / SAMPLES;
+    const float2 q = stretch_path_point(keys, i, u) - v;
+    const float d = q.x * q.x + q.y * q.y;
+    if (d < best_d) {
+      best_d = d;
+      best = u;
+    }
+  }
+  /* Narrowed down between the samples either side. */
+  float lo = std::max(0.0f, best - 1.0f / SAMPLES), hi = std::min(1.0f, best + 1.0f / SAMPLES);
+  for (int it = 0; it < 30; it++) {
+    const float a = lo + (hi - lo) / 3.0f, b = hi - (hi - lo) / 3.0f;
+    const float2 qa = stretch_path_point(keys, i, a) - v, qb = stretch_path_point(keys, i, b) - v;
+    if (qa.x * qa.x + qa.y * qa.y < qb.x * qb.x + qb.y * qb.y) {
+      hi = b;
+    }
+    else {
+      lo = a;
+    }
+  }
+  return 0.5f * (lo + hi);
+}
+
 }  // namespace
 
 const char *path_brush_id(PathBrush brush)
 {
-  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",        "GRAB",   "SMOOTH",     "PAINT_SPEED",
-                                                    "FASTER",      "SLOWER", "BLEND_SPEED"};
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT",   "GRAB",   "SMOOTH",      "PAINT_SPEED",
+                                                    "FASTER", "SLOWER", "BLEND_SPEED", "EDIT_SPEED"};
   return IDS[int(brush)];
 }
 
 const char *path_brush_name(PathBrush brush)
 {
   static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit",   "Grab",   "Smooth",     "Paint Speed",
-                                                      "Faster", "Slower", "Blend Speed"};
+                                                      "Faster", "Slower", "Blend Speed", "Edit Speed"};
   return NAMES[int(brush)];
 }
 
@@ -956,6 +1095,121 @@ int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &ta
   }
   animation_evaluate(doc, doc.frame_current);
   return changed;
+}
+
+bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide)
+{
+  Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return false;
+  }
+  size_t i = 0;
+  int start = 0, n = 0;
+  if (target.bone && !target.head) {
+    /* A tip: its bone's angle, the stretch's progress how far the angle has turned between its keys. */
+    const int b = bone_index(*layer, target.bone);
+    if (b < 0) {
+      return false;
+    }
+    Channel<float> &ch = layer->bones[size_t(b)].angle_keys;
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return false;
+    }
+    Document copy = doc;
+    copy.frame_current = frame;
+    animation_evaluate(copy, frame);
+    Bone &posed = layer_find(copy, target.layer)->bones[size_t(b)];
+    const float before = posed.angle;
+    if (!solve_tip(copy, target, posed, at)) {
+      return false;
+    }
+    const float want = ch.evaluate(frame) + (posed.angle - before);
+    const std::vector<float> s = stretch_make_custom(ch, i, start, n);
+    const float a = ch.keys[i - 1].value, z = ch.keys[i].value;
+    if (std::abs(z - a) < 1e-9f) {
+      return false;
+    }
+    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, (want - a) / (z - a), slide));
+  }
+  else {
+    Channel<float2> *ch = handle_channel(doc, target);
+    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
+      return false;
+    }
+    const std::vector<float> s = stretch_make_custom(*ch, i, start, n);
+    /* The mouse in the keys' own space, by how the target moves with the channel's value there. */
+    const float2 value = ch->evaluate(frame);
+    float2 shown, cx, cy;
+    if (!value_jacobian(doc, target, frame, value, shown, cx, cy)) {
+      return false;
+    }
+    const float det = cx.x * cy.y - cx.y * cy.x;
+    if (std::abs(det) < 1e-12f) {
+      return false;
+    }
+    const float2 miss = at - shown;
+    const float2 v = value + float2{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
+    key_speeds_set(ch->keys, i, slid_speeds(s, frame - start, nearest_progress(ch->keys, i, v), slide));
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
+bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame)
+{
+  Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return false;
+  }
+  size_t i = 0;
+  int start = 0, n = 0;
+  if (target.bone && !target.head) {
+    const int b = bone_index(*layer, target.bone);
+    if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
+      return false;
+    }
+    Channel<float> &ch = layer->bones[size_t(b)].angle_keys;
+    stretch_make_custom(ch, i, start, n);
+    key_speeds_set(ch.keys, i, std::vector<float>(size_t(n), 1.0f));
+  }
+  else {
+    Channel<float2> *ch = handle_channel(doc, target);
+    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
+      return false;
+    }
+    stretch_make_custom(*ch, i, start, n);
+    key_speeds_set(ch->keys, i, std::vector<float>(size_t(n), 1.0f));
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
+float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target, int frame)
+{
+  Layer *layer = layer_find(const_cast<Document &>(doc), target.layer);
+  if (!layer) {
+    return 0.0f;
+  }
+  size_t i = 0;
+  int start = 0, n = 0;
+  std::vector<float> s;
+  if (target.bone && !target.head) {
+    const int b = bone_index(*layer, target.bone);
+    if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
+      return 0.0f;
+    }
+    s = stretch_speeds(layer->bones[size_t(b)].angle_keys, i, start, n);
+  }
+  else {
+    const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
+    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
+      return 0.0f;
+    }
+    s = stretch_speeds(*ch, i, start, n);
+  }
+  /* The steps into and out of the dot, averaged. */
+  const int k = frame - start;
+  return 0.5f * (s[size_t(k - 1)] + s[size_t(std::min(k, n - 1))]);
 }
 
 bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target)

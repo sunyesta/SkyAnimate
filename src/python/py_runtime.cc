@@ -1285,6 +1285,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["radius"] = ts.path_radius;
     d["strength"] = ts.path_strength;
     d["speed"] = ts.path_speed;
+    d["proportional"] = ts.proportional;
+    d["proportional_size"] = ts.path_proportional_size;
+    d["falloff"] = proportional_falloff_identifier(ts.proportional_falloff);
     return d;
   });
   /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */
