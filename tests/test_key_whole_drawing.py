@@ -153,6 +153,9 @@ timing = oanim.wm.motion_path_timing()
 drawing_rows = [t for t in timing if t["label"] == line.name + " drawing"]
 assert len(drawing_rows) == 1, [t["label"] for t in timing]
 assert [(s["start"], s["end"]) for s in drawing_rows[0]["stretches"]] == [(0, 10)], drawing_rows[0]["stretches"]
+assert line.name not in [t["label"] for t in timing], "no row of its own: the layer doesn't move itself"
+panel = oanim.wm.motion_path_timing_panel()
+assert panel and panel["label"] == line.name + " drawing", ("the graph shows the drawing's timing unpicked", panel)
 
 args = {"layer": str(line.id), "drawing": "1"}
 assert ops.anim.motion_path_stretch_shape(shape="EASE_IN", frame="5", **args) == {'FINISHED'}

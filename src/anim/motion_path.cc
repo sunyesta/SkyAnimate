@@ -263,6 +263,17 @@ std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, co
       out.push_back(t);
     }
   }
+  /* A whole drawing's layer that doesn't move itself: its own row would only show the drawing's keys again, with no
+   * timing of its own. */
+  std::erase_if(out, [&](const MotionPathTarget &t) {
+    if (t.drawing || t.bone || t.point) {
+      return false;
+    }
+    const bool drawing_row = std::any_of(out.begin(), out.end(), [&](const MotionPathTarget &o) {
+      return o.drawing && o.layer == t.layer;
+    });
+    return drawing_row && motion_path_stretches(doc, t).empty();
+  });
   return out;
 }
 
@@ -1989,7 +2000,14 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
   if (targets.empty()) {
     return false;
   }
+  /* The one picked on; else the first with timing to show. */
   r_target = targets.front();
+  for (const MotionPathTarget &t : targets) {
+    if (!motion_path_stretches(doc, t).empty()) {
+      r_target = t;
+      break;
+    }
+  }
   for (const MotionPathTarget &t : targets) {
     if (t.same(want)) {
       r_target = t;

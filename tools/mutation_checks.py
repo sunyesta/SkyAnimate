@@ -63,6 +63,11 @@ PENDING = [
      "Delete Key deletes it", "tests/test_motion_path_key_menu.py"),
     ("src/anim/motion_path.cc", "    /* A drawing keyed as a whole: all its points' keys there. */\n    filter.kinds = KEY_POINTS;",
      "    filter.kinds = 0;", "a click selects a whole drawing's keys", "tests/test_motion_path_key_menu.py"),
+    ("src/anim/motion_path.cc", "    return drawing_row && motion_path_stretches(doc, t).empty();", "    return false;",
+     "no empty row for a whole drawing's layer", "tests/test_key_whole_drawing.py"),
+    ("src/anim/motion_path.cc", "    if (!motion_path_stretches(doc, t).empty()) {\n      r_target = t;\n      break;",
+     "    if (false) {\n      r_target = t;\n      break;", "the graph shows the first row with timing",
+     "tests/test_key_whole_drawing.py"),
 ]
 
 
