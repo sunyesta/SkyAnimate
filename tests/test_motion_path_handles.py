@@ -127,4 +127,34 @@ doc.frame_current = 25
 head = next(p for p in oanim.wm.motion_paths() if p["label"] == "arm head")
 assert head["points"][25 - head["first"]][0] < 0.9, "the head's path bends left"
 
+# --- Only the handles of stretches the path draws: none past its ends --------------------------------------------
+ops.layer.new()
+hill = layers.active
+hill.add_curve([(0.0, 0.0), (0.5, 0.0)])
+for other in layers:
+    other.selected = other.id == hill.id
+layers.active = hill
+for frame, xy in ((10, (0.0, 0.0)), (20, (1.0, 1.0)), (30, (2.0, 0.0))):
+    assert ops.anim.motion_path_move(frame=str(frame), x=str(xy[0]), y=str(xy[1]), layer=str(hill.id)) == {'FINISHED'}
+
+
+def shown_handles(frame):
+    path = next(p for p in oanim.wm.motion_paths() if p["layer"] == hill.id)
+    return next(h for h in path["handles"] if h["frame"] == frame), path
+
+
+doc.frame_current = 20
+doc.path_before, doc.path_after = 3, 3
+h, path = shown_handles(20)
+assert h["in"] is not None and h["out"] is not None, (h, path["first"], len(path["points"]))
+# The path ending on the frame shown: the stretch after the key isn't drawn, so neither is its handle.
+doc.path_after = 0
+h, path = shown_handles(20)
+assert path["first"] + len(path["points"]) - 1 == 20, (path["first"], len(path["points"]))
+assert h["in"] is not None and h["out"] is None, h
+# Starting there: no handle into it.
+doc.path_before, doc.path_after = 0, 3
+h, path = shown_handles(20)
+assert path["first"] == 20 and h["in"] is None and h["out"] is not None, h
+
 print("Motion path handle tests passed")

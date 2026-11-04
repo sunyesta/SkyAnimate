@@ -207,9 +207,10 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_select";
     ot.name = "Select Motion Path Dot";
-    ot.description = "Go to frame=N, as clicking a path's dot with the Motion Path tool does, and select the keys "
-                     "there of what the paths trace (on an in-between dot, the keys ending its stretch, whose "
-                     "interpolation it moves by). extend=1 keeps the keys selected already";
+    ot.description = "Select the keys on frame=N of what the paths trace, as clicking a path's dot with the Motion "
+                     "Path tool does, showing their path handles (on an in-between dot, the keys ending its stretch, "
+                     "whose interpolation it moves by). go=1 (Alt click) also goes to that frame. extend=1 keeps the "
+                     "keys selected already";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -219,8 +220,10 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
-      doc.frame_current = frame;
-      animation_sync(doc);
+      if (op_arg_bool(C, "go")) {
+        doc.frame_current = frame;
+        animation_sync(doc);
+      }
       if (!op_arg_bool(C, "extend")) {
         std::vector<Layer *> all;
         for (const Layer *l : document_layers_flat(doc)) {
@@ -246,9 +249,9 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_move";
     ot.name = "Move Motion Path Dot";
     ot.description = "Put what a path traces (layer=id with bone=name or point=id: that one; else the first traced) "
-                     "at x, y on frame=N, keyed there whatever auto-key says: a key moves, an in-between gets a key. "
-                     "A bone's tip turns the bone. straight=1 puts it on the line between the keys either side, "
-                     "nearest x, y";
+                     "at x, y on frame=N (x, y in document space on that frame), keyed there whatever auto-key says: "
+                     "a key moves, an in-between gets a key; the frame shown stays. A bone's tip turns the bone. "
+                     "straight=1 puts it on the line between the keys either side, nearest x, y";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -258,9 +261,7 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       const MotionPathTarget t = targets.front();
-      const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
-      doc.frame_current = frame;
-      animation_sync(doc);
+      const MotionPathOnFrame on(doc, std::max(1, op_arg_int(C, "frame", doc.frame_current)));
       float2 at = {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
       if (op_arg_bool(C, "straight") && !motion_path_straighten(doc, t, at)) {
         report(ReportType::Warning, "Straight needs keys either side");
@@ -290,8 +291,7 @@ void motion_path_operators_register()
       if (!op_targets(C, targets)) {
         return OpStatus::Cancelled;
       }
-      doc.frame_current = std::max(1, op_arg_int(C, "frame", doc.frame_current));
-      animation_sync(doc);
+      const MotionPathOnFrame on(doc, std::max(1, op_arg_int(C, "frame", doc.frame_current)));
       if (!motion_path_breakdown(doc, targets.front(), op_arg_float(C, "factor", 0.5f))) {
         report(ReportType::Warning, "A breakdown goes between two keys");
         return OpStatus::Cancelled;

@@ -48,10 +48,16 @@ doc.frame_current = 15
 doc.motion_paths = True
 args = dict(layer=str(box.id))
 assert ops.anim.motion_path_move(frame="20", x="2.0", y="1.0", **args) == {'FINISHED'}
-assert doc.frame_current == 20 and close((box.location_x, box.location_y), (2.0, 1.0)), "the key moved"
+def key_value(layer, channel, frame):
+    return next((k["value"] for k in layer.keyframes(channel) if k["frame"] == frame), None)
+
+
+assert doc.frame_current == 15, "the frame shown stays"
+assert close(key_value(box, "position", 20), (2.0, 1.0)), "the key moved"
 assert key_frames(box, "position") == [10, 20]
 ops.ed.undo()
-assert close(box.location_y, 0.0), "one undo step"
+undone = key_value(box, "position", 20)
+assert undone is None or close(undone[1], 0.0), "one undo step"
 ops.ed.redo()
 
 doc.auto_key = False
@@ -65,7 +71,7 @@ doc.auto_key = True
 # Ctrl: onto the straight line between the keys either side (here 15 (1.5, 2) and 20 (2, 1)), nearest the mouse:
 # (1, 1) is 0.6 of the way along.
 assert ops.anim.motion_path_move(frame="17", x="1", y="1", straight="1", **args) == {'FINISHED'}
-assert close((box.location_x, box.location_y), (1.8, 1.4)), (box.location_x, box.location_y)
+assert close(key_value(box, "position", 17), (1.8, 1.4)), key_value(box, "position", 17)
 assert ops.anim.motion_path_move(frame="5", x="0", y="0", straight="1", **args) == {'CANCELLED'}, "needs two keys"
 
 # --- A bone: dragging its tip turns it; its head moves it ----------------------------------------------------------
@@ -87,26 +93,29 @@ assert close(at(path("arm tip"), 20), (0.0, 2.0)), "the tip turned onto the mous
 
 ops.anim.motion_path_style(head="1", **bone_args)
 assert ops.anim.motion_path_move(frame="20", x="0.5", y="0.25", **bone_args) == {'FINISHED'}
-arm = next(b for b in rig.bones if b["name"] == "arm")
-assert close(arm["position"], (0.5, 0.25)), "the head moves the bone"
+head = key_value(rig, 'bones["arm"].position', 20)
+assert close(head, (0.5, 0.25)), ("the head moves the bone", head)
 ops.ed.undo()
 ops.anim.motion_path_style(head="0", **bone_args)
 
 # --- Shift between keys: a breakdown, staying on the arc -----------------------------------------------------------
 assert ops.anim.motion_path_breakdown(frame="12", factor="0.25", **bone_args) == {'FINISHED'}
-arm = next(b for b in rig.bones if b["name"] == "arm")
-assert close(arm["angle"], 0.2 + 0.25 * (math.pi / 2 - 0.2)), arm["angle"]
+angle = key_value(rig, 'bones["arm"].angle', 12)
+assert close(angle, 0.2 + 0.25 * (math.pi / 2 - 0.2)), angle
 assert 12 in key_frames(rig, 'bones["arm"].angle')
 doc.frame_current = 15
 assert close(math.hypot(*at(path("arm tip"), 12)), 2.0), "on the arc"
 assert ops.anim.motion_path_breakdown(frame="25", factor="0.5", **bone_args) == {'CANCELLED'}, "past the last key"
 
-# --- Clicking a dot: its frame, and its key (between keys, the one ending that stretch) ------------------------------
+# --- Clicking a dot: its key (between keys, the one ending that stretch); Alt also goes to its frame ---------------
 def selected(channel):
     return [k["frame"] for k in rig.keyframes(channel) if k["selected"]]
 
 
+doc.frame_current = 5
 assert ops.anim.motion_path_select(frame="15", **bone_args) == {'FINISHED'}
+assert doc.frame_current == 5, "a plain click keeps the frame"
+assert ops.anim.motion_path_select(frame="15", go="1", **bone_args) == {'FINISHED'}
 assert doc.frame_current == 15 and selected('bones["arm"].angle') == [20], selected('bones["arm"].angle')
 assert ops.anim.motion_path_select(frame="12", **bone_args) == {'FINISHED'}
 assert selected('bones["arm"].angle') == [12], "on a key: that key"

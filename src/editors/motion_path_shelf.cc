@@ -145,7 +145,7 @@ static const char *brush_tip(PathBrush brush)
 {
   switch (brush) {
     case PathBrush::Edit:
-      return "Click a dot to go to its frame and select its key; drag a key to move it, a dot between keys to add "
+      return "Click a dot to select its key and show its handles (Alt click: go to its frame too); drag a key to move it, a dot between keys to add "
              "one (Ctrl: onto the line between the keys, Shift: a breakdown), a selected key's handles to bend the "
              "path (Alt breaks them)";
     case PathBrush::Grab:

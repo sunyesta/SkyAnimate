@@ -729,8 +729,9 @@ struct PathHandlesShown {
   float2 offset;
 };
 
-/* The Motion Path tool's mouse: press a dot (go there, select its key), drag it (keyed there), or press a selected
- * key's handle and drag it (Alt breaks the pair); Esc cancels. */
+/* The Motion Path tool's mouse: press a dot (select its key, showing its handles; Alt also goes to its frame), drag
+ * it (keyed on its frame, the frame shown staying), or press a selected key's handle and drag it (Alt breaks the
+ * pair); Esc cancels. */
 static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
                                    int first, int last, const PathHandlesShown *hover_handle, bool hover_out)
 {
@@ -767,7 +768,19 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     g.breakdown = io.KeyShift && !g.on_key;
     OpArgs args = motion_path_target_args(doc, g.target);
     args["frame"] = std::to_string(hover_frame);
+    if (io.KeyAlt) {
+      args["go"] = "1";
+    }
     operator_call(C, "anim.motion_path_select", args);
+    /* Drawn where it is relative to the frame shown: the mouse less this is where it goes on the dot's own frame. */
+    g.offset = float2{0.0f, 0.0f};
+    float2 own;
+    if (hover_frame != doc.frame_current && hover_frame >= hover_path->first &&
+        hover_frame - hover_path->first < int(hover_path->points.size()) &&
+        motion_path_position_at(doc, g.target, hover_frame, own))
+    {
+      g.offset = hover_path->points[size_t(hover_frame - hover_path->first)] - own;
+    }
     g.snapshot = doc;
     g.arc.clear();
     if (g.breakdown) {
@@ -808,7 +821,6 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     return;
   }
   g.dragging = true;
-  /* On the dot's frame the path is drawn where things are then, whatever it is relative to. */
   float2 at = view.to_document(io.MousePos);
   if (g.handle) {
     /* Only the key's handles change: no record, the keys are what's edited. */
@@ -817,17 +829,22 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     g.serial++;
     return;
   }
-  if (g.breakdown) {
-    motion_path_breakdown(doc, g.target, arc_fraction(g.arc, at));
-  }
-  else {
-    if (io.KeyCtrl) {
-      motion_path_straighten(doc, g.target, at);
+  {
+    /* Edited on the dot's frame, the frame shown staying. */
+    const MotionPathOnFrame on(doc, g.frame);
+    if (g.breakdown) {
+      motion_path_breakdown(doc, g.target, arc_fraction(g.arc, at));
     }
-    motion_path_place(doc, g.target, at);
+    else {
+      at = at - g.offset;
+      if (io.KeyCtrl) {
+        motion_path_straighten(doc, g.target, at);
+      }
+      motion_path_place(doc, g.target, at);
+    }
+    /* Keyed as it goes, so the path (worked out from keys) follows the mouse. */
+    motion_path_record(doc);
   }
-  /* Keyed as it goes, so the path (worked out from keys) follows the mouse. */
-  motion_path_record(doc);
   g.serial++;
 }
 
@@ -1157,13 +1174,15 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       if (!motion_path_handles(doc, target, f, h.key, h.in, h.out, &h.mode)) {
         continue;
       }
+      bool show_in = true, show_out = true;
       for (const MotionPath &p : cache.paths) {
         if (p.target.same(target) && f >= p.first && f - p.first < int(p.points.size())) {
           h.offset = p.points[size_t(f - p.first)] - h.key;
+          motion_path_handle_sides(p, f, show_in, show_out);
         }
       }
-      h.first = length(h.in - h.key) < 1e-7f;
-      h.last = length(h.out - h.key) < 1e-7f;
+      h.first = !show_in || length(h.in - h.key) < 1e-7f;
+      h.last = !show_out || length(h.out - h.key) < 1e-7f;
       handles.shown.push_back(h);
     }
   }
@@ -1211,7 +1230,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     return;
   }
   if (tool && (hovered || g_path_drag.active)) {
-    /* A copy: pressing a dot goes to its frame, which can make the paths again. */
+    /* A copy: Alt pressing a dot goes to its frame, which can make the paths again. */
     const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
     const std::optional<PathHandlesShown> pressed_handle =
         hover_handle ? std::optional<PathHandlesShown>(*hover_handle) : std::nullopt;
@@ -1678,9 +1697,9 @@ static const ToolInfo TOOLS[] = {
      "wm.tool_sculpt"},
     {Tool::MotionPath, "Motion Path",
      "Edit the motion paths of what's selected (shown with this tool even when the Onion Skin popover's Motion "
-     "Paths is off). Click a dot to go to its frame and select its key (between keys, the key ending that "
-     "stretch). Drag a key to move it there; drag a dot between keys to add a key. Shift-drag between keys: a "
-     "breakdown, sliding along the arc between the keys either side. Ctrl: onto the straight line between them. "
+     "Paths is off). Click a dot to select its key and show its handles (between keys, the key ending that "
+     "stretch); Alt click also goes to its frame. Drag a key to move it there; drag a dot between keys to add a "
+     "key, the frame shown staying. Shift-drag between keys: a breakdown, sliding along the arc between the keys either side. Ctrl: onto the straight line between them. "
      "Dragging always keys, whatever auto-key says. The header sets the selected keys' interpolation, with a "
      "ball showing how it moves, and has Smooth Arc",
      "wm.tool_motion_path"},
@@ -4202,7 +4221,7 @@ static const char *tool_hint(const ToolSettings &ts)
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
       }
-      return "Click a dot: its frame, its key  |  Drag a key: move it  |  Drag between keys: add a key  |  Shift: "
+      return "Click a dot: its key  |  Alt click: its frame too  |  Drag a key: move it  |  Drag between keys: add a key  |  Shift: "
              "breakdown along the arc  |  Ctrl: straight  |  Esc: cancel";
     default:
       return "";

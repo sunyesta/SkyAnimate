@@ -1177,6 +1177,34 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["points"] = pts;
       d["speed"] = speed;
       d["keys"] = p.keys;
+      /* Each key's path handles as the Motion Path tool shows them once it's selected (as drawn; None for a side
+       * not shown). */
+      py::list handles;
+      if (motion_path_has_handles(doc, p.target)) {
+        for (const int f : p.keys) {
+          float2 key, in, out_end;
+          bool show_in = false, show_out = false;
+          if (f < p.first || f - p.first >= int(p.points.size()) ||
+              !motion_path_handles(doc, p.target, f, key, in, out_end, nullptr))
+          {
+            continue;
+          }
+          motion_path_handle_sides(p, f, show_in, show_out);
+          const float2 offset = p.points[size_t(f - p.first)] - key;
+          const auto end = [&](bool shown, float2 at) -> py::object {
+            if (!shown || length(at - key) < 1e-7f) {
+              return py::none();
+            }
+            return py::make_tuple((at + offset).x, (at + offset).y);
+          };
+          py::dict h;
+          h["frame"] = f;
+          h["in"] = end(show_in, in);
+          h["out"] = end(show_out, out_end);
+          handles.append(h);
+        }
+      }
+      d["handles"] = handles;
       const Color fast = motion_path_speed_color(1.0f), still = motion_path_speed_color(0.0f);
       d["speed_colors"] = py::make_tuple(py::make_tuple(still.r, still.g, still.b), py::make_tuple(fast.r, fast.g, fast.b));
       out.append(d);

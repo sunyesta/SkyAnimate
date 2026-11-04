@@ -963,6 +963,12 @@ bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target
   return handle_channel(const_cast<Document &>(doc), target) != nullptr;
 }
 
+void motion_path_handle_sides(const MotionPath &p, int frame, bool &r_in, bool &r_out)
+{
+  r_in = frame > p.first;
+  r_out = frame < p.first + int(p.points.size()) - 1;
+}
+
 bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
                          float2 &r_out, PathHandles *r_mode)
 {
@@ -1111,6 +1117,18 @@ KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &ta
     filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
   }
   return filter;
+}
+
+MotionPathOnFrame::MotionPathOnFrame(Document &doc, int frame) : doc(doc), shown(doc.frame_current)
+{
+  doc.frame_current = frame;
+  animation_sync(doc);
+}
+
+MotionPathOnFrame::~MotionPathOnFrame()
+{
+  doc.frame_current = shown;
+  animation_evaluate(doc, shown);
 }
 
 void motion_path_record(Document &doc)

@@ -319,7 +319,9 @@ def onion_frames():
 def motion_paths():
     """The motion paths drawn now (none with doc.motion_paths off): dicts with label, layer, pinned, head, color,
     first (the frame of points[0]), points (where it is on each frame, as drawn: relative to doc.path_relative),
-    speed (0 still to 1 its fastest, per frame), keys and speed_colors ((still, fast) rgb). They trace the selected
+    speed (0 still to 1 its fastest, per frame), keys, handles (each key's path handles as the Motion Path tool shows
+    them once selected: dicts with frame, in and out, as drawn, None for a side not shown) and speed_colors ((still,
+    fast) rgb). They trace the selected
     bones (tip, or head) or points of the layers being edited, else those layers' origins, and pinned ones."""
     return _oanim.motion_paths()
 

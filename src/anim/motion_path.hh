@@ -77,6 +77,16 @@ bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float 
 KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target);
 /* Keys the edits on the frame shown, with auto-key on or off. */
 void motion_path_record(Document &doc);
+/* Editing a dot on another frame than the one shown (clicking a dot doesn't go to its frame): while it lives the
+ * document is on `frame`, then back on the frame it showed, evaluated there. */
+struct MotionPathOnFrame {
+  Document &doc;
+  int shown;
+  MotionPathOnFrame(Document &doc, int frame);
+  ~MotionPathOnFrame();
+  MotionPathOnFrame(const MotionPathOnFrame &) = delete;
+  MotionPathOnFrame &operator=(const MotionPathOnFrame &) = delete;
+};
 /* Smooth Arc: each of the target's keys strictly between `first` and `last` moves onto a smooth curve through the
  * keys either side of it (up to two each side). Returns how many keys moved. */
 int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int first, int last);
@@ -90,6 +100,9 @@ bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target
  * shown a third of the way along its stretch, as a Bezier's). False with no position key there. */
 bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
                          float2 &r_out, PathHandles *r_mode = nullptr);
+/* Which of the handles of `p`'s key on `frame` the tool shows: each shapes the stretch on its side, so it shows only
+ * where some of that stretch is drawn (none past the path's ends, as when it ends on the frame shown). */
+void motion_path_handle_sides(const MotionPath &p, int frame, bool &r_in, bool &r_out);
 /* Moves the handle (`out`, else in) of `target`'s position key on `frame` so it ends at `at` (document space on that
  * frame); `broken` (Alt) moves it alone and breaks the pair. Only the keys change: call animation_evaluate after. */
 bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int frame, bool out, float2 at,
