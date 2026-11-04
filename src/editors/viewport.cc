@@ -1282,6 +1282,14 @@ static void draw_selected_path_dots(Context &C, const ViewMapping &view, ImDrawL
   }
   else if (hover_path && !std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame)) {
     shown.push_back({hover_path->target, hover_frame});
+    /* The timeline's timing chart rings its tick. */
+    C.wm->path_hover_target = hover_path->target;
+    C.wm->path_hover_frame = hover_frame;
+    C.wm->path_hover_tick = ImGui::GetFrameCount();
+  }
+  else if (ImGui::GetFrameCount() - C.wm->path_hover_tick <= 1) {
+    /* A tick hovered in the timing chart: its dot. */
+    shown.push_back({C.wm->path_hover_target, C.wm->path_hover_frame});
   }
   for (const auto &[t, frame] : shown) {
     for (const MotionPath &p : paths) {
@@ -1561,6 +1569,14 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         picked = layers_key_summary({layer}, motion_path_key_filter(doc, p.target));
       }
     }
+    /* Each dot's colour (by time through its stretch, the one being worked on lit), for its selected dots too. */
+    std::vector<int> lit_dots;
+    for (const auto &[t, f] : wm.path_dots) {
+      if (t.same(p.target)) {
+        lit_dots.push_back(f);
+      }
+    }
+    const std::vector<Color> dot_colors = motion_path_dot_colors(doc, p, lit_dots);
     /* A dot every `step` frames (and on every key); frames it holds still over make one dot with how many. */
     for (size_t i = 0; i < screen.size();) {
       size_t run = i + 1;
@@ -1582,16 +1598,17 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
       if (shown) {
         const ImVec2 s = screen[i];
-        const Color dot = doc.path_speed_colors ? motion_path_speed_color(p.speed[i]) : p.color;
+        const Color dot = dot_colors[i];
         if (key) {
+          /* Keys plain white, so they stand apart from the coloured dots; selected, larger and ringed orange. */
           const float r = selected ? 6.0f : 4.5f;
           const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
-          dl->AddConvexPolyFilled(d, 4, u32(p.color, 1.0f));
-          dl->AddPolyline(d, 4, selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(20, 20, 20, 220),
+          dl->AddConvexPolyFilled(d, 4, IM_COL32(240, 240, 240, 255));
+          dl->AddPolyline(d, 4, selected ? IM_COL32(255, 160, 40, 255) : IM_COL32(20, 20, 20, 220),
                           ImDrawFlags_Closed, selected ? 2.0f : 1.0f);
         }
         else {
-          dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, 200));
+          dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, int(200.0f * dot.a)));
           dl->AddCircleFilled(s, 2.8f, u32(dot, 1.0f));
         }
         if (run - i > 1) {
@@ -4613,7 +4630,9 @@ static void motion_path_header(Context &C)
     }
     for (int f = 0; f <= span; f++) {
       const float speed = f > 0 ? std::abs(xs[size_t(f)] - xs[size_t(f) - 1]) / fastest : 0.0f;
-      const Color c = motion_path_speed_color(speed);
+      /* Coloured as the path's dots are. */
+      const Color c = C.document->path_dot_colors == PathDotColors::Speed ? motion_path_speed_color(speed)
+                                                                           : motion_path_time_color(float(f) / float(span));
       dl->AddCircleFilled(ImVec2(x_of(xs[size_t(f)]), y), 1.8f,
                           ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.8f)));
     }

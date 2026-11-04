@@ -454,6 +454,17 @@ struct WindowManager {
    * timeline's), and what its shortcuts ask the viewport to start: Alt S scaling the timing around the selection,
    * G R S on the selected keys ('G', 'R', 'S'). */
   std::vector<std::pair<MotionPathTarget, int>> path_dots;
+  /* The dot under the mouse in the viewport or the timeline's timing chart, so the other rings it too: set each frame
+   * it is hovered (`path_hover_tick` the ImGui frame it was), stale a frame later. */
+  MotionPathTarget path_hover_target;
+  int path_hover_frame = 0;
+  int path_hover_tick = -10;
+  /* The Path Timing panel's stretch: of the last thing a dot or key was picked on, the stretch ending on
+   * `path_timing_end` (0: the one the frame shown is in); see motion_path_timing_stretch. */
+  MotionPathTarget path_timing_target;
+  int path_timing_end = 0;
+  /* The timeline's sidebar (N), with its Path Timing tab. */
+  bool timeline_sidebar = false;
   bool path_scale_request = false;
   char path_keys_request = 0;
   char path_adjust_request = 0;

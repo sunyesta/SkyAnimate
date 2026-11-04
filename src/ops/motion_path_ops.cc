@@ -268,6 +268,8 @@ void motion_path_operators_register()
         dots.clear();
       }
       if (none) {
+        /* Nothing picked: the Path Timing panel follows the frame shown again. */
+        C.wm->path_timing_end = 0;
         C.undo->mark_changed();
         return OpStatus::Finished;
       }
@@ -283,8 +285,17 @@ void motion_path_operators_register()
         if (motion_path_is_key(doc, t, frame)) {
           /* The key, on every channel the path's keys are on (as the timeline shows them). */
           const bool was = motion_path_key_selected(doc, t, frame);
+          C.wm->path_timing_target = t;
+          C.wm->path_timing_end = frame;
           layers_select_keys({layer}, frame, frame, !(was && op_arg_bool(C, "extend")), motion_path_key_filter(doc, t));
           continue;
+        }
+        /* The Path Timing panel shows the stretch picked on. */
+        C.wm->path_timing_target = t;
+        for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
+          if (frame > s.start && frame < s.end) {
+            C.wm->path_timing_end = s.end;
+          }
         }
         const auto it = std::find_if(dots.begin(), dots.end(),
                                      [&](const auto &d) { return d.first.same(t) && d.second == frame; });
@@ -608,7 +619,13 @@ void motion_path_operators_register()
       }
       animation_sync(doc);
       const float2 at = {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
-      if (!motion_path_slide(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), at, slide)) {
+      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      /* progress= (the timing chart's): how far along its stretch, instead of a place to be nearest. */
+      const bool slid = op_has_arg(C, "progress")
+                            ? motion_path_slide_progress(doc, targets.front(), frame, op_arg_float(C, "progress", 0.5f),
+                                                         slide)
+                            : motion_path_slide(doc, targets.front(), frame, at, slide);
+      if (!slid) {
         report(ReportType::Warning, "Only a dot between keys slides (not a key, a held frame or a stepped stretch)");
         return OpStatus::Cancelled;
       }
@@ -645,6 +662,104 @@ void motion_path_operators_register()
         report(ReportType::Warning, "Only between keys");
         return OpStatus::Cancelled;
       }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_stretch_shape";
+    ot.name = "Path Timing Shape";
+    ot.description = "The stretch frame=N is strictly inside goes along its path in shape= EVEN, EASE_IN, EASE_OUT or "
+                     "EASE_IN_OUT, the keys staying on their frames; of what a path traces (layer=, bone=, point=, or "
+                     "the first traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      PathShape shape = PathShape::Even;
+      if (!path_shape_from_identifier(op_arg(C, "shape", "EVEN"), shape)) {
+        report(ReportType::Warning, "shape= is EVEN, EASE_IN, EASE_OUT or EASE_IN_OUT");
+        return OpStatus::Cancelled;
+      }
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      if (!motion_path_stretch_shape(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), shape)) {
+        report(ReportType::Warning, "Only between keys");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_dot_speed";
+    ot.name = "Path Dot Speed";
+    ot.description = "The dot on frame=N goes speed= (1: the stretch's even speed), the rest of its stretch making up "
+                     "the time; of what a path traces (layer=, bone=, point=, or the first traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      if (!motion_path_dot_speed_set(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current),
+                                     op_arg_float(C, "speed", 1.0f)))
+      {
+        report(ReportType::Warning, "Only between keys");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_timing_step";
+    ot.name = "Previous/Next Stretch";
+    ot.description = "The Path Timing panel shows the stretch step= (-1 or 1) before or after the one it shows";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      const Document &doc = *C.document;
+      WindowManager &wm = *C.wm;
+      MotionPathTarget t;
+      MotionPathStretch shown;
+      if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), wm.path_timing_target,
+                                      wm.path_timing_end, t, shown))
+      {
+        return OpStatus::Cancelled;
+      }
+      const std::vector<MotionPathStretch> stretches = motion_path_stretches(doc, t);
+      const int step = op_arg_int(C, "step", 1) < 0 ? -1 : 1;
+      for (size_t i = 0; i < stretches.size(); i++) {
+        const int j = int(i) + step;
+        if (stretches[i].end == shown.end && j >= 0 && j < int(stretches.size())) {
+          wm.path_timing_target = t;
+          wm.path_timing_end = stretches[size_t(j)].end;
+          return OpStatus::Finished;
+        }
+      }
+      return OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timeline_sidebar_toggle";
+    ot.name = "Sidebar";
+    ot.description = "N: show or hide the timeline's sidebar (its Path Timing tab)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      C.wm->timeline_sidebar = !C.wm->timeline_sidebar;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

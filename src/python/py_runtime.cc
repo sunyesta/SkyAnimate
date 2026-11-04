@@ -1205,6 +1205,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
       }
       d["handles"] = handles;
+      std::vector<int> lit_dots;
+      for (const auto &[t, f] : C.wm->path_dots) {
+        if (t.same(p.target)) {
+          lit_dots.push_back(f);
+        }
+      }
+      py::list dot_colors;
+      for (const Color &c : motion_path_dot_colors(doc, p, lit_dots)) {
+        dot_colors.append(py::make_tuple(c.r, c.g, c.b, c.a));
+      }
+      d["dot_colors"] = dot_colors;
       const Color fast = motion_path_speed_color(1.0f), still = motion_path_speed_color(0.0f);
       d["speed_colors"] = py::make_tuple(py::make_tuple(still.r, still.g, still.b), py::make_tuple(fast.r, fast.g, fast.b));
       out.append(d);
@@ -1276,6 +1287,55 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (C.undo) {
       C.undo->mark_changed();
     }
+  });
+  /* The timing chart's stretches for what the paths trace (as motion_path_stretches gives them). */
+  m.def("motion_path_timing", []() {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    py::list out;
+    for (const MotionPathTarget &t : motion_path_targets(doc, editable_layers(C))) {
+      py::list stretches;
+      for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
+        py::dict d;
+        d["start"] = s.start;
+        d["end"] = s.end;
+        py::list progress;
+        for (const float u : s.progress) {
+          progress.append(u);
+        }
+        d["progress"] = progress;
+        stretches.append(d);
+      }
+      py::dict d;
+      d["label"] = motion_path_label(doc, t);
+      d["stretches"] = stretches;
+      out.append(d);
+    }
+    return out;
+  });
+  /* The stretch the timeline's Path Timing panel shows (motion_path_timing_stretch), or None. */
+  m.def("motion_path_timing_panel", []() -> py::object {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    MotionPathTarget t;
+    MotionPathStretch s;
+    if (!motion_path_timing_stretch(doc, motion_path_targets(doc, editable_layers(C)), C.wm->path_timing_target,
+                                    C.wm->path_timing_end, t, s))
+    {
+      return py::none();
+    }
+    py::dict d;
+    d["label"] = motion_path_label(doc, t);
+    d["layer"] = t.layer;
+    d["start"] = s.start;
+    d["end"] = s.end;
+    py::list progress;
+    for (const float u : s.progress) {
+      progress.append(u);
+    }
+    d["progress"] = progress;
+    d["sidebar"] = C.wm->timeline_sidebar;
+    return d;
   });
   /* The Motion Path tool's Edit: the dots selected between keys. */
   m.def("motion_path_dots", []() {

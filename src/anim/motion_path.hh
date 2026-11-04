@@ -55,6 +55,22 @@ std::vector<uint64_t> motion_path_ghost_layers(const Document &doc, const std::v
 std::string motion_path_label(const Document &doc, const MotionPathTarget &target);
 /* Red where fast, blue where still. */
 Color motion_path_speed_color(float speed);
+/* Time through a stretch between keys (0 just after its first key to 1 arriving at the next), the same everywhere a
+ * dot is drawn (the viewport, the timeline): blue, teal, green, yellow, as viridis without its darkest end, so it
+ * reads on the dark viewport and to colour-blind eyes. */
+Color motion_path_time_color(float t);
+/* A dot outside the stretch being worked on: light grey, a little see-through. */
+Color motion_path_unlit_color();
+/* How far through its stretch's time `frame` is, from the frames of the keys (sorted): (frame - start) / (end -
+ * start) with start < frame < end the keys either side; false on a key or outside every stretch. */
+bool motion_path_stretch_time(const std::vector<int> &keys, int frame, float &r_t, int *r_start = nullptr,
+                              int *r_end = nullptr);
+/* Whether the stretch from key `start` to key `end` is the one being worked on: it holds the frame shown (on a key,
+ * the stretches either side both do), or one of `dots` (frames of dots selected on this path). */
+bool motion_path_stretch_lit(int start, int end, int current, const std::vector<int> &dots);
+/* Each of a path's dots' colour, by doc.path_dot_colors; `dots` the frames of its selected dots. Keys are drawn as
+ * keys, so theirs is the unlit grey. */
+std::vector<Color> motion_path_dot_colors(const Document &doc, const MotionPath &path, const std::vector<int> &dots);
 
 /* --- Editing, the Motion Path tool's: every edit lands on keys (motion_path_record keys it whatever auto-key says). */
 
@@ -114,6 +130,35 @@ int motion_path_keys_transform(Document &doc, const std::vector<std::pair<Motion
 /* The selected keys' path handles made `mode`: Auto as before they were dragged, Aligned (the two in line, each
  * keeping its length) or Broken (free of each other, as they are). Returns how many keys changed. */
 int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> &targets, PathHandles mode);
+/* A stretch between keys of the channel that moves a target's dot, as the timeline's timing chart shows it: from
+ * `start` (its first key, or the end of its hold) to `end` (the key ending it), how far along its path (0-1 by
+ * length) it has got on each of its frames. */
+struct MotionPathStretch {
+  int start = 0, end = 0;
+  std::vector<float> progress;
+};
+/* Each stretch that moves (not stepped, posed or cycling). */
+std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const MotionPathTarget &target);
+/* The dot on `frame` (between keys) slid to `progress` (0-1 of the way along its stretch's path), as dragging a tick
+ * in the timing chart does; the dots around it by proportional editing, as motion_path_slide. */
+bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
+                                const PathSlide &slide);
+/* The timing shapes the Path Timing panel's buttons give a stretch, by how far along it each frame has got (t the
+ * share of its time): Even t, Ease In t^2, Ease Out 1-(1-t)^2, Ease In-Out 3t^2-2t^3. */
+enum class PathShape { Even, EaseIn, EaseOut, EaseInOut };
+bool path_shape_from_identifier(const std::string &id, PathShape &r_shape);
+/* The stretch `frame` is strictly inside made Custom with that shape, the keys staying on their frames. */
+bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape);
+/* The dot on `frame` made to go `speed` (as motion_path_dot_speed gives it: 1 even), the rest of its stretch taking up
+ * the time it gains or loses, each frame by its share; false off a stretch, or when the rest can't (the most it can
+ * go is less than the stretch's frames). */
+bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, int frame, float speed);
+/* The stretch the Path Timing panel shows: of `want` (the last thing a dot or key was picked on) when it is one of
+ * `targets`, else the first; the one ending on `want_end`, else the one the frame shown is in (or ends), else the
+ * first. False when nothing traced moves. */
+bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPathTarget> &targets,
+                                const MotionPathTarget &want, int want_end, MotionPathTarget &r_target,
+                                MotionPathStretch &r_stretch);
 /* A key on `frame` of the channel that moves the target's dot, where it is now (the path unchanged); false if there
  * is one already. */
 bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame);

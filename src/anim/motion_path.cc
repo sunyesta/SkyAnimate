@@ -377,6 +377,81 @@ Color motion_path_speed_color(float speed)
   return {still.r + (fast.r - still.r) * t, still.g + (fast.g - still.g) * t, still.b + (fast.b - still.b) * t, 1.0f};
 }
 
+Color motion_path_time_color(float t)
+{
+  /* Viridis at 0.30, 0.48, 0.70 and 1.0. */
+  static const Color STOPS[4] = {{0.231f, 0.322f, 0.545f, 1.0f},
+                                 {0.129f, 0.569f, 0.549f, 1.0f},
+                                 {0.369f, 0.788f, 0.384f, 1.0f},
+                                 {0.992f, 0.906f, 0.145f, 1.0f}};
+  const float x = std::clamp(t, 0.0f, 1.0f) * 3.0f;
+  const int i = std::min(int(x), 2);
+  const float f = x - float(i);
+  const Color &a = STOPS[i], &b = STOPS[i + 1];
+  return {a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, 1.0f};
+}
+
+Color motion_path_unlit_color()
+{
+  return {0.85f, 0.85f, 0.85f, 0.55f};
+}
+
+bool motion_path_stretch_time(const std::vector<int> &keys, int frame, float &r_t, int *r_start, int *r_end)
+{
+  const auto after = std::upper_bound(keys.begin(), keys.end(), frame);
+  if (after == keys.begin() || after == keys.end() || *(after - 1) == frame) {
+    return false;
+  }
+  const int start = *(after - 1), end = *after;
+  r_t = float(frame - start) / float(end - start);
+  if (r_start) {
+    *r_start = start;
+  }
+  if (r_end) {
+    *r_end = end;
+  }
+  return true;
+}
+
+bool motion_path_stretch_lit(int start, int end, int current, const std::vector<int> &dots)
+{
+  if (current >= start && current <= end) {
+    return true;
+  }
+  return std::any_of(dots.begin(), dots.end(), [&](int f) { return f > start && f < end; });
+}
+
+std::vector<Color> motion_path_dot_colors(const Document &doc, const MotionPath &path, const std::vector<int> &dots)
+{
+  std::vector<Color> out(path.points.size(), motion_path_unlit_color());
+  /* Every key, not only those in the range drawn, so a stretch running off its end still knows its keys. */
+  const std::vector<int> keys = motion_path_keys(doc, path.target);
+  for (size_t i = 0; i < out.size(); i++) {
+    const int frame = path.first + int(i);
+    switch (doc.path_dot_colors) {
+      case PathDotColors::Speed:
+        out[i] = motion_path_speed_color(i < path.speed.size() ? path.speed[i] : 0.0f);
+        break;
+      case PathDotColors::Path:
+        out[i] = path.color;
+        break;
+      case PathDotColors::TimingCurrent:
+      case PathDotColors::TimingAll: {
+        float t = 0.0f;
+        int start = 0, end = 0;
+        if (motion_path_stretch_time(keys, frame, t, &start, &end) &&
+            (doc.path_dot_colors == PathDotColors::TimingAll ||
+             motion_path_stretch_lit(start, end, doc.frame_current, dots)))
+        {
+          out[i] = motion_path_time_color(t);
+        }
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 /* --- Editing (the Motion Path tool) ----------------------------------------------------------------------------- */
 
 namespace {
@@ -1472,6 +1547,164 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
   }
   animation_evaluate(doc, doc.frame_current);
   return changed;
+}
+
+std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const MotionPathTarget &target)
+{
+  std::vector<MotionPathStretch> out;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    for (size_t i = 1; i < ch.keys.size(); i++) {
+      const auto &a = ch.keys[i - 1], &b = ch.keys[i];
+      const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+      const int n = b.frame - start;
+      if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+        continue;
+      }
+      MotionPathStretch st;
+      st.start = start;
+      st.end = b.frame;
+      st.progress = speeds_progress(stretch_speeds(ch, i, start, n));
+      out.push_back(std::move(st));
+    }
+  });
+  return out;
+}
+
+bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, int frame, float progress,
+                                const PathSlide &slide)
+{
+  bool slid = false;
+  with_path_channel(doc, target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return;
+    }
+    const std::vector<float> s = stretch_make_custom(ch, i, start, n);
+    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, std::clamp(progress, 0.0f, 1.0f), slide));
+    slid = true;
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return slid;
+}
+
+bool path_shape_from_identifier(const std::string &id, PathShape &r_shape)
+{
+  static const std::pair<const char *, PathShape> ids[] = {{"EVEN", PathShape::Even},
+                                                            {"EASE_IN", PathShape::EaseIn},
+                                                            {"EASE_OUT", PathShape::EaseOut},
+                                                            {"EASE_IN_OUT", PathShape::EaseInOut}};
+  for (const auto &[name, shape] : ids) {
+    if (id == name) {
+      r_shape = shape;
+      return true;
+    }
+  }
+  return false;
+}
+
+static float path_shape_progress(PathShape shape, float t)
+{
+  switch (shape) {
+    case PathShape::Even:
+      return t;
+    case PathShape::EaseIn:
+      return t * t;
+    case PathShape::EaseOut:
+      return 1.0f - (1.0f - t) * (1.0f - t);
+    case PathShape::EaseInOut:
+      return t * t * (3.0f - 2.0f * t);
+  }
+  return t;
+}
+
+bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape)
+{
+  bool done = false;
+  with_path_channel(doc, target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return;
+    }
+    stretch_make_custom(ch, i, start, n);
+    std::vector<float> u(size_t(n + 1), 0.0f);
+    for (int k = 0; k <= n; k++) {
+      u[size_t(k)] = path_shape_progress(shape, float(k) / float(n));
+    }
+    /* Each frame at least the speed brushes' least on, so no dot sits on a key. */
+    order_progress(u, 0, 0.02f / float(n));
+    key_speeds_set(ch.keys, i, progress_speeds(u));
+    done = true;
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return done;
+}
+
+bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, int frame, float speed)
+{
+  bool done = false;
+  with_path_channel(doc, target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return;
+    }
+    std::vector<float> s = stretch_make_custom(ch, i, start, n);
+    /* The steps into and out of the dot (motion_path_dot_speed's average) set; the others scaled to make up the
+     * stretch's frames again (speeds average 1 over it). */
+    const size_t a = size_t(frame - start - 1), b = size_t(frame - start);
+    float rest = 0.0f;
+    for (size_t k = 0; k < s.size(); k++) {
+      rest += k == a || k == b ? 0.0f : s[k];
+    }
+    const float least = 0.02f;
+    const float most = (float(n) - least * float(n - 2)) * 0.5f;
+    speed = std::clamp(speed, least, std::max(most, least));
+    const float left = float(n) - 2.0f * speed;
+    if (rest <= 1e-6f || left <= 0.0f) {
+      return;
+    }
+    for (size_t k = 0; k < s.size(); k++) {
+      s[k] = k == a || k == b ? speed : std::max(s[k] * left / rest, least);
+    }
+    key_speeds_set(ch.keys, i, s);
+    done = true;
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return done;
+}
+
+bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPathTarget> &targets,
+                                const MotionPathTarget &want, int want_end, MotionPathTarget &r_target,
+                                MotionPathStretch &r_stretch)
+{
+  if (targets.empty()) {
+    return false;
+  }
+  r_target = targets.front();
+  for (const MotionPathTarget &t : targets) {
+    if (t.same(want)) {
+      r_target = t;
+    }
+  }
+  const std::vector<MotionPathStretch> stretches = motion_path_stretches(doc, r_target);
+  if (stretches.empty()) {
+    return false;
+  }
+  const MotionPathStretch *pick = nullptr;
+  for (const MotionPathStretch &s : stretches) {
+    if (s.end == want_end) {
+      pick = &s;
+    }
+  }
+  for (const MotionPathStretch &s : stretches) {
+    if (!pick && doc.frame_current > s.start - 1 && doc.frame_current <= s.end) {
+      pick = &s;
+    }
+  }
+  r_stretch = pick ? *pick : stretches.front();
+  return true;
 }
 
 bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame)

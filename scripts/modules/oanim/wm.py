@@ -320,8 +320,8 @@ def motion_paths():
     """The motion paths drawn now (none with doc.motion_paths off): dicts with label, layer, pinned, head, color,
     first (the frame of points[0]), points (where it is on each frame, as drawn: relative to doc.path_relative),
     speed (0 still to 1 its fastest, per frame), keys, handles (each key's path handles as the Motion Path tool shows
-    them once selected: dicts with frame, in and out, as drawn, None for a side not shown) and speed_colors ((still,
-    fast) rgb). They trace the selected
+    them once selected: dicts with frame, in and out, as drawn, None for a side not shown), speed_colors ((still,
+    fast) rgb) and dot_colors (each dot's rgba as drawn, by doc.path_dot_colors). They trace the selected
     bones (tip, or head) or points of the layers being edited, else those layers' origins, and pinned ones."""
     return _oanim.motion_paths()
 
@@ -361,6 +361,19 @@ def onion_colors():
 def set_onion_colors(before=None, after=None):
     """Set the onion skins' before and/or after colour: (r, g, b) or (r, g, b, a), 0-1."""
     _oanim.set_onion_colors(before, after)
+
+
+def motion_path_timing():
+    """The timeline's timing chart: for each thing the paths trace, a dict with "label" and "stretches", each a dict
+    with "start" and "end" frames and "progress", how far along its path (0-1 by length) it is on each frame from start
+    to end."""
+    return _oanim.motion_path_timing()
+
+
+def motion_path_timing_panel():
+    """The stretch the timeline's Path Timing panel shows: a dict with "label", "layer", "start", "end", "progress" (as
+    motion_path_timing gives them) and "sidebar" (whether the timeline's sidebar is open), or None."""
+    return _oanim.motion_path_timing_panel()
 
 
 def motion_path_dots():

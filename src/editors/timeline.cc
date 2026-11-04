@@ -25,6 +25,7 @@
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "editors/timeline_media.hh"
+#include "editors/timeline_path.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -1377,7 +1378,7 @@ static void timeline_header(Area &area, Context &C)
       ui_prop_check(C, ptr, "path_all", path, "Range");
       ui_prop(C, ptr, "path_step", path);
       ui_prop_check(C, ptr, "path_lines", path, "Display");
-      ui_prop_check(C, ptr, "path_speed_colors", path);
+      ui_prop(C, ptr, "path_dot_colors", path);
       ui_prop(C, ptr, "path_relative", path);
       if (doc.path_relative == PathRelative::Parent) {
         ui_row("Parent", [&](float width) {
@@ -2099,10 +2100,15 @@ static void timeline_body(Area &area, Context &C)
   Document &doc = *C.document;
   ImGuiIO &io = ImGui::GetIO();
   const ImVec2 p0 = ImGui::GetCursorScreenPos();
-  const ImVec2 size = ImGui::GetContentRegionAvail();
-  if (size.x < 8.0f || size.y < 8.0f) {
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  if (avail.x < 8.0f || avail.y < 8.0f) {
     return;
   }
+  /* The Motion Path tool's timing chart takes the bottom (at most half), its clicks its own. */
+  const float strip_h = std::min(timeline_path_strip_height(C, ImGui::GetFrameHeight()), avail.y * 0.5f);
+  /* The sidebar (N) takes the right. */
+  const float sidebar_w = timeline_sidebar_width(C, avail.x);
+  const ImVec2 size(avail.x - sidebar_w, avail.y - strip_h);
   const ImVec2 p1 = p0 + size;
 
   if (!area.view_initialized) {
@@ -3045,6 +3051,15 @@ static void timeline_body(Area &area, Context &C)
     const float tw = ImGui::CalcTextSize(label.c_str()).x;
     dl->AddText(ImVec2(x - tw * 0.5f, p0.y + (ruler_h - font_size) * 0.5f), IM_COL32_WHITE, label.c_str());
     dl->PopClipRect();
+  }
+
+  if (strip_h > 0.0f) {
+    timeline_path_strip(C, ImVec2(p0.x, p1.y), ImVec2(p1.x, p1.y + strip_h), k0.x, area.view_start,
+                        area.view_end - area.view_start, row_h);
+  }
+
+  if (sidebar_w > 0.0f) {
+    timeline_sidebar(C, ImVec2(p1.x, p0.y), ImVec2(p1.x + sidebar_w, p0.y + avail.y));
   }
 
   /* Blender's Adjust Last Operation, over the keys' bottom-left corner (as in the viewport). */

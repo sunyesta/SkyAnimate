@@ -40,6 +40,9 @@ enum class OnionMode { Keyframes, Frames };
 /* What a motion path is drawn relative to: as it is, as the camera sees it, or as a parent layer (or a bone of it)
  * sees it, so that thing stands still. */
 enum class PathRelative { World, Camera, Parent };
+/* What colours a motion path's dots: how far through its stretch's time each is (only the stretch being worked on,
+ * or every stretch), how fast it goes, or the path's own colour. */
+enum class PathDotColors { TimingCurrent, TimingAll, Speed, Path };
 
 /* Something a motion path traces (anim/motion_path.hh): a bone's tip (or head) when `bone` is set, a point when
  * `point` is, else the layer's origin. Kept in Document::path_targets once it is pinned or given its own colour
@@ -128,7 +131,7 @@ struct Document {
   bool path_all = false;
   int path_step = 1;
   bool path_lines = true;
-  bool path_speed_colors = true;
+  PathDotColors path_dot_colors = PathDotColors::TimingCurrent;
   PathRelative path_relative = PathRelative::World;
   uint64_t path_relative_layer = 0;
   uint64_t path_relative_bone = 0;

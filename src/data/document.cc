@@ -92,9 +92,16 @@ const rna::StructRNA &Document::rna()
                           &Document::path_step, 1, 100),
         def_bool<Document>("path_lines", "Lines", "Join the dots with a line in the path's colour",
                            &Document::path_lines),
-        def_bool<Document>("path_speed_colors", "Speed Colours",
-                           "Colour the dots by speed: red fast, blue still (off: the path's colour)",
-                           &Document::path_speed_colors),
+        def_enum<Document, PathDotColors>(
+            "path_dot_colors", "Dot Colour",
+            "Colour the dots by time through their stretch between keys (blue just after a key to yellow arriving at "
+            "the next; the stretch holding the frame shown, or every stretch), by speed (red fast, blue still), or "
+            "in the path's colour",
+            &Document::path_dot_colors,
+            {{"TIMING_CURRENT", "Timing (Current Stretch)"},
+             {"TIMING_ALL", "Timing (All)"},
+             {"SPEED", "Speed"},
+             {"PATH", "Path Colour"}}),
         def_enum<Document, PathRelative>(
             "path_relative", "Relative To",
             "Draw the paths as they are, as the camera sees them, or as a parent sees them, so it stands still",

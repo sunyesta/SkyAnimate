@@ -25,7 +25,7 @@ def close(a, b, eps=1e-4):
 
 assert not doc.motion_paths, "off by default"
 assert doc.path_before == 1 and doc.path_after == 1 and not doc.path_all and doc.path_step == 1
-assert doc.path_lines and doc.path_speed_colors and doc.path_relative == "WORLD"
+assert doc.path_lines and doc.path_dot_colors == "TIMING_CURRENT" and doc.path_relative == "WORLD"
 
 # --- A layer with nothing picked traces its origin, over the keys either side --------------------------------
 doc.auto_key = True
@@ -134,7 +134,7 @@ assert oanim.ops.anim.motion_path_snapshot(clear="1") == {'FINISHED'} and oanim.
 
 # --- Saved with the file --------------------------------------------------------------------------------------
 doc.path_before, doc.path_after, doc.path_step = 3, 2, 2
-doc.path_lines, doc.path_speed_colors = False, False
+doc.path_lines, doc.path_dot_colors = False, "SPEED"
 doc.path_relative = "CAMERA"
 folder = tempfile.mkdtemp()
 try:
@@ -145,7 +145,7 @@ try:
     assert oanim.ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
     doc = oanim.data.document
     assert doc.motion_paths and (doc.path_before, doc.path_after, doc.path_step) == (3, 2, 2)
-    assert not doc.path_lines and not doc.path_speed_colors and doc.path_relative == "CAMERA"
+    assert not doc.path_lines and doc.path_dot_colors == "SPEED" and doc.path_relative == "CAMERA"
     doc.path_relative = "WORLD"
     arm = next(q for q in paths() if q["label"] == "arm tip")
     assert arm["pinned"] and close(arm["color"], (0.1, 0.9, 0.2)), "pins and colours kept"
