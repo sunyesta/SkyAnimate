@@ -312,6 +312,19 @@ int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths)
  * take that timing too (once, as it is turned on). Returns how many keys already there had their timing changed. */
 int drawing_key_whole(Layer &layer, bool settle, const std::string &action);
 
+/* Key Together (Layer::key_together) is for groups and bone layers. */
+bool key_together_allowed(const Layer &layer);
+/* The outermost group keying the layer (or itself) together, or null. */
+Layer *key_together_group(Document &doc, uint64_t layer_id);
+/* The channels a Key Together group keys as one: its layers' turn, move, size and opacity, their bones', and their
+ * drawings' shapes. */
+std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group);
+/* Keys the group's channels as one (drawing_key_whole's way, the keys added fillers). Returns how many keys had their
+ * timing changed (with `settle`). */
+int key_together_sync(Document &doc, Layer &group, bool settle);
+/* Turned off: the filler keys never edited go. Returns how many went and how many fillers stayed. */
+std::pair<int, int> key_together_release(Document &doc, Layer &group);
+
 /* Frames where the layer (or its drawing) has keys, sorted, each once. */
 std::vector<int> layer_key_frames(const Layer &layer);
 /* Whether any of the layer's channels has a key (cheaper than layer_key_frames). */

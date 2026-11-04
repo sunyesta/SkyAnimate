@@ -567,6 +567,13 @@ const rna::StructRNA &Layer::rna()
                         "the Motion Path tool's timing chart and Path Timing graph. Turned on, every point is keyed "
                         "where any is, where it already is",
                         &Layer::key_whole_drawing),
+        def_bool<Layer>("key_together", "Key Together",
+                        "Everything in this group is keyed as one movement: an edit on a frame keys every layer in it "
+                        "there (its move, turn, size and opacity, its bones and its drawing's points), all sharing "
+                        "their keys' frames and timing, edited together in the timing chart's together row. Turned "
+                        "on, every layer is keyed where any is, holding where it is (filler keys); turned off, the "
+                        "filler keys never edited go again",
+                        &Layer::key_together),
         def_bool<Layer>("link_same_named", "Link Same-Named Switches",
                         "A switch: the switches of the same name at the same place inside its different drawings "
                         "(a Mouth in each view of a Heads switch) are linked by name: picking a mouth in one picks "

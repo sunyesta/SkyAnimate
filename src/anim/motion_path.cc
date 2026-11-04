@@ -51,13 +51,24 @@ bool target_exists(const Document &doc, const MotionPathTarget &t)
   if (t.point) {
     return point_index(*layer, t.point) >= 0;
   }
-  return !t.drawing || layer->has_drawing();
+  return !t.drawing || layer->has_drawing() || (key_together_allowed(*layer) && layer->key_together);
 }
 
 /* A Key Whole Drawing layer's shape channels (every point's position and width, every curve point's curvature and
  * handles), the animated ones; `f` returns false to stop. */
-template<typename F> static void drawing_channels(Layer &layer, F &&f)
+template<typename F> static void drawing_channels(Document &doc, Layer &layer, F &&f)
 {
+  /* A Key Together group: every channel it keys as one. */
+  if (key_together_allowed(layer) && layer.key_together) {
+    for (const ChannelRef &ref : key_together_channels(doc, layer)) {
+      if ((ref.scalar && ref.scalar->animated() && !f(*ref.scalar)) ||
+          (ref.vector && ref.vector->animated() && !f(*ref.vector)))
+      {
+        return;
+      }
+    }
+    return;
+  }
   if (!layer.has_drawing() || layer.is_reference()) {
     return;
   }
@@ -78,10 +89,10 @@ template<typename F> static void drawing_channels(Layer &layer, F &&f)
   }
 }
 
-static bool drawing_animated(const Layer &layer)
+static bool drawing_animated(const Document &doc, const Layer &layer)
 {
   bool any = false;
-  drawing_channels(const_cast<Layer &>(layer), [&](auto &) {
+  drawing_channels(const_cast<Document &>(doc), const_cast<Layer &>(layer), [&](auto &) {
     any = true;
     return false;
   });
@@ -252,8 +263,19 @@ std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, co
     }
   }
   layers.insert(layers.end(), editing.begin(), editing.end());
+  Document &d = const_cast<Document &>(doc);
   for (const Layer *layer : layers) {
-    if (!layer || !layer->key_whole_drawing || !drawing_animated(*layer)) {
+    if (!layer) {
+      continue;
+    }
+    /* Keyed together with the rest of a group: the group's row. */
+    if (const Layer *group = key_together_group(d, layer->id)) {
+      layer = group;
+    }
+    else if (!layer->key_whole_drawing || !layer->has_drawing()) {
+      continue;
+    }
+    if (!drawing_animated(doc, *layer)) {
       continue;
     }
     MotionPathTarget t;
@@ -263,6 +285,11 @@ std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, co
       out.push_back(t);
     }
   }
+  /* Inside a Key Together group: its timing is the group's row. */
+  std::erase_if(out, [&](const MotionPathTarget &t) {
+    const Layer *group = key_together_group(d, t.layer);
+    return group && !(t.drawing && t.layer == group->id);
+  });
   /* A whole drawing's layer that doesn't move itself: its own row would only show the drawing's keys again, with no
    * timing of its own. */
   std::erase_if(out, [&](const MotionPathTarget &t) {
@@ -283,7 +310,7 @@ std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &t
     /* The drawing's own keys: its points share them. */
     std::vector<int> keys;
     if (Layer *layer = layer_find(const_cast<Document &>(doc), target.layer)) {
-      drawing_channels(*layer, [&](auto &ch) {
+      drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
         for (const auto &k : ch.keys) {
           if (k.frame > 0) {
             keys.push_back(k.frame);
@@ -458,7 +485,7 @@ std::string motion_path_label(const Document &doc, const MotionPathTarget &targe
     return layer->name + " point " + std::to_string(point_index(*layer, target.point));
   }
   if (target.drawing) {
-    return layer->name + " drawing";
+    return layer->name + (layer->has_drawing() ? " drawing" : " together");
   }
   return layer->name;
 }
@@ -1509,7 +1536,7 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
   if (t.drawing) {
     /* The drawing: its first animated channel stands for all (they share their keys' frames and timing). */
     bool found = false;
-    drawing_channels(*layer, [&](auto &ch) {
+    drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
       f(ch);
       found = true;
       return false;
@@ -1764,7 +1791,7 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   Layer *layer = layer_find(doc, t.layer);
   bool found = false;
   if (layer) {
-    drawing_channels(*layer, [&](auto &ch) {
+    drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
       f(ch);
       found = true;
       return true;

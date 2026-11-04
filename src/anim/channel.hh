@@ -94,6 +94,13 @@ template<typename T> struct Key {
   std::vector<float> speeds;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
+  /* Key Together (a group's): added only to hold this channel where it was while another layer of the group was
+   * keyed here. Taken away when Key Together is turned off, unless it was edited since: its value or timing
+   * (filler_self; 0 until taken, as when opened), or the timing of the stretch after it while the key after is the one it had (filler_next: its
+   * frame, filler_out: its timing). */
+  bool filler = false;
+  int filler_next = 0;
+  uint32_t filler_self = 0, filler_out = 0;
   bool operator==(const Key &) const = default;
 };
 

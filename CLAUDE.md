@@ -120,7 +120,7 @@ sidebar's Path Timing tab in `src/editors/timeline_path.*`, stretches from `moti
 the chart and graph have always-on proportional editing and Shift click's `motion_path_timing_blend`). Key Whole Drawing (`Layer::key_whole_drawing`, on for new vector layers:
 `drawing_key_whole` in `animation.cc` keys every shape channel on every keyed frame and takes a deleted key's frame from them
 all; drawing targets, `MotionPathTarget::drawing`, in the timing chart via `motion_path_timing_targets` and
-`with_path_channels` in `motion_path.cc`). Next: key buttons in Properties, dope sheet, frame-by-frame layers
+`with_path_channels` in `motion_path.cc`). Key Together on groups (`Layer::key_together`: `key_together_sync` and `key_together_release` in `animation.cc`, sharing `keys_together_sync` with Key Whole Drawing; filler keys are `Key::filler`, let go when it is turned off unless edited). Next: key buttons in Properties, dope sheet, frame-by-frame layers
 and onion skins, PNG sequence export, playback range.
 
 Rigging and modifiers (milestones 4 and 5, started early): bone layers (`LayerType::Bone`,

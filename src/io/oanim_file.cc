@@ -212,6 +212,10 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.selected) {
       key["selected"] = true;
     }
+    if (k.filler) {
+      /* Its value is rounded as saved: what it was is taken again once opened (Key::filler_self 0). */
+      key["filler"] = true;
+    }
     keys.push_back(std::move(key));
   }
   return keys;
@@ -579,6 +583,7 @@ static json layer_to_json(const Layer &layer)
       {"edit_with_bones", layer.edit_with_bones},
       {"ignore_group_deforms", layer.ignore_group_deforms},
       {"key_whole_drawing", layer.key_whole_drawing},
+      {"key_together", layer.key_together},
       {"edit_descendants", layer.edit_descendants},
       {"sub_bone_group", layer.sub_bone_group},
       {"link_same_named", layer.link_same_named},
@@ -1689,6 +1694,7 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
       }
     }
     key.selected = get_bool(k, "selected", false);
+    key.filler = get_bool(k, "filler", false);
     if (!r_ch.key_at(key.frame)) {
       r_ch.keys.push_back(key);
     }
@@ -2363,6 +2369,9 @@ static Layer layer_from_json(const json &j, int depth)
   layer.ignore_group_deforms = get_bool(j, "ignore_group_deforms", false);
   /* Files from before it: each point keyed on its own, as they were made. */
   layer.key_whole_drawing = get_bool(j, "key_whole_drawing", false);
+  layer.key_together = get_bool(j, "key_together", false);
+  /* Saved on: its keys already agree, and turning it off lets its fillers go. */
+  layer.key_together_settled = layer.key_together;
   layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
   layer.sub_bone_group = get_bool(j, "sub_bone_group", true);
   layer.link_same_named = get_bool(j, "link_same_named", true);

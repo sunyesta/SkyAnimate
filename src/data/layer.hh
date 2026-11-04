@@ -1223,6 +1223,14 @@ struct Layer {
   /* Not saved: its keys have been made to agree since it was turned on (their timing too, once); and how many of its
    * shape's channels were keyed on each frame then (one fewer since: a key deleted, deleted from them all). */
   bool key_whole_settled = false;
+  /* Key Together (a group or bone layer): everything inside it keyed as one, each layer's move, turn, size and
+   * opacity, its bones and its drawing's points sharing their keys' frames and timing (keys_together in
+   * anim/animation.cc); keys added only to hold a layer in place are fillers (Key::filler), taken away when it is
+   * turned off unless edited since. Off for new groups. */
+  bool key_together = false;
+  /* Not saved: its keys have been made to agree since it was turned on. */
+  bool key_together_settled = false;
+  /* Not saved, for Key Whole Drawing on a drawing and Key Together on a group alike. */
   std::map<int, int> key_whole_counts;
   std::string key_whole_action;
   int key_whole_channels = 0;

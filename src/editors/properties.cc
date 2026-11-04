@@ -8352,6 +8352,9 @@ static void layer_tab(Context &C)
     if (layer->type == LayerType::Vector) {
       ui_prop(C, ptr, "key_whole_drawing", path);
     }
+    if (key_together_allowed(*layer)) {
+      ui_prop(C, ptr, "key_together", path);
+    }
     if (layer->is_group()) {
       /* Picking the group edits what's inside it. */
       ui_prop(C, ptr, "edit_descendants", path);

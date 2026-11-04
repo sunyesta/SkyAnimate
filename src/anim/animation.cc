@@ -512,12 +512,76 @@ template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
   k.speeds = t.speeds;
 }
 
-int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
+/* A key's value and timing (with_value) or its timing alone, as a number: a filler key edited since it was added no
+ * longer has the one it was given (Key::filler_self, filler_out). */
+static uint32_t sig_add(uint32_t h, const void *data, size_t size)
 {
-  if (!layer.has_drawing() || layer.is_reference()) {
-    return 0;
+  const auto *b = static_cast<const unsigned char *>(data);
+  for (size_t i = 0; i < size; i++) {
+    h = (h ^ b[i]) * 16777619u;
   }
-  VectorDrawing &drawing = layer.drawing;
+  return h;
+}
+
+template<typename T> static uint32_t key_sig(const Key<T> &k, bool with_value)
+{
+  uint32_t h = 2166136261u;
+  if (with_value) {
+    h = sig_add(h, &k.value, sizeof(T));
+  }
+  const int ints[] = {int(k.interp), k.hold, k.interval, int(k.ease), k.cycle_back, k.cycle_frame, k.cycle_absolute};
+  const float floats[] = {k.overshoot, k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency};
+  h = sig_add(h, ints, sizeof(ints));
+  h = sig_add(h, floats, sizeof(floats));
+  return k.speeds.empty() ? h : sig_add(h, k.speeds.data(), k.speeds.size() * sizeof(float));
+}
+
+/* Filler keys edited since they were added (their value or timing, or the timing of the stretch after them while the
+ * key after is the same) become the channel's own. */
+template<typename C> static void fillers_check(C &ch)
+{
+  for (size_t i = 0; i < ch.keys.size(); i++) {
+    auto &k = ch.keys[i];
+    /* Not taken yet (just opened): as it is now. */
+    if (!k.filler || k.filler_self == 0) {
+      continue;
+    }
+    const bool next = i + 1 < ch.keys.size();
+    const int next_frame = next ? ch.keys[i + 1].frame : INT32_MIN;
+    if (key_sig(k, true) != k.filler_self ||
+        (next_frame == k.filler_next && next && key_sig(ch.keys[i + 1], false) != k.filler_out))
+    {
+      k.filler = false;
+    }
+  }
+}
+
+/* What each filler key is now, to tell later whether it was edited. */
+template<typename C> static void fillers_mark(C &ch)
+{
+  for (size_t i = 0; i < ch.keys.size(); i++) {
+    auto &k = ch.keys[i];
+    if (!k.filler) {
+      continue;
+    }
+    const bool next = i + 1 < ch.keys.size();
+    k.filler_self = std::max(1u, key_sig(k, true));
+    k.filler_next = next ? ch.keys[i + 1].frame : INT32_MIN;
+    k.filler_out = next ? key_sig(ch.keys[i + 1], false) : 0;
+  }
+}
+
+/* Keys a set of channels as one (Key Whole Drawing: a drawing's shape; Key Together: everything in a group): every
+ * channel keyed on every frame any is, each new key holding what the channel has there and taking the timing most keys
+ * on that frame have; with `settle` (as it is turned on), the keys already there take that timing too. A frame fewer
+ * channels have than last time (`owner`'s counts, in the same action), by more than the channels gone, had a key
+ * deleted: it goes from them all. `visit(f)` calls f(channel, value, unit) for each channel; `changes(true)` turns the
+ * values into the changes keys hold, `changes(false)` back. With `fillers`, the keys added are fillers
+ * (Key::filler). Returns how many keys already there had their timing changed. */
+template<typename Visit, typename Changes>
+static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bool settle, const std::string &action,
+                              bool fillers)
+{
   /* Each frame keyed anywhere: how many channels have it, and the timings its keys have there (how many of each, in
    * the order first met). */
   struct Frame {
@@ -527,7 +591,10 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
   std::map<int, Frame> frames;
   bool all_alike = true;
   size_t keyed_count = 0, channels = 0;
-  drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+  visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) {
+    if (fillers) {
+      fillers_check(ch);
+    }
     channels++;
     keyed_count += ch.keys.size();
     for (const auto &k : ch.keys) {
@@ -545,15 +612,18 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
     }
   });
   /* Counts from another action's channels (or none yet) say nothing about what was deleted here. */
-  const std::map<int, int> before = settle || layer.key_whole_action != action ? std::map<int, int>{} :
-                                                                                  layer.key_whole_counts;
+  const std::map<int, int> before = settle || owner.key_whole_action != action ? std::map<int, int>{} :
+                                                                                  owner.key_whole_counts;
   const auto remember = [&] {
-    layer.key_whole_action = action;
-    layer.key_whole_channels = int(channels);
-    layer.key_whole_counts.clear();
-    drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+    owner.key_whole_action = action;
+    owner.key_whole_channels = int(channels);
+    owner.key_whole_counts.clear();
+    visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) {
+      if (fillers) {
+        fillers_mark(ch);
+      }
       for (const auto &k : ch.keys) {
-        layer.key_whole_counts[k.frame]++;
+        owner.key_whole_counts[k.frame]++;
       }
     });
   };
@@ -564,7 +634,7 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
   }
   /* A frame fewer channels have than last time, by more than the channels gone (a point deleted takes its own), had
    * a key deleted: it goes from them all. Frame 0 is the setup, never. */
-  const int channels_gone = std::max(0, layer.key_whole_channels - int(channels));
+  const int channels_gone = std::max(0, owner.key_whole_channels - int(channels));
   std::vector<int> deleted;
   for (const auto &[frame, count] : before) {
     const auto it = frames.find(frame);
@@ -580,8 +650,8 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
     most[frame] = &best->first;
   }
   int settled = 0;
-  drawing_changes_from_values(drawing);
-  drawing_shape_channels(drawing, [&](auto &ch, auto &value) {
+  changes(true);
+  visit([&](auto &ch, auto &value, const void * /*unit*/) {
     for (const int frame : deleted) {
       channel_delete_key(ch, value, frame);
     }
@@ -596,12 +666,183 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
       }
       /* What it has there now: between its keys, or (not keyed) the value it holds everywhere. */
       const auto held = was_animated ? ch.evaluate(frame) : value - ch.from_action_bones;
-      key_timing_set(ch.set_key(frame, held), *timing);
+      auto &k = ch.set_key(frame, held);
+      key_timing_set(k, *timing);
+      k.filler = fillers;
     }
   });
-  drawing_values_from_changes(drawing);
+  changes(false);
   remember();
   return settled;
+}
+
+/* Key Together turned off: the filler keys never edited go (a unit's keys on a frame stay together: a whole drawing's
+ * stay if any of them is its own), and the rest become the channels' own. Returns how many went, and how many fillers
+ * stayed. */
+template<typename Visit, typename Changes>
+static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&changes)
+{
+  std::set<std::pair<const void *, int>> own;
+  int fillers = 0;
+  visit([&](auto &ch, auto & /*value*/, const void *unit) {
+    fillers_check(ch);
+    for (const auto &k : ch.keys) {
+      fillers += k.filler ? 1 : 0;
+      if (!k.filler) {
+        own.insert({unit, k.frame});
+      }
+    }
+  });
+  int removed = 0;
+  changes(true);
+  visit([&](auto &ch, auto &value, const void *unit) {
+    std::vector<int> go;
+    for (const auto &k : ch.keys) {
+      if (k.filler && !own.count({unit, k.frame})) {
+        go.push_back(k.frame);
+      }
+    }
+    /* Frame 0 last, and only when nothing else is left: a channel keyed holds a key there. */
+    for (auto it = go.rbegin(); it != go.rend(); ++it) {
+      if (*it != 0 || ch.keys.size() == 1) {
+        ch.remove_key(*it);
+        removed++;
+      }
+    }
+    if (!ch.animated() && ch.keys.size() <= 1) {
+      if (const auto *k = ch.key_at(0); k && k->filler) {
+        value = k->value + ch.from_action_bones;
+        ch.remove_key(0);
+        removed++;
+      }
+    }
+    for (auto &k : ch.keys) {
+      k.filler = false;
+    }
+  });
+  changes(false);
+  return {removed, std::max(0, fillers - removed)};
+}
+
+int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
+{
+  if (!layer.has_drawing() || layer.is_reference()) {
+    return 0;
+  }
+  VectorDrawing &drawing = layer.drawing;
+  return keys_together_sync(
+      layer,
+      [&](auto &&f) { drawing_shape_channels(drawing, [&](auto &ch, auto &value) { f(ch, value, &ch); }); },
+      [&](bool to_changes) {
+        if (to_changes) {
+          drawing_changes_from_values(drawing);
+        }
+        else {
+          drawing_values_from_changes(drawing);
+        }
+      },
+      settle, action, false);
+}
+
+bool key_together_allowed(const Layer &layer)
+{
+  return layer.type == LayerType::Group || layer.type == LayerType::Bone;
+}
+
+Layer *key_together_group(Document &doc, uint64_t layer_id)
+{
+  Layer *found = nullptr;
+  for (Layer *l = layer_find(doc, layer_id); l; l = layer_parent(doc, l->id)) {
+    if (l->key_together && key_together_allowed(*l)) {
+      found = l;
+    }
+  }
+  return found;
+}
+
+/* The group and every layer inside it, flat. */
+static std::vector<Layer *> together_layers(Document &doc, Layer &group)
+{
+  std::vector<Layer *> out;
+  for (const Layer *l : document_layers_flat(doc)) {
+    for (Layer *a = layer_find(doc, l->id); a; a = layer_parent(doc, a->id)) {
+      if (a == &group) {
+        out.push_back(layer_find(doc, l->id));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/* Calls f(channel, value, unit) for each channel a Key Together group keys as one: each layer's turn, move, size and
+ * opacity, its bones', and its drawing's shape (a whole drawing's channels one unit). */
+template<typename F> static void together_channels(Document &doc, Layer &group, F &&f)
+{
+  KeyFilter filter;
+  filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM | KEY_OPACITY | KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
+  std::set<const void *> seen;
+  for (Layer *l : together_layers(doc, group)) {
+    for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
+      if (ref.scalar && ref.scalar_value && seen.insert(ref.scalar).second) {
+        f(*ref.scalar, *ref.scalar_value, static_cast<const void *>(ref.scalar));
+      }
+      if (ref.vector && ref.vector_value && seen.insert(ref.vector).second) {
+        f(*ref.vector, *ref.vector_value, static_cast<const void *>(ref.vector));
+      }
+    }
+    if (l->type == LayerType::Vector && l->has_drawing() && !l->is_reference()) {
+      const void *whole = l->key_whole_drawing ? static_cast<const void *>(l) : nullptr;
+      drawing_shape_channels(l->drawing, [&](auto &ch, auto &value) {
+        f(ch, value, whole ? whole : static_cast<const void *>(&ch));
+      });
+    }
+  }
+}
+
+static void together_changes(Document &doc, Layer &group, bool to_changes)
+{
+  for (Layer *l : together_layers(doc, group)) {
+    if (l->type == LayerType::Vector && l->has_drawing() && !l->is_reference()) {
+      if (to_changes) {
+        drawing_changes_from_values(l->drawing);
+      }
+      else {
+        drawing_values_from_changes(l->drawing);
+      }
+    }
+  }
+}
+
+std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group)
+{
+  std::vector<ChannelRef> out;
+  together_channels(doc, group, [&](auto &ch, auto &value, const void * /*unit*/) {
+    ChannelRef ref;
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>, float>) {
+      ref.scalar = &ch;
+      ref.scalar_value = &value;
+    }
+    else {
+      ref.vector = &ch;
+      ref.vector_value = &value;
+    }
+    out.push_back(ref);
+  });
+  return out;
+}
+
+int key_together_sync(Document &doc, Layer &group, bool settle)
+{
+  return keys_together_sync(
+      group, [&](auto &&f) { together_channels(doc, group, f); },
+      [&](bool to_changes) { together_changes(doc, group, to_changes); }, settle, doc.action, true);
+}
+
+std::pair<int, int> key_together_release(Document &doc, Layer &group)
+{
+  return keys_together_release([&](auto &&f) { together_channels(doc, group, f); },
+                               [&](bool to_changes) { together_changes(doc, group, to_changes); });
 }
 
 void animation_record(Document &doc)
@@ -736,6 +977,32 @@ void animation_record(Document &doc)
     if (settled[i] > 0) {
       report(ReportType::Info, flat[i]->name + ": Key Whole Drawing gave " + std::to_string(settled[i]) +
                                    " keys the timing most of its points have on their frame");
+    }
+  }
+  /* Key Together: everything in the group keyed as one (a group inside one that is, by the outer one); turned off,
+   * the keys added only to hold a layer in place go. */
+  for (Layer *group : flat) {
+    if (!key_together_allowed(*group)) {
+      continue;
+    }
+    const Layer *parent = layer_parent(doc, group->id);
+    const bool on = group->key_together && !(parent && key_together_group(doc, parent->id));
+    if (on) {
+      const int changed = key_together_sync(doc, *group, !group->key_together_settled);
+      group->key_together_settled = true;
+      if (changed > 0) {
+        report(ReportType::Info, group->name + ": Key Together gave " + std::to_string(changed) +
+                                     " keys the timing most of its layers have on their frame");
+      }
+    }
+    else if (group->key_together_settled) {
+      group->key_together_settled = false;
+      const auto [removed, kept] = key_together_release(doc, *group);
+      if (removed + kept > 0) {
+        report(ReportType::Info, group->name + ": Key Together off: removed " + std::to_string(removed) +
+                                     " filler keys" +
+                                     (kept > 0 ? ", kept " + std::to_string(kept) + " you edited" : std::string()));
+      }
     }
   }
   simulation_in(doc);

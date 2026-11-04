@@ -33,7 +33,9 @@ PENDING = [
      "  for (const int frame : std::vector<int>{frames.front()}) {\n    changed += motion_path_timing_blend(",
      "a blend on each frame of the stroke", "tests/test_motion_path_timing.py"),
     # Key Whole Drawing (2026-11-04).
-    ("src/anim/animation.cc", "      key_timing_set(ch.set_key(frame, held), *timing);", "      (void)held;",
+    ("src/anim/animation.cc",
+     "      auto &k = ch.set_key(frame, held);\n      key_timing_set(k, *timing);\n      k.filler = fillers;",
+     "      (void)held;",
      "every channel keyed where any is", "tests/test_key_whole_drawing.py"),
     ("src/anim/animation.cc", "        if (settle && key_timing(*k) != *timing) {", "        if (false) {",
      "turned on, a frame's keys take the timing most have", "tests/test_key_whole_drawing.py"),
@@ -68,6 +70,19 @@ PENDING = [
     ("src/anim/motion_path.cc", "    if (!motion_path_stretches(doc, t).empty()) {\n      r_target = t;\n      break;",
      "    if (false) {\n      r_target = t;\n      break;", "the graph shows the first row with timing",
      "tests/test_key_whole_drawing.py"),
+    # Key Together (2026-11-04).
+    ("src/anim/animation.cc", "      k.filler = fillers;", "      (void)k;", "keys added are fillers",
+     "tests/test_key_together.py"),
+    ("src/anim/animation.cc", "      if (k.filler && !own.count({unit, k.frame})) {", "      if (k.filler) {",
+     "a whole drawing's keys on a frame stay together", "tests/test_key_together.py"),
+    ("src/anim/animation.cc", "      k.filler = false;\n    }\n  }\n}", "    }\n  }\n}",
+     "an edited filler stays", "tests/test_key_together.py"),
+    ("src/io/oanim_file.cc", "  layer.key_together_settled = layer.key_together;\n", "",
+     "opened on, its fillers can go", "tests/test_key_together.py"),
+    ("src/anim/motion_path.cc", "    return group && !(t.drawing && t.layer == group->id);", "    return false;",
+     "one together row, none of its layers'", "tests/test_key_together.py"),
+    ("src/anim/motion_path.cc", "    if (const Layer *group = key_together_group(d, layer->id)) {",
+     "    if (const Layer *group = nullptr) {", "the group's together row", "tests/test_key_together.py"),
 ]
 
 
