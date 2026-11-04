@@ -26,6 +26,24 @@ EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
 PENDING = [
+    ("src/anim/animation.cc", "if (!before.empty() && ch.synced) {",
+     "if (!before.empty()) {", "eraser cut ends say nothing about deleted keys", "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "drawing_key_whole(layer, !layer.key_whole_settled, action_key);",
+     "drawing_key_whole(layer, !layer.key_whole_settled, doc.action);", "same-named actions told apart",
+     "tests/test_key_whole_drawing.py"),
+    ("src/anim/animation.cc", "      together_on.push_back(group);\n",
+     "      key_together_sync(doc, *group, !group->key_together_settled);\n      group->key_together_settled = true;\n",
+     "groups turned off let go before others sync", "tests/test_key_together.py"),
+    ("src/anim/animation.cc",
+     "      std::erase_if(keys, [&](const auto &k) { return k.filler && !own_away.count({unit, it->first, k.frame}); });\n",
+     "", "fillers in actions let go", "tests/test_key_together.py"),
+    ("src/ops/anim_ops.cc", "  KeySettings s = r_settings;", "  KeySettings &s = r_settings;",
+     "a refused argument changes no key", "tests/test_motion_path_key_menu.py"),
+    ("src/anim/motion_path.cc", "          k->speeds = speeds;", "          (void)speeds;",
+     "whole drawing slide: every point alike", "tests/test_key_whole_drawing.py"),
+    ("src/anim/motion_path.cc", "  if (!target.bone && !target.point) {\n    /* A layer's path:",
+     "  if (false) {\n    /* A layer's path:", "a layer's diamonds only its path keys",
+     "tests/test_motion_path_key_menu.py"),
 ]
 
 

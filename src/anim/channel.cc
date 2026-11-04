@@ -651,6 +651,11 @@ static void keys_changed()
   }
 }
 
+void channel_keys_changed()
+{
+  keys_changed();
+}
+
 template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value)
 {
   if (Key<T> *existing = key_at(frame)) {

@@ -1230,10 +1230,10 @@ struct Layer {
   bool key_together = false;
   /* Not saved: its keys have been made to agree since it was turned on. */
   bool key_together_settled = false;
-  /* Not saved, for Key Whole Drawing on a drawing and Key Together on a group alike. */
-  std::map<int, int> key_whole_counts;
+  /* Not saved, for Key Whole Drawing on a drawing and Key Together on a group alike: the frames keyed when its keys
+   * were last made to agree, and in which action (its owner's id and name). */
+  std::set<int> key_whole_frames;
   std::string key_whole_action;
-  int key_whole_channels = 0;
   /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
    * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
    * with their bone collections instead). */

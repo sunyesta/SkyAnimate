@@ -207,4 +207,83 @@ try:
 finally:
     shutil.rmtree(folder, ignore_errors=True)
 
+
+def nudge():
+    f = doc.frame_current
+    doc.frame_current = f + 1
+    doc.frame_current = f
+
+
+# --- The Stroke Eraser cutting it on frame 0: a point gone and two cut ends new, no pose lost -------------------------
+assert ops.wm.read_homefile() == {'FINISHED'}
+doc = oanim.data.document
+layers = oanim.data.layers
+doc.auto_key = True
+doc.auto_freeze_keys = False
+ops.layer.new()
+cut_line = layers.active
+cut_line.add_curve([(-0.5, 0.0), (-0.25, 0.0), (0.0, 0.0), (0.25, 0.0), (0.5, 0.0)])
+doc.frame_current = 10
+cut_line.set_point(4, (0.5, 0.2))
+doc.frame_current = 0
+assert frames(cut_line, "points[0].pos") == [0, 10]
+assert ops.wm.tool_draw(mode="STROKE_ERASER") == {'FINISHED'}
+oanim.wm.set_draw(fill_size=0.1)
+cut = ";".join("%f,%f,1.0,%f" % (0.0, -0.4 + 0.8 * i / 59, 0.5 * i / 59) for i in range(60))
+assert ops.draw.stroke(samples=cut, pixel=2.0 / doc.height) == {'FINISHED'}
+nudge()
+assert len(cut_line.points) == 6, len(cut_line.points)
+assert frames(cut_line, "points[0].pos") == [0, 10], ("frame 10's pose kept", frames(cut_line, "points[0].pos"))
+assert ops.wm.tool_select() == {'FINISHED'}
+
+# --- Two bone layers with actions of the same name: one's keys say nothing about the other's --------------------------
+ops.layer.new_bone()
+rig_a = layers.active
+ops.armature.bone_add(name="ba", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+ops.layer.new()
+inside = layers.active
+assert ops.layer.move_to_group(group=str(rig_a.id)) == {'FINISHED'}
+inside.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+doc.frame_current = 10
+inside.set_point(1, (1.0, 1.0))
+doc.frame_current = 0
+nudge()
+ops.layer.new_bone()
+rig_b = layers.active
+assert ops.anim.action_new(name="Walk") == {'FINISHED'}
+assert ops.anim.action_set(name="") == {'FINISHED'}
+layers.active = rig_a
+assert ops.anim.action_new(name="Walk") == {'FINISHED'}
+inside.add_curve([(0.0, 5.0), (1.0, 5.0)])
+doc.frame_current = 10
+inside.set_point(3, (0.0, 6.0))
+doc.frame_current = 0
+nudge()
+assert ops.anim.action_set(name="Walk", layer=str(rig_b.id)) == {'FINISHED'}
+nudge()
+assert ops.anim.action_set(name="") == {'FINISHED'}
+nudge()
+assert frames(inside, "points[0].pos") == [0, 10], ("the mainline's frame 10 kept", frames(inside, "points[0].pos"))
+
+# --- A timing edit relative to the timing there (a slide) leaves every point on the same share of the way -----------
+ops.layer.new()
+even = layers.active
+even.add_curve([(0.0, 0.0), (1.0, 0.0)])
+doc.frame_current = 10
+even.set_point(1, (1.0, 1.0))
+doc.frame_current = 20
+even.set_point(0, (0.0, 1.0))
+even.set_point(1, (1.0, 2.0))
+doc.frame_current = 0
+# The two points' stretch 10-20 timed apart, so each would start the slide from its own.
+even.keyframe_set("points[0].pos", 20, interp="EASE_IN")
+even.keyframe_set("points[1].pos", 20, interp="LINEAR")
+assert ops.anim.motion_path_slide(frame="15", progress="0.8", proportional="0", layer=str(even.id), drawing="1") == {
+    'FINISHED'}
+doc.frame_current = 12
+share0 = even.points[0][1] - 0.0
+share1 = even.points[1][1] - 1.0
+assert abs(share0 - share1) < 1e-3, ("both points the same share of the way", share0, share1)
+doc.frame_current = 0
+
 print("Key Whole Drawing tests passed")

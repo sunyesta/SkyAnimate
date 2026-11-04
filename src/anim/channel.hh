@@ -190,6 +190,10 @@ template<typename T> struct Channel {
   /* An action bone action is playing into it now (its bone turned into it, the offset maybe 0 at this turn):
    * its field shows pink. Worked out with `from_action_bones`, never saved. */
   bool action_bone_live = false;
+  /* Key Whole Drawing and Key Together: it was there when its keys were last made to agree with the rest's; one of
+   * that time's frames it misses now had its key deleted (a channel new since, like an eraser's cut end, says
+   * nothing). Not saved. */
+  bool synced = false;
   /* Auto-keying leaves it alone until it is animated (keyed by hand first): a layer's visibility,
    * so hiding a layer while working doesn't key it. */
   bool keyed_by_hand = false;
@@ -251,6 +255,8 @@ bool path_handles_from_identifier(const std::string &identifier, PathHandles *r_
 /* Grows each time a key is added, changed or removed (set_key, remove_key), anywhere: for what is kept until
  * keys change. */
 uint64_t channel_keys_generation();
+/* For keys changed in place without set_key or remove_key (an action's put-away keys). */
+void channel_keys_changed();
 /* While one is alive (on this thread), keys set on scratch channels (a copy sampled and dropped) don't count. */
 struct ChannelKeysQuiet {
   ChannelKeysQuiet();

@@ -324,6 +324,30 @@ std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &t
   /* Everything that moves it: its own layer's keys (a bone's moved by its knob's actions, too) and those of the
    * layers above. Frame 0 is the setup, not a key of the animation. */
   std::set<int> keys;
+  if (!target.bone && !target.point) {
+    /* A layer's path: only the turns, moves and sizes that move it (its opacity or drawing keys aren't keys of its
+     * path, and its diamonds' menu reaches only these). */
+    KeyFilter filter;
+    filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
+    Document &d = const_cast<Document &>(doc);
+    for (Layer *l = layer_find(d, target.layer); l; l = layer_parent(d, l->id)) {
+      for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
+        const auto add = [&](const auto *ch) {
+          if (!ch) {
+            return;
+          }
+          for (const auto &k : ch->keys) {
+            if (k.frame > 0) {
+              keys.insert(k.frame);
+            }
+          }
+        };
+        add(ref.scalar);
+        add(ref.vector);
+      }
+    }
+    return {keys.begin(), keys.end()};
+  }
   for (const Layer *l = layer_find(doc, target.layer); l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
     for (const int f : layer_key_frames(*l)) {
       if (f > 0) {
@@ -1782,7 +1806,9 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
   return changed;
 }
 
-/* As with_path_channel, but a timing change to the drawing goes to every channel of it alike. */
+/* As with_path_channel, but a timing change to the drawing goes to every channel of it alike: the timing the first
+ * channel (the one its row shows) ends up with, since an edit relative to the timing there (a slide, a speed, a
+ * blend) would otherwise start from each channel's own. */
 template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f)
 {
   if (!t.drawing) {
@@ -1790,10 +1816,31 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   }
   Layer *layer = layer_find(doc, t.layer);
   bool found = false;
+  using Timing = std::tuple<int, Interp, std::vector<float>>;
+  std::vector<Timing> changed;
   if (layer) {
     drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
+      if (!found) {
+        std::vector<Timing> before;
+        for (const auto &k : ch.keys) {
+          before.push_back({k.frame, k.interp, k.speeds});
+        }
+        f(ch);
+        found = true;
+        for (const auto &k : ch.keys) {
+          Timing now{k.frame, k.interp, k.speeds};
+          if (std::find(before.begin(), before.end(), now) == before.end()) {
+            changed.push_back(std::move(now));
+          }
+        }
+        return true;
+      }
       f(ch);
-      found = true;
+      for (const auto &[frame, interp, speeds] : changed) {
+        if (auto *k = ch.key_at(frame); k && k->interp == interp && k->speeds.size() == speeds.size()) {
+          k->speeds = speeds;
+        }
+      }
       return true;
     });
   }

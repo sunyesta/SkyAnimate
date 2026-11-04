@@ -362,8 +362,10 @@ static bool g_interp_copied = false;
 
 /* The settings an operator's arguments name, over `s`: only those given change. False (and a
  * report) for an unknown mode or strength. */
-bool interp_args_apply(Context &C, KeySettings &s, std::string *r_what)
+bool interp_args_apply(Context &C, KeySettings &r_settings, std::string *r_what)
 {
+  /* Worked out on a copy: an argument refused changes nothing. */
+  KeySettings s = r_settings;
   if (op_has_arg(C, "interp")) {
     Interp interp;
     if (!interp_from_identifier(op_arg(C, "interp"), &interp)) {
@@ -386,7 +388,13 @@ bool interp_args_apply(Context &C, KeySettings &s, std::string *r_what)
   }
   const auto number = [&](const char *name, auto &r_value) {
     if (op_has_arg(C, name)) {
-      r_value = std::decay_t<decltype(r_value)>(op_arg_float(C, name, float(r_value)));
+      using T = std::decay_t<decltype(r_value)>;
+      float v = op_arg_float(C, name, float(r_value));
+      if constexpr (std::is_integral_v<T>) {
+        /* Past what an int holds the cast is undefined. */
+        v = std::clamp(v, -1e9f, 1e9f);
+      }
+      r_value = T(v);
       if (r_what->empty()) {
         *r_what = "Interpolation Settings";
       }
@@ -404,6 +412,7 @@ bool interp_args_apply(Context &C, KeySettings &s, std::string *r_what)
   s.interval = std::clamp(s.interval, 1, 3);
   s.cycle_back = std::max(0, s.cycle_back);
   s.elastic_period = std::max(0.02f, s.elastic_period);
+  r_settings = s;
   return true;
 }
 

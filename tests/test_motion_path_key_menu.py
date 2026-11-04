@@ -112,4 +112,32 @@ assert key(group, "position", 20)["interp"] == "LINEAR", key(group, "position", 
 assert ops.anim.motion_path_key_delete(frame="20", **g) == {'FINISHED'}
 assert 20 not in frames(group, "position")
 
+# --- A bad argument changes nothing: no key half set ------------------------------------------------------------------
+ops.layer.new()
+odd = layers.active
+odd.key_whole_drawing = False
+odd.add_curve([(0.0, 0.0), (1.0, 0.0)])
+doc.frame_current = 10
+odd.location_x = 1.0
+doc.frame_current = 20
+odd.location_x = 3.0
+doc.frame_current = 25
+odd.opacity = 0.5
+doc.frame_current = 0
+for l in layers:
+    l.selected = l.id == odd.id
+o = {"layer": str(odd.id)}
+assert ops.anim.motion_path_key_interp(frame="10", interp="STEP", ease="WOBBLY", **o) == {'CANCELLED'}
+assert key(odd, "position", 10)["interp"] == "SMOOTH", ("left alone", key(odd, "position", 10))
+
+# --- A layer's path diamonds are only what moves it: its opacity key isn't one ---------------------------------------
+doc.frame_current = 15
+doc.motion_paths = True
+doc.path_before, doc.path_after = 50, 50
+layers.active = odd
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+path = next(p for p in oanim.wm.motion_paths() if p["layer"] == odd.id and not p.get("point") and not p.get("bone"))
+assert path["keys"] == [10, 20], path["keys"]
+doc.frame_current = 0
+
 print("Motion path key menu tests passed")

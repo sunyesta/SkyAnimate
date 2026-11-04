@@ -154,4 +154,85 @@ try:
 finally:
     shutil.rmtree(folder, ignore_errors=True)
 
+
+def new_vec(points):
+    ops.layer.new()
+    l = layers.active
+    l.add_curve(points)
+    return l
+
+
+def group_of(members):
+    ids = [m.id for m in members]
+    for l in layers.all():
+        l.selected = l.id in ids
+    assert ops.layer.group() == {'FINISHED'}
+    return layers.active
+
+
+# --- Nested: the inner group on first, then the outer one: the inner one's keys handed over, none lost ---------------
+assert ops.wm.read_homefile() == {'FINISHED'}
+doc = oanim.data.document
+layers = oanim.data.layers
+doc.auto_key = True
+doc.auto_freeze_keys = False
+na = new_vec([(0.0, 0.0), (1.0, 0.0)])
+nb = new_vec([(0.0, 3.0), (1.0, 3.0)])
+inner = group_of([na, nb])
+nc = new_vec([(0.0, 6.0), (1.0, 6.0)])
+outer = group_of([inner, nc])
+doc.frame_current = 10
+na.set_point(1, (1.0, 1.0))
+doc.frame_current = 20
+nc.set_point(0, (0.0, 7.0))
+doc.frame_current = 0
+inner.key_together = True
+settle()
+outer.key_together = True
+settle()
+settle()
+for l in (na, nb, nc):
+    assert frames(l, "points[0].pos") == [0, 10, 20], (l.name, frames(l, "points[0].pos"))
+outer.key_together = False
+settle()
+settle()
+assert frames(na, "points[1].pos") == [0, 10] and frames(nc, "points[0].pos") == [0, 20], (
+    "the outer off: the inner one keys its own again", frames(na, "points[1].pos"), frames(nc, "points[0].pos"))
+assert frames(nb, "points[0].pos") == [0, 10], frames(nb, "points[0].pos")
+inner.key_together = False
+settle()
+assert frames(na, "points[1].pos") == [0, 10] and frames(nb, "points[0].pos") == [], frames(nb, "points[0].pos")
+doc.frame_current = 20
+assert abs(nc.points[0][1] - 7.0) < 1e-4, ("c's own pose kept", nc.points[0])
+doc.frame_current = 0
+
+# --- Fillers added in an action go too when it's turned off on the mainline -------------------------------------------
+ops.layer.new_bone()
+rig = layers.active
+ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+ops.armature.select_none()
+ops.armature.bone_add(name="leg", head_x="0", head_y="-1", tail_x="1", tail_y="-1", parent="")
+hat = new_vec([(0.0, 5.0), (1.0, 5.0)])
+assert ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
+layers.active = rig
+rig.key_together = True
+settle()
+assert ops.anim.action_new(name="wave") == {'FINISHED'}
+rig.select_bone("arm")
+doc.frame_current = 6
+assert ops.armature.rotate(angle="30") == {'FINISHED'}
+doc.frame_current = 0
+settle()
+assert frames(rig, 'bones["leg"].angle') == [0, 6] and frames(hat, "position") == [0, 6]
+assert ops.anim.action_set(name="") == {'FINISHED'}
+settle()
+rig.key_together = False
+settle()
+assert ops.anim.action_set(name="wave") == {'FINISHED'}
+settle()
+assert frames(rig, 'bones["arm"].angle') == [0, 6], frames(rig, 'bones["arm"].angle')
+assert 6 not in frames(rig, 'bones["leg"].angle') and 6 not in frames(hat, "position"), (
+    "the action's fillers let go", frames(rig, 'bones["leg"].angle'), frames(hat, "position"))
+assert ops.anim.action_set(name="") == {'FINISHED'}
+
 print("Key Together tests passed")
