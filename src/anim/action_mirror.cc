@@ -64,7 +64,15 @@ void mirror_keys(const Channel<T> &src, Channel<T> &dst, const std::string &from
   }
   std::vector<Key<T>> keys = it->second;
   for (Key<T> &k : keys) {
-    k.value = map(k.value);
+    const T was = k.value;
+    k.value = map(was);
+    if constexpr (std::is_same_v<T, float2>) {
+      /* Path handles are offsets from the value: mirrored as the places they reach. */
+      if (k.path_handles != PathHandles::Auto) {
+        k.path_in = map(was + k.path_in) - k.value;
+        k.path_out = map(was + k.path_out) - k.value;
+      }
+    }
     k.selected = false;
   }
   dst.actions[to] = std::move(keys);

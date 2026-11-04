@@ -100,6 +100,8 @@ def build():
     face.set_point(5, (0.05, -0.9))
     layer("Side_X").set_point(2, (0.6, 0.1))
     tab_l.move_handle(0, 1, "OUT", (1.1, 1.6))
+    # Path handles dragged on a point's key (the Motion Path tool's), broken.
+    ear_l.keyframe_set("points[1].pos", 10, path_out=(0.3, 0.1), path_in=(-0.2, 0.05))
     assert ops.layer.draw_order_set(layer=str(back.id), mode="FRONT", target=str(ear_r.id)) == {'FINISHED'}
     assert ops.layer.switch_set(layer=switch.name, child="Side_X") == {'FINISHED'}
     doc.frame_current = 11
@@ -164,6 +166,9 @@ spine = {k["frame"]: k["value"] for k in rig.keyframes('bones["Spine_X"].angle')
 assert close(spine[10], -0.2), ("a centred bone turns the other way inside itself", spine)
 ear_keys = {k["frame"]: k["value"] for k in layer("Ear_R").keyframes("points[1].pos")}
 assert close(ear_keys[10], (-0.1, 0.2)), ("Ear_L's change, reflected", ear_keys)
+ear_key = next(k for k in layer("Ear_R").keyframes("points[1].pos") if k["frame"] == 10)
+assert ear_key["path_handles"] == "BROKEN", ear_key
+assert close(ear_key["path_out"], (-0.3, 0.1)) and close(ear_key["path_in"], (0.2, 0.05)), ("its handles too", ear_key)
 ear_keys = {k["frame"]: k["value"] for k in layer("Ear_L").keyframes("points[1].pos")}
 assert close(ear_keys[10], (-0.1, -0.1)), ("and Ear_R's", ear_keys)
 rule = [k for k in layer("Back").keyframes("draw_order")]
