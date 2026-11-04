@@ -80,4 +80,20 @@ void motion_path_record(Document &doc);
  * keys either side of it (up to two each side). Returns how many keys moved. */
 int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int first, int last);
 
+/* --- Path handles on position keys: a layer's origin, a bone's head (not a connected one), a point. A bone's tip goes
+ * where its angle turns it, so its path has none. */
+
+/* Whether `target` has position keys with path handles. */
+bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target);
+/* Where `target`'s position key on `frame` is and where its handles end, in document space on that frame (a handle
+ * shown a third of the way along its stretch, as a Bezier's). False with no position key there. */
+bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
+                         float2 &r_out, PathHandles *r_mode = nullptr);
+/* Moves the handle (`out`, else in) of `target`'s position key on `frame` so it ends at `at` (document space on that
+ * frame); `broken` (Alt) moves it alone and breaks the pair. Only the keys change: call animation_evaluate after. */
+bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int frame, bool out, float2 at,
+                            bool broken);
+/* Puts `target`'s selected position keys back to Auto handles. Returns how many changed. */
+int motion_path_handles_auto(Document &doc, const MotionPathTarget &target);
+
 }  // namespace oanim

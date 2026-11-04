@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <type_traits>
 
 namespace oanim {
 
@@ -254,6 +255,162 @@ static void for_each_component(float2 &r, float2 v, float2 vp, float2 vn,
   f(r.y, v.y, vp.y, vn.y);
 }
 
+static void keys_changed();
+
+/* Smooth's slope at key `i` (value per frame), from its neighbours. */
+template<typename T> static T key_slope(const std::vector<Key<T>> &keys, int i)
+{
+  const int n = int(keys.size());
+  const bool has_prev = i > 0, has_next = i + 1 < n;
+  T m{};
+  for_each_component(m, keys[i].value, has_prev ? keys[i - 1].value : keys[i].value,
+                     has_next ? keys[i + 1].value : keys[i].value, [&](float &r, float v, float vp, float vn) {
+                       const float fp = has_prev ? float(keys[i - 1].frame) : 0.0f;
+                       const float fn = has_next ? float(keys[i + 1].frame) : 0.0f;
+                       const float f = float(keys[i].frame);
+                       r = clamped_slope(vp, v, vn, f - fp, fn - f, has_prev, has_next);
+                     });
+  return m;
+}
+
+/* The frames a stretch from key `a` to key `b` moves over (after a's hold). */
+template<typename T> static float stretch_span(const Key<T> &a, const Key<T> &b)
+{
+  return float(b.frame - std::min(a.frame + std::max(a.hold, 0), b.frame));
+}
+
+static Interp stretch_interp(Interp arriving)
+{
+  return arriving == Interp::Cycle ? Interp::Smooth : arriving;
+}
+
+static bool interp_smooth(Interp interp)
+{
+  return interp == Interp::Smooth || interp == Interp::Bezier;
+}
+
+void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_in, float2 &r_out)
+{
+  r_in = r_out = float2{0.0f, 0.0f};
+  if (i >= keys.size()) {
+    return;
+  }
+  const Key<float2> &k = keys[i];
+  if (k.path_handles != PathHandles::Auto) {
+    r_in = k.path_in;
+    r_out = k.path_out;
+    return;
+  }
+  if (i > 0) {
+    const Key<float2> &a = keys[i - 1];
+    r_in = interp_smooth(stretch_interp(k.interp)) ? key_slope(keys, int(i)) * (-stretch_span(a, k) / 3.0f)
+                                                    : (a.value - k.value) / 3.0f;
+  }
+  if (i + 1 < keys.size()) {
+    const Key<float2> &b = keys[i + 1];
+    r_out = interp_smooth(stretch_interp(b.interp)) ? key_slope(keys, int(i)) * (stretch_span(k, b) / 3.0f)
+                                                     : (b.value - k.value) / 3.0f;
+  }
+}
+
+static float2 bezier(const float2 p[4], float t)
+{
+  const float s = 1.0f - t;
+  return p[0] * (s * s * s) + p[1] * (3.0f * s * s * t) + p[2] * (3.0f * s * t * t) + p[3] * (t * t * t);
+}
+
+/* Where a stretch with handles is, `u` of the way along it by length (Linear moves at an even speed); past either end
+ * (Back, Elastic) it carries on along the end's direction. */
+static float2 bezier_along(const float2 p[4], float u)
+{
+  constexpr int PIECES = 32;
+  float lengths[PIECES + 1] = {0.0f};
+  float2 prev = p[0];
+  for (int j = 1; j <= PIECES; j++) {
+    const float2 q = bezier(p, float(j) / PIECES);
+    lengths[j] = lengths[j - 1] + length(q - prev);
+    prev = q;
+  }
+  const float total = lengths[PIECES];
+  if (total < 1e-9f) {
+    return p[0];
+  }
+  const auto direction = [](float2 from, float2 to, float2 fallback) {
+    const float2 d = to - from;
+    const float l = length(d);
+    return l > 1e-9f ? d / l : fallback;
+  };
+  const float2 chord = direction(p[0], p[3], float2{1.0f, 0.0f});
+  if (u <= 0.0f) {
+    const float2 d = direction(p[0], length(p[1] - p[0]) > 1e-9f ? p[1] : p[2], chord);
+    return p[0] + d * (u * total);
+  }
+  if (u >= 1.0f) {
+    const float2 d = direction(length(p[2] - p[3]) > 1e-9f ? p[2] : p[1], p[3], chord);
+    return p[3] + d * ((u - 1.0f) * total);
+  }
+  const float want = u * total;
+  int j = 1;
+  while (j < PIECES && lengths[j] < want) {
+    j++;
+  }
+  const float piece = lengths[j] - lengths[j - 1];
+  const float f = piece > 1e-12f ? (want - lengths[j - 1]) / piece : 0.0f;
+  return bezier(p, (float(j - 1) + f) / PIECES);
+}
+
+void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken)
+{
+  if (i >= keys.size()) {
+    return;
+  }
+  float2 in_now, out_now;
+  key_path_handles(keys, i, in_now, out_now);
+  Key<float2> &k = keys[i];
+  if (k.path_handles == PathHandles::Auto) {
+    k.path_in = in_now;
+    k.path_out = out_now;
+    k.path_handles = PathHandles::Aligned;
+  }
+  if (broken) {
+    k.path_handles = PathHandles::Broken;
+  }
+  (out ? k.path_out : k.path_in) = handle;
+  if (k.path_handles == PathHandles::Aligned) {
+    float2 &other = out ? k.path_in : k.path_out;
+    const float l = length(handle);
+    const float keep = length(other) > 1e-9f ? length(other) : l;
+    if (l > 1e-9f) {
+      other = handle * (-keep / l);
+    }
+  }
+  keys_changed();
+}
+
+const char *path_handles_identifier(PathHandles mode)
+{
+  switch (mode) {
+    case PathHandles::Auto:
+      return "AUTO";
+    case PathHandles::Aligned:
+      return "ALIGNED";
+    case PathHandles::Broken:
+      return "BROKEN";
+  }
+  return "AUTO";
+}
+
+bool path_handles_from_identifier(const std::string &identifier, PathHandles *r_mode)
+{
+  for (const PathHandles mode : {PathHandles::Auto, PathHandles::Aligned, PathHandles::Broken}) {
+    if (identifier == path_handles_identifier(mode)) {
+      *r_mode = mode;
+      return true;
+    }
+  }
+  return false;
+}
+
 template<typename T> T Channel<T>::evaluate(int frame) const
 {
   if (keys.empty()) {
@@ -303,7 +460,43 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   /* The stretch arriving at a key takes that key's interpolation and its settings (as Moho's: how the
    * motion gets to this pose); a Cycle key's own interpolation is its loop after it, so the stretch
    * into one is Smooth. Hold, the interval and Cycle stay the earlier key's: what happens after it. */
-  const Interp interp = b.interp == Interp::Cycle ? Interp::Smooth : b.interp;
+  const Interp interp = stretch_interp(b.interp);
+  if constexpr (std::is_same_v<T, float2>) {
+    /* A dragged path handle at either end: the stretch runs along the Bezier the handles make, Smooth by the curve's
+     * own timing (as without handles), any other mode by its progress along the curve's length. */
+    if ((a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto) && interp != Interp::Step &&
+        interp != Interp::Pose)
+    {
+      float2 in, out, unused;
+      key_path_handles(keys, size_t(k), unused, out);
+      key_path_handles(keys, size_t(k) + 1, in, unused);
+      const float2 p[4] = {a.value, a.value + out, b.value + in, b.value};
+      if (interp_smooth(interp)) {
+        return bezier(p, t);
+      }
+      float u = t;
+      switch (interp) {
+        case Interp::EaseInOut:
+        case Interp::EaseIn:
+        case Interp::EaseOut:
+          u = ease_shaped(interp, b.ease, t);
+          break;
+        case Interp::Back:
+          u = ease_back(t, b.overshoot);
+          break;
+        case Interp::Bounce:
+          u = ease_bounce(t);
+          break;
+        case Interp::Elastic:
+          u = ease_elastic(t, b.elastic_amplitude, b.elastic_period);
+          break;
+        default:
+          break;
+      }
+      const float2 along = bezier_along(p, u);
+      return interp == Interp::Noisy ? along + noise_of(a.value, b, float(frame)) : along;
+    }
+  }
   switch (interp) {
     case Interp::Step:
     case Interp::Pose:
@@ -331,20 +524,7 @@ template<typename T> T Channel<T>::evaluate(int frame) const
    * end uses the straight line to its one neighbour), so it eases through keys as Moho does.
    * Like Blender's auto-clamped handles, a key that is a peak, a valley or equal to a neighbour
    * is flat, so equal keys hold still and the motion never overshoots its keys. */
-  const auto slope = [&](int i) {
-    const int n = int(keys.size());
-    const bool has_prev = i > 0, has_next = i + 1 < n;
-    T m{};
-    for_each_component(m, keys[i].value, has_prev ? keys[i - 1].value : keys[i].value,
-                       has_next ? keys[i + 1].value : keys[i].value, [&](float &r, float v, float vp, float vn) {
-                         const float fp = has_prev ? float(keys[i - 1].frame) : 0.0f;
-                         const float fn = has_next ? float(keys[i + 1].frame) : 0.0f;
-                         const float f = float(keys[i].frame);
-                         r = clamped_slope(vp, v, vn, f - fp, fn - f, has_prev, has_next);
-                       });
-    return m;
-  };
-  const T m0 = slope(k) * span, m1 = slope(k + 1) * span;
+  const T m0 = key_slope(keys, k) * span, m1 = key_slope(keys, k + 1) * span;
   const float t2 = t * t, t3 = t2 * t;
   return a.value * (2 * t3 - 3 * t2 + 1) + m0 * (t3 - 2 * t2 + t) + b.value * (-2 * t3 + 3 * t2) + m1 * (t3 - t2);
 }

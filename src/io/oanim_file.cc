@@ -194,6 +194,14 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.color != 0) {
       key["color"] = k.color;
     }
+    if constexpr (std::is_same_v<T, float2>) {
+      /* Path handles (the Motion Path tool's), once dragged. */
+      if (k.path_handles != PathHandles::Auto) {
+        key["path_handles"] = path_handles_identifier(k.path_handles);
+        key["path_in"] = float2_to_json(k.path_in);
+        key["path_out"] = float2_to_json(k.path_out);
+      }
+    }
     if (k.selected) {
       key["selected"] = true;
     }
@@ -1657,6 +1665,16 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.cycle_absolute = get_bool(k, "cycle_absolute", false);
     key.cycle_frame = std::max(0, get_int(k, "cycle_frame", 0));
     key.color = get_int(k, "color", 0);
+    if constexpr (std::is_same_v<T, float2>) {
+      const auto in = k.find("path_in"), out = k.find("path_out");
+      if (path_handles_from_identifier(get_string(k, "path_handles", "AUTO"), &key.path_handles) &&
+          key.path_handles != PathHandles::Auto &&
+          !(in != k.end() && out != k.end() && value_from_json(*in, &key.path_in) &&
+            value_from_json(*out, &key.path_out)))
+      {
+        key.path_handles = PathHandles::Auto;
+      }
+    }
     key.selected = get_bool(k, "selected", false);
     if (!r_ch.key_at(key.frame)) {
       r_ch.keys.push_back(key);

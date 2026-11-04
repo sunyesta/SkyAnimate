@@ -531,7 +531,114 @@ void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v
   }
 }
 
+/* The position keys that carry `t`'s path handles, or null (a bone's tip, a connected bone's head). */
+Channel<float2> *handle_channel(Document &doc, const MotionPathTarget &t)
+{
+  Layer *layer = layer_find(doc, t.layer);
+  if (!layer) {
+    return nullptr;
+  }
+  if (t.bone) {
+    const int i = bone_index(*layer, t.bone);
+    if (i < 0 || !t.head || layer->bones[size_t(i)].connected) {
+      return nullptr;
+    }
+    return &layer->bones[size_t(i)].position_keys;
+  }
+  if (t.point) {
+    const int i = point_index(*layer, t.point);
+    return i < 0 ? nullptr : &layer->drawing.points[size_t(i)].pos_keys;
+  }
+  return &layer->position_keys;
+}
+
+/* How `t` shows on `frame` as its position key there changes: where it is (r_at) and how far it moves for a step of
+ * the key's value in x (r_cx) and y (r_cy). Keys hold values in their own space (a bone's turned with its rest, a
+ * point's from where it sits at rest), so this is found by nudging the key on a copy. */
+bool key_jacobian(const Document &doc, const MotionPathTarget &t, int frame, float2 &r_at, float2 &r_cx, float2 &r_cy)
+{
+  Document copy = doc;
+  Channel<float2> *ch = handle_channel(copy, t);
+  Key<float2> *key = ch ? ch->key_at(frame) : nullptr;
+  if (!key) {
+    return false;
+  }
+  copy.frame_current = frame;
+  const float2 start = key->value;
+  const float h = 1e-2f;
+  float2 dx, dy;
+  animation_evaluate(copy, frame);
+  bool ok = target_position(copy, t, r_at);
+  key->value = start + float2{h, 0.0f};
+  animation_evaluate(copy, frame);
+  ok = ok && target_position(copy, t, dx);
+  key->value = start + float2{0.0f, h};
+  animation_evaluate(copy, frame);
+  ok = ok && target_position(copy, t, dy);
+  r_cx = (dx - r_at) / h;
+  r_cy = (dy - r_at) / h;
+  return ok;
+}
+
 }  // namespace
+
+bool motion_path_has_handles(const Document &doc, const MotionPathTarget &target)
+{
+  return handle_channel(const_cast<Document &>(doc), target) != nullptr;
+}
+
+bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
+                         float2 &r_out, PathHandles *r_mode)
+{
+  const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
+  const Key<float2> *key = ch ? ch->key_at(frame) : nullptr;
+  float2 cx, cy;
+  if (!key || !key_jacobian(doc, target, frame, r_key, cx, cy)) {
+    return false;
+  }
+  float2 in, out;
+  key_path_handles(ch->keys, size_t(key - ch->keys.data()), in, out);
+  r_in = r_key + cx * in.x + cy * in.y;
+  r_out = r_key + cx * out.x + cy * out.y;
+  if (r_mode) {
+    *r_mode = key->path_handles;
+  }
+  return true;
+}
+
+bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int frame, bool out, float2 at,
+                            bool broken)
+{
+  Channel<float2> *ch = handle_channel(doc, target);
+  Key<float2> *key = ch ? ch->key_at(frame) : nullptr;
+  float2 p, cx, cy;
+  if (!key || !key_jacobian(doc, target, frame, p, cx, cy)) {
+    return false;
+  }
+  const float det = cx.x * cy.y - cx.y * cy.x;
+  if (std::abs(det) < 1e-12f) {
+    return false;
+  }
+  const float2 miss = at - p;
+  const float2 handle{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
+  key_path_handle_set(ch->keys, size_t(key - ch->keys.data()), out, handle, broken);
+  return true;
+}
+
+int motion_path_handles_auto(Document &doc, const MotionPathTarget &target)
+{
+  Channel<float2> *ch = handle_channel(doc, target);
+  int changed = 0;
+  if (ch) {
+    for (Key<float2> &k : ch->keys) {
+      if (k.selected && k.path_handles != PathHandles::Auto) {
+        k.path_handles = PathHandles::Auto;
+        changed++;
+      }
+    }
+  }
+  return changed;
+}
 
 bool motion_path_position(const Document &doc, const MotionPathTarget &target, float2 &r_at)
 {

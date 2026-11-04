@@ -51,6 +51,10 @@ const char *ease_identifier(Ease ease);
 const char *ease_name(Ease ease);
 bool ease_from_identifier(const std::string &identifier, Ease *r_ease);
 
+/* A position key's path handles (the Motion Path tool's): Auto until one is dragged, then Aligned (the two in a line,
+ * as a smooth point's) or Broken (Alt: each its own way). */
+enum class PathHandles : uint8_t { Auto, Aligned, Broken };
+
 template<typename T> struct Key {
   int frame = 0;
   T value{};
@@ -77,6 +81,11 @@ template<typename T> struct Key {
   int cycle_frame = 0;
   /* Moho's key colour tag (0 = none). */
   int color = 0;
+  /* Position keys only (Channel<float2>): how the path leaves this key toward the next (path_out) and arrives from
+   * the one before (path_in), as offsets from its value, as a Bezier's handles. Unused while Auto, when the path runs
+   * as it always has (key_path_handles works out what they would be). */
+  PathHandles path_handles = PathHandles::Auto;
+  T path_in{}, path_out{};
   /* Picked in the timeline. Not saved. */
   bool selected = false;
   bool operator==(const Key &) const = default;
@@ -199,6 +208,17 @@ template<typename T> struct Channel {
 
 extern template struct Channel<float>;
 extern template struct Channel<float2>;
+
+/* Key `i`'s path handles as they shape its two stretches: its own once dragged, else the Auto ones (on a Smooth
+ * stretch the slope Smooth gives it, on any other pointing a third of the way to the key at the other end, so the
+ * stretch stays straight). Zero where there is no stretch. */
+void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_in, float2 &r_out);
+/* Sets one of key `i`'s handles (`out`, else in) to `handle`: an Auto key takes its Auto handles first; Aligned turns
+ * the other one to stay in line, keeping its length; `broken` breaks them for good. */
+void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken);
+/* "AUTO", "ALIGNED", "BROKEN". */
+const char *path_handles_identifier(PathHandles mode);
+bool path_handles_from_identifier(const std::string &identifier, PathHandles *r_mode);
 
 /* Grows each time a key is added, changed or removed (set_key, remove_key), anywhere: for what is kept until
  * keys change. */

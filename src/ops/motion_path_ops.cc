@@ -332,6 +332,63 @@ void motion_path_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handle";
+    ot.name = "Move Motion Path Handle";
+    ot.description = "Move a path handle of the position key on frame=N of what a path traces (layer=, bone= (its "
+                     "head), point=, or the first traced) so it ends at x, y: side=OUT shapes the path toward the next "
+                     "key, IN from the one before. The other handle stays in line, unless broken=1 (Alt), which "
+                     "breaks the pair";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      const float2 at = {op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
+      if (!motion_path_handle_set(doc, targets.front(), frame, op_arg(C, "side") != "IN", at, op_arg_bool(C, "broken")))
+      {
+        report(ReportType::Warning, "No position key there with path handles (a bone's tip turns, so has none)");
+        return OpStatus::Cancelled;
+      }
+      animation_evaluate(doc, doc.frame_current);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handles_auto";
+    ot.name = "Auto Handles";
+    ot.description = "Put the selected keys' path handles back to Auto, the path running through them as it did "
+                     "before they were dragged (layer=, bone=, point= for one path; else every path traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      int changed = 0;
+      for (const MotionPathTarget &t : targets) {
+        changed += motion_path_handles_auto(doc, t);
+      }
+      if (changed == 0) {
+        report(ReportType::Info, "No selected key has dragged handles");
+        return OpStatus::Cancelled;
+      }
+      animation_evaluate(doc, doc.frame_current);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
 }
 
 }  // namespace oanim

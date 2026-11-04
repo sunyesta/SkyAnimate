@@ -673,6 +673,10 @@ static struct {
   ImVec2 press;
   /* The arc between the keys either side (document space), for a breakdown. */
   std::vector<float2> arc;
+  /* A path handle pressed instead of a dot: 1 its key's in handle, 2 its out; `offset` from where the path is drawn to
+   * document space on its key's frame (zero unless drawn relative to something). */
+  int handle = 0;
+  float2 offset;
   Document snapshot;
   /* Each update changes what's drawn without an undo step: this tells the cache. */
   uint64_t serial = 0;
@@ -714,13 +718,40 @@ static OpArgs motion_path_target_args(const Document &doc, const MotionPathTarge
   return args;
 }
 
-/* The Motion Path tool's mouse: press a dot (go there, select its key), drag it (keyed there), Esc cancels. */
+/* A selected position key's path handles as drawn: where its key and handle ends show (where the path is drawn). */
+struct PathHandlesShown {
+  MotionPathTarget target;
+  int frame = 0;
+  float2 key, in, out;
+  PathHandles mode = PathHandles::Auto;
+  bool first = false, last = false;
+  /* Drawn position less document space on the key's frame. */
+  float2 offset;
+};
+
+/* The Motion Path tool's mouse: press a dot (go there, select its key), drag it (keyed there), or press a selected
+ * key's handle and drag it (Alt breaks the pair); Esc cancels. */
 static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
-                                   int first, int last)
+                                   int first, int last, const PathHandlesShown *hover_handle, bool hover_out)
 {
   Document &doc = *C.document;
   ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_drag;
+  if (!g.active && hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    g.active = true;
+    g.dragging = false;
+    g.breakdown = false;
+    g.on_key = true;
+    g.target = hover_handle->target;
+    g.frame = hover_handle->frame;
+    g.first = first;
+    g.last = last;
+    g.press = io.MousePos;
+    g.handle = hover_out ? 2 : 1;
+    g.offset = hover_handle->offset;
+    g.snapshot = doc;
+    return;
+  }
   if (!g.active) {
     if (!hover_path || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
@@ -762,7 +793,10 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
   }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (g.dragging) {
-      push_undo(C, g.breakdown ? "Motion Path Breakdown" : g.on_key ? "Move Motion Path Key" : "Add Motion Path Key");
+      push_undo(C, g.handle      ? "Move Motion Path Handle"
+                   : g.breakdown ? "Motion Path Breakdown"
+                   : g.on_key    ? "Move Motion Path Key"
+                                 : "Add Motion Path Key");
     }
     const uint64_t serial = g.serial + 1;
     g = {};
@@ -776,6 +810,13 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
   g.dragging = true;
   /* On the dot's frame the path is drawn where things are then, whatever it is relative to. */
   float2 at = view.to_document(io.MousePos);
+  if (g.handle) {
+    /* Only the key's handles change: no record, the keys are what's edited. */
+    motion_path_handle_set(doc, g.target, g.frame, g.handle == 2, at - g.offset, io.KeyAlt);
+    animation_evaluate(doc, doc.frame_current);
+    g.serial++;
+    return;
+  }
   if (g.breakdown) {
     motion_path_breakdown(doc, g.target, arc_fraction(g.arc, at));
   }
@@ -866,6 +907,8 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
   const MotionPath *hover_path = nullptr;
   int hover_frame = 0;
   const int step = std::max(1, doc.path_step);
+  /* With the tool, the path handles of selected position keys. */
+  std::vector<std::pair<MotionPathTarget, int>> handle_keys;
   for (const MotionPath &p : cache.paths) {
     std::vector<ImVec2> screen;
     for (const float2 q : p.points) {
@@ -895,6 +938,9 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
         shown |= on_key || (f - p.first) % step == 0;
         if (const auto it = picked.find(f); it != picked.end() && it->second.selected > 0) {
           selected = true;
+          if (on_key && motion_path_has_handles(doc, p.target)) {
+            handle_keys.push_back({p.target, f});
+          }
         }
       }
       if (shown) {
@@ -932,10 +978,87 @@ static void draw_motion_paths(Context &C, const ViewMapping &view, ImDrawList *d
       dl->AddCircle(screen[size_t(now)], 7.0f, IM_COL32(255, 255, 255, 240), 0, 1.6f);
     }
   }
+  /* Each selected position key's handles: a line from the key to each end, hollow while Auto, filled once dragged
+   * (square once broken). Worked out from copies of the document, so kept until something changes. */
+  static struct {
+    const Document *doc = nullptr;
+    uint64_t changes = ~uint64_t(0), serial = 0;
+    int frame = -1;
+    std::vector<std::pair<MotionPathTarget, int>> keys;
+    std::vector<PathHandlesShown> shown;
+  } handles;
+  if (handles.doc != &doc || handles.changes != changes || handles.serial != g_path_drag.serial ||
+      handles.frame != doc.frame_current || handles.keys != handle_keys)
+  {
+    handles.doc = &doc;
+    handles.changes = changes;
+    handles.serial = g_path_drag.serial;
+    handles.frame = doc.frame_current;
+    handles.keys = handle_keys;
+    handles.shown.clear();
+    for (const auto &[target, f] : handle_keys) {
+      PathHandlesShown h;
+      h.target = target;
+      h.frame = f;
+      if (!motion_path_handles(doc, target, f, h.key, h.in, h.out, &h.mode)) {
+        continue;
+      }
+      for (const MotionPath &p : cache.paths) {
+        if (p.target.same(target) && f >= p.first && f - p.first < int(p.points.size())) {
+          h.offset = p.points[size_t(f - p.first)] - h.key;
+        }
+      }
+      h.first = length(h.in - h.key) < 1e-7f;
+      h.last = length(h.out - h.key) < 1e-7f;
+      handles.shown.push_back(h);
+    }
+  }
+  const PathHandlesShown *hover_handle = nullptr;
+  bool hover_out = false;
+  float handle_best = 7.0f * 7.0f;
+  for (const PathHandlesShown &h : handles.shown) {
+    const ImVec2 k = view.to_screen(h.key + h.offset);
+    for (const bool out : {false, true}) {
+      if (out ? h.last : h.first) {
+        continue;
+      }
+      const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
+      dl->AddLine(k, e, IM_COL32(20, 20, 20, 200), 3.0f);
+      dl->AddLine(k, e, IM_COL32(235, 235, 235, 230), 1.4f);
+      const bool dragged = g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
+                           g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame;
+      const ImU32 fill = dragged ? IM_COL32(255, 160, 40, 255) : IM_COL32(235, 235, 235, 255);
+      if (h.mode == PathHandles::Broken) {
+        dl->AddRectFilled(ImVec2(e.x - 4.0f, e.y - 4.0f), ImVec2(e.x + 4.0f, e.y + 4.0f), IM_COL32(20, 20, 20, 220));
+        dl->AddRectFilled(ImVec2(e.x - 3.0f, e.y - 3.0f), ImVec2(e.x + 3.0f, e.y + 3.0f), fill);
+      }
+      else if (h.mode == PathHandles::Aligned) {
+        dl->AddCircleFilled(e, 4.2f, IM_COL32(20, 20, 20, 220));
+        dl->AddCircleFilled(e, 3.3f, fill);
+      }
+      else {
+        dl->AddCircle(e, 3.6f, IM_COL32(20, 20, 20, 220), 0, 3.0f);
+        dl->AddCircle(e, 3.6f, fill, 0, 1.5f);
+      }
+      const float dx = e.x - mouse.x, dy = e.y - mouse.y;
+      if (tool && hovering && dx * dx + dy * dy < handle_best) {
+        handle_best = dx * dx + dy * dy;
+        hover_handle = &h;
+        hover_out = out;
+      }
+    }
+  }
+  if (hover_handle) {
+    /* A handle over a dot: the handle, which is only there on a selected key. */
+    hover_path = nullptr;
+  }
   if (tool && (hovered || g_path_drag.active)) {
     /* A copy: pressing a dot goes to its frame, which can make the paths again. */
     const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
-    motion_path_tool_input(C, view, pressed ? &*pressed : nullptr, hover_frame, first, last);
+    const std::optional<PathHandlesShown> pressed_handle =
+        hover_handle ? std::optional<PathHandlesShown>(*hover_handle) : std::nullopt;
+    motion_path_tool_input(C, view, pressed ? &*pressed : nullptr, hover_frame, first, last,
+                           pressed_handle ? &*pressed_handle : nullptr, hover_out);
     if (g_path_drag.active) {
       return;
     }
@@ -3826,6 +3949,13 @@ static void motion_path_header(Context &C)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "
                       "keys either side of it");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Auto Handles")) {
+    operator_call(C, "anim.motion_path_handles_auto");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Put the selected keys' path handles back to Auto, as they were before being dragged");
   }
 }
 

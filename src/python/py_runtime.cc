@@ -2134,6 +2134,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         else {
           d["value"] = py::make_tuple(k.value.x, k.value.y);
+          /* Path handles: what shapes the path into and out of the key (the Auto ones until dragged). */
+          float2 in, out;
+          key_path_handles(ch.keys, size_t(&k - ch.keys.data()), in, out);
+          d["path_handles"] = path_handles_identifier(k.path_handles);
+          d["path_in"] = py::make_tuple(in.x, in.y);
+          d["path_out"] = py::make_tuple(out.x, out.y);
         }
         d["interp"] = interp_identifier(k.interp);
         d["hold"] = k.hold;
@@ -2260,6 +2266,29 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         else if (name == "cycle_back") {
           key->cycle_back = std::max(0, value.cast<int>());
+        }
+        else if (name == "path_handles" || name == "path_in" || name == "path_out") {
+          if constexpr (std::is_same_v<std::decay_t<decltype(key->value)>, float2>) {
+            const size_t i = size_t(key - ch.keys.data());
+            if (name == "path_handles") {
+              PathHandles mode;
+              if (!path_handles_from_identifier(value.cast<std::string>(), &mode)) {
+                throw py::value_error("path_handles is AUTO, ALIGNED or BROKEN");
+              }
+              if (mode != PathHandles::Auto && key->path_handles == PathHandles::Auto) {
+                key_path_handles(ch.keys, i, key->path_in, key->path_out);
+              }
+              key->path_handles = mode;
+            }
+            else {
+              const auto xy = value.cast<std::pair<float, float>>();
+              /* Exactly as given: the other handle stays as it is. */
+              key_path_handle_set(ch.keys, i, name == "path_out", float2{xy.first, xy.second}, true);
+            }
+          }
+          else {
+            throw py::key_error("'" + path + "' has no path handles: only position keys do");
+          }
         }
         else {
           throw py::key_error("unknown key setting '" + name + "'");
