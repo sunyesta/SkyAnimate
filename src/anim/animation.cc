@@ -4691,6 +4691,18 @@ std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &f
 }
 
 /* Calls f(channel) for every channel of `layers` that passes the filter. */
+template<typename F> static void filtered_for_each(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f);
+
+bool layers_channel_among(const std::vector<Layer *> &layers, const KeyFilter &filter,
+                          const std::set<const void *> &channels)
+{
+  bool found = false;
+  if (!channels.empty()) {
+    filtered_for_each(layers, filter, [&](auto &ch) { found = found || channels.count(&ch) > 0; });
+  }
+  return found;
+}
+
 template<typename F> static void filtered_for_each(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f)
 {
   for (Layer *layer : layers) {
@@ -4892,11 +4904,28 @@ bool layers_any_key_selected(const std::vector<Layer *> &layers)
   return false;
 }
 
-void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::function<int(int)> &to)
+void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::function<int(int)> &to, bool ripple)
 {
   for (Layer *layer : layers) {
     layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
       using KeyT = std::decay_t<decltype(ch.keys.front())>;
+      /* Ripple: the keys after the last one moved go along by as much, so the rest keeps its timing. */
+      if (ripple) {
+        int last = -1, shift = 0;
+        for (const KeyT &key : ch.keys) {
+          if (key.selected && key.frame != 0) {
+            last = key.frame;
+            shift = std::max(1, to(key.frame)) - key.frame;
+          }
+        }
+        if (last >= 0 && shift != 0) {
+          for (KeyT &key : ch.keys) {
+            if (!key.selected && key.frame > last) {
+              key.frame += shift;
+            }
+          }
+        }
+      }
       std::vector<KeyT> moved, kept;
       const auto dest = [&](const KeyT &key) {
         return key.selected && key.frame != 0 ? std::max(1, to(key.frame)) : key.frame;
@@ -4936,6 +4965,301 @@ void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::fu
       ch.keys = std::move(kept);
     });
   }
+}
+
+/* --- Time Together ------------------------------------------------------------------------ */
+
+namespace {
+
+/* A channel of either kind. */
+struct AnyChannel {
+  Channel<float> *s = nullptr;
+  Channel<float2> *v = nullptr;
+  const void *id() const { return s ? static_cast<const void *>(s) : static_cast<const void *>(v); }
+};
+
+template<typename F> void any_visit(const AnyChannel &c, F &&f)
+{
+  if (c.s) {
+    f(*c.s);
+  }
+  else {
+    f(*c.v);
+  }
+}
+
+template<typename T> void any_add(std::vector<AnyChannel> &out, Channel<T> &ch)
+{
+  if constexpr (std::is_same_v<T, float>) {
+    out.push_back({&ch, nullptr});
+  }
+  else {
+    out.push_back({nullptr, &ch});
+  }
+}
+
+void layers_walk(std::vector<Layer> &layers, const std::function<void(Layer &)> &f)
+{
+  for (Layer &l : layers) {
+    f(l);
+    layers_walk(l.children, f);
+  }
+}
+
+/* An edited stretch of a channel and how its frames go: from `lo` to `hi` (old frames), through `map` (old frame to
+ * new, in order, the ends included); past `hi`, keys move by `after` when `open` (Ripple, or the channel's last key
+ * moved). */
+struct Stretch {
+  int lo = 0, hi = 0;
+  std::vector<std::pair<int, int>> map;
+  bool open = false;
+  int after = 0;
+  bool operator==(const Stretch &) const = default;
+  float to(int f) const
+  {
+    if (f > hi) {
+      return float(f + (open ? after : 0));
+    }
+    for (size_t i = 1; i < map.size(); i++) {
+      const auto [a, na] = map[i - 1];
+      const auto [b, nb] = map[i];
+      if (f <= b) {
+        return b == a ? float(nb) : float(na) + float(nb - na) * float(f - a) / float(b - a);
+      }
+    }
+    return float(map.back().second);
+  }
+};
+
+/* The stretches a channel's selected keys edit when they move to `to(frame)`: from the unmoved key before each run of
+ * selected keys to the unmoved key after it (or the run's own end key where there is none, or with Ripple on the
+ * last run). */
+template<typename KeyT>
+std::vector<Stretch> edited_stretches(const std::vector<KeyT> &keys, const std::function<int(int)> &to, bool ripple)
+{
+  std::vector<Stretch> out;
+  const auto moves = [&](const KeyT &k) { return k.selected && k.frame != 0; };
+  const auto dest = [&](const KeyT &k) { return moves(k) ? std::max(1, to(k.frame)) : k.frame; };
+  size_t last_moved = keys.size();
+  for (size_t i = 0; i < keys.size(); i++) {
+    if (moves(keys[i])) {
+      last_moved = i;
+    }
+  }
+  for (size_t i = 0; i < keys.size();) {
+    if (!moves(keys[i])) {
+      i++;
+      continue;
+    }
+    size_t j = i;
+    while (j + 1 < keys.size() && moves(keys[j + 1])) {
+      j++;
+    }
+    Stretch st;
+    if (i > 0) {
+      st.lo = keys[i - 1].frame;
+      st.map.push_back({st.lo, st.lo});
+    }
+    else {
+      st.lo = keys[i].frame;
+    }
+    for (size_t k = i; k <= j; k++) {
+      st.map.push_back({keys[k].frame, dest(keys[k])});
+    }
+    const bool rippled = ripple && j == last_moved;
+    if (j + 1 < keys.size() && !rippled) {
+      st.hi = keys[j + 1].frame;
+      st.map.push_back({st.hi, st.hi});
+    }
+    else {
+      st.hi = keys[j].frame;
+      st.open = true;
+      st.after = dest(keys[j]) - keys[j].frame;
+    }
+    if (st.hi > st.lo) {
+      out.push_back(std::move(st));
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+/* Whether the channel is keyed on both ends of the stretch: it is timed with it. */
+template<typename Ch> bool stretch_linked(const Ch &ch, const Stretch &st)
+{
+  return ch.keys.size() >= 2 && ch.key_at(st.lo) && ch.key_at(st.hi);
+}
+
+/* Moves the channel's keys through the stretches (each key by the first it falls in), to whole frames, keeping each a
+ * frame apart from the next (keys still landing together: the later wins). */
+template<typename Ch> void stretches_apply(Ch &ch, const std::vector<const Stretch *> &sts)
+{
+  using KeyT = std::decay_t<decltype(ch.keys.front())>;
+  const size_t n = ch.keys.size();
+  std::vector<int> to(n);
+  std::vector<bool> mapped(n, false);
+  for (size_t i = 0; i < n; i++) {
+    const int f = ch.keys[i].frame;
+    to[i] = f;
+    if (f == 0) {
+      continue;
+    }
+    for (const Stretch *st : sts) {
+      if (f > st->lo && (f <= st->hi || st->open)) {
+        to[i] = std::max(1, int(std::lround(st->to(f))));
+        mapped[i] = true;
+        break;
+      }
+    }
+  }
+  /* Rounding can land two on one frame: forward, then back from the unmoved keys. */
+  for (size_t i = 1; i < n; i++) {
+    if (mapped[i] && to[i] <= to[i - 1]) {
+      to[i] = to[i - 1] + 1;
+    }
+  }
+  for (size_t i = n - 1; i-- > 0;) {
+    if (mapped[i] && to[i] >= to[i + 1] && to[i + 1] - 1 > (i > 0 ? to[i - 1] : -1)) {
+      to[i] = to[i + 1] - 1;
+    }
+  }
+  std::map<int, KeyT> landed;
+  for (size_t i = 0; i < n; i++) {
+    KeyT k = ch.keys[i];
+    k.frame = to[i];
+    landed[k.frame] = std::move(k);
+  }
+  ch.keys.clear();
+  for (auto &[f, k] : landed) {
+    ch.keys.push_back(std::move(k));
+  }
+}
+
+bool any_selected(const AnyChannel &c)
+{
+  bool sel = false;
+  any_visit(c, [&](auto &ch) {
+    for (const auto &k : ch.keys) {
+      sel = sel || (k.selected && k.frame != 0);
+    }
+  });
+  return sel;
+}
+
+/* The channels Time Together can link (see time_together_candidates). */
+std::vector<AnyChannel> together_candidates(Document &doc)
+{
+  std::vector<AnyChannel> out;
+  layers_walk(doc.layers, [&](Layer &l) {
+    if (!l.selected) {
+      return;
+    }
+    any_add(out, l.position_keys);
+    any_add(out, l.rotation_keys);
+    any_add(out, l.scale_keys);
+    any_add(out, l.shear_keys);
+    any_add(out, l.opacity_keys);
+    for (Bone &b : l.bones) {
+      if (b.selected) {
+        any_add(out, b.position_keys);
+        any_add(out, b.angle_keys);
+        any_add(out, b.scale_keys);
+        any_add(out, b.depth_keys);
+      }
+    }
+    if (l.has_drawing() && !l.is_reference()) {
+      drawing_shape_channels(l.drawing, [&](auto &ch, auto & /*value*/) { any_add(out, ch); });
+    }
+  });
+  return out;
+}
+
+}  // namespace
+
+std::vector<const void *> time_together_candidates(Document &doc)
+{
+  std::vector<const void *> ids;
+  for (const AnyChannel &c : together_candidates(doc)) {
+    ids.push_back(c.id());
+  }
+  return ids;
+}
+
+/* The stretches the selected keys of `layers` edit, moved by `to`. */
+static std::vector<Stretch> selected_stretches(const std::vector<Layer *> &layers, const std::function<int(int)> &to,
+                                               bool ripple)
+{
+  std::vector<Stretch> all;
+  for (Layer *layer : layers) {
+    layer_for_each_channel<false>(*layer, [&](auto &ch, auto & /*value*/) {
+      for (Stretch &st : edited_stretches(ch.keys, to, ripple)) {
+        if (std::find(all.begin(), all.end(), st) == all.end()) {
+          all.push_back(std::move(st));
+        }
+      }
+    });
+  }
+  return all;
+}
+
+std::set<const void *> time_together_linked(Document &doc, const std::vector<Layer *> &layers)
+{
+  std::set<const void *> out;
+  if (!doc.time_together) {
+    return out;
+  }
+  const std::vector<Stretch> sts = selected_stretches(layers, [](int f) { return f; }, false);
+  if (sts.empty()) {
+    return out;
+  }
+  for (const AnyChannel &c : together_candidates(doc)) {
+    if (any_selected(c)) {
+      continue;
+    }
+    any_visit(c, [&](auto &ch) {
+      for (const Stretch &st : sts) {
+        if (stretch_linked(ch, st)) {
+          out.insert(c.id());
+          break;
+        }
+      }
+    });
+  }
+  return out;
+}
+
+int keys_move_selected(Document &doc, const std::vector<Layer *> &layers, const std::function<int(int)> &to,
+                       bool ripple, bool together)
+{
+  std::vector<Stretch> sts;
+  std::vector<AnyChannel> linked;
+  if (together && doc.time_together) {
+    sts = selected_stretches(layers, to, ripple);
+    if (!sts.empty()) {
+      for (const AnyChannel &c : together_candidates(doc)) {
+        if (!any_selected(c)) {
+          linked.push_back(c);
+        }
+      }
+    }
+  }
+  layers_move_selected_keys(layers, to, ripple);
+  int followed = 0;
+  for (const AnyChannel &c : linked) {
+    any_visit(c, [&](auto &ch) {
+      std::vector<const Stretch *> mine;
+      for (const Stretch &st : sts) {
+        if (stretch_linked(ch, st)) {
+          mine.push_back(&st);
+        }
+      }
+      if (!mine.empty()) {
+        stretches_apply(ch, mine);
+        followed++;
+      }
+    });
+  }
+  return followed;
 }
 
 int layers_delete_selected_keys(const std::vector<Layer *> &layers)

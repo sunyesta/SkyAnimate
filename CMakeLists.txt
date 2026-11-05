@@ -443,6 +443,8 @@ add_test(NAME breakdown_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_breakdown_keys.py)
 add_test(NAME key_together
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together.py)
+add_test(NAME time_together
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_time_together.py)
 add_test(NAME motion_path_edit
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_edit.py)
 add_test(NAME subdivide

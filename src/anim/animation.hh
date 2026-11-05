@@ -392,6 +392,10 @@ std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &f
  * channels, double-clicked). Returns how many keys were set. */
 int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame);
 
+/* Whether any channel of `layers` passing `filter` is one of `channels` (a timeline row's, Time Together's marks). */
+bool layers_channel_among(const std::vector<Layer *> &layers, const KeyFilter &filter,
+                          const std::set<const void *> &channels);
+
 /* Whether a channel passes the filter's path ('bones["arm"].' covers the bone's channels). */
 bool key_filter_path_matches(const KeyFilter &filter, const std::string &path);
 
@@ -437,7 +441,21 @@ SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers);
 int layers_change_selected_keys(const std::vector<Layer *> &layers, const std::function<void(KeySettings &)> &change);
 /* Moves the selected keys to `to(frame)` (never below 1; frame-0 keys, the setup, stay put).
  * A moved key landing on an unselected one replaces it, as in Blender. */
-void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::function<int(int)> &to);
+/* Ripple: the unselected keys after each channel's last selected key move by as much as it does. */
+void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::function<int(int)> &to,
+                               bool ripple = false);
+
+/* Time Together (Document::time_together). The channels it can link: of the selected layers, each one's move, turn,
+ * size, shear and opacity and its drawing's shape, and the selected bones' position, angle, scale and depth. */
+std::vector<const void *> time_together_candidates(Document &doc);
+/* The candidates the selected keys of `layers` carry along: keyed on both ends of a stretch they edit (from the
+ * unmoved key before to the unmoved key after), with none of their own selected. Empty while it is off. */
+std::set<const void *> time_together_linked(Document &doc, const std::vector<Layer *> &layers);
+/* layers_move_selected_keys, and with `together` (and Time Together on) the linked channels' keys inside each edited
+ * stretch go through the same stretch, so a key halfway along stays halfway, rounded to whole frames and kept a
+ * frame apart. Returns how many linked channels moved. */
+int keys_move_selected(Document &doc, const std::vector<Layer *> &layers, const std::function<int(int)> &to,
+                       bool ripple, bool together);
 /* Deletes the selected keys, except frame 0's. Returns how many went. */
 int layers_delete_selected_keys(const std::vector<Layer *> &layers);
 /* Copies the selected keys `offset` frames later (never below 1); the copies become the

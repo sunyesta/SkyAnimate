@@ -116,6 +116,10 @@ struct Document {
   bool auto_key = true;
   AutoKeyMode auto_key_mode = AutoKeyMode::AddReplace;
   bool auto_freeze_keys = false;
+  /* Time Together (the timeline's chain toggle): changing the timing of keys changes it the same way on the linked
+   * channels, those of the selected layers and bones keyed on the same frames at both ends of the stretch edited
+   * (time_together_* in anim/animation.hh). */
+  bool time_together = false;
   /* Onion skins (the timeline's toggle beside the record button, and its popover): the drawings being
    * edited as they are on frames before and after this one, wireframes only in a colour per side,
    * fading with distance. Never rendered. `onion_step` is for Frames: every so many frames. */

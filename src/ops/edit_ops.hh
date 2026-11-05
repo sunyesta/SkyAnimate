@@ -88,6 +88,8 @@ std::vector<Layer *> timeline_layers(Context &C);
 /* The interpolation settings an operator's arguments name (interp=, ease=, hold=... as anim.keys_interpolation_set
  * takes them), over `s`: only those given change. False (and a report) for an unknown mode or strength. */
 bool interp_args_apply(Context &C, struct KeySettings &s, std::string *r_what);
+/* "Time Together: re-timed N channels with it" in the Info editor, when any were. */
+void keys_moved_report(int followed);
 /* The layers with pinned channels, flat order (kept between frames until the next change). */
 const std::vector<uint64_t> &timeline_pinned_layer_ids(Context &C);
 

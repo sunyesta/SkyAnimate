@@ -1160,6 +1160,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"auto_key", doc.auto_key},
            {"auto_key_mode", Document::rna().find("auto_key_mode")->items[size_t(doc.auto_key_mode)].identifier},
            {"auto_freeze_keys", doc.auto_freeze_keys},
+           {"time_together", doc.time_together},
            {"onion_skin", doc.onion_skin},
            {"onion_mode", Document::rna().find("onion_mode")->items[size_t(doc.onion_mode)].identifier},
            {"onion_before", doc.onion_before},
@@ -3481,6 +3482,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     doc.auto_key_mode = AutoKeyMode(mode);
   }
   doc.auto_freeze_keys = get_bool(j, "auto_freeze_keys", false);
+  doc.time_together = get_bool(j, "time_together", false);
   doc.onion_skin = get_bool(j, "onion_skin", false);
   if (const int mode = Document::rna().find("onion_mode")->enum_index(get_string(j, "onion_mode", "")); mode >= 0) {
     doc.onion_mode = OnionMode(mode);

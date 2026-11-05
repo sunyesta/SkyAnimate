@@ -1290,6 +1290,26 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       C.undo->mark_changed();
     }
   });
+  /* Time Together: the channels the selected keys carry along (the timeline's chain marks), as (layer id, path). */
+  m.def("time_together_linked", []() {
+    Context &C = current_context();
+    Document &doc = *C.document;
+    const std::set<const void *> linked = time_together_linked(doc, timeline_layers(C));
+    py::list out;
+    std::function<void(std::vector<Layer> &)> walk = [&](std::vector<Layer> &layers) {
+      for (Layer &l : layers) {
+        for (const ChannelRef &ref : layer_channels(l)) {
+          const void *id = ref.scalar ? static_cast<const void *>(ref.scalar) : static_cast<const void *>(ref.vector);
+          if (linked.count(id)) {
+            out.append(py::make_tuple(l.id, ref.path));
+          }
+        }
+        walk(l.children);
+      }
+    };
+    walk(doc.layers);
+    return out;
+  });
   /* The timing chart's stretches for what the paths trace (as motion_path_stretches gives them). */
   m.def("motion_path_timing", []() {
     Context &C = current_context();

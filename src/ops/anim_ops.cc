@@ -362,6 +362,14 @@ static bool g_interp_copied = false;
 
 /* The settings an operator's arguments name, over `s`: only those given change. False (and a
  * report) for an unknown mode or strength. */
+void keys_moved_report(int followed)
+{
+  if (followed > 0) {
+    report(ReportType::Info, "Time Together: re-timed " + std::to_string(followed) + " channel" +
+                                 (followed == 1 ? "" : "s") + " with it");
+  }
+}
+
 bool interp_args_apply(Context &C, KeySettings &r_settings, std::string *r_what)
 {
   /* Worked out on a copy: an argument refused changes nothing. */
@@ -1175,26 +1183,33 @@ void anim_operators_register()
                       layers_deselect_keys(timeline_layers(C));
                       return OpStatus::Finished;
                     });
-  anim_operator_add("anim.keys_offset", "Move Keys", "Move the selected keys by `frames` (G in the timeline)",
+  anim_operator_add("anim.keys_offset", "Move Keys", "Move the selected keys by `frames` (G in the timeline). ripple=1: the keys after them go along (Ctrl). "
+                    "With Time Together, the linked channels' keys go through the same stretch (together=0: not, "
+                    "Alt)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       const int frames = op_arg_int(C, "frames", 0);
                       if (frames == 0) {
                         return OpStatus::Cancelled;
                       }
                       animation_record(*C.document);
-                      layers_move_selected_keys(timeline_layers(C), [frames](int f) { return f + frames; });
+                      keys_moved_report(keys_move_selected(*C.document, timeline_layers(C),
+                                                           [frames](int f) { return f + frames; },
+                                                           op_arg(C, "ripple", "0") == "1",
+                                                           op_arg(C, "together", "1") != "0"));
                       animation_evaluate(*C.document, C.document->frame_current);
                       return OpStatus::Finished;
                     });
   anim_operator_add("anim.keys_scale", "Scale Keys",
-                    "Scale the spacing of the selected keys by `factor` around the current frame (S in the timeline)",
+                    "Scale the spacing of the selected keys by `factor` around the current frame (S in the timeline); "
+                    "ripple= and together= as Move Keys",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       const float factor = op_arg_float(C, "factor", 1.0f);
                       const int center = C.document->frame_current;
                       animation_record(*C.document);
-                      layers_move_selected_keys(timeline_layers(C), [&](int f) {
-                        return int(std::lround(float(center) + float(f - center) * factor));
-                      });
+                      keys_moved_report(keys_move_selected(
+                          *C.document, timeline_layers(C),
+                          [&](int f) { return int(std::lround(float(center) + float(f - center) * factor)); },
+                          op_arg(C, "ripple", "0") == "1", op_arg(C, "together", "1") != "0"));
                       animation_evaluate(*C.document, C.document->frame_current);
                       return OpStatus::Finished;
                     });

@@ -84,6 +84,22 @@ PENDING = [
      '        });\n        continue;', 'a group handed over is new to the outer one', "tests/test_key_together.py"),
     ('src/io/oanim_file.cc', '  layer.key_whole_settled = layer.key_whole_drawing;\n', '',
      "opening keeps a whole drawing's timing", "tests/test_key_whole_drawing.py"),
+    ('src/anim/animation.cc', '  return ch.keys.size() >= 2 && ch.key_at(st.lo) && ch.key_at(st.hi);',
+     '  return ch.keys.size() >= 2 && ch.key_at(st.lo);', 'Time Together links only channels keyed on both ends', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '      if (b.selected) {\n        any_add(out, b.position_keys);',
+     '      if (true) {\n        any_add(out, b.position_keys);', 'Time Together links only selected bones', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '  layers_walk(doc.layers, [&](Layer &l) {\n    if (!l.selected) {\n      return;\n    }\n    any_add(out, l.position_keys);',
+     '  layers_walk(doc.layers, [&](Layer &l) {\n    any_add(out, l.position_keys);', 'Time Together links only selected layers', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '        return b == a ? float(nb) : float(na) + float(nb - na) * float(f - a) / float(b - a);',
+     '        return float(f);', 'linked keys go through the same stretch', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '    if (mapped[i] && to[i] <= to[i - 1]) {\n      to[i] = to[i - 1] + 1;\n    }',
+     '    (void)mapped;', 'linked keys kept a frame apart', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '            if (!key.selected && key.frame > last) {\n              key.frame += shift;',
+     '            if (false) {\n              key.frame += shift;', 'Ripple: the keys after go along', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '  if (together && doc.time_together) {\n    sts = selected_stretches(layers, to, ripple);',
+     '  if (together) {\n    sts = selected_stretches(layers, to, ripple);', 'Time Together off: just the one', "tests/test_time_together.py"),
+    ('src/io/oanim_file.cc', '           {"time_together", doc.time_together},\n',
+     '', 'Time Together saved', "tests/test_time_together.py"),
 ]
 
 

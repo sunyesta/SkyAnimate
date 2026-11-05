@@ -364,6 +364,12 @@ def set_onion_colors(before=None, after=None):
     _oanim.set_onion_colors(before, after)
 
 
+def time_together_linked():
+    """Time Together (oanim.data.document.time_together): the channels the selected keys carry along when moved or
+    retimed, those marked with a chain in the timeline, as (layer id, channel path) pairs."""
+    return [tuple(x) for x in _oanim.time_together_linked()]
+
+
 def motion_path_timing():
     """The timeline's timing chart: for each thing the paths trace, a dict with "label" and "stretches", each a dict
     with "start" and "end" frames and "progress", how far along its path (0-1 by length) it is on each frame from start

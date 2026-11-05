@@ -62,6 +62,10 @@ const rna::StructRNA &Document::rna()
                            "and keying a point every point of its drawing, so the whole pose and shape hold there "
                            "(Moho's)",
                            &Document::auto_freeze_keys),
+        def_bool<Document>("time_together", "Time Together",
+                           "Changing the timing of keys changes it the same way on the selected layers' and bones' "
+                           "channels keyed on the same frames at both ends of the stretch (Alt: just the one)",
+                           &Document::time_together),
         def_bool<Document>("onion_skin", "Onion Skins",
                            "Show the drawings being edited as they are on the frames before (and after) this one, "
                            "as coloured wireframes. Never rendered",

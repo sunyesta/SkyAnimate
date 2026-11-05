@@ -66,7 +66,7 @@ static constexpr ImU32 COL_FIX_TEXT = UI_FIX_COLOR;
 static constexpr ImU32 COL_BROKEN = UI_BROKEN_COLOR;
 static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
-enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion };
+enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion, Chain };
 
 /* Where a button sits in a row of joined buttons (Blender's aligned buttons): only the row's outer
  * corners are round. */
@@ -86,6 +86,24 @@ static void tri_left(ImDrawList *dl, float x0, float x1, float cy, float half_h,
 static void diamond(ImDrawList *dl, ImVec2 c, float r, ImU32 col)
 {
   dl->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), col);
+}
+
+/* Two slanted chain links (Time Together's mark), `s` from the middle to the ends. */
+static void chain_draw(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
+{
+  const ImVec2 d(s * 0.42f, -s * 0.42f);
+  const float r = s * 0.36f, t = std::max(1.2f, s * 0.24f);
+  for (const float side : {-1.0f, 1.0f}) {
+    const ImVec2 m = c + ImVec2(d.x * side, d.y * side);
+    const ImVec2 a = m - ImVec2(d.x * 0.55f, d.y * 0.55f), b = m + ImVec2(d.x * 0.55f, d.y * 0.55f);
+    const ImVec2 n(r * 0.7071f, r * 0.7071f);
+    dl->AddLine(a + n, b + n, col, t);
+    dl->AddLine(a - n, b - n, col, t);
+    dl->PathArcTo(a, r, 0.75f * 3.14159265f, 1.75f * 3.14159265f, 8);
+    dl->PathStroke(col, 0, t);
+    dl->PathArcTo(b, r, -0.25f * 3.14159265f, 0.75f * 3.14159265f, 8);
+    dl->PathStroke(col, 0, t);
+  }
 }
 
 static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
@@ -138,6 +156,11 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
       dl->AddCircleFilled(c + ImVec2(s * 0.32f, 0.0f), s * 0.62f, col);
       break;
     }
+    case Icon::Chain:
+      /* Two links of a chain, slanted: Time Together. */
+      (void)on;
+      chain_draw(dl, c, s, col);
+      break;
     case Icon::Stepped: {
       /* Stairs: the motion held from key to key. */
       (void)on;
@@ -1578,6 +1601,17 @@ static void timeline_header(Area &area, Context &C)
   {
     operator_call(C, "screen.stepped_preview");
   }
+  ImGui::SameLine();
+  if (icon_button("##time_together", Icon::Chain, doc.time_together,
+                  "Time Together\nChanging the timing of keys changes it the same way on the channels of the selected "
+                  "layers and bones keyed on both ends of the stretch: they move through the same stretch, and take "
+                  "the same interpolation. A chain marks them. Ctrl while moving keys: Ripple (the keys after go "
+                  "along). Alt: just the one",
+                  ""))
+  {
+    doc.time_together = !doc.time_together;
+    C.undo->mark_changed();
+  }
   ImGui::PopStyleVar();
   const float transport_end = ImGui::GetItemRectMax().x;
 
@@ -1798,6 +1832,8 @@ struct KeyTransform {
   Document snapshot;
   /* Shift D: how far the copies are from the keys now. */
   int offset = 0;
+  /* Time Together: how many linked channels went along. */
+  int followed = 0;
 };
 static KeyTransform g_key_transform;
 
@@ -2450,7 +2486,8 @@ static void timeline_body(Area &area, Context &C)
       }
       else if (g_key_transform.kind == 'G') {
         const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
-        layers_move_selected_keys(timeline_layers(C), [offset](int f) { return f + offset; });
+        g_key_transform.followed = keys_move_selected(doc, timeline_layers(C), [offset](int f) { return f + offset; },
+                                                      io.KeyCtrl, !io.KeyAlt);
         transform_info = "Move Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
       }
       else {
@@ -2458,9 +2495,9 @@ static void timeline_body(Area &area, Context &C)
         const float cx = frame_x(float(frame));
         const float start = std::max(std::fabs(g_key_transform.start_x - cx), 1.0f);
         const float factor = std::fabs(io.MousePos.x - cx) / start;
-        layers_move_selected_keys(timeline_layers(C), [&](int f) {
-          return int(std::lround(float(frame) + float(f - frame) * factor));
-        });
+        g_key_transform.followed = keys_move_selected(
+            doc, timeline_layers(C), [&](int f) { return int(std::lround(float(frame) + float(f - frame) * factor)); },
+            io.KeyCtrl, !io.KeyAlt);
         char text[48];
         std::snprintf(text, sizeof(text), "Scale Keys  %.2f", factor);
         transform_info = text;
@@ -2477,6 +2514,7 @@ static void timeline_body(Area &area, Context &C)
           operator_call(C, "anim.keys_duplicate", {{"frames", std::to_string(g_key_transform.offset)}});
         }
         else {
+          keys_moved_report(g_key_transform.followed);
           C.undo->push(g_key_transform.kind == 'G' ? "Move Keys" : "Scale Keys", doc);
         }
         g_key_transform.snapshot = Document();
@@ -3011,9 +3049,36 @@ static void timeline_body(Area &area, Context &C)
         key_draw(dl, ImVec2(kx, ky), kr, sum.shape, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
       }
     }
+    /* Moving keys: how many frames to the keys either side of the selected ones (animBot's). */
+    if (g_key_transform.active && g_key_transform.kind != 'D') {
+      int prev = -1;
+      bool prev_selected = false;
+      for (const auto &[f, sum] : sum_row) {
+        const bool sel = sum.selected > 0;
+        if (prev >= 0 && (sel || prev_selected)) {
+          const std::string gap = std::to_string(f - prev);
+          const float mx = (frame_x(float(prev)) + frame_x(float(f))) * 0.5f;
+          const ImVec2 gap_size = ImGui::CalcTextSize(gap.c_str());
+          if (frame_x(float(f)) - frame_x(float(prev)) > gap_size.x + kr * 2.0f) {
+            dl->AddText(ImVec2(mx - gap_size.x * 0.5f, ky - row_h * 0.5f - gap_size.y * 0.15f), COL_KEY_SELECTED, gap.c_str());
+          }
+        }
+        prev = f;
+        prev_selected = sel;
+      }
+    }
     dl->PopClipRect();
   }
   dl->PopClipRect();
+
+  /* Time Together: the rows whose channels the selected keys carry along, marked with a chain. */
+  std::vector<bool> linked_row(rows.size(), false);
+  if (doc.time_together) {
+    const std::set<const void *> linked = time_together_linked(doc, timeline_layers(C));
+    for (size_t r = 0; r < rows.size() && !linked.empty(); r++) {
+      linked_row[r] = layers_channel_among(rows[r].layers, rows[r].filter, linked);
+    }
+  }
 
   /* The names column. */
   dl->AddRectFilled(p0, ImVec2(k0.x, p1.y), IM_COL32(0x26, 0x26, 0x26, 255));
@@ -3053,7 +3118,16 @@ static void timeline_body(Area &area, Context &C)
     }
     x += font_size;
     /* The name, cut short with "..." where it would run into the pin or the keys. */
-    const float text_right = k0.x - 6.0f - (row.pin_path.empty() ? 0.0f : row_h);
+    const float text_right = k0.x - 6.0f - (row.pin_path.empty() ? 0.0f : row_h) - (linked_row[r] ? row_h : 0.0f);
+    if (linked_row[r]) {
+      chain_draw(dl, ImVec2(text_right + row_h * 0.5f, top + row_h * 0.5f), row_h * 0.3f, COL_KEY_SELECTED);
+      if (io.MousePos.x >= text_right && io.MousePos.x < text_right + row_h && io.MousePos.y >= top &&
+          io.MousePos.y < top + row_h)
+      {
+        ImGui::SetTooltip("Time Together: timed with the selected keys (keyed on both ends of the stretch they edit), "
+                          "so it goes along when they move or are retimed");
+      }
+    }
     cut[r] = ImGui::CalcTextSize(row.name.c_str()).x > text_right - x;
     ImGui::PushStyleColor(ImGuiCol_Text, col);
     ImGui::RenderTextEllipsis(dl, ImVec2(x, top + (row_h - font_size) * 0.5f), ImVec2(text_right, top + row_h),
