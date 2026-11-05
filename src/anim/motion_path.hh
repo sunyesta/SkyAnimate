@@ -36,6 +36,9 @@ MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget
 /* The frames the paths of `targets` cover. False with nothing to trace. */
 bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> &targets, int &r_first,
                        int &r_last);
+/* Whether `frame` is outside the shot, before the scene's Start (Start past 0) or after its End: a path reaching back
+ * or on to the keys the shot opens and ends between draws that part faded. */
+bool motion_path_frame_outside(const Document &doc, int frame);
 /* The keys of what moves `target` (its own and those of the bones and layers above it), in the animation. */
 std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &target);
 

@@ -335,6 +335,12 @@ PENDING = [
      '    if (length(at - a) <= reach) {', 'dots along a handle line are left out', 'tests/test_motion_path_start.py'),
     ("src/anim/motion_path.cc", "    if (len > 1e-6f) {", "    if (false && len > 1e-6f) {",
      "an Auto handle with no length shows short", "motion_path_start"),
+    ("src/anim/motion_path.cc", "    if (const auto it = keys.upper_bound(end); it != keys.end()) {", "    if (const auto it = keys.upper_bound(end); false) {",
+     "no key on End: the path goes on to the key after it", "motion_path_start"),
+    ("src/anim/motion_path.cc", "  return (doc.frame_start > 0 && frame < doc.frame_start) || frame > std::max(doc.frame_start, doc.frame_end);", "  return (doc.frame_start > 0 && frame < doc.frame_start);",
+     "a key past End is faded", "motion_path_start"),
+    ("src/editors/viewport.cc", "    return (doc.frame_start > 0 && f <= doc.frame_start) || f - 1 >= std::max(doc.frame_start, doc.frame_end);", "    return (doc.frame_start > 0 && f <= doc.frame_start);",
+     "the path past End is faded", "motion_path_start"),
 ]
 
 

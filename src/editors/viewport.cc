@@ -1537,7 +1537,7 @@ bool path_dot_under_handles(float2 at, const std::vector<std::pair<float2, float
   return false;
 }
 
-/* Before the scene's Start (a path reaching back to the key the shot opens between): see-through. */
+/* Outside the shot (a path reaching back or on to the keys the shot opens and ends between): see-through. */
 static constexpr float PATH_BEFORE_START = 0.35f;
 /* A motion path handle's line, pixels: thicker than the path's, so lying along it, it reads as a bar over it. */
 static constexpr float PATH_HANDLE_WIDTH = 2.5f;
@@ -1579,7 +1579,7 @@ std::vector<PathQuietMark> motion_path_quiet_marks(const Document &doc, const Mo
       /* Keys a touch lighter than the dots around them, so they stand out a little; no outlines. */
       const ImU32 dot = contrast_u32(colors.of(pick), 1.0f);
       ImU32 fill = key ? u32_mix(dot, IM_COL32(255, 255, 255, 255), 0.15f) : dot;
-      if (doc.frame_start > 0 && p.first + int(i) < doc.frame_start) {
+      if (motion_path_frame_outside(doc, p.first + int(i))) {
         fill = u32_faded(fill, PATH_BEFORE_START);
       }
       out.push_back({p.first + int(i), p.points[i],
@@ -1604,8 +1604,10 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
   const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
   const ContrastColors colors = path_contrast_colors(p);
   const std::function<bool(float2, Color &)> under_at = [&](float2 q, Color &c) { return under && under->at(q, c); };
-  /* The step into frame `f` is before the scene's Start: faded. */
-  const auto before = [&](int f) { return doc.frame_start > 0 && f <= doc.frame_start; };
+  /* The step into frame `f` is outside the shot (before Start, or from End on): faded. */
+  const auto before = [&](int f) {
+    return (doc.frame_start > 0 && f <= doc.frame_start) || f - 1 >= std::max(doc.frame_start, doc.frame_end);
+  };
   std::vector<ContrastPiece> pieces;
   std::vector<float2> run = {p.points[0]};
   bool run_before = before(p.first + 1);
@@ -1861,7 +1863,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
       if (shown) {
         const ImVec2 s = screen[i];
-        const float fade = doc.frame_start > 0 && p.first + int(i) < doc.frame_start ? PATH_BEFORE_START : 1.0f;
+        const float fade = motion_path_frame_outside(doc, p.first + int(i)) ? PATH_BEFORE_START : 1.0f;
         Color dot = dot_colors[i];
         dot.a *= fade;
         if (key && breakdown) {

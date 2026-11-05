@@ -1,7 +1,8 @@
 """Motion paths start where the animation starts (the Frame Range's Start): frame 0 is the setup pose, not part of the
 shot. With a key on Start the path begins there; without one it reaches back to the last key before Start (frame 0's,
 the setup's, when there is none) so the stretch the shot opens in can still be shaped, the part before Start drawn
-faded. With Start at 0, from 0 as before. A point with only a handle picked traces too; path dots a handle lies over
+faded. With Start at 0, from 0 as before. The End the same way: with no key on End, on to the first key after
+it, faded past End. A point with only a handle picked traces too; path dots a handle lies over
 are left out."""
 
 import oanim
@@ -60,6 +61,27 @@ assert first() == 10, "a key on Start"
 # Start at 0: from 0, as before.
 doc.frame_start = 0
 assert first() == 0
+
+# --- The End the same way: no key on End, on to the first key after it, faded past End --------------------------------
+def last():
+    return wm.motion_path_range()[1]
+
+
+doc.frame_end = 7
+assert last() == 10, ("no key on End: on to the key after it", wm.motion_path_range())
+ops.wm.tool_select()
+path = wm.overlay_colors(art, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0)["paths"][0]
+marks = {m["frame"]: m for m in path["marks"]}
+assert marks[10]["alpha"] < 120 and marks[5]["alpha"] == 255, ("the key past End faded, the shot's not", marks[10], marks[5])
+# Frame 7 to 10 is past End: faded.
+tail = [k for k in path["pieces"] if k["alpha"] < 120]
+assert tail, "the stretch past End faded"
+ops.wm.tool_motion_path()
+doc.frame_end = 5
+assert last() == 5, "a key on End: to there"
+doc.frame_end = 12
+assert last() == 12, "no key after End: End"
+doc.frame_end = 20
 
 # --- A point with only a handle picked traces its path too -----------------------------------------------------------
 ops.mesh.select_none()

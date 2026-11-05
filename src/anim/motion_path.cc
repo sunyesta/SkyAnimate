@@ -438,6 +438,11 @@ std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &t
   return {keys.begin(), keys.end()};
 }
 
+bool motion_path_frame_outside(const Document &doc, int frame)
+{
+  return (doc.frame_start > 0 && frame < doc.frame_start) || frame > std::max(doc.frame_start, doc.frame_end);
+}
+
 bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> &targets, int &r_first, int &r_last)
 {
   if (targets.empty()) {
@@ -457,7 +462,14 @@ bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> 
     const auto it = keys.lower_bound(start);
     start = it == keys.begin() ? 0 : *std::prev(it);
   }
-  const int end = std::max(start, doc.frame_end);
+  /* To the scene's End; with no key on End, on to the first key after it, so the stretch the shot ends in can be
+   * shaped too (drawn faded past End); with none after, End. */
+  int end = std::max(start, doc.frame_end);
+  if (!keys.count(end)) {
+    if (const auto it = keys.upper_bound(end); it != keys.end()) {
+      end = *it;
+    }
+  }
   r_first = start;
   r_last = end;
   if (doc.path_all) {
