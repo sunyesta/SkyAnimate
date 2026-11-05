@@ -1192,6 +1192,7 @@ std::string oanim_document_to_json(const Document &doc)
            {"path_all", doc.path_all},
            {"path_step", doc.path_step},
            {"path_lines", doc.path_lines},
+           {"path_own_motion", doc.path_own_motion},
            {"path_dot_colors", Document::rna().find("path_dot_colors")->items[size_t(doc.path_dot_colors)].identifier},
            {"path_relative", Document::rna().find("path_relative")->items[size_t(doc.path_relative)].identifier},
            {"path_relative_layer", doc.path_relative_layer},
@@ -3539,6 +3540,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.path_all = get_bool(j, "path_all", false);
   doc.path_step = std::clamp(get_int(j, "path_step", 1), 1, 100);
   doc.path_lines = get_bool(j, "path_lines", true);
+  doc.path_own_motion = get_bool(j, "path_own_motion", true);
   /* Files from before Dot Colour had a Speed Colours switch: off was the path's colour. */
   if (const int dots = Document::rna().find("path_dot_colors")->enum_index(get_string(j, "path_dot_colors", ""));
       dots >= 0)

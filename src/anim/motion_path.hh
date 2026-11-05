@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -47,7 +48,15 @@ struct MotionPath {
   /* How fast it moves into each frame, 0 (still) to 1 (its fastest). */
   std::vector<float> speed;
   std::vector<int> keys;
+  /* Own Motion (Document::path_own_motion): `points` hold only the target's own motion, `ghost` where it really goes
+   * (empty when that is the same). */
+  bool own_motion = false;
+  std::vector<float2> ghost;
 };
+/* Whether `target`'s path shows only its own motion now: Own Motion is on and one of its own keys or dots is picked. */
+bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target);
+/* The targets of the dots picked on paths (the window's), for Own Motion. */
+void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets);
 /* The paths of `targets` over frames first..last. */
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
                                           int first, int last);
@@ -216,6 +225,9 @@ float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target,
 struct MotionPathOnFrame {
   Document &doc;
   int shown;
+  /* The document as shown, for Own Motion (Document::path_own_motion). */
+  std::unique_ptr<Document> held;
+  const Document *outer = nullptr;
   MotionPathOnFrame(Document &doc, int frame);
   ~MotionPathOnFrame();
   MotionPathOnFrame(const MotionPathOnFrame &) = delete;

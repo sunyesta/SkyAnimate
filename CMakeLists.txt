@@ -449,6 +449,8 @@ add_test(NAME motion_path_setup_handle
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_setup_handle.py)
 add_test(NAME motion_path_own_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_own_keys.py)
+add_test(NAME motion_path_own_motion
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_own_motion.py)
 add_test(NAME motion_path_handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_handles.py)
 add_test(NAME motion_path_brushes

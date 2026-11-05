@@ -105,6 +105,10 @@ const rna::StructRNA &Document::rna()
                           &Document::path_step, 1, 100),
         def_bool<Document>("path_lines", "Lines", "Join the dots with a line in the path's colour",
                            &Document::path_lines),
+        def_bool<Document>("path_own_motion", "Own Motion",
+                           "A path being edited shows only its own motion: whatever else moves it (a bone, a parent, "
+                           "a group) held as on this frame, the real path a faint ghost behind",
+                           &Document::path_own_motion),
         def_enum<Document, PathDotColors>(
             "path_dot_colors", "Dot Colour",
             "Colour the dots by time through their stretch between keys (blue just after a key to yellow arriving at "

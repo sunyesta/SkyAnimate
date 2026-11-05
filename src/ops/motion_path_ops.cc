@@ -16,6 +16,21 @@
 
 namespace oanim {
 
+/* Own Motion follows the dots picked (motion_path_own_motion): told whenever an operator here changes them. */
+struct PathDotsSync {
+  Context &C;
+  ~PathDotsSync()
+  {
+    std::vector<MotionPathTarget> targets;
+    if (C.wm) {
+      for (const auto &[t, f] : C.wm->path_dots) {
+        targets.push_back(t);
+      }
+    }
+    motion_path_dots_picked(targets);
+  }
+};
+
 namespace {
 
 /* The targets an operator works on: layer=id (with bone=name, and head=1 for its head's path rather than its tip's,
@@ -252,6 +267,7 @@ void motion_path_operators_register()
       }
       /* Frame 0 only for its key, the setup's: picked for its out handle, never a dot to slide. */
       const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));
+      PathDotsSync sync{C};
       std::vector<std::pair<MotionPathTarget, int>> &dots = C.wm->path_dots;
       const bool none = op_arg_bool(C, "none");
       if (op_arg_bool(C, "go") && !none) {
@@ -1090,6 +1106,7 @@ void motion_path_operators_register()
       }
       layers_deselect_keys(all);
       C.wm->path_dots.clear();
+      motion_path_dots_picked({});
       if (Layer *layer = layer_find(doc, targets.front().layer)) {
         layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, targets.front()));
       }

@@ -1196,6 +1196,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (!doc.motion_paths || !motion_path_range(doc, targets, first, last)) {
       return out;
     }
+    std::vector<MotionPathTarget> dotted;
+    for (const auto &[t, f] : C.wm->path_dots) {
+      dotted.push_back(t);
+    }
+    motion_path_dots_picked(dotted);
     for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
       py::dict d;
       d["label"] = motion_path_label(doc, p.target);
@@ -1204,6 +1209,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["head"] = p.target.head;
       d["color"] = py::make_tuple(p.color.r, p.color.g, p.color.b);
       d["first"] = p.first;
+      d["own_motion"] = p.own_motion;
+      py::list ghost;
+      for (const float2 q : p.ghost) {
+        ghost.append(py::make_tuple(q.x, q.y));
+      }
+      d["ghost"] = ghost;
       py::list pts, speed;
       for (size_t i = 0; i < p.points.size(); i++) {
         pts.append(py::make_tuple(p.points[i].x, p.points[i].y));

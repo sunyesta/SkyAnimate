@@ -1483,6 +1483,18 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     return;
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+  {
+    std::vector<MotionPathTarget> dotted;
+    for (const auto &[t, f] : wm.path_dots) {
+      dotted.push_back(t);
+    }
+    motion_path_dots_picked(dotted);
+  }
+  /* Own Motion: which paths show only their own motion (those being edited). */
+  std::vector<bool> own;
+  for (const MotionPathTarget &t : targets) {
+    own.push_back(motion_path_own_motion(doc, t));
+  }
   int first = 0, last = 0;
   if (wm.playing && wm.play_range_first > 0) {
     first = wm.play_range_first;
@@ -1500,15 +1512,19 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     uint64_t changes = ~uint64_t(0), serial = 0;
     int first = 0, last = 0, frame = 0;
     std::vector<MotionPathTarget> targets;
+    std::vector<bool> own;
     PathRelative relative = PathRelative::World;
     uint64_t relative_layer = 0, relative_bone = 0;
     std::vector<MotionPath> paths;
   } cache;
   const uint64_t changes = C.undo ? C.undo->change_count() : 0;
-  /* Drawn relative to something, a path depends on where that is now too. */
-  const int frame = doc.path_relative == PathRelative::World ? 0 : doc.frame_current;
+  /* Drawn relative to something, or showing only its own motion (the rest held as now), a path depends on where that
+   * is now too. */
+  const bool any_own = std::find(own.begin(), own.end(), true) != own.end();
+  const int frame = doc.path_relative == PathRelative::World && !any_own ? 0 : doc.frame_current;
   if (cache.doc != &doc || cache.changes != changes || cache.serial != g_path_drag.serial || cache.first != first ||
-      cache.last != last || cache.frame != frame || cache.targets != targets || cache.relative != doc.path_relative ||
+      cache.last != last || cache.frame != frame || cache.targets != targets || cache.own != own ||
+      cache.relative != doc.path_relative ||
       cache.relative_layer != doc.path_relative_layer || cache.relative_bone != doc.path_relative_bone)
   {
     cache.doc = &doc;
@@ -1518,6 +1534,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     cache.last = last;
     cache.frame = frame;
     cache.targets = targets;
+    cache.own = own;
     cache.relative = doc.path_relative;
     cache.relative_layer = doc.path_relative_layer;
     cache.relative_bone = doc.path_relative_bone;
@@ -1541,6 +1558,17 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     std::vector<ImVec2> screen;
     for (const float2 q : p.points) {
       screen.push_back(view.to_screen(q));
+    }
+    if (p.ghost.size() > 1) {
+      /* Own Motion: where it really goes, faint behind the path being edited. */
+      std::vector<ImVec2> ghost;
+      for (const float2 q : p.ghost) {
+        ghost.push_back(view.to_screen(q));
+      }
+      dl->AddPolyline(ghost.data(), int(ghost.size()), u32(p.color, 0.45f), ImDrawFlags_None, 1.0f);
+      for (size_t i = 0; i < ghost.size(); i += size_t(step)) {
+        dl->AddCircleFilled(ghost[i], 2.0f, u32(p.color, 0.5f));
+      }
     }
     if (doc.path_lines && screen.size() > 1) {
       /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over
@@ -4713,6 +4741,21 @@ static void motion_path_header(Context &C)
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Put the selected keys' path handles back to Auto, as they were before being dragged");
+  }
+  ImGui::SameLine();
+  {
+    Document &doc = *C.document;
+    bool own = doc.path_own_motion;
+    if (ImGui::Checkbox("Own Motion", &own)) {
+      doc.path_own_motion = own;
+      if (C.undo) {
+        C.undo->mark_changed();
+      }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("A path being edited (a key or dot picked) shows only its own motion: whatever else moves it "
+                        "(a bone, a parent, a group) held as on this frame, the real path a faint ghost behind");
+    }
   }
   /* The brush picked on the shelf, and its settings. */
   ToolSettings &ts = C.wm->tool_settings;

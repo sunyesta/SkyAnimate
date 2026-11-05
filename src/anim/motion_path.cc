@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 
@@ -130,6 +131,19 @@ bool target_position(const Document &doc, const MotionPathTarget &t, float2 &r_a
   r_at = layer_world_transform(doc, layer->id).apply(at);
   return true;
 }
+
+/* A target's own values as evaluated: a bone's position, size and angle, a point's position, a layer's. */
+struct OwnValues {
+  float2 position, scale;
+  float angle = 0.0f;
+};
+bool own_values(const Document &doc, const MotionPathTarget &t, OwnValues &r);
+void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v);
+
+/* The targets of the dots picked on paths, set by the window (see motion_path_dots_picked). */
+std::vector<MotionPathTarget> g_dots_picked;
+/* While a MotionPathOnFrame has the document on another frame: the document as shown, what Own Motion holds. */
+const Document *g_shown = nullptr;
 
 /* Document space to the space the paths are drawn relative to, as `doc` shows it now. */
 Transform2D relative_space(const Document &doc)
@@ -461,6 +475,50 @@ bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> 
   return true;
 }
 
+void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets)
+{
+  g_dots_picked = targets;
+}
+
+bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target)
+{
+  /* A drawing's path is its layer's origin, which its own (shape) keys never move. */
+  if (!doc.path_own_motion || target.drawing) {
+    return false;
+  }
+  if (std::any_of(g_dots_picked.begin(), g_dots_picked.end(), [&](const MotionPathTarget &t) { return t.same(target); }))
+  {
+    return true;
+  }
+  const Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return false;
+  }
+  const auto picked = [](const auto &ch) {
+    return std::any_of(ch.keys.begin(), ch.keys.end(), [](const auto &k) { return k.selected; });
+  };
+  if (target.bone) {
+    const int i = bone_index(*layer, target.bone);
+    if (i < 0) {
+      return false;
+    }
+    const Bone &b = layer->bones[size_t(i)];
+    return picked(b.position_keys) || picked(b.angle_keys) || picked(b.scale_keys);
+  }
+  if (target.point) {
+    const int i = point_index(*layer, target.point);
+    return i >= 0 && picked(layer->drawing.points[size_t(i)].pos_keys);
+  }
+  KeyFilter filter;
+  filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
+  for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {
+    if ((ref.scalar && picked(*ref.scalar)) || (ref.vector && picked(*ref.vector))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
                                           int first, int last)
 {
@@ -483,6 +541,15 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
   /* Drawn relative to something: each frame's place taken into its space then, and back out of it as it is now. */
   const bool relative = doc.path_relative != PathRelative::World;
   const Transform2D back = relative ? relative_space(doc).inverted() : Transform2D();
+  /* Own Motion: a path being edited is worked out on a copy held as the frame shown, only the target's own values
+   * taken from each frame; where it really goes is its ghost. */
+  std::vector<std::unique_ptr<Document>> held(paths.size());
+  for (size_t i = 0; i < paths.size(); i++) {
+    if (motion_path_own_motion(doc, paths[i].target)) {
+      paths[i].own_motion = true;
+      held[i] = std::make_unique<Document>(g_shown ? *g_shown : doc);
+    }
+  }
   /* Edits not yet keyed stay on the frame they were made on: each frame from its keys alone. */
   Document copy = doc;
   for (int f = first; f <= last; f++) {
@@ -490,12 +557,36 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
     animation_evaluate(copy, f);
     ArmaturePoseCacheScope poses;
     const Transform2D into = relative ? relative_space(copy) : Transform2D();
-    for (MotionPath &p : paths) {
+    for (size_t i = 0; i < paths.size(); i++) {
+      MotionPath &p = paths[i];
+      std::vector<float2> &real = p.own_motion ? p.ghost : p.points;
       float2 at = {0.0f, 0.0f};
-      if (!target_position(copy, p.target, at) && !p.points.empty()) {
-        at = p.points.back();
+      if (!target_position(copy, p.target, at) && !real.empty()) {
+        at = real.back();
       }
-      p.points.push_back(relative ? back.apply(into.apply(at)) : at);
+      real.push_back(relative ? back.apply(into.apply(at)) : at);
+      if (p.own_motion) {
+        /* Everything else held as shown, so drawn relative to anything it stays where it is. */
+        OwnValues v;
+        float2 own = at;
+        if (own_values(copy, p.target, v)) {
+          own_values_set(*held[i], p.target, v);
+          if (!target_position(*held[i], p.target, own) && !p.points.empty()) {
+            own = p.points.back();
+          }
+        }
+        p.points.push_back(own);
+      }
+    }
+  }
+  for (MotionPath &p : paths) {
+    /* Nothing else moves it: no ghost to tell apart. */
+    bool apart = false;
+    for (size_t k = 0; k < p.ghost.size() && k < p.points.size() && !apart; k++) {
+      apart = length(p.ghost[k] - p.points[k]) > 1e-5f;
+    }
+    if (!apart) {
+      p.ghost.clear();
     }
   }
   for (MotionPath &p : paths) {
@@ -755,11 +846,6 @@ bool solve_tip(Document &doc, const MotionPathTarget &t, Bone &bone, float2 at)
 }
 
 /* A target's own values, which a breakdown blends. */
-struct OwnValues {
-  float2 position, scale;
-  float angle = 0.0f;
-};
-
 bool own_values(const Document &doc, const MotionPathTarget &t, OwnValues &r)
 {
   const Layer *layer = layer_find(doc, t.layer);
@@ -806,6 +892,35 @@ void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v
   }
 }
 
+/* `copy` as `t`'s path has it on `frame`: evaluated then, or with Own Motion only `t`'s own values from then and
+ * everything else held as shown (the document's, or what a MotionPathOnFrame holds), as the path is drawn. */
+void path_evaluate(Document &copy, const MotionPathTarget &t, int frame)
+{
+  if (!motion_path_own_motion(copy, t)) {
+    animation_evaluate(copy, frame);
+    return;
+  }
+  Document then = copy;
+  then.frame_current = frame;
+  animation_evaluate(then, frame);
+  OwnValues v;
+  const bool got = own_values(then, t, v);
+  if (g_shown) {
+    copy = *g_shown;
+  }
+  if (got) {
+    own_values_set(copy, t, v);
+  }
+}
+
+/* Where `t` is on `frame` as its path is drawn (see path_evaluate); `doc` stays as it is. */
+bool path_position(const Document &doc, const MotionPathTarget &t, int frame, float2 &r_at)
+{
+  Document copy = doc;
+  path_evaluate(copy, t, frame);
+  return target_position(copy, t, r_at);
+}
+
 /* The position keys that carry `t`'s path handles, or null (a bone's tip, a connected bone's head). */
 Channel<float2> *handle_channel(Document &doc, const MotionPathTarget &t)
 {
@@ -842,14 +957,11 @@ bool key_jacobian(const Document &doc, const MotionPathTarget &t, int frame, flo
   const float2 start = key->value;
   const float h = 1e-2f;
   float2 dx, dy;
-  animation_evaluate(copy, frame);
-  bool ok = target_position(copy, t, r_at);
+  bool ok = path_position(copy, t, frame, r_at);
   key->value = start + float2{h, 0.0f};
-  animation_evaluate(copy, frame);
-  ok = ok && target_position(copy, t, dx);
+  ok = ok && path_position(copy, t, frame, dx);
   key->value = start + float2{0.0f, h};
-  animation_evaluate(copy, frame);
-  ok = ok && target_position(copy, t, dy);
+  ok = ok && path_position(copy, t, frame, dy);
   r_cx = (dx - r_at) / h;
   r_cy = (dy - r_at) / h;
   return ok;
@@ -1496,14 +1608,11 @@ bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, f
   const float h = 1e-2f;
   float2 dx, dy;
   ch->keys[0].value = value;
-  animation_evaluate(copy, frame);
-  bool ok = target_position(copy, t, r_at);
+  bool ok = path_position(copy, t, frame, r_at);
   ch->keys[0].value = value + float2{h, 0.0f};
-  animation_evaluate(copy, frame);
-  ok = ok && target_position(copy, t, dx);
+  ok = ok && path_position(copy, t, frame, dx);
   ch->keys[0].value = value + float2{0.0f, h};
-  animation_evaluate(copy, frame);
-  ok = ok && target_position(copy, t, dy);
+  ok = ok && path_position(copy, t, frame, dy);
   r_cx = (dx - r_at) / h;
   r_cy = (dy - r_at) / h;
   return ok;
@@ -1728,7 +1837,7 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
     }
     Document copy = doc;
     copy.frame_current = frame;
-    animation_evaluate(copy, frame);
+    path_evaluate(copy, target, frame);
     Bone &posed = layer_find(copy, target.layer)->bones[size_t(b)];
     const float before = posed.angle;
     if (!solve_tip(copy, target, posed, at)) {
@@ -2554,12 +2663,31 @@ bool motion_path_position_at(const Document &doc, const MotionPathTarget &target
 {
   Document copy = doc;
   copy.frame_current = frame;
-  animation_evaluate(copy, frame);
-  return target_position(copy, target, r_at);
+  return path_position(copy, target, frame, r_at);
 }
 
 bool motion_path_place(Document &doc, const MotionPathTarget &target, float2 at)
 {
+  if (g_shown && motion_path_own_motion(doc, target)) {
+    /* Own Motion: `at` is where the path is drawn, everything else held as shown; put there on that, the values found
+     * are its own, the same on the frame being edited. */
+    Document held = *g_shown;
+    OwnValues v;
+    if (!own_values(doc, target, v)) {
+      return false;
+    }
+    own_values_set(held, target, v);
+    held.frame_current = doc.frame_current;
+    const Document *outer = g_shown;
+    g_shown = nullptr;
+    const bool ok = motion_path_place(held, target, at);
+    g_shown = outer;
+    if (!ok || !own_values(held, target, v)) {
+      return false;
+    }
+    own_values_set(doc, target, v);
+    return true;
+  }
   Bone *bone = nullptr;
   float2 *value = place_value(doc, target, &bone);
   if (bone && tip_turns(doc, target)) {
@@ -2648,12 +2776,21 @@ KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &ta
 
 MotionPathOnFrame::MotionPathOnFrame(Document &doc, int frame) : doc(doc), shown(doc.frame_current)
 {
+  /* Own Motion holds everything else as shown: kept as it is before going to the other frame. */
+  if (doc.path_own_motion) {
+    held = std::make_unique<Document>(doc);
+    outer = g_shown;
+    g_shown = held.get();
+  }
   doc.frame_current = frame;
   animation_sync(doc);
 }
 
 MotionPathOnFrame::~MotionPathOnFrame()
 {
+  if (held) {
+    g_shown = outer;
+  }
   doc.frame_current = shown;
   animation_evaluate(doc, shown);
 }
