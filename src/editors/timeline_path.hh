@@ -48,5 +48,8 @@ bool timeline_path_strip_busy();
  * toward a dot out of view, or showing another stretch fits it to the stretch. 0 wide while it is hidden. */
 float timeline_sidebar_width(Context &C, float avail_w);
 void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max);
+/* Where the sidebar's tab (a small "<" at the right edge of the keys `min`..`max`, a third of the way down, as
+ * Blender's region arrow) is while the sidebar is closed, so it shows it's there; false while it is open. */
+bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max);
 
 }  // namespace oanim

@@ -1002,6 +1002,18 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   C.undo->mark_changed();
 }
 
+bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max)
+{
+  constexpr float W = 12.0f, H = 24.0f;
+  if (open || max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {
+    return false;
+  }
+  const float y = min.y + (max.y - min.y) / 3.0f;
+  r_min = ImVec2(max.x - W, y - H * 0.5f);
+  r_max = ImVec2(max.x, y + H * 0.5f);
+  return true;
+}
+
 void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
 {
   if (max.x - min.x < 20.0f || max.y - min.y < 20.0f || !C.document || !C.wm) {

@@ -494,6 +494,13 @@ def timeline_key_press(row, frame, to_frame=None, *, ctrl=False, shift=False, do
                                      bool(shift), bool(double_click), bool(ripple), bool(alt), str(typed))
 
 
+def timeline_sidebar_tab(keys_min, keys_max, open=False):
+    """Test hook: where the timeline sidebar's "<" tab sits ((x0, y0, x1, y1) pixels) on the keys from keys_min to
+    keys_max while the sidebar is closed; None while it is open."""
+    return _oanim.timeline_sidebar_tab(float(keys_min[0]), float(keys_min[1]), float(keys_max[0]), float(keys_max[1]),
+                                       bool(open))
+
+
 def timeline_scrollbar_drag(start, end, part, frames):
     """The timeline's scroll bar dragged `frames` with the view at start..end: part "BAR" pans, "LEFT" or "RIGHT"
     (its ends) zoom that side, never closer than 10 frames. Returns the new (start, end)."""

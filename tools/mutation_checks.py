@@ -343,6 +343,8 @@ PENDING = [
      "the path past End is faded", "motion_path_start"),
     ("src/ops/motion_path_ops.cc", '      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : true;', '      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : ts.proportional;',
      "Alt S is soft whatever O says", "motion_path_edit_speed"),
+    ("src/editors/timeline_path.cc", "  if (open || max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {", "  if (max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {",
+     "the sidebar's tab hides while it is open", "timeline_navigation"),
 ]
 
 

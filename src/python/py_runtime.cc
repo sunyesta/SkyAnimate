@@ -66,6 +66,7 @@
 #include "editors/overlay_contrast.hh"
 #include "editors/editors.hh"
 #include "editors/statistics.hh"
+#include "editors/timeline_path.hh"
 
 namespace py = pybind11;
 
@@ -436,6 +437,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                                        typed);
   });
   m.def("timeline_hidden", []() { return timeline_hidden_count(current_context()); });
+  /* Test hook: the timeline sidebar's tab ((x0, y0, x1, y1)) over keys from min to max, or None while it is open. */
+  m.def("timeline_sidebar_tab", [](float x0, float y0, float x1, float y1, bool open) -> py::object {
+    ImVec2 a, b;
+    if (!timeline_sidebar_tab(ImVec2(x0, y0), ImVec2(x1, y1), open, a, b)) {
+      return py::none();
+    }
+    return py::make_tuple(a.x, a.y, b.x, b.y);
+  });
   m.def("timeline_scrollbar_drag", [](float start, float end, int part, float frames) {
     return timeline_scrollbar_drag(start, end, part, frames);
   });
