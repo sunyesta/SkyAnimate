@@ -201,6 +201,11 @@ struct TimelineRowInfo {
   /* The frames it shows keys on. */
   std::vector<int> frames;
 };
+/* A press on the key at `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them) with the timeline's
+ * click and drag (`ctrl`, `shift`: held as it is pressed): dragged to `to_frame` (or by the frames `typed`) when it
+ * moves the keys, Ctrl held while dragging (`ripple`) or Alt (`alt`). For tests. */
+bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
+                                 bool double_click, bool ripple, bool alt, const std::string &typed);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */

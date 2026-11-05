@@ -132,6 +132,14 @@ PENDING = [
      '  if (false) {\n    /* Locked:', 'Lock keeps the layers shown', 'tests/test_timeline_only_selected.py'),
     ('src/io/oanim_file.cc', '  doc.timeline_lock = get_bool(j, "timeline_lock", false);',
      '  doc.timeline_lock = false;', 'Lock is saved', 'tests/test_timeline_only_selected.py'),
+    ('src/editors/timeline.cc', '    args["extend"] = "1";\n    args["deselect"] = "1";',
+     '    args["extend"] = "1";\n    args["deselect"] = "0";', 'Ctrl-click takes a key out', 'tests/test_timeline_mouse.py'),
+    ('src/editors/timeline.cc', '  if (double_click && !ctrl && !shift) {',
+     '  if (false) {', "a double-click picks the row's every key", 'tests/test_timeline_mouse.py'),
+    ('src/editors/timeline.cc', '  if (keys > 0 && selected == keys) {\n    *r_reselect = true;',
+     '  if (false) {\n    *r_reselect = true;', 'pressing a selected key keeps the selection for a drag', 'tests/test_timeline_mouse.py'),
+    ('src/editors/timeline.cc', '  return num.any() ? int(std::lround(num.value(0, float(mouse_offset)))) : mouse_offset;',
+     '  return mouse_offset;', 'frames typed set the move', 'tests/test_timeline_mouse.py'),
 ]
 
 

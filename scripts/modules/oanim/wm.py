@@ -430,6 +430,16 @@ def timeline_rows(changed=False):
     return rows if changed else [r[:4] for r in rows]
 
 
+def timeline_key_press(row, frame, to_frame=None, *, ctrl=False, shift=False, double_click=False, ripple=False,
+                       alt=False, typed=""):
+    """Press the key at `frame` in timeline row `row` (an index into timeline_row_details(as_shown=True)) as the
+    mouse does: a click picks it (Shift adds, Ctrl takes away, double_click picks the row's every key); dragged to
+    `to_frame`, or with frames `typed` ("-3"), the selected keys move (Ctrl held while dragging, ripple: Ripple;
+    alt: just the one channel). Returns False when the row has no key there."""
+    return _oanim.timeline_key_press(int(row), int(frame), int(frame if to_frame is None else to_frame), bool(ctrl),
+                                     bool(shift), bool(double_click), bool(ripple), bool(alt), str(typed))
+
+
 def timeline_row_details(as_shown=False):
     """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary

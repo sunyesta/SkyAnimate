@@ -25,6 +25,7 @@
 #include "data/document.hh"
 #include "editors/editors.hh"
 #include "editors/timeline_media.hh"
+#include "editors/num_input.hh"
 #include "editors/timeline_path.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
@@ -1848,8 +1849,81 @@ struct KeyTransform {
   int followed = 0;
   /* Dragged between two selected keys: they slide, a frame short of their neighbours, and let go to confirm. */
   bool slide = false;
+  /* Started by dragging a key: let go to confirm. */
+  bool drag = false;
+  /* Frames (or the scale) typed while it runs, as Blender's numeric input. */
+  NumInput num;
 };
 static KeyTransform g_key_transform;
+
+/* A key pressed and not yet dragged: past a few pixels the selected keys move with the mouse (Blender's
+ * click-drag); let go first and `reselect` picks just that key (it was already selected, among others). */
+struct KeyPress {
+  bool armed = false;
+  float x = 0.0f, y = 0.0f;
+  int row = -1, frame = -1;
+  bool reselect = false;
+};
+static KeyPress g_key_press;
+/* How far the mouse goes before a pressed key drags. */
+static constexpr float KEY_DRAG_PX = 4.0f;
+
+/* The keys a timeline row shows, by its layers and filter, as anim.keys_select takes them. */
+static OpArgs row_key_args(const std::vector<Layer *> &layers, const KeyFilter &filter)
+{
+  std::string ids;
+  for (const Layer *l : layers) {
+    ids += (ids.empty() ? "" : ",") + std::to_string(l->id);
+  }
+  return {{"layers", ids},
+          {"kinds", std::to_string(filter.kinds)},
+          {"selected_only", filter.selected_only ? "1" : "0"},
+          {"path", filter.path},
+          {"pinned", filter.pinned_only ? "1" : "0"}};
+}
+
+/* A click on a row's key at `frame` (`keys`/`selected`: how many keys the row has there, and how many are
+ * selected): Ctrl takes it out of the selection, Shift adds it (or takes it out, all selected), a double-click
+ * selects every key of the row (and the rows inside it), else it alone is picked, unless it is selected
+ * already: then the selection stays for a drag to move, and `*r_reselect` asks for it alone on release.
+ * Returns whether a drag may follow (no Ctrl or Shift). */
+static bool timeline_key_click(Context &C, const std::vector<Layer *> &layers, const KeyFilter &filter, int frame,
+                               int keys, int selected, bool ctrl, bool shift, bool double_click, bool *r_reselect)
+{
+  *r_reselect = false;
+  OpArgs args = row_key_args(layers, filter);
+  if (double_click && !ctrl && !shift) {
+    args["frame_start"] = std::to_string(-1000000);
+    args["frame_end"] = std::to_string(1000000);
+    operator_call(C, "anim.keys_select", args);
+    return true;
+  }
+  args["frame_start"] = std::to_string(frame);
+  if (ctrl) {
+    args["extend"] = "1";
+    args["deselect"] = "1";
+    operator_call(C, "anim.keys_select", args);
+    return false;
+  }
+  if (shift) {
+    args["extend"] = "1";
+    args["deselect"] = selected == keys ? "1" : "0";
+    operator_call(C, "anim.keys_select", args);
+    return false;
+  }
+  if (keys > 0 && selected == keys) {
+    *r_reselect = true;
+    return true;
+  }
+  operator_call(C, "anim.keys_select", args);
+  return true;
+}
+
+/* What the selected keys' move is: the frames typed, else the mouse's. */
+static int key_transform_offset(const NumInput &num, int mouse_offset)
+{
+  return num.any() ? int(std::lround(num.value(0, float(mouse_offset)))) : mouse_offset;
+}
 
 static bool modal_key_take(Context &C, const char *type)
 {
@@ -2128,6 +2202,48 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   return rows;
 }
 
+bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
+                                 bool double_click, bool ripple, bool alt, const std::string &typed)
+{
+  Area area;
+  ui_bind_project(C.document, C.undo);
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
+  if (row < 0 || row >= int(rows.size())) {
+    return false;
+  }
+  const std::map<int, KeyFrameSummary> keys = layers_key_summary(rows[size_t(row)].layers, rows[size_t(row)].filter);
+  const auto at = keys.find(frame);
+  if (at == keys.end()) {
+    return false;
+  }
+  bool reselect = false;
+  const bool drag = timeline_key_click(C, rows[size_t(row)].layers, rows[size_t(row)].filter, frame, at->second.keys,
+                                       at->second.selected, ctrl, shift, double_click, &reselect);
+  if (!drag || (to_frame == frame && typed.empty())) {
+    if (reselect) {
+      OpArgs args = row_key_args(rows[size_t(row)].layers, rows[size_t(row)].filter);
+      args["frame_start"] = std::to_string(frame);
+      operator_call(C, "anim.keys_select", args);
+    }
+    return true;
+  }
+  /* Dragged: the selected keys move by the mouse's frames, or the frames typed, as the modal does. */
+  NumInput num;
+  for (const char ch : typed) {
+    C.wm->modal_keys.push_back(ModalKey{ch == '-' ? std::string("MINUS") : std::string(1, ch)});
+  }
+  num_input_keys(C, num, 1);
+  C.wm->modal_keys.clear();
+  const int offset = key_transform_offset(num, to_frame - frame);
+  Document &doc = *C.document;
+  const int followed = keys_move_selected(doc, timeline_layers(C), [offset](int f) { return f + offset; }, ripple, !alt);
+  keys_moved_report(followed);
+  C.undo->push("Move Keys", doc);
+  channel_keys_changed();
+  return true;
+}
+
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
 {
   Area area;
@@ -2387,6 +2503,28 @@ static void timeline_body(Area &area, Context &C)
     ImGui::OpenPopup("##keyed_here");
   };
 
+  /* A pressed key dragged past a few pixels moves the selected keys (Ctrl: Ripple; Alt: just its channel;
+   * numbers typed set the move); let go to confirm. Let go before then: a selected key's click picks it alone. */
+  if (g_key_press.armed && !g_key_transform.active) {
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (g_key_press.reselect && g_key_press.row >= 0 && g_key_press.row < int(rows.size())) {
+        OpArgs args = row_key_args(rows[size_t(g_key_press.row)].layers, rows[size_t(g_key_press.row)].filter);
+        args["frame_start"] = std::to_string(g_key_press.frame);
+        operator_call(C, "anim.keys_select", args);
+      }
+      g_key_press = {};
+    }
+    else if (std::fabs(io.MousePos.x - g_key_press.x) > KEY_DRAG_PX || std::fabs(io.MousePos.y - g_key_press.y) > KEY_DRAG_PX) {
+      g_key_transform = {true, area.id, 'G', g_key_press.x, doc};
+      g_key_transform.drag = true;
+      C.wm->modal_running = true;
+      C.wm->modal_keys.clear();
+      g_key_press = {};
+    }
+  }
+  else if (!g_key_transform.active) {
+    g_key_press = {};
+  }
   /* G and S on the selected keys follow the mouse, as in Blender. */
   if (C.wm->timeline_transform_request && hovered && !g_key_transform.active) {
     g_key_transform = {true, area.id, C.wm->timeline_transform_request, io.MousePos.x, doc};
@@ -2407,38 +2545,44 @@ static void timeline_body(Area &area, Context &C)
       doc = g_key_transform.snapshot;
       doc.frame_current = frame;
       const float frames_per_px = span / keys_w;
+      num_input_keys(C, g_key_transform.num, 1);
+      const NumInput &num = g_key_transform.num;
       if (g_key_transform.kind == 'D') {
         /* Shift D: copies of the selected keys follow the mouse; the originals stay. */
-        const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        const int offset = key_transform_offset(
+            num, int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px)));
         layers_duplicate_selected_keys(timeline_layers(C), offset);
         g_key_transform.offset = offset;
-        transform_info = "Duplicate Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
+        transform_info = "Duplicate Keys  " + (num.any() ? num.shown(0, float(offset), "%.0f") :
+                                                           std::string(offset >= 0 ? "+" : "") + std::to_string(offset));
       }
       else if (g_key_transform.kind == 'G') {
-        int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        int offset = key_transform_offset(
+            num, int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px)));
         if (g_key_transform.slide) {
           offset = keys_offset_clamp(timeline_layers(C), offset, io.KeyCtrl);
         }
         g_key_transform.followed = keys_move_selected(doc, timeline_layers(C), [offset](int f) { return f + offset; },
                                                       io.KeyCtrl, !io.KeyAlt);
-        transform_info = "Move Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
+        transform_info = "Move Keys  " + (num.any() ? num.shown(0, float(offset), "%.0f") :
+                                                      std::string(offset >= 0 ? "+" : "") + std::to_string(offset));
       }
       else {
         /* Scale about the playhead by how far the mouse is from it. */
         const float cx = frame_x(float(frame));
         const float start = std::max(std::fabs(g_key_transform.start_x - cx), 1.0f);
-        const float factor = std::fabs(io.MousePos.x - cx) / start;
+        const float factor = num.any() ? num.value(0, 1.0f) : std::fabs(io.MousePos.x - cx) / start;
         g_key_transform.followed = keys_move_selected(
             doc, timeline_layers(C), [&](int f) { return int(std::lround(float(frame) + float(f - frame) * factor)); },
             io.KeyCtrl, !io.KeyAlt);
         char text[48];
         std::snprintf(text, sizeof(text), "Scale Keys  %.2f", factor);
-        transform_info = text;
+        transform_info = num.any() ? "Scale Keys  " + num.shown(0, factor, "%.2f") : std::string(text);
       }
       animation_evaluate(doc, frame);
       if (modal_key_take(C, "RET") || modal_key_take(C, "SPACE") ||
-          (g_key_transform.slide ? !ImGui::IsMouseDown(ImGuiMouseButton_Left) :
-                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left)))
+          (g_key_transform.slide || g_key_transform.drag ? !ImGui::IsMouseDown(ImGuiMouseButton_Left) :
+                                                           ImGui::IsMouseClicked(ImGuiMouseButton_Left)))
       {
         g_key_transform.active = false;
         C.wm->modal_running = false;
@@ -2453,6 +2597,9 @@ static void timeline_body(Area &area, Context &C)
           keys_moved_report(g_key_transform.followed);
           C.undo->push(g_key_transform.slide ? "Slide Keys" : g_key_transform.kind == 'G' ? "Move Keys" : "Scale Keys",
                        doc);
+          if (g_key_transform.drag) {
+            channel_keys_changed();
+          }
         }
         g_key_transform.snapshot = Document();
         /* The confirming click shouldn't also pick keys. */
@@ -2515,7 +2662,8 @@ static void timeline_body(Area &area, Context &C)
        * clips are picked and dragged by their own code). */
       g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
       /* A double-click in a row keys its channels on that frame (the playhead goes there). */
-      if (!g_press.scrub && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+      int under_row = -1;
+      if (!g_press.scrub && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && key_under(io.MousePos, &under_row) < 0) {
         const int r = row_at(io.MousePos.y);
         if (r >= 0 && !rows[size_t(r)].media) {
           const ChannelRow &row = rows[size_t(r)];
@@ -2547,12 +2695,7 @@ static void timeline_body(Area &area, Context &C)
             }
           }
         }
-        if (hit >= 0 && io.KeyCtrl) {
-          /* Ctrl-click a key: the list of what it has keyed, each one a way to it. */
-          keyed_open(r, hit);
-          g_press = {};
-        }
-        else if (hit < 0 && r >= 0 && !rows[size_t(r)].media) {
+        if (hit < 0 && r >= 0 && !rows[size_t(r)].media) {
           /* Between two selected keys: dragging slides them, the stretch between keeping its length. */
           const float mf = x_frame(io.MousePos.x);
           int before = -1, after = -1;
@@ -2574,16 +2717,14 @@ static void timeline_body(Area &area, Context &C)
           }
         }
         else if (hit >= 0) {
-          const KeyFrameSummary &sum = summaries[r][hit];
-          operator_call(C, "anim.keys_select",
-                        {{"frame_start", std::to_string(hit)},
-                         {"layers", layer_ids(rows[r].layers)},
-                         {"kinds", std::to_string(rows[r].filter.kinds)},
-                         {"selected_only", rows[r].filter.selected_only ? "1" : "0"},
-                         {"path", rows[r].filter.path},
-                         {"pinned", rows[r].filter.pinned_only ? "1" : "0"},
-                         {"extend", io.KeyShift ? "1" : "0"},
-                         {"deselect", io.KeyShift && sum.selected == sum.keys ? "1" : "0"}});
+          /* Click a key to pick it (Shift adds, Ctrl takes away, a double-click picks the row's every key); drag
+           * it to move the selected keys. */
+          const KeyFrameSummary sum = summaries[r][hit];
+          bool reselect = false;
+          const bool drag = timeline_key_click(C, rows[r].layers, rows[r].filter, hit, sum.keys, sum.selected,
+                                               io.KeyCtrl, io.KeyShift, ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
+                                               &reselect);
+          g_key_press = {drag, io.MousePos.x, io.MousePos.y, r, hit, reselect};
           g_press = {};
         }
       }
