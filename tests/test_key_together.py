@@ -283,4 +283,133 @@ doc.frame_current = 27
 assert sa.points[1][1] > 1.2, sa.points[1]
 doc.frame_current = 0
 
+# --- Layers joining and leaving while it is on -----------------------------------------------------------------------
+assert ops.wm.read_homefile() == {'FINISHED'}
+doc = oanim.data.document
+layers = oanim.data.layers
+doc.auto_key = True
+doc.auto_freeze_keys = False
+
+
+def top_vec(points):
+    l = new_vec(points)
+    assert ops.layer.move_to_group(group="0") == {'FINISHED'}
+    return l
+
+
+def together_group(name):
+    """a and b grouped, Key Together on, a keyed on 10 and 20."""
+    doc.frame_current = 0
+    a = top_vec([(0.0, 0.0), (1.0, 0.0)])
+    b = top_vec([(0.0, 3.0), (1.0, 3.0)])
+    g = group_of([a, b])
+    g.name = name
+    g.key_together = True
+    doc.frame_current = 10
+    a.set_point(1, (1.0, 1.0))
+    doc.frame_current = 20
+    a.set_point(1, (1.0, 2.0))
+    doc.frame_current = 0
+    settle()
+    return g, a, b
+
+
+# An animated layer moved in (its drawing keyed as a whole, on 5): it misses the group's frames without any having
+# been deleted, so it gets them, and the group gets its 5.
+g, a, b = together_group("in")
+c = top_vec([(0.0, 6.0), (1.0, 6.0)])
+doc.frame_current = 5
+c.set_point(0, (0.5, 6.0))
+doc.frame_current = 0
+settle()
+layers.active = c
+assert ops.layer.move_to_group(group=str(g.id)) == {'FINISHED'}
+settle()
+assert frames(a, "points[1].pos") == [0, 5, 10, 20], ("the group's keys stay", frames(a, "points[1].pos"))
+assert frames(c, "points[0].pos") == [0, 5, 10, 20], frames(c, "points[0].pos")
+assert frames(b, "position") == [0, 5, 10, 20], frames(b, "position")
+doc.frame_current = 10
+assert abs(a.points[1][1] - 1.0) < 1e-4, a.points[1]
+doc.frame_current = 0
+# Once in, a key deleted on it takes the frame from them all.
+assert ops.anim.keys_deselect_all() == {'FINISHED'}
+assert ops.anim.keys_select(frame_start="5", layers=str(c.id)) == {'FINISHED'}
+assert ops.anim.keys_delete() == {'FINISHED'}
+settle()
+assert frames(a, "points[1].pos") == [0, 10, 20], frames(a, "points[1].pos")
+
+# A new layer made inside it (a pasted or new one): its drawing, keyed as a whole by itself first, is still new here.
+g, a, b = together_group("new")
+layers.active = a
+n = new_vec([(0.0, 9.0), (1.0, 9.0)])
+settle()
+doc.frame_current = 3
+doc.frame_current = 0
+assert frames(a, "points[1].pos") == [0, 10, 20], ("a new layer inside deletes nothing", frames(a, "points[1].pos"))
+assert frames(n, "position") == [0, 10, 20], frames(n, "position")
+doc.frame_current = 15
+n.set_point(0, (2.0, 9.0))
+doc.frame_current = 0
+settle()
+assert frames(a, "points[1].pos") == [0, 10, 15, 20], frames(a, "points[1].pos")
+
+# Moved out: the fillers it never edited go, as when the group is turned off; its own keys stay.
+g, a, b = together_group("out")
+doc.frame_current = 30
+b.set_point(0, (0.0, 4.0))
+doc.frame_current = 0
+settle()
+assert frames(b, "position") == [0, 10, 20, 30]
+assert ops.anim.keys_deselect_all() == {'FINISHED'}  # an undo step to come back to
+layers.active = b
+assert ops.layer.move_to_group(group="0") == {'FINISHED'}
+settle()
+assert frames(b, "position") == [], ("its fillers go", frames(b, "position"))
+assert frames(b, "points[0].pos") == [0, 30], ("its own key stays", frames(b, "points[0].pos"))
+assert frames(a, "points[1].pos") == [0, 10, 20, 30], ("the group's stay", frames(a, "points[1].pos"))
+assert ops.ed.undo() == {'FINISHED'}
+settle()
+assert frames(b, "position") == [0, 10, 20, 30], ("undo puts it and its fillers back", frames(b, "position"))
+layers.active = b
+assert ops.layer.move_to_group(group="0") == {'FINISHED'}
+settle()
+doc.frame_current = 15
+a.set_point(1, (1.0, 1.5))
+doc.frame_current = 0
+settle()
+assert 15 not in frames(b, "points[0].pos"), "out, it isn't keyed with them"
+
+# Moved from one group that is on to another: it lets go of the first's fillers and takes the second's frames.
+g1, a1, b1 = together_group("from")
+g2, a2, b2 = together_group("to")
+doc.frame_current = 7
+a2.set_point(1, (1.0, 0.5))
+doc.frame_current = 0
+settle()
+layers.active = b1
+assert ops.layer.move_to_group(group=str(g2.id)) == {'FINISHED'}
+settle()
+assert frames(b1, "position") == [0, 7, 10, 20], frames(b1, "position")
+assert frames(a2, "points[1].pos") == [0, 7, 10, 20], frames(a2, "points[1].pos")
+assert frames(a1, "points[1].pos") == [0, 10, 20], frames(a1, "points[1].pos")
+doc.frame_current = 7
+assert abs(a2.points[1][1] - 0.5) < 1e-4, a2.points[1]
+doc.frame_current = 0
+
+# A group moved in: its layers join, keys and all.
+g, a, b = together_group("group in")
+x = top_vec([(0.0, 6.0), (1.0, 6.0)])
+y = top_vec([(0.0, 7.0), (1.0, 7.0)])
+inner = group_of([x, y])
+doc.frame_current = 30
+x.set_point(0, (3.0, 6.0))
+doc.frame_current = 0
+settle()
+layers.active = inner
+assert ops.layer.move_to_group(group=str(g.id)) == {'FINISHED'}
+settle()
+assert frames(a, "points[1].pos") == [0, 10, 20, 30], frames(a, "points[1].pos")
+assert frames(x, "points[0].pos") == [0, 10, 20, 30], frames(x, "points[0].pos")
+assert frames(y, "position") == [0, 10, 20, 30], frames(y, "position")
+
 print("Key Together tests passed")

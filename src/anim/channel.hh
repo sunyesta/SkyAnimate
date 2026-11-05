@@ -208,8 +208,10 @@ template<typename T> struct Channel {
   bool action_bone_live = false;
   /* Key Whole Drawing and Key Together: it was there when its keys were last made to agree with the rest's; one of
    * that time's frames it misses now had its key deleted (a channel new since, like an eraser's cut end, says
-   * nothing). Not saved. */
+   * nothing). Not saved. Each its own: a drawing's channel is its drawing's (`synced`) and its Key Together group's
+   * (`together_synced`), and one synced by its drawing is still new to a group it has just joined. */
   bool synced = false;
+  bool together_synced = false;
   /* Auto-keying leaves it alone until it is animated (keyed by hand first): a layer's visibility,
    * so hiding a layer while working doesn't key it. */
   bool keyed_by_hand = false;

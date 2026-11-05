@@ -1234,6 +1234,9 @@ struct Layer {
    * were last made to agree, and in which action (its owner's id and name). */
   std::set<int> key_whole_frames;
   std::string key_whole_action;
+  /* Not saved, for Key Together: the layers inside it then. A layer new to it has none of its frames without them
+   * having been deleted; one gone from it lets go of the fillers it was given. */
+  std::set<uint64_t> key_together_members;
   /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
    * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
    * with their bone collections instead). */

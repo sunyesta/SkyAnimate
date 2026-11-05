@@ -71,6 +71,12 @@ PENDING = [
      '  key.type = defaults.settings.type;', 'the setup frame is never a breakdown', "tests/test_breakdown_keys.py"),
     ('src/io/oanim_file.cc', '      key["type"] = key_type_identifier(k.type);',
      '      (void)k.type;', 'breakdowns saved', "tests/test_breakdown_keys.py"),
+    ('src/anim/animation.cc', '    if (!before.empty() && (fillers ? ch.together_synced : ch.synced)) {',
+     '    if (!before.empty() && ch.synced) {', 'a layer new to a group deletes none of its keys', "tests/test_key_together.py"),
+    ('src/anim/animation.cc', '    const auto [removed, kept] = key_together_leavers_release(doc, *group);',
+     '    const auto [removed, kept] = std::pair<int, int>{0, 0};', 'a layer moved out lets go of its fillers', "tests/test_key_together.py"),
+    ('src/anim/animation.cc', '  visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) { ch.together_synced = false; });\n',
+     '', 'a layer moved between groups is new to the second', "tests/test_key_together.py"),
 ]
 
 

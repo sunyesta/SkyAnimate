@@ -606,7 +606,7 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
     channels++;
     keyed_count += ch.keys.size();
     /* Keyed when they last agreed: each of that time's frames it misses now was deleted (frame 0, the setup, never). */
-    if (!before.empty() && ch.synced) {
+    if (!before.empty() && (fillers ? ch.together_synced : ch.synced)) {
       for (const int frame : before) {
         if (frame != 0 && !ch.key_at(frame)) {
           deleted_set.insert(frame);
@@ -637,7 +637,7 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
       for (const auto &k : ch.keys) {
         owner.key_whole_frames.insert(k.frame);
       }
-      ch.synced = true;
+      (fillers ? ch.together_synced : ch.synced) = true;
     });
   };
   /* Nothing keyed, or every channel already keyed on every frame alike: nothing to do (the usual case, kept cheap). */
@@ -763,6 +763,8 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
     }
   });
   changes(false);
+  /* Out of the group: new to any it joins. */
+  visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) { ch.together_synced = false; });
   return {removed, std::max(0, fillers - removed)};
 }
 
@@ -819,32 +821,38 @@ static std::vector<Layer *> together_layers(Document &doc, Layer &group)
 
 /* Calls f(channel, value, unit) for each channel a Key Together group keys as one: each layer's turn, move, size and
  * opacity, its bones', and its drawing's shape (a whole drawing's channels one unit). */
-template<typename F> static void together_channels(Document &doc, Layer &group, F &&f)
+/* The channels of one layer that Key Together keys (see together_channels). */
+template<typename F> static void layer_together_channels(Layer &l, std::set<const void *> &seen, F &&f)
 {
   KeyFilter filter;
   filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM | KEY_OPACITY | KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
-  std::set<const void *> seen;
-  for (Layer *l : together_layers(doc, group)) {
-    for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
-      if (ref.scalar && ref.scalar_value && seen.insert(ref.scalar).second) {
-        f(*ref.scalar, *ref.scalar_value, static_cast<const void *>(ref.scalar));
-      }
-      if (ref.vector && ref.vector_value && seen.insert(ref.vector).second) {
-        f(*ref.vector, *ref.vector_value, static_cast<const void *>(ref.vector));
-      }
+  for (const ChannelRef &ref : layer_filtered_channels(l, filter)) {
+    if (ref.scalar && ref.scalar_value && seen.insert(ref.scalar).second) {
+      f(*ref.scalar, *ref.scalar_value, static_cast<const void *>(ref.scalar));
     }
-    if (l->type == LayerType::Vector && l->has_drawing() && !l->is_reference()) {
-      const void *whole = l->key_whole_drawing ? static_cast<const void *>(l) : nullptr;
-      drawing_shape_channels(l->drawing, [&](auto &ch, auto &value) {
-        f(ch, value, whole ? whole : static_cast<const void *>(&ch));
-      });
+    if (ref.vector && ref.vector_value && seen.insert(ref.vector).second) {
+      f(*ref.vector, *ref.vector_value, static_cast<const void *>(ref.vector));
     }
+  }
+  if (l.type == LayerType::Vector && l.has_drawing() && !l.is_reference()) {
+    const void *whole = l.key_whole_drawing ? static_cast<const void *>(&l) : nullptr;
+    drawing_shape_channels(l.drawing, [&](auto &ch, auto &value) {
+      f(ch, value, whole ? whole : static_cast<const void *>(&ch));
+    });
   }
 }
 
-static void together_changes(Document &doc, Layer &group, bool to_changes)
+template<typename F> static void together_channels(Document &doc, Layer &group, F &&f)
 {
+  std::set<const void *> seen;
   for (Layer *l : together_layers(doc, group)) {
+    layer_together_channels(*l, seen, f);
+  }
+}
+
+static void layers_changes(const std::vector<Layer *> &layers, bool to_changes)
+{
+  for (Layer *l : layers) {
     if (l->type == LayerType::Vector && l->has_drawing() && !l->is_reference()) {
       if (to_changes) {
         drawing_changes_from_values(l->drawing);
@@ -854,6 +862,11 @@ static void together_changes(Document &doc, Layer &group, bool to_changes)
       }
     }
   }
+}
+
+static void together_changes(Document &doc, Layer &group, bool to_changes)
+{
+  layers_changes(together_layers(doc, group), to_changes);
 }
 
 std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group)
@@ -876,14 +889,54 @@ std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group)
 
 int key_together_sync(Document &doc, Layer &group, bool settle)
 {
-  return keys_together_sync(
+  /* A layer new to the group (moved in, made or pasted inside it) misses its frames without any being deleted: its
+   * channels aren't Channel::together_synced yet. */
+  const std::vector<Layer *> inside = together_layers(doc, group);
+  const int changed = keys_together_sync(
       group, [&](auto &&f) { together_channels(doc, group, f); },
       [&](bool to_changes) { together_changes(doc, group, to_changes); }, settle,
       doc.action.empty() ? std::string() : std::to_string(doc.action_layer) + "/" + doc.action, true);
+  group.key_together_members.clear();
+  for (const Layer *l : inside) {
+    group.key_together_members.insert(l->id);
+  }
+  return changed;
+}
+
+/* Layers moved out of the group (still in the document, the layers inside one going with it): the fillers they were
+ * given and never edited go, as when the group is turned off; their own keys stay. */
+static std::pair<int, int> key_together_leavers_release(Document &doc, Layer &group)
+{
+  const std::vector<Layer *> inside = together_layers(doc, group);
+  std::vector<uint64_t> gone;
+  std::vector<Layer *> left;
+  for (const uint64_t id : group.key_together_members) {
+    if (Layer *l = layer_find(doc, id); !l || std::find(inside.begin(), inside.end(), l) == inside.end()) {
+      gone.push_back(id);
+      if (l) {
+        left.push_back(l);
+      }
+    }
+  }
+  for (const uint64_t id : gone) {
+    group.key_together_members.erase(id);
+  }
+  if (left.empty()) {
+    return {0, 0};
+  }
+  return keys_together_release(
+      [&](auto &&f) {
+        std::set<const void *> seen;
+        for (Layer *l : left) {
+          layer_together_channels(*l, seen, f);
+        }
+      },
+      [&](bool to_changes) { layers_changes(left, to_changes); });
 }
 
 std::pair<int, int> key_together_release(Document &doc, Layer &group)
 {
+  group.key_together_members.clear();
   return keys_together_release([&](auto &&f) { together_channels(doc, group, f); },
                                [&](bool to_changes) { together_changes(doc, group, to_changes); });
 }
@@ -1046,6 +1099,15 @@ void animation_record(Document &doc)
                                      " filler keys" +
                                      (kept > 0 ? ", kept " + std::to_string(kept) + " you edited" : std::string()));
       }
+    }
+  }
+  /* Layers moved out of a group let go first, before any group (the one they joined, say) syncs. */
+  for (Layer *group : together_on) {
+    const auto [removed, kept] = key_together_leavers_release(doc, *group);
+    if (removed + kept > 0) {
+      report(ReportType::Info, group->name + ": layers moved out: removed " + std::to_string(removed) +
+                                   " filler keys" +
+                                   (kept > 0 ? ", kept " + std::to_string(kept) + " you edited" : std::string()));
     }
   }
   for (Layer *group : together_on) {
