@@ -66,6 +66,15 @@ const rna::StructRNA &Document::rna()
                            "Changing the timing of keys changes it the same way on the selected layers' and bones' "
                            "channels keyed on the same frames at both ends of the stretch (Alt: just the one)",
                            &Document::time_together),
+        def_bool<Document>("timeline_only_selected", "Only Selected",
+                           "The timeline shows the picked layers (the animated layers inside them, and the groups "
+                           "they are in, dimmed) and, of a bone layer with bones picked, only those bones; off: "
+                           "every animated layer",
+                           &Document::timeline_only_selected),
+        def_bool<Document>("timeline_lock", "Lock Timeline",
+                           "The timeline keeps the layers it showed when this was turned on, whatever is picked "
+                           "(turn it on with anim.timeline_lock, which takes them)",
+                           &Document::timeline_lock),
         def_bool<Document>("onion_skin", "Onion Skins",
                            "Show the drawings being edited as they are on the frames before (and after) this one, "
                            "as coloured wireframes. Never rendered",

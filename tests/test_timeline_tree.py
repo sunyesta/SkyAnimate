@@ -122,18 +122,21 @@ rig.bone_set("leg", angle=0.25)
 assert ops.anim.keyframe_insert() == {'FINISHED'}
 doc.frame_current = 0
 rig.select_bone("arm")
+doc.timeline_only_selected = False  # every bone (Only Selected lists just the picked ones)
 tree = names()
-at = tree.index((0, "rig"))
+at = next(i for i, (d, n) in enumerate(tree) if n == "rig")
+d = tree[at][0]
 mine = tree[at:]
-assert (1, "Bones") in mine and (2, "arm") in mine and (3, "Angle") in mine and (2, "leg") in mine, mine
+assert (d + 1, "Bones") in mine and (d + 2, "arm") in mine and (d + 3, "Angle") in mine and (d + 2, "leg") in mine, mine
 assert row("arm")["red"] and not row("leg")["red"], "the picked bone is red"
 assert row("Bones", True)["open"] and row("arm", True)["open"], "a picked bone starts open"
 assert not row("leg", True)["open"]
+doc.timeline_only_selected = True
 
 # The camera, once keyed, comes last.
 cam = oanim.data.camera
 assert ops.anim.keyframe_toggle(layer=str(cam.id), paths="rotation") == {'FINISHED'}
 tree = names()
-assert (0, "Camera") in tree and tree.index((0, "Camera")) > tree.index((0, "rig")), tree
+assert (0, "Camera") in tree and tree.index((0, "Camera")) > [n for d, n in tree].index("rig"), tree
 
 print("timeline tree: ok")

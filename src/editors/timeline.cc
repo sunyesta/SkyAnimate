@@ -66,7 +66,7 @@ static constexpr ImU32 COL_FIX_TEXT = UI_FIX_COLOR;
 static constexpr ImU32 COL_BROKEN = UI_BROKEN_COLOR;
 static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
-enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion, Chain };
+enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion, Chain, Pointer, Lock };
 
 /* Where a button sits in a row of joined buttons (Blender's aligned buttons): only the row's outer
  * corners are round. */
@@ -154,6 +154,23 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
       (void)on;
       dl->AddCircle(c + ImVec2(-s * 0.38f, 0.0f), s * 0.62f, (col & 0x00ffffffu) | 0x80000000u, 0, 1.4f);
       dl->AddCircleFilled(c + ImVec2(s * 0.32f, 0.0f), s * 0.62f, col);
+      break;
+    }
+    case Icon::Pointer: {
+      /* Blender's Only Show Selected: the mouse pointer. */
+      (void)on;
+      const ImVec2 pts[7] = {c + ImVec2(-s * 0.55f, -s), c + ImVec2(s * 0.75f, s * 0.25f), c + ImVec2(s * 0.1f, s * 0.3f),
+                             c + ImVec2(s * 0.45f, s), c + ImVec2(s * 0.15f, s * 1.1f), c + ImVec2(-s * 0.2f, s * 0.42f),
+                             c + ImVec2(-s * 0.55f, s * 0.8f)};
+      dl->AddConcavePolyFilled(pts, 7, col);
+      break;
+    }
+    case Icon::Lock: {
+      /* A padlock, its shackle lifted when open. */
+      dl->AddRectFilled(c + ImVec2(-s * 0.7f, -s * 0.1f), c + ImVec2(s * 0.7f, s * 0.85f), col, 1.0f);
+      const float shift = on ? 0.0f : s * 0.5f;
+      dl->PathArcTo(c + ImVec2(shift, -s * 0.15f), s * 0.45f, 3.14159265f, 2.0f * 3.14159265f, 10);
+      dl->PathStroke(col, 0, std::max(1.3f, s * 0.22f));
       break;
     }
     case Icon::Chain:
@@ -1886,6 +1903,8 @@ struct ChannelRow {
   int media_part = 0;
   /* The Summary row (drawn with a band behind it). */
   bool summary = false;
+  /* A group not shown itself, holding shown layers: listed (dimmed) to show where they are. */
+  bool dim = false;
 };
 
 /* Folding rows open or folded as the project keeps them (saved with it, as panels are). */
@@ -2036,13 +2055,18 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
       }
     }
-    const KeyFilter bones{KEY_BONES, false};
+    /* With Only Selected, a bone layer with bones picked lists just those (all of them when none is). */
+    const bool any_picked = std::any_of(l->bones.begin(), l->bones.end(), bone_picked_any);
+    const bool only_picked = doc.timeline_only_selected && any_picked;
+    const KeyFilter bones{KEY_BONES, only_picked};
     if (keyed({l}, bones)) {
-      const bool any_picked = std::any_of(l->bones.begin(), l->bones.end(), bone_picked_any);
       if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0)) {
         for (const Bone &b : l->bones) {
           const KeyFilter one = bone_filter(b, KEY_BONES, false);
           const bool red = bone_picked_any(b);
+          if (only_picked && !red) {
+            continue;
+          }
           if (keyed({l}, one) &&
               add(b.name, {l}, one, depth + 1, "bone:" + id + ":" + std::to_string(b.id), red, red, 0))
           {
@@ -2065,12 +2089,21 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
    * inside it (a layer not shown passes its shown ones up a level). */
   const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
     for (Layer &l : list) {
-      if (!shown.contains(&l)) {
-        self(self, l.children, depth);
-        continue;
-      }
       std::vector<Layer *> under;
       shown_under(shown_under, l, under);
+      if (!shown.contains(&l)) {
+        /* A group holding shown layers: dimmed, for where they are. */
+        if (!under.empty() && keyed(under, KeyFilter{})) {
+          if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), true, false, l.id)) {
+            rows.back().dim = true;
+            self(self, l.children, depth + 1);
+          }
+          else {
+            rows.back().dim = true;
+          }
+        }
+        continue;
+      }
       if (!keyed(under, KeyFilter{})) {
         continue;
       }
@@ -2109,6 +2142,7 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
     info.fold = row.fold;
     info.open = row.open;
     info.summary = row.summary;
+    info.dim = row.dim;
     if (row.filter.kinds != 0) {
       for (const auto &[frame, summary] : layers_key_summary(row.layers, row.filter)) {
         info.frames.push_back(frame);
@@ -3028,7 +3062,8 @@ static void timeline_body(Area &area, Context &C)
     else if (row.selected) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 45));
     }
-    const ImU32 col = row.changed       ? IM_COL32(0x6b, 0xdb, 0xd1, 255)
+    const ImU32 col = row.dim           ? IM_COL32(0x80, 0x80, 0x80, 255)
+                      : row.changed     ? IM_COL32(0x6b, 0xdb, 0xd1, 255)
                       : row.depth == 0 ? (row.selected ? IM_COL32(0xff, 0x90, 0x90, 255) : IM_COL32(0xe6, 0xe6, 0xe6, 255))
                       : is_active      ? IM_COL32(0xff, 0xff, 0xff, 255)
                                        : IM_COL32(0xc8, 0xc8, 0xc8, 255);
@@ -3167,6 +3202,34 @@ static void timeline_body(Area &area, Context &C)
   if (strip_h > 0.0f) {
     timeline_path_strip(C, ImVec2(p0.x, p1.y), ImVec2(p1.x, p1.y + strip_h), k0.x, area.view_start,
                         area.view_end - area.view_start, row_h);
+  }
+
+  /* Over the names, beside the ruler: Only Selected and Lock (Blender's Only Show Selected; Moho's lock). */
+  {
+    const ImVec2 back = ImGui::GetCursorScreenPos();
+    const float bh = ImGui::GetFrameHeight();
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + 4.0f, p0.y + std::max(0.0f, (ruler_h - bh) * 0.5f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::BeginDisabled(doc.timeline_lock);
+    if (icon_button("##only_selected", Icon::Pointer, doc.timeline_only_selected,
+                    "Only Selected\nRows for the picked layers (and the animated layers inside them, and the groups "
+                    "they are in, dimmed) and, of a bone layer with bones picked, only those bones. Off: every "
+                    "animated layer",
+                    "", Joined::First))
+    {
+      doc.timeline_only_selected = !doc.timeline_only_selected;
+      C.undo->mark_changed();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (icon_button("##timeline_lock", Icon::Lock, doc.timeline_lock,
+                    "Lock\nKeep the layers shown now, whatever is picked after (saved with the project)", "",
+                    Joined::Last))
+    {
+      operator_call(C, "anim.timeline_lock");
+    }
+    ImGui::PopStyleVar();
+    ImGui::SetCursorScreenPos(back);
   }
 
   if (sidebar_w > 0.0f) {

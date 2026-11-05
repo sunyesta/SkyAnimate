@@ -122,6 +122,16 @@ PENDING = [
      'depth, "layer:" + std::to_string(l.id), false, false, l.id)', 'the picked layers start open', 'tests/test_timeline_tree.py'),
     ('src/editors/timeline.cc', 'add(channel_label(*l, ref.path, owner || other), {l}, f, depth',
      'add(channel_label(*l, ref.path, owner), {l}, f, depth', "a linked knob's row named with its bone", 'tests/test_controller.py'),
+    ('src/editors/timeline.cc', 'if (!under.empty() && keyed(under, KeyFilter{})) {',
+     'if (false) {', 'the groups above a picked layer, dimmed', 'tests/test_timeline_only_selected.py'),
+    ('src/editors/timeline.cc', 'const bool only_picked = doc.timeline_only_selected && any_picked;',
+     'const bool only_picked = false;', 'only the picked bones with Only Selected', 'tests/test_timeline_only_selected.py'),
+    ('src/ops/anim_ops.cc', 'if (C.document && !C.document->timeline_only_selected && !C.document->timeline_lock) {',
+     'if (false) {', 'Only Selected off shows every animated layer', 'tests/test_timeline_only_selected.py'),
+    ('src/ops/anim_ops.cc', '  if (C.document && C.document->timeline_lock) {\n    /* Locked:',
+     '  if (false) {\n    /* Locked:', 'Lock keeps the layers shown', 'tests/test_timeline_only_selected.py'),
+    ('src/io/oanim_file.cc', '  doc.timeline_lock = get_bool(j, "timeline_lock", false);',
+     '  doc.timeline_lock = false;', 'Lock is saved', 'tests/test_timeline_only_selected.py'),
 ]
 
 

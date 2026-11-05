@@ -4480,6 +4480,8 @@ std::string channel_label(Layer &layer, const std::string &path, bool owner)
       {"position", "Position"},
       {"rotation", "Rotation"},
       {"scale", "Scale"},
+      {"shear", "Shear"},
+      {"depth", "Depth"},
       {"opacity", "Opacity"},
       {"visible", "Visibility"},
       {"draw_order", "Draw Order"},

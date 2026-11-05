@@ -441,6 +441,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["fold"] = row.fold;
       d["open"] = row.open;
       d["summary"] = row.summary;
+      d["dim"] = row.dim;
       d["frames"] = row.frames;
       result.append(d);
     }

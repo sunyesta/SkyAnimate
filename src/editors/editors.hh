@@ -196,6 +196,8 @@ struct TimelineRowInfo {
   std::string fold;
   bool open = false;
   bool summary = false;
+  /* A group not shown itself, listed dimmed for the shown layers inside it. */
+  bool dim = false;
   /* The frames it shows keys on. */
   std::vector<int> frames;
 };

@@ -120,6 +120,12 @@ struct Document {
    * channels, those of the selected layers and bones keyed on the same frames at both ends of the stretch edited
    * (time_together_* in anim/animation.hh). */
   bool time_together = false;
+  /* The timeline's Only Selected (its arrow, on for new documents): rows for the picked layers, the animated
+   * layers inside them and, of a bone layer with bones picked, only those bones; off: every animated layer.
+   * Lock (its padlock) keeps the layers shown when it was turned on, `timeline_locked`, whatever is picked. */
+  bool timeline_only_selected = true;
+  bool timeline_lock = false;
+  std::vector<uint64_t> timeline_locked;
   /* Onion skins (the timeline's toggle beside the record button, and its popover): the drawings being
    * edited as they are on frames before and after this one, wireframes only in a colour per side,
    * fading with distance. Never rendered. `onion_step` is for Frames: every so many frames. */

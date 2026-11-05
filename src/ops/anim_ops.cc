@@ -178,7 +178,16 @@ std::vector<Layer *> timeline_layers(Context &C)
 
 std::vector<Layer *> timeline_shown_layers(Context &C)
 {
-  const std::vector<Layer *> picked = keyed_layers(C);
+  std::vector<Layer *> picked = keyed_layers(C);
+  if (C.document && C.document->timeline_lock) {
+    /* Locked: the layers shown when it was turned on, whatever is picked now. */
+    picked.clear();
+    for (const uint64_t id : C.document->timeline_locked) {
+      if (Layer *l = layer_find(*C.document, id); l && !l->locked) {
+        picked.push_back(l);
+      }
+    }
+  }
   std::vector<Layer *> layers;
   const auto add = [&](Layer *l) {
     if (std::find(layers.begin(), layers.end(), l) == layers.end()) {
@@ -223,6 +232,15 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
     add(l);
     if (l->is_bone_layer() || (l->is_group() && l->edit_descendants)) {
       add_inside(add_inside, *l);
+    }
+  }
+  /* Only Selected off: every animated layer, in the Layers editor's order. */
+  if (C.document && !C.document->timeline_only_selected && !C.document->timeline_lock) {
+    for (const Layer *flat : document_layers_flat(*C.document)) {
+      Layer *l = layer_find(*C.document, flat->id);
+      if (l && !l->locked && keyed(*l)) {
+        add(l);
+      }
     }
   }
   /* The switches a picked layer sits in, once keyed: picking a switch's drawing (which makes it the
@@ -1244,6 +1262,32 @@ void anim_operators_register()
                         }
                         return operator_call(C, "anim.span_frames_add", args);
                       });
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timeline_lock";
+    ot.name = "Lock Timeline";
+    ot.description = "Keep the layers the timeline shows now, whatever is picked after (lock=1), or follow the "
+                     "picked layers again (lock=0); with no lock= it turns over";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const bool lock = op_has_arg(C, "lock") ? op_arg_bool(C, "lock") : !doc.timeline_lock;
+      doc.timeline_locked.clear();
+      if (lock) {
+        doc.timeline_lock = false;
+        for (const Layer *l : timeline_shown_layers(C)) {
+          if (l->id != CAMERA_LAYER_ID && l->id != SIMULATION_LAYER_ID) {
+            doc.timeline_locked.push_back(l->id);
+          }
+        }
+      }
+      doc.timeline_lock = lock;
+      C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
   }
   anim_operator_add("anim.match_timing", "Match Timing",
                     "Key the other selected layers' and selected bones' animated channels on the active layer's "
