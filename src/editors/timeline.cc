@@ -1153,13 +1153,6 @@ static void interp_settings_popup(Context &C)
         preferences_save();
       }
     }
-    /* Wrapped to the rows' width, so it never widens the window off centre. */
-    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + w);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", fit_ok ? "Drag a handle; past the top or bottom overshoots" :
-                                      "Pick a shape below to edit it with handles");
-    ImGui::PopStyleColor();
-    ImGui::PopTextWrapPos();
     /* The shapes as handles. */
     const float quarter = (w - 3.0f * ImGui::GetStyle().ItemSpacing.x) / 4.0f;
     const std::pair<const char *, BezierHandles> presets[] = {
