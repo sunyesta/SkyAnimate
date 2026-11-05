@@ -2629,6 +2629,24 @@ void motion_path_handle_sides(const MotionPath &p, int frame, bool &r_in, bool &
   r_out = frame < p.first + int(p.points.size()) - 1;
 }
 
+bool motion_path_handle_stub(const MotionPath &p, int frame, bool out, float2 &r_direction)
+{
+  const int n = int(p.points.size()), at = frame - p.first;
+  if (at < 0 || at >= n) {
+    return false;
+  }
+  const float2 key = p.points[size_t(at)];
+  for (int i = at + (out ? 1 : -1); i >= 0 && i < n; i += out ? 1 : -1) {
+    const float2 d = p.points[size_t(i)] - key;
+    const float len = length(d);
+    if (len > 1e-6f) {
+      r_direction = d / len;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
                          float2 &r_out, PathHandles *r_mode)
 {

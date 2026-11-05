@@ -671,7 +671,13 @@ struct PathHandlesShown {
   bool first = false, last = false;
   /* Drawn position less document space on the key's frame. */
   float2 offset;
+  /* An Auto side with no length: drawn short (PATH_HANDLE_STUB pixels) along these ways, drawn position. */
+  bool stub_in = false, stub_out = false;
+  float2 stub_in_way, stub_out_way;
 };
+
+/* How long, in pixels, an Auto handle with no length is drawn, so it can be grabbed. */
+static constexpr float PATH_HANDLE_STUB = 30.0f;
 
 /* The Edit brush's selection: the dots selected (`wm.path_dots`), then the keys selected on the paths traced. */
 static std::vector<std::pair<MotionPathTarget, int>> path_edit_selection(Context &C)
@@ -1934,11 +1940,33 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         if (p.target.same(target) && f >= p.first && f - p.first < int(p.points.size())) {
           h.offset = p.points[size_t(f - p.first)] - h.key;
           motion_path_handle_sides(p, f, show_in, show_out);
+          if (h.mode == PathHandles::Auto) {
+            h.stub_in = show_in && length(h.in - h.key) < 1e-7f && motion_path_handle_stub(p, f, false, h.stub_in_way);
+            h.stub_out = show_out && length(h.out - h.key) < 1e-7f &&
+                         motion_path_handle_stub(p, f, true, h.stub_out_way);
+          }
         }
       }
-      h.first = !show_in || length(h.in - h.key) < 1e-7f;
-      h.last = !show_out || length(h.out - h.key) < 1e-7f;
+      h.first = !show_in || (length(h.in - h.key) < 1e-7f && !h.stub_in);
+      h.last = !show_out || (length(h.out - h.key) < 1e-7f && !h.stub_out);
       handles.shown.push_back(h);
+    }
+  }
+  std::vector<PathHandlesShown> shown_handles = handles.shown;
+  for (PathHandlesShown &h : shown_handles) {
+    const float2 at = h.key + h.offset;
+    const ImVec2 k = view.to_screen(at);
+    const auto stub_end = [&](float2 way) {
+      const ImVec2 w = view.to_screen(at + way) - k;
+      const float len = std::sqrt(w.x * w.x + w.y * w.y);
+      const ImVec2 e = len > 1e-9f ? k + w * (PATH_HANDLE_STUB / len) : k;
+      return view.to_document(e) - h.offset;
+    };
+    if (h.stub_in) {
+      h.in = stub_end(h.stub_in_way);
+    }
+    if (h.stub_out) {
+      h.out = stub_end(h.stub_out_way);
     }
   }
   const PathHandlesShown *hover_handle = nullptr;
@@ -1946,7 +1974,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   float handle_best = 7.0f * 7.0f;
   /* Which tip is under the mouse, first: it is drawn bigger. And the lines, to leave out the dots they cover. */
   std::vector<std::pair<float2, float2>> handle_lines;
-  for (const PathHandlesShown &h : handles.shown) {
+  for (const PathHandlesShown &h : shown_handles) {
     const ImVec2 k = view.to_screen(h.key + h.offset);
     for (const bool out : {false, true}) {
       if (out ? h.last : h.first) {
@@ -1971,7 +1999,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     dl->AddCircleFilled(d.at, 2.8f, d.fill);
   }
   dl->ChannelsSetCurrent(1);
-  for (const PathHandlesShown &h : handles.shown) {
+  for (const PathHandlesShown &h : shown_handles) {
     const ImVec2 k = view.to_screen(h.key + h.offset);
     for (const bool out : {false, true}) {
       if (out ? h.last : h.first) {

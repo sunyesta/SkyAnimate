@@ -252,6 +252,10 @@ bool motion_path_handles(const Document &doc, const MotionPathTarget &target, in
 /* Which of the handles of `p`'s key on `frame` the tool shows: each shapes the stretch on its side, so it shows only
  * where some of that stretch is drawn (none past the path's ends, as when it ends on the frame shown). */
 void motion_path_handle_sides(const MotionPath &p, int frame, bool &r_in, bool &r_out);
+/* An Auto handle with no length (Smooth flattens a key where the path turns back in both x and y) still shows, short,
+ * so it can be grabbed: the way the path runs from `p`'s key on `frame` on that side (to the first dot apart from it),
+ * drawn position. False when the path has no dot apart from the key on that side. */
+bool motion_path_handle_stub(const MotionPath &p, int frame, bool out, float2 &r_direction);
 /* Moves the handle (`out`, else in) of `target`'s position key on `frame` so it ends at `at` (document space on that
  * frame); `broken` (Alt) moves it alone and breaks the pair. Only the keys change: call animation_evaluate after. */
 bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int frame, bool out, float2 at,

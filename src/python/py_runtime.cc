@@ -1375,6 +1375,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           h["frame"] = f;
           h["in"] = end(show_in, in);
           h["out"] = end(show_out, out_end);
+          /* An Auto side with no length, drawn short along the way the path runs (None otherwise). */
+          const auto stub = [&](bool shown, float2 at, bool out) -> py::object {
+            float2 way;
+            if (!shown || length(at - key) >= 1e-7f || !motion_path_handle_stub(p, f, out, way)) {
+              return py::none();
+            }
+            return py::make_tuple(way.x, way.y);
+          };
+          h["in_stub"] = stub(show_in, in, false);
+          h["out_stub"] = stub(show_out, out_end, true);
           handles.append(h);
         }
       }

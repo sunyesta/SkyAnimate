@@ -75,4 +75,30 @@ assert wm.path_dot_under_handles(50.0, 3.5, line), "within its width and a littl
 assert not wm.path_dot_under_handles(50.0, 8.0, line), "beside it: shown"
 assert not wm.path_dot_under_handles(110.0, 0.0, line), "past its tip: shown"
 
+# --- An Auto handle with no length still shows, short, along the way the path runs -----------------------------------
+# A key where the path turns back in both x and y (leftmost and highest, as a bounce's top corner): Smooth flattens its
+# slope, so its Auto handles have no length; they show as stubs to grab.
+ops.layer.new()
+ball = layers.active
+ball.add_curve([(0.0, 0.0), (0.2, 0.0)])
+for l in layers.all():
+    l.selected = l.id == ball.id
+doc.frame_start, doc.frame_end = 0, 40
+for frame, xy in ((10, (0.0, 0.0)), (20, (-1.0, 1.0)), (30, (0.0, 0.5))):
+    assert ops.anim.motion_path_move(frame=str(frame), x=str(xy[0]), y=str(xy[1]), layer=str(ball.id)) == {'FINISHED'}
+doc.frame_current = 20
+doc.path_before, doc.path_after = 3, 3
+ops.anim.motion_path_select(frame="20", layer=str(ball.id))
+path = next(p for p in wm.motion_paths() if p["layer"] == ball.id and "point" not in p["label"])
+h = next(h for h in path["handles"] if h["frame"] == 20)
+assert h["in"] is None and h["out"] is None, ("no length at a turnaround", h)
+assert h["in_stub"] is not None and h["out_stub"] is not None, ("shown short instead", h)
+# Out runs toward the next key (right and down), in back toward the one before (right and down too).
+assert h["out_stub"][0] > 0 and h["out_stub"][1] < 0, h["out_stub"]
+assert h["in_stub"][0] > 0 and h["in_stub"][1] < 0, h["in_stub"]
+assert abs(h["out_stub"][0] ** 2 + h["out_stub"][1] ** 2 - 1.0) < 1e-3, "a way, of length 1"
+# A key with a real slope has no stub.
+mid = next(h for h in path["handles"] if h["frame"] == 30) if any(h["frame"] == 30 for h in path["handles"]) else None
+assert mid is None or mid["out_stub"] is None
+
 print("Motion path start tests passed")

@@ -333,6 +333,8 @@ PENDING = [
      '          if (false) {', 'a picked handle traces its point', 'tests/test_motion_path_start.py'),
     ('src/editors/viewport.cc', '    if (length(at - (a + ab * t)) <= reach) {',
      '    if (length(at - a) <= reach) {', 'dots along a handle line are left out', 'tests/test_motion_path_start.py'),
+    ("src/anim/motion_path.cc", "    if (len > 1e-6f) {", "    if (false && len > 1e-6f) {",
+     "an Auto handle with no length shows short", "motion_path_start"),
 ]
 
 
