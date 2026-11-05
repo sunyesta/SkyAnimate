@@ -9,6 +9,7 @@
 
 #include "anim/animation.hh"
 #include "anim/controller.hh"
+#include "assets/asset_library.hh"
 #include "anim/deform.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
@@ -611,7 +612,11 @@ Color motion_path_color(const Document &doc, const MotionPathTarget &target, siz
   if (const MotionPathTarget *style = motion_path_style(doc, target); style && style->has_color) {
     return style->color;
   }
-  /* Away from the speed colours' red and blue. */
+  /* The first the Preferences' path colour; the rest told apart from it, away from the speed colours' red and blue. */
+  if (index % 6 == 0) {
+    const uint32_t rgb = preferences().path_color;
+    return {float((rgb >> 16) & 0xff) / 255.0f, float((rgb >> 8) & 0xff) / 255.0f, float(rgb & 0xff) / 255.0f, 1.0f};
+  }
   static const Color colors[] = {{0.95f, 0.85f, 0.35f, 1.0f}, {0.35f, 0.9f, 0.75f, 1.0f}, {0.85f, 0.5f, 0.95f, 1.0f},
                                  {0.6f, 0.95f, 0.4f, 1.0f},   {0.95f, 0.6f, 0.8f, 1.0f},  {0.9f, 0.9f, 0.9f, 1.0f}};
   return colors[index % std::size(colors)];

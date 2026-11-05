@@ -69,6 +69,7 @@
 #include "python/py_runtime.hh"
 #include "wm/context.hh"
 #include "editors/num_input.hh"
+#include "editors/overlay_contrast.hh"
 #include "wm/event_system.hh"
 #include "wm/pen_input.hh"
 #include "wm/file_drop.hh"
@@ -79,6 +80,30 @@ namespace oanim {
 
 /* Blender's edit-mode colours. */
 static constexpr ImU32 COL_VIEWPORT_BACK = IM_COL32(0x3d, 0x3d, 0x3d, 255);
+/* What the viewport being drawn last drew, for overlays to pick colours that read on it (editors/overlay_contrast.hh);
+ * null when none has been read back yet. */
+static const CanvasSample *g_canvas_now = nullptr;
+/* `a` blended toward `b` by `t` (ImGui colours, each channel). */
+static ImU32 u32_mix(ImU32 a, ImU32 b, float t)
+{
+  ImU32 out = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    const float x = float((a >> shift) & 0xff), y = float((b >> shift) & 0xff);
+    out |= ImU32(std::clamp(int(x + (y - x) * t + 0.5f), 0, 255)) << shift;
+  }
+  return out;
+}
+
+/* 0xRRGGBB at `alpha` (0-255) as an ImGui colour. */
+static ImU32 color_u32_rgb(uint32_t rgb, int alpha)
+{
+  return IM_COL32((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff, alpha);
+}
+
+static ImU32 contrast_u32(const Color &c, float alpha)
+{
+  return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, alpha));
+}
 static constexpr ImU32 COL_WIRE = IM_COL32(0x20, 0x20, 0x20, 170);
 static constexpr ImU32 COL_WIRE_SELECTED = IM_COL32(0xff, 0x8c, 0x00, 220);
 static constexpr ImU32 COL_POINT = IM_COL32(0x10, 0x10, 0x10, 230);
@@ -1448,6 +1473,64 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
   }
 }
 
+std::vector<PathHandleRun> path_handle_runs(bool tip_picked)
+{
+  const ImU32 own = IM_COL32(235, 235, 235, 230), picked = IM_COL32(255, 160, 40, 255);
+  if (!tip_picked) {
+    return {{0.0f, 1.0f, own}};
+  }
+  /* ImGui lines take one colour: the fade in steps short enough not to show. */
+  constexpr int STEPS = 12;
+  std::vector<PathHandleRun> out;
+  for (int i = 0; i < STEPS; i++) {
+    const float from = float(i) / STEPS, to = float(i + 1) / STEPS;
+    out.push_back({from, to, u32_mix(own, picked, (from + to) * 0.5f)});
+  }
+  return out;
+}
+
+std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const MotionPath &p, const CanvasSample *under,
+                                                   float piece)
+{
+  std::vector<PathLinePiece> out;
+  if (p.points.size() < 2) {
+    return out;
+  }
+  /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over the
+   * path's continuation; the rest solid. */
+  const std::vector<int> over = motion_path_overshoot_frames(doc, p.target);
+  const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
+  /* The default colour's lighter and darker are the Preferences'; a colour of a path's own makes its own. */
+  const ContrastColors colors = p.color == path_colors().base ? path_colors() : contrast_colors_of(p.color);
+  const std::function<bool(float2, Color &)> under_at = [&](float2 q, Color &c) { return under && under->at(q, c); };
+  std::vector<ContrastPiece> pieces;
+  std::vector<float2> run = {p.points[0]};
+  const auto flush = [&]() {
+    if (run.size() > 1) {
+      pieces.clear();
+      contrast_pieces(run, piece, under_at, colors.base, pieces);
+      for (const ContrastPiece &k : pieces) {
+        out.push_back({k.a, k.b, contrast_u32(colors.of(k.pick), 0.9f), false});
+      }
+    }
+  };
+  for (size_t i = 1; i < p.points.size(); i++) {
+    const int f = p.first + int(i);
+    if (!is_over(f) && !is_over(f - 1)) {
+      run.push_back(p.points[i]);
+      continue;
+    }
+    flush();
+    Color c;
+    const ContrastPick pick = under_at((p.points[i - 1] + p.points[i]) * 0.5f, c) ? contrast_pick(c, colors.base)
+                                                                                  : ContrastPick::Base;
+    out.push_back({p.points[i - 1], p.points[i], contrast_u32(colors.of(pick), 0.9f), true});
+    run = {p.points[i]};
+  }
+  flush();
+  return out;
+}
+
 /* Motion paths (anim/motion_path.hh): a dot per frame, red where fast and blue where still, keys as diamonds and a
  * ring on the frame shown; hovering a dot shows the drawing there as a ghost. Worked out again only when the
  * document, the range or what is traced changes. With the Motion Path tool they show whatever the popover says, and
@@ -1573,29 +1656,17 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     if (doc.path_lines && screen.size() > 1) {
       /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over
        * the path's continuation; the rest solid. */
-      const std::vector<int> over = motion_path_overshoot_frames(doc, p.target);
-      const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
-      const ImU32 col = u32(p.color, 0.55f);
-      std::vector<ImVec2> run = {screen[0]};
-      for (size_t i = 1; i < screen.size(); i++) {
-        const int f = p.first + int(i);
-        if (!is_over(f) && !is_over(f - 1)) {
-          run.push_back(screen[i]);
+      for (const PathLinePiece &k : motion_path_line_pieces(doc, p, g_canvas_now, 6.0f / std::max(view.zoom, 1e-9f))) {
+        const ImVec2 a = view.to_screen(k.a), b = view.to_screen(k.b);
+        if (!k.dashed) {
+          dl->AddLine(a, b, k.color, 1.5f);
           continue;
         }
-        if (run.size() > 1) {
-          dl->AddPolyline(run.data(), int(run.size()), col, ImDrawFlags_None, 1.5f);
-        }
-        const ImVec2 a = screen[i - 1], b = screen[i];
         for (int d = 0; d < 6; d += 2) {
           dl->AddLine(ImVec2(a.x + (b.x - a.x) * float(d) / 6.0f, a.y + (b.y - a.y) * float(d) / 6.0f),
-                      ImVec2(a.x + (b.x - a.x) * float(d + 1) / 6.0f, a.y + (b.y - a.y) * float(d + 1) / 6.0f), col,
-                      1.5f);
+                      ImVec2(a.x + (b.x - a.x) * float(d + 1) / 6.0f, a.y + (b.y - a.y) * float(d + 1) / 6.0f),
+                      k.color, 1.5f);
         }
-        run = {screen[i]};
-      }
-      if (run.size() > 1) {
-        dl->AddPolyline(run.data(), int(run.size()), col, ImDrawFlags_None, 1.5f);
       }
     }
     /* With the tool, its selected keys (as the timeline has them) outlined. */
@@ -1725,10 +1796,14 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         continue;
       }
       const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
-      dl->AddLine(k, e, IM_COL32(20, 20, 20, 200), 3.0f);
-      dl->AddLine(k, e, IM_COL32(235, 235, 235, 230), 1.4f);
       const bool dragged = g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame;
+      dl->AddLine(k, e, IM_COL32(20, 20, 20, 200), 3.0f);
+      /* A picked tip: orange there, fading to the line's own colour at the key (as vector handles fade). */
+      for (const PathHandleRun &r : path_handle_runs(dragged)) {
+        dl->AddLine(ImVec2(k.x + (e.x - k.x) * r.from, k.y + (e.y - k.y) * r.from),
+                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), r.color, 1.4f);
+      }
       const ImU32 fill = dragged ? IM_COL32(255, 160, 40, 255) : IM_COL32(235, 235, 235, 255);
       if (h.mode == PathHandles::Broken) {
         dl->AddRectFilled(ImVec2(e.x - 4.0f, e.y - 4.0f), ImVec2(e.x + 4.0f, e.y + 4.0f), IM_COL32(20, 20, 20, 220));
@@ -6716,6 +6791,13 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
   const bool cuts = cutter && !cutter->empty();
   std::vector<float2> line;
   std::vector<char> shows;
+  /* The colours that read on what is drawn under them (a layer-space place looked up in the canvas). */
+  const ContrastColors wire = wire_colors();
+  const CanvasSample *under = g_canvas_now;
+  const std::function<bool(float2, Color &)> under_at = [&](float2 p, Color &c) {
+    return under && under->at(to_document.apply(p), c);
+  };
+  std::vector<ContrastPiece> pieces;
   for (const Curve &curve : lines->curves) {
     if (!show_wires) {
       break;
@@ -6745,10 +6827,13 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
         }
         return false;
       };
-      const bool selected = own_selected(s, -1) && own_selected(s + 1, 1);
-      const ImU32 col = selected ? COL_WIRE_SELECTED : COL_WIRE;
+      const bool picked_a = own_selected(s, -1), picked_b = own_selected(s + 1, 1);
+      const bool selected = picked_a && picked_b;
+      /* One end picked (Blender's edit mode): orange at that end, fading along the segment to the other's colour. */
+      const bool fades = picked_a != picked_b;
+      const ImU32 col = selected ? COL_WIRE_SELECTED : contrast_u32(wire.base, 0.92f);
       const ImU32 faint = (col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110);
-      const float thickness = selected ? 1.6f : 1.0f;
+      const float thickness = selected ? 1.6f : 1.5f;
       if (curve.points[s].edge_hidden) {
         /* A hidden edge (Moho's Hide Edge) draws dashed and faint, so it can still be found. */
         for (size_t i = 0; i + 1 < line.size(); i += 2) {
@@ -6768,6 +6853,31 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
           else if (i % 2 == 0) {
             g.lines.push_back({line[i], line[i + 1], faint, thickness});
           }
+        }
+      }
+      else if (!selected && (under || fades)) {
+        /* Each piece its colour by what is drawn under it: the usual one, or where that is hard to see a lighter or
+         * darker one, that piece alone. */
+        pieces.clear();
+        contrast_pieces(line, pixel * 6.0f, under_at, wire.base, pieces);
+        float total = 0.0f;
+        for (const ContrastPiece &p : pieces) {
+          total += length(p.b - p.a);
+        }
+        float along = 0.0f;
+        for (const ContrastPiece &p : pieces) {
+          const ImU32 own = contrast_u32(wire.of(p.pick), 0.92f);
+          if (!fades || total <= 0.0f) {
+            g.lines.push_back({p.a, p.b, own, thickness});
+            continue;
+          }
+          /* How far from the picked end each end of the piece is, 0 to 1. */
+          const float t0 = along / total;
+          along += length(p.b - p.a);
+          const float t1 = along / total;
+          const float f0 = picked_a ? t0 : 1.0f - t0, f1 = picked_a ? t1 : 1.0f - t1;
+          g.lines.push_back({p.a, p.b, u32_mix(COL_WIRE_SELECTED, own, f0), thickness,
+                             u32_mix(COL_WIRE_SELECTED, own, f1)});
         }
       }
       else {
@@ -6796,11 +6906,19 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
         if (distance(h, here) < 1e-9f) {
           continue;
         }
-        const bool selected = point_selected || (pre ? cp.select_in : cp.select_out);
-        const ImU32 col = (cp.aligned ? COL_HANDLE_ALIGNED : COL_HANDLE_FREE)[selected ? 1 : 0];
-        g.lines.push_back({here, h, col, 1.5f});
-        g.marks.push_back({h, (pre ? cp.select_in : cp.select_out) ? IM_COL32(0xff, 0xff, 0xff, 255) : col,
-                           IM_COL32(0, 0, 0, 160), handle_size * 0.5f, 1.0f});
+        /* A picked point lights its handles all along (as Blender's picks its handles); a picked tip alone lights its
+         * end, fading to the point's. */
+        const bool tip_picked = pre ? cp.select_in : cp.select_out;
+        const bool at_point = point_selected, at_tip = point_selected || tip_picked;
+        /* Unpicked: red, outlined in black so it reads on anything. */
+        const ImU32 dark = color_u32_rgb(preferences().handle_color, 255);
+        const ImU32 bright = color_u32_rgb(preferences().handle_selected, 255);
+        g.lines.push_back({here, h, IM_COL32(0, 0, 0, 200), 3.0f});
+        g.lines.push_back({here, h, at_point ? bright : dark, 1.5f, at_tip ? bright : dark});
+        /* The tip: orange when picked; a broken handle's (set, not kept in line) square, a smooth one's round. */
+        const bool broken = cp.handles_set && !cp.aligned;
+        g.marks.push_back({h, at_tip ? COL_POINT_SELECTED : dark, IM_COL32(0, 0, 0, 220), handle_size * 0.5f,
+                           broken ? 0.0f : 1.0f});
       }
     }
   }
@@ -6827,8 +6945,12 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
       }
       /* Coarser points a third bigger. */
       const float r = point_size * (coarse[i] ? 0.667f : 0.5f);
-      g.marks.push_back({p.pos, p.selected ? COL_POINT_SELECTED : COL_POINT,
-                         p.selected ? 0u : IM_COL32(0xff, 0xff, 0xff, 120), r, 0.0f});
+      /* The wire's colour, or the one that reads on what is under the point. */
+      Color c;
+      const ImU32 fill = p.selected      ? COL_POINT_SELECTED
+                         : under_at(p.pos, c) ? contrast_u32(wire.of(contrast_pick(c, wire.base)), 1.0f)
+                                              : contrast_u32(wire.base, 1.0f);
+      g.marks.push_back({p.pos, fill, p.selected ? 0u : IM_COL32(0x10, 0x10, 0x10, 170), r, 0.0f});
     }
   }
   return g;
@@ -6879,6 +7001,27 @@ static void draw_modifier_points(ImDrawList *dl, Context &C, const Layer &layer,
   }
 }
 
+OverlayColorsTest overlay_colors_test(const Document &doc, const Layer &layer, const CanvasSample &under, float pixel,
+                                      bool handles)
+{
+  const CanvasSample *was = g_canvas_now;
+  g_canvas_now = &under;
+  const Posed shown = posed(doc, layer);
+  const OverlayGeometry g = overlay_geometry(*shown.drawing, posed_wires(shown), layer_world_transform(doc, layer.id),
+                                             true, true, 4, handles ? HandleDisplay::All : HandleDisplay::None, true, nullptr,
+                                             6.0f, 6.5f, pixel);
+  g_canvas_now = was;
+  OverlayColorsTest out;
+  const Transform2D to_document = layer_world_transform(doc, layer.id);
+  for (const OverlayLine &l : g.lines) {
+    out.wires.push_back({to_document.apply(l.a), to_document.apply(l.b), l.color, l.width, l.color_b});
+  }
+  for (const OverlayMark &m : g.marks) {
+    out.points.push_back({to_document.apply(m.at), m.fill, m.outline, m.round});
+  }
+  return out;
+}
+
 /* The wires, handles and points of a drawing being edited, drawn by the GPU (gpu/overlay_renderer.hh) at the
  * next overlay_flush: made again only when what they show changes, kept per `slot` (the layer, in its
  * viewport). `cutter` (optional, End Lines at Edge): the stretches of the wires whose line it cuts away draw
@@ -6903,6 +7046,19 @@ static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const Posed 
   }
   for (const float v : {point_size, handle_size, pixel}) {
     key = overlay_mix_float(key, v);
+  }
+  /* Colours picked by what is under them depend on that, where the drawing is, and the colours set. */
+  if (g_canvas_now) {
+    key = overlay_mix(key, g_canvas_now->serial);
+    for (const float v : {to_document.a, to_document.b, to_document.c, to_document.d, to_document.tx, to_document.ty}) {
+      key = overlay_mix_float(key, v);
+    }
+  }
+  {
+    const Preferences &prefs = preferences();
+    key = overlay_mix(key, uint64_t(prefs.wire_color) | uint64_t(prefs.wire_lighter) << 24);
+    key = overlay_mix(key, uint64_t(prefs.wire_darker) | uint64_t(prefs.handle_color) << 24);
+    key = overlay_mix(key, uint64_t(prefs.handle_selected));
   }
   /* Lines ended at masks' edges depend on where the drawing is: then exactly, with the cut and the place. */
   if (cuts) {
@@ -15132,6 +15288,8 @@ static void viewport_draw_contents(Area &area, Context &C)
   if (!renderer) {
     renderer = std::make_unique<SceneRenderer>();
   }
+  /* New renders of this area's canvas, counted for reading it back. */
+  static std::map<int, uint64_t> render_serials;
   /* While pointing for In Front Of... / Behind..., the moving layers show where they would go. */
   std::vector<std::pair<Layer *, float>> order_preview;
   const WindowManager::DrawOrderPick &pick = wm.draw_order_pick;
@@ -15347,6 +15505,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     const Document *previewed = controller_preview_document(doc);
     rendered = renderer->render(previewed ? *previewed : doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
                                 doc.viewport_samples);
+    render_serials[area.id]++;
     last = {rendered,         width_px,          height_px,          document_to_pixels,
             doc.frame_current, doc.viewport_quality, doc.viewport_samples, C.undo->change_count(),
             media_generation(), show_guides,       wm.local_view,      mask_preview_key,
@@ -15391,6 +15550,28 @@ static void viewport_draw_contents(Area &area, Context &C)
                    ImVec2(uv[2], uv[1]));
     }
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+  }
+  /* The canvas read back for the overlays to look under themselves (overlay_contrast.hh): after a render, not while
+   * playing, at most a few times a second (reading it waits for the GPU). */
+  {
+    struct Readback {
+      CanvasSample sample;
+      uint64_t read = 0;
+      double at = -10.0;
+    };
+    static std::map<int, Readback> readbacks;
+    Readback &rb = readbacks[area.id];
+    const uint64_t drawn = render_serials[area.id];
+    if (rendered && drawn != rb.read && !wm.playing && ImGui::GetTime() - rb.at >= 0.15 &&
+        renderer->read_pixels(rb.sample.rgba, &rb.sample.width, &rb.sample.height))
+    {
+      rb.sample.document_to_pixels = renderer->image_to_document().inverted();
+      rb.sample.background = doc.background;
+      rb.sample.serial++;
+      rb.read = drawn;
+      rb.at = ImGui::GetTime();
+    }
+    g_canvas_now = rb.sample.rgba.empty() ? nullptr : &rb.sample;
   }
   if (mask_previewed) {
     /* Says what's shown, over the black and white. */

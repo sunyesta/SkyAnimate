@@ -16,11 +16,13 @@ struct ImDrawList;
 
 namespace oanim {
 
-/* A piece of line from `a` to `b` (layer space), `width` pixels wide; colours are ImGui's (IM_COL32). */
+/* A piece of line from `a` to `b` (layer space), `width` pixels wide; colours are ImGui's (IM_COL32). `color_b`, when
+ * set, is its colour at `b`, blending from `color` at `a` (a wire fading from a picked point). */
 struct OverlayLine {
   float2 a, b;
   uint32_t color = 0;
   float width = 1.0f;
+  uint32_t color_b = 0;
 };
 
 /* A point square or a round handle dot at `at` (layer space), `radius` pixels from its middle to its edge.

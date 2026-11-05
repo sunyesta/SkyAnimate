@@ -88,6 +88,7 @@ set(OANIM_SOURCES
   src/editors/statistics.cc
   src/editors/timeline_media.cc
   src/editors/timeline_path.cc
+  src/editors/overlay_contrast.cc
   src/editors/viewport.cc
   src/gpu/brush_stroke.cc
   src/gpu/gl.cc
@@ -451,6 +452,8 @@ add_test(NAME motion_path_own_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_own_keys.py)
 add_test(NAME motion_path_own_motion
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_own_motion.py)
+add_test(NAME overlay_colors
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_overlay_colors.py)
 add_test(NAME motion_path_handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_handles.py)
 add_test(NAME motion_path_brushes

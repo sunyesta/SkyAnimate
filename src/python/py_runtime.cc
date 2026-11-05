@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cctype>
 #include <memory>
 #include <optional>
@@ -62,6 +63,7 @@
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
 #include "editors/brush_editor.hh"
+#include "editors/overlay_contrast.hh"
 #include "editors/editors.hh"
 #include "editors/statistics.hh"
 
@@ -1178,6 +1180,80 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return out;
   });
   /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
+  /* Test hook: the colours the wire and point overlay of layer `id`, and the motion paths' lines, take over a canvas
+   * that is `left` left of x = `split` and `right` from there on (document space). */
+  /* Test hook: a motion path handle line's runs of colour, key (0) to tip (1). */
+  m.def("path_handle_colors", [](bool tip_picked) {
+    py::list out;
+    for (const PathHandleRun &r : path_handle_runs(tip_picked)) {
+      char s[8];
+      std::snprintf(s, sizeof(s), "#%02X%02X%02X", r.color & 0xff, (r.color >> 8) & 0xff, (r.color >> 16) & 0xff);
+      out.append(py::make_tuple(r.from, r.to, std::string(s)));
+    }
+    return out;
+  });
+  m.def("overlay_colors", [](uint64_t id, py::tuple left, py::tuple right, float split, float pixel, bool handles) {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    CanvasSample under;
+    under.width = 2;
+    under.height = 1;
+    const auto byte = [](py::handle v) { return uint8_t(std::clamp(int(v.cast<float>() * 255.0f + 0.5f), 0, 255)); };
+    under.rgba = {byte(left[0]), byte(left[1]), byte(left[2]), 255, byte(right[0]), byte(right[1]), byte(right[2]), 255};
+    /* x below `split` to the first pixel, from it to the second. */
+    under.document_to_pixels = {1e-3f, 0.0f, 0.0f, 0.0f, 1.0f - split * 1e-3f, 0.5f};
+    const auto hex = [](uint32_t c) {
+      char s[8];
+      std::snprintf(s, sizeof(s), "#%02X%02X%02X", c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff);
+      return std::string(s);
+    };
+    py::dict out;
+    py::list wires, points, paths;
+    if (const Layer *layer = layer_find(doc, id)) {
+      const OverlayColorsTest t = overlay_colors_test(doc, *layer, under, pixel, handles);
+      for (const auto &w : t.wires) {
+        py::dict d;
+        d["a"] = py::make_tuple(w.a.x, w.a.y);
+        d["b"] = py::make_tuple(w.b.x, w.b.y);
+        d["color"] = hex(w.color);
+        d["color_b"] = w.color_b ? py::object(py::str(hex(w.color_b))) : py::object(py::none());
+        d["alpha"] = int(w.color >> 24);
+        d["width"] = w.width;
+        wires.append(d);
+      }
+      for (const auto &q : t.points) {
+        py::dict d;
+        d["at"] = py::make_tuple(q.at.x, q.at.y);
+        d["color"] = hex(q.color);
+        d["outline"] = hex(q.outline);
+        d["round"] = q.round > 0.5f;
+        points.append(d);
+      }
+    }
+    const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    int first = 0, last = 0;
+    if (doc.motion_paths && motion_path_range(doc, targets, first, last)) {
+      for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+        py::list pieces;
+        for (const PathLinePiece &k : motion_path_line_pieces(doc, p, &under, pixel * 6.0f)) {
+          py::dict d;
+          d["a"] = py::make_tuple(k.a.x, k.a.y);
+          d["b"] = py::make_tuple(k.b.x, k.b.y);
+          d["color"] = hex(k.color);
+          d["dashed"] = k.dashed;
+          pieces.append(d);
+        }
+        py::dict d;
+        d["label"] = motion_path_label(doc, p.target);
+        d["pieces"] = pieces;
+        paths.append(d);
+      }
+    }
+    out["wires"] = wires;
+    out["points"] = points;
+    out["paths"] = paths;
+    return out;
+  });
   m.def("motion_paths", []() {
     Context &C = current_context();
     const Document &doc = *C.document;

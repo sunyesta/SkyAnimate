@@ -92,7 +92,10 @@ shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brush
 (`src/data/annotations.*`, operators in `src/ops/annotation_ops.cc`, the tool in `src/editors/viewport.cc`). The draw tools (the spec's "Draw tools" note): every pen sample through Windows Ink or WinTab in
 `src/wm/pen_input.*` and `src/wm/pen_wintab.*`, the Stroke Pen's engine in `src/data/ink_stroke.*`, the shelf and presets in
 `src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`, the Fill Pen and Fill Eraser in
-`src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Still to do in milestone 2: Knife tool
+`src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Overlay colours (`src/editors/overlay_contrast.*`: wires, points and
+motion path lines take a lighter or darker colour only where hard to see, from the canvas read back after each redraw into
+`g_canvas_now` in `viewport.cc`; half-picked wires fade from orange via `OverlayLine::color_b`; red handles, green where picked; colours in
+Preferences; test hook `oanim.wm.overlay_colors`). Still to do in milestone 2: Knife tool
 (Ctrl K), the style library.
 
 Milestone 3 (Animation) in progress on `milestone-3-animation`. Done: animated channels

@@ -14,6 +14,7 @@
  * When no library is set (or its folder is gone), the app asks for a folder at startup and
  * initializes it there. */
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,18 @@ struct Preferences {
   bool viewport_tool_settings = true;
   /* Layers editor settings: Auto Focus keeps the list folded down to the selected layers. */
   bool layers_auto_focus = false;
+  /* Overlay colours (0xRRGGBB, editors/overlay_contrast.hh): vector wires and points, and motion paths' lines, each
+   * with the lighter colour a piece takes over something darker it is hard to see on, and the darker one over
+   * something lighter. */
+  uint32_t wire_color = 0x919191;
+  uint32_t wire_lighter = 0xAEAEAE;
+  uint32_t wire_darker = 0x6E6E6E;
+  uint32_t path_color = 0x4D9191;
+  uint32_t path_lighter = 0x5CA8AE;
+  uint32_t path_darker = 0x3A7070;
+  /* Vector handles: the line and tip dot, and the line where it is picked. */
+  uint32_t handle_color = 0xC9483B;
+  uint32_t handle_selected = 0x68EB50;
 };
 
 /* The current preferences. Loaded at startup from %LOCALAPPDATA%\OpenAnimate\preferences.json;

@@ -1274,6 +1274,43 @@ void App::draw_preferences()
                                                                                        : "Using Windows Ink, with WinTab ready");
   }
 
+  /* The overlays' colours (editors/overlay_contrast.hh): each piece of a wire, point or path takes its usual colour,
+   * or where that is hard to see on the drawing under it, the lighter one (over something darker) or the darker. */
+  ImGui::SeparatorText("Overlay Colours");
+  {
+    struct Row {
+      const char *label;
+      uint32_t Preferences::*color;
+      const char *tip;
+    };
+    static const Row rows[] = {
+        {"Wire", &Preferences::wire_color, "Vector wires and points"},
+        {"Wire, Lighter", &Preferences::wire_lighter, "Where a wire is hard to see on something darker"},
+        {"Wire, Darker", &Preferences::wire_darker, "Where a wire is hard to see on something lighter"},
+        {"Path", &Preferences::path_color, "A motion path's line (the first path; others keep their own colours)"},
+        {"Path, Lighter", &Preferences::path_lighter, "Where a path is hard to see on something darker"},
+        {"Path, Darker", &Preferences::path_darker, "Where a path is hard to see on something lighter"},
+        {"Handle", &Preferences::handle_color, "A vector handle's line and tip"},
+        {"Handle, Selected", &Preferences::handle_selected, "A vector handle's line where it is picked"},
+    };
+    for (const Row &row : rows) {
+      ImGui::PushID(row.label);
+      ImGui::TextUnformatted(row.label);
+      ImGui::SameLine(130);
+      uint32_t &rgb = prefs.*row.color;
+      float c[3] = {float((rgb >> 16) & 0xff) / 255.0f, float((rgb >> 8) & 0xff) / 255.0f, float(rgb & 0xff) / 255.0f};
+      if (ImGui::ColorEdit3("##color", c, ImGuiColorEditFlags_DisplayHex)) {
+        const auto byte = [](float v) { return uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+        rgb = byte(c[0]) << 16 | byte(c[1]) << 8 | byte(c[2]);
+        preferences_save();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", row.tip);
+      }
+      ImGui::PopID();
+    }
+  }
+
   /* Remote control, for Claude through the MCP bridge (tools/mcp). */
   ImGui::SeparatorText("Remote Control");
   if (ImGui::Checkbox("Allow Remote Control", &prefs.remote_control)) {

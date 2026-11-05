@@ -389,6 +389,21 @@ def motion_path_timing_panel():
     return _oanim.motion_path_timing_panel()
 
 
+def overlay_colors(layer, left=(0.0, 0.0, 0.0), right=(1.0, 1.0, 1.0), split=0.0, pixel=0.01, handles=False):
+    """Test hook: the colours ("#RRGGBB") the wires and points of `layer` (a layer or its id) and the motion paths'
+    line pieces take over a canvas that is `left` left of x = `split` and `right` from there on, at `pixel` document
+    units a pixel. {"wires": [{a, b, color, width}], "points": [{at, color}], "paths": [{label, pieces: [{a, b, color,
+    dashed}]}]}. A wire's "color_b" is its colour at b when it fades (else None). With handles=True, every handle too.
+    """
+    return _oanim.overlay_colors(getattr(layer, "id", layer), tuple(left), tuple(right), float(split), float(pixel),
+                                 bool(handles))
+
+
+def path_handle_colors(tip_picked):
+    """Test hook: a motion path handle's line in runs (from, to, "#RRGGBB"), key (0) to tip (1)."""
+    return _oanim.path_handle_colors(bool(tip_picked))
+
+
 def motion_path_dots():
     """The dots selected between keys with the Motion Path tool's Edit: dicts with layer, bone, point (ids, 0 for
     none), head and frame. Keys selected are the timeline's (keyframes()' "selected")."""

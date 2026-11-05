@@ -17,6 +17,7 @@ layout(location = 0) in vec2 a_from;
 layout(location = 1) in vec2 a_to;
 layout(location = 2) in vec4 a_color;
 layout(location = 3) in float a_width;
+layout(location = 4) in vec4 a_color_b;
 uniform mat3 u_to_screen;
 uniform vec2 u_display_pos;
 uniform vec2 u_display_size;
@@ -40,7 +41,8 @@ void main()
   vec2 p = mix(from, to, corner.x) + normal * corner.y * reach;
   v_across = corner.y * reach;
   v_half = half_width;
-  v_color = a_color;
+  /* Unset (all zero) at b: one colour. */
+  v_color = a_color_b == vec4(0.0) ? a_color : mix(a_color, a_color_b, corner.x);
   vec2 ndc = (p - u_display_pos) / u_display_size * 2.0 - 1.0;
   gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
 }
@@ -255,6 +257,7 @@ void overlay_keep(uint64_t layer, uint64_t key, const OverlayGeometry &geometry,
     attribute(1, 2, GL_FLOAT, false, stride, offsetof(OverlayLine, b));
     attribute(2, 4, GL_UNSIGNED_BYTE, true, stride, offsetof(OverlayLine, color));
     attribute(3, 1, GL_FLOAT, false, stride, offsetof(OverlayLine, width));
+    attribute(4, 4, GL_UNSIGNED_BYTE, true, stride, offsetof(OverlayLine, color_b));
   }
   if (!geometry.marks.empty()) {
     upload(k.mark_vao, k.mark_vbo, geometry.marks.data(), geometry.marks.size() * sizeof(OverlayMark));

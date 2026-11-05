@@ -1,11 +1,13 @@
 #include "assets/asset_library.hh"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <set>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -52,6 +54,15 @@ void preferences_set_persistent(bool persistent)
   g_persistent = persistent;
 }
 
+/* The overlay colours' names in preferences.json. */
+static std::vector<std::pair<const char *, uint32_t Preferences::*>> overlay_color_prefs()
+{
+  return {{"wire_color", &Preferences::wire_color},   {"wire_lighter", &Preferences::wire_lighter},
+          {"wire_darker", &Preferences::wire_darker}, {"path_color", &Preferences::path_color},
+          {"path_lighter", &Preferences::path_lighter}, {"path_darker", &Preferences::path_darker},
+          {"handle_color", &Preferences::handle_color}, {"handle_selected", &Preferences::handle_selected}};
+}
+
 void preferences_load()
 {
   if (!g_persistent) {
@@ -85,6 +96,14 @@ void preferences_load()
   {
     if (auto it = j.find(key); it != j.end() && it->is_boolean()) {
       preferences().*flag = it->get<bool>();
+    }
+  }
+  for (const auto &[key, color] : overlay_color_prefs()) {
+    if (auto it = j.find(key); it != j.end() && it->is_string()) {
+      const std::string hex = it->get<std::string>();
+      if (hex.size() == 7 && hex[0] == '#') {
+        preferences().*color = uint32_t(std::stoul(hex.substr(1), nullptr, 16));
+      }
     }
   }
   /* What new keys get (the timeline's Interpolation menu with no keys selected). */
@@ -143,7 +162,7 @@ void preferences_save()
                          {"noise_frequency", s.noise_frequency},
                          {"cycle_back", s.cycle_back},
                          {"copy_previous", keys.copy_previous}};
-  const json j = {{"version", 1},
+  json j = {{"version", 1},
                   {"asset_library", preferences().asset_library},
                   {"remote_control", preferences().remote_control},
                   {"remote_port", preferences().remote_port},
@@ -154,6 +173,11 @@ void preferences_save()
                   {"viewport_tool_settings", preferences().viewport_tool_settings},
                   {"layers_auto_focus", preferences().layers_auto_focus},
                   {"new_keys", new_keys}};
+  for (const auto &[key, color] : overlay_color_prefs()) {
+    char hex[8];
+    std::snprintf(hex, sizeof(hex), "#%06X", unsigned(preferences().*color & 0xFFFFFF));
+    j[key] = hex;
+  }
   std::ofstream out(preferences_path(), std::ios::trunc);
   out << j.dump(2) << "\n";
 }
