@@ -2601,27 +2601,27 @@ static void timeline_body(Area &area, Context &C)
     }
   }
 
-  /* Navigation: the wheel scrolls the rows, Ctrl+wheel zooms around the mouse, Shift+wheel (or a sideways wheel)
-   * and middle-drag pan, the scroll bar at the bottom pans and zooms, Home frames all. Over the timing chart the
-   * wheel zooms. */
+  /* Navigation, as Blender's Dope Sheet: over the keys the wheel zooms around the mouse, Ctrl+wheel (or a sideways
+   * wheel) and middle-drag pan, Shift+wheel scrolls the rows; over the names the wheel scrolls the rows. The scroll
+   * bar at the bottom pans and zooms, Home frames all. Over the timing chart the wheel zooms. */
   float span = area.view_end - area.view_start;
   /* Over the timing chart below, the wheel zooms the timeline too, unless a tick is being dragged there. */
   const bool over_strip = strip_h > 0.0f && !timeline_path_strip_busy() && ImGui::IsWindowHovered() &&
                           ImGui::IsMouseHoveringRect(ImVec2(k0.x, p1.y), ImVec2(p1.x, p1.y + strip_h));
   if (hovered || over_strip) {
-    if (over_names || (!io.KeyCtrl && !io.KeyShift && !over_strip)) {
+    if (over_names || (io.KeyShift && !io.KeyCtrl && !over_strip)) {
       area.channel_scroll -= io.MouseWheel * row_h * 2.0f;
     }
     if (!over_names) {
       const float mouse_frame = area.view_start + (io.MousePos.x - k0.x) / keys_w * span;
-      if (io.MouseWheel != 0.0f && (io.KeyCtrl || over_strip)) {
+      if (io.MouseWheel != 0.0f && ((!io.KeyCtrl && !io.KeyShift) || over_strip)) {
         const float factor = std::pow(0.85f, io.MouseWheel);
         const float new_span = std::clamp(span * factor, 10.0f, 200000.0f);
         const float t = (mouse_frame - area.view_start) / span;
         area.view_start = mouse_frame - t * new_span;
         area.view_end = area.view_start + new_span;
       }
-      const float pan_wheel = io.MouseWheelH + (io.KeyShift && !io.KeyCtrl ? io.MouseWheel : 0.0f);
+      const float pan_wheel = io.MouseWheelH + (io.KeyCtrl && !over_strip ? io.MouseWheel : 0.0f);
       if (pan_wheel != 0.0f) {
         const float delta = -pan_wheel * span * 0.1f;
         area.view_start += delta;
