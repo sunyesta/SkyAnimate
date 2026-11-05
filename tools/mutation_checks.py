@@ -351,6 +351,8 @@ PENDING = [
      'the reach scales with the display', 'point_drag'),
     ('src/editors/viewport.cc', '  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f) * preferences().click_reach;', '  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f);',
      'the reach follows Click Reach', 'point_drag'),
+    ('src/editors/timeline.cc', '  return {{"Interpolation", true}, {"Keyed on frame " + std::to_string(frame), keyed > 0}};', '  return {{"Interpolation", true}, {"Keyed on frame " + std::to_string(frame), true}};',
+     'the keyed submenu greys out with nothing keyed', 'timeline_mouse'),
 ]
 
 

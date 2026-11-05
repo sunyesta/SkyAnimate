@@ -431,6 +431,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("remote_dispatch", [](const std::string &request) { return remote_dispatch(current_context(), request); });
 
   /* The timeline's rows with every row open: (depth, name, red, pinned). */
+  m.def("timeline_key_menu", [](int row, int frame) { return timeline_key_menu_top(current_context(), row, frame); });
   m.def("timeline_key_press", [](int row, int frame, int to_frame, bool ctrl, bool shift, bool double_click,
                                   bool ripple, bool alt, const std::string &typed) {
     return timeline_key_press_simulate(current_context(), row, frame, to_frame, ctrl, shift, double_click, ripple, alt,

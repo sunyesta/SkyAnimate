@@ -207,6 +207,8 @@ struct TimelineRowInfo {
 /* A press on the key at `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them) with the timeline's
  * click and drag (`ctrl`, `shift`: held as it is pressed): dragged to `to_frame` (or by the frames `typed`) when it
  * moves the keys, Ctrl held while dragging (`ripple`) or Alt (`alt`). For tests. */
+/* The right-click key menu's top level for timeline row `row` on `frame`: each item's label and whether it opens. */
+std::vector<std::pair<std::string, bool>> timeline_key_menu_top(Context &C, int row, int frame);
 bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
                                  bool double_click, bool ripple, bool alt, const std::string &typed);
 /* The timeline's scroll bar dragged by `frames`: part 0 the bar (pans the view), 1 its left end, 2 its right end

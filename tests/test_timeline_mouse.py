@@ -1,7 +1,8 @@
 """The timeline's mouse on keys, through the same click and drag as the UI (oanim.wm.timeline_key_press): a click
 picks a key, Shift adds, Ctrl takes away, a double-click picks the row's every key; dragging a key moves the
 selected keys (Ctrl: Ripple; Alt: just the one channel, not Time Together's linked ones), frames typed set the
-move; pressing a selected key among others and letting go picks it alone.
+move; pressing a selected key among others and letting go picks it alone. The right-click menu: Interpolation, then
+what is keyed on the frame in a submenu.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_mouse.py
 """
@@ -96,5 +97,10 @@ oanim.ops.ed.undo()
 assert wm.timeline_key_press(row("Position"), 10)
 assert wm.timeline_key_press(row("Position"), 10, 15)
 assert frames(P) == [0, 15, 20] and frames("opacity") == [0, 8, 20], ("linked: 5 of 10 is 7.5 of 15", frames("opacity"))
+
+# The right-click menu: Interpolation first, then what is keyed on the frame folded into a submenu named for it (no
+# Select These Keys: a click on the key already picks them); greyed out where nothing is keyed.
+assert wm.timeline_key_menu(row("Position"), 15) == [("Interpolation", True), ("Keyed on frame 15", True)],     wm.timeline_key_menu(row("Position"), 15)
+assert wm.timeline_key_menu(row("Position"), 13) == [("Interpolation", True), ("Keyed on frame 13", False)]
 
 print("timeline mouse: ok")

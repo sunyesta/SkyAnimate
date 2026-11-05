@@ -499,6 +499,12 @@ def timeline_rows(changed=False):
     return rows if changed else [r[:4] for r in rows]
 
 
+def timeline_key_menu(row, frame):
+    """Test hook: the top level of the right-click menu on timeline row `row`'s key at `frame` (an index into
+    timeline_row_details(as_shown=True)), as [(label, enabled)]."""
+    return [(label, enabled) for label, enabled in _oanim.timeline_key_menu(int(row), int(frame))]
+
+
 def timeline_key_press(row, frame, to_frame=None, *, ctrl=False, shift=False, double_click=False, ripple=False,
                        alt=False, typed=""):
     """Press the key at `frame` in timeline row `row` (an index into timeline_row_details(as_shown=True)) as the

@@ -1736,6 +1736,13 @@ struct KeyedEntry {
   std::vector<std::pair<std::string, std::string>> singles;
 };
 
+/* The key menu's top level: Interpolation first (the one used most), then what is keyed on the frame folded into a
+ * submenu named for it (greyed out with nothing keyed there). Each: its label and whether it can open. */
+static std::vector<std::pair<std::string, bool>> keyed_menu_top(int frame, size_t keyed)
+{
+  return {{"Interpolation", true}, {"Keyed on frame " + std::to_string(frame), keyed > 0}};
+}
+
 static Layer *keyed_layer(Document &doc, uint64_t id)
 {
   Layer &simulation = document_simulation(doc);
@@ -2470,6 +2477,23 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   return rows;
 }
 
+std::vector<std::pair<std::string, bool>> timeline_key_menu_top(Context &C, int row, int frame)
+{
+  Area area;
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
+  if (row < 0 || row >= int(rows.size())) {
+    return {};
+  }
+  KeyedHere k;
+  for (const Layer *l : rows[size_t(row)].layers) {
+    k.layers.push_back(l->id);
+  }
+  k.filter = rows[size_t(row)].filter;
+  k.frame = frame;
+  return keyed_menu_top(frame, keyed_entries(*C.document, k).size());
+}
+
 bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
                                  bool double_click, bool ripple, bool alt, const std::string &typed)
 {
@@ -3035,8 +3059,6 @@ static void timeline_body(Area &area, Context &C)
    * (Shift adds to the selection, Alt keeps the frame). */
   if (ui_menu_begin("##keyed_here")) {
     const std::vector<KeyedEntry> entries = keyed_entries(doc, g_keyed_here);
-    ImGui::TextDisabled("Keyed on frame %d", g_keyed_here.frame);
-    ImGui::Separator();
     const auto go = [&](uint64_t layer, const std::vector<std::string> &paths) {
       operator_call(C, "anim.keyed_go",
                     {{"layer", std::to_string(layer)},
@@ -3049,75 +3071,71 @@ static void timeline_body(Area &area, Context &C)
         C.wm->keyed_hover = {layer, paths};
       }
     };
-    if (entries.empty()) {
-      ImGui::TextDisabled("Nothing keyed here");
-    }
-    size_t shown = 0;
-    for (const KeyedEntry &e : entries) {
-      if (++shown > 40) {
-        ImGui::TextDisabled("...and %d more", int(entries.size() - 40));
-        break;
-      }
-      if (!e.singles.empty()) {
-        /* Many points: all of them at once, or one at a time. */
-        const std::string label = e.label + " (" + std::to_string(e.singles.size()) + ")";
-        if (ui_submenu_begin(label.c_str())) {
-          const std::string all = "All " + std::to_string(e.singles.size());
-          if (ui_menu_item(all.c_str())) {
-            go(e.layer, e.paths);
-          }
-          hover(e.layer, e.paths);
-          ImGui::Separator();
-          for (const auto &[name, path] : e.singles) {
-            const std::string value = keyed_value(*keyed_layer(doc, e.layer), path, g_keyed_here.frame);
-            if (ui_menu_item(name.c_str(), value.c_str())) {
-              go(e.layer, {path});
-            }
-            hover(e.layer, {path});
-          }
-          ui_submenu_end();
-        }
-        hover(e.layer, e.paths);
-        continue;
-      }
-      if (ui_menu_item(e.label.c_str(), e.value.c_str())) {
-        go(e.layer, e.paths);
-      }
-      hover(e.layer, e.paths);
-    }
-    ImGui::Separator();
     std::vector<Layer *> these;
     for (const uint64_t id : g_keyed_here.layers) {
       if (Layer *l = keyed_layer(doc, id)) {
         these.push_back(l);
       }
     }
-    /* Interpolation for the selection; these keys join it first unless they're all in it. */
-    if (ui_submenu_begin("Interpolation")) {
-      interp_menu_items(C, [&]() {
-        const KeyFrameSummary sum = layers_key_summary(these, g_keyed_here.filter)[g_keyed_here.frame];
-        if (sum.selected < sum.keys) {
-          operator_call(C, "anim.keys_select",
-                        {{"frame_start", std::to_string(g_keyed_here.frame)},
-                         {"layers", layer_ids(these)},
-                         {"kinds", std::to_string(g_keyed_here.filter.kinds)},
-                         {"selected_only", g_keyed_here.filter.selected_only ? "1" : "0"},
-                         {"path", g_keyed_here.filter.path},
-                         {"pinned", g_keyed_here.filter.pinned_only ? "1" : "0"}});
+    for (const auto &[label, enabled] : keyed_menu_top(g_keyed_here.frame, entries.size())) {
+      if (label == "Interpolation") {
+        /* Interpolation for the selection; these keys join it first unless they're all in it. */
+        if (ui_submenu_begin("Interpolation")) {
+          interp_menu_items(C, [&]() {
+            const KeyFrameSummary sum = layers_key_summary(these, g_keyed_here.filter)[g_keyed_here.frame];
+            if (sum.selected < sum.keys) {
+              operator_call(C, "anim.keys_select",
+                            {{"frame_start", std::to_string(g_keyed_here.frame)},
+                             {"layers", layer_ids(these)},
+                             {"kinds", std::to_string(g_keyed_here.filter.kinds)},
+                             {"selected_only", g_keyed_here.filter.selected_only ? "1" : "0"},
+                             {"path", g_keyed_here.filter.path},
+                             {"pinned", g_keyed_here.filter.pinned_only ? "1" : "0"}});
+            }
+          });
+          ui_submenu_end();
         }
-      });
+        continue;
+      }
+      /* What is keyed here, each property under its row by owner with its value: choosing one jumps to the frame
+       * and selects its bone or points, or shows it in Properties (Shift adds, Alt keeps the frame). */
+      if (!ui_submenu_begin(label.c_str(), enabled)) {
+        continue;
+      }
+      size_t shown = 0;
+      for (const KeyedEntry &e : entries) {
+        if (++shown > 40) {
+          ImGui::TextDisabled("...and %d more", int(entries.size() - 40));
+          break;
+        }
+        if (!e.singles.empty()) {
+          /* Many points: all of them at once, or one at a time. */
+          const std::string group = e.label + " (" + std::to_string(e.singles.size()) + ")";
+          if (ui_submenu_begin(group.c_str())) {
+            const std::string all = "All " + std::to_string(e.singles.size());
+            if (ui_menu_item(all.c_str())) {
+              go(e.layer, e.paths);
+            }
+            hover(e.layer, e.paths);
+            ImGui::Separator();
+            for (const auto &[name, path] : e.singles) {
+              const std::string value = keyed_value(*keyed_layer(doc, e.layer), path, g_keyed_here.frame);
+              if (ui_menu_item(name.c_str(), value.c_str())) {
+                go(e.layer, {path});
+              }
+              hover(e.layer, {path});
+            }
+            ui_submenu_end();
+          }
+          hover(e.layer, e.paths);
+          continue;
+        }
+        if (ui_menu_item(e.label.c_str(), e.value.c_str())) {
+          go(e.layer, e.paths);
+        }
+        hover(e.layer, e.paths);
+      }
       ui_submenu_end();
-    }
-    if (ui_menu_item("Select These Keys")) {
-      std::vector<Layer *> &layers = these;
-      operator_call(C, "anim.keys_select",
-                    {{"frame_start", std::to_string(g_keyed_here.frame)},
-                     {"layers", layer_ids(layers)},
-                     {"kinds", std::to_string(g_keyed_here.filter.kinds)},
-                     {"selected_only", g_keyed_here.filter.selected_only ? "1" : "0"},
-                     {"path", g_keyed_here.filter.path},
-                     {"pinned", g_keyed_here.filter.pinned_only ? "1" : "0"},
-                     {"extend", io.KeyShift ? "1" : "0"}});
     }
     ui_menu_end();
   }
