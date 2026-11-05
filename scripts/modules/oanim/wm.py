@@ -459,10 +459,18 @@ def timeline_hidden():
     return _oanim.timeline_hidden()
 
 
+def timeline_row_fold(row, open):
+    """Fold (open=False) or open the timeline's row `row` (as timeline_row_details(as_shown=True) lists them) as
+    its arrow does: a row holding the pick (holds_pick) stays folded only while the pick lasts. False when the
+    row doesn't fold."""
+    return _oanim.timeline_row_fold(int(row), bool(open))
+
+
 def timeline_row_details(as_shown=False):
     """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary,
-    frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow). as_shown=True lists them folded as the project keeps them (else
+    holds_pick (a folding row holding the picked points or bones: open while the pick lasts, unless
+    folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow). as_shown=True lists them folded as the project keeps them (else
     every row open)."""
     return [dict(r) for r in _oanim.timeline_rows(bool(as_shown))]
 

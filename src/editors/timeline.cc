@@ -2034,6 +2034,8 @@ struct ChannelRow {
   bool changed = false;
   /* Pinned, or a picked bone's or the selected points' (drawn red). */
   bool selected = false;
+  /* A folding row holding what is picked (points or bones): open while the pick lasts, unless folded since. */
+  bool holds_pick = false;
   /* A layer's own row: clicking its name makes that layer active. */
   uint64_t layer = 0;
   /* One pinned property's row: its pin (by its layer and path) unpins it. */
@@ -2054,6 +2056,29 @@ static bool row_open(const Area &area, const std::string &key, bool fallback)
 {
   (void)area;
   return ui_fold_state("Timeline/" + key, fallback);
+}
+
+/* Rows holding the pick that were folded while it lasted: they stay folded until the pick moves off them, then
+ * go back to the fold the project keeps (which a pick never changes). */
+static std::set<std::string> g_pick_folded;
+
+static bool row_open(const Area &area, const std::string &key, bool fallback, bool holds_pick)
+{
+  return holds_pick ? !g_pick_folded.contains(key) : row_open(area, key, fallback);
+}
+
+void timeline_row_fold(const std::string &key, bool fold_default, bool holds_pick, bool open)
+{
+  if (holds_pick) {
+    if (open) {
+      g_pick_folded.erase(key);
+    }
+    else {
+      g_pick_folded.insert(key);
+    }
+    return;
+  }
+  ui_fold_record("Timeline/" + key, fold_default, open);
 }
 
 static bool bone_picked_any(const Bone &b)
@@ -2083,14 +2108,15 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     return !layers_key_summary(ls, now(f)).empty();
   };
   const auto add = [&](std::string name, std::vector<Layer *> ls, KeyFilter f, int depth, std::string fold,
-                       bool fold_default, bool red, uint64_t layer) -> bool {
+                       bool fold_default, bool red, uint64_t layer, bool pick = false) -> bool {
     ChannelRow row;
+    row.holds_pick = pick && !fold.empty();
     row.name = std::move(name);
     row.layers = std::move(ls);
     row.filter = now(std::move(f));
     row.depth = depth;
     row.fold = fold;
-    row.open = !fold.empty() && (open_all || row_open(area, fold, fold_default));
+    row.open = !fold.empty() && (open_all || row_open(area, fold, fold_default, row.holds_pick));
     row.fold_default = fold_default;
     row.selected = red;
     row.layer = layer;
@@ -2195,7 +2221,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
         add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);
       }
       else {
-        if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && keyed({l}, sel)) {
+        if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0, keyed({l}, sel)) && keyed({l}, sel)) {
           add("Selected Points", {l}, sel, depth + 1, "", false, true, 0);
         }
       }
@@ -2205,7 +2231,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     const bool only_picked = doc.timeline_only_selected && any_picked;
     const KeyFilter bones{KEY_BONES, only_picked};
     if ((show_all && !l->bones.empty()) || keyed({l}, bones)) {
-      if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0)) {
+      if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0, any_picked)) {
         for (const Bone &b : l->bones) {
           const KeyFilter one = bone_filter(b, KEY_BONES, false);
           const bool red = bone_picked_any(b);
@@ -2213,7 +2239,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
             continue;
           }
           if ((show_all || keyed({l}, one)) &&
-              add(b.name, {l}, one, depth + 1, "bone:" + id + ":" + std::to_string(b.id), red, red, 0))
+              add(b.name, {l}, one, depth + 1, "bone:" + id + ":" + std::to_string(b.id), red, red, 0, red))
           {
             property_rows(l, one, depth + 2, false, red);
           }
@@ -2232,14 +2258,27 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
   };
   /* The layer tree: each shown layer at the depth of its shown ancestors, its rows, then the shown layers
    * inside it (a layer not shown passes its shown ones up a level). */
+  /* What is picked in a layer: its points (while it is being edited, as the Selected Points count them) or its
+   * bones. The layer's name is red, and it and the groups it is in open, as Blender's Dope Sheet shows the
+   * selected channels. */
+  const auto picks_in = [&](const Layer &l) {
+    return (edited->contains(l.id) && std::any_of(l.drawing.points.begin(), l.drawing.points.end(),
+                                                  [](const MeshPoint &p) { return p.selected; })) ||
+           std::any_of(l.bones.begin(), l.bones.end(), bone_picked_any);
+  };
+  const auto picks_under = [&](auto &&self, const Layer &l) -> bool {
+    return picks_in(l) || std::any_of(l.children.begin(), l.children.end(),
+                                      [&](const Layer &child) { return self(self, child); });
+  };
   const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
     for (Layer &l : list) {
       std::vector<Layer *> under;
       shown_under(shown_under, l, under);
+      const bool pick = picks_under(picks_under, l);
       if (!shown.contains(&l)) {
         /* A group holding shown layers: dimmed, for where they are. */
         if (!under.empty() && (show_all || keyed(under, KeyFilter{}))) {
-          if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), true, false, l.id)) {
+          if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), true, false, l.id, pick)) {
             rows.back().dim = true;
             self(self, l.children, depth + 1);
           }
@@ -2252,7 +2291,9 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       if (!show_all && !keyed(under, KeyFilter{})) {
         continue;
       }
-      if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), picked(l), false, l.id)) {
+      if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), picked(l), picks_in(l), l.id,
+              pick))
+      {
         own_rows(&l, depth + 1);
         self(self, l.children, depth + 1);
       }
@@ -2270,6 +2311,10 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       }
     }
   }
+  /* A row the pick has moved off forgets being folded while it held it. */
+  std::erase_if(g_pick_folded, [&](const std::string &key) {
+    return std::none_of(rows.begin(), rows.end(), [&](const ChannelRow &r) { return r.holds_pick && r.fold == key; });
+  });
   return rows;
 }
 
@@ -2428,7 +2473,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     }
     folded_at = -1;
     if (!row.fold.empty()) {
-      row.open = open_all || !search.empty() || row_open(area, row.fold, row.fold_default);
+      row.open = open_all || !search.empty() || row_open(area, row.fold, row.fold_default, row.holds_pick);
       if (!row.open) {
         folded_at = row.depth;
       }
@@ -2489,6 +2534,19 @@ int timeline_hidden_count(Context &C)
   return hidden;
 }
 
+bool timeline_row_fold_at(Context &C, int row, bool open)
+{
+  Area area;
+  ui_bind_project(C.document, C.undo);
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
+  if (row < 0 || row >= int(rows.size()) || rows[row].fold.empty()) {
+    return false;
+  }
+  timeline_row_fold(rows[row].fold, rows[row].fold_default, rows[row].holds_pick, open);
+  return true;
+}
+
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
 {
   Area area;
@@ -2504,6 +2562,7 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
     info.open = row.open;
     info.summary = row.summary;
     info.dim = row.dim;
+    info.holds_pick = row.holds_pick;
     if (row.filter.kinds != 0) {
       for (const auto &[frame, summary] : layers_key_summary(row.layers, row.filter)) {
         info.frames.push_back(frame);
@@ -2899,7 +2958,7 @@ static void timeline_body(Area &area, Context &C)
                         {{"layer", std::to_string(row.pin_layer)}, {"paths", row.pin_path}, {"pinned", "0"}});
         }
         else if (!row.fold.empty() && (on_arrow || !row.layer)) {
-          ui_fold_record("Timeline/" + row.fold, row.fold_default, !row.open);
+          timeline_row_fold(row.fold, row.fold_default, row.holds_pick, !row.open);
         }
         else if (row.layer) {
           doc.active_layer = row.layer;

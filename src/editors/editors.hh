@@ -198,6 +198,8 @@ struct TimelineRowInfo {
   bool summary = false;
   /* A group not shown itself, listed dimmed for the shown layers inside it. */
   bool dim = false;
+  /* A folding row holding the pick (points or bones): open while it lasts, unless folded since. */
+  bool holds_pick = false;
   /* The frames it shows keys on, and those whose keys are all fillers (drawn grey and hollow). */
   std::vector<int> frames;
   std::vector<int> filler_frames;
@@ -215,6 +217,11 @@ std::pair<float, float> timeline_scrollbar_drag(float start, float end, int part
 bool timeline_range_drag(Document &doc, int part, int from_start, int from_end, int frames);
 /* How many channels' rows the timeline's filters take away (its red "N hidden"). */
 int timeline_hidden_count(Context &C);
+/* Folds or opens a timeline row (`key`, its fold) as its arrow does: a row holding the pick is folded only
+ * while the pick lasts, the project's fold left as it is; any other row's fold is the project's. */
+void timeline_row_fold(const std::string &key, bool fold_default, bool holds_pick, bool open);
+/* The same for row `row` as timeline_rows_list(as_shown=true) lists them; false when it doesn't fold. */
+bool timeline_row_fold_at(Context &C, int row, bool open);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */

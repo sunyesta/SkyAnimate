@@ -165,6 +165,17 @@ PENDING = [
     ('src/editors/timeline.cc', 'add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);',
      'add("Drawing", {l}, points, depth, "", false, false, 0);', 'the Drawing row red with points picked',
      'tests/test_timeline_selected_points.py'),
+    ('src/editors/timeline.cc', '  return holds_pick ? !g_pick_folded.contains(key) : row_open(area, key, fallback);',
+     '  return row_open(area, key, fallback);', 'rows holding the pick open', 'tests/test_timeline_pick_open.py'),
+    ('src/editors/timeline.cc', 'picked(l), picks_in(l), l.id,', 'picked(l), false, l.id,',
+     'the layer holding the pick is red', 'tests/test_timeline_pick_open.py'),
+    ('src/editors/timeline.cc', '      const bool pick = picks_under(picks_under, l);', '      const bool pick = picks_in(l);',
+     'the groups holding the pick open', 'tests/test_timeline_pick_open.py'),
+    ('src/editors/timeline.cc', '"bones:" + id, any_picked, false, 0, any_picked)', '"bones:" + id, any_picked, false, 0, false)',
+     'the Bones folder opens for a picked bone', 'tests/test_timeline_pick_open.py'),
+    ('src/editors/timeline.cc', '      g_pick_folded.insert(key);', '      (void)key;', 'folded while picked, it stays folded', 'tests/test_timeline_pick_open.py'),
+    ('src/editors/timeline.cc', 'return r.holds_pick && r.fold == key; });', 'return key.empty(); });',
+     'folded only while that pick lasts', 'tests/test_timeline_pick_open.py'),
 ]
 
 

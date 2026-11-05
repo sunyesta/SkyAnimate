@@ -88,7 +88,9 @@ layers.active = second
 tree = names()
 assert (0, "group") in tree and (1, "second") in tree and row("group")["dim"], tree
 
-# Folds: the picked layer starts open, the project keeps a fold (saved with it).
+# Folds: the picked layer starts open, the project keeps a fold (saved with it). (No points picked: a layer
+# holding picked points opens, test_timeline_pick_open.py.)
+ops.mesh.select_none()
 layers.active = group
 assert row("group", True)["open"], "the picked layer starts open"
 assert not row("first", True)["open"], "the rest start folded"

@@ -397,6 +397,8 @@ add_test(NAME edit_descendants
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_edit_descendants.py)
 add_test(NAME timeline_selected_points
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_selected_points.py)
+add_test(NAME timeline_pick_open
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_pick_open.py)
 add_test(NAME sculpt_toggle
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_toggle.py)
 add_test(NAME bone_relations

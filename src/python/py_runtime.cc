@@ -446,6 +446,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return false;
   });
+  m.def("timeline_row_fold", [](int row, bool open) { return timeline_row_fold_at(current_context(), row, open); });
   m.def("timeline_rows", [](bool as_shown) {
     py::list result;
     for (const TimelineRowInfo &row : timeline_rows_list(current_context(), as_shown)) {
@@ -460,6 +461,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["open"] = row.open;
       d["summary"] = row.summary;
       d["dim"] = row.dim;
+      d["holds_pick"] = row.holds_pick;
       d["frames"] = row.frames;
       d["filler_frames"] = row.filler_frames;
       result.append(d);
