@@ -939,8 +939,11 @@ static void settings_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
  * keys (or the new-key settings) as they go; letting go makes one undo step. */
 static void interp_settings_popup(Context &C)
 {
-  /* Above the key group's centre, growing upward as its rows change. */
+  /* Above the key group's centre, growing upward as its rows change; exactly as wide as its rows, so they sit in its
+   * middle. */
   popover_place((g_key_group_min.x + g_key_group_max.x) * 0.5f, g_key_group_min.y, 0.5f, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 14.0f + 2.0f * ImGui::GetStyle().WindowPadding.x, 0.0f),
+                           ImGuiCond_Always);
   if (!ImGui::BeginPopup("##interp_settings")) {
     return;
   }
@@ -1150,8 +1153,13 @@ static void interp_settings_popup(Context &C)
         preferences_save();
       }
     }
-    ImGui::TextDisabled(fit_ok ? "Drag a handle; past the top or bottom overshoots" :
-                                 "Pick a shape below to edit it with handles");
+    /* Wrapped to the rows' width, so it never widens the window off centre. */
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + w);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", fit_ok ? "Drag a handle; past the top or bottom overshoots" :
+                                      "Pick a shape below to edit it with handles");
+    ImGui::PopStyleColor();
+    ImGui::PopTextWrapPos();
     /* The shapes as handles. */
     const float quarter = (w - 3.0f * ImGui::GetStyle().ItemSpacing.x) / 4.0f;
     const std::pair<const char *, BezierHandles> presets[] = {
