@@ -345,6 +345,12 @@ PENDING = [
      "Alt S is soft whatever O says", "motion_path_edit_speed"),
     ("src/editors/timeline_path.cc", "  if (open || max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {", "  if (max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {",
      "the sidebar's tab hides while it is open", "timeline_navigation"),
+    ('src/editors/viewport.cc', '  return click_reach_pixels(std::max(20.0f, size * 0.5f + 10.0f));', '  return click_reach_pixels(std::max(16.0f, size * 0.5f + 8.0f));',
+     'points are taken within 20 screen points', 'point_drag'),
+    ('src/editors/viewport.cc', '  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f) * preferences().click_reach;', '  g_reach_scale = preferences().click_reach;',
+     'the reach scales with the display', 'point_drag'),
+    ('src/editors/viewport.cc', '  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f) * preferences().click_reach;', '  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f);',
+     'the reach follows Click Reach', 'point_drag'),
 ]
 
 

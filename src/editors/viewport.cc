@@ -111,14 +111,34 @@ static constexpr ImU32 COL_HANDLE_ALIGNED[2] = {IM_COL32(0x80, 0x30, 0x60, 255),
 static constexpr ImU32 COL_HEADER = IM_COL32(0x30, 0x30, 0x30, 235);
 static constexpr ImU32 COL_TOOLBAR = IM_COL32(0x28, 0x28, 0x28, 235);
 
-/* Pick radius in screen pixels. */
-static constexpr float PICK_PIXELS = 9.0f;
+/* Click reach is in screen points: times the display's scale (the Interface Scale, so it feels the same on any
+ * screen) and Preferences' Click Reach. Set each frame (and by the test hooks) from the window manager. */
+static float g_reach_scale = 1.0f;
+static void reach_update(const Context &C)
+{
+  g_reach_scale = (C.wm ? C.wm->ui_scale : 1.0f) * preferences().click_reach;
+}
+float click_reach_pixels(float points)
+{
+  return points * g_reach_scale;
+}
+
+/* How near (pixels) a line or a bone's edge picks. */
+static float pick_line_pixels()
+{
+  return click_reach_pixels(9.0f);
+}
 
 /* How far from a point (or handle's end) drawn `size` pixels across a click still picks it. */
 static float pick_pixels(float size)
 {
   /* Generous, as the nearest point or handle within reach wins: a click needn't land on one. */
-  return std::max(16.0f, size * 0.5f + 8.0f);
+  return click_reach_pixels(std::max(20.0f, size * 0.5f + 10.0f));
+}
+/* Motion path dots, keys and handle tips. */
+static float pick_path_pixels()
+{
+  return click_reach_pixels(14.0f);
 }
 /* A right-click that cancelled something (a move, a turn, a one-off tool) is spent: its release
  * doesn't open a context menu. Cleared once the button is up. */
@@ -334,6 +354,8 @@ struct PressGrab {
   ShapeEdge edge{-1, 0};
   /* How far (pixels) the mouse must go before it moves: further with a pen, so a tap never nudges. */
   float threshold = 3.0f;
+  /* How far (pixels) the press was from the point grabbed: a handle in reach takes the press only if no nearer. */
+  float distance = FLT_MAX;
 };
 
 struct ToolDrag {
@@ -1746,7 +1768,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   const bool editing = !tool || wm.tool_settings.path_brush == PathBrush::Edit;
   const bool hovering = hovered && editing && !g_path_drag.active &&
                         (!ImGui::IsAnyMouseDown() || (tool && ImGui::IsMouseClicked(ImGuiMouseButton_Left)));
-  float best = 7.0f * 7.0f;
+  float best = pick_path_pixels() * pick_path_pixels();
   const MotionPath *hover_path = nullptr;
   int hover_frame = 0;
   const int step = std::max(1, doc.path_step);
@@ -1897,8 +1919,10 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         }
         for (size_t k = i; k < run; k++) {
           const float dx = screen[k].x - mouse.x, dy = screen[k].y - mouse.y;
-          if (hovering && dx * dx + dy * dy < best) {
-            best = dx * dx + dy * dy;
+          /* A key wins over a dot about as near (it is drawn over it). */
+          const float how_near = std::max(std::sqrt(dx * dx + dy * dy) - (key ? 2.0f : 0.0f), 0.0f);
+          if (hovering && how_near * how_near < best) {
+            best = how_near * how_near;
             hover_path = &p;
             hover_frame = p.first + int(k);
           }
@@ -1973,7 +1997,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   }
   const PathHandlesShown *hover_handle = nullptr;
   bool hover_out = false;
-  float handle_best = 7.0f * 7.0f;
+  float handle_best = pick_path_pixels() * pick_path_pixels();
   /* Which tip is under the mouse, first: it is drawn bigger. And the lines, to leave out the dots they cover. */
   std::vector<std::pair<float2, float2>> handle_lines;
   for (const PathHandlesShown &h : shown_handles) {
@@ -3685,7 +3709,7 @@ static void guide_measure_draw(ImDrawList *dl, const ViewMapping &view, const Dr
  * guide's before the others'), then the nearest line. Only shown, unlocked guides. */
 static bool pick_guide_handle(const Document &doc, const ViewMapping &view, ImVec2 mouse, int *r_guide, int *r_point)
 {
-  float best = GUIDE_HANDLE_PICK * GUIDE_HANDLE_PICK;
+  float best = click_reach_pixels(GUIDE_HANDLE_PICK) * click_reach_pixels(GUIDE_HANDLE_PICK);
   bool found = false;
   for (int pass = 0; pass < 2 && !found; pass++) {
     for (int g = 0; g < int(doc.guides.size()); g++) {
@@ -6539,12 +6563,12 @@ static SplitHit split_pick(Context &C, const ViewMapping &view, float2 mouse_doc
     float d = FLT_MAX;
     SplitHit candidate;
     if (point) {
-      candidate.point = drawing_pick_point(drawing, mouse, PICK_PIXELS * pixel);
+      candidate.point = drawing_pick_point(drawing, mouse, pick_line_pixels() * pixel);
       if (candidate.point >= 0) {
         d = distance(drawing.points[candidate.point].pos, mouse) / pixel;
       }
     }
-    else if (drawing_pick_segment(drawing, mouse, PICK_PIXELS * pixel, &candidate.edge, &candidate.t)) {
+    else if (drawing_pick_segment(drawing, mouse, pick_line_pixels() * pixel, &candidate.edge, &candidate.t)) {
       float2 ctrl[4];
       curve_segment_bezier(drawing, drawing.curves[candidate.edge.curve], candidate.edge.segment, ctrl);
       d = distance(bezier_eval(ctrl, candidate.t), mouse) / pixel;
@@ -6617,7 +6641,11 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       }
     }
   }
-  std::stable_sort(hits.begin(), hits.end(), [](const PointHit &a, const PointHit &b) { return a.d < b.d; });
+  /* Nearest first; a picked point counts a pixel nearer, so of two about as near the picked one is taken. */
+  const auto how_near = [](const PointHit &h) {
+    return h.d - (h.layer->drawing.points[size_t(h.point)].selected ? 1.0f : 0.0f);
+  };
+  std::stable_sort(hits.begin(), hits.end(), [&](const PointHit &a, const PointHit &b) { return how_near(a) < how_near(b); });
   size_t choice = 0;
   bool cycled = false;
   const ImVec2 moved = mouse_screen - g_point_cycle.pos;
@@ -6671,7 +6699,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       const Posed shown = posed(*C.document, *layer);
       const VectorDrawing *wires = posed_wires(shown);
       const VectorDrawing lines = wires ? *wires : drawing_detail_shown_curves(*shown.drawing);
-      if (drawing_pick_segment(lines, to_document.inverted().apply(mouse_document), PICK_PIXELS * pixel, &edge, &t)) {
+      if (drawing_pick_segment(lines, to_document.inverted().apply(mouse_document), pick_line_pixels() * pixel, &edge, &t)) {
         if (wires) {
           /* A piece of a segment Resample split: the segment, by the drawing's own points before it. */
           int own = -1;
@@ -6709,7 +6737,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
    * outline; a click elsewhere lets it go. */
   const ViewportOverlays &ov = C.document->overlays;
   if (!hit_layer && ov.show && ov.camera_frame &&
-      camera_border_distance(*C.document, view, view.to_screen(mouse_document)) <= PICK_PIXELS)
+      camera_border_distance(*C.document, view, view.to_screen(mouse_document)) <= pick_line_pixels())
   {
     camera.selected = io.KeyCtrl ? false : (io.KeyShift ? !camera.selected : true);
   }
@@ -6746,6 +6774,7 @@ static PressGrab select_press_grab(Context &C, const ViewMapping &view, ImVec2 m
           best = d;
           grab.layer = layer->id;
           grab.points = {p};
+          grab.distance = d;
         }
       }
       continue;
@@ -6755,7 +6784,7 @@ static PressGrab select_press_grab(Context &C, const ViewMapping &view, ImVec2 m
     const VectorDrawing lines = wires ? *wires : drawing_detail_shown_curves(*shown.drawing);
     ShapeEdge edge;
     float t;
-    if (drawing_pick_segment(lines, at, PICK_PIXELS * pixel, &edge, &t)) {
+    if (drawing_pick_segment(lines, at, pick_line_pixels() * pixel, &edge, &t)) {
       if (wires) {
         int own = -1;
         for (int i = 0; i <= edge.segment; i++) {
@@ -6820,6 +6849,7 @@ static bool select_press_grab_move(Context &C, Area &area, const ViewMapping &vi
 std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
                                                                           bool shift_or_ctrl, bool drag)
 {
+  reach_update(C);
   const ViewMapping view{{0.0f, 0.0f}, {1000.0f, 1000.0f}, {0.0f, 0.0f}, zoom};
   const PressGrab grab = select_press_grab(C, view, view.to_screen(at), shift_or_ctrl);
   std::vector<std::pair<uint64_t, std::vector<int>>> out;
@@ -9221,7 +9251,7 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
         for (int k = 0; k < 4; k++) {
           edge = std::min(edge, distance_to_segment(m, c[k], c[(k + 1) % 4]));
         }
-        if (edge < PICK_PIXELS * 1.5f) {
+        if (edge < pick_line_pixels() * 1.5f) {
           found.push_back({{bone.id, BonePart::Body}, 1, edge, 0});
         }
       }
@@ -9271,7 +9301,7 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
       found.push_back({{bone.id, posing ? BonePart::Body : BonePart::Head}, 0, head_d, 1});
     }
     const float body_d = distance_to_segment(m, {sbs[i].head.x, sbs[i].head.y}, {sbs[i].tail.x, sbs[i].tail.y});
-    if (body_d < PICK_PIXELS * 1.5f) {
+    if (body_d < pick_line_pixels() * 1.5f) {
       found.push_back({{bone.id, BonePart::Body}, 1, body_d, 0});
     }
   }
@@ -13785,7 +13815,7 @@ static bool point_under(Context &C, const ViewMapping &view, ImVec2 mouse)
     const Posed shown = posed(*C.document, *layer);
     for (const MeshPoint &p : shown.drawing->points) {
       const ImVec2 s = view.to_screen(to_document.apply(p.pos));
-      if ((s.x - mouse.x) * (s.x - mouse.x) + (s.y - mouse.y) * (s.y - mouse.y) <= PICK_PIXELS * PICK_PIXELS) {
+      if ((s.x - mouse.x) * (s.x - mouse.x) + (s.y - mouse.y) * (s.y - mouse.y) <= pick_line_pixels() * pick_line_pixels()) {
         return true;
       }
     }
@@ -15508,6 +15538,7 @@ void viewport_draw(Area &area, Context &C)
 
 static void viewport_draw_contents(Area &area, Context &C)
 {
+  reach_update(C);
   Document &doc = *C.document;
   /* Detail rides its curves as they are edited (data/detail.hh). It changes drawings, never which layers
    * there are: found by an index. */
@@ -16128,7 +16159,7 @@ static void viewport_draw_contents(Area &area, Context &C)
   const Transform2D to_document = layer ? layer_world_transform(doc, layer->id) : Transform2D();
   const Transform2D to_layer = to_document.inverted();
   const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
-  const float radius = PICK_PIXELS * pixel;
+  const float radius = pick_line_pixels() * pixel;
   const float2 mouse_layer = to_layer.apply(view.to_document(io.MousePos));
 
   /* A K split that's cancelled (Esc or right-click), or a different tool picked meanwhile. */
@@ -16352,9 +16383,11 @@ static void viewport_draw_contents(Area &area, Context &C)
         case Tool::Select: {
           /* Pressing on a shown handle drags it at once, as Blender's tweak does. */
           const HandleHit handle = pick_handle(C, view, io.MousePos, handles_shown(C.document->overlays, ts));
-          if (!handle.layer || io.KeyShift || io.KeyCtrl) {
-            /* On a point (an edge in Edges mode): dragging it moves it, a click still just picks. */
-            g_drag.grab = select_press_grab(C, view, io.MousePos, io.KeyShift || io.KeyCtrl);
+          /* On a point (an edge in Edges mode): dragging it moves it, a click still just picks. A handle takes the
+           * press only if no point is nearer (as a click picks: the nearest within reach). */
+          const PressGrab grab = select_press_grab(C, view, io.MousePos, io.KeyShift || io.KeyCtrl);
+          if (!handle.layer || io.KeyShift || io.KeyCtrl || grab.distance < handle.distance) {
+            g_drag.grab = grab;
             break;
           }
           const CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];

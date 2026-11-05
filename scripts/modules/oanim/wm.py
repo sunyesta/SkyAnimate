@@ -425,6 +425,21 @@ def canvas_at(x, y):
     return _oanim.canvas_at(float(x), float(y))
 
 
+def click_reach():
+    """Preferences' Click Reach: how far a click still takes a point, handle or line, times the usual reach."""
+    return _oanim.click_reach()
+
+
+def set_click_reach(factor):
+    """Sets Preferences' Click Reach (0.5 to 3; not saved in background runs)."""
+    _oanim.set_click_reach(float(factor))
+
+
+def set_display_scale(scale):
+    """Test hook: the display's scale (as a 200% screen is 2), which click reaches are multiplied by."""
+    _oanim.set_display_scale(float(scale))
+
+
 def path_dot_under_handles(x, y, lines):
     """Test hook: whether a motion path dot at pixel (x, y) is left out because a handle line ((ax, ay, bx, by) pixels)
     covers it, so a handle lying along the path reads as one bar."""

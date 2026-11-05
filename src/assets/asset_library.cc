@@ -99,6 +99,9 @@ void preferences_load()
       preferences().*flag = it->get<bool>();
     }
   }
+  if (auto it = j.find("click_reach"); it != j.end() && it->is_number()) {
+    preferences().click_reach = std::clamp(it->get<float>(), 0.5f, 3.0f);
+  }
   for (const auto &[key, color] : overlay_color_prefs()) {
     if (auto it = j.find(key); it != j.end() && it->is_string()) {
       const std::string hex = it->get<std::string>();
@@ -173,6 +176,7 @@ void preferences_save()
                   {"status_version", preferences().status_version},
                   {"viewport_tool_settings", preferences().viewport_tool_settings},
                   {"layers_auto_focus", preferences().layers_auto_focus},
+                  {"click_reach", preferences().click_reach},
                   {"new_keys", new_keys}};
   for (const auto &[key, color] : overlay_color_prefs()) {
     char hex[8];

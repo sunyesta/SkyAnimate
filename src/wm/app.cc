@@ -1276,6 +1276,18 @@ void App::draw_preferences()
 
   /* The overlays' colours (editors/overlay_contrast.hh): each piece of a wire, point or path takes its usual colour,
    * or where that is hard to see on the drawing under it, the lighter one (over something darker) or the darker. */
+  ImGui::SeparatorText("Selecting");
+  ImGui::TextUnformatted("Click Reach");
+  ImGui::SameLine(130);
+  ImGui::SetNextItemWidth(160.0f);
+  if (ImGui::SliderFloat("##click_reach", &prefs.click_reach, 0.5f, 3.0f, "%.2fx")) {
+    preferences_save();
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How far from a point, handle, line or motion path dot a click still takes it.\n"
+                      "The nearest within reach wins, so a bigger reach never takes the wrong one.");
+  }
+
   ImGui::SeparatorText("Overlay Colours");
   {
     struct Row {

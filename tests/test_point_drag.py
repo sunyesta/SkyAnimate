@@ -1,6 +1,7 @@
 """Dragging a point in the Select tool moves it as G does (Blender's tweak); a click still only picks. What a press
 grabs: the nearest shown point within reach, or in Edges mode the segment under it (its two points); nothing with Shift
-or Ctrl held, or on empty space (those drags box-select). Dragging an unpicked point picks it alone first; dragging
+or Ctrl held, or on empty space (those drags box-select); within 20 screen points (times the display scale and
+Preferences' Click Reach). Dragging an unpicked point picks it alone first; dragging
 one already picked moves the whole selection. The overlays follow the picks at once, however they change."""
 
 import oanim
@@ -22,6 +23,23 @@ assert wm.select_press_grab(0.5, 0.0) == [], "a line in Points mode: a box, as a
 assert wm.select_press_grab(1.0, 0.0, shift=True) == [], "Shift: a box that adds"
 assert wm.select_press_grab(1.0, 0.0, ctrl=True) == [], "Ctrl: a box that takes away"
 assert wm.select_press_grab(1.5, 0.0, zoom=1000.0) == [], "out of reach when zoomed in"
+
+# --- The reach: 20 screen points, times the display's scale and Preferences' Click Reach -------------------------------
+# At 100 pixels a unit, 18 pixels off the point still takes it, 22 doesn't.
+assert wm.select_press_grab(1.18, 0.0) == [(me, [1])], "18 px off: taken"
+assert wm.select_press_grab(1.22, 0.0) == [], "22 px off: out of reach"
+assert wm.click_reach() == 1.0
+wm.set_click_reach(2.0)
+assert wm.select_press_grab(1.35, 0.0) == [(me, [1])], "Click Reach 2: 35 px off taken"
+wm.set_click_reach(0.5)
+assert wm.select_press_grab(1.12, 0.0) == [], "Click Reach 0.5: 12 px off out of reach"
+assert wm.select_press_grab(1.08, 0.0) == [(me, [1])]
+wm.set_click_reach(1.0)
+# A screen at 200%: twice the pixels.
+wm.set_display_scale(2.0)
+assert wm.select_press_grab(1.35, 0.0) == [(me, [1])], "at 200%, 35 px off taken"
+wm.set_display_scale(1.0)
+assert wm.select_press_grab(1.22, 0.0) == []
 
 # --- Dragging: unpicked, it alone; picked, the whole selection -------------------------------------------------------
 art.select_points([0, 2])

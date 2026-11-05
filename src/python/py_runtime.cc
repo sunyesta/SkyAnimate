@@ -1199,6 +1199,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return path_dot_under_handles({x, y}, segments, 2.5f * 0.5f + 3.0f);
   });
+  /* Test hook: Preferences' Click Reach (times the usual reach). */
+  m.def("click_reach", []() { return preferences().click_reach; });
+  m.def("set_click_reach", [](float f) { preferences().click_reach = std::clamp(f, 0.5f, 3.0f); });
+  /* Test hook: the display's scale as the window manager has it (background runs have no Interface Scale). */
+  m.def("set_display_scale", [](float s) { current_context().wm->ui_scale = std::clamp(s, 0.5f, 3.0f); });
   /* Test hook: what the overlays key a layer's drawing by. */
   m.def("overlay_drawing_identity", [](uint64_t id) -> uint64_t {
     const Layer *layer = layer_find(*current_context().document, id);

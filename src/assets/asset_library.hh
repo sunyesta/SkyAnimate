@@ -37,6 +37,8 @@ struct Preferences {
   bool viewport_tool_settings = true;
   /* Layers editor settings: Auto Focus keeps the list folded down to the selected layers. */
   bool layers_auto_focus = false;
+  /* How far from a point, handle or line a click still takes it, times the usual reach (0.5 to 3). */
+  float click_reach = 1.0f;
   /* Overlay colours (0xRRGGBB, editors/overlay_contrast.hh): vector wires and points, and motion paths' lines, each
    * with the lighter colour a piece takes over something darker it is hard to see on, and the darker one over
    * something lighter. */
