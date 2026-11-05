@@ -373,6 +373,9 @@ PENDING = [
     ('src/editors/viewport.cc', '  return thing_under ? PathPress::Pick : PathPress::Deselect;', '  return PathPress::Deselect;', 'path press: off the paths picks', 'motion_path_pick'),
     ('src/editors/viewport.cc', '  if (cached == &drawing && cached_frame == frame && frame != -2 && mask.size() == drawing.points.size()) {', '  if (cached == &drawing && cached_frame == ImGui::GetFrameCount() && mask.size() == drawing.points.size()) {', 'shape handle cache: background run', 'motion_path_pick'),
     ('src/editors/timeline_path.cc', '  (void)ts;', '  if (ts.path_brush != PathBrush::Edit) { return false; }', 'timing chart: ticks with every brush', 'motion_path_timing'),
+    ('src/editors/viewport.cc', '         pick_handle(C, view, mouse, handles_shown(C.document->overlays, C.wm->tool_settings)).layer ||', '         false ||', 'path tool: handles count as the drawing', 'motion_path_pick'),
+    ('src/editors/viewport.cc', '                        vector_under(C, view, at);', '                        point_under(C, view, at);', 'path tool: a handle click picks it', 'motion_path_pick'),
+    ('src/editors/viewport.cc', '  else if (q.on && (std::fabs(mouse.x - q.at.x) > 2.0f || std::fabs(mouse.y - q.at.y) > 2.0f)) {', '  else if (q.on) {', 'path hover: quiet until the mouse moves on', 'motion_path_pick'),
 ]
 
 

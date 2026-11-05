@@ -419,6 +419,18 @@ def motion_path_press_kind(on_handle=False, on_path=False, on_frame_shown=False,
                                          bool(alt))
 
 
+def motion_path_vector_under(x, y, zoom=100.0):
+    """Test hook: whether a point, a shown handle or (outside Points mode) a line of the drawings being edited is at
+    document point (x, y): there the Motion Path tool's Edit brush edits the drawing as the Select tool does."""
+    return _oanim.motion_path_vector_under(float(x), float(y), float(zoom))
+
+
+def path_hover_quiet_update(moving, x, y):
+    """Test hook: one frame of the motion path dots' hover with the mouse at screen (x, y), `moving` whether something
+    is being moved; returns whether the hovered dot's ghost is held back (from a move until the mouse moves on)."""
+    return _oanim.path_hover_quiet_update(bool(moving), float(x), float(y))
+
+
 def motion_path_pick(x, y, zoom=100.0, extend=False, apply=True):
     """Test hook: the Motion Path tool's pick at document point (x, y): whether a bone or point is there; with
     apply, picks it (extend adds), as its click does."""

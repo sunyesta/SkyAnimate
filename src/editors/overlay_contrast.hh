@@ -88,6 +88,12 @@ PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_sho
 /* Test hook: the Motion Path tool's pick at document point `at` (zoom pixels a unit): whether a bone or point is
  * there, and with `apply` picks it (`extend` adds). */
 bool motion_path_pick_test(Context &C, float2 at, float zoom, bool extend, bool apply);
+/* Test hook: whether a point, shown handle or (outside Points mode) line of the drawings being edited is at `at`. */
+bool motion_path_vector_under_test(Context &C, float2 at, float zoom);
+/* The motion path dots' hover while things move: `moving` now (returned); after a move the ghost of the hovered
+ * dot's frame waits (path_hover_quiet) until the mouse leaves where it ended. */
+bool path_hover_quiet_update(bool moving, float2 mouse);
+bool path_hover_quiet();
 std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
                                                                           bool shift_or_ctrl, bool drag);
 

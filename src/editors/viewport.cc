@@ -738,6 +738,36 @@ static ImVec2 path_dot_screen(const Document &doc, const ViewMapping &view, cons
 /* A press on something already selected changes the selection only if it is let go of without a drag (so a drag
  * doesn't lose the others): the select it makes then. */
 static std::optional<OpArgs> g_path_select_on_release;
+/* After a move (G R S, a drag, a brush stroke) the dots' ghost waits for the mouse to move on. */
+static struct {
+  bool on = false;
+  float2 at;
+} g_path_hover_quiet;
+
+/* `moving`: something is being moved now. Returns it; keeps the ghost quiet until the mouse leaves where the move
+ * ended. */
+bool path_hover_quiet_update(bool moving, float2 mouse)
+{
+  auto &q = g_path_hover_quiet;
+  if (moving) {
+    q.on = true;
+    q.at = mouse;
+  }
+  else if (q.on && (std::fabs(mouse.x - q.at.x) > 2.0f || std::fabs(mouse.y - q.at.y) > 2.0f)) {
+    q.on = false;
+  }
+  return moving;
+}
+
+bool path_hover_quiet()
+{
+  return g_path_hover_quiet.on;
+}
+
+static bool path_hover_quiet_update(bool moving)
+{
+  return path_hover_quiet_update(moving, float2(ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y));
+}
 /* A plain press on the dot of the frame shown, over the bone or point it is the path of: a drag moves the path there,
  * a click (let go without moving) picks the bone or point, at this place. */
 static std::optional<ImVec2> g_path_pick_on_release;
@@ -765,6 +795,10 @@ static void path_drag_finish()
 }
 
 static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply = true);
+static bool motion_path_vector_active();
+static bool vector_under(Context &C, const ViewMapping &view, ImVec2 mouse);
+static bool motion_path_vector_press(Context &C, Area &area, const ViewMapping &view, ImVec2 at);
+static void motion_path_vector_update(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl);
 
 static void motion_path_slide_update(Context &C, const ViewMapping &view)
 {
@@ -842,13 +876,17 @@ PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_sho
   return thing_under ? PathPress::Pick : PathPress::Deselect;
 }
 
-static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
-                                   int first, int last, const PathHandlesShown *hover_handle, bool hover_out,
-                                   bool hovered)
+static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &view, const MotionPath *hover_path,
+                                   int hover_frame, int first, int last, const PathHandlesShown *hover_handle,
+                                   bool hover_out, bool hovered, ImDrawList *dl)
 {
   Document &doc = *C.document;
   ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_drag;
+  if (motion_path_vector_active()) {
+    motion_path_vector_update(C, area, view, dl);
+    return;
+  }
   if (g_path_slide.active) {
     motion_path_slide_update(C, view);
     return;
@@ -879,8 +917,15 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
                                                   hover_path && hover_frame == doc.frame_current, thing_under,
                                                   io.KeyAlt);
     g_path_pick_on_release.reset();
+    /* Off the paths the drawing is edited as with the Select tool: a point or handle clicked or dragged, a line
+     * clicked, a box dragged from empty space. */
+    if ((kind == PathPress::Pick || kind == PathPress::Deselect) && hovered && !io.KeyAlt &&
+        motion_path_vector_press(C, area, view, io.MousePos))
+    {
+      return;
+    }
     if (kind == PathPress::Pick) {
-      /* A bone or a point: picked, as the Select tool's click (Shift adds), so its path shows. */
+      /* A bone: picked, as the Select tool's click (Shift adds), so its path shows. */
       motion_path_pick_click(C, view, io.MousePos, io.KeyShift);
       return;
     }
@@ -1816,7 +1861,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   const ImVec2 mouse = ImGui::GetIO().MousePos;
   /* With a brush other than Edit the dots aren't picked, and only the brush's circle shows. */
   const bool editing = !tool || wm.tool_settings.path_brush == PathBrush::Edit;
-  const bool hovering = hovered && editing && !g_path_drag.active &&
+  const bool moving = path_hover_quiet_update(wm.modal_running || g_path_brush.active || motion_path_vector_active() ||
+                                              g_path_drag.active || g_path_slide.active);
+  const bool hovering = hovered && editing && !moving &&
                         (!ImGui::IsAnyMouseDown() || (tool && ImGui::IsMouseClicked(ImGuiMouseButton_Left)));
   float best = pick_path_pixels() * pick_path_pixels();
   const MotionPath *hover_path = nullptr;
@@ -2133,7 +2180,8 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
      * Alt Shift stays Edit's breakdown. */
     const ImGuiIO &io = ImGui::GetIO();
     if (g_path_brush.active || g_path_brush.adjust || wm.path_adjust_request ||
-        (io.KeyShift && !io.KeyAlt && !g_path_drag.active && !g_path_slide.active && hovered))
+        (io.KeyShift && !io.KeyAlt && !g_path_drag.active && !g_path_slide.active && !motion_path_vector_active() &&
+         hovered))
     {
       std::optional<OpArgs> pick;
       if (hover_path) {
@@ -2151,19 +2199,20 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       return;
     }
   }
-  if (tool && (hovered || g_path_drag.active)) {
+  if (tool && (hovered || g_path_drag.active || motion_path_vector_active())) {
     /* A copy: a double click goes to the dot's frame, which can make the paths again. */
     const std::optional<MotionPath> pressed = hover_path ? std::optional<MotionPath>(*hover_path) : std::nullopt;
     const std::optional<PathHandlesShown> pressed_handle =
         hover_handle ? std::optional<PathHandlesShown>(*hover_handle) : std::nullopt;
-    motion_path_tool_input(C, view, pressed ? &*pressed : nullptr, hover_frame, first, last,
-                           pressed_handle ? &*pressed_handle : nullptr, hover_out, hovered);
+    motion_path_tool_input(C, area, view, pressed ? &*pressed : nullptr, hover_frame, first, last,
+                           pressed_handle ? &*pressed_handle : nullptr, hover_out, hovered, dl);
     if (g_path_drag.active) {
       return;
     }
   }
-  /* The hovered dot's frame as a ghost of the drawing there, with its number. */
-  if (hover_path && !ImGui::IsAnyMouseDown()) {
+  /* The hovered dot's frame as a ghost of the drawing there, with its number (not until the mouse moves on after a
+   * move: what was just moved is what's looked at). */
+  if (hover_path && !ImGui::IsAnyMouseDown() && !g_path_hover_quiet.on) {
     static struct {
       const Document *doc = nullptr;
       uint64_t changes = ~uint64_t(0);
@@ -6905,6 +6954,13 @@ static bool select_press_grab_move(Context &C, Area &area, const ViewMapping &vi
   g_modal.tweak = true;
   g_modal.tweak_points = true;
   return true;
+}
+
+bool motion_path_vector_under_test(Context &C, float2 at, float zoom)
+{
+  reach_update(C);
+  const ViewMapping view{{0.0f, 0.0f}, {1000.0f, 1000.0f}, {0.0f, 0.0f}, zoom};
+  return vector_under(C, view, view.to_screen(at));
 }
 
 bool motion_path_pick_test(Context &C, float2 at, float zoom, bool extend, bool apply)
@@ -13891,6 +13947,38 @@ static bool point_under(Context &C, const ViewMapping &view, ImVec2 mouse)
   return false;
 }
 
+/* Whether a line of an edited layer is under the mouse, where a click picks lines (Edges and Strokes modes). */
+static bool line_under(Context &C, const ViewMapping &view, ImVec2 mouse)
+{
+  if (C.wm->tool_settings.select_mode == SelectMode::Point) {
+    return false;
+  }
+  const float2 mouse_document = view.to_document(mouse);
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    const Posed shown = posed(*C.document, *layer);
+    const VectorDrawing *wires = posed_wires(shown);
+    const VectorDrawing lines = wires ? *wires : drawing_detail_shown_curves(*shown.drawing);
+    ShapeEdge edge;
+    float t;
+    if (drawing_pick_segment(lines, to_document.inverted().apply(mouse_document), pick_line_pixels() * pixel, &edge,
+                             &t))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* A point, a shown handle or (outside Points mode) a line of the drawings being edited, under the mouse. */
+static bool vector_under(Context &C, const ViewMapping &view, ImVec2 mouse)
+{
+  return point_under(C, view, mouse) ||
+         pick_handle(C, view, mouse, handles_shown(C.document->overlays, C.wm->tool_settings)).layer ||
+         line_under(C, view, mouse);
+}
+
 /* Alt click in the Motion Path tool (Alt Shift: `extend`): the bone (of the active bone layer and its family) or the
  * point (of the drawings being edited) under the mouse, picked as the Select tool's click picks it, so its path shows.
  * A point wins over a bone's body, a bone's end over a point, as there. False, nothing done, when there is neither. */
@@ -13913,7 +14001,7 @@ static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 a
     }
   }
   const bool on_point = !point_layers.empty() && (!under.hit.bone || under.hit.part == BonePart::Body) &&
-                        point_under(C, view, at);
+                        vector_under(C, view, at);
   if (!on_point && !under.hit.bone) {
     return false;
   }
@@ -13942,6 +14030,116 @@ static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 a
   }
   push_undo(C, on_point ? "Select" : "Select Bone");
   return true;
+}
+
+/* The Motion Path tool's Edit brush off the paths: the drawings being edited, as with the Select tool. */
+static struct {
+  bool active = false;
+  int area = 0;
+  ImVec2 start;
+  /* A point pressed on: a drag moves it, a click picks. None: a click picks a line or clears, a drag is a box. */
+  PressGrab grab;
+  bool box = false;
+} g_path_vector;
+
+static bool motion_path_vector_active()
+{
+  return g_path_vector.active;
+}
+
+/* A press off the paths. A handle nearer than any point is dragged at once (as Blender's tweak); a point, a line or
+ * empty space waits to see a click or a drag. False (nothing taken) on a bone's end (it wins over a point), or with
+ * no drawing to edit. */
+static bool motion_path_vector_press(Context &C, Area &area, const ViewMapping &view, ImVec2 at)
+{
+  const ImGuiIO &io = ImGui::GetIO();
+  if (editable_layers(C).empty()) {
+    return false;
+  }
+  bool bone = false;
+  if (motion_path_pick_click(C, view, at, false, false)) {
+    /* Something there: a bone unless the drawing is (motion_path_pick_click's choice, asked again without bones). */
+    bone = !vector_under(C, view, at);
+    if (!bone) {
+      Layer *armature = document_active_layer(*C.document);
+      if (armature && armature->is_bone_layer()) {
+        const std::vector<FamilyHit> hits = pick_family_parts(*C.document, *armature, view, at);
+        bone = !hits.empty() && hits.front().hit.bone && hits.front().hit.part != BonePart::Body;
+      }
+    }
+  }
+  if (bone) {
+    return false;
+  }
+  const bool modifier = io.KeyShift || io.KeyCtrl;
+  const HandleHit handle = pick_handle(C, view, at, handles_shown(C.document->overlays, C.wm->tool_settings));
+  const PressGrab grab = select_press_grab(C, view, at, modifier);
+  if (handle.layer && !modifier && grab.distance >= handle.distance) {
+    CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
+    if (!(handle.pre ? cp.select_in : cp.select_out)) {
+      for (Layer *editing : editable_layers(C)) {
+        deselect_all(editing->drawing);
+      }
+      (handle.pre ? cp.select_in : cp.select_out) = true;
+    }
+    if (modal_start(C, area, 'G', view.to_document(at))) {
+      g_modal.tweak = true;
+    }
+    return true;
+  }
+  g_path_vector = {};
+  g_path_vector.active = true;
+  g_path_vector.area = area.id;
+  g_path_vector.start = at;
+  g_path_vector.grab = grab;
+  return true;
+}
+
+/* Until the mouse comes up: a point dragged moves (as G), empty space drags a box; let go without moving, a click. */
+static void motion_path_vector_update(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl)
+{
+  auto &g = g_path_vector;
+  const ImGuiIO &io = ImGui::GetIO();
+  if (g.area != area.id) {
+    return;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    g = {};
+    return;
+  }
+  if (g.grab.layer) {
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, g.grab.threshold)) {
+      const PressGrab grab = g.grab;
+      const ImVec2 start = g.start;
+      g = {};
+      select_press_grab_move(C, area, view, grab, start);
+      return;
+    }
+  }
+  else {
+    g.box |= ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f);
+    if (g.box) {
+      dl->AddRectFilled(g.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
+      dl->AddRect(g.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 160));
+    }
+  }
+  if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    return;
+  }
+  if (g.box) {
+    select_box(C, view, g.start, io.MousePos, handles_shown(C.document->overlays, C.wm->tool_settings));
+    push_undo(C, "Select");
+  }
+  else if (vector_under(C, view, g.start)) {
+    /* (The click reads Shift and Ctrl itself: adding, taking away.) */
+    motion_path_pick_click(C, view, g.start, io.KeyShift || io.KeyCtrl);
+  }
+  else if (!io.KeyShift && !io.KeyCtrl) {
+    /* A click on nothing: no path keys or dots selected; the points picked stay, so their paths do. */
+    operator_call(C, "anim.motion_path_select", {{"none", "1"}});
+  }
+  g = {};
 }
 
 /* The Select tool on a bone layer: a click picks a bone or one of its ends; a drag box-selects
@@ -16804,7 +17002,9 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
 
   /* Right-click with points or handles selected: their context menu, as in Blender. */
-  if (hovered && ts.tool == Tool::Select && !io.KeyShift && !g_modal.active && drawing &&
+  /* The Motion Path tool too, while no path keys or dots are picked (then the path's menu is the one). */
+  const bool path_tool_points = ts.tool == Tool::MotionPath && !g_path_drag.active && path_edit_selection(C).empty();
+  if (hovered && (ts.tool == Tool::Select || path_tool_points) && !io.KeyShift && !g_modal.active && drawing &&
       ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) &&
       !g_right_click_spent)
   {
@@ -16812,8 +17012,10 @@ static void viewport_draw_contents(Area &area, Context &C)
     for (Layer *editing : editable_layers(C)) {
       any |= drawing_selected_alignment(editing->drawing) != -1;
     }
-    /* With nothing selected: the active layer's Draw Order. */
-    ImGui::OpenPopup(any ? "##point_menu" : "##draw_order");
+    /* With nothing selected: the active layer's Draw Order (the Select tool's). */
+    if (any || ts.tool == Tool::Select) {
+      ImGui::OpenPopup(any ? "##point_menu" : "##draw_order");
+    }
   }
   if (hovered && wm.menu_request == "draw_order") {
     ImGui::OpenPopup("##draw_order");

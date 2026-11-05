@@ -54,4 +54,31 @@ ops.mesh.select_none()
 assert wm.motion_path_pick(7.0, 5.0), "a point"
 assert [i for i, p in enumerate(art.points) if p[2]] == [1], "picked"
 
+
+# --- The drawing edited off the paths, as with the Select tool: handles and lines count too ------------------------
+ops.mesh.select_none()
+art.add_curve([(10.0, 0.0), (12.0, 2.0), (14.0, 0.0)])
+mid = len(art.points) - 2
+curve = next(i for i in range(8) if len(art.curve_handles(i)) == 3)
+_, hin, hout = art.curve_handles(curve)[1]
+far = max((hin, hout), key=lambda h: (h[0] - 12.0) ** 2 + (h[1] - 2.0) ** 2)
+assert (far[0] - 12.0) ** 2 + (far[1] - 2.0) ** 2 > 0.3 ** 2, ("a handle well away from its point", far)
+art.add_curve([(20.0, 0.0), (22.0, 0.0)])
+art.select_points([mid])
+assert wm.motion_path_vector_under(*far), "a shown handle"
+assert not wm.motion_path_vector_under(21.0, 0.0), "a line in Points mode: not picked"
+assert ops.mesh.select_mode_edge() == {'FINISHED'}
+assert wm.motion_path_vector_under(21.0, 0.0), "a line in Edges mode"
+assert ops.mesh.select_mode_point() == {'FINISHED'}
+assert wm.motion_path_pick(*far), "a click on the handle"
+assert not [i for i, p in enumerate(art.points) if p[2]], "the handle alone picked, as the Select tool's click"
+
+# --- While something moves the dots' ghost waits, until the mouse moves on after ---------------------------------
+quiet = wm.path_hover_quiet_update
+assert not quiet(False, 0, 0)
+assert quiet(True, 50, 50), "moving: no ghost"
+assert quiet(False, 50, 50), "the move ended where the mouse is: still none"
+assert quiet(False, 51, 50), "a pixel's tremble: still none"
+assert not quiet(False, 60, 50), "the mouse moved on: the ghost is back"
+
 print("Motion path pick tests passed")

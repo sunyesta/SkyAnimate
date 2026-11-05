@@ -1234,6 +1234,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     static const char *const names[] = {"HANDLE", "PATH", "PATH_OR_PICK", "PICK", "DESELECT"};
     return std::string(names[int(motion_path_press_kind(on_handle, on_path, on_frame_shown, thing_under, alt))]);
   });
+  m.def("motion_path_vector_under", [](float x, float y, float zoom) {
+    return motion_path_vector_under_test(current_context(), {x, y}, zoom);
+  });
+  m.def("path_hover_quiet_update", [](bool moving, float x, float y) {
+    path_hover_quiet_update(moving, float2(x, y));
+    return path_hover_quiet();
+  });
   m.def("motion_path_pick", [](float x, float y, float zoom, bool extend, bool apply) {
     return motion_path_pick_test(current_context(), {x, y}, zoom, extend, apply);
   });
