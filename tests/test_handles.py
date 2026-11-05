@@ -75,6 +75,42 @@ for side, other in (("OUT", free_in), ("IN", free_out)):
     layer.select_points([1])
     oanim.ops.mesh.handles_unalign()
 
+# The point picked: both handles turn the same angle, onto the line halfway between, each keeping its length.
+oanim.ops.mesh.select_none()
+layer.select_points([1])
+layer.move_handle(curve, 1, "IN", free_in)
+layer.move_handle(curve, 1, "OUT", free_out)
+d_in, d_out = sub(free_in, pts[1]), sub(free_out, pts[1])
+assert oanim.ops.mesh.handles_align() == {'FINISHED'}
+kind, h_in, h_out = layer.curve_handles(curve)[1]
+assert kind == "ALIGNED" and collinear_opposite(sub(h_in, pts[1]), sub(h_out, pts[1]))
+n_in, n_out = sub(h_in, pts[1]), sub(h_out, pts[1])
+assert abs(length(n_in) - length(d_in)) < 1e-4 and abs(length(n_out) - length(d_out)) < 1e-4, "lengths kept"
+
+
+def turn(a, b):
+    """The angle from vector a to b, -pi..pi."""
+    return math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])
+
+
+t_in, t_out = turn(d_in, n_in), turn(d_out, n_out)
+assert abs(t_in) > 1e-3 and abs(t_in + t_out) < 1e-4, ("both turned as far, toward each other", t_in, t_out)
+
+# Folded back on each other (both pointing the same way): along the way from the point before to the one after.
+oanim.ops.mesh.handles_unalign()
+layer.move_handle(curve, 1, "IN", (pts[1][0], pts[1][1] + 0.4))
+layer.move_handle(curve, 1, "OUT", (pts[1][0], pts[1][1] + 0.3))
+assert oanim.ops.mesh.handles_align() == {'FINISHED'}
+_, f_in, f_out = layer.curve_handles(curve)[1]
+run = sub(pts[2], pts[0])
+along = (run[0] / length(run), run[1] / length(run))
+o = sub(f_out, pts[1])
+assert abs(turn(along, o)) < 1e-4 and abs(length(o) - 0.3) < 1e-4, ("toward the point after", o, along)
+oanim.ops.mesh.handles_unalign()
+layer.move_handle(curve, 1, "IN", free_in)
+layer.move_handle(curve, 1, "OUT", free_out)
+assert oanim.ops.mesh.handles_align() == {'FINISHED'}
+
 # Aligned: moving one handle turns the other, keeping its length.
 assert oanim.ops.mesh.handles_align() == {'FINISHED'}
 _, old_in, _ = layer.curve_handles(curve)[1]

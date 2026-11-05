@@ -408,6 +408,10 @@ void curve_point_move_handle(VectorDrawing &drawing, Curve &curve, int i, bool p
 /* Align: turns one handle (keeping its length) to face away from the other and keeps them in
  * line from now on. `turn_out`: the out handle turns; else the in handle. */
 void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_out);
+/* Lines up point `i`'s handles with both turning the same angle, each half the gap, onto the line halfway between
+ * them, keeping their lengths; folded back on each other (no halfway), along the way from the point before to the
+ * one after. A handle with no length leaves the other where it is. Marks the point aligned. */
+void curve_point_align_both(VectorDrawing &drawing, Curve &curve, int i);
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);

@@ -251,6 +251,37 @@ void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_ou
   cp.aligned = true;
 }
 
+void curve_point_align_both(VectorDrawing &drawing, Curve &curve, int i)
+{
+  own_handles(drawing, curve, i);
+  CurvePoint &cp = curve.points[i];
+  const float in_len = length(cp.handle_in), out_len = length(cp.handle_out);
+  cp.aligned = true;
+  if (in_len <= 1e-9f || out_len <= 1e-9f) {
+    return;
+  }
+  /* Where the in handle points, and where the out handle would have it point: aligned, the two are the same. */
+  const float2 a = cp.handle_in / in_len, b = -cp.handle_out / out_len;
+  float2 back = a + b;
+  if (length(back) < 1e-4f) {
+    /* Folded back on each other: the way the curve runs through the point, from the one before to the one after. */
+    const int n = int(curve.points.size());
+    const bool has_before = curve.closed || i > 0, has_after = curve.closed || i + 1 < n;
+    if (!has_before || !has_after) {
+      return;
+    }
+    const float2 before = drawing.points[curve.points[size_t((i - 1 + n) % n)].point].pos;
+    const float2 after = drawing.points[curve.points[size_t((i + 1) % n)].point].pos;
+    back = before - after;
+    if (length(back) < 1e-9f) {
+      return;
+    }
+  }
+  back = normalize(back);
+  cp.handle_in = back * in_len;
+  cp.handle_out = -back * out_len;
+}
+
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to)
 {
   const int n = int(curve.points.size());
@@ -2552,10 +2583,15 @@ int drawing_align_selected_handles(VectorDrawing &drawing, bool align)
         continue;
       }
       if (align) {
-        /* With just the out handle picked, it is the one that turns into line (the handle you
-         * pick is the one you are aligning); otherwise the in handle does. */
-        const bool only_out = cp.select_out && !cp.select_in && !drawing.points[cp.point].selected;
-        curve_point_align(drawing, curve, i, only_out);
+        /* One handle picked: that one turns into line (the handle you pick is the one you are aligning). The point
+         * picked (or both handles): both turn, halfway each. */
+        const bool point = drawing.points[cp.point].selected || (cp.select_in && cp.select_out);
+        if (point) {
+          curve_point_align_both(drawing, curve, i);
+        }
+        else {
+          curve_point_align(drawing, curve, i, cp.select_out);
+        }
         changed++;
       }
       else if (cp.aligned) {

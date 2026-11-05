@@ -343,7 +343,7 @@ void vector_operators_register()
   for (const bool align : {true, false}) {
     vector_operator(align ? "mesh.handles_align" : "mesh.handles_unalign", align ? "Align Handles" : "Unalign Handles",
                     align ? "Line up the selected points' handles and keep them in line (with one handle picked, "
-                            "that one turns); moving one then turns the other"
+                            "that one turns; a picked point turns both, halfway each); moving one then turns the other"
                           : "Let the selected points' handles move separately again",
                     UNDO, editable_with_selection_poll, [align](Context &C) {
                       int changed = 0;
