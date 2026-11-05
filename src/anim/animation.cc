@@ -1585,7 +1585,16 @@ template<typename T> static void swap_timeline(Channel<T> &ch, T &value, const s
   ch.keys.clear();
   const bool mainline_animated = from.empty() && !away.empty();
   if (!from.empty()) {
-    /* An action keeps its keys after frame 0; frame 0 belongs to the setup pose. */
+    /* An action keeps its keys after frame 0; frame 0 belongs to the setup pose, all but its path handles, which are
+     * the action's own. */
+    ch.action_setup.erase(from);
+    if constexpr (std::is_same_v<T, float2>) {
+      for (const Key<T> &k : away) {
+        if (k.frame == 0 && k.path_handles != PathHandles::Auto) {
+          ch.action_setup[from] = k;
+        }
+      }
+    }
     std::erase_if(away, [](const Key<T> &k) { return k.frame == 0; });
   }
   if (!away.empty()) {
@@ -1612,7 +1621,17 @@ template<typename T> static void swap_timeline(Channel<T> &ch, T &value, const s
   else if ((ch.animated() || mainline_animated) && !ch.key_at(0)) {
     /* An action starts from the setup pose: frame 0 shows the setup keys of everything animated,
      * as on the mainline. */
-    ch.set_key(0, setup);
+    Key<T> &k = ch.set_key(0, setup);
+    if constexpr (std::is_same_v<T, float2>) {
+      if (auto it = ch.action_setup.find(to); it != ch.action_setup.end()) {
+        k.path_handles = it->second.path_handles;
+        k.path_in = it->second.path_in;
+        k.path_out = it->second.path_out;
+      }
+    }
+  }
+  if (!to.empty()) {
+    ch.action_setup.erase(to);
   }
   value = setup;
 }
@@ -1691,7 +1710,10 @@ bool document_action_delete(Document &doc, uint64_t owner_id, const std::string 
   for (Bone &bone : owner->bones) {
     std::replace(bone.controller_actions.begin(), bone.controller_actions.end(), name, std::string());
   }
-  owner_for_each_channel(*owner, [&](auto &ch, auto & /*value*/) { ch.actions.erase(name); });
+  owner_for_each_channel(*owner, [&](auto &ch, auto & /*value*/) {
+    ch.actions.erase(name);
+    ch.action_setup.erase(name);
+  });
   animation_evaluate(doc, doc.frame_current);
   return true;
 }
@@ -2812,6 +2834,11 @@ bool document_action_rename(Document &doc, uint64_t owner_id, const std::string 
       ch.actions.erase(it);
       ch.actions[to] = std::move(keys);
     }
+    if (auto it = ch.action_setup.find(from); it != ch.action_setup.end()) {
+      auto key = std::move(it->second);
+      ch.action_setup.erase(it);
+      ch.action_setup[to] = std::move(key);
+    }
   });
   const auto joined = [](const std::vector<std::string> &names) {
     std::string out;
@@ -2842,6 +2869,11 @@ bool document_action_rename(Document &doc, uint64_t owner_id, const std::string 
           auto keys = std::move(it->second);
           ch.actions.erase(it);
           ch.actions[renamed] = std::move(keys);
+        }
+        if (auto it = ch.action_setup.find(old); it != ch.action_setup.end()) {
+          auto key = std::move(it->second);
+          ch.action_setup.erase(it);
+          ch.action_setup[renamed] = std::move(key);
         }
       });
       if (doc.action == old && doc.action_layer == owner_id) {

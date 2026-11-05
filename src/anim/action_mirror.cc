@@ -76,6 +76,16 @@ void mirror_keys(const Channel<T> &src, Channel<T> &dst, const std::string &from
     k.selected = false;
   }
   dst.actions[to] = std::move(keys);
+  /* Frame 0's path handles (its value is the setup's): offsets, mirrored by how the map moves them. */
+  dst.action_setup.erase(to);
+  if (const auto s = src.action_setup.find(from); s != src.action_setup.end()) {
+    Key<T> k = s->second;
+    if constexpr (std::is_same_v<T, float2>) {
+      k.path_in = map(k.path_in) - map(T{});
+      k.path_out = map(k.path_out) - map(T{});
+    }
+    dst.action_setup[to] = std::move(k);
+  }
 }
 
 /* A channel's change from the setup on `frame` of action `name`. */

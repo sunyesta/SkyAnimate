@@ -798,7 +798,10 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
       return;
     }
     const MotionPathTarget target = hover_path->target;
-    const bool on_key = std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
+    /* Frame 0's key, the setup pose: picked for its out handle, but never moved (nor a key added on it). */
+    const bool on_setup = hover_frame == 0 && motion_path_is_key(doc, target, 0);
+    const bool on_key = on_setup ||
+                        std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
     OpArgs args = motion_path_target_args(doc, target);
     args["frame"] = std::to_string(hover_frame);
     /* Drawn where it is relative to the frame shown: the mouse less this is where it goes on the dot's own frame. */
@@ -818,6 +821,10 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
       }
       if (io.KeyShift) {
         args["extend"] = "1";
+        operator_call(C, "anim.motion_path_select", args);
+        return;
+      }
+      if (on_setup) {
         operator_call(C, "anim.motion_path_select", args);
         return;
       }
@@ -847,6 +854,9 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
         g.last = last;
         return;
       }
+    }
+    if (on_setup) {
+      return;
     }
     g.active = true;
     g.dragging = false;
@@ -1584,7 +1594,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       bool shown = false, key = false, selected = false, breakdown = false;
       for (size_t k = i; k < run; k++) {
         const int f = p.first + int(k);
-        const bool on_key = std::binary_search(p.keys.begin(), p.keys.end(), f);
+        /* Frame 0's key too (the setup's): it has an out handle. */
+        const bool on_key = std::binary_search(p.keys.begin(), p.keys.end(), f) ||
+                            (f == 0 && motion_path_is_key(doc, p.target, 0));
         breakdown |= on_key && !key && motion_path_key_is_breakdown(doc, p.target, f);
         key |= on_key;
         shown |= on_key || (f - p.first) % step == 0;

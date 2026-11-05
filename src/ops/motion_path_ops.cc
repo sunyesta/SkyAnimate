@@ -250,7 +250,8 @@ void motion_path_operators_register()
       if (!op_targets(C, targets)) {
         return OpStatus::Cancelled;
       }
-      const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));
+      /* Frame 0 only for its key, the setup's: picked for its out handle, never a dot to slide. */
+      const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));
       std::vector<std::pair<MotionPathTarget, int>> &dots = C.wm->path_dots;
       const bool none = op_arg_bool(C, "none");
       if (op_arg_bool(C, "go") && !none) {
@@ -296,6 +297,9 @@ void motion_path_operators_register()
           C.wm->path_timing_end = frame;
           C.wm->path_timing_frame = doc.frame_current;
           layers_select_keys({layer}, frame, frame, !(was && op_arg_bool(C, "extend")), motion_path_key_filter(doc, t));
+          continue;
+        }
+        if (frame == 0) {
           continue;
         }
         /* The Path Timing panel shows the stretch picked on. */

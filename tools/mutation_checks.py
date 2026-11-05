@@ -212,6 +212,19 @@ PENDING = [
      "head=1 names a bone's head path", 'tests/test_motion_path_tool.py'),
     ('src/editors/viewport.cc', ' || ts.tool == Tool::MotionPath) &&', ') &&',
      "Motion Path stays on through a layer change", 'tests/test_motion_path_tool.py'),
+    ('src/ops/motion_path_ops.cc', 'const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));',
+     'const int frame = std::max(1, op_arg_int(C, "frame", doc.frame_current));', "frame 0's key can be picked",
+     'tests/test_motion_path_setup_handle.py'),
+    ('src/anim/animation.cc', '          ch.action_setup[from] = k;', '',
+     "an action's frame 0 handle kept as it is put away", 'tests/test_motion_path_setup_handle.py'),
+    ('src/anim/animation.cc', '        k.path_handles = it->second.path_handles;', '',
+     "an action's frame 0 handle brought back", 'tests/test_motion_path_setup_handle.py'),
+    ('src/anim/animation.cc', '      ch.action_setup[to] = std::move(key);', '',
+     "a renamed action keeps its frame 0 handle", 'tests/test_motion_path_setup_handle.py'),
+    ('src/io/oanim_file.cc', '    j[std::string(name) + "_action_setup"] = std::move(setup);', '',
+     "an action's frame 0 handle saved", 'tests/test_motion_path_setup_handle.py'),
+    ('src/anim/motion_path.cc', 'const int start = doc.frame_start <= 1 ? 0 : doc.frame_start,',
+     'const int start = std::max(1, doc.frame_start),', "paths start at frame 0, the setup", 'tests/test_motion_paths.py'),
 ]
 
 

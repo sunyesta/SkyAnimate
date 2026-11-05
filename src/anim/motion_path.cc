@@ -387,7 +387,9 @@ bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> 
   if (targets.empty()) {
     return false;
   }
-  const int start = std::max(1, doc.frame_start), end = std::max(start, doc.frame_end);
+  /* From frame 0 when the scene starts there (or at 1, the setup's next frame): the first stretch leaves the setup
+   * pose, its key with an out handle of its own. */
+  const int start = doc.frame_start <= 1 ? 0 : doc.frame_start, end = std::max(start, doc.frame_end);
   r_first = start;
   r_last = end;
   if (doc.path_all) {

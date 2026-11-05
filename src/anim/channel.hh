@@ -200,6 +200,9 @@ template<typename T> struct Channel {
    * channel. The timeline being edited is always `keys`; while an action is edited the mainline's
    * keys wait here under "". Action keys start after frame 0, which is the shared setup pose. */
   LazyMap<std::string, std::vector<Key<T>>> actions;
+  /* Frame 0's key in an action not being edited (by name): its value is the setup's, shared, but its path handles
+   * are the action's own (the way its path leaves the setup pose). Only kept when they aren't Auto. */
+  LazyMap<std::string, Key<T>> action_setup;
   /* What action bone actions add to the value right now (it is in the plain value too). Edits and saving
    * take it off, so it never becomes part of the data. */
   T from_action_bones{};

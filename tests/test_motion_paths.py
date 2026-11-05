@@ -50,7 +50,7 @@ assert doc.frame_current == 15 and close(box.location_x, box.location_x), "the d
 
 # Two keys back and one ahead; on a key, that key's neighbours.
 doc.path_before = 2
-assert oanim.wm.motion_path_range() == (1, 20), "short of keys: the animation's start"
+assert oanim.wm.motion_path_range() == (0, 20), "short of keys: the animation's start, frame 0 (the setup) included"
 doc.frame_current = 25
 assert oanim.wm.motion_path_range() == (10, 30), oanim.wm.motion_path_range()
 doc.frame_current = 30
@@ -58,7 +58,7 @@ doc.path_before = 1
 assert oanim.wm.motion_path_range() == (20, 40)
 doc.path_all = True
 doc.frame_end = 60
-assert oanim.wm.motion_path_range() == (1, 60), "All: the whole animation"
+assert oanim.wm.motion_path_range() == (0, 60), "All: the whole animation from the setup"
 doc.path_all = False
 
 # Speed: 0 where it holds still (20-30), 1 on its fastest frame.

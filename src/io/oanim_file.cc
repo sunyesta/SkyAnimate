@@ -247,6 +247,16 @@ template<typename T> static void put_keys(json &j, const char *name, const Chann
     }
     j[std::string(name) + "_actions"] = std::move(actions);
   }
+  /* Frame 0's key in each action not being edited, for its path handles. */
+  if (!ch.action_setup.empty()) {
+    json setup = json::object();
+    for (const auto &[action, key] : ch.action_setup) {
+      Channel<T> other;
+      other.keys = {key};
+      setup[action] = keys_to_json(other);
+    }
+    j[std::string(name) + "_action_setup"] = std::move(setup);
+  }
 }
 
 static json drawing_to_json(const VectorDrawing &drawing);
@@ -1728,6 +1738,16 @@ template<typename T> static void get_keys(const json &j, const char *name, Chann
   get_key_list(j, name, r_ch);
   if (auto it = j.find(std::string(name) + "_pinned"); it != j.end() && it->is_boolean()) {
     r_ch.pinned = it->get<bool>();
+  }
+  if (auto s = j.find(std::string(name) + "_action_setup"); s != j.end() && s->is_object()) {
+    for (const auto &[action, list] : s->items()) {
+      Channel<T> other;
+      const json wrapper = {{"keys", list}};
+      get_key_list(wrapper, "keys", other);
+      if (other.keys.size() == 1) {
+        r_ch.action_setup[action] = std::move(other.keys.front());
+      }
+    }
   }
   auto it = j.find(std::string(name) + "_actions");
   if (it == j.end() || !it->is_object()) {
