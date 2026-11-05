@@ -353,6 +353,22 @@ PENDING = [
      'the reach follows Click Reach', 'point_drag'),
     ('src/editors/timeline.cc', '  return {{"Interpolation", true}, {"Keyed on frame " + std::to_string(frame), keyed > 0}};', '  return {{"Interpolation", true}, {"Keyed on frame " + std::to_string(frame), true}};',
      'the keyed submenu greys out with nothing keyed', 'timeline_mouse'),
+    ('src/anim/channel.cc', '      return a.value + (b.value - a.value) * bezier_ease(b.bezier, t);', '      return a.value + (b.value - a.value) * t;',
+     "Bezier keys take their handles' ease", 'bezier_keys'),
+    ('src/anim/channel.cc', '          u = bezier_ease(b.bezier, t);', '          u = t;',
+     "Bezier position keys go along the path at the handles' timing", 'bezier_keys'),
+    ('src/anim/channel.cc', '        mode == Interp::Bezier)', '        false)',
+     'a Bezier key times its whole breakdown span', 'bezier_keys'),
+    ('src/anim/channel.cc', '      r_handles = {1.0f / 3.0f, 0.0f, 2.0f / 3.0f, 1.0f};', '      r_handles = BEZIER_DEFAULT;',
+     "Smooth's handles in the settings graph", 'bezier_keys'),
+    ('src/anim/channel.hh', '  k.bezier = bezier_clamped(s.bezier);', '  k.bezier = BEZIER_DEFAULT;',
+     "keys take the handles they're given", 'bezier_keys'),
+    ('src/io/oanim_file.cc', '    if (k.bezier != defaults.bezier) {', '    if (false) {',
+     'Bezier handles are saved', 'bezier_keys'),
+    ('src/ops/anim_ops.cc', '    s.interp = Interp::Bezier;', '    (void)0;',
+     'giving handles makes the keys Bezier', 'bezier_keys'),
+    ('src/editors/timeline.cc', '    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);', '    return IM_COL32(0x54, 0x54, 0x54, 255);',
+     'the key header is red while it edits keys', 'bezier_keys'),
 ]
 
 

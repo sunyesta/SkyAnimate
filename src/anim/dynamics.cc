@@ -131,6 +131,7 @@ struct Hash {
       value(k.overshoot);
       value(k.elastic_amplitude);
       value(k.elastic_period);
+      value(k.bezier);
     }
     if (!ch.animated()) {
       const T base = plain - ch.from_action_bones;

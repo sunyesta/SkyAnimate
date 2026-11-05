@@ -8,6 +8,7 @@
  * position). The plain value always holds the value at the frame last evaluated, so drawing
  * and editing code never looks at keys; see anim/animation.hh for how edits become keys. */
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -26,7 +27,8 @@ enum class Interp : uint8_t {
   EaseIn,
   EaseOut,
   Step,
-  /* A custom curve; until the graph editor edits its handles it moves like Smooth. */
+  /* An ease shaped by two handles (Key::bezier), as a CSS cubic-bezier: the same curve fits a stretch of any length,
+   * so one shape can be given to many keys. Position keys go along the path Smooth makes, at this timing. */
   Bezier,
   Back,
   Bounce,
@@ -49,6 +51,19 @@ bool interp_from_identifier(const std::string &identifier, Interp *r_interp);
  * the gentlest (Sine) to the strongest (Expo). */
 enum class Ease : uint8_t { Sine, Quad, Cubic, Quart, Quint, Expo, Circ };
 inline constexpr int EASE_COUNT = 7;
+
+/* Bezier's handles: {x1, y1, x2, y2}, the handle leaving the key before and the one arriving at this key, in time (x,
+ * 0..1 across the stretch) and progress (y, 0 at the key before and 1 at this key; past either end overshoots). */
+using BezierHandles = std::array<float, 4>;
+inline constexpr BezierHandles BEZIER_DEFAULT = {0.42f, 0.0f, 0.58f, 1.0f};
+/* The presets: Even (steady), In (slows into this key), Out (starts slowly), In-Out. */
+inline constexpr BezierHandles BEZIER_EVEN = {1.0f / 3.0f, 1.0f / 3.0f, 2.0f / 3.0f, 2.0f / 3.0f};
+inline constexpr BezierHandles BEZIER_IN = {0.0f, 0.0f, 0.58f, 1.0f};
+inline constexpr BezierHandles BEZIER_OUT = {0.42f, 0.0f, 1.0f, 1.0f};
+/* Progress at `t` (0..1) along the ease the handles make. */
+float bezier_ease(const BezierHandles &handles, float t);
+/* Handles in range: times 0..1, progress -2..3. */
+BezierHandles bezier_clamped(const BezierHandles &handles);
 
 /* Blender's keyframe types, two of them: a Key, or a Breakdown, an in-between pose whose timing is the main keys'
  * either side: the stretches next to it are timed as one movement from main key to main key (Channel::evaluate), the
@@ -94,6 +109,8 @@ template<typename T> struct Key {
   int cycle_back = 0;
   bool cycle_absolute = false;
   int cycle_frame = 0;
+  /* Bezier: its two handles. */
+  BezierHandles bezier = BEZIER_DEFAULT;
   /* Moho's key colour tag (0 = none). */
   int color = 0;
   /* Position keys only (Channel<float2>): how the path leaves this key toward the next (path_out) and arrives from
@@ -301,6 +318,7 @@ struct KeySettings {
   int cycle_back = 0;
   bool cycle_absolute = false;
   int cycle_frame = 0;
+  BezierHandles bezier = BEZIER_DEFAULT;
 
   bool operator==(const KeySettings &) const = default;
 };
@@ -325,6 +343,7 @@ template<typename T> KeySettings key_settings(const Key<T> &k)
   s.cycle_back = k.cycle_back;
   s.cycle_absolute = k.cycle_absolute;
   s.cycle_frame = k.cycle_frame;
+  s.bezier = k.bezier;
   return s;
 }
 
@@ -343,6 +362,7 @@ template<typename T> void key_settings_apply(Key<T> &k, const KeySettings &s)
   k.cycle_back = s.cycle_back;
   k.cycle_absolute = s.cycle_absolute;
   k.cycle_frame = s.cycle_frame;
+  k.bezier = bezier_clamped(s.bezier);
 }
 
 /* What new keys get (the timeline's Interpolation menu with no keys selected sets it). With
@@ -363,5 +383,9 @@ void stepped_preview_set(bool on);
 /* The shape of a mode on its own, 0..1 progress for t in 0..1, as the menus and the settings graph
  * draw it (Smooth as between two flat keys; Noisy without its jitter). */
 float interp_curve(const KeySettings &s, float t);
+/* Bezier handles that draw `s`'s curve, or as near as two handles get (least squares): exact for Linear, Smooth and
+ * Bezier, close for the Ease modes and Back. False for modes two handles can't shape (Step, Bounce, Elastic, Noisy,
+ * Cycle, Pose, Custom). */
+bool interp_bezier_fit(const KeySettings &s, BezierHandles &r_handles);
 
 }  // namespace oanim

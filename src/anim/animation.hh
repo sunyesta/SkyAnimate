@@ -442,6 +442,10 @@ struct SelectedKeys {
   bool mixed_ease = false;
   /* Some keys and some breakdowns. */
   bool mixed_type = false;
+  /* Frames the stretch arriving at the first key moves over (0: it is a channel's first key). */
+  int first_span = 0;
+  /* Up to six other curves among them (differing from the first's and each other's). */
+  std::vector<KeySettings> others;
 };
 SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers);
 /* Changes the selected keys' interpolation settings with `change`; yes/no channels' keys stay

@@ -137,6 +137,14 @@ void preferences_load()
     number("noise_amplitude", s.noise_amplitude);
     number("noise_frequency", s.noise_frequency);
     number("cycle_back", s.cycle_back);
+    if (auto v = k.find("bezier"); v != k.end() && v->is_array() && v->size() == 4) {
+      for (size_t i = 0; i < 4; i++) {
+        if ((*v)[i].is_number()) {
+          s.bezier[i] = (*v)[i].get<float>();
+        }
+      }
+      s.bezier = bezier_clamped(s.bezier);
+    }
     s.hold = std::max(0, s.hold);
     s.interval = std::clamp(s.interval, 1, 3);
     s.elastic_period = std::max(0.02f, s.elastic_period);
@@ -165,6 +173,7 @@ void preferences_save()
                          {"noise_amplitude", s.noise_amplitude},
                          {"noise_frequency", s.noise_frequency},
                          {"cycle_back", s.cycle_back},
+                         {"bezier", s.bezier},
                          {"copy_previous", keys.copy_previous}};
   json j = {{"version", 1},
                   {"asset_library", preferences().asset_library},

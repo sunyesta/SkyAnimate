@@ -181,6 +181,9 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.elastic_period != defaults.elastic_period) {
       key["elastic_period"] = num(k.elastic_period);
     }
+    if (k.bezier != defaults.bezier) {
+      key["bezier"] = json::array({num(k.bezier[0]), num(k.bezier[1]), num(k.bezier[2]), num(k.bezier[3])});
+    }
     if (k.noise_amplitude != defaults.noise_amplitude) {
       key["noise_amplitude"] = num(k.noise_amplitude);
     }
@@ -1699,6 +1702,14 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.overshoot = get_float(k, "overshoot", key.overshoot);
     key.elastic_amplitude = get_float(k, "elastic_amplitude", key.elastic_amplitude);
     key.elastic_period = std::max(0.02f, get_float(k, "elastic_period", key.elastic_period));
+    if (auto v = k.find("bezier"); v != k.end() && v->is_array() && v->size() == 4) {
+      for (size_t i = 0; i < 4; i++) {
+        if ((*v)[i].is_number()) {
+          key.bezier[i] = (*v)[i].get<float>();
+        }
+      }
+      key.bezier = bezier_clamped(key.bezier);
+    }
     key.noise_amplitude = get_float(k, "noise_amplitude", key.noise_amplitude);
     key.noise_frequency = get_float(k, "noise_frequency", key.noise_frequency);
     key.cycle_back = std::max(0, get_int(k, "cycle_back", key.cycle_back));

@@ -499,6 +499,18 @@ def timeline_rows(changed=False):
     return rows if changed else [r[:4] for r in rows]
 
 
+def timeline_key_header():
+    """Test hook: the timeline header's key group: {"parts": [...] in order, "editing": whether it
+    edits the selected keys (red) rather than setting new keys', "color": (r, g, b)}."""
+    return dict(_oanim.timeline_key_header())
+
+
+def interp_bezier_fit(interp, ease="QUAD"):
+    """Test hook: the Bezier handles (x1, y1, x2, y2) the settings graph shows for a mode, or None where two handles
+    can't shape it."""
+    return _oanim.interp_bezier_fit(interp, ease)
+
+
 def timeline_key_menu(row, frame):
     """Test hook: the top level of the right-click menu on timeline row `row`'s key at `frame` (an index into
     timeline_row_details(as_shown=True)), as [(label, enabled)]."""

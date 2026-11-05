@@ -544,6 +544,8 @@ add_test(NAME keyed_here
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_keyed_here.py)
 add_test(NAME interpolation
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_interpolation.py)
+add_test(NAME bezier_keys
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bezier_keys.py)
 add_test(NAME reference_edges
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_reference_edges.py)
 add_test(NAME draw_order

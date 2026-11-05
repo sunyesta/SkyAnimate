@@ -163,10 +163,10 @@ static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int fr
   return args;
 }
 
-/* A breakdown key: a small circle, light blue, dark blue when selected. */
+/* A breakdown key: a small circle, dark blue, light blue when selected. */
 static void breakdown_dot(ImDrawList *dl, ImVec2 c, float r, bool selected)
 {
-  dl->AddCircleFilled(c, r, selected ? IM_COL32(0x1f, 0x5f, 0xd6, 255) : IM_COL32(0x8c, 0xc8, 0xff, 255));
+  dl->AddCircleFilled(c, r, selected ? IM_COL32(0x8c, 0xc8, 0xff, 255) : IM_COL32(0x1f, 0x5f, 0xd6, 255));
   dl->AddCircle(c, r, IM_COL32(20, 20, 20, 220), 0, 1.0f);
 }
 

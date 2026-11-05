@@ -485,6 +485,33 @@ bool interp_args_apply(Context &C, KeySettings &r_settings, std::string *r_what)
   number("noise_amplitude", s.noise_amplitude);
   number("noise_frequency", s.noise_frequency);
   number("cycle_back", s.cycle_back);
+  if (op_has_arg(C, "bezier")) {
+    /* "x1,y1,x2,y2"; giving the handles makes the keys Bezier. */
+    BezierHandles h{};
+    const std::string text = op_arg(C, "bezier");
+    const char *at = text.c_str();
+    int read = 0;
+    for (; read < 4; read++) {
+      char *end = nullptr;
+      h[size_t(read)] = std::strtof(at, &end);
+      if (end == at) {
+        break;
+      }
+      at = end;
+      while (*at == ',' || *at == ' ') {
+        at++;
+      }
+    }
+    if (read != 4) {
+      report(ReportType::Error, "bezier takes four numbers: x1,y1,x2,y2");
+      return false;
+    }
+    s.bezier = bezier_clamped(h);
+    s.interp = Interp::Bezier;
+    if (r_what->empty()) {
+      *r_what = "Bezier Handles";
+    }
+  }
   s.hold = std::max(0, s.hold);
   s.interval = std::clamp(s.interval, 1, 3);
   s.cycle_back = std::max(0, s.cycle_back);
@@ -503,7 +530,7 @@ void anim_operators_register()
         "Set the selected keys' interpolation (with no keys selected: what new keys get). interp: LINEAR, SMOOTH, "
         "EASE_IN, EASE_OUT, EASE_IN_OUT, STEP, BACK, BOUNCE, ELASTIC, NOISY, CYCLE; ease: SINE, QUAD, CUBIC, QUART, "
         "QUINT, EXPO, CIRC; and hold, interval, overshoot, elastic_amplitude, elastic_period, noise_amplitude, "
-        "noise_frequency, cycle_back; type: KEYFRAME, BREAKDOWN (the key type, never on frame 0). Only the settings "
+        "noise_frequency, cycle_back; bezier: x1,y1,x2,y2 (makes them BEZIER); type: KEYFRAME, BREAKDOWN (the key type, never on frame 0). Only the settings "
         "given change. With Time Together, the linked channels' keys take it too (together=0: not)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };

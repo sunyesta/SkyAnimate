@@ -48,8 +48,9 @@ static constexpr ImU32 COL_PLAYHEAD = IM_COL32(0x47, 0x72, 0xb3, 255);
 /* Blender's keyframe diamonds: light grey, orange when selected. */
 static constexpr ImU32 COL_KEY = IM_COL32(0xdd, 0xdd, 0xdd, 255);
 static constexpr ImU32 COL_KEY_SELECTED = IM_COL32(0xff, 0xbe, 0x33, 255);
-static constexpr ImU32 COL_BREAKDOWN = IM_COL32(0x8c, 0xc8, 0xff, 255);
-static constexpr ImU32 COL_BREAKDOWN_SELECTED = IM_COL32(0x1f, 0x5f, 0xd6, 255);
+/* Breakdowns: deep blue, light blue when selected. */
+static constexpr ImU32 COL_BREAKDOWN = IM_COL32(0x1f, 0x5f, 0xd6, 255);
+static constexpr ImU32 COL_BREAKDOWN_SELECTED = IM_COL32(0x8c, 0xc8, 0xff, 255);
 static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 /* Blender's header buttons (the default theme's Regular widgets): grey, lighter under the mouse, blue
  * when on; a menu's arrow half darker; outlined, with a darker line under each group. */
@@ -629,12 +630,12 @@ static void action_menu(Context &C, float width)
 /* The modes the menus offer, in groups (Bezier comes from dragging handles, Pose from actions). */
 struct InterpGroup {
   const char *heading;
-  Interp modes[3];
+  Interp modes[4];
   int count;
 };
 static constexpr InterpGroup INTERP_GROUPS[] = {
     {nullptr, {Interp::Smooth, Interp::Linear, Interp::Step}, 3},
-    {"Ease", {Interp::EaseIn, Interp::EaseOut, Interp::EaseInOut}, 3},
+    {"Ease", {Interp::EaseIn, Interp::EaseOut, Interp::EaseInOut, Interp::Bezier}, 4},
     {"Bouncy", {Interp::Back, Interp::Bounce, Interp::Elastic}, 3},
     {"Special", {Interp::Noisy, Interp::Cycle, Interp::Cycle}, 2},
 };
@@ -654,6 +655,8 @@ static const char *interp_tooltip(Interp interp)
       return "Starts slowly from the key before";
     case Interp::EaseInOut:
       return "Starts slowly and slows down into this key";
+    case Interp::Bezier:
+      return "An ease shaped by two handles in Settings: the same curve on keys of any length";
     case Interp::Back:
       return "Goes past this key, then settles back onto it";
     case Interp::Bounce:
@@ -762,6 +765,8 @@ void timeline_interp_modes(const KeySettings &current, bool mixed, bool mixed_ea
 /* The Interpolation menu's items. `prepare` (right-click on a key) selects the keys clicked
  * before anything is set. */
 /* Key and Breakdown, for the selected keys (or new keys when none are). */
+static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill, ImU32 edge = IM_COL32(0, 0, 0, 200));
+static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected);
 static void key_type_menu_items(Context &C, const std::function<void()> &prepare)
 {
   const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
@@ -769,7 +774,21 @@ static void key_type_menu_items(Context &C, const std::function<void()> &prepare
   const KeyType current = for_keys ? sel.first.type : new_key_settings().settings.type;
   for (const KeyType t : {KeyType::Key, KeyType::Breakdown}) {
     const bool on = !(for_keys && sel.mixed_type) && current == t;
-    if (ui_menu_item(key_type_name(t), nullptr, on)) {
+    /* Each with its look in the timeline: a key's diamond, a breakdown's small circle. */
+    const std::string label = std::string("     ") + key_type_name(t);
+    const bool chosen = ui_menu_item(label.c_str(), nullptr, on);
+    {
+      const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+      const float ih = b.y - a.y;
+      const ImVec2 icon(a.x + ImGui::GetStyle().ItemSpacing.x * 0.5f + ih * 0.5f, (a.y + b.y) * 0.5f);
+      if (t == KeyType::Breakdown) {
+        breakdown_draw(ImGui::GetWindowDrawList(), icon, ih * 0.3f, false);
+      }
+      else {
+        key_draw(ImGui::GetWindowDrawList(), icon, ih * 0.26f, KEY_SHAPE_SMOOTH, COL_KEY);
+      }
+    }
+    if (chosen) {
       if (prepare) {
         prepare();
       }
@@ -804,6 +823,11 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
   }
   timeline_interp_modes(current, sel.mixed, sel.mixed_ease, !prepare,
                         [&](const OpArgs &args) { run("anim.keys_interpolation_set", args); });
+  if (!prepare) {
+    /* The header's dropdown is the modes alone: the key type, copying and the settings have their own buttons beside
+     * it and in the settings window. */
+    return;
+  }
   ImGui::Separator();
   if (ImGui::BeginMenu("Key Type")) {
     key_type_menu_items(C, prepare);
@@ -849,6 +873,44 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
   }
 }
 
+ImU32 key_header_color(bool keys_selected, bool hovered);
+
+/* Popovers open above the header, a small caret under them pointing at the button that opened them (Blender's). */
+static float popover_caret_size()
+{
+  return ImGui::GetFontSize() * 0.45f;
+}
+
+/* Places the next popover with its bottom a caret's height above `y`, `pivot_x` of its width at `x`. */
+static void popover_place(float x, float y, float pivot_x, ImGuiCond cond = ImGuiCond_Appearing)
+{
+  ImGui::SetNextWindowPos(ImVec2(x, y - popover_caret_size()), cond, ImVec2(pivot_x, 1.0f));
+}
+
+/* Inside the popover: the caret below it, its tip under `x` (kept within the popover's width). */
+static void popover_caret(float x)
+{
+  const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+  const float c = popover_caret_size();
+  const float r = ImGui::GetStyle().PopupRounding;
+  x = std::clamp(x, pos.x + r + c, pos.x + size.x - r - c);
+  const float y = pos.y + size.y;
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->PushClipRectFullScreen();
+  /* Overlapping the window's edge a little, so its border doesn't cross the caret's base. */
+  const ImVec2 a(x - c, y - 1.0f), b(x + c, y - 1.0f), tip(x, y + c);
+  dl->AddTriangleFilled(a, b, tip, ImGui::GetColorU32(ImGuiCol_PopupBg));
+  if (ImGui::GetStyle().PopupBorderSize > 0.0f) {
+    const ImU32 edge = ImGui::GetColorU32(ImGuiCol_Border);
+    dl->AddLine(ImVec2(a.x, y), tip, edge, ImGui::GetStyle().PopupBorderSize);
+    dl->AddLine(tip, ImVec2(b.x, y), edge, ImGui::GetStyle().PopupBorderSize);
+  }
+  dl->PopClipRect();
+}
+
+/* Where the header's key group is (key_header): the settings window opens above its centre. */
+static ImVec2 g_key_group_min, g_key_group_max;
+
 /* A sliders icon: the settings button beside the mode. */
 static void settings_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
 {
@@ -864,9 +926,12 @@ static void settings_icon(ImDrawList *dl, ImVec2 c, float s, ImU32 col)
  * keys (or the new-key settings) as they go; letting go makes one undo step. */
 static void interp_settings_popup(Context &C)
 {
+  /* Above the key group's centre, growing upward as its rows change. */
+  popover_place((g_key_group_min.x + g_key_group_max.x) * 0.5f, g_key_group_min.y, 0.5f, ImGuiCond_Always);
   if (!ImGui::BeginPopup("##interp_settings")) {
     return;
   }
+  popover_caret((g_key_group_min.x + g_key_group_max.x) * 0.5f);
   Document &doc = *C.document;
   const std::vector<Layer *> layers = timeline_layers(C);
   const SelectedKeys sel = layers_selected_keys(layers);
@@ -874,44 +939,6 @@ static void interp_settings_popup(Context &C)
   const KeySettings s = interp_shown(sel);
   const float fs = ImGui::GetFontSize();
   const float w = fs * 14.0f;
-
-  if (keys) {
-    ImGui::Text("Interpolation of %d key%s", sel.count, sel.count == 1 ? "" : "s");
-    if (sel.mixed) {
-      ImGui::TextDisabled("Mixed: showing the first key's; a change goes to all");
-    }
-  }
-  else {
-    ImGui::Text("Interpolation of New Keys");
-    ImGui::TextDisabled("No keys selected");
-  }
-
-  /* The curve: progress (0 at the key before, 1 at this one) over the time between them. */
-  {
-    const ImVec2 a = ImGui::GetCursorScreenPos();
-    const ImVec2 size(w, fs * 7.0f);
-    ImGui::Dummy(size);
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    const ImVec2 b = a + size;
-    dl->AddRectFilled(a, b, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
-    /* Tall enough for the whole curve (Elastic and Back swing past this key). */
-    float lo = -0.15f, hi = 1.15f;
-    for (int i = 0; i <= 64; i++) {
-      const float v = interp_curve(s, float(i) / 64.0f);
-      lo = std::min(lo, v - 0.08f);
-      hi = std::max(hi, v + 0.08f);
-    }
-    /* The lines of the key before's value (0) and this key's (1), labelled above, at the right. */
-    for (const float v : {0.0f, 1.0f}) {
-      const float y = b.y - (v - lo) / (hi - lo) * size.y;
-      dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0x44, 0x44, 0x44, 255));
-      const char *label = v == 0.0f ? "key before" : "this key";
-      const float tw = ImGui::CalcTextSize(label).x;
-      dl->AddText(ImVec2(b.x - tw - 4.0f, y - fs - 1.0f), IM_COL32(0x80, 0x80, 0x80, 255),
-                  label);
-    }
-    curve_draw(dl, a + ImVec2(6.0f, 0.0f), b - ImVec2(6.0f, 0.0f), s, IM_COL32(0x9c, 0xc6, 0xff, 255), 2.0f, lo, hi);
-  }
 
   const auto set = [&](const char *name, const std::string &value) {
     operator_call(C, "anim.keys_interpolation_set", {{name, value}});
@@ -936,6 +963,211 @@ static void interp_settings_popup(Context &C)
       }
     }
   };
+
+  /* A strip across the top saying what a change goes to: red while it edits the selected keys (as the header). */
+  {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const ImVec2 size(w, ImGui::GetFrameHeight());
+    dl->AddRectFilled(a, a + size, key_header_color(keys, false), ImGui::GetStyle().FrameRounding);
+    char title[96];
+    if (keys) {
+      std::snprintf(title, sizeof(title), "Editing %d selected key%s%s", sel.count, sel.count == 1 ? "" : "s",
+                    sel.mixed ? " (mixed)" : "");
+    }
+    else {
+      std::snprintf(title, sizeof(title), "Interpolation of New Keys");
+    }
+    dl->AddText(a + ImVec2(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y),
+                ImGui::GetColorU32(ImGuiCol_Text), title);
+    ImGui::Dummy(size);
+    if (keys && sel.mixed && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Their curves differ: the first key's is shown, the others faint behind it. A change goes to all");
+    }
+  }
+
+  /* Key or Breakdown. */
+  {
+    const float half = (w - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+    for (const KeyType type : {KeyType::Key, KeyType::Breakdown}) {
+      if (type == KeyType::Breakdown) {
+        ImGui::SameLine();
+      }
+      const bool on = !(keys && sel.mixed_type) && s.type == type;
+      if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      const std::string label = std::string("   ") + key_type_name(type);
+      if (ImGui::Button(label.c_str(), ImVec2(half, 0.0f))) {
+        set("type", key_type_identifier(type));
+      }
+      if (on) {
+        ImGui::PopStyleColor();
+      }
+      const float fh = ImGui::GetFrameHeight();
+      const ImVec2 icon = p + ImVec2(fh * 0.55f, fh * 0.5f);
+      if (type == KeyType::Breakdown) {
+        breakdown_draw(ImGui::GetWindowDrawList(), icon, fh * 0.28f, false);
+      }
+      else {
+        key_draw(ImGui::GetWindowDrawList(), icon, fh * 0.24f, KEY_SHAPE_SMOOTH, COL_KEY);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(type == KeyType::Key ? "An ordinary key: the timing eases at it" :
+                                                 "A breakdown: a pose on the way, timed as one movement with the keys "
+                                                 "either side");
+      }
+    }
+  }
+
+  /* The curve: progress (0 at the key before, 1 at this one) over the time between them. Where two handles can shape
+   * it they are drawn, and dragging one makes the curve Bezier: the same ease on every selected key, whatever its
+   * length. */
+  {
+    static int drag = -1;
+    static float drag_lo = 0.0f, drag_hi = 1.0f;
+    static KeySettings fit_for;
+    static BezierHandles fit{};
+    static bool fit_ok = false, fit_made = false;
+    KeySettings fit_key = s;
+    fit_key.type = KeyType::Key;
+    fit_key.hold = 0;
+    fit_key.interval = 1;
+    if (!fit_made || !(fit_key == fit_for)) {
+      fit_ok = interp_bezier_fit(fit_key, fit);
+      fit_for = fit_key;
+      fit_made = true;
+    }
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const ImVec2 size(w, fs * 7.5f);
+    ImGui::InvisibleButton("##curve", size);
+    const bool active = ImGui::IsItemActive();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImVec2 b = a + size;
+    dl->AddRectFilled(a, b, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
+    /* Tall enough for the whole curve (Elastic and Back swing past this key) and the handles; kept while dragging. */
+    float lo = -0.15f, hi = 1.15f;
+    if (drag >= 0) {
+      lo = drag_lo;
+      hi = drag_hi;
+    }
+    else {
+      const auto take = [&](const KeySettings &k) {
+        for (int i = 0; i <= 64; i++) {
+          const float v = interp_curve(k, float(i) / 64.0f);
+          lo = std::min(lo, v - 0.08f);
+          hi = std::max(hi, v + 0.08f);
+        }
+      };
+      take(s);
+      for (const KeySettings &o : sel.others) {
+        take(o);
+      }
+      if (fit_ok) {
+        lo = std::min({lo, fit[1] - 0.1f, fit[3] - 0.1f});
+        hi = std::max({hi, fit[1] + 0.1f, fit[3] + 0.1f});
+      }
+    }
+    const float inset = fs * 0.6f;
+    const auto to_screen = [&](float x, float y) {
+      return ImVec2(a.x + inset + x * (size.x - 2.0f * inset), b.y - (y - lo) / (hi - lo) * size.y);
+    };
+    /* The lines of the key before's value (0) and this key's (1), labelled above, at the right. */
+    for (const float v : {0.0f, 1.0f}) {
+      const float y = to_screen(0.0f, v).y;
+      dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0x44, 0x44, 0x44, 255));
+      const char *label = v == 0.0f ? "key before" : "this key";
+      const float tw = ImGui::CalcTextSize(label).x;
+      dl->AddText(ImVec2(b.x - tw - 4.0f, y - fs - 1.0f), IM_COL32(0x80, 0x80, 0x80, 255), label);
+    }
+    const ImVec2 c0 = to_screen(0.0f, 0.0f), c1 = to_screen(1.0f, 1.0f);
+    for (const KeySettings &o : sel.others) {
+      curve_draw(dl, ImVec2(c0.x, a.y), ImVec2(c1.x, b.y), o, IM_COL32(0x9c, 0xc6, 0xff, 70), 1.5f, lo, hi);
+    }
+    curve_draw(dl, ImVec2(c0.x, a.y), ImVec2(c1.x, b.y), s, IM_COL32(0x9c, 0xc6, 0xff, 255), 2.0f, lo, hi);
+    /* Where the frames of the first key's stretch land on it. */
+    if (keys && sel.first_span > 1 && sel.first_span <= 240) {
+      for (int f = 1; f < sel.first_span; f++) {
+        const float x = float(f) / float(sel.first_span);
+        dl->AddCircleFilled(to_screen(x, interp_curve(s, x)), 2.0f, IM_COL32(0xdd, 0xdd, 0xdd, 200));
+      }
+    }
+    const ImU32 handle_col = keys ? IM_COL32(0xff, 0x6b, 0x6b, 255) : IM_COL32(0x9c, 0xc6, 0xff, 255);
+    const ImVec2 h1 = to_screen(fit[0], fit[1]), h2 = to_screen(fit[2], fit[3]);
+    if (fit_ok) {
+      dl->AddLine(c0, h1, handle_col & 0xb0ffffff, 1.5f);
+      dl->AddLine(c1, h2, handle_col & 0xb0ffffff, 1.5f);
+      dl->AddCircleFilled(h1, fs * 0.3f, handle_col);
+      dl->AddCircleFilled(h2, fs * 0.3f, handle_col);
+    }
+    for (const ImVec2 &end : {c0, c1}) {
+      dl->AddQuadFilled(end + ImVec2(0, -fs * 0.35f), end + ImVec2(fs * 0.35f, 0), end + ImVec2(0, fs * 0.35f),
+                        end + ImVec2(-fs * 0.35f, 0), IM_COL32(0xff, 0xff, 0xff, 255));
+    }
+    if (ImGui::IsItemActivated() && fit_ok) {
+      const ImVec2 m = ImGui::GetIO().MousePos;
+      const auto dist = [&](ImVec2 p) { return std::hypot(p.x - m.x, p.y - m.y); };
+      const float d1 = dist(h1), d2 = dist(h2);
+      if (std::min(d1, d2) <= fs * 1.2f) {
+        drag = d1 <= d2 ? 0 : 1;
+        drag_lo = lo;
+        drag_hi = hi;
+      }
+    }
+    if (drag >= 0 && active) {
+      const ImVec2 m = ImGui::GetIO().MousePos;
+      BezierHandles h = fit;
+      h[size_t(drag) * 2] = std::clamp((m.x - a.x - inset) / (size.x - 2.0f * inset), 0.0f, 1.0f);
+      h[size_t(drag) * 2 + 1] = lo + (b.y - m.y) / size.y * (hi - lo);
+      h = bezier_clamped(h);
+      if (h != fit || s.interp != Interp::Bezier) {
+        live([h](KeySettings &k) {
+          k.interp = Interp::Bezier;
+          k.bezier = h;
+        });
+      }
+    }
+    if (ImGui::IsItemDeactivated() && drag >= 0) {
+      drag = -1;
+      if (keys) {
+        C.undo->push("Bezier Handles", doc);
+      }
+      else {
+        preferences_save();
+      }
+    }
+    ImGui::TextDisabled(fit_ok ? "Drag a handle; past the top or bottom overshoots" :
+                                 "Pick a shape below to edit it with handles");
+    /* The shapes as handles. */
+    const float quarter = (w - 3.0f * ImGui::GetStyle().ItemSpacing.x) / 4.0f;
+    const std::pair<const char *, BezierHandles> presets[] = {
+        {"Even", BEZIER_EVEN}, {"In", BEZIER_IN}, {"Out", BEZIER_OUT}, {"In-Out", BEZIER_DEFAULT}};
+    for (size_t i = 0; i < 4; i++) {
+      if (i > 0) {
+        ImGui::SameLine();
+      }
+      const bool on = s.interp == Interp::Bezier && bezier_clamped(s.bezier) == bezier_clamped(presets[i].second);
+      if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      if (ImGui::Button(presets[i].first, ImVec2(quarter, 0.0f))) {
+        const BezierHandles &p = presets[i].second;
+        char arg[96];
+        std::snprintf(arg, sizeof(arg), "%g,%g,%g,%g", p[0], p[1], p[2], p[3]);
+        set("bezier", arg);
+      }
+      if (on) {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        static const char *const tips[] = {"Steady speed", "Slows down into this key", "Starts slowly from the key before",
+                                           "Starts slowly and slows down into this key"};
+        ImGui::SetTooltip("%s (Bezier handles)", tips[i]);
+      }
+    }
+  }
+
   const float label_w = fs * 5.5f;
   const auto row = [&](const char *label) {
     ImGui::AlignTextToFramePadding();
@@ -1093,56 +1325,25 @@ static void interp_settings_popup(Context &C)
   ImGui::EndPopup();
 }
 
-/* The header's mode dropdown and settings button. */
-static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill, ImU32 edge = IM_COL32(0, 0, 0, 200));
-static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected);
-/* The selected keys as the header last saw them (worked out by interp_header, kept until an edit or a click). */
-static SelectedKeys g_header_sel;
+/* The header's key group (key_header). */
 
-/* The Key Type menu beside the interpolation: what new keys are (no key selected), or the selected keys'. */
-static void key_type_header(Context &C, float width)
+std::vector<std::string> timeline_key_header_parts()
 {
-  const SelectedKeys &sel = g_header_sel;
-  const bool for_keys = sel.count > 0;
-  const KeyType type = for_keys ? sel.first.type : new_key_settings().settings.type;
-  const char *name = for_keys && sel.mixed_type ? "Mixed" : key_type_name(type);
-  const float h = ImGui::GetFrameHeight();
-  const ImGuiStyle &style = ImGui::GetStyle();
-  const ImVec2 p = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##key_type", ImVec2(width, h));
-  const bool hovered = ImGui::IsItemHovered();
-  if (ImGui::IsItemClicked()) {
-    ImGui::OpenPopup("##key_type_menu");
-  }
-  if (hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip(for_keys ? "Key Type of the selected keys: Key, or Breakdown (timed as one movement with the "
-                                 "keys either side)" :
-                                 "Key Type of new keys: Key, or Breakdown (timed as one movement with the keys "
-                                 "either side)");
-  }
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(p, p + ImVec2(width, h), ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
-                    style.FrameRounding);
-  const ImVec2 icon = p + ImVec2(style.FramePadding.x + h * 0.3f, h * 0.5f);
-  if (type == KeyType::Breakdown && !(for_keys && sel.mixed_type)) {
-    breakdown_draw(dl, icon, h * 0.32f, false);
-  }
-  else {
-    key_draw(dl, icon, h * 0.26f, KEY_SHAPE_SMOOTH, COL_KEY);
-  }
-  dl->PushClipRect(p, p + ImVec2(width - h * 0.7f, h), true);
-  dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 0.6f, style.FramePadding.y),
-              ImGui::GetColorU32(ImGuiCol_Text), name);
-  dl->PopClipRect();
-  ImGui::RenderArrow(dl, p + ImVec2(width - h * 0.75f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
-                     ImGuiDir_Down, 0.8f);
-  if (ImGui::BeginPopup("##key_type_menu")) {
-    key_type_menu_items(C, nullptr);
-    ImGui::EndPopup();
-  }
+  return {"Animate On", "Interpolation", "Key Type", "Settings"};
 }
 
-static void interp_header(Context &C, float width)
+ImU32 key_header_color(bool keys_selected, bool hovered)
+{
+  if (keys_selected) {
+    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);
+  }
+  return ImGui::GetCurrentContext() ? ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg)
+                                    : IM_COL32(0x54, 0x54, 0x54, 255);
+}
+
+/* Animate On, the interpolation, the key type and the settings: one joined group without arrows, red while
+ * keys are selected (a change edits them), grey otherwise (it sets what new keys get). */
+static void key_header(Context &C)
 {
   /* Visiting every channel of a big rig each frame costs tens of milliseconds, so the summary is kept until an
    * edit (key selection goes through operators, which push undo), a click or the shown layers change. */
@@ -1165,52 +1366,110 @@ static void interp_header(Context &C, float width)
     sel_changes = changes;
     sel_layers = std::move(ids);
   }
-  g_header_sel = sel;
+  const bool keys = sel.count > 0;
   const KeySettings s = interp_shown(sel);
-  const char *name = sel.count > 0 && sel.mixed ? "Mixed" : interp_name(s.interp);
   const float h = ImGui::GetFrameHeight();
   const ImGuiStyle &style = ImGui::GetStyle();
-  const ImVec2 p = ImGui::GetCursorScreenPos();
-  const float drop_w = width - h - 2.0f;
-  ImGui::InvisibleButton("##interp_mode", ImVec2(drop_w, h));
-  const bool hovered = ImGui::IsItemHovered();
-  if (ImGui::IsItemClicked()) {
-    ImGui::OpenPopup("##key_interpolation");
-  }
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(p, p + ImVec2(drop_w, h), ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
-                    style.FrameRounding);
-  KeySettings shape = s;
-  if (sel.count > 0 && sel.mixed) {
-    shape.interp = Interp::Smooth;
+  const float r = style.FrameRounding;
+  /* One part: an invisible button with its background; the group's ends rounded. */
+  const auto part = [&](const char *id, float width, ImDrawFlags corners, ImVec2 &r_at) {
+    r_at = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(width, h));
+    dl->AddRectFilled(r_at, r_at + ImVec2(width, h), key_header_color(keys, ImGui::IsItemHovered()), r, corners);
+    return pressed;
+  };
+  ImVec2 p;
+  g_key_group_min = ImGui::GetCursorScreenPos();
+
+  /* Animate On: 1s, 2s or 3s. */
+  char on[8];
+  std::snprintf(on, sizeof(on), "%ds", s.interval);
+  if (part("##animate_on", h * 1.25f, ImDrawFlags_RoundCornersLeft, p)) {
+    ImGui::OpenPopup("##animate_on_menu");
   }
-  curve_draw(dl, p + ImVec2(style.FramePadding.x, 3.0f), p + ImVec2(style.FramePadding.x + h * 1.3f, h - 3.0f), shape,
-             IM_COL32(0x9c, 0xc6, 0xff, 255), 1.5f);
-  dl->PushClipRect(p, p + ImVec2(drop_w - h * 0.7f, h), true);
-  dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 1.3f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
-              name);
-  dl->PopClipRect();
-  ImGui::RenderArrow(dl, p + ImVec2(drop_w - h * 0.75f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
-                     ImGuiDir_Down, 0.8f);
+  {
+    const ImVec2 tw = ImGui::CalcTextSize(on);
+    dl->AddText(p + ImVec2((h * 1.25f - tw.x) * 0.5f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text), on);
+  }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    if (sel.count > 0) {
-      ImGui::SetTooltip("Interpolation of the selected keys: how the motion arrives at each from the key before\nShortcut: T");
-    }
-    else {
-      ImGui::SetTooltip("Interpolation new keys get (no keys selected)\nShortcut: T");
-    }
+    ImGui::SetTooltip(keys ? "Animate On for the selected keys: on 2s or 3s the motion only moves every second or third frame" :
+                             "Animate On for new keys: on 2s or 3s the motion only moves every second or third frame");
   }
-  ImGui::SameLine(0.0f, 2.0f);
-  const ImVec2 q = ImGui::GetCursorScreenPos();
-  if (ImGui::InvisibleButton("##interp_settings_button", ImVec2(h, h))) {
+  /* Each part's menu opens above it, a caret pointing at it. */
+  const float on_x = p.x + h * 0.625f;
+  popover_place(on_x, p.y, 0.5f);
+  if (ImGui::BeginPopup("##animate_on_menu")) {
+    popover_caret(on_x);
+    for (int n = 1; n <= 3; n++) {
+      char label[16];
+      std::snprintf(label, sizeof(label), "On %ds", n);
+      if (ui_menu_item(label, nullptr, s.interval == n)) {
+        operator_call(C, "anim.keys_interpolation_set", {{"interval", std::to_string(n)}});
+      }
+    }
+    ImGui::EndPopup();
+  }
+
+  /* The interpolation: its curve and name. */
+  ImGui::SameLine(0.0f, 1.0f);
+  const char *name = keys && sel.mixed ? "Mixed" : interp_name(s.interp);
+  const float interp_w = h * 1.3f + style.FramePadding.x * 3.0f +
+                         std::max(ImGui::CalcTextSize("Ease In/Out").x, ImGui::CalcTextSize(name).x);
+  if (part("##interp_mode", interp_w, ImDrawFlags_RoundCornersNone, p)) {
+    ImGui::OpenPopup("##key_interpolation_header");
+  }
+  const ImVec2 interp_at = p;
+  {
+    KeySettings shape = s;
+    if (keys && sel.mixed) {
+      shape.interp = Interp::Smooth;
+    }
+    curve_draw(dl, p + ImVec2(style.FramePadding.x, 3.0f), p + ImVec2(style.FramePadding.x + h * 1.3f, h - 3.0f), shape,
+               keys ? IM_COL32(0xff, 0xc2, 0xc2, 255) : IM_COL32(0x9c, 0xc6, 0xff, 255), 1.5f);
+    dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 1.3f, style.FramePadding.y),
+                ImGui::GetColorU32(ImGuiCol_Text), name);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(keys ? "Interpolation of the selected keys: how the motion arrives at each from the key before\nShortcut: T" :
+                             "Interpolation new keys get (no keys selected)\nShortcut: T");
+  }
+
+  /* The key type: its diamond (or a breakdown's circle). */
+  ImGui::SameLine(0.0f, 1.0f);
+  if (part("##key_type", h, ImDrawFlags_RoundCornersNone, p)) {
+    ImGui::OpenPopup("##key_type_menu");
+  }
+  if (s.type == KeyType::Breakdown && !(keys && sel.mixed_type)) {
+    breakdown_draw(dl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.32f, false);
+  }
+  else {
+    key_draw(dl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.26f, KEY_SHAPE_SMOOTH, COL_KEY);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(keys ? "Key Type of the selected keys: Key, or Breakdown (timed as one movement with the keys "
+                             "either side)" :
+                             "Key Type of new keys: Key, or Breakdown (timed as one movement with the keys either side)");
+  }
+  const float type_x = p.x + h * 0.5f;
+  popover_place(type_x, p.y, 0.5f);
+  if (ImGui::BeginPopup("##key_type_menu")) {
+    popover_caret(type_x);
+    key_type_menu_items(C, nullptr);
+    ImGui::EndPopup();
+  }
+
+  /* The settings. */
+  ImGui::SameLine(0.0f, 1.0f);
+  if (part("##interp_settings_button", h, ImDrawFlags_RoundCornersRight, p)) {
     ImGui::OpenPopup("##interp_settings");
   }
-  dl->AddRectFilled(q, q + ImVec2(h, h), ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
-                    style.FrameRounding);
-  settings_icon(dl, q + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, COL_ICON);
+  settings_icon(dl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.28f, COL_ICON);
+  g_key_group_max = p + ImVec2(h, h);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Interpolation settings: the curve, strength, overshoot, hold, animating on 2s");
+    ImGui::SetTooltip("Settings: the key type, the curve and its handles, hold, animating on 2s");
   }
+
   /* T over the timeline opens the same menu at the mouse (asked from a script with the mouse
    * outside the window, the timeline drawn first opens it); likewise the settings. */
   const bool here =
@@ -1228,11 +1487,23 @@ static void interp_header(Context &C, float width)
     ImGui::OpenPopup("##interp_settings");
     g_settings_request = false;
   }
+  /* From T or a script: at the mouse, as Blender's menus. From its button: above it. */
   if (ui_menu_begin("##key_interpolation")) {
     interp_menu_items(C, nullptr);
     ui_menu_end();
   }
+  popover_place(interp_at.x + interp_w * 0.5f, interp_at.y, 0.5f);
+  if (ImGui::BeginPopup("##key_interpolation_header")) {
+    popover_caret(interp_at.x + interp_w * 0.5f);
+    interp_menu_items(C, nullptr);
+    ImGui::EndPopup();
+  }
   interp_settings_popup(C);
+}
+
+bool timeline_key_header_editing(Context &C)
+{
+  return layers_selected_keys(timeline_layers(C)).count > 0;
 }
 
 /* A key in the rows, shaped by its mode's family: diamond Smooth, thin diamond Linear, square
@@ -1345,9 +1616,7 @@ static void timeline_header(Area &area, Context &C)
   }
   ImGui::PopStyleColor();
   ImGui::SameLine(0.0f, pad * 2.0f);
-  interp_header(C, h * 6.5f);
-  ImGui::SameLine(0.0f, pad);
-  key_type_header(C, h * 4.5f);
+  key_header(C);
   const float menus_end = ImGui::GetItemRectMax().x;
 
   if (ImGui::BeginPopup("View")) {
@@ -1424,8 +1693,9 @@ static void timeline_header(Area &area, Context &C)
     ImGui::OpenPopup("##auto_key_popover");
   }
   /* Opens above the timeline's header. */
-  ImGui::SetNextWindowPos(ImVec2(arrow_at.x - h * 2.0f, arrow_at.y - 4.0f), ImGuiCond_Appearing, ImVec2(0.0f, 1.0f));
+  popover_place(arrow_at.x - h * 2.0f, arrow_at.y, 0.0f);
   if (ImGui::BeginPopup("##auto_key_popover")) {
+    popover_caret(arrow_at.x + keying_arrow_w * 0.5f);
     const float seg_w = h * 4.2f;
     for (const auto &[mode, label, tip] :
          {std::tuple{AutoKeyMode::AddReplace, "Add & Replace", "Key whatever changes, adding keys where there are none"},
@@ -1476,9 +1746,9 @@ static void timeline_header(Area &area, Context &C)
   if (icon_button("##onion_options", Icon::Menu, false, "Onion Skin options", "", Joined::Last, keying_arrow_w)) {
     ImGui::OpenPopup("##onion_popover");
   }
-  ImGui::SetNextWindowPos(ImVec2(onion_arrow_at.x - h * 3.0f, onion_arrow_at.y - 4.0f), ImGuiCond_Appearing,
-                          ImVec2(0.0f, 1.0f));
+  popover_place(onion_arrow_at.x - h * 3.0f, onion_arrow_at.y, 0.0f);
   if (ImGui::BeginPopup("##onion_popover")) {
+    popover_caret(onion_arrow_at.x + keying_arrow_w * 0.5f);
     ImGui::TextDisabled("Onion Skins");
     const float seg_w = h * 4.2f;
     for (const auto &[mode, label, tip] :

@@ -486,6 +486,7 @@ struct KeyTiming {
   int cycle_back = 0, cycle_frame = 0;
   bool cycle_absolute = false;
   std::vector<float> speeds;
+  BezierHandles bezier = BEZIER_DEFAULT;
   bool operator==(const KeyTiming &) const = default;
 };
 
@@ -493,7 +494,7 @@ template<typename T> static KeyTiming key_timing(const Key<T> &k)
 {
   return {k.interp,         k.type,           k.hold,            k.interval,      k.ease,
           k.overshoot,      k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency,
-          k.cycle_back,     k.cycle_frame,    k.cycle_absolute,  k.speeds};
+          k.cycle_back,     k.cycle_frame,    k.cycle_absolute,  k.speeds,          k.bezier};
 }
 
 template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
@@ -512,6 +513,7 @@ template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
   k.cycle_frame = t.cycle_frame;
   k.cycle_absolute = t.cycle_absolute;
   k.speeds = t.speeds;
+  k.bezier = t.bezier;
 }
 
 /* A key's value and timing (with_value) or its timing alone, as a number: a filler key edited since it was added no
@@ -536,6 +538,7 @@ template<typename T> static uint32_t key_sig(const Key<T> &k, bool with_value)
   const float floats[] = {k.overshoot, k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency};
   h = sig_add(h, ints, sizeof(ints));
   h = sig_add(h, floats, sizeof(floats));
+  h = sig_add(h, k.bezier.data(), sizeof(k.bezier));
   return k.speeds.empty() ? h : sig_add(h, k.speeds.data(), k.speeds.size() * sizeof(float));
 }
 
@@ -3344,6 +3347,7 @@ static int controller_keys_copy(const std::vector<Key<From>> &keys, Channel<To> 
       made->overshoot = k.overshoot;
       made->elastic_amplitude = k.elastic_amplitude;
       made->elastic_period = k.elastic_period;
+      made->bezier = k.bezier;
     }
     count++;
   }
@@ -4812,6 +4816,7 @@ KeyShape interp_key_shape(Interp interp)
     case Interp::EaseIn:
     case Interp::EaseOut:
     case Interp::EaseInOut:
+    case Interp::Bezier:
       return KEY_SHAPE_EASE;
     case Interp::Back:
     case Interp::Bounce:
@@ -4819,7 +4824,6 @@ KeyShape interp_key_shape(Interp interp)
       return KEY_SHAPE_BOUNCY;
     case Interp::Noisy:
     case Interp::Cycle:
-    case Interp::Bezier:
     case Interp::Pose:
     case Interp::Custom:
       break;
@@ -4867,11 +4871,26 @@ SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers)
         const KeySettings s = key_settings(key);
         if (r.count == 0) {
           r.first = s;
+          /* The stretch arriving at it, after the key before's hold. */
+          const size_t i = size_t(&key - ch.keys.data());
+          if (i > 0) {
+            const auto &before = ch.keys[i - 1];
+            r.first_span = std::max(key.frame - std::min(before.frame + std::max(before.hold, 0), key.frame), 0);
+          }
         }
         else {
           r.mixed |= s.interp != r.first.interp;
           r.mixed_ease |= s.ease != r.first.ease;
           r.mixed_type |= s.type != r.first.type;
+          /* A few of the other curves, for the settings graph to draw behind the first's. */
+          const auto curve_same = [&](const KeySettings &o) {
+            return o.interp == s.interp && o.ease == s.ease && o.bezier == s.bezier && o.overshoot == s.overshoot;
+          };
+          if (!curve_same(r.first) && r.others.size() < 6 &&
+              std::none_of(r.others.begin(), r.others.end(), curve_same))
+          {
+            r.others.push_back(s);
+          }
         }
         r.count++;
       }

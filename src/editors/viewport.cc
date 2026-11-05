@@ -1889,9 +1889,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         Color dot = dot_colors[i];
         dot.a *= fade;
         if (key && breakdown) {
-          /* A breakdown: a blue circle, larger and dark blue when selected. */
+          /* A breakdown: a dark blue circle, larger and light blue when selected. */
           const float r = selected ? 5.0f : 4.0f;
-          dl->AddCircleFilled(s, r, selected ? IM_COL32(0x1f, 0x5f, 0xd6, 255) : IM_COL32(0x8c, 0xc8, 0xff, 255));
+          dl->AddCircleFilled(s, r, selected ? IM_COL32(0x8c, 0xc8, 0xff, 255) : IM_COL32(0x1f, 0x5f, 0xd6, 255));
           dl->AddCircle(s, r, selected ? IM_COL32(255, 160, 40, 255) : IM_COL32(20, 20, 20, 220), 0,
                         selected ? 2.0f : 1.0f);
         }

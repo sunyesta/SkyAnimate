@@ -431,6 +431,26 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("remote_dispatch", [](const std::string &request) { return remote_dispatch(current_context(), request); });
 
   /* The timeline's rows with every row open: (depth, name, red, pinned). */
+  m.def("timeline_key_header", []() {
+    py::dict d;
+    const bool editing = timeline_key_header_editing(current_context());
+    d["parts"] = timeline_key_header_parts();
+    d["editing"] = editing;
+    const uint32_t c = key_header_color(editing, false);
+    d["color"] = py::make_tuple(int(c & 0xff), int((c >> 8) & 0xff), int((c >> 16) & 0xff));
+    return d;
+  });
+  m.def("interp_bezier_fit", [](const std::string &interp, const std::string &ease) -> py::object {
+    KeySettings s;
+    if (!interp_from_identifier(interp, &s.interp) || !ease_from_identifier(ease, &s.ease)) {
+      throw py::value_error("unknown interpolation or ease");
+    }
+    BezierHandles h;
+    if (!interp_bezier_fit(s, h)) {
+      return py::none();
+    }
+    return py::make_tuple(h[0], h[1], h[2], h[3]);
+  });
   m.def("timeline_key_menu", [](int row, int frame) { return timeline_key_menu_top(current_context(), row, frame); });
   m.def("timeline_key_press", [](int row, int frame, int to_frame, bool ctrl, bool shift, bool double_click,
                                   bool ripple, bool alt, const std::string &typed) {
@@ -2512,6 +2532,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["overshoot"] = k.overshoot;
         d["elastic_amplitude"] = k.elastic_amplitude;
         d["elastic_period"] = k.elastic_period;
+        d["bezier"] = py::make_tuple(k.bezier[0], k.bezier[1], k.bezier[2], k.bezier[3]);
         d["noise_amplitude"] = k.noise_amplitude;
         d["noise_frequency"] = k.noise_frequency;
         d["cycle_back"] = k.cycle_back;
@@ -2637,6 +2658,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
         else if (name == "elastic_period") {
           key->elastic_period = std::max(0.02f, value.cast<float>());
+        }
+        else if (name == "bezier") {
+          const auto h = value.cast<std::vector<float>>();
+          if (h.size() != 4) {
+            throw py::value_error("bezier takes four numbers: (x1, y1, x2, y2)");
+          }
+          key->bezier = bezier_clamped({h[0], h[1], h[2], h[3]});
         }
         else if (name == "noise_amplitude") {
           key->noise_amplitude = value.cast<float>();

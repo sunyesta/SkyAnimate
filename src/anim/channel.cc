@@ -177,6 +177,104 @@ static float ease_shaped(Interp interp, Ease ease, float t)
   }
 }
 
+BezierHandles bezier_clamped(const BezierHandles &h)
+{
+  return {std::clamp(h[0], 0.0f, 1.0f), std::clamp(h[1], -2.0f, 3.0f), std::clamp(h[2], 0.0f, 1.0f),
+          std::clamp(h[3], -2.0f, 3.0f)};
+}
+
+/* One coordinate of a cubic Bezier from 0 to 1 with control values c1, c2, at parameter s. */
+static float bezier_1d(float c1, float c2, float s)
+{
+  const float u = 1.0f - s;
+  return 3.0f * u * u * s * c1 + 3.0f * u * s * s * c2 + s * s * s;
+}
+
+/* The curve's parameter where its time is `t`: with both handle times in 0..1 time only goes forward, so halving
+ * finds it. */
+static float bezier_param(float x1, float x2, float t)
+{
+  float lo = 0.0f, hi = 1.0f;
+  for (int i = 0; i < 24; i++) {
+    const float mid = (lo + hi) * 0.5f;
+    (bezier_1d(x1, x2, mid) < t ? lo : hi) = mid;
+  }
+  return (lo + hi) * 0.5f;
+}
+
+float bezier_ease(const BezierHandles &handles, float t)
+{
+  const BezierHandles h = bezier_clamped(handles);
+  t = std::clamp(t, 0.0f, 1.0f);
+  if (t <= 0.0f || t >= 1.0f) {
+    return t;
+  }
+  return bezier_1d(h[1], h[3], bezier_param(h[0], h[2], t));
+}
+
+bool interp_bezier_fit(const KeySettings &s, BezierHandles &r_handles)
+{
+  switch (s.interp) {
+    case Interp::Bezier:
+      r_handles = bezier_clamped(s.bezier);
+      return true;
+    case Interp::Linear:
+      r_handles = BEZIER_EVEN;
+      return true;
+    case Interp::Smooth:
+      /* 3t^2 - 2t^3 exactly. */
+      r_handles = {1.0f / 3.0f, 0.0f, 2.0f / 3.0f, 1.0f};
+      return true;
+    case Interp::EaseIn:
+    case Interp::EaseOut:
+    case Interp::EaseInOut:
+    case Interp::Back:
+      break;
+    default:
+      return false;
+  }
+  /* For each pair of handle times the progress is linear in the two handle heights, so those come from least
+   * squares; the times are searched on a grid. */
+  constexpr int SAMPLES = 32, GRID = 20;
+  float best = 1e30f;
+  for (int i = 0; i <= GRID; i++) {
+    for (int j = 0; j <= GRID; j++) {
+      const float x1 = float(i) / GRID, x2 = float(j) / GRID;
+      float a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+      float ts[SAMPLES], p1[SAMPLES], p2[SAMPLES], r[SAMPLES];
+      for (int k = 0; k < SAMPLES; k++) {
+        const float t = (float(k) + 0.5f) / SAMPLES;
+        const float u = bezier_param(x1, x2, t), v = 1.0f - u;
+        ts[k] = t;
+        p1[k] = 3.0f * v * v * u;
+        p2[k] = 3.0f * v * u * u;
+        r[k] = interp_curve(s, t) - u * u * u;
+        a11 += p1[k] * p1[k];
+        a12 += p1[k] * p2[k];
+        a22 += p2[k] * p2[k];
+        b1 += p1[k] * r[k];
+        b2 += p2[k] * r[k];
+      }
+      const float det = a11 * a22 - a12 * a12;
+      if (std::fabs(det) < 1e-9f) {
+        continue;
+      }
+      const float y1 = std::clamp((b1 * a22 - b2 * a12) / det, -2.0f, 3.0f);
+      const float y2 = std::clamp((a11 * b2 - a12 * b1) / det, -2.0f, 3.0f);
+      float err = 0.0f;
+      for (int k = 0; k < SAMPLES; k++) {
+        const float e = p1[k] * y1 + p2[k] * y2 - r[k];
+        err += e * e;
+      }
+      if (err < best) {
+        best = err;
+        r_handles = {x1, y1, x2, y2};
+      }
+    }
+  }
+  return best < 1e29f;
+}
+
 float interp_curve(const KeySettings &s, float t)
 {
   t = std::clamp(t, 0.0f, 1.0f);
@@ -201,8 +299,9 @@ float interp_curve(const KeySettings &s, float t)
     case Interp::Cycle:
       /* Back to the start and again: a saw. */
       return t < 0.5f ? t * 2.0f : (t - 0.5f) * 2.0f;
-    case Interp::Smooth:
     case Interp::Bezier:
+      return bezier_ease(s.bezier, t);
+    case Interp::Smooth:
       break;
   }
   return t * t * (3.0f - 2.0f * t);
@@ -307,13 +406,14 @@ static Interp stretch_interp(Interp arriving)
 /* Timed by the curve's own parameter, as Smooth's Hermite is. */
 static bool interp_smooth(Interp interp)
 {
-  return interp == Interp::Smooth || interp == Interp::Bezier;
+  return interp == Interp::Smooth;
 }
 
-/* Shaped as Smooth (Auto handles from the slopes): Custom goes along the path Smooth makes, at its own speeds. */
+/* Shaped as Smooth (Auto handles from the slopes): Custom and Bezier go along the path Smooth makes, at their own
+ * timing. */
 static bool interp_smooth_shape(Interp interp)
 {
-  return interp_smooth(interp) || interp == Interp::Custom;
+  return interp_smooth(interp) || interp == Interp::Custom || interp == Interp::Bezier;
 }
 
 bool interp_path_smooth(Interp interp)
@@ -595,12 +695,14 @@ template<typename T> T Channel<T>::evaluate(int frame) const
     }
     const Key<T> &e = keys[m1];
     const Interp mode = stretch_interp(e.interp);
-    if (mode == Interp::Linear || mode == Interp::EaseIn || mode == Interp::EaseOut || mode == Interp::EaseInOut) {
+    if (mode == Interp::Linear || mode == Interp::EaseIn || mode == Interp::EaseOut || mode == Interp::EaseInOut ||
+        mode == Interp::Bezier)
+    {
       const int s0 = std::min(keys[m0].frame + std::max(keys[m0].hold, 0), e.frame);
       const float whole = float(std::max(e.frame - s0, 1));
       const auto progress = [&](float at) {
         const float x = std::clamp((at - float(s0)) / whole, 0.0f, 1.0f);
-        return mode == Interp::Linear ? x : ease_shaped(mode, e.ease, x);
+        return mode == Interp::Linear ? x : mode == Interp::Bezier ? bezier_ease(e.bezier, x) : ease_shaped(mode, e.ease, x);
       };
       const float pa = size_t(k) == m0 ? 0.0f : progress(float(a.frame));
       const float pb = size_t(k) + 1 == m1 ? 1.0f : progress(float(b.frame));
@@ -624,7 +726,8 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   if constexpr (std::is_same_v<T, float2>) {
     /* A dragged path handle at either end: the stretch runs along the Bezier the handles make, Smooth by the curve's
      * own timing (as without handles), any other mode by its progress along the curve's length. */
-    if ((a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto || interp == Interp::Custom) &&
+    if ((a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto || interp == Interp::Custom ||
+         interp == Interp::Bezier) &&
         interp != Interp::Step && interp != Interp::Pose)
     {
       float2 in, out, unused;
@@ -653,6 +756,9 @@ template<typename T> T Channel<T>::evaluate(int frame) const
         case Interp::Custom:
           u = custom_progress(b.speeds, t);
           break;
+        case Interp::Bezier:
+          u = bezier_ease(b.bezier, t);
+          break;
         default:
           break;
       }
@@ -680,8 +786,9 @@ template<typename T> T Channel<T>::evaluate(int frame) const
       return a.value + (b.value - a.value) * t + noise_of(a.value, b, float(frame));
     case Interp::Custom:
       return a.value + (b.value - a.value) * custom_progress(b.speeds, t);
-    case Interp::Smooth:
     case Interp::Bezier:
+      return a.value + (b.value - a.value) * bezier_ease(b.bezier, t);
+    case Interp::Smooth:
     case Interp::Cycle:
       break;
   }
@@ -790,6 +897,7 @@ template<typename T> void keys_curves_to_arriving(std::vector<Key<T>> &keys)
     s.elastic_period = from.elastic_period;
     s.noise_amplitude = from.noise_amplitude;
     s.noise_frequency = from.noise_frequency;
+    s.bezier = from.bezier;
     key_settings_apply(keys[i], s);
   }
 }
