@@ -341,6 +341,8 @@ PENDING = [
      "a key past End is faded", "motion_path_start"),
     ("src/editors/viewport.cc", "    return (doc.frame_start > 0 && f <= doc.frame_start) || f - 1 >= std::max(doc.frame_start, doc.frame_end);", "    return (doc.frame_start > 0 && f <= doc.frame_start);",
      "the path past End is faded", "motion_path_start"),
+    ("src/ops/motion_path_ops.cc", '      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : true;', '      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : ts.proportional;',
+     "Alt S is soft whatever O says", "motion_path_edit_speed"),
 ]
 
 

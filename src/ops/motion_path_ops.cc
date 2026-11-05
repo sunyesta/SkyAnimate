@@ -918,8 +918,8 @@ void motion_path_operators_register()
     ot.name = "Scale Path Spacing";
     ot.description = "Alt S: the dots around frame=N (else around each dot and key selected) brought factor= as far "
                      "from it along the path (under 1 closer: slower there; on a key, easing into and out of it), the "
-                     "keys staying on their frames; the dots within size= frames, by falloff= with proportional=1, "
-                     "else all alike (the tool's settings when left out). Of what a path traces (layer=, bone=, "
+                     "keys staying on their frames; the dots within size= frames, by falloff= (proportional=0: all "
+                     "alike; the tool's size and falloff when left out, always soft whatever O says). Of what a path traces (layer=, bone=, "
                      "point=, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
@@ -931,7 +931,8 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       PathSlide slide;
-      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : ts.proportional;
+      /* Soft unless told otherwise, whatever O says (as Alt S is). */
+      slide.proportional = op_has_arg(C, "proportional") ? op_arg_bool(C, "proportional") : true;
       slide.size = std::max(op_arg_float(C, "size", ts.path_proportional_size), 1.0f);
       slide.falloff = ts.proportional_falloff;
       if (op_has_arg(C, "falloff") && !proportional_falloff_from_identifier(op_arg(C, "falloff"), &slide.falloff)) {

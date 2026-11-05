@@ -127,6 +127,13 @@ assert ops.anim.motion_path_scale_spacing(frame="15", factor="0", proportional="
 assert close(where(even, 14)[0], 0.5 - 0.1 / 3) and close(where(even, 13)[0], 0.5 - 0.2 * 2 / 3), where(even, 13)
 assert close(where(even, 12)[0], 0.2) and close(where(even, 20)[0], 1.0)
 ops.ed.undo()
+# Left to itself it is always soft, whatever O says (O stays off): as proportional=1, not all alike.
+oanim.wm.set_proportional_editing(False)
+assert ops.anim.motion_path_scale_spacing(frame="15", factor="0", size="3", falloff="LINEAR", **sargs) == {'FINISHED'}
+assert close(where(even, 14)[0], 0.5 - 0.1 / 3) and close(where(even, 13)[0], 0.5 - 0.2 * 2 / 3), \
+    ("soft with O off", where(even, 13), where(even, 14))
+assert not oanim.wm.path_brush_settings()["proportional"], "O left as it was"
+ops.ed.undo()
 assert ops.anim.motion_path_scale_spacing(frame="40", factor="0.5", **sargs) == {'CANCELLED'}, "no stretch there"
 
 # On a key: the dots either side come in toward it, easing into and out of the pose.

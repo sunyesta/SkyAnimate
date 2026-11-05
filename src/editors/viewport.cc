@@ -1131,8 +1131,10 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     if (f != sc.factor || typed || sc.again) {
       sc.factor = f;
       sc.again = false;
+      /* Always soft (as the timing chart's): scaling the timing around a dot evenly would kink it at the reach's
+       * edges. O is left as it is. */
       PathSlide slide;
-      slide.proportional = ts.proportional;
+      slide.proportional = true;
       slide.size = ts.path_proportional_size;
       slide.falloff = ts.proportional_falloff;
       doc = sc.snapshot;
@@ -1150,9 +1152,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
         for (size_t k = 0; k < p.points.size(); k++) {
           const int fr = p.first + int(k);
           const float d = float(std::abs(fr - pivot));
-          const float w = ts.proportional
-                              ? proportional_weight(ts.proportional_falloff, d, ts.path_proportional_size, fr)
-                              : (d < ts.path_proportional_size ? 1.0f : 0.0f);
+          const float w = proportional_weight(ts.proportional_falloff, d, ts.path_proportional_size, fr);
           if (w > 0.0f && fr != pivot) {
             dl->AddCircle(view.to_screen(p.points[k]), 5.5f, IM_COL32(255, 160, 40, int(60.0f + 195.0f * w)), 0,
                           1.5f);
