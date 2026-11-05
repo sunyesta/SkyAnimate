@@ -738,6 +738,9 @@ static ImVec2 path_dot_screen(const Document &doc, const ViewMapping &view, cons
 /* A press on something already selected changes the selection only if it is let go of without a drag (so a drag
  * doesn't lose the others): the select it makes then. */
 static std::optional<OpArgs> g_path_select_on_release;
+/* A plain press on the dot of the frame shown, over the bone or point it is the path of: a drag moves the path there,
+ * a click (let go without moving) picks the bone or point, at this place. */
+static std::optional<ImVec2> g_path_pick_on_release;
 
 /* The Edit brush's dot drag: a dot between keys slid along its path, from the document as it was pressed each time
  * the mouse moves (or the wheel sizes the proportional reach), one undo step; Esc or a right click cancels. */
@@ -761,6 +764,8 @@ static void path_drag_finish()
   g_path_drag.serial = serial;
 }
 
+static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply = true);
+
 static void motion_path_slide_update(Context &C, const ViewMapping &view)
 {
   Document &doc = *C.document;
@@ -776,6 +781,7 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
     doc = std::move(g.snapshot);
     g_right_click_spent = true;
     g_path_select_on_release.reset();
+    g_path_pick_on_release.reset();
     finish();
     return;
   }
@@ -785,10 +791,14 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
       push_undo(C, "Slide Path Dot");
     }
     finish();
-    if (clicked && g_path_select_on_release) {
+    if (clicked && g_path_pick_on_release) {
+      motion_path_pick_click(C, view, *g_path_pick_on_release, false);
+    }
+    else if (clicked && g_path_select_on_release) {
       operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
     }
     g_path_select_on_release.reset();
+    g_path_pick_on_release.reset();
     return;
   }
   if (ts.proportional && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown))) {
@@ -813,13 +823,25 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
   }
 }
 
-static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply = true);
 
 /* The Motion Path tool's mouse with Edit. A press on a key or a dot selects it (Shift adds or takes it out, a double
  * click also goes to its frame; on empty space, nothing is selected). Dragging a key moves it, a dot between keys
  * slides it along its path (with proportional editing), a selected key's handle bends the path (Alt breaks the
  * pair). Alt on the path adds a key there, a drag moving it (Ctrl: onto the line between the keys; Alt Shift: a
  * breakdown along the arc). Edits happen on the dot's own frame, the frame shown staying; Esc cancels. */
+PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_shown, bool thing_under, bool alt)
+{
+  /* The path first (the tool edits paths: a dot drawn over a bone doesn't lose its click), but the dot of the frame
+   * shown sits on the bone or point it traces, so there a click picks that and a drag moves the path. */
+  if (on_handle) {
+    return PathPress::Handle;
+  }
+  if (on_path) {
+    return !alt && on_frame_shown && thing_under ? PathPress::PathOrPick : PathPress::Path;
+  }
+  return thing_under ? PathPress::Pick : PathPress::Deselect;
+}
+
 static void motion_path_tool_input(Context &C, const ViewMapping &view, const MotionPath *hover_path, int hover_frame,
                                    int first, int last, const PathHandlesShown *hover_handle, bool hover_out,
                                    bool hovered)
@@ -851,13 +873,26 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
     }
+    /* A bone or point under the press (of the active bone layer and its family, or the drawings being edited). */
+    const bool thing_under = !io.KeyAlt && hovered && motion_path_pick_click(C, view, io.MousePos, false, false);
+    const PathPress kind = motion_path_press_kind(false, hover_path != nullptr,
+                                                  hover_path && hover_frame == doc.frame_current, thing_under,
+                                                  io.KeyAlt);
+    g_path_pick_on_release.reset();
+    if (kind == PathPress::Pick) {
+      /* A bone or a point: picked, as the Select tool's click (Shift adds), so its path shows. */
+      motion_path_pick_click(C, view, io.MousePos, io.KeyShift);
+      return;
+    }
     if (!hover_path) {
-      /* A click on nothing: nothing selected, as in Blender. */
+      /* A click on nothing: no path keys or dots selected, as in Blender; the bones and points picked stay, so
+       * their paths do. */
       if (hovered && !io.KeyShift && !io.KeyCtrl && !io.KeyAlt) {
         operator_call(C, "anim.motion_path_select", {{"none", "1"}});
       }
       return;
     }
+    const bool pick_on_click = kind == PathPress::PathOrPick && !io.KeyShift;
     const MotionPathTarget target = hover_path->target;
     /* Frame 0's key, the setup pose: picked for its out handle, but never moved (nor a key added on it). */
     const bool on_setup = hover_frame == 0 && motion_path_is_key(doc, target, 0);
@@ -886,13 +921,23 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
         return;
       }
       if (on_setup) {
-        operator_call(C, "anim.motion_path_select", args);
+        if (pick_on_click) {
+          /* The setup key never moves: on its bone or point, a click is a pick. */
+          motion_path_pick_click(C, view, io.MousePos, false);
+        }
+        else {
+          operator_call(C, "anim.motion_path_select", args);
+        }
         return;
       }
       const bool selected = on_key ? motion_path_key_selected(doc, target, hover_frame)
                                    : path_dot_selected(*C.wm, target, hover_frame);
       g_path_select_on_release.reset();
-      if (selected) {
+      if (pick_on_click) {
+        /* Nothing selected yet: let go without moving, it picks; dragged, it moves the path there. */
+        g_path_pick_on_release = io.MousePos;
+      }
+      else if (selected) {
         g_path_select_on_release = args;
       }
       else {
@@ -951,6 +996,7 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
       doc = std::move(g.snapshot);
     }
     g_path_select_on_release.reset();
+    g_path_pick_on_release.reset();
     path_drag_finish();
     g_right_click_spent = true;
     return;
@@ -976,10 +1022,14 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
       /* The key just made, selected. */
       operator_call(C, "anim.motion_path_select", args);
     }
+    else if (!dragged && g_path_pick_on_release) {
+      motion_path_pick_click(C, view, *g_path_pick_on_release, false);
+    }
     else if (!dragged && g_path_select_on_release) {
       operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
     }
     g_path_select_on_release.reset();
+    g_path_pick_on_release.reset();
     return;
   }
   const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;
@@ -2090,6 +2140,13 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         pick = motion_path_target_args(doc, hover_path->target);
         (*pick)["frame"] = std::to_string(hover_frame);
       }
+      /* Off the paths, a Shift click on a bone or point adds it (as the Select tool's); on a path it is Blend Speed's. */
+      if (!g_path_brush.active && !hover_path && !hover_handle && hovered && io.KeyShift && !io.KeyAlt &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left) && motion_path_pick_click(C, view, io.MousePos, false, false))
+      {
+        motion_path_pick_click(C, view, io.MousePos, true);
+        return;
+      }
       motion_path_brush_input(C, area, view, dl, hovered, first, last, pick);
       return;
     }
@@ -2147,11 +2204,13 @@ static const std::vector<bool> &shape_handle_points(const VectorDrawing &drawing
   static const VectorDrawing *cached = nullptr;
   static int cached_frame = -1;
   static std::vector<bool> mask;
-  if (cached == &drawing && cached_frame == ImGui::GetFrameCount() && mask.size() == drawing.points.size()) {
+  /* (A background run has no ImGui and no frames: worked out every time.) */
+  const int frame = ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : -2;
+  if (cached == &drawing && cached_frame == frame && frame != -2 && mask.size() == drawing.points.size()) {
     return mask;
   }
   cached = &drawing;
-  cached_frame = ImGui::GetFrameCount();
+  cached_frame = frame;
   mask.assign(drawing.points.size(), false);
   for (const Shape &shape : drawing.shapes) {
     bool touched = false;
@@ -6604,7 +6663,9 @@ static struct {
 
 static void select_click(Context &C, const ViewMapping &view, float2 mouse_document, HandleDisplay handles)
 {
-  const ImGuiIO &io = ImGui::GetIO();
+  /* Shift adds, Ctrl takes away (none in a background run, which has no ImGui: the Motion Path tool's test hook). */
+  const bool has_io = ImGui::GetCurrentContext() != nullptr;
+  const bool shift = has_io && ImGui::GetIO().KeyShift, ctrl = has_io && ImGui::GetIO().KeyCtrl;
   const std::vector<Layer *> layers = editable_layers(C);
   Layer *hit_layer = nullptr;
   std::vector<int> picked;
@@ -6672,15 +6733,15 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   /* A handle nearer than any point takes the click: just that handle is selected (not while clicking
    * again goes through the points there). */
   if (handle.layer && handle.distance <= best) {
-    if (!io.KeyShift && !io.KeyCtrl) {
+    if (!shift && !ctrl) {
       for (Layer *layer : layers) {
         deselect_all(layer->drawing);
       }
     }
     CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
     bool &flag = handle.pre ? cp.select_in : cp.select_out;
-    flag = io.KeyCtrl ? false : (io.KeyShift ? !flag : true);
-    camera.selected &= io.KeyShift || io.KeyCtrl;
+    flag = ctrl ? false : (shift ? !flag : true);
+    camera.selected &= shift || ctrl;
     if (flag) {
       document_set_active_shape(*C.document, *handle.layer, cp.point);
     }
@@ -6717,7 +6778,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
       }
     }
   }
-  if (!io.KeyShift && !io.KeyCtrl) {
+  if (!shift && !ctrl) {
     for (Layer *layer : layers) {
       deselect_all(layer->drawing);
     }
@@ -6725,7 +6786,7 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   if (hit_layer) {
     for (int p : picked) {
       MeshPoint &point = hit_layer->drawing.points[p];
-      point.selected = io.KeyCtrl ? false : (io.KeyShift && picked.size() == 1 ? !point.selected : true);
+      point.selected = ctrl ? false : (shift && picked.size() == 1 ? !point.selected : true);
     }
     drawing_expand_selection_by_mode(C, hit_layer->drawing);
     /* The shape clicked becomes the active one (its panels show it), unless the click took it out. */
@@ -6739,9 +6800,9 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   if (!hit_layer && ov.show && ov.camera_frame &&
       camera_border_distance(*C.document, view, view.to_screen(mouse_document)) <= pick_line_pixels())
   {
-    camera.selected = io.KeyCtrl ? false : (io.KeyShift ? !camera.selected : true);
+    camera.selected = ctrl ? false : (shift ? !camera.selected : true);
   }
-  else if (!io.KeyShift && !io.KeyCtrl) {
+  else if (!shift && !ctrl) {
     camera.selected = false;
   }
 }
@@ -6844,6 +6905,13 @@ static bool select_press_grab_move(Context &C, Area &area, const ViewMapping &vi
   g_modal.tweak = true;
   g_modal.tweak_points = true;
   return true;
+}
+
+bool motion_path_pick_test(Context &C, float2 at, float zoom, bool extend, bool apply)
+{
+  reach_update(C);
+  const ViewMapping view{{0.0f, 0.0f}, {1000.0f, 1000.0f}, {0.0f, 0.0f}, zoom};
+  return motion_path_pick_click(C, view, view.to_screen(at), extend, apply);
 }
 
 std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,

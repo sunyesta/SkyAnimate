@@ -369,6 +369,9 @@ PENDING = [
      'giving handles makes the keys Bezier', 'bezier_keys'),
     ('src/editors/timeline.cc', '    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);', '    return IM_COL32(0x54, 0x54, 0x54, 255);',
      'the key header is red while it edits keys', 'bezier_keys'),
+    ('src/editors/viewport.cc', '    return !alt && on_frame_shown && thing_under ? PathPress::PathOrPick : PathPress::Path;', '    return PathPress::Path;', 'path press: the frame shown picks', 'motion_path_pick'),
+    ('src/editors/viewport.cc', '  return thing_under ? PathPress::Pick : PathPress::Deselect;', '  return PathPress::Deselect;', 'path press: off the paths picks', 'motion_path_pick'),
+    ('src/editors/viewport.cc', '  if (cached == &drawing && cached_frame == frame && frame != -2 && mask.size() == drawing.points.size()) {', '  if (cached == &drawing && cached_frame == ImGui::GetFrameCount() && mask.size() == drawing.points.size()) {', 'shape handle cache: background run', 'motion_path_pick'),
 ]
 
 

@@ -1230,6 +1230,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const Layer *layer = layer_find(*current_context().document, id);
     return layer ? overlay_drawing_identity_test(*layer) : 0;
   });
+  m.def("motion_path_press_kind", [](bool on_handle, bool on_path, bool on_frame_shown, bool thing_under, bool alt) {
+    static const char *const names[] = {"HANDLE", "PATH", "PATH_OR_PICK", "PICK", "DESELECT"};
+    return std::string(names[int(motion_path_press_kind(on_handle, on_path, on_frame_shown, thing_under, alt))]);
+  });
+  m.def("motion_path_pick", [](float x, float y, float zoom, bool extend, bool apply) {
+    return motion_path_pick_test(current_context(), {x, y}, zoom, extend, apply);
+  });
   /* Test hook: what pressing the Select tool at a document point grabs to drag; with drag, the selection after. */
   m.def("select_press_grab", [](float x, float y, float zoom, bool modifier, bool drag) {
     py::list out;
