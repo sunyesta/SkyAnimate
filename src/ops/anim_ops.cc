@@ -176,9 +176,38 @@ std::vector<Layer *> timeline_layers(Context &C)
   return layers;
 }
 
+/* What Only Selected shows: the layers picked in the Layers editor (the active one unless deselected there),
+ * and those whose points or bones are picked while they are being edited. Nothing picked, nothing shown. */
+static std::vector<Layer *> timeline_selected_layers(Context &C)
+{
+  std::vector<Layer *> layers;
+  Document &doc = *C.document;
+  const std::shared_ptr<const std::set<uint64_t>> edited = editable_layer_ids(doc);
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (flat->locked) {
+      continue;
+    }
+    const bool picked = flat->selected || (flat->id == doc.active_layer && doc.active_unpicked != flat->id);
+    /* Points count in the layers being edited, bones in those and the active bone layer (where they are
+     * picked), as the timeline's red rows count them. */
+    const bool edits = edited->contains(flat->id) || flat->id == doc.active_layer;
+    const bool holds = (edited->contains(flat->id) &&
+                        std::any_of(flat->drawing.points.begin(), flat->drawing.points.end(),
+                                    [](const MeshPoint &p) { return p.selected; })) ||
+                       (edits && std::any_of(flat->bones.begin(), flat->bones.end(), [](const Bone &b) {
+                          return b.selected || b.select_head || b.select_tail;
+                        }));
+    if (picked || holds) {
+      layers.push_back(layer_find(doc, flat->id));
+    }
+  }
+  return layers;
+}
+
 std::vector<Layer *> timeline_shown_layers(Context &C)
 {
-  std::vector<Layer *> picked = keyed_layers(C);
+  std::vector<Layer *> picked = C.document && C.document->timeline_only_selected ? timeline_selected_layers(C)
+                                                                                  : keyed_layers(C);
   if (C.document && C.document->timeline_lock) {
     /* Locked: the layers shown when it was turned on, whatever is picked now. */
     picked.clear();
@@ -258,6 +287,12 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
         }
       }
     }
+  }
+  /* Only Selected with nothing picked: no rows (Pinned aside, which the timeline adds itself). */
+  if (C.document && C.document->timeline_only_selected && !C.document->timeline_lock && picked.empty() &&
+      !document_camera(*C.document).selected)
+  {
+    return layers;
   }
   /* The document's animated gravity and wind (a Simulation row). */
   if (C.document && layer_has_keys(document_simulation(*C.document))) {

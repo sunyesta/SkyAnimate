@@ -515,9 +515,10 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
       layer.selected = true;
     }
     doc.camera.selected = false;
+    doc.active_unpicked = 0;
   }
   else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ImGui::GetIO().KeyCtrl &&
-           (layer.selected || doc.active_layer == layer.id))
+           (layer.selected || (doc.active_layer == layer.id && doc.active_unpicked != layer.id)))
   {
     /* Ctrl click on a picked layer unpicks just it; the active one hands that to another picked
      * layer, if there is one. */
@@ -531,8 +532,9 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
         }
       }
       if (doc.active_layer == layer.id) {
-        /* The only one picked: it stays (a layer is always active). */
+        /* The only one picked: it stays active, for editing, but unpicked (Deselect All Layers). */
         layer.selected = false;
+        doc.active_unpicked = layer.id;
       }
     }
   }
@@ -541,7 +543,10 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
      * this one. */
     const ImGuiIO &io = ImGui::GetIO();
     if (io.KeyCtrl) {
-      if (Layer *previous = layer_find(doc, doc.active_layer); previous && previous != &layer) {
+      /* (The active layer joins the picked ones only if it was picked itself.) */
+      if (Layer *previous = layer_find(doc, doc.active_layer);
+          previous && previous != &layer && doc.active_unpicked != previous->id)
+      {
         previous->selected = true;
       }
     }
@@ -557,6 +562,7 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
       doc.camera.selected = false;
     }
     doc.active_layer = layer.id;
+    doc.active_unpicked = 0;
   }
   if (g_narrow_on_release == layer.id && ImGui::IsItemDeactivated()) {
     const ImGuiIO &io = ImGui::GetIO();
@@ -665,7 +671,11 @@ static void layer_row(Context &C, Area &area, Layer &layer, int depth, DropReque
       dl->AddRect(row_min, row_min + ImVec2(row_w, h), IM_COL32(0xff, 0x9a, 0x3c, 255), 3.0f, 0, 1.5f);
     }
   }
-  if (doc.active_layer == layer.id) {
+  if (doc.active_layer == layer.id && doc.active_unpicked == layer.id) {
+    /* Active but unpicked (Deselect All Layers): only outlined, as Blender's Outliner shows it. */
+    dl->AddRect(row_min, row_min + ImVec2(row_w, h), COL_ACTIVE_ROW, 3.0f, 0, 1.5f);
+  }
+  else if (doc.active_layer == layer.id) {
     /* While the camera is picked the active layer waits, shown lighter. */
     dl->AddRectFilled(row_min, row_min + ImVec2(row_w, h), doc.camera.selected ? COL_SELECTED_ROW : COL_ACTIVE_ROW, 3.0f);
   }
@@ -1198,6 +1208,10 @@ void layers_draw(Area &area, Context &C)
     }
     /* Dropping below the last row moves the layer to the bottom of the top level. */
     ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, std::max(ImGui::GetContentRegionAvail().y, 8.0f)));
+    /* A click there deselects every layer, as in Blender's Outliner. */
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::GetDragDropPayload()) {
+      operator_call(C, "layer.select_none");
+    }
     if (ImGui::BeginDragDropTarget()) {
       /* Empty space below the list: to the bottom, shown by a line under the last layer. */
       const ImVec2 area_min = ImGui::GetItemRectMin(), area_max = ImGui::GetItemRectMax();

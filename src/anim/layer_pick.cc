@@ -475,6 +475,7 @@ bool layer_pick_apply(Document &doc, uint64_t id, LayerPickMode mode)
     }
     doc.camera.selected = false;
     doc.active_layer = id;
+    doc.active_unpicked = 0;
   }
   else if (mode == LayerPickMode::Toggle && !was_picked) {
     /* Added: the layer that was active stays picked, and the new one is active. */
@@ -483,6 +484,7 @@ bool layer_pick_apply(Document &doc, uint64_t id, LayerPickMode mode)
     }
     layer->selected = false;
     doc.active_layer = id;
+    doc.active_unpicked = 0;
   }
   else if (was_picked) {
     /* Taken out: another picked layer becomes active (the only one picked stays, as some layer is

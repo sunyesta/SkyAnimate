@@ -176,6 +176,18 @@ PENDING = [
     ('src/editors/timeline.cc', '      g_pick_folded.insert(key);', '      (void)key;', 'folded while picked, it stays folded', 'tests/test_timeline_pick_open.py'),
     ('src/editors/timeline.cc', 'return r.holds_pick && r.fold == key; });', 'return key.empty(); });',
      'folded only while that pick lasts', 'tests/test_timeline_pick_open.py'),
+    ('src/ops/anim_ops.cc', '    const bool picked = flat->selected || (flat->id == doc.active_layer && doc.active_unpicked != flat->id);',
+     '    const bool picked = flat->selected || flat->id == doc.active_layer;', 'the unpicked active layer shows nothing', 'tests/test_timeline_nothing_selected.py'),
+    ('src/ops/layer_ops.cc', '                   doc.active_unpicked = doc.active_layer;', '                   doc.active_unpicked = 0;',
+     'Deselect All Layers unpicks the active layer', 'tests/test_timeline_nothing_selected.py'),
+    ('src/ops/anim_ops.cc', '[](const MeshPoint &p) { return p.selected; })) ||', '[](const MeshPoint &p) { return p.selected && false; })) ||',
+     'picked points show their layer', 'tests/test_timeline_nothing_selected.py'),
+    ('src/ops/anim_ops.cc', '    const bool edits = edited->contains(flat->id) || flat->id == doc.active_layer;',
+     '    const bool edits = edited->contains(flat->id);', 'picked bones show their layer', 'tests/test_timeline_nothing_selected.py'),
+    ('src/ops/anim_ops.cc', 'picked.empty() &&', 'false &&',
+     'nothing picked: no Camera or Simulation rows', 'tests/test_timeline_nothing_selected.py'),
+    ('src/python/py_runtime.cc', '    current_context().document->active_unpicked = 0;', '',
+     'made active is picked again', 'tests/test_timeline_nothing_selected.py'),
 ]
 
 

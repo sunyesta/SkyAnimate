@@ -108,6 +108,7 @@ static void layers_deselect(Document &doc)
 }
 
 /* --- Layer Symmetrize -------------------------------------------------------------------- */
+/* (Deselect All Layers is registered with the other selection operators, below.) */
 
 /* The space a layer mirrors in: its bone layer's (across the line bone Symmetrize uses), or the
  * document's. */
@@ -627,6 +628,24 @@ void layer_operators_register()
     };
     operators().add(std::move(ot));
   }
+  /* Alt A in the Layers editor, and a click on its empty space: nothing picked, the active layer kept for
+   * editing (as Blender's Outliner deselects, the active object staying active). */
+  layer_operator("layer.select_none", "Deselect All Layers",
+                 "Deselect every layer (Alt A); the active one stays active for editing, unpicked, so the timeline's "
+                 "Only Selected shows nothing until a layer, points or bones are picked",
+                 [](Context &C) { return C.document != nullptr; }, [](Context &C) {
+                   Document &doc = *C.document;
+                   const std::vector<const Layer *> flat = document_layers_flat(doc);
+                   if (doc.active_unpicked == doc.active_layer && !doc.camera.selected &&
+                       std::none_of(flat.begin(), flat.end(), [](const Layer *l) { return l->selected; }))
+                   {
+                     return OpStatus::Cancelled;
+                   }
+                   layers_deselect(doc);
+                   doc.camera.selected = false;
+                   doc.active_unpicked = doc.active_layer;
+                   return OpStatus::Finished;
+                 });
   /* With X mirror editing on, inside a sided group (Arm_L) its partner (Arm_R) gets one too. */
   layer_operator("layer.new", "New Layer", "Add a vector layer above the active layer", nullptr, [](Context &C) {
     document_add_layer_mirrored(*C.document, LayerType::Vector, C.wm && C.wm->tool_settings.mirror_x);

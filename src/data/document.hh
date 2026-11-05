@@ -254,6 +254,10 @@ struct Document {
   /* Top-level layers, top of the stack first. */
   std::vector<Layer> layers;
   uint64_t active_layer = 0;
+  /* The active layer deselected in the Layers editor (Deselect All Layers, Alt A; a click on its empty space;
+   * Ctrl click on the only picked one): it stays active, for editing and keys, but isn't picked, so the
+   * timeline's Only Selected shows nothing of it. A click on a layer picks it again. */
+  uint64_t active_unpicked = 0;
   uint64_t next_layer_id = 1;
   /* Changes whenever layers may have been added, removed or moved (see Revision). */
   Revision tree_revision;

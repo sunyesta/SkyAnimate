@@ -2620,8 +2620,11 @@ static void timeline_body(Area &area, Context &C)
   /* Channel rows: Pinned, All, then each animated (active or selected) layer, as Blender's Dope
    * Sheet lists the selected objects. The names sit in a column on the left. */
   int rows_hidden = 0;
+  const std::vector<Layer *> shown_layers = timeline_shown_layers(C);
+  /* Only Selected with nothing picked: a line saying so, where the rows would be. */
+  const bool nothing_picked = doc.timeline_only_selected && !doc.timeline_lock && shown_layers.empty();
   std::vector<ChannelRow> rows =
-      channel_rows(area, timeline_shown_layers(C), doc, timeline_pinned_layer_ids(C), false, &rows_hidden);
+      channel_rows(area, shown_layers, doc, timeline_pinned_layer_ids(C), false, &rows_hidden);
   const float font_size = ImGui::GetFontSize();
   /* Wide enough for a property's name ("arm: Dynamics: Angle Bounce"); its edge drags. */
   const float names_w = std::clamp(area.timeline_names_w > 0.0f ? area.timeline_names_w : font_size * 13.0f,
@@ -3857,6 +3860,15 @@ static void timeline_body(Area &area, Context &C)
         }
         ImGui::GetWindowDrawList()->AddText(ImVec2(p0.x + 6.0f + font_size, top + (row_h - font_size) * 0.5f),
                                             IM_COL32(0xff, 0x70, 0x70, 255), label.c_str());
+      }
+    }
+    if (nothing_picked) {
+      const float top = std::max(row_top(rows.size()), rows_top) + row_h * 0.25f;
+      if (top + row_h <= p1.y) {
+        ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), font_size, ImVec2(p0.x + 6.0f + font_size * 0.5f, top),
+                                            IM_COL32(0x90, 0x90, 0x90, 255),
+                                            "Nothing selected: pick a layer, bones or points", nullptr,
+                                            names_w - 12.0f - font_size * 0.5f);
       }
     }
     /* Back under the keys, where nothing else is placed: ImGui wants an item after the cursor moves there. */

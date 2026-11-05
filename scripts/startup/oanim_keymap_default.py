@@ -161,6 +161,7 @@ KEYMAP = (
     ("Properties", "mask.areas_group", "G", {"ctrl": True}),
     # Layers editor.
     ("Layers", "layer.delete", "X", {}),
+    ("Layers", "layer.select_none", "A", {"alt": True}),
     # Blender's Outliner Show Active.
     ("Layers", "layer.show_active", "PERIOD", {}),
     ("Layers", "layer.show_active", "NUMPAD_PERIOD", {}),

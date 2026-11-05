@@ -1612,6 +1612,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("layer_set_active", [layer_or_raise](uint64_t id) {
     layer_or_raise(id);
     current_context().document->active_layer = id;
+    /* Made active is picked again (as a click on it in the Layers editor). */
+    current_context().document->active_unpicked = 0;
   });
   m.def("layer_parent", [](uint64_t id) {
     const Layer *parent = layer_parent(*current_context().document, id);
