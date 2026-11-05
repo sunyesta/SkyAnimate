@@ -478,6 +478,7 @@ template<typename F> static void drawing_shape_channels(VectorDrawing &drawing, 
 /* A key's timing (all but its value, path handles, colour and selection). */
 struct KeyTiming {
   Interp interp = Interp::Smooth;
+  KeyType type = KeyType::Key;
   int hold = 0, interval = 1;
   Ease ease = Ease::Quad;
   float overshoot = 0.0f, elastic_amplitude = 0.0f, elastic_period = 0.0f, noise_amplitude = 0.0f,
@@ -490,14 +491,15 @@ struct KeyTiming {
 
 template<typename T> static KeyTiming key_timing(const Key<T> &k)
 {
-  return {k.interp,         k.hold,           k.interval,        k.ease,       k.overshoot,
-          k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency, k.cycle_back,
-          k.cycle_frame,    k.cycle_absolute, k.speeds};
+  return {k.interp,         k.type,           k.hold,            k.interval,      k.ease,
+          k.overshoot,      k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency,
+          k.cycle_back,     k.cycle_frame,    k.cycle_absolute,  k.speeds};
 }
 
 template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
 {
   k.interp = t.interp;
+  k.type = k.frame == 0 ? KeyType::Key : t.type;
   k.hold = t.hold;
   k.interval = t.interval;
   k.ease = t.ease;
@@ -529,7 +531,8 @@ template<typename T> static uint32_t key_sig(const Key<T> &k, bool with_value)
   if (with_value) {
     h = sig_add(h, &k.value, sizeof(T));
   }
-  const int ints[] = {int(k.interp), k.hold, k.interval, int(k.ease), k.cycle_back, k.cycle_frame, k.cycle_absolute};
+  const int ints[] = {int(k.interp), k.hold, k.interval, int(k.ease), k.cycle_back, k.cycle_frame, k.cycle_absolute,
+                      int(k.type)};
   const float floats[] = {k.overshoot, k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency};
   h = sig_add(h, ints, sizeof(ints));
   h = sig_add(h, floats, sizeof(floats));
@@ -4710,6 +4713,7 @@ std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &la
       KeyFrameSummary &s = summary[key.frame];
       s.keys++;
       s.selected += key.selected ? 1 : 0;
+      s.breakdowns += key.type == KeyType::Breakdown ? 1 : 0;
       if (!ch.constant) {
         const KeyShape shape = interp_key_shape(key.interp);
         s.shape = s.shape_set && s.shape != shape ? KEY_SHAPE_MIXED : shape;
@@ -4744,6 +4748,7 @@ SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers)
         else {
           r.mixed |= s.interp != r.first.interp;
           r.mixed_ease |= s.ease != r.first.ease;
+          r.mixed_type |= s.type != r.first.type;
         }
         r.count++;
       }
@@ -4821,10 +4826,22 @@ void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::fu
     layer_for_each_channel(*layer, [&](auto &ch, auto & /*value*/) {
       using KeyT = std::decay_t<decltype(ch.keys.front())>;
       std::vector<KeyT> moved, kept;
-      for (const KeyT &key : ch.keys) {
+      const auto dest = [&](const KeyT &key) {
+        return key.selected && key.frame != 0 ? std::max(1, to(key.frame)) : key.frame;
+      };
+      for (size_t i = 0; i < ch.keys.size(); i++) {
+        const KeyT &key = ch.keys[i];
         if (key.selected && key.frame != 0) {
           KeyT k = key;
-          k.frame = std::max(1, to(key.frame));
+          k.frame = dest(key);
+          /* A breakdown slides between the keys either side (where they go): its pose stays, only when it is reached
+           * changes, so it never passes them. */
+          if (key.type == KeyType::Breakdown && i > 0 && i + 1 < ch.keys.size()) {
+            const int lo = dest(ch.keys[i - 1]) + 1, hi = dest(ch.keys[i + 1]) - 1;
+            if (lo <= hi) {
+              k.frame = std::clamp(k.frame, lo, hi);
+            }
+          }
           moved.push_back(k);
         }
         else {

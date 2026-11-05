@@ -160,6 +160,9 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
   json keys = json::array();
   for (const Key<T> &k : ch.keys) {
     json key = {{"frame", k.frame}, {"value", value_to_json(k.value)}, {"interp", interp_identifier(k.interp)}};
+    if (k.type != KeyType::Key) {
+      key["type"] = key_type_identifier(k.type);
+    }
     if (k.hold != defaults.hold) {
       key["hold"] = k.hold;
     }
@@ -1666,6 +1669,9 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.frame = std::max(0, get_int(k, "frame", 0));
     if (!interp_from_identifier(get_string(k, "interp", "SMOOTH"), &key.interp)) {
       key.interp = Interp::Smooth;
+    }
+    if (!key_type_from_identifier(get_string(k, "type", "KEYFRAME"), &key.type) || key.frame == 0) {
+      key.type = KeyType::Key;
     }
     key.hold = std::max(0, get_int(k, "hold", key.hold));
     key.interval = std::max(1, get_int(k, "interval", key.interval));

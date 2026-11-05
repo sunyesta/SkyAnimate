@@ -50,6 +50,16 @@ bool interp_from_identifier(const std::string &identifier, Interp *r_interp);
 enum class Ease : uint8_t { Sine, Quad, Cubic, Quart, Quint, Expo, Circ };
 inline constexpr int EASE_COUNT = 7;
 
+/* Blender's keyframe types, two of them: a Key, or a Breakdown, an in-between pose whose timing is the main keys'
+ * either side: the stretches next to it are timed as one movement from main key to main key (Channel::evaluate), the
+ * timing tools working on them as one (anim/motion_path.cc), and in the timeline a small blue circle. */
+enum class KeyType : uint8_t { Key, Breakdown };
+
+/* "KEYFRAME", "BREAKDOWN" (Blender's identifiers). */
+const char *key_type_identifier(KeyType type);
+const char *key_type_name(KeyType type);
+bool key_type_from_identifier(const std::string &identifier, KeyType *r_type);
+
 const char *ease_identifier(Ease ease);
 const char *ease_name(Ease ease);
 bool ease_from_identifier(const std::string &identifier, Ease *r_ease);
@@ -62,6 +72,8 @@ template<typename T> struct Key {
   int frame = 0;
   T value{};
   Interp interp = Interp::Smooth;
+  /* Never a Breakdown on frame 0, the setup. */
+  KeyType type = KeyType::Key;
   /* Frames the value waits at this key before moving on. */
   int hold = 0;
   /* 1 animates on 1s; 2 or 3 steps the motion every 2 or 3 frames. */
@@ -272,6 +284,7 @@ struct ChannelKeysQuiet {
 /* A key's interpolation and its settings: everything but its frame, value, colour and selection. */
 struct KeySettings {
   Interp interp = Interp::Smooth;
+  KeyType type = KeyType::Key;
   Ease ease = Ease::Quad;
   int hold = 0;
   int interval = 1;
@@ -295,6 +308,7 @@ template<typename T> KeySettings key_settings(const Key<T> &k)
 {
   KeySettings s;
   s.interp = k.interp;
+  s.type = k.type;
   s.ease = k.ease;
   s.hold = k.hold;
   s.interval = k.interval;
@@ -312,6 +326,7 @@ template<typename T> KeySettings key_settings(const Key<T> &k)
 template<typename T> void key_settings_apply(Key<T> &k, const KeySettings &s)
 {
   k.interp = s.interp;
+  k.type = k.frame == 0 ? KeyType::Key : s.type;
   k.ease = s.ease;
   k.hold = s.hold;
   k.interval = s.interval;

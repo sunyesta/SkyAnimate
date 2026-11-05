@@ -375,6 +375,17 @@ bool interp_args_apply(Context &C, KeySettings &r_settings, std::string *r_what)
     s.interp = interp;
     *r_what = interp_name(interp);
   }
+  if (op_has_arg(C, "type")) {
+    KeyType type;
+    if (!key_type_from_identifier(op_arg(C, "type"), &type)) {
+      report(ReportType::Error, "Unknown key type '" + op_arg(C, "type") + "' (KEYFRAME or BREAKDOWN)");
+      return false;
+    }
+    s.type = type;
+    if (r_what->empty()) {
+      *r_what = std::string("Key Type ") + key_type_name(type);
+    }
+  }
   if (op_has_arg(C, "ease")) {
     Ease ease;
     if (!ease_from_identifier(op_arg(C, "ease"), &ease)) {
@@ -426,7 +437,8 @@ void anim_operators_register()
         "Set the selected keys' interpolation (with no keys selected: what new keys get). interp: LINEAR, SMOOTH, "
         "EASE_IN, EASE_OUT, EASE_IN_OUT, STEP, BACK, BOUNCE, ELASTIC, NOISY, CYCLE; ease: SINE, QUAD, CUBIC, QUART, "
         "QUINT, EXPO, CIRC; and hold, interval, overshoot, elastic_amplitude, elastic_period, noise_amplitude, "
-        "noise_frequency, cycle_back. Only the settings given change";
+        "noise_frequency, cycle_back; type: KEYFRAME, BREAKDOWN (the key type, never on frame 0). Only the settings "
+        "given change";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -443,7 +455,8 @@ void anim_operators_register()
         }
         s = changed;
         preferences_save();
-        report(ReportType::Info, "New keys: " + std::string(interp_name(s.interp)));
+        const bool type_only = op_has_arg(C, "type") && !op_has_arg(C, "interp");
+        report(ReportType::Info, "New keys: " + (type_only ? what : std::string(interp_name(s.interp))));
         return OpStatus::Finished;
       }
       bool ok = true;
@@ -509,7 +522,12 @@ void anim_operators_register()
                       Document &doc = *C.document;
                       animation_record(doc);
                       const int count = layers_change_selected_keys(timeline_layers(C),
-                                                                    [](KeySettings &s) { s = g_interp_clipboard; });
+                                                                    [](KeySettings &s) {
+                                                                      /* Interpolation only: each keeps its key type. */
+                                                                      const KeyType type = s.type;
+                                                                      s = g_interp_clipboard;
+                                                                      s.type = type;
+                                                                    });
                       if (count == 0) {
                         report(ReportType::Warning, "Select keys to paste the interpolation onto");
                         return OpStatus::Cancelled;
@@ -526,7 +544,10 @@ void anim_operators_register()
                         report(ReportType::Warning, "Select a key whose interpolation new keys should get");
                         return OpStatus::Cancelled;
                       }
+                      /* Interpolation only: the new-key type stays as it was set. */
+                      const KeyType type = new_key_settings().settings.type;
                       new_key_settings().settings = sel.first;
+                      new_key_settings().settings.type = type;
                       preferences_save();
                       report(ReportType::Info, std::string("New keys: ") + interp_name(sel.first.interp));
                       return OpStatus::Finished;

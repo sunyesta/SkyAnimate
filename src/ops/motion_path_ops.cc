@@ -359,7 +359,7 @@ void motion_path_operators_register()
     ot.name = "Motion Path Breakdown";
     ot.description = "A breakdown on frame=N, as Shift-dragging an in-between dot does: what a path traces (layer=, "
                      "bone=, point= or the first traced) keyed factor=0-1 of the way from its pose on the key "
-                     "before to the key after, staying on its arc";
+                     "before to the key after, staying on its arc; the key made is a breakdown";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -374,6 +374,7 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       motion_path_record(doc);
+      motion_path_key_type_set(doc, targets.front(), doc.frame_current, KeyType::Breakdown);
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -721,7 +722,8 @@ void motion_path_operators_register()
     ot.description = "Right-click a key's diamond in the timing chart or Path Timing graph: the interpolation of the "
                      "key on frame=N of what a path traces (layer=, bone=, point=, drawing=1, or the first traced): its "
                      "own key there (a drawing's: all its channels'), else its layer's or a group's that moves it "
-                     "there. interp=, ease=, hold= and the rest as anim.keys_interpolation_set takes them";
+                     "there. interp=, ease=, hold=, type= (KEYFRAME or BREAKDOWN) and the rest as anim.keys_interpolation_set "
+                     "takes them";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -1057,7 +1059,8 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_key_add";
     ot.name = "Add Motion Path Key";
     ot.description = "A key on frame=N of what a path traces (layer=, bone=, point=, or the first traced), where it is "
-                     "now, so the path stays as it is (Alt click with the Motion Path tool's Edit); it is selected";
+                     "now, so the path stays as it is (Alt click with the Motion Path tool's Edit); it is selected. A "
+                     "breakdown, unless type=KEYFRAME";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -1068,10 +1071,16 @@ void motion_path_operators_register()
       }
       const int frame = op_arg_int(C, "frame", doc.frame_current);
       animation_sync(doc);
+      KeyType type = KeyType::Breakdown;
+      if (op_has_arg(C, "type") && !key_type_from_identifier(op_arg(C, "type"), &type)) {
+        report(ReportType::Error, "type is KEYFRAME or BREAKDOWN");
+        return OpStatus::Cancelled;
+      }
       if (!motion_path_key_add(doc, targets.front(), frame)) {
         report(ReportType::Info, "A key is there already");
         return OpStatus::Cancelled;
       }
+      motion_path_key_type_set(doc, targets.front(), frame, type);
       std::vector<Layer *> all;
       for (const Layer *l : document_layers_flat(doc)) {
         all.push_back(layer_find(doc, l->id));

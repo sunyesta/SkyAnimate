@@ -1306,6 +1306,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           progress.append(u);
         }
         d["progress"] = progress;
+        py::list breakdowns;
+        for (const int f : s.breakdowns) {
+          breakdowns.append(f);
+        }
+        d["breakdowns"] = breakdowns;
         stretches.append(d);
       }
       py::dict d;
@@ -2268,6 +2273,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["path_out"] = py::make_tuple(out.x, out.y);
         }
         d["interp"] = interp_identifier(k.interp);
+        d["type"] = key_type_identifier(k.type);
         d["hold"] = k.hold;
         d["selected"] = k.selected;
         d["interval"] = k.interval;
@@ -2368,6 +2374,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
             throw py::value_error("'" + path + "' is a yes/no property: its keys can only be STEP (constant)");
           }
           key->interp = interp;
+        }
+        else if (name == "type") {
+          KeyType type;
+          if (!key_type_from_identifier(value.cast<std::string>(), &type)) {
+            throw py::value_error("unknown key type '" + value.cast<std::string>() + "' (KEYFRAME or BREAKDOWN)");
+          }
+          if (frame == 0 && type == KeyType::Breakdown) {
+            throw py::value_error("frame 0 is the setup: its keys are never breakdowns");
+          }
+          key->type = type;
         }
         else if (name == "hold") {
           key->hold = std::max(0, value.cast<int>());

@@ -347,6 +347,8 @@ KeyShape interp_key_shape(Interp interp);
 struct KeyFrameSummary {
   int keys = 0;
   int selected = 0;
+  /* How many of the keys are breakdowns (drawn as a small circle when all are). */
+  int breakdowns = 0;
   /* The family of the keys' modes (yes/no channels, always Step, only count when there is
    * nothing else). */
   KeyShape shape = KEY_SHAPE_STEP;
@@ -426,6 +428,8 @@ struct SelectedKeys {
   KeySettings first;
   bool mixed = false;
   bool mixed_ease = false;
+  /* Some keys and some breakdowns. */
+  bool mixed_type = false;
 };
 SelectedKeys layers_selected_keys(const std::vector<Layer *> &layers);
 /* Changes the selected keys' interpolation settings with `change`; yes/no channels' keys stay

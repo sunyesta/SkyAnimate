@@ -160,6 +160,7 @@ Transform2D relative_space(const Document &doc)
 
 template<typename F> static bool with_path_channel(Document &doc, const MotionPathTarget &t, F &&f);
 template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f);
+template<typename F> static bool with_timing_channels(Document &doc, const MotionPathTarget &t, F &&f);
 
 const MotionPathTarget *motion_path_style(const Document &doc, const MotionPathTarget &target)
 {
@@ -1029,6 +1030,274 @@ template<typename T> std::vector<float> stretch_make_custom(Channel<T> &ch, size
   return s;
 }
 
+std::vector<float> speeds_progress(const std::vector<float> &s);
+std::vector<float> progress_speeds(const std::vector<float> &u);
+
+/* --- Breakdowns (KeyType::Breakdown) in the timing tools ----------------------------------------------------------
+ * While one is alive, `ch` has each span from main key to main key across breakdowns as one stretch, as it moves now
+ * (its main key after Custom, its speeds how far it goes each frame), so a timing tool shapes the span as one. Gone,
+ * the span's breakdowns come back, each on the frame where the new timing reaches its pose (nearest, kept in order and
+ * off the keys either side), the stretches between them Custom to go the span's timing between their keys. A span
+ * the tool left alone comes back as it was. */
+template<typename T> struct SpanFlat {
+  struct Span {
+    /* Its main keys (indices in `original`), first frame (after the main key before's hold) and frames. */
+    size_t m0 = 0, m1 = 0;
+    int start = 0, n = 0;
+    /* How far along the span each breakdown's pose is (0-1, by how far the value goes). */
+    std::vector<float> at;
+    /* What the flat stretch was given, and the index of its key there. */
+    std::vector<float> speeds;
+    size_t flat = 0;
+  };
+  Channel<T> &ch;
+  std::vector<Key<T>> original;
+  /* Each flat key's index in `original`. */
+  std::vector<size_t> kept;
+  std::vector<Span> spans;
+
+  explicit SpanFlat(Channel<T> &c) : ch(c)
+  {
+    const std::vector<Key<T>> &keys = ch.keys;
+    if (std::none_of(keys.begin(), keys.end(), [](const Key<T> &k) { return k.type == KeyType::Breakdown; })) {
+      return;
+    }
+    for (size_t m0 = 0; m0 + 1 < keys.size();) {
+      size_t m1 = m0 + 1;
+      while (m1 + 1 < keys.size() && keys[m1].type == KeyType::Breakdown) {
+        m1++;
+      }
+      if (m1 - m0 > 1) {
+        Span sp;
+        sp.m0 = m0;
+        sp.m1 = m1;
+        sp.start = std::min(keys[m0].frame + std::max(keys[m0].hold, 0), keys[m1].frame);
+        sp.n = keys[m1].frame - sp.start;
+        bool moves = sp.n >= 2;
+        for (size_t j = m0 + 1; j <= m1 && moves; j++) {
+          const Interp interp = keys[j].interp;
+          moves = !(interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle) &&
+                  (j == m1 || keys[j].frame > sp.start);
+        }
+        if (moves) {
+          /* How far it goes each frame (along the path for a position), and where each breakdown is on the way. */
+          std::vector<float> d(size_t(sp.n), 0.0f);
+          T before = ch.evaluate(sp.start);
+          float total = 0.0f;
+          for (int j = 0; j < sp.n; j++) {
+            const T now = ch.evaluate(sp.start + j + 1);
+            if constexpr (std::is_same_v<T, float>) {
+              d[size_t(j)] = std::abs(now - before);
+            }
+            else {
+              d[size_t(j)] = length(now - before);
+            }
+            total += d[size_t(j)];
+            before = now;
+          }
+          if (total > 1e-9f) {
+            float done = 0.0f;
+            size_t next = m0 + 1;
+            for (int j = 0; j < sp.n && next < m1; j++) {
+              done += d[size_t(j)];
+              if (sp.start + j + 1 == keys[next].frame) {
+                sp.at.push_back(done / total);
+                next++;
+              }
+            }
+            for (float &v : d) {
+              v = std::max(v * float(sp.n) / total, 0.02f);
+            }
+            sp.speeds = std::move(d);
+            spans.push_back(std::move(sp));
+          }
+        }
+      }
+      m0 = m1;
+    }
+    if (spans.empty()) {
+      return;
+    }
+    original = keys;
+    std::vector<Key<T>> flat;
+    size_t s = 0;
+    for (size_t i = 0; i < original.size(); i++) {
+      while (s < spans.size() && spans[s].m1 < i) {
+        s++;
+      }
+      if (s < spans.size() && i > spans[s].m0 && i < spans[s].m1) {
+        continue;
+      }
+      Key<T> k = original[i];
+      if (s < spans.size() && i == spans[s].m1) {
+        k.interp = Interp::Custom;
+        k.speeds = spans[s].speeds;
+        spans[s].flat = flat.size();
+      }
+      kept.push_back(i);
+      flat.push_back(std::move(k));
+    }
+    ch.keys = std::move(flat);
+  }
+
+  SpanFlat(const SpanFlat &) = delete;
+  SpanFlat &operator=(const SpanFlat &) = delete;
+
+  /* The span whose flat stretch arrives at flat key `i`, or null. */
+  const Span *span_at(size_t i) const
+  {
+    for (const Span &sp : spans) {
+      if (sp.flat == i) {
+        return &sp;
+      }
+    }
+    return nullptr;
+  }
+
+  /* The breakdowns' frames of a span. */
+  std::vector<int> breakdown_frames(const Span &sp) const
+  {
+    std::vector<int> out;
+    for (size_t j = sp.m0 + 1; j < sp.m1; j++) {
+      out.push_back(original[j].frame);
+    }
+    return out;
+  }
+
+  /* Progress `q` (0-1) along the stretch arriving at key `i` of the channel as it was, as progress along its span (as
+   * the flat stretch has it); unchanged outside spans. */
+  float span_progress(size_t i, float q) const
+  {
+    for (const Span &sp : spans) {
+      if (i > sp.m0 && i <= sp.m1) {
+        const float a = i - 1 == sp.m0 ? 0.0f : sp.at[i - 2 - sp.m0];
+        const float b = i == sp.m1 ? 1.0f : sp.at[i - 1 - sp.m0];
+        return a + (b - a) * q;
+      }
+    }
+    return q;
+  }
+
+  ~SpanFlat()
+  {
+    if (spans.empty()) {
+      return;
+    }
+    std::vector<Key<T>> flat = std::move(ch.keys);
+    if (flat.size() != kept.size()) {
+      /* Keys added or taken away: not a timing change; the breakdowns as they were. */
+      ch.keys = std::move(original);
+      return;
+    }
+    /* The keys as they were, with handles frozen where a stretch made Custom must keep its line. */
+    std::vector<Key<T>> frozen = original;
+    std::vector<Key<T>> out;
+    bool changed = false;
+    size_t s = 0;
+    for (size_t fi = 0; fi < flat.size(); fi++) {
+      const size_t oi = kept[fi];
+      while (s < spans.size() && spans[s].m1 < oi) {
+        s++;
+      }
+      const bool span_end = s < spans.size() && oi == spans[s].m1;
+      const bool span_start = std::any_of(spans.begin(), spans.end(), [&](const Span &sp) { return sp.m0 == oi; });
+      Key<T> k = flat[fi];
+      if (span_start || span_end) {
+        /* Its path handles are the span's stretches', not the flat one's. */
+        k.path_handles = original[oi].path_handles;
+        k.path_in = original[oi].path_in;
+        k.path_out = original[oi].path_out;
+      }
+      if (!span_end) {
+        out.push_back(std::move(k));
+        continue;
+      }
+      const Span &sp = spans[s];
+      if (k.interp != Interp::Custom || k.speeds == sp.speeds) {
+        /* Left alone: as it was. */
+        for (size_t j = sp.m0 + 1; j < sp.m1; j++) {
+          out.push_back(original[j]);
+        }
+        Key<T> end = original[sp.m1];
+        end.value = k.value;
+        end.selected = k.selected;
+        out.push_back(std::move(end));
+        continue;
+      }
+      changed = true;
+      /* The span's new progress, a value a frame (its speeds might be for another length). */
+      std::vector<float> sv(size_t(sp.n), 1.0f);
+      for (int j = 0; j < sp.n; j++) {
+        sv[size_t(j)] =
+            k.speeds[std::min(k.speeds.size() - 1, size_t((float(j) + 0.5f) * float(k.speeds.size()) / float(sp.n)))];
+      }
+      const std::vector<float> u = speeds_progress(sv);
+      /* Each breakdown on the frame its pose is reached. */
+      const size_t count = sp.m1 - sp.m0 - 1;
+      std::vector<int> at_frame(count);
+      int lo = std::max(original[sp.m0].frame - sp.start, 0) + 1;
+      for (size_t b = 0; b < count; b++) {
+        const int hi = sp.n - int(count - b);
+        int best = std::clamp(lo, 1, std::max(hi, 1));
+        for (int j = lo; j <= hi; j++) {
+          if (std::abs(u[size_t(j)] - sp.at[b]) < std::abs(u[size_t(best)] - sp.at[b])) {
+            best = j;
+          }
+        }
+        at_frame[b] = best;
+        lo = best + 1;
+      }
+      if constexpr (std::is_same_v<T, float2>) {
+        /* Straight stretches (by the span's Linear or Ease, or their own) keep their line as Custom. */
+        const Interp mode = original[sp.m1].interp;
+        const bool span_timed = mode == Interp::Linear || mode == Interp::EaseIn || mode == Interp::EaseOut ||
+                                mode == Interp::EaseInOut;
+        for (size_t j = sp.m0 + 1; j <= sp.m1; j++) {
+          if (span_timed || !interp_path_smooth(original[j].interp)) {
+            key_path_handles_freeze(frozen, j - 1);
+            key_path_handles_freeze(frozen, j);
+          }
+        }
+        if (!out.empty()) {
+          out.back().path_handles = frozen[sp.m0].path_handles;
+          out.back().path_in = frozen[sp.m0].path_in;
+          out.back().path_out = frozen[sp.m0].path_out;
+        }
+      }
+      /* Each stretch going the part of the span's timing between its keys. */
+      int from = 0;
+      for (size_t b = 0; b <= count; b++) {
+        const int to = b < count ? at_frame[b] : sp.n;
+        const int seg_start = b == 0 ? 0 : std::min(from + std::max(original[sp.m0 + b].hold, 0), to);
+        const int seg_n = to - seg_start;
+        Key<T> key = b < count ? frozen[sp.m0 + 1 + b] : k;
+        if (b == count) {
+          key.path_handles = frozen[sp.m1].path_handles;
+          key.path_in = frozen[sp.m1].path_in;
+          key.path_out = frozen[sp.m1].path_out;
+        }
+        key.frame = sp.start + to;
+        if (seg_n >= 1) {
+          const float u0 = u[size_t(seg_start)], u1 = u[size_t(to)];
+          std::vector<float> q(size_t(seg_n + 1));
+          for (int j = 0; j <= seg_n; j++) {
+            q[size_t(j)] = std::abs(u1 - u0) > 1e-9f ? (u[size_t(seg_start + j)] - u0) / (u1 - u0) :
+                                                       float(j) / float(seg_n);
+          }
+          key.interp = Interp::Custom;
+          key.speeds = progress_speeds(q);
+        }
+        out.push_back(std::move(key));
+        from = to;
+      }
+    }
+    ch.keys = std::move(out);
+    if (changed) {
+      channel_keys_changed();
+    }
+  }
+};
+
 /* Progress `u` (0 at the stretch's start to 1 at its key, a value a frame) put back in order around dot `k0`, which
  * stays: none passing another or a key, each frame at least `gap` on. */
 void order_progress(std::vector<float> &u, int k0, float gap)
@@ -1370,11 +1639,13 @@ int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &ta
     if (layer && p.target.bone && !p.target.head) {
       for (Bone &b : layer->bones) {
         if (b.id == p.target.bone) {
+          SpanFlat flat(b.angle_keys);
           changed += paint_speeds(b.angle_keys, falloff, brush, dab);
         }
       }
     }
     else if (Channel<float2> *ch = handle_channel(doc, p.target)) {
+      SpanFlat flat(*ch);
       changed += paint_speeds(*ch, falloff, brush, dab);
     }
   }
@@ -1409,19 +1680,24 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
       return false;
     }
     const float want = ch.evaluate(frame) + (posed.angle - before);
-    const std::vector<float> s = stretch_make_custom(ch, i, start, n);
     const float a = ch.keys[i - 1].value, z = ch.keys[i].value;
     if (std::abs(z - a) < 1e-9f) {
       return false;
     }
-    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, (want - a) / (z - a), slide));
+    /* Across breakdowns: the span's stretch, the progress as the span's. */
+    SpanFlat flat(ch);
+    const float progress = flat.span_progress(i, (want - a) / (z - a));
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return false;
+    }
+    const std::vector<float> s = stretch_make_custom(ch, i, start, n);
+    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, progress, slide));
   }
   else {
     Channel<float2> *ch = handle_channel(doc, target);
     if (!ch || !stretch_of(*ch, frame, i, start, n)) {
       return false;
     }
-    const std::vector<float> s = stretch_make_custom(*ch, i, start, n);
     /* The mouse in the keys' own space, by how the target moves with the channel's value there. */
     const float2 value = ch->evaluate(frame);
     float2 shown, cx, cy;
@@ -1434,7 +1710,15 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
     }
     const float2 miss = at - shown;
     const float2 v = value + float2{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
-    key_speeds_set(ch->keys, i, slid_speeds(s, frame - start, nearest_progress(ch->keys, i, v), slide));
+    const float q = nearest_progress(ch->keys, i, v);
+    /* Across breakdowns: the span's stretch, the progress as the span's. */
+    SpanFlat flat(*ch);
+    const float progress = flat.span_progress(i, q);
+    if (!stretch_of(*ch, frame, i, start, n)) {
+      return false;
+    }
+    const std::vector<float> s = stretch_make_custom(*ch, i, start, n);
+    key_speeds_set(ch->keys, i, slid_speeds(s, frame - start, progress, slide));
   }
   animation_evaluate(doc, doc.frame_current);
   return true;
@@ -1442,108 +1726,49 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
 
 bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame)
 {
-  Layer *layer = layer_find(doc, target.layer);
-  if (!layer) {
-    return false;
-  }
-  size_t i = 0;
-  int start = 0, n = 0;
-  if (target.drawing) {
-    bool done = false;
-    with_path_channels(doc, target, [&](auto &ch) {
-      if (stretch_of(ch, frame, i, start, n)) {
-        stretch_make_custom(ch, i, start, n);
-        key_speeds_set(ch.keys, i, std::vector<float>(size_t(n), 1.0f));
-        done = true;
-      }
-    });
-    animation_evaluate(doc, doc.frame_current);
-    return done;
-  }
-  if (target.bone && !target.head) {
-    const int b = bone_index(*layer, target.bone);
-    if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
-      return false;
+  bool done = false;
+  with_timing_channels(doc, target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (stretch_of(ch, frame, i, start, n)) {
+      stretch_make_custom(ch, i, start, n);
+      key_speeds_set(ch.keys, i, std::vector<float>(size_t(n), 1.0f));
+      done = true;
     }
-    Channel<float> &ch = layer->bones[size_t(b)].angle_keys;
-    stretch_make_custom(ch, i, start, n);
-    key_speeds_set(ch.keys, i, std::vector<float>(size_t(n), 1.0f));
-  }
-  else {
-    Channel<float2> *ch = handle_channel(doc, target);
-    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
-      return false;
-    }
-    stretch_make_custom(*ch, i, start, n);
-    key_speeds_set(ch->keys, i, std::vector<float>(size_t(n), 1.0f));
-  }
+  });
   animation_evaluate(doc, doc.frame_current);
-  return true;
+  return done;
 }
 
 int motion_path_scale_spacing(Document &doc, const MotionPathTarget &target, int frame, float factor,
                               const PathSlide &slide)
 {
-  Layer *layer = layer_find(doc, target.layer);
-  if (!layer) {
-    return 0;
-  }
   factor = std::max(factor, 0.0f);
   int changed = 0;
-  if (target.drawing) {
-    bool first = true;
-    with_path_channels(doc, target, [&](auto &ch) {
-      const int c = scale_stretches(ch, frame, factor, slide);
-      changed = first ? c : changed;
-      first = false;
-    });
-  }
-  else if (target.bone && !target.head) {
-    const int b = bone_index(*layer, target.bone);
-    if (b < 0) {
-      return 0;
-    }
-    changed = scale_stretches(layer->bones[size_t(b)].angle_keys, frame, factor, slide);
-  }
-  else if (Channel<float2> *ch = handle_channel(doc, target)) {
-    changed = scale_stretches(*ch, frame, factor, slide);
-  }
+  bool first = true;
+  with_timing_channels(doc, target, [&](auto &ch) {
+    /* A drawing's channels each change alike: counted once. */
+    const int c = scale_stretches(ch, frame, factor, slide);
+    changed = first ? c : changed;
+    first = false;
+  });
   animation_evaluate(doc, doc.frame_current);
   return changed;
 }
 
 float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target, int frame)
 {
-  Layer *layer = layer_find(const_cast<Document &>(doc), target.layer);
-  if (!layer) {
-    return 0.0f;
-  }
   size_t i = 0;
   int start = 0, n = 0;
   std::vector<float> s;
-  if (target.drawing) {
-    with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
-      if (stretch_of(ch, frame, i, start, n)) {
-        s = stretch_speeds(ch, i, start, n);
-      }
-    });
-    if (s.empty()) {
-      return 0.0f;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    SpanFlat flat(ch);
+    if (stretch_of(ch, frame, i, start, n)) {
+      s = stretch_speeds(ch, i, start, n);
     }
-  }
-  else if (target.bone && !target.head) {
-    const int b = bone_index(*layer, target.bone);
-    if (b < 0 || !stretch_of(layer->bones[size_t(b)].angle_keys, frame, i, start, n)) {
-      return 0.0f;
-    }
-    s = stretch_speeds(layer->bones[size_t(b)].angle_keys, i, start, n);
-  }
-  else {
-    const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
-    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
-      return 0.0f;
-    }
-    s = stretch_speeds(*ch, i, start, n);
+  });
+  if (s.empty()) {
+    return 0.0f;
   }
   /* The steps into and out of the dot, averaged. */
   const int k = frame - start;
@@ -1686,6 +1911,16 @@ bool motion_path_key_selected(const Document &doc, const MotionPathTarget &targe
   return selected;
 }
 
+bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame)
+{
+  bool breakdown = false;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    const auto *k = ch.key_at(frame);
+    breakdown = k && k->type == KeyType::Breakdown;
+  });
+  return breakdown;
+}
+
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select)
 {
   with_path_channel(doc, target, [&](auto &ch) {
@@ -1809,6 +2044,14 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
 /* As with_path_channel, but a timing change to the drawing goes to every channel of it alike: the timing the first
  * channel (the one its row shows) ends up with, since an edit relative to the timing there (a slide, a speed, a
  * blend) would otherwise start from each channel's own. */
+template<typename F> static bool with_timing_channels(Document &doc, const MotionPathTarget &t, F &&f)
+{
+  return with_path_channels(doc, t, [&](auto &ch) {
+    SpanFlat flat(ch);
+    f(ch);
+  });
+}
+
 template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f)
 {
   if (!t.drawing) {
@@ -1818,24 +2061,37 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   bool found = false;
   using Timing = std::tuple<int, Interp, std::vector<float>>;
   std::vector<Timing> changed;
+  std::vector<int> first_before, first_after;
   if (layer) {
     drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
       if (!found) {
         std::vector<Timing> before;
         for (const auto &k : ch.keys) {
           before.push_back({k.frame, k.interp, k.speeds});
+          first_before.push_back(k.frame);
         }
         f(ch);
         found = true;
         for (const auto &k : ch.keys) {
           Timing now{k.frame, k.interp, k.speeds};
+          first_after.push_back(k.frame);
           if (std::find(before.begin(), before.end(), now) == before.end()) {
             changed.push_back(std::move(now));
           }
         }
         return true;
       }
+      std::vector<int> frames_before;
+      for (const auto &k : ch.keys) {
+        frames_before.push_back(k.frame);
+      }
       f(ch);
+      /* Breakdowns moved by the tool land where the first channel's did, so the drawing's keys stay together. */
+      if (frames_before == first_before && ch.keys.size() == first_after.size()) {
+        for (size_t j = 0; j < ch.keys.size(); j++) {
+          ch.keys[j].frame = first_after[j];
+        }
+      }
       for (const auto &[frame, interp, speeds] : changed) {
         if (auto *k = ch.key_at(frame); k && k->interp == interp && k->speeds.size() == speeds.size()) {
           k->speeds = speeds;
@@ -1851,6 +2107,7 @@ std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const 
 {
   std::vector<MotionPathStretch> out;
   with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    SpanFlat flat(ch);
     for (size_t i = 1; i < ch.keys.size(); i++) {
       const auto &a = ch.keys[i - 1], &b = ch.keys[i];
       const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
@@ -1862,6 +2119,9 @@ std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const 
       st.start = start;
       st.end = b.frame;
       st.progress = speeds_progress(stretch_speeds(ch, i, start, n));
+      if (const auto *sp = flat.span_at(i)) {
+        st.breakdowns = flat.breakdown_frames(*sp);
+      }
       out.push_back(std::move(st));
     }
   });
@@ -1887,7 +2147,7 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
   PathSlide slide = slide_in;
   slide.keep_order = false;
   bool slid = false;
-  with_path_channels(doc, target, [&](auto &ch) {
+  with_timing_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {
@@ -1909,7 +2169,7 @@ int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int 
   repeat = std::clamp(repeat, 1, 100);
   radius = std::max(radius, 0.0f);
   bool counted = false;
-  with_path_channels(doc, target, [&](auto &ch) {
+  with_timing_channels(doc, target, [&](auto &ch) {
     /* The drawing's channels each change alike: counted once. */
     const bool count = !counted;
     counted = true;
@@ -2012,7 +2272,7 @@ static float path_shape_progress(PathShape shape, float t)
 bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape)
 {
   bool done = false;
-  with_path_channels(doc, target, [&](auto &ch) {
+  with_timing_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {
@@ -2035,7 +2295,7 @@ bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, in
 bool motion_path_dot_speed_set(Document &doc, const MotionPathTarget &target, int frame, float speed)
 {
   bool done = false;
-  with_path_channels(doc, target, [&](auto &ch) {
+  with_timing_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
     int start = 0, n = 0;
     if (!stretch_of(ch, frame, i, start, n)) {
@@ -2121,6 +2381,29 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
   });
   animation_evaluate(doc, doc.frame_current);
   return added;
+}
+
+int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int frame, KeyType type)
+{
+  Layer *layer = layer_find(doc, target.layer);
+  if (frame <= 0 || !layer) {
+    return 0;
+  }
+  int count = 0;
+  const auto set = [&](auto *ch) {
+    if (auto *k = ch ? ch->key_at(frame) : nullptr) {
+      k->type = type;
+      count++;
+    }
+  };
+  for (const ChannelRef &ref : layer_filtered_channels(*layer, motion_path_key_filter(doc, target))) {
+    set(ref.scalar);
+    set(ref.vector);
+  }
+  if (count > 0) {
+    channel_keys_changed();
+  }
+  return count;
 }
 
 int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &targets)

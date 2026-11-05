@@ -439,6 +439,8 @@ add_test(NAME key_whole_drawing
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_whole_drawing.py)
 add_test(NAME motion_path_key_menu
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_key_menu.py)
+add_test(NAME breakdown_keys
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_breakdown_keys.py)
 add_test(NAME key_together
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together.py)
 add_test(NAME motion_path_edit

@@ -986,7 +986,7 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     OpArgs args = motion_path_target_args(doc, target);
     args["frame"] = std::to_string(frame);
     if (made && !dragged) {
-      /* Alt click: a key there, as it is. */
+      /* Alt click: a breakdown there, as it is. */
       operator_call(C, "anim.motion_path_key_add", args);
     }
     else if (made) {
@@ -1027,6 +1027,10 @@ static void motion_path_tool_input(Context &C, const ViewMapping &view, const Mo
     }
     /* Keyed as it goes, so the path (worked out from keys) follows the mouse. */
     motion_path_record(doc);
+    if (g.adding || g.breakdown) {
+      /* Alt makes breakdowns, never main keys. */
+      motion_path_key_type_set(doc, g.target, g.frame, KeyType::Breakdown);
+    }
   }
   g.serial++;
 }
@@ -1656,10 +1660,11 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       while (run < screen.size() && length(p.points[run] - p.points[i]) < 1e-6f) {
         run++;
       }
-      bool shown = false, key = false, selected = false;
+      bool shown = false, key = false, selected = false, breakdown = false;
       for (size_t k = i; k < run; k++) {
         const int f = p.first + int(k);
         const bool on_key = std::binary_search(p.keys.begin(), p.keys.end(), f);
+        breakdown |= on_key && !key && motion_path_key_is_breakdown(doc, p.target, f);
         key |= on_key;
         shown |= on_key || (f - p.first) % step == 0;
         if (const auto it = picked.find(f); it != picked.end() && it->second.selected > 0) {
@@ -1672,7 +1677,14 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       if (shown) {
         const ImVec2 s = screen[i];
         const Color dot = dot_colors[i];
-        if (key) {
+        if (key && breakdown) {
+          /* A breakdown: a blue circle, larger and dark blue when selected. */
+          const float r = selected ? 5.0f : 4.0f;
+          dl->AddCircleFilled(s, r, selected ? IM_COL32(0x1f, 0x5f, 0xd6, 255) : IM_COL32(0x8c, 0xc8, 0xff, 255));
+          dl->AddCircle(s, r, selected ? IM_COL32(255, 160, 40, 255) : IM_COL32(20, 20, 20, 220), 0,
+                        selected ? 2.0f : 1.0f);
+        }
+        else if (key) {
           /* Keys plain white, so they stand apart from the coloured dots; selected, larger and ringed orange. */
           const float r = selected ? 6.0f : 4.5f;
           const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
@@ -4862,7 +4874,8 @@ static const char *tool_hint(const ToolSettings &ts)
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
       }
       return "Click: select  |  Shift: add  |  Shift drag: Blend Speed  |  Double click: its frame  |  Drag a key: "
-             "move it, a dot: slide it (O: proportional)  |  Alt click: add a key  |  Alt Shift: breakdown  |  Ctrl: straight  |  G R S  |  Alt S: "
+             "move it, a dot: slide it (O: proportional)  |  Alt click: add a breakdown  |  Alt Shift: breakdown on the "
+             "arc  |  Ctrl: straight  |  G R S  |  Alt S: "
              "timing  |  V: handles  |  X: delete";
     default:
       return "";

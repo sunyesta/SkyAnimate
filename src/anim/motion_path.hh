@@ -136,6 +136,8 @@ int motion_path_key_settings(Document &doc, const MotionPathTarget &target, int 
 int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int frame);
 /* Selects (or deselects) the key on `frame` of the channel that moves the dot; whether it is selected now. */
 bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame);
+/* Whether the target's key on `frame` is a breakdown (drawn as a blue circle). */
+bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame);
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);
 /* G R S on the selected keys: `kind` 'G' moves them by `offset` (document space), 'R' turns them by `angle` and 'S'
  * scales them by `factor` about their centre, their handles turning and scaling with them; one key on its own stays,
@@ -151,6 +153,8 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
 struct MotionPathStretch {
   int start = 0, end = 0;
   std::vector<float> progress;
+  /* Breakdowns inside the stretch (a span from main key to main key is one stretch). */
+  std::vector<int> breakdowns;
 };
 /* Each stretch that moves (not stepped, posed or cycling). Progress can go over 1 (past its key: overshoot) or under 0
  * (backing up first). */
@@ -195,6 +199,9 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
 /* A key on `frame` of the channel that moves the target's dot, where it is now (the path unchanged); false if there
  * is one already. */
 bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame);
+/* The target's keys on `frame` (each channel its path covers: a bone's, a point's, a drawing's, a layer's turn, move
+ * and size) made `type`; never frame 0. Returns how many. Alt click and Alt Shift on a path make breakdowns. */
+int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int frame, KeyType type);
 /* Deletes the selected keys of the channels that move the targets' dots (not the setup frame's). */
 int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &targets);
 

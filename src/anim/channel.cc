@@ -15,6 +15,25 @@ static constexpr const char *INTERP_NAMES[INTERP_COUNT] = {
     "Linear", "Smooth", "Ease In/Out", "Ease In", "Ease Out", "Step", "Bezier",
     "Back",   "Bounce", "Elastic",     "Noisy",   "Cycle",    "Pose",     "Custom"};
 
+const char *key_type_identifier(KeyType type)
+{
+  return type == KeyType::Breakdown ? "BREAKDOWN" : "KEYFRAME";
+}
+
+const char *key_type_name(KeyType type)
+{
+  return type == KeyType::Breakdown ? "Breakdown" : "Key";
+}
+
+bool key_type_from_identifier(const std::string &identifier, KeyType *r_type)
+{
+  if (identifier == "KEYFRAME" || identifier == "BREAKDOWN") {
+    *r_type = identifier == "BREAKDOWN" ? KeyType::Breakdown : KeyType::Key;
+    return true;
+  }
+  return false;
+}
+
 const char *interp_identifier(Interp interp)
 {
   return INTERP_IDS[int(interp)];
@@ -562,6 +581,42 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   const float span = float(b.frame - start);
   const float t = span > 0.0f ? float(f - start) / span : 1.0f;
 
+  /* Across breakdowns (KeyType::Breakdown): the stretches from main key to main key timed as one, by the main key
+   * after's Linear or Ease curve over the whole span, each stretch going the part of it between its keys; so the
+   * motion eases only at the main keys, and a breakdown dragged to another frame keeps its pose, reached earlier or
+   * later. A stretch painted Custom keeps its own timing. */
+  if ((a.type == KeyType::Breakdown || b.type == KeyType::Breakdown) && b.interp != Interp::Custom) {
+    size_t m0 = size_t(k), m1 = size_t(k) + 1;
+    while (m0 > 0 && keys[m0].type == KeyType::Breakdown) {
+      m0--;
+    }
+    while (m1 + 1 < keys.size() && keys[m1].type == KeyType::Breakdown) {
+      m1++;
+    }
+    const Key<T> &e = keys[m1];
+    const Interp mode = stretch_interp(e.interp);
+    if (mode == Interp::Linear || mode == Interp::EaseIn || mode == Interp::EaseOut || mode == Interp::EaseInOut) {
+      const int s0 = std::min(keys[m0].frame + std::max(keys[m0].hold, 0), e.frame);
+      const float whole = float(std::max(e.frame - s0, 1));
+      const auto progress = [&](float at) {
+        const float x = std::clamp((at - float(s0)) / whole, 0.0f, 1.0f);
+        return mode == Interp::Linear ? x : ease_shaped(mode, e.ease, x);
+      };
+      const float pa = size_t(k) == m0 ? 0.0f : progress(float(a.frame));
+      const float pb = size_t(k) + 1 == m1 ? 1.0f : progress(float(b.frame));
+      const float q = pb - pa > 1e-6f ? (progress(float(f)) - pa) / (pb - pa) : t;
+      if constexpr (std::is_same_v<T, float2>) {
+        if (a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto) {
+          float2 in, out, unused;
+          key_path_handles(keys, size_t(k), unused, out);
+          key_path_handles(keys, size_t(k) + 1, in, unused);
+          const float2 p[4] = {a.value, a.value + out, b.value + in, b.value};
+          return bezier_along(p, q);
+        }
+      }
+      return a.value + (b.value - a.value) * q;
+    }
+  }
   /* The stretch arriving at a key takes that key's interpolation and its settings (as Moho's: how the
    * motion gets to this pose); a Cycle key's own interpolation is its loop after it, so the stretch
    * into one is Smooth. Hold, the interval and Cycle stay the earlier key's: what happens after it. */
@@ -702,6 +757,8 @@ template<typename T> Key<T> &Channel<T>::set_key(int frame, const T &value)
   const NewKeySettings &defaults = new_key_settings();
   const bool copy = defaults.copy_previous && at != keys.begin();
   key_settings_apply(key, copy ? key_settings(*std::prev(at)) : defaults.settings);
+  /* Its type is the new-key one even when copying the key before's interpolation. */
+  key.type = frame == 0 ? KeyType::Key : defaults.settings.type;
   if (copy && key.interp == Interp::Cycle) {
     /* A cycle key ends a loop; the keys after it start out ordinary. */
     key.interp = defaults.settings.interp == Interp::Cycle ? Interp::Smooth : defaults.settings.interp;

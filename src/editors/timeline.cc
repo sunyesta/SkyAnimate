@@ -47,6 +47,8 @@ static constexpr ImU32 COL_PLAYHEAD = IM_COL32(0x47, 0x72, 0xb3, 255);
 /* Blender's keyframe diamonds: light grey, orange when selected. */
 static constexpr ImU32 COL_KEY = IM_COL32(0xdd, 0xdd, 0xdd, 255);
 static constexpr ImU32 COL_KEY_SELECTED = IM_COL32(0xff, 0xbe, 0x33, 255);
+static constexpr ImU32 COL_BREAKDOWN = IM_COL32(0x8c, 0xc8, 0xff, 255);
+static constexpr ImU32 COL_BREAKDOWN_SELECTED = IM_COL32(0x1f, 0x5f, 0xd6, 255);
 static constexpr ImU32 COL_RECORD = IM_COL32(0xd6, 0x3c, 0x3c, 255);
 /* Blender's header buttons (the default theme's Regular widgets): grey, lighter under the mouse, blue
  * when on; a menu's arrow half darker; outlined, with a darker line under each group. */
@@ -701,6 +703,28 @@ void timeline_interp_modes(const KeySettings &current, bool mixed, bool mixed_ea
 
 /* The Interpolation menu's items. `prepare` (right-click on a key) selects the keys clicked
  * before anything is set. */
+/* Key and Breakdown, for the selected keys (or new keys when none are). */
+static void key_type_menu_items(Context &C, const std::function<void()> &prepare)
+{
+  const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
+  const bool for_keys = prepare || sel.count > 0;
+  const KeyType current = for_keys ? sel.first.type : new_key_settings().settings.type;
+  for (const KeyType t : {KeyType::Key, KeyType::Breakdown}) {
+    const bool on = !(for_keys && sel.mixed_type) && current == t;
+    if (ui_menu_item(key_type_name(t), nullptr, on)) {
+      if (prepare) {
+        prepare();
+      }
+      operator_call(C, "anim.keys_interpolation_set", OpArgs{{"type", key_type_identifier(t)}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(t == KeyType::Key ? "An ordinary key: the timing eases at it" :
+                                            "A breakdown: a pose on the way, timed as one movement with the keys "
+                                            "either side, so it can be slid in time and brushed smooth");
+    }
+  }
+}
+
 static void interp_menu_items(Context &C, const std::function<void()> &prepare)
 {
   const SelectedKeys sel = layers_selected_keys(timeline_layers(C));
@@ -722,6 +746,11 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
   }
   timeline_interp_modes(current, sel.mixed, sel.mixed_ease, !prepare,
                         [&](const OpArgs &args) { run("anim.keys_interpolation_set", args); });
+  ImGui::Separator();
+  if (ImGui::BeginMenu("Key Type")) {
+    key_type_menu_items(C, prepare);
+    ImGui::EndMenu();
+  }
   ImGui::Separator();
   if (ui_menu_item("Copy Previous Key", nullptr, new_key_settings().copy_previous)) {
     operator_call(C, "anim.interpolation_copy_previous");
@@ -999,6 +1028,54 @@ static void interp_settings_popup(Context &C)
 }
 
 /* The header's mode dropdown and settings button. */
+static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill);
+static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected);
+/* The selected keys as the header last saw them (worked out by interp_header, kept until an edit or a click). */
+static SelectedKeys g_header_sel;
+
+/* The Key Type menu beside the interpolation: what new keys are (no key selected), or the selected keys'. */
+static void key_type_header(Context &C, float width)
+{
+  const SelectedKeys &sel = g_header_sel;
+  const bool for_keys = sel.count > 0;
+  const KeyType type = for_keys ? sel.first.type : new_key_settings().settings.type;
+  const char *name = for_keys && sel.mixed_type ? "Mixed" : key_type_name(type);
+  const float h = ImGui::GetFrameHeight();
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##key_type", ImVec2(width, h));
+  const bool hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemClicked()) {
+    ImGui::OpenPopup("##key_type_menu");
+  }
+  if (hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip(for_keys ? "Key Type of the selected keys: Key, or Breakdown (timed as one movement with the "
+                                 "keys either side)" :
+                                 "Key Type of new keys: Key, or Breakdown (timed as one movement with the keys "
+                                 "either side)");
+  }
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p, p + ImVec2(width, h), ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    style.FrameRounding);
+  const ImVec2 icon = p + ImVec2(style.FramePadding.x + h * 0.3f, h * 0.5f);
+  if (type == KeyType::Breakdown && !(for_keys && sel.mixed_type)) {
+    breakdown_draw(dl, icon, h * 0.32f, false);
+  }
+  else {
+    key_draw(dl, icon, h * 0.26f, KEY_SHAPE_SMOOTH, COL_KEY);
+  }
+  dl->PushClipRect(p, p + ImVec2(width - h * 0.7f, h), true);
+  dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 0.6f, style.FramePadding.y),
+              ImGui::GetColorU32(ImGuiCol_Text), name);
+  dl->PopClipRect();
+  ImGui::RenderArrow(dl, p + ImVec2(width - h * 0.75f, style.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text),
+                     ImGuiDir_Down, 0.8f);
+  if (ImGui::BeginPopup("##key_type_menu")) {
+    key_type_menu_items(C, nullptr);
+    ImGui::EndPopup();
+  }
+}
+
 static void interp_header(Context &C, float width)
 {
   /* Visiting every channel of a big rig each frame costs tens of milliseconds, so the summary is kept until an
@@ -1022,6 +1099,7 @@ static void interp_header(Context &C, float width)
     sel_changes = changes;
     sel_layers = std::move(ids);
   }
+  g_header_sel = sel;
   const KeySettings s = interp_shown(sel);
   const char *name = sel.count > 0 && sel.mixed ? "Mixed" : interp_name(s.interp);
   const float h = ImGui::GetFrameHeight();
@@ -1137,6 +1215,14 @@ static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fi
   dl->AddPolyline(d, 4, edge, ImDrawFlags_Closed, 1.0f);
 }
 
+/* A breakdown: a small circle, light blue, dark blue when selected (Blender's colours). */
+static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected)
+{
+  const float rr = r * 0.6f;
+  dl->AddCircleFilled(c, rr, selected ? COL_BREAKDOWN_SELECTED : COL_BREAKDOWN);
+  dl->AddCircle(c, rr, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+}
+
 static void timeline_header(Area &area, Context &C)
 {
   Document &doc = *C.document;
@@ -1165,6 +1251,8 @@ static void timeline_header(Area &area, Context &C)
   action_menu(C, h * 6.0f);
   ImGui::SameLine(0.0f, pad * 2.0f);
   interp_header(C, h * 6.5f);
+  ImGui::SameLine(0.0f, pad);
+  key_type_header(C, h * 4.5f);
   const float menus_end = ImGui::GetItemRectMax().x;
 
   if (ImGui::BeginPopup("View")) {
@@ -2916,7 +3004,12 @@ static void timeline_body(Area &area, Context &C)
       if (kx < k0.x - kr || kx > p1.x + kr) {
         continue;
       }
-      key_draw(dl, ImVec2(kx, ky), kr, sum.shape, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
+      if (sum.breakdowns == sum.keys) {
+        breakdown_draw(dl, ImVec2(kx, ky), kr, sum.selected > 0);
+      }
+      else {
+        key_draw(dl, ImVec2(kx, ky), kr, sum.shape, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
+      }
     }
     dl->PopClipRect();
   }

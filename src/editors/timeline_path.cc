@@ -108,10 +108,11 @@ static void key_menu(Context &C, const char *name)
     ui_menu_end();
     return;
   }
-  bool mixed_interp = false, mixed_ease = false;
+  bool mixed_interp = false, mixed_ease = false, mixed_type = false;
   motion_path_key_settings(doc, t, frame, [&](KeySettings &s) {
     mixed_interp |= s.interp != current.interp;
     mixed_ease |= s.ease != current.ease;
+    mixed_type |= s.type != current.type;
   });
   if (ui_submenu_begin("Interpolation")) {
     timeline_interp_modes(current, mixed_interp, mixed_ease, false, [&](const OpArgs &set) {
@@ -121,6 +122,16 @@ static void key_menu(Context &C, const char *name)
       }
       operator_call(C, "anim.motion_path_key_interp", args);
     });
+    ui_submenu_end();
+  }
+  if (frame > 0 && ui_submenu_begin("Key Type")) {
+    for (const KeyType type : {KeyType::Key, KeyType::Breakdown}) {
+      if (ui_menu_item(key_type_name(type), nullptr, !mixed_type && current.type == type)) {
+        OpArgs args = target_args(doc, t, frame);
+        args["type"] = key_type_identifier(type);
+        operator_call(C, "anim.motion_path_key_interp", args);
+      }
+    }
     ui_submenu_end();
   }
   ImGui::Separator();
@@ -147,6 +158,13 @@ static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int fr
     args["drawing"] = "1";
   }
   return args;
+}
+
+/* A breakdown key: a small circle, light blue, dark blue when selected. */
+static void breakdown_dot(ImDrawList *dl, ImVec2 c, float r, bool selected)
+{
+  dl->AddCircleFilled(c, r, selected ? IM_COL32(0x1f, 0x5f, 0xd6, 255) : IM_COL32(0x8c, 0xc8, 0xff, 255));
+  dl->AddCircle(c, r, IM_COL32(20, 20, 20, 220), 0, 1.0f);
 }
 
 static void diamond(ImDrawList *dl, ImVec2 c, float r, ImU32 fill, ImU32 edge)
@@ -376,8 +394,13 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
       const float x = x_of(float(k));
       if (x >= keys_x - 8.0f && x <= max.x + 8.0f) {
         const bool sel = motion_path_key_selected(doc, t, k);
-        diamond(dl, ImVec2(x, cy), row_h * 0.28f, sel ? IM_COL32(255, 160, 40, 255) : IM_COL32(240, 240, 240, 255),
-                IM_COL32(20, 20, 20, 220));
+        if (motion_path_key_is_breakdown(doc, t, k)) {
+          breakdown_dot(dl, ImVec2(x, cy), row_h * 0.2f, sel);
+        }
+        else {
+          diamond(dl, ImVec2(x, cy), row_h * 0.28f, sel ? IM_COL32(255, 160, 40, 255) : IM_COL32(240, 240, 240, 255),
+                  IM_COL32(20, 20, 20, 220));
+        }
         if (hovered && std::fabs(io.MousePos.x - x) < 6.0f && std::fabs(io.MousePos.y - cy) < lane_h * 0.5f) {
           key_hit = std::pair{t, k};
         }
@@ -765,6 +788,18 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     }
   }
   std::optional<int> key_hit;
+  /* The span's breakdowns, where its timing reaches them. */
+  for (const int k : s.breakdowns) {
+    const int j = k - s.start;
+    if (j < 0 || j >= int(s.progress.size())) {
+      continue;
+    }
+    const ImVec2 p = to_screen(float(k), s.progress[size_t(j)]);
+    breakdown_dot(dl, p, 4.0f, motion_path_key_selected(doc, t, k));
+    if (hovered && std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y) < 8.0f) {
+      key_hit = k;
+    }
+  }
   for (const int k : {s.start, s.end}) {
     const ImVec2 p = to_screen(float(k), k == s.start ? 0.0f : 1.0f);
     const bool sel = k > 0 && motion_path_key_selected(doc, t, k);

@@ -683,7 +683,7 @@ class _Layer:
         "BEZIER"|"BACK"|"BOUNCE"|"ELASTIC"|"NOISY"|"CYCLE"|"POSE", ease="SINE"|"QUAD"|"CUBIC"|
         "QUART"|"QUINT"|"EXPO"|"CIRC" (how strongly the Ease modes slow), hold, interval,
         overshoot, elastic_amplitude, elastic_period, noise_amplitude, noise_frequency,
-        cycle_back."""
+        cycle_back, type="KEYFRAME"|"BREAKDOWN" (a breakdown's timing is the main keys' either side)."""
         _oanim.layer_keyframe_set(self._id, path, frame, settings)
 
     @property

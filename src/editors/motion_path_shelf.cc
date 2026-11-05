@@ -113,7 +113,7 @@ static const char *brush_tip(PathBrush brush)
     case PathBrush::Edit:
       return "Click a key or a dot to select it (Shift: add or take out; double click: go to its frame). Drag a key "
              "to move it, a dot along its path (proportional editing: O), a selected key's handles to bend the path "
-             "(Alt breaks them). Alt click the path: a key there (Alt drag: and move it; Ctrl: onto the line between "
+             "(Alt breaks them). Alt click the path: a breakdown there (Alt drag: and move it; Ctrl: onto the line between "
              "the keys; Alt Shift: a breakdown). G R S on the selected keys, V their handle types, X deletes them; "
              "Alt S scales the timing around the selection. Shift drag: Blend Speed";
     case PathBrush::Grab:

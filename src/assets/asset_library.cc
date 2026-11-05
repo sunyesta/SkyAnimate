@@ -98,6 +98,9 @@ void preferences_load()
     if (auto v = k.find("ease"); v != k.end() && v->is_string()) {
       ease_from_identifier(v->get<std::string>(), &s.ease);
     }
+    if (auto v = k.find("type"); v != k.end() && v->is_string()) {
+      key_type_from_identifier(v->get<std::string>(), &s.type);
+    }
     const auto number = [&](const char *name, auto &r_value) {
       if (auto v = k.find(name); v != k.end() && v->is_number()) {
         r_value = v->get<std::decay_t<decltype(r_value)>>();
@@ -129,6 +132,7 @@ void preferences_save()
   const NewKeySettings &keys = new_key_settings();
   const KeySettings &s = keys.settings;
   const json new_keys = {{"interp", interp_identifier(s.interp)},
+                         {"type", key_type_identifier(s.type)},
                          {"ease", ease_identifier(s.ease)},
                          {"hold", s.hold},
                          {"interval", s.interval},
