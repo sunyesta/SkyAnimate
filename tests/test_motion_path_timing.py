@@ -379,4 +379,10 @@ u = progress(line, 10)
 assert close(u[8], 1.1) and close(u[9], 1.05) and close(u[10], 1.0), u
 assert close(where(line, 19), (1.05, 0.0))
 
+# --- The chart's ticks are picked and slid whichever brush is chosen ---------------------------------------------------
+for brush in oanim.wm.path_brush_settings()["brushes"]:
+    assert oanim.ops.anim.motion_path_brush_set(brush=brush) == {'FINISHED'}, brush
+    assert oanim.wm.timing_chart_ticks_editable(), ("the chart's ticks edit with " + brush)
+assert oanim.ops.anim.motion_path_brush_set(brush="EDIT") == {'FINISHED'}
+
 print("Motion path timing tests passed")

@@ -34,6 +34,8 @@ float timeline_path_strip_height(Context &C, float row_h);
  * keys' width) and takes its clicks. */
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h);
+/* Whether the strip's ticks are picked and slid with the Motion Path tool's brush in `ts` (every brush). */
+bool timeline_path_strip_ticks_editable(const ToolSettings &ts);
 /* A tick or a blend is being dragged in the strip, or Shift is held: the wheel is the strip's, not the timeline's
  * zoom. */
 bool timeline_path_strip_busy();

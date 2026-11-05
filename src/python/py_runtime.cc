@@ -1564,6 +1564,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return out;
   });
+  m.def("timing_chart_ticks_editable", []() {
+    return timeline_path_strip_ticks_editable(current_context().wm->tool_settings);
+  });
   /* The stretch the timeline's Path Timing panel shows (motion_path_timing_stretch), or None. */
   m.def("motion_path_timing_panel", []() -> py::object {
     Context &C = current_context();

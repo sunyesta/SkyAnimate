@@ -383,6 +383,12 @@ def motion_path_timing():
     return _oanim.motion_path_timing()
 
 
+def timing_chart_ticks_editable():
+    """Test hook: whether the timeline's timing chart lets its ticks be picked and slid with the Motion Path tool's
+    brush now chosen (every brush)."""
+    return _oanim.timing_chart_ticks_editable()
+
+
 def motion_path_timing_panel():
     """The stretch the timeline's Path Timing panel shows: a dict with "label", "layer", "start", "end", "progress" (as
     motion_path_timing gives them) and "sidebar" (whether the timeline's sidebar is open), or None."""

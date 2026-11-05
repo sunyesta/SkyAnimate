@@ -270,6 +270,14 @@ static void blend_update(Context &C, float frame)
   }
 }
 
+bool timeline_path_strip_ticks_editable(const ToolSettings &ts)
+{
+  /* The brush is what a drag on the path does in the viewport; the chart is a place of its own, as the timeline is,
+   * so its ticks are picked and slid whichever brush is chosen. */
+  (void)ts;
+  return true;
+}
+
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h)
 {
@@ -282,7 +290,7 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
-  const bool edit = ts.path_brush == PathBrush::Edit;
+  const bool edit = timeline_path_strip_ticks_editable(ts);
   const float keys_w = std::max(max.x - keys_x, 8.0f);
   const auto x_of = [&](float frame) { return keys_x + (frame - view_start) / span * keys_w; };
   const auto frame_of = [&](float x) { return view_start + (x - keys_x) / keys_w * span; };

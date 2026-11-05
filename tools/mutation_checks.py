@@ -372,6 +372,7 @@ PENDING = [
     ('src/editors/viewport.cc', '    return !alt && on_frame_shown && thing_under ? PathPress::PathOrPick : PathPress::Path;', '    return PathPress::Path;', 'path press: the frame shown picks', 'motion_path_pick'),
     ('src/editors/viewport.cc', '  return thing_under ? PathPress::Pick : PathPress::Deselect;', '  return PathPress::Deselect;', 'path press: off the paths picks', 'motion_path_pick'),
     ('src/editors/viewport.cc', '  if (cached == &drawing && cached_frame == frame && frame != -2 && mask.size() == drawing.points.size()) {', '  if (cached == &drawing && cached_frame == ImGui::GetFrameCount() && mask.size() == drawing.points.size()) {', 'shape handle cache: background run', 'motion_path_pick'),
+    ('src/editors/timeline_path.cc', '  (void)ts;', '  if (ts.path_brush != PathBrush::Edit) { return false; }', 'timing chart: ticks with every brush', 'motion_path_timing'),
 ]
 
 
