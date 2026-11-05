@@ -307,6 +307,14 @@ PENDING = [
      '', 'handle lines pick by what is under them', 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '            under_at(h, seen) ? tip_colors.of(contrast_pick(seen, tip_colors.base)) : tip_colors.base, 1.0f);',
      '            tip_colors.base, 1.0f);', 'handle tips pick by what is under them', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '  if (shift_or_ctrl) {',
+     '  if (false) {', 'Shift and Ctrl presses box-select', 'tests/test_point_drag.py'),
+    ('src/editors/viewport.cc', '        if (d <= reach && d < best) {',
+     '        if (d <= reach) {', 'a press grabs the nearest point', 'tests/test_point_drag.py'),
+    ('src/editors/viewport.cc', '    picked = picked && p < int(drawing.points.size()) && drawing.points[size_t(p)].selected;',
+     '    picked = false;', 'a picked point brings the whole selection', 'tests/test_point_drag.py'),
+    ('src/editors/viewport.cc', '      grab.points = {a, b};',
+     '      grab.points = {a};', 'Edges mode grabs both points', 'tests/test_point_drag.py'),
 ]
 
 

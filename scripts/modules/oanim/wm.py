@@ -399,6 +399,14 @@ def overlay_colors(layer, left=(0.0, 0.0, 0.0), right=(1.0, 1.0, 1.0), split=0.0
                                  bool(handles))
 
 
+def select_press_grab(x, y, zoom=100.0, shift=False, ctrl=False, drag=False):
+    """Test hook: what pressing the Select tool at document point (x, y) grabs, dragging it then moving it as G does,
+    as [(layer id, [points])] (empty: the drag box-selects); zoom is pixels per unit. With drag=True it is picked as a
+    drag picks it (alone, unless already picked) and the result is every edited layer's selected points."""
+    return [(layer, list(points)) for layer, points in
+            _oanim.select_press_grab(float(x), float(y), float(zoom), bool(shift or ctrl), bool(drag))]
+
+
 def canvas_hash(rgba, width, height, background=0.0):
     """Test hook: the fingerprint the viewport takes of a canvas read back (bytes, RGBA); the same picture, the same
     one, so a click that only picks something doesn't make the overlays work their colours out again."""

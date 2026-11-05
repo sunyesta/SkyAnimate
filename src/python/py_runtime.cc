@@ -1182,6 +1182,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
   /* Test hook: the colours the wire and point overlay of layer `id`, and the motion paths' lines, take over a canvas
    * that is `left` left of x = `split` and `right` from there on (document space). */
+  /* Test hook: what pressing the Select tool at a document point grabs to drag; with drag, the selection after. */
+  m.def("select_press_grab", [](float x, float y, float zoom, bool modifier, bool drag) {
+    py::list out;
+    for (const auto &[layer, points] : select_press_grab_test(current_context(), {x, y}, zoom, modifier, drag)) {
+      out.append(py::make_tuple(layer, py::cast(points)));
+    }
+    return out;
+  });
   /* Test hook: canvas_hash of `rgba` (bytes), as the viewport fingerprints a canvas read back. */
   m.def("canvas_hash", [](py::bytes rgba, int width, int height, float bg) {
     const std::string s = rgba;

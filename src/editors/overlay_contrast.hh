@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include "core/math.hh"
@@ -71,6 +72,12 @@ ContrastColors contrast_colors_of(const Color &base);
 struct Document;
 struct Layer;
 struct MotionPath;
+struct Context;
+
+/* Test hook: what a Select-tool press at document point `at` grabs (zoom: pixels per unit, the view centred on 0), as
+ * (layer id, points); with `drag`, picked as dragging it picks, every edited layer's selected points then. */
+std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
+                                                                          bool shift_or_ctrl, bool drag);
 
 /* A piece of a motion path's line (document space) and its colour (ImU32); dashed where it overshoots. */
 struct PathLinePiece {

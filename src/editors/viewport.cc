@@ -322,6 +322,8 @@ struct ModalTransform {
   NumInput num;
   /* Started by dragging a handle: ends when the mouse button is let go. */
   bool tweak = false;
+  /* Started by dragging a point (tweak too): its undo step is a Move. */
+  bool tweak_points = false;
   /* Only handles move: S lengthens and R turns each handle about its own point. */
   bool about_points = false;
   /* Points are dragged along by proportional editing (its circle shows, the wheel sizes it). */
@@ -331,11 +333,22 @@ struct ModalTransform {
   float slide_factor = 0.0f;
 };
 
+/* What a press in the Select tool grabs to drag (Blender's tweak): a point, or in Edges mode a segment's two points.
+ * No layer: the drag box-selects. */
+struct PressGrab {
+  uint64_t layer = 0;
+  std::vector<int> points;
+  ShapeEdge edge{-1, 0};
+  /* How far (pixels) the mouse must go before it moves: further with a pen, so a tap never nudges. */
+  float threshold = 3.0f;
+};
+
 struct ToolDrag {
   bool active = false;
   int area = 0;
   ImVec2 start;
   bool box = false;
+  PressGrab grab;
   /* Draw tool: the stroke so far, and what it will make. */
   InkStroke ink;
   DrawMode ink_mode = DrawMode::Freehand;
@@ -5719,7 +5732,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
 static void modal_end(Context &C, bool confirm)
 {
   if (confirm) {
-    const char *name = g_modal.extrude ? "Extrude" : g_modal.tweak ? "Move Handle" : (g_modal.kind == 'R' ? "Rotate" : g_modal.kind == 'S' ? "Scale" : "Move");
+    const char *name = g_modal.extrude ? "Extrude" : g_modal.tweak && !g_modal.tweak_points ? "Move Handle" : (g_modal.kind == 'R' ? "Rotate" : g_modal.kind == 'S' ? "Scale" : "Move");
     push_undo(C, name);
   }
   else {
@@ -6577,6 +6590,133 @@ static void select_click(Context &C, const ViewMapping &view, float2 mouse_docum
   else if (!io.KeyShift && !io.KeyCtrl) {
     camera.selected = false;
   }
+}
+
+/* What pressing at `mouse` grabs to drag: the nearest shown point within reach (as a click picks it), or in Edges mode
+ * the segment under it, its two points. Shift and Ctrl presses grab nothing: they box-select. */
+static PressGrab select_press_grab(Context &C, const ViewMapping &view, ImVec2 mouse, bool shift_or_ctrl)
+{
+  PressGrab grab;
+  if (shift_or_ctrl) {
+    return grab;
+  }
+  grab.threshold = tablet_state().touching ? 10.0f : 3.0f;
+  const float2 mouse_document = view.to_document(mouse);
+  const bool edges = C.wm->tool_settings.select_mode == SelectMode::Edge;
+  float best = FLT_MAX;
+  for (Layer *layer : editable_layers(C)) {
+    const Transform2D to_document = layer_world_transform(*C.document, layer->id);
+    const float pixel = 1.0f / std::max(view.zoom * to_document.scale(), 1e-6f);
+    const float2 at = to_document.inverted().apply(mouse_document);
+    const Posed shown = posed(*C.document, *layer);
+    if (!edges) {
+      const float reach = pick_pixels(C.document->overlays.point_size);
+      for (int p = 0; p < int(shown.drawing->points.size()); p++) {
+        if (shown.drawing->points[size_t(p)].detail.hidden) {
+          continue;
+        }
+        const float d = distance(shown.drawing->points[size_t(p)].pos, at) / pixel;
+        if (d <= reach && d < best) {
+          best = d;
+          grab.layer = layer->id;
+          grab.points = {p};
+        }
+      }
+      continue;
+    }
+    /* The segment under it, where its line shows (as a click in Edges mode picks it). */
+    const VectorDrawing *wires = posed_wires(shown);
+    const VectorDrawing lines = wires ? *wires : drawing_detail_shown_curves(*shown.drawing);
+    ShapeEdge edge;
+    float t;
+    if (drawing_pick_segment(lines, at, PICK_PIXELS * pixel, &edge, &t)) {
+      if (wires) {
+        int own = -1;
+        for (int i = 0; i <= edge.segment; i++) {
+          own += wires->points[wires->curves[edge.curve].points[i].point].made_by < 0 ? 1 : 0;
+        }
+        edge.segment = std::max(own, 0);
+      }
+      int a, b;
+      curve_segment_points((wires ? *shown.drawing : lines).curves[edge.curve], edge.segment, &a, &b);
+      grab.layer = layer->id;
+      grab.points = {a, b};
+      grab.edge = edge;
+      break;
+    }
+  }
+  return grab;
+}
+
+/* A grab being dragged: what it holds becomes the selection unless it is all picked already (then the whole selection
+ * moves with it). Its layer, or null when it has gone. */
+static Layer *select_press_grab_pick(Context &C, const PressGrab &grab)
+{
+  Layer *layer = layer_find(*C.document, grab.layer);
+  if (!layer) {
+    return nullptr;
+  }
+  VectorDrawing &drawing = layer->drawing;
+  bool picked = true;
+  for (int p : grab.points) {
+    picked = picked && p < int(drawing.points.size()) && drawing.points[size_t(p)].selected;
+  }
+  if (!picked) {
+    for (Layer *editing : editable_layers(C)) {
+      deselect_all(editing->drawing);
+    }
+    for (int p : grab.points) {
+      if (p < int(drawing.points.size())) {
+        drawing.points[size_t(p)].selected = true;
+      }
+    }
+    drawing_expand_selection_by_mode(C, drawing);
+    document_set_active_shape(*C.document, *layer, grab.points.front(), grab.edge);
+    document_camera(*C.document).selected = false;
+  }
+  return layer;
+}
+
+/* Dragging a grab past its threshold: picked as above, then moving as G moves it until the mouse comes up. */
+static bool select_press_grab_move(Context &C, Area &area, const ViewMapping &view, const PressGrab &grab, ImVec2 start)
+{
+  if (!select_press_grab_pick(C, grab)) {
+    return false;
+  }
+  if (!modal_start(C, area, 'G', view.to_document(start))) {
+    return false;
+  }
+  g_modal.tweak = true;
+  g_modal.tweak_points = true;
+  return true;
+}
+
+std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
+                                                                          bool shift_or_ctrl, bool drag)
+{
+  const ViewMapping view{{0.0f, 0.0f}, {1000.0f, 1000.0f}, {0.0f, 0.0f}, zoom};
+  const PressGrab grab = select_press_grab(C, view, view.to_screen(at), shift_or_ctrl);
+  std::vector<std::pair<uint64_t, std::vector<int>>> out;
+  if (!grab.layer) {
+    return out;
+  }
+  if (!drag) {
+    out.push_back({grab.layer, grab.points});
+    return out;
+  }
+  select_press_grab_pick(C, grab);
+  for (Layer *layer : editable_layers(C)) {
+    std::vector<int> picked;
+    for (int p = 0; p < int(layer->drawing.points.size()); p++) {
+      if (layer->drawing.points[size_t(p)].selected) {
+        picked.push_back(p);
+      }
+    }
+    if (!picked.empty()) {
+      out.push_back({layer->id, picked});
+    }
+  }
+  return out;
 }
 
 static void select_box(Context &C, const ViewMapping &view, ImVec2 a, ImVec2 b, HandleDisplay handles)
@@ -13541,6 +13681,8 @@ struct BoneBox {
   bool active = false;
   int area = 0;
   ImVec2 start;
+  /* A point (of a drawing inside) pressed on, not under a bone's end: dragging it moves it. */
+  PressGrab grab;
 };
 static BoneBox g_bone_box;
 
@@ -13669,6 +13811,26 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       return;
     }
     g_bone_box = {true, area.id, io.MousePos};
+    if (!editable_layers(C).empty()) {
+      const std::vector<FamilyHit> parts = pick_family_parts(doc, armature, view, io.MousePos);
+      /* A bone's end wins over a point, a point over a bone's body (as a click picks). */
+      if (parts.empty() || !parts.front().hit.bone || parts.front().hit.part == BonePart::Body) {
+        g_bone_box.grab = select_press_grab(C, view, io.MousePos, io.KeyShift || io.KeyCtrl);
+      }
+    }
+  }
+  if (g_bone_box.active && g_bone_box.area == area.id && g_bone_box.grab.layer &&
+      ImGui::IsMouseDragging(ImGuiMouseButton_Left, g_bone_box.grab.threshold))
+  {
+    const PressGrab grab = g_bone_box.grab;
+    const ImVec2 start = g_bone_box.start;
+    g_bone_box = {};
+    Layer *layer = layer_find(doc, grab.layer);
+    if (layer && !layer->drawing.points[size_t(grab.points.front())].selected) {
+      family_deselect_all(doc, armature);
+    }
+    select_press_grab_move(C, area, view, grab, start);
+    return;
   }
   if (g_bone_box.active && g_bone_box.area == area.id) {
     const ImVec2 d = io.MousePos - g_bone_box.start;
@@ -16021,6 +16183,8 @@ static void viewport_draw_contents(Area &area, Context &C)
           /* Pressing on a shown handle drags it at once, as Blender's tweak does. */
           const HandleHit handle = pick_handle(C, view, io.MousePos, handles_shown(C.document->overlays, ts));
           if (!handle.layer || io.KeyShift || io.KeyCtrl) {
+            /* On a point (an edge in Edges mode): dragging it moves it, a click still just picks. */
+            g_drag.grab = select_press_grab(C, view, io.MousePos, io.KeyShift || io.KeyCtrl);
             break;
           }
           const CurvePoint &cp = handle.layer->drawing.curves[handle.curve].points[handle.index];
@@ -16057,6 +16221,16 @@ static void viewport_draw_contents(Area &area, Context &C)
     const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f);
     switch (ts.tool) {
       case Tool::Select:
+        if (g_drag.grab.layer) {
+          if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, g_drag.grab.threshold)) {
+            const PressGrab grab = g_drag.grab;
+            const ImVec2 start = g_drag.start;
+            g_drag = {};
+            select_press_grab_move(C, area, view, grab, start);
+            return;
+          }
+          break;
+        }
         g_drag.box |= dragging;
         if (g_drag.box) {
           dl->AddRectFilled(g_drag.start, io.MousePos, IM_COL32(0xff, 0xff, 0xff, 20));
