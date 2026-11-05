@@ -749,6 +749,8 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
   }
 }
 
+static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply = true);
+
 /* The Motion Path tool's mouse with Edit. A press on a key or a dot selects it (Shift adds or takes it out, a double
  * click also goes to its frame; on empty space, nothing is selected). Dragging a key moves it, a dot between keys
  * slides it along its path (with proportional editing), a selected key's handle bends the path (Alt breaks the
@@ -1456,6 +1458,15 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     g_path_drag = {};
   }
   if (!doc.motion_paths && !tool) {
+    return;
+  }
+  /* With any brush, Alt click on a bone or a point picks it, Alt Shift adds it, as the Select tool's click does: its
+   * path shows. Its own spot wins over the path's dot drawn on it; elsewhere Alt on the path keeps its meaning. Asked
+   * before there is a path at all: with nothing picked there may be none to draw. */
+  if (tool && hovered && ImGui::GetIO().KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+      !g_path_drag.active && !g_path_slide.active && !g_path_brush.active &&
+      motion_path_pick_click(C, view, ImGui::GetIO().MousePos, ImGui::GetIO().KeyShift))
+  {
     return;
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
@@ -13151,6 +13162,59 @@ static bool point_under(Context &C, const ViewMapping &view, ImVec2 mouse)
   return false;
 }
 
+/* Alt click in the Motion Path tool (Alt Shift: `extend`): the bone (of the active bone layer and its family) or the
+ * point (of the drawings being edited) under the mouse, picked as the Select tool's click picks it, so its path shows.
+ * A point wins over a bone's body, a bone's end over a point, as there. False, nothing done, when there is neither. */
+static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply)
+{
+  Document &doc = *C.document;
+  Layer *armature = document_active_layer(doc);
+  if (armature && !armature->is_bone_layer()) {
+    armature = nullptr;
+  }
+  const std::vector<Layer *> point_layers = editable_layers(C);
+  FamilyHit under;
+  if (armature) {
+    /* Only asking (apply off): the first hit, the cycle through bones on top of each other left as it is. */
+    if (apply) {
+      under = pick_family_cycling(doc, *armature, view, at);
+    }
+    else if (const std::vector<FamilyHit> hits = pick_family_parts(doc, *armature, view, at); !hits.empty()) {
+      under = hits.front();
+    }
+  }
+  const bool on_point = !point_layers.empty() && (!under.hit.bone || under.hit.part == BonePart::Body) &&
+                        point_under(C, view, at);
+  if (!on_point && !under.hit.bone) {
+    return false;
+  }
+  if (!apply) {
+    return true;
+  }
+  if (on_point) {
+    if (!extend && armature) {
+      family_deselect_all(doc, *armature);
+    }
+    /* (It reads Shift itself: held, the point joins the selection.) */
+    select_click(C, view, view.to_document(at), handles_shown(doc.overlays, C.wm->tool_settings));
+  }
+  else {
+    Layer *other = under.layer && under.layer->id != armature->id ? under.layer : nullptr;
+    if (!extend) {
+      family_deselect_all(doc, *armature);
+      for (Layer *l : point_layers) {
+        deselect_all(l->drawing);
+      }
+    }
+    bone_click_select(other ? *other : *armature, under.hit, extend);
+    if (other && !extend && !layer_inside(doc, other->id, armature->id)) {
+      doc.active_layer = other->id;
+    }
+  }
+  push_undo(C, on_point ? "Select" : "Select Bone");
+  return true;
+}
+
 /* The Select tool on a bone layer: a click picks a bone or one of its ends; a drag box-selects
  * the ends inside (Shift adds, Ctrl removes), as Blender's Select Box tool does. */
 struct BoneBox {
@@ -14152,6 +14216,12 @@ static bool layer_pick_wanted(Context &C, const ViewMapping &view)
   }
   if (ts.tool == Tool::Select &&
       pick_handle(C, view, ImGui::GetIO().MousePos, handles_shown(C.document->overlays, ts)).layer)
+  {
+    return false;
+  }
+  /* The Motion Path tool's Alt click on a bone or point picks that instead (motion_path_pick_click). */
+  if (ts.tool == Tool::MotionPath && C.document->motion_paths &&
+      motion_path_pick_click(C, view, ImGui::GetIO().MousePos, false, false))
   {
     return false;
   }
