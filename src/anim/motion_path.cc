@@ -143,6 +143,7 @@ void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v
 
 /* The targets of the dots picked on paths, set by the window (see motion_path_dots_picked). */
 std::vector<MotionPathTarget> g_dots_picked;
+bool g_path_tool = true;
 /* While a MotionPathOnFrame has the document on another frame: the document as shown, what Own Motion holds. */
 const Document *g_shown = nullptr;
 
@@ -481,10 +482,16 @@ void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets)
   g_dots_picked = targets;
 }
 
+void motion_path_tool_on(bool on)
+{
+  g_path_tool = on;
+}
+
 bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target)
 {
-  /* A drawing's path is its layer's origin, which its own (shape) keys never move. */
-  if (!doc.path_own_motion || target.drawing) {
+  /* A drawing's path is its layer's origin, which its own (shape) keys never move; outside the tool nothing is being
+   * edited. */
+  if (!doc.path_own_motion || target.drawing || !g_path_tool) {
     return false;
   }
   if (std::any_of(g_dots_picked.begin(), g_dots_picked.end(), [&](const MotionPathTarget &t) { return t.same(target); }))

@@ -80,6 +80,14 @@ p = path(label)
 h = next(h for h in p["handles"] if h["frame"] == 10)
 assert close(h["in"], (3.5, 1.0)), ("the handle where it was dragged", h)
 
+# --- Outside the tool: only looked at, the real path, the key still picked -------------------------------------
+ops.wm.tool_select()
+p = path(label)
+assert not p["own_motion"] and p["ghost"] == [], "nothing is edited outside the tool"
+assert close(at(p, 10), (6.0, 2.0)), ("the real path", at(p, 10))
+ops.wm.tool_motion_path()
+assert path(label)["own_motion"], "back in the tool: as it was"
+
 # --- Off in the header: the real path --------------------------------------------------------------------------
 doc.path_own_motion = False
 p = path(label)

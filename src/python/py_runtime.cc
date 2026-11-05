@@ -1244,6 +1244,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
     }
     const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    motion_path_tool_on(C.wm->tool_settings.tool == Tool::MotionPath);
     int first = 0, last = 0;
     if (doc.motion_paths && motion_path_range(doc, targets, first, last)) {
       for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
@@ -1256,9 +1257,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["dashed"] = k.dashed;
           pieces.append(d);
         }
+        py::list marks;
+        for (const PathQuietMark &k : motion_path_quiet_marks(doc, p, &under)) {
+          py::dict m;
+          m["frame"] = k.frame;
+          m["kind"] = k.kind == PathQuietMark::Key ? "KEY" : k.kind == PathQuietMark::Breakdown ? "BREAKDOWN" : "DOT";
+          m["color"] = hex(k.fill);
+          m["outline"] = hex(k.outline);
+          marks.append(m);
+        }
         py::dict d;
         d["label"] = motion_path_label(doc, p.target);
         d["pieces"] = pieces;
+        d["marks"] = marks;
         paths.append(d);
       }
     }
@@ -1281,6 +1292,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       dotted.push_back(t);
     }
     motion_path_dots_picked(dotted);
+    motion_path_tool_on(C.wm->tool_settings.tool == Tool::MotionPath);
     for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
       py::dict d;
       d["label"] = motion_path_label(doc, p.target);

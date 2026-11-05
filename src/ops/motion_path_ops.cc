@@ -28,6 +28,7 @@ struct PathDotsSync {
       }
     }
     motion_path_dots_picked(targets);
+    motion_path_tool_on(C.wm && C.wm->tool_settings.tool == Tool::MotionPath);
   }
 };
 

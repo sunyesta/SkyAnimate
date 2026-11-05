@@ -55,6 +55,9 @@ struct MotionPath {
 };
 /* Whether `target`'s path shows only its own motion now: Own Motion is on and one of its own keys or dots is picked. */
 bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target);
+/* Whether the Motion Path tool is on (the window's): Own Motion is for editing with it; outside it paths are only
+ * looked at, the real ones. */
+void motion_path_tool_on(bool on);
 /* The targets of the dots picked on paths (the window's), for Own Motion. */
 void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets);
 /* The paths of `targets` over frames first..last. */

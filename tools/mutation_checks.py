@@ -281,8 +281,6 @@ PENDING = [
      '        const bool at_point = false, at_tip = point_selected || tip_picked;', 'a picked point lights its handles all along', 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '        const bool at_point = point_selected, at_tip = point_selected || tip_picked;',
      '        const bool at_point = point_selected, at_tip = tip_picked;', "a picked point lights its handles' tips", 'tests/test_overlay_colors.py'),
-    ('src/editors/viewport.cc', '        const bool broken = cp.handles_set && !cp.aligned;',
-     '        const bool broken = false;', "broken handles' tips square", 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '        const ImU32 tip = at_tip ? COL_POINT_SELECTED : own;',
      '        const ImU32 tip = at_tip ? picked : own;', 'picked handle tips orange', 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '    out.push_back({from, to, u32_mix(own, picked, (from + to) * 0.5f)});',
@@ -293,6 +291,18 @@ PENDING = [
      '                        document_to_pixels.tx, document_to_pixels.ty})', 'the canvas fingerprint sees the background', 'tests/test_overlay_colors.py'),
     ('src/ops/vector_ops.cc', '        C.document->motion_paths = true;',
      '', 'choosing the Motion Path tool shows paths', 'tests/test_motion_path_own_motion.py'),
+    ('src/editors/viewport.cc', '      g.marks.push_back({p.pos, fill, p.selected ? 0u : IM_COL32(0x10, 0x10, 0x10, 170), r, 1.0f});',
+     '      g.marks.push_back({p.pos, fill, p.selected ? 0u : IM_COL32(0x10, 0x10, 0x10, 170), r, 0.0f});', 'points round', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '      const ImU32 fill = contrast_u32(colors.of(pick), 1.0f);',
+     '      const ImU32 fill = key ? IM_COL32(240, 240, 240, 255) : contrast_u32(colors.of(pick), 1.0f);', "outside the tool, keys the path's colour", 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '      const ContrastPick pick = under && under->at(p.points[i], c) ? contrast_pick(c, colors.base)',
+     '      const ContrastPick pick = false ? contrast_pick(c, colors.base)', 'quiet dots and keys readable on anything', 'tests/test_overlay_colors.py'),
+    ('src/anim/motion_path.cc', '  if (!doc.path_own_motion || target.drawing || !g_path_tool) {',
+     '  if (!doc.path_own_motion || target.drawing) {', 'Own Motion only in the tool', 'tests/test_motion_path_own_motion.py'),
+    ('src/data/vector.cc', '        if (point) {',
+     '        if (false) {', 'a picked point turns both handles', 'tests/test_handles.py'),
+    ('src/data/vector.cc', '  if (length(back) < 1e-4f) {',
+     '  if (false) {', 'folded handles line up along the curve', 'tests/test_handles.py'),
 ]
 
 

@@ -90,6 +90,20 @@ struct PathHandleRun {
 };
 std::vector<PathHandleRun> path_handle_runs(bool tip_picked);
 
+/* Outside the Motion Path tool a path is only looked at: its dots and keys all in its colour (lighter or darker where
+ * hard to see, as its line), keys still diamonds (breakdowns hollow), each outlined in a darker shade. */
+struct PathQuietMark {
+  enum Kind : uint8_t { Dot, Key, Breakdown };
+  int frame = 0;
+  float2 at;
+  Kind kind = Dot;
+  uint32_t fill = 0, outline = 0;
+  /* Frames held still here (one mark for them all). */
+  int held = 1;
+};
+std::vector<PathQuietMark> motion_path_quiet_marks(const Document &doc, const MotionPath &p,
+                                                   const CanvasSample *under);
+
 /* For tests: the wires and points `layer`'s overlay draws (document space, ImU32 colours) over `under`, at `pixel`
  * document units a pixel. */
 struct OverlayColorsTest {

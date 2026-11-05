@@ -2,8 +2,8 @@
 takes #AEAEAE (over something darker) or #6E6E6E (over something lighter). Motion path lines the same with #4D9191,
 #5CA8AE and #3A7070 for the first path; a path's own colour makes its own lighter and darker. Selected stays orange; a
 segment with one end picked fades from orange there to the other end's colour (as Blender's edit mode). Handles are
-light red (#FF9D9D), #FF3737 where picked, outlined in a darker shade of the same red (fading the same way), their tips orange when picked, round on
-smooth points and square on broken ones. A motion path handle keeps its white, fading to orange at a dragged tip."""
+light red (#FF9D9D), #FF3737 where picked, outlined in a darker shade of the same red (fading the same way), their tips orange when picked, all
+round, as points are. A motion path handle keeps its white, fading to orange at a dragged tip."""
 
 import oanim
 
@@ -121,7 +121,7 @@ second = segment(wm.overlay_colors(bend, BLACK, GREY, 0.0)["wires"], 0.0, 1.0)
 assert second and all(w["color_b"] is None and w["color"] == ORANGE for w in second), second[:2]
 bend.select_points([0, 1, 2], False)
 
-# --- Handles: green lines outlined in black, tips round on smooth points, square on broken ones ----------------------
+# --- Handles: green lines outlined in black, tips round ----------------------------------------------------------
 here = (0.0, 1.0)
 _, h_in, h_out = bend.curve_handles(0)[1]
 
@@ -160,11 +160,12 @@ for tip in (h_in, h_out):
     line, _, mark = handle(out, tip)
     assert line["color"] == H_BRIGHT and line["color_b"] == H_BRIGHT, line
     assert mark["color"] == ORANGE, mark
-# Broken (handles set apart, not kept in line): square tips.
+# Broken (handles set apart, not kept in line): round tips too.
 bend.move_handle(0, 1, "OUT", (0.5, 1.3))
 _, h_in, h_out = bend.curve_handles(0)[1]
 out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
-assert not handle(out, h_in)[2]["round"] and not handle(out, h_out)[2]["round"], "a broken point's: square"
+assert handle(out, h_in)[2]["round"] and handle(out, h_out)[2]["round"], "a broken point's: round as well"
+assert all(q["round"] for q in out["points"]), ("points round too", [q for q in out["points"] if not q["round"]])
 
 # Only one tip picked, not its point: that line fades from bright at the tip to dark at the point; the other stays dark.
 bend.select_points([1], False)
@@ -236,5 +237,22 @@ assert wm.canvas_hash(bytes(changed), 8, 8) != wm.canvas_hash(pic, 8, 8), "a pix
 assert wm.canvas_hash(pic, 8, 8, 0.5) != wm.canvas_hash(pic, 8, 8), "the background changed"
 assert wm.canvas_hash(pic, 16, 4) != wm.canvas_hash(pic, 8, 8), "another size"
 assert wm.canvas_at(0.0, 0.0) is None, "nothing read back in a background run"
+
+# --- Outside the Motion Path tool: dots and keys all the path's teal, keys still diamonds ----------------------------
+ops.wm.tool_select()
+assert doc.motion_paths
+marks = point_path(BLACK, BLACK, 0.0)["marks"]
+kinds = {m["kind"] for m in marks}
+assert "KEY" in kinds and "DOT" in kinds, kinds
+own_red = {m["color"] for m in marks}
+assert len(own_red) == 1, ("one colour for dots and keys alike", own_red)
+assert all(m["outline"] == DARKER_OF(m["color"]) for m in marks), "outlined in a darker shade"
+# Over teal: the lighter teal, as the line.
+art.select_points([0])
+assert ops.anim.motion_path_style(color="", layer=str(art.id), point=str(art.point_ids[0])) == {'FINISHED'}
+marks = point_path(BLACK, BLACK, 0.0)["marks"]
+assert {m["color"] for m in marks} == {P_BASE}, marks
+marks = point_path(TEAL, TEAL, 0.0)["marks"]
+assert {m["color"] for m in marks} == {P_LIGHTER}, marks
 
 print("Overlay colours tests passed")
