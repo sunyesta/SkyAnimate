@@ -206,6 +206,8 @@ struct TimelineRowInfo {
  * moves the keys, Ctrl held while dragging (`ripple`) or Alt (`alt`). For tests. */
 bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
                                  bool double_click, bool ripple, bool alt, const std::string &typed);
+/* How many channels' rows the timeline's filters take away (its red "N hidden"). */
+int timeline_hidden_count(Context &C);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */

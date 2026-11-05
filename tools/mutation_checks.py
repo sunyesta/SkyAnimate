@@ -140,6 +140,20 @@ PENDING = [
      '  if (false) {\n    *r_reselect = true;', 'pressing a selected key keeps the selection for a drag', 'tests/test_timeline_mouse.py'),
     ('src/editors/timeline.cc', '  return num.any() ? int(std::lround(num.value(0, float(mouse_offset)))) : mouse_offset;',
      '  return mouse_offset;', 'frames typed set the move', 'tests/test_timeline_mouse.py'),
+    ('src/editors/timeline.cc', '      keep[i] = (kinds & kind) && (doc.timeline_show',
+     '      keep[i] = true && (doc.timeline_show', 'the kinds filter', 'tests/test_timeline_filters.py'),
+    ('src/editors/timeline.cc', '(doc.timeline_show != TIMELINE_SHOW_CHANGED || row_channel_changes(row))',
+     'true', 'Changed leaves out keys holding one value', 'tests/test_timeline_filters.py'),
+    ('src/editors/timeline.cc', 'stack.push_back({full[i].depth, found_above[i] || (folder && !search.empty() && fuzzy_match(full[i].name, search))});',
+     'stack.push_back({full[i].depth, false});', "a folder's name finds what it holds", 'tests/test_timeline_filters.py'),
+    ('src/editors/timeline.cc', '    if (at == name.size()) {\n      return false;',
+     '    if (false) {\n      return false;', 'the search needs its letters in order', 'tests/test_timeline_filters.py'),
+    ('src/editors/timeline.cc', 'if ((!animated && !show_all) ||',
+     'if ((!animated) ||', 'All lists every channel', 'tests/test_timeline_filters.py'),
+    ('src/editors/timeline.cc', 'row.open = open_all || !search.empty() || row_open(',
+     'row.open = open_all || row_open(', 'searching opens folded rows', 'tests/test_timeline_filters.py'),
+    ('src/io/oanim_file.cc', '  doc.timeline_search = get_string(j, "timeline_search", "");',
+     '  doc.timeline_search.clear();', 'the filters are saved', 'tests/test_timeline_filters.py'),
 ]
 
 

@@ -1265,6 +1265,61 @@ void anim_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.timeline_filter";
+    ot.name = "Timeline Filters";
+    ot.description = "Set the timeline's filters (those not given stay): show=ANIMATED (rows for channels with keys), "
+                     "CHANGED (keys that don't all hold one value) or ALL (every channel); kinds: TRANSFORM, BONES, "
+                     "POINTS, OPACITY, SWITCH, MEDIA, OTHER, comma-separated, or ALL; search: a name to look for "
+                     "(its letters in order); only_selected=0/1; clear=1 puts them all back";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      if (op_arg_bool(C, "clear")) {
+        doc.timeline_show = TIMELINE_SHOW_ANIMATED;
+        doc.timeline_kinds = TIMELINE_KIND_ALL;
+        doc.timeline_search.clear();
+      }
+      if (op_has_arg(C, "show")) {
+        const std::string show = op_arg(C, "show");
+        if (show == "ANIMATED" || show == "CHANGED" || show == "ALL") {
+          doc.timeline_show = show == "ALL" ? TIMELINE_SHOW_ALL : show == "CHANGED" ? TIMELINE_SHOW_CHANGED :
+                                                                                      TIMELINE_SHOW_ANIMATED;
+        }
+        else {
+          report(ReportType::Error, "show is ANIMATED, CHANGED or ALL, not " + show);
+          return OpStatus::Cancelled;
+        }
+      }
+      if (op_has_arg(C, "kinds")) {
+        static const std::pair<const char *, uint32_t> KINDS[] = {
+            {"TRANSFORM", TIMELINE_KIND_TRANSFORM}, {"BONES", TIMELINE_KIND_BONES},   {"POINTS", TIMELINE_KIND_POINTS},
+            {"OPACITY", TIMELINE_KIND_OPACITY},     {"SWITCH", TIMELINE_KIND_SWITCH}, {"MEDIA", TIMELINE_KIND_MEDIA},
+            {"OTHER", TIMELINE_KIND_OTHER},         {"ALL", TIMELINE_KIND_ALL}};
+        uint32_t kinds = 0;
+        for (const std::string &part : split_list(op_arg(C, "kinds"))) {
+          const auto it = std::find_if(std::begin(KINDS), std::end(KINDS), [&](const auto &k) { return part == k.first; });
+          if (it == std::end(KINDS)) {
+            report(ReportType::Error, "Not a kind of channel: " + part);
+            return OpStatus::Cancelled;
+          }
+          kinds |= it->second;
+        }
+        doc.timeline_kinds = kinds;
+      }
+      if (op_has_arg(C, "search")) {
+        doc.timeline_search = op_arg(C, "search");
+      }
+      if (op_has_arg(C, "only_selected")) {
+        doc.timeline_only_selected = op_arg_bool(C, "only_selected");
+      }
+      C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.timeline_lock";
     ot.name = "Lock Timeline";
     ot.description = "Keep the layers the timeline shows now, whatever is picked after (lock=1), or follow the "

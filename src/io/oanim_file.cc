@@ -1164,6 +1164,9 @@ std::string oanim_document_to_json(const Document &doc)
            {"timeline_only_selected", doc.timeline_only_selected},
            {"timeline_lock", doc.timeline_lock},
            {"timeline_locked", doc.timeline_locked},
+           {"timeline_show", doc.timeline_show},
+           {"timeline_kinds", doc.timeline_kinds},
+           {"timeline_search", doc.timeline_search},
            {"onion_skin", doc.onion_skin},
            {"onion_mode", Document::rna().find("onion_mode")->items[size_t(doc.onion_mode)].identifier},
            {"onion_before", doc.onion_before},
@@ -3488,6 +3491,9 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
   doc.time_together = get_bool(j, "time_together", false);
   doc.timeline_only_selected = get_bool(j, "timeline_only_selected", true);
   doc.timeline_lock = get_bool(j, "timeline_lock", false);
+  doc.timeline_show = std::clamp(get_int(j, "timeline_show", 0), 0, 2);
+  doc.timeline_kinds = uint32_t(get_int(j, "timeline_kinds", int(TIMELINE_KIND_ALL))) & TIMELINE_KIND_ALL;
+  doc.timeline_search = get_string(j, "timeline_search", "");
   doc.timeline_locked.clear();
   if (const auto it = j.find("timeline_locked"); it != j.end() && it->is_array()) {
     for (const auto &id : *it) {

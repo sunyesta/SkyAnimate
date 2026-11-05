@@ -440,6 +440,11 @@ def timeline_key_press(row, frame, to_frame=None, *, ctrl=False, shift=False, do
                                      bool(shift), bool(double_click), bool(ripple), bool(alt), str(typed))
 
 
+def timeline_hidden():
+    """How many channels' rows the timeline's filters (anim.timeline_filter) take away: its red "N hidden"."""
+    return _oanim.timeline_hidden()
+
+
 def timeline_row_details(as_shown=False):
     """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary

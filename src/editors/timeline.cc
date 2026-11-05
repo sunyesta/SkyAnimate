@@ -1993,9 +1993,11 @@ static bool bone_picked_any(const Bone &b)
   return b.selected || b.select_head || b.select_tail;
 }
 
-/* `layers`: what the timeline shows. `open_all`: every folding row open (for listing them). */
-static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers, Document &doc,
-                                            const std::vector<uint64_t> &pinned_layers, bool open_all = false)
+/* `layers`: what the timeline shows. `open_all`: every folding row open (for listing them). `show_all`: a row
+ * for every channel, keys or not (the filters' All). */
+static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::vector<Layer *> &layers, Document &doc,
+                                                  const std::vector<uint64_t> &pinned_layers, bool open_all,
+                                                  bool show_all)
 {
   /* Lookups by an index while the rows are worked out (they change no layers). */
   const LayerIndexScope layer_index(doc);
@@ -2035,7 +2037,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     listed.kinds &= ~uint32_t(KEY_POINTS);
     for (const ChannelRef &ref : layer_filtered_channels(*l, listed)) {
       const bool animated = ref.scalar ? ref.scalar->animated() : ref.vector->animated();
-      if (!animated || channel_kind(ref.path) == KEY_POINTS || (keep && !keep(ref.path))) {
+      if ((!animated && !show_all) || channel_kind(ref.path) == KEY_POINTS || (keep && !keep(ref.path))) {
         continue;
       }
       KeyFilter f = base;
@@ -2077,7 +2079,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
       all.push_back(l);
     }
   }
-  if (keyed(all, KeyFilter{}) || !pinned.empty()) {
+  if (keyed(all, KeyFilter{}) || !pinned.empty() || (show_all && !layers.empty())) {
     add("Summary", all, KeyFilter{}, 0, "", false, false, 0);
     rows.back().summary = true;
   }
@@ -2117,7 +2119,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     property_rows(l, KeyFilter{KEY_LAYER | KEY_SIMULATION, false}, depth, false, false,
                   [](const std::string &path) { return path.rfind("bones[", 0) != 0; });
     const KeyFilter points{KEY_POINTS, false};
-    if (keyed({l}, points)) {
+    if ((show_all && l->has_drawing() && !l->drawing.points.empty()) || keyed({l}, points)) {
       /* Keyed as a whole drawing: all its points, whichever are selected. */
       if (l->key_whole_drawing) {
         add("Drawing", {l}, points, depth, "", false, false, 0);
@@ -2133,7 +2135,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     const bool any_picked = std::any_of(l->bones.begin(), l->bones.end(), bone_picked_any);
     const bool only_picked = doc.timeline_only_selected && any_picked;
     const KeyFilter bones{KEY_BONES, only_picked};
-    if (keyed({l}, bones)) {
+    if ((show_all && !l->bones.empty()) || keyed({l}, bones)) {
       if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0)) {
         for (const Bone &b : l->bones) {
           const KeyFilter one = bone_filter(b, KEY_BONES, false);
@@ -2141,7 +2143,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
           if (only_picked && !red) {
             continue;
           }
-          if (keyed({l}, one) &&
+          if ((show_all || keyed({l}, one)) &&
               add(b.name, {l}, one, depth + 1, "bone:" + id + ":" + std::to_string(b.id), red, red, 0))
           {
             property_rows(l, one, depth + 2, false, red);
@@ -2167,7 +2169,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
       shown_under(shown_under, l, under);
       if (!shown.contains(&l)) {
         /* A group holding shown layers: dimmed, for where they are. */
-        if (!under.empty() && keyed(under, KeyFilter{})) {
+        if (!under.empty() && (show_all || keyed(under, KeyFilter{}))) {
           if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), true, false, l.id)) {
             rows.back().dim = true;
             self(self, l.children, depth + 1);
@@ -2178,7 +2180,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         }
         continue;
       }
-      if (!keyed(under, KeyFilter{})) {
+      if (!show_all && !keyed(under, KeyFilter{})) {
         continue;
       }
       if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), picked(l), false, l.id)) {
@@ -2190,7 +2192,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   tree(tree, doc.layers, 0);
   /* The camera and the document's Simulation, last. */
   for (Layer *l : layers) {
-    if ((l->id == CAMERA_LAYER_ID || l->id == SIMULATION_LAYER_ID) && keyed({l}, KeyFilter{})) {
+    if ((l->id == CAMERA_LAYER_ID || l->id == SIMULATION_LAYER_ID) && (show_all || keyed({l}, KeyFilter{}))) {
       const bool camera = l->id == CAMERA_LAYER_ID;
       if (add(camera ? "Camera" : "Simulation", {l}, KeyFilter{}, 0, camera ? "camera" : "simulation",
               camera && l->selected, false, 0))
@@ -2198,6 +2200,171 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
         property_rows(l, KeyFilter{}, 1, false, false);
       }
     }
+  }
+  return rows;
+}
+
+/* Whether `name` has the letters of `search` in order, whatever their case (Blender's fuzzy match). */
+static bool fuzzy_match(const std::string &name, const std::string &search)
+{
+  size_t at = 0;
+  for (const char c : search) {
+    if (c == ' ') {
+      continue;
+    }
+    const char want = char(std::tolower(static_cast<unsigned char>(c)));
+    while (at < name.size() && char(std::tolower(static_cast<unsigned char>(name[at]))) != want) {
+      at++;
+    }
+    if (at == name.size()) {
+      return false;
+    }
+    at++;
+  }
+  return true;
+}
+
+/* The kind of channel a row is, for the filters (0: a folder, which shows what's in it). */
+static uint32_t row_timeline_kind(const ChannelRow &row)
+{
+  if (row.media) {
+    return TIMELINE_KIND_MEDIA;
+  }
+  const std::string &path = row.filter.path;
+  if (path.empty() || path.back() == '.') {
+    return row.filter.kinds == KEY_POINTS ? uint32_t(TIMELINE_KIND_POINTS) : 0u;
+  }
+  if (path == "switch") {
+    return TIMELINE_KIND_SWITCH;
+  }
+  switch (channel_kind(path)) {
+    case KEY_BONE_ANGLE:
+    case KEY_BONE_TRANSFORM:
+    case KEY_CONSTRAINTS:
+      return TIMELINE_KIND_BONES;
+    case KEY_POINTS:
+      return TIMELINE_KIND_POINTS;
+    case KEY_OPACITY:
+      return TIMELINE_KIND_OPACITY;
+    case KEY_LAYER_ANGLE:
+      return TIMELINE_KIND_TRANSFORM;
+    case KEY_LAYER_TRANSFORM:
+      return path == "position" || path == "scale" || path == "shear" ? TIMELINE_KIND_TRANSFORM : TIMELINE_KIND_OTHER;
+    default:
+      return TIMELINE_KIND_OTHER;
+  }
+}
+
+/* Whether a channel's keys change it (don't all hold one value): the filters' Changed. */
+static bool row_channel_changes(const ChannelRow &row)
+{
+  const std::string &path = row.filter.path;
+  if (row.layers.size() != 1 || path.empty() || path.back() == '.') {
+    return true;
+  }
+  ChannelRef ch;
+  if (!layer_channel(*row.layers[0], path, &ch)) {
+    return true;
+  }
+  if (ch.scalar) {
+    const auto &keys = ch.scalar->keys;
+    return std::any_of(keys.begin(), keys.end(), [&](const Key<float> &k) {
+      return std::fabs(k.value - keys.front().value) > 1e-6f;
+    });
+  }
+  if (ch.vector) {
+    const auto &keys = ch.vector->keys;
+    return std::any_of(keys.begin(), keys.end(), [&](const Key<float2> &k) {
+      return std::fabs(k.value.x - keys.front().value.x) > 1e-6f || std::fabs(k.value.y - keys.front().value.y) > 1e-6f;
+    });
+  }
+  return true;
+}
+
+/* The timeline's rows with its filters: built whole (every folder open), each channel's row kept when it is of a
+ * kind shown, changes (for Changed) and its name, or a folder's above it, has the search's letters; a folder is
+ * kept with anything inside it; then folded as the project keeps them (not while searching, so what's found
+ * shows). `r_hidden`: how many channels' rows the filters take away. */
+static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<Layer *> &layers, Document &doc,
+                                            const std::vector<uint64_t> &pinned_layers, bool open_all = false,
+                                            int *r_hidden = nullptr)
+{
+  if (r_hidden) {
+    *r_hidden = 0;
+  }
+  const uint32_t kinds = doc.timeline_kinds & TIMELINE_KIND_ALL;
+  const std::string &search = doc.timeline_search;
+  const bool filtering = doc.timeline_show != TIMELINE_SHOW_ANIMATED || kinds != TIMELINE_KIND_ALL || !search.empty();
+  if (!filtering) {
+    return channel_rows_built(area, layers, doc, pinned_layers, open_all, false);
+  }
+  std::vector<ChannelRow> full =
+      channel_rows_built(area, layers, doc, pinned_layers, true, doc.timeline_show == TIMELINE_SHOW_ALL);
+  const size_t n = full.size();
+  /* Whether a folder above each row has the search's letters (then all it holds is found). */
+  std::vector<bool> found_above(n, false);
+  std::vector<std::pair<int, bool>> stack;
+  for (size_t i = 0; i < n; i++) {
+    while (!stack.empty() && stack.back().first >= full[i].depth) {
+      stack.pop_back();
+    }
+    found_above[i] = !stack.empty() && stack.back().second;
+    const bool folder = !full[i].fold.empty() && !full[i].summary && full[i].name != "Pinned";
+    stack.push_back({full[i].depth, found_above[i] || (folder && !search.empty() && fuzzy_match(full[i].name, search))});
+  }
+  std::vector<bool> keep(n, false);
+  int hidden = 0;
+  for (size_t i = n; i-- > 0;) {
+    const ChannelRow &row = full[i];
+    const uint32_t kind = row_timeline_kind(row);
+    bool inside = false;
+    for (size_t j = i + 1; j < n && full[j].depth > row.depth; j++) {
+      inside = inside || keep[j];
+    }
+    if (row.summary) {
+      keep[i] = true;
+    }
+    else if (row.media && row.media_part == 1) {
+      keep[i] = i > 0 && keep[i - 1];
+    }
+    else if (kind != 0) {
+      const std::string &name = row.media ? std::string("Clips") : row.name;
+      keep[i] = (kinds & kind) && (doc.timeline_show != TIMELINE_SHOW_CHANGED || row_channel_changes(row)) &&
+                (search.empty() || found_above[i] || fuzzy_match(name, search));
+      keep[i] = keep[i] || inside;
+      hidden += keep[i] ? 0 : 1;
+    }
+    else {
+      keep[i] = inside;
+    }
+  }
+  /* A media row's lower half follows its upper half (worked out after it, going backwards). */
+  for (size_t i = 1; i < n; i++) {
+    if (full[i].media && full[i].media_part == 1) {
+      keep[i] = keep[i - 1];
+    }
+  }
+  if (r_hidden) {
+    *r_hidden = hidden;
+  }
+  std::vector<ChannelRow> rows;
+  int folded_at = -1;
+  for (size_t i = 0; i < n; i++) {
+    if (!keep[i]) {
+      continue;
+    }
+    ChannelRow row = std::move(full[i]);
+    if (folded_at >= 0 && row.depth > folded_at) {
+      continue;
+    }
+    folded_at = -1;
+    if (!row.fold.empty()) {
+      row.open = open_all || !search.empty() || row_open(area, row.fold, row.fold_default);
+      if (!row.open) {
+        folded_at = row.depth;
+      }
+    }
+    rows.push_back(std::move(row));
   }
   return rows;
 }
@@ -2242,6 +2409,15 @@ bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, b
   C.undo->push("Move Keys", doc);
   channel_keys_changed();
   return true;
+}
+
+int timeline_hidden_count(Context &C)
+{
+  Area area;
+  ui_bind_project(C.document, C.undo);
+  int hidden = 0;
+  channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), false, &hidden);
+  return hidden;
 }
 
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
@@ -2312,7 +2488,9 @@ static void timeline_body(Area &area, Context &C)
 
   /* Channel rows: Pinned, All, then each animated (active or selected) layer, as Blender's Dope
    * Sheet lists the selected objects. The names sit in a column on the left. */
-  std::vector<ChannelRow> rows = channel_rows(area, timeline_shown_layers(C), doc, timeline_pinned_layer_ids(C));
+  int rows_hidden = 0;
+  std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), doc, timeline_pinned_layer_ids(C), false, &rows_hidden);
   const float font_size = ImGui::GetFontSize();
   /* Wide enough for a property's name ("arm: Dynamics: Angle Bounce"); its edge drags. */
   const float names_w = std::clamp(area.timeline_names_w > 0.0f ? area.timeline_names_w : font_size * 13.0f,
@@ -3365,11 +3543,84 @@ static void timeline_body(Area &area, Context &C)
     ImGui::SameLine();
     if (icon_button("##timeline_lock", Icon::Lock, doc.timeline_lock,
                     "Lock\nKeep the layers shown now, whatever is picked after (saved with the project)", "",
-                    Joined::Last))
+                    Joined::Middle))
     {
       operator_call(C, "anim.timeline_lock");
     }
+    ImGui::SameLine();
+    const bool filtered = doc.timeline_show != TIMELINE_SHOW_ANIMATED || doc.timeline_kinds != TIMELINE_KIND_ALL;
+    if (icon_button("##timeline_filters", Icon::Menu, filtered,
+                    "Filters\nWhich channels get rows: Animated (keyed), Changed (keys that don't all hold one value) "
+                    "or All; and which kinds",
+                    "", Joined::Last))
+    {
+      ImGui::OpenPopup("##timeline_filters_menu");
+    }
     ImGui::PopStyleVar();
+    /* The search fills the rest of the names column's top. */
+    ImGui::SameLine(0.0f, 4.0f);
+    const float search_w = k0.x - 6.0f - ImGui::GetCursorScreenPos().x;
+    if (search_w > font_size * 2.0f) {
+      char text[128];
+      std::snprintf(text, sizeof(text), "%s", doc.timeline_search.c_str());
+      ImGui::SetNextItemWidth(search_w);
+      if (ImGui::InputTextWithHint("##timeline_search", "Search", text, sizeof(text))) {
+        operator_call(C, "anim.timeline_filter", {{"search", text}});
+      }
+    }
+    if (ImGui::BeginPopup("##timeline_filters_menu")) {
+      const char *show_names[] = {"Animated", "Changed", "All"};
+      const char *show_ids[] = {"ANIMATED", "CHANGED", "ALL"};
+      const char *show_tips[] = {"Rows for the channels with keys", "Rows for the channels whose keys don't all hold one value",
+                                 "Rows for every channel, keys or not"};
+      for (int i = 0; i < 3; i++) {
+        if (ImGui::RadioButton(show_names[i], doc.timeline_show == i)) {
+          operator_call(C, "anim.timeline_filter", {{"show", show_ids[i]}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", show_tips[i]);
+        }
+      }
+      ImGui::Separator();
+      static const std::tuple<const char *, uint32_t, const char *> KINDS[] = {
+          {"Transform", TIMELINE_KIND_TRANSFORM, "TRANSFORM"}, {"Bones", TIMELINE_KIND_BONES, "BONES"},
+          {"Points", TIMELINE_KIND_POINTS, "POINTS"},          {"Opacity", TIMELINE_KIND_OPACITY, "OPACITY"},
+          {"Switch", TIMELINE_KIND_SWITCH, "SWITCH"},          {"Media", TIMELINE_KIND_MEDIA, "MEDIA"},
+          {"Other", TIMELINE_KIND_OTHER, "OTHER"}};
+      for (const auto &[label, bit, id] : KINDS) {
+        bool on = (doc.timeline_kinds & bit) != 0;
+        if (ImGui::Checkbox(label, &on)) {
+          std::string list;
+          for (const auto &[l2, b2, id2] : KINDS) {
+            if (b2 == bit ? on : (doc.timeline_kinds & b2) != 0) {
+              list += (list.empty() ? "" : ",") + std::string(id2);
+            }
+          }
+          operator_call(C, "anim.timeline_filter", {{"kinds", list}});
+        }
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Show Everything")) {
+        operator_call(C, "anim.timeline_filter", {{"clear", "1"}});
+      }
+      ImGui::EndPopup();
+    }
+    /* What the filters take away, in red under the rows: clicked, they all go back. */
+    if (rows_hidden > 0) {
+      const float top = std::max(row_top(rows.size()), rows_top);
+      if (top + row_h <= p1.y) {
+        const std::string label = std::to_string(rows_hidden) + " hidden";
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + 6.0f, top));
+        if (ImGui::InvisibleButton("##timeline_hidden", ImVec2(names_w - 12.0f, row_h))) {
+          operator_call(C, "anim.timeline_filter", {{"clear", "1"}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("Rows the filters and the search take away: click to show everything");
+        }
+        ImGui::GetWindowDrawList()->AddText(ImVec2(p0.x + 6.0f + font_size, top + (row_h - font_size) * 0.5f),
+                                            IM_COL32(0xff, 0x70, 0x70, 255), label.c_str());
+      }
+    }
     ImGui::SetCursorScreenPos(back);
   }
 

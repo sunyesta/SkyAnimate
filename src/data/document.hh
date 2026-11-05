@@ -82,6 +82,20 @@ struct SwitchLink {
   bool operator==(const SwitchLink &) const = default;
 };
 
+/* What the timeline's rows show (Document::timeline_show) and the kinds of channel it filters by
+ * (Document::timeline_kinds). */
+enum TimelineShow : int { TIMELINE_SHOW_ANIMATED = 0, TIMELINE_SHOW_CHANGED = 1, TIMELINE_SHOW_ALL = 2 };
+enum TimelineKind : uint32_t {
+  TIMELINE_KIND_TRANSFORM = 1 << 0, /* a layer's (or the camera's) position, rotation, scale, shear */
+  TIMELINE_KIND_BONES = 1 << 1,
+  TIMELINE_KIND_POINTS = 1 << 2, /* a drawing's points (Drawing, Points) */
+  TIMELINE_KIND_OPACITY = 1 << 3,
+  TIMELINE_KIND_SWITCH = 1 << 4,
+  TIMELINE_KIND_MEDIA = 1 << 5, /* a Media layer's clips */
+  TIMELINE_KIND_OTHER = 1 << 6, /* visibility, draw order, masks, Simulation, the rest */
+  TIMELINE_KIND_ALL = 0x7f,
+};
+
 struct Document {
   /* The viewports' overlays (kept as they are through undo, as Blender's are). */
   ViewportOverlays overlays;
@@ -126,6 +140,12 @@ struct Document {
   bool timeline_only_selected = true;
   bool timeline_lock = false;
   std::vector<uint64_t> timeline_locked;
+  /* The timeline's filters: which channels get rows (Animated: those with keys; Changed: those whose keys don't
+   * all hold one value; All: every channel, keys or not), the kinds shown (TIMELINE_KIND_* bits) and a name to
+   * look for (fuzzy, as Blender's: its letters in order). */
+  int timeline_show = 0;
+  uint32_t timeline_kinds = 0x7f;
+  std::string timeline_search;
   /* Onion skins (the timeline's toggle beside the record button, and its popover): the drawings being
    * edited as they are on frames before and after this one, wireframes only in a colour per side,
    * fading with distance. Never rendered. `onion_step` is for Frames: every so many frames. */
