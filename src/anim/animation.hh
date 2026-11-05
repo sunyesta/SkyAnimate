@@ -349,6 +349,8 @@ struct KeyFrameSummary {
   int selected = 0;
   /* How many of the keys are breakdowns (drawn as a small circle when all are). */
   int breakdowns = 0;
+  /* How many are Key Together's or Key Whole Drawing's fillers (drawn grey and hollow when all are). */
+  int fillers = 0;
   /* The family of the keys' modes (yes/no channels, always Step, only count when there is
    * nothing else). */
   KeyShape shape = KEY_SHAPE_STEP;

@@ -198,14 +198,21 @@ struct TimelineRowInfo {
   bool summary = false;
   /* A group not shown itself, listed dimmed for the shown layers inside it. */
   bool dim = false;
-  /* The frames it shows keys on. */
+  /* The frames it shows keys on, and those whose keys are all fillers (drawn grey and hollow). */
   std::vector<int> frames;
+  std::vector<int> filler_frames;
 };
 /* A press on the key at `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them) with the timeline's
  * click and drag (`ctrl`, `shift`: held as it is pressed): dragged to `to_frame` (or by the frames `typed`) when it
  * moves the keys, Ctrl held while dragging (`ripple`) or Alt (`alt`). For tests. */
 bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,
                                  bool double_click, bool ripple, bool alt, const std::string &typed);
+/* The timeline's scroll bar dragged by `frames`: part 0 the bar (pans the view), 1 its left end, 2 its right end
+ * (zooming that side, never closer than 10 frames). Returns the new view. */
+std::pair<float, float> timeline_scrollbar_drag(float start, float end, int part, float frames);
+/* The playback range's bar on the ruler dragged by `frames` from `from_start`..`from_end`: part 0 its start, 1 its
+ * end, 2 the whole bar (its length kept). Start stays at 0 or more and before the end. Returns whether it changed. */
+bool timeline_range_drag(Document &doc, int part, int from_start, int from_end, int frames);
 /* How many channels' rows the timeline's filters take away (its red "N hidden"). */
 int timeline_hidden_count(Context &C);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */

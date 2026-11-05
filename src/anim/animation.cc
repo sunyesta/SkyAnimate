@@ -4800,6 +4800,7 @@ std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &la
       s.keys++;
       s.selected += key.selected ? 1 : 0;
       s.breakdowns += key.type == KeyType::Breakdown ? 1 : 0;
+      s.fillers += key.filler ? 1 : 0;
       if (!ch.constant) {
         const KeyShape shape = interp_key_shape(key.interp);
         s.shape = s.shape_set && s.shape != shape ? KEY_SHAPE_MIXED : shape;

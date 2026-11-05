@@ -256,6 +256,43 @@ static void view_frame_all(Area &area, const Document &doc)
   area.view_end = float(doc.frame_end) + margin;
 }
 
+std::pair<float, float> timeline_scrollbar_drag(float start, float end, int part, float frames)
+{
+  /* The bar's ends zoom that side, never closer than 10 frames; the bar itself pans. */
+  constexpr float MIN_SPAN = 10.0f;
+  if (part == 1) {
+    start = std::min(start + frames, end - MIN_SPAN);
+  }
+  else if (part == 2) {
+    end = std::max(end + frames, start + MIN_SPAN);
+  }
+  else {
+    start += frames;
+    end += frames;
+  }
+  return {start, end};
+}
+
+bool timeline_range_drag(Document &doc, int part, int from_start, int from_end, int frames)
+{
+  int start = from_start, end = from_end;
+  if (part == 0) {
+    start = std::clamp(from_start + frames, 0, std::max(0, from_end - 1));
+  }
+  else if (part == 1) {
+    end = std::max(from_end + frames, from_start + 1);
+  }
+  else {
+    const int by = std::max(frames, -from_start);
+    start = from_start + by;
+    end = from_end + by;
+  }
+  const bool changed = start != doc.frame_start || end != doc.frame_end;
+  doc.frame_start = start;
+  doc.frame_end = end;
+  return changed;
+}
+
 static void view_center_current(Area &area, const Document &doc)
 {
   const float half = (area.view_end - area.view_start) * 0.5f;
@@ -1077,7 +1114,7 @@ static void interp_settings_popup(Context &C)
 }
 
 /* The header's mode dropdown and settings button. */
-static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill);
+static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill, ImU32 edge = IM_COL32(0, 0, 0, 200));
 static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected);
 /* The selected keys as the header last saw them (worked out by interp_header, kept until an edit or a click). */
 static SelectedKeys g_header_sel;
@@ -1220,9 +1257,8 @@ static void interp_header(Context &C, float width)
 
 /* A key in the rows, shaped by its mode's family: diamond Smooth, thin diamond Linear, square
  * Step, circle Ease, star Back/Bounce/Elastic, hexagon Noisy/Cycle. */
-static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill)
+static void key_draw(ImDrawList *dl, ImVec2 c, float r, KeyShape shape, ImU32 fill, ImU32 edge)
 {
-  const ImU32 edge = IM_COL32(0, 0, 0, 200);
   switch (shape) {
     case KEY_SHAPE_EASE:
       dl->AddCircleFilled(c, r * 0.85f, fill);
@@ -1270,6 +1306,38 @@ static void breakdown_draw(ImDrawList *dl, ImVec2 c, float r, bool selected)
   const float rr = r * 0.6f;
   dl->AddCircleFilled(c, rr, selected ? COL_BREAKDOWN_SELECTED : COL_BREAKDOWN);
   dl->AddCircle(c, rr, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+}
+
+/* `col` with its alpha times `a`. */
+static ImU32 col_faded(ImU32 col, float a)
+{
+  const ImU32 alpha = ImU32(float((col >> IM_COL32_A_SHIFT) & 0xff) * a + 0.5f);
+  return (col & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+}
+
+/* How a frame's keys look in a row: a filler (Key Together's, Key Whole Drawing's: kept there to hold the rest,
+ * not posed) grey and hollow; a breakdown a small circle; else the key's shape. Outside the playback range,
+ * faint. */
+static void key_summary_draw(ImDrawList *dl, ImVec2 c, float r, const KeyFrameSummary &sum, bool in_range)
+{
+  const float a = in_range ? 1.0f : 0.4f;
+  const bool selected = sum.selected > 0;
+  if (sum.keys > 0 && sum.fillers == sum.keys) {
+    key_draw(dl, c, r, sum.shape, col_faded(selected ? COL_KEY_SELECTED : IM_COL32(0x90, 0x90, 0x90, 255), a),
+             col_faded(IM_COL32(0, 0, 0, 200), a));
+    key_draw(dl, c, r * 0.5f, sum.shape, col_faded(IM_COL32(0x2b, 0x2b, 0x2b, 255), a), IM_COL32(0, 0, 0, 0));
+  }
+  else if (sum.breakdowns == sum.keys && in_range) {
+    breakdown_draw(dl, c, r, selected);
+  }
+  else if (sum.breakdowns == sum.keys) {
+    const float rr = r * 0.6f;
+    dl->AddCircleFilled(c, rr, col_faded(selected ? COL_BREAKDOWN_SELECTED : COL_BREAKDOWN, a));
+    dl->AddCircle(c, rr, col_faded(IM_COL32(0, 0, 0, 200), a), 0, 1.0f);
+  }
+  else {
+    key_draw(dl, c, r, sum.shape, col_faded(selected ? COL_KEY_SELECTED : COL_KEY, a), col_faded(IM_COL32(0, 0, 0, 200), a));
+  }
 }
 
 static void timeline_header(Area &area, Context &C)
@@ -2438,6 +2506,9 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
     if (row.filter.kinds != 0) {
       for (const auto &[frame, summary] : layers_key_summary(row.layers, row.filter)) {
         info.frames.push_back(frame);
+        if (summary.keys > 0 && summary.fillers == summary.keys) {
+          info.filler_frames.push_back(frame);
+        }
       }
     }
     list.push_back(std::move(info));
@@ -2530,26 +2601,27 @@ static void timeline_body(Area &area, Context &C)
     }
   }
 
-  /* Navigation: wheel zooms around the mouse (over the names it scrolls the rows), Ctrl+wheel or
-   * middle-drag pans, Home frames all. */
+  /* Navigation: the wheel scrolls the rows, Ctrl+wheel zooms around the mouse, Shift+wheel (or a sideways wheel)
+   * and middle-drag pan, the scroll bar at the bottom pans and zooms, Home frames all. Over the timing chart the
+   * wheel zooms. */
   float span = area.view_end - area.view_start;
   /* Over the timing chart below, the wheel zooms the timeline too, unless a tick is being dragged there. */
   const bool over_strip = strip_h > 0.0f && !timeline_path_strip_busy() && ImGui::IsWindowHovered() &&
                           ImGui::IsMouseHoveringRect(ImVec2(k0.x, p1.y), ImVec2(p1.x, p1.y + strip_h));
   if (hovered || over_strip) {
-    if (over_names) {
+    if (over_names || (!io.KeyCtrl && !io.KeyShift && !over_strip)) {
       area.channel_scroll -= io.MouseWheel * row_h * 2.0f;
     }
-    else {
+    if (!over_names) {
       const float mouse_frame = area.view_start + (io.MousePos.x - k0.x) / keys_w * span;
-      if (io.MouseWheel != 0.0f && !io.KeyCtrl) {
+      if (io.MouseWheel != 0.0f && (io.KeyCtrl || over_strip)) {
         const float factor = std::pow(0.85f, io.MouseWheel);
         const float new_span = std::clamp(span * factor, 10.0f, 200000.0f);
         const float t = (mouse_frame - area.view_start) / span;
         area.view_start = mouse_frame - t * new_span;
         area.view_end = area.view_start + new_span;
       }
-      const float pan_wheel = io.KeyCtrl ? io.MouseWheel : io.MouseWheelH;
+      const float pan_wheel = io.MouseWheelH + (io.KeyShift && !io.KeyCtrl ? io.MouseWheel : 0.0f);
       if (pan_wheel != 0.0f) {
         const float delta = -pan_wheel * span * 0.1f;
         area.view_start += delta;
@@ -3319,12 +3391,7 @@ static void timeline_body(Area &area, Context &C)
       if (kx < k0.x - kr || kx > p1.x + kr) {
         continue;
       }
-      if (sum.breakdowns == sum.keys) {
-        breakdown_draw(dl, ImVec2(kx, ky), kr, sum.selected > 0);
-      }
-      else {
-        key_draw(dl, ImVec2(kx, ky), kr, sum.shape, sum.selected > 0 ? COL_KEY_SELECTED : COL_KEY);
-      }
+      key_summary_draw(dl, ImVec2(kx, ky), kr, sum, f >= doc.frame_start && f <= doc.frame_end);
     }
     /* Moving keys: how many frames to the keys either side of the selected ones (animBot's). */
     if (g_key_transform.active && g_key_transform.kind != 'D') {
@@ -3523,6 +3590,117 @@ static void timeline_body(Area &area, Context &C)
                         area.view_end - area.view_start, row_h);
   }
 
+  /* The playback range's bar on the ruler: drag an end to set Start or End, the bar to move both (playback loops
+   * inside it). */
+  {
+    static int range_part = -1;
+    static float range_press_x = 0.0f;
+    static int range_from_start = 0, range_from_end = 0;
+    const float bar_top = p0.y + 1.0f, bar_h = std::max(4.0f, ruler_h * 0.22f);
+    const float xs = frame_x(float(doc.frame_start)), xe = frame_x(float(doc.frame_end));
+    const float grip = std::max(6.0f, bar_h * 1.6f);
+    const ImVec2 back = ImGui::GetCursorScreenPos();
+    dl->PushClipRect(ImVec2(k0.x, p0.y), ImVec2(p1.x, p0.y + ruler_h), true);
+    const ImU32 bar_col = range_part >= 0 ? IM_COL32(0x80, 0xb0, 0xff, 230) : IM_COL32(0x5a, 0x86, 0xd0, 200);
+    dl->AddRectFilled(ImVec2(xs, bar_top), ImVec2(xe, bar_top + bar_h), bar_col, 2.0f);
+    for (const float gx : {xs, xe}) {
+      dl->AddRectFilled(ImVec2(gx - grip * 0.5f, bar_top), ImVec2(gx + grip * 0.5f, bar_top + bar_h + 2.0f),
+                        IM_COL32(0xb8, 0xd0, 0xff, 255), 2.0f);
+    }
+    dl->PopClipRect();
+    const auto press = [&](const char *id, ImVec2 a, ImVec2 b, int part, const char *tip) {
+      if (b.x <= k0.x || a.x >= p1.x) {
+        return;
+      }
+      a.x = std::max(a.x, k0.x);
+      b.x = std::min(b.x, p1.x);
+      ImGui::SetCursorScreenPos(a);
+      ImGui::InvisibleButton(id, b - a);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(part == 2 ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_ResizeEW);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+          ImGui::SetTooltip("%s", tip);
+        }
+      }
+      if (ImGui::IsItemActivated()) {
+        range_part = part;
+        range_press_x = io.MousePos.x;
+        range_from_start = doc.frame_start;
+        range_from_end = doc.frame_end;
+      }
+    };
+    press("##range_bar", ImVec2(xs + grip * 0.5f, bar_top), ImVec2(xe - grip * 0.5f, bar_top + bar_h + 2.0f), 2,
+          "Playback range: drag to move it (playback loops inside it)");
+    press("##range_start", ImVec2(xs - grip * 0.5f, bar_top), ImVec2(xs + grip * 0.5f, bar_top + bar_h + 2.0f), 0,
+          "Start: drag to set where playback starts");
+    press("##range_end", ImVec2(xe - grip * 0.5f, bar_top), ImVec2(xe + grip * 0.5f, bar_top + bar_h + 2.0f), 1,
+          "End: drag to set where playback ends");
+    if (range_part >= 0) {
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const int frames = int(std::lround((io.MousePos.x - range_press_x) / keys_w * span));
+        timeline_range_drag(doc, range_part, range_from_start, range_from_end, frames);
+      }
+      else {
+        if (doc.frame_start != range_from_start || doc.frame_end != range_from_end) {
+          C.undo->push(range_part == 0 ? "Change Start" : range_part == 1 ? "Change End" : "Move Range", doc);
+        }
+        range_part = -1;
+      }
+      g_press = {};
+    }
+    ImGui::SetCursorScreenPos(back);
+  }
+  /* The scroll bar under the keys: the view among the frames there are (the range and the view, a margin round
+   * them); drag it to pan, its ends to zoom that side. */
+  {
+    static int scroll_part = -1;
+    const float bar_h = std::max(6.0f, font_size * 0.45f);
+    const float y0 = p1.y - bar_h - 2.0f, y1 = p1.y - 2.0f;
+    const float margin = std::max(10.0f, float(doc.frame_end - doc.frame_start) * 0.1f);
+    const float lo = std::min(area.view_start, float(doc.frame_start) - margin);
+    const float hi = std::max(area.view_end, float(doc.frame_end) + margin);
+    const float track_x0 = k0.x + 4.0f, track_x1 = p1.x - 4.0f;
+    const float track_w = std::max(track_x1 - track_x0, 1.0f);
+    const auto bar_x = [&](float f) { return track_x0 + (f - lo) / std::max(hi - lo, 1.0f) * track_w; };
+    const float bx0 = bar_x(area.view_start), bx1 = std::max(bar_x(area.view_end), bx0 + 12.0f);
+    const ImVec2 back = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(track_x0, y0));
+    ImGui::InvisibleButton("##timeline_scroll", ImVec2(track_w, y1 - y0));
+    const bool over = ImGui::IsItemHovered() || scroll_part >= 0;
+    dl->AddRectFilled(ImVec2(track_x0, y0), ImVec2(track_x1, y1), IM_COL32(0x1c, 0x1c, 0x1c, over ? 200 : 120), bar_h * 0.5f);
+    dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), over ? IM_COL32(0x80, 0x80, 0x80, 230) : IM_COL32(0x60, 0x60, 0x60, 200),
+                      bar_h * 0.5f);
+    const float grip = std::min(8.0f, (bx1 - bx0) * 0.3f);
+    if (over) {
+      dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx0 + grip, y1), IM_COL32(0xb0, 0xb0, 0xb0, 255), bar_h * 0.5f);
+      dl->AddRectFilled(ImVec2(bx1 - grip, y0), ImVec2(bx1, y1), IM_COL32(0xb0, 0xb0, 0xb0, 255), bar_h * 0.5f);
+    }
+    if (ImGui::IsItemActivated()) {
+      const float mx = io.MousePos.x;
+      scroll_part = mx < bx0 || mx > bx1 ? 3 : mx < bx0 + grip ? 1 : mx > bx1 - grip ? 2 : 0;
+      if (scroll_part == 3) {
+        /* Off the bar: the view jumps to centre there. */
+        const float f = lo + (mx - track_x0) / track_w * (hi - lo);
+        const float half = (area.view_end - area.view_start) * 0.5f;
+        area.view_start = f - half;
+        area.view_end = f + half;
+        scroll_part = 0;
+      }
+    }
+    if (scroll_part >= 0) {
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const float frames = io.MouseDelta.x / track_w * (hi - lo);
+        const auto [s, e] = timeline_scrollbar_drag(area.view_start, area.view_end, scroll_part, frames);
+        area.view_start = s;
+        area.view_end = e;
+      }
+      else {
+        scroll_part = -1;
+      }
+      g_press = {};
+    }
+    ImGui::SetCursorScreenPos(back);
+  }
   /* Over the names, beside the ruler: Only Selected and Lock (Blender's Only Show Selected; Moho's lock). */
   {
     const ImVec2 back = ImGui::GetCursorScreenPos();

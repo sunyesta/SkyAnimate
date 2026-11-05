@@ -154,6 +154,14 @@ PENDING = [
      'row.open = open_all || row_open(', 'searching opens folded rows', 'tests/test_timeline_filters.py'),
     ('src/io/oanim_file.cc', '  doc.timeline_search = get_string(j, "timeline_search", "");',
      '  doc.timeline_search.clear();', 'the filters are saved', 'tests/test_timeline_filters.py'),
+    ('src/anim/animation.cc', '      s.fillers += key.filler ? 1 : 0;',
+     '      s.fillers += 0;', 'filler keys counted for their grey hollow look', 'tests/test_timeline_key_fills.py'),
+    ('src/editors/timeline.cc', '    start = std::min(start + frames, end - MIN_SPAN);',
+     '    start = start + frames;', 'the scroll bar never zooms closer than 10 frames', 'tests/test_timeline_navigation.py'),
+    ('src/editors/timeline.cc', '    const int by = std::max(frames, -from_start);',
+     '    const int by = frames;', 'the range never moves before frame 0', 'tests/test_timeline_navigation.py'),
+    ('src/editors/timeline.cc', '    start = std::clamp(from_start + frames, 0, std::max(0, from_end - 1));',
+     '    start = from_start + frames;', 'Start stays before the End', 'tests/test_timeline_navigation.py'),
 ]
 
 

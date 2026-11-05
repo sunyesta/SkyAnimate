@@ -383,6 +383,10 @@ add_test(NAME timeline_mouse
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_mouse.py)
 add_test(NAME timeline_filters
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_filters.py)
+add_test(NAME timeline_key_fills
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_key_fills.py)
+add_test(NAME timeline_navigation
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_navigation.py)
 add_test(NAME remote_control
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_remote_control.py)
 add_test(NAME auto_key_options

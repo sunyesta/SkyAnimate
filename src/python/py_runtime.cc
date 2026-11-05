@@ -434,6 +434,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                                        typed);
   });
   m.def("timeline_hidden", []() { return timeline_hidden_count(current_context()); });
+  m.def("timeline_scrollbar_drag", [](float start, float end, int part, float frames) {
+    return timeline_scrollbar_drag(start, end, part, frames);
+  });
+  m.def("timeline_range_drag", [](int part, int frames) {
+    Context &C = current_context();
+    Document &doc = *C.document;
+    if (timeline_range_drag(doc, part, doc.frame_start, doc.frame_end, frames)) {
+      C.undo->push(part == 0 ? "Change Start" : part == 1 ? "Change End" : "Move Range", doc);
+      return true;
+    }
+    return false;
+  });
   m.def("timeline_rows", [](bool as_shown) {
     py::list result;
     for (const TimelineRowInfo &row : timeline_rows_list(current_context(), as_shown)) {
@@ -449,6 +461,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["summary"] = row.summary;
       d["dim"] = row.dim;
       d["frames"] = row.frames;
+      d["filler_frames"] = row.filler_frames;
       result.append(d);
     }
     return result;
