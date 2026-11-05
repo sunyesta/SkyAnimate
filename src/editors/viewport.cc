@@ -1518,8 +1518,23 @@ std::vector<PathHandleRun> path_handle_pieces(float2 key, float2 tip, bool tip_p
   return out;
 }
 
+bool path_dot_under_handles(float2 at, const std::vector<std::pair<float2, float2>> &handles, float reach)
+{
+  for (const auto &[a, b] : handles) {
+    const float2 ab = b - a;
+    const float len2 = dot(ab, ab);
+    const float t = len2 > 1e-12f ? std::clamp(dot(at - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+    if (length(at - (a + ab * t)) <= reach) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* Before the scene's Start (a path reaching back to the key the shot opens between): see-through. */
 static constexpr float PATH_BEFORE_START = 0.35f;
+/* A motion path handle's line, pixels: thicker than the path's, so lying along it, it reads as a bar over it. */
+static constexpr float PATH_HANDLE_WIDTH = 2.5f;
 static ImU32 u32_faded(ImU32 c, float alpha)
 {
   return (c & 0x00FFFFFFu) | (ImU32(float(c >> 24) * alpha + 0.5f) << 24);
@@ -1729,7 +1744,16 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   const int step = std::max(1, doc.path_step);
   /* With the tool, the path handles of selected position keys. */
   std::vector<std::pair<MotionPathTarget, int>> handle_keys;
+  /* Two layers: lines and plain dots under (0), keys, rings and handles over (1), so a handle lying along the path
+   * reads as one bar over it; the plain dots wait until the handles are known, those a handle covers left out. */
+  dl->ChannelsSplit(2);
+  struct PlainDot {
+    ImVec2 at;
+    ImU32 under, fill;
+  };
+  std::vector<PlainDot> plain_dots;
   for (const MotionPath &p : cache.paths) {
+    dl->ChannelsSetCurrent(0);
     std::vector<ImVec2> screen;
     for (const float2 q : p.points) {
       screen.push_back(view.to_screen(q));
@@ -1791,6 +1815,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
       continue;
     }
+    dl->ChannelsSetCurrent(1);
     /* With the tool, its selected keys (as the timeline has them) outlined. */
     std::map<int, KeyFrameSummary> picked;
     if (tool) {
@@ -1855,8 +1880,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
           }
         }
         else {
-          dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, int(200.0f * dot.a)));
-          dl->AddCircleFilled(s, 2.8f, u32(dot, 1.0f));
+          plain_dots.push_back({s, IM_COL32(20, 20, 20, int(200.0f * dot.a)), u32(dot, 1.0f)});
           (void)fade;
         }
         if (run - i > 1) {
@@ -1920,6 +1944,33 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   const PathHandlesShown *hover_handle = nullptr;
   bool hover_out = false;
   float handle_best = 7.0f * 7.0f;
+  /* Which tip is under the mouse, first: it is drawn bigger. And the lines, to leave out the dots they cover. */
+  std::vector<std::pair<float2, float2>> handle_lines;
+  for (const PathHandlesShown &h : handles.shown) {
+    const ImVec2 k = view.to_screen(h.key + h.offset);
+    for (const bool out : {false, true}) {
+      if (out ? h.last : h.first) {
+        continue;
+      }
+      const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
+      handle_lines.push_back({float2{k.x, k.y}, float2{e.x, e.y}});
+      const float dx = e.x - mouse.x, dy = e.y - mouse.y;
+      if (tool && hovering && dx * dx + dy * dy < handle_best) {
+        handle_best = dx * dx + dy * dy;
+        hover_handle = &h;
+        hover_out = out;
+      }
+    }
+  }
+  dl->ChannelsSetCurrent(0);
+  for (const PlainDot &d : plain_dots) {
+    if (path_dot_under_handles(float2{d.at.x, d.at.y}, handle_lines, PATH_HANDLE_WIDTH * 0.5f + 3.0f)) {
+      continue;
+    }
+    dl->AddCircleFilled(d.at, 3.6f, d.under);
+    dl->AddCircleFilled(d.at, 2.8f, d.fill);
+  }
+  dl->ChannelsSetCurrent(1);
   for (const PathHandlesShown &h : handles.shown) {
     const ImVec2 k = view.to_screen(h.key + h.offset);
     for (const bool out : {false, true}) {
@@ -1929,6 +1980,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
       const bool dragged = g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame;
+      /* Under the mouse (or being dragged): a little bigger and brighter, so it shows what a click takes. */
+      const bool lit = dragged || (hover_handle == &h && hover_out == out);
+      const auto brighten = [lit](ImU32 c) { return lit ? u32_mix(c, IM_COL32(255, 255, 255, 255), 0.3f) : c; };
       /* Violet, no outline: in pieces, each a lighter or darker shade only where hard to see; a picked tip orange
        * there, fading to the violet at the key (as vector handles fade). */
       const float2 key_at = h.key + h.offset, tip_at = (out ? h.out : h.in) + h.offset;
@@ -1937,28 +1991,27 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
                                                        under_at))
       {
         dl->AddLine(ImVec2(k.x + (e.x - k.x) * r.from, k.y + (e.y - k.y) * r.from),
-                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), r.color, 1.5f);
+                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), brighten(r.color),
+                    lit ? PATH_HANDLE_WIDTH + 0.7f : PATH_HANDLE_WIDTH);
       }
       const Color tip_base = dragged ? Color{1.0f, 160.0f / 255.0f, 40.0f / 255.0f, 1.0f}
                                      : color_from_rgb(preferences().path_handle_color);
       Color seen;
       const ImU32 fill = contrast_u32(
           canvas_now_at(tip_at, seen) ? contrast_colors_of(tip_base).of(contrast_pick(seen, tip_base)) : tip_base, 1.0f);
-      /* Round tips: filled once dragged (Aligned or Broken), hollow while Auto. */
+      /* The tip, twice a dot's size inside a thin white ring a gap away (a target, never taken for a path dot):
+       * filled once dragged (Aligned or Broken), hollow while Auto. */
+      const float r = lit ? 5.6f : 4.6f;
       if (h.mode != PathHandles::Auto) {
-        dl->AddCircleFilled(e, 3.6f, fill);
+        dl->AddCircleFilled(e, r, brighten(fill));
       }
       else {
-        dl->AddCircle(e, 3.4f, fill, 0, 1.6f);
+        dl->AddCircle(e, r - 1.0f, brighten(fill), 0, 2.2f);
       }
-      const float dx = e.x - mouse.x, dy = e.y - mouse.y;
-      if (tool && hovering && dx * dx + dy * dy < handle_best) {
-        handle_best = dx * dx + dy * dy;
-        hover_handle = &h;
-        hover_out = out;
-      }
+      dl->AddCircle(e, r + 2.2f, IM_COL32(255, 255, 255, 235), 0, 1.3f);
     }
   }
+  dl->ChannelsMerge();
   if (hover_handle) {
     /* A handle over a dot: the handle, which is only there on a selected key. */
     hover_path = nullptr;

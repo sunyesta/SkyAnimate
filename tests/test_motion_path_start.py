@@ -1,7 +1,8 @@
 """Motion paths start where the animation starts (the Frame Range's Start): frame 0 is the setup pose, not part of the
 shot. With a key on Start the path begins there; without one it reaches back to the last key before Start (frame 0's,
 the setup's, when there is none) so the stretch the shot opens in can still be shaped, the part before Start drawn
-faded. With Start at 0, from 0 as before."""
+faded. With Start at 0, from 0 as before. A point with only a handle picked traces too; path dots a handle lies over
+are left out."""
 
 import oanim
 
@@ -59,5 +60,19 @@ assert first() == 10, "a key on Start"
 # Start at 0: from 0, as before.
 doc.frame_start = 0
 assert first() == 0
+
+# --- A point with only a handle picked traces its path too -----------------------------------------------------------
+ops.mesh.select_none()
+assert wm.motion_paths() == [] or all("point" not in p["label"] for p in wm.motion_paths()), "nothing picked: no point path"
+art.select_handle(0, 0, "OUT")
+labels = [p["label"] for p in wm.motion_paths()]
+assert labels == [art.name + " point 0"], ("its handle picked: the point's path", labels)
+
+# --- A handle lying along the path: the dots under it are left out, so it reads as one bar --------------------------
+line = [(0.0, 0.0, 100.0, 0.0)]
+assert wm.path_dot_under_handles(50.0, 0.0, line), "on the line"
+assert wm.path_dot_under_handles(50.0, 3.5, line), "within its width and a little"
+assert not wm.path_dot_under_handles(50.0, 8.0, line), "beside it: shown"
+assert not wm.path_dot_under_handles(110.0, 0.0, line), "past its tip: shown"
 
 print("Motion path start tests passed")

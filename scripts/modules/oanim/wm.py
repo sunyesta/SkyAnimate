@@ -425,6 +425,12 @@ def canvas_at(x, y):
     return _oanim.canvas_at(float(x), float(y))
 
 
+def path_dot_under_handles(x, y, lines):
+    """Test hook: whether a motion path dot at pixel (x, y) is left out because a handle line ((ax, ay, bx, by) pixels)
+    covers it, so a handle lying along the path reads as one bar."""
+    return _oanim.path_dot_under_handles(float(x), float(y), [tuple(map(float, l)) for l in lines])
+
+
 def path_handle_colors(tip_picked, under=None):
     """Test hook: a motion path handle's line in runs (from, to, "#RRGGBB"), key (0) to tip (1); `under`: the colour
     (r, g, b, 0-1) drawn under all of it (None: nothing read back)."""

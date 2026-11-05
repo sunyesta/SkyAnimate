@@ -1182,6 +1182,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
   /* Test hook: the colours the wire and point overlay of layer `id`, and the motion paths' lines, take over a canvas
    * that is `left` left of x = `split` and `right` from there on (document space). */
+  /* Test hook: whether a path dot is left out under the handle lines ((ax, ay, bx, by) in pixels). */
+  m.def("path_dot_under_handles", [](float x, float y, std::vector<std::tuple<float, float, float, float>> lines) {
+    std::vector<std::pair<float2, float2>> segments;
+    for (const auto &[ax, ay, bx, by] : lines) {
+      segments.push_back({{ax, ay}, {bx, by}});
+    }
+    return path_dot_under_handles({x, y}, segments, 2.5f * 0.5f + 3.0f);
+  });
   /* Test hook: what the overlays key a layer's drawing by. */
   m.def("overlay_drawing_identity", [](uint64_t id) -> uint64_t {
     const Layer *layer = layer_find(*current_context().document, id);

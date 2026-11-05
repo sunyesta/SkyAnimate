@@ -329,6 +329,10 @@ PENDING = [
      '    pick = ContrastPick::Base;', 'path handles shaded where hard to see', 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '  return overlay_mix(kept_fingerprint, overlay_selection_hash(drawing));',
      '  return kept_fingerprint;', 'overlays follow picks without a new revision', 'tests/test_point_drag.py'),
+    ('src/anim/motion_path.cc', '          if ((cp.select_in || cp.select_out) && size_t(cp.point) < handle_picked.size()) {',
+     '          if (false) {', 'a picked handle traces its point', 'tests/test_motion_path_start.py'),
+    ('src/editors/viewport.cc', '    if (length(at - (a + ab * t)) <= reach) {',
+     '    if (length(at - a) <= reach) {', 'dots along a handle line are left out', 'tests/test_motion_path_start.py'),
 ]
 
 

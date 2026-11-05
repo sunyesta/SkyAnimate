@@ -271,8 +271,18 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
       }
     }
     else if (layer->has_drawing() && !layer->key_whole_drawing) {
-      for (const MeshPoint &p : layer->drawing.points) {
-        if (p.selected && p.id && points < MAX_POINTS) {
+      /* A point with one of its handles picked traces too: the handle is part of it. */
+      std::vector<bool> handle_picked(layer->drawing.points.size(), false);
+      for (const Curve &c : layer->drawing.curves) {
+        for (const CurvePoint &cp : c.points) {
+          if ((cp.select_in || cp.select_out) && size_t(cp.point) < handle_picked.size()) {
+            handle_picked[size_t(cp.point)] = true;
+          }
+        }
+      }
+      for (size_t i = 0; i < layer->drawing.points.size(); i++) {
+        const MeshPoint &p = layer->drawing.points[i];
+        if ((p.selected || handle_picked[i]) && p.id && points < MAX_POINTS) {
           add({layer->id, 0, p.id});
           points++;
           any = true;

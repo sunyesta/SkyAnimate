@@ -102,6 +102,9 @@ struct PathHandleRun {
 /* A motion path handle's line from `key` to `tip` (document space) in runs of colour (0 at the key, 1 at the tip):
  * the Preferences' violet, a lighter or darker shade only where what `under` says is there makes it hard to see (no
  * outline); a picked tip orange, fading to the violet at the key. Pieces about `piece` long. */
+/* Whether a path dot at `dot` lies under one of the handle lines (screen space), within `reach`: it is left out, so
+ * a handle along the path reads as one bar. */
+bool path_dot_under_handles(float2 dot, const std::vector<std::pair<float2, float2>> &handles, float reach);
 std::vector<PathHandleRun> path_handle_pieces(float2 key, float2 tip, bool tip_picked, float piece,
                                               const std::function<bool(float2, Color &)> &under);
 
