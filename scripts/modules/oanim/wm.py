@@ -533,8 +533,16 @@ def timeline_rows(changed=False):
 
 def timeline_key_header():
     """Test hook: the timeline header's key group: {"parts": [...] in order, "editing": whether it
-    edits the selected keys (red) rather than setting new keys', "color": (r, g, b)}."""
+    edits keys rather than setting new keys', "mode": "NEW" (grey), "SELECTED" (red: the selected keys, or the
+    Motion Path tool's picked dots' stretches) or "PATH" (teal: with the tool and nothing picked, the stretch under
+    the playhead of the path being edited, "label" and "span" (start, end) saying which), "color": (r, g, b)}."""
     return dict(_oanim.timeline_key_header())
+
+
+def timeline_key_header_call(idname, **args):
+    """Test hook: run operator `idname` (e.g. "anim.keys_interpolation_set", interp="LINEAR") as the timeline's key
+    header does: on what it edits now (timeline_key_header's mode). True when it finished."""
+    return _oanim.timeline_key_header_call(idname, {k: str(val) for k, val in args.items()})
 
 
 def interp_bezier_fit(interp, ease="QUAD"):

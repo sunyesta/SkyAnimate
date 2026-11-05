@@ -353,6 +353,12 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
         dots.push_back(df);
       }
     }
+    MotionPathTarget focus_target;
+    int focus_start = 0, focus_end = 0;
+    if (timeline_key_focus_span(focus_target, focus_start, focus_end) && focus_target.same(t)) {
+      dl->AddRectFilled(ImVec2(x_of(float(focus_start)), top + 1.0f), ImVec2(x_of(float(focus_end)), top + lane_h - 1.0f),
+                        KEY_FOCUS_FILL);
+    }
     const bool all = doc.path_dot_colors == PathDotColors::TimingAll;
     const bool pulling = g_tick.active && g_tick.dragging && g_tick.target.same(t);
     for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {

@@ -433,12 +433,23 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* The timeline's rows with every row open: (depth, name, red, pinned). */
   m.def("timeline_key_header", []() {
     py::dict d;
-    const bool editing = timeline_key_header_editing(current_context());
+    const KeyHeaderFocus focus = timeline_key_header_focus(current_context());
+    static const char *const modes[] = {"NEW", "SELECTED", "PATH"};
     d["parts"] = timeline_key_header_parts();
-    d["editing"] = editing;
-    const uint32_t c = key_header_color(editing, false);
+    d["editing"] = focus.mode != 0;
+    d["mode"] = std::string(modes[focus.mode]);
+    d["label"] = focus.label;
+    d["span"] = py::make_tuple(focus.start, focus.end);
+    const uint32_t c = key_header_color(focus.mode, false);
     d["color"] = py::make_tuple(int(c & 0xff), int((c >> 8) & 0xff), int((c >> 16) & 0xff));
     return d;
+  });
+  m.def("timeline_key_header_call", [](const std::string &idname, const std::map<std::string, std::string> &args) {
+    OpArgs a;
+    for (const auto &[k, val] : args) {
+      a[k] = val;
+    }
+    return timeline_key_header_call(current_context(), idname, a);
   });
   m.def("interp_bezier_fit", [](const std::string &interp, const std::string &ease) -> py::object {
     KeySettings s;

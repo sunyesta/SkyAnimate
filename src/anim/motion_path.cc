@@ -2115,6 +2115,23 @@ bool motion_path_key_selected(const Document &doc, const MotionPathTarget &targe
   return selected;
 }
 
+bool motion_path_stretch_at(const Document &doc, const MotionPathTarget &target, int frame, int &r_start, int &r_end)
+{
+  Layer *layer = layer_find(const_cast<Document &>(doc), target.layer);
+  if (!layer) {
+    return false;
+  }
+  /* Frame 0 is the setup: its key starts the first stretch. */
+  const std::set<int> frames = layers_filtered_key_frames({layer}, motion_path_key_filter(doc, target));
+  const auto it = frames.lower_bound(std::max(frame, 1));
+  if (it == frames.end() || it == frames.begin()) {
+    return false;
+  }
+  r_end = *it;
+  r_start = *std::prev(it);
+  return true;
+}
+
 bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame)
 {
   bool breakdown = false;

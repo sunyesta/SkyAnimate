@@ -36,6 +36,10 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
                          float row_h);
 /* Whether the strip's ticks are picked and slid with the Motion Path tool's brush in `ts` (every brush). */
 bool timeline_path_strip_ticks_editable(const ToolSettings &ts);
+/* The stretch the timeline's key header edits while it follows the path (teal), this frame; false otherwise. */
+bool timeline_key_focus_span(MotionPathTarget &r_target, int &r_start, int &r_end);
+/* Its shade, behind the keys. */
+constexpr ImU32 KEY_FOCUS_FILL = IM_COL32(0x2a, 0xb0, 0xa8, 60);
 /* A tick or a blend is being dragged in the strip, or Shift is held: the wheel is the strip's, not the timeline's
  * zoom. */
 bool timeline_path_strip_busy();

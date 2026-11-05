@@ -428,6 +428,12 @@ std::vector<std::pair<Layer *, std::string>> layers_keyed_at(const std::vector<L
 /* For each keyed frame: how many keys there are, and how many of them are selected. */
 std::map<int, KeyFrameSummary> layers_key_summary(const std::vector<Layer *> &layers, const KeyFilter &filter = {});
 /* Selects (or deselects) every key on frames `first`..`last`. */
+/* The selected flags of the keys on `frame` of the channels passing `filter`. */
+std::vector<bool *> layers_key_selected_flags(const std::vector<Layer *> &layers, int frame, const KeyFilter &filter);
+/* The frames the channels passing `filter` have keys on. */
+std::set<int> layers_filtered_key_frames(const std::vector<Layer *> &layers, const KeyFilter &filter);
+/* The channels passing `filter` (to ask layers_channel_among about). */
+std::set<const void *> layers_filtered_channel_set(const std::vector<Layer *> &layers, const KeyFilter &filter);
 void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select,
                         const KeyFilter &filter = {});
 void layers_deselect_keys(const std::vector<Layer *> &layers);

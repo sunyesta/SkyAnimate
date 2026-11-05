@@ -4574,6 +4574,7 @@ static void motion_path_menus(Context &C, bool hovered)
     if (!wm.path_dots.empty()) {
       menu_operator(C, "Even Spacing", "anim.motion_path_even_spacing");
     }
+    menu_operator(C, "Smooth Arc", "anim.motion_path_smooth_arc");
     if (!picked.empty()) {
       ImGui::Separator();
       OpArgs args = motion_path_target_args(doc, picked.front().first);
@@ -4683,6 +4684,23 @@ static void falloff_glyph(ImDrawList *dl, ImVec2 min, float s, ProportionalFallo
 
 /* Proportional editing in the header, as Blender's: a toggle (O), and a dropdown showing its
  * falloff, with Connected Only, the falloffs and the size. Only for points. */
+static void proportional_buttons(ToolSettings &ts, float h, float arrow_w);
+
+void motion_path_proportional_settings(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  const float h = ImGui::GetFrameHeight();
+  proportional_buttons(ts, h, h * 0.75f);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(h * 5.5f);
+  ImGui::DragFloat("##path_proportional_size", &ts.path_proportional_size, 0.1f, 1.0f, 500.0f, "Influence %.0f frames",
+                   ImGuiSliderFlags_AlwaysClamp);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How many frames either side of a dragged dot slide with it, with proportional editing on "
+                      "(O; the wheel or Page Up / Page Down while dragging), and how far Alt S reaches");
+  }
+}
+
 static void proportional_buttons(ToolSettings &ts, float h, float arrow_w)
 {
   const ImU32 ink = IM_COL32(0xe6, 0xe6, 0xe6, 255);
@@ -5041,132 +5059,9 @@ static void draw_header(Context &C)
 static void motion_path_header(Context &C)
 {
   const float h = ImGui::GetFrameHeight();
-  const std::vector<Layer *> layers = timeline_layers(C);
-  const SelectedKeys sel = layers_selected_keys(layers);
-  static const Interp CHOICES[] = {Interp::Linear,  Interp::Smooth, Interp::EaseIn,  Interp::EaseOut,
-                                   Interp::EaseInOut, Interp::Step,  Interp::Back,    Interp::Bounce,
-                                   Interp::Elastic, Interp::Noisy};
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Interpolation");
-  ImGui::SameLine();
-  const char *shown = sel.count == 0 ? "No key selected" : sel.mixed ? "Mixed" : interp_name(sel.first.interp);
-  /* The option the mouse is over in the open list, previewed by the ball. */
-  static int previewing = -1;
-  int hovered_now = -1;
-  ImGui::BeginDisabled(sel.count == 0);
-  ImGui::SetNextItemWidth(h * 5.5f);
-  if (ImGui::BeginCombo("##path_interp", shown)) {
-    for (int i = 0; i < int(std::size(CHOICES)); i++) {
-      const bool on = sel.count > 0 && !sel.mixed && sel.first.interp == CHOICES[i];
-      if (ImGui::Selectable(interp_name(CHOICES[i]), on)) {
-        operator_call(C, "anim.keys_interpolation_set", {{"interp", interp_identifier(CHOICES[i])}});
-      }
-      if (ImGui::IsItemHovered()) {
-        hovered_now = i;
-      }
-    }
-    ImGui::EndCombo();
-  }
-  ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip("How the selected keys are reached from the key before (click a key, or a dot between keys, to "
-                      "select it)");
-  }
-  previewing = hovered_now;
-
-  /* The ball: across the strip and back to the start, taking as long as the selected key's stretch plays. */
-  KeySettings settings = sel.first;
-  const bool preview = previewing >= 0;
-  if (preview) {
-    settings.interp = CHOICES[previewing];
-  }
-  const bool empty = !preview && (sel.count == 0 || sel.mixed);
-  int span = 12;
-  if (sel.count > 0) {
-    const std::map<int, KeyFrameSummary> keys = layers_key_summary(layers);
-    int before = 0;
-    for (const auto &[frame, summary] : keys) {
-      if (summary.selected > 0) {
-        if (before > 0 || frame > 0) {
-          span = std::max(2, frame - before);
-        }
-        break;
-      }
-      before = frame;
-    }
-  }
-  ImGui::SameLine();
-  const ImVec2 at = ImGui::GetCursorScreenPos();
-  const ImVec2 size(h * 7.0f, h);
-  ImGui::Dummy(size);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How it moves: a ball crossing at that interpolation, the dots its spacing frame by frame, red "
-                      "where fast and blue where slow");
-  }
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(at, at + size, IM_COL32(0x22, 0x22, 0x22, 255), h * 0.3f);
-  if (!empty) {
-    /* Overshooting modes go past the ends: the strip keeps a margin for them. */
-    const float pad = h * 0.6f, y = at.y + size.y * 0.5f;
-    const auto x_of = [&](float v) { return at.x + pad + v * (size.x - 2.0f * pad); };
-    std::vector<float> xs;
-    float fastest = 1e-6f;
-    for (int f = 0; f <= span; f++) {
-      xs.push_back(interp_curve(settings, float(f) / float(span)));
-      if (f > 0) {
-        fastest = std::max(fastest, std::abs(xs[size_t(f)] - xs[size_t(f) - 1]));
-      }
-    }
-    for (int f = 0; f <= span; f++) {
-      const float speed = f > 0 ? std::abs(xs[size_t(f)] - xs[size_t(f) - 1]) / fastest : 0.0f;
-      /* Coloured as the path's dots are. */
-      const Color c = C.document->path_dot_colors == PathDotColors::Speed ? motion_path_speed_color(speed)
-                                                                           : motion_path_time_color(float(f) / float(span));
-      dl->AddCircleFilled(ImVec2(x_of(xs[size_t(f)]), y), 1.8f,
-                          ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.8f)));
-    }
-    const double fps = std::max(1.0, double(C.document->fps));
-    const double seconds = double(span) / fps, pause = 0.35;
-    const float t = float(std::min(1.0, std::fmod(ImGui::GetTime(), seconds + pause) / seconds));
-    /* Step jumps at the end; moving on whole frames, as the animation plays. */
-    const float frame_t = std::floor(t * float(span) + 1e-4f) / float(span);
-    dl->AddCircleFilled(ImVec2(x_of(interp_curve(settings, frame_t)), y), h * 0.28f, IM_COL32(0xf0, 0xf0, 0xf0, 255));
-  }
-  /* The ease's strength, for the modes that have one. */
-  if (sel.count > 0 && !sel.mixed &&
-      (sel.first.interp == Interp::EaseIn || sel.first.interp == Interp::EaseOut ||
-       sel.first.interp == Interp::EaseInOut))
-  {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(h * 4.0f);
-    if (ImGui::BeginCombo("##path_ease", sel.mixed_ease ? "Mixed" : ease_name(sel.first.ease))) {
-      for (int i = 0; i < EASE_COUNT; i++) {
-        if (ImGui::Selectable(ease_name(Ease(i)), !sel.mixed_ease && sel.first.ease == Ease(i))) {
-          operator_call(C, "anim.keys_interpolation_set", {{"ease", ease_identifier(Ease(i))}});
-        }
-      }
-      ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("How strongly it eases, from Sine (gentlest) to Expo (strongest)");
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Smooth Arc")) {
-    operator_call(C, "anim.motion_path_smooth_arc");
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "
-                      "keys either side of it");
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Auto Handles")) {
-    operator_call(C, "anim.motion_path_handles_auto");
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Put the selected keys' path handles back to Auto, as they were before being dragged");
-  }
-  ImGui::SameLine();
+  /* Own Motion, and with a brush other than Edit its size and strength. Interpolation is the timeline's key header
+   * (which follows the path); Smooth Arc, Even Spacing and the handles are in the path's menu; proportional editing
+   * in the timeline's Motion Paths popover. */
   {
     Document &doc = *C.document;
     bool own = doc.path_own_motion;
@@ -5183,31 +5078,7 @@ static void motion_path_header(Context &C)
   }
   /* The brush picked on the shelf, and its settings. */
   ToolSettings &ts = C.wm->tool_settings;
-  if (ts.path_brush == PathBrush::Edit) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    proportional_buttons(ts, h, h * 0.75f);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(h * 5.0f);
-    ImGui::DragFloat("##path_proportional_size", &ts.path_proportional_size, 0.1f, 1.0f, 500.0f,
-                     "Influence %.0f frames", ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("How many frames either side of a dragged dot slide with it, with proportional editing on "
-                        "(the wheel or Page Up / Page Down while dragging), and how far Alt S reaches");
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(C.wm->path_dots.empty());
-    if (ImGui::Button("Even Spacing")) {
-      operator_call(C, "anim.motion_path_even_spacing");
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("The stretches the selected dots are in go along their path at an even speed, the keys "
-                        "staying on their frames");
-    }
-  }
-  else if (ts.path_brush != PathBrush::Edit) {
+  if (ts.path_brush != PathBrush::Edit) {
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();

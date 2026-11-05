@@ -4929,6 +4929,37 @@ int layers_change_selected_keys(const std::vector<Layer *> &layers, const std::f
   return count;
 }
 
+std::vector<bool *> layers_key_selected_flags(const std::vector<Layer *> &layers, int frame, const KeyFilter &filter)
+{
+  std::vector<bool *> out;
+  filtered_for_each(layers, filter, [&](auto &ch) {
+    for (auto &key : ch.keys) {
+      if (key.frame == frame) {
+        out.push_back(&key.selected);
+      }
+    }
+  });
+  return out;
+}
+
+std::set<int> layers_filtered_key_frames(const std::vector<Layer *> &layers, const KeyFilter &filter)
+{
+  std::set<int> out;
+  filtered_for_each(layers, filter, [&](auto &ch) {
+    for (const auto &key : ch.keys) {
+      out.insert(key.frame);
+    }
+  });
+  return out;
+}
+
+std::set<const void *> layers_filtered_channel_set(const std::vector<Layer *> &layers, const KeyFilter &filter)
+{
+  std::set<const void *> out;
+  filtered_for_each(layers, filter, [&](auto &ch) { out.insert(&ch); });
+  return out;
+}
+
 void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select, const KeyFilter &filter)
 {
   filtered_for_each(layers, filter, [&](auto &ch) {

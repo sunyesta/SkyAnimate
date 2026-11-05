@@ -376,6 +376,11 @@ PENDING = [
     ('src/editors/viewport.cc', '         pick_handle(C, view, mouse, handles_shown(C.document->overlays, C.wm->tool_settings)).layer ||', '         false ||', 'path tool: handles count as the drawing', 'motion_path_pick'),
     ('src/editors/viewport.cc', '                        vector_under(C, view, at);', '                        point_under(C, view, at);', 'path tool: a handle click picks it', 'motion_path_pick'),
     ('src/editors/viewport.cc', '  else if (q.on && (std::fabs(mouse.x - q.at.x) > 2.0f || std::fabs(mouse.y - q.at.y) > 2.0f)) {', '  else if (q.on) {', 'path hover: quiet until the mouse moves on', 'motion_path_pick'),
+    ('src/editors/timeline.cc', '        scope->clear();', '        (void)scope;', 'key header: focus keys never into undo', 'key_header_path'),
+    ('src/editors/timeline.cc', '  f.mode = 2;', '  f.mode = 0;', 'key header: teal follows the path', 'key_header_path'),
+    ('src/editors/timeline.cc', '      f.mode = 1;', '      (void)0;', 'key header: picked dots red', 'key_header_path'),
+    ('src/anim/motion_path.cc', '  const auto it = frames.lower_bound(std::max(frame, 1));', '  const auto it = frames.upper_bound(std::max(frame, 1));', 'path stretch at: a key ends its stretch', 'key_header_path'),
+    ('src/editors/timeline.cc', '    return hovered ? IM_COL32(0x2c, 0x86, 0x82, 255) : IM_COL32(0x22, 0x6e, 0x6b, 255);', '    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);', 'key header: teal', 'key_header_path'),
 ]
 
 

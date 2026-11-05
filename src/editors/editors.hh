@@ -210,8 +210,20 @@ struct TimelineRowInfo {
 /* The timeline header's key group, in order, whether it edits the selected keys (red) or sets what
  * new keys get (grey), and its colour either way. */
 std::vector<std::string> timeline_key_header_parts();
-bool timeline_key_header_editing(Context &C);
-uint32_t key_header_color(bool keys_selected, bool hovered);
+/* 0: new keys' (grey), 1: the selected keys' or picked path dots' (red), 2: the path's stretch at the playhead (teal). */
+uint32_t key_header_color(int mode, bool hovered);
+/* What the header's key group edits now: mode as key_header_color's; in the teal mode the stretch (its target's label,
+ * first and last frame). */
+struct KeyHeaderFocus {
+  int mode = 0;
+  std::string label;
+  int start = 0, end = 0;
+};
+KeyHeaderFocus timeline_key_header_focus(Context &C);
+/* Test hook: runs an operator as the header's buttons do (on what it edits now). */
+bool timeline_key_header_call(Context &C, const std::string &idname, const std::map<std::string, std::string> &args);
+/* The Motion Path tool's proportional editing (the timeline's Motion Paths popover). */
+void motion_path_proportional_settings(Context &C);
 /* The right-click key menu's top level for timeline row `row` on `frame`: each item's label and whether it opens. */
 std::vector<std::pair<std::string, bool>> timeline_key_menu_top(Context &C, int row, int frame);
 bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, bool ctrl, bool shift,

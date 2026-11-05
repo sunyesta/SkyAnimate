@@ -151,6 +151,9 @@ int motion_path_key_settings(Document &doc, const MotionPathTarget &target, int 
 int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int frame);
 /* Selects (or deselects) the key on `frame` of the channel that moves the dot; whether it is selected now. */
 bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame);
+/* The stretch of the target's keys (every channel its path's keys are on) that `frame` is in or ends: the keys before
+ * and at its end, stepped or moving. False before its first key's stretch or past its last key. */
+bool motion_path_stretch_at(const Document &doc, const MotionPathTarget &target, int frame, int &r_start, int &r_end);
 /* Whether the target's key on `frame` is a breakdown (drawn as a blue circle). */
 bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame);
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);
