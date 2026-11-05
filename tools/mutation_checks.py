@@ -225,6 +225,16 @@ PENDING = [
      "an action's frame 0 handle saved", 'tests/test_motion_path_setup_handle.py'),
     ('src/anim/motion_path.cc', 'const int start = doc.frame_start <= 1 ? 0 : doc.frame_start,',
      'const int start = std::max(1, doc.frame_start),', "paths start at frame 0, the setup", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '    add(b.scale_keys);',
+     '    add(b.scale_keys); for (const int f : layer_key_frames(*layer)) { if (f > 0) { keys.insert(f); } }', "a bone's row: not its parent's or other bones' keys", 'tests/test_motion_path_own_keys.py'),
+    ('src/anim/motion_path.cc', '      add(layer->drawing.points[size_t(i)].pos_keys);',
+     '      add(layer->drawing.points[size_t(i)].pos_keys); for (const Layer *l = layer_parent(const_cast<Document &>(doc), layer->id); l; l = layer_parent(const_cast<Document &>(doc), l->id)) { for (const int f : layer_key_frames(*l)) { if (f > 0) { keys.insert(f); } } }', "a point's row: not the keys of the bones and layers above", 'tests/test_motion_path_own_keys.py'),
+    ('src/anim/motion_path.cc', '    for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {',
+     '    for (const Layer *l = layer_parent(const_cast<Document &>(doc), layer->id); l; l = layer_parent(const_cast<Document &>(doc), l->id)) { for (const int f : layer_key_frames(*l)) { if (f > 0) { keys.insert(f); } } } for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {', "a layer's row: not its group's keys", 'tests/test_motion_path_own_keys.py'),
+    ('src/anim/motion_path.cc', '        add(knob->position_keys);',
+     '', "a bone a controller plays keeps the knob's keys", 'tests/test_motion_path_own_keys.py'),
+    ('src/anim/motion_path.cc', '  std::erase_if(out, [&](const MotionPathTarget &t) { return motion_path_keys(doc, t).empty(); });',
+     '', 'no timing row with nothing of its own', 'tests/test_motion_path_own_keys.py'),
 ]
 
 

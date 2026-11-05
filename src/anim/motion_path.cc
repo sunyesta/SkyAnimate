@@ -7,6 +7,7 @@
 #include <string>
 
 #include "anim/animation.hh"
+#include "anim/controller.hh"
 #include "anim/deform.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
@@ -325,6 +326,8 @@ std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, co
     });
     return drawing_row && motion_path_stretches(doc, t).empty();
   });
+  /* Nothing of its own to retime: a point only a bone moves. */
+  std::erase_if(out, [&](const MotionPathTarget &t) { return motion_path_keys(doc, t).empty(); });
   return out;
 }
 
@@ -345,37 +348,64 @@ std::vector<int> motion_path_keys(const Document &doc, const MotionPathTarget &t
     }
     return keys;
   }
-  /* Everything that moves it: its own layer's keys (a bone's moved by its knob's actions, too) and those of the
-   * layers above. Frame 0 is the setup, not a key of the animation. */
+  /* Only its own keys: a bone's moves, turns and sizes (and its knob's keys, which play the actions moving it), a
+   * point's moves, a layer's turns, moves and sizes. What moves it from elsewhere (a bone moving a point, a parent
+   * bone or layer) has a row of its own: its keys here would split stretches this row can't retime. Frame 0 is the
+   * setup, not a key of the animation. */
   std::set<int> keys;
-  if (!target.bone && !target.point) {
+  const auto add = [&](const auto &ch) {
+    for (const auto &k : ch.keys) {
+      if (k.frame > 0) {
+        keys.insert(k.frame);
+      }
+    }
+  };
+  const Layer *layer = layer_find(doc, target.layer);
+  if (!layer) {
+    return {};
+  }
+  if (target.bone) {
+    const int i = bone_index(*layer, target.bone);
+    if (i < 0) {
+      return {};
+    }
+    const Bone &b = layer->bones[size_t(i)];
+    add(b.position_keys);
+    add(b.angle_keys);
+    add(b.scale_keys);
+    std::set<std::string> actions;
+    for (const auto &[name, action_keys] : b.position_keys.actions) {
+      actions.insert(name);
+    }
+    for (const auto &[name, action_keys] : b.angle_keys.actions) {
+      actions.insert(name);
+    }
+    for (const auto &[name, action_keys] : b.scale_keys.actions) {
+      actions.insert(name);
+    }
+    for (const std::string &name : actions) {
+      if (const Bone *knob = controller_of_action(*layer, name)) {
+        add(knob->position_keys);
+      }
+    }
+  }
+  else if (target.point) {
+    const int i = point_index(*layer, target.point);
+    if (i >= 0) {
+      add(layer->drawing.points[size_t(i)].pos_keys);
+    }
+  }
+  else {
     /* A layer's path: only the turns, moves and sizes that move it (its opacity or drawing keys aren't keys of its
      * path, and its diamonds' menu reaches only these). */
     KeyFilter filter;
     filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
-    Document &d = const_cast<Document &>(doc);
-    for (Layer *l = layer_find(d, target.layer); l; l = layer_parent(d, l->id)) {
-      for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
-        const auto add = [&](const auto *ch) {
-          if (!ch) {
-            return;
-          }
-          for (const auto &k : ch->keys) {
-            if (k.frame > 0) {
-              keys.insert(k.frame);
-            }
-          }
-        };
-        add(ref.scalar);
-        add(ref.vector);
+    for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {
+      if (ref.scalar) {
+        add(*ref.scalar);
       }
-    }
-    return {keys.begin(), keys.end()};
-  }
-  for (const Layer *l = layer_find(doc, target.layer); l; l = layer_parent(const_cast<Document &>(doc), l->id)) {
-    for (const int f : layer_key_frames(*l)) {
-      if (f > 0) {
-        keys.insert(f);
+      if (ref.vector) {
+        add(*ref.vector);
       }
     }
   }

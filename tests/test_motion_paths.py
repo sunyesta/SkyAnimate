@@ -138,7 +138,9 @@ assert oanim.ops.anim.motion_path_relative(to="SIDEWAYS") == {'CANCELLED'}
 box.select_points([1])
 (p,) = paths()
 assert p["label"] == box.name + " point 1", p["label"]
-assert close(p["points"][0], (2.0, 0.0)) and close(p["points"][10], (3.0, 0.0)), "the point, moved by its layer"
+at = lambda f: p["points"][f - p["first"]]
+assert close(at(10), (2.0, 0.0)) and close(at(20), (3.0, 0.0)), "the point, moved by its layer"
+assert p["keys"] == [], "its layer's keys aren't the point's own"
 box.select_points([1], False)
 
 # --- Pin keeps a path when it isn't selected; a colour of its own ---------------------------------------------

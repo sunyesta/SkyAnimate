@@ -192,7 +192,7 @@ for other in layers:
 two.select_points([0, 1])
 assert ops.wm.tool_motion_path() == {'FINISHED'}
 labels = [t["label"] for t in oanim.wm.motion_path_timing()]
-assert labels[0] == two.name + " point 0", labels
+assert labels == [two.name + " point 1"], ("point 0 has no keys of its own: no row", labels)
 panel = oanim.wm.motion_path_timing_panel()
 assert panel and panel["label"] == two.name + " point 1", ("point 0 has no keys", panel)
 
