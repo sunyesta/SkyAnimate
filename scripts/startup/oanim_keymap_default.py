@@ -138,6 +138,11 @@ KEYMAP = (
     # Timeline: keys, as in Blender's.
     ("Timeline", "anim.keys_transform_move", "G", {}),
     ("Timeline", "anim.keys_transform_scale", "S", {}),
+    # Cascadeur's: a frame more or fewer in the stretch under the playhead.
+    ("Timeline", "anim.span_frame_insert", "EQUAL", {}),
+    ("Timeline", "anim.span_frame_insert", "NUMPAD_PLUS", {}),
+    ("Timeline", "anim.span_frame_remove", "MINUS", {}),
+    ("Timeline", "anim.span_frame_remove", "NUMPAD_MINUS", {}),
     ("Timeline", "anim.keys_duplicate_move", "D", {"shift": True}),
     # Clips picked in a Media layer's row go first; otherwise the selected keys.
     ("Timeline", "media.clips_delete_selected", "X", {}),

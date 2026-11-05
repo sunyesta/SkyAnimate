@@ -543,7 +543,7 @@ void motion_path_operators_register()
                      "(document space), with radius= in document units, strength= (else the brush's own) and "
                      "invert=1 (Ctrl), on the paths traced (or layer=, bone=, point=): Grab "
                      "moves what was under the first point by the move to the last; the others dab at every point";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -620,7 +620,7 @@ void motion_path_operators_register()
                      "proportional=1 slides the dots within size= frames too, by falloff= (the tool's settings when "
                      "left out). Of what a path traces (layer=, bone=, point=, or the first traced); the frame shown "
                      "stays";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -660,7 +660,7 @@ void motion_path_operators_register()
     ot.description = "The stretch frame=N is in (else each selected dot's) goes along its path at an even speed, the "
                      "keys staying on their frames; of what a path traces (layer=, bone=, point=, or the first "
                      "traced)";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -724,7 +724,7 @@ void motion_path_operators_register()
                      "own key there (a drawing's: all its channels'), else its layer's or a group's that moves it "
                      "there. interp=, ease=, hold=, type= (KEYFRAME or BREAKDOWN) and the rest as anim.keys_interpolation_set "
                      "takes them";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -784,7 +784,7 @@ void motion_path_operators_register()
                      "frame=N (a drag's stroke: frames=\"15,16,17\", a blend on each in turn), each dot within radius= frames moving smoothing= (0-1) of the way to the midpoint of its "
                      "neighbours, repeat= times, the keys staying; of what a path traces (layer=, bone=, point=, or "
                      "the first traced). Left out, the settings of the last blend";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -828,7 +828,7 @@ void motion_path_operators_register()
     ot.name = "Path Dot Speed";
     ot.description = "The dot on frame=N goes speed= (1: the stretch's even speed), the rest of its stretch making up "
                      "the time; of what a path traces (layer=, bone=, point=, or the first traced)";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;

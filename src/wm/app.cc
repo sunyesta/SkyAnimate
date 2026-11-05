@@ -80,6 +80,7 @@ static std::string key_type_from_sdl(SDL_Keycode key)
       {"/", "SLASH"},           {"?", "SLASH"},             {"Keypad /", "NUMPAD_SLASH"},
       {".", "PERIOD"},          {"Keypad .", "NUMPAD_PERIOD"},
       {"`", "ACCENT_GRAVE"},    {"~", "ACCENT_GRAVE"},      {"=", "EQUAL"},            {"+", "EQUAL"},
+      {"-", "MINUS"},           {"Keypad +", "NUMPAD_PLUS"}, {"Keypad -", "NUMPAD_MINUS"},
   };
   std::string name = SDL_GetKeyName(key);
   for (const auto &[sdl_name, blender_name] : renames) {

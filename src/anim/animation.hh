@@ -456,6 +456,28 @@ std::set<const void *> time_together_linked(Document &doc, const std::vector<Lay
  * frame apart. Returns how many linked channels moved. */
 int keys_move_selected(Document &doc, const std::vector<Layer *> &layers, const std::function<int(int)> &to,
                        bool ripple, bool together);
+/* Cascadeur's + and -: `amount` frames more (or fewer) in the stretch of each of the layer's channels that the frame is
+ * in (from a key on or before it to the next), the keys after going along; never below one frame. With `together`
+ * and Time Together on, the linked channels keyed on the same two frames take it too, their keys inside through the
+ * same stretch. Returns how many of the layer's channels changed and how many linked ones went along. */
+std::pair<int, int> keys_span_frames_add(Document &doc, Layer &layer, int frame, int amount, bool together);
+/* Match Timing (animBot's key-time copy): the selected layers' and bones' other channels (Time Together's candidates)
+ * keyed on the source layer's frames, stretched over each one's own first to last key; with as many keys as frames
+ * each key goes to its frame, else to the nearest (the nearest wins a frame two reach) and frames none reached are
+ * keyed with what it held there. Returns how many channels changed and how many keys merged. */
+std::pair<int, int> keys_match_timing(Document &doc, Layer &source);
+/* `offset` held so the selected keys move without reaching the unselected keys either side (a frame short; with
+ * Ripple the one after the last goes along), nor frame 0: sliding a stretch keeps its length. */
+int keys_offset_clamp(const std::vector<Layer *> &layers, int offset, bool ripple);
+/* Every key's timing (as a number), to see after a timing edit which keys it changed. */
+struct TimingSnapshot {
+  std::map<const void *, std::vector<std::pair<int, uint32_t>>> keys;
+};
+TimingSnapshot time_together_timing_snapshot(Document &doc);
+/* Each key whose timing changed since `before` gives it to the linked channels' key on its frame, where they are keyed
+ * on the frames of the keys either side and nowhere between (the same stretches): interpolation, hold, type and
+ * Custom speeds alike. Returns how many channels took it. */
+int time_together_timing_follow(Document &doc, const TimingSnapshot &before);
 /* Deletes the selected keys, except frame 0's. Returns how many went. */
 int layers_delete_selected_keys(const std::vector<Layer *> &layers);
 /* Copies the selected keys `offset` frames later (never below 1); the copies become the

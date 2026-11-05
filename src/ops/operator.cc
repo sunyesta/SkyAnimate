@@ -275,7 +275,18 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     const bool mirror = (ot.flag & OPTYPE_MIRROR) && !outer_args;
     const MirrorSelection mirrored = mirror ? mirror_selection_begin(C) : MirrorSelection();
     g_operator_runs++;
+    /* Time Together: the timing edits reach the linked channels (an outer run's does it once). */
+    const auto together_arg = args.find("together");
+    const bool together = (ot.flag & OPTYPE_TIMING) && !outer_args && C.document && C.document->time_together &&
+                          (together_arg == args.end() || together_arg->second != "0");
+    TimingSnapshot timing_before;
+    if (together) {
+      timing_before = time_together_timing_snapshot(*C.document);
+    }
     status = ot.exec(C);
+    if (together && status == OpStatus::Finished) {
+      keys_moved_report(time_together_timing_follow(*C.document, timing_before));
+    }
     if (mirror) {
       mirror_selection_end(C, mirrored);
     }

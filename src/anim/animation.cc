@@ -5262,6 +5262,277 @@ int keys_move_selected(Document &doc, const std::vector<Layer *> &layers, const 
   return followed;
 }
 
+std::pair<int, int> keys_span_frames_add(Document &doc, Layer &layer, int frame, int amount, bool together)
+{
+  if (amount == 0) {
+    return {0, 0};
+  }
+  std::vector<Stretch> sts;
+  std::set<const void *> done;
+  int changed = 0;
+  layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
+    const auto &keys = ch.keys;
+    for (size_t i = 0; i + 1 < keys.size(); i++) {
+      const int a = keys[i].frame, b = keys[i + 1].frame;
+      if (a <= frame && frame < b) {
+        if (b - a + amount < 1) {
+          return;
+        }
+        Stretch st;
+        st.lo = a;
+        st.hi = b;
+        st.map = {{a, a}, {b, b + amount}};
+        st.open = true;
+        st.after = amount;
+        stretches_apply(ch, {&st});
+        done.insert(static_cast<const void *>(&ch));
+        changed++;
+        if (std::find(sts.begin(), sts.end(), st) == sts.end()) {
+          sts.push_back(std::move(st));
+        }
+        return;
+      }
+    }
+  });
+  int followed = 0;
+  if (together && doc.time_together && !sts.empty()) {
+    for (const AnyChannel &c : together_candidates(doc)) {
+      if (done.count(c.id())) {
+        continue;
+      }
+      any_visit(c, [&](auto &ch) {
+        for (const Stretch &st : sts) {
+          if (stretch_linked(ch, st)) {
+            stretches_apply(ch, {&st});
+            followed++;
+            return;
+          }
+        }
+      });
+    }
+  }
+  return {changed, followed};
+}
+
+std::pair<int, int> keys_match_timing(Document &doc, Layer &source)
+{
+  std::set<int> frames;
+  std::set<const void *> own;
+  layer_for_each_channel<false>(source, [&](auto &ch, auto & /*value*/) {
+    own.insert(static_cast<const void *>(&ch));
+    for (const auto &k : ch.keys) {
+      frames.insert(k.frame);
+    }
+  });
+  if (frames.size() < 2) {
+    return {0, 0};
+  }
+  const std::vector<int> from(frames.begin(), frames.end());
+  const float f0 = float(from.front()), span = float(from.back() - from.front());
+  int matched = 0, merged = 0;
+  for (const AnyChannel &c : together_candidates(doc)) {
+    if (own.count(c.id())) {
+      continue;
+    }
+    any_visit(c, [&](auto &ch) {
+      using KeyT = std::decay_t<decltype(ch.keys.front())>;
+      if (ch.keys.size() < 2) {
+        return;
+      }
+      /* The source's frames stretched over this channel's first to last key. */
+      const int t0 = ch.keys.front().frame, t1 = ch.keys.back().frame;
+      std::vector<int> to;
+      for (const int f : from) {
+        const int g = int(std::lround(float(t0) + (float(f) - f0) / span * float(t1 - t0)));
+        if (to.empty() || g != to.back()) {
+          to.push_back(g);
+        }
+      }
+      std::vector<int> now;
+      for (const auto &k : ch.keys) {
+        now.push_back(k.frame);
+      }
+      if (now == to) {
+        return;
+      }
+      const auto old = ch;
+      std::map<int, KeyT> placed;
+      std::map<int, int> distance;
+      if (ch.keys.size() == to.size()) {
+        /* As many keys as frames: each goes to its frame, pose and timing kept. */
+        for (size_t i = 0; i < to.size(); i++) {
+          KeyT k = ch.keys[i];
+          k.frame = to[i];
+          placed[k.frame] = k;
+        }
+      }
+      else {
+        /* Each key to the nearest frame (the nearest key wins a frame two reach)... */
+        for (const KeyT &k : ch.keys) {
+          int best = to.front();
+          for (const int g : to) {
+            if (std::abs(g - k.frame) < std::abs(best - k.frame)) {
+              best = g;
+            }
+          }
+          const int d = std::abs(best - k.frame);
+          if (placed.count(best) && distance[best] <= d) {
+            merged++;
+            continue;
+          }
+          if (placed.count(best)) {
+            merged++;
+          }
+          KeyT moved = k;
+          moved.frame = best;
+          placed[best] = moved;
+          distance[best] = d;
+        }
+        /* ...and the frames no key reached keyed with what the channel held there. */
+        for (const int g : to) {
+          if (!placed.count(g)) {
+            KeyT k = ch.keys.front();
+            k.frame = g;
+            k.value = old.evaluate(g);
+            k.selected = false;
+            k.filler = false;
+            k.filler_inside = false;
+            placed[g] = k;
+          }
+        }
+      }
+      ch.keys.clear();
+      for (auto &[f, k] : placed) {
+        ch.keys.push_back(k);
+      }
+      matched++;
+    });
+  }
+  return {matched, merged};
+}
+
+int keys_offset_clamp(const std::vector<Layer *> &layers, int offset, bool ripple)
+{
+  int lo = INT32_MIN, hi = INT32_MAX;
+  for (Layer *layer : layers) {
+    layer_for_each_channel<false>(*layer, [&](auto &ch, auto & /*value*/) {
+      const auto &keys = ch.keys;
+      size_t last = keys.size();
+      for (size_t i = 0; i < keys.size(); i++) {
+        if (keys[i].selected && keys[i].frame != 0) {
+          last = i;
+        }
+      }
+      for (size_t i = 0; i < keys.size(); i++) {
+        if (!keys[i].selected || keys[i].frame == 0) {
+          continue;
+        }
+        /* Never onto frame 0 or past the unselected key before; the one after too, unless it goes along. */
+        const int before = i > 0 && !keys[i - 1].selected ? keys[i - 1].frame : (i == 0 ? 0 : INT32_MIN);
+        if (before != INT32_MIN) {
+          lo = std::max(lo, before + 1 - keys[i].frame);
+        }
+        lo = std::max(lo, 1 - keys[i].frame);
+        if (i + 1 < keys.size() && !keys[i + 1].selected && !(ripple && i == last)) {
+          hi = std::min(hi, keys[i + 1].frame - 1 - keys[i].frame);
+        }
+      }
+    });
+  }
+  if (lo > hi) {
+    return 0;
+  }
+  return std::clamp(offset, lo, hi);
+}
+
+TimingSnapshot time_together_timing_snapshot(Document &doc)
+{
+  TimingSnapshot snap;
+  layers_walk(doc.layers, [&](Layer &l) {
+    layer_for_each_channel<false>(l, [&](auto &ch, auto & /*value*/) {
+      if (ch.keys.empty()) {
+        return;
+      }
+      auto &keys = snap.keys[static_cast<const void *>(&ch)];
+      for (const auto &k : ch.keys) {
+        keys.push_back({k.frame, key_sig(k, false)});
+      }
+    });
+  });
+  return snap;
+}
+
+/* A channel's key whose timing changed since `before`, with the frames of the keys either side (-1: none). */
+struct TimingEdit {
+  int frame, prev, next;
+  AnyChannel from;
+};
+
+int time_together_timing_follow(Document &doc, const TimingSnapshot &before)
+{
+  std::vector<TimingEdit> edits;
+  std::set<const void *> edited;
+  layers_walk(doc.layers, [&](Layer &l) {
+    layer_for_each_channel<false>(l, [&](auto &ch, auto & /*value*/) {
+      const auto it = before.keys.find(static_cast<const void *>(&ch));
+      if (it == before.keys.end()) {
+        return;
+      }
+      for (size_t i = 0; i < ch.keys.size(); i++) {
+        const auto &k = ch.keys[i];
+        const auto was = std::find_if(it->second.begin(), it->second.end(),
+                                      [&](const auto &p) { return p.first == k.frame; });
+        if (was == it->second.end() || was->second == key_sig(k, false)) {
+          continue;
+        }
+        AnyChannel from;
+        if constexpr (std::is_same_v<std::decay_t<decltype(ch)>, Channel<float>>) {
+          from.s = &ch;
+        }
+        else {
+          from.v = &ch;
+        }
+        edits.push_back({k.frame, i > 0 ? ch.keys[i - 1].frame : -1,
+                         i + 1 < ch.keys.size() ? ch.keys[i + 1].frame : -1, from});
+        edited.insert(static_cast<const void *>(&ch));
+      }
+    });
+  });
+  if (edits.empty()) {
+    return 0;
+  }
+  int followed = 0;
+  for (const AnyChannel &c : together_candidates(doc)) {
+    if (edited.count(c.id())) {
+      continue;
+    }
+    bool changed = false;
+    any_visit(c, [&](auto &ch) {
+      for (const TimingEdit &e : edits) {
+        auto *k = ch.key_at(e.frame);
+        /* Keyed on the same frames around it, and nothing between: the same stretches, timed alike. */
+        if (!k || (e.prev >= 0 && !ch.key_at(e.prev)) || (e.next >= 0 && !ch.key_at(e.next))) {
+          continue;
+        }
+        const int lo = e.prev >= 0 ? e.prev : e.frame, hi = e.next >= 0 ? e.next : e.frame;
+        if (std::any_of(ch.keys.begin(), ch.keys.end(),
+                        [&](const auto &o) { return o.frame > lo && o.frame < hi && o.frame != e.frame; }))
+        {
+          continue;
+        }
+        KeyTiming t;
+        any_visit(e.from, [&](auto &src) { t = key_timing(*src.key_at(e.frame)); });
+        if (key_timing(*k) != t) {
+          key_timing_set(*k, t);
+          changed = true;
+        }
+      }
+    });
+    followed += changed ? 1 : 0;
+  }
+  return followed;
+}
+
 int layers_delete_selected_keys(const std::vector<Layer *> &layers)
 {
   int removed = 0;

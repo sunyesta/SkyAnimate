@@ -23,6 +23,9 @@ enum OperatorFlag : unsigned {
   /* With X mirror editing on, it acts on the selected points' mirror images too (in the same layer,
    * or a sided layer's partner): see mirror_selection_begin. */
   OPTYPE_MIRROR = 1 << 2,
+  /* It changes keys' timing (interpolation, key type, speeds): with Time Together on, the linked channels take the
+   * new timing too (time_together_timing_follow), unless told together=0. */
+  OPTYPE_TIMING = 1 << 3,
 };
 
 /* An option an operator shows in the ViewportActionPanel after it runs (Blender's operator

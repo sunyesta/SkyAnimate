@@ -367,6 +367,7 @@ void keys_moved_report(int followed)
   if (followed > 0) {
     report(ReportType::Info, "Time Together: re-timed " + std::to_string(followed) + " channel" +
                                  (followed == 1 ? "" : "s") + " with it");
+    channel_keys_changed();
   }
 }
 
@@ -446,8 +447,8 @@ void anim_operators_register()
         "EASE_IN, EASE_OUT, EASE_IN_OUT, STEP, BACK, BOUNCE, ELASTIC, NOISY, CYCLE; ease: SINE, QUAD, CUBIC, QUART, "
         "QUINT, EXPO, CIRC; and hold, interval, overshoot, elastic_amplitude, elastic_period, noise_amplitude, "
         "noise_frequency, cycle_back; type: KEYFRAME, BREAKDOWN (the key type, never on frame 0). Only the settings "
-        "given change";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+        "given change. With Time Together, the linked channels' keys take it too (together=0: not)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -522,7 +523,7 @@ void anim_operators_register()
                     });
   anim_operator_add("anim.interpolation_paste", "Paste Interpolation",
                     "Give the selected keys the copied interpolation and settings (their values stay)",
-                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                    OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING, [](Context &C) {
                       if (!g_interp_copied) {
                         report(ReportType::Warning, "Copy a key's interpolation first");
                         return OpStatus::Cancelled;
@@ -1185,18 +1186,88 @@ void anim_operators_register()
                     });
   anim_operator_add("anim.keys_offset", "Move Keys", "Move the selected keys by `frames` (G in the timeline). ripple=1: the keys after them go along (Ctrl). "
                     "With Time Together, the linked channels' keys go through the same stretch (together=0: not, "
-                    "Alt)",
+                    "Alt). slide=1: the keys stop a frame short of the unselected keys either side, so a stretch slides whole "
+                    "(dragging between two selected keys)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
-                      const int frames = op_arg_int(C, "frames", 0);
+                      const bool ripple = op_arg(C, "ripple", "0") == "1";
+                      const int frames = op_arg_bool(C, "slide") ?
+                                             keys_offset_clamp(timeline_layers(C), op_arg_int(C, "frames", 0), ripple) :
+                                             op_arg_int(C, "frames", 0);
                       if (frames == 0) {
                         return OpStatus::Cancelled;
                       }
                       animation_record(*C.document);
                       keys_moved_report(keys_move_selected(*C.document, timeline_layers(C),
                                                            [frames](int f) { return f + frames; },
-                                                           op_arg(C, "ripple", "0") == "1",
-                                                           op_arg(C, "together", "1") != "0"));
+                                                           ripple, op_arg(C, "together", "1") != "0"));
                       animation_evaluate(*C.document, C.document->frame_current);
+                      return OpStatus::Finished;
+                    });
+  anim_operator_add("anim.span_frames_add", "Add Frames to Stretch",
+                    "One frame more (amount=1, + in the timeline) or fewer (amount=-1, -) in the stretch the current "
+                    "frame is in, on the active layer's channels, the keys after going along (never below one frame). "
+                    "With Time Together the linked channels keyed on the same two frames go along (together=0: not)",
+                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                      Document &doc = *C.document;
+                      Layer *layer = document_active_layer(doc);
+                      const int amount = op_arg_int(C, "amount", 1);
+                      if (!layer || amount == 0) {
+                        return OpStatus::Cancelled;
+                      }
+                      animation_record(doc);
+                      const auto [changed, followed] = keys_span_frames_add(
+                          doc, *layer, doc.frame_current, amount, op_arg(C, "together", "1") != "0");
+                      if (changed == 0) {
+                        report(ReportType::Warning, amount < 0 ? "No stretch here to take a frame from (one frame "
+                                                                 "long, or no keys either side)" :
+                                                               "No keys either side of the current frame");
+                        return OpStatus::Cancelled;
+                      }
+                      keys_moved_report(followed);
+                      animation_evaluate(doc, doc.frame_current);
+                      return OpStatus::Finished;
+                    });
+  /* + and - in the timeline (keymap entries take no arguments). */
+  for (const auto &[idname, label, amount] :
+       {std::tuple{"anim.span_frame_insert", "Insert Frame", "1"}, std::tuple{"anim.span_frame_remove", "Remove Frame", "-1"}})
+  {
+    const std::string by = amount;
+    anim_operator_add(idname, label,
+                      by == "1" ? "One frame more in the stretch under the playhead (anim.span_frames_add amount=1)" :
+                                  "One frame fewer in the stretch under the playhead (anim.span_frames_add amount=-1)",
+                      OPTYPE_REGISTER | OPTYPE_UNDO, [by](Context &C) {
+                        OpArgs args{{"amount", by}};
+                        if (C.op_args) {
+                          for (const auto &[k, v] : *C.op_args) {
+                            args.try_emplace(k, v);
+                          }
+                        }
+                        return operator_call(C, "anim.span_frames_add", args);
+                      });
+  }
+  anim_operator_add("anim.match_timing", "Match Timing",
+                    "Key the other selected layers' and selected bones' animated channels on the active layer's "
+                    "frames, stretched over each one's own first to last key, so Time Together links them",
+                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                      Document &doc = *C.document;
+                      Layer *layer = document_active_layer(doc);
+                      if (!layer) {
+                        return OpStatus::Cancelled;
+                      }
+                      animation_record(doc);
+                      const auto [matched, merged] = keys_match_timing(doc, *layer);
+                      if (matched == 0) {
+                        report(ReportType::Warning, "Nothing to match: select animated layers or bones besides the "
+                                                    "active layer, which needs two keys or more");
+                        return OpStatus::Cancelled;
+                      }
+                      report(ReportType::Info, "Match Timing: " + std::to_string(matched) + " channel" +
+                                                   (matched == 1 ? "" : "s") + " keyed on " + layer->name +
+                                                   "'s frames" +
+                                                   (merged > 0 ? " (" + std::to_string(merged) + " keys merged)" :
+                                                                 std::string()));
+                      channel_keys_changed();
+                      animation_evaluate(doc, doc.frame_current);
                       return OpStatus::Finished;
                     });
   anim_operator_add("anim.keys_scale", "Scale Keys",

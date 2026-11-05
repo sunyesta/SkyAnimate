@@ -100,6 +100,18 @@ PENDING = [
      '  if (together) {\n    sts = selected_stretches(layers, to, ripple);', 'Time Together off: just the one', "tests/test_time_together.py"),
     ('src/io/oanim_file.cc', '           {"time_together", doc.time_together},\n',
      '', 'Time Together saved', "tests/test_time_together.py"),
+    ('src/ops/operator.cc', '      keys_moved_report(time_together_timing_follow(*C.document, timing_before));',
+     '      (void)timing_before;', 'timing edits reach the linked channels', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '[&](const auto &o) { return o.frame > lo && o.frame < hi && o.frame != e.frame; }))',
+     '[&](const auto &o) { return o.frame < 0; }))', 'timing goes only to the same stretches', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '          hi = std::min(hi, keys[i + 1].frame - 1 - keys[i].frame);',
+     '          (void)hi;', 'a slid stretch stops a frame short', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '        if (b - a + amount < 1) {\n          return;',
+     '        if (false) {\n          return;', '- never takes a stretch below one frame', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '  if (together && doc.time_together && !sts.empty()) {\n    for (const AnyChannel &c : together_candidates(doc)) {\n      if (done.count(c.id())) {',
+     '  if (together && doc.time_together && sts.empty()) {\n    for (const AnyChannel &c : together_candidates(doc)) {\n      if (done.count(c.id())) {', '+ and - reach the linked channels', "tests/test_time_together.py"),
+    ('src/anim/animation.cc', '      if (ch.keys.size() == to.size()) {',
+     '      if (false) {', 'Match Timing keeps every key when the counts match', "tests/test_time_together.py"),
 ]
 
 

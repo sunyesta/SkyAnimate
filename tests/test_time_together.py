@@ -169,6 +169,106 @@ assert ops.anim.keys_offset(frames="10") == {'FINISHED'}
 assert frames(rig, 'bones["leg"].angle') == [0, 10, 20], frames(rig, 'bones["leg"].angle')
 assert frames(rig, 'bones["arm"].angle') == [0, 5, 20], frames(rig, 'bones["arm"].angle')
 
+# --- Timing edits: the linked keys take the same interpolation, hold and type --------------------------------------
+fresh()
+doc.time_together = True
+a = keyed([10, 20])
+same = keyed([10, 20])
+inner = keyed([5, 10, 20])
+apart = keyed([10, 20])
+only_selected(a, same, inner)
+
+
+def interp(l, f):
+    return next(k for k in l.keyframes("position") if k["frame"] == f)["interp"]
+
+
+pick(a, 10)
+assert ops.anim.keys_interpolation_set(interp="LINEAR") == {'FINISHED'}
+assert interp(a, 10) == "LINEAR"
+assert interp(same, 10) == "LINEAR", "keyed on the same frames: timed alike"
+assert interp(inner, 10) == "SMOOTH", "a key between: not the same stretch"
+assert interp(apart, 10) == "SMOOTH", "an unselected layer: not linked"
+assert ops.anim.keys_interpolation_set(type="BREAKDOWN", hold="2") == {'FINISHED'}
+k = next(k for k in same.keyframes("position") if k["frame"] == 10)
+assert k["type"] == "BREAKDOWN" and k["hold"] == 2, k
+assert ops.ed.undo() == {'FINISHED'}
+assert ops.ed.undo() == {'FINISHED'}
+assert interp(same, 10) == "SMOOTH", "one undo step each"
+pick(a, 10)
+assert ops.anim.keys_interpolation_set(interp="EASE_IN", together="0") == {'FINISHED'}
+assert interp(a, 10) == "EASE_IN" and interp(same, 10) == "SMOOTH", "together=0 (Alt): just the one"
+doc.time_together = False
+assert ops.anim.keys_interpolation_set(interp="STEP") == {'FINISHED'}
+assert interp(same, 10) == "SMOOTH", "off: just the one"
+doc.time_together = True
+
+# --- Sliding a stretch (dragging between two selected keys, slide=1): it keeps its length, a frame short ----------
+fresh()
+doc.time_together = True
+a = keyed([10, 20, 30, 40])
+b = keyed([10, 25, 40])
+only_selected(a, b)
+assert ops.anim.keys_select(frame_start="20", frame_end="30", layers=str(a.id), path="position") == {'FINISHED'}
+assert ops.anim.keys_offset(frames="15", slide="1") == {'FINISHED'}
+assert frames(a) == [0, 10, 29, 39, 40], ("stopped a frame short of the key after", frames(a))
+# b is keyed on 10 and 40, the ends of the stretch edited: its 25, halfway between 20 and 30, stays halfway (34).
+assert frames(b) == [0, 10, 34, 40], frames(b)
+assert ops.ed.undo() == {'FINISHED'}
+assert ops.anim.keys_select(frame_start="20", frame_end="30", layers=str(a.id), path="position") == {'FINISHED'}
+assert ops.anim.keys_offset(frames="-15", slide="1") == {'FINISHED'}
+assert frames(a) == [0, 10, 11, 21, 40], ("a frame short of the key before", frames(a))
+assert ops.ed.undo() == {'FINISHED'}
+assert ops.anim.keys_select(frame_start="20", frame_end="30", layers=str(a.id), path="position") == {'FINISHED'}
+assert ops.anim.keys_offset(frames="15", slide="1", ripple="1") == {'FINISHED'}
+assert frames(a) == [0, 10, 35, 45, 55], ("with Ripple the key after goes along: no stop", frames(a))
+
+# --- + and - (Cascadeur's): a frame more or fewer in the stretch under the playhead ------------------------------
+fresh()
+doc.time_together = True
+a = keyed([10, 20, 30])
+b = keyed([10, 15, 20])
+only_selected(a, b)
+layers.active = a
+doc.frame_current = 12
+assert ops.anim.span_frame_insert() == {'FINISHED'}
+assert frames(a) == [0, 10, 21, 31], ("a frame more, the keys after going along", frames(a))
+assert frames(b) == [0, 10, 16, 21], ("linked on 10 and 20: its 15 through the stretch", frames(b))
+assert ops.anim.span_frame_remove() == {'FINISHED'}
+assert frames(a) == [0, 10, 20, 30] and frames(b) == [0, 10, 15, 20], (frames(a), frames(b))
+assert ops.anim.span_frames_add(amount="3", together="0") == {'FINISHED'}
+assert frames(a) == [0, 10, 23, 33] and frames(b) == [0, 10, 15, 20], ("together=0: just the one", frames(b))
+assert ops.ed.undo() == {'FINISHED'}
+assert frames(a) == [0, 10, 20, 30], ("one undo step", frames(a))
+c = keyed([10, 11])
+layers.active = c
+doc.frame_current = 10
+assert ops.anim.span_frame_remove() == {'CANCELLED'}, "never below one frame"
+assert frames(c) == [0, 10, 11]
+
+# --- Match Timing: the active layer's frames, stretched over each one's own keys ---------------------------------
+fresh()
+lead = keyed([10, 20])
+same_count = keyed([5, 30])
+more = keyed([3, 6, 9])
+only_selected(lead, same_count, more)
+layers.active = lead
+before = [k["value"] for k in same_count.keyframes("position")]
+assert ops.anim.match_timing() == {'FINISHED'}
+assert frames(same_count) == [0, 15, 30], ("0..10..20 stretched over 0..30", frames(same_count))
+assert [k["value"] for k in same_count.keyframes("position")] == before, "as many keys: poses kept"
+assert frames(more) == [0, 5, 9], ("stretched over 0..9, each key to the nearest", frames(more))
+assert frames(lead) == [0, 10, 20], "the active layer is the source"
+doc.time_together = True
+pick(lead, 10)
+assert (same_count.id, "position") not in oanim.wm.time_together_linked(), "a frame range of its own"
+assert ops.ed.undo() == {'FINISHED'}
+assert ops.ed.undo() == {'FINISHED'}
+assert frames(same_count) == [0, 5, 30], ("one undo step", frames(same_count))
+only_selected(lead)
+assert ops.anim.match_timing() == {'CANCELLED'}, "nothing else selected"
+doc.time_together = True
+
 # --- Saved with the file ---------------------------------------------------------------------------------------------
 folder = tempfile.mkdtemp()
 try:

@@ -795,6 +795,14 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
     ImGui::SetTooltip("New keys get this key's interpolation and settings");
   }
   ImGui::Separator();
+  if (ui_menu_item("Match Timing")) {
+    operator_call(C, "anim.match_timing");
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Key the other selected layers and bones on the active layer's frames, stretched over each "
+                      "one's own first to last key, so Time Together links them");
+  }
+  ImGui::Separator();
   if (ui_menu_item("Settings...")) {
     if (prepare) {
       prepare();
@@ -1834,6 +1842,8 @@ struct KeyTransform {
   int offset = 0;
   /* Time Together: how many linked channels went along. */
   int followed = 0;
+  /* Dragged between two selected keys: they slide, a frame short of their neighbours, and let go to confirm. */
+  bool slide = false;
 };
 static KeyTransform g_key_transform;
 
@@ -2485,7 +2495,10 @@ static void timeline_body(Area &area, Context &C)
         transform_info = "Duplicate Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
       }
       else if (g_key_transform.kind == 'G') {
-        const int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        int offset = int(std::lround((io.MousePos.x - g_key_transform.start_x) * frames_per_px));
+        if (g_key_transform.slide) {
+          offset = keys_offset_clamp(timeline_layers(C), offset, io.KeyCtrl);
+        }
         g_key_transform.followed = keys_move_selected(doc, timeline_layers(C), [offset](int f) { return f + offset; },
                                                       io.KeyCtrl, !io.KeyAlt);
         transform_info = "Move Keys  " + std::string(offset >= 0 ? "+" : "") + std::to_string(offset);
@@ -2503,7 +2516,10 @@ static void timeline_body(Area &area, Context &C)
         transform_info = text;
       }
       animation_evaluate(doc, frame);
-      if (modal_key_take(C, "RET") || modal_key_take(C, "SPACE") || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      if (modal_key_take(C, "RET") || modal_key_take(C, "SPACE") ||
+          (g_key_transform.slide ? !ImGui::IsMouseDown(ImGuiMouseButton_Left) :
+                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left)))
+      {
         g_key_transform.active = false;
         C.wm->modal_running = false;
         if (g_key_transform.kind == 'D') {
@@ -2515,7 +2531,8 @@ static void timeline_body(Area &area, Context &C)
         }
         else {
           keys_moved_report(g_key_transform.followed);
-          C.undo->push(g_key_transform.kind == 'G' ? "Move Keys" : "Scale Keys", doc);
+          C.undo->push(g_key_transform.slide ? "Slide Keys" : g_key_transform.kind == 'G' ? "Move Keys" : "Scale Keys",
+                       doc);
         }
         g_key_transform.snapshot = Document();
         /* The confirming click shouldn't also pick keys. */
@@ -2614,6 +2631,27 @@ static void timeline_body(Area &area, Context &C)
           /* Ctrl-click a key: the list of what it has keyed, each one a way to it. */
           keyed_open(r, hit);
           g_press = {};
+        }
+        else if (hit < 0 && r >= 0 && !rows[size_t(r)].media) {
+          /* Between two selected keys: dragging slides them, the stretch between keeping its length. */
+          const float mf = x_frame(io.MousePos.x);
+          int before = -1, after = -1;
+          for (const auto &[f, sum] : summaries[size_t(r)]) {
+            if (float(f) < mf) {
+              before = sum.selected == sum.keys && sum.keys > 0 ? f : -1;
+            }
+            else {
+              after = sum.selected == sum.keys && sum.keys > 0 ? f : -1;
+              break;
+            }
+          }
+          if (before >= 0 && after >= 0) {
+            g_key_transform = {true, area.id, 'G', io.MousePos.x, doc};
+            g_key_transform.slide = true;
+            C.wm->modal_running = true;
+            C.wm->modal_keys.clear();
+            g_press = {};
+          }
         }
         else if (hit >= 0) {
           const KeyFrameSummary &sum = summaries[r][hit];
