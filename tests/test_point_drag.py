@@ -1,7 +1,7 @@
 """Dragging a point in the Select tool moves it as G does (Blender's tweak); a click still only picks. What a press
 grabs: the nearest shown point within reach, or in Edges mode the segment under it (its two points); nothing with Shift
 or Ctrl held, or on empty space (those drags box-select). Dragging an unpicked point picks it alone first; dragging
-one already picked moves the whole selection."""
+one already picked moves the whole selection. The overlays follow the picks at once, however they change."""
 
 import oanim
 
@@ -38,5 +38,17 @@ assert wm.select_press_grab(0.5, 0.01) == [(me, [0, 1])], wm.select_press_grab(0
 assert wm.select_press_grab(1.5, 0.0, drag=True) == [(me, [1, 2])], "dragging an edge picks and moves its two points"
 assert wm.select_press_grab(5.0, 5.0) == [], "empty space: a box"
 ops.mesh.select_mode_point()
+
+# --- The handles shown follow the picks at once, even a pick that records no undo step (Shape handles stayed) ---------
+ops.mesh.select_none()
+before = wm.overlay_drawing_identity(art)
+assert wm.overlay_drawing_identity(art) == before, "nothing changed: the overlays are kept"
+art.select_points([1])
+picked = wm.overlay_drawing_identity(art)
+assert picked != before, "a point picked: made again"
+art.select_points([1], False)
+assert wm.overlay_drawing_identity(art) == before, "let go again: as before"
+art.select_handle(0, 1, "OUT")
+assert wm.overlay_drawing_identity(art) != before, "a handle picked: made again"
 
 print("Point drag tests passed")

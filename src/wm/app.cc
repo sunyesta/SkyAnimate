@@ -1292,6 +1292,7 @@ void App::draw_preferences()
         {"Path, Darker", &Preferences::path_darker, "Where a path is hard to see on something lighter"},
         {"Handle", &Preferences::handle_color, "A vector handle's line and tip"},
         {"Handle, Selected", &Preferences::handle_selected, "A vector handle's line where it is picked"},
+        {"Path Handle", &Preferences::path_handle_color, "A motion path key's handles, with the Motion Path tool"},
     };
     for (const Row &row : rows) {
       ImGui::PushID(row.label);

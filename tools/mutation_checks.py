@@ -315,6 +315,20 @@ PENDING = [
      '    picked = false;', 'a picked point brings the whole selection', 'tests/test_point_drag.py'),
     ('src/editors/viewport.cc', '      grab.points = {a, b};',
      '      grab.points = {a};', 'Edges mode grabs both points', 'tests/test_point_drag.py'),
+    ('src/anim/motion_path.cc', '  if (start > 0 && !keys.count(start)) {',
+     '  if (false) {', 'paths reach back to the key before Start', 'tests/test_motion_path_start.py'),
+    ('src/editors/viewport.cc', '        fill = u32_faded(fill, PATH_BEFORE_START);',
+     '', 'quiet marks faded before Start', 'tests/test_motion_path_start.py'),
+    ('src/editors/viewport.cc', '        out.push_back({k.a, k.b, contrast_u32(colors.of(k.pick), 0.9f * (run_before ? PATH_BEFORE_START : 1.0f)),',
+     '        out.push_back({k.a, k.b, contrast_u32(colors.of(k.pick), 0.9f),', 'path line faded before Start', 'tests/test_motion_path_start.py'),
+    ('src/editors/viewport.cc', '      ImU32 fill = key ? u32_mix(dot, IM_COL32(255, 255, 255, 255), 0.15f) : dot;',
+     '      ImU32 fill = dot;', 'quiet keys a touch lighter', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '                     key ? (breakdown ? PathQuietMark::Breakdown : PathQuietMark::Key) : PathQuietMark::Dot, fill, 0u,',
+     '                     key ? (breakdown ? PathQuietMark::Breakdown : PathQuietMark::Key) : PathQuietMark::Dot, fill, fill,', 'quiet marks have no outline', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '    pick = under && under(key + (tip - key) * mid, seen) ? contrast_pick(seen, base, pick) : ContrastPick::Base;',
+     '    pick = ContrastPick::Base;', 'path handles shaded where hard to see', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '  return overlay_mix(kept_fingerprint, overlay_selection_hash(drawing));',
+     '  return kept_fingerprint;', 'overlays follow picks without a new revision', 'tests/test_point_drag.py'),
 ]
 
 

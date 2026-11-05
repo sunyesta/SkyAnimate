@@ -49,6 +49,8 @@ struct Preferences {
   /* Vector handles: the line and tip dot, and the line where it is picked. */
   uint32_t handle_color = 0xFF9D9D;
   uint32_t handle_selected = 0xFF3737;
+  /* Motion path handles (on selected keys, with the Motion Path tool). */
+  uint32_t path_handle_color = 0xC3A6FF;
 };
 
 /* The current preferences. Loaded at startup from %LOCALAPPDATA%\OpenAnimate\preferences.json;

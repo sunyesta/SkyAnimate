@@ -74,6 +74,10 @@ struct Layer;
 struct MotionPath;
 struct Context;
 
+/* Test hook: what the overlays key a layer's own drawing by (its fingerprint, kept while its revision is, and what
+ * is picked in it): a pick that changes it, with or without a new revision, makes the overlays again. */
+uint64_t overlay_drawing_identity_test(const Layer &layer);
+
 /* Test hook: what a Select-tool press at document point `at` grabs (zoom: pixels per unit, the view centred on 0), as
  * (layer id, points); with `drag`, picked as dragging it picks, every edited layer's selected points then. */
 std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
@@ -95,10 +99,15 @@ struct PathHandleRun {
   float from = 0.0f, to = 1.0f;
   uint32_t color = 0;
 };
-std::vector<PathHandleRun> path_handle_runs(bool tip_picked);
+/* A motion path handle's line from `key` to `tip` (document space) in runs of colour (0 at the key, 1 at the tip):
+ * the Preferences' violet, a lighter or darker shade only where what `under` says is there makes it hard to see (no
+ * outline); a picked tip orange, fading to the violet at the key. Pieces about `piece` long. */
+std::vector<PathHandleRun> path_handle_pieces(float2 key, float2 tip, bool tip_picked, float piece,
+                                              const std::function<bool(float2, Color &)> &under);
 
 /* Outside the Motion Path tool a path is only looked at: its dots and keys all in its colour (lighter or darker where
- * hard to see, as its line), keys still diamonds (breakdowns hollow), each outlined in a darker shade. */
+ * hard to see, as its line), keys still diamonds (breakdowns hollow) and a touch lighter; no outlines (0); faded
+ * before the scene's Start. */
 struct PathQuietMark {
   enum Kind : uint8_t { Dot, Key, Breakdown };
   int frame = 0;

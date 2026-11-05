@@ -217,13 +217,18 @@ line, _, mark = handle(out, h_in)
 assert line["color"] == H_DARK and line["color_b"] is None and mark["color"] == H_DARK, (line, mark)
 layers.active = art
 
-# --- Motion path handles: their white as is; a dragged tip fades to orange there ------------------------------------
-assert wm.path_handle_colors(False) == [(0.0, 1.0, "#EBEBEB")], wm.path_handle_colors(False)
+# --- Motion path handles: violet with no outline, a lighter or darker violet only where hard to see; a dragged tip
+# fades to orange there ---------------------------------------------------------------------------------------------
+VIOLET = "#C3A6FF"
+assert wm.path_handle_colors(False) == [(0.0, 1.0, VIOLET)], wm.path_handle_colors(False)
+assert wm.path_handle_colors(False, BLACK) == [(0.0, 1.0, VIOLET)], "readable over black: as it is"
+over_violet = wm.path_handle_colors(False, tuple(c / 255 for c in rgb(VIOLET)))
+assert over_violet == [(0.0, 1.0, SHADE(VIOLET, 255))], ("a lighter violet over violet", over_violet)
 runs = wm.path_handle_colors(True)
 assert len(runs) > 4 and runs[0][0] == 0.0 and runs[-1][1] == 1.0
-assert near(runs[0][2], "#EBEBEB", 12) and near(runs[-1][2], "#FFA028", 12), runs
-greens = [rgb(r[2])[2] for r in runs]
-assert all(a >= b for a, b in zip(greens, greens[1:])), ("an even fade", runs)
+assert near(runs[0][2], VIOLET, 12) and near(runs[-1][2], "#FFA028", 12), runs
+greens = [rgb(r[2])[1] for r in runs]
+assert all(a <= b for a, b in zip(greens, greens[1:])) or all(a >= b for a, b in zip(greens, greens[1:])),     ("an even fade", runs)
 
 # --- Motion paths: the first path #4D9191, switching only where hard to see ----------------------------------------
 doc.auto_key = True
@@ -282,15 +287,19 @@ assert doc.motion_paths
 marks = point_path(BLACK, BLACK, 0.0)["marks"]
 kinds = {m["kind"] for m in marks}
 assert "KEY" in kinds and "DOT" in kinds, kinds
-own_red = {m["color"] for m in marks}
-assert len(own_red) == 1, ("one colour for dots and keys alike", own_red)
-assert all(m["outline"] == DARKER_OF(m["color"]) for m in marks), "outlined in a darker shade"
+dots = {m["color"] for m in marks if m["kind"] == "DOT"}
+keys = {m["color"] for m in marks if m["kind"] != "DOT"}
+assert len(dots) == 1 and len(keys) == 1, ("one colour for the dots, one for the keys", dots, keys)
+LIFT = lambda h: "#" + "".join("%02X" % int(c + (255 - c) * 0.15 + 0.5) for c in rgb(h))
+assert keys == {LIFT(next(iter(dots)))}, ("keys a touch lighter than the dots", dots, keys)
+assert all(m["outline"] is None for m in marks), ("no outlines", marks)
 # Over teal: the lighter teal, as the line.
 art.select_points([0])
 assert ops.anim.motion_path_style(color="", layer=str(art.id), point=str(art.point_ids[0])) == {'FINISHED'}
 marks = point_path(BLACK, BLACK, 0.0)["marks"]
-assert {m["color"] for m in marks} == {P_BASE}, marks
+assert {m["color"] for m in marks if m["kind"] == "DOT"} == {P_BASE}, marks
+assert {m["color"] for m in marks if m["kind"] != "DOT"} == {LIFT(P_BASE)}, marks
 marks = point_path(TEAL, TEAL, 0.0)["marks"]
-assert {m["color"] for m in marks} == {P_LIGHTER}, marks
+assert {m["color"] for m in marks if m["kind"] == "DOT"} == {P_LIGHTER}, marks
 
 print("Overlay colours tests passed")

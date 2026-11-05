@@ -433,19 +433,25 @@ bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> 
   if (targets.empty()) {
     return false;
   }
-  /* From frame 0 when the scene starts there (or at 1, the setup's next frame): the first stretch leaves the setup
-   * pose, its key with an out handle of its own. */
-  const int start = doc.frame_start <= 1 ? 0 : doc.frame_start, end = std::max(start, doc.frame_end);
-  r_first = start;
-  r_last = end;
-  if (doc.path_all) {
-    return true;
-  }
   std::set<int> keys;
   for (const MotionPathTarget &t : targets) {
     for (const int f : motion_path_keys(doc, t)) {
       keys.insert(f);
     }
+  }
+  /* From the scene's Start: frame 0 is the setup pose, not part of the shot. With no key on Start, back to the last
+   * key before it (frame 0's, the setup's, when there is none), so the stretch the shot opens in can still be
+   * shaped; what is before Start is drawn faded. */
+  int start = std::max(0, doc.frame_start);
+  if (start > 0 && !keys.count(start)) {
+    const auto it = keys.lower_bound(start);
+    start = it == keys.begin() ? 0 : *std::prev(it);
+  }
+  const int end = std::max(start, doc.frame_end);
+  r_first = start;
+  r_last = end;
+  if (doc.path_all) {
+    return true;
   }
   const int now = doc.frame_current;
   /* The `path_before`th key before the shown frame (one on it doesn't count) and the `path_after`th after it; short

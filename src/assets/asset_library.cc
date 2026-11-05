@@ -60,7 +60,8 @@ static std::vector<std::pair<const char *, uint32_t Preferences::*>> overlay_col
   return {{"wire_color", &Preferences::wire_color},   {"wire_lighter", &Preferences::wire_lighter},
           {"wire_darker", &Preferences::wire_darker}, {"path_color", &Preferences::path_color},
           {"path_lighter", &Preferences::path_lighter}, {"path_darker", &Preferences::path_darker},
-          {"handle_color", &Preferences::handle_color}, {"handle_selected", &Preferences::handle_selected}};
+          {"handle_color", &Preferences::handle_color}, {"handle_selected", &Preferences::handle_selected},
+          {"path_handle_color", &Preferences::path_handle_color}};
 }
 
 void preferences_load()

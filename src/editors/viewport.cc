@@ -94,13 +94,6 @@ static ImU32 u32_mix(ImU32 a, ImU32 b, float t)
   return out;
 }
 
-/* The same hue, darker: an outline that keeps a light colour readable on light drawings. */
-static ImU32 u32_darker(ImU32 c)
-{
-  const auto part = [c](int shift) { return ImU32(float((c >> shift) & 0xff) * 0.45f + 0.5f) << shift; };
-  return part(0) | part(8) | part(16) | IM_COL32(0, 0, 0, 230);
-}
-
 
 static ImU32 contrast_u32(const Color &c, float alpha)
 {
@@ -1493,20 +1486,43 @@ bool canvas_now_at(float2 at, Color &r)
   return g_canvas_now && g_canvas_now->at(at, r);
 }
 
-std::vector<PathHandleRun> path_handle_runs(bool tip_picked)
+std::vector<PathHandleRun> path_handle_pieces(float2 key, float2 tip, bool tip_picked, float piece,
+                                              const std::function<bool(float2, Color &)> &under)
 {
-  const ImU32 own = IM_COL32(235, 235, 235, 230), picked = IM_COL32(255, 160, 40, 255);
-  if (!tip_picked) {
-    return {{0.0f, 1.0f, own}};
+  const Color own = color_from_rgb(preferences().path_handle_color);
+  const Color orange{1.0f, 160.0f / 255.0f, 40.0f / 255.0f, 1.0f};
+  /* ImGui lines take one colour: the fade (and the shades) in pieces short enough not to show. */
+  int steps = std::clamp(int(std::ceil(length(tip - key) / std::max(piece, 1e-9f))), 1, 64);
+  if (tip_picked) {
+    steps = std::max(steps, 12);
   }
-  /* ImGui lines take one colour: the fade in steps short enough not to show. */
-  constexpr int STEPS = 12;
   std::vector<PathHandleRun> out;
-  for (int i = 0; i < STEPS; i++) {
-    const float from = float(i) / STEPS, to = float(i + 1) / STEPS;
-    out.push_back({from, to, u32_mix(own, picked, (from + to) * 0.5f)});
+  ContrastPick pick = ContrastPick::Base;
+  for (int i = 0; i < steps; i++) {
+    const float from = float(i) / float(steps), to = float(i + 1) / float(steps), mid = (from + to) * 0.5f;
+    Color base = own;
+    if (tip_picked) {
+      base = Color{own.r + (orange.r - own.r) * mid, own.g + (orange.g - own.g) * mid,
+                   own.b + (orange.b - own.b) * mid, 1.0f};
+    }
+    Color seen;
+    pick = under && under(key + (tip - key) * mid, seen) ? contrast_pick(seen, base, pick) : ContrastPick::Base;
+    const uint32_t color = contrast_u32(contrast_colors_of(base).of(pick), 1.0f);
+    if (!out.empty() && out.back().color == color) {
+      out.back().to = to;
+    }
+    else {
+      out.push_back({from, to, color});
+    }
   }
   return out;
+}
+
+/* Before the scene's Start (a path reaching back to the key the shot opens between): see-through. */
+static constexpr float PATH_BEFORE_START = 0.35f;
+static ImU32 u32_faded(ImU32 c, float alpha)
+{
+  return (c & 0x00FFFFFFu) | (ImU32(float(c >> 24) * alpha + 0.5f) << 24);
 }
 
 /* A path's colours: the default colour's lighter and darker are the Preferences'; a colour of its own makes its own. */
@@ -1539,10 +1555,15 @@ std::vector<PathQuietMark> motion_path_quiet_marks(const Document &doc, const Mo
       Color c;
       const ContrastPick pick = under && under->at(p.points[i], c) ? contrast_pick(c, colors.base)
                                                                      : ContrastPick::Base;
-      const ImU32 fill = contrast_u32(colors.of(pick), 1.0f);
+      /* Keys a touch lighter than the dots around them, so they stand out a little; no outlines. */
+      const ImU32 dot = contrast_u32(colors.of(pick), 1.0f);
+      ImU32 fill = key ? u32_mix(dot, IM_COL32(255, 255, 255, 255), 0.15f) : dot;
+      if (doc.frame_start > 0 && p.first + int(i) < doc.frame_start) {
+        fill = u32_faded(fill, PATH_BEFORE_START);
+      }
       out.push_back({p.first + int(i), p.points[i],
-                     key ? (breakdown ? PathQuietMark::Breakdown : PathQuietMark::Key) : PathQuietMark::Dot, fill,
-                     u32_darker(fill), int(run - i)});
+                     key ? (breakdown ? PathQuietMark::Breakdown : PathQuietMark::Key) : PathQuietMark::Dot, fill, 0u,
+                     int(run - i)});
     }
     i = run;
   }
@@ -1562,20 +1583,29 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
   const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
   const ContrastColors colors = path_contrast_colors(p);
   const std::function<bool(float2, Color &)> under_at = [&](float2 q, Color &c) { return under && under->at(q, c); };
+  /* The step into frame `f` is before the scene's Start: faded. */
+  const auto before = [&](int f) { return doc.frame_start > 0 && f <= doc.frame_start; };
   std::vector<ContrastPiece> pieces;
   std::vector<float2> run = {p.points[0]};
+  bool run_before = before(p.first + 1);
   const auto flush = [&]() {
     if (run.size() > 1) {
       pieces.clear();
       contrast_pieces(run, piece, under_at, colors.base, pieces);
       for (const ContrastPiece &k : pieces) {
-        out.push_back({k.a, k.b, contrast_u32(colors.of(k.pick), 0.9f), false});
+        out.push_back({k.a, k.b, contrast_u32(colors.of(k.pick), 0.9f * (run_before ? PATH_BEFORE_START : 1.0f)),
+                       false});
       }
     }
   };
   for (size_t i = 1; i < p.points.size(); i++) {
     const int f = p.first + int(i);
     if (!is_over(f) && !is_over(f - 1)) {
+      if (before(f) != run_before) {
+        flush();
+        run = {p.points[i - 1]};
+        run_before = before(f);
+      }
       run.push_back(p.points[i]);
       continue;
     }
@@ -1583,8 +1613,10 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
     Color c;
     const ContrastPick pick = under_at((p.points[i - 1] + p.points[i]) * 0.5f, c) ? contrast_pick(c, colors.base)
                                                                                   : ContrastPick::Base;
-    out.push_back({p.points[i - 1], p.points[i], contrast_u32(colors.of(pick), 0.9f), true});
+    out.push_back({p.points[i - 1], p.points[i],
+                   contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), true});
     run = {p.points[i]};
+    run_before = before(f + 1);
   }
   flush();
   return out;
@@ -1734,20 +1766,17 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       for (const PathQuietMark &m : motion_path_quiet_marks(doc, p, g_canvas_now)) {
         const ImVec2 s = view.to_screen(m.at);
         if (m.kind == PathQuietMark::Dot) {
-          dl->AddCircleFilled(s, 3.6f, m.outline);
-          dl->AddCircleFilled(s, 2.8f, m.fill);
+          dl->AddCircleFilled(s, 3.0f, m.fill);
         }
         else {
           const float r = 4.5f;
           const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
           if (m.kind == PathQuietMark::Key) {
             dl->AddConvexPolyFilled(d, 4, m.fill);
-            dl->AddPolyline(d, 4, m.outline, ImDrawFlags_Closed, 1.0f);
           }
           else {
-            /* A breakdown: hollow. */
-            dl->AddPolyline(d, 4, m.outline, ImDrawFlags_Closed, 3.0f);
-            dl->AddPolyline(d, 4, m.fill, ImDrawFlags_Closed, 1.5f);
+            /* A breakdown: hollow, a ring of its colour. */
+            dl->AddPolyline(d, 4, m.fill, ImDrawFlags_Closed, 1.6f);
           }
         }
         if (m.held > 1) {
@@ -1758,8 +1787,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       const int now = doc.frame_current - p.first;
       if (now >= 0 && now < int(screen.size())) {
         const ImU32 ring = contrast_u32(path_contrast_colors(p).base, 1.0f);
-        dl->AddCircle(screen[size_t(now)], 7.0f, u32_darker(ring), 0, 3.2f);
-        dl->AddCircle(screen[size_t(now)], 7.0f, ring, 0, 1.6f);
+        dl->AddCircle(screen[size_t(now)], 7.0f, ring, 0, 1.8f);
       }
       continue;
     }
@@ -1802,7 +1830,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
       if (shown) {
         const ImVec2 s = screen[i];
-        const Color dot = dot_colors[i];
+        const float fade = doc.frame_start > 0 && p.first + int(i) < doc.frame_start ? PATH_BEFORE_START : 1.0f;
+        Color dot = dot_colors[i];
+        dot.a *= fade;
         if (key && breakdown) {
           /* A breakdown: a blue circle, larger and dark blue when selected. */
           const float r = selected ? 5.0f : 4.0f;
@@ -1814,13 +1844,20 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
           /* Keys plain white, so they stand apart from the coloured dots; selected, larger and ringed orange. */
           const float r = selected ? 6.0f : 4.5f;
           const ImVec2 d[4] = {{s.x, s.y - r}, {s.x + r, s.y}, {s.x, s.y + r}, {s.x - r, s.y}};
-          dl->AddConvexPolyFilled(d, 4, IM_COL32(240, 240, 240, 255));
-          dl->AddPolyline(d, 4, selected ? IM_COL32(255, 160, 40, 255) : IM_COL32(20, 20, 20, 220),
+          dl->AddConvexPolyFilled(d, 4, u32_faded(IM_COL32(240, 240, 240, 255), fade));
+          dl->AddPolyline(d, 4, u32_faded(selected ? IM_COL32(255, 160, 40, 255) : IM_COL32(20, 20, 20, 220), fade),
                           ImDrawFlags_Closed, selected ? 2.0f : 1.0f);
+          if (p.first + int(i) == 0) {
+            /* The setup pose's key: locked (its out handle still shapes the first stretch), so a hollow centre. */
+            const float h = r * 0.45f;
+            const ImVec2 c[4] = {{s.x, s.y - h}, {s.x + h, s.y}, {s.x, s.y + h}, {s.x - h, s.y}};
+            dl->AddConvexPolyFilled(c, 4, u32_faded(IM_COL32(20, 20, 20, 230), fade));
+          }
         }
         else {
           dl->AddCircleFilled(s, 3.6f, IM_COL32(20, 20, 20, int(200.0f * dot.a)));
           dl->AddCircleFilled(s, 2.8f, u32(dot, 1.0f));
+          (void)fade;
         }
         if (run - i > 1) {
           const std::string held = "x" + std::to_string(run - i);
@@ -1892,21 +1929,27 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
       const bool dragged = g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame;
-      dl->AddLine(k, e, IM_COL32(20, 20, 20, 200), 3.0f);
-      /* A picked tip: orange there, fading to the line's own colour at the key (as vector handles fade). */
-      for (const PathHandleRun &r : path_handle_runs(dragged)) {
+      /* Violet, no outline: in pieces, each a lighter or darker shade only where hard to see; a picked tip orange
+       * there, fading to the violet at the key (as vector handles fade). */
+      const float2 key_at = h.key + h.offset, tip_at = (out ? h.out : h.in) + h.offset;
+      const std::function<bool(float2, Color &)> under_at = [](float2 q, Color &c) { return canvas_now_at(q, c); };
+      for (const PathHandleRun &r : path_handle_pieces(key_at, tip_at, dragged, 6.0f / std::max(view.zoom, 1e-9f),
+                                                       under_at))
+      {
         dl->AddLine(ImVec2(k.x + (e.x - k.x) * r.from, k.y + (e.y - k.y) * r.from),
-                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), r.color, 1.4f);
+                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), r.color, 1.5f);
       }
-      const ImU32 fill = dragged ? IM_COL32(255, 160, 40, 255) : IM_COL32(235, 235, 235, 255);
+      const Color tip_base = dragged ? Color{1.0f, 160.0f / 255.0f, 40.0f / 255.0f, 1.0f}
+                                     : color_from_rgb(preferences().path_handle_color);
+      Color seen;
+      const ImU32 fill = contrast_u32(
+          canvas_now_at(tip_at, seen) ? contrast_colors_of(tip_base).of(contrast_pick(seen, tip_base)) : tip_base, 1.0f);
       /* Round tips: filled once dragged (Aligned or Broken), hollow while Auto. */
       if (h.mode != PathHandles::Auto) {
-        dl->AddCircleFilled(e, 4.2f, IM_COL32(20, 20, 20, 220));
-        dl->AddCircleFilled(e, 3.3f, fill);
+        dl->AddCircleFilled(e, 3.6f, fill);
       }
       else {
-        dl->AddCircle(e, 3.6f, IM_COL32(20, 20, 20, 220), 0, 3.0f);
-        dl->AddCircle(e, 3.6f, fill, 0, 1.5f);
+        dl->AddCircle(e, 3.4f, fill, 0, 1.6f);
       }
       const float dx = e.x - mouse.x, dy = e.y - mouse.y;
       if (tool && hovering && dx * dx + dy * dy < handle_best) {
@@ -6992,6 +7035,51 @@ static uint64_t overlay_fingerprint(const VectorDrawing &d, float unit)
   return h;
 }
 
+/* What is picked and shown in a drawing (points, handles, detail hidden): looked at every frame, as a pick can change
+ * without the layer's revision (an operator that records no undo step), and Shape handles show by what is picked. */
+static uint64_t overlay_selection_hash(const VectorDrawing &d)
+{
+  uint64_t h = overlay_mix(1469598103934665603ull, d.points.size());
+  uint64_t bits = 0;
+  int n = 0;
+  const auto add = [&](bool b) {
+    bits = bits << 1 | uint64_t(b);
+    if (++n == 64) {
+      h = overlay_mix(h, bits);
+      bits = 0;
+      n = 0;
+    }
+  };
+  for (const MeshPoint &p : d.points) {
+    add(p.selected);
+    add(p.detail.hidden);
+  }
+  for (const Curve &c : d.curves) {
+    for (const CurvePoint &cp : c.points) {
+      add(cp.select_in);
+      add(cp.select_out);
+    }
+  }
+  return overlay_mix(h, bits ^ uint64_t(n) << 56);
+}
+
+/* The layer's own drawing as the overlays key it: its fingerprint (kept while its revision is) and what is picked. */
+static uint64_t overlay_drawing_identity(uint64_t kept_fingerprint, const VectorDrawing &drawing)
+{
+  return overlay_mix(kept_fingerprint, overlay_selection_hash(drawing));
+}
+
+uint64_t overlay_drawing_identity_test(const Layer &layer)
+{
+  /* As draw_drawing_overlay keys the layer's own drawing: its kept fingerprint, and what is picked. */
+  static uint64_t kept_revision = ~uint64_t(0), kept = 0;
+  if (kept_revision != layer.revision.value) {
+    kept_revision = layer.revision.value;
+    kept = overlay_fingerprint(layer.drawing, 1.0f / 16.0f);
+  }
+  return overlay_drawing_identity(kept, layer.drawing);
+}
+
 /* The wires, handles and points of a drawing being edited (layer space): what the GPU overlays draw. */
 static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const VectorDrawing *wires, const Transform2D &to_document,
                                         bool show_wires, bool show_points, int quality, HandleDisplay handles, bool point_squares,
@@ -7337,7 +7425,7 @@ static void draw_drawing_overlay(uint64_t slot, const Layer &owner, const Posed 
       if (k.revision != owner.revision.value || k.pixel != pixel || k.fingerprint == 0) {
         k = {owner.revision.value, pixel, overlay_fingerprint(drawing, pixel / 16.0f)};
       }
-      key = overlay_mix(key, k.fingerprint);
+      key = overlay_mix(key, overlay_drawing_identity(k.fingerprint, drawing));
     }
     else {
       key = overlay_mix(key, overlay_fingerprint(drawing, pixel / 16.0f));
@@ -13830,7 +13918,6 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
       family_deselect_all(doc, armature);
     }
     select_press_grab_move(C, area, view, grab, start);
-    return;
   }
   if (g_bone_box.active && g_bone_box.area == area.id) {
     const ImVec2 d = io.MousePos - g_bone_box.start;
@@ -16226,8 +16313,8 @@ static void viewport_draw_contents(Area &area, Context &C)
             const PressGrab grab = g_drag.grab;
             const ImVec2 start = g_drag.start;
             g_drag = {};
+            /* The frame carries on drawing (a return here skipped the rest of the view for a frame: a flicker). */
             select_press_grab_move(C, area, view, grab, start);
-            return;
           }
           break;
         }

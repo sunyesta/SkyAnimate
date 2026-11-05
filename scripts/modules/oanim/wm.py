@@ -399,6 +399,12 @@ def overlay_colors(layer, left=(0.0, 0.0, 0.0), right=(1.0, 1.0, 1.0), split=0.0
                                  bool(handles))
 
 
+def overlay_drawing_identity(layer):
+    """Test hook: what the viewport's overlays key a layer's drawing by: it changes with what is picked in it, even
+    when nothing records an undo step, so the handles shown follow the picks at once."""
+    return _oanim.overlay_drawing_identity(int(getattr(layer, "id", layer)))
+
+
 def select_press_grab(x, y, zoom=100.0, shift=False, ctrl=False, drag=False):
     """Test hook: what pressing the Select tool at document point (x, y) grabs, dragging it then moving it as G does,
     as [(layer id, [points])] (empty: the drag box-selects); zoom is pixels per unit. With drag=True it is picked as a
@@ -419,9 +425,10 @@ def canvas_at(x, y):
     return _oanim.canvas_at(float(x), float(y))
 
 
-def path_handle_colors(tip_picked):
-    """Test hook: a motion path handle's line in runs (from, to, "#RRGGBB"), key (0) to tip (1)."""
-    return _oanim.path_handle_colors(bool(tip_picked))
+def path_handle_colors(tip_picked, under=None):
+    """Test hook: a motion path handle's line in runs (from, to, "#RRGGBB"), key (0) to tip (1); `under`: the colour
+    (r, g, b, 0-1) drawn under all of it (None: nothing read back)."""
+    return _oanim.path_handle_colors(bool(tip_picked), None if under is None else tuple(under))
 
 
 def motion_path_dots():

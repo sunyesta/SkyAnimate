@@ -1182,6 +1182,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
   /* Test hook: the colours the wire and point overlay of layer `id`, and the motion paths' lines, take over a canvas
    * that is `left` left of x = `split` and `right` from there on (document space). */
+  /* Test hook: what the overlays key a layer's drawing by. */
+  m.def("overlay_drawing_identity", [](uint64_t id) -> uint64_t {
+    const Layer *layer = layer_find(*current_context().document, id);
+    return layer ? overlay_drawing_identity_test(*layer) : 0;
+  });
   /* Test hook: what pressing the Select tool at a document point grabs to drag; with drag, the selection after. */
   m.def("select_press_grab", [](float x, float y, float zoom, bool modifier, bool drag) {
     py::list out;
@@ -1204,9 +1209,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return py::make_tuple(c.r, c.g, c.b);
   });
   /* Test hook: a motion path handle line's runs of colour, key (0) to tip (1). */
-  m.def("path_handle_colors", [](bool tip_picked) {
+  m.def("path_handle_colors", [](bool tip_picked, py::object under) {
     py::list out;
-    for (const PathHandleRun &r : path_handle_runs(tip_picked)) {
+    Color seen{0.0f, 0.0f, 0.0f, 1.0f};
+    if (!under.is_none()) {
+      const py::tuple t = under;
+      seen = Color{t[0].cast<float>(), t[1].cast<float>(), t[2].cast<float>(), 1.0f};
+    }
+    const std::function<bool(float2, Color &)> under_at = [&](float2, Color &c) {
+      c = seen;
+      return true;
+    };
+    for (const PathHandleRun &r : path_handle_pieces({0.0f, 0.0f}, {1.0f, 0.0f}, tip_picked, 0.05f,
+                                                     under.is_none() ? nullptr : under_at))
+    {
       char s[8];
       std::snprintf(s, sizeof(s), "#%02X%02X%02X", r.color & 0xff, (r.color >> 8) & 0xff, (r.color >> 16) & 0xff);
       out.append(py::make_tuple(r.from, r.to, std::string(s)));
@@ -1262,6 +1278,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["a"] = py::make_tuple(k.a.x, k.a.y);
           d["b"] = py::make_tuple(k.b.x, k.b.y);
           d["color"] = hex(k.color);
+          d["alpha"] = int(k.color >> 24);
           d["dashed"] = k.dashed;
           pieces.append(d);
         }
@@ -1271,7 +1288,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           m["frame"] = k.frame;
           m["kind"] = k.kind == PathQuietMark::Key ? "KEY" : k.kind == PathQuietMark::Breakdown ? "BREAKDOWN" : "DOT";
           m["color"] = hex(k.fill);
-          m["outline"] = hex(k.outline);
+          m["alpha"] = int(k.fill >> 24);
+          m["outline"] = k.outline >> 24 ? py::object(py::str(hex(k.outline))) : py::object(py::none());
           marks.append(m);
         }
         py::dict d;
