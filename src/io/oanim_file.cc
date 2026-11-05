@@ -2379,6 +2379,9 @@ static Layer layer_from_json(const json &j, int depth)
   layer.ignore_group_deforms = get_bool(j, "ignore_group_deforms", false);
   /* Files from before it: each point keyed on its own, as they were made. */
   layer.key_whole_drawing = get_bool(j, "key_whole_drawing", false);
+  /* Saved on: its keys were made to agree when it was turned on; matching their timing again on opening would undo
+   * timing edits made to one point since. */
+  layer.key_whole_settled = layer.key_whole_drawing;
   layer.key_together = get_bool(j, "key_together", false);
   /* Saved on: its keys already agree, and turning it off lets its fillers go. */
   layer.key_together_settled = layer.key_together;

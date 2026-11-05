@@ -77,6 +77,13 @@ PENDING = [
      '    const auto [removed, kept] = std::pair<int, int>{0, 0};', 'a layer moved out lets go of its fillers', "tests/test_key_together.py"),
     ('src/anim/animation.cc', '  visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) { ch.together_synced = false; });\n',
      '', 'a layer moved between groups is new to the second', "tests/test_key_together.py"),
+    ('src/anim/animation.cc', '      if (group->key_together) {\n        /* On inside one turned on: handed over.',
+     '      if (false) {\n        /* On inside one turned on: handed over.', 'an inner group handed over keeps its fillers',
+     "tests/test_key_together.py"),
+    ('src/anim/animation.cc', '          ch.together_synced = false;\n        });\n        continue;',
+     '        });\n        continue;', 'a group handed over is new to the outer one', "tests/test_key_together.py"),
+    ('src/io/oanim_file.cc', '  layer.key_whole_settled = layer.key_whole_drawing;\n', '',
+     "opening keeps a whole drawing's timing", "tests/test_key_whole_drawing.py"),
 ]
 
 

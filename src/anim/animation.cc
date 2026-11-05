@@ -1093,6 +1093,16 @@ void animation_record(Document &doc)
     }
     else if (group->key_together_settled) {
       group->key_together_settled = false;
+      if (group->key_together) {
+        /* On inside one turned on: handed over. Its fillers hold its layers where they were and stay, the outer
+         * group's now (it lets them go when turned off), so turning the outer one on moves nothing. Its layers are new
+         * to the outer one, which reads no frame they miss as deleted. */
+        group->key_together_members.clear();
+        together_channels(doc, *group, [](auto &ch, auto & /*value*/, const void * /*unit*/) {
+          ch.together_synced = false;
+        });
+        continue;
+      }
       const auto [removed, kept] = key_together_release(doc, *group);
       if (removed + kept > 0) {
         report(ReportType::Info, group->name + ": Key Together off: removed " + std::to_string(removed) +

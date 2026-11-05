@@ -412,4 +412,57 @@ assert frames(a, "points[1].pos") == [0, 10, 20, 30], frames(a, "points[1].pos")
 assert frames(x, "points[0].pos") == [0, 10, 20, 30], frames(x, "points[0].pos")
 assert frames(y, "position") == [0, 10, 20, 30], frames(y, "position")
 
+# A group that is on moved into another that is on: handed over, its layers are new there, so the frames they miss
+# (the other's 7) are given to them, not deleted from all; and nothing of theirs moves.
+g1, a1, b1 = together_group("on in")
+g2, a2, b2 = together_group("on to")
+doc.frame_current = 7
+a2.set_point(1, (1.0, 0.5))
+doc.frame_current = 0
+settle()
+doc.frame_current = 15
+before = (a1.points[1][1], b1.points[0][1])
+doc.frame_current = 0
+layers.active = g1
+assert ops.layer.move_to_group(group=str(g2.id)) == {'FINISHED'}
+settle()
+assert frames(a2, "points[1].pos") == [0, 7, 10, 20], ("no frame deleted", frames(a2, "points[1].pos"))
+assert frames(a1, "points[1].pos") == [0, 7, 10, 20], frames(a1, "points[1].pos")
+doc.frame_current = 15
+assert all(abs(x - y) < 1e-4 for x, y in zip((a1.points[1][1], b1.points[0][1]), before)), ("nothing moves", (a1.points[1][1], b1.points[0][1]), before)
+doc.frame_current = 0
+
+# A group inside one that is on, saved and opened: it handed its keys over, so opening doesn't make it let go of its
+# fillers (the outer group would make them again, holding something else).
+g, a, b = together_group("inner")
+doc.frame_current = 30
+b.set_point(0, (0.0, 5.0))
+doc.frame_current = 0
+settle()
+assert frames(b, "points[0].pos") == [0, 10, 20, 30]
+doc.frame_current = 10
+held = b.points[0][1]
+doc.frame_current = 0
+assert abs(held - 3.0) < 1e-4, ("its filler on 10 holds it where it was until then", held)
+c = top_vec([(0.0, 8.0), (1.0, 8.0)])
+outer = group_of([g, c])
+outer.key_together = True
+settle()
+doc.frame_current = 10
+assert abs(b.points[0][1] - held) < 1e-4, ("handed over, nothing moves", b.points[0], held)
+doc.frame_current = 0
+folder = tempfile.mkdtemp()
+path = os.path.join(folder, "nested.oanim")
+assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
+assert ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
+doc = oanim.data.document
+layers = oanim.data.layers
+b = next(l for l in layers.all() if l.id == b.id)
+settle()
+doc.frame_current = 10
+assert abs(b.points[0][1] - held) < 1e-4, ("opened, it holds the same", b.points[0])
+doc.frame_current = 0
+assert frames(b, "points[0].pos") == [0, 10, 20, 30], frames(b, "points[0].pos")
+shutil.rmtree(folder, ignore_errors=True)
+
 print("Key Together tests passed")

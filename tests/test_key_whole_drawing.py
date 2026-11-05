@@ -199,11 +199,23 @@ assert panel and panel["label"] == two.name + " point 1", ("point 0 has no keys"
 # --- Saved with the file -------------------------------------------------------------------------------------------
 folder = tempfile.mkdtemp()
 try:
+    # One point's key timed apart after it was turned on (a timing edit on one point): opening keeps it so, the
+    # drawing's keys are not made to agree again.
+    line.keyframe_set("points[1].pos", 10, interp="EASE_OUT")
+    doc.frame_current = 1
+    doc.frame_current = 0
+    assert key(line, "points[1].pos", 10)["interp"] == "EASE_OUT"
     path = os.path.join(folder, "whole.oanim")
     assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
     assert ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
     kept = {l.name: l.key_whole_drawing for l in oanim.data.layers}
     assert kept[line.name] is True and kept[loose.name] is False, kept
+    opened = next(l for l in oanim.data.layers if l.name == line.name)
+    doc = oanim.data.document
+    doc.frame_current = 1
+    doc.frame_current = 0
+    assert key(opened, "points[1].pos", 10)["interp"] == "EASE_OUT", ("its timing kept on opening",
+                                                                       key(opened, "points[1].pos", 10)["interp"])
 finally:
     shutil.rmtree(folder, ignore_errors=True)
 

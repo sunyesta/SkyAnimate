@@ -2273,7 +2273,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["path_out"] = py::make_tuple(out.x, out.y);
         }
         d["interp"] = interp_identifier(k.interp);
+        if (!k.speeds.empty()) {
+          /* Custom: how far it goes each frame of the stretch into it. */
+          py::list speeds;
+          for (const float v : k.speeds) {
+            speeds.append(v);
+          }
+          d["speeds"] = speeds;
+        }
         d["type"] = key_type_identifier(k.type);
+        if (k.filler) {
+          d["filler"] = true;
+          d["filler_inside"] = k.filler_inside;
+        }
         d["hold"] = k.hold;
         d["selected"] = k.selected;
         d["interval"] = k.interval;
