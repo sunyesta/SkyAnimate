@@ -3799,7 +3799,9 @@ static void timeline_body(Area &area, Context &C)
                                             IM_COL32(0xff, 0x70, 0x70, 255), label.c_str());
       }
     }
+    /* Back under the keys, where nothing else is placed: ImGui wants an item after the cursor moves there. */
     ImGui::SetCursorScreenPos(back);
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
   }
 
   if (sidebar_w > 0.0f) {
