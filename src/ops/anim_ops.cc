@@ -257,9 +257,13 @@ std::vector<Layer *> timeline_shown_layers(Context &C)
       self(self, child);
     }
   };
+  /* A group with Edit Descendants brings its animated layers (they are edited with it, as if picked). With Only
+   * Selected, a bone layer's come only when picked themselves (Blender's Only Show Selected); off or locked, a
+   * picked bone layer brings them too. */
+  const bool sel_only = C.document && C.document->timeline_only_selected && !C.document->timeline_lock;
   for (Layer *l : picked) {
     add(l);
-    if (l->is_bone_layer() || (l->is_group() && l->edit_descendants)) {
+    if ((l->is_group() && l->edit_descendants) || (!sel_only && l->is_bone_layer())) {
       add_inside(add_inside, *l);
     }
   }
@@ -1137,6 +1141,7 @@ void anim_operators_register()
                       KeyFilter filter;
                       filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
                       filter.selected_only = op_arg_bool(C, "selected_only");
+                      filter.picked_bones_only = op_arg_bool(C, "picked_bones");
                       filter.point_layers = editable_layer_ids(doc);
                       filter.path = op_arg(C, "path");
                       filter.pinned_only = op_arg_bool(C, "pinned");
@@ -1155,7 +1160,8 @@ void anim_operators_register()
                     "Select the keys on frames frame_start..frame_end (extend keeps the others; deselect takes "
                     "them out). layers: only these layers' keys (comma-separated ids); kinds: only these kinds "
                     "of channel (KeyKind bits); selected_only: only selected points' and bones'; path: only this "
-                    "channel (or, ending in '.', those under it); pinned: only pinned channels (a timeline row)",
+                    "channel (or, ending in '.', those under it); pinned: only pinned channels; picked_bones: bones' "
+                    "keys only for the picked bones (a timeline row)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       const std::vector<Layer *> layers = op_layers(C);
                       const int first = op_arg_int(C, "frame_start", 0);
@@ -1167,6 +1173,7 @@ void anim_operators_register()
                       KeyFilter filter;
                       filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
                       filter.selected_only = op_arg_bool(C, "selected_only");
+                      filter.picked_bones_only = op_arg_bool(C, "picked_bones");
                       filter.point_layers = editable_layer_ids(*C.document);
                       filter.path = op_arg(C, "path");
                       filter.pinned_only = op_arg_bool(C, "pinned");

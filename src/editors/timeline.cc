@@ -1946,6 +1946,7 @@ static OpArgs row_key_args(const std::vector<Layer *> &layers, const KeyFilter &
   return {{"layers", ids},
           {"kinds", std::to_string(filter.kinds)},
           {"selected_only", filter.selected_only ? "1" : "0"},
+          {"picked_bones", filter.picked_bones_only ? "1" : "0"},
           {"path", filter.path},
           {"pinned", filter.pinned_only ? "1" : "0"}};
 }
@@ -2166,6 +2167,15 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     pinned.push_back({&doc.simulation, ref.path});
   }
 
+  /* With Only Selected (not locked), a picked layer's rows show its own keys and those of its picked bones only:
+   * its unpicked bones' keys show nowhere, its name row there even without keys, for what is picked. */
+  const bool sel_only = doc.timeline_only_selected && !doc.timeline_lock;
+  KeyFilter layer_keys;
+  layer_keys.picked_bones_only = sel_only;
+  const auto named = [&](const Layer &l) {
+    return sel_only && (l.selected || (l.id == doc.active_layer && doc.active_unpicked != l.id));
+  };
+
   /* Summary: everything the rows show, pinned or not. */
   std::vector<Layer *> all = layers;
   for (const auto &[l, path] : pinned) {
@@ -2173,8 +2183,8 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       all.push_back(l);
     }
   }
-  if (keyed(all, KeyFilter{}) || !pinned.empty() || (show_all && !layers.empty())) {
-    add("Summary", all, KeyFilter{}, 0, "", false, false, 0);
+  if (keyed(all, layer_keys) || !pinned.empty() || (show_all && !layers.empty())) {
+    add("Summary", all, layer_keys, 0, "", false, false, 0);
     rows.back().summary = true;
   }
 
@@ -2230,7 +2240,8 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     const bool any_picked = std::any_of(l->bones.begin(), l->bones.end(), bone_picked_any);
     const bool only_picked = doc.timeline_only_selected && any_picked;
     const KeyFilter bones{KEY_BONES, only_picked};
-    if ((show_all && !l->bones.empty()) || keyed({l}, bones)) {
+    /* Only Selected with no bone picked: no bones (their keys aren't the layer's). */
+    if (!(sel_only && !any_picked) && ((show_all && !l->bones.empty()) || keyed({l}, bones))) {
       if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0, any_picked)) {
         for (const Bone &b : l->bones) {
           const KeyFilter one = bone_filter(b, KEY_BONES, false);
@@ -2277,8 +2288,8 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       const bool pick = picks_under(picks_under, l);
       if (!shown.contains(&l)) {
         /* A group holding shown layers: dimmed, for where they are. */
-        if (!under.empty() && (show_all || keyed(under, KeyFilter{}))) {
-          if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), true, false, l.id, pick)) {
+        if (!under.empty() && (show_all || keyed(under, layer_keys))) {
+          if (add(l.name, under, layer_keys, depth, "layer:" + std::to_string(l.id), true, false, l.id, pick)) {
             rows.back().dim = true;
             self(self, l.children, depth + 1);
           }
@@ -2288,10 +2299,10 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
         }
         continue;
       }
-      if (!show_all && !keyed(under, KeyFilter{})) {
+      if (!show_all && !keyed(under, layer_keys) && !named(l)) {
         continue;
       }
-      if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), picked(l), picks_in(l), l.id,
+      if (add(l.name, under, layer_keys, depth, "layer:" + std::to_string(l.id), picked(l), picks_in(l), l.id,
               pick))
       {
         own_rows(&l, depth + 1);

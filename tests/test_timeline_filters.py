@@ -39,6 +39,7 @@ if not rig.keyframes("opacity"):
 assert len(rig.keyframes("opacity")) == 2, rig.keyframes("opacity")
 doc.frame_current = 0
 assert ops.armature.select_none() == {'FINISHED'}
+doc.timeline_only_selected = False  # every bone (Only Selected lists the picked ones only)
 assert "Opacity" in names() and "arm" in names() and "Position" in names(), names()
 assert wm.timeline_hidden() == 0
 
@@ -99,6 +100,7 @@ assert ops.anim.timeline_filter(clear="1") == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in oanim.data.layers.all() if l.name == "rig")
 oanim.data.layers.active = rig
+oanim.data.document.timeline_only_selected = False  # every bone, for the search to choose from
 listed = names()
 assert "arm" in listed and "leg" not in listed and "Position" not in listed, ("kept after opening", listed)
 

@@ -1,6 +1,6 @@
 """The timeline's Only Selected (on for new documents) and Lock: with Only Selected the rows are the picked
-layers', the animated layers inside them and the groups they are in (dimmed), and of a bone layer with
-bones picked only those bones; off, every animated layer. Lock keeps the layers shown when it was turned
+layers', the animated layers inside them (a group's with Edit Descendants; a bone layer's only when picked
+themselves) and the groups they are in (dimmed), and of a bone layer only the picked bones; off, every animated layer. Lock keeps the layers shown when it was turned
 on, whatever is picked after. Both are saved with the project.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_only_selected.py
@@ -84,7 +84,8 @@ assert bones == ["arm", "leg"], ("Only Selected off: every bone", bones)
 doc.timeline_only_selected = True
 assert oanim.ops.armature.select_none() == {'FINISHED'}
 bones = [n for d, n in names() if n in ("arm", "leg")]
-assert bones == ["arm", "leg"], ("none picked: all of them", bones)
+assert bones == [], ("none picked: no bones (their keys aren't the layer's)", bones)
+assert "rig" in shown(), "the picked layer's name row stays"
 
 # Lock: the layers shown now stay, whatever is picked after.
 layers.active = alone

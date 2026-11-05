@@ -111,7 +111,9 @@ oanim.ops.ed.undo()
 assert abs(angle() - setup_before) < 1e-6, "undo brings the old setup back"
 doc.action = "wave"
 
-# --- A selected bone layer's summary has the animated layers inside it ---------------------------
+# --- A selected bone layer's summary has the animated layers inside it (with Only Selected off; on, they come
+# only when picked themselves, test_timeline_picked_layer.py) ---------------------------------------------
+doc.timeline_only_selected = False
 doc.action = ""
 doc.frame_current = 0
 layers.active = rig
@@ -127,6 +129,7 @@ assert oanim.ops.anim.keys_offset(frames="2") == {'FINISHED'}
 assert 32 in inner.key_frames and 30 not in inner.key_frames, inner.key_frames
 assert oanim.ops.anim.keyframe_insert() == {'FINISHED'}
 assert 0 in inner.key_frames and len(inner.key_frames) == 2, "I keys only the selected layers"
+doc.timeline_only_selected = True
 doc.action = "wave"
 
 # --- Deleting an action (right-click it in the action menu) ---------------------------------------

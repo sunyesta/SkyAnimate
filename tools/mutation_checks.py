@@ -188,6 +188,18 @@ PENDING = [
      'nothing picked: no Camera or Simulation rows', 'tests/test_timeline_nothing_selected.py'),
     ('src/python/py_runtime.cc', '    current_context().document->active_unpicked = 0;', '',
      'made active is picked again', 'tests/test_timeline_nothing_selected.py'),
+    ('src/anim/animation.cc', 'if (filter.picked_bones_only && ref.path.rfind("bones[\\"", 0) == 0 && !channel_thing_selected(layer, ref.path, filter)) {',
+     'if (false) {', "an unpicked bone's keys aren't the layer row's", 'tests/test_timeline_picked_layer.py'),
+    ('src/editors/timeline.cc', '  layer_keys.picked_bones_only = sel_only;',
+     '  layer_keys.picked_bones_only = false;', "the layer row shows its own keys and its picked bones'", 'tests/test_timeline_picked_layer.py'),
+    ('src/editors/timeline.cc', '!keyed(under, layer_keys) && !named(l)) {',
+     '!keyed(under, layer_keys)) {', "a picked layer's name row with no keys", 'tests/test_timeline_picked_layer.py'),
+    ('src/editors/timeline.cc', 'if (!(sel_only && !any_picked) && ((show_all',
+     'if (((show_all', 'no Bones folder with no bone picked', 'tests/test_timeline_picked_layer.py'),
+    ('src/ops/anim_ops.cc', '(!sel_only && l->is_bone_layer())',
+     'l->is_bone_layer()', "a bone layer's layers only when picked", 'tests/test_timeline_picked_layer.py'),
+    ('src/editors/timeline.cc', '          {"picked_bones", filter.picked_bones_only ? "1" : "0"},\n',
+     '', "the row's keys picked as it shows them", 'tests/test_timeline_picked_layer.py'),
 ]
 
 

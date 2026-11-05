@@ -384,7 +384,13 @@ struct KeyFilter {
   /* With selected_only: the layers whose selected points count, those being edited (a selection
    * left in a layer no longer edited stays stored, but isn't the selection now); null: every layer's. */
   std::shared_ptr<const std::set<uint64_t>> point_layers;
-  bool everything() const { return kinds == KEY_ALL && !selected_only && path.empty() && !pinned_only; }
+  /* Bones' channels only for the picked bones (other channels all pass): a picked bone layer's timeline row
+   * with Only Selected, its own keys and its picked bones'. */
+  bool picked_bones_only = false;
+  bool everything() const
+  {
+    return kinds == KEY_ALL && !selected_only && path.empty() && !pinned_only && !picked_bones_only;
+  }
 };
 /* The kind of channel a path names (see ChannelRef). */
 KeyKind channel_kind(const std::string &path);

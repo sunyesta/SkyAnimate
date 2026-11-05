@@ -4658,6 +4658,9 @@ std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &f
     if (filter.selected_only && !channel_thing_selected(layer, ref.path, filter)) {
       continue;
     }
+    if (filter.picked_bones_only && ref.path.rfind("bones[\"", 0) == 0 && !channel_thing_selected(layer, ref.path, filter)) {
+      continue;
+    }
     refs.push_back(ref);
   }
   if (filter.pinned_only) {
@@ -4678,6 +4681,7 @@ std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &f
       const std::string dial_path = "bones[\"" + dial->name + "\"].angle";
       if (!(filter.kinds & channel_kind(dial_path)) || !key_filter_path_matches(filter, dial_path) ||
           (filter.selected_only && !channel_thing_selected(layer, dial_path, filter)) ||
+          (filter.picked_bones_only && !channel_thing_selected(layer, dial_path, filter)) ||
           std::any_of(refs.begin(), refs.end(), [&](const ChannelRef &r) { return r.path == knob_path; }))
       {
         continue;
