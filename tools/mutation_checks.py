@@ -112,6 +112,16 @@ PENDING = [
      '  if (together && doc.time_together && sts.empty()) {\n    for (const AnyChannel &c : together_candidates(doc)) {\n      if (done.count(c.id())) {', '+ and - reach the linked channels', "tests/test_time_together.py"),
     ('src/anim/animation.cc', '      if (ch.keys.size() == to.size()) {',
      '      if (false) {', 'Match Timing keeps every key when the counts match', "tests/test_time_together.py"),
+    ('src/editors/timeline.cc', '        own_rows(&l, depth + 1);\n        self(self, l.children, depth + 1);',
+     '        own_rows(&l, depth + 1);\n        self(self, l.children, depth);', 'layers nest under their group', 'tests/test_timeline_tree.py'),
+    ('src/editors/timeline.cc', '  if (keyed(all, KeyFilter{}) || !pinned.empty()) {',
+     '  if (false) {', 'the Summary row comes first', 'tests/test_timeline_tree.py'),
+    ('src/editors/timeline.cc', 'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && keyed({l}, sel)) {',
+     'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && false) {', "the selected points' keys under Points", 'tests/test_timeline_selected_points.py'),
+    ('src/editors/timeline.cc', 'depth, "layer:" + std::to_string(l.id), picked(l), false, l.id)',
+     'depth, "layer:" + std::to_string(l.id), false, false, l.id)', 'the picked layers start open', 'tests/test_timeline_tree.py'),
+    ('src/editors/timeline.cc', 'add(channel_label(*l, ref.path, owner || other), {l}, f, depth',
+     'add(channel_label(*l, ref.path, owner), {l}, f, depth', "a linked knob's row named with its bone", 'tests/test_controller.py'),
 ]
 
 

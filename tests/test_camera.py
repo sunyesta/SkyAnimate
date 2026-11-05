@@ -58,23 +58,20 @@ assert close(cam.zoom, 1.0)
 assert oanim.ops.anim.keyframe_toggle(layer=str(cam.id), paths="rotation") == {'FINISHED'}
 assert [k["frame"] for k in cam.keyframes("rotation")] == [0]
 
-# Picked, the timeline's Selected section is the camera's keys (and only then).
-def selected_rows(group_by):
-    rows = oanim.wm.timeline_rows(group_by)
+# The timeline lists the camera last, its rows named for a camera, picked or not.
+def camera_rows():
+    rows = oanim.wm.timeline_rows()
     names = [r[1] for r in rows]
-    if "Selected" not in names:
+    if "Camera" not in names:
         return []
-    return [(r[0], r[1]) for r in rows[names.index("Selected") + 1:]]
+    return [(r[0], r[1]) for r in rows[names.index("Camera"):]]
 
 
 oanim.ops.mesh.select_none()
-assert selected_rows("KIND") == [], "nothing picked: no Selected section"
+assert camera_rows() == [(0, "Camera"), (1, "Position"), (1, "Roll"), (1, "Zoom")], camera_rows()
 cam.selected = True
-for group_by in ("KIND", "OWNER"):
-    assert selected_rows(group_by) == [(1, "Camera"), (2, "Position"), (2, "Roll"), (2, "Zoom")], \
-        (group_by, selected_rows(group_by))
+assert camera_rows() == [(0, "Camera"), (1, "Position"), (1, "Roll"), (1, "Zoom")], camera_rows()
 cam.selected = False
-assert selected_rows("OWNER") == []
 
 # Picked, and saved with the project, keys and all.
 cam.selected = True

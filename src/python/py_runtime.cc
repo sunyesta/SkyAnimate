@@ -428,10 +428,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("remote_dispatch", [](const std::string &request) { return remote_dispatch(current_context(), request); });
 
   /* The timeline's rows with every row open: (depth, name, red, pinned). */
-  m.def("timeline_rows", [](bool by_kind) {
+  m.def("timeline_rows", [](bool as_shown) {
     py::list result;
-    for (const TimelineRowInfo &row : timeline_rows_list(current_context(), by_kind)) {
-      result.append(py::make_tuple(row.depth, row.name, row.red, row.pinned, row.changed));
+    for (const TimelineRowInfo &row : timeline_rows_list(current_context(), as_shown)) {
+      py::dict d;
+      d["depth"] = row.depth;
+      d["name"] = row.name;
+      d["red"] = row.red;
+      d["pinned"] = row.pinned;
+      d["changed"] = row.changed;
+      d["layer"] = row.layer;
+      d["fold"] = row.fold;
+      d["open"] = row.open;
+      d["summary"] = row.summary;
+      d["frames"] = row.frames;
+      result.append(d);
     }
     return result;
   });

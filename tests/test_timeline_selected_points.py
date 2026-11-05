@@ -1,5 +1,5 @@
-"""The timeline's Selected section counts the points selected in the layers being edited: points left
-selected in a layer that isn't edited any more stay stored, but don't put a Points row under Selected.
+"""The timeline's Selected Points row (under a drawing's Points) counts the points selected in the layers
+being edited: points left selected in a layer that isn't edited any more stay stored, but don't make one.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_selected_points.py
 """
@@ -34,18 +34,8 @@ assert any(p[2] for p in drawing.points), "points are selected"
 
 
 def selected_section():
-    rows = oanim.wm.timeline_rows()
-    names = [r[1] for r in rows]
-    if "Selected" not in names:
-        return []
-    at = names.index("Selected")
-    depth = rows[at][0]
-    out = []
-    for r in rows[at + 1:]:
-        if r[0] <= depth:
-            break
-        out.append(r[1])
-    return out
+    """The red rows: Selected Points while the drawing's selected points count."""
+    return ["Points" for r in oanim.wm.timeline_rows() if r[1] == "Selected Points" and r[2]]
 
 
 # Editing the drawing: its selected points' keys are under Selected.
@@ -55,7 +45,7 @@ assert "Points" in selected_section(), selected_section()
 # Working on the bone layer instead: the drawing's points aren't being edited (their selection is kept,
 # but isn't the selection now), so nothing is selected.
 layers.active = rig
-assert "Points" in [r[1] for r in oanim.wm.timeline_rows()], "the timeline still shows the drawing's keys (under All)"
+assert "Points" in [r[1] for r in oanim.wm.timeline_rows()], "the timeline still shows the drawing's keys (inside the bone layer)"
 assert "Points" not in selected_section(), selected_section()
 assert any(p[2] for p in drawing.points), "the selection is kept"
 

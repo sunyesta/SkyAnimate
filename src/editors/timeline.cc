@@ -1294,19 +1294,6 @@ static void timeline_header(Area &area, Context &C)
       view_center_current(area, doc);
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Group by Owner", nullptr, !area.timeline_by_kind)) {
-      area.timeline_by_kind = false;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Rows by whose they are: each layer, its bones, each bone's properties");
-    }
-    if (ImGui::MenuItem("Group by Kind", nullptr, area.timeline_by_kind)) {
-      area.timeline_by_kind = true;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("Rows by what they are: layer transforms, bone angles, bone transforms, constraints");
-    }
-    ImGui::Separator();
     if (ImGui::MenuItem("Clear Pins")) {
       operator_call(C, "anim.pins_clear");
     }
@@ -1859,21 +1846,21 @@ static bool modal_key_take(Context &C, const char *type)
   return false;
 }
 
-/* A row of the timeline. Rows fold, as Blender's channels do, down to one row per property, in
-   four groups:
+/* A row of the timeline. The rows follow the Layers editor, as Blender's Dope Sheet follows the outliner:
 
+     Summary                 every key of every row below, one diamond a frame
      Pinned                  properties pinned to the timeline, whatever is picked (red; with no
                              keys left too), each with its pin to unpin it
-     Props                   the settings: a layer's own transform, opacity and visibility, the
-                             bones' constraint settings, the document's Simulation settings
-     All                     the motion: the bones' angle, position and scale, and the points
-     Selected                the motion of the selected bones and points (red)
+     each layer              in the Layers editor's order and nesting, folding to its own channels
+                             (Position, Rotation, Scale, Opacity, Visibility, Draw Order, Switch,
+                             masks), its Drawing (or Points, and the Selected Points in red), its
+                             Bones (each bone a folder of its Angle, Transform, Scale and
+                             constraints; picked bones red) and a Media layer's clips; then the
+                             layers inside it
+     Camera, Simulation      last
 
-   Inside Props, All and Selected, View > Group by Kind (the default) lists by what they are (Layers, Constraints, Simulation; Bone Angle and Bone Transform, a row per
-   bone: "arm: Angle"); Group by Owner, as Blender's Dope Sheet, lists each layer, its bones and
-   each bone's rows ("Angle", "IK: Influence"). A row with no keys under it isn't shown (but a pinned one is, under
-   Pinned); a folding row shows the keys of all it holds. The four start open, but the Bones
-   inside Selected (and in All) start folded. */
+   A row with no keys under it isn't shown (but a pinned one is, under Pinned); a folding row shows the
+   keys of all it holds. The picked layers start open, the rest folded; the project keeps each one's state. */
 struct ChannelRow {
   std::string name;
   std::vector<Layer *> layers;
@@ -1886,7 +1873,7 @@ struct ChannelRow {
   bool fold_default = false;
   /* A copy's (reference layer's) channel changed from its original (drawn teal). */
   bool changed = false;
-  /* In the Pinned or Selected sections (drawn red). */
+  /* Pinned, or a picked bone's or the selected points' (drawn red). */
   bool selected = false;
   /* A layer's own row: clicking its name makes that layer active. */
   uint64_t layer = 0;
@@ -1897,6 +1884,8 @@ struct ChannelRow {
    * row, part 1, is the bars' lower half). */
   uint64_t media = 0;
   int media_part = 0;
+  /* The Summary row (drawn with a band behind it). */
+  bool summary = false;
 };
 
 /* Folding rows open or folded as the project keeps them (saved with it, as panels are). */
@@ -1904,27 +1893,6 @@ static bool row_open(const Area &area, const std::string &key, bool fallback)
 {
   (void)area;
   return ui_fold_state("Timeline/" + key, fallback);
-}
-
-/* Something selected for the Selected section: a point, or a bone (by body or ball). */
-static bool anything_selected(const std::vector<Layer *> &layers, const std::set<uint64_t> &edited)
-{
-  for (const Layer *l : layers) {
-    if (l->id == CAMERA_LAYER_ID && l->selected) {
-      return true;
-    }
-    for (const MeshPoint &p : l->drawing.points) {
-      if (p.selected && edited.contains(l->id)) {
-        return true;
-      }
-    }
-    for (const Bone &b : l->bones) {
-      if (b.selected || b.select_head || b.select_tail) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 static bool bone_picked_any(const Bone &b)
@@ -1939,7 +1907,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   /* Lookups by an index while the rows are worked out (they change no layers). */
   const LayerIndexScope layer_index(doc);
   std::vector<ChannelRow> rows;
-  /* Selected counts the points selected in the layers being edited: a selection left in another layer
+  /* The selected points are those in the layers being edited: a selection left in another layer
    * isn't one now. */
   const std::shared_ptr<const std::set<uint64_t>> edited = editable_layer_ids(doc);
   const auto now = [&](KeyFilter f) {
@@ -1966,19 +1934,22 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     rows.push_back(std::move(row));
     return rows.back().open;
   };
-  /* A row per animated property of `l` that passes `base`, named with its owner or not. */
-  const auto property_rows = [&](Layer *l, const KeyFilter &base, int depth, bool owner, bool red) {
+  /* A row per animated property of `l` that passes `base` (and `keep`), named with its owner or not. */
+  const auto property_rows = [&](Layer *l, const KeyFilter &base, int depth, bool owner, bool red,
+                                 bool (*keep)(const std::string &) = nullptr) {
     /* Points get no row of their own: not listing them spares working out every point's channel. */
     KeyFilter listed = base;
     listed.kinds &= ~uint32_t(KEY_POINTS);
     for (const ChannelRef &ref : layer_filtered_channels(*l, listed)) {
       const bool animated = ref.scalar ? ref.scalar->animated() : ref.vector->animated();
-      if (!animated || channel_kind(ref.path) == KEY_POINTS) {
+      if (!animated || channel_kind(ref.path) == KEY_POINTS || (keep && !keep(ref.path))) {
         continue;
       }
       KeyFilter f = base;
       f.path = ref.path;
-      add(channel_label(*l, ref.path, owner), {l}, f, depth, "", false, red, 0);
+      /* Another's channel under a bone (a linked controller's knob): named with its owner. */
+      const bool other = !base.path.empty() && ref.path.rfind(base.path, 0) != 0;
+      add(channel_label(*l, ref.path, owner || other), {l}, f, depth, "", false, red, 0);
       rows.back().changed = l->is_reference() && l->reference.own_channels.count(ref.path) > 0;
       if (ref.scalar ? ref.scalar->pinned : ref.vector->pinned) {
         rows.back().pin_layer = l->id;
@@ -2005,6 +1976,19 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   for (const ChannelRef &ref : layer_filtered_channels(document_simulation(doc), pins)) {
     pinned.push_back({&doc.simulation, ref.path});
   }
+
+  /* Summary: everything the rows show, pinned or not. */
+  std::vector<Layer *> all = layers;
+  for (const auto &[l, path] : pinned) {
+    if (std::find(all.begin(), all.end(), l) == all.end()) {
+      all.push_back(l);
+    }
+  }
+  if (keyed(all, KeyFilter{}) || !pinned.empty()) {
+    add("Summary", all, KeyFilter{}, 0, "", false, false, 0);
+    rows.back().summary = true;
+  }
+
   if (!pinned.empty()) {
     std::vector<Layer *> owners;
     for (const auto &[l, path] : pinned) {
@@ -2023,212 +2007,114 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   if (layers.empty()) {
     return rows;
   }
-  Layer *sim = nullptr;
-  std::vector<Layer *> owned;
-  for (Layer *l : layers) {
-    (l->id == SIMULATION_LAYER_ID ? sim : owned.emplace_back(l)) = l;
-  }
-  const KeyFilter sim_kind{KEY_SIMULATION, false};
+  const std::set<const Layer *> shown(layers.begin(), layers.end());
+  const auto picked = [&](const Layer &l) { return l.id == doc.active_layer || l.selected; };
 
-  /* Props: the settings (a layer's own transform, opacity and visibility, constraints' settings,
-   * the document's Simulation); All and Selected: the motion (bones' angle, position and scale,
-   * and points). */
-  const uint32_t props = KEY_LAYER | KEY_CONSTRAINTS | KEY_SIMULATION;
-  const uint32_t bone_motion = KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
-  const uint32_t motion = bone_motion | KEY_POINTS;
-  /* Selected: the motion of the selected points and bones, and the picked camera's Position, Zoom and
-   * Roll (a layer's own transform is a prop, so only the camera's pass as selected). */
-  const KeyFilter selected_motion{motion | KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
-  /* The active layer when it is a Media layer: under Selected, its clips (start and end) and its own
-   * keyed channels (where it is, its opacity). */
-  Layer *media = nullptr;
-  for (Layer *l : owned) {
-    if (l->is_media() && l->id == doc.active_layer) {
-      media = l;
-    }
-  }
-  const auto media_rows = [&](int depth) {
-    if (media) {
-      add(media->name + ": Clips", {media}, KeyFilter{0, false}, depth, "", false, true, 0);
-      rows.back().media = media->id;
-      add("", {media}, KeyFilter{0, false}, depth, "", false, true, 0);
-      rows.back().media = media->id;
+  /* A layer's own rows, under its name: its channels, drawing, bones and clips. */
+  const auto own_rows = [&](Layer *l, int depth) {
+    const std::string id = std::to_string(l->id);
+    if (l->is_media()) {
+      add("Clips", {l}, KeyFilter{0, false}, depth, "", false, false, 0);
+      rows.back().media = l->id;
+      add("", {l}, KeyFilter{0, false}, depth, "", false, false, 0);
+      rows.back().media = l->id;
       rows.back().media_part = 1;
-      property_rows(media, KeyFilter{KEY_LAYER, false}, depth, true, true);
     }
-  };
-  const auto camera_rows = [&](int depth) {
-    const KeyFilter camera{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, true};
-    for (Layer *l : owned) {
-      if (l->id == CAMERA_LAYER_ID && keyed({l}, camera) && add("Camera", {l}, camera, depth, "sel:camera", true, true, 0))
-      {
-        property_rows(l, camera, depth + 1, false, true);
+    /* The layer's own channels (not its bones', not its points'). */
+    property_rows(l, KeyFilter{KEY_LAYER | KEY_SIMULATION, false}, depth, false, false,
+                  [](const std::string &path) { return path.rfind("bones[", 0) != 0; });
+    const KeyFilter points{KEY_POINTS, false};
+    if (keyed({l}, points)) {
+      /* Keyed as a whole drawing: all its points, whichever are selected. */
+      if (l->key_whole_drawing) {
+        add("Drawing", {l}, points, depth, "", false, false, 0);
       }
-    }
-  };
-
-  if (!area.timeline_by_kind) {
-    /* Props, by owner: each layer (Transform, Opacity, Visibility, its bones' constraint settings),
-     * then Simulation. */
-    if (keyed(layers, KeyFilter{props}) && add("Props", layers, KeyFilter{props}, 0, "props", true, false, 0)) {
-      for (Layer *l : owned) {
-        const KeyFilter own{props & ~KEY_SIMULATION};
-        if (!keyed({l}, own)) {
-          continue;
-        }
-        const std::string id = std::to_string(l->id);
-        if (!add(l->name, {l}, own, 1, "p:" + id, l->id == doc.active_layer, false, l->id)) {
-          continue;
-        }
-        const KeyFilter transform{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, false};
-        if (keyed({l}, transform) && add("Transform", {l}, transform, 2, "p:t:" + id, false, false, 0)) {
-          property_rows(l, transform, 3, false, false);
-        }
-        property_rows(l, KeyFilter{KEY_OPACITY | KEY_VISIBILITY | KEY_DRAW_ORDER, false}, 2, false, false);
-        const KeyFilter constraints{KEY_CONSTRAINTS, false};
-        if (keyed({l}, constraints) && add("Bones", {l}, constraints, 2, "p:b:" + id, false, false, 0)) {
-          for (const Bone &b : l->bones) {
-            const KeyFilter one = bone_filter(b, KEY_CONSTRAINTS, false);
-            if (keyed({l}, one) &&
-                add(b.name, {l}, one, 3, "p:bone:" + id + ":" + std::to_string(b.id), false, false, 0))
-            {
-              property_rows(l, one, 4, false, false);
-            }
-          }
-        }
-      }
-      if (sim && keyed({sim}, sim_kind) && add("Simulation", {sim}, sim_kind, 1, "p:sim", false, false, 0)) {
-        property_rows(sim, sim_kind, 2, false, false);
-      }
-    }
-    /* All, by owner: each layer's bones (their angle, position and scale) and points. */
-    if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
-      for (Layer *l : owned) {
-        if (!keyed({l}, KeyFilter{motion})) {
-          continue;
-        }
-        const std::string id = std::to_string(l->id);
-        if (!add(l->name, {l}, KeyFilter{motion}, 1, "o:" + id, l->id == doc.active_layer, false, l->id)) {
-          continue;
-        }
-        const KeyFilter bones{bone_motion, false};
-        if (keyed({l}, bones) && add("Bones", {l}, bones, 2, "o:b:" + id, false, false, 0)) {
-          for (const Bone &b : l->bones) {
-            const KeyFilter one = bone_filter(b, bone_motion, false);
-            if (keyed({l}, one) &&
-                add(b.name, {l}, one, 3, "o:bone:" + id + ":" + std::to_string(b.id), false, false, 0))
-            {
-              property_rows(l, one, 4, false, false);
-            }
-          }
-        }
-        const KeyFilter points{KEY_POINTS, false};
-        if (keyed({l}, points)) {
-          add(l->key_whole_drawing ? "Drawing" : "Points", {l}, points, 2, "", false, false, 0);
+      else {
+        const KeyFilter sel{KEY_POINTS, true};
+        if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && keyed({l}, sel)) {
+          add("Selected Points", {l}, sel, depth + 1, "", false, true, 0);
         }
       }
     }
-    if ((anything_selected(owned, *edited) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
-      media_rows(1);
-      camera_rows(1);
-      for (Layer *l : owned) {
+    const KeyFilter bones{KEY_BONES, false};
+    if (keyed({l}, bones)) {
+      const bool any_picked = std::any_of(l->bones.begin(), l->bones.end(), bone_picked_any);
+      if (add("Bones", {l}, bones, depth, "bones:" + id, any_picked, false, 0)) {
         for (const Bone &b : l->bones) {
-          const KeyFilter one = bone_filter(b, bone_motion, true);
-          if (bone_picked_any(b) && keyed({l}, one) &&
-              add(b.name, {l}, one, 1, "sel:" + std::to_string(l->id) + ":" + std::to_string(b.id), false, true, 0))
+          const KeyFilter one = bone_filter(b, KEY_BONES, false);
+          const bool red = bone_picked_any(b);
+          if (keyed({l}, one) &&
+              add(b.name, {l}, one, depth + 1, "bone:" + id + ":" + std::to_string(b.id), red, red, 0))
           {
-            property_rows(l, one, 2, false, true);
-          }
-        }
-        /* Keyed as a whole drawing: all its points, whichever are selected. */
-        const KeyFilter points{KEY_POINTS, !l->key_whole_drawing};
-        const char *what = l->key_whole_drawing ? "Drawing" : "Points";
-        if (keyed({l}, points)) {
-          add(owned.size() > 1 ? l->name + ": " + what : std::string(what), {l}, points, 1, "", false, true, 0);
-        }
-      }
-    }
-    return rows;
-  }
-
-  /* Group by Kind. Props: Layers (each layer's Angle & Transform, Opacity, Visibility),
-   * Constraints, Simulation. */
-  if (keyed(layers, KeyFilter{props}) && add("Props", layers, KeyFilter{props}, 0, "props", true, false, 0)) {
-    const KeyFilter layer_kinds{KEY_LAYER & ~KEY_DRAW_ORDER, false};
-    if (keyed(owned, layer_kinds) && add("Layers", owned, layer_kinds, 1, "layers", true, false, 0)) {
-      for (Layer *l : owned) {
-        if (!keyed({l}, layer_kinds)) {
-          continue;
-        }
-        const std::string id = std::to_string(l->id);
-        if (!add(l->name, {l}, layer_kinds, 2, "layer:" + id, false, false, l->id)) {
-          continue;
-        }
-        const KeyFilter at{KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM, false};
-        if (keyed({l}, at) && add("Angle & Transform", {l}, at, 3, "lat:" + id, false, false, 0)) {
-          property_rows(l, at, 4, false, false);
-        }
-        property_rows(l, KeyFilter{KEY_OPACITY | KEY_VISIBILITY, false}, 3, false, false);
-      }
-    }
-    /* Every layer's Draw Order in one place, so a rule reaching across bone layers reads at a glance. */
-    const KeyFilter order{KEY_DRAW_ORDER, false};
-    if (keyed(owned, order) && add("Draw Order", owned, order, 1, "draw_order", true, false, 0)) {
-      for (Layer *l : owned) {
-        property_rows(l, order, 2, true, false);
-      }
-    }
-    const KeyFilter constraints{KEY_CONSTRAINTS, false};
-    if (keyed(owned, constraints) && add("Constraints", owned, constraints, 1, "constraints", false, false, 0)) {
-      for (Layer *l : owned) {
-        property_rows(l, constraints, 2, true, false);
-      }
-    }
-    if (sim && keyed({sim}, sim_kind) && add("Simulation", {sim}, sim_kind, 1, "sim", false, false, 0)) {
-      property_rows(sim, sim_kind, 2, false, false);
-    }
-  }
-  /* All and Selected: Bones (Bone Angle, Bone Transform, a row per bone) and Points. */
-  const auto bones_and_points = [&](bool selected, int depth, const std::string &prefix) {
-    const KeyFilter bones{bone_motion, selected};
-    /* Folded to start with, even in Selected (open by default), so a long rig doesn't fill it. */
-    if (keyed(owned, bones) && add("Bones", owned, bones, depth, prefix + "bones", false, selected, 0)) {
-      for (const auto &[name, kind] : {std::pair{"Bone Angle", KEY_BONE_ANGLE}, std::pair{"Bone Transform", KEY_BONE_TRANSFORM}}) {
-        const KeyFilter group{uint32_t(kind), selected};
-        if (keyed(owned, group) && add(name, owned, group, depth + 1, prefix + name, selected, selected, 0)) {
-          for (Layer *l : owned) {
-            property_rows(l, group, depth + 2, true, selected);
+            property_rows(l, one, depth + 2, false, red);
           }
         }
       }
-    }
-    const KeyFilter points{KEY_POINTS, selected};
-    if (keyed(owned, points)) {
-      /* Drawings keyed as a whole (Key Whole Drawing) keep their points' keys together: one Drawing row. */
-      const bool whole = std::all_of(owned.begin(), owned.end(), [](const Layer *l) {
-        return !l->has_drawing() || l->key_whole_drawing;
-      });
-      add(whole ? "Drawing" : "Points", owned, points, depth, "", false, selected, 0);
     }
   };
-  if (keyed(owned, KeyFilter{motion}) && add("All", owned, KeyFilter{motion}, 0, "all", true, false, 0)) {
-    bones_and_points(false, 1, "");
-  }
-  if ((anything_selected(owned, *edited) || media) && add("Selected", owned, selected_motion, 0, "sel", true, true, 0)) {
-    media_rows(1);
-    camera_rows(1);
-    bones_and_points(true, 1, "sel_");
+  /* The shown layers under `l` (itself, when shown), for its row's keys. */
+  const auto shown_under = [&](auto &&self, Layer &l, std::vector<Layer *> &out) -> void {
+    if (shown.contains(&l)) {
+      out.push_back(&l);
+    }
+    for (Layer &child : l.children) {
+      self(self, child, out);
+    }
+  };
+  /* The layer tree: each shown layer at the depth of its shown ancestors, its rows, then the shown layers
+   * inside it (a layer not shown passes its shown ones up a level). */
+  const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
+    for (Layer &l : list) {
+      if (!shown.contains(&l)) {
+        self(self, l.children, depth);
+        continue;
+      }
+      std::vector<Layer *> under;
+      shown_under(shown_under, l, under);
+      if (!keyed(under, KeyFilter{})) {
+        continue;
+      }
+      if (add(l.name, under, KeyFilter{}, depth, "layer:" + std::to_string(l.id), picked(l), false, l.id)) {
+        own_rows(&l, depth + 1);
+        self(self, l.children, depth + 1);
+      }
+    }
+  };
+  tree(tree, doc.layers, 0);
+  /* The camera and the document's Simulation, last. */
+  for (Layer *l : layers) {
+    if ((l->id == CAMERA_LAYER_ID || l->id == SIMULATION_LAYER_ID) && keyed({l}, KeyFilter{})) {
+      const bool camera = l->id == CAMERA_LAYER_ID;
+      if (add(camera ? "Camera" : "Simulation", {l}, KeyFilter{}, 0, camera ? "camera" : "simulation",
+              camera && l->selected, false, 0))
+      {
+        property_rows(l, KeyFilter{}, 1, false, false);
+      }
+    }
   }
   return rows;
 }
 
-std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool by_kind)
+std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
 {
   Area area;
-  area.timeline_by_kind = by_kind;
+  /* The project's fold states (bound while editors draw; a background run draws none). */
+  ui_bind_project(C.document, C.undo);
   std::vector<TimelineRowInfo> list;
-  for (const ChannelRow &row : channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), true)) {
-    list.push_back({row.depth, row.name, row.selected, !row.pin_path.empty(), row.changed});
+  for (const ChannelRow &row :
+       channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), !as_shown))
+  {
+    TimelineRowInfo info{row.depth, row.name, row.selected, !row.pin_path.empty(), row.changed};
+    info.layer = row.layer;
+    info.fold = row.fold;
+    info.open = row.open;
+    info.summary = row.summary;
+    if (row.filter.kinds != 0) {
+      for (const auto &[frame, summary] : layers_key_summary(row.layers, row.filter)) {
+        info.frames.push_back(frame);
+      }
+    }
+    list.push_back(std::move(info));
   }
   return list;
 }
@@ -3134,6 +3020,10 @@ static void timeline_body(Area &area, Context &C)
     const bool is_active = row.layer != 0 && row.layer == doc.active_layer;
     if (is_active) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0x33, 0x4d, 0x80, 255));
+    }
+    else if (row.summary) {
+      /* Summary: a band set apart from the rows it sums up, as Blender's Dope Sheet has it. */
+      dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0x3a, 0x3a, 0x3a, 255));
     }
     else if (row.selected) {
       dl->AddRectFilled(ImVec2(p0.x, top), ImVec2(k0.x, top + row_h), IM_COL32(0xc0, 0x30, 0x30, 45));

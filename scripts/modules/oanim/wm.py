@@ -419,13 +419,23 @@ def sculpt_presets():
     return list(_oanim.sculpt_presets())
 
 
-def timeline_rows(group_by="KIND", changed=False):
-    """The timeline's channel rows, every one open: (depth, name, red, pinned) for each, red for the
-    Pinned and Selected sections, pinned for a pinned property's row; with changed=True a fifth,
-    changed: a reference's channel it took over from its original (drawn teal). group_by: "OWNER"
-    or "KIND" (the default; the timeline's View menu)."""
-    rows = [tuple(r) for r in _oanim.timeline_rows(group_by.upper() == "KIND")]
+def timeline_rows(changed=False):
+    """The timeline's channel rows, every one open: (depth, name, red, pinned) for each, red for a
+    pinned row, a picked bone's rows and the Selected Points, pinned for a pinned property's row; with
+    changed=True a fifth, changed: a reference's channel it took over from its original (drawn teal).
+    The rows are Summary, Pinned, then the layers in the Layers editor's order and nesting, each with
+    its channels, Drawing or Points, Bones and clips, then Camera and Simulation."""
+    keys = ("depth", "name", "red", "pinned", "changed")
+    rows = [tuple(r[k] for k in keys) for r in _oanim.timeline_rows(False)]
     return rows if changed else [r[:4] for r in rows]
+
+
+def timeline_row_details(as_shown=False):
+    """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
+    else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary
+    and frames (where it shows keys). as_shown=True lists them folded as the project keeps them (else
+    every row open)."""
+    return [dict(r) for r in _oanim.timeline_rows(bool(as_shown))]
 
 
 def undo_history():

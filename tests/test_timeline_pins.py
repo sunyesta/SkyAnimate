@@ -1,7 +1,6 @@
-"""The timeline's channel rows, one per property, in four groups: Pinned (properties pinned to it,
-whatever is selected, even with no keys left), Props (the settings: layer transform, opacity,
-visibility, constraint settings, Simulation), All (the motion: bones and points) and Selected;
-inside them grouped by owner (the default) or by kind.
+"""The timeline's channel rows: Summary, Pinned (properties pinned to it, whatever is selected, even
+with no keys left), then the layer tree as the Layers editor has it, each layer folding to its own
+channels, its drawing and its Bones (each bone a folder of its channels), then Camera and Simulation.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_pins.py
 """
@@ -16,12 +15,12 @@ layers = oanim.data.layers
 wm = oanim.wm
 
 
-def rows(group_by="OWNER"):
-    return wm.timeline_rows(group_by)
+def rows():
+    return wm.timeline_rows()
 
 
-def names(group_by="OWNER"):
-    return [(depth, name) for depth, name, red, pinned in rows(group_by)]
+def names():
+    return [(depth, name) for depth, name, red, pinned in rows()]
 
 
 # A drawing with its opacity keyed, and a bone layer with a keyed bone.
@@ -46,47 +45,42 @@ def section(rows_, title):
     return rows_[at + 1:end]
 
 
-# --- Group by Owner: Props holds the layer's own transform; All holds the bones' motion ------------
-owner = names()
-tops = [name for depth, name in owner if depth == 0]
-assert tops == ["Props", "All", "Selected"], tops
-props, motion = section(owner, "Props"), section(owner, "All")
-for row in [(1, rig.name), (2, "Transform"), (3, "Position"), (3, "Rotation"), (3, "Scale")]:
-    assert row in props, (row, props)
-assert not any(name in ("Bones", "arm", "Angle") for depth, name in props), "no bone motion in Props"
-for row in [(1, rig.name), (2, "Bones"), (3, "arm"), (4, "Angle"), (4, "Transform"), (4, "Scale")]:
-    assert row in motion, (row, motion)
-assert not any(depth == 2 and name == "Transform" for depth, name in motion), "the layer's own transform is a Prop"
-assert motion.index((3, "arm")) < motion.index((4, "Angle")), "a bone's rows sit under it"
-assert (1, "arm") in section(owner, "Selected"), "the selected bone's motion"
+# --- The layer tree: Summary, then the picked bone layer with its own channels and its bones ---------
+tree = names()
+tops = [name for depth, name in tree if depth == 0]
+assert tops == ["Summary", rig.name], tops
+assert art.name not in [name for depth, name in tree], "only the picked layer"
+mine = section(tree, rig.name)
+for row in [(1, "Position"), (1, "Rotation"), (1, "Scale"), (1, "Bones"), (2, "arm"), (3, "Angle"),
+            (3, "Transform"), (3, "Scale")]:
+    assert row in mine, (row, mine)
+assert mine.index((1, "Rotation")) < mine.index((1, "Bones")) < mine.index((2, "arm")) < mine.index((3, "Angle")),     "the layer's own channels, then its bones, each bone's rows under it"
 
-# --- Group by Kind -------------------------------------------------------------------------------
-kind = names("KIND")
-props, motion = section(kind, "Props"), section(kind, "All")
-for row in [(1, "Layers"), (2, rig.name), (3, "Angle & Transform"), (4, "Rotation")]:
-    assert row in props, (row, props)
-for row in [(1, "Bones"), (2, "Bone Angle"), (3, "arm: Angle"), (2, "Bone Transform"), (3, "arm: Transform"),
-            (3, "arm: Scale")]:
-    assert row in motion, (row, motion)
-
-# Constraints' keyed settings get their own rows, by constraint and setting.
+# Constraints' keyed settings get their own rows under their bone, by constraint and setting.
 rig.select_bone("arm")
 assert oanim.ops.armature.constraint_add(type="DYNAMICS", bone="arm") == {'FINISHED'}
 bounce = 'bones["arm"].constraints[0].angle_spring.bounce'
 assert oanim.ops.anim.keyframe_toggle(layer=str(rig.id), paths=bounce) == {'FINISHED'}
-assert (1, "Constraints") in section(names("KIND"), "Props")
-assert (2, "arm: Dynamics: Angle Bounce") in section(names("KIND"), "Props"), names("KIND")
-props = section(names(), "Props")
-assert (2, "Bones") in props and (3, "arm") in props and (4, "Dynamics: Angle Bounce") in props, props
-assert (4, "Dynamics: Angle Bounce") not in section(names(), "All"), "a setting, not motion"
+mine = section(names(), rig.name)
+assert (3, "Dynamics: Angle Bounce") in mine and mine.index((2, "arm")) < mine.index((3, "Dynamics: Angle Bounce")), mine
+assert any(red for depth, name, red, pinned in rows() if name == "arm"), "the picked bone's rows are red"
+
+# Clicking another layer brings its rows instead, all its layers in Layers-editor order when both are picked.
+art.selected = True
+tops = [name for depth, name in names() if depth == 0]
+order = [l.name for l in layers]
+assert tops == ["Summary"] + [n for n in order if n in (art.name, rig.name)], (tops, order)
+assert (1, "Opacity") in section(names(), art.name), section(names(), art.name)
+art.selected = False
 
 # --- Pinning: the drawing's opacity, while the bone layer is the one picked -----------------------
 assert not art.channel_pinned("opacity")
 assert art.pin_channel("opacity") == {'FINISHED'} and art.channel_pinned("opacity")
 pinned = rows()
-assert pinned[0][:3] == (0, "Pinned", True), pinned[0]
-assert pinned[1] == (1, art.name + ": Opacity", True, True), pinned[1]
-assert (1, art.name) not in names(), "only the pinned property shows, not its whole layer"
+assert pinned[0][:2] == (0, "Summary"), pinned[0]
+assert pinned[1][:3] == (0, "Pinned", True), pinned[1]
+assert pinned[2] == (1, art.name + ": Opacity", True, True), pinned[2]
+assert (0, art.name) not in names(), "only the pinned property shows, not its whole layer"
 # Pinned even without keys: an empty row stays.
 assert art.pin_channel("rotation") == {'FINISHED'}
 assert (1, art.name + ": Rotation") in names() and art.keyframes("rotation") == []

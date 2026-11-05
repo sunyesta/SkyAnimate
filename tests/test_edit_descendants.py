@@ -62,11 +62,11 @@ doc.frame_current = 10
 first.location_x = 0.25
 doc.frame_current = 11
 layers.active = outer
-names = [r[1] for r in oanim.wm.timeline_rows(group_by="OWNER")]
+names = [r[1] for r in oanim.wm.timeline_rows()]
 assert first.name in names, names
 outer.edit_descendants = False
 layers.active = outer
-assert first.name not in [r[1] for r in oanim.wm.timeline_rows(group_by="OWNER")], "off: only the group"
+assert first.name not in [r[1] for r in oanim.wm.timeline_rows()], "off: only the group"
 outer.edit_descendants = True
 doc.frame_current = 0
 

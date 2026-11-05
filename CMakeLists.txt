@@ -375,6 +375,8 @@ add_test(NAME live_dynamics
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_live_dynamics.py)
 add_test(NAME timeline_pins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_pins.py)
+add_test(NAME timeline_tree
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_tree.py)
 add_test(NAME remote_control
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_remote_control.py)
 add_test(NAME auto_key_options

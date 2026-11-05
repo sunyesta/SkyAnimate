@@ -48,8 +48,6 @@ struct Area {
   /* Timeline: how far the channel rows are scrolled, in pixels (which folding rows are open is the
    * project's: Document::ui_open). */
   float channel_scroll = 0.0f;
-  /* View > Group by Kind (the default), else by Owner. */
-  bool timeline_by_kind = true;
   /* The names column's width, dragged by its edge (0: the default). */
   float timeline_names_w = 0.0f;
 
@@ -186,14 +184,23 @@ void asset_shelf_draw(Area &area, Context &C);
 struct TimelineRowInfo {
   int depth = 0;
   std::string name;
-  /* In the Pinned or Selected sections. */
+  /* Pinned, or a picked bone's or the selected points' (red). */
   bool red = false;
   /* A pinned property's row (with its pin). */
   bool pinned = false;
   /* A copy's (reference layer's) channel changed from its original (teal). */
   bool changed = false;
+  /* A layer's own row: that layer's id (clicking its name makes it active); else 0. */
+  uint64_t layer = 0;
+  /* A folding row's key in the project's fold states ("Timeline/<fold>"), "" when it doesn't fold. */
+  std::string fold;
+  bool open = false;
+  bool summary = false;
+  /* The frames it shows keys on. */
+  std::vector<int> frames;
 };
-std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool by_kind);
+/* `as_shown`: folded rows as the project keeps them (else every row open). */
+std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */
 void text_editor_draw(Area &area, Context &C);
 /* Python console, in console.cc. */
