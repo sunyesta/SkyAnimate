@@ -399,6 +399,18 @@ def overlay_colors(layer, left=(0.0, 0.0, 0.0), right=(1.0, 1.0, 1.0), split=0.0
                                  bool(handles))
 
 
+def canvas_hash(rgba, width, height, background=0.0):
+    """Test hook: the fingerprint the viewport takes of a canvas read back (bytes, RGBA); the same picture, the same
+    one, so a click that only picks something doesn't make the overlays work their colours out again."""
+    return _oanim.canvas_hash(bytes(rgba), int(width), int(height), float(background))
+
+
+def canvas_at(x, y):
+    """What the viewport's last canvas read back shows at document point (x, y), (r, g, b), or None (none read yet,
+    as in a background run)."""
+    return _oanim.canvas_at(float(x), float(y))
+
+
 def path_handle_colors(tip_picked):
     """Test hook: a motion path handle's line in runs (from, to, "#RRGGBB"), key (0) to tip (1)."""
     return _oanim.path_handle_colors(bool(tip_picked))

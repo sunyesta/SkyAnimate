@@ -42,10 +42,11 @@ doc.frame_current = 5
 for l in layers.all():
     l.selected = l.id == art.id
 art.select_points([0])
-doc.motion_paths = True
 doc.path_all = True
 doc.frame_end = 10
-ops.wm.tool_motion_path()
+assert not doc.motion_paths
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+assert doc.motion_paths, "the Motion Path tool shows the paths it edits"
 label = art.name + " point 0"
 pid = str(art.point_ids[0])
 on = dict(layer=str(art.id), point=pid)

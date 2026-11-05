@@ -229,6 +229,10 @@ class Device {
   virtual void resolve(Target target) = 0;
   /* The resolved image's pixels, RGBA, bottom row first. */
   virtual void read_pixels(Target target, std::vector<uint8_t> &r_rgba) = 0;
+  /* As read_pixels without waiting for the GPU: starts copying them aside (replacing a copy not yet taken), and
+   * read_pixels_take hands them over once the GPU has finished it (false until then, or with nothing started). */
+  virtual void read_pixels_begin(Target target) = 0;
+  virtual bool read_pixels_take(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height) = 0;
 
   /* Timing (render statistics, for benchmarks): while on, by kind of draw ("batches", "fill fans", "fill covers",
    * "mask passes", ...): the GPU's time from one kind to the next, the CPU's time in the device's calls, and how many

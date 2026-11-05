@@ -94,6 +94,13 @@ static ImU32 u32_mix(ImU32 a, ImU32 b, float t)
   return out;
 }
 
+/* The same hue, darker: an outline that keeps a light colour readable on light drawings. */
+static ImU32 u32_darker(ImU32 c)
+{
+  const auto part = [c](int shift) { return ImU32(float((c >> shift) & 0xff) * 0.45f + 0.5f) << shift; };
+  return part(0) | part(8) | part(16) | IM_COL32(0, 0, 0, 230);
+}
+
 /* 0xRRGGBB at `alpha` (0-255) as an ImGui colour. */
 static ImU32 color_u32_rgb(uint32_t rgb, int alpha)
 {
@@ -1471,6 +1478,11 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     dab();
     g.last = io.MousePos;
   }
+}
+
+bool canvas_now_at(float2 at, Color &r)
+{
+  return g_canvas_now && g_canvas_now->at(at, r);
 }
 
 std::vector<PathHandleRun> path_handle_runs(bool tip_picked)
@@ -6910,15 +6922,16 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
          * end, fading to the point's. */
         const bool tip_picked = pre ? cp.select_in : cp.select_out;
         const bool at_point = point_selected, at_tip = point_selected || tip_picked;
-        /* Unpicked: red, outlined in black so it reads on anything. */
-        const ImU32 dark = color_u32_rgb(preferences().handle_color, 255);
-        const ImU32 bright = color_u32_rgb(preferences().handle_selected, 255);
-        g.lines.push_back({here, h, IM_COL32(0, 0, 0, 200), 3.0f});
-        g.lines.push_back({here, h, at_point ? bright : dark, 1.5f, at_tip ? bright : dark});
+        /* Light red, a stronger red where picked; outlined in a darker shade of the colour beside it. */
+        const ImU32 own = color_u32_rgb(preferences().handle_color, 255);
+        const ImU32 picked = color_u32_rgb(preferences().handle_selected, 255);
+        const ImU32 near_point = at_point ? picked : own, near_tip = at_tip ? picked : own;
+        g.lines.push_back({here, h, u32_darker(near_point), 3.0f, u32_darker(near_tip)});
+        g.lines.push_back({here, h, near_point, 1.5f, near_tip});
         /* The tip: orange when picked; a broken handle's (set, not kept in line) square, a smooth one's round. */
         const bool broken = cp.handles_set && !cp.aligned;
-        g.marks.push_back({h, at_tip ? COL_POINT_SELECTED : dark, IM_COL32(0, 0, 0, 220), handle_size * 0.5f,
-                           broken ? 0.0f : 1.0f});
+        const ImU32 tip = at_tip ? COL_POINT_SELECTED : own;
+        g.marks.push_back({h, tip, u32_darker(tip), handle_size * 0.5f, broken ? 0.0f : 1.0f});
       }
     }
   }
@@ -15551,23 +15564,42 @@ static void viewport_draw_contents(Area &area, Context &C)
     }
     dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
   }
-  /* The canvas read back for the overlays to look under themselves (overlay_contrast.hh): after a render, not while
-   * playing, at most a few times a second (reading it waits for the GPU). */
+  /* The canvas read back for the overlays to look under themselves (overlay_contrast.hh): begun after a render (not
+   * while playing, at most a few times a second) and taken a frame or so later, so nothing waits for the GPU; the
+   * overlays keep the colours they have meanwhile. Only a picture that really changed (not a click that picked
+   * something, which draws the same one again) makes them work their colours out again. */
   {
     struct Readback {
       CanvasSample sample;
+      std::vector<uint8_t> incoming;
+      Transform2D incoming_to_pixels;
+      uint64_t hash = 0;
       uint64_t read = 0;
+      bool pending = false;
       double at = -10.0;
     };
     static std::map<int, Readback> readbacks;
     Readback &rb = readbacks[area.id];
     const uint64_t drawn = render_serials[area.id];
+    int w = 0, h = 0;
+    if (rb.pending && renderer->read_pixels_take(rb.incoming, &w, &h)) {
+      rb.pending = false;
+      const uint64_t hash = canvas_hash(rb.incoming, w, h, rb.incoming_to_pixels, doc.background);
+      if (hash != rb.hash) {
+        rb.hash = hash;
+        rb.sample.rgba.swap(rb.incoming);
+        rb.sample.width = w;
+        rb.sample.height = h;
+        rb.sample.document_to_pixels = rb.incoming_to_pixels;
+        rb.sample.background = doc.background;
+        rb.sample.serial++;
+      }
+    }
     if (rendered && drawn != rb.read && !wm.playing && ImGui::GetTime() - rb.at >= 0.15 &&
-        renderer->read_pixels(rb.sample.rgba, &rb.sample.width, &rb.sample.height))
+        renderer->read_pixels_begin())
     {
-      rb.sample.document_to_pixels = renderer->image_to_document().inverted();
-      rb.sample.background = doc.background;
-      rb.sample.serial++;
+      rb.pending = true;
+      rb.incoming_to_pixels = renderer->image_to_document().inverted();
       rb.read = drawn;
       rb.at = ImGui::GetTime();
     }

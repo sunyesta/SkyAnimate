@@ -1493,6 +1493,13 @@ void vector_operators_register()
         return OpStatus::Cancelled;
       }
       C.wm->tool_settings.tool = tool;
+      /* The Motion Path tool edits paths: chosen with them off, it shows them (not an undo step, as a tool isn't). */
+      if (tool == Tool::MotionPath && C.document && !C.document->motion_paths) {
+        C.document->motion_paths = true;
+        if (C.undo) {
+          C.undo->mark_changed();
+        }
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

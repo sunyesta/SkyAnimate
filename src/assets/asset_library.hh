@@ -47,8 +47,8 @@ struct Preferences {
   uint32_t path_lighter = 0x5CA8AE;
   uint32_t path_darker = 0x3A7070;
   /* Vector handles: the line and tip dot, and the line where it is picked. */
-  uint32_t handle_color = 0xC9483B;
-  uint32_t handle_selected = 0x68EB50;
+  uint32_t handle_color = 0xFF9D9D;
+  uint32_t handle_selected = 0xFF3737;
 };
 
 /* The current preferences. Loaded at startup from %LOCALAPPDATA%\OpenAnimate\preferences.json;

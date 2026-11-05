@@ -79,6 +79,10 @@ class SceneRenderer {
 
   /* The last render's pixels, top row first, RGBA, 8 bits each (premultiplied). */
   bool read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height);
+  /* The last render's pixels without waiting for the GPU: begun after a render, taken (bottom row first, as
+   * premultiplied as read_pixels) a frame or so later once ready; false until then. */
+  bool read_pixels_begin();
+  bool read_pixels_take(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height);
 
   /* Whether the next viewport renders draw guides, the layers not rendered (off: overlays off, so the
    * viewport shows what renders). */

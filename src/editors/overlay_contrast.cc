@@ -1,5 +1,6 @@
 #include "editors/overlay_contrast.hh"
 
+#include <cstring>
 #include <algorithm>
 #include <cmath>
 
@@ -38,7 +39,7 @@ bool CanvasSample::at(float2 p, Color &r) const
     return false;
   }
   const float2 px = document_to_pixels.apply(p);
-  const int x = int(std::floor(px.x)), y = height - 1 - int(std::floor(px.y));
+  const int x = int(std::floor(px.x)), y = int(std::floor(px.y));
   if (x < 0 || y < 0 || x >= width || y >= height) {
     return false;
   }
@@ -76,6 +77,32 @@ void contrast_pieces(const std::vector<float2> &points, float piece,
       previous = pick;
     }
   }
+}
+
+uint64_t canvas_hash(const std::vector<uint8_t> &rgba, int width, int height, const Transform2D &document_to_pixels,
+                     const Color &background)
+{
+  uint64_t h = 1469598103934665603ull;
+  const auto mix = [&h](uint64_t v) { h = (h ^ v) * 0x100000001b3ull; };
+  mix(uint64_t(uint32_t(width)) << 32 | uint32_t(height));
+  /* Eight bytes at a time: a full screen in about a millisecond. */
+  const size_t words = rgba.size() / 8;
+  for (size_t i = 0; i < words; i++) {
+    uint64_t w;
+    std::memcpy(&w, rgba.data() + i * 8, 8);
+    mix(w);
+  }
+  for (size_t i = words * 8; i < rgba.size(); i++) {
+    mix(rgba[i]);
+  }
+  for (const float v : {document_to_pixels.a, document_to_pixels.b, document_to_pixels.c, document_to_pixels.d,
+                        document_to_pixels.tx, document_to_pixels.ty, background.r, background.g, background.b})
+  {
+    uint32_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    mix(bits);
+  }
+  return h;
 }
 
 Color color_from_rgb(uint32_t rgb)

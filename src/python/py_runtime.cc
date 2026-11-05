@@ -1182,6 +1182,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   /* Motion paths (anim/motion_path.hh): what they trace now, over which frames, and where (as drawn). */
   /* Test hook: the colours the wire and point overlay of layer `id`, and the motion paths' lines, take over a canvas
    * that is `left` left of x = `split` and `right` from there on (document space). */
+  /* Test hook: canvas_hash of `rgba` (bytes), as the viewport fingerprints a canvas read back. */
+  m.def("canvas_hash", [](py::bytes rgba, int width, int height, float bg) {
+    const std::string s = rgba;
+    return canvas_hash(std::vector<uint8_t>(s.begin(), s.end()), width, height, Transform2D(), Color{bg, bg, bg, 1.0f});
+  });
+  /* The live viewport's last canvas read back, at a document point: (r, g, b) or None. */
+  m.def("canvas_at", [](float x, float y) -> py::object {
+    Color c;
+    if (!canvas_now_at({x, y}, c)) {
+      return py::none();
+    }
+    return py::make_tuple(c.r, c.g, c.b);
+  });
   /* Test hook: a motion path handle line's runs of colour, key (0) to tip (1). */
   m.def("path_handle_colors", [](bool tip_picked) {
     py::list out;

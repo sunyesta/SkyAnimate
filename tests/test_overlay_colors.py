@@ -2,7 +2,7 @@
 takes #AEAEAE (over something darker) or #6E6E6E (over something lighter). Motion path lines the same with #4D9191,
 #5CA8AE and #3A7070 for the first path; a path's own colour makes its own lighter and darker. Selected stays orange; a
 segment with one end picked fades from orange there to the other end's colour (as Blender's edit mode). Handles are
-red (#C9483B) with a black outline, #68EB50 where picked (fading the same way), their tips orange when picked, round on
+light red (#FF9D9D), #FF3737 where picked, outlined in a darker shade of the same red (fading the same way), their tips orange when picked, round on
 smooth points and square on broken ones. A motion path handle keeps its white, fading to orange at a dragged tip."""
 
 import oanim
@@ -75,7 +75,7 @@ pieces = wires_on(BLACK, border, 0.0)
 assert colors_at(pieces, 0.5) == {BASE}, ("borderline on its own: still readable", pieces)
 
 # --- One end picked: orange there, fading along the segment to the other end's colour --------------------------------
-ORANGE, H_DARK, H_BRIGHT = "#FF8C00", "#C9483B", "#68EB50"
+ORANGE, H_DARK, H_BRIGHT = "#FF8C00", "#FF9D9D", "#FF3737"
 ops.layer.new()
 bend = layers.active
 bend.add_curve([(-1.0, 0.0), (0.0, 1.0), (1.0, 0.0)])
@@ -135,6 +135,11 @@ def handle(out, tip):
     return line, outline, mark
 
 
+def DARKER_OF(h):
+    """The outline's colour: the same hue at 45%."""
+    return "#" + "".join("%02X" % int(c * 0.45 + 0.5) for c in rgb(h))
+
+
 def close2(a, b):
     return abs(a[0] - b[0]) < 1e-4 and abs(a[1] - b[1]) < 1e-4
 
@@ -143,8 +148,10 @@ out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
 for tip in (h_in, h_out):
     line, outline, mark = handle(out, tip)
     assert line["color"] == H_DARK and line["color_b"] == H_DARK, ("unpicked: red", line)
-    assert outline["color"] == "#000000", ("a thin black outline", outline)
-    assert mark["color"] == H_DARK and mark["outline"] == "#000000" and mark["round"], ("a smooth point's: round", mark)
+    assert outline["color"] == DARKER_OF(H_DARK) and outline["color_b"] == DARKER_OF(H_DARK), \
+        ("outlined in a darker shade of the same red", outline)
+    assert mark["color"] == H_DARK and mark["outline"] == DARKER_OF(H_DARK) and mark["round"], \
+        ("a smooth point's: round", mark)
 
 # The point picked lights both its handles all along; their tips orange.
 bend.select_points([1])
@@ -163,8 +170,10 @@ assert not handle(out, h_in)[2]["round"] and not handle(out, h_out)[2]["round"],
 bend.select_points([1], False)
 bend.select_handle(0, 1, "OUT")
 out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
-line, _, mark = handle(out, h_out)
+line, outline, mark = handle(out, h_out)
 assert line["color"] == H_DARK and line["color_b"] == H_BRIGHT and mark["color"] == ORANGE, (line, mark)
+assert outline["color"] == DARKER_OF(H_DARK) and outline["color_b"] == DARKER_OF(H_BRIGHT), outline
+assert mark["outline"] == DARKER_OF(ORANGE), mark
 line, _, mark = handle(out, h_in)
 assert line["color"] == H_DARK and line["color_b"] == H_DARK and mark["color"] == H_DARK, (line, mark)
 layers.active = art
@@ -217,5 +226,15 @@ assert any(c == P_BASE and x < -0.1 for x, c in seen) and any(c == P_LIGHTER and
 assert ops.anim.motion_path_style(color="0.9,0.2,0.2", layer=str(art.id), point=str(art.point_ids[0])) == {'FINISHED'}
 own = {k["color"] for k in point_path(BLACK, BLACK, 0.0)["pieces"]}
 assert own and not own & {P_BASE, P_LIGHTER, P_DARKER}, own
+
+# --- The canvas fingerprint: the same picture again (a click that only picks) keeps the colours worked out --------
+pic = bytes([10, 20, 30, 255] * 64)
+assert wm.canvas_hash(pic, 8, 8) == wm.canvas_hash(bytes(pic), 8, 8), "the same picture"
+changed = bytearray(pic)
+changed[-2] = 21
+assert wm.canvas_hash(bytes(changed), 8, 8) != wm.canvas_hash(pic, 8, 8), "a pixel changed, even the last"
+assert wm.canvas_hash(pic, 8, 8, 0.5) != wm.canvas_hash(pic, 8, 8), "the background changed"
+assert wm.canvas_hash(pic, 16, 4) != wm.canvas_hash(pic, 8, 8), "another size"
+assert wm.canvas_at(0.0, 0.0) is None, "nothing read back in a background run"
 
 print("Overlay colours tests passed")

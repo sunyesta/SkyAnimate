@@ -14,7 +14,7 @@ namespace oanim {
 
 /* The canvas as the viewport last drew it, read back for the overlays to look under themselves. */
 struct CanvasSample {
-  /* Top row first, RGBA 8 bits each, premultiplied (as SceneRenderer::read_pixels). */
+  /* Bottom row first (as the GPU reads them: no flipping), RGBA 8 bits each, premultiplied. */
   std::vector<uint8_t> rgba;
   int width = 0, height = 0;
   /* Document space to the image's pixels (y up from its bottom row). */
@@ -26,6 +26,14 @@ struct CanvasSample {
   /* The colour shown at `at` (document space): the canvas over the background. False off the image. */
   bool at(float2 at, Color &r) const;
 };
+
+/* A fingerprint of a canvas read back: its pixels, size, place and background. The same picture drawn again (a click
+ * that only picked something) has the same one, so the overlays' colours aren't worked out again. */
+uint64_t canvas_hash(const std::vector<uint8_t> &rgba, int width, int height, const Transform2D &document_to_pixels,
+                     const Color &background);
+
+/* What the last canvas read back shows at `at` (document space), as the overlays see it; false with none read yet. */
+bool canvas_now_at(float2 at, Color &r);
 
 enum class ContrastPick : uint8_t { Base, Lighter, Darker };
 

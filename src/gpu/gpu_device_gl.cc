@@ -3,6 +3,7 @@
  * Each draw's state is compared with what was last set and only what differs is sent; begin() forgets what was set,
  * since the UI draws with OpenGL between renders. */
 
+#include <cstring>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -313,10 +314,16 @@ class GLDevice final : public Device {
   void draw(const Draw &draw) override;
   void resolve(Target target) override;
   void read_pixels(Target target, std::vector<uint8_t> &r_rgba) override;
+  void read_pixels_begin(Target target) override;
+  bool read_pixels_take(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height) override;
   void set_timing(bool on) override { timing_ = on; }
   std::vector<Timing> timings() override;
 
  private:
+  /* A read without waiting: pixels copied into a buffer of the GPU's, and a fence passed once they are there. */
+  GLuint read_buffer_ = 0;
+  GLsync read_fence_ = nullptr;
+  int read_width_ = 0, read_height_ = 0;
   /* Timing: a timestamp each time the kind of draw changes. */
   void mark(const char *kind);
   static const char *kind_of(const Draw &d);
@@ -423,6 +430,12 @@ GLDevice::~GLDevice()
 {
   if (!initialized_ || !gl::DeleteProgram) {
     return;
+  }
+  if (read_fence_) {
+    gl::DeleteSync(read_fence_);
+  }
+  if (read_buffer_) {
+    gl::DeleteBuffers(1, &read_buffer_);
   }
   for (uint32_t id = 1; id < targets_.items.size(); id++) {
     if (targets_[id].draw_framebuffer) {
@@ -1135,6 +1148,56 @@ void GLDevice::read_pixels(Target target, std::vector<uint8_t> &r_rgba)
   glReadPixels(0, 0, t.width, t.height, GL_RGBA, GL_UNSIGNED_BYTE, r_rgba.data());
   gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
   framebuffer_ = UNKNOWN;
+}
+
+void GLDevice::read_pixels_begin(Target target)
+{
+  const GLTarget &t = targets_[target.id];
+  if (read_fence_) {
+    gl::DeleteSync(read_fence_);
+    read_fence_ = nullptr;
+  }
+  if (!read_buffer_) {
+    gl::GenBuffers(1, &read_buffer_);
+  }
+  read_width_ = t.width;
+  read_height_ = t.height;
+  gl::BindBuffer(GL_PIXEL_PACK_BUFFER, read_buffer_);
+  gl::BufferData(GL_PIXEL_PACK_BUFFER, GLsizeiptr(size_t(t.width) * size_t(t.height) * 4), nullptr, GL_STREAM_READ);
+  gl::BindFramebuffer(GL_READ_FRAMEBUFFER, t.resolve_framebuffer);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  /* Into the buffer: returns at once, the copy happening on the GPU after what was drawn. */
+  glReadPixels(0, 0, t.width, t.height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  gl::BindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+  gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
+  framebuffer_ = UNKNOWN;
+  read_fence_ = gl::FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+
+bool GLDevice::read_pixels_take(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height)
+{
+  if (!read_fence_) {
+    return false;
+  }
+  /* Only looked at, never waited for. */
+  const GLenum state = gl::ClientWaitSync(read_fence_, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+  if (state != GL_ALREADY_SIGNALED && state != GL_CONDITION_SATISFIED) {
+    return false;
+  }
+  gl::DeleteSync(read_fence_);
+  read_fence_ = nullptr;
+  const size_t bytes = size_t(read_width_) * size_t(read_height_) * 4;
+  gl::BindBuffer(GL_PIXEL_PACK_BUFFER, read_buffer_);
+  const void *mapped = gl::MapBufferRange(GL_PIXEL_PACK_BUFFER, 0, GLsizeiptr(bytes), GL_MAP_READ_BIT);
+  if (mapped) {
+    r_rgba.resize(bytes);
+    std::memcpy(r_rgba.data(), mapped, bytes);
+    gl::UnmapBuffer(GL_PIXEL_PACK_BUFFER);
+  }
+  gl::BindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+  *r_width = read_width_;
+  *r_height = read_height_;
+  return mapped != nullptr;
 }
 
 std::unique_ptr<Device> make_gl_device()

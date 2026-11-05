@@ -441,6 +441,21 @@ bool SceneRenderer::read_pixels(std::vector<uint8_t> &r_rgba, int *r_width, int 
   return true;
 }
 
+bool SceneRenderer::read_pixels_begin()
+{
+  flush_batch();
+  if (!output_) {
+    return false;
+  }
+  device_->read_pixels_begin(output_->target);
+  return true;
+}
+
+bool SceneRenderer::read_pixels_take(std::vector<uint8_t> &r_rgba, int *r_width, int *r_height)
+{
+  return device_->read_pixels_take(r_rgba, r_width, r_height);
+}
+
 void SceneRenderer::use_color_stencil(Paint paint)
 {
   const unsigned required = paint == Paint::Line ? required_stencil_ & ~line_free_stencil_
