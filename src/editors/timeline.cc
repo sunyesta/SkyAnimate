@@ -68,7 +68,7 @@ static constexpr ImU32 COL_FIX_TEXT = UI_FIX_COLOR;
 static constexpr ImU32 COL_BROKEN = UI_BROKEN_COLOR;
 static constexpr ImU32 COL_ACTION_TINT = IM_COL32(0xd0, 0x8a, 0x2e, 0x14);
 
-enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion, Chain, Pointer, Lock };
+enum class Icon { Record, JumpStart, KeyPrev, PlayReverse, Play, Pause, KeyNext, JumpEnd, Stepped, Menu, Onion, Path, Chain, Pointer, Lock };
 
 /* Where a button sits in a row of joined buttons (Blender's aligned buttons): only the row's outer
  * corners are round. */
@@ -156,6 +156,19 @@ static void icon_draw(ImDrawList *dl, Icon icon, ImVec2 c, float s, bool on)
       (void)on;
       dl->AddCircle(c + ImVec2(-s * 0.38f, 0.0f), s * 0.62f, (col & 0x00ffffffu) | 0x80000000u, 0, 1.4f);
       dl->AddCircleFilled(c + ImVec2(s * 0.32f, 0.0f), s * 0.62f, col);
+      break;
+    }
+    case Icon::Path: {
+      /* A motion path: an arc with the dots of its frames, the last one solid. */
+      (void)on;
+      const ImVec2 p0 = c + ImVec2(-s, s * 0.7f), p1 = c + ImVec2(-s * 0.3f, -s * 1.1f), p2 = c + ImVec2(s * 0.3f, -s * 1.1f),
+                   p3 = c + ImVec2(s, s * 0.7f);
+      dl->AddBezierCubic(p0, p1, p2, p3, (col & 0x00ffffffu) | 0x90000000u, 1.2f);
+      for (int i = 0; i <= 4; i++) {
+        const float t = float(i) / 4.0f, u = 1.0f - t;
+        const ImVec2 q = p0 * (u * u * u) + p1 * (3.0f * u * u * t) + p2 * (3.0f * u * t * t) + p3 * (t * t * t);
+        dl->AddCircleFilled(q, i == 4 ? s * 0.32f : s * 0.2f, col);
+      }
       break;
     }
     case Icon::Pointer: {
@@ -1675,65 +1688,13 @@ static void timeline_header(Area &area, Context &C)
   const float record_gap = h * 0.6f;
   const float keying_arrow_w = h * 0.75f;
   const float onion_gap = h * 0.25f;
-  const float transport_w = 9.0f * h + 2.0f * record_gap + 2.0f * keying_arrow_w + onion_gap;
+  const float transport_w = 10.0f * h + 2.0f * record_gap + 3.0f * keying_arrow_w + 2.0f * onion_gap;
   const float transport_x = std::max(menus_end + pad * 2.0f, origin.x + (width - transport_w) * 0.5f);
   ImGui::SetCursorScreenPos(ImVec2(transport_x, origin.y + top));
   (void)spacing;
   /* Buttons in a group touch, as Blender's aligned rows. */
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, style.ItemSpacing.y));
-  if (icon_button("##auto_key", Icon::Record, doc.auto_key,
-                  "Auto Keying\nEditing at a frame other than 0 keys what you change there", "", Joined::First)) {
-    doc.auto_key = !doc.auto_key;
-    C.undo->mark_changed();
-  }
-  /* Blender's auto-keying popover beside the record button: the mode, and Moho's Auto-Freeze Keys. */
-  ImGui::SameLine(0.0f, 0.0f);
-  const ImVec2 arrow_at = ImGui::GetCursorScreenPos();
-  if (icon_button("##auto_key_options", Icon::Menu, false, "Auto Keying options", "", Joined::Last, keying_arrow_w)) {
-    ImGui::OpenPopup("##auto_key_popover");
-  }
-  /* Opens above the timeline's header. */
-  popover_place(arrow_at.x - h * 2.0f, arrow_at.y, 0.0f);
-  if (ImGui::BeginPopup("##auto_key_popover")) {
-    popover_caret(arrow_at.x + keying_arrow_w * 0.5f);
-    const float seg_w = h * 4.2f;
-    for (const auto &[mode, label, tip] :
-         {std::tuple{AutoKeyMode::AddReplace, "Add & Replace", "Key whatever changes, adding keys where there are none"},
-          std::tuple{AutoKeyMode::Replace, "Replace", "Only change keys already on the frame: a change where there "
-                                                       "is no key isn't keyed"}})
-    {
-      if (mode == AutoKeyMode::Replace) {
-        ImGui::SameLine(0.0f, 0.0f);
-      }
-      const bool on = doc.auto_key_mode == mode;
-      if (on) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-      }
-      if (ImGui::Button(label, ImVec2(seg_w, 0.0f)) && !on) {
-        doc.auto_key_mode = mode;
-        C.undo->mark_changed();
-      }
-      if (on) {
-        ImGui::PopStyleColor();
-      }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("%s", tip);
-      }
-    }
-    ImGui::BeginDisabled(doc.auto_key_mode == AutoKeyMode::Replace);
-    if (ImGui::Checkbox("Auto-Freeze Keys", &doc.auto_freeze_keys)) {
-      C.undo->mark_changed();
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("Keying a bone keys every other bone of its bone layer shown there on that frame too, and "
-                        "keying a point every point of its drawing, so the whole pose and shape hold there (Moho's). "
-                        "Not with Replace, which adds no keys");
-    }
-    ImGui::EndPopup();
-  }
-  /* Onion skins beside it, the same way: the toggle and its popover. */
-  ImGui::SameLine(0.0f, onion_gap);
+  /* The panel buttons, each a toggle and its popover: onion skins, motion paths, then auto keying. */
   if (icon_button("##onion_skin", Icon::Onion, doc.onion_skin,
                   "Onion Skins\nShow the drawings being edited as they are on the keys (or frames) before this "
                   "one, as coloured wireframes. Never rendered",
@@ -1807,16 +1768,33 @@ static void timeline_header(Area &area, Context &C)
       ui_prop_check(C, ptr, "onion_all_layers", path);
       ImGui::EndTable();
     }
-    /* Motion paths (anim/motion_path.hh): where the selected things go, under the ghosts they go with. */
-    ImGui::Spacing();
-    ImGui::Separator();
+    ImGui::EndPopup();
+  }
+  /* Motion paths: the toggle and its popover. */
+  ImGui::SameLine(0.0f, onion_gap);
+  if (icon_button("##motion_paths", Icon::Path, doc.motion_paths,
+                  "Motion Paths\nShow where the selected layers, bones and points go over the frames around this one, "
+                  "as a line of dots. Never rendered",
+                  "", Joined::First)) {
+    doc.motion_paths = !doc.motion_paths;
+    C.undo->mark_changed();
+  }
+  ImGui::SameLine(0.0f, 0.0f);
+  const ImVec2 path_arrow_at = ImGui::GetCursorScreenPos();
+  if (icon_button("##path_options", Icon::Menu, false, "Motion Path options", "", Joined::Last, keying_arrow_w)) {
+    ImGui::OpenPopup("##path_popover");
+  }
+  popover_place(path_arrow_at.x - h * 3.0f, path_arrow_at.y, 0.0f);
+  if (ImGui::BeginPopup("##path_popover")) {
+    popover_caret(path_arrow_at.x + keying_arrow_w * 0.5f);
+    const float seg_w = h * 4.2f;
+    /* Motion paths (anim/motion_path.hh): where the selected things go. */
     ImGui::TextDisabled("Motion Paths");
     if (ImGui::BeginTable("##paths", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(seg_w * 2.0f, 0.0f))) {
       ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.4f);
       ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.6f);
       const rna::PointerRNA ptr{&doc, &Document::rna()};
       const char *path = "oanim.data.document";
-      ui_prop_check(C, ptr, "motion_paths", path, "Show");
       ImGui::BeginDisabled(!doc.motion_paths);
       ImGui::BeginDisabled(doc.path_all);
       ui_prop(C, ptr, "path_before", path);
@@ -1900,6 +1878,59 @@ static void timeline_header(Area &area, Context &C)
       }
       ImGui::EndDisabled();
       ImGui::TextDisabled("Alt Space plays just the paths' range");
+    }
+    ImGui::EndPopup();
+  }
+  /* Auto keying, last. */
+  ImGui::SameLine(0.0f, onion_gap);
+  if (icon_button("##auto_key", Icon::Record, doc.auto_key,
+                  "Auto Keying\nEditing at a frame other than 0 keys what you change there", "", Joined::First)) {
+    doc.auto_key = !doc.auto_key;
+    C.undo->mark_changed();
+  }
+  /* Blender's auto-keying popover beside the record button: the mode, and Moho's Auto-Freeze Keys. */
+  ImGui::SameLine(0.0f, 0.0f);
+  const ImVec2 arrow_at = ImGui::GetCursorScreenPos();
+  if (icon_button("##auto_key_options", Icon::Menu, false, "Auto Keying options", "", Joined::Last, keying_arrow_w)) {
+    ImGui::OpenPopup("##auto_key_popover");
+  }
+  /* Opens above the timeline's header. */
+  popover_place(arrow_at.x - h * 2.0f, arrow_at.y, 0.0f);
+  if (ImGui::BeginPopup("##auto_key_popover")) {
+    popover_caret(arrow_at.x + keying_arrow_w * 0.5f);
+    const float seg_w = h * 4.2f;
+    for (const auto &[mode, label, tip] :
+         {std::tuple{AutoKeyMode::AddReplace, "Add & Replace", "Key whatever changes, adding keys where there are none"},
+          std::tuple{AutoKeyMode::Replace, "Replace", "Only change keys already on the frame: a change where there "
+                                                       "is no key isn't keyed"}})
+    {
+      if (mode == AutoKeyMode::Replace) {
+        ImGui::SameLine(0.0f, 0.0f);
+      }
+      const bool on = doc.auto_key_mode == mode;
+      if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      }
+      if (ImGui::Button(label, ImVec2(seg_w, 0.0f)) && !on) {
+        doc.auto_key_mode = mode;
+        C.undo->mark_changed();
+      }
+      if (on) {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", tip);
+      }
+    }
+    ImGui::BeginDisabled(doc.auto_key_mode == AutoKeyMode::Replace);
+    if (ImGui::Checkbox("Auto-Freeze Keys", &doc.auto_freeze_keys)) {
+      C.undo->mark_changed();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Keying a bone keys every other bone of its bone layer shown there on that frame too, and "
+                        "keying a point every point of its drawing, so the whole pose and shape hold there (Moho's). "
+                        "Not with Replace, which adds no keys");
     }
     ImGui::EndPopup();
   }
