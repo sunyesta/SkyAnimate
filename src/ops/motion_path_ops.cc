@@ -18,7 +18,8 @@ namespace oanim {
 
 namespace {
 
-/* The targets an operator works on: layer=id (with bone=name or point=id) for one, else those traced now. */
+/* The targets an operator works on: layer=id (with bone=name, and head=1 for its head's path rather than its tip's,
+ * or point=id) for one, else those traced now. */
 bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
 {
   Document &doc = *C.document;
@@ -44,6 +45,7 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
       report(ReportType::Warning, "No bone named " + bone);
       return false;
     }
+    t.head = op_arg_bool(C, "head");
   }
   t.point = uint64_t(std::stoull(op_arg(C, "point", "0")));
   /* A Key Whole Drawing layer's drawing as a whole (its timing). */
@@ -54,7 +56,7 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
     report(ReportType::Warning, layer->name + " isn't keyed as a whole drawing or together");
     return false;
   }
-  /* As it is traced: by its head, say. */
+  /* With its style (colour, pinned). */
   if (const MotionPathTarget *style = motion_path_style(doc, t)) {
     t = *style;
   }
@@ -132,7 +134,7 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_style";
     ot.name = "Motion Path Style";
     ot.description = "For the paths traced now (layer=id with bone=name or point=id: that one): color=\"r,g,b\" its "
-                     "colour (\"\" the usual one), head=1 a bone traced by its head, head=0 by its tip";
+                     "colour (\"\" the usual one); head=1 with bone= names the bone's head path, else its tip's";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -151,9 +153,6 @@ void motion_path_operators_register()
         if (recolor) {
           style.has_color = !op_arg(C, "color").empty();
           style.color = style.has_color ? color : Color();
-        }
-        if (op_has_arg(C, "head")) {
-          style.head = op_arg_bool(C, "head");
         }
       }
       return OpStatus::Finished;

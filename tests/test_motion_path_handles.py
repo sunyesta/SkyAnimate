@@ -114,10 +114,16 @@ assert ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tai
 for frame, x in ((10, 1.0), (20, 2.0), (30, 3.0)):
     doc.frame_current = frame
     rig.bone_set("arm", position=(x, 0.0))
+doc.frame_current = 20  # (the last pose keyed as the frame changes)
 rig.select_bone("arm")
-bone_args = dict(layer=str(rig.id), bone="arm")
-assert ops.anim.motion_path_handle(frame="20", side="OUT", x="3", y="1", **bone_args) == {'CANCELLED'}, "a tip turns"
-ops.anim.motion_path_style(head="1", **bone_args)
+tip_args = dict(layer=str(rig.id), bone="arm")
+# A bone that only moves: its tip goes as its head does, on the same position keys, so it has their handles too.
+assert ops.anim.motion_path_handle(frame="10", side="OUT", x="2", y="1", **tip_args) == {'FINISHED'}, "a moved tip"
+doc.frame_current = 30
+rig.bone_set("arm", angle=0.3)
+doc.frame_current = 20  # (the turn keyed as the frame changes)
+assert ops.anim.motion_path_handle(frame="20", side="OUT", x="3", y="1", **tip_args) == {'CANCELLED'}, "a tip turns"
+bone_args = dict(tip_args, head="1")
 # The layer is 1 across and turned a quarter: the head shows at (1, 2) on frame 20, moving up the page. Its out handle
 # to (0.5, 2), half a unit left, is half a unit across the bone layer's own y.
 assert ops.anim.motion_path_handle(frame="20", side="OUT", x="0.5", y="2", **bone_args) == {'FINISHED'}

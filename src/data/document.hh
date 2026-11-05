@@ -61,7 +61,8 @@ struct MotionPathTarget {
   bool operator==(const MotionPathTarget &) const = default;
   bool same(const MotionPathTarget &o) const
   {
-    return layer == o.layer && bone == o.bone && point == o.point && drawing == o.drawing;
+    /* A bone's head and its tip are two paths. */
+    return layer == o.layer && bone == o.bone && point == o.point && head == o.head && drawing == o.drawing;
   }
 };
 

@@ -1618,6 +1618,9 @@ static void timeline_header(Area &area, Context &C)
         if (t.point) {
           args["point"] = std::to_string(t.point);
         }
+        if (t.head) {
+          args["head"] = "1";
+        }
         const Color c = motion_path_color(doc, t, i);
         float rgba[4] = {c.r, c.g, c.b, 1.0f};
         bool finished = false;
@@ -1631,14 +1634,6 @@ static void timeline_header(Area &area, Context &C)
           OpArgs set = args;
           set["pinned"] = t.pinned ? "0" : "1";
           operator_call(C, "anim.motion_path_pin", set);
-        }
-        if (t.bone) {
-          ImGui::SameLine();
-          if (ImGui::SmallButton(t.head ? "Head" : "Tip")) {
-            OpArgs set = args;
-            set["head"] = t.head ? "0" : "1";
-            operator_call(C, "anim.motion_path_style", set);
-          }
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(motion_path_label(doc, t).c_str());

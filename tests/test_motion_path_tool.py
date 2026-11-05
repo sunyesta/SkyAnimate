@@ -91,12 +91,10 @@ assert close(arm["angle"], math.pi / 2) and close(arm["position"], (0.0, 0.0)), 
 doc.frame_current = 15
 assert close(at(path("arm tip"), 20), (0.0, 2.0)), "the tip turned onto the mouse's line"
 
-ops.anim.motion_path_style(head="1", **bone_args)
-assert ops.anim.motion_path_move(frame="20", x="0.5", y="0.25", **bone_args) == {'FINISHED'}
+assert ops.anim.motion_path_move(frame="20", x="0.5", y="0.25", head="1", **bone_args) == {'FINISHED'}
 head = key_value(rig, 'bones["arm"].position', 20)
 assert close(head, (0.5, 0.25)), ("the head moves the bone", head)
 ops.ed.undo()
-ops.anim.motion_path_style(head="0", **bone_args)
 
 # --- Shift between keys: a breakdown, staying on the arc -----------------------------------------------------------
 assert ops.anim.motion_path_breakdown(frame="12", factor="0.25", **bone_args) == {'FINISHED'}
@@ -153,5 +151,21 @@ assert close(ball.location_y, arc_y(10)), "only the keys inside the range move"
 doc.frame_current = 15
 assert ops.anim.motion_path_smooth_arc() == {'FINISHED'}, "already smooth: nothing lost"
 assert close(ball.location_y, arc_y(15))
+
+# --- The tool stays on as another kind of layer is made active (an Alt click picks a bone in another layer, say) ----
+wm = oanim.wm
+layers.active = box
+wm.tool_follow_layer()
+assert ops.wm.tool_transform_points() == {'FINISHED'}
+layers.active = rig
+wm.tool_follow_layer()
+assert wm.tool() != "TRANSFORM_POINTS", "another tool goes with its kind of layer"
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+layers.active = box
+wm.tool_follow_layer()
+assert wm.tool() == "MOTION_PATH", "to a drawing"
+layers.active = rig
+wm.tool_follow_layer()
+assert wm.tool() == "MOTION_PATH", "and back to the bones"
 
 print("Motion path tool tests passed")

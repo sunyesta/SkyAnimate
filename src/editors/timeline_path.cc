@@ -154,6 +154,9 @@ static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int fr
   if (t.point) {
     args["point"] = std::to_string(t.point);
   }
+  if (t.head) {
+    args["head"] = "1";
+  }
   if (t.drawing) {
     args["drawing"] = "1";
   }

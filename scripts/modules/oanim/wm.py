@@ -3,6 +3,12 @@
 import _oanim
 
 
+def tool_follow_layer():
+    """What the viewport's tool bar does each frame (not run in the background): after another kind of layer is made
+    active, its own tool again, except that the weight tools and Motion Path stay on."""
+    _oanim.tool_follow_layer()
+
+
 def tool():
     """The viewport tool: "SELECT", "SELECT_LAYER", "CURSOR", "ANNOTATE", "DRAW", "SHAPE", "SPLIT_CURVE",
     "WEIGHT_SELECT", "WEIGHT_PAINT", "TRANSFORM_BONES", "TRANSFORM_POINTS" or "SCULPT"."""

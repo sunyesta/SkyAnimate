@@ -220,6 +220,8 @@ int timeline_hidden_count(Context &C);
 /* Folds or opens a timeline row (`key`, its fold) as its arrow does: a row holding the pick is folded only
  * while the pick lasts, the project's fold left as it is; any other row's fold is the project's. */
 void timeline_row_fold(const std::string &key, bool fold_default, bool holds_pick, bool open);
+/* The tool for the active layer's kind, as the viewport's tool bar picks it each frame (viewport.cc). */
+void tool_follow_active_layer(Context &C);
 /* The same for row `row` as timeline_rows_list(as_shown=true) lists them; false when it doesn't fold. */
 bool timeline_row_fold_at(Context &C, int row, bool open);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */

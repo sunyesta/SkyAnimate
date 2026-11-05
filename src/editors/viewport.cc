@@ -623,6 +623,9 @@ static OpArgs motion_path_target_args(const Document &doc, const MotionPathTarge
   if (t.point) {
     args["point"] = std::to_string(t.point);
   }
+  if (t.head) {
+    args["head"] = "1";
+  }
   return args;
 }
 
@@ -2596,6 +2599,28 @@ static const ToolInfo &tool_info(Tool tool)
   return TOOLS[0];
 }
 
+/* Another kind of layer made active: its own tool again (Select the first time); the one left is kept for when that
+ * kind comes back. The weight tools and the Motion Path tool stay wherever they work: weighing goes from a drawing to
+ * its group and back, and paths are traced across layers (an Alt click picks a bone or point in another). */
+void tool_follow_active_layer(Context &C)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  const int kind = tool_layer_kind(document_active_layer(*C.document));
+  if (kind != ts.tool_layer_kind) {
+    if (ts.tool_layer_kind >= 0) {
+      ts.tool_for_layer_kind[ts.tool_layer_kind] = ts.tool_temporary ? ts.tool_return : ts.tool;
+    }
+    ts.tool_layer_kind = kind;
+    const bool stays = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect || ts.tool == Tool::MotionPath) &&
+                       tool_state(C, ts.tool).shown;
+    ts.tool = stays ? ts.tool : ts.tool_for_layer_kind[kind];
+    ts.tool_temporary = false;
+  }
+  if (!tool_state(C, ts.tool).shown) {
+    ts.tool = tool_fallback(C);
+  }
+}
+
 /* The tool bar down the left side of the viewport: its boxes (TOOL_BOXES), each a panel of its own, in
  * two columns when one would run past `max_height`. Returns its width. */
 static float toolbar_draw(Context &C, ImVec2 origin, float top, float max_height)
@@ -2607,24 +2632,7 @@ static float toolbar_draw(Context &C, ImVec2 origin, float top, float max_height
   const float gap = 10.0f;
   const float step = button + 2.0f;
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  const Layer *active_layer = document_active_layer(*C.document);
-
-  /* Another kind of layer made active: its own tool again (Select the first time); the one left is
-   * kept for when that kind comes back. */
-  const int kind = tool_layer_kind(active_layer);
-  if (kind != ts.tool_layer_kind) {
-    if (ts.tool_layer_kind >= 0) {
-      ts.tool_for_layer_kind[ts.tool_layer_kind] = ts.tool_temporary ? ts.tool_return : ts.tool;
-    }
-    ts.tool_layer_kind = kind;
-    /* Weighing goes from a drawing to its group and back: the weight tools stay wherever they work. */
-    const bool weighing = (ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect) && tool_state(C, ts.tool).shown;
-    ts.tool = weighing ? ts.tool : ts.tool_for_layer_kind[kind];
-    ts.tool_temporary = false;
-  }
-  if (!tool_state(C, ts.tool).shown) {
-    ts.tool = tool_fallback(C);
-  }
+  tool_follow_active_layer(C);
 
   /* What each box shows. */
   struct Shown {

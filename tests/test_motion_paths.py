@@ -69,7 +69,7 @@ assert close(max(speed.values()), 1.0) and max(speed, key=speed.get) > 30, "fast
 still, fast = p["speed_colors"]
 assert fast[0] > fast[2] and still[2] > still[0], "red where fast, blue where still"
 
-# --- A bone traces its tip (an arc as it turns), or its head -------------------------------------------------
+# --- A bone traces its tip (an arc as it turns) and its head ---------------------------------------------------
 doc.frame_current = 0
 oanim.ops.layer.new_bone()
 rig = layers.active
@@ -81,14 +81,43 @@ doc.frame_current = 20
 rig.bone_set("arm", angle=math.pi / 2)
 doc.frame_current = 15
 rig.select_bone("arm")
-(p,) = paths()
+p, h = paths()
 assert p["label"] == "arm tip" and (p["first"], len(p["points"])) == (10, 11), (p["label"], p["first"])
 assert close(p["points"][0], (2 * math.cos(0.2), 2 * math.sin(0.2))) and close(p["points"][10], (0.0, 2.0)), "tip at both keys"
 assert all(close(math.hypot(*pt), 2.0) for pt in p["points"]), "turning draws an arc about the head"
-assert oanim.ops.anim.motion_path_style(layer=str(rig.id), bone="arm", head="1") == {'FINISHED'}
-(p,) = paths()
-assert p["head"] and p["label"] == "arm head" and all(close(pt, (0.0, 0.0)) for pt in p["points"]), "the head stays"
-oanim.ops.anim.motion_path_style(layer=str(rig.id), bone="arm", head="0")
+assert h["head"] and h["label"] == "arm head" and all(close(pt, (0.0, 0.0)) for pt in h["points"]), "the head stays"
+# Each has its own colour: the head's style is its own.
+assert oanim.ops.anim.motion_path_style(layer=str(rig.id), bone="arm", head="1", color="1,0,0") == {'FINISHED'}
+p, h = paths()
+assert h["color"] != p["color"], "the head recoloured alone"
+oanim.ops.anim.motion_path_style(layer=str(rig.id), bone="arm", head="1", color="")
+
+# A connected bone's head rides on its parent's tip: only its tip is traced.
+doc.frame_current = 0
+assert oanim.ops.armature.bone_add(name="hand", head_x="2", head_y="0", tail_x="3", tail_y="0", parent="arm") == {'FINISHED'}
+assert oanim.ops.armature.bone_relations_set(bone="hand", connected="1") == {'FINISHED'}
+hand = next(b for b in rig.bones if b["name"] == "hand")
+assert hand["connected"], hand
+doc.frame_current = 15
+rig.select_bone("hand")
+assert [q["label"] for q in paths()] == ["hand tip"], [q["label"] for q in paths()]
+
+# A bone that only moves: its tip goes as its head does, timed by its position keys (none of its own to turn).
+doc.frame_current = 0
+assert oanim.ops.armature.bone_add(name="brow", head_x="0", head_y="-1", tail_x="1", tail_y="-1", parent="") == {'FINISHED'}
+doc.frame_current = 9
+rig.bone_set("brow", position=(0.0, -0.5))
+doc.frame_current = 4
+rig.select_bone("brow")
+timing = {r["label"]: r["stretches"] for r in oanim.wm.motion_path_timing()}
+assert [(s["start"], s["end"]) for s in timing["brow tip"]] == [(0, 9)], timing
+assert [(s["start"], s["end"]) for s in timing["brow head"]] == [(0, 9)], timing
+assert oanim.ops.anim.motion_path_move(frame="9", x="1", y="0", layer=str(rig.id), bone="brow") == {'FINISHED'}
+tip = next(q for q in paths() if q["label"] == "brow tip")
+assert close(tip["points"][9 - tip["first"]], (1.0, 0.0)), "dragging the tip moves the bone there"
+assert all(r["angle"] == 0.0 for r in rig.bones if r["name"] == "brow"), "rather than turning it"
+rig.select_bone("arm")
+doc.frame_current = 15
 
 # The ghost a dot shows is the bone layer's drawings on that frame (none here) and leaves the document alone.
 assert oanim.wm.motion_path_ghost(12) == [] and doc.frame_current == 15
@@ -124,14 +153,14 @@ layers.active = box
 for l in layers:
     l.selected = l.name == box.name
 labels = sorted(q["label"] for q in paths())
-assert labels == sorted([box.name, "arm tip"]), labels
+assert labels == sorted([box.name, "arm tip", "arm head"]), labels
 arm = next(q for q in paths() if q["label"] == "arm tip")
 assert arm["pinned"] and close(arm["color"], (0.1, 0.9, 0.2))
 
 # --- A snapshot to compare an edit against --------------------------------------------------------------------
 assert oanim.ops.anim.motion_path_snapshot() == {'FINISHED'}
 snap = oanim.wm.motion_path_snapshot()
-assert len(snap) == 2 and any(close(s[0], (1.0, 0.0)) for s in snap), snap
+assert len(snap) == 3 and any(close(s[0], (1.0, 0.0)) for s in snap), snap
 assert oanim.ops.anim.motion_path_snapshot(clear="1") == {'FINISHED'} and oanim.wm.motion_path_snapshot() == []
 
 # --- Saved with the file --------------------------------------------------------------------------------------

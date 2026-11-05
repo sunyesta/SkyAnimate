@@ -1110,6 +1110,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   m.def("warp_cells", []() { return current_context().wm->tool_settings.warp_cells; });
   /* The viewport tool, by its Tool order. */
+  /* What the viewport's tool bar does each frame: the tool for the active layer's kind (oanim.wm.tool_follow_layer). */
+  m.def("tool_follow_layer", []() { tool_follow_active_layer(current_context()); });
   m.def("tool", []() {
     static const char *const names[] = {"SELECT", "SELECT_LAYER", "CURSOR", "ANNOTATE", "DRAW", "SHAPE",
                                         "SPLIT_CURVE", "WEIGHT_SELECT", "WEIGHT_PAINT", "TRANSFORM_BONES",

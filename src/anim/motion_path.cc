@@ -162,6 +162,22 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
 template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f);
 template<typename F> static bool with_timing_channels(Document &doc, const MotionPathTarget &t, F &&f);
 
+/* A bone's tip goes by its angle (turned to follow the mouse, timed by its angle keys), unless the bone only moves:
+ * no angle keys, a head of its own with position keys. Then the tip goes as its head does, by those. */
+static bool tip_turns(const Document &doc, const MotionPathTarget &t)
+{
+  if (!t.bone || t.head || t.drawing) {
+    return false;
+  }
+  const Layer *layer = layer_find(doc, t.layer);
+  const int i = layer ? bone_index(*layer, t.bone) : -1;
+  if (i < 0) {
+    return true;
+  }
+  const Bone &b = layer->bones[size_t(i)];
+  return !b.angle_keys.keys.empty() || b.connected || b.position_keys.keys.empty();
+}
+
 const MotionPathTarget *motion_path_style(const Document &doc, const MotionPathTarget &target)
 {
   for (const MotionPathTarget &t : doc.path_targets) {
@@ -183,6 +199,7 @@ MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget
   t.layer = target.layer;
   t.bone = target.bone;
   t.point = target.point;
+  t.head = target.head;
   doc.path_targets.push_back(t);
   return doc.path_targets.back();
 }
@@ -223,9 +240,15 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   for (const Layer *layer : layers) {
     bool any = false;
     if (layer->is_bone_layer()) {
+      /* A bone traces its tip and its head, but a connected head only rides on its parent's tip. */
       for (const Bone &b : layer->bones) {
         if (b.selected) {
           add({layer->id, b.id, 0});
+          if (!b.connected) {
+            MotionPathTarget head{layer->id, b.id, 0};
+            head.head = true;
+            add(head);
+          }
           any = true;
         }
       }
@@ -760,7 +783,7 @@ Channel<float2> *handle_channel(Document &doc, const MotionPathTarget &t)
   }
   if (t.bone) {
     const int i = bone_index(*layer, t.bone);
-    if (i < 0 || !t.head || layer->bones[size_t(i)].connected) {
+    if (i < 0 || layer->bones[size_t(i)].connected || tip_turns(doc, t)) {
       return nullptr;
     }
     return &layer->bones[size_t(i)].position_keys;
@@ -1636,7 +1659,7 @@ int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &ta
     }
     /* The channel that moves the dot: a bone's angle for its tip, else the position. */
     Layer *layer = layer_find(doc, p.target.layer);
-    if (layer && p.target.bone && !p.target.head) {
+    if (layer && tip_turns(doc, p.target)) {
       for (Bone &b : layer->bones) {
         if (b.id == p.target.bone) {
           SpanFlat flat(b.angle_keys);
@@ -1661,7 +1684,7 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
   }
   size_t i = 0;
   int start = 0, n = 0;
-  if (target.bone && !target.head) {
+  if (tip_turns(doc, target)) {
     /* A tip: its bone's angle, the stretch's progress how far the angle has turned between its keys. */
     const int b = bone_index(*layer, target.bone);
     if (b < 0) {
@@ -1792,7 +1815,7 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
     });
     return found;
   }
-  if (t.bone && !t.head) {
+  if (tip_turns(doc, t)) {
     const int b = bone_index(*layer, t.bone);
     if (b < 0) {
       return false;
@@ -2507,7 +2530,7 @@ bool motion_path_place(Document &doc, const MotionPathTarget &target, float2 at)
 {
   Bone *bone = nullptr;
   float2 *value = place_value(doc, target, &bone);
-  if (bone && !target.head) {
+  if (bone && tip_turns(doc, target)) {
     return solve_tip(doc, target, *bone, at);
   }
   return value && solve_position(doc, target, *value, at);

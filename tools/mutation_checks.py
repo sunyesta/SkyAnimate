@@ -200,6 +200,18 @@ PENDING = [
      'l->is_bone_layer()', "a bone layer's layers only when picked", 'tests/test_timeline_picked_layer.py'),
     ('src/editors/timeline.cc', '          {"picked_bones", filter.picked_bones_only ? "1" : "0"},\n',
      '', "the row's keys picked as it shows them", 'tests/test_timeline_picked_layer.py'),
+    ('src/data/document.hh', 'point == o.point && head == o.head && drawing', 'point == o.point && drawing',
+     "a bone's head and tip are two paths", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '          if (!b.connected) {', '          if (true) {',
+     "no head path for a connected bone", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', 'return !b.angle_keys.keys.empty() || b.connected || b.position_keys.keys.empty();',
+     'return true;', "a tip that only moves goes by its position keys", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '  t.head = target.head;', '',
+     "a head path's style is its own", 'tests/test_motion_paths.py'),
+    ('src/ops/motion_path_ops.cc', '    t.head = op_arg_bool(C, "head");', '',
+     "head=1 names a bone's head path", 'tests/test_motion_path_tool.py'),
+    ('src/editors/viewport.cc', ' || ts.tool == Tool::MotionPath) &&', ') &&',
+     "Motion Path stays on through a layer change", 'tests/test_motion_path_tool.py'),
 ]
 
 
