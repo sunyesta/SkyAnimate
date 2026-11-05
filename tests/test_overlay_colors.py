@@ -2,8 +2,10 @@
 takes #AEAEAE (over something darker) or #6E6E6E (over something lighter). Motion path lines the same with #4D9191,
 #5CA8AE and #3A7070 for the first path; a path's own colour makes its own lighter and darker. Selected stays orange; a
 segment with one end picked fades from orange there to the other end's colour (as Blender's edit mode). Handles are
-light red (#FF9D9D), #FF3737 where picked, outlined in a darker shade of the same red (fading the same way), their tips orange when picked, all
-round, as points are. A motion path handle keeps its white, fading to orange at a dragged tip."""
+light red (#FF9D9D), #FF3737 where picked, with no outline: a lighter or darker red only where
+hard to see (fading the same way), their tips orange when picked, all round, as points are. A motion path handle keeps its white, fading to orange at a dragged tip."""
+
+import math
 
 import oanim
 
@@ -121,23 +123,45 @@ second = segment(wm.overlay_colors(bend, BLACK, GREY, 0.0)["wires"], 0.0, 1.0)
 assert second and all(w["color_b"] is None and w["color"] == ORANGE for w in second), second[:2]
 bend.select_points([0, 1, 2], False)
 
-# --- Handles: green lines outlined in black, tips round ----------------------------------------------------------
+# --- Handles: red lines and round tips with no outline, a lighter or darker red only where hard to see -------------
 here = (0.0, 1.0)
 _, h_in, h_out = bend.curve_handles(0)[1]
 
 
+def on_handle(w, tip):
+    """Whether wire piece w lies along the handle from `here` to `tip`."""
+    d = (tip[0] - here[0], tip[1] - here[1])
+    n = math.hypot(*d)
+    for q in (w["a"], w["b"]):
+        v = (q[0] - here[0], q[1] - here[1])
+        along = (v[0] * d[0] + v[1] * d[1]) / n
+        if abs(v[0] * d[1] - v[1] * d[0]) / n > 1e-4 or along < -1e-4 or along > n + 1e-4:
+            return False
+    return True
+
+
 def handle(out, tip):
-    """The middle point's handle line (from the point to `tip`), its black outline under it, and its tip mark."""
-    lines = [w for w in out["wires"] if close2(w["a"], here) and close2(w["b"], tip)]
-    line = next(w for w in lines if abs(w["width"] - 1.5) < 1e-6)
-    outline = next(w for w in lines if w["width"] > 2.0)
+    """The middle point's handle line from the point to `tip` as one piece (its colour at the point, `color_b` at the
+    tip, None where the same), every piece of it, and its tip mark."""
+    pieces = [w for w in out["wires"] if w["width"] < 2.0 and on_handle(w, tip) and not close2(w["a"], w["b"])
+              and (close2(w["a"], here) or not close2(w["b"], here))]
+    pieces = [w for w in pieces if abs(w["width"] - 1.5) < 1e-6]
+    pieces.sort(key=lambda w: math.hypot(w["a"][0] - here[0], w["a"][1] - here[1]))
+    assert pieces and close2(pieces[0]["a"], here) and close2(pieces[-1]["b"], tip), ("a line, point to tip", pieces)
+    at_tip = pieces[-1]["color_b"] or pieces[-1]["color"]
+    line = {"color": pieces[0]["color"], "color_b": None if at_tip == pieces[0]["color"] else at_tip}
     mark = next(p for p in out["points"] if close2(p["at"], tip))
-    return line, outline, mark
+    return line, pieces, mark
 
 
 def DARKER_OF(h):
     """The outline's colour: the same hue at 45%."""
     return "#" + "".join("%02X" % int(c * 0.45 + 0.5) for c in rgb(h))
+
+
+def SHADE(h, to):
+    """A handle colour's lighter (to=255) or darker (to=0) shade: 30% of the way."""
+    return "#" + "".join("%02X" % int(c + (to - c) * 0.3 + 0.5) for c in rgb(h))
 
 
 def close2(a, b):
@@ -146,19 +170,33 @@ def close2(a, b):
 
 out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
 for tip in (h_in, h_out):
-    line, outline, mark = handle(out, tip)
-    assert line["color"] == H_DARK and line["color_b"] == H_DARK, ("unpicked: red", line)
-    assert outline["color"] == DARKER_OF(H_DARK) and outline["color_b"] == DARKER_OF(H_DARK), \
-        ("outlined in a darker shade of the same red", outline)
-    assert mark["color"] == H_DARK and mark["outline"] == DARKER_OF(H_DARK) and mark["round"], \
-        ("a smooth point's: round", mark)
+    line, pieces, mark = handle(out, tip)
+    assert all(w["color"] == H_DARK and w["color_b"] is None for w in pieces), ("unpicked: red all along", pieces)
+    assert mark["color"] == H_DARK and mark["outline"] is None and mark["round"], ("round, no outline", mark)
+assert not [w for w in out["wires"] if w["width"] > 2.0], "no outline under the handles"
+
+# Over something the red is hard to see on: that stretch alone takes a darker red (over light pink), a lighter one
+# (over a slightly darker red); the tip the same.
+PINK = (1.0, 0.7, 0.7)
+out = wm.overlay_colors(bend, PINK, PINK, 0.0, handles=True)
+line, pieces, mark = handle(out, h_out)
+assert {w["color"] for w in pieces} == {SHADE(H_DARK, 0)}, ("darker red over pink", pieces)
+assert mark["color"] == SHADE(H_DARK, 0) and mark["outline"] is None, mark
+DARK_RED = (0.9, 0.55, 0.55)
+out = wm.overlay_colors(bend, DARK_RED, DARK_RED, 0.0, handles=True)
+colors = {w["color"] for w in handle(out, h_out)[1]}
+assert colors == {SHADE(H_DARK, 255)}, ("lighter red over dark red", colors)
+# Pink on one side only: the pieces over it go darker, the rest stay the usual red.
+out = wm.overlay_colors(bend, PINK, BLACK, 0.25, handles=True)
+colors = {w["color"] for w in handle(out, h_out)[1]}
+assert colors == {SHADE(H_DARK, 0), H_DARK}, ("only where hard to see", colors)
 
 # The point picked lights both its handles all along; their tips orange.
 bend.select_points([1])
 out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
 for tip in (h_in, h_out):
     line, _, mark = handle(out, tip)
-    assert line["color"] == H_BRIGHT and line["color_b"] == H_BRIGHT, line
+    assert line["color"] == H_BRIGHT and line["color_b"] is None, line
     assert mark["color"] == ORANGE, mark
 # Broken (handles set apart, not kept in line): round tips too.
 bend.move_handle(0, 1, "OUT", (0.5, 1.3))
@@ -171,12 +209,12 @@ assert all(q["round"] for q in out["points"]), ("points round too", [q for q in 
 bend.select_points([1], False)
 bend.select_handle(0, 1, "OUT")
 out = wm.overlay_colors(bend, BLACK, BLACK, 0.0, handles=True)
-line, outline, mark = handle(out, h_out)
+line, pieces, mark = handle(out, h_out)
 assert line["color"] == H_DARK and line["color_b"] == H_BRIGHT and mark["color"] == ORANGE, (line, mark)
-assert outline["color"] == DARKER_OF(H_DARK) and outline["color_b"] == DARKER_OF(H_BRIGHT), outline
-assert mark["outline"] == DARKER_OF(ORANGE), mark
+assert len({w["color"] for w in pieces}) > 1, ("fading along its pieces", pieces)
+assert mark["outline"] is None, mark
 line, _, mark = handle(out, h_in)
-assert line["color"] == H_DARK and line["color_b"] == H_DARK and mark["color"] == H_DARK, (line, mark)
+assert line["color"] == H_DARK and line["color_b"] is None and mark["color"] == H_DARK, (line, mark)
 layers.active = art
 
 # --- Motion path handles: their white as is; a dragged tip fades to orange there ------------------------------------

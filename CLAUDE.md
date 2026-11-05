@@ -94,7 +94,7 @@ shapes in `brushes.cc` with the one-time upgrade of Moho-format libraries, brush
 `src/editors/draw_shelf.cc`, `src/assets/draw_presets.*` and `src/ops/draw_ops.cc`, the Fill Pen and Fill Eraser in
 `src/data/fill_paint.*`, the Stroke Eraser and Vector Trimmer in `src/data/line_cut.*`. Overlay colours (`src/editors/overlay_contrast.*`: wires, points and
 motion path lines take a lighter or darker colour only where hard to see, from the canvas read back after each redraw into
-`g_canvas_now` in `viewport.cc`; half-picked wires fade from orange via `OverlayLine::color_b`; light red handles, stronger red where picked; colours in
+`g_canvas_now` in `viewport.cc`; half-picked wires fade from orange via `OverlayLine::color_b`; light red handles, stronger red where picked, no outlines, shaded only where hard to see; colours in
 Preferences; test hook `oanim.wm.overlay_colors`). Still to do in milestone 2: Knife tool
 (Ctrl K), the style library.
 

@@ -101,11 +101,6 @@ static ImU32 u32_darker(ImU32 c)
   return part(0) | part(8) | part(16) | IM_COL32(0, 0, 0, 230);
 }
 
-/* 0xRRGGBB at `alpha` (0-255) as an ImGui colour. */
-static ImU32 color_u32_rgb(uint32_t rgb, int alpha)
-{
-  return IM_COL32((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff, alpha);
-}
 
 static ImU32 contrast_u32(const Color &c, float alpha)
 {
@@ -6974,6 +6969,9 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
     return g;
   }
   /* Handles under the points: a line out to a dot, coloured by type, bright when selected. */
+  const ContrastColors handle_own = contrast_colors_of(color_from_rgb(preferences().handle_color));
+  const ContrastColors handle_picked = contrast_colors_of(color_from_rgb(preferences().handle_selected));
+  const ContrastColors handle_tip_picked = contrast_colors_of(Color{1.0f, float(0x8c) / 255.0f, 0.0f, 1.0f});
   const ShownHandleFactors factors = drawing_detail_shown_factors(drawing);
   for (int c = 0; c < int(drawing.curves.size()); c++) {
     const Curve &curve = drawing.curves[c];
@@ -6993,15 +6991,35 @@ static OverlayGeometry overlay_geometry(const VectorDrawing &drawing, const Vect
          * end, fading to the point's. */
         const bool tip_picked = pre ? cp.select_in : cp.select_out;
         const bool at_point = point_selected, at_tip = point_selected || tip_picked;
-        /* Light red, a stronger red where picked; outlined in a darker shade of the colour beside it. */
-        const ImU32 own = color_u32_rgb(preferences().handle_color, 255);
-        const ImU32 picked = color_u32_rgb(preferences().handle_selected, 255);
-        const ImU32 near_point = at_point ? picked : own, near_tip = at_tip ? picked : own;
-        g.lines.push_back({here, h, u32_darker(near_point), 3.0f, u32_darker(near_tip)});
-        g.lines.push_back({here, h, near_point, 1.5f, near_tip});
-        /* The tip, round: orange when picked. */
-        const ImU32 tip = at_tip ? COL_POINT_SELECTED : own;
-        g.marks.push_back({h, tip, u32_darker(tip), handle_size * 0.5f, 1.0f});
+        /* Light red, a stronger red where picked; no outline: in pieces, as wires, each taking a lighter or darker
+         * shade only where what is drawn under it makes the red hard to see. */
+        const ContrastColors &near_point = at_point ? handle_picked : handle_own;
+        const ContrastColors &near_tip = at_tip ? handle_picked : handle_own;
+        const int steps = std::clamp(int(std::ceil(distance(here, h) / (pixel * 6.0f))), 1, 64);
+        ContrastPick pick_point = ContrastPick::Base, pick_tip = ContrastPick::Base;
+        for (int s = 0; s < steps; s++) {
+          const float t0 = float(s) / float(steps), t1 = float(s + 1) / float(steps);
+          const float2 a = here + (h - here) * t0, b = here + (h - here) * t1;
+          Color seen;
+          if (under_at((a + b) * 0.5f, seen)) {
+            pick_point = contrast_pick(seen, near_point.base, pick_point);
+            pick_tip = contrast_pick(seen, near_tip.base, pick_tip);
+          }
+          const ImU32 from = contrast_u32(near_point.of(pick_point), 1.0f);
+          const ImU32 to = contrast_u32(near_tip.of(pick_tip), 1.0f);
+          if (from == to) {
+            g.lines.push_back({a, b, from, 1.5f});
+          }
+          else {
+            g.lines.push_back({a, b, u32_mix(from, to, t0), 1.5f, u32_mix(from, to, t1)});
+          }
+        }
+        /* The tip, round, no outline: orange when picked; a lighter or darker shade where it is hard to see. */
+        const ContrastColors &tip_colors = at_tip ? handle_tip_picked : handle_own;
+        Color seen;
+        const ImU32 tip = contrast_u32(
+            under_at(h, seen) ? tip_colors.of(contrast_pick(seen, tip_colors.base)) : tip_colors.base, 1.0f);
+        g.marks.push_back({h, tip, 0u, handle_size * 0.5f, 1.0f});
       }
     }
   }

@@ -1238,7 +1238,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         py::dict d;
         d["at"] = py::make_tuple(q.at.x, q.at.y);
         d["color"] = hex(q.color);
-        d["outline"] = hex(q.outline);
+        d["outline"] = q.outline >> 24 ? py::object(py::str(hex(q.outline))) : py::object(py::none());
         d["round"] = q.round > 0.5f;
         points.append(d);
       }
