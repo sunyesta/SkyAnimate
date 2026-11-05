@@ -2188,12 +2188,13 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
                   [](const std::string &path) { return path.rfind("bones[", 0) != 0; });
     const KeyFilter points{KEY_POINTS, false};
     if ((show_all && l->has_drawing() && !l->drawing.points.empty()) || keyed({l}, points)) {
-      /* Keyed as a whole drawing: all its points, whichever are selected. */
+      /* Keyed as a whole drawing: all its points, whichever are selected; red while some of them are (as a
+       * picked bone's rows are), there being no Selected Points row to show it. */
+      const KeyFilter sel{KEY_POINTS, true};
       if (l->key_whole_drawing) {
-        add("Drawing", {l}, points, depth, "", false, false, 0);
+        add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);
       }
       else {
-        const KeyFilter sel{KEY_POINTS, true};
         if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && keyed({l}, sel)) {
           add("Selected Points", {l}, sel, depth + 1, "", false, true, 0);
         }

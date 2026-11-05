@@ -162,6 +162,9 @@ PENDING = [
      '    const int by = frames;', 'the range never moves before frame 0', 'tests/test_timeline_navigation.py'),
     ('src/editors/timeline.cc', '    start = std::clamp(from_start + frames, 0, std::max(0, from_end - 1));',
      '    start = from_start + frames;', 'Start stays before the End', 'tests/test_timeline_navigation.py'),
+    ('src/editors/timeline.cc', 'add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);',
+     'add("Drawing", {l}, points, depth, "", false, false, 0);', 'the Drawing row red with points picked',
+     'tests/test_timeline_selected_points.py'),
 ]
 
 
