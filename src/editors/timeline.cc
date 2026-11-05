@@ -273,26 +273,6 @@ std::pair<float, float> timeline_scrollbar_drag(float start, float end, int part
   return {start, end};
 }
 
-bool timeline_range_drag(Document &doc, int part, int from_start, int from_end, int frames)
-{
-  int start = from_start, end = from_end;
-  if (part == 0) {
-    start = std::clamp(from_start + frames, 0, std::max(0, from_end - 1));
-  }
-  else if (part == 1) {
-    end = std::max(from_end + frames, from_start + 1);
-  }
-  else {
-    const int by = std::max(frames, -from_start);
-    start = from_start + by;
-    end = from_end + by;
-  }
-  const bool changed = start != doc.frame_start || end != doc.frame_end;
-  doc.frame_start = start;
-  doc.frame_end = end;
-  return changed;
-}
-
 static void view_center_current(Area &area, const Document &doc)
 {
   const float half = (area.view_end - area.view_start) * 0.5f;
@@ -1365,8 +1345,6 @@ static void timeline_header(Area &area, Context &C)
   }
   ImGui::PopStyleColor();
   ImGui::SameLine(0.0f, pad * 2.0f);
-  action_menu(C, h * 6.0f);
-  ImGui::SameLine(0.0f, pad * 2.0f);
   interp_header(C, h * 6.5f);
   ImGui::SameLine(0.0f, pad);
   key_type_header(C, h * 4.5f);
@@ -1691,13 +1669,16 @@ static void timeline_header(Area &area, Context &C)
   ImGui::PopStyleVar();
   const float transport_end = ImGui::GetItemRectMax().x;
 
-  /* Right: current frame, then the Start and End of the range. */
+  /* Right: the action being edited (or Mainline), the current frame, then the Start and End of the range. */
+  const float action_w = h * 6.0f;
   const float current_w = h * 2.6f;
   const float range_w = h * 4.0f;
   const float group_gap = h * 0.6f;
-  const float fields_w = current_w + group_gap + range_w * 2.0f;
+  const float fields_w = action_w + group_gap + current_w + group_gap + range_w * 2.0f;
   const float fields_x = std::max(transport_end + pad * 2.0f, origin.x + width - fields_w - pad);
   ImGui::SetCursorScreenPos(ImVec2(fields_x, origin.y + top));
+  action_menu(C, action_w);
+  ImGui::SameLine(0.0f, group_gap);
   frame_field(C, "##frame_current", &doc.frame_current, "%d", current_w, nullptr);
   ImGui::SameLine(0.0f, group_gap);
   /* Start and End side by side as one row, as Blender's. */
@@ -3293,6 +3274,16 @@ static void timeline_body(Area &area, Context &C)
   }
   dl->PopClipRect();
 
+  /* The playhead's line, under the keys so a key on the frame shown stays in sight (its frame box goes on the ruler
+   * after them). */
+  {
+    const float x = frame_x(float(doc.frame_current));
+    dl->PushClipRect(k0, p1, true);
+    dl->AddLine(ImVec2(x, p0.y + ruler_h * 0.5f), ImVec2(x, p1.y), doc.frame_current == 0 ? COL_RECORD : COL_PLAYHEAD,
+                2.0f);
+    dl->PopClipRect();
+  }
+
   /* The rows: hold bars between neighbouring keys where nothing changes, and a diamond per keyed
    * frame, orange when selected. */
   dl->PushClipRect(ImVec2(p0.x, rows_top), p1, true);
@@ -3643,7 +3634,6 @@ static void timeline_body(Area &area, Context &C)
   const float x = frame_x(float(doc.frame_current));
   if (x >= k0.x - 40.0f && x <= p1.x + 40.0f) {
     dl->PushClipRect(k0, p1, true);
-    dl->AddLine(ImVec2(x, p0.y + ruler_h * 0.5f), ImVec2(x, p1.y), playhead, 2.0f);
     const std::string label = std::to_string(doc.frame_current);
     const float box_w = std::max(ImGui::CalcTextSize(label.c_str()).x + font_size * 0.8f, ruler_h);
     const ImVec2 box_min(x - box_w * 0.5f, p0.y + 2.0f);
@@ -3659,66 +3649,6 @@ static void timeline_body(Area &area, Context &C)
                         area.view_end - area.view_start, row_h);
   }
 
-  /* The playback range's bar on the ruler: drag an end to set Start or End, the bar to move both (playback loops
-   * inside it). */
-  {
-    static int range_part = -1;
-    static float range_press_x = 0.0f;
-    static int range_from_start = 0, range_from_end = 0;
-    const float bar_top = p0.y + 1.0f, bar_h = std::max(4.0f, ruler_h * 0.22f);
-    const float xs = frame_x(float(doc.frame_start)), xe = frame_x(float(doc.frame_end));
-    const float grip = std::max(6.0f, bar_h * 1.6f);
-    const ImVec2 back = ImGui::GetCursorScreenPos();
-    dl->PushClipRect(ImVec2(k0.x, p0.y), ImVec2(p1.x, p0.y + ruler_h), true);
-    const ImU32 bar_col = range_part >= 0 ? IM_COL32(0x80, 0xb0, 0xff, 230) : IM_COL32(0x5a, 0x86, 0xd0, 200);
-    dl->AddRectFilled(ImVec2(xs, bar_top), ImVec2(xe, bar_top + bar_h), bar_col, 2.0f);
-    for (const float gx : {xs, xe}) {
-      dl->AddRectFilled(ImVec2(gx - grip * 0.5f, bar_top), ImVec2(gx + grip * 0.5f, bar_top + bar_h + 2.0f),
-                        IM_COL32(0xb8, 0xd0, 0xff, 255), 2.0f);
-    }
-    dl->PopClipRect();
-    const auto press = [&](const char *id, ImVec2 a, ImVec2 b, int part, const char *tip) {
-      if (b.x <= k0.x || a.x >= p1.x) {
-        return;
-      }
-      a.x = std::max(a.x, k0.x);
-      b.x = std::min(b.x, p1.x);
-      ImGui::SetCursorScreenPos(a);
-      ImGui::InvisibleButton(id, b - a);
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetMouseCursor(part == 2 ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_ResizeEW);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          ImGui::SetTooltip("%s", tip);
-        }
-      }
-      if (ImGui::IsItemActivated()) {
-        range_part = part;
-        range_press_x = io.MousePos.x;
-        range_from_start = doc.frame_start;
-        range_from_end = doc.frame_end;
-      }
-    };
-    press("##range_bar", ImVec2(xs + grip * 0.5f, bar_top), ImVec2(xe - grip * 0.5f, bar_top + bar_h + 2.0f), 2,
-          "Playback range: drag to move it (playback loops inside it)");
-    press("##range_start", ImVec2(xs - grip * 0.5f, bar_top), ImVec2(xs + grip * 0.5f, bar_top + bar_h + 2.0f), 0,
-          "Start: drag to set where playback starts");
-    press("##range_end", ImVec2(xe - grip * 0.5f, bar_top), ImVec2(xe + grip * 0.5f, bar_top + bar_h + 2.0f), 1,
-          "End: drag to set where playback ends");
-    if (range_part >= 0) {
-      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        const int frames = int(std::lround((io.MousePos.x - range_press_x) / keys_w * span));
-        timeline_range_drag(doc, range_part, range_from_start, range_from_end, frames);
-      }
-      else {
-        if (doc.frame_start != range_from_start || doc.frame_end != range_from_end) {
-          C.undo->push(range_part == 0 ? "Change Start" : range_part == 1 ? "Change End" : "Move Range", doc);
-        }
-        range_part = -1;
-      }
-      g_press = {};
-    }
-    ImGui::SetCursorScreenPos(back);
-  }
   /* The scroll bar under the keys: the view among the frames there are (the range and the view, a margin round
    * them); drag it to pan, its ends to zoom that side. */
   {

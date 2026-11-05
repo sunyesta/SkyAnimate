@@ -212,9 +212,6 @@ bool timeline_key_press_simulate(Context &C, int row, int frame, int to_frame, b
 /* The timeline's scroll bar dragged by `frames`: part 0 the bar (pans the view), 1 its left end, 2 its right end
  * (zooming that side, never closer than 10 frames). Returns the new view. */
 std::pair<float, float> timeline_scrollbar_drag(float start, float end, int part, float frames);
-/* The playback range's bar on the ruler dragged by `frames` from `from_start`..`from_end`: part 0 its start, 1 its
- * end, 2 the whole bar (its length kept). Start stays at 0 or more and before the end. Returns whether it changed. */
-bool timeline_range_drag(Document &doc, int part, int from_start, int from_end, int frames);
 /* How many channels' rows the timeline's filters take away (its red "N hidden"). */
 int timeline_hidden_count(Context &C);
 /* Folds or opens a timeline row (`key`, its fold) as its arrow does: a row holding the pick is folded only

@@ -453,13 +453,6 @@ def timeline_scrollbar_drag(start, end, part, frames):
     return tuple(_oanim.timeline_scrollbar_drag(float(start), float(end), parts[part], float(frames)))
 
 
-def timeline_range_drag(part, frames):
-    """Drag the playback range's bar on the timeline's ruler by `frames`: part "START", "END" or "BAR" (both, its
-    length kept). Start stays at 0 or more and before the end. One undo step; returns whether it changed."""
-    parts = {"START": 0, "END": 1, "BAR": 2}
-    return _oanim.timeline_range_drag(parts[part], int(frames))
-
-
 def timeline_hidden():
     """How many channels' rows the timeline's filters (anim.timeline_filter) take away: its red "N hidden"."""
     return _oanim.timeline_hidden()
