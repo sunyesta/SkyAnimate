@@ -173,6 +173,9 @@ assert dots() == [(False, 12), (True, 12)], ("the Summary: every path shown", do
 assert wm.timeline_row_alt_click(row("Transform"), 20)
 assert dots() == [] and selected() == [20] and doc.frame_current == 20, ("on a key: the key", dots(), selected())
 assert len(wm.undo_history()[0]) == steps, "no undo step"
+# Two quick Alt clicks are two picks: never a double-click keying the row.
+assert wm.timeline_double_click_keys(True) and not wm.timeline_double_click_keys(False)
+assert not wm.timeline_double_click_keys(True, alt=True), "an Alt double-click adds no keys"
 
 # A row with no path traced does nothing: the bone layer's own position (Edit Layer off).
 none()

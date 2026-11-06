@@ -3295,6 +3295,12 @@ static OpArgs timeline_stretch_pick_args(const std::vector<Layer *> &layers, con
           {"extend", extend ? "1" : "0"}};
 }
 
+bool timeline_double_click_keys(bool double_click, bool alt)
+{
+  /* Alt clicks pick stretches: two quickly are two picks, never keys. */
+  return double_click && !alt;
+}
+
 bool timeline_row_alt_click(Context &C, int row, int frame, bool shift)
 {
   Area area;
@@ -3700,7 +3706,9 @@ static void timeline_body(Area &area, Context &C)
       g_press = {true, io.MousePos.y < p0.y + ruler_h, io.MousePos};
       /* A double-click in a row keys its channels on that frame (the playhead goes there). */
       int under_row = -1;
-      if (!g_press.scrub && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && key_under(io.MousePos, &under_row) < 0) {
+      if (!g_press.scrub && timeline_double_click_keys(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left), io.KeyAlt) &&
+          key_under(io.MousePos, &under_row) < 0)
+      {
         const int r = row_at(io.MousePos.y);
         if (r >= 0 && !rows[size_t(r)].media) {
           const ChannelRow &row = rows[size_t(r)];

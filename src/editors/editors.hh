@@ -254,6 +254,8 @@ bool timeline_row_fold_at(Context &C, int row, bool open);
 /* An Alt click on `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them), Shift held or not:
  * anim.timeline_stretch_pick on its channels. False when it did nothing. */
 bool timeline_row_alt_click(Context &C, int row, int frame, bool shift);
+/* Whether a press in a row (between keys) keys its channels there: a double-click, not with Alt held. */
+bool timeline_double_click_keys(bool double_click, bool alt);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */

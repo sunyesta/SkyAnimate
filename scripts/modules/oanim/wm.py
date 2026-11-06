@@ -620,6 +620,12 @@ def timeline_row_details(as_shown=False):
     return [dict(r) for r in _oanim.timeline_rows(bool(as_shown))]
 
 
+def timeline_double_click_keys(double_click, alt=False):
+    """Test hook: whether a press between keys in a timeline row keys its channels there (a double-click does, but
+    not with Alt held: two quick Alt clicks are two stretch picks)."""
+    return _oanim.timeline_double_click_keys(bool(double_click), bool(alt))
+
+
 def timeline_row_alt_click(row, frame, shift=False):
     """Alt click (Shift Alt with shift=True) on `frame` of timeline row `row` (an index into
     timeline_row_details(as_shown=True)): anim.timeline_stretch_pick on the row's channels. False when it did

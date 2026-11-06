@@ -447,6 +447,7 @@ PENDING = [
     ('src/ops/anim_ops.cc', '        layers_select_keys(layers, *end, *end, true, filter);\n', '        (void)end;\n', "Alt click without the tool selects the stretch's end key", 'tests/test_selected_stretch.py'),
     ('src/editors/timeline.cc', '  if (wm.tool_settings.tool != Tool::MotionPath) {\n    return f;\n  }\n  const MotionPathPicks picks', '  if (wm.tool_settings.tool != Tool::MotionPath || !doc.motion_paths) {\n    return f;\n  }\n  const MotionPathPicks picks', 'the stretch is teal with the Motion Paths overlay off', 'tests/test_selected_stretch.py'),
     ('src/ops/motion_path_ops.cc', '  if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath) {', '  if (!C.document || !C.wm || !C.document->motion_paths) {', 'picks count with the overlay off', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '  return double_click && !alt;\n', '  return double_click;\n', 'an Alt double-click in a row adds no keys', 'tests/test_selected_stretch.py'),
 ]
 
 
