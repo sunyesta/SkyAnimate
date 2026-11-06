@@ -516,6 +516,7 @@ PENDING = [
     ('src/anim/controller.cc', 'if (!knob.controller_knob_independent && !controller_constrained(knob)) {', 'if (!knob.controller_knob_independent) {', 'its actions play from where the constraints put the knob', 'tests/test_controller_constraints.py'),
     ('src/anim/controller.cc', '    return controller_knob(knob) + pose.knob_pull;', '    return controller_knob(knob);', "the knob is placed with its constraints' pull", 'tests/test_controller_constraints.py'),
     ('src/ops/rig_ops.cc', '                 if (bone_is_controller(*bone) && !controller_constraint_works(type)) {', '                 if (false) {', 'a controller takes only the constraints that work on it', 'tests/test_controller_constraints.py'),
+    ('src/editors/properties.cc', '      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});', '      if (const Bone *b = bone_find(*active_layer, active_layer->active_bone); !b || !bone_is_controller(*b)) {\n        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});\n      }', 'the Bone Constraints tab shows for a controller', 'tests/test_controller_constraints.py'),
 ]
 
 

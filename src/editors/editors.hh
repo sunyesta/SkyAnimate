@@ -176,6 +176,12 @@ void viewport_drag_follow_forget();
 float viewport_bone_turn_snap(Document &doc, float degrees, bool rotate_key, std::string *r_what);
 /* Properties editor, in properties.cc. */
 void properties_draw(Area &area, Context &C);
+/* The Properties editor's tabs for what is active, in order (the labels shown). */
+struct PropertiesTabEntry {
+  const char *label;
+  int id;
+};
+std::vector<PropertiesTabEntry> properties_tabs(Document &doc);
 /* Layers editor, in layers_editor.cc. */
 void layers_draw(Area &area, Context &C);
 /* Timeline editor, in timeline.cc. */

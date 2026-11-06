@@ -992,6 +992,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return names;
   });
+  m.def("properties_tabs", [] {
+    std::vector<std::string> labels;
+    for (const PropertiesTabEntry &t : properties_tabs(*current_context().document)) {
+      labels.push_back(t.label);
+    }
+    return labels;
+  });
   m.def("properties_tab", [](int tab) { current_context().wm->properties_tab_request = std::clamp(tab, 0, 11); });
   /* How long frames take (ms, ImGui's running average), for checking the app's speed. */
   /* The left/right name rule bone Symmetrize and mirror editing pair by (bone_mirror_name). */

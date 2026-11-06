@@ -229,6 +229,11 @@ def properties_tab(tab):
                          "MASKING", "CAMERA", "MEDIA", "TEXT", "SHAPE", "BONE"].index(name))
 
 
+def properties_tabs():
+    """The Properties editor's tabs for what is active, in order, as labelled ("Document", "Layer", ...)."""
+    return list(_oanim.properties_tabs())
+
+
 def media_view():
     """Whether Media View is on (`, oanim.ops.view.media_view()): every media layer at full
     opacity, guides too, with the viewport's overlays hidden. A view only: nothing changes or is keyed."""

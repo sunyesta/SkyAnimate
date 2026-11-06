@@ -69,6 +69,9 @@ assert ops.armature.controller_side(side="RIGHT", action="eye_r") == {'FINISHED'
 assert ops.armature.controller_side(side="LEFT", action="eye_l") == {'FINISHED'}
 size = bone("eye")["controller_frame_size"]
 
+# --- The Bone Constraints tab shows for a controller ---------------------------------------------------------------
+assert "Bone Constraints" in oanim.wm.properties_tabs(), oanim.wm.properties_tabs()
+
 # --- What can be added ----------------------------------------------------------------------------------------------
 for kind in ("STRETCH_TO", "MAINTAIN_VOLUME", "IK", "LIMIT_ANGLE", "COPY_SCALE"):
     assert ops.armature.constraint_add(type=kind, bone="eye") == {'CANCELLED'}, kind

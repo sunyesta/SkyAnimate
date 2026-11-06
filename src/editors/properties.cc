@@ -10270,35 +10270,18 @@ static void point_panel(Context &C, VectorDrawing &drawing)
   ui_panel_end();
 }
 
-void properties_draw(Area &area, Context &C)
+std::vector<PropertiesTabEntry> properties_tabs(Document &doc)
 {
-  C.wm->mask_area_hover = {};
-  C.wm->mask_tab_shown = false;
-  /* A property shown from the timeline: its panel opens and its row flashes (see ui_flash_bind). */
-  struct FlashBinding {
-    explicit FlashBinding(WindowManager *wm) { ui_flash_bind(wm); }
-    ~FlashBinding() { ui_flash_bind(nullptr); }
-  } flash_binding(C.wm);
-  area_editor_type_menu(area);
-  ImGui::SameLine();
-  if (C.wm->properties_tab_request >= 0) {
-    area.properties_tab = C.wm->properties_tab_request;
-    C.wm->properties_tab_request = -1;
-  }
-  const Layer *active_layer = document_active_layer(*C.document);
+  const Layer *active_layer = document_active_layer(doc);
   const bool bones = active_layer && active_layer->is_bone_layer();
   /* Drawings have a Modifiers tab, left of their data tab, as Blender's modifier tab sits beside the
    * object data tab. Groups have one for the deforms that bend what is in them. */
   const bool modifiers = active_layer && (active_layer->has_drawing() || active_layer->is_group());
-  struct TabEntry {
-    const char *label;
-    int id;
-  };
   /* One order always, as Blender's (Object, Modifiers, Data, Bone, Bone Constraints, Material): the
    * layer's own settings, then its kind's data tab (Vector, Armature, Media, Text), then a drawing's
    * Shape or a bone layer's Bone and Bone Constraints, then a reference's link. */
-  std::vector<TabEntry> tabs = {{"Document", TAB_DOCUMENT}};
-  const bool camera = C.document->camera.selected;
+  std::vector<PropertiesTabEntry> tabs = {{"Document", TAB_DOCUMENT}};
+  const bool camera = doc.camera.selected;
   const bool vector = active_layer && active_layer->has_drawing();
   const bool reference = active_layer && active_layer->is_reference();
   const bool media = active_layer && active_layer->is_media();
@@ -10330,24 +10313,42 @@ void properties_draw(Area &area, Context &C)
     }
     if (bones) {
       tabs.push_back({"Bone", TAB_BONE});
-      /* A controller rests where it is: there is nothing for them to act on. */
-      if (const Bone *shown = active_layer ? bone_find(*active_layer, active_layer->active_bone) : nullptr;
-          !shown || !bone_is_controller(*shown))
-      {
-        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
-      }
+      /* A controller's too: its knob takes what places a bone, its box what turns one. */
+      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});
     }
     if (reference) {
       tabs.push_back({"Reference", TAB_REFERENCE});
     }
   }
+  return tabs;
+}
+
+void properties_draw(Area &area, Context &C)
+{
+  C.wm->mask_area_hover = {};
+  C.wm->mask_tab_shown = false;
+  /* A property shown from the timeline: its panel opens and its row flashes (see ui_flash_bind). */
+  struct FlashBinding {
+    explicit FlashBinding(WindowManager *wm) { ui_flash_bind(wm); }
+    ~FlashBinding() { ui_flash_bind(nullptr); }
+  } flash_binding(C.wm);
+  area_editor_type_menu(area);
+  ImGui::SameLine();
+  if (C.wm->properties_tab_request >= 0) {
+    area.properties_tab = C.wm->properties_tab_request;
+    C.wm->properties_tab_request = -1;
+  }
+  const Layer *active_layer = document_active_layer(*C.document);
+  const bool camera = C.document->camera.selected;
+  const std::vector<PropertiesTabEntry> tabs = properties_tabs(*C.document);
+  const bool bones = active_layer && active_layer->is_bone_layer();
   /* The tab picked shows when it applies; otherwise Layer (the camera's own with the camera picked),
    * the pick kept for when it applies again. */
   int shown = area.properties_tab;
   if (camera && shown != TAB_DOCUMENT) {
     shown = TAB_CAMERA;
   }
-  if (std::none_of(tabs.begin(), tabs.end(), [&](const TabEntry &t) { return t.id == shown; })) {
+  if (std::none_of(tabs.begin(), tabs.end(), [&](const PropertiesTabEntry &t) { return t.id == shown; })) {
     shown = TAB_LAYER;
   }
   for (size_t i = 0; i < tabs.size(); i++) {
@@ -10369,7 +10370,7 @@ void properties_draw(Area &area, Context &C)
   if (ImGui::BeginChild("##properties", ImVec2(0, 0))) {
     /* Each tab's panels in boxes, in the order kept for that tab. */
     std::string tab_name = "Document";
-    for (const TabEntry &t : tabs) {
+    for (const PropertiesTabEntry &t : tabs) {
       if (t.id == shown) {
         tab_name = t.label;
       }
