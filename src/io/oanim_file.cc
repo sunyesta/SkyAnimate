@@ -1249,6 +1249,9 @@ std::string oanim_document_to_json(const Document &doc)
                 if (t.has_color) {
                   tj["color"] = color_to_json(t.color);
                 }
+                if (t.drawing) {
+                  tj["drawing"] = true;
+                }
                 targets.push_back(std::move(tj));
               }
               return targets;
@@ -3645,6 +3648,7 @@ bool oanim_document_from_json(const std::string &text, Document &r_doc, std::str
     t.bone = get_id(tj, "bone");
     t.point = get_id(tj, "point");
     t.head = get_bool(tj, "head", false);
+    t.drawing = get_bool(tj, "drawing", false);
     t.pinned = get_bool(tj, "pinned", false);
     t.has_color = tj.contains("color");
     t.color = get_color(tj, "color", t.color);

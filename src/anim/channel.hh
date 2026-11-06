@@ -65,9 +65,8 @@ float bezier_ease(const BezierHandles &handles, float t);
 /* Handles in range: times 0..1, progress -2..3. */
 BezierHandles bezier_clamped(const BezierHandles &handles);
 
-/* Blender's keyframe types, two of them: a Key, or a Breakdown, an in-between pose whose timing is the main keys'
- * either side: the stretches next to it are timed as one movement from main key to main key (Channel::evaluate), the
- * timing tools working on them as one (anim/motion_path.cc), and in the timeline a small blue circle. */
+/* Blender's keyframe types, two of them: a Key, or a Breakdown, an in-between pose that works as any key (its stretches
+ * timed on their own, by their own interpolation), only drawn apart: in the timeline a small blue circle. */
 enum class KeyType : uint8_t { Key, Breakdown };
 
 /* "KEYFRAME", "BREAKDOWN" (Blender's identifiers). */
@@ -313,6 +312,12 @@ float2 path_control_offset_value(float2 a, float2 b, float2 stored);
 float2 path_control_offset_stored(float2 a, float2 b, float2 offset);
 /* Control point `j`'s handles as stored (not set when it has none yet). */
 PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j);
+/* Key `i` just put between two: the control points of the stretch it splits go to the side of it they are on along
+ * the path, each staying where it is (they are stored relative to their stretch's keys). */
+void key_controls_split(std::vector<Key<float2>> &keys, size_t i);
+/* Before key `i` is taken out: the control points either side of it go to the stretch that joins its neighbours, each
+ * staying where it is. */
+void key_controls_join(std::vector<Key<float2>> &keys, size_t i);
 /* The stretch arriving at key `i` as points with the handles the path runs along (offsets from them), in the keys' own
  * space: its two keys (along their path handles, each a share of its piece) and its control points between (their own
  * handles once set, else smooth through the points either side). */

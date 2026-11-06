@@ -2,6 +2,7 @@
  * and a snapshot to compare an edit against. */
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 
@@ -955,7 +956,7 @@ void motion_path_operators_register()
         if (rest != pair.c_str() && *rest == ',') {
           char *end_y = nullptr;
           const float y = std::strtof(rest + 1, &end_y);
-          if (end_y != rest + 1) {
+          if (end_y != rest + 1 && std::isfinite(x) && std::isfinite(y)) {
             points.push_back({x, y});
           }
         }
@@ -965,6 +966,13 @@ void motion_path_operators_register()
       if (points.empty() || !op_targets(C, targets)) {
         return OpStatus::Cancelled;
       }
+      if (path_brush_is_sculpt(brush)) {
+        /* A drawing's path is its points' timing, not a place of its own: there is nothing there to reshape. */
+        std::erase_if(targets, [](const MotionPathTarget &t) { return t.drawing; });
+        if (targets.empty()) {
+          return OpStatus::Cancelled;
+        }
+      }
       int first = 0, last = 0;
       if (!motion_path_range(doc, motion_path_targets(C), first, last) &&
           !motion_path_range(doc, targets, first, last))
@@ -973,8 +981,9 @@ void motion_path_operators_register()
       }
       animation_sync(doc);
       PathDab dab;
-      dab.radius = op_arg_float(C, "radius", 0.1f);
-      dab.strength = op_arg_float(C, "strength", ts.path_brush_settings(brush).strength);
+      dab.radius = std::max(op_arg_float(C, "radius", 0.1f), 0.0f);
+      /* As the brush's own setting (brush_set) is. */
+      dab.strength = std::clamp(op_arg_float(C, "strength", ts.path_brush_settings(brush).strength), 0.0f, 1.0f);
       dab.invert = op_arg_bool(C, "invert");
       int changed = 0;
       if (path_brush_is_sculpt(brush)) {
@@ -1124,7 +1133,7 @@ void motion_path_operators_register()
     ot.description = "The stretch frame=N is strictly inside goes along its path in shape= EVEN, EASE_IN, EASE_OUT or "
                      "EASE_IN_OUT, the keys staying on their frames; of what a path traces (layer=, bone=, point=, or "
                      "the first traced)";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
@@ -1351,7 +1360,7 @@ void motion_path_operators_register()
                      "keys staying on their frames; the dots within size= frames, by falloff= (proportional=0: all "
                      "alike; the tool's size and falloff when left out, always soft whatever O says). Of what a path traces (layer=, bone=, "
                      "point=, or the first traced)";
-    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;

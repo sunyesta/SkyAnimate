@@ -1,5 +1,7 @@
 #include "python/py_runtime.hh"
 
+#include <cmath>
+
 #include <pybind11/embed.h>
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
@@ -2771,7 +2773,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         else if (name == "speeds") {
           std::vector<float> speeds;
           for (const py::handle s : value) {
-            speeds.push_back(std::max(0.0f, s.cast<float>()));
+            /* Signed, as keyframes() gives them: a negative one goes back past the key (overshoot). */
+            const float v = s.cast<float>();
+            speeds.push_back(std::isfinite(v) ? v : 0.0f);
           }
           key_speeds_set(ch.keys, size_t(key - ch.keys.data()), std::move(speeds));
         }

@@ -219,6 +219,7 @@ MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget
   t.bone = target.bone;
   t.point = target.point;
   t.head = target.head;
+  t.drawing = target.drawing;
   doc.path_targets.push_back(t);
   return doc.path_targets.back();
 }
@@ -1097,16 +1098,47 @@ bool arc_fit(const Document &doc, const MotionPathTarget &target, const std::vec
   return true;
 }
 
+/* A stretch timed by its mode alone, whatever way it goes (Smooth and Noisy are timed by how they move). */
+static bool interp_timed_by_mode(Interp interp)
+{
+  return interp == Interp::Linear || interp == Interp::EaseIn || interp == Interp::EaseOut ||
+         interp == Interp::EaseInOut || interp == Interp::Back || interp == Interp::Bounce || interp == Interp::Elastic ||
+         interp == Interp::Bezier;
+}
+
 /* A stretch's speeds as it moves now: one for each frame from `start`, the change since the frame before (along the
  * path for a position), as a share of the even speed. */
 template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, size_t i, int start, int n)
 {
   const Key<T> &b = ch.keys[i];
   std::vector<float> s(size_t(n), 1.0f);
+  /* Timed by its mode alone (a controlled stretch is timed by how it moves). */
+  bool shaped = interp_timed_by_mode(b.interp);
+  if constexpr (std::is_same_v<T, float2>) {
+    shaped = shaped && b.path_controls.empty();
+  }
   if (b.interp == Interp::Custom && !b.speeds.empty()) {
-    /* Painted for a stretch of another length: each frame takes the one it falls in. */
+    if (b.speeds.size() == size_t(n)) {
+      s = b.speeds;
+    }
+    else {
+      /* Painted for a stretch of another length (its keys moved since): as it plays now, each frame's step. */
+      float before = 0.0f;
+      for (int j = 0; j < n; j++) {
+        const float now = custom_progress(b.speeds, float(j + 1) / float(n));
+        s[size_t(j)] = (now - before) * float(n);
+        before = now;
+      }
+    }
+  }
+  else if (shaped) {
+    /* Its mode's progress, signed: Back and Elastic go past the key and come back to it. */
+    const KeySettings settings = key_settings(b);
+    float before = 0.0f;
     for (int j = 0; j < n; j++) {
-      s[size_t(j)] = b.speeds[std::min(b.speeds.size() - 1, size_t((float(j) + 0.5f) * float(b.speeds.size()) / float(n)))];
+      const float now = interp_curve(settings, float(j + 1) / float(n));
+      s[size_t(j)] = (now - before) * float(n);
+      before = now;
     }
   }
   else {
@@ -1122,8 +1154,8 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
       before = now;
     }
   }
-  /* A Custom stretch's speeds keep their signs (going back past a key); measured ones are how far it went. */
-  const bool custom = b.interp == Interp::Custom && !b.speeds.empty();
+  /* A Custom or shaped stretch's speeds keep their signs (going back past a key); measured ones are how far it went. */
+  const bool custom = (b.interp == Interp::Custom && !b.speeds.empty()) || shaped;
   float total = 0.0f;
   for (float &v : s) {
     if (!custom) {
@@ -1151,7 +1183,7 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
     const Key<T> &a = ch.keys[i - 1], &b = ch.keys[i];
     const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
     const int n = b.frame - start;
-    if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+    if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle || a.interp == Interp::Cycle) {
       continue;
     }
     std::vector<float> w(size_t(n), 0.0f);
@@ -1195,7 +1227,8 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
         default:
           break;
       }
-      v = std::max(v, 0.02f);
+      /* A frame going back (overshoot, a bounce) keeps going back; the rest never stop dead. */
+      v = was[size_t(j)] < 0.0f ? v : std::max(v, 0.02f);
     }
     /* Arriving on its frame: the frames not under the brush take up the difference, or all of them where those can't
      * (the brushed ones would leave them next to nothing). */
@@ -1207,14 +1240,14 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
       const float scale = (float(n) - brushed) / rest;
       for (int j = 0; j < n; j++) {
         if (w[size_t(j)] <= 0.0f) {
-          s[size_t(j)] = std::max(s[size_t(j)] * scale, 0.02f);
+          s[size_t(j)] = s[size_t(j)] < 0.0f ? s[size_t(j)] * scale : std::max(s[size_t(j)] * scale, 0.02f);
         }
       }
     }
     else {
       const float scale = float(n) / std::max(brushed + rest, 1e-9f);
       for (float &v : s) {
-        v = std::max(v * scale, 0.02f);
+        v = v < 0.0f ? v * scale : std::max(v * scale, 0.02f);
       }
     }
     key_speeds_set(ch.keys, i, std::move(s));
@@ -1233,7 +1266,9 @@ template<typename T> bool stretch_of(const Channel<T> &ch, int frame, size_t &r_
       continue;
     }
     const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
-    if (frame <= start || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+    if (frame <= start || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle ||
+        a.interp == Interp::Cycle)
+    {
       return false;
     }
     r_i = i;
@@ -1349,7 +1384,9 @@ template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor
     const int start = std::min(a_frame + std::max(ch.keys[i - 1].hold, 0), b_frame);
     const int n = b_frame - start;
     const Interp interp = ch.keys[i].interp;
-    if (n < 1 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle) {
+    if (n < 1 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle ||
+        ch.keys[i - 1].interp == Interp::Cycle)
+    {
       continue;
     }
     int k0 = 0;
@@ -1880,6 +1917,32 @@ float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target,
   return 0.5f * (s[size_t(k - 1)] + s[size_t(std::min(k, n - 1))]);
 }
 
+/* Of a drawing's animated channels (drawing_channels' order), the one that goes furthest: its timing is the drawing's
+ * (one keyed in place has no motion to time). -1 with none. */
+static int drawing_lead_channel(Document &doc, Layer &layer)
+{
+  int best = -1, index = 0;
+  float most = -1.0f;
+  drawing_channels(doc, layer, [&](auto &ch) {
+    float travel = 0.0f;
+    for (size_t i = 1; i < ch.keys.size(); i++) {
+      if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[i].value)>, float>) {
+        travel += std::abs(ch.keys[i].value - ch.keys[i - 1].value);
+      }
+      else {
+        travel += length(ch.keys[i].value - ch.keys[i - 1].value);
+      }
+    }
+    if (travel > most) {
+      most = travel;
+      best = index;
+    }
+    index++;
+    return true;
+  });
+  return best;
+}
+
 /* Calls `f` with the channel that moves the target's dot: a tip's bone angle, else its position. */
 template<typename F> static bool with_path_channel(Document &doc, const MotionPathTarget &t, F &&f)
 {
@@ -1888,14 +1951,17 @@ template<typename F> static bool with_path_channel(Document &doc, const MotionPa
     return false;
   }
   if (t.drawing) {
-    /* The drawing: its first animated channel stands for all (they share their keys' frames and timing). */
-    bool found = false;
+    /* The drawing: its lead channel stands for all (they share their keys' frames and timing). */
+    const int best = drawing_lead_channel(doc, *layer);
+    int index = 0;
     drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
-      f(ch);
-      found = true;
-      return false;
+      if (index++ == best) {
+        f(ch);
+        return false;
+      }
+      return true;
     });
-    return found;
+    return best >= 0;
   }
   if (tip_turns(doc, t)) {
     const int b = bone_index(*layer, t.bone);
@@ -1968,6 +2034,17 @@ int motion_path_key_settings(Document &doc, const MotionPathTarget &target, int 
   });
 }
 
+/* Takes out a key, the control points either side of it staying where they are. */
+template<typename T> static bool path_key_remove(Channel<T> &ch, int frame)
+{
+  if constexpr (std::is_same_v<T, float2>) {
+    if (const Key<float2> *k = ch.key_at(frame)) {
+      key_controls_join(ch.keys, size_t(k - ch.keys.data()));
+    }
+  }
+  return ch.remove_key(frame);
+}
+
 int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int frame)
 {
   if (frame == 0) {
@@ -1975,7 +2052,7 @@ int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int fr
   }
   std::vector<std::function<void()>> removals;
   const int count = with_diamond_channels(doc, target, frame, [&](auto &ch) {
-    removals.push_back([&ch, frame] { ch.remove_key(frame); });
+    removals.push_back([&ch, frame] { path_key_remove(ch, frame); });
   });
   for (const auto &remove : removals) {
     remove();
@@ -1983,18 +2060,66 @@ int motion_path_key_delete(Document &doc, const MotionPathTarget &target, int fr
   return count;
 }
 
+/* Calls `f` with each channel whose keys are the target's own keys on its path (see motion_path_keys): a diamond
+ * on the path is all of them on its frame, a turn's key as much as a move's. */
+template<typename F> static void with_own_key_channels(Document &doc, const MotionPathTarget &t, F &&f)
+{
+  Layer *layer = layer_find(doc, t.layer);
+  if (!layer) {
+    return;
+  }
+  if (t.drawing) {
+    drawing_channels(doc, *layer, [&](auto &ch) {
+      f(ch);
+      return true;
+    });
+    return;
+  }
+  if (t.bone) {
+    const int i = bone_index(*layer, t.bone);
+    if (i >= 0) {
+      Bone &b = layer->bones[size_t(i)];
+      f(b.position_keys);
+      f(b.angle_keys);
+      f(b.scale_keys);
+    }
+    return;
+  }
+  if (t.point) {
+    const int i = point_index(*layer, t.point);
+    if (i >= 0) {
+      f(layer->drawing.points[size_t(i)].pos_keys);
+    }
+    return;
+  }
+  KeyFilter filter;
+  filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
+  for (const ChannelRef &ref : layer_filtered_channels(*layer, filter)) {
+    if (ref.scalar) {
+      f(*ref.scalar);
+    }
+    if (ref.vector) {
+      f(*ref.vector);
+    }
+  }
+}
+
 std::vector<std::pair<MotionPathTarget, int>> motion_path_selected_keys(const Document &doc,
                                                                         const std::vector<MotionPathTarget> &targets)
 {
   std::vector<std::pair<MotionPathTarget, int>> out;
   for (const MotionPathTarget &t : targets) {
-    with_path_channel(const_cast<Document &>(doc), t, [&](auto &ch) {
+    std::set<int> frames;
+    with_own_key_channels(const_cast<Document &>(doc), t, [&](auto &ch) {
       for (const auto &k : ch.keys) {
         if (k.selected && k.frame > 0) {
-          out.push_back({t, k.frame});
+          frames.insert(k.frame);
         }
       }
     });
+    for (const int f : frames) {
+      out.push_back({t, f});
+    }
   }
   return out;
 }
@@ -2003,15 +2128,18 @@ bool motion_path_is_key(const Document &doc, const MotionPathTarget &target, int
 {
   bool found = false;
   with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) { found = ch.key_at(frame) != nullptr; });
+  if (!found && frame > 0) {
+    with_own_key_channels(const_cast<Document &>(doc), target, [&](auto &ch) { found = found || ch.key_at(frame); });
+  }
   return found;
 }
 
 bool motion_path_key_selected(const Document &doc, const MotionPathTarget &target, int frame)
 {
   bool selected = false;
-  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+  with_own_key_channels(const_cast<Document &>(doc), target, [&](auto &ch) {
     const auto *k = ch.key_at(frame);
-    selected = k && k->selected;
+    selected = selected || (k && k->selected);
   });
   return selected;
 }
@@ -2105,7 +2233,7 @@ bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &t
 
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select)
 {
-  with_path_channel(doc, target, [&](auto &ch) {
+  with_own_key_channels(doc, target, [&](auto &ch) {
     if (auto *k = ch.key_at(frame)) {
       k->selected = select;
     }
@@ -2188,7 +2316,8 @@ int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> 
     }
     for (size_t i = 0; i < ch->keys.size(); i++) {
       Key<float2> &k = ch->keys[i];
-      if (!k.selected || k.frame <= 0) {
+      /* The setup key too: its handles are dragged like any key's, so they can be set back. */
+      if (!k.selected || k.frame < 0) {
         continue;
       }
       if (mode == PathHandles::Auto) {
@@ -2242,7 +2371,10 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   std::vector<Timing> changed;
   std::vector<int> first_before, first_after;
   if (layer) {
-    drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
+    /* The lead channel first (see with_path_channel): what the tool does to it, the others follow. */
+    const int lead = drawing_lead_channel(doc, *layer);
+    int index = 0;
+    const auto visit = [&](auto &ch) {
       if (!found) {
         std::vector<Timing> before;
         for (const auto &k : ch.keys) {
@@ -2265,7 +2397,7 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
         frames_before.push_back(k.frame);
       }
       f(ch);
-      /* Breakdowns moved by the tool land where the first channel's did, so the drawing's keys stay together. */
+      /* Breakdowns moved by the tool land where the lead channel's did, so the drawing's keys stay together. */
       if (frames_before == first_before && ch.keys.size() == first_after.size()) {
         for (size_t j = 0; j < ch.keys.size(); j++) {
           ch.keys[j].frame = first_after[j];
@@ -2277,7 +2409,10 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
         }
       }
       return true;
-    });
+    };
+    drawing_channels(doc, *layer, [&](auto &ch) { return index++ == lead ? visit(ch) : true; });
+    index = 0;
+    drawing_channels(doc, *layer, [&](auto &ch) { return index++ == lead ? true : visit(ch); });
   }
   return found;
 }
@@ -2290,7 +2425,7 @@ std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const 
       const auto &a = ch.keys[i - 1], &b = ch.keys[i];
       const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
       const int n = b.frame - start;
-      if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+      if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle || a.interp == Interp::Cycle) {
         continue;
       }
       MotionPathStretch st;
@@ -2352,7 +2487,9 @@ int motion_path_timing_blend(Document &doc, const MotionPathTarget &target, int 
       const int start = std::min(ch.keys[i - 1].frame + std::max(ch.keys[i - 1].hold, 0), ch.keys[i].frame);
       const int n = ch.keys[i].frame - start;
       const Interp interp = ch.keys[i].interp;
-      if (n < 2 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle) {
+      if (n < 2 || interp == Interp::Step || interp == Interp::Pose || interp == Interp::Cycle ||
+          ch.keys[i - 1].interp == Interp::Cycle)
+      {
         continue;
       }
       /* The reach eases to nothing a frame past `radius`, so radius 0 is the clicked dot alone. */
@@ -2570,7 +2707,11 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
   const int span_in = before ? frame - before->frame : 0, span_out = after ? after->frame - frame : 0;
   with_path_channel(doc, target, [&](auto &ch) {
     if (!ch.key_at(frame)) {
-      ch.set_key(frame, ch.evaluate(frame));
+      Key<std::decay_t<decltype(ch.keys[0].value)>> &k = ch.set_key(frame, ch.evaluate(frame));
+      if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[0].value)>, float2>) {
+        /* The control points of the stretch it splits stay where they are. */
+        key_controls_split(ch.keys, size_t(&k - ch.keys.data()));
+      }
       added = true;
     }
   });
@@ -2612,18 +2753,9 @@ int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int 
 int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &targets)
 {
   int deleted = 0;
-  for (const MotionPathTarget &t : targets) {
-    with_path_channel(doc, t, [&](auto &ch) {
-      std::vector<int> frames;
-      for (const auto &k : ch.keys) {
-        if (k.selected && k.frame > 0) {
-          frames.push_back(k.frame);
-        }
-      }
-      for (const int f : frames) {
-        deleted += ch.remove_key(f) ? 1 : 0;
-      }
-    });
+  for (const auto &[t, frame] : motion_path_selected_keys(doc, targets)) {
+    /* The diamond goes: every key of the target's own on its frame. */
+    with_own_key_channels(doc, t, [&, f = frame](auto &ch) { deleted += path_key_remove(ch, f) ? 1 : 0; });
   }
   animation_evaluate(doc, doc.frame_current);
   return deleted;
@@ -3081,9 +3213,8 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
       return o.first != i && picks[o.first].target.same(p.target) && picks[o.first].frame == p.frame &&
              picks[o.first].control == p.control;
     });
-    const auto mc = std::find_if(controls.begin(), controls.end(), [&](const MotionPathControl &x) {
-      return x.end == p.frame && x.index == p.control;
-    });
+    /* Its own control point (another path's can share its end frame and index). */
+    const auto mc = controls.begin() + (std::find(control_of.begin(), control_of.end(), i) - control_of.begin());
     changed += motion_path_control_handle_set(doc, p.target, p.frame, p.control, p.control_handle == 2,
                                               mc->near_frame, tip, both)
                    ? 1
@@ -3407,12 +3538,21 @@ std::vector<float> stretch_length_speeds(const Channel<float2> &ch, size_t i)
   const Key<float2> &a = ch.keys[i - 1], &b = ch.keys[i];
   const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
   const int n = b.frame - start;
-  if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+  if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle || a.interp == Interp::Cycle) {
     return {};
   }
   if (b.interp == Interp::Custom && !b.speeds.empty()) {
     /* Already by length along it. */
     return b.speeds;
+  }
+  if (interp_timed_by_mode(b.interp)) {
+    /* Its mode's progress by length along it, signed: Back, Bounce and Elastic go past the key and back. */
+    const KeySettings settings = key_settings(b);
+    std::vector<float> u(size_t(n + 1), 0.0f);
+    for (int j = 1; j <= n; j++) {
+      u[size_t(j)] = interp_curve(settings, float(j) / float(n));
+    }
+    return progress_speeds(u);
   }
   /* The stretch without its control points (they lie on it by the same share) and without its interval. */
   Channel<float2> plain = ch;

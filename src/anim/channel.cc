@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <type_traits>
 
 namespace oanim {
@@ -576,6 +577,83 @@ float2 path_control_offset_stored(float2 a, float2 b, float2 offset)
 PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j)
 {
   return j < key.path_control_handles.size() ? key.path_control_handles[j] : PathControlHandles{};
+}
+
+/* Control point `j` of the stretch from `a` arriving at `b`: where it is and its handles as offsets. */
+static std::pair<float2, PathControlHandles> path_control_placed(const Key<float2> &a, const Key<float2> &b, size_t j)
+{
+  PathControlHandles h = path_control_handles_of(b, j);
+  h.in = path_control_offset_value(a.value, b.value, h.in);
+  h.out = path_control_offset_value(a.value, b.value, h.out);
+  return {path_control_value(a.value, b.value, b.path_controls[j]), h};
+}
+
+/* Stores placed control points on `b`, for the stretch from `a`. */
+static void path_controls_store(const Key<float2> &a, Key<float2> &b,
+                                const std::vector<std::pair<float2, PathControlHandles>> &placed)
+{
+  b.path_controls.clear();
+  b.path_control_handles.clear();
+  for (auto [at, h] : placed) {
+    b.path_controls.push_back(path_control_stored(a.value, b.value, at));
+    h.in = path_control_offset_stored(a.value, b.value, h.in);
+    h.out = path_control_offset_stored(a.value, b.value, h.out);
+    b.path_control_handles.push_back(h);
+  }
+}
+
+void key_controls_split(std::vector<Key<float2>> &keys, size_t i)
+{
+  if (i == 0 || i + 1 >= keys.size() || keys[i + 1].path_controls.empty()) {
+    return;
+  }
+  const Key<float2> &a = keys[i - 1];
+  Key<float2> &k = keys[i], &b = keys[i + 1];
+  std::vector<std::pair<float2, PathControlHandles>> placed;
+  std::vector<float2> line = {a.value};
+  for (size_t j = 0; j < b.path_controls.size(); j++) {
+    placed.push_back(path_control_placed(a, b, j));
+    line.push_back(placed.back().first);
+  }
+  line.push_back(b.value);
+  /* The new key's place along the line through them: the nearest segment's. */
+  size_t segment = 0;
+  float nearest = std::numeric_limits<float>::max();
+  for (size_t s = 0; s + 1 < line.size(); s++) {
+    const float2 d = line[s + 1] - line[s];
+    const float l2 = d.x * d.x + d.y * d.y;
+    const float t = l2 > 1e-12f ? std::clamp(((k.value.x - line[s].x) * d.x + (k.value.y - line[s].y) * d.y) / l2, 0.0f, 1.0f)
+                                : 0.0f;
+    const float dist = length(line[s] + d * t - k.value);
+    if (dist < nearest) {
+      nearest = dist;
+      segment = s;
+    }
+  }
+  /* Control points before the segment (line[1..segment]) end the stretch into the new key. */
+  const std::vector<std::pair<float2, PathControlHandles>> before(placed.begin(), placed.begin() + long(segment)),
+      after(placed.begin() + long(segment), placed.end());
+  path_controls_store(a, k, before);
+  path_controls_store(k, b, after);
+  keys_changed();
+}
+
+void key_controls_join(std::vector<Key<float2>> &keys, size_t i)
+{
+  if (i == 0 || i + 1 >= keys.size() || (keys[i].path_controls.empty() && keys[i + 1].path_controls.empty())) {
+    return;
+  }
+  const Key<float2> &a = keys[i - 1], &k = keys[i];
+  Key<float2> &b = keys[i + 1];
+  std::vector<std::pair<float2, PathControlHandles>> placed;
+  for (size_t j = 0; j < k.path_controls.size(); j++) {
+    placed.push_back(path_control_placed(a, k, j));
+  }
+  for (size_t j = 0; j < b.path_controls.size(); j++) {
+    placed.push_back(path_control_placed(k, b, j));
+  }
+  path_controls_store(a, b, placed);
+  keys_changed();
 }
 
 StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i)

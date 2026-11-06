@@ -808,9 +808,9 @@ static void key_type_menu_items(Context &C, const std::function<void()> &prepare
       operator_call(C, "anim.keys_interpolation_set", OpArgs{{"type", key_type_identifier(t)}});
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip(t == KeyType::Key ? "An ordinary key: the timing eases at it" :
-                                            "A breakdown: a pose on the way, timed as one movement with the keys "
-                                            "either side, so it can be slid in time and brushed smooth");
+      ImGui::SetTooltip(t == KeyType::Key ? "An ordinary key" :
+                                            "A breakdown: a pose on the way, drawn apart; timed as any key, on its "
+                                            "own");
     }
   }
 }
@@ -1314,9 +1314,9 @@ static void interp_settings_popup(Context &C)
         key_draw(ImGui::GetWindowDrawList(), icon, fh * 0.24f, KEY_SHAPE_SMOOTH, COL_KEY);
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip(type == KeyType::Key ? "An ordinary key: the timing eases at it" :
-                                                 "A breakdown: a pose on the way, timed as one movement with the keys "
-                                                 "either side");
+        ImGui::SetTooltip(type == KeyType::Key ? "An ordinary key" :
+                                                 "A breakdown: a pose on the way, drawn apart; timed as any key, on "
+                                                 "its own");
       }
     }
   }
@@ -1759,9 +1759,8 @@ static void key_header(Context &C)
     key_draw(dl, p + ImVec2(h * 0.5f, h * 0.5f), h * 0.26f, KEY_SHAPE_SMOOTH, COL_KEY);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip(keys ? "Key Type of the selected keys: Key, or Breakdown (timed as one movement with the keys "
-                             "either side)" :
-                             "Key Type of new keys: Key, or Breakdown (timed as one movement with the keys either side)");
+    ImGui::SetTooltip(keys ? "Key Type of the selected keys: Key, or Breakdown (a pose on the way, drawn apart)" :
+                             "Key Type of new keys: Key, or Breakdown (a pose on the way, drawn apart)");
   }
   const float type_x = p.x + h * 0.5f;
   popover_place(type_x, p.y, 0.5f);

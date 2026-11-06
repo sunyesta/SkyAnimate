@@ -1,5 +1,6 @@
 #include "ops/operator.hh"
 
+#include <cmath>
 #include <cstdlib>
 
 #include "anim/animation.hh"
@@ -105,7 +106,8 @@ float op_arg_float(const Context &C, const std::string &name, float fallback)
   const std::string value = op_arg(C, name);
   char *end = nullptr;
   const float v = std::strtof(value.c_str(), &end);
-  return (!value.empty() && end && *end == 0) ? v : fallback;
+  /* "nan" and "inf" parse, but no setting means them: they'd spread through whatever they're mixed into. */
+  return (!value.empty() && end && *end == 0 && std::isfinite(v)) ? v : fallback;
 }
 
 /* oanim.ops.wm.open_mainfile(filepath="walk.oanim"), for the Info log. */
