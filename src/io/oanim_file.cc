@@ -933,8 +933,11 @@ static json layer_to_json(const Layer &layer)
         if (b.controller_box_angle != 0.0f) {
           bj["controller_box_angle"] = num(b.controller_box_angle);
         }
-        if (b.controller_knob_stays) {
-          bj["controller_knob_stays"] = true;
+        if (b.controller_knob_independent) {
+          bj["controller_knob_independent"] = true;
+        }
+        if (b.controller_knob_parent != 0) {
+          bj["controller_knob_parent"] = b.controller_knob_parent;
         }
         if (!b.controller_size_auto) {
           bj["controller_size_auto"] = false;
@@ -2827,7 +2830,9 @@ static Layer layer_from_json(const json &j, int depth)
       b.controller_frame_size = std::max(get_float(bj, "controller_frame_size", b.controller_frame_size), 1e-5f);
       b.controller_size_auto = get_bool(bj, "controller_size_auto", true);
       b.controller_box_angle = get_float(bj, "controller_box_angle", 0.0f);
-      b.controller_knob_stays = get_bool(bj, "controller_knob_stays", false);
+      /* Knob Stays in Place was saved under its first name. */
+      b.controller_knob_independent = get_bool(bj, "controller_knob_independent", get_bool(bj, "controller_knob_stays", false));
+      b.controller_knob_parent = bj.value("controller_knob_parent", uint64_t(0));
       for (const json &sj : get_array(bj, "controller_spots")) {
         const json at = sj.value("at", json());
         if (sj.is_object() && at.is_array() && at.size() == 2 && at[0].is_number() && at[1].is_number()) {

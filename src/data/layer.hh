@@ -729,10 +729,13 @@ struct Bone {
   /* Which way the box lies in the setup pose (bone layer space; 0 upright): turned with the bone on the setup frame, so
    * a slider can lie on a slant, its knob running along it. */
   float controller_box_angle = 0.0f;
-  /* Knob Stays in Place: posed, the box moves with its parent (the Box Parent) and the knob keeps its place in the
-   * picture, so where it sits in the box (what it plays) changes: eyes keep looking at one spot as the head moves.
-   * Its keys then place it as it would sit in the box at rest. */
-  bool controller_knob_stays = false;
+  /* Knob Is Independent (Relations): posed, the box moves with its parent (the Box Parent) and the knob doesn't: it
+   * keeps its place in the picture, or rides its Knob Parent, so where it sits in the box (what it plays) changes: eyes
+   * keep looking at one spot as the head moves, or follow a target. Its keys place it against its Knob Parent as that
+   * rests (the bone layer, with none). */
+  bool controller_knob_independent = false;
+  /* Its Knob Parent (a bone's id in the same bone layer; 0 for none). */
+  uint64_t controller_knob_parent = 0;
   bool controller_size_auto = true;
   /* Its spots, in the Spots panel's order. */
   std::vector<ControllerSpot> controller_spots;

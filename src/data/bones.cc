@@ -665,12 +665,23 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
+    if (rests && bone.controller_knob_independent) {
+      /* Riding its Knob Parent, worked out first (one hanging from this knob can't be: it would carry itself). */
+      const int ki = find(bone.controller_knob_parent);
+      if (ki >= 0 && ki != i && state[ki] != 1) {
+        self(self, ki, depth + 1);
+        if (state[ki] == 2) {
+          p.knob_parent_skin = poses[ki].skin;
+        }
+      }
+    }
     if (rests) {
       /* The knob moves and turns what hangs from it, as a pin would: the box stays. */
       const float2 at = controller_box_point(bone, p, controller_knob_held(bone, p));
-      /* Staying in place, it doesn't turn with the box either. */
-      p.knob = bone.controller_knob_stays ?
-                   Transform2D::translate(at - p.setup_head) * p.setup * Transform2D::rotate(knob_turn) :
+      /* Independent, it doesn't turn with the box either: with its Knob Parent, or as it rests. */
+      const Transform2D carried = p.knob_parent_skin * p.setup;
+      p.knob = bone.controller_knob_independent ?
+                   Transform2D::translate(at - carried.apply({0, 0})) * carried * Transform2D::rotate(knob_turn) :
                    Transform2D::translate(at - p.head) * p.pose * Transform2D::rotate(knob_turn);
       p.skin = p.knob * p.setup.inverted();
     }

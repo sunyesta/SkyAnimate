@@ -2911,7 +2911,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["knob_head"] = py::make_tuple(at.x, at.y);
         d["knob_angle"] = std::atan2(dir.y, dir.x);
         d["controller_box_angle"] = b.controller_box_angle;
-        d["knob_stays"] = b.controller_knob_stays;
+        d["knob_independent"] = b.controller_knob_independent;
+        const Bone *knob_parent = bone_find(layer, b.controller_knob_parent);
+        d["knob_parent"] = knob_parent ? knob_parent->name : std::string();
       }
       if (const Bone *knob = controller_of_dial(layer, b)) {
         d["controller"] = knob->name;
@@ -2984,12 +2986,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           throw py::value_error("a pin is one point: it has no length");
         }
         bone.length = std::max(0.0f, value.cast<float>());
-      }
-      else if (key == "knob_stays") {
-        if (!bone_is_controller(bone)) {
-          throw py::value_error("knob_stays is a 2 Axis Controller's");
-        }
-        bone.controller_knob_stays = value.cast<bool>();
       }
       else if (key == "controller_frame_size") {
         bone.controller_frame_size = std::max(value.cast<float>(), 1e-5f);

@@ -1,6 +1,7 @@
-"""Knob Stays in Place: a 2 Axis Controller's box moves with its parent (its Box Parent) while the knob keeps its place
-in the picture, so where it sits in the box, and what it plays, changes: eyes keep looking at one spot as the head
-moves. It never leaves the box (held at the edge). Off, the knob moves with the box, as before. Saved.
+"""Knob Is Independent (Relations): a 2 Axis Controller's box moves with its parent (its Box Parent) while the knob
+keeps its place in the picture, or rides its Knob Parent, so where it sits in the box, and what it plays, changes: eyes
+keep looking at one spot as the head moves, or follow a target. It never leaves the box (held at the edge). Off, the
+knob moves with the box, as before. Set on the setup frame; saved.
 
 Run with:  OpenAnimate --background --python tests/test_controller_knob_stays.py
 """
@@ -70,10 +71,13 @@ assert close(look["knob_head"], (-10 * size, 2)), ("the knob moves with the box"
 assert close(look["knob_shown"], (0, 0)) and close(tuple(face.shown()[0][0]), rest_face), "nothing plays"
 
 # --- On: the knob keeps its place, so it sits further right in the box, and plays that ----------------------------------
-rig.bone_set("look", knob_stays=True)
+doc.frame_current = 10
+assert ops.armature.bone_relations_set(bone="look", knob_independent="1") == {'CANCELLED'}, "the setup frame only"
+doc.frame_current = 0
+assert ops.armature.bone_relations_set(bone="look", knob_independent="1") == {'FINISHED'}
 doc.frame_current = 10
 look = bone("look")
-assert look["knob_stays"]
+assert look["knob_independent"] and look["knob_parent"] == ""
 assert close(look["head"], (-10 * size, 2)), "the box moves with its parent"
 assert close(look["knob_head"], (0, 2)), ("the knob stays where it was", look)
 assert close(look["knob_shown"], (10, 0), 1e-2), ("10 frames into the box", look["knob_shown"])
@@ -108,11 +112,30 @@ assert rig.drag_bone_ends([(0.0, 0.0), (-10 * size, 0.0)])
 after = bone("look")["knob_shown"][0]
 assert close(before - after, 10 * math.cos(0.2), 0.05), ("the drag moves it along the picture", before, after)
 
+# --- A Knob Parent carries it: a target the eyes follow ---------------------------------------------------------------
+doc.frame_current = 0
+add("target", (3, 3), (3.2, 3))
+add("pupil_child", (0.1, 2.6), (0.2, 2.6), parent="pupil")
+assert ops.armature.bone_relations_set(bone="look", knob_parent="pupil_child") == {'CANCELLED'}, "not what hangs from it"
+assert ops.armature.bone_relations_set(bone="look", knob_parent="look") == {'CANCELLED'}, "nor itself"
+assert ops.armature.bone_relations_set(bone="look", knob_parent="target") == {'FINISHED'}
+assert bone("look")["knob_parent"] == "target"
+doc.frame_current = 40
+rig.bone_set("head", position=(0.0, 0.0), angle=bone("head")["setup_angle"])
+rig.bone_set("look", knob=(20.0, 0.0))
+look = bone("look")
+assert close(look["knob_shown"], (20, 0), 1e-2), look["knob_shown"]
+knob = look["knob_head"]
+rig.bone_set("target", position=(3 - 5 * size, 3.0))
+look = bone("look")
+assert close(look["knob_head"], (knob[0] - 5 * size, knob[1])), ("the target carries the knob", look)
+assert close(look["knob_shown"], (15, 0), 1e-2), ("and it plays where it sits in the box", look["knob_shown"])
+
 # --- Saved -------------------------------------------------------------------------------------------------------------
 path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_stays_")) / "stays.oanim")
 assert ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in layers if l.type == "BONE")
-assert bone("look")["knob_stays"]
+assert bone("look")["knob_independent"] and bone("look")["knob_parent"] == "target"
 
-print("Knob Stays in Place tests passed")
+print("Knob Is Independent tests passed")

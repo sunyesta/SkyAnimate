@@ -708,6 +708,95 @@ static void bone_relations_panel(Context &C, Layer &armature)
   }
   ImGui::EndDisabled();
 
+  /* A 2 Axis Controller's knob: riding the box, or independent, keeping its place or riding its Knob Parent. */
+  if (bone_is_controller(*active)) {
+    active = bone_find(armature, own);
+    label("");
+    ImGui::BeginDisabled(!setup);
+    bool independent = active->controller_knob_independent;
+    if (ImGui::Checkbox("Knob Is Independent", &independent)) {
+      relations_set("knob_independent", independent ? "1" : "0");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(!setup ? "Switch to Setup (frame 0) to change it"
+                               : "The box moves with its Box Parent and the knob doesn't: it keeps its place in the "
+                                 "picture, or rides its Knob Parent, so what it plays changes (eyes keep looking at one "
+                                 "spot as the head moves, or follow a target)");
+    }
+    ImGui::EndDisabled();
+    active = bone_find(armature, own);
+    if (active && active->controller_knob_independent) {
+      const Bone *knob_parent = bone_find(armature, active->controller_knob_parent);
+      label("Knob Parent");
+      ImGui::BeginDisabled(!setup);
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
+      if (ImGui::BeginCombo("##knob_parent", knob_parent ? knob_parent->name.c_str() : "None", ImGuiComboFlags_HeightLarge)) {
+        static std::string search;
+        if (ImGui::IsWindowAppearing()) {
+          search.clear();
+          ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(-1);
+        const bool entered = ImGui::InputTextWithHint("##search", "Search bones", &search, ImGuiInputTextFlags_EnterReturnsTrue);
+        std::string needle = search;
+        std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+        if (needle.empty() && ImGui::Selectable("None", knob_parent == nullptr)) {
+          relations_set("knob_parent", "");
+        }
+        const Bone *first = nullptr;
+        for (const Bone &b : armature.bones) {
+          std::string lower = b.name;
+          std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+          /* Not itself, nor anything hanging from it. */
+          if (b.id == own || bone_is_descendant(armature, b.id, own) || lower.find(needle) == std::string::npos) {
+            continue;
+          }
+          first = first ? first : &b;
+          if (ImGui::Selectable(b.name.c_str(), knob_parent && knob_parent->id == b.id)) {
+            relations_set("knob_parent", b.name);
+          }
+        }
+        if (entered && first) {
+          relations_set("knob_parent", first->name);
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndCombo();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(!setup ? "Switch to Setup (frame 0) to change it"
+                                 : "What carries the knob, moving and turning it (kept inside the box); None, it keeps "
+                                   "its place in the picture");
+      }
+      ImGui::SameLine(0, 2);
+      if (ui_pick_button("##pick_knob_parent", "Eyedropper: click the Knob Parent in the viewport",
+                         ui_bone_eyedropper_armature() == rig_id))
+      {
+        ui_bone_eyedropper_start(
+            rig_id,
+            [rig_id, own](Context &C, uint64_t picked) {
+              Layer *rig = layer_find(*C.document, rig_id);
+              const Bone *b = rig ? bone_find(*rig, own) : nullptr;
+              const Bone *up = rig ? bone_find(*rig, picked) : nullptr;
+              if (!b || !up) {
+                return true;
+              }
+              if (up->id == b->id || bone_is_descendant(*rig, up->id, b->id)) {
+                return false;
+              }
+              operator_call(C, "armature.bone_relations_set", {{"bone", b->name}, {"knob_parent", up->name}});
+              return true;
+            },
+            [] { return std::string("Click the Knob Parent  |  Esc cancels"); });
+      }
+      ImGui::EndDisabled();
+    }
+    active = bone_find(armature, own);
+    if (!active) {
+      ui_panel_end();
+      return;
+    }
+  }
+
   /* Under a 2 Axis Controller: from its knob (moving and turning with it), or riding the box. */
   if (parent && bone_is_controller(*parent)) {
     active = bone_find(armature, own);
@@ -1972,17 +2061,6 @@ static void bone_panel(Context &C, Layer &armature)
       for (int side = 0; side < CONTROLLER_SIDES; side++) {
         label(controller_side_name(side));
         controller_side_row(C, armature, *active, side);
-      }
-      label("");
-      if (ImGui::Checkbox("Knob Stays in Place", &active->controller_knob_stays)) {
-        /* What it plays changes at once. */
-        animation_evaluate(doc, doc.frame_current);
-        C.undo->push("Knob Stays in Place", doc);
-      }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("The box moves with its Box Parent while the knob keeps its place in the picture, so what it "
-                          "plays changes (eyes keep looking at one spot as the head moves). Its keys place it as it "
-                          "would sit in the box at rest");
       }
       label("Frame Size");
       if (ui_drag_float("##controller_frame_size", &active->controller_frame_size, 0.0001f, 0.00001f, 10.0f, "%.4f")) {

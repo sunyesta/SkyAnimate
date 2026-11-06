@@ -479,12 +479,16 @@ PENDING = [
     ('src/io/oanim_file.cc', '          bj["controller_box_angle"] = num(b.controller_box_angle);\n', '', 'the box angle is saved', 'tests/test_controller_knob.py'),
     ('src/ops/rig_ops.cc', '                   bone->follow_knob = follow;\n', '', 'Follow Knob can be turned off', 'tests/test_controller_knob.py'),
     ('src/ops/rig_ops.cc', '                   b.follow_knob = true;\n                   if (connect) {', '                   if (connect) {', 'Ctrl P onto a controller follows the knob', 'tests/test_controller_knob.py'),
-    ('src/anim/controller.cc', '  if (!knob.controller_knob_stays) {\n    return controller_knob_clamped(knob);\n  }\n', '  return controller_knob_clamped(knob);\n', 'the knob stays in place', 'tests/test_controller_knob_stays.py'),
-    ('src/anim/controller.cc', '  return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};\n}\n\nfloat2 controller_knob_played', '  return at;\n}\n\nfloat2 controller_knob_played', 'a staying knob is held in the box', 'tests/test_controller_knob_stays.py'),
-    ('src/anim/animation.cc', '    knobs.push_back(controller_knob_played(owner, b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', '    knobs.push_back(controller_knob(b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', 'a staying knob plays where it sits in the box', 'tests/test_controller_knob_stays.py'),
-    ('src/anim/controller.cc', 'knob.controller_knob_stays ? delta : pose.box_skin', 'false ? delta : pose.box_skin', 'dragging a staying knob keys a place in the picture', 'tests/test_controller_knob_stays.py'),
-    ('src/data/bones.cc', '      p.knob = bone.controller_knob_stays ?', '      p.knob = false ?', 'what hangs from a staying knob stays', 'tests/test_controller_knob_stays.py'),
-    ('src/io/oanim_file.cc', '          bj["controller_knob_stays"] = true;\n', '', 'Knob Stays in Place is saved', 'tests/test_controller_knob_stays.py'),
+    ('src/anim/controller.cc', '  if (!knob.controller_knob_independent) {\n    return controller_knob_clamped(knob);\n  }\n', '  return controller_knob_clamped(knob);\n', 'an independent knob keeps its place', 'tests/test_controller_knob_stays.py'),
+    ('src/anim/controller.cc', '  return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};\n}\n\nfloat2 controller_knob_played', '  return at;\n}\n\nfloat2 controller_knob_played', 'an independent knob is held in the box', 'tests/test_controller_knob_stays.py'),
+    ('src/anim/animation.cc', '    knobs.push_back(controller_knob_played(owner, b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', '    knobs.push_back(controller_knob(b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', 'an independent knob plays where it sits in the box', 'tests/test_controller_knob_stays.py'),
+    ('src/anim/controller.cc', 'knob.controller_knob_independent ? pose.knob_parent_skin : pose.box_skin', 'pose.box_skin', 'dragging an independent knob goes the way the mouse does', 'tests/test_controller_knob_stays.py'),
+    ('src/data/bones.cc', '      p.knob = bone.controller_knob_independent ?', '      p.knob = false ?', "an independent knob doesn't turn with the box", 'tests/test_controller_knob_stays.py'),
+    ('src/io/oanim_file.cc', '          bj["controller_knob_independent"] = true;\n', '', 'Knob Is Independent is saved', 'tests/test_controller_knob_stays.py'),
+    ('src/data/bones.cc', '          p.knob_parent_skin = poses[ki].skin;\n', '', 'the Knob Parent carries the knob', 'tests/test_controller_knob_stays.py'),
+    ('src/io/oanim_file.cc', '          bj["controller_knob_parent"] = b.controller_knob_parent;\n', '', 'the Knob Parent is saved', 'tests/test_controller_knob_stays.py'),
+    ('src/ops/rig_ops.cc', '                     if (up && (up->id == bone->id || bone_is_descendant(rig, up->id, bone->id))) {', '                     if (false) {', "the knob can't ride what hangs from it", 'tests/test_controller_knob_stays.py'),
+    ('src/ops/rig_ops.cc', '                   if (!on_setup_frame(C)) {\n                     return OpStatus::Cancelled;\n                   }\n                   bool independent', '                   bool independent', 'Knob Is Independent changes on the setup frame', 'tests/test_controller_knob_stays.py'),
 ]
 
 

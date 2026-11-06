@@ -1635,7 +1635,8 @@ void rig_operators_register()
                "only: its head onto the parent's tail), inherit_rotation (1 or 0), "
                "inherit_scale (FULL, UNIFORM or NONE), local_location (1 or 0: its Transform reads along it as it rests, "
                "or along its parent), follow_knob (1 or 0: under a 2 Axis Controller, hanging from its knob or riding the "
-               "box). keep_animation=1: every keyed frame of every action still shows the bone as it "
+               "box); for a 2 Axis Controller, knob_independent (1 or 0: the knob doesn't ride the box) and knob_parent "
+               "(a bone's name, \"\" for none: what carries an independent knob), setup frame only. keep_animation=1: every keyed frame of every action still shows the bone as it "
                "did (its angle and scale keyed back) after an Inherit change",
                bone_layer_active, [](Context &C) {
                  Document &doc = *C.document;
@@ -1681,6 +1682,43 @@ void rig_operators_register()
                        return OpStatus::Finished;
                      }
                    }
+                 }
+                 if (op_has_arg(C, "knob_independent") || op_has_arg(C, "knob_parent")) {
+                   /* A rig change, as Parent: on the setup frame, where the knob rests, so nothing moves there. */
+                   if (!bone_is_controller(*bone)) {
+                     report(ReportType::Warning, "Only a 2 Axis Controller has a knob");
+                     return OpStatus::Cancelled;
+                   }
+                   if (!on_setup_frame(C)) {
+                     return OpStatus::Cancelled;
+                   }
+                   bool independent = bone->controller_knob_independent;
+                   uint64_t knob_parent = bone->controller_knob_parent;
+                   if (op_has_arg(C, "knob_independent")) {
+                     independent = op_arg_bool(C, "knob_independent");
+                   }
+                   if (op_has_arg(C, "knob_parent")) {
+                     const std::string name = op_arg(C, "knob_parent");
+                     const Bone *up = name.empty() ? nullptr : bone_find_by_name(rig, name);
+                     if (!name.empty() && !up) {
+                       report(ReportType::Warning, "No bone named " + name);
+                       return OpStatus::Cancelled;
+                     }
+                     /* Not itself, nor anything hanging from it: the knob would carry itself. */
+                     if (up && (up->id == bone->id || bone_is_descendant(rig, up->id, bone->id))) {
+                       report(ReportType::Warning, "The knob can't ride " + name + ": it hangs from this controller");
+                       return OpStatus::Cancelled;
+                     }
+                     knob_parent = up ? up->id : 0;
+                     independent = independent || up != nullptr;
+                   }
+                   if (independent == bone->controller_knob_independent && knob_parent == bone->controller_knob_parent) {
+                     return OpStatus::Cancelled;
+                   }
+                   bone->controller_knob_independent = independent;
+                   bone->controller_knob_parent = knob_parent;
+                   animation_evaluate(doc, doc.frame_current);
+                   return OpStatus::Finished;
                  }
                  if (op_has_arg(C, "follow_knob")) {
                    const bool follow = op_arg_bool(C, "follow_knob");

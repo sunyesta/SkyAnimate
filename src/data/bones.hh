@@ -34,6 +34,8 @@ struct BonePose {
   /* Bone frame -> bone layer space now, at a controller's knob, turned by its angle (else the same as `pose`): what
    * children that follow the knob hang from. */
   Transform2D knob;
+  /* What carries an independent knob: its Knob Parent's setup to now (else none). */
+  Transform2D knob_parent_skin;
   /* Where the bone runs in the setup pose and now (bone layer space). */
   float2 setup_head, setup_tail;
   float2 head, tail;
