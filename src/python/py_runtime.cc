@@ -656,6 +656,35 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     C.undo->push("Rotate Bones", *C.document);
   });
+  /* G on the picked bones as the viewport's drag does it, one mouse update per (dx, dy) (bone layer space, from where
+   * the drag began), then confirmed. Returns where bone `watch` (its knob, for a controller) is drawn after each
+   * update, in the bone layer's space: in the main loop's order, the frame synced first, then the drag's update, then
+   * the drawing, nothing synced in between (for tests: a real drag needs a mouse). */
+  m.def("debug_move_bones", [](uint64_t id, const std::vector<std::pair<float, float>> &deltas, const std::string &watch) {
+    Context &C = current_context();
+    Layer *armature = layer_find(*C.document, id);
+    if (!armature || !armature->is_bone_layer()) {
+      throw py::value_error("not a bone layer");
+    }
+    const std::vector<Bone> original = armature->bones;
+    const bool setup = C.document->frame_current == 0;
+    py::list drawn;
+    animation_action_bone_drag_begin(*C.document);
+    for (const auto &[dx, dy] : deltas) {
+      animation_sync(*C.document);
+      armature = layer_find(*C.document, id);
+      armature_grab_selected(*armature, original, float2{dx, dy}, setup);
+      animation_drag_refresh(*C.document);
+      const Bone *b = bone_find_by_name(*armature, watch);
+      const std::vector<BonePose> poses = armature_pose(*armature, setup);
+      const BonePose *p = b ? bone_pose_find(poses, b->id) : nullptr;
+      const float2 at = !p ? float2() : bone_is_controller(*b) ? p->knob.apply({0, 0}) : p->head;
+      drawn.append(py::make_tuple(at.x, at.y));
+    }
+    animation_action_bone_drag_end();
+    C.undo->push("Move Bones", *C.document);
+    return drawn;
+  });
   /* Crashes on purpose, to try the crash report (oanim.wm.debug_crash). */
   m.def("debug_crash", []() {
     volatile bool go = true;

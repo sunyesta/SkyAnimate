@@ -611,6 +611,52 @@ assert ops.armature.symmetrize() == {'FINISHED'}
 assert bone("eye_R")["type"] == "CONTROLLER_2D", "the other side is a controller too"
 assert bone("eye_R")["controller_actions"]["LEFT"] == "look_R", ("across, the other side's action", bone("eye_R"))
 assert bone("eye_R")["controller_actions"]["RIGHT"] == ""
+# Sides named after their bone: the other side's are named after its own ("lid_L Left" -> "lid_R Right"), never the
+# same bone's other side (which an action has one controller of, and which Mirror Action Bone Actions would write over).
+ops.armature.select_none()
+ops.armature.bone_add(name="lid_L", head_x="3.0", head_y="-3.0", tail_x="3.5", tail_y="-3.0", parent="")
+rig.select_bone("lid_L")
+assert ops.armature.bone_convert(type="CONTROLLER_2D") == {'FINISHED'}
+ordinary("lid_L Right", 20, (0.2, 0.0))
+ordinary("lid_L Left", 20, (-0.2, 0.0))
+ops.armature.select_none()
+rig.select_bone("lid_L")
+assert side("RIGHT", "lid_L Right") == {'FINISHED'} and side("LEFT", "lid_L Left") == {'FINISHED'}
+lid_sides = dict(bone("lid_L")["controller_actions"])
+assert ops.armature.symmetrize() == {'FINISHED'}
+assert not any(bone("lid_R")["controller_actions"].values()), ("no lid_R actions yet", bone("lid_R")["controller_actions"])
+assert ops.ed.undo() == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
+assert bone("lid_L")["controller_actions"] == lid_sides, bone("lid_L")["controller_actions"]
+assert bone("lid_R")["controller_actions"]["RIGHT"] == "lid_R Right", bone("lid_R")["controller_actions"]
+assert bone("lid_R")["controller_actions"]["LEFT"] == "lid_R Left", bone("lid_R")["controller_actions"]
+doc.action = "lid_L Left"
+doc.frame_current = 20
+settle()
+assert close(where(), (-0.2, 0.0)), ("its own Left as it was", where())
+mainline()
+doc.frame_current = 0
+# Named without the bone, "Brow Left" flips to "Brow Right": the same bone's, so it is left alone.
+ops.armature.select_none()
+ops.armature.bone_add(name="brow_L", head_x="3.0", head_y="-4.0", tail_x="3.5", tail_y="-4.0", parent="")
+rig.select_bone("brow_L")
+assert ops.armature.bone_convert(type="CONTROLLER_2D") == {'FINISHED'}
+ordinary("Brow Right", 20, (0.3, 0.1))
+ordinary("Brow Left", 20, (-0.2, 0.0))
+ops.armature.select_none()
+rig.select_bone("brow_L")
+assert side("RIGHT", "Brow Right") == {'FINISHED'} and side("LEFT", "Brow Left") == {'FINISHED'}
+assert ops.armature.symmetrize(action_bone_actions="1") == {'FINISHED'}
+assert bone("brow_L")["controller_actions"]["LEFT"] == "Brow Left", bone("brow_L")["controller_actions"]
+assert not any(bone("brow_R")["controller_actions"].values()), ("not brow_L's", bone("brow_R")["controller_actions"])
+for name, moved in (("Brow Left", (-0.2, 0.0)), ("Brow Right", (0.3, 0.1))):
+    doc.action = name
+    doc.frame_current = 20
+    settle()
+    assert close(where(), moved), ("neither mirrored over the other", name, where())
+mainline()
+doc.frame_current = 0
+ops.armature.select_none()
 rig.select_bone("eye_L")
 assert ops.armature.duplicate_move() == {'FINISHED'}
 copy = next(b for b in rig.bones if b["name"].startswith("eye_L."))

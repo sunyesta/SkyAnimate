@@ -125,6 +125,17 @@ arm = sub(before, knob)
 assert close(bone("hand")["head"], (knob[0] - arm[1], knob[1] + arm[0])), ("the child turns about the knob", bone("hand"))
 assert close(bone("ride")["head"], (0, 1)), "the box doesn't turn"
 
+# The Transform Bones tool's move and its Distort cage take the knob as G does; the box stays.
+for move in (lambda: ops.armature.transform(move_x="0.05", move_y="0"),
+             lambda: ops.armature.cage_transform(lo_x="-3", lo_y="-3", hi_x="3", hi_y="3", cells="1",
+                                                 nodes="-2.95 -3 3.05 -3 -2.95 3 3.05 3")):
+    was = bone("stick")["knob_head"]
+    assert move() == {'FINISHED'}
+    assert close(bone("stick")["knob_head"], (was[0] + 0.05, was[1])), ("the knob moved", was, bone("stick")["knob_head"])
+    assert close(bone("stick")["head"], (0, 0)), "the box stays where it rests"
+    assert ops.ed.undo() == {'FINISHED'}
+    assert close(bone("stick")["knob_head"], was)
+
 # --- One motion path, at the knob -------------------------------------------------------------------------------------
 doc.motion_paths = True
 ops.armature.select_none()

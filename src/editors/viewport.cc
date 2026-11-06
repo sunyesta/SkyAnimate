@@ -10832,8 +10832,9 @@ static std::string bone_modal_update(Context &C, const ViewMapping &view)
   }
   /* Each update starts the bones again from how they were, which undoes what action bone actions did to
    * the bones they drive: play them again from the bones as they are now, so an action bone being
-   * turned moves its bones (and their points) as it turns. */
-  animation_refresh_action_bones(*C.document);
+   * turned moves its bones (and their points) as it turns. And what is worked out from the pose (a Look At's eye shape,
+   * turned with the head) from it now, so this update draws with it. */
+  animation_drag_refresh(*C.document);
   if (!g_bone_modal.counter.layers.empty()) {
     bone_counter_apply(*C.document, g_bone_modal.counter);
   }

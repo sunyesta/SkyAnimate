@@ -253,6 +253,10 @@ void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
  * added) is neither recorded nor evaluated again: on a rig with many views, most of the document. */
 void animation_sync_playing(Document &doc, uint64_t edits);
 void animation_refresh_action_bones(Document &doc);
+/* A bone drag's update, once the bones are where it has them: action bone actions played again from them, then what
+ * is worked out from the pose (outer parents' frames, Follow Point's, Limit to Shape's and a Look At's eye shape), so
+ * what the update draws holds to the picture as it is now, not as it was an update before. */
+void animation_drag_refresh(Document &doc);
 /* A bone drag on `doc` begins: until it ends, the layers action bone actions play into are the ones found now (it
  * changes no layers, only bones), and the drag works action bone actions out again itself every update, so
  * animation_sync leaves them. End it before the document is put back or replaced. */

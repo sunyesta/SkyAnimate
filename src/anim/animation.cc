@@ -3090,6 +3090,14 @@ void animation_refresh_action_bones(Document &doc)
   g_action_bone_layers = nullptr;
 }
 
+void animation_drag_refresh(Document &doc)
+{
+  animation_refresh_action_bones(doc);
+  bone_outer_parents_update(doc);
+  follow_points_update(doc);
+  shape_limits_update(doc);
+}
+
 void animation_action_bone_drag_begin(Document &doc)
 {
   g_drag_layers.clear();

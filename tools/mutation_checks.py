@@ -569,6 +569,12 @@ PENDING = [
     ('src/anim/motion_path.cc', '  if (k && split && key_curve_split(pos->keys, ki, old_points)) {', '  if (false) {', 'a key added splits the curve where the dot is', 'tests/test_motion_path_pupil.py'),
     ('src/anim/motion_path.cc', '        u2[size_t(j)] = u > 1.0f ? 1.0f + (u - 1.0f) * beyond2 : (u - at) / (1.0f - at);', '        u2[size_t(j)] = (u - at) / (1.0f - at);', 'a key added keeps an overshoot past the key', 'tests/test_motion_path_pupil.py'),
     ('src/anim/channel.cc', '  if (line.size() >= 2 && u > 1.0f) {\n    return beyond(', '  if (false) {\n    return beyond(', 'an overshoot through control points goes past the key', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/animation.cc', '  animation_refresh_action_bones(doc);\n  bone_outer_parents_update(doc);\n  follow_points_update(doc);\n  shape_limits_update(doc);\n}', '  animation_refresh_action_bones(doc);\n}', 'a drag update works out the eye shape from the pose now', 'tests/test_bone_drag_followers.py'),
+    ('src/ops/rig_ops.cc', '                       copy.position_keys.actions.erase(action);', '                       (void)action;', 'a duplicated controller leaves the timing keys behind', 'tests/test_controller_side_timing.py'),
+    ('src/data/bones.cc', '  const size_t at = other != bone && !bone.empty() ? action.find(bone) : std::string::npos;', '  const size_t at = std::string::npos;', 'a side action named after its bone mirrors to the other bone', 'tests/test_controller.py'),
+    ('src/ops/rig_ops.cc', 'copy.controller_actions[side] = name != from && there && !own ? name : "";', 'copy.controller_actions[side] = name != from && there ? name : "";', 'Symmetrize never gives a controller side its own action', 'tests/test_controller.py'),
+    ('src/ops/rig_ops.cc', '    else if (action_bone_of(owner, other) == bone) {', '    else if (false) {', 'Mirror Action Bone Actions never writes over the same bone', 'tests/test_controller.py'),
+    ('src/data/bones.cc', '      controller_knob_move(b, poses[i], map(at) - at);', '      (void)at;', 'the Transform Bones tool moves a knob', 'tests/test_controller_knob.py'),
 ]
 
 

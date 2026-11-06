@@ -103,6 +103,19 @@ for out, frame in ((5, 10), (10, 20), (16, 24), (25, 30), (30, 40), (50, 40)):
     go(7)
     assert close(playing("eye_r"), frame), ("%s out plays frame %s" % (out, frame), playing("eye_r"))
 
+# --- A copy isn't the action's controller: the timing keys stay behind -------------------------------------------------
+go(0)
+ops.armature.select_none()
+rig.select_bone("eye")
+assert ops.armature.duplicate_move() == {'FINISHED'}
+copy = next(b["name"] for b in rig.bones if b["name"].startswith("eye."))
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+frames = lambda name: [k["frame"] for k in rig.keyframes('bones["%s"].position' % name) if k["frame"]]
+assert frames(copy) == [], ("they'd play as moves", frames(copy))
+assert frames("eye") == [20, 30, 35], ("the original keeps them", frames("eye"))
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(7)
+
 # --- Deleting the keys: even timing again ------------------------------------------------------------------------------
 assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
 for frame in (20, 30, 35):

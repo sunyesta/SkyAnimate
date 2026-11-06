@@ -178,6 +178,9 @@ void armature_set_joints(Layer &armature, const std::map<uint64_t, std::pair<flo
 /* Blender's symmetry names: "arm_L" <-> "arm_R", "arm.L" <-> "arm.R", "Left arm" <-> "Right arm".
  * Names without a side come back unchanged. */
 std::string bone_mirror_name(const std::string &name);
+/* The other side's name for `action`, an action of bone `bone`: where it has the bone's name, that flips with a Left or
+ * Right in the rest ("Pupil_L Left" -> "Pupil_R Right"); otherwise as bone_mirror_name. */
+std::string action_mirror_name(const std::string &action, const std::string &bone);
 /* The id of the bone on the other side (by name), or `id` itself when there is none. */
 uint64_t bone_mirror_id(const Layer &armature, uint64_t id);
 

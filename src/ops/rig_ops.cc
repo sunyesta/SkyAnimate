@@ -95,9 +95,14 @@ static void mirror_action_bone_actions(Context &C, uint64_t owner_id, const std:
     if (!action_bone_of(owner, name) || fix_action_find(owner, name)) {
       continue;
     }
-    const std::string other = bone_mirror_name(name);
+    const Bone *bone = action_bone_of(owner, name);
+    const std::string other = action_mirror_name(name, bone->name);
     if (other == name) {
       centred.push_back(name);
+    }
+    else if (action_bone_of(owner, other) == bone) {
+      /* Its own bone's other action (a controller's Left for its Right): never mirrored over. */
+      continue;
     }
     else if (picks(name) && !(has(other) && picks(other) && (name < other) != left_to_right)) {
       jobs.push_back({name, other});
@@ -2434,7 +2439,13 @@ void rig_operators_register()
                    Bone copy = armature.bones[i];
                    copy.id = copies[copy.id];
                    copy.name = armature_unique_bone_name(armature, copy.name);
-                   /* An action has one controller. */
+                   /* An action has one controller. Its keys in the sides' actions were their timing: the copy
+                    * isn't their controller, so in them they'd play as moves. */
+                   for (const std::string &action : copy.controller_actions) {
+                     if (!action.empty()) {
+                       copy.position_keys.actions.erase(action);
+                     }
+                   }
                    copy.controller_actions = {};
                    copy.controller_keys = {};
                    /* A copied child hangs from its parent's copy, as in Blender. */
@@ -3686,9 +3697,12 @@ void rig_operators_register()
                      /* Left and Right swap, reading the other side's actions where they're there. */
                      for (int side = 0; side < CONTROLLER_SIDES; side++) {
                        const std::string from = src->controller_actions[side < 2 ? side ^ 1 : side];
-                       const std::string name = from.empty() ? from : bone_mirror_name(from);
+                       const std::string name = from.empty() ? from : action_mirror_name(from, src->name);
                        const bool there = std::find(armature.actions.begin(), armature.actions.end(), name) != armature.actions.end();
-                       copy.controller_actions[side] = name != from && there ? name : "";
+                       /* Never one of its own sides: an action has one controller. */
+                       const bool own = std::find(src->controller_actions.begin(), src->controller_actions.end(), name) !=
+                                        src->controller_actions.end();
+                       copy.controller_actions[side] = name != from && there && !own ? name : "";
                        if (name != from && !there) {
                          sides_later.emplace_back(other, side, name);
                        }

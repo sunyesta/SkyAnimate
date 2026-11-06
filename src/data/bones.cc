@@ -1546,7 +1546,12 @@ static void armature_map_selected_by(Layer &armature, const std::vector<Bone> &o
     rest[i] = parent_rest * bone_local(b.setup_position, b.setup_angle, setup_value(b.scale_keys, b.scale, false));
     const bool picked = bone_moves(original[i]);
     const bool child_of_picked = has_parent && bone_moves(original[parent->second]);
-    /* A controller's position holds its knob while posing, and the box rides on its parent. */
+    /* A controller's position holds its knob while posing, and the box rides on its parent: a picked knob goes
+     * where the map takes it, as G moves it. */
+    if (picked && !setup_frame && bone_is_controller(b)) {
+      const float2 at = poses[i].knob.apply({0, 0});
+      controller_knob_move(b, poses[i], map(at) - at);
+    }
     if ((picked || child_of_picked) && (setup_frame || !bone_is_controller(b))) {
       /* Where the base and a point along the bone go: through the map when picked; an unpicked
        * child of a picked bone stays where it was. */
@@ -1794,6 +1799,20 @@ void armature_mirror_edits(Layer &armature, const std::vector<Bone> &original, b
   }
 }
 
+/* Left and Right anywhere in `name`, the first found swapped. */
+static std::string side_words_flipped(const std::string &name)
+{
+  static const std::pair<const char *, const char *> words[] = {{"Left", "Right"}, {"left", "right"}, {"LEFT", "RIGHT"}};
+  for (const auto &[l, r] : words) {
+    for (const auto &[from, to] : {std::pair{l, r}, std::pair{r, l}}) {
+      if (const size_t at = name.find(from); at != std::string::npos) {
+        return name.substr(0, at) + to + name.substr(at + std::string(from).size());
+      }
+    }
+  }
+  return name;
+}
+
 std::string bone_mirror_name(const std::string &name)
 {
   /* A number at the end stays there, after a dot (Blender's unique names), a space (Moho's copies) or
@@ -1829,15 +1848,19 @@ std::string bone_mirror_name(const std::string &name)
       }
     }
   }
-  static const std::pair<const char *, const char *> words[] = {{"Left", "Right"}, {"left", "right"}, {"LEFT", "RIGHT"}};
-  for (const auto &[l, r] : words) {
-    for (const auto &[from, to] : {std::pair{l, r}, std::pair{r, l}}) {
-      if (const size_t at = name.find(from); at != std::string::npos) {
-        return name.substr(0, at) + to + name.substr(at + std::string(from).size());
-      }
-    }
+  return side_words_flipped(name);
+}
+
+std::string action_mirror_name(const std::string &action, const std::string &bone)
+{
+  /* "Pupil_L Left" of bone Pupil_L: the bone's side and the way it goes both flip, "Pupil_R Right". Flipping only the
+   * first side found would give "Pupil_L Right", the same bone's other action. */
+  const std::string other = bone_mirror_name(bone);
+  const size_t at = other != bone && !bone.empty() ? action.find(bone) : std::string::npos;
+  if (at == std::string::npos) {
+    return bone_mirror_name(action);
   }
-  return name;
+  return side_words_flipped(action.substr(0, at)) + other + side_words_flipped(action.substr(at + bone.size()));
 }
 
 uint64_t bone_mirror_id(const Layer &armature, uint64_t id)
