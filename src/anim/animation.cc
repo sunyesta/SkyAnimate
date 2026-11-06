@@ -1948,7 +1948,45 @@ static bool action_bone_action_turns(const Layer &owner, const std::string &by, 
            });
   };
   if (bone_is_controller(*bone)) {
-    return moves_knob(*bone);
+    if (moves_knob(*bone)) {
+      return true;
+    }
+    /* An independent knob plays where it sits in its box: an action moving the box or its Knob Parent (or what either
+     * hangs from) moves it there, so it plays first (a head turn before the eyes riding it). */
+    /* `by` itself, or a fix it drives (played as soon as its drivers have). */
+    std::vector<const std::string *> movers = {&by};
+    for (const FixAction &fix : owner.fix_actions) {
+      if (std::find(fix.drivers.begin(), fix.drivers.end(), by) != fix.drivers.end()) {
+        movers.push_back(&fix.name);
+      }
+    }
+    const auto moves = [&](const Bone &b) {
+      return std::any_of(movers.begin(), movers.end(), [&](const std::string *action) {
+        const auto pos = b.position_keys.actions.find(*action);
+        const auto ang = b.angle_keys.actions.find(*action);
+        return (pos != b.position_keys.actions.end() &&
+                std::any_of(pos->second.begin(), pos->second.end(), [](const Key<float2> &k) {
+                  return std::abs(k.value.x) > 1e-6f || std::abs(k.value.y) > 1e-6f;
+                })) ||
+               (ang != b.angle_keys.actions.end() && std::any_of(ang->second.begin(), ang->second.end(), [](const Key<float> &k) {
+                  return std::abs(k.value) > 1e-6f;
+                }));
+      });
+    };
+    const auto moves_from = [&](uint64_t id) {
+      for (int depth = 0; id != 0 && depth < 256; depth++) {
+        const Bone *up = bone_find(owner, id);
+        if (!up) {
+          return false;
+        }
+        if (moves(*up)) {
+          return true;
+        }
+        id = up->parent;
+      }
+      return false;
+    };
+    return bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent));
   }
   /* A linked bone turns as its knob moves: an action moving the knob turns it. */
   int side = 0;
@@ -3214,44 +3252,6 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
         doc.action_bones_applied = true;
       });
     };
-    if (fixing) {
-      for (const auto &[name, t] : frames) {
-        play(name, t, nullptr, false);
-      }
-    }
-    else {
-      /* What each linked bone's knob gave it as linked: an action that moves a knob (one a master controller plays)
-       * turns its bones on from there, before they pick their frames. */
-      std::vector<std::tuple<Bone *, Bone *, float>> given;
-      if (!controller_in_action(doc, owner)) {
-        for (Bone &knob : owner.bones) {
-          for (int side = 0; side < CONTROLLER_SIDES && bone_is_controller(knob); side++) {
-            Bone *dial = controller_side_dial(owner, knob, side);
-            if (dial && std::none_of(given.begin(), given.end(), [&](const auto &g) { return std::get<1>(g) == dial; })) {
-              given.emplace_back(&knob, dial, controller_dial_turn(owner, knob, *dial, controller_knob_played(owner, knob)));
-            }
-          }
-        }
-      }
-      /* An action bone action never moves its own bone (the bone picks its frame), unless held for a fix. */
-      frames = action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
-        const Bone *by = action_bone_of(owner, name);
-        play(name, t, by ? static_cast<const void *>(&by->angle_keys) : nullptr, false);
-        for (auto &[knob, dial, was] : given) {
-          const float now = controller_dial_turn(owner, *knob, *dial, controller_knob_played(owner, *knob));
-          if (now != was) {
-            Channel<float> &ch = dial->angle_keys;
-            ch.last += now - was;
-            ch.from_action_bones += now - was;
-            ch.has_last = true;
-            dial->turn += now - was;
-            dial->angle += now - was;
-            was = now;
-            doc.action_bones_applied = true;
-          }
-        }
-      });
-    }
     /* Then the fixes, after every action bone action, as their drivers play together. While one is edited, the
      * fixes for some of its drivers only (a pair inside a three) play under it: it is keyed on top of them. */
     const auto inside_edited = [&](const FixAction &fix) {
@@ -3262,15 +3262,17 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
         return std::find(edited_fix->drivers.begin(), edited_fix->drivers.end(), d) != edited_fix->drivers.end();
       });
     };
-    for (const FixAction &fix : owner.fix_actions) {
+    std::set<std::string> fixes_played;
+    const auto play_fix = [&](const FixAction &fix, const std::vector<std::pair<std::string, float>> &with) {
+      fixes_played.insert(fix.name);
       if ((fix.name == doc.action && owner.id == doc.action_layer) || !fix_action_broken(owner, fix).empty() ||
           action_muted(owner, fix.name) || (fixing && !inside_edited(fix)))
       {
-        continue;
+        return;
       }
-      const FixMix mix = fix_action_mix(owner, fix, frames);
+      const FixMix mix = fix_action_mix(owner, fix, with);
       if (mix.strength <= 0.0f) {
-        continue;
+        return;
       }
       owner_for_each_channel_with(owner, fix.name, [&](auto &ch, auto &value) {
         if (driving.count(static_cast<const void *>(&ch)) || switches.count(static_cast<const void *>(&ch))) {
@@ -3291,6 +3293,62 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
         ch.action_bone_live = ch.action_bone_live || !(delta == setup - setup);
         doc.action_bones_applied = true;
       });
+    };
+    if (fixing) {
+      for (const auto &[name, t] : frames) {
+        play(name, t, nullptr, false);
+      }
+    }
+    else {
+      /* What each linked bone's knob gave it as linked: an action that moves a knob (one a master controller plays)
+       * turns its bones on from there, before they pick their frames. */
+      std::vector<std::tuple<Bone *, Bone *, float>> given;
+      if (!controller_in_action(doc, owner)) {
+        for (Bone &knob : owner.bones) {
+          for (int side = 0; side < CONTROLLER_SIDES && bone_is_controller(knob); side++) {
+            Bone *dial = controller_side_dial(owner, knob, side);
+            if (dial && std::none_of(given.begin(), given.end(), [&](const auto &g) { return std::get<1>(g) == dial; })) {
+              given.emplace_back(&knob, dial, controller_dial_turn(owner, knob, *dial, controller_knob_played(owner, knob)));
+            }
+          }
+        }
+      }
+      /* An action bone action never moves its own bone (the bone picks its frame), unless held for a fix. */
+      std::vector<std::pair<std::string, float>> so_far;
+      frames = action_bone_actions_in_order(owner, playing_now, [&](const std::string &name, float t) {
+        const Bone *by = action_bone_of(owner, name);
+        play(name, t, by ? static_cast<const void *>(&by->angle_keys) : nullptr, false);
+        so_far.push_back({name, t});
+        /* A fix as soon as all its drivers have played (it plays only while they all do): an independent knob riding
+         * what it moves (a head turn's fix) picks its frames after it. */
+        for (const FixAction &fix : owner.fix_actions) {
+          if (!fixes_played.count(fix.name) &&
+              std::all_of(fix.drivers.begin(), fix.drivers.end(), [&](const std::string &d) {
+                return std::any_of(so_far.begin(), so_far.end(), [&](const auto &p) { return p.first == d; });
+              }))
+          {
+            play_fix(fix, so_far);
+          }
+        }
+        for (auto &[knob, dial, was] : given) {
+          const float now = controller_dial_turn(owner, *knob, *dial, controller_knob_played(owner, *knob));
+          if (now != was) {
+            Channel<float> &ch = dial->angle_keys;
+            ch.last += now - was;
+            ch.from_action_bones += now - was;
+            ch.has_last = true;
+            dial->turn += now - was;
+            dial->angle += now - was;
+            was = now;
+            doc.action_bones_applied = true;
+          }
+        }
+      });
+    }
+    for (const FixAction &fix : owner.fix_actions) {
+      if (!fixes_played.count(fix.name)) {
+        play_fix(fix, frames);
+      }
     }
   }
 }

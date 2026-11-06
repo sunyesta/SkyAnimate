@@ -492,6 +492,9 @@ PENDING = [
     ('src/data/bones.cc', 'bone.controller_knob_editing ? bone.controller_knob_edit_at :', 'false ? bone.controller_knob_edit_at :', 'inside its action the knob sits at its frame', 'tests/test_controller_knob_in_action.py'),
     ('src/anim/animation.cc', '      knob.controller_knob_editing = editing;\n', '      knob.controller_knob_editing = false;\n', 'editing an action places its knob', 'tests/test_controller_knob_in_action.py'),
     ('src/anim/animation.cc', '      const bool editing = doc.action_layer == owner.id && bone_held_by_fix(doc, owner, knob);', '      const bool editing = !doc.action.empty() && doc.action_layer == owner.id;', 'only its own actions place the knob', 'tests/test_controller_knob_in_action.py'),
+    ('src/anim/animation.cc', '    return bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent));', '    return false;', 'an independent knob waits for what moves its parents', 'tests/test_controller_knob_order.py'),
+    ('src/anim/animation.cc', '            play_fix(fix, so_far);\n', '', 'a fix plays as soon as its drivers have', 'tests/test_controller_knob_order.py'),
+    ('src/anim/animation.cc', '        movers.push_back(&fix.name);\n', '', 'a fix its action drives moves the parents too', 'tests/test_controller_knob_order.py'),
 ]
 
 
