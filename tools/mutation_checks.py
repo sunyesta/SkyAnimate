@@ -517,6 +517,7 @@ PENDING = [
     ('src/anim/controller.cc', '    return controller_knob(knob) + pose.knob_pull;', '    return controller_knob(knob);', "the knob is placed with its constraints' pull", 'tests/test_controller_constraints.py'),
     ('src/ops/rig_ops.cc', '                 if (bone_is_controller(*bone) && !controller_constraint_works(type)) {', '                 if (false) {', 'a controller takes only the constraints that work on it', 'tests/test_controller_constraints.py'),
     ('src/editors/properties.cc', '      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});', '      if (const Bone *b = bone_find(*active_layer, active_layer->active_bone); !b || !bone_is_controller(*b)) {\n        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});\n      }', 'the Bone Constraints tab shows for a controller', 'tests/test_controller_constraints.py'),
+    ('src/data/bones.cc', '            if (rests && (c.look_reach.x <= 0.0f || c.shape_region.size() < 3)) {', '            if (rests) {', "a controller's Look At with an Eye Shape looks as a pupil does", 'tests/test_controller_constraints.py'),
 ]
 
 

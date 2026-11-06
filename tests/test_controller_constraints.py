@@ -101,6 +101,27 @@ assert close(shown(), (-k[0] / 2, 0)), ("half the influence, half the way", show
 rig.bone_constraint_set("eye", 0, influence=1.0)
 rig.bone_set("look", position=(0.0, 0.0))
 
+# With an Eye Shape, the knob looks as any pupil does: the shape says how big the eye is, and it stays inside.
+doc.frame_current = 0
+ops.layer.new()
+white = layers.active
+ops.layer.move_to_group(group=str(rig.id))
+white = next(x for x in layers.all() if x.id == white.id)
+white.add_curve([(0.2 * math.cos(2 * math.pi * i / 32), 0.2 * math.sin(2 * math.pi * i / 32)) for i in range(32)],
+                closed=True, fill=True)
+layers.active = rig
+rig.bone_constraint_set("eye", 0, shape_layer=white.name, fit="CENTER")
+doc.frame_current = 10
+rig.bone_set("look", position=(0.5, 0.0))
+go(10)
+want = 0.2 * math.sin(math.atan(0.5)) / size
+assert close(shown(), (want, 0), 0.05) and close(playing("eye_r"), want, 0.05), ("the eye as big as its shape", shown(), want)
+rig.bone_set("look", position=(1000.0, 0.0))
+go(10)
+assert close(shown(), (0.2 / size, 0), 0.1), ("held inside its shape", shown())
+rig.bone_constraint_set("eye", 0, shape_layer="")
+rig.bone_set("look", position=(0.0, 0.0))
+
 # Its keys go on top.
 rig.bone_set("eye", knob=(5.0, 0.0))
 go(10)

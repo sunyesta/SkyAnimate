@@ -6583,16 +6583,15 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
           }
           /* The eye: the shape the pupil stays inside, which also says how big the eye is. */
-          if (bone_is_controller(*bone)) {
-            modifier_row_label("", column);
-            ImGui::TextDisabled("The box is the eye: looking all the way to a side takes the knob to its edge");
-            break;
-          }
           ImGui::Spacing();
           modifier_row_label("", column);
           ImGui::TextDisabled("Eye Shape");
           shape_rows();
-          if (c.enabled && c.shape_layer == 0) {
+          if (bone_is_controller(*bone) && c.shape_layer == 0) {
+            modifier_row_label("", column);
+            ImGui::TextDisabled("No Eye Shape: the box is the eye, looking all the way to a side takes the knob to its edge");
+          }
+          else if (c.enabled && c.shape_layer == 0) {
             modifier_row_label("", column);
             ImGui::TextDisabled("Pick the eye's shape: Look At needs it");
           }

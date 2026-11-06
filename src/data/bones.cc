@@ -551,8 +551,9 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
             }
             break;
           case BoneConstraintType::LookAt:
-            if (rests) {
-              /* A controller's box is the eye: looking all the way to a side takes the knob to that side's edge. */
+            if (rests && (c.look_reach.x <= 0.0f || c.shape_region.size() < 3)) {
+              /* A controller with no Eye Shape: its box is the eye, looking all the way to a side takes the knob to
+               * that side's edge. With one, the knob looks as any pupil does (below). */
               if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
                 self(self, ti, depth + 1);
                 if (state[ti] == 2) {
