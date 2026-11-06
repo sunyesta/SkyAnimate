@@ -596,7 +596,8 @@ static void bone_relations_panel(Context &C, Layer &armature)
   const std::string parent_shown = outer_parent ? outer->name + ": " + outer_parent->name
                                    : parent     ? parent->name
                                                 : std::string("None");
-  label("Parent");
+  /* A controller's parent carries its box. */
+  label(bone_is_controller(*active) ? "Box Parent" : "Parent");
   ImGui::BeginDisabled(!setup);
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 2.0f);
   if (ImGui::BeginCombo("##bone_parent", parent_shown.c_str(), ImGuiComboFlags_HeightLarge)) {
@@ -1971,6 +1972,17 @@ static void bone_panel(Context &C, Layer &armature)
       for (int side = 0; side < CONTROLLER_SIDES; side++) {
         label(controller_side_name(side));
         controller_side_row(C, armature, *active, side);
+      }
+      label("");
+      if (ImGui::Checkbox("Knob Stays in Place", &active->controller_knob_stays)) {
+        /* What it plays changes at once. */
+        animation_evaluate(doc, doc.frame_current);
+        C.undo->push("Knob Stays in Place", doc);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("The box moves with its Box Parent while the knob keeps its place in the picture, so what it "
+                          "plays changes (eyes keep looking at one spot as the head moves). Its keys place it as it "
+                          "would sit in the box at rest");
       }
       label("Frame Size");
       if (ui_drag_float("##controller_frame_size", &active->controller_frame_size, 0.0001f, 0.00001f, 10.0f, "%.4f")) {

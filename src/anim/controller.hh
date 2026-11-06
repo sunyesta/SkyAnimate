@@ -81,6 +81,11 @@ void controller_box(const Bone &knob, float2 &lo, float2 &hi);
 float2 controller_knob(const Bone &knob);
 /* The same, kept in the box. */
 float2 controller_knob_clamped(const Bone &knob);
+/* Where the knob sits in the box as posed (`pose` the controller's), kept in it: with Knob Stays in Place, where its
+ * place in the picture falls in the box as it has moved; else its keys' frames. */
+float2 controller_knob_held(const Bone &knob, const BonePose &pose);
+/* The frames it plays now: controller_knob, or with Knob Stays in Place where it sits in the box as posed. */
+float2 controller_knob_played(const Layer &owner, const Bone &knob);
 /* Puts the knob there, in the box. */
 void controller_knob_set(Bone &knob, float2 frames);
 /* Frames from the rest point to the bone layer's space, the box riding on the bone's parent, lying at its angle. */

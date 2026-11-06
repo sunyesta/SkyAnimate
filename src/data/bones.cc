@@ -429,8 +429,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float sx = 1.0f, sy = 1.0f;
     /* A controller stays where it rests, on its parent: only its knob moves (its position keys hold frames). */
     const bool rests = !setup_frame && bone_is_controller(bone);
-    /* Its knob: where its position keys put it in the box (frames), and its own turn, as a pin's. */
-    const float2 knob_frames = rests ? controller_knob_clamped(bone) : float2();
+    /* Its knob's own turn, as a pin's. */
     const float knob_turn = rests ? bone.angle - setup_angle : 0.0f;
     if (rests) {
       position = setup_position;
@@ -668,8 +667,11 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.tail = p.pose.apply({bone.length, 0});
     if (rests) {
       /* The knob moves and turns what hangs from it, as a pin would: the box stays. */
-      const float2 at = controller_box_point(bone, p, knob_frames);
-      p.knob = Transform2D::translate(at - p.head) * p.pose * Transform2D::rotate(knob_turn);
+      const float2 at = controller_box_point(bone, p, controller_knob_held(bone, p));
+      /* Staying in place, it doesn't turn with the box either. */
+      p.knob = bone.controller_knob_stays ?
+                   Transform2D::translate(at - p.setup_head) * p.setup * Transform2D::rotate(knob_turn) :
+                   Transform2D::translate(at - p.head) * p.pose * Transform2D::rotate(knob_turn);
       p.skin = p.knob * p.setup.inverted();
     }
     state[i] = 2;

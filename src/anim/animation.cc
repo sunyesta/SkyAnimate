@@ -1917,7 +1917,7 @@ std::vector<std::pair<std::string, float>> action_bone_actions_playing(const Lay
   std::vector<float2> knobs;
   for (const Bone &b : owner.bones) {
     turns.push_back(b.angle - b.setup_angle);
-    knobs.push_back(controller_knob(b));
+    knobs.push_back(controller_knob_played(owner, b));
   }
   return action_bone_frames_for(owner, turns, knobs);
 }
@@ -2169,7 +2169,7 @@ float action_frame_shown(const Layer &owner, const std::string &name)
       std::vector<float2> knobs;
       for (const Bone &b : owner.bones) {
         turns.push_back(b.angle - b.setup_angle);
-        knobs.push_back(controller_knob(b));
+        knobs.push_back(controller_knob_played(owner, b));
       }
       for (const auto &[n, t] : action_bone_frames_for(owner, turns, knobs, true)) {
         if (n == name) {
@@ -3228,7 +3228,7 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
           for (int side = 0; side < CONTROLLER_SIDES && bone_is_controller(knob); side++) {
             Bone *dial = controller_side_dial(owner, knob, side);
             if (dial && std::none_of(given.begin(), given.end(), [&](const auto &g) { return std::get<1>(g) == dial; })) {
-              given.emplace_back(&knob, dial, controller_dial_turn(owner, knob, *dial, controller_knob(knob)));
+              given.emplace_back(&knob, dial, controller_dial_turn(owner, knob, *dial, controller_knob_played(owner, knob)));
             }
           }
         }
@@ -3238,7 +3238,7 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
         const Bone *by = action_bone_of(owner, name);
         play(name, t, by ? static_cast<const void *>(&by->angle_keys) : nullptr, false);
         for (auto &[knob, dial, was] : given) {
-          const float now = controller_dial_turn(owner, *knob, *dial, controller_knob(*knob));
+          const float now = controller_dial_turn(owner, *knob, *dial, controller_knob_played(owner, *knob));
           if (now != was) {
             Channel<float> &ch = dial->angle_keys;
             ch.last += now - was;
@@ -3604,7 +3604,8 @@ static void controllers_rest(Document &doc)
 float2 controller_knob_shown(const Document &doc, const Layer &owner, const Bone &knob)
 {
   if (doc.action.empty() || doc.action_layer != owner.id) {
-    return controller_knob(knob);
+    /* Staying in place, where it sits in the box as that has moved. */
+    return doc.frame_current != 0 ? controller_knob_played(owner, knob) : controller_knob(knob);
   }
   float2 at;
   const auto put = [&](int side, float frames) {
@@ -3631,7 +3632,7 @@ float2 controller_knob_shown(const Document &doc, const Layer &owner, const Bone
 
 float2 controller_knob_playing(const Layer &owner, const Bone &knob)
 {
-  float2 at = controller_knob(knob);
+  float2 at = controller_knob_played(owner, knob);
   /* Only dials can differ: what the controller plays itself goes by the knob. */
   const std::vector<std::pair<std::string, float>> playing = action_bone_actions_playing(owner);
   for (int axis = 0; axis < 2; axis++) {
