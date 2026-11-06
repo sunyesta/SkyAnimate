@@ -454,6 +454,8 @@ add_test(NAME controller_knob
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_knob.py)
 add_test(NAME controller_knob_stays
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_knob_stays.py)
+add_test(NAME controller_knob_in_action
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_knob_in_action.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

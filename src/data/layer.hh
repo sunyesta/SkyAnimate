@@ -741,6 +741,11 @@ struct Bone {
   std::vector<ControllerSpot> controller_spots;
   /* The frames each side's action has keys on, sorted, its last one its length (worked out, never saved). */
   std::array<std::vector<int>, CONTROLLER_SIDES> controller_keys;
+  /* While one of its actions (a side's, or a fix it drives) is edited, the knob sits at that action's frame, as Moho
+   * poses a smart bone in its action, so what hangs from it moves there as it will on the mainline: where, in frames
+   * (worked out, never saved). */
+  bool controller_knob_editing = false;
+  float2 controller_knob_edit_at;
   bool operator==(const Bone &) const = default;
 };
 

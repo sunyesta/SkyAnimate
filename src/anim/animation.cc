@@ -3576,6 +3576,10 @@ void controllers_update(Document &doc)
       if (knob.controller_size_auto) {
         controller_fit_size(knob);
       }
+      /* Editing one of its actions, the knob sits at its frame (what hangs from it with it). */
+      const bool editing = doc.action_layer == owner.id && bone_held_by_fix(doc, owner, knob);
+      knob.controller_knob_editing = editing;
+      knob.controller_knob_edit_at = editing ? controller_knob_shown(doc, owner, knob) : float2();
     }
   }
 }

@@ -489,6 +489,9 @@ PENDING = [
     ('src/io/oanim_file.cc', '          bj["controller_knob_parent"] = b.controller_knob_parent;\n', '', 'the Knob Parent is saved', 'tests/test_controller_knob_stays.py'),
     ('src/ops/rig_ops.cc', '                     if (up && (up->id == bone->id || bone_is_descendant(rig, up->id, bone->id))) {', '                     if (false) {', "the knob can't ride what hangs from it", 'tests/test_controller_knob_stays.py'),
     ('src/ops/rig_ops.cc', '                   if (!on_setup_frame(C)) {\n                     return OpStatus::Cancelled;\n                   }\n                   bool independent', '                   bool independent', 'Knob Is Independent changes on the setup frame', 'tests/test_controller_knob_stays.py'),
+    ('src/data/bones.cc', 'bone.controller_knob_editing ? bone.controller_knob_edit_at :', 'false ? bone.controller_knob_edit_at :', 'inside its action the knob sits at its frame', 'tests/test_controller_knob_in_action.py'),
+    ('src/anim/animation.cc', '      knob.controller_knob_editing = editing;\n', '      knob.controller_knob_editing = false;\n', 'editing an action places its knob', 'tests/test_controller_knob_in_action.py'),
+    ('src/anim/animation.cc', '      const bool editing = doc.action_layer == owner.id && bone_held_by_fix(doc, owner, knob);', '      const bool editing = !doc.action.empty() && doc.action_layer == owner.id;', 'only its own actions place the knob', 'tests/test_controller_knob_in_action.py'),
 ]
 
 
