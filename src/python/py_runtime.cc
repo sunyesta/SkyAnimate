@@ -1610,6 +1610,20 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return d;
   });
   /* The Motion Path tool's Edit: the dots selected between keys. */
+  m.def("motion_path_handle_picks", []() {
+    py::list out;
+    for (const MotionPathHandlePick &p : current_context().wm->path_handle_picks) {
+      py::dict d;
+      d["layer"] = p.target.layer;
+      d["bone"] = p.target.bone;
+      d["point"] = p.target.point;
+      d["head"] = p.target.head;
+      d["frame"] = p.frame;
+      d["out"] = p.out;
+      out.append(d);
+    }
+    return out;
+  });
   m.def("motion_path_dots", []() {
     py::list out;
     for (const auto &[t, frame] : current_context().wm->path_dots) {

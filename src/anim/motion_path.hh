@@ -266,6 +266,13 @@ bool motion_path_handle_stub(const MotionPath &p, int frame, bool out, float2 &r
  * frame); `broken` (Alt) moves it alone and breaks the pair. Only the keys change: call animation_evaluate after. */
 bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int frame, bool out, float2 at,
                             bool broken);
+/* G R S on picked handles: 'G' moves each tip by `offset` (document space), 'R' turns it by `angle` and 'S' scales it
+ * by `factor` about its own key; its partner follows as the handle type says (Auto becomes Aligned). Returns how many
+ * changed. */
+int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHandlePick> &picks, char kind,
+                                  float2 offset, float angle, float factor);
+/* The keys of `picks` made `mode` (as motion_path_handles_type). Returns how many keys changed. */
+int motion_path_handles_type_at(Document &doc, const std::vector<MotionPathHandlePick> &picks, PathHandles mode);
 /* Puts `target`'s selected position keys back to Auto handles. Returns how many changed. */
 int motion_path_handles_auto(Document &doc, const MotionPathTarget &target);
 

@@ -2714,6 +2714,66 @@ bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int f
   return true;
 }
 
+int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHandlePick> &picks, char kind,
+                                  float2 offset, float angle, float factor)
+{
+  /* Where every tip goes, from where they all are before any moves (a key's two handles picked turn together). */
+  std::vector<float2> to(picks.size());
+  std::vector<bool> ok(picks.size(), false);
+  const float c = std::cos(angle), s = std::sin(angle);
+  for (size_t i = 0; i < picks.size(); i++) {
+    float2 key, in, out;
+    if (!motion_path_handles(doc, picks[i].target, picks[i].frame, key, in, out)) {
+      continue;
+    }
+    const float2 tip = picks[i].out ? out : in, d = tip - key;
+    to[i] = kind == 'G' ? tip + offset
+            : kind == 'R' ? key + float2{d.x * c - d.y * s, d.x * s + d.y * c}
+                          : key + d * factor;
+    ok[i] = true;
+  }
+  int changed = 0;
+  for (size_t i = 0; i < picks.size(); i++) {
+    if (ok[i] && motion_path_handle_set(doc, picks[i].target, picks[i].frame, picks[i].out, to[i], false)) {
+      changed++;
+    }
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return changed;
+}
+
+int motion_path_handles_type_at(Document &doc, const std::vector<MotionPathHandlePick> &picks, PathHandles mode)
+{
+  /* motion_path_handles_type on these keys alone: selected for it, the selection put back after. */
+  std::vector<std::pair<Key<float2> *, bool>> was;
+  std::vector<MotionPathTarget> targets;
+  for (const MotionPathHandlePick &p : picks) {
+    Channel<float2> *ch = handle_channel(doc, p.target);
+    if (!ch) {
+      continue;
+    }
+    if (std::none_of(targets.begin(), targets.end(), [&](const MotionPathTarget &t) { return t.same(p.target); })) {
+      targets.push_back(p.target);
+      for (Key<float2> &k : ch->keys) {
+        was.push_back({&k, k.selected});
+        k.selected = false;
+      }
+    }
+  }
+  for (const MotionPathHandlePick &p : picks) {
+    if (Channel<float2> *ch = handle_channel(doc, p.target)) {
+      if (Key<float2> *k = ch->key_at(p.frame)) {
+        k->selected = true;
+      }
+    }
+  }
+  const int changed = motion_path_handles_type(doc, targets, mode);
+  for (auto &[k, sel] : was) {
+    k->selected = sel;
+  }
+  return changed;
+}
+
 int motion_path_handles_auto(Document &doc, const MotionPathTarget &target)
 {
   Channel<float2> *ch = handle_channel(doc, target);

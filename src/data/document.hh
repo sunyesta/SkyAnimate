@@ -66,6 +66,17 @@ struct MotionPathTarget {
   }
 };
 
+/* One handle of a position key on a path (the Motion Path tool's Edit): `out` the one toward the next key. */
+struct MotionPathHandlePick {
+  MotionPathTarget target;
+  int frame = 0;
+  bool out = false;
+  bool operator==(const MotionPathHandlePick &o) const
+  {
+    return target.same(o.target) && frame == o.frame && out == o.out;
+  }
+};
+
 /* Switches linked by name (anim/switch.hh): one set of keys for the group, on its lead member's Switch
  * channel, holding entries of `names` (their ids; 0 none, -1 Rig) rather than layer ids; each member
  * shows its child answering to the entry's name (its name, or one of its aliases). */

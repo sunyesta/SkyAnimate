@@ -462,6 +462,9 @@ struct WindowManager {
    * timeline's), and what its shortcuts ask the viewport to start: Alt S scaling the timing around the selection,
    * G R S on the selected keys ('G', 'R', 'S'). */
   std::vector<std::pair<MotionPathTarget, int>> path_dots;
+  /* The path handles picked: never with keys, dots or other path things (a pick of one kind drops the others);
+   * G R S, V and X act on them alone. The bones and points traced stay picked, as they make the paths show. */
+  std::vector<MotionPathHandlePick> path_handle_picks;
   /* The dot under the mouse in the viewport or the timeline's timing chart, so the other rings it too: set each frame
    * it is hovered (`path_hover_tick` the ImGui frame it was), stale a frame later. */
   MotionPathTarget path_hover_target;

@@ -381,6 +381,14 @@ PENDING = [
     ('src/editors/timeline.cc', '      f.mode = 1;', '      (void)0;', 'key header: picked dots red', 'key_header_path'),
     ('src/anim/motion_path.cc', '  const auto it = frames.lower_bound(std::max(frame, 1));', '  const auto it = frames.upper_bound(std::max(frame, 1));', 'path stretch at: a key ends its stretch', 'key_header_path'),
     ('src/editors/timeline.cc', '    return hovered ? IM_COL32(0x2c, 0x86, 0x82, 255) : IM_COL32(0x22, 0x6e, 0x6b, 255);', '    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);', 'key header: teal', 'key_header_path'),
+    ('src/ops/motion_path_ops.cc', '      C.wm->path_handle_picks.clear();', '      (void)0;', 'path handles: a key or dot pick drops them', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '        C.wm->path_dots.clear();', '        (void)0;', 'path handles: a handle pick drops the dots', 'tests/test_motion_path_handle_pick.py'),
+    ('src/editors/viewport.cc', '    /* A bone or point picked: no path handles with it. */', '  }\n  if (false) {', 'path handles: a bone or point pick drops them', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '          path_handles_picked(C)', '          false', 'path handles: G R S on the handles alone', 'tests/test_motion_path_handle_pick.py'),
+    ('src/anim/motion_path.cc', "            : kind == 'R' ? key + float2{d.x * c - d.y * s, d.x * s + d.y * c}", "            : kind == 'R' ? key + float2{d.x * c + d.y * s, d.x * s + d.y * c}", 'path handles: R turns about the key', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '      if ((path_handles_picked(C)', '      if ((false', "path handles: V on the picked handles' keys", 'tests/test_motion_path_handle_pick.py'),
+    ('src/editors/timeline.cc', '    if (motion_path_stretch_at(doc, hp.target, hp.out ? hp.frame + 1 : hp.frame, start, end) &&', '    if (motion_path_stretch_at(doc, hp.target, hp.frame, start, end) &&', 'path handles: the header edits the stretch an out handle shapes', 'tests/test_motion_path_handle_pick.py'),
+    ('scripts/startup/oanim_keymap_default.py', '    ("Motion Path", "anim.motion_path_handles_reset", "X", {}),', '', 'path handles: X resets them', 'tests/test_motion_path_handle_pick.py'),
 ]
 
 

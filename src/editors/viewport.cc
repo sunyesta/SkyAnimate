@@ -892,6 +892,17 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     return;
   }
   if (!g.active && hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    OpArgs pick = motion_path_target_args(doc, hover_handle->target);
+    pick["frame"] = std::to_string(hover_handle->frame);
+    pick["out"] = hover_out ? "1" : "0";
+    if (io.KeyShift) {
+      /* Shift: in or out of the handles picked, nothing dragged. */
+      pick["extend"] = "1";
+      operator_call(C, "anim.motion_path_handle_select", pick);
+      return;
+    }
+    /* Picked alone (keys, dots and other handles let go), and a drag moves it. */
+    operator_call(C, "anim.motion_path_handle_select", pick);
     g.active = true;
     g.dragging = false;
     g.breakdown = false;
@@ -911,6 +922,8 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
       return;
     }
+    /* Anything but a path handle pressed: the handles picked are let go (never picked with anything else). */
+    C.wm->path_handle_picks.clear();
     /* A bone or point under the press (of the active bone layer and its family, or the drawings being edited). */
     const bool thing_under = !io.KeyAlt && hovered && motion_path_pick_click(C, view, io.MousePos, false, false);
     const PathPress kind = motion_path_press_kind(false, hover_path != nullptr,
@@ -1138,6 +1151,8 @@ static struct {
   bool active = false;
   char kind = 0;
   std::vector<std::pair<MotionPathTarget, int>> keys;
+  /* Path handles picked: these instead, each turned or scaled about its key. */
+  std::vector<MotionPathHandlePick> handles;
   ImVec2 pivot, press;
   NumInput num;
   PreciseMouse precise;
@@ -1200,15 +1215,31 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     wm.path_keys_request = 0;
     std::vector<std::pair<MotionPathTarget, int>> keys =
         motion_path_selected_keys(doc, motion_path_targets(doc, editable_layers(C)));
+    std::vector<MotionPathHandlePick> handles;
+    for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
+      float2 k, hi, ho;
+      if (motion_path_handles(doc, hp.target, hp.frame, k, hi, ho)) {
+        handles.push_back(hp);
+      }
+    }
+    if (!handles.empty()) {
+      /* Handles picked: they alone; turned and scaled about the first one's key. */
+      keys.clear();
+      for (const MotionPathHandlePick &hp : handles) {
+        keys.push_back({hp.target, hp.frame});
+      }
+    }
     if (idle && !sc.active && !keys.empty()) {
       gk.active = true;
       gk.kind = kind;
       gk.keys = std::move(keys);
+      gk.handles = std::move(handles);
       ImVec2 c(0.0f, 0.0f);
       for (const auto &[t, f] : gk.keys) {
         c = c + path_dot_screen(doc, view, paths, t, f);
       }
-      gk.pivot = c * (1.0f / float(gk.keys.size()));
+      gk.pivot = gk.handles.empty() ? c * (1.0f / float(gk.keys.size()))
+                                    : path_dot_screen(doc, view, paths, gk.keys[0].first, gk.keys[0].second);
       gk.press = io.MousePos;
       gk.num = NumInput();
       gk.precise.reset(float2{io.MousePos.x, io.MousePos.y});
@@ -1288,7 +1319,14 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
   if (gk.active) {
     const auto end = [&](bool keep) {
       if (keep) {
-        push_undo(C, gk.kind == 'G' ? "Move Path Keys" : gk.kind == 'R' ? "Rotate Path Keys" : "Scale Path Keys");
+        if (!gk.handles.empty()) {
+          push_undo(C, gk.kind == 'G'   ? "Move Path Handles"
+                       : gk.kind == 'R' ? "Rotate Path Handles"
+                                        : "Scale Path Handles");
+        }
+        else {
+          push_undo(C, gk.kind == 'G' ? "Move Path Keys" : gk.kind == 'R' ? "Rotate Path Keys" : "Scale Path Keys");
+        }
       }
       else {
         doc = std::move(gk.snapshot);
@@ -1327,7 +1365,12 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
       factor = gk.num.value(0, factor);
     }
     doc = gk.snapshot;
-    motion_path_keys_transform(doc, gk.keys, gk.kind, offset, angle, factor);
+    if (!gk.handles.empty()) {
+      motion_path_handles_transform(doc, gk.handles, gk.kind, offset, angle, factor);
+    }
+    else {
+      motion_path_keys_transform(doc, gk.keys, gk.kind, offset, angle, factor);
+    }
     g_path_drag.serial++;
     std::string text;
     if (gk.kind == 'G') {
@@ -1339,7 +1382,9 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     else {
       text = "Scale " + gk.num.shown(0, factor, "%.3f");
     }
-    text += gk.keys.size() == 1 && gk.kind != 'G' ? "   (the key's handles)" : "";
+    text += !gk.handles.empty()                        ? (gk.handles.size() == 1 ? "   (the handle)" : "   (the handles)")
+            : gk.keys.size() == 1 && gk.kind != 'G' ? "   (the key's handles)"
+                                                    : "";
     dl->AddCircle(gk.pivot, 4.0f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
     path_modal_overlay(dl, gk.kind == 'G' ? gk.press : gk.pivot, io.MousePos, text);
     if (confirm) {
@@ -2033,6 +2078,19 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       dl->AddCircle(screen[size_t(now)], 7.0f, IM_COL32(255, 255, 255, 240), 0, 1.6f);
     }
   }
+  /* A picked handle's key shows its handles though the key isn't selected (a handle is picked alone). */
+  if (editing) {
+    for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
+      const bool traced = std::any_of(cache.paths.begin(), cache.paths.end(),
+                                      [&](const MotionPath &p) { return p.target.same(hp.target); });
+      if (traced && std::none_of(handle_keys.begin(), handle_keys.end(), [&](const auto &k) {
+            return k.first.same(hp.target) && k.second == hp.frame;
+          }))
+      {
+        handle_keys.push_back({hp.target, hp.frame});
+      }
+    }
+  }
   /* Each selected position key's handles: a line from the key to each end, hollow while Auto, filled once dragged
    * (square once broken). Worked out from copies of the document, so kept until something changes. */
   static struct {
@@ -2129,8 +2187,11 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         continue;
       }
       const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
-      const bool dragged = g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
-                           g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame;
+      /* Picked (or being dragged): orange. */
+      const bool dragged = (g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
+                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame) ||
+                           std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                                     MotionPathHandlePick{h.target, h.frame, out}) != wm.path_handle_picks.end();
       /* Under the mouse (or being dragged): a little bigger and brighter, so it shows what a click takes. */
       const bool lit = dragged || (hover_handle == &h && hover_out == out);
       const auto brighten = [lit](ImU32 c) { return lit ? u32_mix(c, IM_COL32(255, 255, 255, 255), 0.3f) : c; };
@@ -2181,7 +2242,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     const ImGuiIO &io = ImGui::GetIO();
     if (g_path_brush.active || g_path_brush.adjust || wm.path_adjust_request ||
         (io.KeyShift && !io.KeyAlt && !g_path_drag.active && !g_path_slide.active && !motion_path_vector_active() &&
-         hovered))
+         hovered && !(hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left))))
     {
       std::optional<OpArgs> pick;
       if (hover_path) {
@@ -4545,10 +4606,14 @@ static void motion_path_menus(Context &C, bool hovered)
     wm.menu_request.clear();
   }
   if (edit && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
-      !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) && !g_right_click_spent && !g_path_drag.active &&
-      !path_edit_selection(C).empty())
+      !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) && !g_right_click_spent && !g_path_drag.active)
   {
-    ImGui::OpenPopup("##path_menu");
+    if (!wm.path_handle_picks.empty()) {
+      ImGui::OpenPopup("##path_handles");
+    }
+    else if (!path_edit_selection(C).empty()) {
+      ImGui::OpenPopup("##path_menu");
+    }
   }
   if (ui_menu_begin("##path_handles")) {
     ImGui::TextDisabled("Path Handles");
@@ -13856,6 +13921,10 @@ static bool vector_under(Context &C, const ViewMapping &view, ImVec2 mouse)
 static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply)
 {
   Document &doc = *C.document;
+  if (apply) {
+    /* A bone or point picked: no path handles with it. */
+    C.wm->path_handle_picks.clear();
+  }
   Layer *armature = document_active_layer(doc);
   if (armature && !armature->is_bone_layer()) {
     armature = nullptr;
@@ -16874,7 +16943,8 @@ static void viewport_draw_contents(Area &area, Context &C)
 
   /* Right-click with points or handles selected: their context menu, as in Blender. */
   /* The Motion Path tool too, while no path keys or dots are picked (then the path's menu is the one). */
-  const bool path_tool_points = ts.tool == Tool::MotionPath && !g_path_drag.active && path_edit_selection(C).empty();
+  const bool path_tool_points = ts.tool == Tool::MotionPath && !g_path_drag.active && path_edit_selection(C).empty() &&
+                                wm.path_handle_picks.empty();
   if (hovered && (ts.tool == Tool::Select || path_tool_points) && !io.KeyShift && !g_modal.active && drawing &&
       ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) &&
       !g_right_click_spent)

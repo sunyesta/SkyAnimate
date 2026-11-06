@@ -112,6 +112,21 @@ static std::vector<std::pair<MotionPathTarget, int>> path_selected_keys(Context 
   return motion_path_selected_keys(*C.document, motion_path_targets(*C.document, editable_layers(C)));
 }
 
+/* The path handles picked whose keys are still there. */
+static bool path_handles_picked(Context &C)
+{
+  if (!C.wm || !C.document) {
+    return false;
+  }
+  for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {
+    float2 key, in, out;
+    if (motion_path_handles(*C.document, p.target, p.frame, key, in, out)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* The dots selected, then the keys selected: what Alt S scales the timing around. */
 static std::vector<std::pair<MotionPathTarget, int>> path_selection(Context &C)
 {
@@ -271,6 +286,8 @@ void motion_path_operators_register()
       PathDotsSync sync{C};
       std::vector<std::pair<MotionPathTarget, int>> &dots = C.wm->path_dots;
       const bool none = op_arg_bool(C, "none");
+      /* Keys and dots are never picked with path handles, Shift or not. */
+      C.wm->path_handle_picks.clear();
       if (op_arg_bool(C, "go") && !none) {
         /* On something selected already (a double click's second press, Go to Frame): only the frame changes. */
         for (const MotionPathTarget &t : targets) {
@@ -337,6 +354,78 @@ void motion_path_operators_register()
         }
       }
       C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handle_select";
+    ot.name = "Select Path Handle";
+    ot.description = "Pick a path handle, as clicking one with the Motion Path tool's Edit does: of the key on "
+                     "frame=N of what a path traces (layer=id with bone=name or point=id: that one; else the first "
+                     "traced), out=1 the one toward the next key. On its own: every other path handle, key and dot "
+                     "is let go (the bones and points traced stay, as they make the paths show); extend=1 (Shift) "
+                     "adds it to the handles picked or takes it out; none=1 lets go of every path handle";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
+      if (op_arg_bool(C, "none")) {
+        picks.clear();
+        C.undo->mark_changed();
+        return OpStatus::Finished;
+      }
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      MotionPathHandlePick pick{targets.front(), op_arg_int(C, "frame", doc.frame_current), op_arg_bool(C, "out")};
+      float2 key, in, out;
+      if (!motion_path_handles(doc, pick.target, pick.frame, key, in, out)) {
+        report(ReportType::Warning, "No position key with path handles there");
+        return OpStatus::Cancelled;
+      }
+      /* Whatever else is picked on the paths goes: a handle is picked alone or with other handles. */
+      {
+        PathDotsSync sync{C};
+        std::vector<Layer *> all;
+        for (const Layer *l : document_layers_flat(doc)) {
+          all.push_back(layer_find(doc, l->id));
+        }
+        layers_deselect_keys(all);
+        C.wm->path_dots.clear();
+      }
+      const auto it = std::find(picks.begin(), picks.end(), pick);
+      if (!op_arg_bool(C, "extend")) {
+        picks = {pick};
+      }
+      else if (it != picks.end()) {
+        picks.erase(it);
+      }
+      else {
+        picks.push_back(pick);
+      }
+      C.wm->path_timing_target = pick.target;
+      C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_handles_reset";
+    ot.name = "Reset Path Handles";
+    ot.description = "X with path handles picked (the Motion Path tool's Edit): their keys' handles back to Auto";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return path_edit_poll(C) && path_handles_picked(C); };
+    ot.exec = [](Context &C) {
+      animation_sync(*C.document);
+      if (motion_path_handles_type_at(*C.document, C.wm->path_handle_picks, PathHandles::Auto) == 0) {
+        report(ReportType::Info, "The handles are Auto already");
+        return OpStatus::Cancelled;
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -988,7 +1077,9 @@ void motion_path_operators_register()
                          : "S with the Motion Path tool's Edit: scale the selected key's handles (several keys: the "
                            "keys about their centre, handles scaling with them)";
     ot.flag = 0;
-    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
+    ot.poll = [](Context &C) {
+      return path_edit_poll(C) && (path_handles_picked(C) || !path_selected_keys(C).empty());
+    };
     ot.exec = [kind](Context &C) {
       C.wm->path_keys_request = kind;
       return OpStatus::Finished;
@@ -1012,9 +1103,14 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       animation_sync(doc);
-      const int changed = motion_path_keys_transform(
-          doc, path_selected_keys(C), kind[0], float2{op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)},
-          op_arg_float(C, "angle", 0.0f), op_arg_float(C, "factor", 1.0f));
+      const float2 offset{op_arg_float(C, "x", 0.0f), op_arg_float(C, "y", 0.0f)};
+      /* Path handles picked: they alone, each about its key. */
+      const int changed =
+          path_handles_picked(C)
+              ? motion_path_handles_transform(doc, C.wm->path_handle_picks, kind[0], offset,
+                                              op_arg_float(C, "angle", 0.0f), op_arg_float(C, "factor", 1.0f))
+              : motion_path_keys_transform(doc, path_selected_keys(C), kind[0], offset,
+                                           op_arg_float(C, "angle", 0.0f), op_arg_float(C, "factor", 1.0f));
       if (changed == 0) {
         report(ReportType::Info, "No keys selected on the paths");
         return OpStatus::Cancelled;
@@ -1038,7 +1134,12 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       animation_sync(*C.document);
-      if (motion_path_handles_type(*C.document, motion_path_targets(*C.document, editable_layers(C)), mode) == 0) {
+      /* Path handles picked: their keys. */
+      if ((path_handles_picked(C)
+               ? motion_path_handles_type_at(*C.document, C.wm->path_handle_picks, mode)
+               : motion_path_handles_type(*C.document, motion_path_targets(*C.document, editable_layers(C)), mode)) ==
+          0)
+      {
         return OpStatus::Cancelled;
       }
       return OpStatus::Finished;
@@ -1049,9 +1150,10 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_handles_menu";
     ot.name = "Path Handle Type";
-    ot.description = "V with the Motion Path tool's Edit: a menu of handle types for the selected keys";
+    ot.description = "V with the Motion Path tool's Edit: a menu of handle types for the selected keys (or the keys of "
+                     "the path handles picked)";
     ot.flag = 0;
-    ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
+    ot.poll = [](Context &C) { return path_edit_poll(C) && (path_handles_picked(C) || !path_selected_keys(C).empty()); };
     ot.exec = [](Context &C) {
       C.wm->menu_request = "motion_path_handles";
       return OpStatus::Finished;

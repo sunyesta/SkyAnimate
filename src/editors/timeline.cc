@@ -955,6 +955,17 @@ static KeyFocus key_focus(Context &C)
       f.mode = 1;
     }
   }
+  /* Picked path handles: the stretch each shapes (an in handle the one its key ends, an out handle the next). */
+  for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
+    int start = 0, end = 0;
+    if (motion_path_stretch_at(doc, hp.target, hp.out ? hp.frame + 1 : hp.frame, start, end) &&
+        std::none_of(f.keys.begin(), f.keys.end(),
+                     [&](const auto &k) { return k.first.same(hp.target) && k.second == end; }))
+    {
+      f.keys.push_back({hp.target, end});
+      f.mode = 1;
+    }
+  }
   if (f.mode == 1) {
     return f;
   }

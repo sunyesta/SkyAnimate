@@ -484,6 +484,12 @@ def path_handle_colors(tip_picked, under=None):
     return _oanim.path_handle_colors(bool(tip_picked), None if under is None else tuple(under))
 
 
+def motion_path_handle_picks():
+    """The path handles picked with the Motion Path tool's Edit (anim.motion_path_handle_select): dicts with layer,
+    bone, point (ids, 0 for none), head, frame and out (the handle toward the next key). Never with keys or dots."""
+    return _oanim.motion_path_handle_picks()
+
+
 def motion_path_dots():
     """The dots selected between keys with the Motion Path tool's Edit: dicts with layer, bone, point (ids, 0 for
     none), head and frame. Keys selected are the timeline's (keyframes()' "selected")."""
