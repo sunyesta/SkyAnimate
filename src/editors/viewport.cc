@@ -2279,6 +2279,10 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   /* A picked handle's key shows its handles though the key isn't selected (a handle is picked alone). */
   if (editing) {
     for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
+      if (hp.control >= 0) {
+        /* A control point (or its handle) shows its own handles, not its stretch's key's. */
+        continue;
+      }
       const bool traced = std::any_of(cache.paths.begin(), cache.paths.end(),
                                       [&](const MotionPath &p) { return p.target.same(hp.target); });
       if (traced && std::none_of(handle_keys.begin(), handle_keys.end(), [&](const auto &k) {
@@ -2369,61 +2373,18 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
     }
   }
-  dl->ChannelsSetCurrent(0);
-  for (const PlainDot &d : plain_dots) {
-    if (path_dot_under_handles(float2{d.at.x, d.at.y}, handle_lines, PATH_HANDLE_WIDTH * 0.5f + 3.0f)) {
-      continue;
-    }
-    dl->AddCircleFilled(d.at, 3.6f, d.under);
-    dl->AddCircleFilled(d.at, 2.8f, d.fill);
-  }
-  dl->ChannelsSetCurrent(1);
-  for (const PathHandlesShown &h : shown_handles) {
-    const ImVec2 k = view.to_screen(h.key + h.offset);
-    for (const bool out : {false, true}) {
-      if (out ? h.last : h.first) {
-        continue;
-      }
-      const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
-      /* Picked (or being dragged): orange. */
-      const bool dragged = (g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
-                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame) ||
-                           std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
-                                     MotionPathHandlePick{h.target, h.frame, out}) != wm.path_handle_picks.end();
-      /* Under the mouse (or being dragged): a little bigger and brighter, so it shows what a click takes. */
-      const bool lit = dragged || (hover_handle == &h && hover_out == out);
-      const auto brighten = [lit](ImU32 c) { return lit ? u32_mix(c, IM_COL32(255, 255, 255, 255), 0.3f) : c; };
-      /* Violet, no outline: in pieces, each a lighter or darker shade only where hard to see; a picked tip orange
-       * there, fading to the violet at the key (as vector handles fade). */
-      const float2 key_at = h.key + h.offset, tip_at = (out ? h.out : h.in) + h.offset;
-      const std::function<bool(float2, Color &)> under_at = [](float2 q, Color &c) { return canvas_now_at(q, c); };
-      for (const PathHandleRun &r : path_handle_pieces(key_at, tip_at, dragged, 6.0f / std::max(view.zoom, 1e-9f),
-                                                       under_at))
-      {
-        dl->AddLine(ImVec2(k.x + (e.x - k.x) * r.from, k.y + (e.y - k.y) * r.from),
-                    ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), brighten(r.color),
-                    lit ? PATH_HANDLE_WIDTH + 0.7f : PATH_HANDLE_WIDTH);
-      }
-      const Color tip_base = dragged ? Color{1.0f, 160.0f / 255.0f, 40.0f / 255.0f, 1.0f}
-                                     : color_from_rgb(preferences().path_handle_color);
-      Color seen;
-      const ImU32 fill = contrast_u32(
-          canvas_now_at(tip_at, seen) ? contrast_colors_of(tip_base).of(contrast_pick(seen, tip_base)) : tip_base, 1.0f);
-      /* The tip, twice a dot's size inside a thin white ring a gap away (a target, never taken for a path dot):
-       * filled once dragged (Aligned or Broken), hollow while Auto. */
-      const float r = lit ? 5.6f : 4.6f;
-      if (h.mode != PathHandles::Auto) {
-        dl->AddCircleFilled(e, r, brighten(fill));
-      }
-      else {
-        dl->AddCircle(e, r - 1.0f, brighten(fill), 0, 2.2f);
-      }
-      dl->AddCircle(e, r + 2.2f, IM_COL32(255, 255, 255, 235), 0, 1.3f);
-    }
-  }
-  /* Control points: small hollow squares (no frame: never a key's diamond or a dot), orange when picked; their handles
-   * as a vector point's, shown as the Handles overlay says (Selected: the control point's, or a handle's, picked). */
+  /* Control points, before the dots: their handles' lines leave out the dots they cover, as the keys' do, and what's
+   * under the mouse is known before anything draws (lit). Key handles win a tie: they are picked first. */
   g_path_control_hover.reset();
+  struct ControlShown {
+    MotionPathTarget target;
+    MotionPathControl c;
+    float2 at, tip[2];
+    bool picked = false, drag = false, tip_picked[2] = {false, false}, show_handles = false, no_tip[2] = {true, true};
+    bool hovered = false;
+    float2 offset;
+  };
+  std::vector<ControlShown> controls_shown;
   if (editing) {
     static struct {
       const Document *doc = nullptr;
@@ -2446,6 +2407,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       }
     }
     float best_control = pick_path_pixels() * pick_path_pixels();
+    ControlShown *hover_cs = nullptr;
     for (const auto &[target, list] : controls.all) {
       const MotionPath *path = nullptr;
       for (const MotionPath &p : cache.paths) {
@@ -2458,68 +2420,135 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         if (i < 0 || i >= int(path->points.size())) {
           continue;
         }
-        const float2 drawn_offset = path->points[size_t(i)] - c.curve;
-        const ImVec2 s = view.to_screen(c.at + drawn_offset);
+        ControlShown cs;
+        cs.target = target;
+        cs.c = c;
+        cs.offset = path->points[size_t(i)] - c.curve;
+        cs.at = c.at + cs.offset;
+        cs.tip[0] = c.in_tip + cs.offset;
+        cs.tip[1] = c.out_tip + cs.offset;
         const auto part_picked = [&](int part) {
           return std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
                            MotionPathHandlePick{target, c.end, false, c.index, part}) != wm.path_handle_picks.end();
         };
-        const bool drag_this = g_path_drag.active && g_path_drag.control == c.index && g_path_drag.frame == c.end &&
-                               g_path_drag.target.same(target);
-        const bool picked = part_picked(0);
-        const bool dragged = drag_this && g_path_drag.control_handle == 0;
-        const bool tip_picked[2] = {part_picked(1) || (drag_this && g_path_drag.control_handle == 1),
-                                    part_picked(2) || (drag_this && g_path_drag.control_handle == 2)};
-        const HandleDisplay shows = doc.overlays.handles;
-        const bool show_handles = shows == HandleDisplay::All || shows == HandleDisplay::Shape ||
-                                  (shows == HandleDisplay::Selected && (picked || drag_this || tip_picked[0] ||
-                                                                        tip_picked[1]));
-        if (show_handles) {
-          const Color red = color_from_rgb(preferences().handle_color);
-          const Color strong = color_from_rgb(preferences().handle_selected);
-          for (const int part : {1, 2}) {
-            const float2 tip_at = (part == 2 ? c.out_tip : c.in_tip) + drawn_offset;
-            const ImVec2 e = view.to_screen(tip_at);
-            if ((e.x - s.x) * (e.x - s.x) + (e.y - s.y) * (e.y - s.y) < 1.0f) {
-              continue;
-            }
-            const bool at_tip = picked || tip_picked[part - 1];
-            Color seen;
-            const auto shade = [&](const Color &base, float2 q) {
-              return contrast_u32(canvas_now_at(q, seen) ? contrast_colors_of(base).of(contrast_pick(seen, base)) : base,
-                                  1.0f);
-            };
-            /* Picked: the stronger red, all along for the point, fading in to a tip picked alone. */
-            const ImU32 from_point = shade(picked ? strong : red, c.at + drawn_offset), to_tip = shade(at_tip ? strong : red, tip_at);
-            const int steps = 8;
-            for (int k = 0; k < steps; k++) {
-              const float t0 = float(k) / steps, t1 = float(k + 1) / steps;
-              dl->AddLine(ImVec2(s.x + (e.x - s.x) * t0, s.y + (e.y - s.y) * t0),
-                          ImVec2(s.x + (e.x - s.x) * t1, s.y + (e.y - s.y) * t1), u32_mix(from_point, to_tip, (t0 + t1) * 0.5f),
-                          1.5f);
-            }
-            const Color tip_base = at_tip ? Color{1.0f, float(0x8c) / 255.0f, 0.0f, 1.0f} : red;
-            dl->AddCircleFilled(e, doc.overlays.handle_size * 0.5f, shade(tip_base, tip_at));
-            const float tx = e.x - mouse.x, ty = e.y - mouse.y;
-            if (tool && hovering && !hover_handle && tx * tx + ty * ty < best_control) {
-              best_control = tx * tx + ty * ty;
-              g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, part, drawn_offset};
-            }
-          }
-        }
-        const float dx = s.x - mouse.x, dy = s.y - mouse.y;
-        const bool lit = dragged;
-        const float r = lit ? 5.0f : 4.0f;
-        dl->AddRect(ImVec2(s.x - r - 1.5f, s.y - r - 1.5f), ImVec2(s.x + r + 1.5f, s.y + r + 1.5f),
-                    IM_COL32(20, 20, 20, 200), 0.0f, 0, 1.2f);
-        dl->AddRect(ImVec2(s.x - r, s.y - r), ImVec2(s.x + r, s.y + r),
-                    picked || dragged ? IM_COL32(255, 160, 40, 255) : u32(path->color, 1.0f), 0.0f, 0, 2.0f);
-        if (tool && hovering && !hover_handle && dx * dx + dy * dy < best_control) {
-          best_control = dx * dx + dy * dy;
-          g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, 0, drawn_offset};
-        }
+        cs.drag = g_path_drag.active && g_path_drag.control == c.index && g_path_drag.frame == c.end &&
+                  g_path_drag.target.same(target);
+        cs.picked = part_picked(0);
+        cs.tip_picked[0] = part_picked(1) || (cs.drag && g_path_drag.control_handle == 1);
+        cs.tip_picked[1] = part_picked(2) || (cs.drag && g_path_drag.control_handle == 2);
+        cs.show_handles = cs.picked || cs.drag || cs.tip_picked[0] || cs.tip_picked[1];
+        controls_shown.push_back(cs);
       }
     }
+    for (ControlShown &cs : controls_shown) {
+      const ImVec2 s = view.to_screen(cs.at);
+      if (cs.show_handles) {
+        for (const int part : {1, 2}) {
+          const ImVec2 e = view.to_screen(cs.tip[part - 1]);
+          cs.no_tip[part - 1] = (e.x - s.x) * (e.x - s.x) + (e.y - s.y) * (e.y - s.y) < 1.0f;
+          if (cs.no_tip[part - 1]) {
+            continue;
+          }
+          handle_lines.push_back({float2{s.x, s.y}, float2{e.x, e.y}});
+          const float tx = e.x - mouse.x, ty = e.y - mouse.y;
+          if (tool && hovering && !hover_handle && tx * tx + ty * ty < best_control) {
+            best_control = tx * tx + ty * ty;
+            hover_cs = &cs;
+            g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, part, cs.offset};
+          }
+        }
+      }
+      const float dx = s.x - mouse.x, dy = s.y - mouse.y;
+      if (tool && hovering && !hover_handle && dx * dx + dy * dy < best_control) {
+        best_control = dx * dx + dy * dy;
+        hover_cs = &cs;
+        g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, 0, cs.offset};
+      }
+    }
+    if (hover_cs) {
+      hover_cs->hovered = true;
+    }
+  }
+  dl->ChannelsSetCurrent(0);
+  for (const PlainDot &d : plain_dots) {
+    if (path_dot_under_handles(float2{d.at.x, d.at.y}, handle_lines, PATH_HANDLE_WIDTH * 0.5f + 3.0f)) {
+      continue;
+    }
+    dl->AddCircleFilled(d.at, 3.6f, d.under);
+    dl->AddCircleFilled(d.at, 2.8f, d.fill);
+  }
+  dl->ChannelsSetCurrent(1);
+  /* A path handle (a key's, or a control point's): a line from its point to its tip, violet with no outline, in pieces
+   * each a lighter or darker shade only where hard to see; picked (or dragged) the tip orange, fading to the violet at
+   * the point (as vector handles fade); lit (under the mouse, or dragged) a little bigger and brighter. The tip, twice
+   * a dot's size inside a thin white ring a gap away (a target, never taken for a path dot): filled once its own
+   * (dragged), hollow while worked out (Auto). */
+  const auto draw_path_handle = [&](float2 key_at, float2 tip_at, bool picked, bool lit, bool filled) {
+    const ImVec2 k = view.to_screen(key_at), e = view.to_screen(tip_at);
+    const auto brighten = [lit](ImU32 c) { return lit ? u32_mix(c, IM_COL32(255, 255, 255, 255), 0.3f) : c; };
+    const std::function<bool(float2, Color &)> under_at = [](float2 q, Color &c) { return canvas_now_at(q, c); };
+    for (const PathHandleRun &r : path_handle_pieces(key_at, tip_at, picked, 6.0f / std::max(view.zoom, 1e-9f),
+                                                     under_at))
+    {
+      dl->AddLine(ImVec2(k.x + (e.x - k.x) * r.from, k.y + (e.y - k.y) * r.from),
+                  ImVec2(k.x + (e.x - k.x) * r.to, k.y + (e.y - k.y) * r.to), brighten(r.color),
+                  lit ? PATH_HANDLE_WIDTH + 0.7f : PATH_HANDLE_WIDTH);
+    }
+    const Color tip_base = picked ? Color{1.0f, 160.0f / 255.0f, 40.0f / 255.0f, 1.0f}
+                                  : color_from_rgb(preferences().path_handle_color);
+    Color seen;
+    const ImU32 fill = contrast_u32(
+        canvas_now_at(tip_at, seen) ? contrast_colors_of(tip_base).of(contrast_pick(seen, tip_base)) : tip_base, 1.0f);
+    const float r = lit ? 5.6f : 4.6f;
+    if (filled) {
+      dl->AddCircleFilled(e, r, brighten(fill));
+    }
+    else {
+      dl->AddCircle(e, r - 1.0f, brighten(fill), 0, 2.2f);
+    }
+    dl->AddCircle(e, r + 2.2f, IM_COL32(255, 255, 255, 235), 0, 1.3f);
+  };
+  for (const PathHandlesShown &h : shown_handles) {
+    for (const bool out : {false, true}) {
+      if (out ? h.last : h.first) {
+        continue;
+      }
+      /* Picked (or being dragged): orange. */
+      const bool dragged = (g_path_drag.active && g_path_drag.handle == (out ? 2 : 1) &&
+                            g_path_drag.target.same(h.target) && g_path_drag.frame == h.frame) ||
+                           std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                                     MotionPathHandlePick{h.target, h.frame, out}) != wm.path_handle_picks.end();
+      /* Under the mouse (or being dragged): a little bigger and brighter, so it shows what a click takes. */
+      const bool lit = dragged || (hover_handle == &h && hover_out == out);
+      draw_path_handle(h.key + h.offset, (out ? h.out : h.in) + h.offset, dragged, lit, h.mode != PathHandles::Auto);
+    }
+  }
+  /* Control points: small squares (no frame: never a key's diamond or a dot), white as the keys, orange when picked;
+   * their handles drawn as the keys' path handles (shown while the control point, or one of its handles, is picked or
+   * dragged). */
+  for (const ControlShown &cs : controls_shown) {
+    if (cs.show_handles) {
+      for (const int part : {1, 2}) {
+        if (cs.no_tip[part - 1]) {
+          continue;
+        }
+        /* As a key's: picking the point shows its handles, only a tip picked (or dragged) is orange. */
+        const bool picked = cs.tip_picked[part - 1];
+        const bool lit = (cs.drag && g_path_drag.control_handle == part) ||
+                         (g_path_control_hover && g_path_control_hover->handle == part && cs.hovered);
+        draw_path_handle(cs.at, cs.tip[part - 1], picked, lit, cs.c.set);
+      }
+    }
+    const ImVec2 s = view.to_screen(cs.at);
+    const bool lit = (cs.drag && g_path_drag.control_handle == 0) ||
+                     (g_path_control_hover && g_path_control_hover->handle == 0 && cs.hovered);
+    const float r = lit ? 5.0f : 4.0f;
+    dl->AddRect(ImVec2(s.x - r - 1.5f, s.y - r - 1.5f), ImVec2(s.x + r + 1.5f, s.y + r + 1.5f),
+                IM_COL32(20, 20, 20, 200), 0.0f, 0, 1.2f);
+    dl->AddRect(ImVec2(s.x - r, s.y - r), ImVec2(s.x + r, s.y + r),
+                cs.picked || (cs.drag && g_path_drag.control_handle == 0) ? IM_COL32(255, 160, 40, 255)
+                                                                         : IM_COL32(255, 255, 255, 240),
+                0.0f, 0, 2.0f);
   }
   dl->ChannelsMerge();
   if (g_path_control_hover) {
