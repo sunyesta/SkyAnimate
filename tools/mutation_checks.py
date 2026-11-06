@@ -427,9 +427,10 @@ PENDING = [
     ('src/anim/motion_path.cc', "    if (kind == 'G') {\n      /* Kept relative to the point, its handles ride along. */\n      continue;\n    }\n", "    if (kind != 'X') {\n      continue;\n    }\n", 'R S on a control point turn and scale its handles', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h * factor);\n", "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h);\n", 'S on a control point scales its handles', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', '      k->path_control_handles[size_t(mc.index)].aligned = mc.aligned;\n', '      (void)k;\n', 'R on a control point keeps its handles aligned', 'tests/test_motion_path_control_handles.py'),
-    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    (void)in_line;\n', 'the path line goes through a control point', 'tests/test_motion_path_smooth_line.py'),
-    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    r[size_t(i)] = {true, at, false && !in_line};\n', 'a crease at a control point is a corner', 'tests/test_motion_path_smooth_line.py'),
-    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    r[size_t(i)] = {true, at, true || !in_line};\n', 'an in-line control point stays smooth', 'tests/test_motion_path_smooth_line.py'),
+    ('src/editors/viewport.cc', '  if (i < p.shape_known.size() && p.shape_known[i]) {\n', '  if (false && i < p.shape_known.size() && p.shape_known[i]) {\n', "the path line follows the path's own shape", 'tests/test_motion_path_smooth_line.py'),
+    ('src/anim/motion_path.cc', '      mirrored = (cv > 0.0f) != (cp > 0.0f);\n', '      mirrored = false && (cv > 0.0f) != (cp > 0.0f);\n', 'the path shape flips under a flipped parent', 'tests/test_motion_path_smooth_line.py'),
+    ('src/anim/motion_path.cc', '    if (s1 < s0) {\n      std::reverse(', '    if (false) {\n      std::reverse(', 'the path shape backs up with its dots', 'tests/test_motion_path_smooth_line.py'),
+    ('src/anim/motion_path.cc', '    r_line = stretch_control_line(keys, i, 96);\n', '    r_line = stretch_control_line(keys, i, 6);\n', 'the path shape is fine enough to read smooth', 'tests/test_motion_path_smooth_line.py'),
 ]
 
 

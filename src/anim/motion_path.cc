@@ -565,6 +565,8 @@ bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target)
   return false;
 }
 
+static void path_shape_fill(const Document &doc, MotionPath &p);
+
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
                                           int first, int last)
 {
@@ -634,6 +636,7 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
     if (!apart) {
       p.ghost.clear();
     }
+    path_shape_fill(doc, p);
   }
   for (MotionPath &p : paths) {
     float fastest = 0.0f;
@@ -1437,6 +1440,126 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
 }
 
 }  // namespace
+
+/* The curve a stretch's dots are placed on (the keys' own space), as a line dense enough to draw: through its control
+ * points (each a vertex, so a crease stays a corner), else its Bezier. With the length along it at each vertex. */
+static void stretch_shape_line(const std::vector<Key<float2>> &keys, size_t i, std::vector<float2> &r_line,
+                               std::vector<float> &r_along)
+{
+  r_line.clear();
+  if (!keys[i].path_controls.empty()) {
+    r_line = stretch_control_line(keys, i, 96);
+  }
+  else {
+    constexpr int SAMPLES = 256;
+    for (int j = 0; j <= SAMPLES; j++) {
+      r_line.push_back(stretch_path_point(keys, i, float(j) / SAMPLES));
+    }
+  }
+  r_along.assign(r_line.size(), 0.0f);
+  for (size_t j = 1; j < r_line.size(); j++) {
+    r_along[j] = r_along[j - 1] + length(r_line[j] - r_line[j - 1]);
+  }
+}
+
+/* Where along `line` (by length) the point nearest `v` is, and how far off it `v` is. */
+static float shape_line_project(const std::vector<float2> &line, const std::vector<float> &along, float2 v,
+                                float &r_off)
+{
+  float best = along.empty() ? 0.0f : along.front(), best_d = 1e30f;
+  for (size_t j = 1; j < line.size(); j++) {
+    const float2 a = line[j - 1], d = line[j] - a;
+    const float dd = dot(d, d);
+    const float t = dd > 1e-14f ? std::clamp(dot(v - a, d) / dd, 0.0f, 1.0f) : 0.0f;
+    const float s = along[j - 1] + (along[j] - along[j - 1]) * t;
+    const float dist = length(v - (a + d * t));
+    if (dist < best_d) {
+      best_d = dist;
+      best = s;
+    }
+  }
+  r_off = best_d;
+  return best;
+}
+
+static void path_shape_fill(const Document &doc, MotionPath &p)
+{
+  const size_t n = p.points.size();
+  p.shape.assign(n, {});
+  p.shape_known.assign(n, false);
+  const Channel<float2> *ch = n >= 2 ? handle_channel(const_cast<Document &>(doc), p.target) : nullptr;
+  if (!ch || ch->keys.size() < 2) {
+    return;
+  }
+  const std::vector<Key<float2>> &keys = ch->keys;
+  std::vector<float2> values(n);
+  for (size_t i = 0; i < n; i++) {
+    values[i] = ch->evaluate(p.first + int(i));
+  }
+  /* From the keys' space to the drawing's, per step: the turn, scale and move that puts the two values on the two dots
+   * as drawn (so a parent moving, turning or scaling is followed, and the line always meets its dots); mirrored where
+   * the drawing is (a parent flipped), told from the first three dots not in a line. */
+  const auto cross = [](float2 a, float2 b) { return a.x * b.y - a.y * b.x; };
+  bool mirrored = false;
+  for (size_t i = 2; i < n; i++) {
+    const float cv = cross(values[i - 1] - values[i - 2], values[i] - values[i - 2]);
+    const float cp = cross(p.points[i - 1] - p.points[i - 2], p.points[i] - p.points[i - 2]);
+    const float sv = length(values[i] - values[i - 2]), sp = length(p.points[i] - p.points[i - 2]);
+    if (std::abs(cv) > 1e-4f * sv * sv && std::abs(cp) > 1e-4f * sp * sp) {
+      mirrored = (cv > 0.0f) != (cp > 0.0f);
+      break;
+    }
+  }
+  const auto conj = [](float2 z) { return float2{z.x, -z.y}; };
+  const auto mul = [](float2 a, float2 b) { return float2{a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x}; };
+  size_t stretch = 0;
+  std::vector<float2> line;
+  std::vector<float> along;
+  for (size_t i = 1; i < n; i++) {
+    const int f1 = p.first + int(i);
+    /* The stretch this step is in: arriving at the first key on or after its end. */
+    const auto it = std::lower_bound(keys.begin(), keys.end(), f1,
+                                     [](const Key<float2> &k, int f) { return k.frame < f; });
+    if (it == keys.begin() || it == keys.end()) {
+      continue;
+    }
+    const size_t si = size_t(it - keys.begin());
+    if (si != stretch) {
+      stretch = si;
+      stretch_shape_line(keys, si, line, along);
+    }
+    const float2 v0 = values[i - 1], v1 = values[i];
+    if (length(v1 - v0) < 1e-7f) {
+      /* Still: nothing between. */
+      p.shape_known[i] = true;
+      continue;
+    }
+    const float tol = 1e-4f + 1e-3f * along.back();
+    float off0, off1;
+    const float s0 = shape_line_project(line, along, v0, off0);
+    const float s1 = shape_line_project(line, along, v1, off1);
+    if (off0 > tol || off1 > tol || std::abs(s1 - s0) < 1e-9f) {
+      /* Not on it (past its key, noise, a cycle, offsets from elsewhere): drawn through the dots instead. */
+      continue;
+    }
+    const float2 d = mirrored ? conj(v1 - v0) : v1 - v0;
+    const float dd = dot(d, d);
+    const float2 z = mul(p.points[i] - p.points[i - 1], float2{d.x, -d.y} * (1.0f / dd));
+    /* The vertices between, in the way the dot goes (backward too: a dot backing up along it). */
+    const float margin = 1e-6f * std::max(along.back(), 1e-6f), lo = std::min(s0, s1), hi = std::max(s0, s1);
+    const size_t first = p.shape[i].size();
+    for (size_t j = 0; j < line.size(); j++) {
+      if (along[j] > lo + margin && along[j] < hi - margin) {
+        const float2 q = line[j] - v0;
+        p.shape[i].push_back(p.points[i - 1] + mul(z, mirrored ? conj(q) : q));
+      }
+    }
+    if (s1 < s0) {
+      std::reverse(p.shape[i].begin() + std::ptrdiff_t(first), p.shape[i].end());
+    }
+    p.shape_known[i] = true;
+  }
+}
 
 const char *path_brush_id(PathBrush brush)
 {

@@ -116,11 +116,11 @@ for f in (13, 14):
 
 # --- A control point: the line goes through it; a crease there (handles not in line) is a sharp corner ---------------
 def turn_at(pts, at):
-    """How sharply the line turns at its point nearest `at` (degrees), from a little way either side."""
+    """How sharply the line turns at its point nearest `at` (degrees), from the points either side of it."""
     k = min(range(len(pts)), key=lambda j: math.dist(pts[j], at))
     assert math.dist(pts[k], at) < 1e-4, ("the line goes through the control point", at, pts[k])
-    b = next(p for p in reversed(pts[:k]) if math.dist(p, at) > 0.02)
-    c = next(p for p in pts[k + 1:] if math.dist(p, at) > 0.02)
+    b = next(p for p in reversed(pts[:k]) if math.dist(p, at) > 1e-4)
+    c = next(p for p in pts[k + 1:] if math.dist(p, at) > 1e-4)
     u, w = (at[0] - b[0], at[1] - b[1]), (c[0] - at[0], c[1] - at[1])
     cos = (u[0] * w[0] + u[1] * w[1]) / (math.hypot(*u) * math.hypot(*w))
     return math.degrees(math.acos(max(-1.0, min(1.0, cos))))
@@ -152,6 +152,68 @@ for crease in (False, True):
     else:
         assert angle < 5, ("in line: smooth through it", angle)
 
+
+# --- Sliding dots (a timing change) leaves the line where it is: it is the path's own shape, not a curve through them --
+def off_line(q, pts):
+    best = 1e9
+    for a, b in zip(pts, pts[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        dd = dx * dx + dy * dy
+        t = max(0.0, min(1.0, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / dd)) if dd > 1e-14 else 0.0
+        best = min(best, math.dist(q, (a[0] + dx * t, a[1] + dy * t)))
+    return best
+
+
+for interp, control in (("SMOOTH", False), ("LINEAR", True)):
+    slid = mover({10: (0.0, 0.0), 20: (2.0, 2.0), 30: (4.0, 0.0)}, interp)
+    sa = dict(layer=str(slid.id))
+    if control:
+        assert ops.anim.motion_path_control_add(frame="15", **sa) == {'FINISHED'}
+        assert ops.anim.motion_path_control_move(frame="20", index="0", x="0.4", y="1.6", **sa) == {'FINISHED'}
+    before, _ = line(slid)
+    dots_before = [where(slid, f) for f in range(10, 31)]
+    assert ops.wm.tool_motion_path() == {'FINISHED'}
+    for f, u in ((12, 0.5), (13, 0.62), (17, 0.95)):
+        assert ops.anim.motion_path_slide(frame=str(f), progress=str(u), **sa) == {'FINISHED'}
+    ops.wm.tool_select()
+    after, _ = line(slid)
+    assert max(math.dist(a, b) for a, b in zip(dots_before, [where(slid, f) for f in range(10, 31)])) > 0.1,         "the dots slid"
+    worst = max(max(off_line(q, before) for q in after), max(off_line(q, after) for q in before))
+    assert worst < 2e-3, ("the line stays put while its dots slide", interp, control, worst)
+
+# A dot backing up along the path: the line goes back along it, from the dot before straight to it.
+back = mover({10: (0.0, 0.0), 20: (2.0, 2.0), 30: (4.0, 0.0)}, "SMOOTH")
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+assert ops.anim.motion_path_slide(frame="12", progress="0.5", layer=str(back.id)) == {'FINISHED'}
+assert ops.anim.motion_path_slide(frame="13", progress="0.3", layer=str(back.id)) == {'FINISHED'}
+ops.wm.tool_select()
+d12, d13 = where(back, 12), where(back, 13)
+pts, _ = line(back)
+j = next(k for k, q in enumerate(pts) if math.dist(q, d12) < 1e-6)
+k = next(k for k in range(j + 1, len(pts)) if math.dist(pts[k], d13) < 1e-6)
+drawn = sum(math.dist(a, b) for a, b in zip(pts[j:k], pts[j + 1:k + 1]))
+assert math.dist(d12, d13) > 0.1 and drawn < 1.2 * math.dist(d12, d13), ("straight back along it", drawn,
+                                                                         math.dist(d12, d13))
+
+# --- Under a flipped parent the shape is flipped too (it bends the way the dots do) --------------------------------------
+plain = mover({10: (0.0, 0.0), 20: (2.0, 2.0), 30: (4.0, 0.0)}, "SMOOTH")
+assert ops.anim.motion_path_control_add(frame="15", layer=str(plain.id)) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="20", index="0", x="0.4", y="1.6", layer=str(plain.id)) == {'FINISHED'}
+reference, _ = line(plain)
+flipped = mover({10: (0.0, 0.0), 20: (2.0, 2.0), 30: (4.0, 0.0)}, "SMOOTH")
+assert ops.anim.motion_path_control_add(frame="15", layer=str(flipped.id)) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="20", index="0", x="0.4", y="1.6", layer=str(flipped.id)) == {'FINISHED'}
+assert ops.layer.group() == {'FINISHED'}
+parent = layers.active
+doc.frame_current = 0
+parent.scale_x = -1.0
+for other in layers.all():
+    other.selected = other.id == flipped.id
+layers.active = flipped
+pts, _ = line(flipped)
+mirror = [(-x, y) for x, y in reference]
+worst = max(max(off_line(q, mirror) for q in pts), max(off_line(q, pts) for q in mirror))
+assert worst < 2e-3, ("the flipped path is the plain one mirrored", worst)
 
 # --- Overshoot is dashed, along the smooth line; the rest stays solid -------------------------------------------------
 over = mover({10: (0.0, 0.0), 20: (2.0, 1.0)}, "LINEAR")

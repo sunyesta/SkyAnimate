@@ -1904,113 +1904,45 @@ std::vector<PathQuietMark> motion_path_quiet_marks(const Document &doc, const Mo
   return out;
 }
 
-/* A control point between two frames' dots (the path goes through it, as a vector point's curve does): the line
- * passes through it too, and turns a corner there where its handles aren't in line (a crease). */
-struct PathLineControl {
-  bool has = false;
-  float2 at;
-  bool corner = false;
-};
-
-/* The control points of a path as drawn, each on the step between the two dots it lies between (index i: from dot
- * i - 1 to dot i). */
-static std::vector<PathLineControl> path_line_controls(const Document &doc, const MotionPath &p)
+/* The line from frame dot i - 1 to dot i: along the path's own shape where it is known (MotionPath::shape), else as a
+ * smooth curve through the dots (centripetal Catmull-Rom: it passes through every dot, never loops or overshoots
+ * between them), in steps about `step` long; the points after dot i - 1, ending on dot i. A held frame (dots on top of
+ * each other) and a key are where the curve starts afresh, its way there taken from its own side only, so a key's
+ * corner (Linear into Linear) stays a corner and a hold doesn't swing the line. */
+static void path_line_between(const MotionPath &p, size_t i, float step, std::vector<float2> &r_points)
 {
-  std::vector<PathLineControl> r(p.points.size());
-  if (p.points.size() < 2 || !motion_path_has_handles(doc, p.target)) {
-    return r;
+  if (i < p.shape_known.size() && p.shape_known[i]) {
+    r_points.insert(r_points.end(), p.shape[i].begin(), p.shape[i].end());
+    r_points.push_back(p.points[i]);
+    return;
   }
-  for (const MotionPathControl &c : motion_path_controls(doc, p.target)) {
-    const int k = c.near_frame - p.first;
-    if (k < 0 || k >= int(p.points.size())) {
-      continue;
-    }
-    /* Drawn where its frame's dot is drawn (relative to something, or Own Motion). */
-    const float2 at = c.at + (p.points[size_t(k)] - c.curve);
-    if (length(at - p.points[size_t(k)]) < 1e-6f) {
-      continue;
-    }
-    /* The step it is nearest: before its dot or after. */
-    const auto off = [&](int i) {
-      if (i < 1 || i >= int(p.points.size())) {
-        return std::numeric_limits<float>::max();
-      }
-      const float2 s0 = p.points[size_t(i - 1)], s1 = p.points[size_t(i)], d = s1 - s0;
-      const float dd = dot(d, d);
-      const float t = dd > 1e-12f ? std::clamp(dot(at - s0, d) / dd, 0.0f, 1.0f) : 0.0f;
-      return length(at - (s0 + d * t));
-    };
-    const int i = off(k) <= off(k + 1) ? k : k + 1;
-    if (i < 1 || i >= int(p.points.size())) {
-      continue;
-    }
-    const float2 hin = c.in_tip - c.at, hout = c.out_tip - c.at;
-    const bool in_line = length(hin) > 1e-9f && length(hout) > 1e-9f &&
-                         dot(normalize(hin), normalize(hout)) < -0.9995f;
-    r[size_t(i)] = {true, at, !in_line};
+  const float2 b = p.points[i - 1], c = p.points[i];
+  const float len = length(c - b);
+  const int steps = len > 1e-9f && step > 1e-9f ? std::clamp(int(std::ceil(len / step)), 1, 32) : 1;
+  if (steps == 1) {
+    r_points.push_back(c);
+    return;
   }
-  return r;
-}
-
-/* The line from frame dot i - 1 to dot i as a smooth curve through the dots (centripetal Catmull-Rom: it passes through
- * every dot, never loops or overshoots between them), in steps about `step` long; the points after dot i - 1, ending on
- * dot i. A held frame (dots on top of each other) and a key are where the curve starts afresh, its way there taken
- * from its own side only, so a key's corner (Linear into Linear) stays a corner and a hold doesn't swing the line. A
- * control point between the two dots is passed through, a corner there when it is a crease. */
-static void path_line_between(const MotionPath &p, const std::vector<PathLineControl> &controls, size_t i, float step,
-                              std::vector<float2> &r_points)
-{
   const auto is_key = [&](size_t k) {
     return std::binary_search(p.keys.begin(), p.keys.end(), p.first + int(k));
   };
-  /* The vertices around this step, in order: dots and the control points between them; a corner is where the curve
-   * starts afresh. */
-  struct Vertex {
-    float2 at;
-    bool corner;
-  };
-  std::vector<Vertex> seq;
-  size_t from = 0, to = 0;
-  const size_t lo = i >= 2 ? i - 2 : i - 1, hi = std::min(i + 1, p.points.size() - 1);
-  for (size_t k = lo; k <= hi; k++) {
-    if (k > lo && controls[k].has) {
-      seq.push_back({controls[k].at, controls[k].corner});
-    }
-    if (k == i - 1) {
-      from = seq.size();
-    }
-    if (k == i) {
-      to = seq.size();
-    }
-    seq.push_back({p.points[k], is_key(k)});
-  }
+  /* The dots either side, unless held there or a key between: then one mirrored across, so the end is straight on. */
+  const bool has_a = i >= 2 && !is_key(i - 1) && length(p.points[i - 2] - b) > 1e-6f;
+  const bool has_d = i + 1 < p.points.size() && !is_key(i) && length(p.points[i + 1] - c) > 1e-6f;
+  const float2 a = has_a ? p.points[i - 2] : b * 2.0f - c;
+  const float2 d = has_d ? p.points[i + 1] : c * 2.0f - b;
   const auto knot = [](float2 x, float2 y) { return std::max(std::sqrt(length(y - x)), 1e-5f); };
-  for (size_t v = from + 1; v <= to; v++) {
-    const float2 b = seq[v - 1].at, c = seq[v].at;
-    const float len = length(c - b);
-    const int steps = len > 1e-9f && step > 1e-9f ? std::clamp(int(std::ceil(len / step)), 1, 32) : 1;
-    if (steps == 1) {
-      r_points.push_back(c);
-      continue;
-    }
-    /* The vertices either side, unless held there or a corner between: then one mirrored across, so the end is
-     * straight on. */
-    const bool has_a = v >= 2 && !seq[v - 1].corner && length(seq[v - 2].at - b) > 1e-6f;
-    const bool has_d = v + 1 < seq.size() && !seq[v].corner && length(seq[v + 1].at - c) > 1e-6f;
-    const float2 a = has_a ? seq[v - 2].at : b * 2.0f - c;
-    const float2 d = has_d ? seq[v + 1].at : c * 2.0f - b;
-    const float t1 = knot(a, b), t2 = t1 + knot(b, c), t3 = t2 + knot(c, d);
-    for (int s = 1; s < steps; s++) {
-      const float t = t1 + (t2 - t1) * float(s) / float(steps);
-      const float2 a1 = a * ((t1 - t) / t1) + b * (t / t1);
-      const float2 a2 = b * ((t2 - t) / (t2 - t1)) + c * ((t - t1) / (t2 - t1));
-      const float2 a3 = c * ((t3 - t) / (t3 - t2)) + d * ((t - t2) / (t3 - t2));
-      const float2 b1 = a1 * ((t2 - t) / t2) + a2 * (t / t2);
-      const float2 b2 = a2 * ((t3 - t) / (t3 - t1)) + a3 * ((t - t1) / (t3 - t1));
-      r_points.push_back(b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1)));
-    }
-    r_points.push_back(c);
+  const float t1 = knot(a, b), t2 = t1 + knot(b, c), t3 = t2 + knot(c, d);
+  for (int s = 1; s < steps; s++) {
+    const float t = t1 + (t2 - t1) * float(s) / float(steps);
+    const float2 a1 = a * ((t1 - t) / t1) + b * (t / t1);
+    const float2 a2 = b * ((t2 - t) / (t2 - t1)) + c * ((t - t1) / (t2 - t1));
+    const float2 a3 = c * ((t3 - t) / (t3 - t2)) + d * ((t - t2) / (t3 - t2));
+    const float2 b1 = a1 * ((t2 - t) / t2) + a2 * (t / t2);
+    const float2 b2 = a2 * ((t3 - t) / (t3 - t1)) + a3 * ((t - t1) / (t3 - t1));
+    r_points.push_back(b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1)));
   }
+  r_points.push_back(c);
 }
 
 std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const MotionPath &p, const CanvasSample *under,
@@ -2025,7 +1957,6 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
   const std::vector<int> over = motion_path_overshoot_frames(doc, p.target);
   const auto is_over = [&](int frame) { return std::binary_search(over.begin(), over.end(), frame); };
   const ContrastColors colors = path_contrast_colors(p);
-  const std::vector<PathLineControl> controls = path_line_controls(doc, p);
   const std::function<bool(float2, Color &)> under_at = [&](float2 q, Color &c) { return under && under->at(q, c); };
   /* The step into frame `f` is outside the shot (before Start, or from End on): faded. */
   const auto before = [&](int f) {
@@ -2053,7 +1984,7 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
         run_before = before(f);
       }
       /* Smooth between the dots, so a fast curve reads as a curve, not corners. */
-      path_line_between(p, controls, i, piece * 0.5f, run);
+      path_line_between(p, i, piece * 0.5f, run);
       continue;
     }
     flush();
@@ -2061,7 +1992,7 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
     const ContrastPick pick = under_at((p.points[i - 1] + p.points[i]) * 0.5f, c) ? contrast_pick(c, colors.base)
                                                                                   : ContrastPick::Base;
     std::vector<float2> curve{p.points[i - 1]};
-    path_line_between(p, controls, i, piece * 0.5f, curve);
+    path_line_between(p, i, piece * 0.5f, curve);
     for (size_t k = 1; k < curve.size(); k++) {
       out.push_back({curve[k - 1], curve[k],
                      contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), true});
