@@ -2558,6 +2558,8 @@ struct ChannelRow {
   int media_part = 0;
   /* The Summary row (drawn with a band behind it). */
   bool summary = false;
+  /* A lone layer's row that is the Summary too: shown "Summary / <name>". */
+  bool merged = false;
   /* A group not shown itself, holding shown layers: listed (dimmed) to show where they are. */
   bool dim = false;
 };
@@ -2832,8 +2834,22 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       }
     }
   }
+  /* Summary and a lone layer showing the same keys: one row, "Summary / <layer>", the layer's own (its name makes it
+   * active, it folds), so nothing is listed twice. Not with pinned rows, another top row or the camera. */
+  if (rows.size() >= 2 && rows[0].summary && rows[1].layer != 0 && rows[1].depth == 0 && !rows[1].dim &&
+      std::count_if(rows.begin() + 1, rows.end(), [](const ChannelRow &r) { return r.depth == 0; }) == 1)
+  {
+    std::vector<Layer *> a = rows[0].layers, b = rows[1].layers;
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    if (a == b) {
+      rows[1].summary = true;
+      rows[1].merged = true;
+      rows.erase(rows.begin());
+    }
+  }
   /* A row the pick has moved off forgets being folded while it held it. */
-  std::erase_if(g_pick_folded, [&](const std::string &key) {
+  std::erase_if(g_pick_folded,[&](const std::string &key) {
     return std::none_of(rows.begin(), rows.end(), [&](const ChannelRow &r) { return r.holds_pick && r.fold == key; });
   });
   return rows;
@@ -3099,6 +3115,7 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
     info.fold = row.fold;
     info.open = row.open;
     info.summary = row.summary;
+    info.label = row.merged ? "Summary / " + row.name : row.name;
     info.dim = row.dim;
     info.holds_pick = row.holds_pick;
     if (row.filter.kinds != 0) {
@@ -4096,10 +4113,11 @@ static void timeline_body(Area &area, Context &C)
                           "so it goes along when they move or are retimed");
       }
     }
-    cut[r] = ImGui::CalcTextSize(row.name.c_str()).x > text_right - x;
+    const std::string shown_name = row.merged ? "Summary / " + row.name : row.name;
+    cut[r] = ImGui::CalcTextSize(shown_name.c_str()).x > text_right - x;
     ImGui::PushStyleColor(ImGuiCol_Text, col);
     ImGui::RenderTextEllipsis(dl, ImVec2(x, top + (row_h - font_size) * 0.5f), ImVec2(text_right, top + row_h),
-                              text_right, row.name.c_str(), nullptr, nullptr);
+                              text_right, shown_name.c_str(), nullptr, nullptr);
     ImGui::PopStyleColor();
     if (!row.pin_path.empty()) {
       /* Its pin, red: click to unpin. */

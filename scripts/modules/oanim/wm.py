@@ -602,7 +602,8 @@ def timeline_row_fold(row, open):
 
 def timeline_row_details(as_shown=False):
     """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
-    else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary,
+    else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary, label (as
+    shown: "Summary / <name>" when a lone layer's row is the Summary too),
     holds_pick (a folding row holding the picked points or bones: open while the pick lasts, unless
     folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow). as_shown=True lists them folded as the project keeps them (else
     every row open)."""

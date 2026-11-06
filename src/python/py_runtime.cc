@@ -494,6 +494,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["fold"] = row.fold;
       d["open"] = row.open;
       d["summary"] = row.summary;
+      d["label"] = row.label;
       d["dim"] = row.dim;
       d["holds_pick"] = row.holds_pick;
       d["frames"] = row.frames;

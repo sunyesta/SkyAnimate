@@ -61,7 +61,8 @@ doc.frame_current = 0
 # The group picked (it edits what's inside it): its layers nested under it, in the Layers editor's order.
 layers.active = group
 tree = names()
-assert tree[0] == (0, "Summary"), tree
+assert tree[0] == (0, "group") and row("group")["label"] == "Summary / group", \
+    ("the group alone at the top: the Summary too", tree)
 order = [l.name for l in group.children]
 at = tree.index((0, "group"))
 inside = [name for depth, name in tree[at + 1:] if depth == 1 and name in ("first", "second")]
@@ -69,7 +70,6 @@ assert inside == order, (inside, order, tree)
 assert (2, "Position") in tree and (2, "Drawing") in tree, tree
 assert tree.index((1, "second")) < tree.index((2, "Drawing")), "a layer's rows under it"
 assert "top" not in [name for depth, name in tree], "only what's picked"
-assert row("Summary")["frames"] == [0, 10, 20], row("Summary")
 assert row("group")["frames"] == [0, 10, 20], "a folding row shows what it holds"
 assert row("group")["layer"] == group.id and row("Drawing")["layer"] == 0
 
@@ -99,7 +99,7 @@ wm.set_ui_open("Timeline/" + row("first")["fold"], True)
 assert row("first", True)["open"]
 assert (2, "Position") in names(True)
 wm.set_ui_open("Timeline/" + row("group")["fold"], False)
-assert names(True) == [(0, "Summary"), (0, "group")], names(True)
+assert names(True) == [(0, "group")], names(True)
 
 # Points keyed point by point: a Points folder, with the selected points' keys red under it.
 wm.set_ui_open("Timeline/" + row("group")["fold"], True)

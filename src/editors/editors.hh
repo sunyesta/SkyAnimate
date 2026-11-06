@@ -196,6 +196,8 @@ struct TimelineRowInfo {
   std::string fold;
   bool open = false;
   bool summary = false;
+  /* As shown: "Summary / <name>" for a lone layer's row that is the Summary too, else the name. */
+  std::string label;
   /* A group not shown itself, listed dimmed for the shown layers inside it. */
   bool dim = false;
   /* A folding row holding the pick (points or bones): open while it lasts, unless folded since. */

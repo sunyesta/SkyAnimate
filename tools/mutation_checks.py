@@ -389,6 +389,7 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', '      const int controls = motion_path_controls_delete(*C.document, picks);', '      const int controls = 0;', 'X deletes control points', 'tests/test_motion_path_controls.py'),
     ('src/ops/motion_path_ops.cc', '      C.wm->path_handle_picks = {MotionPathHandlePick{targets.front(), end, false, index}};', '      (void)index;', 'a new control point picked alone', 'tests/test_motion_path_controls.py'),
     ('src/anim/motion_path.cc', "    const float2 goes = kind == 'G'   ? mc.at + offset", "    const float2 goes = kind == 'G'   ? mc.at", 'G moves picked control points', 'tests/test_motion_path_controls.py'),
+    ('src/editors/timeline.cc', '      rows.erase(rows.begin());', '      (void)0;', 'Summary and a lone layer one row', 'tests/test_timeline_summary_merge.py'),
 ]
 
 
