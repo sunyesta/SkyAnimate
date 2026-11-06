@@ -485,8 +485,27 @@ static bool *relations_set_keep_flag()
   return &keep;
 }
 
-/* A side of a 2 Axis Controller: its action, a list of the bone layer's, + to make one, and Left and Right can be made
- * from each other. Picking an action whose bone has keys where the knob has too asks whose stay. */
+/* A pencil, for a button that opens something to edit (the app has no icon font). */
+static void pencil_icon(ImDrawList *dl, ImVec2 center, float size, ImU32 color)
+{
+  /* Slanted up to the right: the body, a band at the top end, the tip at the bottom left. */
+  const ImVec2 dir(0.7071f, -0.7071f), across(0.7071f, 0.7071f);
+  const float half = size * 0.30f, len = size * 1.05f, tip = size * 0.42f;
+  const auto at = [&](float along, float side) {
+    return ImVec2(center.x + dir.x * along + across.x * side, center.y + dir.y * along + across.y * side);
+  };
+  const float back = len * 0.5f, front = -len * 0.5f + tip;
+  dl->AddQuadFilled(at(back, -half), at(back, half), at(front, half), at(front, -half), color);
+  dl->AddTriangleFilled(at(front, -half), at(front, half), at(-len * 0.5f, 0.0f), color);
+  /* A gap between the band and the body, as a pencil's ferrule. */
+  dl->AddLine(at(back - size * 0.22f, -half), at(back - size * 0.22f, half), ImGui::GetColorU32(ImGuiCol_Button),
+              std::max(1.0f, size * 0.10f));
+}
+
+/* A side of a 2 Axis Controller: its action, a list of the bone layer's (New Action at the bottom), and a button: the
+ * pencil opens its action (pressed while it is open; again, back to the mainline), + makes one for an empty side, and
+ * Left and Right can be made from each other. Picking an action whose bone has keys where the knob has too asks whose
+ * stay. */
 static void controller_side_row(Context &C, Layer &armature, const Bone &knob, int side)
 {
   static int pending_side = -1;
@@ -522,6 +541,13 @@ static void controller_side_row(Context &C, Layer &armature, const Bone &knob, i
         pick(action);
       }
     }
+    ImGui::Separator();
+    if (ImGui::Selectable("New Action")) {
+      operator_call(C, "armature.controller_action_new", {{"side", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make a new action, put it in this side and open it");
+    }
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -529,11 +555,40 @@ static void controller_side_row(Context &C, Layer &armature, const Bone &knob, i
                       "stays its bone's: the bone and the knob are linked, one set of keys");
   }
   ImGui::SameLine();
-  if (ImGui::Button("+", ImVec2(ImGui::GetFrameHeight(), 0))) {
-    operator_call(C, "armature.controller_action_new", {{"side", id}});
+  if (now.empty()) {
+    if (ImGui::Button("+", ImVec2(ImGui::GetFrameHeight(), 0))) {
+      operator_call(C, "armature.controller_action_new", {{"side", id}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Make a new action for this side and open it");
+    }
   }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Make a new action for this side and open it");
+  else {
+    const Document &doc = *C.document;
+    const bool open = doc.action == now && doc.action_layer == armature.id;
+    const float h = ImGui::GetFrameHeight();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    if (open) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    const bool clicked = ImGui::Button("##edit", ImVec2(h, h));
+    if (open) {
+      ImGui::PopStyleColor();
+    }
+    pencil_icon(ImGui::GetWindowDrawList(), ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.5f,
+                ImGui::GetColorU32(ImGuiCol_Text));
+    if (clicked) {
+      operator_call(C, "anim.action_set",
+                    {{"layer", std::to_string(armature.id)}, {"name", open ? std::string() : now}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      if (open) {
+        ImGui::SetTooltip("Editing %s: click to go back to the mainline", now.c_str());
+      }
+      else {
+        ImGui::SetTooltip("Edit %s", now.c_str());
+      }
+    }
   }
   if (can_mirror) {
     ImGui::SameLine();
