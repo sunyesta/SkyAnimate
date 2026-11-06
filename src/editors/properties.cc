@@ -1981,6 +1981,8 @@ static void bone_panel(Context &C, Layer &armature)
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         C.undo->push("Bone Head", doc);
       }
+      /* A pin is one point: no tail and no length to show (its length is kept, hidden, for converting back). */
+      if (!bone_is_pin(*active)) {
       label("Tail");
       if (ui_drag_float2("##bone_tail", &tail.x, 0.005f, -10000.0f, 10000.0f, "%.3f")) {
         armature_set_joints(armature, {{active->id, {head, tail}}});
@@ -1996,6 +1998,7 @@ static void bone_panel(Context &C, Layer &armature)
       ui_drag_float("##bone_length", &active->length, 0.005f, 0.0f, 1000.0f, "%.3f");
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         C.undo->push("Bone Length", doc);
+      }
       }
     }
     else {

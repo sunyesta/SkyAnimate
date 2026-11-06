@@ -54,6 +54,12 @@ length = bone("arm")["length"]
 # --- Convert To Pin: its connected children let go, right where they were ----------------------------------------------
 assert convert("arm", "PIN") == {'FINISHED'}
 assert bone("arm")["type"] == "PIN" and bone("arm")["shape"] == "BONE", bone("arm")
+assert "tail" not in bone("arm") and "length" not in bone("arm"), ("a pin is one point: no tail, no length", bone("arm"))
+try:
+    rig.bone_set("arm", length=3.0)
+    raise AssertionError("a pin has no length to set")
+except ValueError:
+    pass
 assert not bone("hand")["connected"], "nothing connects to a pin"
 assert close(bone("hand")["head"], (1, 0)) and close(bone("hand")["tail"], (2, 0)), ("the child stays put", bone("hand"))
 try:
@@ -99,9 +105,7 @@ doc.frame_current = 1
 rig.select_bone("hand")
 assert ops.armature.constraint_add(type="IK", bone="hand") == {'FINISHED'}
 rig.bone_constraint_set("hand", 0, target="goal")
-arm = bone("arm")
-assert abs(math.atan2(arm["tail"][1] - arm["head"][1], arm["tail"][0] - arm["head"][0])) < 1e-4, \
-    ("the pin isn't turned by the chain", arm)
+assert close(bone("hand")["head"], (1, 0)), ("the pin isn't turned by the chain: the hand stays", bone("hand"))
 hand = bone("hand")
 assert abs(math.atan2(hand["tail"][1] - hand["head"][1], hand["tail"][0] - hand["head"][0])) > 0.1, "the hand turns"
 rig.bone_constraint_set("hand", 0, enabled=False)

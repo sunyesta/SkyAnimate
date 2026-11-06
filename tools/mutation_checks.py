@@ -458,6 +458,9 @@ PENDING = [
     ('src/anim/animation.cc', '  if (bone && bone_is_pin(*bone)) {\n    /* Its length was kept', '  if (false) {\n    /* Its length was kept', 'a pin converts back to Regular', 'tests/test_pin_bones.py'),
     ('src/io/oanim_file.cc', '    if (shape == "PIN" || bj.value("type", std::string()) == "PIN") {', '    if (bj.value("type", std::string()) == "PIN") {', "old files' Pin shape opens as the Pin type", 'tests/test_pin_bones.py'),
     ('src/io/oanim_file.cc', '      if (b.type == BoneType::Pin) {\n        bj["type"] = "PIN";', '      if (false) {\n        bj["type"] = "PIN";', 'the Pin type is saved', 'tests/test_pin_bones.py'),
+    ('src/python/py_runtime.cc', '      if (!bone_is_pin(b)) {\n        d["length"] = b.length;', '      if (true) {\n        d["length"] = b.length;', 'a pin shows no length in Python', 'tests/test_pin_bones.py'),
+    ('src/python/py_runtime.cc', '      if (!bone_is_pin(b)) {\n        d["tail"] =', '      if (true) {\n        d["tail"] =', 'a pin shows no tail in Python', 'tests/test_pin_bones.py'),
+    ('src/python/py_runtime.cc', '        if (bone_is_pin(bone)) {\n          throw py::value_error("a pin is one point: it has no length");', '        if (false) {\n          throw py::value_error("a pin is one point: it has no length");', "a pin's length can't be set", 'tests/test_pin_bones.py'),
 ]
 
 

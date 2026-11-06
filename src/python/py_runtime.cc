@@ -2859,7 +2859,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["angle"] = b.angle;
       d["setup_position"] = py::make_tuple(b.setup_position.x, b.setup_position.y);
       d["setup_angle"] = b.setup_angle;
-      d["length"] = b.length;
+      /* A pin is one point: no length (kept hidden for converting back) and no tail. */
+      if (!bone_is_pin(b)) {
+        d["length"] = b.length;
+      }
       d["scale"] = py::make_tuple(b.scale.x, b.scale.y);
       d["depth"] = b.depth;
       d["strength"] = b.strength;
@@ -2897,7 +2900,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                                    py::make_tuple(shades.active.r, shades.active.g, shades.active.b));
       d["active"] = b.id == layer.active_bone;
       d["head"] = py::make_tuple(poses[i].head.x, poses[i].head.y);
-      d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
+      if (!bone_is_pin(b)) {
+        d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
+      }
       d["type"] = bone_is_controller(b) ? "CONTROLLER_2D" : bone_is_pin(b) ? "PIN" : "REGULAR";
       if (const Bone *knob = controller_of_dial(layer, b)) {
         d["controller"] = knob->name;
@@ -2966,6 +2971,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
       }
       else if (key == "length") {
+        if (bone_is_pin(bone)) {
+          throw py::value_error("a pin is one point: it has no length");
+        }
         bone.length = std::max(0.0f, value.cast<float>());
       }
       else if (key == "controller_frame_size") {
