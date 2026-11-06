@@ -4972,6 +4972,29 @@ void layers_select_keys(const std::vector<Layer *> &layers, int first, int last,
 }
 
 
+bool layers_key_selected_outside(const std::vector<Layer *> &layers, const std::set<const void *> &channels)
+{
+  bool any = false;
+  for (Layer *layer : layers) {
+    layer_for_each_channel<false>(*layer, [&](auto &ch, auto & /*value*/) {
+      if (any || ch.constant) {
+        return;
+      }
+      const bool among = channels.count(&ch) > 0;
+      for (const auto &key : ch.keys) {
+        if (key.selected && (!among || key.frame == 0)) {
+          any = true;
+          return;
+        }
+      }
+    });
+    if (any) {
+      break;
+    }
+  }
+  return any;
+}
+
 void layers_deselect_keys(const std::vector<Layer *> &layers)
 {
   for (Layer *layer : layers) {

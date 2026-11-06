@@ -434,12 +434,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("timeline_key_header", []() {
     py::dict d;
     const KeyHeaderFocus focus = timeline_key_header_focus(current_context());
-    static const char *const modes[] = {"NEW", "SELECTED", "PATH"};
+    static const char *const modes[] = {"NEW", "SELECTED", "PATH", "STRETCHES"};
     d["parts"] = timeline_key_header_parts();
     d["editing"] = focus.mode != 0;
     d["mode"] = std::string(modes[focus.mode]);
     d["label"] = focus.label;
     d["span"] = py::make_tuple(focus.start, focus.end);
+    d["picked"] = focus.picked;
+    py::list targets;
+    for (const MotionPathTarget &t : focus.targets) {
+      targets.append(py::make_tuple(t.layer, t.bone, t.head, t.point));
+    }
+    d["targets"] = targets;
     const uint32_t c = key_header_color(focus.mode, false);
     d["color"] = py::make_tuple(int(c & 0xff), int((c >> 8) & 0xff), int((c >> 16) & 0xff));
     return d;
@@ -481,6 +487,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return timeline_scrollbar_drag(start, end, part, frames);
   });
   m.def("timeline_row_fold", [](int row, bool open) { return timeline_row_fold_at(current_context(), row, open); });
+  /* An Alt click (Shift Alt with shift=True) on `frame` of row `row` of timeline_rows(True). */
+  m.def("timeline_row_alt_click", [](int row, int frame, bool shift) {
+    return timeline_row_alt_click(current_context(), row, frame, shift);
+  }, py::arg("row"), py::arg("frame"), py::arg("shift") = false);
   m.def("timeline_rows", [](bool as_shown) {
     py::list result;
     for (const TimelineRowInfo &row : timeline_rows_list(current_context(), as_shown)) {
@@ -497,6 +507,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["label"] = row.label;
       d["dim"] = row.dim;
       d["holds_pick"] = row.holds_pick;
+      d["teal"] = row.teal.second > row.teal.first ? py::object(py::make_tuple(row.teal.first, row.teal.second)) : py::none();
       d["frames"] = row.frames;
       d["filler_frames"] = row.filler_frames;
       result.append(d);
@@ -1588,18 +1599,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("timing_chart_ticks_editable", []() {
     return timeline_path_strip_ticks_editable(current_context().wm->tool_settings);
   });
-  /* The stretch the timeline's Path Timing panel shows (motion_path_timing_stretch), or None. */
+  /* The stretch the timeline's Path Timing panel shows (motion_path_timing_shown), or None; with picks in different
+   * stretches, which of them ("of": index, count). */
   m.def("motion_path_timing_panel", []() -> py::object {
     Context &C = current_context();
     const Document &doc = *C.document;
     MotionPathTarget t;
     MotionPathStretch s;
-    if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), C.wm->path_timing_target,
-                                    C.wm->path_timing_end, C.wm->path_timing_frame, t, s))
-    {
+    MotionPathPicks picks;
+    if (!motion_path_timing_shown(C, t, s, &picks)) {
       return py::none();
     }
     py::dict d;
+    d["of"] = picks.spans > 1 ? py::object(py::make_tuple(picks.shown + 1, int(picks.stretches.size()))) : py::none();
+    d["bone"] = t.bone;
+    d["head"] = t.head;
     d["label"] = motion_path_label(doc, t);
     d["layer"] = t.layer;
     d["start"] = s.start;

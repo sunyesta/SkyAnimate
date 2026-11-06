@@ -108,7 +108,7 @@ assert not ops.anim.motion_path_handles_reset.poll(), "no handles picked: X is D
 # --- The key header: the stretch the handle shapes ---------------------------------------------------------------------
 assert ops.anim.motion_path_handle_select(frame="20", out="1", **args) == {'FINISHED'}
 h = wm.timeline_key_header()
-assert h["mode"] == "SELECTED", h
+assert h["mode"] == "PATH" and h["picked"] and tuple(h["span"]) == (20, 30), ("its stretch, teal", h)
 assert wm.timeline_key_header_call("anim.keys_interpolation_set", interp="STEP")
 assert key(30)["interp"] == "STEP" and key(20)["interp"] != "STEP", "an out handle: the stretch to the next key"
 assert ops.anim.motion_path_handle_select(frame="20", out="0", **args) == {'FINISHED'}

@@ -2029,6 +2029,66 @@ bool motion_path_stretch_at(const Document &doc, const MotionPathTarget &target,
   return true;
 }
 
+std::vector<MotionPathPickedStretch> motion_path_picked_stretches(
+    const Document &doc, const std::vector<MotionPathTarget> &key_targets,
+    const std::vector<std::pair<MotionPathTarget, int>> &dots, const std::vector<MotionPathHandlePick> &handles)
+{
+  std::vector<MotionPathPickedStretch> out;
+  const auto add = [&](const MotionPathTarget &t, int frame) {
+    MotionPathPickedStretch p{t, 0, 0};
+    if (motion_path_stretch_at(doc, t, frame, p.start, p.end) && std::find(out.begin(), out.end(), p) == out.end()) {
+      out.push_back(p);
+      return true;
+    }
+    return false;
+  };
+  for (const auto &[t, f] : dots) {
+    add(t, f);
+  }
+  for (const MotionPathHandlePick &hp : handles) {
+    add(hp.target, hp.out ? hp.frame + 1 : hp.frame);
+  }
+  for (const auto &[t, f] : motion_path_selected_keys(doc, key_targets)) {
+    /* The side the frame shown is on; where there is none (a path's end), the other. */
+    const bool after = doc.frame_current > f;
+    MotionPathPickedStretch p{t, 0, 0};
+    const bool arriving = motion_path_stretch_at(doc, t, f, p.start, p.end) && p.end == f;
+    const bool leaving = motion_path_stretch_at(doc, t, f + 1, p.start, p.end) && p.start == f;
+    if ((after && leaving) || (!after && !arriving && leaving)) {
+      add(t, f + 1);
+    }
+    else if (arriving) {
+      add(t, f);
+    }
+  }
+  return out;
+}
+
+int motion_path_picked_spans(const std::vector<MotionPathPickedStretch> &picks)
+{
+  std::set<std::pair<int, int>> spans;
+  for (const MotionPathPickedStretch &p : picks) {
+    spans.insert({p.start, p.end});
+  }
+  return int(spans.size());
+}
+
+std::set<const void *> motion_path_dot_channels(const Document &doc, const MotionPathTarget &target)
+{
+  std::set<const void *> out;
+  if (target.drawing) {
+    if (Layer *layer = layer_find(const_cast<Document &>(doc), target.layer)) {
+      drawing_channels(const_cast<Document &>(doc), *layer, [&](auto &ch) {
+        out.insert(&ch);
+        return true;
+      });
+    }
+    return out;
+  }
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) { out.insert(&ch); });
+  return out;
+}
+
 bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame)
 {
   bool breakdown = false;

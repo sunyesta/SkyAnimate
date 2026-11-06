@@ -42,6 +42,118 @@ std::vector<MotionPathTarget> motion_path_timing_targets(Context &C)
   return motion_path_timing_targets(*C.document, editable_layers(C), C.wm && C.wm->tool_settings.path_edit_layer);
 }
 
+std::vector<MotionPathTarget> motion_path_key_pick_targets(Context &C)
+{
+  std::vector<MotionPathTarget> out;
+  const bool edit_layer = C.wm && C.wm->tool_settings.path_edit_layer;
+  for (const MotionPathTarget &t : motion_path_timing_targets(C)) {
+    /* Edit Layer off: bones and points, never the layer's own position. */
+    if (edit_layer == (!t.bone && !t.point && !t.drawing)) {
+      out.push_back(t);
+    }
+  }
+  return out;
+}
+
+MotionPathPicks motion_path_picks(Context &C)
+{
+  MotionPathPicks r;
+  if (!C.document || !C.wm || !C.document->motion_paths) {
+    return r;
+  }
+  const WindowManager &wm = *C.wm;
+  r.stretches = motion_path_picked_stretches(*C.document, motion_path_key_pick_targets(C), wm.path_dots,
+                                             wm.path_handle_picks);
+  r.spans = motion_path_picked_spans(r.stretches);
+  r.shown = int(r.stretches.size()) - 1;
+  for (size_t i = 0; i < r.stretches.size(); i++) {
+    const MotionPathPickedStretch &p = r.stretches[i];
+    if (p.target.same(wm.path_timing_target) && p.start < wm.path_timing_end && wm.path_timing_end <= p.end) {
+      r.shown = int(i);
+    }
+  }
+  return r;
+}
+
+/* The stretch of `t` holding the picked one (a span across breakdowns is one). */
+static bool stretch_holding(const Document &doc, const MotionPathPickedStretch &p, MotionPathStretch &r_stretch)
+{
+  for (const MotionPathStretch &s : motion_path_stretches(doc, p.target)) {
+    if (s.start <= p.start && p.end <= s.end) {
+      r_stretch = s;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool motion_path_timing_shown(Context &C, MotionPathTarget &r_target, MotionPathStretch &r_stretch,
+                              MotionPathPicks *r_picks)
+{
+  const Document &doc = *C.document;
+  const WindowManager &wm = *C.wm;
+  const MotionPathPicks picks = motion_path_picks(C);
+  if (r_picks) {
+    *r_picks = picks;
+  }
+  if (picks.shown >= 0) {
+    const MotionPathPickedStretch &p = picks.stretches[size_t(picks.shown)];
+    if (stretch_holding(doc, p, r_stretch)) {
+      r_target = p.target;
+      return true;
+    }
+  }
+  return motion_path_timing_stretch(doc, motion_path_timing_targets(C), wm.path_timing_target, wm.path_timing_end,
+                                    wm.path_timing_frame, r_target, r_stretch);
+}
+
+bool motion_path_pick_at(Context &C, const std::vector<MotionPathTarget> &targets, int frame, bool extend)
+{
+  Document &doc = *C.document;
+  WindowManager &wm = *C.wm;
+  /* Edits not yet recorded belong to the frame they were made at. */
+  animation_record(doc);
+  PathDotsSync sync{C};
+  if (!extend) {
+    std::vector<Layer *> all;
+    for (const Layer *l : document_layers_flat(doc)) {
+      all.push_back(layer_find(doc, l->id));
+    }
+    layers_deselect_keys(all);
+    wm.path_dots.clear();
+  }
+  wm.path_handle_picks.clear();
+  bool picked = false;
+  for (const MotionPathTarget &t : targets) {
+    Layer *layer = layer_find(doc, t.layer);
+    int start = 0, end = 0;
+    if (!layer) {
+      continue;
+    }
+    if (motion_path_is_key(doc, t, frame)) {
+      layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, t));
+      wm.path_timing_target = t;
+      wm.path_timing_end = frame;
+      picked = true;
+    }
+    else if (frame > 0 && motion_path_stretch_at(doc, t, frame, start, end)) {
+      if (std::none_of(wm.path_dots.begin(), wm.path_dots.end(),
+                       [&](const auto &d) { return d.first.same(t) && d.second == frame; }))
+      {
+        wm.path_dots.push_back({t, frame});
+      }
+      wm.path_timing_target = t;
+      wm.path_timing_end = end;
+      picked = true;
+    }
+  }
+  doc.frame_current = frame;
+  wm.path_timing_frame = frame;
+  animation_sync(doc);
+  C.undo->mark_changed();
+  return picked;
+}
+
 namespace {
 
 /* The targets an operator works on: layer=id (with bone=name, and head=1 for its head's path rather than its tip's,
@@ -1170,29 +1282,48 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_timing_step";
     ot.name = "Previous/Next Stretch";
-    ot.description = "The Path Timing panel shows the stretch step= (-1 or 1) before or after the one it shows";
+    ot.description = "The Path Timing panel shows the stretch step= (-1 or 1) before or after the one it shows. "
+                     "With picks in different stretches, the next or previous of those (the picks kept); with one "
+                     "stretch picked, the one beside it is picked instead (the dot in its middle, or its end key) "
+                     "and the frame goes there";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
-      const Document &doc = *C.document;
+      Document &doc = *C.document;
       WindowManager &wm = *C.wm;
       MotionPathTarget t;
       MotionPathStretch shown;
-      if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), wm.path_timing_target,
-                                      wm.path_timing_end, wm.path_timing_frame, t, shown))
-      {
+      MotionPathPicks picks;
+      if (!motion_path_timing_shown(C, t, shown, &picks)) {
         return OpStatus::Cancelled;
       }
-      const std::vector<MotionPathStretch> stretches = motion_path_stretches(doc, t);
       const int step = op_arg_int(C, "step", 1) < 0 ? -1 : 1;
+      if (picks.spans > 1) {
+        /* Shown one by one, round and round; what is picked stays. */
+        const int n = int(picks.stretches.size());
+        const MotionPathPickedStretch &p = picks.stretches[size_t(((picks.shown + step) % n + n) % n)];
+        wm.path_timing_target = p.target;
+        wm.path_timing_end = p.end;
+        wm.path_timing_frame = doc.frame_current;
+        return OpStatus::Finished;
+      }
+      const std::vector<MotionPathStretch> stretches = motion_path_stretches(doc, t);
       for (size_t i = 0; i < stretches.size(); i++) {
         const int j = int(i) + step;
-        if (stretches[i].end == shown.end && j >= 0 && j < int(stretches.size())) {
-          wm.path_timing_target = t;
-          wm.path_timing_end = stretches[size_t(j)].end;
-          wm.path_timing_frame = doc.frame_current;
+        if (stretches[i].end != shown.end || j < 0 || j >= int(stretches.size())) {
+          continue;
+        }
+        const MotionPathStretch &next = stretches[size_t(j)];
+        if (picks.spans == 1) {
+          /* Kept in step with the rest: the stretch beside is picked, at its middle (a dot), else its end key. */
+          const int frame = next.end - next.start >= 2 ? (next.start + next.end) / 2 : next.end;
+          motion_path_pick_at(C, {t}, frame, false);
           return OpStatus::Finished;
         }
+        wm.path_timing_target = t;
+        wm.path_timing_end = next.end;
+        wm.path_timing_frame = doc.frame_current;
+        return OpStatus::Finished;
       }
       return OpStatus::Cancelled;
     };

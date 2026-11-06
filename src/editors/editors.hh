@@ -8,9 +8,11 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "anim/path_brush.hh"
+#include "data/document.hh"
 #include "anim/sculpt.hh"
 #include "editors/tool_shelf.hh"
 
@@ -202,6 +204,9 @@ struct TimelineRowInfo {
   bool dim = false;
   /* A folding row holding the pick (points or bones): open while it lasts, unless folded since. */
   bool holds_pick = false;
+  /* Shaded teal (the selected stretch, first and last frame) on this row: the most specific row shown of a channel
+   * moving its dots. (0, 0) when not. */
+  std::pair<int, int> teal{0, 0};
   /* The frames it shows keys on, and those whose keys are all fillers (drawn grey and hollow). */
   std::vector<int> frames;
   std::vector<int> filler_frames;
@@ -212,7 +217,8 @@ struct TimelineRowInfo {
 /* The timeline header's key group, in order, whether it edits the selected keys (red) or sets what
  * new keys get (grey), and its colour either way. */
 std::vector<std::string> timeline_key_header_parts();
-/* 0: new keys' (grey), 1: the selected keys' or picked path dots' (red), 2: the path's stretch at the playhead (teal). */
+/* 0: new keys' (grey), 1: the selected keys' (red), 2: the selected stretch (teal: the one the Motion Path tool's picks
+ * are in, else the path's at the playhead), 3: picks in different stretches (grey, editing them all). */
 uint32_t key_header_color(int mode, bool hovered);
 /* What the header's key group edits now: mode as key_header_color's; in the teal mode the stretch (its target's label,
  * first and last frame). */
@@ -220,6 +226,9 @@ struct KeyHeaderFocus {
   int mode = 0;
   std::string label;
   int start = 0, end = 0;
+  /* Teal from picks (not the playhead), and whose stretch it is. */
+  bool picked = false;
+  std::vector<MotionPathTarget> targets;
 };
 KeyHeaderFocus timeline_key_header_focus(Context &C);
 /* Test hook: runs an operator as the header's buttons do (on what it edits now). */
@@ -242,6 +251,9 @@ void timeline_row_fold(const std::string &key, bool fold_default, bool holds_pic
 void tool_follow_active_layer(Context &C);
 /* The same for row `row` as timeline_rows_list(as_shown=true) lists them; false when it doesn't fold. */
 bool timeline_row_fold_at(Context &C, int row, bool open);
+/* An Alt click on `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them), Shift held or not:
+ * anim.timeline_stretch_pick on its channels. False when it did nothing. */
+bool timeline_row_alt_click(Context &C, int row, int frame, bool shift);
 /* `as_shown`: folded rows as the project keeps them (else every row open). */
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown = false);
 /* Text editor, in text_editor.cc. */

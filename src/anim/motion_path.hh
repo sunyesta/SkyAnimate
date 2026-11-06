@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -163,6 +164,29 @@ bool motion_path_key_selected(const Document &doc, const MotionPathTarget &targe
 /* The stretch of the target's keys (every channel its path's keys are on) that `frame` is in or ends: the keys before
  * and at its end, stepped or moving. False before its first key's stretch or past its last key. */
 bool motion_path_stretch_at(const Document &doc, const MotionPathTarget &target, int frame, int &r_start, int &r_end);
+/* A stretch picked with the Motion Path tool: of `target`, from its key on `start` to its key on `end`. */
+struct MotionPathPickedStretch {
+  MotionPathTarget target;
+  int start = 0, end = 0;
+  bool operator==(const MotionPathPickedStretch &o) const
+  {
+    return target.same(o.target) && start == o.start && end == o.end;
+  }
+};
+/* The stretches picked (the selected stretch the key header, the timeline's rows and the Path Timing panel share):
+ * each picked dot's; each picked path handle's (an in handle's the stretch its key ends, an out handle's the next);
+ * and each selected key's of the channel moving the dot of one of `key_targets`, on the side of the frame shown (with
+ * the frame on the key itself, the stretch arriving at it; a path's first and last keys have one side). In that order,
+ * each once. */
+std::vector<MotionPathPickedStretch> motion_path_picked_stretches(
+    const Document &doc, const std::vector<MotionPathTarget> &key_targets,
+    const std::vector<std::pair<MotionPathTarget, int>> &dots, const std::vector<MotionPathHandlePick> &handles);
+/* How many different spans of frames (first and last frame) the picked stretches cover: with one, the stretch is
+ * selected (teal); with more, picks are in different stretches. */
+int motion_path_picked_spans(const std::vector<MotionPathPickedStretch> &picks);
+/* The channels that move the target's dot (a tip's bone angle, else its position; a drawing's every channel): the
+ * timeline rows its selected stretch is shaded on. */
+std::set<const void *> motion_path_dot_channels(const Document &doc, const MotionPathTarget &target);
 /* Whether the target's key on `frame` is a breakdown (drawn as a blue circle). */
 bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &target, int frame);
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);

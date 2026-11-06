@@ -431,6 +431,20 @@ PENDING = [
     ('src/anim/motion_path.cc', '      mirrored = (cv > 0.0f) != (cp > 0.0f);\n', '      mirrored = false && (cv > 0.0f) != (cp > 0.0f);\n', 'the path shape flips under a flipped parent', 'tests/test_motion_path_smooth_line.py'),
     ('src/anim/motion_path.cc', '    if (s1 < s0) {\n      std::reverse(', '    if (false) {\n      std::reverse(', 'the path shape backs up with its dots', 'tests/test_motion_path_smooth_line.py'),
     ('src/anim/motion_path.cc', '    r_line = stretch_control_line(keys, i, 96);\n', '    r_line = stretch_control_line(keys, i, 6);\n', 'the path shape is fine enough to read smooth', 'tests/test_motion_path_smooth_line.py'),
+    ('src/anim/motion_path.cc', '    const bool after = doc.frame_current > f;\n', '    const bool after = false && doc.frame_current > f;\n', "a picked key: the stretch on the playhead's side", 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '    if (picks.spans > 1) {\n      /* Picks in different stretches: no one stretch', '    if (false) {\n      /* Picks in different stretches: no one stretch', 'picks in different stretches: no teal, "N stretches"', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '    out[r] = !below;\n', '    out[r] = true;\n', 'teal on the most specific row shown alone', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '      set(kt, kf, false);\n      unkeys_.push_back({kt, kf});\n', '      unkeys_.push_back({kt, kf});\n', 'a picked key outside the stretch is left out while the header acts', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '    for (const auto &[kt, kf] : unkeys_) {\n      set(kt, kf, true);\n', '    for (const auto &[kt, kf] : unkeys_) {\n      set(kt, kf, false);\n', 'the picked key is picked again after the header acts', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '    if (any_selected && timeline_keys_selected_outside(C, layers, path_channels)) {\n', '    if (false && any_selected && timeline_keys_selected_outside(C, layers, path_channels)) {\n', 'other keys selected with the picks: red', 'tests/test_selected_stretch.py'),
+    ('src/editors/timeline.cc', '        f.targets.push_back(p.target);\n', '        (void)p;\n', 'one stretch on two paths: teal on both rows', 'tests/test_selected_stretch.py'),
+    ('src/ops/motion_path_ops.cc', '  if (picks.shown >= 0) {\n', '  if (false && picks.shown >= 0) {\n', 'the Path Timing panel shows the picked stretch', 'tests/test_motion_path_timing.py'),
+    ('src/ops/motion_path_ops.cc', '      r.shown = int(i);\n', '      (void)i;\n', 'the panel shows the stretch last picked on', 'tests/test_selected_stretch.py'),
+    ('src/ops/motion_path_ops.cc', '      if (picks.spans > 1) {\n        /* Shown one by one', '      if (false) {\n        /* Shown one by one', "the panel's arrows step through picks in different stretches", 'tests/test_selected_stretch.py'),
+    ('src/ops/motion_path_ops.cc', '        if (picks.spans == 1) {\n          /* Kept in step', '        if (false) {\n          /* Kept in step', 'with one stretch picked the arrows pick the next', 'tests/test_selected_stretch.py'),
+    ('src/ops/motion_path_ops.cc', '  doc.frame_current = frame;\n  wm.path_timing_frame = frame;\n', '  wm.path_timing_frame = frame;\n', 'Alt click goes to the frame clicked', 'tests/test_selected_stretch.py'),
+    ('src/ops/anim_ops.cc', '            if (std::any_of(moving.begin(), moving.end(), [&](const void *ch) { return row.count(ch) > 0; })) {\n', '            if (true) {\n', "Alt click picks the row's own paths' dots", 'tests/test_selected_stretch.py'),
+    ('src/ops/anim_ops.cc', '        layers_select_keys(layers, *end, *end, true, filter);\n', '        (void)end;\n', "Alt click without the tool selects the stretch's end key", 'tests/test_selected_stretch.py'),
 ]
 
 

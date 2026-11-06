@@ -205,7 +205,7 @@ ops.ed.undo()
 assert close(progress(line, 10)[4], 0.4)
 assert ops.anim.motion_path_dot_speed(frame="10", speed="2", **args) == {'CANCELLED'}, "on a key"
 
-# --- The Path Timing panel: the stretch of the last thing picked on, stepped by its arrows ----------------------
+# --- The Path Timing panel: the stretch picked, its arrows picking the one beside -----------------------------------
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 doc.frame_current = 15
 panel = oanim.wm.motion_path_timing_panel()
@@ -226,10 +226,13 @@ assert ops.anim.motion_path_timing_step(step="1") == {'CANCELLED'}, "none after 
 assert ops.anim.motion_path_select(frame="20", **args) == {'FINISHED'}
 assert oanim.wm.motion_path_timing_panel()["end"] == 20, "a key picked: the stretch arriving at it"
 
-# Once the frame changes it follows the frame shown again.
+# A dot picked: its stretch is the selected one, shown whatever the frame.
 assert ops.anim.motion_path_select(frame="25", **args) == {'FINISHED'}
 assert oanim.wm.motion_path_timing_panel()["end"] == 30
 doc.frame_current = 16
+assert oanim.wm.motion_path_timing_panel()["end"] == 30, "the picked stretch, not the playhead's"
+# Nothing picked: it follows the frame shown, a stretch stepped to shown while the frame stays.
+assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 assert oanim.wm.motion_path_timing_panel()["end"] == 20, "the playhead's stretch"
 assert ops.anim.motion_path_timing_step(step="1") == {'FINISHED'}
 assert oanim.wm.motion_path_timing_panel()["end"] == 30, "stepped to: shown while the frame stays"

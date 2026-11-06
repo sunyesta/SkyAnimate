@@ -353,9 +353,8 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
         dots.push_back(df);
       }
     }
-    MotionPathTarget focus_target;
     int focus_start = 0, focus_end = 0;
-    if (timeline_key_focus_span(focus_target, focus_start, focus_end) && focus_target.same(t)) {
+    if (timeline_key_focus_span(t, focus_start, focus_end)) {
       dl->AddRectFilled(ImVec2(x_of(float(focus_start)), top + 1.0f), ImVec2(x_of(float(focus_end)), top + lane_h - 1.0f),
                         KEY_FOCUS_FILL);
     }
@@ -1060,22 +1059,27 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   }
   MotionPathTarget t;
   MotionPathStretch s;
-  if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), wm.path_timing_target,
-                                  wm.path_timing_end, wm.path_timing_frame, t, s))
-  {
+  MotionPathPicks picks;
+  if (!motion_path_timing_shown(C, t, s, &picks)) {
     ImGui::TextWrapped("Trace something with keys a few frames apart: its stretches show here.");
     ImGui::EndChild();
     return;
   }
   /* Which thing and stretch, with arrows to the ones either side. */
   if (ImGui::ArrowButton("##stretch_prev", ImGuiDir_Left)) {
-    wm.path_timing_target = t;
-    wm.path_timing_end = s.end;
-    wm.path_timing_frame = doc.frame_current;
+    if (picks.stretches.empty()) {
+      wm.path_timing_target = t;
+      wm.path_timing_end = s.end;
+      wm.path_timing_frame = doc.frame_current;
+    }
     operator_call(C, "anim.motion_path_timing_step", {{"step", "-1"}});
   }
   ImGui::SameLine();
-  const std::string title = motion_path_label(doc, t) + "  " + std::to_string(s.start) + "-" + std::to_string(s.end);
+  /* Picks in different stretches: which of them this is; the arrows go through them. */
+  std::string title = motion_path_label(doc, t) + "  " + std::to_string(s.start) + "-" + std::to_string(s.end);
+  if (picks.spans > 1) {
+    title = std::to_string(picks.shown + 1) + " of " + std::to_string(picks.stretches.size()) + ":  " + title;
+  }
   const float arrow_w = ImGui::GetFrameHeight();
   const float title_w = std::max(w - arrow_w * 2.0f - ImGui::GetStyle().ItemSpacing.x * 2.0f, 10.0f);
   const ImVec2 tp = ImGui::GetCursorScreenPos();
@@ -1084,9 +1088,11 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
                             ImVec2(tp.x + title_w, tp.y + arrow_w), tp.x + title_w, title.c_str(), nullptr, nullptr);
   ImGui::SameLine();
   if (ImGui::ArrowButton("##stretch_next", ImGuiDir_Right)) {
-    wm.path_timing_target = t;
-    wm.path_timing_end = s.end;
-    wm.path_timing_frame = doc.frame_current;
+    if (picks.stretches.empty()) {
+      wm.path_timing_target = t;
+      wm.path_timing_end = s.end;
+      wm.path_timing_frame = doc.frame_current;
+    }
     operator_call(C, "anim.motion_path_timing_step", {{"step", "1"}});
   }
   /* The graph: as tall as there is room for, under the fields and buttons. */

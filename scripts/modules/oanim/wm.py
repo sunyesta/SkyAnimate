@@ -391,7 +391,8 @@ def timing_chart_ticks_editable():
 
 def motion_path_timing_panel():
     """The stretch the timeline's Path Timing panel shows: a dict with "label", "layer", "start", "end", "progress" (as
-    motion_path_timing gives them) and "sidebar" (whether the timeline's sidebar is open), or None."""
+    motion_path_timing gives them), "bone" and "head" (whose path), "sidebar" (whether the timeline's sidebar is
+    open) and "of" ((n, count): with picks in different stretches, which of them it shows; else None), or None."""
     return _oanim.motion_path_timing_panel()
 
 
@@ -546,9 +547,11 @@ def timeline_rows(changed=False):
 
 def timeline_key_header():
     """Test hook: the timeline header's key group: {"parts": [...] in order, "editing": whether it
-    edits keys rather than setting new keys', "mode": "NEW" (grey), "SELECTED" (red: the selected keys, or the
-    Motion Path tool's picked dots' stretches) or "PATH" (teal: with the tool and nothing picked, the stretch under
-    the playhead of the path being edited, "label" and "span" (start, end) saying which), "color": (r, g, b)}."""
+    edits keys rather than setting new keys', "mode": "NEW" (grey), "SELECTED" (red: the selected keys, with any
+    picks' stretches), "PATH" (teal: the selected stretch, the one the Motion Path tool's picked dots, keys and
+    handles are in, "picked" True; with nothing picked the stretch under the playhead of the path being edited) or
+    "STRETCHES" (grey: picks in different stretches, all edited; "label" "N stretches"); "label" and "span" (start,
+    end) say which, "targets" whose stretch it is ((layer, bone, head, point) each), "color": (r, g, b)}."""
     return dict(_oanim.timeline_key_header())
 
 
@@ -611,9 +614,17 @@ def timeline_row_details(as_shown=False):
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary, label (as
     shown: "Summary / <name>" when a lone layer's row is the Summary too),
     holds_pick (a folding row holding the picked points or bones: open while the pick lasts, unless
-    folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow). as_shown=True lists them folded as the project keeps them (else
-    every row open)."""
+    folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow),
+    teal ((start, end) of the selected stretch where it is shaded on this row, else None). as_shown=True lists them
+    folded as the project keeps them (else every row open)."""
     return [dict(r) for r in _oanim.timeline_rows(bool(as_shown))]
+
+
+def timeline_row_alt_click(row, frame, shift=False):
+    """Alt click (Shift Alt with shift=True) on `frame` of timeline row `row` (an index into
+    timeline_row_details(as_shown=True)): anim.timeline_stretch_pick on the row's channels. False when it did
+    nothing."""
+    return _oanim.timeline_row_alt_click(int(row), int(frame), bool(shift))
 
 
 def undo_history():

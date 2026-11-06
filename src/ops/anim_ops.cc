@@ -11,6 +11,7 @@
 #include "anim/animation.hh"
 #include "anim/controller.hh"
 #include "anim/keep_poses.hh"
+#include "anim/motion_path.hh"
 #include "assets/asset_library.hh"
 #include "core/log.hh"
 #include "data/bones.hh"
@@ -1183,6 +1184,62 @@ void anim_operators_register()
                       animation_evaluate(doc, frame);
                       return OpStatus::Finished;
                     });
+  anim_operator_add(
+      "anim.timeline_stretch_pick", "Pick Stretch in Row",
+      "Alt click in a timeline row (Shift adds, extend=1): with the Motion Path tool, picks what the row's paths have "
+      "on frame= (the dot there between keys, or the key on it; a bone's row its tip's and head's, a layer's or the "
+      "Summary every path shown), so that stretch is the one edited; without it, selects the key ending the stretch "
+      "there. The frame goes there either way. layers, kinds, selected_only, path, pinned and picked_bones: the row's "
+      "channels, as anim.keys_select takes them. Not an undo step",
+      OPTYPE_REGISTER, [](Context &C) {
+        Document &doc = *C.document;
+        const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));
+        const bool extend = op_arg_bool(C, "extend");
+        KeyFilter filter;
+        filter.kinds = uint32_t(op_arg_int(C, "kinds", int(KEY_ALL)));
+        filter.selected_only = op_arg_bool(C, "selected_only");
+        filter.picked_bones_only = op_arg_bool(C, "picked_bones");
+        filter.point_layers = editable_layer_ids(doc);
+        filter.path = op_arg(C, "path");
+        filter.pinned_only = op_arg_bool(C, "pinned");
+        const std::vector<Layer *> layers = op_layers(C);
+        if (C.wm && C.wm->tool_settings.tool == Tool::MotionPath && doc.motion_paths) {
+          /* The paths whose dots this row's channels move. */
+          const std::set<const void *> row = layers_filtered_channel_set(layers, filter);
+          std::vector<MotionPathTarget> targets;
+          for (const MotionPathTarget &t : motion_path_timing_targets(C)) {
+            const std::set<const void *> moving = motion_path_dot_channels(doc, t);
+            if (std::any_of(moving.begin(), moving.end(), [&](const void *ch) { return row.count(ch) > 0; })) {
+              targets.push_back(t);
+            }
+          }
+          if (targets.empty()) {
+            report(ReportType::Info, "No path traced in this row");
+            return OpStatus::Cancelled;
+          }
+          C.wm->playing = false;
+          motion_path_pick_at(C, targets, frame, extend);
+          return OpStatus::Finished;
+        }
+        const std::set<int> frames = layers_filtered_key_frames(layers, filter);
+        const auto end = frames.lower_bound(frame);
+        if (end == frames.end()) {
+          report(ReportType::Info, "No key after this frame in the row");
+          return OpStatus::Cancelled;
+        }
+        animation_record(doc);
+        if (!extend) {
+          layers_deselect_keys(timeline_layers(C));
+        }
+        layers_select_keys(layers, *end, *end, true, filter);
+        doc.frame_current = frame;
+        if (C.wm) {
+          C.wm->playing = false;
+        }
+        animation_evaluate(doc, frame);
+        C.undo->mark_changed();
+        return OpStatus::Finished;
+      });
   anim_operator_add("anim.keys_select", "Select Keys",
                     "Select the keys on frames frame_start..frame_end (extend keeps the others; deselect takes "
                     "them out). layers: only these layers' keys (comma-separated ids); kinds: only these kinds "

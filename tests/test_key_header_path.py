@@ -1,6 +1,6 @@
 """The timeline's key header follows the path being edited: with the Motion Path tool and nothing picked on the path,
 it edits the stretch under the playhead (teal), its end key selected only while the header acts, never into an undo
-step; picked dots or selected keys make it red; without the tool it is as before.
+step; a picked dot or key makes it the stretch the pick is in (teal too); without the tool it is as before.
 
 Run with:  OpenAnimate --background --python tests/test_key_header_path.py
 """
@@ -74,16 +74,17 @@ ops.ed.redo()
 assert keys()[20]["interp"] == "LINEAR"
 assert selected() == [], "nor the redone one"
 
-# --- Something picked on the path: red, on that --------------------------------------------------------------------
+# --- Something picked on the path: teal, on the stretch it is in ---------------------------------------------------
 assert ops.anim.motion_path_select(frame="25", layer=str(ball.id)) == {'FINISHED'}
 h = wm.timeline_key_header()
-assert h["mode"] == "SELECTED", h
+assert h["mode"] == "PATH" and h["picked"] and tuple(h["span"]) == (20, 30), h
 assert wm.timeline_key_header_call("anim.keys_interpolation_set", interp="STEP")
 assert keys()[30]["interp"] == "STEP", "a picked dot: its stretch's key"
 assert keys()[20]["interp"] == "LINEAR", "not the playhead's"
 ops.anim.motion_path_select(none="1")
 assert ops.anim.motion_path_select(frame="10", layer=str(ball.id)) == {'FINISHED'}
-assert wm.timeline_key_header()["mode"] == "SELECTED", "a picked key"
+h = wm.timeline_key_header()
+assert h["mode"] == "PATH" and tuple(h["span"]) == (10, 20), ("a picked key, the playhead after it: the stretch leaving it", h)
 ops.anim.motion_path_select(none="1")
 assert wm.timeline_key_header()["mode"] == "PATH", "nothing picked again: teal"
 

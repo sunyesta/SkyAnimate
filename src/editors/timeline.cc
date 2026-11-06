@@ -888,34 +888,45 @@ static void interp_menu_items(Context &C, const std::function<void()> &prepare)
 
 ImU32 key_header_color(int mode, bool hovered);
 
-/* What the header's key group edits (KeyHeaderFocus): with the Motion Path tool, the picked dots' stretches (red, with
- * any selected keys), or with nothing picked the stretch under the playhead of the path being edited (teal). Their
- * end keys are selected only while the header draws and acts (KeyFocusScope), never into an undo step. */
+/* What the header's key group edits (KeyHeaderFocus). With the Motion Path tool, the selected stretch (teal): the one
+ * the picks are in (dots, path handles, selected path keys: motion_path_picked_stretches), or with nothing picked the
+ * one under the playhead of the path being edited; with picks in different stretches, all of them (grey, "N
+ * stretches"); with other keys selected too, those and the picks' (red). Their end keys are selected only while the
+ * header draws and acts (KeyFocusScope), never into an undo step. */
 struct KeyFocus {
+  /* 0 new keys', 1 the selected keys' (red), 2 the selected stretch (teal), 3 picks in different stretches (grey). */
   int mode = 0;
   /* The end keys to select for the header. */
   std::vector<std::pair<MotionPathTarget, int>> keys;
+  /* Selected path keys ending none of the picked stretches (a key picked with the playhead after it): left out while
+   * the header acts, as a key's curve is the stretch arriving at it. */
+  std::vector<std::pair<MotionPathTarget, int>> unkeys;
+  /* Teal: the stretch, of every target in `targets` (the last picked on, or followed, is `target`). */
   MotionPathTarget target;
+  std::vector<MotionPathTarget> targets;
   int start = 0, end = 0;
+  /* Teal from picks, not from the playhead. */
+  bool picked = false;
   std::string label;
   std::string signature() const
   {
     std::string s = std::to_string(mode) + ":" + std::to_string(start) + ":" + std::to_string(end);
-    for (const auto &[kt, kf] : keys) {
-      s += ";" + std::to_string(kt.layer) + "/" + std::to_string(kt.bone) + "/" + std::to_string(kt.point) + "/" +
-           std::to_string(int(kt.drawing)) + "@" + std::to_string(kf);
+    for (const auto &list : {keys, unkeys}) {
+      for (const auto &[kt, kf] : list) {
+        s += ";" + std::to_string(kt.layer) + "/" + std::to_string(kt.bone) + "/" + std::to_string(kt.point) + "/" +
+             std::to_string(int(kt.drawing)) + "@" + std::to_string(kf);
+      }
+      s += "|";
     }
     return s;
   }
 };
 
-/* Whether any key of the timeline's layers is selected: walking a big rig's channels costs, so kept until an edit,
- * a click or the shown layers change (as key_header's summary). */
-static bool timeline_any_key_selected(Context &C, const std::vector<Layer *> &layers)
+/* Whether the timeline's keys need summing again: an edit, a click or the shown layers changed since `r_changes` and
+ * `r_layers` (walking a big rig's channels costs, so what they give is kept till then). */
+static bool timeline_keys_stale(Context &C, const std::vector<Layer *> &layers, uint64_t &r_changes,
+                                std::vector<uint64_t> &r_layers)
 {
-  static bool any = false;
-  static uint64_t changes_seen = ~uint64_t(0);
-  static std::vector<uint64_t> layers_seen;
   std::vector<uint64_t> ids;
   for (const Layer *layer : layers) {
     ids.push_back(layer->id);
@@ -927,10 +938,37 @@ static bool timeline_any_key_selected(Context &C, const std::vector<Layer *> &la
       clicked |= ImGui::IsMouseReleased(b);
     }
   }
-  if (!C.undo || changes != changes_seen || ids != layers_seen || clicked) {
+  if (!C.undo || changes != r_changes || ids != r_layers || clicked) {
+    r_changes = changes;
+    r_layers = std::move(ids);
+    return true;
+  }
+  return false;
+}
+
+/* Whether any key of the timeline's layers is selected. */
+static bool timeline_any_key_selected(Context &C, const std::vector<Layer *> &layers)
+{
+  static bool any = false;
+  static uint64_t changes_seen = ~uint64_t(0);
+  static std::vector<uint64_t> layers_seen;
+  if (timeline_keys_stale(C, layers, changes_seen, layers_seen)) {
     any = layers_selected_keys(layers).count > 0;
-    changes_seen = changes;
-    layers_seen = std::move(ids);
+  }
+  return any;
+}
+
+/* Whether a key is selected off `channels` (the paths' own), as layers_key_selected_outside; kept as the above. */
+static bool timeline_keys_selected_outside(Context &C, const std::vector<Layer *> &layers,
+                                           const std::set<const void *> &channels)
+{
+  static bool any = false;
+  static uint64_t changes_seen = ~uint64_t(0);
+  static std::vector<uint64_t> layers_seen;
+  static std::set<const void *> channels_seen;
+  if (timeline_keys_stale(C, layers, changes_seen, layers_seen) || channels != channels_seen) {
+    any = layers_key_selected_outside(layers, channels);
+    channels_seen = channels;
   }
   return any;
 }
@@ -941,51 +979,70 @@ static KeyFocus key_focus(Context &C)
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   const std::vector<Layer *> layers = timeline_layers(C);
-  f.mode = timeline_any_key_selected(C, layers) ? 1 : 0;
+  const bool any_selected = timeline_any_key_selected(C, layers);
+  f.mode = any_selected ? 1 : 0;
   if (wm.tool_settings.tool != Tool::MotionPath || !doc.motion_paths) {
     return f;
   }
-  /* Picked dots: their stretches' end keys, with whatever keys are selected. */
-  for (const auto &[dt, df] : wm.path_dots) {
-    int start = 0, end = 0;
-    if (motion_path_stretch_at(doc, dt, df, start, end) &&
-        std::none_of(f.keys.begin(), f.keys.end(), [&](const auto &k) { return k.first.same(dt) && k.second == end; }))
-    {
-      f.keys.push_back({dt, end});
-      f.mode = 1;
+  const MotionPathPicks picks = motion_path_picks(C);
+  if (!picks.stretches.empty()) {
+    for (const MotionPathPickedStretch &p : picks.stretches) {
+      if (std::none_of(f.keys.begin(), f.keys.end(),
+                       [&](const auto &k) { return k.first.same(p.target) && k.second == p.end; }))
+      {
+        f.keys.push_back({p.target, p.end});
+      }
     }
-  }
-  /* Picked path handles: the stretch each shapes (an in handle the one its key ends, an out handle the next). */
-  for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
-    int start = 0, end = 0;
-    if (motion_path_stretch_at(doc, hp.target, hp.out ? hp.frame + 1 : hp.frame, start, end) &&
-        std::none_of(f.keys.begin(), f.keys.end(),
-                     [&](const auto &k) { return k.first.same(hp.target) && k.second == end; }))
-    {
-      f.keys.push_back({hp.target, end});
-      f.mode = 1;
+    /* Other keys selected as well (not the paths' own): red, the header editing them with the picks'. */
+    const std::vector<MotionPathTarget> key_targets = motion_path_key_pick_targets(C);
+    std::set<const void *> path_channels;
+    for (const MotionPathTarget &kt : key_targets) {
+      if (Layer *layer = layer_find(doc, kt.layer)) {
+        const std::set<const void *> own = layers_filtered_channel_set({layer}, motion_path_key_filter(doc, kt));
+        path_channels.insert(own.begin(), own.end());
+      }
     }
+    if (any_selected && timeline_keys_selected_outside(C, layers, path_channels)) {
+      f.mode = 1;
+      return f;
+    }
+    for (const auto &[kt, kf] : motion_path_selected_keys(doc, key_targets)) {
+      if (std::none_of(f.keys.begin(), f.keys.end(), [&](const auto &k) { return k.first.same(kt) && k.second == kf; })) {
+        f.unkeys.push_back({kt, kf});
+      }
+    }
+    const MotionPathPickedStretch &shown = picks.stretches[size_t(picks.shown)];
+    f.target = shown.target;
+    f.start = shown.start;
+    f.end = shown.end;
+    f.picked = true;
+    if (picks.spans > 1) {
+      /* Picks in different stretches: no one stretch, so nothing teal; a change still goes to them all. */
+      f.mode = 3;
+      f.label = std::to_string(picks.spans) + " stretches";
+      return f;
+    }
+    f.mode = 2;
+    for (const MotionPathPickedStretch &p : picks.stretches) {
+      if (std::none_of(f.targets.begin(), f.targets.end(), [&](const auto &tg) { return tg.same(p.target); })) {
+        f.targets.push_back(p.target);
+      }
+    }
+    f.label = (f.targets.size() == 1 ? motion_path_label(doc, f.target) : std::to_string(f.targets.size()) + " paths") +
+              "  " + std::to_string(f.start) + "-" + std::to_string(f.end);
+    return f;
   }
   if (f.mode == 1) {
     return f;
   }
   /* Nothing picked: the stretch under the playhead, of the path last picked on, else the first traced. */
-  const std::vector<MotionPathTarget> targets = motion_path_timing_targets(C);
+  const std::vector<MotionPathTarget> targets = motion_path_key_pick_targets(C);
   if (targets.empty()) {
     return f;
   }
-  /* Edit Layer off: bones and points, never the layer's own position. */
-  const auto layer_itself = [](const MotionPathTarget &tg) { return !tg.bone && !tg.point && !tg.drawing; };
-  const bool edit_layer = wm.tool_settings.path_edit_layer;
-  const auto shaded = std::find_if(targets.begin(), targets.end(), [&](const MotionPathTarget &tg) {
-    return edit_layer == layer_itself(tg);
-  });
-  if (shaded == targets.end()) {
-    return f;
-  }
-  MotionPathTarget target = *shaded;
+  MotionPathTarget target = targets.front();
   for (const MotionPathTarget &tg : targets) {
-    if (tg.same(wm.path_timing_target) && edit_layer == layer_itself(tg)) {
+    if (tg.same(wm.path_timing_target)) {
       target = tg;
     }
   }
@@ -994,6 +1051,7 @@ static KeyFocus key_focus(Context &C)
   }
   f.mode = 2;
   f.target = target;
+  f.targets = {target};
   f.keys.push_back({target, f.end});
   f.label = motion_path_label(doc, target) + "  " + std::to_string(f.start) + "-" + std::to_string(f.end);
   return f;
@@ -1019,7 +1077,11 @@ class KeyFocusScope {
         keys_.push_back({kt, kf});
       }
     }
-    if (!keys_.empty() && C.undo) {
+    for (const auto &[kt, kf] : focus.unkeys) {
+      set(kt, kf, false);
+      unkeys_.push_back({kt, kf});
+    }
+    if ((!keys_.empty() || !unkeys_.empty()) && C.undo) {
       hook_ = C.undo->before_push;
       hook_data_ = C.undo->before_push_data;
       C.undo->before_push = [](Document &doc, const std::function<const Document &()> &previous, void *data) {
@@ -1062,9 +1124,14 @@ class KeyFocusScope {
       set(kt, kf, false);
     }
     keys_.clear();
+    /* The user's own picks back. */
+    for (const auto &[kt, kf] : unkeys_) {
+      set(kt, kf, true);
+    }
+    unkeys_.clear();
   }
   Context &C_;
-  std::vector<std::pair<MotionPathTarget, int>> keys_;
+  std::vector<std::pair<MotionPathTarget, int>> keys_, unkeys_;
   void (*hook_)(Document &, const std::function<const Document &()> &, void *) = nullptr;
   void *hook_data_ = nullptr;
   bool hooked_ = false;
@@ -1076,7 +1143,10 @@ static KeyFocus g_key_focus;
 KeyHeaderFocus timeline_key_header_focus(Context &C)
 {
   const KeyFocus f = key_focus(C);
-  return {f.mode, f.label, f.start, f.end};
+  KeyHeaderFocus r{f.mode, f.label, f.start, f.end};
+  r.picked = f.picked;
+  r.targets = f.targets;
+  return r;
 }
 
 bool timeline_key_header_call(Context &C, const std::string &idname, const OpArgs &args)
@@ -1086,12 +1156,13 @@ bool timeline_key_header_call(Context &C, const std::string &idname, const OpArg
   return operator_call(C, idname, args) == OpStatus::Finished;
 }
 
-bool timeline_key_focus_span(MotionPathTarget &r_target, int &r_start, int &r_end)
+bool timeline_key_focus_span(const MotionPathTarget &target, int &r_start, int &r_end)
 {
-  if (g_key_focus.mode != 2) {
+  if (g_key_focus.mode != 2 ||
+      std::none_of(g_key_focus.targets.begin(), g_key_focus.targets.end(), [&](const auto &t) { return t.same(target); }))
+  {
     return false;
   }
-  r_target = g_key_focus.target;
   r_start = g_key_focus.start;
   r_end = g_key_focus.end;
   return true;
@@ -1196,7 +1267,7 @@ static void interp_settings_popup(Context &C)
     const int mode = keys ? std::max(g_key_focus.mode, 1) : 0;
     dl->AddRectFilled(a, a + size, key_header_color(mode, false), ImGui::GetStyle().FrameRounding);
     char title[160];
-    if (mode == 2) {
+    if (mode == 2 || mode == 3) {
       std::snprintf(title, sizeof(title), "Editing %s", g_key_focus.label.c_str());
     }
     else if (keys) {
@@ -1662,8 +1733,9 @@ static void key_header(Context &C)
       shape.interp = Interp::Smooth;
     }
     curve_draw(dl, p + ImVec2(style.FramePadding.x, 3.0f), p + ImVec2(style.FramePadding.x + h * 1.3f, h - 3.0f), shape,
-               mode == 2 ? IM_COL32(0xa8, 0xf0, 0xe8, 255)
-               : keys    ? IM_COL32(0xff, 0xc2, 0xc2, 255)
+               mode == 2   ? IM_COL32(0xa8, 0xf0, 0xe8, 255)
+               : mode == 3 ? IM_COL32(0xe6, 0xe6, 0xe6, 255)
+               : keys      ? IM_COL32(0xff, 0xc2, 0xc2, 255)
                          : IM_COL32(0x9c, 0xc6, 0xff, 255),
                1.5f);
     dl->AddText(p + ImVec2(style.FramePadding.x * 2.0f + h * 1.3f, style.FramePadding.y),
@@ -1708,14 +1780,28 @@ static void key_header(Context &C)
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip("Settings: the key type, the curve and its handles, hold, animating on 2s");
   }
-  /* Teal: following the path, which stretch a change goes to. */
-  if (mode == 2) {
+  /* Teal: the selected stretch, which a change goes to; grey with picks in several. */
+  if (mode == 2 || mode == 3) {
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImVec4(0.55f, 0.92f, 0.88f, 1.0f), "%s", focus.label.c_str());
+    if (mode == 2) {
+      ImGui::TextColored(ImVec4(0.55f, 0.92f, 0.88f, 1.0f), "%s", focus.label.c_str());
+    }
+    else {
+      ImGui::TextUnformatted(focus.label.c_str());
+    }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("No path keys or dots picked: the header edits the stretch of the path under the playhead "
-                        "(its key on frame %d), shaded teal in the timeline", focus.end);
+      if (mode == 3) {
+        ImGui::SetTooltip("The picks are in different stretches: a change goes to them all, none is shaded teal");
+      }
+      else if (focus.picked) {
+        ImGui::SetTooltip("The stretch the picks are in (its key on frame %d): a change goes to it, shaded teal in the "
+                          "timeline and shown in Path Timing", focus.end);
+      }
+      else {
+        ImGui::SetTooltip("Nothing picked on the paths: the header edits the stretch of the path under the playhead "
+                          "(its key on frame %d), shaded teal in the timeline", focus.end);
+      }
     }
   }
 
@@ -2573,6 +2659,45 @@ struct ChannelRow {
   bool dim = false;
 };
 
+/* The rows the selected stretch is shaded on: each holding a channel of `channels` (those moving the picked dots)
+ * with no row under it shown that holds one too, so the most specific row shown (the channel's own, else the row it
+ * is folded into); never the Summary. */
+static std::vector<bool> focus_rows(const std::vector<ChannelRow> &rows, const std::set<const void *> &channels)
+{
+  std::vector<bool> among(rows.size(), false), out(rows.size(), false);
+  if (channels.empty()) {
+    return out;
+  }
+  for (size_t r = 0; r < rows.size(); r++) {
+    among[r] = !rows[r].summary && !rows[r].media && rows[r].filter.kinds != 0 &&
+               layers_channel_among(rows[r].layers, rows[r].filter, channels);
+  }
+  for (size_t r = 0; r < rows.size(); r++) {
+    if (!among[r]) {
+      continue;
+    }
+    bool below = false;
+    for (size_t c = r + 1; c < rows.size() && rows[c].depth > rows[r].depth && !below; c++) {
+      below = among[c];
+    }
+    out[r] = !below;
+  }
+  return out;
+}
+
+/* The channels the teal stretch is shaded on: those moving its targets' dots. */
+static std::set<const void *> focus_channels(const Document &doc, const KeyFocus &f)
+{
+  std::set<const void *> out;
+  if (f.mode == 2) {
+    for (const MotionPathTarget &t : f.targets) {
+      const std::set<const void *> moving = motion_path_dot_channels(doc, t);
+      out.insert(moving.begin(), moving.end());
+    }
+  }
+  return out;
+}
+
 /* Folding rows open or folded as the project keeps them (saved with it, as panels are). */
 static bool row_open(const Area &area, const std::string &key, bool fallback)
 {
@@ -3116,10 +3241,16 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
   /* The project's fold states (bound while editors draw; a background run draws none). */
   ui_bind_project(C.document, C.undo);
   std::vector<TimelineRowInfo> list;
-  for (const ChannelRow &row :
-       channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), !as_shown))
-  {
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C), !as_shown);
+  const KeyFocus focus = key_focus(C);
+  const std::vector<bool> teal = focus_rows(rows, focus_channels(*C.document, focus));
+  for (size_t r = 0; r < rows.size(); r++) {
+    const ChannelRow &row = rows[r];
     TimelineRowInfo info{row.depth, row.name, row.selected, !row.pin_path.empty(), row.changed};
+    if (teal[r]) {
+      info.teal = {focus.start, focus.end};
+    }
     info.layer = row.layer;
     info.fold = row.fold;
     info.open = row.open;
@@ -3147,6 +3278,34 @@ static std::string layer_ids(const std::vector<Layer *> &layers)
     ids += (ids.empty() ? "" : ",") + std::to_string(l->id);
   }
   return ids;
+}
+
+/* anim.timeline_stretch_pick's arguments for an Alt click on `frame` of a row (its layers and channels). */
+static OpArgs timeline_stretch_pick_args(const std::vector<Layer *> &layers, const KeyFilter &filter, int frame,
+                                         bool extend)
+{
+  return {{"frame", std::to_string(frame)},
+          {"layers", layer_ids(layers)},
+          {"kinds", std::to_string(filter.kinds)},
+          {"selected_only", filter.selected_only ? "1" : "0"},
+          {"picked_bones", filter.picked_bones_only ? "1" : "0"},
+          {"path", filter.path},
+          {"pinned", filter.pinned_only ? "1" : "0"},
+          {"extend", extend ? "1" : "0"}};
+}
+
+bool timeline_row_alt_click(Context &C, int row, int frame, bool shift)
+{
+  Area area;
+  ui_bind_project(C.document, C.undo);
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
+  if (row < 0 || row >= int(rows.size()) || rows[size_t(row)].media || rows[size_t(row)].filter.kinds == 0) {
+    return false;
+  }
+  return operator_call(C, "anim.timeline_stretch_pick",
+                       timeline_stretch_pick_args(rows[size_t(row)].layers, rows[size_t(row)].filter, frame, shift)) ==
+         OpStatus::Finished;
 }
 
 static void timeline_body(Area &area, Context &C)
@@ -3554,6 +3713,19 @@ static void timeline_body(Area &area, Context &C)
           g_press = {};
         }
       }
+      /* Alt click between two keys: picks that stretch (with the Motion Path tool its dots on the frame clicked, on a
+       * key that key; else the key ending it), the frame going there. */
+      if (g_press.active && !g_press.scrub && io.KeyAlt && !io.KeyCtrl) {
+        int on_row = -1;
+        const int on_key = key_under(io.MousePos, &on_row);
+        if (on_row >= 0 && !rows[size_t(on_row)].media && rows[size_t(on_row)].filter.kinds != 0) {
+          const ChannelRow &row = rows[size_t(on_row)];
+          operator_call(C, "anim.timeline_stretch_pick", timeline_stretch_pick_args(
+              row.layers, row.filter, on_key >= 0 ? on_key : std::max(0, int(std::lround(x_frame(io.MousePos.x)))),
+              io.KeyShift));
+          g_press = {};
+        }
+      }
       const int media_row = g_press.scrub || !g_press.active ? -1 : row_at(io.MousePos.y);
       if (media_row >= 0 && rows[media_row].media &&
           timeline_media_row_press(C, media_view, *rows[media_row].layers[0],
@@ -3855,13 +4027,8 @@ static void timeline_body(Area &area, Context &C)
     dl->PopClipRect();
   }
 
-  /* The stretch the key header edits following the path (teal): the channels its keys are on. */
-  std::set<const void *> focus_channels;
-  if (g_key_focus.mode == 2) {
-    if (Layer *focus_layer = layer_find(doc, g_key_focus.target.layer)) {
-      focus_channels = layers_filtered_channel_set({focus_layer}, motion_path_key_filter(doc, g_key_focus.target));
-    }
-  }
+  /* The selected stretch (teal): on the rows of the channels moving its dots. */
+  const std::vector<bool> teal_rows = focus_rows(rows, focus_channels(doc, g_key_focus));
   /* The rows: hold bars between neighbouring keys where nothing changes, and a diamond per keyed
    * frame, orange when selected. */
   dl->PushClipRect(ImVec2(p0.x, rows_top), p1, true);
@@ -3902,10 +4069,8 @@ static void timeline_body(Area &area, Context &C)
       continue;
     }
     dl->PushClipRect(ImVec2(k0.x, rows_top), p1, true);
-    if (!focus_channels.empty() && !rows[r].summary &&
-        layers_channel_among(rows[r].layers, rows[r].filter, focus_channels))
-    {
-      /* The stretch the key header edits, following the path. */
+    if (teal_rows[r]) {
+      /* The selected stretch. */
       dl->AddRectFilled(ImVec2(frame_x(float(g_key_focus.start)), top + 1.0f),
                         ImVec2(frame_x(float(g_key_focus.end)), top + row_h - 1.0f), KEY_FOCUS_FILL);
     }

@@ -437,6 +437,9 @@ std::set<const void *> layers_filtered_channel_set(const std::vector<Layer *> &l
 void layers_select_keys(const std::vector<Layer *> &layers, int first, int last, bool select,
                         const KeyFilter &filter = {});
 void layers_deselect_keys(const std::vector<Layer *> &layers);
+/* Whether a key is selected on a channel of `layers` that isn't one of `channels`, or on the setup frame (keys the
+ * Motion Path tool's picked stretches don't account for). Visibility's always-Step keys are left out. */
+bool layers_key_selected_outside(const std::vector<Layer *> &layers, const std::set<const void *> &channels);
 bool layers_any_key_selected(const std::vector<Layer *> &layers);
 
 /* The selected keys' interpolation: how many there are, the first one's settings, and whether

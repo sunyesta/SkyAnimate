@@ -117,6 +117,24 @@ std::vector<Layer *> editable_layers(Context &C);
  * operators and the timeline work on. */
 std::vector<struct MotionPathTarget> motion_path_targets(Context &C);
 std::vector<struct MotionPathTarget> motion_path_timing_targets(Context &C);
+/* What a selected key picks a stretch on: the timing targets, Edit Layer choosing between the layers' own and their
+ * bones' and points' (as the key header's stretch at the playhead). */
+std::vector<struct MotionPathTarget> motion_path_key_pick_targets(Context &C);
+/* The selected stretch with the Motion Path tool (motion_path_picked_stretches of what is picked now), and which of
+ * them the Path Timing panel shows: the one last picked on, else the last; -1 with nothing picked. */
+struct MotionPathPicks {
+  std::vector<struct MotionPathPickedStretch> stretches;
+  int spans = 0;
+  int shown = -1;
+};
+MotionPathPicks motion_path_picks(Context &C);
+/* Picks what is on `frame` of each of `targets` (its key, else its dot between keys; `extend`: added to what is
+ * picked, else instead of it) and goes to that frame. Not an undo step. Whether anything was picked. */
+bool motion_path_pick_at(Context &C, const std::vector<struct MotionPathTarget> &targets, int frame, bool extend);
+/* The stretch the Path Timing panel shows: the picks' shown one, else (nothing picked) as motion_path_timing_stretch.
+ * `r_picks` gets the picks. False when nothing traced moves. */
+bool motion_path_timing_shown(Context &C, struct MotionPathTarget &r_target, struct MotionPathStretch &r_stretch,
+                              MotionPathPicks *r_picks = nullptr);
 std::vector<Layer *> document_editable_layers(Document &doc);
 /* What the weight tools work on, so only one bone layer's bones are ever in play: the active drawing alone, whatever
  * else is picked; or on an active bone layer, or group with Edit Descendants, the drawings inside it that go by those
