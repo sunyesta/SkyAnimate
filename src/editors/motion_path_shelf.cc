@@ -99,6 +99,18 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
       }
       break;
     }
+    case PathBrush::SurfaceSmooth: {
+      /* A wiggly arc and the clean arc it becomes. */
+      std::vector<ImVec2> wiggly;
+      for (int i = 0; i <= 24; i++) {
+        const float u = float(i) / 24.0f;
+        wiggly.push_back(c + ImVec2((u - 0.5f) * 1.6f * s, -std::sin(u * 3.14159f) * 0.45f * s + 0.2f * s +
+                                                                std::sin(u * 40.0f) * 0.07f * s));
+      }
+      dl->AddPolyline(wiggly.data(), int(wiggly.size()), COL_FAINT, ImDrawFlags_None, t * 0.8f);
+      arc_line(dl, c, s, col, 0.45f, t);
+      break;
+    }
     case PathBrush::Pinch: {
       /* The dots crowding toward the middle. */
       arc_line(dl, c, s, COL_FAINT, 0.45f, t * 0.6f);
@@ -126,7 +138,7 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
 static bool in_tab(PathBrush brush, int tab)
 {
   if (tab == 1) {
-    return brush == PathBrush::Grab || brush == PathBrush::Smooth;
+    return path_brush_is_sculpt(brush);
   }
   if (tab == 2) {
     return path_brush_is_timing(brush);
@@ -144,11 +156,14 @@ static const char *brush_tip(PathBrush brush)
              "Alt Shift: a breakdown on the arc). G R S on the selected keys, V their handle types, X deletes them; "
              "Alt S scales the timing around the selection. Shift drag: Blend Speed";
     case PathBrush::Grab:
-      return "Drag a soft area of the path: the keys under the brush follow the mouse, the nearest most. Shift: "
-             "Smooth";
+      return "The Sculpt tool's Grab on the path: the path under the brush follows the mouse, the middle most, its "
+             "keys, control points and handles fitted to it; each stretch keeps its timing. Shift: Smooth";
     case PathBrush::Smooth:
-      return "Brush over a lumpy stretch: each key under it moves toward the curve through the keys either side, "
-             "and its dragged handles back toward Auto";
+      return "The Sculpt tool's Smooth on the path: brush over a lumpy stretch to even it out; keys stay on their "
+             "frames, each stretch keeping its timing";
+    case PathBrush::SurfaceSmooth:
+      return "The Sculpt tool's Surface Smooth on the path: its lumps and wiggles go, its arcs stay (Lump "
+             "Sensitivity: how big a lump); each stretch keeps its timing";
     case PathBrush::BlendSpeed:
       return "Even out the spacing where you brush. Ctrl sharpens it: slow parts slower, fast parts faster";
     case PathBrush::Pinch:
@@ -186,8 +201,10 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     const int per_row = std::max(1, int((size.x - gap) / (tile + gap)));
     const std::string search = shelf_lower(shelf.search);
     std::vector<PathBrush> shown;
-    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit,       PathBrush::Grab,  PathBrush::Smooth,
-                                                          PathBrush::BlendSpeed, PathBrush::Pinch, PathBrush::Slide};
+    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit,          PathBrush::Grab,
+                                                          PathBrush::Smooth,        PathBrush::SurfaceSmooth,
+                                                          PathBrush::BlendSpeed,    PathBrush::Pinch,
+                                                          PathBrush::Slide};
     for (const PathBrush brush : ORDER) {
       if (in_tab(brush, shelf.tab) &&
           (search.empty() || shelf_lower(path_brush_name(brush)).find(search) != std::string::npos))

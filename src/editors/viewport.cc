@@ -1538,6 +1538,11 @@ static struct {
   ImVec2 last;
   float2 press;
   std::vector<PathGrabKey> grab;
+  /* The shape brushes: the Sculpt tool's stroke on the paths that can take it, the others (a bone turning its tip)
+   * moved by their keys as before; where the mouse was at the last dab. */
+  PathSculptStroke sculpt;
+  std::vector<MotionPathTarget> unsculpted;
+  float2 sculpt_last;
   /* Slide's dot (the nearest the press), how far its pull reaches in frames, and where it is drawn less where it is. */
   bool slide = false;
   MotionPathTarget slide_target;
@@ -1647,6 +1652,8 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     g.pending = false;
     g.pick.reset();
     g.grab.clear();
+    g.sculpt = PathSculptStroke();
+    g.unsculpted.clear();
     g.snapshot = Document();
   };
   if (!g.active) {
@@ -1670,8 +1677,16 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     if (g.pending) {
       return;
     }
-    if (brush == PathBrush::Grab) {
-      g.grab = motion_path_grab_keys(doc, motion_path_targets(C), first, last, mouse, radius);
+    if (path_brush_is_sculpt(brush)) {
+      std::vector<MotionPathTarget> own;
+      for (const MotionPathTarget &t : motion_path_targets(C)) {
+        (motion_path_sculptable(doc, t) ? own : g.unsculpted).push_back(t);
+      }
+      g.sculpt = motion_path_sculpt_begin(doc, own, first, last, motion_path_sculpt_dab_make(brush, bs, mouse, radius));
+      g.sculpt_last = mouse;
+      if (brush == PathBrush::Grab) {
+        g.grab = motion_path_grab_keys(doc, g.unsculpted, first, last, mouse, radius);
+      }
     }
     else if (brush == PathBrush::Slide) {
       /* The dot nearest the press, the dots in the circle going with it along the path. */
@@ -1728,14 +1743,37 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     }
     return;
   }
-  if (brush == PathBrush::Grab) {
-    if (io.MousePos.x != g.last.x || io.MousePos.y != g.last.y) {
-      /* From where it all was, so the keys follow the mouse wherever it goes. */
-      doc = g.snapshot;
-      g.changed |= motion_path_grab(doc, g.grab, mouse - g.press, bs.strength) > 0;
-      g.last = io.MousePos;
+  if (path_brush_is_sculpt(brush)) {
+    SculptDab sd = motion_path_sculpt_dab_make(brush, bs, mouse, radius);
+    sd.move = mouse - g.sculpt_last;
+    /* As the Sculpt tool: Smooth and Surface Smooth work on while held, a tenth of a second a full step. */
+    sd.amount = std::min(1.0f, io.DeltaTime * 10.0f);
+    if (brush == PathBrush::Grab) {
+      if (sd.move.x != 0.0f || sd.move.y != 0.0f) {
+        /* The paths that can't be sculpted: their keys from where they were, following the mouse. */
+        if (!g.grab.empty()) {
+          doc = g.snapshot;
+          g.changed |= motion_path_grab(doc, g.grab, mouse - g.press, bs.strength) > 0;
+        }
+        g.changed |= motion_path_sculpt_dab(doc, g.sculpt, sd) > 0;
+        g_path_drag.serial++;
+      }
+    }
+    else {
+      g.changed |= motion_path_sculpt_dab(doc, g.sculpt, sd) > 0;
+      const float dx = io.MousePos.x - g.last.x, dy = io.MousePos.y - g.last.y;
+      const float spacing = std::max(bs.radius * 0.25f, 2.0f);
+      if (brush == PathBrush::Smooth && !g.unsculpted.empty() && dx * dx + dy * dy >= spacing * spacing) {
+        PathDab d;
+        d.center = mouse;
+        d.radius = radius;
+        d.strength = bs.strength;
+        g.changed |= motion_path_smooth_dab(doc, g.unsculpted, first, last, d) > 0;
+        g.last = io.MousePos;
+      }
       g_path_drag.serial++;
     }
+    g.sculpt_last = mouse;
     return;
   }
   const float dx = io.MousePos.x - g.last.x, dy = io.MousePos.y - g.last.y;
@@ -5331,6 +5369,28 @@ static void motion_path_header(Context &C)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("How much each dab does (Shift F)");
     }
+    if (path_brush_is_sculpt(ts.path_brush)) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(h * 3.6f);
+      static const char *const falloffs[] = {"Smooth", "Sphere", "Constant"};
+      int falloff = int(bs.falloff);
+      if (ImGui::Combo("##path_falloff", &falloff, falloffs, 3)) {
+        bs.falloff = SculptFalloff(falloff);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How the brush fades toward its edge, as the Sculpt tool's: Smooth eases out, Sphere stays "
+                          "strong almost to the edge, Constant is the same all over");
+      }
+    }
+    if (ts.path_brush == PathBrush::SurfaceSmooth) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(h * 7.0f);
+      ui_slider_float("##path_sensitivity", &bs.sensitivity, 0.001f, 1.0f, "Lump Sensitivity %.3f", 0, 0.0f, FLT_MAX);
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("How big a lump Surface Smooth takes out of the path: 0 none, higher bigger ones, as the "
+                          "Sculpt tool's");
+      }
+    }
   }
 }
 
@@ -5375,10 +5435,14 @@ static const char *tool_hint(const ToolSettings &ts)
         case PathBrush::Edit:
           break;
         case PathBrush::Grab:
-          return "Drag: the keys under the brush follow  |  Shift: Smooth  |  F: radius  |  Shift F: strength  |  "
-                 "Esc: cancel";
+          return "Drag: the path under the brush follows, as the Sculpt tool's Grab, the keys keeping their timing  |  "
+                 "Shift: Smooth  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::Smooth:
-          return "Brush over a lumpy stretch: smooth it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
+          return "Brush over a lumpy stretch: smooth it, as the Sculpt tool's Smooth  |  F: radius  |  Shift F: "
+                 "strength  |  Esc: cancel";
+        case PathBrush::SurfaceSmooth:
+          return "Brush over the path: its lumps go, its arcs stay (Lump Sensitivity: how big)  |  F: radius  |  "
+                 "Shift F: strength  |  Esc: cancel";
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::Pinch:

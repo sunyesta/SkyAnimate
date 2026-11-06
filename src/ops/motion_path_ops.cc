@@ -690,6 +690,15 @@ void motion_path_operators_register()
       if (op_has_arg(C, "proportional")) {
         ts.proportional = op_arg_bool(C, "proportional");
       }
+      if (path_brush_is_sculpt(sized) && op_has_arg(C, "brush_falloff") &&
+          !sculpt_falloff_from_id(op_arg(C, "brush_falloff"), &bs.falloff))
+      {
+        report(ReportType::Error, "brush_falloff= is one of SMOOTH, SPHERE, CONSTANT");
+        return OpStatus::Cancelled;
+      }
+      if (sized == PathBrush::SurfaceSmooth && op_has_arg(C, "sensitivity")) {
+        bs.sensitivity = std::max(op_arg_float(C, "sensitivity", bs.sensitivity), 0.0f);
+      }
       if (op_has_arg(C, "edit_layer")) {
         if (ts.path_edit_layer != op_arg_bool(C, "edit_layer")) {
           ts.path_edit_layer = !ts.path_edit_layer;
@@ -790,9 +799,43 @@ void motion_path_operators_register()
       dab.strength = op_arg_float(C, "strength", ts.path_brush_settings(brush).strength);
       dab.invert = op_arg_bool(C, "invert");
       int changed = 0;
-      if (brush == PathBrush::Grab) {
-        const std::vector<PathGrabKey> keys = motion_path_grab_keys(doc, targets, first, last, points.front(), dab.radius);
-        changed = motion_path_grab(doc, keys, points.back() - points.front(), dab.strength);
+      if (path_brush_is_sculpt(brush)) {
+        /* The Sculpt tool's stroke along the points on the paths that can take it; the others (a bone turning its
+         * tip) by their keys, as before. */
+        PathBrushSettings bs = ts.path_brush_settings(brush);
+        bs.strength = dab.strength;
+        if (op_has_arg(C, "brush_falloff") && !sculpt_falloff_from_id(op_arg(C, "brush_falloff"), &bs.falloff)) {
+          report(ReportType::Error, "brush_falloff= is one of SMOOTH, SPHERE, CONSTANT");
+          return OpStatus::Cancelled;
+        }
+        if (op_has_arg(C, "sensitivity")) {
+          bs.sensitivity = op_arg_float(C, "sensitivity", bs.sensitivity);
+        }
+        std::vector<MotionPathTarget> own, other;
+        for (const MotionPathTarget &t : targets) {
+          (motion_path_sculptable(doc, t) ? own : other).push_back(t);
+        }
+        SculptDab sd = motion_path_sculpt_dab_make(brush, bs, points.front(), dab.radius);
+        sd.amount = op_arg_float(C, "amount", 1.0f);
+        PathSculptStroke stroke = motion_path_sculpt_begin(doc, own, first, last, sd);
+        const std::vector<PathGrabKey> keys = brush == PathBrush::Grab ? motion_path_grab_keys(
+                                                                             doc, other, first, last, points.front(), dab.radius)
+                                                                       : std::vector<PathGrabKey>();
+        for (size_t i = 0; i < points.size(); i++) {
+          sd.move = i > 0 ? points[i] - points[i - 1] : float2();
+          sd.center = points[i];
+          if (brush == PathBrush::Grab && i == 0) {
+            continue;
+          }
+          changed = std::max(changed, motion_path_sculpt_dab(doc, stroke, sd));
+          if (brush == PathBrush::Smooth && !other.empty()) {
+            dab.center = points[i];
+            changed += motion_path_smooth_dab(doc, other, first, last, dab);
+          }
+        }
+        if (!keys.empty()) {
+          changed += motion_path_grab(doc, keys, points.back() - points.front(), dab.strength);
+        }
       }
       else if (brush == PathBrush::Slide) {
         /* The dot nearest the first point slides to the last, the dots inside the circle going with it. */

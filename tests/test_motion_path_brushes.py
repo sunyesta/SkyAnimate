@@ -1,4 +1,5 @@
-"""Motion paths, stages 4-6: the Motion Path tool's brushes. Shape brushes (Grab, Smooth) move keys; Blend Speed
+"""Motion paths, stages 4-6: the Motion Path tool's brushes. Shape brushes (Grab, Smooth: the Sculpt tool's) reshape
+the path (more in test_motion_path_sculpt.py); Blend Speed
 evens out how fast a path is gone along, its stretches becoming Custom, each still arriving on its key's frame and
 keeping its shape; Ctrl (invert=1) sharpens. Each brush has its own radius and strength; Shift (shift=1) swaps in
 Grab's Smooth and Edit's Blend Speed.
@@ -91,7 +92,7 @@ w = 1.0 - x * x * (3.0 - 2.0 * x)
 assert ops.anim.motion_path_stroke(brush="GRAB", points="1,0;1,1", radius="1.5", strength="0.5") == {'FINISHED'}
 assert close(where(box, 20), (1.0, 0.5)) and close(where(box, 10), (0.0, 0.5 * w)), (where(box, 10), w)
 
-# --- Smooth (stage 5): a lump toward the curve through the keys either side ------------------------------------------
+# --- Smooth: the Sculpt tool's Smooth on the path, a lump lowered, keys on their frames -----------------------------
 def arc_y(f):
     return 2.0 - (f - 20) ** 2 / 50.0
 
@@ -99,22 +100,18 @@ def arc_y(f):
 ball = fresh_layer({f: (f / 10.0, arc_y(f) + (1.0 if f == 20 else 0.0)) for f in (10, 15, 20, 25, 30)})
 doc.frame_current = 20
 bump = where(ball, 20)
+side = (where(ball, 10), where(ball, 30))
 # Shift with Grab is Smooth.
-assert ops.anim.motion_path_stroke(brush="GRAB", shift="1", points=f"{bump[0]},{bump[1]}", radius="0.2",
-                                   strength="0.5") == {'FINISHED'}
-assert close(where(ball, 20), (2.0, arc_y(20) + 0.5)), ("half way, at the middle of the brush", where(ball, 20))
-assert close(where(ball, 15), (1.5, arc_y(15))), "outside the brush, as it was"
+assert ops.anim.motion_path_stroke(brush="GRAB", shift="1", points=f"{bump[0]},{bump[1]}", radius="0.6",
+                                   strength="1") == {'FINISHED'}
+lower = where(ball, 20)
+assert lower[1] < bump[1] - 0.05, ("the lump lowered", bump, lower)
+assert frames(ball) == [10, 15, 20, 25, 30], "no keys added"
+assert close((where(ball, 10), where(ball, 30)), side), "outside the brush, as it was"
 here = where(ball, 20)
-assert ops.anim.motion_path_stroke(brush="SMOOTH", points=f"{here[0]},{here[1]}", radius="0.2", strength="1") == {
+assert ops.anim.motion_path_stroke(brush="SMOOTH", points=f"{here[0]},{here[1]}", radius="0.6", strength="1") == {
     'FINISHED'}
-assert close(where(ball, 20), (2.0, arc_y(20))), where(ball, 20)
-# Dragged handles ease back to Auto.
-assert ops.anim.motion_path_handle(frame="20", side="OUT", x="3", y="3", layer=str(ball.id)) == {'FINISHED'}
-assert key(ball, "position", 20)["path_handles"] == "ALIGNED"
-here = where(ball, 20)
-assert ops.anim.motion_path_stroke(brush="SMOOTH", points=f"{here[0]},{here[1]}", radius="0.2", strength="1") == {
-    'FINISHED'}
-assert key(ball, "position", 20)["path_handles"] == "AUTO"
+assert where(ball, 20)[1] < lower[1] - 1e-3, ("smoother again", lower, where(ball, 20))
 
 # --- Speed (stage 6): Blend Speed evens out the spacing; Ctrl sharpens ----------------------------------------------
 def spread(speeds):

@@ -15,6 +15,7 @@
 
 #include "anim/animation.hh"
 #include "anim/path_brush.hh"
+#include "anim/sculpt.hh"
 #include "core/math.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
@@ -341,5 +342,29 @@ bool motion_path_slide_pick(const Document &doc, const std::vector<MotionPathTar
                             float2 &r_offset);
 int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
                           PathBrush brush, const PathDab &dab);
+
+/* Sculpting motion paths as the Sculpt tool sculpts lines (Grab, Smooth, Surface Smooth, exactly theirs): when a
+ * stroke starts, each path traced with keys of its own (a layer's origin, a point, a bone's head or a bone moving its
+ * tip) is made into a line in a drawing of its own, its keys and control points the line's points and the handles the
+ * path runs along its handles, and the Sculpt tool's stroke is begun on it (sampled densely, each point anchored to its
+ * sample). Each dab sculpts that line, then the path is given back from it: each key goes where its point went, its
+ * handles as the fitted line has them (an Auto key becoming Aligned), each control point where it went. No key is
+ * added or removed, the setup key (frame 0) and keys off the paths shown stay, and each stretch reshaped keeps its
+ * timing: it becomes Custom with the speeds it had by length along it, so its dots stay at the same share of the way. */
+struct PathSculptState;
+struct PathSculptStroke {
+  std::shared_ptr<PathSculptState> state;
+  bool empty() const;
+};
+/* Whether `target`'s path can be sculpted so (a channel of position keys, two at least). */
+bool motion_path_sculptable(const Document &doc, const MotionPathTarget &target);
+/* `dab` is the Sculpt tool's, in document space; its brush Grab, Smooth or Surface Smooth. first..last: the frames
+ * the paths show. */
+PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector<MotionPathTarget> &targets, int first,
+                                          int last, const SculptDab &dab);
+/* Returns how many paths changed. */
+int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const SculptDab &dab);
+/* A shape brush's dab (Grab, Smooth, Surface Smooth) from its settings, in document space. */
+SculptDab motion_path_sculpt_dab_make(PathBrush brush, const PathBrushSettings &settings, float2 center, float radius);
 
 }  // namespace oanim

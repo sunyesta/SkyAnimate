@@ -11,6 +11,7 @@
 #include "anim/controller.hh"
 #include "assets/asset_library.hh"
 #include "anim/deform.hh"
+#include "anim/sculpt.hh"
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/document.hh"
@@ -1439,13 +1440,15 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
 
 const char *path_brush_id(PathBrush brush)
 {
-  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE"};
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE",
+                                                       "SURFACE_SMOOTH"};
   return IDS[int(brush)];
 }
 
 const char *path_brush_name(PathBrush brush)
 {
-  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide"};
+  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide",
+                                                         "Surface Smooth"};
   return NAMES[int(brush)];
 }
 
@@ -2930,6 +2933,368 @@ int motion_path_smooth_arc(Document &doc, const MotionPathTarget &target, int fi
   doc.frame_current = shown;
   animation_sync(doc);
   return moved;
+}
+
+/* --- Path sculpting: the vector Sculpt tool's Grab, Smooth and Surface Smooth on motion paths -------------------- */
+
+namespace {
+
+/* Where a stretch's value `v` (between keys with maps `a` and `b`, `t` of the way along) shows, and back. */
+struct KeyMap {
+  float2 value, at, cx, cy;
+};
+float2 map_apply(const KeyMap &m, float2 v)
+{
+  const float2 d = v - m.value;
+  return m.at + m.cx * d.x + m.cy * d.y;
+}
+float2 map_vector(const KeyMap &m, float2 d)
+{
+  return m.cx * d.x + m.cy * d.y;
+}
+float2 map_unvector(const KeyMap &m, float2 d)
+{
+  const float det = m.cx.x * m.cy.y - m.cy.x * m.cx.y;
+  if (std::abs(det) < 1e-12f) {
+    return float2{0.0f, 0.0f};
+  }
+  return float2{(d.x * m.cy.y - d.y * m.cy.x) / det, (m.cx.x * d.y - m.cx.y * d.x) / det};
+}
+KeyMap map_blend(const KeyMap &a, const KeyMap &b, float t)
+{
+  t = std::clamp(t, 0.0f, 1.0f);
+  /* Each key's map moved to the same value, then mixed. */
+  KeyMap m;
+  m.value = a.value + (b.value - a.value) * t;
+  m.at = map_apply(a, m.value) + (map_apply(b, m.value) - map_apply(a, m.value)) * t;
+  m.cx = a.cx + (b.cx - a.cx) * t;
+  m.cy = a.cy + (b.cy - a.cy) * t;
+  return m;
+}
+
+/* The stretch arriving at keys[i] as points and the handles through them (keys' own space): its two keys and its
+ * control points between, each with its handles as the path runs (a key's out handle and in handle as its Bezier has
+ * them, a control point's along the line through it, as stretch_control_line draws it). */
+struct StretchPoints {
+  std::vector<float2> p, in, out;
+};
+StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i)
+{
+  StretchPoints s;
+  const Key<float2> &a = keys[i - 1], &b = keys[i];
+  s.p.push_back(a.value);
+  for (const float2 c : b.path_controls) {
+    s.p.push_back(path_control_value(a.value, b.value, c));
+  }
+  s.p.push_back(b.value);
+  const size_t n = s.p.size() - 1;
+  std::vector<float> chord(n);
+  float sum = 0.0f;
+  for (size_t j = 0; j < n; j++) {
+    chord[j] = length(s.p[j + 1] - s.p[j]);
+    sum += chord[j];
+  }
+  sum = std::max(sum, 1e-9f);
+  float2 in, out, unused;
+  key_path_handles(keys, i - 1, unused, out);
+  key_path_handles(keys, i, in, unused);
+  std::vector<float2> tangent(n + 1);
+  for (size_t j = 1; j < n; j++) {
+    tangent[j] = (s.p[j + 1] - s.p[j - 1]) * 0.5f;
+  }
+  tangent[0] = length(out) > 1e-9f ? out * (3.0f * chord[0] / sum) : (s.p[1] - s.p[0]);
+  tangent[n] = length(in) > 1e-9f ? in * (-3.0f * chord[n - 1] / sum) : (s.p[n] - s.p[n - 1]);
+  if (n == 1) {
+    /* No control points: the Bezier's own handles. */
+    tangent[0] = out * 3.0f;
+    tangent[1] = in * -3.0f;
+  }
+  for (size_t j = 0; j <= n; j++) {
+    s.in.push_back(tangent[j] * (-1.0f / 3.0f));
+    s.out.push_back(tangent[j] * (1.0f / 3.0f));
+  }
+  return s;
+}
+
+/* A stretch's progress at each frame from its start (after the hold) to its key, by length along it: what the dots
+ * keep while the path is sculpted. Empty for a stretch that doesn't move along its path (Step, Pose, Cycle). */
+std::vector<float> stretch_length_speeds(const Channel<float2> &ch, size_t i)
+{
+  const Key<float2> &a = ch.keys[i - 1], &b = ch.keys[i];
+  const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+  const int n = b.frame - start;
+  if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle) {
+    return {};
+  }
+  if (b.interp == Interp::Custom && !b.speeds.empty()) {
+    /* Already by length along it. */
+    return b.speeds;
+  }
+  /* The stretch without its control points (they lie on it by the same share) and without its interval. */
+  Channel<float2> plain = ch;
+  plain.keys[i].path_controls.clear();
+  plain.keys[i - 1].interval = 1;
+  std::vector<float> u(size_t(n + 1), 0.0f);
+  u[size_t(n)] = 1.0f;
+  for (int j = 1; j < n; j++) {
+    u[size_t(j)] = nearest_progress(plain.keys, i, plain.evaluate(start + j));
+  }
+  for (int j = 1; j <= n; j++) {
+    u[size_t(j)] = std::max(u[size_t(j)], u[size_t(j - 1)]);
+  }
+  return progress_speeds(u);
+}
+
+}  // namespace
+
+struct PathSculptState {
+  Document drawing;
+  SculptStroke stroke;
+  struct Target {
+    MotionPathTarget target;
+    std::vector<Key<float2>> keys;
+    std::vector<KeyMap> maps;
+    /* Each of the drawing's points: its key, or (control >= 0) the control point of the stretch arriving at it. */
+    std::vector<int> key, control;
+    std::vector<float2> pos;
+    std::vector<float2> in, out;
+    /* Each stretch's speeds keeping its timing by length (index: the key it arrives at). */
+    std::vector<std::vector<float>> speeds;
+    uint64_t layer = 0;
+  };
+  std::vector<Target> targets;
+};
+
+bool PathSculptStroke::empty() const
+{
+  return !state || state->targets.empty();
+}
+
+bool motion_path_sculptable(const Document &doc, const MotionPathTarget &target)
+{
+  const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
+  return ch && ch->keys.size() >= 2;
+}
+
+PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector<MotionPathTarget> &targets, int first,
+                                          int last, const SculptDab &dab)
+{
+  PathSculptStroke out;
+  auto st = std::make_shared<PathSculptState>();
+  std::vector<uint64_t> ids;
+  for (const MotionPathTarget &t : targets) {
+    const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), t);
+    if (!ch || ch->keys.size() < 2) {
+      continue;
+    }
+    PathSculptState::Target tg;
+    tg.target = t;
+    tg.keys = ch->keys;
+    bool ok = true;
+    for (const Key<float2> &k : tg.keys) {
+      KeyMap m;
+      m.value = k.value;
+      ok = ok && key_jacobian(doc, t, k.frame, m.at, m.cx, m.cy);
+      tg.maps.push_back(m);
+    }
+    if (!ok) {
+      continue;
+    }
+    /* The path as a drawing: its keys and control points in order, with the handles the path runs along. */
+    Layer &layer = document_add_layer(st->drawing, LayerType::Vector, "path");
+    tg.layer = layer.id;
+    Curve curve;
+    const auto add = [&](int key, int control, float2 at, float2 in, float2 out_h, bool held, bool aligned) {
+      MeshPoint p;
+      p.pos = p.setup_pos = at;
+      p.selected = !held;
+      layer.drawing.points.push_back(p);
+      CurvePoint cp;
+      cp.point = int(layer.drawing.points.size()) - 1;
+      cp.handle_in = in;
+      cp.handle_out = out_h;
+      cp.handles_set = true;
+      cp.aligned = aligned;
+      curve.points.push_back(cp);
+      tg.key.push_back(key);
+      tg.control.push_back(control);
+      tg.pos.push_back(at);
+      tg.in.push_back(in);
+      tg.out.push_back(out_h);
+    };
+    const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };
+    const size_t n = tg.keys.size();
+    for (size_t i = 0; i < n; i++) {
+      const Key<float2> &k = tg.keys[i];
+      if (i > 0) {
+        const StretchPoints s = stretch_points(tg.keys, i);
+        for (size_t c = 1; c + 1 < s.p.size(); c++) {
+          const float along = tg.keys[i].path_controls[c - 1].x;
+          const KeyMap m = map_blend(tg.maps[i - 1], tg.maps[i], along);
+          add(int(i), int(c - 1), map_apply(m, s.p[c]), map_vector(m, s.in[c]), map_vector(m, s.out[c]),
+              !shown(tg.keys[i - 1].frame) && !shown(k.frame), true);
+        }
+      }
+      float2 in{0.0f, 0.0f}, out_h{0.0f, 0.0f};
+      if (i > 0) {
+        in = map_vector(tg.maps[i], stretch_points(tg.keys, i).in.back());
+      }
+      if (i + 1 < n) {
+        out_h = map_vector(tg.maps[i], stretch_points(tg.keys, i + 1).out.front());
+      }
+      add(int(i), -1, tg.maps[i].at, in, out_h, !shown(k.frame), k.path_handles != PathHandles::Broken);
+    }
+    layer.drawing.curves.push_back(curve);
+    tg.speeds.resize(n);
+    for (size_t i = 1; i < n; i++) {
+      tg.speeds[i] = stretch_length_speeds(*ch, i);
+    }
+    ids.push_back(layer.id);
+    st->targets.push_back(std::move(tg));
+  }
+  if (st->targets.empty()) {
+    return out;
+  }
+  st->drawing.frame_current = 0;
+  SculptDab d = dab;
+  /* The setup key (frame 0) and keys off the paths shown stay: the brush works on the rest. */
+  d.selected_only = true;
+  d.mirror_x = false;
+  st->stroke = sculpt_stroke_begin(st->drawing, ids, d);
+  out.state = std::move(st);
+  return out;
+}
+
+int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const SculptDab &dab)
+{
+  if (stroke.empty()) {
+    return 0;
+  }
+  PathSculptState &st = *stroke.state;
+  SculptDab d = dab;
+  d.selected_only = true;
+  d.mirror_x = false;
+  /* Every path the stroke has changed so far is given back, whether or not this dab moved it (a Grab can start again
+   * from the document as it was). */
+  sculpt_stroke_dab(st.drawing, st.stroke, d);
+  int changed = 0;
+  for (const PathSculptState::Target &tg : st.targets) {
+    const Layer *layer = layer_find(st.drawing, tg.layer);
+    Channel<float2> *ch = handle_channel(doc, tg.target);
+    if (!layer || !ch || layer->drawing.curves.empty() || ch->keys.size() != tg.keys.size()) {
+      continue;
+    }
+    const Curve &curve = layer->drawing.curves.front();
+    std::vector<Key<float2>> keys = tg.keys;
+    const size_t n = keys.size();
+    std::vector<bool> moved(n, false);
+    std::vector<float2> in(n), out(n);
+    std::vector<bool> has_in(n, false), has_out(n, false);
+    std::vector<std::vector<float2>> controls(n);
+    std::vector<std::vector<int>> control_points(n);
+    /* Keys first (control points are kept relative to them). */
+    for (size_t j = 0; j < curve.points.size() && j < tg.key.size(); j++) {
+      const CurvePoint &cp = curve.points[j];
+      const float2 at = layer->drawing.points[size_t(cp.point)].pos;
+      const bool same = length(at - tg.pos[j]) < 1e-7f && length(cp.handle_in - tg.in[j]) < 1e-7f &&
+                        length(cp.handle_out - tg.out[j]) < 1e-7f;
+      const size_t k = size_t(tg.key[j]);
+      if (tg.control[j] >= 0) {
+        control_points[k].push_back(int(j));
+        if (!same) {
+          moved[k] = moved[k - 1] = true;
+        }
+        continue;
+      }
+      if (same) {
+        continue;
+      }
+      const KeyMap &m = tg.maps[k];
+      keys[k].value = tg.keys[k].value + map_unvector(m, at - tg.pos[j]);
+      in[k] = map_unvector(m, cp.handle_in);
+      out[k] = map_unvector(m, cp.handle_out);
+      has_in[k] = k > 0;
+      has_out[k] = k + 1 < n;
+      moved[k] = true;
+    }
+    if (std::none_of(moved.begin(), moved.end(), [](bool b) { return b; })) {
+      continue;
+    }
+    /* Control points: where they went, kept relative to the keys as they are now. */
+    for (size_t k = 1; k < n; k++) {
+      if (!moved[k] && !moved[k - 1]) {
+        continue;
+      }
+      for (size_t c = 0; c < control_points[k].size() && c < keys[k].path_controls.size(); c++) {
+        const int j = control_points[k][c];
+        const float2 at = layer->drawing.points[size_t(curve.points[size_t(j)].point)].pos;
+        const float along = tg.keys[k].path_controls[c].x;
+        const KeyMap m = map_blend(tg.maps[k - 1], tg.maps[k], along);
+        const float2 was = path_control_value(tg.keys[k - 1].value, tg.keys[k].value, tg.keys[k].path_controls[c]);
+        keys[k].path_controls[c] = path_control_stored(keys[k - 1].value, keys[k].value,
+                                                       was + map_unvector(m, at - tg.pos[size_t(j)]));
+      }
+    }
+    /* The keys' handles as the fitted curve has them. A stretch with control points runs through them on its own
+     * line, its keys' handles a share of its first and last piece (stretch_control_line): given back that way. */
+    for (size_t k = 0; k < n; k++) {
+      if (!moved[k]) {
+        continue;
+      }
+      const auto piece_share = [&](size_t arriving, bool first_piece) {
+        std::vector<float2> p{keys[arriving - 1].value};
+        for (const float2 c : keys[arriving].path_controls) {
+          p.push_back(path_control_value(keys[arriving - 1].value, keys[arriving].value, c));
+        }
+        p.push_back(keys[arriving].value);
+        if (p.size() <= 2) {
+          return 1.0f;
+        }
+        float sum = 0.0f;
+        for (size_t j = 1; j < p.size(); j++) {
+          sum += length(p[j] - p[j - 1]);
+        }
+        const float piece = first_piece ? length(p[1] - p[0]) : length(p[p.size() - 1] - p[p.size() - 2]);
+        return piece > 1e-9f ? sum / piece : 1.0f;
+      };
+      float2 key_in, key_out, unused;
+      key_path_handles(tg.keys, k, key_in, key_out);
+      key_in = has_in[k] ? in[k] * piece_share(k, false) : key_in;
+      key_out = has_out[k] ? out[k] * piece_share(k + 1, true) : key_out;
+      (void)unused;
+      keys[k].path_in = key_in;
+      keys[k].path_out = key_out;
+      if (keys[k].path_handles == PathHandles::Auto) {
+        keys[k].path_handles = PathHandles::Aligned;
+      }
+    }
+    /* Each stretch reshaped keeps its timing: the dots stay at the same share of the way along it. */
+    for (size_t i = 1; i < n; i++) {
+      if ((moved[i] || moved[i - 1]) && !tg.speeds[i].empty()) {
+        keys[i].interp = Interp::Custom;
+        keys[i].speeds = tg.speeds[i];
+      }
+    }
+    ch->keys = std::move(keys);
+    changed++;
+  }
+  if (changed) {
+    channel_keys_changed();
+    animation_evaluate(doc, doc.frame_current);
+  }
+  return changed;
+}
+
+SculptDab motion_path_sculpt_dab_make(PathBrush brush, const PathBrushSettings &settings, float2 center, float radius)
+{
+  SculptDab d;
+  d.brush = path_brush_sculpt(brush);
+  d.center = center;
+  d.radius = std::max(radius, 1e-6f);
+  d.strength = settings.strength;
+  d.falloff = settings.falloff;
+  d.surface_sensitivity = settings.sensitivity;
+  return d;
 }
 
 }  // namespace oanim

@@ -1657,6 +1657,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["brushes"] = each;
     d["proportional"] = ts.proportional;
     d["edit_layer"] = ts.path_edit_layer;
+    d["brush_falloff"] = sculpt_falloff_id(ts.path_brush_settings(sized).falloff);
+    d["sensitivity"] = ts.path_brush_settings(sized).sensitivity;
     d["proportional_size"] = ts.path_proportional_size;
     d["falloff"] = proportional_falloff_identifier(ts.proportional_falloff);
     d["chart_size"] = ts.path_chart_size;

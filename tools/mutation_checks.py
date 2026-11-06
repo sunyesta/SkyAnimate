@@ -400,6 +400,12 @@ PENDING = [
     ('src/editors/timeline.cc', '    return edit_layer == layer_itself(tg);\n  });', '    return (void)layer_itself, true;\n  });', 'teal never on the layer position with Edit Layer off', 'tests/test_motion_path_edit_layer.py'),
     ('src/editors/viewport.cc', '  if (C.wm->tool_settings.tool == Tool::MotionPath) {\n    Document &doc = *C.document;\n    const bool auto_key', '  if ((false)) {\n    Document &doc = *C.document;\n    const bool auto_key', 'Edit Layer: the box keyed whatever Auto Keying says', 'tests/test_motion_path_edit_layer.py'),
     ('src/ops/motion_path_ops.cc', 'ts.path_edit_layer = !ts.path_edit_layer;', '(void)0;', 'edit_layer= sets it', 'tests/test_motion_path_edit_layer.py'),
+    ('src/anim/motion_path.cc', '        keys[i].interp = Interp::Custom;\n        keys[i].speeds = tg.speeds[i];', '        (void)0;', "path sculpt keeps each stretch's timing", 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', 'const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };', 'const auto shown = [&](int f) { return f >= first && f <= last; };', 'path sculpt leaves the setup key', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '                                                       was + map_unvector(m, at - tg.pos[size_t(j)]));', '                                                       was);', 'path sculpt moves control points', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '      if (keys[k].path_handles == PathHandles::Auto) {\n        keys[k].path_handles = PathHandles::Aligned;', '      if ((false)) {\n        keys[k].path_handles = PathHandles::Aligned;', 'path sculpt: fitted handles Aligned', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '      keys[k].value = tg.keys[k].value + map_unvector(m, at - tg.pos[j]);', '      keys[k].value = tg.keys[k].value;', 'path sculpt moves keys', 'tests/test_motion_path_sculpt.py'),
+    ('src/ops/motion_path_ops.cc', '        bs.sensitivity = std::max(op_arg_float(C, "sensitivity", bs.sensitivity), 0.0f);', '        (void)0;', 'Surface Smooth sensitivity= sets it', 'tests/test_motion_path_sculpt.py'),
 ]
 
 

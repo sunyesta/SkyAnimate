@@ -8,15 +8,18 @@
 #include <cstdint>
 #include <string>
 
+#include "anim/sculpt.hh"
+
 namespace oanim {
 
-/* Edit takes dots, keys and handles; Grab and Smooth shape the path; Blend Speed, Pinch and Slide retime it. */
-enum class PathBrush : uint8_t { Edit, Grab, Smooth, BlendSpeed, Pinch, Slide };
-inline constexpr int PATH_BRUSH_COUNT = 6;
+/* Edit takes dots, keys and handles; Grab, Smooth and Surface Smooth shape the path (the Sculpt tool's own, on the
+ * path as a line: motion_path_sculpt_begin); Blend Speed, Pinch and Slide retime it. */
+enum class PathBrush : uint8_t { Edit, Grab, Smooth, BlendSpeed, Pinch, Slide, SurfaceSmooth };
+inline constexpr int PATH_BRUSH_COUNT = 7;
 
-/* "EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE". */
+/* "EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE", "SURFACE_SMOOTH". */
 const char *path_brush_id(PathBrush brush);
-/* "Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide". */
+/* "Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide", "Surface Smooth". */
 const char *path_brush_name(PathBrush brush);
 bool path_brush_from_id(const std::string &id, PathBrush *r_brush);
 /* The brushes painting speed under a circle (Ctrl paints the opposite: Pinch spreads). */
@@ -38,10 +41,24 @@ inline PathBrush path_brush_shifted(PathBrush brush)
          : brush == PathBrush::Edit || brush == PathBrush::Pinch || brush == PathBrush::Slide ? PathBrush::BlendSpeed
                                                                                       : brush;
 }
-/* Each brush's own size (screen pixels) and strength. */
+/* The shape brushes: the Sculpt tool's Grab, Smooth and Surface Smooth on the path. */
+inline bool path_brush_is_sculpt(PathBrush brush)
+{
+  return brush == PathBrush::Grab || brush == PathBrush::Smooth || brush == PathBrush::SurfaceSmooth;
+}
+inline SculptBrush path_brush_sculpt(PathBrush brush)
+{
+  return brush == PathBrush::Grab ? SculptBrush::Grab
+         : brush == PathBrush::Smooth ? SculptBrush::Smooth
+                                      : SculptBrush::SurfaceSmooth;
+}
+/* Each brush's own size (screen pixels) and strength; the shape brushes' falloff, and Surface Smooth's Lump
+ * Sensitivity, as the Sculpt tool's. */
 struct PathBrushSettings {
   float radius = 50.0f;
   float strength = 0.5f;
+  SculptFalloff falloff = SculptFalloff::Smooth;
+  float sensitivity = 0.25f;
 };
 /* The brushes with a circle (a radius and a strength): all but Edit, which takes dots, keys and handles. */
 inline bool path_brush_has_radius(PathBrush brush)
