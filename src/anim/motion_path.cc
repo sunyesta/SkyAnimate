@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -618,6 +619,9 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
         at = real.back();
       }
       real.push_back(relative ? back.apply(into.apply(at)) : at);
+      if (relative && !p.own_motion) {
+        p.spaces.push_back(back * into);
+      }
       if (p.own_motion) {
         /* Everything else held as shown, so drawn relative to anything it stays where it is. */
         OwnValues v;
@@ -658,6 +662,19 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
     }
   }
   return paths;
+}
+
+Transform2D motion_path_drawn(const MotionPath &p, int frame, float2 at)
+{
+  const int k = frame - p.first;
+  if (k < 0 || k >= int(p.points.size())) {
+    return Transform2D();
+  }
+  Transform2D m = k < int(p.spaces.size()) ? p.spaces[size_t(k)] : Transform2D();
+  const float2 d = p.points[size_t(k)] - m.apply(at);
+  m.tx += d.x;
+  m.ty += d.y;
+  return m;
 }
 
 Color motion_path_color(const Document &doc, const MotionPathTarget &target, size_t index)
@@ -3602,6 +3619,25 @@ bool motion_path_sculptable(const Document &doc, const MotionPathTarget &target)
   return ch && ch->keys.size() >= 2;
 }
 
+/* Drawn relative to something: from document space on each of `frames` to where the paths draw it (as
+ * motion_paths_make works it out). Empty when drawn as they are. */
+static std::map<int, Transform2D> drawn_spaces(const Document &doc, const std::set<int> &frames)
+{
+  std::map<int, Transform2D> out;
+  if (doc.path_relative == PathRelative::World || frames.empty()) {
+    return out;
+  }
+  const Transform2D back = relative_space(doc).inverted();
+  Document copy = doc;
+  for (const int f : frames) {
+    copy.frame_current = f;
+    animation_evaluate(copy, f);
+    ArmaturePoseCacheScope poses;
+    out[f] = back * relative_space(copy);
+  }
+  return out;
+}
+
 PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector<MotionPathTarget> &targets, int first,
                                           int last, const SculptDab &dab)
 {
@@ -3625,6 +3661,21 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
     }
     if (!ok) {
       continue;
+    }
+    if (!motion_path_own_motion(doc, t)) {
+      /* Sculpted where it is drawn: relative to something, each key's frame drawn turned and scaled as that is. */
+      std::set<int> frames;
+      for (const Key<float2> &k : tg.keys) {
+        frames.insert(k.frame);
+      }
+      const std::map<int, Transform2D> spaces = drawn_spaces(doc, frames);
+      for (size_t i = 0; i < tg.keys.size() && !spaces.empty(); i++) {
+        const Transform2D &s = spaces.at(tg.keys[i].frame);
+        KeyMap &m = tg.maps[i];
+        m.at = s.apply(m.at);
+        m.cx = s.apply_vector(m.cx);
+        m.cy = s.apply_vector(m.cy);
+      }
     }
     /* The path as a drawing: its keys and control points in order, with the handles the path runs along. */
     Layer &layer = document_add_layer(st->drawing, LayerType::Vector, "path");

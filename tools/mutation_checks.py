@@ -551,6 +551,12 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', '        std::erase_if(targets, [](const MotionPathTarget &t) { return t.drawing; });', '        (void)0;', "shape brushes leave a drawing's path alone", 'tests/test_motion_path_robust.py'),
     ('src/ops/motion_path_ops.cc', '          if (end_y != rest + 1 && std::isfinite(x) && std::isfinite(y)) {', '          if (end_y != rest + 1) {', 'stroke points must be numbers', 'tests/test_motion_path_robust.py'),
     ('src/ops/motion_path_ops.cc', '      dab.strength = std::clamp(op_arg_float(C, "strength", ts.path_brush_settings(brush).strength), 0.0f, 1.0f);', '      dab.strength = op_arg_float(C, "strength", ts.path_brush_settings(brush).strength);', "a stroke's strength is 0 to 1", 'tests/test_motion_path_robust.py'),
+    ('src/anim/motion_path.cc', '        p.spaces.push_back(back * into);', '        p.spaces.push_back(Transform2D());',
+     "a relative path keeps each frame's space, so its handles turn as drawn", 'tests/test_motion_path_robust.py'),
+    ('src/anim/motion_path.cc', '        m.at = s.apply(m.at);\n        m.cx = s.apply_vector(m.cx);\n        m.cy = s.apply_vector(m.cy);',
+     '        (void)s;\n        (void)m;', "brushes sculpt a relative path where it is drawn", 'tests/test_motion_path_robust.py'),
+    ('src/python/py_runtime.cc', '            const float2 there = drawn.apply(at);',
+     '            const float2 there = at + (drawn.apply(key) - key);', "Python's handles are drawn turned with the path", 'tests/test_motion_path_robust.py'),
 ]
 
 

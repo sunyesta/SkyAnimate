@@ -636,10 +636,11 @@ static struct {
   ImVec2 press;
   /* The arc between the keys either side (document space), for a breakdown. */
   std::vector<float2> arc;
-  /* A path handle pressed instead of a dot: 1 its key's in handle, 2 its out; `offset` from where the path is drawn to
-   * document space on its key's frame (zero unless drawn relative to something). */
+  /* A path handle pressed instead of a dot: 1 its key's in handle, 2 its out. */
   int handle = 0;
-  float2 offset;
+  /* From document space on the dot's frame to where it is drawn (motion_path_drawn): as it is unless drawn relative
+   * to something, which can turn and scale it too. */
+  Transform2D drawn;
   /* A control point dragged instead (>= 0): which of the stretch ending on `frame`, moved as seen on `near`; or one of
    * its handles (1 in, 2 out). */
   int control = -1;
@@ -657,7 +658,8 @@ struct PathControlHover {
   int end = 0, index = 0, near_frame = 0;
   /* One of its handles' tips instead: 1 in, 2 out. */
   int handle = 0;
-  float2 offset;
+  /* From document space on its nearest frame to where it is drawn. */
+  Transform2D drawn;
 };
 static std::optional<PathControlHover> g_path_control_hover;
 /* A path handle's tip or a control point (or its handle) under the mouse, as last drawn: an Alt press there takes it
@@ -710,8 +712,8 @@ struct PathHandlesShown {
   float2 key, in, out;
   PathHandles mode = PathHandles::Auto;
   bool first = false, last = false;
-  /* Drawn position less document space on the key's frame. */
-  float2 offset;
+  /* From document space on the key's frame to where it is drawn. */
+  Transform2D drawn;
   /* An Auto side with no length: drawn short (PATH_HANDLE_STUB pixels) along these ways, drawn position. */
   bool stub_in = false, stub_out = false;
   float2 stub_in_way, stub_out_way;
@@ -801,7 +803,8 @@ static struct {
   MotionPathTarget target;
   int frame = 0;
   ImVec2 press;
-  float2 offset;
+  /* From document space on the dot's frame to where it is drawn. */
+  Transform2D drawn;
   Document snapshot;
 } g_path_slide;
 
@@ -871,7 +874,7 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
     slide.size = ts.path_proportional_size;
     slide.falloff = ts.proportional_falloff;
     doc = g.snapshot;
-    g.changed = motion_path_slide(doc, g.target, g.frame, view.to_document(io.MousePos) - g.offset, slide);
+    g.changed = motion_path_slide(doc, g.target, g.frame, g.drawn.inverted().apply(view.to_document(io.MousePos)), slide);
     g_path_drag.serial++;
   }
 }
@@ -937,7 +940,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     g.first = first;
     g.last = last;
     g.press = io.MousePos;
-    g.offset = hc.offset;
+    g.drawn = hc.drawn;
     g.snapshot = doc;
     return;
   }
@@ -964,7 +967,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     g.last = last;
     g.press = io.MousePos;
     g.handle = hover_out ? 2 : 1;
-    g.offset = hover_handle->offset;
+    g.drawn = hover_handle->drawn;
     g.snapshot = doc;
     return;
   }
@@ -1008,14 +1011,15 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
                         std::binary_search(hover_path->keys.begin(), hover_path->keys.end(), hover_frame);
     OpArgs args = motion_path_target_args(doc, target);
     args["frame"] = std::to_string(hover_frame);
-    /* Drawn where it is relative to the frame shown: the mouse less this is where it goes on the dot's own frame. */
-    float2 offset{0.0f, 0.0f};
+    /* Drawn where it is relative to the frame shown: the mouse taken back through this is where it goes on the dot's
+     * own frame. */
+    Transform2D drawn;
     float2 own;
     if (hover_frame != doc.frame_current && hover_frame >= hover_path->first &&
         hover_frame - hover_path->first < int(hover_path->points.size()) &&
         motion_path_position_at(doc, target, hover_frame, own))
     {
-      offset = hover_path->points[size_t(hover_frame - hover_path->first)] - own;
+      drawn = motion_path_drawn(*hover_path, hover_frame, own);
     }
     if (!io.KeyAlt) {
       if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -1060,7 +1064,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
         sl.target = target;
         sl.frame = hover_frame;
         sl.press = io.MousePos;
-        sl.offset = offset;
+        sl.drawn = drawn;
         sl.snapshot = doc;
         /* The paths keep the range they had while the drag goes on. */
         g.active = true;
@@ -1093,7 +1097,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
       g.first = first;
       g.last = last;
       g.press = io.MousePos;
-      g.offset = offset;
+      g.drawn = drawn;
       g.snapshot = doc;
       return;
     }
@@ -1108,7 +1112,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     g.on_key = on_key;
     g.breakdown = io.KeyAlt && io.KeyShift && !on_key;
     g.adding = io.KeyAlt && !on_key && !g.breakdown;
-    g.offset = offset;
+    g.drawn = drawn;
     g.snapshot = doc;
     g.arc.clear();
     if (g.breakdown) {
@@ -1178,17 +1182,17 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     if (g.control_handle) {
       /* A handle, as a vector point's: aligned, the other turns to stay in line; Alt moves just this one. */
       motion_path_control_handle_set(doc, g.target, g.frame, g.control, g.control_handle == 2, g.near_frame,
-                                     at - g.offset, io.KeyAlt);
+                                     g.drawn.inverted().apply(at), io.KeyAlt);
       g.serial++;
       return;
     }
-    motion_path_control_set(doc, g.target, g.frame, g.control, g.near_frame, at - g.offset);
+    motion_path_control_set(doc, g.target, g.frame, g.control, g.near_frame, g.drawn.inverted().apply(at));
     g.serial++;
     return;
   }
   if (g.handle) {
     /* Only the key's handles change: no record, the keys are what's edited. */
-    motion_path_handle_set(doc, g.target, g.frame, g.handle == 2, at - g.offset, io.KeyAlt);
+    motion_path_handle_set(doc, g.target, g.frame, g.handle == 2, g.drawn.inverted().apply(at), io.KeyAlt);
     animation_evaluate(doc, doc.frame_current);
     g.serial++;
     return;
@@ -1200,7 +1204,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
       motion_path_breakdown(doc, g.target, arc_fraction(g.arc, at));
     }
     else {
-      at = at - g.offset;
+      at = g.drawn.inverted().apply(at);
       if (io.KeyCtrl) {
         motion_path_straighten(doc, g.target, at);
       }
@@ -2334,7 +2338,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       bool show_in = true, show_out = true;
       for (const MotionPath &p : cache.paths) {
         if (p.target.same(target) && f >= p.first && f - p.first < int(p.points.size())) {
-          h.offset = p.points[size_t(f - p.first)] - h.key;
+          h.drawn = motion_path_drawn(p, f, h.key);
           motion_path_handle_sides(p, f, show_in, show_out);
           if (h.mode == PathHandles::Auto) {
             h.stub_in = show_in && length(h.in - h.key) < 1e-7f && motion_path_handle_stub(p, f, false, h.stub_in_way);
@@ -2350,13 +2354,13 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   }
   std::vector<PathHandlesShown> shown_handles = handles.shown;
   for (PathHandlesShown &h : shown_handles) {
-    const float2 at = h.key + h.offset;
+    const float2 at = h.drawn.apply(h.key);
     const ImVec2 k = view.to_screen(at);
     const auto stub_end = [&](float2 way) {
       const ImVec2 w = view.to_screen(at + way) - k;
       const float len = std::sqrt(w.x * w.x + w.y * w.y);
       const ImVec2 e = len > 1e-9f ? k + w * (PATH_HANDLE_STUB / len) : k;
-      return view.to_document(e) - h.offset;
+      return h.drawn.inverted().apply(view.to_document(e));
     };
     if (h.stub_in) {
       h.in = stub_end(h.stub_in_way);
@@ -2371,12 +2375,12 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   /* Which tip is under the mouse, first: it is drawn bigger. And the lines, to leave out the dots they cover. */
   std::vector<std::pair<float2, float2>> handle_lines;
   for (const PathHandlesShown &h : shown_handles) {
-    const ImVec2 k = view.to_screen(h.key + h.offset);
+    const ImVec2 k = view.to_screen(h.drawn.apply(h.key));
     for (const bool out : {false, true}) {
       if (out ? h.last : h.first) {
         continue;
       }
-      const ImVec2 e = view.to_screen((out ? h.out : h.in) + h.offset);
+      const ImVec2 e = view.to_screen(h.drawn.apply(out ? h.out : h.in));
       handle_lines.push_back({float2{k.x, k.y}, float2{e.x, e.y}});
       const float dx = e.x - mouse.x, dy = e.y - mouse.y;
       if (tool && hovering && dx * dx + dy * dy < handle_best) {
@@ -2395,7 +2399,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     float2 at, tip[2];
     bool picked = false, drag = false, tip_picked[2] = {false, false}, show_handles = false, no_tip[2] = {true, true};
     bool hovered = false;
-    float2 offset;
+    Transform2D drawn;
   };
   std::vector<ControlShown> controls_shown;
   if (editing) {
@@ -2436,10 +2440,10 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         ControlShown cs;
         cs.target = target;
         cs.c = c;
-        cs.offset = path->points[size_t(i)] - c.curve;
-        cs.at = c.at + cs.offset;
-        cs.tip[0] = c.in_tip + cs.offset;
-        cs.tip[1] = c.out_tip + cs.offset;
+        cs.drawn = motion_path_drawn(*path, c.near_frame, c.curve);
+        cs.at = cs.drawn.apply(c.at);
+        cs.tip[0] = cs.drawn.apply(c.in_tip);
+        cs.tip[1] = cs.drawn.apply(c.out_tip);
         const auto part_picked = [&](int part) {
           return std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
                            MotionPathHandlePick{target, c.end, false, c.index, part}) != wm.path_handle_picks.end();
@@ -2467,7 +2471,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
           if (tool && hovering && !hover_handle && tx * tx + ty * ty < best_control) {
             best_control = tx * tx + ty * ty;
             hover_cs = &cs;
-            g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, part, cs.offset};
+            g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, part, cs.drawn};
           }
         }
       }
@@ -2475,7 +2479,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       if (tool && hovering && !hover_handle && dx * dx + dy * dy < best_control) {
         best_control = dx * dx + dy * dy;
         hover_cs = &cs;
-        g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, 0, cs.offset};
+        g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, 0, cs.drawn};
       }
     }
     if (hover_cs) {
@@ -2534,7 +2538,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
                                      MotionPathHandlePick{h.target, h.frame, out}) != wm.path_handle_picks.end();
       /* Under the mouse (or being dragged): a little bigger and brighter, so it shows what a click takes. */
       const bool lit = dragged || (hover_handle == &h && hover_out == out);
-      draw_path_handle(h.key + h.offset, (out ? h.out : h.in) + h.offset, dragged, lit, h.mode != PathHandles::Auto);
+      draw_path_handle(h.drawn.apply(h.key), h.drawn.apply(out ? h.out : h.in), dragged, lit, h.mode != PathHandles::Auto);
     }
   }
   /* Control points: small squares (no frame: never a key's diamond or a dot), white as the keys, orange when picked;

@@ -1448,12 +1448,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
             continue;
           }
           motion_path_handle_sides(p, f, show_in, show_out);
-          const float2 offset = p.points[size_t(f - p.first)] - key;
+          const Transform2D drawn = motion_path_drawn(p, f, key);
           const auto end = [&](bool shown, float2 at) -> py::object {
             if (!shown || length(at - key) < 1e-7f) {
               return py::none();
             }
-            return py::make_tuple((at + offset).x, (at + offset).y);
+            const float2 there = drawn.apply(at);
+            return py::make_tuple(there.x, there.y);
           };
           py::dict h;
           h["frame"] = f;

@@ -541,4 +541,79 @@ for brush in ("GRAB", "SMOOTH"):
     assert frames(face) == [], (brush, "no position keys added to the layer", frames(face))
     assert close(where(face, 10), (0.0, 0.0)), (brush, "the layer stays put")
 
+# --- A path drawn Relative To a parent that turns: its key handles lie along it as drawn ------------------------------
+def in_group(layer):
+    """`layer` put in a new group, which becomes the active layer."""
+    only(layer)
+    assert ops.layer.group() == {'FINISHED'}
+    return layers.active
+
+
+def heading(a, b):
+    return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+
+
+start()
+ops.layer.new()
+ball = layers.active
+ball.add_curve([(0.0, 0.0), (0.1, 0.0)])
+group = in_group(ball)
+doc.auto_key = True
+doc.frame_current = 40
+group.rotation = 90.0
+doc.frame_current = 0
+for f, x in ((10, 1.0), (20, 2.0), (30, 3.0)):
+    doc.frame_current = f
+    ball.location_x, ball.location_y = x, 0.0
+doc.frame_current = 0
+doc.auto_key = False
+assert frames(ball) == [0, 10, 20, 30], frames(ball)
+group.keyframe_set("rotation", 40, interp="LINEAR")
+only(ball)
+assert ops.anim.motion_path_relative(to="PARENT", layer=str(group.id)) == {'FINISHED'}
+doc.path_before, doc.path_after = 40, 40
+for at in (0, 20):
+    doc.frame_current = at
+    p = path_of(ball)
+    pts = p["points"]
+    for kf in (10, 20):
+        h = next(h for h in p["handles"] if h["frame"] == kf)
+        i = kf - p["first"]
+        along = heading(pts[i - 1], pts[i + 1])
+        assert close(along, 45.0 if at == 20 else 0.0, 0.5), ("the path drawn in the group as it is on", at, along)
+        assert math.dist(pts[i], h["out"]) < 0.5, ("the handle starts at its dot", at, kf, h["out"], pts[i])
+        assert close(heading(pts[i], h["out"]), along, 0.5), (
+            "the handle lies along the path as drawn, not as it turns", at, kf, heading(pts[i], h["out"]), along)
+
+
+# --- Grab and Smooth take a Relative To Parent path's dots where they are drawn --------------------------------------
+start()
+ops.layer.new()
+art = layers.active
+art.key_whole_drawing = False
+art.add_curve([(0.0, 0.0), (0.1, 0.0)])
+group = in_group(art)
+doc.auto_key = True
+doc.frame_current = 30
+group.location_x = 10.0
+doc.frame_current = 31
+doc.auto_key = False
+only(art)
+for f, (x, y) in {10: (0, 0), 20: (1, 1), 30: (2, 0)}.items():
+    assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), layer=str(art.id)) == {'FINISHED'}
+doc.frame_current = 20
+assert ops.anim.motion_path_relative(to="PARENT", layer=str(group.id)) == {'FINISHED'}
+d10 = path_of(art)["points"][10 - path_of(art)["first"]]
+assert close(d10, (3.333, 0.0), 1e-2), ("key 10's dot drawn where the group is on frame 20", d10)
+before = key(art, 10)["value"]
+for brush in ("GRAB", "SMOOTH"):
+    assert ops.anim.motion_path_stroke(brush=brush, points=f"{d10[0]},{d10[1]};{d10[0]},{d10[1] + 0.5}",
+                                       radius="0.3", strength="1") == {'FINISHED'}, (brush, "on the drawn dot")
+    assert not close(key(art, 10)["value"], before, 1e-5), (brush, "key 10 moves", key(art, 10)["value"])
+    assert ops.ed.undo() == {'FINISHED'}
+    assert close(key(art, 10)["value"], before, 1e-5), (brush, "undone", key(art, 10)["value"])
+assert ops.anim.motion_path_stroke(brush="GRAB", points="0,0;0,0.5", radius="0.3",
+                                   strength="1") == {'CANCELLED'}, "no dot is drawn where key 10 really is"
+assert close(key(art, 10)["value"], before), key(art, 10)["value"]
+
 print("test_motion_path_robust: all passed")
