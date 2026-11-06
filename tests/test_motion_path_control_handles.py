@@ -155,6 +155,45 @@ assert ops.ed.undo() == {'FINISHED'}
 s = handles(ball)["out"]
 assert close(g, (s[0] * 2, s[1] * 2), 1e-3), ("S scales it about its point", s, g)
 
+
+def turned(v, a):
+    return (v[0] * math.cos(a) - v[1] * math.sin(a), v[0] * math.sin(a) + v[1] * math.cos(a))
+
+
+# --- R S on a control point, as on a vector point: its handles turn and scale with it (alone, about it) ---------------
+assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'FINISHED'}
+was, at_was = handles(ball), key(ball, 30)["path_controls"][0]
+assert ops.anim.motion_path_keys_transform(kind="R", angle=str(math.pi / 2)) == {'FINISHED'}
+now = handles(ball)
+assert close(key(ball, 30)["path_controls"][0], at_was, 1e-4), "alone: the point stays"
+assert close(now["in"], turned(was["in"], math.pi / 2), 1e-3) and close(now["out"], turned(was["out"], math.pi / 2), 1e-3), \
+    ("R turns both handles about it", was, now)
+assert now["aligned"] == was["aligned"], "as in line as they were"
+assert ops.anim.motion_path_keys_transform(kind="S", factor="0.5") == {'FINISHED'}
+assert close(handles(ball)["out"], (now["out"][0] * 0.5, now["out"][1] * 0.5), 1e-3), ("S scales them", handles(ball))
+assert close(handles(ball)["in"], (now["in"][0] * 0.5, now["in"][1] * 0.5), 1e-3)
+assert ops.ed.undo() == {'FINISHED'} and ops.ed.undo() == {'FINISHED'}
+assert close(handles(ball)["out"], was["out"], 1e-4), "undone"
+# Worked-out handles (not set yet) turn too, becoming its own.
+pair = mover({10: (0.0, 0.0), 30: (6.0, 0.0)})
+a5 = dict(layer=str(pair.id))
+assert ops.anim.motion_path_control_add(frame="16", **a5) == {'FINISHED'}
+assert ops.anim.motion_path_control_add(frame="24", **a5) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="1", **a5) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="30", index="1", x="4", y="1", **a5) == {'FINISHED'}
+both_was = key(pair, 30)["path_control_handles"]
+assert not both_was[0]["set"] and not both_was[1]["set"], both_was
+tips_was = [(both_was[j]["in"], both_was[j]["out"]) for j in (0, 1)]
+assert ops.anim.motion_path_handle_select(frame="30", control="0", **a5) == {'FINISHED'}
+assert ops.anim.motion_path_handle_select(frame="30", control="1", extend="1", **a5) == {'FINISHED'}
+assert ops.anim.motion_path_keys_transform(kind="R", angle=str(math.pi / 2)) == {'FINISHED'}
+cs = key(pair, 30)["path_controls"]
+assert not close(cs[0], (2.0, 1.0), 1e-2), ("two: they turn about their middle", cs)
+hs = key(pair, 30)["path_control_handles"]
+for j in (0, 1):
+    assert hs[j]["set"] is True, ("turned: its own", hs[j])
+    assert close(hs[j]["out"], turned(tips_was[j][1], math.pi / 2), 1e-3), ("and their handles with them", j, hs[j])
+
 # --- Saved ---------------------------------------------------------------------------------------------------------------
 kept = handles(ball)
 path = os.path.join(tempfile.mkdtemp(), "control_handles.oanim")

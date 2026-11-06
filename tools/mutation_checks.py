@@ -424,6 +424,9 @@ PENDING = [
     ('src/anim/motion_path.cc', '      mp.pos = mp.setup_pos = tg.pos[size_t(tg.pinned)];', '      (void)mp;', 'sculpt pins the setup key point', 'tests/test_motion_path_sculpt.py'),
     ('src/editors/viewport.cc', '  if (!on_point && !under.hit.bone) {\n    return false;\n', '  if (!on_point && !under.hit.bone) {\n    if (apply) {\n      C.wm->path_handle_picks.clear();\n    }\n    return false;\n', 'Alt pick of nothing keeps a picked path handle', 'tests/test_motion_path_control_handles.py'),
     ('src/editors/viewport.cc', '  /* A bone or point picked: no path handles with it (nothing there: the handles picked stay). */\n  C.wm->path_handle_picks.clear();\n', '', 'a picked point lets the path handles go', 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/motion_path.cc', "    if (kind == 'G') {\n      /* Kept relative to the point, its handles ride along. */\n      continue;\n    }\n", "    if (kind != 'X') {\n      continue;\n    }\n", 'R S on a control point turn and scale its handles', 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/motion_path.cc', "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h * factor);\n", "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h);\n", 'S on a control point scales its handles', 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/motion_path.cc', '      k->path_control_handles[size_t(mc.index)].aligned = mc.aligned;\n', '      (void)k;\n', 'R on a control point keeps its handles aligned', 'tests/test_motion_path_control_handles.py'),
 ]
 
 

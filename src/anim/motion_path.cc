@@ -2917,7 +2917,34 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
                         : kind == 'R' ? middle + float2{d.x * c - d.y * s, d.x * s + d.y * c}
                                       : middle + d * factor;
     const MotionPathHandlePick &p = picks[control_of[j]];
-    changed += motion_path_control_set(doc, p.target, mc.end, mc.index, mc.near_frame, goes) ? 1 : 0;
+    if (!motion_path_control_set(doc, p.target, mc.end, mc.index, mc.near_frame, goes)) {
+      continue;
+    }
+    changed++;
+    if (kind == 'G') {
+      /* Kept relative to the point, its handles ride along. */
+      continue;
+    }
+    /* As a vector point's: its handles turn and scale with it (alone, about it); a handle picked itself went its own
+     * way above. */
+    bool turned = false;
+    for (const int part : {1, 2}) {
+      const bool own_pick = std::any_of(control_tips.begin(), control_tips.end(), [&](const auto &o) {
+        const MotionPathHandlePick &q = picks[o.first];
+        return q.target.same(p.target) && q.frame == mc.end && q.control == mc.index && q.control_handle == part;
+      });
+      const float2 h = (part == 2 ? mc.out_tip : mc.in_tip) - mc.at;
+      if (own_pick || length(h) < 1e-9f) {
+        continue;
+      }
+      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h * factor);
+      turned |= motion_path_control_handle_set(doc, p.target, mc.end, mc.index, part == 2, mc.near_frame, tip, true);
+    }
+    if (turned) {
+      /* Each where it goes: as in line as they were. */
+      Key<float2> *k = handle_channel(doc, p.target)->key_at(mc.end);
+      k->path_control_handles[size_t(mc.index)].aligned = mc.aligned;
+    }
   }
   animation_evaluate(doc, doc.frame_current);
   return changed;
