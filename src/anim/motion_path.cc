@@ -860,18 +860,21 @@ float2 *place_value(Document &doc, const MotionPathTarget &t, Bone **r_bone)
 }
 
 /* Moves `value` so `t` shows at `at`: how it moves the target is found by nudging it (bones, parents and skins move
- * a point, a head or an origin as a straight-line function of it), a few times over for anything that isn't quite. */
+ * a point, a head or an origin as a straight-line function of it), a few times over for anything that isn't quite.
+ * Where it can't get there (a pupil held inside its eye by Look At, at the edge), as near as it gets, the value going
+ * no further than it takes to get there, so moving back in starts at once. False if it gets no nearer at all. */
 bool solve_position(Document &doc, const MotionPathTarget &t, float2 &value, float2 at)
 {
-  for (int iteration = 0; iteration < 4; iteration++) {
-    float2 now;
-    if (!target_position(doc, t, now)) {
-      return false;
-    }
+  float2 now;
+  if (!target_position(doc, t, now)) {
+    return false;
+  }
+  const float2 first = value;
+  const float first_miss = length(at - now);
+  float2 best = value;
+  float best_miss = first_miss;
+  for (int iteration = 0; iteration < 6 && best_miss >= 1e-6f; iteration++) {
     const float2 miss = at - now;
-    if (length(miss) < 1e-6f) {
-      return true;
-    }
     const float h = 1e-2f;
     const float2 start = value;
     float2 dx, dy;
@@ -881,12 +884,45 @@ bool solve_position(Document &doc, const MotionPathTarget &t, float2 &value, flo
     target_position(doc, t, dy);
     value = start;
     const float2 cx = (dx - now) / h, cy = (dy - now) / h;
-    const float det = cx.x * cy.y - cx.y * cy.x;
-    if (std::abs(det) < 1e-9f) {
-      return false;
+    /* Least squares, damped a touch: a way the value can't move it (held at an edge) is left alone. */
+    const float xx = dot(cx, cx), xy = dot(cx, cy), yy = dot(cy, cy);
+    const float damp = 1e-6f * (xx + yy);
+    const float a = xx + damp, d = yy + damp, det = a * d - xy * xy;
+    if (xx + yy < 1e-18f || std::abs(det) < 1e-30f) {
+      break;
     }
-    value = start + float2{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
+    const float gx = dot(cx, miss), gy = dot(cy, miss);
+    value = start + float2{(d * gx - xy * gy) / det, (a * gy - xy * gx) / det};
+    if (!target_position(doc, t, now)) {
+      break;
+    }
+    const float m = length(at - now);
+    if (m >= best_miss - 1e-9f) {
+      break;
+    }
+    best = value;
+    best_miss = m;
   }
+  value = best;
+  if (best_miss < 1e-6f) {
+    return true;
+  }
+  if (best_miss >= first_miss - 1e-7f) {
+    value = first;
+    return false;
+  }
+  /* Short of it: the least change from where it was that still shows where `best` does. */
+  float2 reached;
+  target_position(doc, t, reached);
+  float lo = 0.0f, hi = 1.0f;
+  for (int i = 0; i < 16; i++) {
+    const float mid = 0.5f * (lo + hi);
+    value = first + (best - first) * mid;
+    float2 there;
+    target_position(doc, t, there);
+    (length(there - reached) < 1e-6f ? hi : lo) = mid;
+  }
+  value = first + (best - first) * hi;
   return true;
 }
 
@@ -1314,20 +1350,21 @@ std::vector<float> speeds_progress(const std::vector<float> &s);
 std::vector<float> progress_speeds(const std::vector<float> &u);
 
 /* Progress `u` (0 at the stretch's start to 1 at its key, a value a frame) put back in order around dot `k0`, which
- * stays: none passing another or a key, each frame at least `gap` on. */
-void order_progress(std::vector<float> &u, int k0, float gap)
+ * stays: none passing another or the dots `lo` and `hi` that bound them (the keys, by default), each frame at least
+ * `gap` on. */
+void order_progress(std::vector<float> &u, int k0, float gap, int lo = 0, int hi = -1)
 {
-  const int n = int(u.size()) - 1;
-  for (int k = k0 + 1; k < n; k++) {
+  hi = hi < 0 ? int(u.size()) - 1 : hi;
+  for (int k = k0 + 1; k < hi; k++) {
     u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
   }
-  for (int k = k0 - 1; k >= 1; k--) {
+  for (int k = k0 - 1; k > lo; k--) {
     u[size_t(k)] = std::min(u[size_t(k)], u[size_t(k + 1)] - gap);
   }
-  for (int k = n - 1; k > k0; k--) {
+  for (int k = hi - 1; k > k0; k--) {
     u[size_t(k)] = std::min(u[size_t(k)], u[size_t(k + 1)] - gap);
   }
-  for (int k = 1; k < k0; k++) {
+  for (int k = lo + 1; k < k0; k++) {
     u[size_t(k)] = std::max(u[size_t(k)], u[size_t(k - 1)] + gap);
   }
 }
@@ -1375,18 +1412,36 @@ std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, 
     u[size_t(k0)] = want;
     return progress_speeds(u);
   }
+  /* Kept in order within the run of dots going forward that it is in, between the dots that bound it: the keys, or
+   * where an overshoot turns (past its key and back, or back before the start), which stays as it is. */
+  const auto turns = [&](int j) {
+    return j <= 0 || j >= n || !(u[size_t(j - 1)] < u[size_t(j)] && u[size_t(j)] < u[size_t(j + 1)]);
+  };
+  if (turns(k0)) {
+    /* On an overshoot's turn or its way back: it alone, between the dots either side. */
+    const float a = u[size_t(k0 - 1)], b = u[size_t(k0 + 1)];
+    u[size_t(k0)] = std::clamp(want, std::min(a, b), std::max(a, b));
+    return progress_speeds(u);
+  }
+  int lo = k0 - 1, hi = k0 + 1;
+  while (!turns(lo)) {
+    lo--;
+  }
+  while (!turns(hi)) {
+    hi++;
+  }
   /* Each frame keeps at least the speed brushes' least. */
   const float gap = 0.02f / float(n);
-  want = std::clamp(want, float(k0) * gap, 1.0f - float(n - k0) * gap);
+  want = std::clamp(want, u[size_t(lo)] + float(k0 - lo) * gap, u[size_t(hi)] - float(hi - k0) * gap);
   const float d = want - u[size_t(k0)];
-  for (int k = 1; k < n; k++) {
+  for (int k = lo + 1; k < hi; k++) {
     const float w = k == k0                ? 1.0f
                     : slide.proportional ? proportional_weight(slide.falloff, float(std::abs(k - k0)), slide.size, k)
                                          : 0.0f;
     u[size_t(k)] += d * w;
   }
   u[size_t(k0)] = want;
-  order_progress(u, k0, gap);
+  order_progress(u, k0, gap, lo, hi);
   return progress_speeds(u);
 }
 
@@ -1468,13 +1523,15 @@ bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, f
   return ok;
 }
 
-/* The progress (0-1 by length) along the stretch arriving at keys[i] nearest `v` (the keys' own space). */
-float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
+/* The progress (0-1 by length) along the stretch arriving at keys[i] nearest `v` (the keys' own space), looked for
+ * from `from` to `to` (past 1: on past the key along its end's direction, where an overshoot goes). */
+float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v, float from = 0.0f, float to = 1.0f)
 {
   constexpr int SAMPLES = 128;
-  float best = 0.0f, best_d = 1e30f;
+  const float step = (to - from) / SAMPLES;
+  float best = from, best_d = 1e30f;
   for (int j = 0; j <= SAMPLES; j++) {
-    const float u = float(j) / SAMPLES;
+    const float u = from + float(j) * step;
     const float2 q = stretch_path_point(keys, i, u) - v;
     const float d = q.x * q.x + q.y * q.y;
     if (d < best_d) {
@@ -1483,7 +1540,7 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
     }
   }
   /* Narrowed down between the samples either side. */
-  float lo = std::max(0.0f, best - 1.0f / SAMPLES), hi = std::min(1.0f, best + 1.0f / SAMPLES);
+  float lo = std::max(from, best - step), hi = std::min(to, best + step);
   for (int it = 0; it < 30; it++) {
     const float a = lo + (hi - lo) / 3.0f, b = hi - (hi - lo) / 3.0f;
     const float2 qa = stretch_path_point(keys, i, a) - v, qb = stretch_path_point(keys, i, b) - v;
@@ -1866,14 +1923,22 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
     if (!value_jacobian(doc, target, frame, value, shown, cx, cy)) {
       return false;
     }
-    const float det = cx.x * cy.y - cx.y * cy.x;
-    if (std::abs(det) < 1e-12f) {
+    /* Least squares, damped: where the value hardly moves it one way (a pupil Look At holds against its eye's edge),
+     * the mouse along that way doesn't fling the value off. */
+    const float xx = dot(cx, cx), xy = dot(cx, cy), yy = dot(cy, cy);
+    const float damp = xx * yy - xy * xy > 1e-3f * (xx + yy) * (xx + yy) ? 0.0f : 1e-3f * (xx + yy);
+    const float a = xx + damp, d = yy + damp, det = a * d - xy * xy;
+    if (xx + yy < 1e-18f || std::abs(det) < 1e-30f) {
       return false;
     }
     const float2 miss = at - shown;
-    const float2 v = value + float2{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
-    const float q = nearest_progress(ch->keys, i, v);
-    const float progress = q;
+    const float gx = dot(cx, miss), gy = dot(cy, miss);
+    const float2 v = value + float2{(d * gx - xy * gy) / det, (a * gy - xy * gx) / det};
+    /* A dot past its key (overshoot) or back before the start slides on along the line it goes there by. */
+    const std::vector<float> now = speeds_progress(stretch_speeds(*ch, i, start, n));
+    const float was = now[size_t(std::clamp(frame - start, 0, n))];
+    const float progress = nearest_progress(ch->keys, i, v, std::clamp(std::min(0.0f, was - 0.5f), -1.0f, 0.0f),
+                                            std::clamp(std::max(1.0f, was + 0.5f), 1.0f, 2.0f));
     if (!stretch_of(*ch, frame, i, start, n)) {
       return false;
     }
@@ -2721,23 +2786,93 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
       speed = (pos->evaluate(frame + 1) - pos->evaluate(frame - 1)) * 0.5f;
     }
   }
+  /* On a stretch that runs along a curve of its own (dragged handles, control points) or is timed along it (Linear's
+   * way with handles, the eases, Custom...): that curve split at the key and its timing shared out between the two, so
+   * no dot moves. A plain Smooth or Linear stretch already keeps its way with the handles above. */
+  StretchPoints old_points;
+  std::vector<float> old_u;
+  int old_k = 0;
+  bool split = false, curve_timed = false;
+  float old_length = 0.0f;
+  KeySettings arriving;
+  int interval = 1;
+  if (before && after) {
+    const Key<float2> &a = *before, &b = *after;
+    const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+    const bool handles = a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto;
+    const bool controls = !b.path_controls.empty();
+    const bool moves = b.interp != Interp::Step && b.interp != Interp::Pose && b.interp != Interp::Cycle &&
+                       b.interp != Interp::Noisy && a.interp != Interp::Cycle && frame > start;
+    const bool plain = (b.interp == Interp::Smooth || b.interp == Interp::Linear) && !handles && !controls;
+    if (moves && !plain) {
+      const size_t bi = size_t(&b - pos->keys.data());
+      const int n = b.frame - start;
+      old_points = stretch_points(pos->keys, bi);
+      old_u = speeds_progress(stretch_speeds(*pos, bi, start, n));
+      old_length = stretch_path_length(pos->keys, bi);
+      old_k = frame - start;
+      arriving = key_settings(b);
+      interval = a.interval;
+      /* Smooth along dragged handles is timed by the curve itself, which the split keeps; the rest by length, shared
+       * out (not where the key is at, or past, either end: there is nothing to share). */
+      curve_timed = b.interp == Interp::Smooth && !controls;
+      split = curve_timed || (old_u[size_t(old_k)] > 0.02f && old_u[size_t(old_k)] < 0.98f);
+    }
+  }
   const int span_in = before ? frame - before->frame : 0, span_out = after ? after->frame - frame : 0;
   with_path_channel(doc, target, [&](auto &ch) {
     if (!ch.key_at(frame)) {
       Key<std::decay_t<decltype(ch.keys[0].value)>> &k = ch.set_key(frame, ch.evaluate(frame));
       if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[0].value)>, float2>) {
         /* The control points of the stretch it splits stay where they are. */
-        key_controls_split(ch.keys, size_t(&k - ch.keys.data()));
+        if (!split || static_cast<void *>(&ch) != static_cast<void *>(pos)) {
+          key_controls_split(ch.keys, size_t(&k - ch.keys.data()));
+        }
       }
       added = true;
     }
   });
-  if (added && pos && span_in > 0 && span_out > 0) {
-    if (Key<float2> *k = pos->key_at(frame)) {
-      k->path_in = speed * (-float(span_in) / 3.0f);
-      k->path_out = speed * (float(span_out) / 3.0f);
-      k->path_handles = PathHandles::Aligned;
-      channel_keys_changed();
+  Key<float2> *k = added && pos ? pos->key_at(frame) : nullptr;
+  const size_t ki = k ? size_t(k - pos->keys.data()) : 0;
+  if (k && split && key_curve_split(pos->keys, ki, old_points)) {
+    k = &pos->keys[ki];
+    key_settings_apply(*k, arriving);
+    k->hold = 0;
+    k->interval = interval;
+    k->type = KeyType::Key;
+    if (!curve_timed) {
+      const int n = int(old_u.size()) - 1;
+      const float at = old_u[size_t(old_k)];
+      /* Along each curve the same share of the way; past an end (an overshoot past the key, or back before the
+       * start), on along it as far as before, by each one's own length. */
+      const float l1 = stretch_path_length(pos->keys, ki), l2 = stretch_path_length(pos->keys, ki + 1);
+      const float beyond1 = l1 > 1e-9f ? old_length / l1 : 1.0f / at;
+      const float beyond2 = l2 > 1e-9f ? old_length / l2 : 1.0f / (1.0f - at);
+      std::vector<float> u1(size_t(old_k + 1)), u2(size_t(n - old_k + 1));
+      for (int j = 0; j <= old_k; j++) {
+        const float u = old_u[size_t(j)];
+        u1[size_t(j)] = u < 0.0f ? u * beyond1 : u / at;
+      }
+      for (int j = 0; j <= n - old_k; j++) {
+        const float u = old_u[size_t(old_k + j)];
+        u2[size_t(j)] = u > 1.0f ? 1.0f + (u - 1.0f) * beyond2 : (u - at) / (1.0f - at);
+      }
+      key_speeds_set(pos->keys, ki, progress_speeds(u1));
+      key_speeds_set(pos->keys, ki + 1, progress_speeds(u2));
+    }
+    channel_keys_changed();
+  }
+  else {
+    if (k && split) {
+      key_controls_split(pos->keys, ki);
+    }
+    if (added && pos && span_in > 0 && span_out > 0) {
+      if (Key<float2> *kk = pos->key_at(frame)) {
+        kk->path_in = speed * (-float(span_in) / 3.0f);
+        kk->path_out = speed * (float(span_out) / 3.0f);
+        kk->path_handles = PathHandles::Aligned;
+        channel_keys_changed();
+      }
     }
   }
   animation_evaluate(doc, doc.frame_current);

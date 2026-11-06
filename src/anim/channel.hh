@@ -301,7 +301,7 @@ float custom_progress(const std::vector<float> &speeds, float t);
 /* Makes the stretch arriving at key `i` Custom with `speeds`. */
 template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds);
 /* Where the stretch arriving at key `i` is `u` (0-1) of the way along its path by length, as Custom goes along it (in
- * the keys' own space). */
+ * the keys' own space); past either end (an overshoot), on along the end's direction. */
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);
 
 /* A control point stored relative to the stretch from `a` to `b` (Key::path_controls) as a value, and back. */
@@ -328,6 +328,14 @@ StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i);
 /* The path of the stretch arriving at key `i` through its control points, as a line of points (`per` a piece), in the
  * keys' own space. */
 std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per = 24);
+/* Key `i`, just put on the path of the stretch that ran through `old` (stretch_points of it before, its ends now keys
+ * i - 1 and i + 1): the curve split there (de Casteljau on the piece it is on), so both stretches keep its shape. The
+ * keys either side get handles that run as theirs did, the new key the split's, and the control points their sides
+ * with their handles set as they ran. False, changing nothing, where the key isn't on that curve. */
+bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old);
+/* The length of the path of the stretch arriving at key `i` as the stretch measures it to go along it (through its
+ * control points, else along its Bezier): what one unit of progress is, in the keys' own space. */
+float stretch_path_length(const std::vector<Key<float2>> &keys, size_t i);
 
 /* "AUTO", "ALIGNED", "BROKEN". */
 const char *path_handles_identifier(PathHandles mode);

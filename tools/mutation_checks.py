@@ -557,6 +557,18 @@ PENDING = [
      '        (void)s;\n        (void)m;', "brushes sculpt a relative path where it is drawn", 'tests/test_motion_path_robust.py'),
     ('src/python/py_runtime.cc', '            const float2 there = drawn.apply(at);',
      '            const float2 there = at + (drawn.apply(key) - key);', "Python's handles are drawn turned with the path", 'tests/test_motion_path_robust.py'),
+    ('src/anim/channel.cc', '  if (interp != Interp::Smooth && interp != Interp::Noisy && interp != Interp::Cycle && interp != Interp::Step &&\n      interp != Interp::Pose)\n  {', '  if (false)\n  {', 'dots through control points go as the speeds say', 'tests/test_motion_path_pupil.py'),
+    ('src/ops/builtin_ops.cc', '  doc.motion_paths = view.motion_paths;\n', '', "undo keeps the Motion Path tool's paths shown", 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '  value = first + (best - first) * hi;\n  return true;', '  value = best;\n  return true;', "G past a controller's box stops at the edge", 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '    const float damp = 1e-6f * (xx + yy);', '    const float damp = 0.0f;', 'G solves a knob held at its edge', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/channel.cc', '    /* Through its control points, as the stretch plays (controls_evaluate). */\n    return line_at(stretch_control_line(keys, i), u);', '    /* Through its control points, as the stretch plays (controls_evaluate). */', 'Slide on control points lands where dragged', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '  if (turns(k0)) {', '  if (false) {', 'a dot in an overshoot slides on its own', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '  order_progress(u, k0, gap, lo, hi);', '  order_progress(u, k0, gap);', 'Slide keeps an overshoot elsewhere in the stretch', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '                                            std::clamp(std::max(1.0f, was + 0.5f), 1.0f, 2.0f));', '                                            1.0f);', 'a dot past the key follows the mouse', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '    const float damp = xx * yy - xy * xy > 1e-3f * (xx + yy) * (xx + yy) ? 0.0f : 1e-3f * (xx + yy);', '    const float damp = 1e-3f * (xx + yy);', 'Slide undamped where the path moves freely', 'tests/test_motion_path_edit.py'),
+    ('src/anim/motion_path.cc', '  if (k && split && key_curve_split(pos->keys, ki, old_points)) {', '  if (false) {', 'a key added splits the curve where the dot is', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '        u2[size_t(j)] = u > 1.0f ? 1.0f + (u - 1.0f) * beyond2 : (u - at) / (1.0f - at);', '        u2[size_t(j)] = (u - at) / (1.0f - at);', 'a key added keeps an overshoot past the key', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/channel.cc', '  if (line.size() >= 2 && u > 1.0f) {\n    return beyond(', '  if (false) {\n    return beyond(', 'an overshoot through control points goes past the key', 'tests/test_motion_path_pupil.py'),
 ]
 
 

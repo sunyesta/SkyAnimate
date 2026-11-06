@@ -48,8 +48,9 @@ static bool export_path(Context &C, const char *idname, const char *filter_name,
 }
 
 
-/* What undo leaves alone: the playhead (as in Blender and Moho) and text blocks, so undoing a
- * drawing change never loses typed code. The action being edited is undone with the rest: its
+/* What undo leaves alone: the playhead (as in Blender and Moho), text blocks, so undoing a
+ * drawing change never loses typed code, and what is shown (overlays, Motion Paths: the Motion Path tool turns
+ * them on without an undo step, so undoing a stroke would hide the path it was made on). The action being edited is undone with the rest: its
  * keys are swapped into the channels, so the two always go together. */
 struct ViewState {
   int frame_current;
@@ -57,11 +58,12 @@ struct ViewState {
   ViewportOverlays overlays;
   std::map<std::string, bool> ui_open;
   ViewportView view;
+  bool motion_paths;
 };
 
 static ViewState view_state_get(const Document &doc)
 {
-  return {doc.frame_current, doc.texts, doc.overlays, doc.ui_open, doc.view};
+  return {doc.frame_current, doc.texts, doc.overlays, doc.ui_open, doc.view, doc.motion_paths};
 }
 
 static void view_state_restore(Document &doc, ViewState &view)
@@ -71,6 +73,7 @@ static void view_state_restore(Document &doc, ViewState &view)
   doc.overlays = view.overlays;
   doc.ui_open = std::move(view.ui_open);
   doc.view = view.view;
+  doc.motion_paths = view.motion_paths;
 }
 
 static void ed_undo_register()

@@ -638,6 +638,162 @@ void key_controls_split(std::vector<Key<float2>> &keys, size_t i)
   keys_changed();
 }
 
+float stretch_path_length(const std::vector<Key<float2>> &keys, size_t i)
+{
+  if (i == 0 || i >= keys.size()) {
+    return 0.0f;
+  }
+  const auto polyline = [](const std::vector<float2> &line) {
+    float total = 0.0f;
+    for (size_t j = 1; j < line.size(); j++) {
+      total += length(line[j] - line[j - 1]);
+    }
+    return total;
+  };
+  if (!keys[i].path_controls.empty()) {
+    return polyline(stretch_control_line(keys, i));
+  }
+  /* As bezier_along measures it. */
+  float2 in, out, unused;
+  key_path_handles(keys, i - 1, unused, out);
+  key_path_handles(keys, i, in, unused);
+  const float2 p[4] = {keys[i - 1].value, keys[i - 1].value + out, keys[i].value + in, keys[i].value};
+  constexpr int PIECES = 32;
+  std::vector<float2> line;
+  for (int j = 0; j <= PIECES; j++) {
+    line.push_back(bezier(p, float(j) / PIECES));
+  }
+  return polyline(line);
+}
+
+bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old)
+{
+  if (i == 0 || i + 1 >= keys.size() || old.p.size() < 2 || old.in.size() != old.p.size() ||
+      old.out.size() != old.p.size())
+  {
+    return false;
+  }
+  Key<float2> &a = keys[i - 1], &k = keys[i], &b = keys[i + 1];
+  const size_t n = old.p.size() - 1;
+  const auto piece = [&](size_t j, float t) {
+    const float2 q[4] = {old.p[j], old.p[j] + old.out[j], old.p[j + 1] + old.in[j + 1], old.p[j + 1]};
+    return bezier(q, t);
+  };
+  /* Where on the curve the key is: the nearest piece and place on it. */
+  size_t at_piece = 0;
+  float at_t = 0.0f, best = std::numeric_limits<float>::max(), size = 0.0f;
+  constexpr int SAMPLES = 64;
+  for (size_t j = 0; j < n; j++) {
+    size += length(old.p[j + 1] - old.p[j]);
+    for (int s = 0; s <= SAMPLES; s++) {
+      const float d = length(piece(j, float(s) / SAMPLES) - k.value);
+      if (d < best) {
+        best = d;
+        at_piece = j;
+        at_t = float(s) / SAMPLES;
+      }
+    }
+  }
+  float lo = std::max(at_t - 1.0f / SAMPLES, 0.0f), hi = std::min(at_t + 1.0f / SAMPLES, 1.0f);
+  for (int it = 0; it < 40; it++) {
+    const float m1 = lo + (hi - lo) / 3.0f, m2 = hi - (hi - lo) / 3.0f;
+    if (length(piece(at_piece, m1) - k.value) < length(piece(at_piece, m2) - k.value)) {
+      hi = m2;
+    }
+    else {
+      lo = m1;
+    }
+  }
+  at_t = 0.5f * (lo + hi);
+  best = length(piece(at_piece, at_t) - k.value);
+  if (best > 1e-3f * std::max(size, 1e-6f) || at_t <= 1e-4f || at_t >= 1.0f - 1e-4f) {
+    return false;
+  }
+  /* de Casteljau. */
+  const size_t J = at_piece;
+  const float t = at_t;
+  const float2 P0 = old.p[J], P1 = old.p[J] + old.out[J], P2 = old.p[J + 1] + old.in[J + 1], P3 = old.p[J + 1];
+  const float2 A1 = P0 + (P1 - P0) * t, mid = P1 + (P2 - P1) * t, B2 = P2 + (P3 - P2) * t;
+  const float2 A2 = A1 + (mid - A1) * t, B1 = mid + (B2 - mid) * t, M = A2 + (B1 - A2) * t;
+  /* The two stretches as points with the handles they run along. */
+  StretchPoints s1, s2;
+  for (size_t j = 0; j <= J; j++) {
+    s1.p.push_back(old.p[j]);
+    s1.in.push_back(old.in[j]);
+    s1.out.push_back(old.out[j]);
+  }
+  s1.out[J] = A1 - P0;
+  s1.p.push_back(M);
+  s1.in.push_back(A2 - M);
+  s1.out.push_back(float2{0.0f, 0.0f});
+  s2.p.push_back(M);
+  s2.in.push_back(float2{0.0f, 0.0f});
+  s2.out.push_back(B1 - M);
+  for (size_t j = J + 1; j <= n; j++) {
+    s2.p.push_back(old.p[j]);
+    s2.in.push_back(old.in[j]);
+    s2.out.push_back(old.out[j]);
+  }
+  s2.in[1] = B2 - P3;
+  /* A key's handle as stretch_points reads it: the Bezier's own with no control points, else a share of its piece. */
+  const auto key_handle = [](const StretchPoints &s, bool start) {
+    const size_t m = s.p.size() - 1;
+    if (m == 1) {
+      return start ? s.out[0] : s.in[1];
+    }
+    float sum = 0.0f;
+    for (size_t j = 0; j < m; j++) {
+      sum += length(s.p[j + 1] - s.p[j]);
+    }
+    const float chord = start ? length(s.p[1] - s.p[0]) : length(s.p[m] - s.p[m - 1]);
+    if (chord < 1e-9f) {
+      return float2{0.0f, 0.0f};
+    }
+    return (start ? s.out[0] : s.in[m]) * (sum / chord);
+  };
+  /* A key frozen from Auto (Broken) is Aligned again where its handles are in line, as Auto's smooth ones are. */
+  const auto aligned_again = [](Key<float2> &key, bool was_broken) {
+    const float li = length(key.path_in), lo_ = length(key.path_out);
+    const float cross = key.path_in.x * key.path_out.y - key.path_in.y * key.path_out.x;
+    if (!was_broken && li > 1e-9f && lo_ > 1e-9f && dot(key.path_in, key.path_out) < 0.0f &&
+        std::abs(cross) <= 1e-4f * li * lo_)
+    {
+      key.path_handles = PathHandles::Aligned;
+    }
+  };
+  const bool a_broken = a.path_handles == PathHandles::Broken, b_broken = b.path_handles == PathHandles::Broken;
+  key_path_handles_freeze(keys, i - 1);
+  key_path_handles_freeze(keys, i + 1);
+  /* Control points: each side's, their handles set as they ran (so a new neighbour doesn't turn them). */
+  const Key<float2> b_was = b;
+  const auto controls_from_old = [&](const Key<float2> &from, Key<float2> &to, const StretchPoints &s,
+                                     size_t first_old) {
+    to.path_controls.clear();
+    to.path_control_handles.clear();
+    for (size_t j = 1; j + 1 < s.p.size(); j++) {
+      const PathControlHandles was = path_control_handles_of(b_was, first_old + j - 1);
+      PathControlHandles h;
+      h.set = true;
+      h.aligned = was.set ? was.aligned : true;
+      h.in = path_control_offset_stored(from.value, to.value, s.in[j]);
+      h.out = path_control_offset_stored(from.value, to.value, s.out[j]);
+      to.path_controls.push_back(path_control_stored(from.value, to.value, s.p[j]));
+      to.path_control_handles.push_back(h);
+    }
+  };
+  controls_from_old(a, k, s1, 0);
+  controls_from_old(k, b, s2, J);
+  a.path_out = key_handle(s1, true);
+  aligned_again(a, a_broken);
+  k.path_in = key_handle(s1, false);
+  k.path_out = key_handle(s2, true);
+  k.path_handles = PathHandles::Aligned;
+  b.path_in = key_handle(s2, false);
+  aligned_again(b, b_broken);
+  keys_changed();
+  return true;
+}
+
 void key_controls_join(std::vector<Key<float2>> &keys, size_t i)
 {
   if (i == 0 || i + 1 >= keys.size() || (keys[i].path_controls.empty() && keys[i + 1].path_controls.empty())) {
@@ -727,12 +883,24 @@ std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, s
   return line;
 }
 
-/* The point `u` (0-1) of the way along `line` by length. */
+/* The point `u` of the way along `line` by length; past either end (overshoot) it carries on along the end's
+ * direction, as a stretch without control points does. */
 static float2 line_at(const std::vector<float2> &line, float u)
 {
   float total = 0.0f;
   for (size_t j = 1; j < line.size(); j++) {
     total += length(line[j] - line[j - 1]);
+  }
+  const auto beyond = [&](size_t from, size_t to, float by) {
+    const float2 d = line[to] - line[from];
+    const float l = length(d);
+    return l > 1e-12f ? line[to] + d * (by * total / l) : line[to];
+  };
+  if (line.size() >= 2 && u < 0.0f) {
+    return beyond(1, 0, -u);
+  }
+  if (line.size() >= 2 && u > 1.0f) {
+    return beyond(line.size() - 2, line.size() - 1, u - 1.0f);
   }
   float want = std::clamp(u, 0.0f, 1.0f) * total;
   for (size_t j = 1; j < line.size(); j++) {
@@ -753,6 +921,25 @@ static thread_local bool g_controls_off = false;
 static float2 controls_evaluate(const Channel<float2> &ch, size_t i, int frame)
 {
   const Key<float2> &a = ch.keys[i - 1], &b = ch.keys[i];
+  /* A mode that runs along its path by length (all but Smooth and Noisy): its own progress, signed, so Custom speeds
+   * and eases space the dots as they say and an overshoot goes past the key. Measured off the path without the
+   * control points, a sharp turn in that path (its handles drawn long) would bunch the dots there. */
+  const Interp interp = stretch_interp(b.interp);
+  if (interp != Interp::Smooth && interp != Interp::Noisy && interp != Interp::Cycle && interp != Interp::Step &&
+      interp != Interp::Pose)
+  {
+    const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+    if (frame <= start) {
+      return a.value;
+    }
+    const int interval = std::max(a.interval, 1);
+    const int f = std::min(start + (frame - start) / interval * interval, b.frame);
+    const float t = float(f - start) / float(std::max(b.frame - start, 1));
+    KeySettings settings = key_settings(b);
+    settings.interp = interp;
+    const float u = interp == Interp::Custom ? custom_progress(b.speeds, t) : interp_curve(settings, t);
+    return line_at(stretch_control_line(ch.keys, i), u);
+  }
   g_controls_off = true;
   std::vector<float2> plain;
   for (int f = a.frame; f <= b.frame; f++) {
@@ -776,11 +963,15 @@ float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float 
   if (i == 0 || i >= keys.size()) {
     return i < keys.size() ? keys[i].value : float2{0.0f, 0.0f};
   }
+  if (!keys[i].path_controls.empty()) {
+    /* Through its control points, as the stretch plays (controls_evaluate). */
+    return line_at(stretch_control_line(keys, i), u);
+  }
   float2 in, out, unused;
   key_path_handles(keys, i - 1, unused, out);
   key_path_handles(keys, i, in, unused);
   const float2 p[4] = {keys[i - 1].value, keys[i - 1].value + out, keys[i].value + in, keys[i].value};
-  return bezier_along(p, std::clamp(u, 0.0f, 1.0f));
+  return bezier_along(p, u);
 }
 
 void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken)
