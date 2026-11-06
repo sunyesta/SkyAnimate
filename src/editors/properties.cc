@@ -1811,7 +1811,7 @@ static void controller_spots_panel_body(Context &C, Layer &armature, const Bone 
   }
   if (st.dragging) {
     if (Bone *knob = bone_find(armature, knob_id); knob && ImGui::IsMouseDown(ImGuiMouseButton_Left) && can_move) {
-      controller_knob_set(*knob, to_frames(mouse));
+      controller_knob_put(*knob, to_frames(mouse));
       if (io.KeyCtrl) {
         armature_knob_snap(armature, *knob);
       }

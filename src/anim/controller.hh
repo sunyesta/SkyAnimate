@@ -58,6 +58,9 @@ inline bool controller_constraint_works(BoneConstraintType type)
 /* Whether a controller has a constraint on that works (so its knob is posed, not just keyed). */
 inline bool controller_constrained(const Bone &bone)
 {
+  if (bone.type != BoneType::Controller2D) {
+    return false;
+  }
   for (const BoneConstraint &c : bone.constraints) {
     if (c.enabled && c.influence > 0.0f && controller_constraint_works(c.type)) {
       return true;
@@ -129,6 +132,11 @@ float2 controller_knob_held(const Bone &knob, const BonePose &pose);
 float2 controller_knob_played(const Layer &owner, const Bone &knob);
 /* Puts the knob there, in the box. */
 void controller_knob_set(Bone &knob, float2 frames);
+/* The knob to where it is seen at `at` in its box (kept in it when contained): its keys worked out from its Knob
+ * Parent and constraints as they are now. Spots, typed frames, the knob pad and snapping put it so. */
+void controller_knob_put(Bone &knob, float2 at);
+/* Where the knob is seen in its box now, from its keys (as controller_knob_put puts it). */
+float2 controller_knob_seen(const Bone &knob);
 /* Frames from the rest point to the bone layer's space, the box riding on the bone's parent, lying at its angle. */
 float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frames);
 /* A move of the knob by `delta` (bone layer space) from where it is. */

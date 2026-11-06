@@ -1990,7 +1990,16 @@ static bool action_bone_action_turns(const Layer &owner, const std::string &by, 
       }
       return false;
     };
-    return bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent));
+    if (bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent))) {
+      return true;
+    }
+    /* Its constraints move it too: an action moving one's target (or what it hangs from) plays first. */
+    for (const BoneConstraint &c : bone->constraints) {
+      if (c.enabled && c.influence > 0.0f && controller_constraint_works(c.type) && c.target != 0 && moves_from(c.target)) {
+        return true;
+      }
+    }
+    return false;
   }
   /* A linked bone turns as its knob moves: an action moving the knob turns it. */
   int side = 0;
@@ -2238,9 +2247,9 @@ bool action_frame_set(Layer &owner, const std::string &name, float frame)
       Bone &knob = const_cast<Bone &>(*holder);
       int side = 0;
       controller_of_action(owner, name, &side);
-      float2 at = controller_knob(knob);
+      float2 at = controller_knob_seen(knob);
       (controller_side_axis(side) == 0 ? at.x : at.y) = controller_side_reach(knob, side, frame) * controller_side_sign(side);
-      controller_knob_set(knob, at);
+      controller_knob_put(knob, at);
       return true;
     }
     case ActionFrameBy::Bone: {
@@ -3201,9 +3210,10 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
     };
     gather_switches(gather_switches, owner.children);
     const auto play = [&](const std::string &name, float t, const void *skip, bool skip_driving) {
-      /* A side's action keys its own knob's timing (how far out each frame plays): never a move of the knob. */
-      const Bone *by_knob = action_bone_of(owner, name);
-      const void *timing = by_knob && bone_is_controller(*by_knob) ? static_cast<const void *>(&by_knob->position_keys) : nullptr;
+      /* A side's action keys its own knob's timing (how far out each frame plays): never a move of the knob. The
+       * action may be a linked dial's own, so the knob is the controller it is a side of. */
+      const Bone *by_knob = controller_of_action(owner, name, nullptr);
+      const void *timing = by_knob ? static_cast<const void *>(&by_knob->position_keys) : nullptr;
       owner_for_each_channel_with(owner, name, [&](auto &ch, auto &value) {
         if (static_cast<const void *>(&ch) == skip || static_cast<const void *>(&ch) == timing ||
             (skip_driving && driving.count(static_cast<const void *>(&ch))))
@@ -3443,7 +3453,7 @@ static int controller_fold_dial_keys(Layer &owner, Bone &knob, Bone &dial)
     for (const int side : side_of) {
       if (side >= 0) {
         const float t = controller_frame_of_turn(dial, knob.controller_actions[side], turn);
-        along = t > 0.0f ? t * controller_side_sign(side) : along;
+        along = t > 0.0f ? controller_side_reach(knob, side, t) * controller_side_sign(side) : along;
       }
     }
     float2 value = knob.position_keys.animated() ? knob.position_keys.evaluate(frame) : float2();
@@ -3528,7 +3538,7 @@ static void controllers_link(Document &doc, Layer &owner)
       if (dial[0] == dial[1]) {
         /* One bone turning both ways can't disagree with itself. */
         if (edited[0]) {
-          along = wants[0] > 0.0f ? wants[0] : -wants[1];
+          along = wants[0] > 0.0f ? controller_side_reach(knob, plus, wants[0]) : -controller_side_reach(knob, minus, wants[1]);
           moved = true;
         }
       }
@@ -3543,11 +3553,12 @@ static void controllers_link(Document &doc, Layer &owner)
         report_held(dial[1]->name + " is held: the knob is on " + knob.controller_actions[plus]);
       }
       else if (wants[0] > 0.0f) {
-        along = wants[0];
+        /* The frame it wants, as far out as the side's timing plays it. */
+        along = controller_side_reach(knob, plus, wants[0]);
         moved = true;
       }
       else if (wants[1] > 0.0f) {
-        along = -wants[1];
+        along = -controller_side_reach(knob, minus, wants[1]);
         moved = true;
       }
       else if ((edited[0] && along > 0.0f) || (edited[1] && along < 0.0f)) {
@@ -3639,7 +3650,7 @@ void controllers_update(Document &doc)
         }
       }
       /* Its timing: its own keys in each side's action, how far out each frame plays (being edited, the action's keys
-       * are the channel's own). A key at the rest point or going back adds nothing. */
+       * are the channel's own). A key at the rest point or going back is held where the one before was. */
       for (int side = 0; side < CONTROLLER_SIDES; side++) {
         std::vector<float2> &timing = knob.controller_timing[side];
         timing.clear();
@@ -3655,7 +3666,7 @@ void controllers_update(Document &doc)
         for (size_t k = 0; keys && k < keys->size(); k++) {
           const Key<float2> &key = (*keys)[k];
           const float along = (controller_side_axis(side) == 0 ? key.value.x : key.value.y) * controller_side_sign(side);
-          if (key.frame <= 0 || along <= 1e-6f) {
+          if (key.frame <= 0) {
             continue;
           }
           most = std::max(most, along);
@@ -3677,6 +3688,26 @@ void controllers_update(Document &doc)
       knob.controller_knob_edit_side = edit_side;
       knob.controller_knob_editing = editing;
       knob.controller_knob_edit_at = editing ? controller_knob_shown(doc, owner, knob) : float2();
+      /* Auto keying in a side's own action, the frame a move keys on (see controller_knob_set). */
+      knob.controller_knob_edit_frame = edit_side >= 0 && doc.auto_key ? doc.frame_current : 0;
+      /* From a place seen in the box to its keys, and its constraints' pull (see controller_knob_put). */
+      knob.controller_frames_to_keys = Transform2D();
+      knob.controller_knob_pull_now = float2();
+      if (doc.frame_current != 0 && (knob.controller_knob_independent || controller_constrained(knob))) {
+        const std::vector<BonePose> poses = armature_pose(owner, false);
+        if (const BonePose *p = bone_pose_find(poses, knob.id)) {
+          knob.controller_knob_pull_now = p->knob_pull;
+          if (knob.controller_knob_independent) {
+            const float size = std::max(knob.controller_frame_size, 1e-6f);
+            const auto keyed = [&](float2 to) {
+              return rotate(p->knob_parent_skin.inverted().apply(controller_box_point(knob, *p, to)) - p->setup_head,
+                            -knob.controller_box_angle) / size;
+            };
+            const float2 o = keyed({0, 0}), x = keyed({1, 0}), y = keyed({0, 1});
+            knob.controller_frames_to_keys = {x.x - o.x, x.y - o.y, y.x - o.x, y.y - o.y, o.x, o.y};
+          }
+        }
+      }
     }
   }
 }
@@ -3828,7 +3859,7 @@ bool controller_fix_pose_move(Layer &owner, const Bone &knob, size_t fix, size_t
     if (side < 0) {
       return false;
     }
-    at[k] = (controller_side_axis(side) == 0 ? to.x : to.y) * controller_side_sign(side);
+    at[k] = controller_side_frame(knob, side, (controller_side_axis(side) == 0 ? to.x : to.y) * controller_side_sign(side));
     const float length = action_bone_action_length(owner, f.drivers[k]);
     if (at[k] < FIX_COUNTS_FROM * std::max(length, 1.0f) - 1e-4f) {
       return false;
@@ -3912,6 +3943,12 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
     }
   }
   bone = bone_find(*owner, bone_id);
+  /* Moves in its own actions would be its sides' timing now: they go (the knob doesn't move in them). */
+  for (const std::string &action : own) {
+    if (!action.empty()) {
+      bone->position_keys.actions.erase(action);
+    }
+  }
   std::vector<Key<float>> angle_keys = std::move(bone->angle_keys.keys);
   bone->angle_keys.keys.clear();
   /* A pin turned controller is a box like any other. */
@@ -3999,7 +4036,9 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
     };
     bone->angle_keys.keys.clear();
     controller_keys_copy(bone->position_keys.keys, bone->angle_keys, [&](int, float2 at) {
-      return at.x > 0.0f ? turn_at(own[0], at.x) : turn_at(own[1], -at.x);
+      /* How far out is a frame through the side's timing. */
+      return at.x > 0.0f ? turn_at(own[0], controller_side_frame(*bone, CONTROLLER_RIGHT, at.x)) :
+                           turn_at(own[1], controller_side_frame(*bone, CONTROLLER_LEFT, -at.x));
     });
     bone->position_keys.keys.clear();
   }
@@ -4022,9 +4061,20 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
       bone->position_keys.keys.clear();
     }
   }
+  /* Its keys in its sides' actions were their timing, never a move: as a bone they'd move it. */
+  for (const std::string &action : bone->controller_actions) {
+    if (!action.empty()) {
+      bone->position_keys.actions.erase(action);
+    }
+  }
   bone->type = BoneType::Regular;
   bone->controller_actions = {};
   bone->controller_keys = {};
+  bone->controller_timing = {};
+  bone->controller_knob_editing = false;
+  bone->controller_knob_edit_side = -1;
+  bone->controller_knob_edit_frame = 0;
+  bone->controller_knob_edit_at = {};
   bone->position = bone->setup_position;
   bone->transform = {};
   bone->position_keys.last = {};

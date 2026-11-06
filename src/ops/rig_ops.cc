@@ -2197,7 +2197,7 @@ void rig_operators_register()
   };
   /* The knob to a spot. Held: its key there doesn't move on toward the next (Step), keyed even without Auto Keying. */
   const auto knob_go = [](Document &doc, Layer &armature, Bone &knob, float2 at, bool hold) {
-    controller_knob_set(knob, at);
+    controller_knob_put(knob, at);
     animation_refresh_action_bones(doc);
     if (hold) {
       /* Recorded as Auto Keying would, whether it is on or not. */
@@ -2313,7 +2313,8 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  Layer &armature = *active_armature(C);
-                 const float2 from = spot->at, to = controller_knob(*knob);
+                 /* Where the knob is seen (an independent or constrained knob's keys aren't its place). */
+                 const float2 from = spot->at, to = controller_knob_shown(*C.document, armature, *knob);
                  if (op_arg(C, "fix", "KEEP") == "FOLLOW") {
                    for (const auto &[fix, pose] : controller_fix_poses_at(armature, *knob, from)) {
                      if (!controller_fix_pose_move(armature, *knob, fix, pose, to)) {

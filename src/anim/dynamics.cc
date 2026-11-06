@@ -810,10 +810,12 @@ std::map<uint64_t, Motion> advance(const Document &doc, const Layer &armature, i
       const BoneConstraint &c = *dynamics_of(b);
       Target t;
       t.angle = pose_angle(poses[i].pose);
-      t.head = bone_is_controller(at.bones[i]) ? poses[i].knob.apply({0, 0}) : poses[i].head;
+      /* A controller's knob is what moves (its box rests): it lags and springs, and what hangs from it with it. */
+      const float2 head = bone_is_controller(at.bones[i]) ? poses[i].knob.apply({0, 0}) : poses[i].head;
+      t.head = head;
       t.rest_head = poses[i].setup_head;
       if (strand[i] == int(i)) {
-        strand_head[i] = poses[i].head;
+        strand_head[i] = head;
       }
       t.reach = reach[strand[i]];
       t.strand_head = strand_head[strand[i]];

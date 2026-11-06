@@ -32,7 +32,7 @@ Document controller_posed_copy(const Document &doc, uint64_t armature, uint64_t 
   Layer *owner = layer_find(copy, armature);
   Bone *knob = owner ? bone_find(*owner, bone) : nullptr;
   if (knob && bone_is_controller(*knob)) {
-    controller_knob_set(*knob, at);
+    controller_knob_put(*knob, at);
     animation_refresh_action_bones(copy);
   }
   /* What making it gave its layers isn't the document changing. */

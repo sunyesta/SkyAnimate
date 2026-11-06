@@ -752,6 +752,13 @@ struct Bone {
   /* The side whose own action is being edited (-1: none): there the knob moves along that side's axis, keying how far it
    * goes on each frame (worked out, never saved). */
   int controller_knob_edit_side = -1;
+  /* Auto keying in that action, the frame a move keys on (0: none; worked out, never saved). */
+  int controller_knob_edit_frame = 0;
+  /* From a place in the box as seen (less what its constraints pull) to its keys: an independent knob's keys are a
+   * place against its Knob Parent at rest; else none. And how far its constraints pull it now (worked out, never
+   * saved). */
+  Transform2D controller_frames_to_keys;
+  float2 controller_knob_pull_now;
   /* Each side's timing: the knob's keys in its action as (frame, how far along the side), past frame 0, never going
    * back; empty, frame N is N out (worked out, never saved). */
   std::array<std::vector<float2>, CONTROLLER_SIDES> controller_timing;

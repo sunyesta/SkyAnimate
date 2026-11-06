@@ -209,7 +209,7 @@ float2 controller_knob_held(const Bone &knob, const BonePose &pose)
 
 float2 controller_knob_played(const Layer &owner, const Bone &knob)
 {
-  if (!knob.controller_knob_independent && !controller_constrained(knob)) {
+  if (!bone_is_controller(knob) || (!knob.controller_knob_independent && !controller_constrained(knob))) {
     /* Past the box (Contain Knob in Box off), its actions play the nearest point inside. */
     return controller_knob_clamped(knob);
   }
@@ -222,7 +222,20 @@ void controller_knob_set(Bone &knob, float2 frames)
 {
   if (knob.controller_knob_edit_side >= 0) {
     /* In a side's own action: along that side, keying how far it goes on this frame. */
-    knob.position = bone_position_from_transform(knob, controller_side_only(knob.controller_knob_edit_side, frames));
+    const int side = knob.controller_knob_edit_side;
+    const float2 to = controller_side_only(side, frames);
+    knob.position = bone_position_from_transform(knob, to);
+    /* Shown at its timing but valued where its keys are: a move onto that value (back to rest with none) is no
+     * change to record, though it moved, so it keys here. Its channel keys the move from the setup pose. */
+    Channel<float2> &ch = knob.position_keys;
+    const float2 shown = controller_side_only(side, knob.controller_knob_edit_at);
+    const auto same = [](float2 a, float2 b) { return std::hypot(a.x - b.x, a.y - b.y) <= 1e-5f; };
+    if (knob.controller_knob_edit_frame > 0 && ch.has_last && same(to, ch.last) && !same(to, shown)) {
+      if (!ch.animated()) {
+        ch.set_key(0, float2() - ch.from_action_bones);
+      }
+      ch.set_key(knob.controller_knob_edit_frame, to - ch.from_action_bones);
+    }
     return;
   }
   if (knob.controller_knob_independent) {
@@ -237,6 +250,25 @@ void controller_knob_set(Bone &knob, float2 frames)
   float2 lo, hi;
   controller_box(knob, lo, hi);
   knob.position = bone_position_from_transform(knob, {std::clamp(frames.x, lo.x, hi.x), std::clamp(frames.y, lo.y, hi.y)});
+}
+
+void controller_knob_put(Bone &knob, float2 at)
+{
+  if (knob.controller_knob_edit_side >= 0) {
+    controller_knob_set(knob, at);
+    return;
+  }
+  if (knob.controller_contain_knob) {
+    float2 lo, hi;
+    controller_box(knob, lo, hi);
+    at = {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};
+  }
+  knob.position = bone_position_from_transform(knob, knob.controller_frames_to_keys.apply(at - knob.controller_knob_pull_now));
+}
+
+float2 controller_knob_seen(const Bone &knob)
+{
+  return knob.controller_frames_to_keys.inverted().apply(controller_knob(knob)) + knob.controller_knob_pull_now;
 }
 
 float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frames)
@@ -254,7 +286,15 @@ void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
     return;
   }
   if (!knob.controller_knob_independent) {
-    controller_knob_set(knob, controller_knob(knob) + local);
+    /* From where it is seen (held at the edge, its constraints' pull too), the way the mouse goes. */
+    const float2 seen = knob.controller_contain_knob ? controller_knob_held(knob, pose) : controller_knob_place(knob, pose);
+    float2 to = seen + local;
+    if (knob.controller_contain_knob) {
+      float2 lo, hi;
+      controller_box(knob, lo, hi);
+      to = {std::clamp(to.x, lo.x, hi.x), std::clamp(to.y, lo.y, hi.y)};
+    }
+    knob.position = bone_position_from_transform(knob, to - pose.knob_pull);
     return;
   }
   /* From where it is seen (held at the edge, or past it), the way the mouse goes; contained, it stops at the edge, so
@@ -292,7 +332,7 @@ void controller_knob_snap(Bone &knob, const std::vector<float2> &also)
     }
     return best;
   };
-  const float2 at = controller_knob(knob);
+  const float2 at = controller_knob_seen(knob);
   /* The nearest crossing of keys is the nearest along each axis; a spot or fix pose nearer than that wins. */
   float2 best(nearest(at.x, CONTROLLER_RIGHT, CONTROLLER_LEFT), nearest(at.y, CONTROLLER_UP, CONTROLLER_DOWN));
   const auto dist = [&](float2 p) { return std::hypot(p.x - at.x, p.y - at.y); };
@@ -302,7 +342,7 @@ void controller_knob_snap(Bone &knob, const std::vector<float2> &also)
   for (const float2 &p : also) {
     best = dist(p) < dist(best) ? p : best;
   }
-  controller_knob_set(knob, best);
+  controller_knob_put(knob, best);
 }
 
 ControllerSpot *controller_spot_find(Bone &knob, const std::string &name)

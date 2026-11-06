@@ -9349,6 +9349,18 @@ static ImVec2 controller_screen(const Document &doc, const Layer &armature, cons
          view.to_screen(to_document.apply(pose.head));
 }
 
+/* Where the knob is drawn and clicked: on a posed frame where its pose has it (past the box with Contain Knob in Box
+ * off, or moved in its side's action and not yet keyed), else at `shown`. */
+static ImVec2 controller_knob_screen(const Document &doc, const Layer &armature, const ViewMapping &view, const Bone &knob,
+                                     const BonePose &pose, const ScreenBone &sb, float2 shown)
+{
+  if (doc.frame_current == 0) {
+    return controller_screen(doc, armature, view, knob, pose, sb, shown);
+  }
+  const Transform2D to_document = layer_world_transform(doc, armature.id);
+  return sb.head + view.to_screen(to_document.apply(pose.knob.apply({0, 0}))) - view.to_screen(to_document.apply(pose.head));
+}
+
 static constexpr float CONTROLLER_KNOB_RADIUS = 7.0f;
 /* Half a spot's square, and how near the mouse picks one. */
 static constexpr float CONTROLLER_SPOT_HALF = 3.5f, CONTROLLER_SPOT_PICK = 6.0f;
@@ -9409,12 +9421,11 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
   }
   const float2 knob = controller_knob_shown(doc, armature, bone);
   ImVec2 knob_at = at(knob);
-  if (!bone.controller_contain_knob && doc.frame_current != 0) {
-    /* Past the box: drawn where it is, a ring on the edge where its actions play and a faint line between. */
-    const Transform2D to_document = layer_world_transform(doc, armature.id);
-    const ImVec2 real = view.to_screen(to_document.apply(pose.knob.apply({0, 0})));
+  if (doc.frame_current != 0) {
+    /* Drawn where its pose has it. Past the box: a ring on the edge where its actions play and a faint line between. */
+    const ImVec2 real = controller_knob_screen(doc, armature, view, bone, pose, sb, knob);
     const ImVec2 d = real - knob_at;
-    if (d.x * d.x + d.y * d.y > 9.0f) {
+    if (!bone.controller_contain_knob && d.x * d.x + d.y * d.y > 9.0f) {
       dl->AddLine(knob_at, real, IM_COL32(0xff, 0xff, 0xff, 90), 1.0f);
       dl->AddCircle(knob_at, CONTROLLER_KNOB_RADIUS, IM_COL32(0xff, 0xff, 0xff, 200), 0, 1.5f);
     }
@@ -9733,7 +9744,9 @@ static std::vector<BoneHit> pick_bone_parts(const Document &doc, const Layer &ar
         const ImVec2 s = controller_screen(doc, armature, view, bone, poses[i], sbs[i], frames);
         return float2(s.x, s.y);
       };
-      const float d = distance(m, at(controller_knob_shown(doc, armature, bone)));
+      const ImVec2 drawn = controller_knob_screen(doc, armature, view, bone, poses[i], sbs[i],
+                                                  controller_knob_shown(doc, armature, bone));
+      const float d = distance(m, float2(drawn.x, drawn.y));
       if (d <= CONTROLLER_KNOB_RADIUS + 3.0f) {
         found.push_back({{bone.id, BonePart::Body}, 0, d, 0});
       }
@@ -14599,7 +14612,8 @@ static void bone_tool_input(Context &C, Area &area, Layer &armature, const ViewM
         if (!bone_is_controller(knob) || !bone_shown(armature, knob) || bone_held_by_fix(doc, armature, knob)) {
           continue;
         }
-        const ImVec2 k = controller_screen(doc, armature, view, knob, poses[i], sbs[i], controller_knob_shown(doc, armature, knob));
+        const ImVec2 k = controller_knob_screen(doc, armature, view, knob, poses[i], sbs[i],
+                                                controller_knob_shown(doc, armature, knob));
         if (std::hypot(k.x - io.MousePos.x, k.y - io.MousePos.y) <= CONTROLLER_KNOB_RADIUS) {
           continue;
         }

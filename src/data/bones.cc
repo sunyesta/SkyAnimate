@@ -439,7 +439,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     if (rests && bone.controller_knob_independent) {
       /* Riding its Knob Parent, worked out first (one hanging from this knob can't be: it would carry itself). */
       const int ki = find(bone.controller_knob_parent);
-      if (ki >= 0 && ki != i && state[ki] != 1) {
+      if (ki >= 0 && ki != i && state[ki] != 1 && !bone_is_descendant_in(bones, index, bone.id, ki)) {
         self(self, ki, depth + 1);
         if (state[ki] == 2) {
           p.knob_parent_skin = poses[ki].skin;
