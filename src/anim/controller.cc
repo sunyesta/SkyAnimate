@@ -118,6 +118,14 @@ float2 controller_knob(const Bone &knob)
   return bone_transform_from_position(knob, knob.position);
 }
 
+float2 controller_knob_clamped(const Bone &knob)
+{
+  float2 lo, hi;
+  controller_box(knob, lo, hi);
+  const float2 at = controller_knob(knob);
+  return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};
+}
+
 void controller_knob_set(Bone &knob, float2 frames)
 {
   float2 lo, hi;
@@ -127,12 +135,12 @@ void controller_knob_set(Bone &knob, float2 frames)
 
 float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frames)
 {
-  return pose.head + pose.skin.apply_vector(frames * knob.controller_frame_size);
+  return pose.head + pose.box_skin.apply_vector(rotate(frames * knob.controller_frame_size, knob.controller_box_angle));
 }
 
 void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
 {
-  const float2 local = pose.skin.inverted().apply_vector(delta);
+  const float2 local = rotate(pose.box_skin.inverted().apply_vector(delta), -knob.controller_box_angle);
   controller_knob_set(knob, controller_knob(knob) + local / std::max(knob.controller_frame_size, 1e-6f));
 }
 

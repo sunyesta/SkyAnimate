@@ -707,6 +707,20 @@ static void bone_relations_panel(Context &C, Layer &armature)
   }
   ImGui::EndDisabled();
 
+  /* Under a 2 Axis Controller: from its knob (moving and turning with it), or riding the box. */
+  if (parent && bone_is_controller(*parent)) {
+    active = bone_find(armature, own);
+    label("");
+    bool follow = active->follow_knob;
+    if (ImGui::Checkbox("Follow Knob", &follow)) {
+      relations_set("follow_knob", follow ? "1" : "0");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("It hangs from the controller's knob, moving and turning with it; off, it rides the box, "
+                        "which stays where it rests");
+    }
+  }
+
   active = bone_find(armature, own);
   label("");
   bool local_location = active->local_location;

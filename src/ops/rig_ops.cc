@@ -996,6 +996,7 @@ void rig_operators_register()
                  bone->scale = scale;
                  bone->parent = parent_id;
                  bone->connected = false;
+                 bone->follow_knob = true;
                  return OpStatus::Finished;
                });
 
@@ -1633,7 +1634,8 @@ void rig_operators_register()
                "Set how bone `bone` (default: the active bone) hangs from its parent: connected (1 or 0, setup frame "
                "only: its head onto the parent's tail), inherit_rotation (1 or 0), "
                "inherit_scale (FULL, UNIFORM or NONE), local_location (1 or 0: its Transform reads along it as it rests, "
-               "or along its parent). keep_animation=1: every keyed frame of every action still shows the bone as it "
+               "or along its parent), follow_knob (1 or 0: under a 2 Axis Controller, hanging from its knob or riding the "
+               "box). keep_animation=1: every keyed frame of every action still shows the bone as it "
                "did (its angle and scale keyed back) after an Inherit change",
                bone_layer_active, [](Context &C) {
                  Document &doc = *C.document;
@@ -1657,8 +1659,9 @@ void rig_operators_register()
                        report(ReportType::Warning, "A bone needs a parent to connect to");
                        return OpStatus::Cancelled;
                      }
-                     if (connect && bone_is_pin(*bone_find(rig, bone->parent))) {
-                       report(ReportType::Warning, "Nothing connects to a pin: its children hang with an offset");
+                     if (connect && bone_is_point(*bone_find(rig, bone->parent))) {
+                       report(ReportType::Warning,
+                              "Nothing connects to a pin or a controller's knob: its children hang with an offset");
                        return OpStatus::Cancelled;
                      }
                      if (connect) {
@@ -1678,6 +1681,15 @@ void rig_operators_register()
                        return OpStatus::Finished;
                      }
                    }
+                 }
+                 if (op_has_arg(C, "follow_knob")) {
+                   const bool follow = op_arg_bool(C, "follow_knob");
+                   if (follow == bone->follow_knob) {
+                     return OpStatus::Cancelled;
+                   }
+                   bone->follow_knob = follow;
+                   animation_evaluate(doc, doc.frame_current);
+                   return OpStatus::Finished;
                  }
                  bool inherit_rotation = bone->inherit_rotation, local_location = bone->local_location;
                  InheritScale inherit_scale = bone->inherit_scale;
@@ -1833,7 +1845,8 @@ void rig_operators_register()
                  std::vector<Grow> grows;
                  for (size_t i = 0; i < armature.bones.size(); i++) {
                    const Bone &b = armature.bones[i];
-                   if (bone_is_pin(b)) {
+                   if (bone_is_point(b)) {
+                     /* From a pin, or a controller's knob (at rest here, on the setup frame). */
                      if (b.selected || bone_head_selected(armature, b)) {
                        grows.push_back({b.id, true, poses[i].head});
                      }
@@ -1861,7 +1874,7 @@ void rig_operators_register()
                    Bone *bone = armature_add_bone(armature, name, g.at, g.at + dir * 1e-3f, parent);
                    bone->length = 0.0f;
                    /* Nothing connects to a pin: the new bone hangs from it with an offset. */
-                   bone->connected = g.from_tail && !bone_is_pin(*bone_find(armature, g.from));
+                   bone->connected = g.from_tail && !bone_is_point(*bone_find(armature, g.from));
                    grown.push_back(bone->id);
                    /* X mirror: the other side grows a bone too, named to match; the move that
                     * follows mirrors it. */
@@ -1873,7 +1886,7 @@ void rig_operators_register()
                      const bool connected = bone->connected;
                      const Bone *o = bone_find(armature, other);
                      const BonePose *op = bone_pose_find(poses, other);
-                     const float2 at = g.from_tail && !bone_is_pin(*o) ? op->setup_tail : op->setup_head;
+                     const float2 at = g.from_tail && !bone_is_point(*o) ? op->setup_tail : op->setup_head;
                      const uint64_t o_parent = g.from_tail ? o->id : o->parent;
                      const float2 o_dir = float2(-dir.x, dir.y);
                      Bone *twin = armature_add_bone(armature, bone_mirror_name(new_name), at, at + o_dir * 1e-3f, o_parent);
@@ -2416,9 +2429,9 @@ void rig_operators_register()
                    return OpStatus::Cancelled;
                  }
                  bool connect = op_arg(C, "type", "OFFSET") == "CONNECTED";
-                 if (connect && bone_is_pin(*parent)) {
-                   /* Nothing connects to a pin. */
-                   report(ReportType::Info, "Nothing connects to a pin: parented with the offset kept");
+                 if (connect && bone_is_point(*parent)) {
+                   /* Nothing connects to a pin or a knob. */
+                   report(ReportType::Info, "Nothing connects to a pin or a controller's knob: parented with the offset kept");
                    connect = false;
                  }
                  const uint64_t parent_id = parent->id;
@@ -2453,6 +2466,8 @@ void rig_operators_register()
                    b.scale = scale;
                    b.parent = parent_id;
                    b.connected = false;
+                   /* Onto a controller: hanging from its knob. */
+                   b.follow_knob = true;
                    if (connect) {
                      /* The child slides, keeping its direction and length, until its base is on the tip. */
                      const float2 shift = pp->setup_tail - self->setup_head;

@@ -117,7 +117,8 @@ bool target_position(const Document &doc, const MotionPathTarget &t, float2 &r_a
       return false;
     }
     const std::vector<BonePose> poses = armature_pose(*layer, false);
-    at = t.head ? poses[size_t(i)].head : poses[size_t(i)].tail;
+    /* A controller's head is its knob. */
+    at = t.head ? poses[size_t(i)].knob.apply({0, 0}) : poses[size_t(i)].tail;
   }
   else if (t.point) {
     const int i = point_index(*layer, t.point);
@@ -266,10 +267,10 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
        * path, at the pin. */
       for (const Bone &b : layer->bones) {
         if (b.selected) {
-          if (b.type != BoneType::Pin) {
+          if (!bone_is_point(b)) {
             add({layer->id, b.id, 0});
           }
-          if (!b.connected || b.type == BoneType::Pin) {
+          if (!b.connected || bone_is_point(b)) {
             MotionPathTarget head{layer->id, b.id, 0};
             head.head = true;
             add(head);

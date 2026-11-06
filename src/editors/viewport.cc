@@ -9416,8 +9416,18 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
       dl->AddCircle(playing, CONTROLLER_KNOB_RADIUS, IM_COL32(0xff, 0xff, 0xff, 200), 0, 1.5f);
     }
   }
-  dl->AddCircleFilled(knob_at, CONTROLLER_KNOB_RADIUS, fill == 0 ? edge : fill);
-  dl->AddCircle(knob_at, CONTROLLER_KNOB_RADIUS, edge, 0, active ? 1.6f : 1.2f);
+  /* The knob is a pin: its tick shows which way it is turned (what hangs from it turns with it). */
+  {
+    const Transform2D to_document = layer_world_transform(doc, armature.id);
+    const float2 from = pose.knob.apply({0, 0});
+    const ImVec2 d = view.to_screen(to_document.apply(from + pose.knob.apply_vector({1, 0}))) -
+                     view.to_screen(to_document.apply(from));
+    const float n = std::sqrt(d.x * d.x + d.y * d.y);
+    ScreenBone pin = sb;
+    pin.head = knob_at;
+    pin.dir = n > 1e-6f ? d / n : ImVec2(1, 0);
+    draw_pin(dl, pin, CONTROLLER_KNOB_RADIUS, fill == 0 ? edge : fill, edge, active ? 1.6f : 1.2f);
+  }
   /* Frame 0 sizes it: its corners are handles. */
   if (doc.frame_current == 0 && picked && (hi.x > lo.x || hi.y > lo.y)) {
     for (const ImVec2 &c : corners) {

@@ -3799,6 +3799,15 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
              "instead and it goes on working.";
     }
   }
+  /* Nothing connects to its knob: children on its tip hang from the knob with an offset, where they are (the knob
+   * rests on the setup frame); so does any other child. */
+  for (Bone &child : owner->bones) {
+    if (child.parent == bone_id) {
+      child.connected = false;
+      child.follow_knob = true;
+    }
+  }
+  bone = bone_find(*owner, bone_id);
   std::vector<Key<float>> angle_keys = std::move(bone->angle_keys.keys);
   bone->angle_keys.keys.clear();
   /* A pin turned controller is a box like any other. */
@@ -3807,6 +3816,7 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
   bone->controller_actions[CONTROLLER_RIGHT] = own[0];
   bone->controller_actions[CONTROLLER_LEFT] = own[1];
   bone->controller_size_auto = true;
+  bone->controller_box_angle = 0.0f;
   controller_fit_size(*bone);
   if (!own[0].empty() || !own[1].empty()) {
     /* Its turns on the mainline are the knob's now. */

@@ -36,6 +36,12 @@ inline bool bone_is_pin(const Bone &bone)
 {
   return bone.type == BoneType::Pin;
 }
+/* A pin, or a controller (whose knob is one): one point that nothing connects to, its children hanging with an
+ * offset. */
+inline bool bone_is_point(const Bone &bone)
+{
+  return bone.type == BoneType::Pin || bone.type == BoneType::Controller2D;
+}
 /* 0 X, 1 Y. */
 inline int controller_side_axis(int side)
 {
@@ -73,9 +79,11 @@ float controller_side_frames(const Bone &knob, int side);
 void controller_box(const Bone &knob, float2 &lo, float2 &hi);
 /* Where the knob is, in frames. */
 float2 controller_knob(const Bone &knob);
+/* The same, kept in the box. */
+float2 controller_knob_clamped(const Bone &knob);
 /* Puts the knob there, in the box. */
 void controller_knob_set(Bone &knob, float2 frames);
-/* Frames from the rest point to the bone layer's space, the box riding on the bone's parent. */
+/* Frames from the rest point to the bone layer's space, the box riding on the bone's parent, lying at its angle. */
 float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frames);
 /* A move of the knob by `delta` (bone layer space) from where it is. */
 void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta);

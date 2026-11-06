@@ -411,7 +411,8 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     if (pi >= 0 && pi != i && depth < 256) {
       self(self, pi, depth + 1);
       parent_setup = poses[pi].setup;
-      parent_pose = poses[pi].pose;
+      /* Hanging from a controller's knob (the bone's own pose for any other parent). */
+      parent_pose = bone.follow_knob ? poses[pi].knob : poses[pi].pose;
     }
     else if (bone.outer_bone != 0) {
       parent_setup = bone.outer_setup;
@@ -428,6 +429,9 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     float sx = 1.0f, sy = 1.0f;
     /* A controller stays where it rests, on its parent: only its knob moves (its position keys hold frames). */
     const bool rests = !setup_frame && bone_is_controller(bone);
+    /* Its knob: where its position keys put it in the box (frames), and its own turn, as a pin's. */
+    const float2 knob_frames = rests ? controller_knob_clamped(bone) : float2();
+    const float knob_turn = rests ? bone.angle - setup_angle : 0.0f;
     if (rests) {
       position = setup_position;
       angle = setup_angle;
@@ -656,10 +660,18 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
      * moving one there rigs, it doesn't move the artwork. */
     p.setup = setup_frame ? p.pose : parent_setup * bone_local(setup_position, setup_angle, setup_scale);
     p.skin = p.pose * p.setup.inverted();
+    p.box_skin = p.skin;
+    p.knob = p.pose;
     p.setup_head = p.setup.apply({0, 0});
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
+    if (rests) {
+      /* The knob moves and turns what hangs from it, as a pin would: the box stays. */
+      const float2 at = controller_box_point(bone, p, knob_frames);
+      p.knob = Transform2D::translate(at - p.head) * p.pose * Transform2D::rotate(knob_turn);
+      p.skin = p.knob * p.setup.inverted();
+    }
     state[i] = 2;
   };
   for (int i = 0; i < int(n); i++) {
@@ -676,7 +688,9 @@ static std::vector<int> ik_chain(const std::vector<Bone> &bones, const std::map<
   std::vector<int> chain;
   for (int at = i, guard = 0; at >= 0 && guard < 256; guard++) {
     /* A pin has no length to turn toward the goal. */
-    if (bones[at].ik_ignore || bones[at].type == BoneType::Pin || (limit > 0 && int(chain.size()) >= limit)) {
+    if (bones[at].ik_ignore || bones[at].type == BoneType::Pin || bones[at].type == BoneType::Controller2D ||
+        (limit > 0 && int(chain.size()) >= limit))
+    {
       break;
     }
     chain.push_back(at);
@@ -1236,7 +1250,8 @@ std::vector<float2> armature_picked_heads(const Layer &armature, bool setup_fram
   std::vector<float2> heads;
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (bone_picked(armature.bones[i])) {
-      heads.push_back(poses[i].head);
+      /* A controller's knob is what moves and turns. */
+      heads.push_back(poses[i].knob.apply({0, 0}));
     }
   }
   return heads;
@@ -1321,12 +1336,15 @@ void armature_rotate_selected(Layer &armature, const std::vector<Bone> &original
   std::vector<bool> turns(armature.bones.size());
   for (size_t i = 0; i < armature.bones.size(); i++) {
     const Bone &b = armature.bones[i];
-    /* A controller has no turn: its box stays upright. */
-    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves) && !bone_is_controller(b);
+    /* A controller turns its knob (keyed, as a pin's angle); on the setup frame, the whole box with it. */
+    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);
   }
   for (size_t i = 0; i < armature.bones.size(); i++) {
     if (turns[i]) {
       armature.bones[i].angle += angle;
+      if (setup_frame && bone_is_controller(armature.bones[i])) {
+        armature.bones[i].controller_box_angle += angle;
+      }
     }
   }
   if (setup_frame) {

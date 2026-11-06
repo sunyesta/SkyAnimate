@@ -200,10 +200,14 @@ rig.bone_set("stick", knob=(10.0, 5.0))
 settle()
 assert close(bone("stick")["head"], head), "posed, the bone stays where it rests: only the knob moves"
 rig.select_bone("stick")
+turned = bone("stick")["knob_angle"]
 assert ops.armature.rotate(angle="30") == {'FINISHED'} and close(bone("stick")["head"], head)
+assert close(bone("stick")["knob_angle"] - turned, math.radians(30)), ("R turns the knob, as a pin", bone("stick"))
+assert rig.keyframes('bones["stick"].angle'), "keyed"
 assert ops.armature.resize(scale="2") == {'FINISHED'}
-assert close(bone("stick")["scale"], (1.0, 1.0)), "R and S have nothing to turn or scale"
-assert not rig.keyframes('bones["stick"].angle') and not rig.keyframes('bones["stick"].scale')
+assert close(bone("stick")["scale"], (1.0, 1.0)), "S has nothing to scale"
+assert not rig.keyframes('bones["stick"].scale')
+assert ops.armature.rotate(angle="-30") == {'FINISHED'}
 settle()
 rig.bone_set("stick", knob=(0.0, 0.0))
 settle()

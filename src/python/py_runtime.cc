@@ -2870,6 +2870,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["select_head"] = bone_head_selected(layer, b);
       d["select_tail"] = bone_tail_selected(layer, b);
       d["connected"] = b.connected;
+      d["follow_knob"] = b.follow_knob;
       d["inherit_rotation"] = b.inherit_rotation;
       /* Its swap: (bone layer, bone) it stands in for, or None. */
       {
@@ -2904,6 +2905,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
       }
       d["type"] = bone_is_controller(b) ? "CONTROLLER_2D" : bone_is_pin(b) ? "PIN" : "REGULAR";
+      if (bone_is_controller(b)) {
+        /* Where its knob is and which way it points (bone layer space), and which way the box lies. */
+        const float2 at = poses[i].knob.apply({0, 0}), dir = poses[i].knob.apply_vector({1, 0});
+        d["knob_head"] = py::make_tuple(at.x, at.y);
+        d["knob_angle"] = std::atan2(dir.y, dir.x);
+        d["controller_box_angle"] = b.controller_box_angle;
+      }
       if (const Bone *knob = controller_of_dial(layer, b)) {
         d["controller"] = knob->name;
         d["held"] = controller_dial_held(layer, b);

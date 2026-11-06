@@ -26,8 +26,14 @@ struct BonePose {
   /* Bone frame -> bone layer space, in the setup pose and now. */
   Transform2D setup;
   Transform2D pose;
-  /* Setup to now, in bone layer space. */
+  /* Setup to now, in bone layer space: what the bone moves (weights, layers bound to it). A 2 Axis Controller's is its
+   * knob's, which moves and turns like a pin inside the box. */
   Transform2D skin;
+  /* Setup to now of the bone itself: for a controller the box's, resting on its parent (else the same as `skin`). */
+  Transform2D box_skin;
+  /* Bone frame -> bone layer space now, at a controller's knob, turned by its angle (else the same as `pose`): what
+   * children that follow the knob hang from. */
+  Transform2D knob;
   /* Where the bone runs in the setup pose and now (bone layer space). */
   float2 setup_head, setup_tail;
   float2 head, tail;

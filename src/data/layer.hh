@@ -673,6 +673,10 @@ struct Bone {
                                         Color{1.0f, 0.75f, 0.31f, 1.0f}};
   /* Connected, as in Blender: the head sits on the parent's tail and moves with it. */
   bool connected = false;
+  /* With a 2 Axis Controller for its parent: it hangs from the knob, moving and turning with it, as from a pin; off,
+   * it rides the box, which stays where it rests (files from before the knob could carry anything). Nothing connects to
+   * a knob. */
+  bool follow_knob = true;
   /* Relations, as Blender's. Posing (the setup pose always hangs from the parent as it rests): whether
    * the bone turns as its parent has turned from its setup pose, and how much of its parent's change in
    * size it takes. Its head goes where the parent takes it either way. Local Location: its Transform
@@ -722,6 +726,9 @@ struct Bone {
   /* How far one action frame is (bone layer units), the same either way: the box is its actions' frames times this, so
    * its shape is how long they are. Fitted to the box's actions as they're picked, until it is set by hand. */
   float controller_frame_size = 0.02f;
+  /* Which way the box lies in the setup pose (bone layer space; 0 upright): turned with the bone on the setup frame, so
+   * a slider can lie on a slant, its knob running along it. */
+  float controller_box_angle = 0.0f;
   bool controller_size_auto = true;
   /* Its spots, in the Spots panel's order. */
   std::vector<ControllerSpot> controller_spots;
