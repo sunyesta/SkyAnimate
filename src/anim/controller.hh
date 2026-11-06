@@ -32,6 +32,10 @@ inline bool bone_is_controller(const Bone &bone)
 {
   return bone.type == BoneType::Controller2D;
 }
+inline bool bone_is_pin(const Bone &bone)
+{
+  return bone.type == BoneType::Pin;
+}
 /* 0 X, 1 Y. */
 inline int controller_side_axis(int side)
 {

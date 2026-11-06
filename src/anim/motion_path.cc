@@ -262,11 +262,14 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
       /* Edit Layer: the layer itself, its origin. */
     }
     else if (layer->is_bone_layer()) {
-      /* A bone traces its tip and its head, but a connected head only rides on its parent's tip. */
+      /* A bone traces its tip and its head, but a connected head only rides on its parent's tip; a pin traces one
+       * path, at the pin. */
       for (const Bone &b : layer->bones) {
         if (b.selected) {
-          add({layer->id, b.id, 0});
-          if (!b.connected) {
+          if (b.type != BoneType::Pin) {
+            add({layer->id, b.id, 0});
+          }
+          if (!b.connected || b.type == BoneType::Pin) {
             MotionPathTarget head{layer->id, b.id, 0};
             head.head = true;
             add(head);

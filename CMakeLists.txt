@@ -448,6 +448,8 @@ add_test(NAME motion_path_tool
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_tool.py)
 add_test(NAME key_header_path
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_header_path.py)
+add_test(NAME pin_bones
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_pin_bones.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

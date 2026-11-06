@@ -423,8 +423,9 @@ class _Layer:
         """Pose or edit a bone: position=(x, y), angle, scale=(x, y) (x across the bone, y along
         it; one number sets both), length, strength, name; a controller's knob=(x, y) in frames,
         knob_snap=True (after knob=: where Ctrl takes it, the nearest spot, fix pose, rest or crossing of keys) and
-        controller_frame_size; and how it is drawn: shape ("BONE",
-        "PIN" or "CUSTOM", while the viewport shows custom bone shapes), pin_size, shape_layer (a
+        controller_frame_size; and how it is drawn: shape ("BONE" or
+        "CUSTOM", while the viewport shows custom bone shapes; a pin is a bone type, armature.bone_convert(type="PIN")),
+        pin_size (a pin's), shape_layer (a
         vector layer's name, "" for none), color_set ("DEFAULT", "THEME01" to "THEME15" or
         "CUSTOM") and custom_colors (three (r, g, b): regular, selected, active; makes it Custom)."""
         _oanim.layer_bone_set(self._id, name, values)

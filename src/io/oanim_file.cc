@@ -903,7 +903,10 @@ static json layer_to_json(const Layer &layer)
         bj["arc_ik"] = true;
       }
       if (b.shape != BoneShape::None) {
-        bj["shape"] = b.shape == BoneShape::Pin ? "PIN" : "CUSTOM";
+        bj["shape"] = "CUSTOM";
+      }
+      if (b.type == BoneType::Pin) {
+        bj["type"] = "PIN";
       }
       if (b.pin_size != 1.0f) {
         bj["pin_size"] = num(b.pin_size);
@@ -2796,7 +2799,11 @@ static Layer layer_from_json(const json &j, int depth)
     b.ik_ignore = get_bool(bj, "ik_ignore", false);
     b.arc_ik = get_bool(bj, "arc_ik", false);
     const std::string shape = bj.value("shape", std::string());
-    b.shape = shape == "PIN" ? BoneShape::Pin : shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
+    b.shape = shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
+    /* Files from before keep pins as a shape: they are the Pin type now, drawn the same. */
+    if (shape == "PIN" || bj.value("type", std::string()) == "PIN") {
+      b.type = BoneType::Pin;
+    }
     b.pin_size = std::clamp(get_float(bj, "pin_size", 1.0f), 0.1f, 20.0f);
     b.shape_layer = bj.value("shape_layer", uint64_t(0));
     if (bj.value("type", std::string()) == "CONTROLLER_2D") {

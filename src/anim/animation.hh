@@ -118,6 +118,9 @@ void controllers_update(Document &doc);
  * the same way, and linked dials get keys of their own. Returns anything the user should hear of. */
 std::string bone_convert_to_controller(Document &doc, uint64_t owner, uint64_t bone);
 std::string bone_convert_to_regular(Document &doc, uint64_t owner, uint64_t bone);
+/* Makes the bone a Pin (BoneType::Pin; a controller becomes Regular first). Its children connected to its tip are
+ * let go, keeping where they are: nothing connects to a pin. */
+std::string bone_convert_to_pin(Document &doc, uint64_t owner, uint64_t bone);
 /* Puts `action` in a side ("" empties it), from the mainline. An action bone action's dial is linked: its keys move to
  * the knob. Keys there too on that axis are one too many: `keep` says whose ("THIS" or "OTHER"). False with why,
  * nothing changed. `r_note`: anything the user should hear of. */

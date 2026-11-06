@@ -9170,9 +9170,10 @@ static constexpr float PIN_RADIUS = 6.0f;
  * viewport draws. */
 static uint64_t g_plain_armature = 0;
 
+/* A Pin bone is drawn (and picked) as a pin, always: it has no tip to show. */
 static bool shows_pin(const Bone &bone)
 {
-  return g_bone_shapes && bone.shape == BoneShape::Pin;
+  return bone_is_pin(bone);
 }
 
 static float pin_radius(const Bone &bone)
@@ -9573,7 +9574,7 @@ static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armatur
                         faint ? col_ghost : active ? col_active : COL_BONE_EDGE);
         continue;
       }
-      if (!as_bone && shows_pin(bone)) {
+      if (shows_pin(bone)) {
         if (faint) {
           draw_pin(dl, sbs[i], pin_radius(bone), 0, col_ghost, 1.0f);
         }
@@ -14770,11 +14771,15 @@ static void bone_parent_menus(Context &C, bool hovered)
       const Layer *armature = document_active_layer(*C.document);
       const Bone *active = armature ? bone_find(*armature, armature->active_bone) : nullptr;
       const bool controller = active && bone_is_controller(*active);
-      if (ImGui::MenuItem("Regular", nullptr, active && !controller)) {
+      const bool pin = active && bone_is_pin(*active);
+      if (ImGui::MenuItem("Regular", nullptr, active && !controller && !pin)) {
         operator_call(C, "armature.bone_convert", {{"type", "REGULAR"}});
       }
       if (ImGui::MenuItem("2 Axis Controller", nullptr, controller)) {
         operator_call(C, "armature.bone_convert", {{"type", "CONTROLLER_2D"}});
+      }
+      if (ImGui::MenuItem("Pin", nullptr, pin)) {
+        operator_call(C, "armature.bone_convert", {{"type", "PIN"}});
       }
       ImGui::EndMenu();
     }

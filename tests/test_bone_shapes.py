@@ -1,4 +1,4 @@
-"""Bone display: each bone has a Shape (Bone, Pin with a size, or Custom: a vector layer's drawing)
+"""Bone display: each bone has a Shape (Bone, or Custom: a vector layer's drawing; a pin, with its size, is a bone type)
 and a Bone Color (Blender's Default Colors, its 15 theme sets, or a Custom set of three shades). Both
 only change how the viewport draws the bone, and both are saved.
 
@@ -28,8 +28,11 @@ def bone(name):
 
 # --- Shape ------------------------------------------------------------------------------------
 assert bone("arm")["shape"] == "BONE", "new bones are drawn as bones"
-rig.bone_set("pin", shape="PIN", pin_size=1.5)
-assert bone("pin")["shape"] == "PIN" and abs(bone("pin")["pin_size"] - 1.5) < 1e-6
+oanim.ops.armature.select_none()
+rig.select_bone("pin")
+assert oanim.ops.armature.bone_convert(type="PIN") == {'FINISHED'}
+rig.bone_set("pin", pin_size=1.5)
+assert bone("pin")["type"] == "PIN" and abs(bone("pin")["pin_size"] - 1.5) < 1e-6
 try:
     rig.bone_set("arm", shape="STAR")
     raise AssertionError("an unknown shape is refused")
@@ -48,7 +51,7 @@ doc.frame_current = 5
 rig.bone_set("pin", angle=1.0)
 doc.frame_current = 6
 doc.frame_current = 5
-assert abs(bone("pin")["angle"] - 1.0) < 1e-5 and bone("pin")["shape"] == "PIN"
+assert abs(bone("pin")["angle"] - 1.0) < 1e-5 and bone("pin")["type"] == "PIN"
 doc.frame_current = 0
 
 # --- Bone Color ---------------------------------------------------------------------------------
@@ -83,7 +86,7 @@ path = str(pathlib.Path(tempfile.mkdtemp(prefix="oanim_shapes_")) / "shapes.oani
 assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 rig = next(l for l in oanim.data.layers if l.type == "BONE")
-assert bone("pin")["shape"] == "PIN" and abs(bone("pin")["pin_size"] - 1.5) < 1e-6
+assert bone("pin")["type"] == "PIN" and abs(bone("pin")["pin_size"] - 1.5) < 1e-6
 assert bone("arm")["shape"] == "CUSTOM" and bone("arm")["shape_layer"] == "top teeth"
 assert bone("arm")["color_set"] == "CUSTOM"
 assert all(abs(a - b) < 1e-4 for a, b in zip(bone("arm")["colors"][2], (0.7, 0.8, 0.9)))

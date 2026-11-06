@@ -675,7 +675,8 @@ static std::vector<int> ik_chain(const std::vector<Bone> &bones, const std::map<
 {
   std::vector<int> chain;
   for (int at = i, guard = 0; at >= 0 && guard < 256; guard++) {
-    if (bones[at].ik_ignore || (limit > 0 && int(chain.size()) >= limit)) {
+    /* A pin has no length to turn toward the goal. */
+    if (bones[at].ik_ignore || bones[at].type == BoneType::Pin || (limit > 0 && int(chain.size()) >= limit)) {
       break;
     }
     chain.push_back(at);
@@ -974,12 +975,19 @@ static bool tail_joint(const Layer &armature, const Bone &bone)
 
 bool bone_head_selected(const Layer &armature, const Bone &bone)
 {
+  if (bone.type == BoneType::Pin) {
+    /* One point: either end picked is the pin, which moves whole (its hidden tip with it). */
+    return bone.selected || head_joint(armature, bone) || tail_joint(armature, bone);
+  }
   const Bone *parent = bone.connected ? bone_find(armature, bone.parent) : nullptr;
   return bone.selected || head_joint(armature, bone) || (parent && parent->selected);
 }
 
 bool bone_tail_selected(const Layer &armature, const Bone &bone)
 {
+  if (bone.type == BoneType::Pin) {
+    return bone_head_selected(armature, bone);
+  }
   if (bone.selected || tail_joint(armature, bone)) {
     return true;
   }

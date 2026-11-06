@@ -3801,6 +3801,7 @@ std::string bone_convert_to_controller(Document &doc, uint64_t owner_id, uint64_
   }
   std::vector<Key<float>> angle_keys = std::move(bone->angle_keys.keys);
   bone->angle_keys.keys.clear();
+  /* A pin turned controller is a box like any other. */
   bone->type = BoneType::Controller2D;
   bone->controller_actions = {};
   bone->controller_actions[CONTROLLER_RIGHT] = own[0];
@@ -3860,6 +3861,11 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
 {
   Layer *owner = layer_find(doc, owner_id);
   Bone *bone = owner ? bone_find(*owner, bone_id) : nullptr;
+  if (bone && bone_is_pin(*bone)) {
+    /* Its length was kept: the bone it was. */
+    bone->type = BoneType::Regular;
+    return "";
+  }
   if (!bone || !bone_is_controller(*bone)) {
     return "";
   }
@@ -3910,6 +3916,30 @@ std::string bone_convert_to_regular(Document &doc, uint64_t owner_id, uint64_t b
   bone->position_keys.last = {};
   animation_evaluate(doc, doc.frame_current);
   return "";
+}
+
+std::string bone_convert_to_pin(Document &doc, uint64_t owner_id, uint64_t bone_id)
+{
+  Layer *owner = layer_find(doc, owner_id);
+  Bone *bone = owner ? bone_find(*owner, bone_id) : nullptr;
+  if (!bone || bone_is_pin(*bone)) {
+    return "";
+  }
+  std::string note;
+  if (bone_is_controller(*bone)) {
+    note = bone_convert_to_regular(doc, owner_id, bone_id);
+    bone = bone_find(*owner, bone_id);
+  }
+  /* Children on its tip hang with an offset instead, right where they are (the tip is kept, hidden). */
+  for (Bone &child : owner->bones) {
+    if (child.parent == bone_id && child.connected) {
+      child.connected = false;
+    }
+  }
+  bone = bone_find(*owner, bone_id);
+  bone->type = BoneType::Pin;
+  animation_evaluate(doc, doc.frame_current);
+  return note;
 }
 
 bool controller_side_keys_clash(const Layer &owner, const Bone &knob, int side, const std::string &action)

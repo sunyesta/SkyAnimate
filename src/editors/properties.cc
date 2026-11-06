@@ -1863,18 +1863,23 @@ static void bone_panel(Context &C, Layer &armature)
       return;
     }
     label("Type");
-    if (ImGui::BeginCombo("##bone_type", bone_is_controller(*active) ? "2 Axis Controller" : "Regular")) {
-      if (ImGui::Selectable("Regular", !bone_is_controller(*active))) {
+    const bool pin = bone_is_pin(*active), controller = bone_is_controller(*active);
+    if (ImGui::BeginCombo("##bone_type", controller ? "2 Axis Controller" : pin ? "Pin" : "Regular")) {
+      if (ImGui::Selectable("Regular", !controller && !pin)) {
         operator_call(C, "armature.bone_convert", {{"type", "REGULAR"}});
       }
-      if (ImGui::Selectable("2 Axis Controller", bone_is_controller(*active))) {
+      if (ImGui::Selectable("2 Axis Controller", controller)) {
         operator_call(C, "armature.bone_convert", {{"type", "CONTROLLER_2D"}});
+      }
+      if (ImGui::Selectable("Pin", pin)) {
+        operator_call(C, "armature.bone_convert", {{"type", "PIN"}});
       }
       ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("What the bone is. A 2 Axis Controller is a box with a knob whose four sides play actions. "
-                        "Changed in the setup pose");
+      ImGui::SetTooltip("What the bone is. A 2 Axis Controller is a box with a knob whose four sides play actions; a "
+                        "Pin is one point, drawn as a pin, that nothing connects to (its children hang with an "
+                        "offset). Changed in the setup pose");
     }
     active = bone_find(armature, armature.active_bone);
     if (!active) {
@@ -2144,16 +2149,17 @@ static void bone_display_panel(Context &C, Layer &armature)
   const ImGuiStyle &style = ImGui::GetStyle();
   const float h = ImGui::GetFrameHeight();
 
-  /* Shape: Bone | Pin | Custom, as Blender's tabs. */
+  /* Shape: Bone | Custom, as Blender's tabs (a pin is a bone type: drawn as a pin whatever this says). */
   props_label("Shape");
   {
-    static const char *const names[] = {"Bone", "Pin", "Custom"};
-    static const char *const tips[] = {"Drawn as a bone", "A round pin at its base, as Moho draws pin bones",
+    static const char *const names[] = {"Bone", "Custom"};
+    static const char *const tips[] = {"Drawn as a bone",
                                        "Drawn as a vector layer's drawing, where that layer sits at rest"};
     const float gap = 1.0f;
-    const float w = (ImGui::GetContentRegionAvail().x - 2.0f * gap) / 3.0f;
+    const float w = (ImGui::GetContentRegionAvail().x - gap) / 2.0f;
+    ImGui::BeginDisabled(bone_is_pin(*active));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, style.ItemSpacing.y));
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 2; k++) {
       if (k > 0) {
         ImGui::SameLine();
       }
@@ -2175,9 +2181,10 @@ static void bone_display_panel(Context &C, Layer &armature)
       }
     }
     ImGui::PopStyleVar();
+    ImGui::EndDisabled();
   }
-  if (active->shape == BoneShape::Pin) {
-    props_label("Size");
+  if (bone_is_pin(*active)) {
+    props_label("Pin Size");
     ui_drag_float("##pin_size", &active->pin_size, 0.01f, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Against the standard pin; it keeps its size on screen, whatever the zoom");

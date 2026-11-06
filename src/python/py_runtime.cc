@@ -2879,7 +2879,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
                            : b.inherit_scale == InheritScale::Uniform ? "UNIFORM"
                                                                       : "NONE";
       d["local_location"] = b.local_location;
-      d["shape"] = b.shape == BoneShape::Pin ? "PIN" : b.shape == BoneShape::Custom ? "CUSTOM" : "BONE";
+      d["shape"] = b.shape == BoneShape::Custom ? "CUSTOM" : "BONE";
       d["pin_size"] = b.pin_size;
       const Layer *shape_layer = b.shape_layer ? layer_find(*current_context().document, b.shape_layer) : nullptr;
       d["shape_layer"] = shape_layer ? shape_layer->name : std::string();
@@ -2898,7 +2898,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["active"] = b.id == layer.active_bone;
       d["head"] = py::make_tuple(poses[i].head.x, poses[i].head.y);
       d["tail"] = py::make_tuple(poses[i].tail.x, poses[i].tail.y);
-      d["type"] = bone_is_controller(b) ? "CONTROLLER_2D" : "REGULAR";
+      d["type"] = bone_is_controller(b) ? "CONTROLLER_2D" : bone_is_pin(b) ? "PIN" : "REGULAR";
       if (const Bone *knob = controller_of_dial(layer, b)) {
         d["controller"] = knob->name;
         d["held"] = controller_dial_held(layer, b);
@@ -2998,10 +2998,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "shape") {
         const std::string shape = value.cast<std::string>();
-        if (shape != "BONE" && shape != "NONE" && shape != "PIN" && shape != "CUSTOM") {
-          throw py::value_error("bone shape is 'BONE', 'PIN' or 'CUSTOM'");
+        if (shape == "PIN") {
+          throw py::value_error("a pin is a bone type: oanim.ops.armature.bone_convert(type='PIN')");
         }
-        bone.shape = shape == "PIN" ? BoneShape::Pin : shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
+        if (shape != "BONE" && shape != "NONE" && shape != "CUSTOM") {
+          throw py::value_error("bone shape is 'BONE' or 'CUSTOM'");
+        }
+        bone.shape = shape == "CUSTOM" ? BoneShape::Custom : BoneShape::None;
       }
       else if (key == "pin_size") {
         bone.pin_size = std::clamp(value.cast<float>(), 0.1f, 20.0f);

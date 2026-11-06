@@ -448,6 +448,16 @@ PENDING = [
     ('src/editors/timeline.cc', '  if (wm.tool_settings.tool != Tool::MotionPath) {\n    return f;\n  }\n  const MotionPathPicks picks', '  if (wm.tool_settings.tool != Tool::MotionPath || !doc.motion_paths) {\n    return f;\n  }\n  const MotionPathPicks picks', 'the stretch is teal with the Motion Paths overlay off', 'tests/test_selected_stretch.py'),
     ('src/ops/motion_path_ops.cc', '  if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath) {', '  if (!C.document || !C.wm || !C.document->motion_paths) {', 'picks count with the overlay off', 'tests/test_selected_stretch.py'),
     ('src/editors/timeline.cc', '  return double_click && !alt;\n', '  return double_click;\n', 'an Alt double-click in a row adds no keys', 'tests/test_selected_stretch.py'),
+    ('src/anim/animation.cc', '      child.connected = false;\n    }\n  }\n  bone = bone_find(*owner, bone_id);\n  bone->type = BoneType::Pin;', '    }\n  }\n  bone = bone_find(*owner, bone_id);\n  bone->type = BoneType::Pin;', 'a pin lets go of its connected children', 'tests/test_pin_bones.py'),
+    ('src/ops/rig_ops.cc', '                 if (connect && bone_is_pin(*parent)) {', '                 if (false && connect && bone_is_pin(*parent)) {', 'Ctrl P onto a pin keeps the offset', 'tests/test_pin_bones.py'),
+    ('src/ops/rig_ops.cc', '                     if (connect && bone_is_pin(*bone_find(rig, bone->parent))) {', '                     if (false) {', "the Bone tab's Connected never onto a pin", 'tests/test_pin_bones.py'),
+    ('src/ops/rig_ops.cc', '                   bone->connected = g.from_tail && !bone_is_pin(*bone_find(armature, g.from));', '                   bone->connected = g.from_tail;', 'E from a pin: not connected', 'tests/test_pin_bones.py'),
+    ('src/ops/rig_ops.cc', '                       grows.push_back({b.id, true, poses[i].head});', '                       grows.push_back({b.id, true, poses[i].tail});', 'E from a pin starts at the pin', 'tests/test_pin_bones.py'),
+    ('src/anim/motion_path.cc', '          if (b.type != BoneType::Pin) {\n            add({layer->id, b.id, 0});', '          if (true) {\n            add({layer->id, b.id, 0});', 'a pin traces one path', 'tests/test_pin_bones.py'),
+    ('src/data/bones.cc', 'bones[at].type == BoneType::Pin || (limit', 'false || (limit', 'an IK chain stops at a pin', 'tests/test_pin_bones.py'),
+    ('src/anim/animation.cc', '  if (bone && bone_is_pin(*bone)) {\n    /* Its length was kept', '  if (false) {\n    /* Its length was kept', 'a pin converts back to Regular', 'tests/test_pin_bones.py'),
+    ('src/io/oanim_file.cc', '    if (shape == "PIN" || bj.value("type", std::string()) == "PIN") {', '    if (bj.value("type", std::string()) == "PIN") {', "old files' Pin shape opens as the Pin type", 'tests/test_pin_bones.py'),
+    ('src/io/oanim_file.cc', '      if (b.type == BoneType::Pin) {\n        bj["type"] = "PIN";', '      if (false) {\n        bj["type"] = "PIN";', 'the Pin type is saved', 'tests/test_pin_bones.py'),
 ]
 
 

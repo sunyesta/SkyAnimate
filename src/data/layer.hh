@@ -611,7 +611,8 @@ struct BoneCollection {
 
 /* What a bone is drawn as while the viewport shows custom bone shapes: a bone, a pin (Moho's pin
  * bones, which have no length) or another layer's drawing (Custom). */
-enum class BoneShape { None, Pin, Custom };
+/* How a bone is drawn: as a bone, or as a layer's drawing (a pin is a bone type, BoneType::Pin, not a shape). */
+enum class BoneShape { None, Custom };
 /* Blender's bone colour sets: 0 its Default Colors, 1 to BONE_COLOR_THEME_SETS its theme sets,
  * BONE_COLOR_CUSTOM the bone's own three shades. */
 inline constexpr int BONE_COLOR_THEME_SETS = 15;
@@ -630,7 +631,10 @@ struct ControllerSpot {
 };
 
 /* What a bone is. A 2 Axis Controller is a joystick, not a bone (anim/controller.hh). */
-enum class BoneType : uint8_t { Regular, Controller2D };
+/* A Pin is Moho's pin bone: one point, drawn as a pin at its head. Its length is kept (hidden), so converting it back
+ * gives the bone it was; nothing connects to it (children hang with an offset), an IK chain stops at it, and it traces
+ * one path, at the pin. */
+enum class BoneType : uint8_t { Regular, Controller2D, Pin };
 /* A 2 Axis Controller's sides, each with an action of its own. */
 enum ControllerSide { CONTROLLER_RIGHT, CONTROLLER_LEFT, CONTROLLER_UP, CONTROLLER_DOWN, CONTROLLER_SIDES };
 
@@ -706,7 +710,7 @@ struct Bone {
   /* Moho's Arc IK solver: a chain ending at this bone bends evenly, as an arc. */
   bool arc_ik = false;
   BoneShape shape = BoneShape::None;
-  /* Pin: its size against the standard pin (it stays that size on screen, whatever the zoom). */
+  /* A pin's size against the standard pin (it stays that size on screen, whatever the zoom). */
   float pin_size = 1.0f;
   /* Custom: the layer whose drawing it is drawn as (its id; 0 for none). */
   uint64_t shape_layer = 0;
