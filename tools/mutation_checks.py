@@ -422,6 +422,8 @@ PENDING = [
     ('src/editors/viewport.cc', '  const auto knot = [](float2 x, float2 y) { return std::max(std::sqrt(length(y - x)), 1e-5f); };', '  const auto knot = [](float2 x, float2 y) { return std::max(length(y - x) * 0.0f + 1.0f, 1e-5f); };', 'the path line centripetal: no overshoot', 'tests/test_motion_path_smooth_line.py'),
     ('src/anim/motion_path.cc', '    const auto shown = [&](int f) { return f >= first && f <= last; };', '    const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };', 'sculpt reshapes the setup key out handle', 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '      mp.pos = mp.setup_pos = tg.pos[size_t(tg.pinned)];', '      (void)mp;', 'sculpt pins the setup key point', 'tests/test_motion_path_sculpt.py'),
+    ('src/editors/viewport.cc', '  if (!on_point && !under.hit.bone) {\n    return false;\n', '  if (!on_point && !under.hit.bone) {\n    if (apply) {\n      C.wm->path_handle_picks.clear();\n    }\n    return false;\n', 'Alt pick of nothing keeps a picked path handle', 'tests/test_motion_path_control_handles.py'),
+    ('src/editors/viewport.cc', '  /* A bone or point picked: no path handles with it (nothing there: the handles picked stay). */\n  C.wm->path_handle_picks.clear();\n', '', 'a picked point lets the path handles go', 'tests/test_motion_path_control_handles.py'),
 ]
 
 

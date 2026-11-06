@@ -199,4 +199,18 @@ assert ops.anim.motion_path_stroke(brush="GRAB", points="2,0;2,0.8", radius="0.6
 assert key(lump, 30)["path_controls"][0][1] > 0.1, ("the brush moved the control point", key(lump, 30))
 now = key(lump, 30)["path_control_handles"][0]
 assert now["set"] is True, ("reshaped by the brush: its own", now)
+# --- Alt on a picked handle keeps it: the Alt click's pick lets the handles go only once it picks something -----------
+alt = mover({10: (0.0, 0.0), 30: (4.0, 0.0)})
+a4 = dict(layer=str(alt.id))
+assert ops.anim.motion_path_control_add(frame="20", **a4) == {'FINISHED'}
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="2", **a4) == {'FINISHED'}
+handle_pick = wm.motion_path_handle_picks()
+assert [p["control_handle"] for p in handle_pick] == [2], handle_pick
+doc.frame_current = 10
+assert not wm.motion_path_pick(2.0, 3.0), "nothing there"
+assert wm.motion_path_handle_picks() == handle_pick, ("a pick of nothing keeps the handle picked",
+                                                      wm.motion_path_handle_picks())
+assert wm.motion_path_pick(0.1, 0.0), "the drawing's point"
+assert wm.motion_path_handle_picks() == [], "a point picked: the handles let go"
 print("Motion path control handles: ok")

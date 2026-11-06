@@ -660,6 +660,9 @@ struct PathControlHover {
   float2 offset;
 };
 static std::optional<PathControlHover> g_path_control_hover;
+/* A path handle's tip or a control point (or its handle) under the mouse, as last drawn: an Alt press there takes it
+ * (Alt drags one handle alone), never the bone or point under it. */
+static bool g_path_handle_under = false;
 
 /* Where along `arc` (0 at its start, 1 at its end, by length) the nearest place to `at` is. */
 static float arc_fraction(const std::vector<float2> &arc, float2 at)
@@ -2018,14 +2021,18 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   if (!tool && g_path_drag.active) {
     g_path_drag = {};
   }
+  /* Last drawn; set again below when the paths draw. */
+  const bool handle_under = g_path_handle_under;
+  g_path_handle_under = false;
   if (!doc.motion_paths && !tool) {
     return;
   }
   /* With any brush, Alt click on a bone or a point picks it, Alt Shift adds it, as the Select tool's click does: its
-   * path shows. Its own spot wins over the path's dot drawn on it; elsewhere Alt on the path keeps its meaning. Asked
-   * before there is a path at all: with nothing picked there may be none to draw. */
+   * path shows. Its own spot wins over the path's dot drawn on it; elsewhere Alt on the path keeps its meaning, and a
+   * path handle or control point under the mouse wins over it (Alt drags one handle alone). Asked before there is a
+   * path at all: with nothing picked there may be none to draw. */
   if (tool && hovered && ImGui::GetIO().KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-      !g_path_drag.active && !g_path_slide.active && !g_path_brush.active &&
+      !g_path_drag.active && !g_path_slide.active && !g_path_brush.active && !handle_under &&
       motion_path_pick_click(C, view, ImGui::GetIO().MousePos, ImGui::GetIO().KeyShift))
   {
     return;
@@ -2469,6 +2476,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       hover_cs->hovered = true;
     }
   }
+  g_path_handle_under = hover_handle || g_path_control_hover;
   dl->ChannelsSetCurrent(0);
   for (const PlainDot &d : plain_dots) {
     if (path_dot_under_handles(float2{d.at.x, d.at.y}, handle_lines, PATH_HANDLE_WIDTH * 0.5f + 3.0f)) {
@@ -14313,10 +14321,6 @@ static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 a
     /* Edit Layer: the layer itself, never its bones or points. */
     return false;
   }
-  if (apply) {
-    /* A bone or point picked: no path handles with it. */
-    C.wm->path_handle_picks.clear();
-  }
   Layer *armature = document_active_layer(doc);
   if (armature && !armature->is_bone_layer()) {
     armature = nullptr;
@@ -14340,6 +14344,8 @@ static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 a
   if (!apply) {
     return true;
   }
+  /* A bone or point picked: no path handles with it (nothing there: the handles picked stay). */
+  C.wm->path_handle_picks.clear();
   if (on_point) {
     if (!extend && armature) {
       family_deselect_all(doc, *armature);
@@ -15516,9 +15522,10 @@ static bool layer_pick_wanted(Context &C, const ViewMapping &view)
   {
     return false;
   }
-  /* The Motion Path tool's Alt click on a bone or point picks that instead (motion_path_pick_click). */
+  /* The Motion Path tool's Alt click on a bone or point picks that instead (motion_path_pick_click), and on a path
+   * handle or control point takes that. */
   if (ts.tool == Tool::MotionPath && C.document->motion_paths &&
-      motion_path_pick_click(C, view, ImGui::GetIO().MousePos, false, false))
+      (g_path_handle_under || motion_path_pick_click(C, view, ImGui::GetIO().MousePos, false, false)))
   {
     return false;
   }
