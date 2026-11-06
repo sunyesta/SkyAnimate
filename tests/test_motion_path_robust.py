@@ -431,10 +431,12 @@ assert key(B, 30)["path_control_handles"][0]["aligned"] is True, "B's aligned"
 assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="1", **a) == {'FINISHED'}
 assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="1", extend="1", **b) == {'FINISHED'}
 assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="2", extend="1", **b) == {'FINISHED'}
+hb_was = key(B, 30)["path_control_handles"][0]
 assert ops.anim.motion_path_keys_transform(kind="G", x="0", y="0.5") == {'FINISHED'}
 hb = key(B, 30)["path_control_handles"][0]
 assert hb["aligned"] is True, ("B's control point still aligned", hb)
-assert close(hb["in"], (-0.6667, 0.5)) and close(hb["out"], (0.6667, 0.5)), ("both of B's handles moved up 0.5", hb)
+assert all(close(hb[s], (hb_was[s][0], hb_was[s][1] + 0.5)) for s in ("in", "out")), \
+    ("both of B's handles moved up 0.5", hb_was, hb)
 assert key(A, 30)["path_control_handles"][0]["aligned"] is False, "A's still unaligned"
 
 

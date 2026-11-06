@@ -666,38 +666,36 @@ float stretch_path_length(const std::vector<Key<float2>> &keys, size_t i)
   return polyline(line);
 }
 
-bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old)
+/* Where `v` is on the curve through `s`: the piece and its parameter there. False where it isn't on it (a dot past a
+ * key, in an overshoot) or is at one of the curve's points. */
+static bool curve_place(const StretchPoints &s, float2 v, size_t &r_piece, float &r_t)
 {
-  if (i == 0 || i + 1 >= keys.size() || old.p.size() < 2 || old.in.size() != old.p.size() ||
-      old.out.size() != old.p.size())
-  {
+  if (s.p.size() < 2 || s.in.size() != s.p.size() || s.out.size() != s.p.size()) {
     return false;
   }
-  Key<float2> &a = keys[i - 1], &k = keys[i], &b = keys[i + 1];
-  const size_t n = old.p.size() - 1;
+  const size_t n = s.p.size() - 1;
   const auto piece = [&](size_t j, float t) {
-    const float2 q[4] = {old.p[j], old.p[j] + old.out[j], old.p[j + 1] + old.in[j + 1], old.p[j + 1]};
+    const float2 q[4] = {s.p[j], s.p[j] + s.out[j], s.p[j + 1] + s.in[j + 1], s.p[j + 1]};
     return bezier(q, t);
   };
-  /* Where on the curve the key is: the nearest piece and place on it. */
   size_t at_piece = 0;
   float at_t = 0.0f, best = std::numeric_limits<float>::max(), size = 0.0f;
   constexpr int SAMPLES = 64;
   for (size_t j = 0; j < n; j++) {
-    size += length(old.p[j + 1] - old.p[j]);
-    for (int s = 0; s <= SAMPLES; s++) {
-      const float d = length(piece(j, float(s) / SAMPLES) - k.value);
+    size += length(s.p[j + 1] - s.p[j]);
+    for (int k = 0; k <= SAMPLES; k++) {
+      const float d = length(piece(j, float(k) / SAMPLES) - v);
       if (d < best) {
         best = d;
         at_piece = j;
-        at_t = float(s) / SAMPLES;
+        at_t = float(k) / SAMPLES;
       }
     }
   }
   float lo = std::max(at_t - 1.0f / SAMPLES, 0.0f), hi = std::min(at_t + 1.0f / SAMPLES, 1.0f);
   for (int it = 0; it < 40; it++) {
     const float m1 = lo + (hi - lo) / 3.0f, m2 = hi - (hi - lo) / 3.0f;
-    if (length(piece(at_piece, m1) - k.value) < length(piece(at_piece, m2) - k.value)) {
+    if (length(piece(at_piece, m1) - v) < length(piece(at_piece, m2) - v)) {
       hi = m2;
     }
     else {
@@ -705,16 +703,129 @@ bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoin
     }
   }
   at_t = 0.5f * (lo + hi);
-  best = length(piece(at_piece, at_t) - k.value);
+  best = length(piece(at_piece, at_t) - v);
   if (best > 1e-3f * std::max(size, 1e-6f) || at_t <= 1e-4f || at_t >= 1.0f - 1e-4f) {
     return false;
   }
-  /* de Casteljau. */
-  const size_t J = at_piece;
-  const float t = at_t;
-  const float2 P0 = old.p[J], P1 = old.p[J] + old.out[J], P2 = old.p[J + 1] + old.in[J + 1], P3 = old.p[J + 1];
-  const float2 A1 = P0 + (P1 - P0) * t, mid = P1 + (P2 - P1) * t, B2 = P2 + (P3 - P2) * t;
-  const float2 A2 = A1 + (mid - A1) * t, B1 = mid + (B2 - mid) * t, M = A2 + (B1 - A2) * t;
+  r_piece = at_piece;
+  r_t = at_t;
+  return true;
+}
+
+/* Piece `j` of `s` split at `t` (de Casteljau), as points: its start's new handle tip `a1`, the split `m` with its
+ * handle tips `a2` and `b1`, its end's new handle tip `b2`. */
+struct CurveSplit {
+  float2 a1, a2, m, b1, b2;
+};
+static CurveSplit curve_split(const StretchPoints &s, size_t j, float t)
+{
+  const float2 P0 = s.p[j], P1 = s.p[j] + s.out[j], P2 = s.p[j + 1] + s.in[j + 1], P3 = s.p[j + 1];
+  CurveSplit c;
+  c.a1 = P0 + (P1 - P0) * t;
+  const float2 mid = P1 + (P2 - P1) * t;
+  c.b2 = P2 + (P3 - P2) * t;
+  c.a2 = c.a1 + (mid - c.a1) * t;
+  c.b1 = mid + (c.b2 - mid) * t;
+  c.m = c.a2 + (c.b1 - c.a2) * t;
+  return c;
+}
+
+/* A key's handle as stretch_points reads it: the Bezier's own with no control points, else a share of its piece. */
+static float2 stretch_key_handle(const StretchPoints &s, bool start)
+{
+  const size_t m = s.p.size() - 1;
+  if (m == 1) {
+    return start ? s.out[0] : s.in[1];
+  }
+  float sum = 0.0f;
+  for (size_t j = 0; j < m; j++) {
+    sum += length(s.p[j + 1] - s.p[j]);
+  }
+  const float chord = start ? length(s.p[1] - s.p[0]) : length(s.p[m] - s.p[m - 1]);
+  if (chord < 1e-9f) {
+    return float2{0.0f, 0.0f};
+  }
+  return (start ? s.out[0] : s.in[m]) * (sum / chord);
+}
+
+/* A key frozen from Auto (Broken) is Aligned again where its handles are in line, as Auto's smooth ones are. */
+static void key_aligned_again(Key<float2> &key, bool was_broken)
+{
+  const float li = length(key.path_in), lo = length(key.path_out);
+  const float cross = key.path_in.x * key.path_out.y - key.path_in.y * key.path_out.x;
+  if (!was_broken && li > 1e-9f && lo > 1e-9f && dot(key.path_in, key.path_out) < 0.0f &&
+      std::abs(cross) <= 1e-4f * li * lo)
+  {
+    key.path_handles = PathHandles::Aligned;
+  }
+}
+
+bool key_control_split(std::vector<Key<float2>> &keys, size_t i, float2 v, size_t *r_index)
+{
+  if (i == 0 || i >= keys.size()) {
+    return false;
+  }
+  StretchPoints s = stretch_points(keys, i);
+  size_t J = 0;
+  float t = 0.0f;
+  if (!curve_place(s, v, J, t)) {
+    return false;
+  }
+  const CurveSplit c = curve_split(s, J, t);
+  s.out[J] = c.a1 - s.p[J];
+  s.in[J + 1] = c.b2 - s.p[J + 1];
+  s.p.insert(s.p.begin() + std::ptrdiff_t(J + 1), c.m);
+  s.in.insert(s.in.begin() + std::ptrdiff_t(J + 1), c.a2 - c.m);
+  s.out.insert(s.out.begin() + std::ptrdiff_t(J + 1), c.b1 - c.m);
+  const bool a_broken = keys[i - 1].path_handles == PathHandles::Broken;
+  const bool b_broken = keys[i].path_handles == PathHandles::Broken;
+  key_path_handles_freeze(keys, i - 1);
+  key_path_handles_freeze(keys, i);
+  Key<float2> &a = keys[i - 1], &b = keys[i];
+  const Key<float2> b_was = b;
+  /* Every control point's handles set as they ran: smooth ones would turn with a new neighbour. */
+  b.path_controls.clear();
+  b.path_control_handles.clear();
+  for (size_t j = 1; j + 1 < s.p.size(); j++) {
+    PathControlHandles h;
+    h.set = true;
+    h.aligned = true;
+    if (j - 1 != J) {
+      const PathControlHandles was = path_control_handles_of(b_was, j - 1 < J ? j - 1 : j - 2);
+      h.aligned = was.set ? was.aligned : true;
+    }
+    h.in = path_control_offset_stored(a.value, b.value, s.in[j]);
+    h.out = path_control_offset_stored(a.value, b.value, s.out[j]);
+    b.path_controls.push_back(path_control_stored(a.value, b.value, s.p[j]));
+    b.path_control_handles.push_back(h);
+  }
+  a.path_out = stretch_key_handle(s, true);
+  key_aligned_again(a, a_broken);
+  b.path_in = stretch_key_handle(s, false);
+  key_aligned_again(b, b_broken);
+  keys_changed();
+  if (r_index) {
+    *r_index = J;
+  }
+  return true;
+}
+
+bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old)
+{
+  if (i == 0 || i + 1 >= keys.size()) {
+    return false;
+  }
+  Key<float2> &a = keys[i - 1], &k = keys[i], &b = keys[i + 1];
+  const size_t n = old.p.size() - 1;
+  /* Where on the curve the key is: the nearest piece and place on it. */
+  size_t J = 0;
+  float t = 0.0f;
+  if (!curve_place(old, k.value, J, t)) {
+    return false;
+  }
+  const CurveSplit c = curve_split(old, J, t);
+  const float2 P0 = old.p[J], P3 = old.p[J + 1];
+  const float2 A1 = c.a1, A2 = c.a2, B1 = c.b1, B2 = c.b2, M = c.m;
   /* The two stretches as points with the handles they run along. */
   StretchPoints s1, s2;
   for (size_t j = 0; j <= J; j++) {
@@ -735,32 +846,6 @@ bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoin
     s2.out.push_back(old.out[j]);
   }
   s2.in[1] = B2 - P3;
-  /* A key's handle as stretch_points reads it: the Bezier's own with no control points, else a share of its piece. */
-  const auto key_handle = [](const StretchPoints &s, bool start) {
-    const size_t m = s.p.size() - 1;
-    if (m == 1) {
-      return start ? s.out[0] : s.in[1];
-    }
-    float sum = 0.0f;
-    for (size_t j = 0; j < m; j++) {
-      sum += length(s.p[j + 1] - s.p[j]);
-    }
-    const float chord = start ? length(s.p[1] - s.p[0]) : length(s.p[m] - s.p[m - 1]);
-    if (chord < 1e-9f) {
-      return float2{0.0f, 0.0f};
-    }
-    return (start ? s.out[0] : s.in[m]) * (sum / chord);
-  };
-  /* A key frozen from Auto (Broken) is Aligned again where its handles are in line, as Auto's smooth ones are. */
-  const auto aligned_again = [](Key<float2> &key, bool was_broken) {
-    const float li = length(key.path_in), lo_ = length(key.path_out);
-    const float cross = key.path_in.x * key.path_out.y - key.path_in.y * key.path_out.x;
-    if (!was_broken && li > 1e-9f && lo_ > 1e-9f && dot(key.path_in, key.path_out) < 0.0f &&
-        std::abs(cross) <= 1e-4f * li * lo_)
-    {
-      key.path_handles = PathHandles::Aligned;
-    }
-  };
   const bool a_broken = a.path_handles == PathHandles::Broken, b_broken = b.path_handles == PathHandles::Broken;
   key_path_handles_freeze(keys, i - 1);
   key_path_handles_freeze(keys, i + 1);
@@ -783,13 +868,89 @@ bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoin
   };
   controls_from_old(a, k, s1, 0);
   controls_from_old(k, b, s2, J);
-  a.path_out = key_handle(s1, true);
-  aligned_again(a, a_broken);
-  k.path_in = key_handle(s1, false);
-  k.path_out = key_handle(s2, true);
+  a.path_out = stretch_key_handle(s1, true);
+  key_aligned_again(a, a_broken);
+  k.path_in = stretch_key_handle(s1, false);
+  k.path_out = stretch_key_handle(s2, true);
   k.path_handles = PathHandles::Aligned;
-  b.path_in = key_handle(s2, false);
-  aligned_again(b, b_broken);
+  b.path_in = stretch_key_handle(s2, false);
+  key_aligned_again(b, b_broken);
+  keys_changed();
+  return true;
+}
+
+/* Control points `from` .. `to` - 1 of `s` (their handles as they ran) stored on `key` for the stretch from `start`;
+ * `was_index(j)` is each one's index in `was`, or -1 for one that wasn't a control point. */
+static void controls_store_from(const Key<float2> &start, Key<float2> &key, const StretchPoints &s, size_t from,
+                                size_t to, const Key<float2> &was, const std::function<int(size_t)> &was_index)
+{
+  key.path_controls.clear();
+  key.path_control_handles.clear();
+  for (size_t j = from; j < to; j++) {
+    PathControlHandles h;
+    h.set = true;
+    h.aligned = true;
+    if (const int w = was_index(j); w >= 0) {
+      const PathControlHandles old = path_control_handles_of(was, size_t(w));
+      h.aligned = old.set ? old.aligned : true;
+    }
+    h.in = path_control_offset_stored(start.value, key.value, s.in[j]);
+    h.out = path_control_offset_stored(start.value, key.value, s.out[j]);
+    key.path_controls.push_back(path_control_stored(start.value, key.value, s.p[j]));
+    key.path_control_handles.push_back(h);
+  }
+}
+
+bool key_overshoot_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old, bool past_end)
+{
+  if (i == 0 || i + 1 >= keys.size() || old.p.size() < 2 || old.in.size() != old.p.size() ||
+      old.out.size() != old.p.size())
+  {
+    return false;
+  }
+  const bool a_broken = keys[i - 1].path_handles == PathHandles::Broken;
+  const bool b_broken = keys[i + 1].path_handles == PathHandles::Broken;
+  key_path_handles_freeze(keys, i - 1);
+  key_path_handles_freeze(keys, i + 1);
+  Key<float2> &a = keys[i - 1], &k = keys[i], &b = keys[i + 1];
+  const Key<float2> b_was = b;
+  const float2 v = k.value;
+  const size_t n = old.p.size() - 1;
+  StretchPoints s = old;
+  if (past_end) {
+    /* Into the key: the old curve, its end now a control point, then on straight to where the dot went. */
+    s.out[n] = (v - s.p[n]) / 3.0f;
+    s.p.push_back(v);
+    s.in.push_back((old.p[n] - v) / 3.0f);
+    s.out.push_back(float2{0.0f, 0.0f});
+    controls_store_from(a, k, s, 1, n + 1, b_was, [&](size_t j) { return j < n ? int(j) - 1 : -1; });
+    a.path_out = stretch_key_handle(s, true);
+    k.path_in = stretch_key_handle(s, false);
+    /* And straight back. */
+    k.path_out = (b.value - v) / 3.0f;
+    b.path_in = (v - b.value) / 3.0f;
+    b.path_controls.clear();
+    b.path_control_handles.clear();
+  }
+  else {
+    /* Out to where the dot went, straight; then back through the old start, now a control point, along the old
+     * curve. */
+    s.p.insert(s.p.begin(), v);
+    s.in.insert(s.in.begin(), float2{0.0f, 0.0f});
+    s.out.insert(s.out.begin(), (old.p[0] - v) / 3.0f);
+    s.in[1] = (v - old.p[0]) / 3.0f;
+    a.path_out = (v - a.value) / 3.0f;
+    k.path_in = (a.value - v) / 3.0f;
+    k.path_controls.clear();
+    k.path_control_handles.clear();
+    controls_store_from(k, b, s, 1, n + 1, b_was, [&](size_t j) { return j > 1 ? int(j) - 2 : -1; });
+    k.path_out = stretch_key_handle(s, true);
+    b.path_in = stretch_key_handle(s, false);
+  }
+  /* It turns back on itself there. */
+  k.path_handles = PathHandles::Broken;
+  key_aligned_again(a, a_broken);
+  key_aligned_again(b, b_broken);
   keys_changed();
   return true;
 }

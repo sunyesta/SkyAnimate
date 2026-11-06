@@ -3,7 +3,8 @@ overshoot) found, each kept fixed. Dots through control points go as the stretch
 path without them would turn sharply, so Blend Speed evens what is seen); undoing a stroke keeps the paths the Motion
 Path tool turned on; Slide on a stretch with control points lands where it is dragged, keeps an overshoot elsewhere
 in the stretch, and a dot in the overshoot follows the mouse there; a key added on a stretch with handles, eases,
-Custom timing or control points leaves every dot where it was; G past a controller's box goes as far as the edge.
+Custom timing or control points, or past its key in an overshoot, leaves every dot where it was, and so does a control
+point added; G past a controller's box goes as far as the edge.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_pupil.py
 """
@@ -194,6 +195,43 @@ for interp, handles, custom, control in (("EASE_IN_OUT", False, False, False), (
         now = dots(layer)
         moved = max(math.dist(was[f], now[f]) for f in range(1, 22))
         assert moved < 2e-3, ("no dot moves", case, kind, moved)
+
+# --- A control point added leaves every dot where it was; where a dot is past its key it isn't added -----------------
+for frame in (13, 17, 24, 28):
+    start()
+    ball = mover({10: (0.0, 0.0), 30: (1.0, 0.0)})
+    curvy(ball)
+    was = dots(ball)
+    assert ops.anim.motion_path_control_add(frame=str(frame), layer=str(ball.id)) == {'FINISHED'}
+    assert len(key(ball, 30)["path_controls"]) == 2
+    moved = max(math.dist(was[f], dots(ball)[f]) for f in range(10, 31))
+    assert moved < 1e-3, ("no dot moves", frame, moved)
+start()
+ball = mover({10: (0.0, 0.0), 30: (1.0, 0.0)})
+ball.keyframe_set("position", 30, speeds=[1.6] * 14 + [-0.9] * 3 + [0.3] * 3)
+doc.frame_current = 20
+assert progress(ball, 10)[25 - 10] > 1.0
+assert ops.anim.motion_path_control_add(frame="25", layer=str(ball.id)) == {'CANCELLED'}, "past the key: not on the path"
+assert key(ball, 30)["path_controls"] == []
+
+# --- A key added past the key (an overshoot) or back before the start leaves every dot where it was -----------------
+for speeds, frame in (([1.6] * 14 + [-0.9] * 3 + [0.3] * 3, 25), ([-0.5] * 4 + [1.0] * 16, 12)):
+    for controls in (False, True):
+        start()
+        ball = mover({10: (0.0, 0.0), 30: (1.0, 0.0)})
+        doc.frame_current = 20
+        if controls:
+            assert ops.anim.motion_path_handle(frame="10", side="OUT", x="0.3", y="0.4", layer=str(ball.id)) == {'FINISHED'}
+            assert ops.anim.motion_path_control_add(frame="20", layer=str(ball.id)) == {'FINISHED'}
+        ball.keyframe_set("position", 30, speeds=speeds)
+        doc.frame_current = 20
+        u = progress(ball, 10)[frame - 10]
+        assert u > 1.0 or u < 0.0, ("off the curve", u)
+        was = dots(ball)
+        assert ops.anim.motion_path_key_add(frame=str(frame), type="KEYFRAME", layer=str(ball.id)) == {'FINISHED'}
+        assert frame in [k["frame"] for k in ball.keyframes("position")]
+        moved = max(math.dist(was[f], dots(ball)[f]) for f in range(10, 31))
+        assert moved < 2e-3, ("no dot moves", frame, controls, moved)
 
 # --- G on a controller's knob past its box: as far as the edge -------------------------------------------------------
 assert ops.wm.read_homefile() == {'FINISHED'}

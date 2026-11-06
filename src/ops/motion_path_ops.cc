@@ -586,7 +586,8 @@ void motion_path_operators_register()
       animation_sync(doc);
       int end = 0, index = 0;
       if (!motion_path_control_add(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), &end, &index)) {
-        report(ReportType::Warning, "Control points go between two position keys of a path with handles");
+        report(ReportType::Warning, "Control points go on a path with handles, between two of its position keys, where the "
+                                               "path is (not where a dot has gone past its key)");
         return OpStatus::Cancelled;
       }
       PathDotsSync sync{C};

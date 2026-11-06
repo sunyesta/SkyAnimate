@@ -842,6 +842,38 @@ static bool is_inside(const Layer &layer, uint64_t id)
   return false;
 }
 
+/* A layer moved to another bone layer: what it was bound to there (Parent Bone, its points' weights, down through groups
+ * to the bone layers inside, which bind to their own) is the bone of the same name here, or nothing. Ids are a bone
+ * layer's own: kept, they'd be read as whichever bone here has that number. */
+static void bones_rebind(Layer &l, const std::map<uint64_t, uint64_t> &to)
+{
+  const auto mapped = [&](uint64_t bone) {
+    const auto it = to.find(bone);
+    return it != to.end() ? it->second : uint64_t(0);
+  };
+  if (l.parent_bone) {
+    l.parent_bone = mapped(l.parent_bone);
+  }
+  const auto rebound = [&](std::vector<BoneWeight> &weights) {
+    std::erase_if(weights, [&](BoneWeight &w) {
+      w.bone = mapped(w.bone);
+      return w.bone == 0;
+    });
+  };
+  for (MeshPoint &p : l.drawing.points) {
+    rebound(p.weights);
+  }
+  /* A reference's own weights, with Match Original off. */
+  for (auto &[point, weights] : l.reference.weights) {
+    rebound(weights);
+  }
+  if (!l.is_bone_layer()) {
+    for (Layer &child : l.children) {
+      bones_rebind(child, to);
+    }
+  }
+}
+
 bool document_reparent_layer(Document &doc, uint64_t id, uint64_t new_parent, int index)
 {
   if (id == new_parent) {
@@ -858,8 +890,25 @@ bool document_reparent_layer(Document &doc, uint64_t id, uint64_t new_parent, in
       return false;
     }
   }
+  const Layer *was_in = layer_armature(doc, id);
+  const Layer *goes_in = nullptr;
+  if (new_parent) {
+    const Layer *target = layer_find(doc, new_parent);
+    goes_in = target->is_bone_layer() ? target : layer_armature(doc, new_parent);
+  }
+  std::map<uint64_t, uint64_t> rebound;
+  const bool rebind = was_in != goes_in;
+  if (rebind && was_in) {
+    for (const Bone &b : was_in->bones) {
+      const Bone *same = goes_in ? bone_find_by_name(*goes_in, b.name) : nullptr;
+      rebound[b.id] = same ? same->id : 0;
+    }
+  }
   Layer moving = std::move((*old_container)[old_index]);
   old_container->erase(old_container->begin() + old_index);
+  if (rebind) {
+    bones_rebind(moving, rebound);
+  }
   std::vector<Layer> &destination = new_parent ? layer_find(doc, new_parent)->children : doc.layers;
   index = std::clamp(index, 0, int(destination.size()));
   destination.insert(destination.begin() + index, std::move(moving));

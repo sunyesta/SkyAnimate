@@ -229,6 +229,14 @@ assert 13 in other.key_frames and 10 not in other.key_frames
 assert 10 in layer.key_frames and 13 not in layer.key_frames, "the other row's keys stay"
 assert oanim.ops.anim.keys_offset(frames="-3") == {'FINISHED'}
 assert 10 in other.key_frames
+# A move that changes nothing (onto the setup frame, where keys never go) is refused, and is no undo step.
+assert oanim.ops.anim.keys_offset(frames="-9") == {'FINISHED'}
+assert 1 in other.key_frames and 10 not in other.key_frames, other.key_frames
+steps = len(oanim.wm.undo_history()[0])
+assert oanim.ops.anim.keys_offset(frames="-1") == {'CANCELLED'}
+assert 1 in other.key_frames and len(oanim.wm.undo_history()[0]) == steps
+assert oanim.ops.anim.keys_offset(frames="9") == {'FINISHED'}
+assert 10 in other.key_frames
 oanim.data.layers.active = layer
 layer.select = False
 

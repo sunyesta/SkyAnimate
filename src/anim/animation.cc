@@ -363,6 +363,7 @@ template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
 static void apply_action_bone_actions(Document &doc, int frame);
 static void controllers_rest(Document &doc);
 static void controllers_link(Document &doc, Layer &owner);
+static void controllers_fold_dials(Document &doc, Layer &owner);
 static float controller_dial_turn(const Layer &owner, const Bone &knob, const Bone &dial, float2 at);
 static bool controller_in_action(const Document &doc, const Layer &owner);
 
@@ -965,10 +966,16 @@ void animation_record(Document &doc)
     doc.frame_current = now;
   }
   /* So is a linked dial's the knob's: an edit to it is the knob's to take or refuse, never a key of its own. */
-  if (doc.evaluated_frame != 0) {
-    for (const Layer *flat : document_layers_flat(doc)) {
-      if (flat->is_bone_layer()) {
-        controllers_link(doc, *layer_find(doc, flat->id));
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (flat->is_bone_layer()) {
+      Layer &owner = *layer_find(doc, flat->id);
+      if (doc.evaluated_frame != 0) {
+        controllers_link(doc, owner);
+      }
+      else {
+        /* The setup frame poses nothing, but keys put on a linked dial there (Insert Keyframe on it) are the knob's
+         * all the same: moved now, in the step that made them, not by the next frame shown (after it was stored). */
+        controllers_fold_dials(doc, owner);
       }
     }
   }
@@ -3468,6 +3475,24 @@ static int controller_fold_dial_keys(Layer &owner, Bone &knob, Bone &dial)
     (axis == 0 ? value.x : value.y) = along;
     return value;
   });
+}
+
+/* Every linked dial's keys onto its knob, nothing else of the link (the setup frame's: it poses nothing). */
+static void controllers_fold_dials(Document &doc, Layer &owner)
+{
+  if (controller_in_action(doc, owner)) {
+    return;
+  }
+  for (Bone &knob : owner.bones) {
+    if (!bone_is_controller(knob)) {
+      continue;
+    }
+    for (int side = 0; side < CONTROLLER_SIDES; side++) {
+      if (Bone *dial = controller_side_dial(owner, knob, side)) {
+        controller_fold_dial_keys(owner, knob, *dial);
+      }
+    }
+  }
 }
 
 /* The dial gets keys of its own that move it as the knob does. */

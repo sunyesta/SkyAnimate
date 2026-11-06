@@ -902,7 +902,8 @@ void rig_operators_register()
                  for (const uint64_t id : doomed) {
                    controller_release(*C.document, armature.id, id);
                  }
-                 const std::vector<BonePose> poses = armature_pose(armature);
+                 /* Posed, the setup pose is where the bones rest, not as they are now. */
+                 const std::vector<BonePose> poses = armature_pose(armature, C.document->frame_current == 0);
                  const auto gone = [&](uint64_t id) { return std::find(doomed.begin(), doomed.end(), id) != doomed.end(); };
                  for (Bone &b : armature.bones) {
                    if (gone(b.id) || !gone(b.parent)) {
@@ -917,7 +918,28 @@ void rig_operators_register()
                    const BonePose *self = bone_pose_find(poses, b.id);
                    const BonePose *pp = bone_pose_find(poses, parent);
                    const float length = b.length;
-                   bone_place(b, pp ? pp->setup : Transform2D(), self->setup_head, self->setup_tail);
+                   if (C.document->frame_current == 0) {
+                     bone_place(b, pp ? pp->setup : Transform2D(), self->setup_head, self->setup_tail);
+                   }
+                   else {
+                     /* Posed: where it rests is worked out again under its new parent, and it keeps its own change
+                      * from there (its keys, or its value; a controller's knob in its box): placing its pose would key
+                      * this frame from the rest. */
+                     const float2 change = bone_transform_from_position(b, b.position);
+                     const float turn = b.angle - b.setup_angle;
+                     /* From its rest under the old parent (a controller's pose has its knob in its "setup" there). */
+                     const BonePose *was = bone_pose_find(poses, b.parent);
+                     const Transform2D old_rest = was ? was->setup : Transform2D();
+                     const float2 head = old_rest.apply(b.setup_position);
+                     const float2 along = old_rest.apply_vector(rotate(float2{1.0f, 0.0f}, b.setup_angle));
+                     Bone rest = b;
+                     bone_place(rest, pp ? pp->setup : Transform2D(), head, head + along);
+                     b.setup_position = rest.position;
+                     b.setup_angle = rest.angle;
+                     b.position = bone_position_from_transform(b, change);
+                     b.angle = b.setup_angle + turn;
+                     bone_changes_from_values(b);
+                   }
                    b.length = length;
                    b.parent = parent;
                    b.connected = false;

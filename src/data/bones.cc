@@ -430,7 +430,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     /* A controller stays where it rests, on its parent: only its knob moves (its position keys hold frames). */
     const bool rests = !setup_frame && bone_is_controller(bone);
     /* Its knob's own turn, as a pin's. */
-    const float knob_turn = rests ? bone.angle - setup_angle : 0.0f;
+    float knob_turn = rests ? bone.angle - setup_angle : 0.0f;
     if (rests) {
       position = setup_position;
       angle = setup_angle;
@@ -626,7 +626,11 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
       if (extras.dynamics) {
         if (const auto it = extras.dynamics->find(bone.id); it != extras.dynamics->end()) {
           const BoneDynamicsState &d = it->second;
-          if (d.angle_on) {
+          if (d.angle_on && rests) {
+            /* A controller's box rests: the swing turns its knob, as its keys do. */
+            knob_turn += wrap_pi(d.angle - transform_angle(parent_pose) - angle);
+          }
+          else if (d.angle_on) {
             angle = d.angle - transform_angle(parent_pose);
           }
           if (d.position_on) {

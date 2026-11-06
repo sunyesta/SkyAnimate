@@ -391,4 +391,50 @@ assert rig.move_bone_ends((0.5, 0.0))
 assert close(ends("loose")[0], (before[0][0] + 0.5, before[0][1])), "posed: children come along"
 doc.frame_current = 0
 
+# --- Delete on a posed frame: as on the setup frame (children rest where they did, keep their keys, none made) -------
+def ends(name):
+    b = bones()[name]
+    return b.get("knob_head", b["head"]), b["tail"]
+
+
+def deleted_on(frame):
+    global rig
+    oanim.ops.wm.read_homefile()
+    doc.auto_key = True
+    doc.frame_current = 0
+    assert oanim.ops.layer.new_bone() == {'FINISHED'}
+    rig = layers.active
+    oanim.ops.armature.bone_add(name="a", head_x="0", head_y="0", tail_x="0", tail_y="1", parent="")
+    oanim.ops.armature.bone_add(name="b", head_x="0", head_y="1", tail_x="0.5", tail_y="1.5", parent="a")
+    oanim.ops.armature.bone_add(name="c", head_x="0.5", head_y="1.5", tail_x="1", tail_y="1.5", parent="b")
+    oanim.ops.armature.bone_add(name="knob", head_x="1", head_y="2", tail_x="1.2", tail_y="2", parent="b")
+    rig.select_bone("knob")
+    assert oanim.ops.armature.bone_convert(type="CONTROLLER_2D") == {'FINISHED'}
+    doc.frame_current = 10
+    rig.bone_set("a", angle=0.4)
+    rig.bone_set("b", angle=bones()["b"]["angle"] - 0.3)
+    rig.bone_set("c", angle=bones()["c"]["angle"] + 0.2)
+    rig.bone_set("knob", knob=(10.0, 5.0))
+    doc.frame_current = frame
+    oanim.ops.armature.select_none()
+    rig.select_bone("b")
+    assert oanim.ops.armature.bone_delete() == {'FINISHED'}
+    assert "b" not in bones() and bones()["c"]["parent"] == "a"
+    seen = {}
+    for f in (0, 5, 10, 15):
+        doc.frame_current = f
+        seen[f] = {n: ends(n) for n in ("c", "knob")}
+    keys = {n: [(k["frame"], k["value"]) for k in rig.keyframes('bones["%s"].%s' % (n, ch))]
+            for n, ch in (("c", "angle"), ("c", "position"), ("knob", "position"))}
+    return seen, keys
+
+
+setup_seen, setup_keys = deleted_on(0)
+posed_seen, posed_keys = deleted_on(10)
+for f in setup_seen:
+    for n in setup_seen[f]:
+        assert close(posed_seen[f][n][0], setup_seen[f][n][0], 1e-3) and close(posed_seen[f][n][1], setup_seen[f][n][1], 1e-3), (
+            "as deleted on the setup frame", f, n, setup_seen[f][n], posed_seen[f][n])
+assert posed_keys == setup_keys, ("no keys made on the frame it was deleted on", setup_keys, posed_keys)
+
 print("Bone editing tests passed")

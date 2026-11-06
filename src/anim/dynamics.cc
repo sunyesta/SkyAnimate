@@ -1046,6 +1046,8 @@ int dynamics_bake(Document &doc, Layer *only)
     float2 position;
     float scale;
     bool angle_on, position_on, scale_on;
+    /* A controller's: its knob's keys themselves (a position in its box, a turn). */
+    bool knob = false;
   };
   std::vector<Baked> baked;
   const int keep = doc.frame_current;
@@ -1080,9 +1082,22 @@ int dynamics_bake(Document &doc, Layer *only)
         if (it == armature.dynamics_now.end()) {
           continue;
         }
+        const BoneDynamicsState &d = it->second;
+        if (bone_is_controller(b)) {
+          /* Its knob is what the springs move, pulled as its constraints pull it, the box staying: its keys take
+           * that pull and turn (what the springs add to where its keys and other constraints have it). */
+          Layer still = at;
+          still.dynamics_now.erase(b.id);
+          const std::vector<BonePose> without = armature_pose(still, false);
+          const float2 pull = poses[i].knob_pull - without[i].knob_pull;
+          const float turn = wrap_pi(pose_angle(poses[i].knob) - pose_angle(without[i].knob));
+          baked.push_back({&armature, b.id, f, b.angle - b.setup_angle + turn,
+                           controller_knob(b) + b.controller_frames_to_keys.apply_vector(pull), d.scale, d.angle_on,
+                           d.position_on, false, true});
+          continue;
+        }
         const BonePose *parent = bone_pose_find(poses, b.parent);
         const Transform2D local = (parent ? parent->pose : bone_outer_frame(b, false)).inverted() * poses[i].pose;
-        const BoneDynamicsState &d = it->second;
         baked.push_back({&armature, b.id, f, pose_angle(local), float2(local.tx, local.ty), d.scale, d.angle_on,
                          d.position_on, d.scale_on});
       }
@@ -1101,6 +1116,15 @@ int dynamics_bake(Document &doc, Layer *only)
       ch.set_key(k.frame, value);
       count++;
     };
+    if (k.knob) {
+      if (k.angle_on) {
+        key(bone->angle_keys, k.angle, bone->angle - bone->setup_angle);
+      }
+      if (k.position_on) {
+        key(bone->position_keys, k.position, bone_transform_from_position(*bone, bone->position));
+      }
+      continue;
+    }
     if (k.angle_on) {
       /* Whole turns are kept: the nearest angle to the keyed one. */
       /* Its keys hold its Angle and Transform: the change from the setup pose. */

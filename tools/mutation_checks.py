@@ -575,6 +575,16 @@ PENDING = [
     ('src/ops/rig_ops.cc', 'copy.controller_actions[side] = name != from && there && !own ? name : "";', 'copy.controller_actions[side] = name != from && there ? name : "";', 'Symmetrize never gives a controller side its own action', 'tests/test_controller.py'),
     ('src/ops/rig_ops.cc', '    else if (action_bone_of(owner, other) == bone) {', '    else if (false) {', 'Mirror Action Bone Actions never writes over the same bone', 'tests/test_controller.py'),
     ('src/data/bones.cc', '      controller_knob_move(b, poses[i], map(at) - at);', '      (void)at;', 'the Transform Bones tool moves a knob', 'tests/test_controller_knob.py'),
+    ('src/anim/channel.cc', '  }\n  a.path_out = stretch_key_handle(s, true);\n  key_aligned_again(a, a_broken);\n  b.path_in = stretch_key_handle(s, false);', '  }\n  key_aligned_again(a, a_broken);', "Add Control Point keeps the keys' handles to the curve", 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '      over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '      over = 0;', 'a key added in an overshoot keeps the dots', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '      over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '      over = uk > 1.0f + 1e-4f ? 1 : 0;', 'a key added in an anticipation keeps the dots', 'tests/test_motion_path_pupil.py'),
+    ('src/ops/rig_ops.cc', 'armature_pose(armature, C.document->frame_current == 0);', 'armature_pose(armature);', 'Delete Bones off the setup frame rests children from the real setup', 'tests/test_bone_editing.py'),
+    ('src/ops/rig_ops.cc', '                     b.setup_position = rest.position;\n                     b.setup_angle = rest.angle;', '                     (void)rest;', 'Delete Bones off the setup frame rests children under the new parent', 'tests/test_bone_editing.py'),
+    ('src/anim/dynamics.cc', '        if (bone_is_controller(b)) {', '        if (false) {', "Bake Dynamics keys a controller's knob", 'tests/test_dynamics_bake_controller.py'),
+    ('src/data/bones.cc', '          if (d.angle_on && rests) {', '          if (false) {', "an angle spring turns a controller's knob, not its box", 'tests/test_dynamics_bake_controller.py'),
+    ('src/data/document_layers.cc', '    bones_rebind(moving, rebound);', '    (void)rebound;', 'a layer moved to another bone layer is bound by bone name', 'tests/test_layer_move_rebind.py'),
+    ('src/ops/anim_ops.cc', '                      if (C.document->layers == was) {', '                      if (false) {', 'a key move that changes nothing is no undo step', 'tests/test_animation.py'),
+    ('src/anim/animation.cc', '        controllers_fold_dials(doc, owner);', '        (void)owner;', "a dial keyed on the setup frame is the knob's at once", 'tests/test_controller_dial_setup_key.py'),
 ]
 
 

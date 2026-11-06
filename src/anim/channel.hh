@@ -333,6 +333,14 @@ std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, s
  * keys either side get handles that run as theirs did, the new key the split's, and the control points their sides
  * with their handles set as they ran. False, changing nothing, where the key isn't on that curve. */
 bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old);
+/* A control point put on the path of the stretch arriving at key `i` where it is at `v`: the curve split there, so its
+ * shape (and every dot on it) stays; the keys' handles and the other control points' are set as they ran. Its index in
+ * `path_controls` in `r_index`. False, changing nothing, where `v` isn't on the curve (past a key, in an overshoot). */
+bool key_control_split(std::vector<Key<float2>> &keys, size_t i, float2 v, size_t *r_index);
+/* Key `i`, just put where a dot of the stretch that ran through `old` went past its end (`past_end`) or back before its
+ * start: the stretch into it is the old curve (its end a control point) and on straight to the key, the one out of it
+ * straight back (or the other way round before the start), so both keep the way the dots went. */
+bool key_overshoot_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old, bool past_end);
 /* The length of the path of the stretch arriving at key `i` as the stretch measures it to go along it (through its
  * control points, else along its Bezier): what one unit of progress is, in the keys' own space. */
 float stretch_path_length(const std::vector<Key<float2>> &keys, size_t i);

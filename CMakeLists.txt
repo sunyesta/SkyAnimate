@@ -472,6 +472,12 @@ add_test(NAME motion_path_pupil
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_pupil.py)
 add_test(NAME bone_drag_followers
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_bone_drag_followers.py)
+add_test(NAME dynamics_bake_controller
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_dynamics_bake_controller.py)
+add_test(NAME layer_move_rebind
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_move_rebind.py)
+add_test(NAME controller_dial_setup_key
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_dial_setup_key.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

@@ -1341,9 +1341,15 @@ void anim_operators_register()
                         return OpStatus::Cancelled;
                       }
                       animation_record(*C.document);
-                      keys_moved_report(keys_move_selected(*C.document, timeline_layers(C),
-                                                           [frames](int f) { return f + frames; },
-                                                           ripple, op_arg(C, "together", "1") != "0"));
+                      /* Refused (onto the setup frame, say), nothing moves: no undo step, as Blender's does nothing. */
+                      const std::vector<Layer> was = C.document->layers;
+                      const int followed = keys_move_selected(*C.document, timeline_layers(C),
+                                                              [frames](int f) { return f + frames; }, ripple,
+                                                              op_arg(C, "together", "1") != "0");
+                      if (C.document->layers == was) {
+                        return OpStatus::Cancelled;
+                      }
+                      keys_moved_report(followed);
                       animation_evaluate(*C.document, C.document->frame_current);
                       return OpStatus::Finished;
                     });

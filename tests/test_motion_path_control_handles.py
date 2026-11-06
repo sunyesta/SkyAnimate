@@ -1,5 +1,5 @@
-"""Control points' handles work as a vector point's: worked out smooth from the points either side until one is moved,
-then kept; Aligned (as they come), moving one turns the other to stay in line, keeping its length; Alt (alone=1) moves
+"""Control points' handles work as a vector point's: added, the curve's own there (the path and its dots as they were);
+X on a handle makes them worked out smooth from the points either side until one is moved, then kept; Aligned (as they come), moving one turns the other to stay in line, keeping its length; Alt (alone=1) moves
 one alone and unaligns the point; Align and Unalign as the vector ones; G R S on a picked handle; X on a handle makes
 them smooth again, X on the point deletes it. They shape the path only (the timing stays), ride with the keys, the
 sculpt brushes fit them, and they are saved.
@@ -79,9 +79,19 @@ assert ops.wm.tool_motion_path() == {'FINISHED'}
 ball = mover({10: (0.0, 0.0), 30: (4.0, 0.0)})
 args = dict(layer=str(ball.id))
 assert ops.anim.motion_path_control_add(frame="20", **args) == {'FINISHED'}
+# --- Added: the curve's own handles there, set, in line: the path and every dot as they were -------------------------
+added = handles(ball)
+assert added["set"] is True and added["aligned"] is True and in_line(added), added
+stored = added
+assert ops.anim.motion_path_move(frame="30", x="4", y="0.5", **args) == {'FINISHED'}
+# Its own: kept relative to the keys, riding with the line between them as the key moves (turned and stretched).
+assert close(handles(ball)["out"], (stored["out"][0], stored["out"][0] * 0.5 / 4.0), 1e-3), (stored, handles(ball))
+assert ops.ed.undo() == {'FINISHED'}
 assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="1", **args) == {'FINISHED'}
 
-# --- At first: smooth, worked out from the points either side, in line, not set --------------------------------------
+# --- X on a handle: smooth, worked out from the points either side, in line, not set ---------------------------------
+assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="1", **args) == {'FINISHED'}
+assert wm.event_simulate("X", area="Viewport")
 h = handles(ball)
 assert h["set"] is False and h["aligned"] is True, h
 assert in_line(h), ("smooth through it", h)
@@ -181,6 +191,9 @@ assert ops.anim.motion_path_control_add(frame="16", **a5) == {'FINISHED'}
 assert ops.anim.motion_path_control_add(frame="24", **a5) == {'FINISHED'}
 assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="1", **a5) == {'FINISHED'}
 assert ops.anim.motion_path_control_move(frame="30", index="1", x="4", y="1", **a5) == {'FINISHED'}
+for j in ("0", "1"):
+    assert ops.anim.motion_path_handle_select(frame="30", control=j, control_handle="1", **a5) == {'FINISHED'}
+    assert wm.event_simulate("X", area="Viewport")
 both_was = key(pair, 30)["path_control_handles"]
 assert not both_was[0]["set"] and not both_was[1]["set"], both_was
 tips_was = [(both_was[j]["in"], both_was[j]["out"]) for j in (0, 1)]
@@ -215,7 +228,7 @@ assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'
 assert wm.event_simulate("X", area="Viewport")
 assert key(ball, 30)["path_controls"] == [] and key(ball, 30)["path_control_handles"] == []
 
-# --- A new control point between others: its own smooth handles, the others keep theirs --------------------------------
+# --- A new control point between others: the curve's handles there, the others keep theirs ---------------------------
 two = mover({10: (0.0, 0.0), 30: (4.0, 0.0)})
 a2 = dict(layer=str(two.id))
 assert ops.anim.motion_path_control_add(frame="15", **a2) == {'FINISHED'}
@@ -225,13 +238,15 @@ assert ops.anim.motion_path_control_handle_move(frame="30", index="0", out="1", 
 first = key(two, 30)["path_control_handles"][0]
 assert ops.anim.motion_path_control_add(frame="12", **a2) == {'FINISHED'}
 hs = key(two, 30)["path_control_handles"]
-assert len(hs) == 2 and hs[0]["set"] is False and hs[1]["set"] is True, hs
+assert len(hs) == 2 and hs[0]["set"] is True and hs[1]["set"] is True, hs
 assert close(hs[1]["out"], first["out"], 1e-4), "the other keeps its own"
 
 # --- The sculpt brushes fit them ------------------------------------------------------------------------------------
 lump = mover({10: (0.0, 0.0), 30: (4.0, 0.0)})
 a3 = dict(layer=str(lump.id))
 assert ops.anim.motion_path_control_add(frame="20", **a3) == {'FINISHED'}
+assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="1", **a3) == {'FINISHED'}
+assert wm.event_simulate("X", area="Viewport")
 was = key(lump, 30)["path_control_handles"][0]
 assert was["set"] is False
 assert ops.anim.motion_path_stroke(brush="GRAB", points="2,0;2,0.8", radius="0.6", strength="1") == {'FINISHED'}
