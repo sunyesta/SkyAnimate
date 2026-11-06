@@ -36,6 +36,35 @@ inline bool bone_is_pin(const Bone &bone)
 {
   return bone.type == BoneType::Pin;
 }
+/* The constraints a 2 Axis Controller takes: those that place a bone move its knob (its actions play from where
+ * they put it), those that turn one turn its box with the knob in it. */
+inline bool controller_constraint_works(BoneConstraintType type)
+{
+  switch (type) {
+    case BoneConstraintType::LookAt:
+    case BoneConstraintType::CopyPosition:
+    case BoneConstraintType::ChildOf:
+    case BoneConstraintType::LimitShape:
+    case BoneConstraintType::FollowPoint:
+    case BoneConstraintType::Dynamics:
+    case BoneConstraintType::CopyAngle:
+    case BoneConstraintType::TrackTo:
+    case BoneConstraintType::IndependentAngle:
+      return true;
+    default:
+      return false;
+  }
+}
+/* Whether a controller has a constraint on that works (so its knob is posed, not just keyed). */
+inline bool controller_constrained(const Bone &bone)
+{
+  for (const BoneConstraint &c : bone.constraints) {
+    if (c.enabled && c.influence > 0.0f && controller_constraint_works(c.type)) {
+      return true;
+    }
+  }
+  return false;
+}
 /* A pin, or a controller (whose knob is one): one point that nothing connects to, its children hanging with an
  * offset. */
 inline bool bone_is_point(const Bone &bone)

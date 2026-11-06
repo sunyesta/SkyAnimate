@@ -5792,6 +5792,10 @@ static void constraints_panel(Context &C, Layer &armature)
     for (const auto &[group, types] : groups) {
       ImGui::TextDisabled("%s", group);
       for (const BoneConstraintType type : types) {
+        /* A controller lists only what works on it (its knob or its box). */
+        if (bone_is_controller(*bone) && !controller_constraint_works(type)) {
+          continue;
+        }
         if (ImGui::MenuItem(bone_constraint_name(type))) {
           operator_call(C, "armature.constraint_add",
                         {{"type", bone_constraint_identifier(type)}, {"bone", bone_name}});
@@ -6579,6 +6583,11 @@ static void constraints_panel(Context &C, Layer &armature)
             ImGui::TextDisabled("Depth: %.3f (the target's, in its Bone panel)", target->depth);
           }
           /* The eye: the shape the pupil stays inside, which also says how big the eye is. */
+          if (bone_is_controller(*bone)) {
+            modifier_row_label("", column);
+            ImGui::TextDisabled("The box is the eye: looking all the way to a side takes the knob to its edge");
+            break;
+          }
           ImGui::Spacing();
           modifier_row_label("", column);
           ImGui::TextDisabled("Eye Shape");

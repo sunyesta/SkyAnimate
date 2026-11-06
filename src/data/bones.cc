@@ -436,13 +436,40 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
       angle = setup_angle;
       scale = setup_scale;
     }
-    if (!setup_frame && !rests) {
-      if (extras.ik_angle) {
+    if (rests && bone.controller_knob_independent) {
+      /* Riding its Knob Parent, worked out first (one hanging from this knob can't be: it would carry itself). */
+      const int ki = find(bone.controller_knob_parent);
+      if (ki >= 0 && ki != i && state[ki] != 1) {
+        self(self, ki, depth + 1);
+        if (state[ki] == 2) {
+          p.knob_parent_skin = poses[ki].skin;
+        }
+      }
+    }
+    /* A controller's constraints (never while one of its actions is edited, so that keys a clean pose) work on its
+     * knob, standing where it is: what places a bone moves the knob, what turns one turns the box. */
+    const bool knob_pulled = rests && !bone.controller_knob_editing && controller_constrained(bone);
+    BonePose rest_box;
+    float2 knob_base;
+    const float knob_size = std::max(bone.controller_frame_size, 1e-6f);
+    if (knob_pulled) {
+      rest_box.setup = parent_setup * bone_local(setup_position, setup_angle, setup_scale);
+      rest_box.pose = bone_on_parent(bone, parent_pose, parent_setup,
+                                     bone_local_xy(setup_position, setup_angle, setup_scale.y, setup_scale.x), false);
+      rest_box.skin = rest_box.box_skin = rest_box.pose * rest_box.setup.inverted();
+      rest_box.head = rest_box.pose.apply({0, 0});
+      rest_box.setup_head = rest_box.setup.apply({0, 0});
+      rest_box.knob_parent_skin = p.knob_parent_skin;
+      knob_base = controller_knob_place(bone, rest_box);
+      position = parent_pose.inverted().apply(controller_box_point(bone, rest_box, knob_base));
+    }
+    if (!setup_frame && (!rests || knob_pulled)) {
+      if (extras.ik_angle && !rests) {
         angle += (*extras.ik_angle)[i];
       }
       for (const BoneConstraint &c : bone.constraints) {
         const float w = std::clamp(c.influence, 0.0f, 1.0f);
-        if (!c.enabled || w <= 0.0f) {
+        if (!c.enabled || w <= 0.0f || (rests && !controller_constraint_works(c.type))) {
           continue;
         }
         const int ti = find(c.target);
@@ -524,6 +551,31 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
             }
             break;
           case BoneConstraintType::LookAt:
+            if (rests) {
+              /* A controller's box is the eye: looking all the way to a side takes the knob to that side's edge. */
+              if (t && !bone_is_descendant_in(bones, index, bone.id, ti)) {
+                self(self, ti, depth + 1);
+                if (state[ti] == 2) {
+                  const float face = transform_angle(parent_pose) - transform_angle(parent_setup);
+                  const float2 gaze = bone_look_gaze(face, parent_pose.apply(setup_position), poses[ti].head, t->depth);
+                  const float2 rest_gaze = bone_look_gaze(0.0f, parent_setup.apply(setup_position), poses[ti].setup_head,
+                                                          value_at(t->depth_keys, t->depth, 0));
+                  const float half_turn = 1.5707964f;
+                  const float2 look = gaze - rest_gaze;
+                  const float2 turn = {std::clamp(look.x, -half_turn, half_turn), std::clamp(look.y, -half_turn, half_turn)};
+                  /* The look in the box's own frame (it turns with the face), out to its edges. */
+                  const float2 along = rotate(rest_box.box_skin.inverted().apply_vector(
+                                                  rotate(float2{std::sin(turn.x) * std::cos(turn.y), std::sin(turn.y)}, face)),
+                                              -bone.controller_box_angle);
+                  float2 lo, hi;
+                  controller_box(bone, lo, hi);
+                  const float2 frames = {along.x * (along.x >= 0.0f ? hi.x : -lo.x), along.y * (along.y >= 0.0f ? hi.y : -lo.y)};
+                  position += parent_pose.inverted().apply_vector(
+                      rest_box.box_skin.apply_vector(rotate(frames * (knob_size * w), bone.controller_box_angle)));
+                }
+              }
+              break;
+            }
             if (t && c.look_reach.x > 0.0f && c.shape_region.size() >= 3 && !bone_is_descendant_in(bones, index, bone.id, ti)) {
               self(self, ti, depth + 1);
               if (state[ti] == 2) {
@@ -594,8 +646,15 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
         const float2 head = parent_pose.apply(position);
         position = parent_pose.inverted().apply(head + (bone_shape_limit(c, head) - head) * w);
       }
-      if (extras.ik_stretch) {
+      if (extras.ik_stretch && !rests) {
         sx *= (*extras.ik_stretch)[i];
+      }
+      if (knob_pulled) {
+        /* Where they have the knob, as frames against the box at rest; the box itself stays (turned, maybe). */
+        p.knob_pull = rotate(rest_box.box_skin.inverted().apply_vector(parent_pose.apply(position) - rest_box.head),
+                             -bone.controller_box_angle) / knob_size -
+                      knob_base;
+        position = setup_position;
       }
     }
     p.pose = bone_on_parent(bone, parent_pose, parent_setup, bone_local_xy(position, angle, scale.y * sx, scale.x * sy), setup_frame);
@@ -606,6 +665,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
         const bool aims = c.type == BoneConstraintType::TrackTo || c.type == BoneConstraintType::StretchTo;
         const int ti = find(c.target);
         if (!aims || !c.enabled || w <= 0.0f || ti < 0 || ti == i || state[ti] == 1 ||
+            (rests && (c.type == BoneConstraintType::StretchTo || bone.controller_knob_editing)) ||
             bone_is_descendant_in(bones, index, bone.id, ti))
         {
           continue;
@@ -630,7 +690,7 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
        * the bone's own X scale (at full amount), so the bone keeps its area. */
       for (const BoneConstraint &c : bone.constraints) {
         const float w = std::clamp(c.influence, 0.0f, 1.0f);
-        if (c.type != BoneConstraintType::MaintainVolume || !c.enabled || w <= 0.0f) {
+        if (c.type != BoneConstraintType::MaintainVolume || !c.enabled || w <= 0.0f || rests) {
           continue;
         }
         const float along = std::abs(setup_scale.y) > 1e-6f ? std::abs(scale.y * sx / setup_scale.y) : 1.0f;
@@ -665,16 +725,6 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     p.setup_tail = p.setup.apply({bone.length, 0});
     p.head = p.pose.apply({0, 0});
     p.tail = p.pose.apply({bone.length, 0});
-    if (rests && bone.controller_knob_independent) {
-      /* Riding its Knob Parent, worked out first (one hanging from this knob can't be: it would carry itself). */
-      const int ki = find(bone.controller_knob_parent);
-      if (ki >= 0 && ki != i && state[ki] != 1) {
-        self(self, ki, depth + 1);
-        if (state[ki] == 2) {
-          p.knob_parent_skin = poses[ki].skin;
-        }
-      }
-    }
     if (rests) {
       /* The knob moves and turns what hangs from it, as a pin would: the box stays. */
       float2 frames = bone.controller_knob_editing ? bone.controller_knob_edit_at :

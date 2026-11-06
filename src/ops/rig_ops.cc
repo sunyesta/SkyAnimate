@@ -1489,6 +1489,12 @@ void rig_operators_register()
                    report(ReportType::Error, "Unknown constraint type " + op_arg(C, "type"));
                    return OpStatus::Cancelled;
                  }
+                 if (bone_is_controller(*bone) && !controller_constraint_works(type)) {
+                   report(ReportType::Warning, std::string(bone_constraint_name(type)) +
+                                                   " doesn't work on a 2 Axis Controller: its knob takes what places a "
+                                                   "bone, its box what turns one");
+                   return OpStatus::Cancelled;
+                 }
                  BoneConstraint c;
                  c.type = type;
                  c.name = bone_constraint_name(type);

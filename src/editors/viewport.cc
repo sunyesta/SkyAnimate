@@ -9420,6 +9420,16 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
     }
     knob_at = real;
   }
+  if (doc.frame_current != 0 && doc.action.empty() && std::hypot(pose.knob_pull.x, pose.knob_pull.y) > 1e-4f) {
+    /* Moved by its constraints: a faint ring where its keys alone would have it. */
+    float2 box_lo, box_hi;
+    controller_box(bone, box_lo, box_hi);
+    float2 keyed = controller_knob_place(bone, pose) - pose.knob_pull;
+    if (bone.controller_contain_knob) {
+      keyed = {std::clamp(keyed.x, box_lo.x, box_hi.x), std::clamp(keyed.y, box_lo.y, box_hi.y)};
+    }
+    dl->AddCircle(at(keyed), CONTROLLER_KNOB_RADIUS, IM_COL32(0xff, 0xff, 0xff, 110), 0, 1.0f);
+  }
   if (doc.frame_current != 0 && doc.action.empty()) {
     const ImVec2 playing = at(controller_knob_playing(armature, bone));
     const ImVec2 d = playing - knob_at;

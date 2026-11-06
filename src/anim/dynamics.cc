@@ -1,4 +1,5 @@
 #include "anim/dynamics.hh"
+#include "anim/controller.hh"
 
 #include <algorithm>
 #include <cmath>
@@ -809,7 +810,7 @@ std::map<uint64_t, Motion> advance(const Document &doc, const Layer &armature, i
       const BoneConstraint &c = *dynamics_of(b);
       Target t;
       t.angle = pose_angle(poses[i].pose);
-      t.head = poses[i].head;
+      t.head = bone_is_controller(at.bones[i]) ? poses[i].knob.apply({0, 0}) : poses[i].head;
       t.rest_head = poses[i].setup_head;
       if (strand[i] == int(i)) {
         strand_head[i] = poses[i].head;
