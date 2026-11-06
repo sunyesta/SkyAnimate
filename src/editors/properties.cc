@@ -1950,6 +1950,20 @@ static void bone_panel(Context &C, Layer &armature)
             C.undo->push("Move Knob", doc);
           }
         });
+        /* Its turn, as a pin's (R): it plays no action, turning what hangs from the knob. */
+        keyed_field("Knob Angle", "angle", [&] {
+          const float setup_angle = bone_setup_angle(*active);
+          float turned = (active->angle - setup_angle) * 180.0f / PI;
+          if (ui_drag_float("##knob_angle", &turned, 0.5f, -36000.0f, 36000.0f, "%.1f\xC2\xB0")) {
+            active->angle = setup_angle + turned * PI / 180.0f;
+          }
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("How far the knob has turned from rest: what hangs from it turns with it");
+          }
+          if (ImGui::IsItemDeactivatedAfterEdit()) {
+            C.undo->push("Knob Angle", doc);
+          }
+        });
         if (held) {
           ImGui::EndDisabled();
         }
