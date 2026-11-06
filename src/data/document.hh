@@ -66,14 +66,17 @@ struct MotionPathTarget {
   }
 };
 
-/* One handle of a position key on a path (the Motion Path tool's Edit): `out` the one toward the next key. */
+/* One handle of a position key on a path (the Motion Path tool's Edit): `out` the one toward the next key; or a
+ * control point. */
 struct MotionPathHandlePick {
   MotionPathTarget target;
   int frame = 0;
   bool out = false;
+  /* A control point instead (>= 0): which of the stretch ending on `frame` (Key::path_controls). */
+  int control = -1;
   bool operator==(const MotionPathHandlePick &o) const
   {
-    return target.same(o.target) && frame == o.frame && out == o.out;
+    return target.same(o.target) && frame == o.frame && control == o.control && (control >= 0 || out == o.out);
   }
 };
 

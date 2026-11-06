@@ -5024,14 +5024,6 @@ void layers_move_selected_keys(const std::vector<Layer *> &layers, const std::fu
         if (key.selected && key.frame != 0) {
           KeyT k = key;
           k.frame = dest(key);
-          /* A breakdown slides between the keys either side (where they go): its pose stays, only when it is reached
-           * changes, so it never passes them. */
-          if (key.type == KeyType::Breakdown && i > 0 && i + 1 < ch.keys.size()) {
-            const int lo = dest(ch.keys[i - 1]) + 1, hi = dest(ch.keys[i + 1]) - 1;
-            if (lo <= hi) {
-              k.frame = std::clamp(k.frame, lo, hi);
-            }
-          }
           moved.push_back(k);
         }
         else {

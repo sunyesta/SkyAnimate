@@ -159,7 +159,7 @@ assert all(off_path(where(f)) < 0.02 for f in range(10, 21)), [off_path(where(f)
 assert where(15) != before and where(15)[0] < before[0], ("slower out of key 10: behind Smooth", where(15), before)
 assert close(where(20), (2.0, 0.0)) and close(where(10), (1.0, 1.0))
 
-# --- Across a breakdown: the whole span timed by the main key's handles ---------------------------------------------
+# --- After a breakdown: its own stretch, timed by the key's handles as after any key ---------------------------------
 ops.layer.new()
 span = layers.active
 span.add_curve([(0.0, 0.0), (0.1, 0.0)])
@@ -179,8 +179,7 @@ def span_at(f):
     return span.opacity
 
 
-q = (e(0.75) - e(0.5)) / (1 - e(0.5))
-assert close(span_at(15), 0.5 + 0.5 * q, 2e-3), (span_at(15), 0.5 + 0.5 * q)
+assert close(span_at(15), 0.5 + 0.5 * e(0.5), 2e-3), (span_at(15), 0.5 + 0.5 * e(0.5))
 assert close(span_at(10), 0.5), "the breakdown's pose on its frame"
 
 # --- New keys: with none selected the handles go to what new keys get -------------------------------------------------

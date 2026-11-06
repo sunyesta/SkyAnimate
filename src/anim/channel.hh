@@ -121,6 +121,11 @@ template<typename T> struct Key {
   /* Custom: how fast the stretch arriving at this key goes on each of its frames (any scale: only how they compare
    * counts; one for each frame from the key before, after its hold). Empty: evenly. */
   std::vector<float> speeds;
+  /* Position keys only: the control points of the stretch arriving at this key (the Motion Path tool's Alt click),
+   * in order along it. They shape its path only (no frame, no timing: its dots go the same share of the way each
+   * frame as without them). Each is where it sits relative to the keys either side: x along the line from the key
+   * before to this one, y across it (both in that line's length), so they ride with the keys. */
+  std::vector<T> path_controls;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
   /* Key Together (a group's): added only to hold this channel where it was while another layer of the group was
@@ -285,6 +290,13 @@ template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, st
 /* Where the stretch arriving at key `i` is `u` (0-1) of the way along its path by length, as Custom goes along it (in
  * the keys' own space). */
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);
+
+/* A control point stored relative to the stretch from `a` to `b` (Key::path_controls) as a value, and back. */
+float2 path_control_value(float2 a, float2 b, float2 stored);
+float2 path_control_stored(float2 a, float2 b, float2 value);
+/* The path of the stretch arriving at key `i` through its control points, as a line of points (`per` a piece), in the
+ * keys' own space. */
+std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per = 24);
 
 /* "AUTO", "ALIGNED", "BROKEN". */
 const char *path_handles_identifier(PathHandles mode);

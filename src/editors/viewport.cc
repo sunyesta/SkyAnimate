@@ -640,10 +640,22 @@ static struct {
    * document space on its key's frame (zero unless drawn relative to something). */
   int handle = 0;
   float2 offset;
+  /* A control point dragged instead (>= 0): which of the stretch ending on `frame`, moved as seen on `near`. */
+  int control = -1;
+  int near_frame = 0;
   Document snapshot;
   /* Each update changes what's drawn without an undo step: this tells the cache. */
   uint64_t serial = 0;
 } g_path_drag;
+
+/* The control point under the mouse (set as the paths draw): its stretch's end key, which one, its nearest frame and
+ * where it is drawn less where it is. */
+struct PathControlHover {
+  MotionPathTarget target;
+  int end = 0, index = 0, near_frame = 0;
+  float2 offset;
+};
+static std::optional<PathControlHover> g_path_control_hover;
 
 /* Where along `arc` (0 at its start, 1 at its end, by length) the nearest place to `at` is. */
 static float arc_fraction(const std::vector<float2> &arc, float2 at)
@@ -891,6 +903,35 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     motion_path_slide_update(C, view);
     return;
   }
+  if (!g.active && g_path_control_hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    const PathControlHover hc = *g_path_control_hover;
+    OpArgs pick = motion_path_target_args(doc, hc.target);
+    pick["frame"] = std::to_string(hc.end);
+    pick["control"] = std::to_string(hc.index);
+    if (io.KeyShift) {
+      pick["extend"] = "1";
+      operator_call(C, "anim.motion_path_handle_select", pick);
+      return;
+    }
+    /* Picked alone, and a drag moves it. */
+    operator_call(C, "anim.motion_path_handle_select", pick);
+    g.active = true;
+    g.dragging = false;
+    g.breakdown = false;
+    g.adding = false;
+    g.on_key = false;
+    g.handle = 0;
+    g.control = hc.index;
+    g.near_frame = hc.near_frame;
+    g.target = hc.target;
+    g.frame = hc.end;
+    g.first = first;
+    g.last = last;
+    g.press = io.MousePos;
+    g.offset = hc.offset;
+    g.snapshot = doc;
+    return;
+  }
   if (!g.active && hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     OpArgs pick = motion_path_target_args(doc, hover_handle->target);
     pick["frame"] = std::to_string(hover_handle->frame);
@@ -1022,6 +1063,31 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     if (on_setup) {
       return;
     }
+    if (io.KeyAlt && !io.KeyShift && !on_key) {
+      /* Alt between keys: a control point there (it shapes the path only), picked; a drag moves it. */
+      if (operator_call(C, "anim.motion_path_control_add", args) != OpStatus::Finished ||
+          C.wm->path_handle_picks.empty())
+      {
+        return;
+      }
+      const MotionPathHandlePick made = C.wm->path_handle_picks.front();
+      g.active = true;
+      g.dragging = false;
+      g.breakdown = false;
+      g.adding = false;
+      g.on_key = false;
+      g.handle = 0;
+      g.control = made.control;
+      g.near_frame = hover_frame;
+      g.target = target;
+      g.frame = made.frame;
+      g.first = first;
+      g.last = last;
+      g.press = io.MousePos;
+      g.offset = offset;
+      g.snapshot = doc;
+      return;
+    }
     g.active = true;
     g.dragging = false;
     g.handle = 0;
@@ -1064,7 +1130,8 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     const int frame = g.frame;
     const bool dragged = g.dragging, made = g.adding || g.breakdown;
     if (dragged) {
-      push_undo(C, g.handle      ? "Move Motion Path Handle"
+      push_undo(C, g.control >= 0 ? "Move Path Control Point"
+                   : g.handle      ? "Move Motion Path Handle"
                    : g.breakdown ? "Motion Path Breakdown"
                    : g.on_key    ? "Move Motion Path Key"
                                  : "Add Motion Path Key");
@@ -1096,6 +1163,13 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
   }
   g.dragging = true;
   float2 at = view.to_document(io.MousePos);
+  if (g.control >= 0) {
+    /* From where it was, each move: the path through it is worked out again. */
+    doc = g.snapshot;
+    motion_path_control_set(doc, g.target, g.frame, g.control, g.near_frame, at - g.offset);
+    g.serial++;
+    return;
+  }
   if (g.handle) {
     /* Only the key's handles change: no record, the keys are what's edited. */
     motion_path_handle_set(doc, g.target, g.frame, g.handle == 2, at - g.offset, io.KeyAlt);
@@ -2223,7 +2297,68 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       dl->AddCircle(e, r + 2.2f, IM_COL32(255, 255, 255, 235), 0, 1.3f);
     }
   }
+  /* Control points: small hollow squares (no frame: never a key's diamond or a dot), orange when picked. */
+  g_path_control_hover.reset();
+  if (editing) {
+    static struct {
+      const Document *doc = nullptr;
+      uint64_t changes = ~uint64_t(0), serial = 0;
+      int frame = -1;
+      std::vector<std::pair<MotionPathTarget, std::vector<MotionPathControl>>> all;
+    } controls;
+    if (controls.doc != &doc || controls.changes != changes || controls.serial != g_path_drag.serial ||
+        controls.frame != doc.frame_current)
+    {
+      controls.doc = &doc;
+      controls.changes = changes;
+      controls.serial = g_path_drag.serial;
+      controls.frame = doc.frame_current;
+      controls.all.clear();
+      for (const MotionPath &p : cache.paths) {
+        if (motion_path_has_handles(doc, p.target)) {
+          controls.all.push_back({p.target, motion_path_controls(doc, p.target)});
+        }
+      }
+    }
+    float best_control = pick_path_pixels() * pick_path_pixels();
+    for (const auto &[target, list] : controls.all) {
+      const MotionPath *path = nullptr;
+      for (const MotionPath &p : cache.paths) {
+        if (p.target.same(target)) {
+          path = &p;
+        }
+      }
+      for (const MotionPathControl &c : list) {
+        const int i = path ? c.near_frame - path->first : -1;
+        if (i < 0 || i >= int(path->points.size())) {
+          continue;
+        }
+        const float2 drawn_offset = path->points[size_t(i)] - c.curve;
+        const ImVec2 s = view.to_screen(c.at + drawn_offset);
+        const bool picked = std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                                      MotionPathHandlePick{target, c.end, false, c.index}) !=
+                            wm.path_handle_picks.end();
+        const bool dragged = g_path_drag.active && g_path_drag.control == c.index && g_path_drag.frame == c.end &&
+                             g_path_drag.target.same(target);
+        const float dx = s.x - mouse.x, dy = s.y - mouse.y;
+        const bool lit = dragged;
+        const float r = lit ? 5.0f : 4.0f;
+        dl->AddRect(ImVec2(s.x - r - 1.5f, s.y - r - 1.5f), ImVec2(s.x + r + 1.5f, s.y + r + 1.5f),
+                    IM_COL32(20, 20, 20, 200), 0.0f, 0, 1.2f);
+        dl->AddRect(ImVec2(s.x - r, s.y - r), ImVec2(s.x + r, s.y + r),
+                    picked || dragged ? IM_COL32(255, 160, 40, 255) : u32(path->color, 1.0f), 0.0f, 0, 2.0f);
+        if (tool && hovering && !hover_handle && dx * dx + dy * dy < best_control) {
+          best_control = dx * dx + dy * dy;
+          g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, drawn_offset};
+        }
+      }
+    }
+  }
   dl->ChannelsMerge();
+  if (g_path_control_hover) {
+    /* A control point over a dot: the control point. */
+    hover_path = nullptr;
+  }
   if (hover_handle) {
     /* A handle over a dot: the handle, which is only there on a selected key. */
     hover_path = nullptr;
@@ -2242,7 +2377,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     const ImGuiIO &io = ImGui::GetIO();
     if (g_path_brush.active || g_path_brush.adjust || wm.path_adjust_request ||
         (io.KeyShift && !io.KeyAlt && !g_path_drag.active && !g_path_slide.active && !motion_path_vector_active() &&
-         hovered && !(hover_handle && ImGui::IsMouseClicked(ImGuiMouseButton_Left))))
+         hovered && !((hover_handle || g_path_control_hover) && ImGui::IsMouseClicked(ImGuiMouseButton_Left))))
     {
       std::optional<OpArgs> pick;
       if (hover_path) {

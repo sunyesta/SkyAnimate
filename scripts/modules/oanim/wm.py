@@ -486,7 +486,8 @@ def path_handle_colors(tip_picked, under=None):
 
 def motion_path_handle_picks():
     """The path handles picked with the Motion Path tool's Edit (anim.motion_path_handle_select): dicts with layer,
-    bone, point (ids, 0 for none), head, frame and out (the handle toward the next key). Never with keys or dots."""
+    bone, point (ids, 0 for none), head, frame and out (the handle toward the next key), or control (>= 0: that
+    control point of the stretch ending on frame). Never with keys or dots."""
     return _oanim.motion_path_handle_picks()
 
 

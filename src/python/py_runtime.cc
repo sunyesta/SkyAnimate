@@ -1620,6 +1620,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["head"] = p.target.head;
       d["frame"] = p.frame;
       d["out"] = p.out;
+      d["control"] = p.control;
       out.append(d);
     }
     return out;
@@ -2552,6 +2553,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["path_handles"] = path_handles_identifier(k.path_handles);
           d["path_in"] = py::make_tuple(in.x, in.y);
           d["path_out"] = py::make_tuple(out.x, out.y);
+          /* Control points of the stretch into it, as stored (along, across the line from the key before). */
+          py::list controls;
+          for (const float2 c : k.path_controls) {
+            controls.append(py::make_tuple(c.x, c.y));
+          }
+          d["path_controls"] = controls;
         }
         d["interp"] = interp_identifier(k.interp);
         if (!k.speeds.empty()) {

@@ -543,6 +543,112 @@ static float2 bezier_along(const float2 p[4], float u)
   return bezier(p, (float(j - 1) + f) / PIECES);
 }
 
+float2 path_control_value(float2 a, float2 b, float2 stored)
+{
+  const float2 d = b - a;
+  if (length(d) < 1e-6f) {
+    /* The keys on top of each other: kept as an offset from them. */
+    return a + stored;
+  }
+  return a + d * stored.x + float2{-d.y, d.x} * stored.y;
+}
+
+float2 path_control_stored(float2 a, float2 b, float2 value)
+{
+  const float2 d = b - a, v = value - a;
+  const float l2 = d.x * d.x + d.y * d.y;
+  if (l2 < 1e-12f) {
+    return v;
+  }
+  return float2{(v.x * d.x + v.y * d.y) / l2, (v.y * d.x - v.x * d.y) / l2};
+}
+
+std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per)
+{
+  std::vector<float2> line;
+  if (i == 0 || i >= keys.size()) {
+    return line;
+  }
+  const Key<float2> &a = keys[i - 1], &b = keys[i];
+  std::vector<float2> p{a.value};
+  for (const float2 s : b.path_controls) {
+    p.push_back(path_control_value(a.value, b.value, s));
+  }
+  p.push_back(b.value);
+  const size_t n = p.size() - 1;
+  std::vector<float> chord(n);
+  float sum = 0.0f;
+  for (size_t j = 0; j < n; j++) {
+    chord[j] = length(p[j + 1] - p[j]);
+    sum += chord[j];
+  }
+  sum = std::max(sum, 1e-9f);
+  /* Through the points smoothly (Catmull-Rom between control points); at the keys along their handles, each a third of
+   * its piece as a Bezier's, so the path leaves and reaches the keys as it would without them. */
+  float2 in, out, unused;
+  key_path_handles(keys, i - 1, unused, out);
+  key_path_handles(keys, i, in, unused);
+  std::vector<float2> tangent(n + 1);
+  for (size_t j = 1; j < n; j++) {
+    tangent[j] = (p[j + 1] - p[j - 1]) * 0.5f;
+  }
+  tangent[0] = length(out) > 1e-9f ? out * (3.0f * chord[0] / sum) : (p[1] - p[0]);
+  tangent[n] = length(in) > 1e-9f ? in * (-3.0f * chord[n - 1] / sum) : (p[n] - p[n - 1]);
+  line.push_back(p[0]);
+  for (size_t j = 0; j < n; j++) {
+    const float2 q[4] = {p[j], p[j] + tangent[j] * (1.0f / 3.0f), p[j + 1] - tangent[j + 1] * (1.0f / 3.0f), p[j + 1]};
+    for (int s = 1; s <= per; s++) {
+      const float t = float(s) / float(per), m = 1.0f - t;
+      line.push_back(q[0] * (m * m * m) + q[1] * (3.0f * m * m * t) + q[2] * (3.0f * m * t * t) + q[3] * (t * t * t));
+    }
+  }
+  return line;
+}
+
+/* The point `u` (0-1) of the way along `line` by length. */
+static float2 line_at(const std::vector<float2> &line, float u)
+{
+  float total = 0.0f;
+  for (size_t j = 1; j < line.size(); j++) {
+    total += length(line[j] - line[j - 1]);
+  }
+  float want = std::clamp(u, 0.0f, 1.0f) * total;
+  for (size_t j = 1; j < line.size(); j++) {
+    const float l = length(line[j] - line[j - 1]);
+    if (want <= l && l > 1e-12f) {
+      return line[j - 1] + (line[j] - line[j - 1]) * (want / l);
+    }
+    want -= l;
+  }
+  return line.back();
+}
+
+/* While set, Channel::evaluate leaves control points out (the stretch as it would go without them). */
+static thread_local bool g_controls_off = false;
+
+/* The stretch arriving at key `i` with control points, on `frame`: as far along its path through them, by length, as
+ * the stretch without them has gone along its own by then, so its timing (eases, holds, Custom speeds) is kept. */
+static float2 controls_evaluate(const Channel<float2> &ch, size_t i, int frame)
+{
+  const Key<float2> &a = ch.keys[i - 1], &b = ch.keys[i];
+  g_controls_off = true;
+  std::vector<float2> plain;
+  for (int f = a.frame; f <= b.frame; f++) {
+    plain.push_back(ch.evaluate(f));
+  }
+  g_controls_off = false;
+  float total = 0.0f, upto = 0.0f;
+  for (size_t j = 1; j < plain.size(); j++) {
+    const float l = length(plain[j] - plain[j - 1]);
+    total += l;
+    if (int(j) <= frame - a.frame) {
+      upto += l;
+    }
+  }
+  const float u = total > 1e-9f ? upto / total : float(frame - a.frame) / float(std::max(b.frame - a.frame, 1));
+  return line_at(stretch_control_line(ch.keys, i), u);
+}
+
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u)
 {
   if (i == 0 || i >= keys.size()) {
@@ -653,6 +759,14 @@ template<typename T> T Channel<T>::evaluate(int frame) const
     /* Blocking: hold each key until the next. */
     return a.value;
   }
+  if constexpr (std::is_same_v<T, float2>) {
+    /* Inside a stretch with control points: along its path through them. */
+    if (!g_controls_off && size_t(k) + 1 < keys.size() && !keys[size_t(k) + 1].path_controls.empty() &&
+        a.interp != Interp::Cycle && frame > a.frame && frame < keys[size_t(k) + 1].frame)
+    {
+      return controls_evaluate(*this, size_t(k) + 1, frame);
+    }
+  }
   if (a.interp == Interp::Cycle) {
     /* Play again from an earlier frame, looping until the next key. */
     const int start = a.cycle_absolute ? a.cycle_frame : (a.cycle_back > 0 ? a.frame - a.cycle_back : keys.front().frame);
@@ -681,44 +795,6 @@ template<typename T> T Channel<T>::evaluate(int frame) const
   const float span = float(b.frame - start);
   const float t = span > 0.0f ? float(f - start) / span : 1.0f;
 
-  /* Across breakdowns (KeyType::Breakdown): the stretches from main key to main key timed as one, by the main key
-   * after's Linear or Ease curve over the whole span, each stretch going the part of it between its keys; so the
-   * motion eases only at the main keys, and a breakdown dragged to another frame keeps its pose, reached earlier or
-   * later. A stretch painted Custom keeps its own timing. */
-  if ((a.type == KeyType::Breakdown || b.type == KeyType::Breakdown) && b.interp != Interp::Custom) {
-    size_t m0 = size_t(k), m1 = size_t(k) + 1;
-    while (m0 > 0 && keys[m0].type == KeyType::Breakdown) {
-      m0--;
-    }
-    while (m1 + 1 < keys.size() && keys[m1].type == KeyType::Breakdown) {
-      m1++;
-    }
-    const Key<T> &e = keys[m1];
-    const Interp mode = stretch_interp(e.interp);
-    if (mode == Interp::Linear || mode == Interp::EaseIn || mode == Interp::EaseOut || mode == Interp::EaseInOut ||
-        mode == Interp::Bezier)
-    {
-      const int s0 = std::min(keys[m0].frame + std::max(keys[m0].hold, 0), e.frame);
-      const float whole = float(std::max(e.frame - s0, 1));
-      const auto progress = [&](float at) {
-        const float x = std::clamp((at - float(s0)) / whole, 0.0f, 1.0f);
-        return mode == Interp::Linear ? x : mode == Interp::Bezier ? bezier_ease(e.bezier, x) : ease_shaped(mode, e.ease, x);
-      };
-      const float pa = size_t(k) == m0 ? 0.0f : progress(float(a.frame));
-      const float pb = size_t(k) + 1 == m1 ? 1.0f : progress(float(b.frame));
-      const float q = pb - pa > 1e-6f ? (progress(float(f)) - pa) / (pb - pa) : t;
-      if constexpr (std::is_same_v<T, float2>) {
-        if (a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto) {
-          float2 in, out, unused;
-          key_path_handles(keys, size_t(k), unused, out);
-          key_path_handles(keys, size_t(k) + 1, in, unused);
-          const float2 p[4] = {a.value, a.value + out, b.value + in, b.value};
-          return bezier_along(p, q);
-        }
-      }
-      return a.value + (b.value - a.value) * q;
-    }
-  }
   /* The stretch arriving at a key takes that key's interpolation and its settings (as Moho's: how the
    * motion gets to this pose); a Cycle key's own interpolation is its loop after it, so the stretch
    * into one is Smooth. Hold, the interval and Cycle stay the earlier key's: what happens after it. */

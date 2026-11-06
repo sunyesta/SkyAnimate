@@ -273,6 +273,29 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
                                   float2 offset, float angle, float factor);
 /* The keys of `picks` made `mode` (as motion_path_handles_type). Returns how many keys changed. */
 int motion_path_handles_type_at(Document &doc, const std::vector<MotionPathHandlePick> &picks, PathHandles mode);
+/* --- Control points (Key::path_controls): shape a stretch's path, no frame or timing. */
+
+struct MotionPathControl {
+  /* The key ending its stretch, and which of its control points. */
+  int end = 0;
+  int index = 0;
+  /* The frame whose dot is nearest it, and where it is and where the path is on that frame, in document space. */
+  int near_frame = 0;
+  float2 at, curve;
+};
+/* Every control point of `target`'s path (position keys only). */
+std::vector<MotionPathControl> motion_path_controls(const Document &doc, const MotionPathTarget &target);
+/* A control point where `target`'s path is on `frame`, between two of its position keys (not on one); in order along
+ * the stretch. Sets which it is. False with no stretch there. */
+bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int frame, int *r_end = nullptr,
+                             int *r_index = nullptr);
+/* Moves a control point to `at` (document space, as seen on frame `near`). */
+bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int end, int index, int near_frame, float2 at);
+/* Deletes the control points among `picks`. Returns how many. */
+int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandlePick> &picks);
+/* Whether a pick (a path handle or a control point) is still there. */
+bool motion_path_pick_valid(const Document &doc, const MotionPathHandlePick &pick);
+
 /* Puts `target`'s selected position keys back to Auto handles. Returns how many changed. */
 int motion_path_handles_auto(Document &doc, const MotionPathTarget &target);
 

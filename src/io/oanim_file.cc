@@ -214,6 +214,13 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
         key["path_in"] = float2_to_json(k.path_in);
         key["path_out"] = float2_to_json(k.path_out);
       }
+      if (!k.path_controls.empty()) {
+        json controls = json::array();
+        for (const float2 c : k.path_controls) {
+          controls.push_back(float2_to_json(c));
+        }
+        key["path_controls"] = std::move(controls);
+      }
     }
     if (k.selected) {
       key["selected"] = true;
@@ -1729,6 +1736,12 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
             value_from_json(*out, &key.path_out)))
       {
         key.path_handles = PathHandles::Auto;
+      }
+      for (const json &c : get_array(k, "path_controls")) {
+        float2 v;
+        if (value_from_json(c, &v)) {
+          key.path_controls.push_back(v);
+        }
       }
     }
     key.selected = get_bool(k, "selected", false);

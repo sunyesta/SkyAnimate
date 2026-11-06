@@ -1,7 +1,6 @@
-"""Breakdown keys (Blender's key type BREAKDOWN): a pose on the way between two main keys. The stretches either side are
-timed as one movement from main key to main key, so Ease eases only at the main keys; the timing tools shape the span
-as one and move the breakdown to the frame the new timing reaches its pose; dragging it in the timeline slides it
-between its neighbours, the pose staying. Alt click on a motion path makes one. The type is saved, set with
+"""Breakdown keys (Blender's key type BREAKDOWN): a key with its own look (a blue circle on the path, its own mark in
+the timeline) that otherwise works as any key: its stretches are timed on their own, the timing tools and the
+timeline treat it as a key. Alt Shift on a motion path makes one. The type is saved, set with
 keyframe_set(type=) or anim.keys_interpolation_set(type=) (new keys' type when no key is selected), and kept together
 across Key Whole Drawing. Frame 0, the setup, is never a breakdown.
 
@@ -78,16 +77,12 @@ assert close(x_at(plain, 15), 0.5)
 plain.keyframe_set("position", 20, type="BREAKDOWN")
 assert key(plain, "position", 20)["type"] == "BREAKDOWN"
 assert close(x_at(plain, 20), 1.0), "the breakdown's pose, exactly on its frame"
-into, out = x_at(plain, 20) - x_at(plain, 19), x_at(plain, 21) - x_at(plain, 20)
-assert into > 0.12 and close(into, out, 1e-2), ("no easing at a breakdown: full speed through it", into, out)
-assert x_at(plain, 11) - x_at(plain, 10) < 0.02, "eased out of the main key at the span's start"
-assert x_at(plain, 30) - x_at(plain, 29) < 0.02, "eased into the main key at the span's end"
-assert x_at(plain, 15) < 0.35, ("the first half of an ease in-out over 10-30, not one over 10-20", x_at(plain, 15))
+assert x_at(plain, 20) - x_at(plain, 19) < 0.05, "timed as a key: Ease slows into it as into any key"
+assert close(x_at(plain, 15), 0.5), "its stretch on its own, not one span 10-30"
 
-# One stretch in the timing chart, its breakdown marked.
+# Two stretches in the timing chart, as for any key.
 sp = [s for s in stretches(plain) if s["start"] >= 10]
-assert [(s["start"], s["end"]) for s in sp] == [(10, 30)], sp
-assert sp[0]["breakdowns"] == [20], sp
+assert [(s["start"], s["end"]) for s in sp] == [(10, 20), (20, 30)], sp
 
 # --- Frame 0 is never a breakdown ------------------------------------------------------------------------------------
 try:
@@ -105,7 +100,7 @@ assert key(plain, "position", 20)["type"] == "BREAKDOWN", "saved"
 assert key(plain, "position", 10)["type"] == "KEYFRAME"
 assert ops.wm.tool_motion_path() == {'FINISHED'}
 
-# --- Dragged in the timeline: the pose stays, only when it is reached changes; it stops short of its neighbours ------
+# --- Dragged in the timeline: as any key, past its neighbours too ----------------------------------------------------
 only(plain)
 assert ops.anim.keys_deselect_all() == {'FINISHED'}
 assert ops.anim.keys_select(frame_start="20", layers=str(plain.id)) == {'FINISHED'}
@@ -113,39 +108,10 @@ assert ops.anim.keys_offset(frames="4") == {'FINISHED'}
 assert frames(plain, "position")[-3:] == [10, 24, 30], frames(plain, "position")
 assert close(x_at(plain, 24), 1.0), "the pose stays, reached later"
 assert ops.anim.keys_offset(frames="20") == {'FINISHED'}
-assert frames(plain, "position")[-3:] == [10, 29, 30], ("stopped a frame before the main key", frames(plain, "position"))
-assert ops.anim.keys_offset(frames="-40") == {'FINISHED'}
-assert frames(plain, "position")[-3:] == [10, 11, 30], ("and a frame after the one before", frames(plain, "position"))
-assert close(x_at(plain, 11), 1.0)
+assert 44 in frames(plain, "position"),\
+    ("not stopped before the main key", frames(plain, "position"))
 
-# A main key dragged is not stopped (it is not a breakdown).
-assert ops.anim.keys_deselect_all() == {'FINISHED'}
-assert ops.anim.keys_select(frame_start="30", layers=str(plain.id)) == {'FINISHED'}
-assert ops.anim.keys_offset(frames="5") == {'FINISHED'}
-assert frames(plain, "position")[-1] == 35, frames(plain, "position")
-
-# --- Even spacing moves the breakdown to where the even timing reaches its pose --------------------------------------
-lumpy = line_layer({10: 0.0, 14: 1.0, 30: 2.0}, "LINEAR")
-lumpy.keyframe_set("position", 14, type="BREAKDOWN")
-assert close(x_at(lumpy, 14), 1.0)
-assert ops.anim.motion_path_even_spacing(frame="12", layer=str(lumpy.id)) == {'FINISHED'}
-assert frames(lumpy, "position")[-3:] == [10, 20, 30], ("halfway along, at the span's even speed", frames(lumpy, "position"))
-assert key(lumpy, "position", 20)["type"] == "BREAKDOWN"
-assert close(x_at(lumpy, 20), 1.0), "its pose, exactly"
-for f in range(11, 30):
-    assert close(x_at(lumpy, f) - x_at(lumpy, f - 1), 0.1, 2e-3), (f, x_at(lumpy, f) - x_at(lumpy, f - 1))
-assert [s["breakdowns"] for s in stretches(lumpy) if s["start"] == 10] == [[20]]
-
-# Blend Speed in the chart (Shift click) evens the span as one too, the breakdown moving with it.
-bumpy = line_layer({10: 0.0, 13: 1.0, 30: 2.0}, "LINEAR")
-bumpy.keyframe_set("position", 13, type="BREAKDOWN")
-for _ in range(30):
-    ops.anim.motion_path_timing_blend(frame="14", smoothing="1", repeat="3", radius="20", layer=str(bumpy.id))
-bk = [k for k in bumpy.keyframes("position") if k["type"] == "BREAKDOWN"]
-assert len(bk) == 1 and bk[0]["frame"] > 14, ("blended toward even, the breakdown later", bk)
-assert close(x_at(bumpy, bk[0]["frame"]), 1.0), "its pose on its new frame"
-
-# --- Alt click on a path: a breakdown, never a main key ------------------------------------------------------------
+# --- motion_path_key_add makes a breakdown unless asked for a key; Alt Shift too --------------------------------------
 alt = line_layer({10: 0.0, 30: 2.0}, "SMOOTH")
 assert ops.anim.motion_path_key_add(frame="18", layer=str(alt.id)) == {'FINISHED'}
 assert key(alt, "position", 18)["type"] == "BREAKDOWN"

@@ -119,8 +119,7 @@ static bool path_handles_picked(Context &C)
     return false;
   }
   for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {
-    float2 key, in, out;
-    if (motion_path_handles(*C.document, p.target, p.frame, key, in, out)) {
+    if (motion_path_pick_valid(*C.document, p)) {
       return true;
     }
   }
@@ -364,7 +363,8 @@ void motion_path_operators_register()
     ot.name = "Select Path Handle";
     ot.description = "Pick a path handle, as clicking one with the Motion Path tool's Edit does: of the key on "
                      "frame=N of what a path traces (layer=id with bone=name or point=id: that one; else the first "
-                     "traced), out=1 the one toward the next key. On its own: every other path handle, key and dot "
+                     "traced), out=1 the one toward the next key; or control=I, that control point of the stretch "
+                     "ending on frame=N. On its own: every other path handle, control point, key and dot "
                      "is let go (the bones and points traced stay, as they make the paths show); extend=1 (Shift) "
                      "adds it to the handles picked or takes it out; none=1 lets go of every path handle";
     ot.flag = OPTYPE_REGISTER;
@@ -381,10 +381,13 @@ void motion_path_operators_register()
       if (!op_targets(C, targets)) {
         return OpStatus::Cancelled;
       }
-      MotionPathHandlePick pick{targets.front(), op_arg_int(C, "frame", doc.frame_current), op_arg_bool(C, "out")};
-      float2 key, in, out;
-      if (!motion_path_handles(doc, pick.target, pick.frame, key, in, out)) {
-        report(ReportType::Warning, "No position key with path handles there");
+      MotionPathHandlePick pick{targets.front(), op_arg_int(C, "frame", doc.frame_current), op_arg_bool(C, "out"),
+                                op_arg_int(C, "control", -1)};
+      if (pick.control >= 0) {
+        pick.out = false;
+      }
+      if (!motion_path_pick_valid(doc, pick)) {
+        report(ReportType::Warning, pick.control >= 0 ? "No such control point" : "No position key with path handles there");
         return OpStatus::Cancelled;
       }
       /* Whatever else is picked on the paths goes: a handle is picked alone or with other handles. */
@@ -417,16 +420,83 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_handles_reset";
     ot.name = "Reset Path Handles";
-    ot.description = "X with path handles picked (the Motion Path tool's Edit): their keys' handles back to Auto";
+    ot.description = "X with path handles or control points picked (the Motion Path tool's Edit): the handles' keys "
+                     "back to Auto, the control points deleted (the path as it was without them)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return path_edit_poll(C) && path_handles_picked(C); };
     ot.exec = [](Context &C) {
       animation_sync(*C.document);
-      if (motion_path_handles_type_at(*C.document, C.wm->path_handle_picks, PathHandles::Auto) == 0) {
+      std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
+      const int controls = motion_path_controls_delete(*C.document, picks);
+      const int handles = motion_path_handles_type_at(*C.document, picks, PathHandles::Auto);
+      picks.erase(std::remove_if(picks.begin(), picks.end(), [](const auto &p) { return p.control >= 0; }), picks.end());
+      if (controls + handles == 0) {
         report(ReportType::Info, "The handles are Auto already");
         return OpStatus::Cancelled;
       }
       return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_control_add";
+    ot.name = "Add Path Control Point";
+    ot.description = "Alt click on a path with the Motion Path tool's Edit: a control point where the path is on "
+                     "frame=N (between two of its position keys), shaping the path only: no key, the timing as it "
+                     "was. It is picked on its own";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      int end = 0, index = 0;
+      if (!motion_path_control_add(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), &end, &index)) {
+        report(ReportType::Warning, "Control points go between two position keys of a path with handles");
+        return OpStatus::Cancelled;
+      }
+      PathDotsSync sync{C};
+      std::vector<Layer *> all;
+      for (const Layer *l : document_layers_flat(doc)) {
+        all.push_back(layer_find(doc, l->id));
+      }
+      layers_deselect_keys(all);
+      C.wm->path_dots.clear();
+      C.wm->path_handle_picks = {MotionPathHandlePick{targets.front(), end, false, index}};
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_control_move";
+    ot.name = "Move Path Control Point";
+    ot.description = "Put control point index=I of the stretch ending on frame=N at x, y (document space, as seen on "
+                     "the frame of the dot nearest it), as dragging it does";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      const int end = op_arg_int(C, "frame", 0), index = op_arg_int(C, "index", 0);
+      for (const MotionPathControl &c : motion_path_controls(doc, targets.front())) {
+        if (c.end == end && c.index == index &&
+            motion_path_control_set(doc, targets.front(), end, index, c.near_frame,
+                                    float2{op_arg_float(C, "x", c.at.x), op_arg_float(C, "y", c.at.y)}))
+        {
+          return OpStatus::Finished;
+        }
+      }
+      report(ReportType::Warning, "No such control point");
+      return OpStatus::Cancelled;
     };
     operators().add(std::move(ot));
   }
