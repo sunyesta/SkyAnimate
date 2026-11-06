@@ -36,9 +36,12 @@ doc.frame_start = 1
 assert first() == 0, ("from the setup when no key is on Start", wm.motion_path_range())
 ops.wm.tool_select()
 path = wm.overlay_colors(art, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0)["paths"][0]
-# Frame 0 to 1 is the first step along it (from (0, 0)); the rest is the shot.
-early = [k for k in path["pieces"] if abs(k["a"][0]) < 1e-4 and abs(k["a"][1]) < 1e-4]
-later = [k for k in path["pieces"] if k not in early]
+# Frame 0 to 1 is the first step along it (from (0, 0), in a few pieces as the line curves through the dots); the
+# rest is the shot.
+pieces = path["pieces"]
+assert abs(pieces[0]["a"][0]) < 1e-4 and abs(pieces[0]["a"][1]) < 1e-4, pieces[0]
+cut = next(i for i, k in enumerate(pieces) if k["alpha"] > 200)
+early, later = pieces[:cut], pieces[cut:]
 assert early and later, path["pieces"]
 assert all(k["alpha"] < 120 for k in early) and all(k["alpha"] > 200 for k in later), \
     ("faded before Start, solid after", [k["alpha"] for k in early], [k["alpha"] for k in later])

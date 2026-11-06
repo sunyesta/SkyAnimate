@@ -1901,6 +1901,41 @@ std::vector<PathQuietMark> motion_path_quiet_marks(const Document &doc, const Mo
   return out;
 }
 
+/* The line from frame dot i - 1 to dot i as a smooth curve through the dots (centripetal Catmull-Rom: it passes through
+ * every dot, never loops or overshoots between them), in steps about `step` long; the points after dot i - 1, ending on
+ * dot i. A held frame (dots on top of each other) and a key are where the curve starts afresh, its way there taken
+ * from its own side only, so a key's corner (Linear into Linear) stays a corner and a hold doesn't swing the line. */
+static void path_line_between(const MotionPath &p, size_t i, float step, std::vector<float2> &r_points)
+{
+  const float2 b = p.points[i - 1], c = p.points[i];
+  const float len = length(c - b);
+  const int steps = len > 1e-9f && step > 1e-9f ? std::clamp(int(std::ceil(len / step)), 1, 32) : 1;
+  if (steps == 1) {
+    r_points.push_back(c);
+    return;
+  }
+  const auto is_key = [&](size_t k) {
+    return std::binary_search(p.keys.begin(), p.keys.end(), p.first + int(k));
+  };
+  /* The dots either side, unless held there or a key between: then one mirrored across, so the end is straight on. */
+  const bool has_a = i >= 2 && !is_key(i - 1) && length(p.points[i - 2] - b) > 1e-6f;
+  const bool has_d = i + 1 < p.points.size() && !is_key(i) && length(p.points[i + 1] - c) > 1e-6f;
+  const float2 a = has_a ? p.points[i - 2] : b * 2.0f - c;
+  const float2 d = has_d ? p.points[i + 1] : c * 2.0f - b;
+  const auto knot = [](float2 x, float2 y) { return std::max(std::sqrt(length(y - x)), 1e-5f); };
+  const float t1 = knot(a, b), t2 = t1 + knot(b, c), t3 = t2 + knot(c, d);
+  for (int s = 1; s < steps; s++) {
+    const float t = t1 + (t2 - t1) * float(s) / float(steps);
+    const float2 a1 = a * ((t1 - t) / t1) + b * (t / t1);
+    const float2 a2 = b * ((t2 - t) / (t2 - t1)) + c * ((t - t1) / (t2 - t1));
+    const float2 a3 = c * ((t3 - t) / (t3 - t2)) + d * ((t - t2) / (t3 - t2));
+    const float2 b1 = a1 * ((t2 - t) / t2) + a2 * (t / t2);
+    const float2 b2 = a2 * ((t3 - t) / (t3 - t1)) + a3 * ((t - t1) / (t3 - t1));
+    r_points.push_back(b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1)));
+  }
+  r_points.push_back(c);
+}
+
 std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const MotionPath &p, const CanvasSample *under,
                                                    float piece)
 {
@@ -1939,15 +1974,20 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
         run = {p.points[i - 1]};
         run_before = before(f);
       }
-      run.push_back(p.points[i]);
+      /* Smooth between the dots, so a fast curve reads as a curve, not corners. */
+      path_line_between(p, i, piece * 0.5f, run);
       continue;
     }
     flush();
     Color c;
     const ContrastPick pick = under_at((p.points[i - 1] + p.points[i]) * 0.5f, c) ? contrast_pick(c, colors.base)
                                                                                   : ContrastPick::Base;
-    out.push_back({p.points[i - 1], p.points[i],
-                   contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), true});
+    std::vector<float2> curve{p.points[i - 1]};
+    path_line_between(p, i, piece * 0.5f, curve);
+    for (size_t k = 1; k < curve.size(); k++) {
+      out.push_back({curve[k - 1], curve[k],
+                     contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), true});
+    }
     run = {p.points[i]};
     run_before = before(f + 1);
   }
@@ -2091,17 +2131,27 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     }
     if (doc.path_lines && screen.size() > 1) {
       /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over
-       * the path's continuation; the rest solid. */
+       * the path's continuation; the rest solid. Dashes by length along the line (4 px on, 4 off), as it comes in short
+       * pieces where it curves. */
+      float dash = 0.0f;
       for (const PathLinePiece &k : motion_path_line_pieces(doc, p, g_canvas_now, 6.0f / std::max(view.zoom, 1e-9f))) {
         const ImVec2 a = view.to_screen(k.a), b = view.to_screen(k.b);
         if (!k.dashed) {
           dl->AddLine(a, b, k.color, 1.5f);
+          dash = 0.0f;
           continue;
         }
-        for (int d = 0; d < 6; d += 2) {
-          dl->AddLine(ImVec2(a.x + (b.x - a.x) * float(d) / 6.0f, a.y + (b.y - a.y) * float(d) / 6.0f),
-                      ImVec2(a.x + (b.x - a.x) * float(d + 1) / 6.0f, a.y + (b.y - a.y) * float(d + 1) / 6.0f),
-                      k.color, 1.5f);
+        const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+        for (float at = 0.0f; at < len;) {
+          const float phase = std::fmod(dash, 8.0f);
+          const float run = std::max(std::min(len - at, (phase < 4.0f ? 4.0f : 8.0f) - phase), 1e-3f);
+          if (phase < 4.0f) {
+            dl->AddLine(ImVec2(a.x + (b.x - a.x) * at / len, a.y + (b.y - a.y) * at / len),
+                        ImVec2(a.x + (b.x - a.x) * (at + run) / len, a.y + (b.y - a.y) * (at + run) / len), k.color,
+                        1.5f);
+          }
+          at += run;
+          dash += run;
         }
       }
     }

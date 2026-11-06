@@ -1,0 +1,125 @@
+"""A motion path's line is a smooth curve through its dots (one a frame), not straight pieces from dot to dot, so a fast
+curve reads as a curve: it passes through every dot, bends between them, never overshoots a dot, keeps a key's corner
+(Linear into Linear) a corner, and stays still on held frames. Overshoot is still dashed; nothing else is.
+
+Run with:  OpenAnimate --background --python tests/test_motion_path_smooth_line.py
+"""
+
+import math
+
+import oanim
+
+ops, doc, layers, wm = oanim.ops, oanim.data.document, oanim.data.layers, oanim.wm
+
+doc.auto_key = False
+doc.motion_paths = True
+doc.path_all = True
+doc.frame_start, doc.frame_end = 10, 30
+
+
+def mover(keys, interp):
+    ops.layer.new()
+    lay = layers.active
+    lay.key_whole_drawing = False
+    lay.add_curve([(0.0, 0.0), (0.1, 0.0)])
+    doc.frame_current = 0
+    lay.location_x, lay.location_y = -3.0, -3.0
+    for other in layers.all():
+        other.selected = other.id == lay.id
+    layers.active = lay
+    for f, (x, y) in sorted(keys.items()):
+        assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), layer=str(lay.id)) == {'FINISHED'}
+        lay.keyframe_set("position", f, interp=interp)
+    return lay
+
+
+def where(layer, f):
+    doc.frame_current = f
+    return (layer.location_x, layer.location_y)
+
+
+def line(layer):
+    """The path's line as the viewport draws it: its pieces' ends, in order."""
+    path = wm.overlay_colors(layer, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0)["paths"][0]
+    pts = [tuple(path["pieces"][0]["a"])] + [tuple(k["b"]) for k in path["pieces"]]
+    return pts, path["pieces"]
+
+
+def off_chord(p, a, b):
+    """How far p is from the straight line a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    return abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / math.hypot(dx, dy)
+
+
+def between(pts, a, b):
+    """The line's points from dot a to dot b."""
+    i = min(range(len(pts)), key=lambda k: math.dist(pts[k], a))
+    j = min(range(len(pts)), key=lambda k: math.dist(pts[k], b))
+    return pts[min(i, j):max(i, j) + 1]
+
+
+# --- A fast curve: many points between dots, through every dot, bent off the chord ------------------------------------
+arc = mover({10: (0.0, 0.0), 14: (2.0, 2.0), 18: (4.0, 0.0)}, "SMOOTH")
+ops.wm.tool_select()
+pts, pieces = line(arc)
+dots = [where(arc, f) for f in range(10, 19)]
+assert len(pts) > 3 * len(dots), ("finer than a piece a frame", len(pts), len(dots))
+for d in dots:
+    assert min(math.dist(d, p) for p in pts) < 1e-4, ("through every dot", d)
+a, b = where(arc, 13), where(arc, 14)
+seg = between(pts, a, b)
+assert len(seg) > 3, seg
+assert max(off_chord(p, a, b) for p in seg) > 2e-3, ("bent between the dots, not straight", seg)
+# It never goes past a dot: between two dots the line stays between them along the way.
+for f in range(10, 18):
+    a, b = where(arc, f), where(arc, f + 1)
+    span = math.dist(a, b)
+    for p in between(pts, a, b):
+        assert math.dist(p, a) <= span + 1e-3 and math.dist(p, b) <= span + 1e-3, ("no overshoot", f, p)
+assert not any(k["dashed"] for k in pieces), "solid: no dashes but overshoot"
+
+
+def no_overshoot(layer, first, last, why):
+    pts, _ = line(layer)
+    for f in range(first, last):
+        a, b = where(layer, f), where(layer, f + 1)
+        span = math.dist(a, b)
+        for p in between(pts, a, b):
+            assert math.dist(p, a) <= span * 1.001 + 1e-4 and math.dist(p, b) <= span * 1.001 + 1e-4, (why, f, p)
+
+
+# Dots spaced very unevenly round a bend (a strong ease): still never past a dot.
+for ease in ("QUART", "EXPO"):
+    eased = mover({10: (0.0, 0.0), 30: (8.0, 0.0)}, "EASE_IN_OUT")
+    eased.keyframe_set("position", 30, ease=ease)
+    assert ops.anim.motion_path_control_add(frame="20", layer=str(eased.id)) == {'FINISHED'}
+    assert ops.anim.motion_path_control_move(frame="30", index="0", x="4", y="5", layer=str(eased.id)) == {'FINISHED'}
+    no_overshoot(eased, 10, 30, ("eased", ease))
+
+# Two dots close together at the bend, their neighbours far off: the line between them stays a short bend, never a
+# swing out past them (as an even-knotted curve would make).
+bend = mover({10: (0.0, 0.0), 20: (8.0, 0.0)}, "LINEAR")
+assert ops.anim.motion_path_control_add(frame="15", layer=str(bend.id)) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="20", index="0", x="4", y="4", layer=str(bend.id)) == {'FINISHED'}
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+for f, u in ((14, 0.2), (15, 0.49), (16, 0.51), (17, 0.8)):
+    assert ops.anim.motion_path_slide(frame=str(f), progress=str(u), layer=str(bend.id)) == {'FINISHED'}
+ops.wm.tool_select()
+no_overshoot(bend, 13, 18, "close dots at a bend")
+
+# --- A Linear key's corner stays a corner; the stretches either side are straight -------------------------------------
+corner = mover({10: (0.0, 0.0), 14: (2.0, 2.0), 18: (4.0, 0.0)}, "LINEAR")
+pts, _ = line(corner)
+for f in (13, 14):
+    a, b = where(corner, f), where(corner, f + 1)
+    assert max(off_chord(p, a, b) for p in between(pts, a, b)) < 1e-4, ("straight into and out of the key", f)
+
+# --- Overshoot is dashed, along the smooth line; the rest stays solid -------------------------------------------------
+over = mover({10: (0.0, 0.0), 20: (2.0, 1.0)}, "LINEAR")
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+assert ops.anim.motion_path_slide(frame="18", progress="1.15", layer=str(over.id)) == {'FINISHED'}
+ops.wm.tool_select()
+_, pieces = line(over)
+dashed = [k for k in pieces if k["dashed"]]
+assert dashed and len(dashed) < len(pieces), ("dashed past the key and back, solid elsewhere", len(dashed), len(pieces))
+print("Motion path smooth line: ok")

@@ -99,7 +99,8 @@ bool path_hover_quiet();
 std::vector<std::pair<uint64_t, std::vector<int>>> select_press_grab_test(Context &C, float2 at, float zoom,
                                                                           bool shift_or_ctrl, bool drag);
 
-/* A piece of a motion path's line (document space) and its colour (ImU32); dashed where it overshoots. */
+/* A piece of a motion path's line (document space) and its colour (ImU32): smooth through the dots; dashed where it
+ * overshoots. */
 struct PathLinePiece {
   float2 a, b;
   uint32_t color = 0;

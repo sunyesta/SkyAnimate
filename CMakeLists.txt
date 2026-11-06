@@ -462,6 +462,8 @@ add_test(NAME motion_path_sculpt
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_sculpt.py)
 add_test(NAME motion_path_control_handles
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_control_handles.py)
+add_test(NAME motion_path_smooth_line
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_smooth_line.py)
 add_test(NAME timeline_summary_merge
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_summary_merge.py)
 add_test(NAME motion_path_setup_handle
