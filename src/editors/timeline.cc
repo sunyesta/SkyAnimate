@@ -981,7 +981,8 @@ static KeyFocus key_focus(Context &C)
   const std::vector<Layer *> layers = timeline_layers(C);
   const bool any_selected = timeline_any_key_selected(C, layers);
   f.mode = any_selected ? 1 : 0;
-  if (wm.tool_settings.tool != Tool::MotionPath || !doc.motion_paths) {
+  /* The tool shows the paths whether the Motion Paths overlay is on or not: the stretch with it, never without. */
+  if (wm.tool_settings.tool != Tool::MotionPath) {
     return f;
   }
   const MotionPathPicks picks = motion_path_picks(C);

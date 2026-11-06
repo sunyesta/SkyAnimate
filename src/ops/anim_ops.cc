@@ -1203,7 +1203,7 @@ void anim_operators_register()
         filter.path = op_arg(C, "path");
         filter.pinned_only = op_arg_bool(C, "pinned");
         const std::vector<Layer *> layers = op_layers(C);
-        if (C.wm && C.wm->tool_settings.tool == Tool::MotionPath && doc.motion_paths) {
+        if (C.wm && C.wm->tool_settings.tool == Tool::MotionPath) {
           /* The paths whose dots this row's channels move. */
           const std::set<const void *> row = layers_filtered_channel_set(layers, filter);
           std::vector<MotionPathTarget> targets;

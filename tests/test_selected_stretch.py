@@ -24,9 +24,9 @@ for f, x, a in ((10, 1.0, 0.3), (20, 2.0, 0.6), (30, 3.0, 0.2)):
     rig.bone_set("arm", position=(x, 0.5 * x), angle=a)
 assert ops.anim.keyframe_insert() == {'FINISHED'}, "an undo step holding the keys"
 doc.frame_current = 15
-doc.motion_paths = True
 doc.path_all = True
 assert ops.wm.tool_motion_path() == {'FINISHED'}
+doc.motion_paths = False  # the tool shows the paths with the overlay off too: the stretch is there all the same
 rig.select_bone("arm")
 HEAD = dict(layer=str(rig.id), bone="arm", head="1")
 TIP = dict(layer=str(rig.id), bone="arm")
@@ -68,6 +68,11 @@ assert h["mode"] == "PATH" and not h["picked"] and tuple(h["span"]) == (10, 20),
 ARM = h["targets"][0][1]
 assert h["targets"] == [(rig.id, ARM, False, 0)], ("the arm's tip", h)
 assert teal() == {"Angle": (10, 20)}, ("the tip turns: its Angle row, not Summary, Bones or the bone's", teal())
+
+# The overlay on: the same.
+doc.motion_paths = True
+assert teal() == {"Angle": (10, 20)}, teal()
+doc.motion_paths = False
 
 # --- A picked dot: its stretch, on its channel's row; the panel shows it ---------------------------------------------
 assert ops.anim.motion_path_select(frame="25", **HEAD) == {'FINISHED'}

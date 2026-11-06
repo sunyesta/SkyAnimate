@@ -58,7 +58,7 @@ std::vector<MotionPathTarget> motion_path_key_pick_targets(Context &C)
 MotionPathPicks motion_path_picks(Context &C)
 {
   MotionPathPicks r;
-  if (!C.document || !C.wm || !C.document->motion_paths) {
+  if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath) {
     return r;
   }
   const WindowManager &wm = *C.wm;
