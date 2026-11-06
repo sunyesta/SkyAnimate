@@ -420,6 +420,8 @@ PENDING = [
     ('src/editors/viewport.cc', '  const bool has_a = i >= 2 && !is_key(i - 1) && length(p.points[i - 2] - b) > 1e-6f;\n  const bool has_d = i + 1 < p.points.size() && !is_key(i) && length(p.points[i + 1] - c) > 1e-6f;', '  const bool has_a = i >= 2 && length(p.points[i - 2] - b) > 1e-6f;\n  const bool has_d = i + 1 < p.points.size() && length(p.points[i + 1] - c) > 1e-6f;', 'the path line keeps a key corner', 'tests/test_motion_path_smooth_line.py'),
     ('src/editors/viewport.cc', '                     contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), true});', '                     contrast_u32(colors.of(pick), 0.9f * (before(f) ? PATH_BEFORE_START : 1.0f)), false});', 'overshoot still dashed', 'tests/test_motion_path_smooth_line.py'),
     ('src/editors/viewport.cc', '  const auto knot = [](float2 x, float2 y) { return std::max(std::sqrt(length(y - x)), 1e-5f); };', '  const auto knot = [](float2 x, float2 y) { return std::max(length(y - x) * 0.0f + 1.0f, 1e-5f); };', 'the path line centripetal: no overshoot', 'tests/test_motion_path_smooth_line.py'),
+    ('src/anim/motion_path.cc', '    const auto shown = [&](int f) { return f >= first && f <= last; };', '    const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };', 'sculpt reshapes the setup key out handle', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '      mp.pos = mp.setup_pos = tg.pos[size_t(tg.pinned)];', '      (void)mp;', 'sculpt pins the setup key point', 'tests/test_motion_path_sculpt.py'),
 ]
 
 

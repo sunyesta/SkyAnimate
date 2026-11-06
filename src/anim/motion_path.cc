@@ -3231,6 +3231,8 @@ struct PathSculptState {
     /* Each stretch's speeds keeping its timing by length (index: the key it arrives at). */
     std::vector<std::vector<float>> speeds;
     uint64_t layer = 0;
+    /* The setup key's point (frame 0, shown), or -1: the brush reshapes its out handle but never moves it. */
+    int pinned = -1;
   };
   std::vector<Target> targets;
 };
@@ -3292,7 +3294,8 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
       tg.in.push_back(in);
       tg.out.push_back(out_h);
     };
-    const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };
+    /* Frame 0's key (the setup) too while shown: only its out handle changes, its point pinned. */
+    const auto shown = [&](int f) { return f >= first && f <= last; };
     const size_t n = tg.keys.size();
     for (size_t i = 0; i < n; i++) {
       const Key<float2> &k = tg.keys[i];
@@ -3311,6 +3314,9 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
       }
       if (i + 1 < n) {
         out_h = map_vector(tg.maps[i], stretch_points(tg.keys, i + 1).out.front());
+      }
+      if (k.frame == 0 && shown(0)) {
+        tg.pinned = int(tg.pos.size());
       }
       add(int(i), -1, tg.maps[i].at, in, out_h, !shown(k.frame), k.path_handles != PathHandles::Broken);
     }
@@ -3347,6 +3353,14 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
   /* Every path the stroke has changed so far is given back, whether or not this dab moved it (a Grab can start again
    * from the document as it was). */
   sculpt_stroke_dab(st.drawing, st.stroke, d);
+  /* The setup key's point back where it was: the setup pose never moves, only how the path leaves it. */
+  for (const PathSculptState::Target &tg : st.targets) {
+    Layer *layer = layer_find(st.drawing, tg.layer);
+    if (tg.pinned >= 0 && layer && !layer->drawing.curves.empty()) {
+      MeshPoint &mp = layer->drawing.points[size_t(layer->drawing.curves.front().points[size_t(tg.pinned)].point)];
+      mp.pos = mp.setup_pos = tg.pos[size_t(tg.pinned)];
+    }
+  }
   int changed = 0;
   for (const PathSculptState::Target &tg : st.targets) {
     const Layer *layer = layer_find(st.drawing, tg.layer);

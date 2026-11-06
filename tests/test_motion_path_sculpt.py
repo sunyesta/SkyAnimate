@@ -114,6 +114,18 @@ was = (rest.location_x, rest.location_y)
 assert ops.anim.motion_path_stroke(brush="GRAB", points=f"{was[0]},{was[1]};{was[0]},{was[1] + 0.5}", radius="0.4",
                                    strength="1") == {'FINISHED'}
 assert close(where(rest, 0), was), ("the setup stays", where(rest, 0))
+# Its out handle (how the path leaves the setup) is the brush's to reshape, its point pinned.
+setup = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)})
+doc.frame_current = 0
+start = (setup.location_x, setup.location_y)
+out_was = key(setup, 0)["path_out"]
+mid = (start[0] * 0.75, start[1] * 0.75)
+assert ops.anim.motion_path_stroke(brush="GRAB", points=f"{mid[0]},{mid[1]};{mid[0] - 0.4},{mid[1] + 0.6}",
+                                   radius="1.5", strength="1") == {'FINISHED'}
+assert close(where(setup, 10), (0.0, 0.0), 1e-6), "the key after out of the brush's reach: only the setup's handle"
+assert close(where(setup, 0), start, 1e-6), ("the setup point never moves", where(setup, 0), start)
+assert not close(key(setup, 0)["path_out"], out_was, 1e-3), ("its out handle reshaped", out_was, key(setup, 0))
+assert frames(setup) == [0, 10, 20]
 
 # --- Smooth and Surface Smooth take a wiggle out, keys on their frames -------------------------------------------
 wiggly = {10 + 2 * i: (0.1 * i, 0.06 if i % 2 else -0.06) for i in range(11)}
