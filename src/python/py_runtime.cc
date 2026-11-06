@@ -1253,6 +1253,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     path_hover_quiet_update(moving, float2(x, y));
     return path_hover_quiet();
   });
+  /* Test hook: the Transform Layer box's drag done, after the layer's transform was changed. */
+  m.def("layer_gizmo_finish", [](const std::string &name) { layer_gizmo_finish(current_context(), name.c_str()); });
   m.def("motion_path_pick", [](float x, float y, float zoom, bool extend, bool apply) {
     return motion_path_pick_test(current_context(), {x, y}, zoom, extend, apply);
   });
@@ -1336,7 +1338,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         points.append(d);
       }
     }
-    const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    const std::vector<MotionPathTarget> targets = motion_path_targets(C);
     motion_path_tool_on(C.wm->tool_settings.tool == Tool::MotionPath);
     int first = 0, last = 0;
     if (doc.motion_paths && motion_path_range(doc, targets, first, last)) {
@@ -1376,7 +1378,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("motion_paths", []() {
     Context &C = current_context();
     const Document &doc = *C.document;
-    const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    const std::vector<MotionPathTarget> targets = motion_path_targets(C);
     py::list out;
     int first = 0, last = 0;
     if (!doc.motion_paths || !motion_path_range(doc, targets, first, last)) {
@@ -1470,7 +1472,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("motion_path_range", []() -> py::object {
     Context &C = current_context();
     int first = 0, last = 0;
-    if (!motion_path_range(*C.document, motion_path_targets(*C.document, editable_layers(C)), first, last)) {
+    if (!motion_path_range(*C.document, motion_path_targets(C), first, last)) {
       return py::none();
     }
     return py::make_tuple(first, last);
@@ -1479,7 +1481,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   m.def("motion_path_ghost", [](int frame) {
     Context &C = current_context();
     const Document &doc = *C.document;
-    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, motion_path_targets(doc, editable_layers(C)));
+    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, motion_path_targets(C));
     py::list lines;
     for (const OnionWires &w : onion_wires(doc, layers, {OnionGhost{frame, frame > doc.frame_current, 1}})) {
       for (const std::vector<float2> &line : w.lines) {
@@ -1558,7 +1560,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     Context &C = current_context();
     const Document &doc = *C.document;
     py::list out;
-    for (const MotionPathTarget &t : motion_path_timing_targets(doc, editable_layers(C))) {
+    for (const MotionPathTarget &t : motion_path_timing_targets(C)) {
       py::list stretches;
       for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
         py::dict d;
@@ -1592,7 +1594,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const Document &doc = *C.document;
     MotionPathTarget t;
     MotionPathStretch s;
-    if (!motion_path_timing_stretch(doc, motion_path_timing_targets(doc, editable_layers(C)), C.wm->path_timing_target,
+    if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), C.wm->path_timing_target,
                                     C.wm->path_timing_end, C.wm->path_timing_frame, t, s))
     {
       return py::none();
@@ -1654,6 +1656,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     d["brushes"] = each;
     d["proportional"] = ts.proportional;
+    d["edit_layer"] = ts.path_edit_layer;
     d["proportional_size"] = ts.path_proportional_size;
     d["falloff"] = proportional_falloff_identifier(ts.proportional_falloff);
     d["chart_size"] = ts.path_chart_size;

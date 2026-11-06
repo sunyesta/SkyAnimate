@@ -34,7 +34,7 @@ static std::vector<MotionPathTarget> strip_targets(Context &C)
   if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath) {
     return {};
   }
-  std::vector<MotionPathTarget> targets = motion_path_timing_targets(*C.document, editable_layers(C));
+  std::vector<MotionPathTarget> targets = motion_path_timing_targets(C);
   if (targets.size() > size_t(MAX_ROWS)) {
     targets.resize(size_t(MAX_ROWS));
   }
@@ -1060,7 +1060,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   }
   MotionPathTarget t;
   MotionPathStretch s;
-  if (!motion_path_timing_stretch(doc, motion_path_timing_targets(doc, editable_layers(C)), wm.path_timing_target,
+  if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), wm.path_timing_target,
                                   wm.path_timing_end, wm.path_timing_frame, t, s))
   {
     ImGui::TextWrapped("Trace something with keys a few frames apart: its stretches show here.");

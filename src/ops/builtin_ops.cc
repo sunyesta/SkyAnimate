@@ -182,7 +182,7 @@ static void playback_operators_register()
           return OpStatus::Finished;
         }
         int first = 0, last = 0;
-        if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last) || last <= first) {
+        if (!motion_path_range(doc, motion_path_targets(C), first, last) || last <= first) {
           report(ReportType::Warning, "No range to play: select something with keys around this frame");
           return OpStatus::Cancelled;
         }

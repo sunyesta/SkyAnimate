@@ -431,6 +431,12 @@ def path_hover_quiet_update(moving, x, y):
     return _oanim.path_hover_quiet_update(bool(moving), float(x), float(y))
 
 
+def layer_gizmo_finish(name="Move Layer"):
+    """Test hook: the Transform Layer box's drag done, after the layer's transform was changed: its undo step (with
+    the Motion Path tool's Edit Layer, keyed whatever Auto Keying says)."""
+    _oanim.layer_gizmo_finish(str(name))
+
+
 def motion_path_pick(x, y, zoom=100.0, extend=False, apply=True):
     """Test hook: the Motion Path tool's pick at document point (x, y): whether a bone or point is there; with
     apply, picks it (extend adds), as its click does."""

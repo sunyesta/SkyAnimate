@@ -395,6 +395,11 @@ PENDING = [
     ('src/anim/path_brush.hh', 'brush == PathBrush::Edit || brush == PathBrush::Pinch || brush == PathBrush::Slide ?', 'brush == PathBrush::Edit ?', 'Shift gives Blend Speed in the timing brushes', 'tests/test_motion_path_timing_brushes.py'),
     ('src/ops/motion_path_ops.cc', '          slide.proportional = true;\n          slide.size = float(reach);', '          slide.proportional = false;\n          slide.size = float(reach);', 'Slide takes the dots in the circle along', 'tests/test_motion_path_timing_brushes.py'),
     ('src/ops/motion_path_ops.cc', 'changed = motion_path_slide(doc, t, frame, points.back() - offset, slide) ? 1 : 0;', 'changed = 0;', 'Slide slides', 'tests/test_motion_path_timing_brushes.py'),
+    ('src/anim/motion_path.cc', '    if (edit_layer) {\n      /* Edit Layer: the layer itself, its origin. */', '    if ((false)) {\n      /* Edit Layer: the layer itself, its origin. */', 'Edit Layer: the origin path alone', 'tests/test_motion_path_edit_layer.py'),
+    ('src/editors/viewport.cc', 'if (C.wm->tool_settings.path_edit_layer) {\n    /* Edit Layer: the layer itself, never', 'if ((false)) {\n    /* Edit Layer: the layer itself, never', 'Edit Layer: no bone or point picked', 'tests/test_motion_path_edit_layer.py'),
+    ('src/editors/timeline.cc', '    return edit_layer == layer_itself(tg);\n  });', '    return (void)layer_itself, true;\n  });', 'teal never on the layer position with Edit Layer off', 'tests/test_motion_path_edit_layer.py'),
+    ('src/editors/viewport.cc', '  if (C.wm->tool_settings.tool == Tool::MotionPath) {\n    Document &doc = *C.document;\n    const bool auto_key', '  if ((false)) {\n    Document &doc = *C.document;\n    const bool auto_key', 'Edit Layer: the box keyed whatever Auto Keying says', 'tests/test_motion_path_edit_layer.py'),
+    ('src/ops/motion_path_ops.cc', 'ts.path_edit_layer = !ts.path_edit_layer;', '(void)0;', 'edit_layer= sets it', 'tests/test_motion_path_edit_layer.py'),
 ]
 
 

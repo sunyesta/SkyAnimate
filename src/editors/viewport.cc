@@ -550,7 +550,7 @@ static HandleDisplay handles_shown(const ViewportOverlays &ov, const ToolSetting
    * works on the points as a whole. */
   if (!ov.show || !ov.points || (ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen) ||
       ts.tool == Tool::WeightPaint || ts.tool == Tool::WeightSelect || ts.tool == Tool::TransformPoints ||
-      ts.tool == Tool::TransformLayer ||
+      ts.tool == Tool::TransformLayer || (ts.tool == Tool::MotionPath && ts.path_edit_layer) ||
       ts.tool == Tool::Sculpt || ts.select_mode == SelectMode::Edge || ts.select_mode == SelectMode::Stroke)
   {
     return HandleDisplay::None;
@@ -566,7 +566,7 @@ static bool points_overlay_shown(const ViewportOverlays &ov, const ToolSettings 
   /* Transform Layer moves the layer as a whole: its points would only look picked. */
   return ov.points && !(ts.tool == Tool::Draw && ts.draw_mode != DrawMode::Pen) &&
          !(ts.tool == Tool::Sculpt && !ts.sculpt_selected_only) && ts.tool != Tool::TransformLayer &&
-         !point_gizmo_busy();
+         !(ts.tool == Tool::MotionPath && ts.path_edit_layer) && !point_gizmo_busy();
 }
 
 /* The onion skins' ghosts: worked out again only when the document, the frame or the ghosts change. */
@@ -717,7 +717,7 @@ static constexpr float PATH_HANDLE_STUB = 30.0f;
 static std::vector<std::pair<MotionPathTarget, int>> path_edit_selection(Context &C)
 {
   std::vector<std::pair<MotionPathTarget, int>> all = C.wm->path_dots;
-  for (const auto &k : motion_path_selected_keys(*C.document, motion_path_targets(*C.document, editable_layers(C)))) {
+  for (const auto &k : motion_path_selected_keys(*C.document, motion_path_targets(C))) {
     all.push_back(k);
   }
   return all;
@@ -1288,7 +1288,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     const char kind = wm.path_keys_request;
     wm.path_keys_request = 0;
     std::vector<std::pair<MotionPathTarget, int>> keys =
-        motion_path_selected_keys(doc, motion_path_targets(doc, editable_layers(C)));
+        motion_path_selected_keys(doc, motion_path_targets(C));
     std::vector<MotionPathHandlePick> handles;
     for (const MotionPathHandlePick &hp : wm.path_handle_picks) {
       float2 k, hi, ho;
@@ -1633,7 +1633,7 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     d.radius = radius;
     d.strength = bs.strength;
     d.invert = invert;
-    const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+    const std::vector<MotionPathTarget> targets = motion_path_targets(C);
     const int n = brush == PathBrush::Smooth ? motion_path_smooth_dab(doc, targets, first, last, d)
                                              : motion_path_speed_dab(doc, targets, first, last, brush, d);
     g.changed |= n > 0;
@@ -1671,11 +1671,11 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
       return;
     }
     if (brush == PathBrush::Grab) {
-      g.grab = motion_path_grab_keys(doc, motion_path_targets(doc, editable_layers(C)), first, last, mouse, radius);
+      g.grab = motion_path_grab_keys(doc, motion_path_targets(C), first, last, mouse, radius);
     }
     else if (brush == PathBrush::Slide) {
       /* The dot nearest the press, the dots in the circle going with it along the path. */
-      g.slide = motion_path_slide_pick(doc, motion_path_targets(doc, editable_layers(C)), first, last, mouse, radius,
+      g.slide = motion_path_slide_pick(doc, motion_path_targets(C), first, last, mouse, radius,
                                        g.slide_target, g.slide_frame, g.slide_reach, g.slide_offset);
     }
     else {
@@ -1939,7 +1939,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   {
     return;
   }
-  const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+  const std::vector<MotionPathTarget> targets = motion_path_targets(C);
   {
     std::vector<MotionPathTarget> dotted;
     for (const auto &[t, f] : wm.path_dots) {
@@ -5297,6 +5297,16 @@ static void motion_path_header(Context &C)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("A path being edited (a key or dot picked) shows only its own motion: whatever else moves it "
                         "(a bone, a parent, a group) held as on this frame, the real path a faint ghost behind");
+    }
+    ImGui::SameLine();
+    bool edit_layer = C.wm->tool_settings.path_edit_layer;
+    if (ImGui::Checkbox("Edit Layer", &edit_layer)) {
+      operator_call(C, "anim.motion_path_brush_set", {{"edit_layer", edit_layer ? "1" : "0"}});
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Edit the layer itself: its origin's path, and the Transform Layer box to move, turn and "
+                        "scale it (keyed on this frame). Clicks never pick its bones or points, and the timeline "
+                        "shades its transform's stretch teal. Off: its bones and points, never its position");
     }
   }
   /* The brush picked on the shelf, and its settings. */
@@ -14084,6 +14094,10 @@ static bool vector_under(Context &C, const ViewMapping &view, ImVec2 mouse)
 static bool motion_path_pick_click(Context &C, const ViewMapping &view, ImVec2 at, bool extend, bool apply)
 {
   Document &doc = *C.document;
+  if (C.wm->tool_settings.path_edit_layer) {
+    /* Edit Layer: the layer itself, never its bones or points. */
+    return false;
+  }
   if (apply) {
     /* A bone or point picked: no path handles with it. */
     C.wm->path_handle_picks.clear();
@@ -14156,7 +14170,7 @@ static bool motion_path_vector_active()
 static bool motion_path_vector_press(Context &C, Area &area, const ViewMapping &view, ImVec2 at)
 {
   const ImGuiIO &io = ImGui::GetIO();
-  if (editable_layers(C).empty()) {
+  if (editable_layers(C).empty() || C.wm->tool_settings.path_edit_layer) {
     return false;
   }
   bool bone = false;
@@ -14880,6 +14894,20 @@ static void draw_layer_grid(ImDrawList *dl, const ViewMapping &view, const Trans
   dl->PopClipRect();
 }
 
+/* The box's drag done: its undo step, and with the Motion Path tool (Edit Layer) keyed whatever Auto Keying says, as
+ * the paths' own edits are. */
+void layer_gizmo_finish(Context &C, const char *name)
+{
+  if (C.wm->tool_settings.tool == Tool::MotionPath) {
+    Document &doc = *C.document;
+    const bool auto_key = doc.auto_key;
+    doc.auto_key = true;
+    animation_record(doc);
+    doc.auto_key = auto_key;
+  }
+  push_undo(C, name);
+}
+
 static void layer_gizmo_input(Context &C, Area &area, const ViewMapping &view, bool hovered, ImDrawList *dl)
 {
   Document &doc = *C.document;
@@ -15117,7 +15145,10 @@ static void layer_gizmo_input(Context &C, Area &area, const ViewMapping &view, b
                          layer->shear != g.shear;
       g = {};
       if (mode != 'P' && moved) {
-        push_undo(C, mode == 'R' ? "Rotate Layer" : mode == 'S' ? "Scale Layer" : mode == 'K' ? "Shear Layer" : "Move Layer");
+        layer_gizmo_finish(C, mode == 'R'   ? "Rotate Layer"
+                              : mode == 'S' ? "Scale Layer"
+                              : mode == 'K' ? "Shear Layer"
+                                            : "Move Layer");
       }
       return;
     }
@@ -17089,6 +17120,13 @@ static void viewport_draw_contents(Area &area, Context &C)
   }
   if (ov.show) {
     draw_motion_paths(C, area, view, dl, hovered);
+    /* Edit Layer: the Transform Layer box round the layer, taking the presses the paths left (Edit's; the other
+     * brushes paint wherever pressed). */
+    if (ts.tool == Tool::MotionPath && ts.path_edit_layer && ts.path_brush == PathBrush::Edit && !g_modal.active &&
+        !g_path_drag.active && !g_path_slide.active && !g_path_brush.active && !g_path_brush.pending)
+    {
+      layer_gizmo_input(C, area, view, hovered, dl);
+    }
   }
   /* Whoever showed a mask set it this frame or the last. */
   wm.mask_hover.clear();

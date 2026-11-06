@@ -207,6 +207,10 @@ struct ToolSettings {
   /* Edit's proportional editing of dots (on/off and falloff are the points', O and Shift O): how many frames either
    * side of the dragged dot slide with it. */
   float path_proportional_size = 3.0f;
+  /* The Motion Path tool's Edit Layer: the layer itself edited (its origin's path, the Transform Layer box; no bone or
+   * point picked, the timeline's teal on its transform rows); off, its bones and points (the teal never on its
+   * position). */
+  bool path_edit_layer = false;
   /* The timing chart's and the Path Timing graph's own reach (frames either side of a dragged dot that follow it,
    * proportional editing being always on there; 0 the dot alone), sized with the wheel while dragging. */
   float path_chart_size = 3.0f;

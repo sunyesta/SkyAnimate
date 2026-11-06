@@ -221,7 +221,8 @@ MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget
   return doc.path_targets.back();
 }
 
-std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std::vector<Layer *> &editing)
+std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std::vector<Layer *> &editing,
+                                                  bool edit_layer)
 {
   std::vector<MotionPathTarget> out;
   const auto add = [&](MotionPathTarget t) {
@@ -249,14 +250,17 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   }
   std::vector<const Layer *> layers = own;
   for (const Layer *layer : editing) {
-    if (layer && std::find(layers.begin(), layers.end(), layer) == layers.end()) {
+    if (!edit_layer && layer && std::find(layers.begin(), layers.end(), layer) == layers.end()) {
       layers.push_back(layer);
     }
   }
   size_t points = 0;
   for (const Layer *layer : layers) {
     bool any = false;
-    if (layer->is_bone_layer()) {
+    if (edit_layer) {
+      /* Edit Layer: the layer itself, its origin. */
+    }
+    else if (layer->is_bone_layer()) {
       /* A bone traces its tip and its head, but a connected head only rides on its parent's tip. */
       for (const Bone &b : layer->bones) {
         if (b.selected) {
@@ -301,9 +305,14 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   return out;
 }
 
-std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing)
+std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing,
+                                                         bool edit_layer)
 {
-  std::vector<MotionPathTarget> out = motion_path_targets(doc, editing);
+  std::vector<MotionPathTarget> out = motion_path_targets(doc, editing, edit_layer);
+  if (edit_layer) {
+    /* The layer itself: no drawing's timing. */
+    return out;
+  }
   std::vector<const Layer *> layers;
   if (const Layer *active = layer_find(doc, doc.active_layer)) {
     layers.push_back(active);

@@ -88,6 +88,8 @@ PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_sho
 /* Test hook: the Motion Path tool's pick at document point `at` (zoom pixels a unit): whether a bone or point is
  * there, and with `apply` picks it (`extend` adds). */
 bool motion_path_pick_test(Context &C, float2 at, float zoom, bool extend, bool apply);
+/* The Transform Layer box's drag done (also Edit Layer's in the Motion Path tool): its undo step, keyed there. */
+void layer_gizmo_finish(Context &C, const char *name);
 /* Test hook: whether a point, shown handle or (outside Points mode) line of the drawings being edited is at `at`. */
 bool motion_path_vector_under_test(Context &C, float2 at, float zoom);
 /* The motion path dots' hover while things move: `moving` now (returned); after a move the ghost of the hovered

@@ -25,11 +25,13 @@ struct Layer;
 
 /* What the paths trace: for each of `editing` (the layers being edited), its selected bones or points, or with
  * none of those its origin; and every pinned target. */
-std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std::vector<Layer *> &editing);
+std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std::vector<Layer *> &editing,
+                                                  bool edit_layer = false);
 /* What the timing chart and Path Timing graph show: the paths' targets, then the drawing (MotionPathTarget::drawing)
  * of each Key Whole Drawing layer among the active, picked and edited ones whose drawing is animated. A Key Whole
  * Drawing layer's points trace no path of their own. */
-std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing);
+std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing,
+                                                         bool edit_layer = false);
 /* The kept style of `target` (pin, colour, end), or null. */
 const MotionPathTarget *motion_path_style(const Document &doc, const MotionPathTarget &target);
 MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget &target);

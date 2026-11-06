@@ -970,13 +970,22 @@ static KeyFocus key_focus(Context &C)
     return f;
   }
   /* Nothing picked: the stretch under the playhead, of the path last picked on, else the first traced. */
-  const std::vector<MotionPathTarget> targets = motion_path_timing_targets(doc, editable_layers(C));
+  const std::vector<MotionPathTarget> targets = motion_path_timing_targets(C);
   if (targets.empty()) {
     return f;
   }
-  MotionPathTarget target = targets.front();
+  /* Edit Layer off: bones and points, never the layer's own position. */
+  const auto layer_itself = [](const MotionPathTarget &tg) { return !tg.bone && !tg.point && !tg.drawing; };
+  const bool edit_layer = wm.tool_settings.path_edit_layer;
+  const auto shaded = std::find_if(targets.begin(), targets.end(), [&](const MotionPathTarget &tg) {
+    return edit_layer == layer_itself(tg);
+  });
+  if (shaded == targets.end()) {
+    return f;
+  }
+  MotionPathTarget target = *shaded;
   for (const MotionPathTarget &tg : targets) {
-    if (tg.same(wm.path_timing_target)) {
+    if (tg.same(wm.path_timing_target) && edit_layer == layer_itself(tg)) {
       target = tg;
     }
   }
@@ -2055,7 +2064,7 @@ static void timeline_header(Area &area, Context &C)
     }
     if (doc.motion_paths) {
       /* Each path traced now: its colour, a pin, and for a bone which end. */
-      const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+      const std::vector<MotionPathTarget> targets = motion_path_targets(C);
       for (size_t i = 0; i < targets.size() && i < 12; i++) {
         const MotionPathTarget &t = targets[i];
         ImGui::PushID(int(i));
@@ -4189,7 +4198,7 @@ static void timeline_body(Area &area, Context &C)
       last = C.wm->play_range_last;
     }
     else {
-      motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last);
+      motion_path_range(doc, motion_path_targets(C), first, last);
     }
     if (last > first) {
       const float half = (frame_x(1.0f) - frame_x(0.0f)) * 0.5f;

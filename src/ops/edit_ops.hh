@@ -113,6 +113,10 @@ VectorDrawing *editable_drawing(Context &C, Layer **r_layer = nullptr);
  * delete and the other point operators act on all of them at once; drawing tools still draw on
  * the active layer. */
 std::vector<Layer *> editable_layers(Context &C);
+/* The motion paths traced now (anim/motion_path.hh), with the Motion Path tool's Edit Layer: what the tool, its
+ * operators and the timeline work on. */
+std::vector<struct MotionPathTarget> motion_path_targets(Context &C);
+std::vector<struct MotionPathTarget> motion_path_timing_targets(Context &C);
 std::vector<Layer *> document_editable_layers(Document &doc);
 /* What the weight tools work on, so only one bone layer's bones are ever in play: the active drawing alone, whatever
  * else is picked; or on an active bone layer, or group with Edit Descendants, the drawings inside it that go by those

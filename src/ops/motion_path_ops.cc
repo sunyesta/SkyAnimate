@@ -32,6 +32,16 @@ struct PathDotsSync {
   }
 };
 
+std::vector<MotionPathTarget> motion_path_targets(Context &C)
+{
+  return motion_path_targets(*C.document, editable_layers(C), C.wm && C.wm->tool_settings.path_edit_layer);
+}
+
+std::vector<MotionPathTarget> motion_path_timing_targets(Context &C)
+{
+  return motion_path_timing_targets(*C.document, editable_layers(C), C.wm && C.wm->tool_settings.path_edit_layer);
+}
+
 namespace {
 
 /* The targets an operator works on: layer=id (with bone=name, and head=1 for its head's path rather than its tip's,
@@ -41,7 +51,7 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
   Document &doc = *C.document;
   r_targets.clear();
   if (!op_has_arg(C, "layer")) {
-    r_targets = motion_path_targets(doc, editable_layers(C));
+    r_targets = motion_path_targets(C);
     return !r_targets.empty();
   }
   const Layer *layer = layer_find(doc, uint64_t(std::stoull(op_arg(C, "layer", "0"))));
@@ -109,7 +119,7 @@ static bool path_edit_poll(Context &C)
 /* The keys selected on the paths traced. */
 static std::vector<std::pair<MotionPathTarget, int>> path_selected_keys(Context &C)
 {
-  return motion_path_selected_keys(*C.document, motion_path_targets(*C.document, editable_layers(C)));
+  return motion_path_selected_keys(*C.document, motion_path_targets(C));
 }
 
 /* The path handles picked whose keys are still there. */
@@ -251,7 +261,7 @@ void motion_path_operators_register()
         return OpStatus::Finished;
       }
       const Document &doc = *C.document;
-      const std::vector<MotionPathTarget> targets = motion_path_targets(doc, editable_layers(C));
+      const std::vector<MotionPathTarget> targets = motion_path_targets(C);
       int first = 0, last = 0;
       if (!motion_path_range(doc, targets, first, last)) {
         report(ReportType::Warning, "No motion paths to keep: select what to trace");
@@ -573,7 +583,7 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       int first = 0, last = 0;
-      if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last)) {
+      if (!motion_path_range(doc, motion_path_targets(C), first, last)) {
         motion_path_range(doc, targets, first, last);
       }
       int moved = 0;
@@ -650,7 +660,8 @@ void motion_path_operators_register()
     OperatorType ot;
     ot.idname = "anim.motion_path_brush_set";
     ot.name = "Set Motion Path Brush";
-    ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH or BLEND_SPEED), and set that "
+    ot.description = "Pick the Motion Path tool's brush (brush=EDIT, GRAB, SMOOTH, BLEND_SPEED, PINCH or SLIDE), "
+                     "Edit Layer (edit_layer=0/1: the layer itself, not its bones and points), and set that "
                      "brush's own radius= (screen pixels) and strength= (Edit's are its Shift brush's, Blend Speed's), "
                      "the timing chart's and Path Timing graph's reach (chart_size=, graph_size=, in frames), "
                      "and Edit's proportional editing of dots: proportional=0/1, proportional_size= (frames), falloff= "
@@ -678,6 +689,14 @@ void motion_path_operators_register()
       }
       if (op_has_arg(C, "proportional")) {
         ts.proportional = op_arg_bool(C, "proportional");
+      }
+      if (op_has_arg(C, "edit_layer")) {
+        if (ts.path_edit_layer != op_arg_bool(C, "edit_layer")) {
+          ts.path_edit_layer = !ts.path_edit_layer;
+          /* Other paths now: the dots and handles picked on the old ones let go. */
+          C.wm->path_dots.clear();
+          C.wm->path_handle_picks.clear();
+        }
       }
       if (op_has_arg(C, "chart_size")) {
         ts.path_chart_size = std::clamp(op_arg_float(C, "chart_size", ts.path_chart_size), 0.0f, 100.0f);
@@ -760,7 +779,7 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       int first = 0, last = 0;
-      if (!motion_path_range(doc, motion_path_targets(doc, editable_layers(C)), first, last) &&
+      if (!motion_path_range(doc, motion_path_targets(C), first, last) &&
           !motion_path_range(doc, targets, first, last))
       {
         return OpStatus::Cancelled;
@@ -1050,7 +1069,7 @@ void motion_path_operators_register()
       WindowManager &wm = *C.wm;
       MotionPathTarget t;
       MotionPathStretch shown;
-      if (!motion_path_timing_stretch(doc, motion_path_timing_targets(doc, editable_layers(C)), wm.path_timing_target,
+      if (!motion_path_timing_stretch(doc, motion_path_timing_targets(C), wm.path_timing_target,
                                       wm.path_timing_end, wm.path_timing_frame, t, shown))
       {
         return OpStatus::Cancelled;
@@ -1219,7 +1238,7 @@ void motion_path_operators_register()
       /* Path handles picked: their keys. */
       if ((path_handles_picked(C)
                ? motion_path_handles_type_at(*C.document, C.wm->path_handle_picks, mode)
-               : motion_path_handles_type(*C.document, motion_path_targets(*C.document, editable_layers(C)), mode)) ==
+               : motion_path_handles_type(*C.document, motion_path_targets(C), mode)) ==
           0)
       {
         return OpStatus::Cancelled;
@@ -1252,7 +1271,7 @@ void motion_path_operators_register()
     ot.poll = [](Context &C) { return path_edit_poll(C) && !path_selected_keys(C).empty(); };
     ot.exec = [](Context &C) {
       animation_record(*C.document);
-      if (motion_path_keys_delete(*C.document, motion_path_targets(*C.document, editable_layers(C))) == 0) {
+      if (motion_path_keys_delete(*C.document, motion_path_targets(C)) == 0) {
         return OpStatus::Cancelled;
       }
       return OpStatus::Finished;

@@ -41,6 +41,11 @@ assert h["mode"] == "NEW" and not h["editing"], h
 
 # --- The tool, nothing picked: the stretch under the playhead, teal --------------------------------------------------
 assert ops.wm.tool_motion_path() == {'FINISHED'}
+# Edit Layer off: never the layer's own position (here the drawing's, keyed whole).
+h = wm.timeline_key_header()
+assert "drawing" in h["label"], ("Edit Layer off: not the layer's position", h)
+# Edit Layer on: the layer's.
+assert ops.anim.motion_path_brush_set(edit_layer="1") == {'FINISHED'}
 h = wm.timeline_key_header()
 assert h["mode"] == "PATH" and h["editing"], h
 assert tuple(h["span"]) == (10, 20), h
