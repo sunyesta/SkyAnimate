@@ -10,23 +10,33 @@
 
 namespace oanim {
 
-enum class PathBrush : uint8_t { Edit, Grab, Smooth, BlendSpeed };
-inline constexpr int PATH_BRUSH_COUNT = 4;
+/* Edit takes dots, keys and handles; Grab and Smooth shape the path; Blend Speed, Pinch and Slide retime it. */
+enum class PathBrush : uint8_t { Edit, Grab, Smooth, BlendSpeed, Pinch, Slide };
+inline constexpr int PATH_BRUSH_COUNT = 6;
 
-/* "EDIT", "GRAB", "SMOOTH", "BLEND_SPEED". */
+/* "EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE". */
 const char *path_brush_id(PathBrush brush);
-/* "Edit", "Grab", "Smooth", "Blend Speed". */
+/* "Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide". */
 const char *path_brush_name(PathBrush brush);
 bool path_brush_from_id(const std::string &id, PathBrush *r_brush);
-/* The brushes painting speed under a circle (Ctrl paints the opposite). */
+/* The brushes painting speed under a circle (Ctrl paints the opposite: Pinch spreads). */
 inline bool path_brush_is_speed(PathBrush brush)
 {
-  return brush == PathBrush::BlendSpeed;
+  return brush == PathBrush::BlendSpeed || brush == PathBrush::Pinch;
 }
-/* The brush Shift swaps in while held: Grab's Smooth, Edit's Blend Speed; the others are their own. */
+/* The timing brushes (the shelf's Timing): they move no key and never change the path's shape, only when its dots
+ * land. */
+inline bool path_brush_is_timing(PathBrush brush)
+{
+  return path_brush_is_speed(brush) || brush == PathBrush::Slide;
+}
+/* The brush Shift swaps in while held: Grab's Smooth; Edit's and the timing brushes' Blend Speed; the others are their
+ * own. */
 inline PathBrush path_brush_shifted(PathBrush brush)
 {
-  return brush == PathBrush::Grab ? PathBrush::Smooth : brush == PathBrush::Edit ? PathBrush::BlendSpeed : brush;
+  return brush == PathBrush::Grab                                                     ? PathBrush::Smooth
+         : brush == PathBrush::Edit || brush == PathBrush::Pinch || brush == PathBrush::Slide ? PathBrush::BlendSpeed
+                                                                                      : brush;
 }
 /* Each brush's own size (screen pixels) and strength. */
 struct PathBrushSettings {

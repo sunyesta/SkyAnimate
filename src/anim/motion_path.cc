@@ -1171,6 +1171,10 @@ int paint_speeds(Channel<T> &ch, const std::map<int, float> &falloff, PathBrush 
         case PathBrush::BlendSpeed:
           v += (dab.invert ? (v - neighbours) : (neighbours - v)) * std::min(f * strength, 1.0f);
           break;
+        case PathBrush::Pinch:
+          /* Slower under the brush (its dots crowd together toward the middle); Ctrl, faster (they spread). */
+          v *= dab.invert ? 1.0f + 0.5f * std::min(f * strength, 1.0f) : 1.0f - 0.5f * std::min(f * strength, 1.0f);
+          break;
         default:
           break;
       }
@@ -1426,13 +1430,13 @@ float nearest_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
 
 const char *path_brush_id(PathBrush brush)
 {
-  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT", "GRAB", "SMOOTH", "BLEND_SPEED"};
+  static const char *const IDS[PATH_BRUSH_COUNT] = {"EDIT", "GRAB", "SMOOTH", "BLEND_SPEED", "PINCH", "SLIDE"};
   return IDS[int(brush)];
 }
 
 const char *path_brush_name(PathBrush brush)
 {
-  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit", "Grab", "Smooth", "Blend Speed"};
+  static const char *const NAMES[PATH_BRUSH_COUNT] = {"Edit", "Grab", "Smooth", "Blend Speed", "Pinch", "Slide"};
   return NAMES[int(brush)];
 }
 
@@ -1553,6 +1557,36 @@ int motion_path_smooth_dab(Document &doc, const std::vector<MotionPathTarget> &t
   doc.frame_current = shown;
   animation_evaluate(doc, shown);
   return changed;
+}
+
+bool motion_path_slide_pick(const Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                            float2 at, float radius, MotionPathTarget &r_target, int &r_frame, int &r_reach,
+                            float2 &r_offset)
+{
+  float best = radius;
+  bool found = false;
+  for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+    for (size_t i = 0; i < p.points.size(); i++) {
+      const int f = p.first + int(i);
+      const float d = length(p.points[i] - at);
+      if (d > best || f <= 0 || std::binary_search(p.keys.begin(), p.keys.end(), f)) {
+        continue;
+      }
+      best = d;
+      found = true;
+      r_target = p.target;
+      r_frame = f;
+      r_reach = 1;
+      for (size_t j = 0; j < p.points.size(); j++) {
+        if (length(p.points[j] - at) <= radius) {
+          r_reach = std::max(r_reach, std::abs(p.first + int(j) - f));
+        }
+      }
+      float2 own;
+      r_offset = motion_path_position_at(doc, p.target, f, own) ? p.points[i] - own : float2{0.0f, 0.0f};
+    }
+  }
+  return found;
 }
 
 int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,

@@ -99,12 +99,39 @@ void path_brush_icon(ImDrawList *dl, PathBrush brush, ImVec2 c, float s, unsigne
       }
       break;
     }
+    case PathBrush::Pinch: {
+      /* The dots crowding toward the middle. */
+      arc_line(dl, c, s, COL_FAINT, 0.45f, t * 0.6f);
+      const auto pinched = [](int i) {
+        const float u = float(i) / 8.0f - 0.5f;
+        return 0.5f + u * std::abs(u) * 2.0f;
+      };
+      dots(dl, c, s, 9, pinched, col);
+      break;
+    }
+    case PathBrush::Slide: {
+      /* Dots along the arc, an arrow along it. */
+      arc_line(dl, c, s, COL_FAINT, 0.45f, t * 0.6f);
+      dots(dl, c, s, 7, even, col);
+      const ImVec2 a = c + ImVec2(-0.3f * s, 0.45f * s), b = c + ImVec2(0.3f * s, 0.45f * s);
+      dl->AddLine(a, b, COL_ARROW, t);
+      dl->AddTriangleFilled(b + ImVec2(0.14f * s, 0), b + ImVec2(-0.02f * s, -0.1f * s),
+                            b + ImVec2(-0.02f * s, 0.1f * s), COL_ARROW);
+      break;
+    }
   }
 }
 
+/* 0 All, 1 Shape (Grab, Smooth), 2 Timing (Blend Speed, Pinch, Slide). */
 static bool in_tab(PathBrush brush, int tab)
 {
-  return tab != 1 || !path_brush_is_speed(brush);
+  if (tab == 1) {
+    return brush == PathBrush::Grab || brush == PathBrush::Smooth;
+  }
+  if (tab == 2) {
+    return path_brush_is_timing(brush);
+  }
+  return true;
 }
 
 static const char *brush_tip(PathBrush brush)
@@ -113,8 +140,8 @@ static const char *brush_tip(PathBrush brush)
     case PathBrush::Edit:
       return "Click a key or a dot to select it (Shift: add or take out; double click: go to its frame). Drag a key "
              "to move it, a dot along its path (proportional editing: O), a selected key's handles to bend the path "
-             "(Alt breaks them). Alt click the path: a breakdown there (Alt drag: and move it; Ctrl: onto the line between "
-             "the keys; Alt Shift: a breakdown). G R S on the selected keys, V their handle types, X deletes them; "
+             "(Alt breaks them). Alt click the path: a control point there, shaping it only (Alt drag: and move it; "
+             "Alt Shift: a breakdown on the arc). G R S on the selected keys, V their handle types, X deletes them; "
              "Alt S scales the timing around the selection. Shift drag: Blend Speed";
     case PathBrush::Grab:
       return "Drag a soft area of the path: the keys under the brush follow the mouse, the nearest most. Shift: "
@@ -124,6 +151,12 @@ static const char *brush_tip(PathBrush brush)
              "and its dragged handles back toward Auto";
     case PathBrush::BlendSpeed:
       return "Even out the spacing where you brush. Ctrl sharpens it: slow parts slower, fast parts faster";
+    case PathBrush::Pinch:
+      return "Crowd the dots together where you brush, so the move slows there. Ctrl spreads them: faster. Shift: "
+             "Blend Speed. The keys and the path's shape stay";
+    case PathBrush::Slide:
+      return "Drag the dots inside the circle along the path, the ones nearer its edge going less. The keys and the "
+             "path's shape stay. Shift: Blend Speed";
   }
   return "";
 }
@@ -136,8 +169,8 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
   ToolSettings &ts = C.wm->tool_settings;
   ShelfState &shelf = area.path_shelf;
   ImGui::PushID("##path_shelf");
-  shelf.tab = std::min(shelf.tab, 1);
-  if (!shelf_frame(shelf, {{0, "All"}, {1, "Shape"}}, min, size)) {
+  shelf.tab = std::min(shelf.tab, 2);
+  if (!shelf_frame(shelf, {{0, "All"}, {1, "Shape"}, {2, "Timing"}}, min, size)) {
     ImGui::PopID();
     return;
   }
@@ -153,8 +186,8 @@ void path_shelf_draw(Context &C, Area &area, ImVec2 min, ImVec2 size)
     const int per_row = std::max(1, int((size.x - gap) / (tile + gap)));
     const std::string search = shelf_lower(shelf.search);
     std::vector<PathBrush> shown;
-    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit, PathBrush::Grab, PathBrush::Smooth,
-                                                          PathBrush::BlendSpeed};
+    static constexpr PathBrush ORDER[PATH_BRUSH_COUNT] = {PathBrush::Edit,       PathBrush::Grab,  PathBrush::Smooth,
+                                                          PathBrush::BlendSpeed, PathBrush::Pinch, PathBrush::Slide};
     for (const PathBrush brush : ORDER) {
       if (in_tab(brush, shelf.tab) &&
           (search.empty() || shelf_lower(path_brush_name(brush)).find(search) != std::string::npos))

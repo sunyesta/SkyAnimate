@@ -390,6 +390,11 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', '      C.wm->path_handle_picks = {MotionPathHandlePick{targets.front(), end, false, index}};', '      (void)index;', 'a new control point picked alone', 'tests/test_motion_path_controls.py'),
     ('src/anim/motion_path.cc', "    const float2 goes = kind == 'G'   ? mc.at + offset", "    const float2 goes = kind == 'G'   ? mc.at", 'G moves picked control points', 'tests/test_motion_path_controls.py'),
     ('src/editors/timeline.cc', '      rows.erase(rows.begin());', '      (void)0;', 'Summary and a lone layer one row', 'tests/test_timeline_summary_merge.py'),
+    ('src/anim/motion_path.cc', 'v *= dab.invert ? 1.0f + 0.5f', 'v *= !dab.invert ? 1.0f + 0.5f', 'Pinch slows, Ctrl spreads', 'tests/test_motion_path_timing_brushes.py'),
+    ('src/anim/path_brush.hh', 'return brush == PathBrush::BlendSpeed || brush == PathBrush::Pinch;', 'return brush == PathBrush::BlendSpeed;', 'Pinch paints speed', 'tests/test_motion_path_timing_brushes.py'),
+    ('src/anim/path_brush.hh', 'brush == PathBrush::Edit || brush == PathBrush::Pinch || brush == PathBrush::Slide ?', 'brush == PathBrush::Edit ?', 'Shift gives Blend Speed in the timing brushes', 'tests/test_motion_path_timing_brushes.py'),
+    ('src/ops/motion_path_ops.cc', '          slide.proportional = true;\n          slide.size = float(reach);', '          slide.proportional = false;\n          slide.size = float(reach);', 'Slide takes the dots in the circle along', 'tests/test_motion_path_timing_brushes.py'),
+    ('src/ops/motion_path_ops.cc', 'changed = motion_path_slide(doc, t, frame, points.back() - offset, slide) ? 1 : 0;', 'changed = 0;', 'Slide slides', 'tests/test_motion_path_timing_brushes.py'),
 ]
 
 

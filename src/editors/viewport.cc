@@ -1538,6 +1538,11 @@ static struct {
   ImVec2 last;
   float2 press;
   std::vector<PathGrabKey> grab;
+  /* Slide's dot (the nearest the press), how far its pull reaches in frames, and where it is drawn less where it is. */
+  bool slide = false;
+  MotionPathTarget slide_target;
+  int slide_frame = 0, slide_reach = 1;
+  float2 slide_offset;
   /* Whether the stroke has changed anything, so a stroke that touched nothing makes no undo step. */
   bool changed = false;
   /* The brush the stroke paints with (Shift's, held when it began). */
@@ -1668,6 +1673,11 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     if (brush == PathBrush::Grab) {
       g.grab = motion_path_grab_keys(doc, motion_path_targets(doc, editable_layers(C)), first, last, mouse, radius);
     }
+    else if (brush == PathBrush::Slide) {
+      /* The dot nearest the press, the dots in the circle going with it along the path. */
+      g.slide = motion_path_slide_pick(doc, motion_path_targets(doc, editable_layers(C)), first, last, mouse, radius,
+                                       g.slide_target, g.slide_frame, g.slide_reach, g.slide_offset);
+    }
     else {
       dab();
     }
@@ -1703,6 +1713,19 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
       push_undo(C, path_brush_name(brush));
     }
     finish();
+    return;
+  }
+  if (brush == PathBrush::Slide) {
+    if (g.slide && (io.MousePos.x != g.last.x || io.MousePos.y != g.last.y)) {
+      doc = g.snapshot;
+      PathSlide slide;
+      slide.proportional = true;
+      slide.size = float(g.slide_reach);
+      slide.falloff = ts.proportional_falloff;
+      g.changed |= motion_path_slide(doc, g.slide_target, g.slide_frame, mouse - g.slide_offset, slide);
+      g.last = io.MousePos;
+      g_path_drag.serial++;
+    }
     return;
   }
   if (brush == PathBrush::Grab) {
@@ -5348,11 +5371,16 @@ static const char *tool_hint(const ToolSettings &ts)
           return "Brush over a lumpy stretch: smooth it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
         case PathBrush::BlendSpeed:
           return "Paint: even out the spacing  |  Ctrl: sharpen it  |  F: radius  |  Shift F: strength  |  Esc: cancel";
+        case PathBrush::Pinch:
+          return "Paint: the dots crowd together (slower)  |  Ctrl: spread them (faster)  |  Shift: Blend Speed  |  "
+                 "F: radius  |  Shift F: strength  |  Esc: cancel";
+        case PathBrush::Slide:
+          return "Drag: the dots in the circle slide along the path, the keys staying  |  Shift: Blend Speed  |  "
+                 "F: radius  |  Esc: cancel";
       }
       return "Click: select  |  Shift: add  |  Shift drag: Blend Speed  |  Double click: its frame  |  Drag a key: "
-             "move it, a dot: slide it (O: proportional)  |  Alt click: add a breakdown  |  Alt Shift: breakdown on the "
-             "arc  |  Ctrl: straight  |  G R S  |  Alt S: "
-             "timing  |  V: handles  |  X: delete";
+             "move it, a dot: slide it (O: proportional)  |  Alt click: add a control point  |  Alt Shift: breakdown on "
+             "the arc  |  G R S  |  Alt S: timing  |  V: handles  |  X: delete";
     default:
       return "";
   }

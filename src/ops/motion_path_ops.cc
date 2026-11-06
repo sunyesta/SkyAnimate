@@ -775,6 +775,18 @@ void motion_path_operators_register()
         const std::vector<PathGrabKey> keys = motion_path_grab_keys(doc, targets, first, last, points.front(), dab.radius);
         changed = motion_path_grab(doc, keys, points.back() - points.front(), dab.strength);
       }
+      else if (brush == PathBrush::Slide) {
+        /* The dot nearest the first point slides to the last, the dots inside the circle going with it. */
+        MotionPathTarget t;
+        int frame = 0, reach = 1;
+        float2 offset;
+        if (motion_path_slide_pick(doc, targets, first, last, points.front(), dab.radius, t, frame, reach, offset)) {
+          PathSlide slide;
+          slide.proportional = true;
+          slide.size = float(reach);
+          changed = motion_path_slide(doc, t, frame, points.back() - offset, slide) ? 1 : 0;
+        }
+      }
       else {
         for (const float2 p : points) {
           dab.center = p;

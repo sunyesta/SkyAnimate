@@ -331,6 +331,12 @@ int motion_path_smooth_dab(Document &doc, const std::vector<MotionPathTarget> &t
 /* Paint Speed, Faster, Slower or Blend Speed: the speeds of the frames under the dab, on the channel that moves each
  * target's dot, its stretches becoming Custom (each still arriving on its key's frame). Returns how many stretches
  * changed. */
+/* Slide's press: the dot between keys nearest `at` within `radius` (document units, as drawn) on the paths of
+ * `targets` over first..last, how many frames either side of it have dots inside the circle (at least 1), and where it
+ * is drawn less where it is. False with none there. */
+bool motion_path_slide_pick(const Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
+                            float2 at, float radius, MotionPathTarget &r_target, int &r_frame, int &r_reach,
+                            float2 &r_offset);
 int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &targets, int first, int last,
                           PathBrush brush, const PathDab &dab);
 
