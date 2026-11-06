@@ -114,6 +114,45 @@ for f in (13, 14):
     a, b = where(corner, f), where(corner, f + 1)
     assert max(off_chord(p, a, b) for p in between(pts, a, b)) < 1e-4, ("straight into and out of the key", f)
 
+# --- A control point: the line goes through it; a crease there (handles not in line) is a sharp corner ---------------
+def turn_at(pts, at):
+    """How sharply the line turns at its point nearest `at` (degrees), from a little way either side."""
+    k = min(range(len(pts)), key=lambda j: math.dist(pts[j], at))
+    assert math.dist(pts[k], at) < 1e-4, ("the line goes through the control point", at, pts[k])
+    b = next(p for p in reversed(pts[:k]) if math.dist(p, at) > 0.02)
+    c = next(p for p in pts[k + 1:] if math.dist(p, at) > 0.02)
+    u, w = (at[0] - b[0], at[1] - b[1]), (c[0] - at[0], c[1] - at[1])
+    cos = (u[0] * w[0] + u[1] * w[1]) / (math.hypot(*u) * math.hypot(*w))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+
+
+for crease in (False, True):
+    # An odd number of frames: the control point, halfway along, falls between two dots.
+    vee = mover({10: (0.0, 0.0), 29: (6.0, 0.0)}, "LINEAR")
+    va = dict(layer=str(vee.id))
+    assert ops.anim.motion_path_control_add(frame="20", **va) == {'FINISHED'}
+    assert ops.anim.motion_path_control_move(frame="29", index="0", x="3", y="-2", **va) == {'FINISHED'}
+    if crease:
+        # Both handles up: the path comes down to the point and goes straight back up (a V).
+        assert ops.anim.motion_path_control_handle_move(frame="29", index="0", out="0", x="2.6", y="0", alone="1",
+                                                        **va) == {'FINISHED'}
+        assert ops.anim.motion_path_control_handle_move(frame="29", index="0", out="1", x="3.4", y="0", alone="1",
+                                                        **va) == {'FINISHED'}
+    pts, _ = line(vee)
+    assert min(math.dist(where(vee, f), (3.0, -2.0)) for f in range(10, 30)) > 0.05, "no dot on it"
+    angle = turn_at(pts, (3.0, -2.0))
+    tip = (3.0, -2.0)
+    bow = []
+    for side in (where(vee, 19), where(vee, 20)):
+        seg = between(pts, side, tip)
+        bow.append(max(off_chord(q, side, tip) for q in seg) / math.dist(side, tip))
+    if crease:
+        assert angle > 60, ("a crease: a sharp corner at the control point", angle)
+        assert max(bow) < 0.02, ("straight into the corner and out, not rounded", bow)
+    else:
+        assert angle < 5, ("in line: smooth through it", angle)
+
+
 # --- Overshoot is dashed, along the smooth line; the rest stays solid -------------------------------------------------
 over = mover({10: (0.0, 0.0), 20: (2.0, 1.0)}, "LINEAR")
 assert ops.wm.tool_motion_path() == {'FINISHED'}

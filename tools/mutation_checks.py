@@ -427,6 +427,9 @@ PENDING = [
     ('src/anim/motion_path.cc', "    if (kind == 'G') {\n      /* Kept relative to the point, its handles ride along. */\n      continue;\n    }\n", "    if (kind != 'X') {\n      continue;\n    }\n", 'R S on a control point turn and scale its handles', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h * factor);\n", "      const float2 tip = goes + (kind == 'R' ? float2{h.x * c - h.y * s, h.x * s + h.y * c} : h);\n", 'S on a control point scales its handles', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', '      k->path_control_handles[size_t(mc.index)].aligned = mc.aligned;\n', '      (void)k;\n', 'R on a control point keeps its handles aligned', 'tests/test_motion_path_control_handles.py'),
+    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    (void)in_line;\n', 'the path line goes through a control point', 'tests/test_motion_path_smooth_line.py'),
+    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    r[size_t(i)] = {true, at, false && !in_line};\n', 'a crease at a control point is a corner', 'tests/test_motion_path_smooth_line.py'),
+    ('src/editors/viewport.cc', '    r[size_t(i)] = {true, at, !in_line};\n', '    r[size_t(i)] = {true, at, true || !in_line};\n', 'an in-line control point stays smooth', 'tests/test_motion_path_smooth_line.py'),
 ]
 
 
