@@ -736,6 +736,9 @@ struct Bone {
   bool controller_knob_independent = false;
   /* Its Knob Parent (a bone's id in the same bone layer; 0 for none). */
   uint64_t controller_knob_parent = 0;
+  /* Contain Knob in Box (on by default): the knob is held at the box's edge, dragging included. Off, it goes where its
+   * keys and parents put it, past the box too, what hangs from it with it; its actions play the nearest point inside. */
+  bool controller_contain_knob = true;
   bool controller_size_auto = true;
   /* Its spots, in the Spots panel's order. */
   std::vector<ControllerSpot> controller_spots;

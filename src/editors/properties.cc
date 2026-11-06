@@ -2128,6 +2128,15 @@ static void bone_panel(Context &C, Layer &armature)
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         C.undo->push("Controller Frame Size", doc);
       }
+      label("");
+      if (ImGui::Checkbox("Contain Knob in Box", &active->controller_contain_knob)) {
+        C.undo->push("Contain Knob in Box", doc);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("On: the knob stays inside the box, held at its edge (dragging too). Off: it goes where its keys "
+                          "and parents put it, past the box too, what hangs from it with it; its actions play the "
+                          "nearest point inside the box (a ring on the edge)");
+      }
       ui_panel_end();
       return;
     }

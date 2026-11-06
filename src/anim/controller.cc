@@ -126,24 +126,30 @@ float2 controller_knob_clamped(const Bone &knob)
   return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};
 }
 
-float2 controller_knob_held(const Bone &knob, const BonePose &pose)
+float2 controller_knob_place(const Bone &knob, const BonePose &pose)
 {
   if (!knob.controller_knob_independent) {
-    return controller_knob_clamped(knob);
+    return controller_knob(knob);
   }
-  float2 lo, hi;
-  controller_box(knob, lo, hi);
   const float size = std::max(knob.controller_frame_size, 1e-6f);
   const float2 place = pose.knob_parent_skin.apply(pose.setup_head +
                                                    rotate(controller_knob(knob) * size, knob.controller_box_angle));
-  const float2 at = rotate(pose.box_skin.inverted().apply_vector(place - pose.head), -knob.controller_box_angle) / size;
+  return rotate(pose.box_skin.inverted().apply_vector(place - pose.head), -knob.controller_box_angle) / size;
+}
+
+float2 controller_knob_held(const Bone &knob, const BonePose &pose)
+{
+  float2 lo, hi;
+  controller_box(knob, lo, hi);
+  const float2 at = controller_knob_place(knob, pose);
   return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};
 }
 
 float2 controller_knob_played(const Layer &owner, const Bone &knob)
 {
   if (!knob.controller_knob_independent) {
-    return controller_knob(knob);
+    /* Past the box (Contain Knob in Box off), its actions play the nearest point inside. */
+    return controller_knob_clamped(knob);
   }
   const std::vector<BonePose> poses = armature_pose(owner, false);
   const BonePose *pose = bone_pose_find(poses, knob.id);
@@ -154,6 +160,10 @@ void controller_knob_set(Bone &knob, float2 frames)
 {
   if (knob.controller_knob_independent) {
     /* A place in the picture: the box may have moved from under it, so it is kept in the box as it plays. */
+    knob.position = bone_position_from_transform(knob, frames);
+    return;
+  }
+  if (!knob.controller_contain_knob) {
     knob.position = bone_position_from_transform(knob, frames);
     return;
   }
@@ -169,10 +179,23 @@ float2 controller_box_point(const Bone &knob, const BonePose &pose, float2 frame
 
 void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
 {
-  /* Staying in place, its keys are a place against the box at rest. */
-  const Transform2D &by = knob.controller_knob_independent ? pose.knob_parent_skin : pose.box_skin;
-  const float2 local = rotate(by.inverted().apply_vector(delta), -knob.controller_box_angle);
-  controller_knob_set(knob, controller_knob(knob) + local / std::max(knob.controller_frame_size, 1e-6f));
+  const float size = std::max(knob.controller_frame_size, 1e-6f);
+  const float2 local = rotate(pose.box_skin.inverted().apply_vector(delta), -knob.controller_box_angle) / size;
+  if (!knob.controller_knob_independent) {
+    controller_knob_set(knob, controller_knob(knob) + local);
+    return;
+  }
+  /* From where it is seen (held at the edge, or past it), the way the mouse goes; contained, it stops at the edge, so
+   * dragging back moves it at once. Its keys are a place against its Knob Parent as that rests. */
+  float2 to = (knob.controller_contain_knob ? controller_knob_held(knob, pose) : controller_knob_place(knob, pose)) + local;
+  if (knob.controller_contain_knob) {
+    float2 lo, hi;
+    controller_box(knob, lo, hi);
+    to = {std::clamp(to.x, lo.x, hi.x), std::clamp(to.y, lo.y, hi.y)};
+  }
+  const float2 place = controller_box_point(knob, pose, to);
+  const float2 keyed = rotate(pose.knob_parent_skin.inverted().apply(place) - pose.setup_head, -knob.controller_box_angle);
+  knob.position = bone_position_from_transform(knob, keyed / size);
 }
 
 void controller_knob_snap(Bone &knob, const std::vector<float2> &also)

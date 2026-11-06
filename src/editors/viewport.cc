@@ -9408,7 +9408,18 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
     }
   }
   const float2 knob = controller_knob_shown(doc, armature, bone);
-  const ImVec2 knob_at = at(knob);
+  ImVec2 knob_at = at(knob);
+  if (!bone.controller_contain_knob && doc.frame_current != 0) {
+    /* Past the box: drawn where it is, a ring on the edge where its actions play and a faint line between. */
+    const Transform2D to_document = layer_world_transform(doc, armature.id);
+    const ImVec2 real = view.to_screen(to_document.apply(pose.knob.apply({0, 0})));
+    const ImVec2 d = real - knob_at;
+    if (d.x * d.x + d.y * d.y > 9.0f) {
+      dl->AddLine(knob_at, real, IM_COL32(0xff, 0xff, 0xff, 90), 1.0f);
+      dl->AddCircle(knob_at, CONTROLLER_KNOB_RADIUS, IM_COL32(0xff, 0xff, 0xff, 200), 0, 1.5f);
+    }
+    knob_at = real;
+  }
   if (doc.frame_current != 0 && doc.action.empty()) {
     const ImVec2 playing = at(controller_knob_playing(armature, bone));
     const ImVec2 d = playing - knob_at;

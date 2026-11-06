@@ -81,8 +81,10 @@ void controller_box(const Bone &knob, float2 &lo, float2 &hi);
 float2 controller_knob(const Bone &knob);
 /* The same, kept in the box. */
 float2 controller_knob_clamped(const Bone &knob);
-/* Where the knob sits in the box as posed (`pose` the controller's), kept in it: with Knob Stays in Place, where its
- * place in the picture falls in the box as it has moved; else its keys' frames. */
+/* Where the knob is as posed (`pose` the controller's), in frames against its box, past it too: an independent knob's
+ * place in the picture (its keys through its Knob Parent) as it falls in the box as that has moved; else its keys. */
+float2 controller_knob_place(const Bone &knob, const BonePose &pose);
+/* That kept in the box: where it plays, and where it is with Contain Knob in Box on. */
 float2 controller_knob_held(const Bone &knob, const BonePose &pose);
 /* The frames it plays now: controller_knob, or with Knob Stays in Place where it sits in the box as posed. */
 float2 controller_knob_played(const Layer &owner, const Bone &knob);

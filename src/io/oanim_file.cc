@@ -936,6 +936,9 @@ static json layer_to_json(const Layer &layer)
         if (b.controller_knob_independent) {
           bj["controller_knob_independent"] = true;
         }
+        if (!b.controller_contain_knob) {
+          bj["controller_contain_knob"] = false;
+        }
         if (b.controller_knob_parent != 0) {
           bj["controller_knob_parent"] = b.controller_knob_parent;
         }
@@ -2832,6 +2835,7 @@ static Layer layer_from_json(const json &j, int depth)
       b.controller_box_angle = get_float(bj, "controller_box_angle", 0.0f);
       /* Knob Stays in Place was saved under its first name. */
       b.controller_knob_independent = get_bool(bj, "controller_knob_independent", get_bool(bj, "controller_knob_stays", false));
+      b.controller_contain_knob = get_bool(bj, "controller_contain_knob", true);
       b.controller_knob_parent = bj.value("controller_knob_parent", uint64_t(0));
       for (const json &sj : get_array(bj, "controller_spots")) {
         const json at = sj.value("at", json());
