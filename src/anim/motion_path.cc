@@ -2550,12 +2550,19 @@ std::vector<MotionPathControl> motion_path_controls(const Document &doc, const M
       c.index = int(j);
       const float2 v = path_control_value(a.value, b.value, b.path_controls[j]);
       c.near_frame = stretch_nearest_frame(*ch, i, v);
-      float2 cx, cy;
+      float2 cx, cy, unused_x, unused_y;
       if (!value_jacobian(doc, target, c.near_frame, v, c.at, cx, cy) ||
-          !value_jacobian(doc, target, c.near_frame, ch->evaluate(c.near_frame), c.curve, cx, cy))
+          !value_jacobian(doc, target, c.near_frame, ch->evaluate(c.near_frame), c.curve, unused_x, unused_y))
       {
         continue;
       }
+      /* The handles as the path runs along them, shown through how the channel shows there (as the point). */
+      const StretchPoints s = stretch_points(ch->keys, i);
+      c.in_tip = c.at + cx * s.in[j + 1].x + cy * s.in[j + 1].y;
+      c.out_tip = c.at + cx * s.out[j + 1].x + cy * s.out[j + 1].y;
+      const PathControlHandles h = path_control_handles_of(b, j);
+      c.set = h.set;
+      c.aligned = h.aligned;
       out.push_back(c);
     }
   }
@@ -2580,6 +2587,9 @@ bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int 
     }
   }
   b.path_controls.insert(b.path_controls.begin() + std::ptrdiff_t(at), path_control_stored(a.value, b.value, v));
+  /* Its handles worked out smooth until moved; the others' stay with theirs. */
+  b.path_control_handles.resize(b.path_controls.size() - 1);
+  b.path_control_handles.insert(b.path_control_handles.begin() + std::ptrdiff_t(at), PathControlHandles{});
   channel_keys_changed();
   if (r_end) {
     *r_end = b.frame;
@@ -2621,7 +2631,7 @@ int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandl
   /* Highest index first, so the others keep theirs. */
   std::vector<MotionPathHandlePick> sorted;
   for (const MotionPathHandlePick &p : picks) {
-    if (p.control >= 0) {
+    if (p.control >= 0 && p.control_handle == 0) {
       sorted.push_back(p);
     }
   }
@@ -2632,6 +2642,9 @@ int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandl
     Key<float2> *b = ch ? ch->key_at(p.frame) : nullptr;
     if (b && p.control < int(b->path_controls.size())) {
       b->path_controls.erase(b->path_controls.begin() + p.control);
+      if (p.control < int(b->path_control_handles.size())) {
+        b->path_control_handles.erase(b->path_control_handles.begin() + p.control);
+      }
       deleted++;
     }
   }
@@ -2640,6 +2653,170 @@ int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandl
     animation_evaluate(doc, doc.frame_current);
   }
   return deleted;
+}
+
+/* Control point `j` of the stretch arriving at keys[i]: its handles made its own (as the path runs along them now). */
+static PathControlHandles &control_handles_own(std::vector<Key<float2>> &keys, size_t i, size_t j)
+{
+  Key<float2> &a = keys[i - 1], &b = keys[i];
+  b.path_control_handles.resize(b.path_controls.size());
+  PathControlHandles &h = b.path_control_handles[j];
+  if (!h.set) {
+    const StretchPoints s = stretch_points(keys, i);
+    h.in = path_control_offset_stored(a.value, b.value, s.in[j + 1]);
+    h.out = path_control_offset_stored(a.value, b.value, s.out[j + 1]);
+    h.set = true;
+  }
+  return h;
+}
+
+/* The stretch ending on `end` and its control point `index`: the key's index, or 0 with none. */
+static size_t control_stretch(Channel<float2> *ch, int end, int index)
+{
+  Key<float2> *b = ch ? ch->key_at(end) : nullptr;
+  if (!b || b == ch->keys.data() || index < 0 || index >= int(b->path_controls.size())) {
+    return 0;
+  }
+  return size_t(b - ch->keys.data());
+}
+
+bool motion_path_control_handle_set(Document &doc, const MotionPathTarget &target, int end, int index, bool out,
+                                    int near_frame, float2 at, bool alone)
+{
+  Channel<float2> *ch = handle_channel(doc, target);
+  const size_t i = control_stretch(ch, end, index);
+  if (!i) {
+    return false;
+  }
+  const size_t j = size_t(index);
+  const Key<float2> &a = ch->keys[i - 1], &b = ch->keys[i];
+  const float2 v = path_control_value(a.value, b.value, b.path_controls[j]);
+  float2 p, cx, cy;
+  if (!value_jacobian(doc, target, near_frame, v, p, cx, cy)) {
+    return false;
+  }
+  const float det = cx.x * cy.y - cx.y * cy.x;
+  if (std::abs(det) < 1e-12f) {
+    return false;
+  }
+  /* The tip in the channel's own space, through how it shows at the point. */
+  const float2 miss = at - p;
+  const float2 offset{(miss.x * cy.y - miss.y * cy.x) / det, (cx.x * miss.y - cx.y * miss.x) / det};
+  PathControlHandles &h = control_handles_own(ch->keys, i, j);
+  float2 in = path_control_offset_value(a.value, b.value, h.in), out_h = path_control_offset_value(a.value, b.value, h.out);
+  (out ? out_h : in) = offset;
+  if (alone) {
+    h.aligned = false;
+  }
+  else if (h.aligned && length(offset) > 1e-9f) {
+    float2 &other = out ? in : out_h;
+    other = -normalize(offset) * length(other);
+  }
+  h.in = path_control_offset_stored(a.value, b.value, in);
+  h.out = path_control_offset_stored(a.value, b.value, out_h);
+  channel_keys_changed();
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
+int motion_path_controls_align(Document &doc, const std::vector<MotionPathHandlePick> &picks, bool align)
+{
+  /* Each control point once: which of its parts are picked. */
+  struct One {
+    MotionPathTarget target;
+    int end = 0, index = 0;
+    bool point = false, in = false, out = false;
+  };
+  std::vector<One> ones;
+  for (const MotionPathHandlePick &p : picks) {
+    if (p.control < 0) {
+      continue;
+    }
+    auto it = std::find_if(ones.begin(), ones.end(), [&](const One &o) {
+      return o.target.same(p.target) && o.end == p.frame && o.index == p.control;
+    });
+    if (it == ones.end()) {
+      ones.push_back({p.target, p.frame, p.control});
+      it = ones.end() - 1;
+    }
+    (p.control_handle == 0 ? it->point : p.control_handle == 1 ? it->in : it->out) = true;
+  }
+  int changed = 0;
+  for (const One &o : ones) {
+    Channel<float2> *ch = handle_channel(doc, o.target);
+    const size_t i = control_stretch(ch, o.end, o.index);
+    if (!i) {
+      continue;
+    }
+    const Key<float2> &a = ch->keys[i - 1], &b = ch->keys[i];
+    if (!align) {
+      if (path_control_handles_of(b, size_t(o.index)).aligned) {
+        control_handles_own(ch->keys, i, size_t(o.index)).aligned = false;
+        changed++;
+      }
+      continue;
+    }
+    PathControlHandles &h = control_handles_own(ch->keys, i, size_t(o.index));
+    float2 in = path_control_offset_value(a.value, b.value, h.in), out = path_control_offset_value(a.value, b.value, h.out);
+    const float in_len = length(in), out_len = length(out);
+    if (in_len > 1e-9f && out_len > 1e-9f) {
+      if (o.point || (o.in && o.out)) {
+        /* Both turn, halfway each (curve_point_align_both). */
+        float2 back = in / in_len - out / out_len;
+        if (length(back) < 1e-4f) {
+          /* Folded back on each other: the way from the point before to the one after. */
+          const StretchPoints s = stretch_points(ch->keys, i);
+          back = s.p[size_t(o.index)] - s.p[size_t(o.index) + 2];
+        }
+        if (length(back) > 1e-9f) {
+          back = normalize(back);
+          in = back * in_len;
+          out = -back * out_len;
+        }
+      }
+      else if (o.out) {
+        /* The handle picked is the one that turns into line. */
+        out = -normalize(in) * out_len;
+      }
+      else {
+        in = -normalize(out) * in_len;
+      }
+    }
+    h.in = path_control_offset_stored(a.value, b.value, in);
+    h.out = path_control_offset_stored(a.value, b.value, out);
+    h.aligned = true;
+    changed++;
+  }
+  if (changed) {
+    channel_keys_changed();
+    animation_evaluate(doc, doc.frame_current);
+  }
+  return changed;
+}
+
+int motion_path_control_handles_reset(Document &doc, const std::vector<MotionPathHandlePick> &picks)
+{
+  int changed = 0;
+  for (const MotionPathHandlePick &p : picks) {
+    if (p.control < 0 || p.control_handle == 0) {
+      continue;
+    }
+    Channel<float2> *ch = handle_channel(doc, p.target);
+    const size_t i = control_stretch(ch, p.frame, p.control);
+    if (!i) {
+      continue;
+    }
+    Key<float2> &b = ch->keys[i];
+    if (size_t(p.control) < b.path_control_handles.size() && b.path_control_handles[size_t(p.control)] != PathControlHandles{}) {
+      b.path_control_handles[size_t(p.control)] = PathControlHandles{};
+      changed++;
+    }
+  }
+  if (changed) {
+    channel_keys_changed();
+    animation_evaluate(doc, doc.frame_current);
+  }
+  return changed;
 }
 
 bool motion_path_pick_valid(const Document &doc, const MotionPathHandlePick &pick)
@@ -2664,20 +2841,34 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
   std::vector<MotionPathControl> controls;
   std::vector<size_t> control_of;
   float2 middle{0.0f, 0.0f};
+  /* And control point handles: each tip about its point. */
+  std::vector<std::pair<size_t, float2>> control_tips;
   for (size_t i = 0; i < picks.size(); i++) {
     if (picks[i].control < 0) {
       continue;
     }
     for (const MotionPathControl &mc : motion_path_controls(doc, picks[i].target)) {
-      if (mc.end == picks[i].frame && mc.index == picks[i].control) {
+      if (mc.end != picks[i].frame || mc.index != picks[i].control) {
+        continue;
+      }
+      if (picks[i].control_handle) {
+        const float2 tip = picks[i].control_handle == 2 ? mc.out_tip : mc.in_tip, d = tip - mc.at;
+        control_tips.push_back({i, kind == 'G'   ? tip + offset
+                                   : kind == 'R' ? mc.at + float2{d.x * c - d.y * s, d.x * s + d.y * c}
+                                                 : mc.at + d * factor});
         controls.push_back(mc);
         control_of.push_back(i);
-        middle = middle + mc.at;
+        continue;
       }
+      controls.push_back(mc);
+      control_of.push_back(i);
+      middle = middle + mc.at;
     }
   }
-  if (!controls.empty()) {
-    middle = middle * (1.0f / float(controls.size()));
+  const size_t moved_points = size_t(std::count_if(control_of.begin(), control_of.end(),
+                                                   [&](size_t i) { return picks[i].control_handle == 0; }));
+  if (moved_points) {
+    middle = middle * (1.0f / float(moved_points));
   }
   for (size_t i = 0; i < picks.size(); i++) {
     float2 key, in, out;
@@ -2696,8 +2887,31 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
       changed++;
     }
   }
+  for (const auto &[i, tip] : control_tips) {
+    const MotionPathHandlePick &p = picks[i];
+    /* Both of a control point's handles picked: each where it goes, so the second isn't turned by the first. */
+    const bool both = std::any_of(control_tips.begin(), control_tips.end(), [&](const auto &o) {
+      return o.first != i && picks[o.first].target.same(p.target) && picks[o.first].frame == p.frame &&
+             picks[o.first].control == p.control;
+    });
+    const auto mc = std::find_if(controls.begin(), controls.end(), [&](const MotionPathControl &x) {
+      return x.end == p.frame && x.index == p.control;
+    });
+    changed += motion_path_control_handle_set(doc, p.target, p.frame, p.control, p.control_handle == 2,
+                                              mc->near_frame, tip, both)
+                   ? 1
+                   : 0;
+    if (both && mc->aligned) {
+      /* Moved together, so still as they were: in line. */
+      Key<float2> *k = handle_channel(doc, p.target)->key_at(p.frame);
+      k->path_control_handles[size_t(p.control)].aligned = true;
+    }
+  }
   for (size_t j = 0; j < controls.size(); j++) {
     const MotionPathControl &mc = controls[j];
+    if (picks[control_of[j]].control_handle) {
+      continue;
+    }
     const float2 d = mc.at - middle;
     const float2 goes = kind == 'G'   ? mc.at + offset
                         : kind == 'R' ? middle + float2{d.x * c - d.y * s, d.x * s + d.y * c}
@@ -2972,50 +3186,6 @@ KeyMap map_blend(const KeyMap &a, const KeyMap &b, float t)
   return m;
 }
 
-/* The stretch arriving at keys[i] as points and the handles through them (keys' own space): its two keys and its
- * control points between, each with its handles as the path runs (a key's out handle and in handle as its Bezier has
- * them, a control point's along the line through it, as stretch_control_line draws it). */
-struct StretchPoints {
-  std::vector<float2> p, in, out;
-};
-StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i)
-{
-  StretchPoints s;
-  const Key<float2> &a = keys[i - 1], &b = keys[i];
-  s.p.push_back(a.value);
-  for (const float2 c : b.path_controls) {
-    s.p.push_back(path_control_value(a.value, b.value, c));
-  }
-  s.p.push_back(b.value);
-  const size_t n = s.p.size() - 1;
-  std::vector<float> chord(n);
-  float sum = 0.0f;
-  for (size_t j = 0; j < n; j++) {
-    chord[j] = length(s.p[j + 1] - s.p[j]);
-    sum += chord[j];
-  }
-  sum = std::max(sum, 1e-9f);
-  float2 in, out, unused;
-  key_path_handles(keys, i - 1, unused, out);
-  key_path_handles(keys, i, in, unused);
-  std::vector<float2> tangent(n + 1);
-  for (size_t j = 1; j < n; j++) {
-    tangent[j] = (s.p[j + 1] - s.p[j - 1]) * 0.5f;
-  }
-  tangent[0] = length(out) > 1e-9f ? out * (3.0f * chord[0] / sum) : (s.p[1] - s.p[0]);
-  tangent[n] = length(in) > 1e-9f ? in * (-3.0f * chord[n - 1] / sum) : (s.p[n] - s.p[n - 1]);
-  if (n == 1) {
-    /* No control points: the Bezier's own handles. */
-    tangent[0] = out * 3.0f;
-    tangent[1] = in * -3.0f;
-  }
-  for (size_t j = 0; j <= n; j++) {
-    s.in.push_back(tangent[j] * (-1.0f / 3.0f));
-    s.out.push_back(tangent[j] * (1.0f / 3.0f));
-  }
-  return s;
-}
-
 /* A stretch's progress at each frame from its start (after the hold) to its key, by length along it: what the dots
  * keep while the path is sculpted. Empty for a stretch that doesn't move along its path (Step, Pose, Cycle). */
 std::vector<float> stretch_length_speeds(const Channel<float2> &ch, size_t i)
@@ -3132,7 +3302,7 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
           const float along = tg.keys[i].path_controls[c - 1].x;
           const KeyMap m = map_blend(tg.maps[i - 1], tg.maps[i], along);
           add(int(i), int(c - 1), map_apply(m, s.p[c]), map_vector(m, s.in[c]), map_vector(m, s.out[c]),
-              !shown(tg.keys[i - 1].frame) && !shown(k.frame), true);
+              !shown(tg.keys[i - 1].frame) && !shown(k.frame), path_control_handles_of(k, c - 1).aligned);
         }
       }
       float2 in{0.0f, 0.0f}, out_h{0.0f, 0.0f};
@@ -3233,6 +3403,17 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
         const float2 was = path_control_value(tg.keys[k - 1].value, tg.keys[k].value, tg.keys[k].path_controls[c]);
         keys[k].path_controls[c] = path_control_stored(keys[k - 1].value, keys[k].value,
                                                        was + map_unvector(m, at - tg.pos[size_t(j)]));
+        /* Its handles, once the brush has moved it or them: its own from then on, as the sculpted line has them. */
+        const CurvePoint &cp = curve.points[size_t(j)];
+        if (length(at - tg.pos[size_t(j)]) > 1e-7f || length(cp.handle_in - tg.in[size_t(j)]) > 1e-7f ||
+            length(cp.handle_out - tg.out[size_t(j)]) > 1e-7f)
+        {
+          keys[k].path_control_handles.resize(keys[k].path_controls.size());
+          PathControlHandles &h = keys[k].path_control_handles[c];
+          h.in = path_control_offset_stored(keys[k - 1].value, keys[k].value, map_unvector(m, cp.handle_in));
+          h.out = path_control_offset_stored(keys[k - 1].value, keys[k].value, map_unvector(m, cp.handle_out));
+          h.set = true;
+        }
       }
     }
     /* The keys' handles as the fitted curve has them. A stretch with control points runs through them on its own

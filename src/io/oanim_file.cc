@@ -221,6 +221,22 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
         }
         key["path_controls"] = std::move(controls);
       }
+      if (std::any_of(k.path_control_handles.begin(), k.path_control_handles.end(),
+                      [](const PathControlHandles &h) { return h.set || !h.aligned; }))
+      {
+        /* Their handles, once moved or unaligned (as stored, relative to the keys). */
+        json handles = json::array();
+        for (size_t j = 0; j < k.path_controls.size(); j++) {
+          const PathControlHandles h = path_control_handles_of(k, j);
+          json one = {{"set", h.set}, {"aligned", h.aligned}};
+          if (h.set) {
+            one["in"] = float2_to_json(h.in);
+            one["out"] = float2_to_json(h.out);
+          }
+          handles.push_back(std::move(one));
+        }
+        key["path_control_handles"] = std::move(handles);
+      }
     }
     if (k.selected) {
       key["selected"] = true;
@@ -1742,6 +1758,20 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
         if (value_from_json(c, &v)) {
           key.path_controls.push_back(v);
         }
+      }
+      for (const json &hj : get_array(k, "path_control_handles")) {
+        if (key.path_control_handles.size() >= key.path_controls.size()) {
+          break;
+        }
+        PathControlHandles h;
+        h.aligned = get_bool(hj, "aligned", true);
+        const auto hin = hj.find("in"), hout = hj.find("out");
+        h.set = get_bool(hj, "set", false) && hin != hj.end() && hout != hj.end() && value_from_json(*hin, &h.in) &&
+                value_from_json(*hout, &h.out);
+        if (!h.set) {
+          h.in = h.out = float2{0.0f, 0.0f};
+        }
+        key.path_control_handles.push_back(h);
       }
     }
     key.selected = get_bool(k, "selected", false);

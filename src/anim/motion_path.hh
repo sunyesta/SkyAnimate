@@ -285,6 +285,9 @@ struct MotionPathControl {
   /* The frame whose dot is nearest it, and where it is and where the path is on that frame, in document space. */
   int near_frame = 0;
   float2 at, curve;
+  /* Its handles' tips (document space, as `at`), and whether they are its own yet and in line. */
+  float2 in_tip, out_tip;
+  bool set = false, aligned = true;
 };
 /* Every control point of `target`'s path (position keys only). */
 std::vector<MotionPathControl> motion_path_controls(const Document &doc, const MotionPathTarget &target);
@@ -294,8 +297,21 @@ bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int 
                              int *r_index = nullptr);
 /* Moves a control point to `at` (document space, as seen on frame `near`). */
 bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int end, int index, int near_frame, float2 at);
-/* Deletes the control points among `picks`. Returns how many. */
+/* Deletes the control points among `picks` (the points themselves, not their handles). Returns how many. */
 int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandlePick> &picks);
+/* Moves a control point's handle (`out` the one toward the stretch's key) so its tip is at `at` (document space, as
+ * seen on frame `near`), as a vector point's handle is dragged: its handles are its own from then on; Aligned, the
+ * other turns to stay in line, keeping its length, unless `alone` (Alt), which moves just this one and breaks the
+ * line. */
+bool motion_path_control_handle_set(Document &doc, const MotionPathTarget &target, int end, int index, bool out,
+                                    int near_frame, float2 at, bool alone);
+/* Align or Unalign the control points among `picks` (or those whose handles are), as a vector point's handles: one
+ * handle picked alone turns into line with the other; the point (or both its handles): both turn, halfway each.
+ * Returns how many changed. */
+int motion_path_controls_align(Document &doc, const std::vector<MotionPathHandlePick> &picks, bool align);
+/* The control points whose handles are among `picks`: their handles worked out smooth again, from the points either
+ * side, and aligned. Returns how many changed. */
+int motion_path_control_handles_reset(Document &doc, const std::vector<MotionPathHandlePick> &picks);
 /* Whether a pick (a path handle or a control point) is still there. */
 bool motion_path_pick_valid(const Document &doc, const MotionPathHandlePick &pick);
 

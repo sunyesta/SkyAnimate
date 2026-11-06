@@ -563,23 +563,38 @@ float2 path_control_stored(float2 a, float2 b, float2 value)
   return float2{(v.x * d.x + v.y * d.y) / l2, (v.y * d.x - v.x * d.y) / l2};
 }
 
-std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per)
+float2 path_control_offset_value(float2 a, float2 b, float2 stored)
 {
-  std::vector<float2> line;
+  return path_control_value(a, b, stored) - a;
+}
+
+float2 path_control_offset_stored(float2 a, float2 b, float2 offset)
+{
+  return path_control_stored(a, b, a + offset);
+}
+
+PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j)
+{
+  return j < key.path_control_handles.size() ? key.path_control_handles[j] : PathControlHandles{};
+}
+
+StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i)
+{
+  StretchPoints s;
   if (i == 0 || i >= keys.size()) {
-    return line;
+    return s;
   }
   const Key<float2> &a = keys[i - 1], &b = keys[i];
-  std::vector<float2> p{a.value};
-  for (const float2 s : b.path_controls) {
-    p.push_back(path_control_value(a.value, b.value, s));
+  s.p.push_back(a.value);
+  for (const float2 c : b.path_controls) {
+    s.p.push_back(path_control_value(a.value, b.value, c));
   }
-  p.push_back(b.value);
-  const size_t n = p.size() - 1;
+  s.p.push_back(b.value);
+  const size_t n = s.p.size() - 1;
   std::vector<float> chord(n);
   float sum = 0.0f;
   for (size_t j = 0; j < n; j++) {
-    chord[j] = length(p[j + 1] - p[j]);
+    chord[j] = length(s.p[j + 1] - s.p[j]);
     sum += chord[j];
   }
   sum = std::max(sum, 1e-9f);
@@ -590,13 +605,42 @@ std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, s
   key_path_handles(keys, i, in, unused);
   std::vector<float2> tangent(n + 1);
   for (size_t j = 1; j < n; j++) {
-    tangent[j] = (p[j + 1] - p[j - 1]) * 0.5f;
+    tangent[j] = (s.p[j + 1] - s.p[j - 1]) * 0.5f;
   }
-  tangent[0] = length(out) > 1e-9f ? out * (3.0f * chord[0] / sum) : (p[1] - p[0]);
-  tangent[n] = length(in) > 1e-9f ? in * (-3.0f * chord[n - 1] / sum) : (p[n] - p[n - 1]);
+  tangent[0] = length(out) > 1e-9f ? out * (3.0f * chord[0] / sum) : (s.p[1] - s.p[0]);
+  tangent[n] = length(in) > 1e-9f ? in * (-3.0f * chord[n - 1] / sum) : (s.p[n] - s.p[n - 1]);
+  if (n == 1) {
+    /* No control points: the Bezier's own handles. */
+    tangent[0] = out * 3.0f;
+    tangent[1] = in * -3.0f;
+  }
+  for (size_t j = 0; j <= n; j++) {
+    s.in.push_back(tangent[j] * (-1.0f / 3.0f));
+    s.out.push_back(tangent[j] * (1.0f / 3.0f));
+  }
+  /* A control point's own handles, once set. */
+  for (size_t j = 1; j < n; j++) {
+    const PathControlHandles h = path_control_handles_of(b, j - 1);
+    if (h.set) {
+      s.in[j] = path_control_offset_value(a.value, b.value, h.in);
+      s.out[j] = path_control_offset_value(a.value, b.value, h.out);
+    }
+  }
+  return s;
+}
+
+std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per)
+{
+  std::vector<float2> line;
+  if (i == 0 || i >= keys.size()) {
+    return line;
+  }
+  const StretchPoints sp = stretch_points(keys, i);
+  const std::vector<float2> &p = sp.p;
+  const size_t n = p.size() - 1;
   line.push_back(p[0]);
   for (size_t j = 0; j < n; j++) {
-    const float2 q[4] = {p[j], p[j] + tangent[j] * (1.0f / 3.0f), p[j + 1] - tangent[j + 1] * (1.0f / 3.0f), p[j + 1]};
+    const float2 q[4] = {p[j], p[j] + sp.out[j], p[j + 1] + sp.in[j + 1], p[j + 1]};
     for (int s = 1; s <= per; s++) {
       const float t = float(s) / float(per), m = 1.0f - t;
       line.push_back(q[0] * (m * m * m) + q[1] * (3.0f * m * m * t) + q[2] * (3.0f * m * t * t) + q[3] * (t * t * t));

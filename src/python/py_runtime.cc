@@ -1624,6 +1624,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["frame"] = p.frame;
       d["out"] = p.out;
       d["control"] = p.control;
+      d["control_handle"] = p.control_handle;
       out.append(d);
     }
     return out;
@@ -2565,6 +2566,21 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
             controls.append(py::make_tuple(c.x, c.y));
           }
           d["path_controls"] = controls;
+          /* Their handles as the path runs along them (offsets, the keys' own space), and whether set and aligned. */
+          py::list control_handles;
+          if (const size_t i = size_t(&k - ch.keys.data()); i > 0) {
+            const StretchPoints s = stretch_points(ch.keys, i);
+            for (size_t j = 0; j < k.path_controls.size(); j++) {
+              const PathControlHandles h = path_control_handles_of(k, j);
+              py::dict hd;
+              hd["in"] = py::make_tuple(s.in[j + 1].x, s.in[j + 1].y);
+              hd["out"] = py::make_tuple(s.out[j + 1].x, s.out[j + 1].y);
+              hd["set"] = h.set;
+              hd["aligned"] = h.aligned;
+              control_handles.append(hd);
+            }
+          }
+          d["path_control_handles"] = control_handles;
         }
         d["interp"] = interp_identifier(k.interp);
         if (!k.speeds.empty()) {

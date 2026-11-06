@@ -74,9 +74,12 @@ struct MotionPathHandlePick {
   bool out = false;
   /* A control point instead (>= 0): which of the stretch ending on `frame` (Key::path_controls). */
   int control = -1;
+  /* With a control point: 0 the point itself, 1 its in handle (toward the key before), 2 its out handle. */
+  int control_handle = 0;
   bool operator==(const MotionPathHandlePick &o) const
   {
-    return target.same(o.target) && frame == o.frame && control == o.control && (control >= 0 || out == o.out);
+    return target.same(o.target) && frame == o.frame && control == o.control &&
+           (control >= 0 ? control_handle == o.control_handle : out == o.out);
   }
 };
 

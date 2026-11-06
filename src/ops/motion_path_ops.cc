@@ -374,7 +374,7 @@ void motion_path_operators_register()
     ot.description = "Pick a path handle, as clicking one with the Motion Path tool's Edit does: of the key on "
                      "frame=N of what a path traces (layer=id with bone=name or point=id: that one; else the first "
                      "traced), out=1 the one toward the next key; or control=I, that control point of the stretch "
-                     "ending on frame=N. On its own: every other path handle, control point, key and dot "
+                     "ending on frame=N (control_handle=1 its in handle, 2 its out). On its own: every other path handle, control point, key and dot "
                      "is let go (the bones and points traced stay, as they make the paths show); extend=1 (Shift) "
                      "adds it to the handles picked or takes it out; none=1 lets go of every path handle";
     ot.flag = OPTYPE_REGISTER;
@@ -395,6 +395,7 @@ void motion_path_operators_register()
                                 op_arg_int(C, "control", -1)};
       if (pick.control >= 0) {
         pick.out = false;
+        pick.control_handle = std::clamp(op_arg_int(C, "control_handle", 0), 0, 2);
       }
       if (!motion_path_pick_valid(doc, pick)) {
         report(ReportType::Warning, pick.control >= 0 ? "No such control point" : "No position key with path handles there");
@@ -431,16 +432,22 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_handles_reset";
     ot.name = "Reset Path Handles";
     ot.description = "X with path handles or control points picked (the Motion Path tool's Edit): the handles' keys "
-                     "back to Auto, the control points deleted (the path as it was without them)";
+                     "back to Auto, the control points deleted (the path as it was without them), a control point's "
+                     "handles picked worked out smooth again";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return path_edit_poll(C) && path_handles_picked(C); };
     ot.exec = [](Context &C) {
       animation_sync(*C.document);
       std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
+      const int smooth = motion_path_control_handles_reset(*C.document, picks);
       const int controls = motion_path_controls_delete(*C.document, picks);
       const int handles = motion_path_handles_type_at(*C.document, picks, PathHandles::Auto);
-      picks.erase(std::remove_if(picks.begin(), picks.end(), [](const auto &p) { return p.control >= 0; }), picks.end());
-      if (controls + handles == 0) {
+      if (controls) {
+        /* The control points after a deleted one are numbered again. */
+        picks.erase(std::remove_if(picks.begin(), picks.end(), [](const auto &p) { return p.control >= 0; }),
+                    picks.end());
+      }
+      if (controls + handles + smooth == 0) {
         report(ReportType::Info, "The handles are Auto already");
         return OpStatus::Cancelled;
       }
@@ -507,6 +514,65 @@ void motion_path_operators_register()
       }
       report(ReportType::Warning, "No such control point");
       return OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_control_handle_move";
+    ot.name = "Move Path Control Point Handle";
+    ot.description = "Put the tip of a handle of control point index=I of the stretch ending on frame=N (out=1 the one "
+                     "toward that key) at x, y (document space, as seen on the frame of the dot nearest it), as "
+                     "dragging it does: aligned, the other turns to stay in line; alone=1 (Alt) moves just this one "
+                     "and unaligns the point";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      const int end = op_arg_int(C, "frame", 0), index = op_arg_int(C, "index", 0);
+      const bool out = op_arg_bool(C, "out");
+      for (const MotionPathControl &c : motion_path_controls(doc, targets.front())) {
+        const float2 tip = out ? c.out_tip : c.in_tip;
+        if (c.end == end && c.index == index &&
+            motion_path_control_handle_set(doc, targets.front(), end, index, out, c.near_frame,
+                                           float2{op_arg_float(C, "x", tip.x), op_arg_float(C, "y", tip.y)},
+                                           op_arg_bool(C, "alone")))
+        {
+          return OpStatus::Finished;
+        }
+      }
+      report(ReportType::Warning, "No such control point");
+      return OpStatus::Cancelled;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_controls_align";
+    ot.name = "Align Control Point Handles";
+    ot.description = "The control points picked (or whose handles are), as a vector point's Align Handles and Unalign "
+                     "Handles: aligned=1 puts their handles in line (a handle picked alone turns to the other; the "
+                     "point, both halfway) so moving one turns the other; aligned=0 lets each go its own way";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) {
+      return C.document && C.wm &&
+             std::any_of(C.wm->path_handle_picks.begin(), C.wm->path_handle_picks.end(),
+                         [&](const MotionPathHandlePick &p) {
+                           return p.control >= 0 && motion_path_pick_valid(*C.document, p);
+                         });
+    };
+    ot.exec = [](Context &C) {
+      animation_sync(*C.document);
+      if (motion_path_controls_align(*C.document, C.wm->path_handle_picks, op_arg_bool(C, "aligned")) == 0) {
+        report(ReportType::Info, "Nothing to change");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
     };
     operators().add(std::move(ot));
   }

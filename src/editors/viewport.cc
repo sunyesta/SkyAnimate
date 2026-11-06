@@ -640,8 +640,10 @@ static struct {
    * document space on its key's frame (zero unless drawn relative to something). */
   int handle = 0;
   float2 offset;
-  /* A control point dragged instead (>= 0): which of the stretch ending on `frame`, moved as seen on `near`. */
+  /* A control point dragged instead (>= 0): which of the stretch ending on `frame`, moved as seen on `near`; or one of
+   * its handles (1 in, 2 out). */
   int control = -1;
+  int control_handle = 0;
   int near_frame = 0;
   Document snapshot;
   /* Each update changes what's drawn without an undo step: this tells the cache. */
@@ -653,6 +655,8 @@ static struct {
 struct PathControlHover {
   MotionPathTarget target;
   int end = 0, index = 0, near_frame = 0;
+  /* One of its handles' tips instead: 1 in, 2 out. */
+  int handle = 0;
   float2 offset;
 };
 static std::optional<PathControlHover> g_path_control_hover;
@@ -908,6 +912,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     OpArgs pick = motion_path_target_args(doc, hc.target);
     pick["frame"] = std::to_string(hc.end);
     pick["control"] = std::to_string(hc.index);
+    pick["control_handle"] = std::to_string(hc.handle);
     if (io.KeyShift) {
       pick["extend"] = "1";
       operator_call(C, "anim.motion_path_handle_select", pick);
@@ -922,6 +927,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     g.on_key = false;
     g.handle = 0;
     g.control = hc.index;
+    g.control_handle = hc.handle;
     g.near_frame = hc.near_frame;
     g.target = hc.target;
     g.frame = hc.end;
@@ -1130,7 +1136,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     const int frame = g.frame;
     const bool dragged = g.dragging, made = g.adding || g.breakdown;
     if (dragged) {
-      push_undo(C, g.control >= 0 ? "Move Path Control Point"
+      push_undo(C, g.control >= 0 ? (g.control_handle ? "Move Path Control Point Handle" : "Move Path Control Point")
                    : g.handle      ? "Move Motion Path Handle"
                    : g.breakdown ? "Motion Path Breakdown"
                    : g.on_key    ? "Move Motion Path Key"
@@ -1166,6 +1172,13 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
   if (g.control >= 0) {
     /* From where it was, each move: the path through it is worked out again. */
     doc = g.snapshot;
+    if (g.control_handle) {
+      /* A handle, as a vector point's: aligned, the other turns to stay in line; Alt moves just this one. */
+      motion_path_control_handle_set(doc, g.target, g.frame, g.control, g.control_handle == 2, g.near_frame,
+                                     at - g.offset, io.KeyAlt);
+      g.serial++;
+      return;
+    }
     motion_path_control_set(doc, g.target, g.frame, g.control, g.near_frame, at - g.offset);
     g.serial++;
     return;
@@ -2358,7 +2371,8 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       dl->AddCircle(e, r + 2.2f, IM_COL32(255, 255, 255, 235), 0, 1.3f);
     }
   }
-  /* Control points: small hollow squares (no frame: never a key's diamond or a dot), orange when picked. */
+  /* Control points: small hollow squares (no frame: never a key's diamond or a dot), orange when picked; their handles
+   * as a vector point's, shown as the Handles overlay says (Selected: the control point's, or a handle's, picked). */
   g_path_control_hover.reset();
   if (editing) {
     static struct {
@@ -2396,11 +2410,53 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         }
         const float2 drawn_offset = path->points[size_t(i)] - c.curve;
         const ImVec2 s = view.to_screen(c.at + drawn_offset);
-        const bool picked = std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
-                                      MotionPathHandlePick{target, c.end, false, c.index}) !=
-                            wm.path_handle_picks.end();
-        const bool dragged = g_path_drag.active && g_path_drag.control == c.index && g_path_drag.frame == c.end &&
-                             g_path_drag.target.same(target);
+        const auto part_picked = [&](int part) {
+          return std::find(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                           MotionPathHandlePick{target, c.end, false, c.index, part}) != wm.path_handle_picks.end();
+        };
+        const bool drag_this = g_path_drag.active && g_path_drag.control == c.index && g_path_drag.frame == c.end &&
+                               g_path_drag.target.same(target);
+        const bool picked = part_picked(0);
+        const bool dragged = drag_this && g_path_drag.control_handle == 0;
+        const bool tip_picked[2] = {part_picked(1) || (drag_this && g_path_drag.control_handle == 1),
+                                    part_picked(2) || (drag_this && g_path_drag.control_handle == 2)};
+        const HandleDisplay shows = doc.overlays.handles;
+        const bool show_handles = shows == HandleDisplay::All || shows == HandleDisplay::Shape ||
+                                  (shows == HandleDisplay::Selected && (picked || drag_this || tip_picked[0] ||
+                                                                        tip_picked[1]));
+        if (show_handles) {
+          const Color red = color_from_rgb(preferences().handle_color);
+          const Color strong = color_from_rgb(preferences().handle_selected);
+          for (const int part : {1, 2}) {
+            const float2 tip_at = (part == 2 ? c.out_tip : c.in_tip) + drawn_offset;
+            const ImVec2 e = view.to_screen(tip_at);
+            if ((e.x - s.x) * (e.x - s.x) + (e.y - s.y) * (e.y - s.y) < 1.0f) {
+              continue;
+            }
+            const bool at_tip = picked || tip_picked[part - 1];
+            Color seen;
+            const auto shade = [&](const Color &base, float2 q) {
+              return contrast_u32(canvas_now_at(q, seen) ? contrast_colors_of(base).of(contrast_pick(seen, base)) : base,
+                                  1.0f);
+            };
+            /* Picked: the stronger red, all along for the point, fading in to a tip picked alone. */
+            const ImU32 from_point = shade(picked ? strong : red, c.at + drawn_offset), to_tip = shade(at_tip ? strong : red, tip_at);
+            const int steps = 8;
+            for (int k = 0; k < steps; k++) {
+              const float t0 = float(k) / steps, t1 = float(k + 1) / steps;
+              dl->AddLine(ImVec2(s.x + (e.x - s.x) * t0, s.y + (e.y - s.y) * t0),
+                          ImVec2(s.x + (e.x - s.x) * t1, s.y + (e.y - s.y) * t1), u32_mix(from_point, to_tip, (t0 + t1) * 0.5f),
+                          1.5f);
+            }
+            const Color tip_base = at_tip ? Color{1.0f, float(0x8c) / 255.0f, 0.0f, 1.0f} : red;
+            dl->AddCircleFilled(e, doc.overlays.handle_size * 0.5f, shade(tip_base, tip_at));
+            const float tx = e.x - mouse.x, ty = e.y - mouse.y;
+            if (tool && hovering && !hover_handle && tx * tx + ty * ty < best_control) {
+              best_control = tx * tx + ty * ty;
+              g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, part, drawn_offset};
+            }
+          }
+        }
         const float dx = s.x - mouse.x, dy = s.y - mouse.y;
         const bool lit = dragged;
         const float r = lit ? 5.0f : 4.0f;
@@ -2410,7 +2466,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
                     picked || dragged ? IM_COL32(255, 160, 40, 255) : u32(path->color, 1.0f), 0.0f, 0, 2.0f);
         if (tool && hovering && !hover_handle && dx * dx + dy * dy < best_control) {
           best_control = dx * dx + dy * dy;
-          g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, drawn_offset};
+          g_path_control_hover = PathControlHover{target, c.end, c.index, c.near_frame, 0, drawn_offset};
         }
       }
     }
@@ -4812,11 +4868,27 @@ static void motion_path_menus(Context &C, bool hovered)
     }
   }
   if (ui_menu_begin("##path_handles")) {
-    ImGui::TextDisabled("Path Handles");
-    ImGui::Separator();
-    menu_operator(C, "Auto", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
-    menu_operator(C, "Aligned", "anim.motion_path_handles_type", {{"mode", "ALIGNED"}});
-    menu_operator(C, "Broken", "anim.motion_path_handles_type", {{"mode", "BROKEN"}});
+    const bool keys = std::any_of(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                                  [](const MotionPathHandlePick &p) { return p.control < 0; });
+    const bool controls = std::any_of(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                                      [](const MotionPathHandlePick &p) { return p.control >= 0; });
+    if (keys || !controls) {
+      ImGui::TextDisabled("Path Handles");
+      ImGui::Separator();
+      menu_operator(C, "Auto", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
+      menu_operator(C, "Aligned", "anim.motion_path_handles_type", {{"mode", "ALIGNED"}});
+      menu_operator(C, "Broken", "anim.motion_path_handles_type", {{"mode", "BROKEN"}});
+    }
+    if (controls) {
+      /* As a vector point's handles. */
+      if (keys) {
+        ImGui::Separator();
+      }
+      ImGui::TextDisabled("Control Points");
+      ImGui::Separator();
+      menu_operator(C, "Align Handles", "anim.motion_path_controls_align", {{"aligned", "1"}});
+      menu_operator(C, "Unalign Handles", "anim.motion_path_controls_align", {{"aligned", "0"}});
+    }
     ui_menu_end();
   }
   if (ui_menu_begin("##path_menu")) {

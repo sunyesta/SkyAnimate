@@ -83,6 +83,18 @@ bool ease_from_identifier(const std::string &identifier, Ease *r_ease);
  * as a smooth point's) or Broken (Alt: each its own way). */
 enum class PathHandles : uint8_t { Auto, Aligned, Broken };
 
+/* A control point's handles (Key::path_control_handles), as a vector point's: worked out smooth from the points either
+ * side until one is moved (`set`), then kept where they are put. Aligned (as smooth ones come), moving one turns the
+ * other to stay in line; Alt moves one alone and breaks the line. Stored as the control point is, relative to the
+ * stretch's keys (x along the line from the key before to this one, y across it, in its length), so they turn and
+ * grow with the keys. */
+struct PathControlHandles {
+  float2 in{}, out{};
+  bool set = false;
+  bool aligned = true;
+  bool operator==(const PathControlHandles &) const = default;
+};
+
 template<typename T> struct Key {
   int frame = 0;
   T value{};
@@ -126,6 +138,8 @@ template<typename T> struct Key {
    * frame as without them). Each is where it sits relative to the keys either side: x along the line from the key
    * before to this one, y across it (both in that line's length), so they ride with the keys. */
   std::vector<T> path_controls;
+  /* Their handles, one for each (any missing: not set yet). */
+  std::vector<PathControlHandles> path_control_handles;
   /* Picked in the timeline. Not saved. */
   bool selected = false;
   /* Key Together (a group's): added only to hold this channel where it was while another layer of the group was
@@ -294,6 +308,18 @@ float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float 
 /* A control point stored relative to the stretch from `a` to `b` (Key::path_controls) as a value, and back. */
 float2 path_control_value(float2 a, float2 b, float2 stored);
 float2 path_control_stored(float2 a, float2 b, float2 value);
+/* A control point's handle (an offset from it) stored the same way, and back. */
+float2 path_control_offset_value(float2 a, float2 b, float2 stored);
+float2 path_control_offset_stored(float2 a, float2 b, float2 offset);
+/* Control point `j`'s handles as stored (not set when it has none yet). */
+PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j);
+/* The stretch arriving at key `i` as points with the handles the path runs along (offsets from them), in the keys' own
+ * space: its two keys (along their path handles, each a share of its piece) and its control points between (their own
+ * handles once set, else smooth through the points either side). */
+struct StretchPoints {
+  std::vector<float2> p, in, out;
+};
+StretchPoints stretch_points(const std::vector<Key<float2>> &keys, size_t i);
 /* The path of the stretch arriving at key `i` through its control points, as a line of points (`per` a piece), in the
  * keys' own space. */
 std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, size_t i, int per = 24);
