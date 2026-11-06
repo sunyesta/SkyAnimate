@@ -677,9 +677,17 @@ static std::vector<BonePose> bones_pose(const std::vector<Bone> &bones, bool set
     }
     if (rests) {
       /* The knob moves and turns what hangs from it, as a pin would: the box stays. */
-      const float2 at = controller_box_point(bone, p, bone.controller_knob_editing ? bone.controller_knob_edit_at :
-                                                      bone.controller_contain_knob ? controller_knob_held(bone, p) :
-                                                                                     controller_knob_place(bone, p));
+      float2 frames = bone.controller_knob_editing ? bone.controller_knob_edit_at :
+                      bone.controller_contain_knob ? controller_knob_held(bone, p) :
+                                                     controller_knob_place(bone, p);
+      /* Moved in its side's own action and not yet keyed: where it is going. */
+      if (bone.controller_knob_edit_side >= 0 && bone.position_keys.has_last) {
+        const float2 now = controller_knob(bone), was = bone.position_keys.last;
+        if (std::hypot(now.x - was.x, now.y - was.y) > 1e-5f) {
+          frames = controller_side_only(bone.controller_knob_edit_side, now);
+        }
+      }
+      const float2 at = controller_box_point(bone, p, frames);
       /* Independent, it doesn't turn with the box either: with its Knob Parent, or as it rests. */
       const Transform2D carried = p.knob_parent_skin * p.setup;
       p.knob = bone.controller_knob_independent ?

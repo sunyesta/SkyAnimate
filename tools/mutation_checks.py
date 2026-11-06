@@ -501,6 +501,14 @@ PENDING = [
     ('src/data/bones.cc', 'bone.controller_contain_knob ? controller_knob_held(bone, p) :', 'true ? controller_knob_held(bone, p) :', 'free, the knob is drawn where it is', 'tests/test_controller_contain.py'),
     ('src/anim/controller.cc', '    return controller_knob_clamped(knob);\n  }\n  const std::vector<BonePose> poses', '    return controller_knob(knob);\n  }\n  const std::vector<BonePose> poses', 'past the box its actions play the nearest point inside', 'tests/test_controller_contain.py'),
     ('src/io/oanim_file.cc', '          bj["controller_contain_knob"] = false;\n', '', 'Contain Knob in Box is saved', 'tests/test_controller_contain.py'),
+    ('src/anim/controller.cc', 'bone_position_from_transform(knob, controller_side_only(knob.controller_knob_edit_side, frames));', 'bone_position_from_transform(knob, frames);', 'in its side action the knob keys along its axis only', 'tests/test_controller_side_timing.py'),
+    ('src/anim/controller.cc', '    controller_knob_set(knob, knob.controller_knob_edit_at + local);\n    return;\n', '', 'dragged in its side action, it goes from where it is shown', 'tests/test_controller_side_timing.py'),
+    ('src/anim/animation.cc', "  /* In a side's own action it moves along that side (keying its timing): held only in a fix. */\n", '  if (holds(doc.action)) {\n    return true;\n  }\n', 'the knob is free in its own side action', 'tests/test_controller_side_timing.py'),
+    ('src/anim/animation.cc', '          most = std::max(most, along);', '          most = along;', 'timing never goes back', 'tests/test_controller_side_timing.py'),
+    ('src/anim/animation.cc', 'static_cast<const void *>(&ch) == timing ||', 'false ||', "a side action's knob keys never move the knob", 'tests/test_controller_side_timing.py'),
+    ('src/anim/animation.cc', 'if (const float t = controller_side_frame(*driver, side, along); t > 0.0f) {', 'if (const float t = std::min(along, controller_side_frames(*driver, side)); t > 0.0f) {', 'how far out picks the frame through the timing', 'tests/test_controller_side_timing.py'),
+    ('src/anim/controller.cc', '  const auto reach = [&](int side) { return controller_side_reach(knob, side, controller_side_frames(knob, side)); };', '  const auto reach = [&](int side) { return controller_side_frames(knob, side); };', 'the box reaches where the end plays', 'tests/test_controller_side_timing.py'),
+    ('src/anim/animation.cc', '    (controller_side_axis(side) == 0 ? at.x : at.y) = controller_side_reach(knob, side, frames) * controller_side_sign(side);', '    (controller_side_axis(side) == 0 ? at.x : at.y) = frames * controller_side_sign(side);', 'in its action the knob is shown through the timing', 'tests/test_controller_side_timing.py'),
 ]
 
 

@@ -1624,7 +1624,7 @@ static std::string controller_place_label(const Bone &knob, float2 at)
     const int side = axis * 2 + (v > 0.0f ? 0 : 1);
     const std::string &action = knob.controller_actions[side];
     label += (label.empty() ? "" : " \xC2\xB7 ") + (action.empty() ? std::string(controller_side_name(side)) : action) +
-             " " + action_frame_text(std::fabs(v));
+             " " + action_frame_text(controller_side_frame(knob, side, std::fabs(v)));
   }
   return label.empty() ? "rest" : label;
 }

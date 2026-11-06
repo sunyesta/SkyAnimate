@@ -2363,7 +2363,8 @@ void rig_operators_register()
                  }
                  std::vector<std::pair<std::string, float2>> places = {{"Rest", {0.0f, 0.0f}}};
                  const auto end = [&](int side) {
-                   const float frames = controller_side_frames(*knob, side) * controller_side_sign(side);
+                   const float frames = controller_side_reach(*knob, side, controller_side_frames(*knob, side)) *
+                                        controller_side_sign(side);
                    return controller_side_axis(side) == 0 ? float2(frames, 0.0f) : float2(0.0f, frames);
                  };
                  for (int side = 0; side < CONTROLLER_SIDES; side++) {

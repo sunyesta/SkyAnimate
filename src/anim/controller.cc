@@ -107,10 +107,70 @@ float controller_side_frames(const Bone &knob, int side)
   return float(keys.empty() ? CONTROLLER_EMPTY_FRAMES : keys.back());
 }
 
+float controller_side_reach(const Bone &knob, int side, float frame)
+{
+  const std::vector<float2> &timing = knob.controller_timing[side];
+  if (timing.empty() || frame <= 0.0f) {
+    return std::max(frame, 0.0f);
+  }
+  float2 prev(0.0f, 0.0f);
+  for (const float2 &k : timing) {
+    if (frame <= k.x) {
+      const float span = k.x - prev.x;
+      return span > 1e-6f ? prev.y + (k.y - prev.y) * (frame - prev.x) / span : k.y;
+    }
+    prev = k;
+  }
+  return prev.y + (frame - prev.x);
+}
+
+float controller_side_frame(const Bone &knob, int side, float along)
+{
+  if (along <= 0.0f) {
+    return 0.0f;
+  }
+  float t = along;
+  const std::vector<float2> &timing = knob.controller_timing[side];
+  if (!timing.empty()) {
+    float2 prev(0.0f, 0.0f);
+    bool found = false;
+    for (const float2 &k : timing) {
+      if (along <= k.y) {
+        const float rise = k.y - prev.y;
+        t = rise > 1e-6f ? prev.x + (k.x - prev.x) * (along - prev.y) / rise : prev.x;
+        found = true;
+        break;
+      }
+      prev = k;
+    }
+    if (!found) {
+      t = prev.x + (along - prev.y);
+    }
+  }
+  return std::min(t, controller_side_frames(knob, side));
+}
+
+float2 controller_frames_place(const Bone &knob, float2 frames)
+{
+  const auto one = [&](float v, int plus, int minus) {
+    return v >= 0.0f ? controller_side_reach(knob, plus, v) : -controller_side_reach(knob, minus, -v);
+  };
+  return {one(frames.x, CONTROLLER_RIGHT, CONTROLLER_LEFT), one(frames.y, CONTROLLER_UP, CONTROLLER_DOWN)};
+}
+
+float2 controller_side_only(int side, float2 at)
+{
+  const float along = std::max((controller_side_axis(side) == 0 ? at.x : at.y) * controller_side_sign(side), 0.0f);
+  return controller_side_axis(side) == 0 ? float2(along * controller_side_sign(side), 0.0f) :
+                                           float2(0.0f, along * controller_side_sign(side));
+}
+
 void controller_box(const Bone &knob, float2 &lo, float2 &hi)
 {
-  lo = {-controller_side_frames(knob, CONTROLLER_LEFT), -controller_side_frames(knob, CONTROLLER_DOWN)};
-  hi = {controller_side_frames(knob, CONTROLLER_RIGHT), controller_side_frames(knob, CONTROLLER_UP)};
+  /* Each side reaches as far as the knob plays its action's end. */
+  const auto reach = [&](int side) { return controller_side_reach(knob, side, controller_side_frames(knob, side)); };
+  lo = {-reach(CONTROLLER_LEFT), -reach(CONTROLLER_DOWN)};
+  hi = {reach(CONTROLLER_RIGHT), reach(CONTROLLER_UP)};
 }
 
 float2 controller_knob(const Bone &knob)
@@ -158,6 +218,11 @@ float2 controller_knob_played(const Layer &owner, const Bone &knob)
 
 void controller_knob_set(Bone &knob, float2 frames)
 {
+  if (knob.controller_knob_edit_side >= 0) {
+    /* In a side's own action: along that side, keying how far it goes on this frame. */
+    knob.position = bone_position_from_transform(knob, controller_side_only(knob.controller_knob_edit_side, frames));
+    return;
+  }
   if (knob.controller_knob_independent) {
     /* A place in the picture: the box may have moved from under it, so it is kept in the box as it plays. */
     knob.position = bone_position_from_transform(knob, frames);
@@ -181,6 +246,11 @@ void controller_knob_move(Bone &knob, const BonePose &pose, float2 delta)
 {
   const float size = std::max(knob.controller_frame_size, 1e-6f);
   const float2 local = rotate(pose.box_skin.inverted().apply_vector(delta), -knob.controller_box_angle) / size;
+  if (knob.controller_knob_edit_side >= 0) {
+    /* In a side's own action: from where it is shown, along that side only. */
+    controller_knob_set(knob, knob.controller_knob_edit_at + local);
+    return;
+  }
   if (!knob.controller_knob_independent) {
     controller_knob_set(knob, controller_knob(knob) + local);
     return;
@@ -205,12 +275,15 @@ void controller_knob_snap(Bone &knob, const std::vector<float2> &also)
     for (const int side : {plus, minus}) {
       const float sign = controller_side_sign(side);
       for (const int frame : knob.controller_keys[side]) {
-        if (std::fabs(float(frame) * sign - at) < std::fabs(best - at)) {
-          best = float(frame) * sign;
+        const float there = controller_side_reach(knob, side, float(frame)) * sign;
+        if (std::fabs(there - at) < std::fabs(best - at)) {
+          best = there;
         }
       }
       /* A side with no keys yet still has its end. */
-      if (const float end = controller_side_frames(knob, side) * sign; std::fabs(end - at) < std::fabs(best - at)) {
+      if (const float end = controller_side_reach(knob, side, controller_side_frames(knob, side)) * sign;
+          std::fabs(end - at) < std::fabs(best - at))
+      {
         best = end;
       }
     }
@@ -257,6 +330,7 @@ void controller_fit_size(Bone &knob)
 {
   float longest = float(CONTROLLER_EMPTY_FRAMES);
   for (int side = 0; side < CONTROLLER_SIDES; side++) {
+    /* By the actions' lengths, not the timing: keying the knob never rescales the box under it. */
     longest = std::max(longest, controller_side_frames(knob, side));
   }
   knob.controller_frame_size = 0.5f / longest;

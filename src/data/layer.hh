@@ -749,6 +749,12 @@ struct Bone {
    * (worked out, never saved). */
   bool controller_knob_editing = false;
   float2 controller_knob_edit_at;
+  /* The side whose own action is being edited (-1: none): there the knob moves along that side's axis, keying how far it
+   * goes on each frame (worked out, never saved). */
+  int controller_knob_edit_side = -1;
+  /* Each side's timing: the knob's keys in its action as (frame, how far along the side), past frame 0, never going
+   * back; empty, frame N is N out (worked out, never saved). */
+  std::array<std::vector<float2>, CONTROLLER_SIDES> controller_timing;
   bool operator==(const Bone &) const = default;
 };
 

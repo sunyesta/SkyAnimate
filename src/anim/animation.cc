@@ -1875,7 +1875,8 @@ static std::vector<std::pair<std::string, float>> action_bone_frames_for(const L
       controller_of_action(owner, name, &side);
       const float2 knob = knobs[size_t(driver - owner.bones.data())];
       const float along = (controller_side_axis(side) == 0 ? knob.x : knob.y) * controller_side_sign(side);
-      if (const float t = std::min(along, controller_side_frames(*driver, side)); t > 0.0f) {
+      /* Through the side's timing: how far out the knob is picks the frame. */
+      if (const float t = controller_side_frame(*driver, side, along); t > 0.0f) {
         frames.push_back({name, t});
       }
       continue;
@@ -1894,7 +1895,7 @@ static std::vector<std::pair<std::string, float>> action_bone_frames_for(const L
       const float2 at = knobs[size_t(knob - owner.bones.data())];
       if (std::fabs(turn - controller_dial_turn(owner, *knob, *driver, at)) < 1e-5f) {
         const float along = (controller_side_axis(side) == 0 ? at.x : at.y) * controller_side_sign(side);
-        if (const float t = std::min(along, controller_side_frames(*knob, side)); t > 0.0f) {
+        if (const float t = controller_side_frame(*knob, side, along); t > 0.0f) {
           frames.push_back({name, t});
         }
         continue;
@@ -1948,7 +1949,10 @@ static bool action_bone_action_turns(const Layer &owner, const std::string &by, 
            });
   };
   if (bone_is_controller(*bone)) {
-    if (moves_knob(*bone)) {
+    /* Its own sides' actions key its timing, not a move. */
+    if (std::find(bone->controller_actions.begin(), bone->controller_actions.end(), by) == bone->controller_actions.end() &&
+        moves_knob(*bone))
+    {
       return true;
     }
     /* An independent knob plays where it sits in its box: an action moving the box or its Knob Parent (or what either
@@ -2235,7 +2239,7 @@ bool action_frame_set(Layer &owner, const std::string &name, float frame)
       int side = 0;
       controller_of_action(owner, name, &side);
       float2 at = controller_knob(knob);
-      (controller_side_axis(side) == 0 ? at.x : at.y) = frame * controller_side_sign(side);
+      (controller_side_axis(side) == 0 ? at.x : at.y) = controller_side_reach(knob, side, frame) * controller_side_sign(side);
       controller_knob_set(knob, at);
       return true;
     }
@@ -2745,9 +2749,7 @@ bool bone_held_by_fix(const Document &doc, const Layer &armature, const Bone &bo
     return bone_is_controller(bone) && std::find(bone.controller_actions.begin(), bone.controller_actions.end(),
                                                  action) != bone.controller_actions.end();
   };
-  if (holds(doc.action)) {
-    return true;
-  }
+  /* In a side's own action it moves along that side (keying its timing): held only in a fix. */
   const FixAction *fix = fix_action_find(armature, doc.action);
   return fix && std::any_of(fix->drivers.begin(), fix->drivers.end(),
                             [&](const std::string &d) { return action_bone_of(armature, d) == &bone || holds(d); });
@@ -3199,8 +3201,13 @@ static void apply_action_bone_actions_playing(Document &doc, int frame)
     };
     gather_switches(gather_switches, owner.children);
     const auto play = [&](const std::string &name, float t, const void *skip, bool skip_driving) {
+      /* A side's action keys its own knob's timing (how far out each frame plays): never a move of the knob. */
+      const Bone *by_knob = action_bone_of(owner, name);
+      const void *timing = by_knob && bone_is_controller(*by_knob) ? static_cast<const void *>(&by_knob->position_keys) : nullptr;
       owner_for_each_channel_with(owner, name, [&](auto &ch, auto &value) {
-        if (static_cast<const void *>(&ch) == skip || (skip_driving && driving.count(static_cast<const void *>(&ch)))) {
+        if (static_cast<const void *>(&ch) == skip || static_cast<const void *>(&ch) == timing ||
+            (skip_driving && driving.count(static_cast<const void *>(&ch))))
+        {
           return;
         }
         if (const auto sw = switches.find(static_cast<const void *>(&ch)); sw != switches.end()) {
@@ -3376,7 +3383,7 @@ static float controller_dial_turn(const Layer &owner, const Bone &knob, const Bo
       continue;
     }
     const float along = (controller_side_axis(side) == 0 ? at.x : at.y) * controller_side_sign(side);
-    if (const float t = std::min(along, controller_side_frames(knob, side)); t > 0.0f) {
+    if (const float t = controller_side_frame(knob, side, along); t > 0.0f) {
       turn += action_bone_sample(controller_side_curve(dial, knob.controller_actions[side]), 0.0f, t);
     }
   }
@@ -3631,11 +3638,43 @@ void controllers_update(Document &doc)
           }
         }
       }
+      /* Its timing: its own keys in each side's action, how far out each frame plays (being edited, the action's keys
+       * are the channel's own). A key at the rest point or going back adds nothing. */
+      for (int side = 0; side < CONTROLLER_SIDES; side++) {
+        std::vector<float2> &timing = knob.controller_timing[side];
+        timing.clear();
+        const std::string &action = knob.controller_actions[side];
+        if (action.empty()) {
+          continue;
+        }
+        const bool own = doc.action == action && doc.action_layer == owner.id;
+        const auto it = knob.position_keys.actions.find(action);
+        const std::vector<Key<float2>> *keys = own ? &knob.position_keys.keys :
+                                               it != knob.position_keys.actions.end() ? &it->second : nullptr;
+        float most = 0.0f;
+        for (size_t k = 0; keys && k < keys->size(); k++) {
+          const Key<float2> &key = (*keys)[k];
+          const float along = (controller_side_axis(side) == 0 ? key.value.x : key.value.y) * controller_side_sign(side);
+          if (key.frame <= 0 || along <= 1e-6f) {
+            continue;
+          }
+          most = std::max(most, along);
+          timing.push_back({float(key.frame), most});
+        }
+      }
       if (knob.controller_size_auto) {
         controller_fit_size(knob);
       }
-      /* Editing one of its actions, the knob sits at its frame (what hangs from it with it). */
-      const bool editing = doc.action_layer == owner.id && bone_held_by_fix(doc, owner, knob);
+      /* Editing one of its actions, the knob sits at its frame (what hangs from it with it); in a side's own action
+       * it moves along that side, keying its timing. */
+      int edit_side = -1;
+      for (int side = 0; side < CONTROLLER_SIDES && doc.action_layer == owner.id; side++) {
+        if (!doc.action.empty() && knob.controller_actions[side] == doc.action) {
+          edit_side = side;
+        }
+      }
+      const bool editing = doc.action_layer == owner.id && (edit_side >= 0 || bone_held_by_fix(doc, owner, knob));
+      knob.controller_knob_edit_side = edit_side;
       knob.controller_knob_editing = editing;
       knob.controller_knob_edit_at = editing ? controller_knob_shown(doc, owner, knob) : float2();
     }
@@ -3671,7 +3710,7 @@ float2 controller_knob_shown(const Document &doc, const Layer &owner, const Bone
   }
   float2 at;
   const auto put = [&](int side, float frames) {
-    (controller_side_axis(side) == 0 ? at.x : at.y) = frames * controller_side_sign(side);
+    (controller_side_axis(side) == 0 ? at.x : at.y) = controller_side_reach(knob, side, frames) * controller_side_sign(side);
   };
   for (int side = 0; side < CONTROLLER_SIDES; side++) {
     if (knob.controller_actions[side] == doc.action) {
@@ -3704,7 +3743,7 @@ float2 controller_knob_playing(const Layer &owner, const Bone &knob)
       linked = linked || controller_side_dial(owner, knob, side);
       for (const auto &[name, t] : playing) {
         if (name == knob.controller_actions[side]) {
-          along += t * controller_side_sign(side);
+          along += controller_side_reach(knob, side, t) * controller_side_sign(side);
         }
       }
     }
@@ -3725,7 +3764,8 @@ std::vector<float2> controller_fix_poses(const Layer &owner, const Bone &knob)
       for (size_t k = 0; k < fix.drivers.size() && k < pose.at.size(); k++) {
         for (int side = 0; side < CONTROLLER_SIDES; side++) {
           if (knob.controller_actions[side] == fix.drivers[k]) {
-            (controller_side_axis(side) == 0 ? at.x : at.y) += pose.at[k] * controller_side_sign(side);
+            (controller_side_axis(side) == 0 ? at.x : at.y) +=
+                controller_side_reach(knob, side, pose.at[k]) * controller_side_sign(side);
             ours = true;
           }
         }
@@ -3765,7 +3805,8 @@ std::vector<std::pair<size_t, size_t>> controller_fix_poses_at(const Layer &owne
       float2 there;
       for (size_t k = 0; k < fix.drivers.size() && k < fix.poses[p].at.size(); k++) {
         const int side = side_of(fix.drivers[k]);
-        (controller_side_axis(side) == 0 ? there.x : there.y) += fix.poses[p].at[k] * controller_side_sign(side);
+        (controller_side_axis(side) == 0 ? there.x : there.y) +=
+            controller_side_reach(knob, side, fix.poses[p].at[k]) * controller_side_sign(side);
       }
       if (std::fabs(there.x - at.x) < 0.05f && std::fabs(there.y - at.y) < 0.05f) {
         found.push_back({f, p});

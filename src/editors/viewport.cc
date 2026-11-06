@@ -9382,7 +9382,7 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
   for (int side = 0; side < CONTROLLER_SIDES; side++) {
     const float sign = controller_side_sign(side);
     for (const int frame : bone.controller_keys[side]) {
-      const float v = float(frame) * sign;
+      const float v = controller_side_reach(bone, side, float(frame)) * sign;
       if (controller_side_axis(side) == 0) {
         tick(at({v, lo.y}), at({v, hi.y}));
       }
