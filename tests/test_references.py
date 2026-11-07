@@ -162,6 +162,30 @@ doc.frame_current = 10
 assert ref.points == shown_10, "its animation stays as it was"
 doc.frame_current = 0
 
+# What the original's modifiers did to it stays too (a Resample's outline), and its own unshown ones stay off.
+oanim.ops.layer.new()
+ringed = layers.active
+ringed.add_curve([(-1.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0)], closed=True)
+assert oanim.ops.object.modifier_add(type="RESAMPLE") == {'FINISHED'}
+assert oanim.ops.layer.make_reference() == {'FINISHED'}
+ring_ref = layers.active
+assert oanim.ops.object.modifier_add(type="BEVEL") == {'FINISHED'}
+
+
+def by_id(i):
+    return next(l for l in layers.all() if l.id == i)
+
+
+shown_ring = by_id(ring_ref.id).evaluated_outline(0, 16)[0]
+assert len(by_id(ring_ref.id).evaluated()[0]) > 4, "the reference shows the original's Resample"
+assert oanim.ops.layer.break_reference() == {'FINISHED'}
+broken = by_id(ring_ref.id)
+assert [m["type"] for m in broken.modifiers] == ["RESAMPLE", "BEVEL"], broken.modifiers
+assert not broken.modifiers[1]["show_viewport"], "its own Bevel never showed: it stays off"
+after = broken.evaluated_outline(0, 16)[0]
+far = max(max(min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for q in b) for p in a) for a, b in ((shown_ring, after), (after, shown_ring)))
+assert len(after) == len(shown_ring) and far < 1e-4, ("Break Reference keeps the Resample's outline", far)
+
 # --- Match Original: posed by the original's bones, wherever it is ------------------------------------
 oanim.ops.layer.new()
 art = layers.active

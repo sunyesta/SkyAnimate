@@ -763,6 +763,46 @@ static int add_handle_offsets(VectorDrawing &d, const ReferenceSettings &rs, uin
   return n;
 }
 
+/* The modifiers a Match Original reference shows through, as an ordinary layer's own (stack_evaluated in
+ * src/anim/deform.cc): the original's stack in its order, its bones being the reference's own Armature where it has one
+ * (in the same bone layer, the same pose) and its Booleans left out (they never showed); then the reference's own
+ * Booleans, which come last. Its own other modifiers didn't show: they are kept, turned off. */
+static std::vector<Modifier> reference_shown_modifiers(const Layer &source, const Layer &ref)
+{
+  std::vector<Modifier> stack;
+  const auto own_armature = std::find_if(ref.modifiers.begin(), ref.modifiers.end(),
+                                         [](const Modifier &m) { return m.type == ModifierType::Armature; });
+  bool armature_placed = false;
+  for (const Modifier &m : source.modifiers) {
+    if (m.type == ModifierType::Boolean) {
+      continue;
+    }
+    if (m.type == ModifierType::Armature) {
+      if (own_armature != ref.modifiers.end() && !armature_placed) {
+        stack.push_back(*own_armature);
+        armature_placed = true;
+      }
+      continue;
+    }
+    stack.push_back(m);
+  }
+  for (const Modifier &m : ref.modifiers) {
+    if (m.type == ModifierType::Armature) {
+      if (!armature_placed) {
+        stack.push_back(m);
+        armature_placed = true;
+      }
+      continue;
+    }
+    Modifier own = m;
+    if (m.type != ModifierType::Boolean) {
+      own.show_viewport = own.show_render = false;
+    }
+    stack.push_back(own);
+  }
+  return stack;
+}
+
 void reference_break(Document &doc, Layer &ref)
 {
   const Layer *source = layer_find(doc, ref.reference_source);
@@ -797,6 +837,9 @@ void reference_break(Document &doc, Layer &ref)
 
     std::erase_if(d.shapes, [](const Shape &s) { return s.hidden; });
     ref.drawing = std::move(d);
+    if (ref.reference.match_original) {
+      ref.modifiers = reference_shown_modifiers(*source, ref);
+    }
   }
   ref.reference_source = 0;
   ref.reference = ReferenceSettings();
