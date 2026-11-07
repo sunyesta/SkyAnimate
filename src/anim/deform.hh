@@ -89,9 +89,16 @@ struct PointTarget {
   Transform2D unskin;
   /* How far the move itself takes the stored point. */
   float moved = 0.0f;
+  /* Where the point was stored before the move, when known: a skin nearly flat across a squashed deform sends the
+   * stored point far for a small move, and from there may be nowhere near; settling starts from whichever of the two
+   * shows nearer the target. */
+  float2 from;
+  bool has_from = false;
 };
 /* A skin is right only around where a point was: a deform isn't straight, so a point sent far by its skin alone lands
- * off. This moves the points on until they show at their targets, as near as the deforms let them. */
+ * off. This moves the points on until they show at their targets, as near as the deforms let them: each step damped
+ * where the deform squashes (so a nearly flat stretch can't throw a point off), and a step that shows it farther off
+ * taken back by half, the point left at the nearest place found. */
 void layer_points_settle(const Document &doc, Layer &layer, const std::vector<PointTarget> &targets);
 /* A handle dragged by itself, likewise: where its end is to show (layer space) as the edit wire shows it. `keep_other`
  * as curve_point_move_handle's. */

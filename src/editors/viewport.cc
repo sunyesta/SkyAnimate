@@ -323,6 +323,8 @@ struct ModalTransform {
     bool proportional = false;
     float reach = 0.0f;
     float2 rest;
+    /* A point: where it was stored as the move began, for settling it (PointTarget::from). */
+    float2 from;
   };
   std::vector<Item> items;
   float2 pivot;
@@ -6460,6 +6462,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
         }
         ModalTransform::Item item{layer->id, i, p};
         item.unskin = shown.skins[i].inverted();
+        item.from = drawing.points[i].pos;
         modal.items.push_back(item);
       }
     }
@@ -6514,6 +6517,7 @@ static bool modal_collect(Context &C, Area &area, char kind, float2 mouse_docume
         item.proportional = true;
         item.reach = reach[i];
         item.rest = drawing.points[i].pos;
+        item.from = item.rest;
         modal.items.push_back(item);
         modal.proportional = true;
       }
@@ -6902,7 +6906,8 @@ static void modal_apply(Context &C, const ModalTransform &modal, ModalLayers &la
     if (item.curve < 0 && item.mirror_source < 0) {
       const Transform2D &to_layer = layers[item.layer].second;
       targets[item.layer].push_back({item.point, to_layer.apply(to), item.unskin,
-                                     length(item.unskin.apply_vector(to_layer.apply_vector(to - item.start)))});
+                                     length(item.unskin.apply_vector(to_layer.apply_vector(to - item.start))), item.from,
+                                     true});
     }
     else if (item.direct && item.shown_scale == 1.0f && item.mirror_source < 0) {
       const Curve &curve = layers[item.layer].first->drawing.curves[size_t(item.curve)];

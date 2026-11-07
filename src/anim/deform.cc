@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -1059,29 +1060,69 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
   for (size_t i = 0; i < targets.size(); i++) {
     from[i] = layer.drawing.points[size_t(targets[i].point)].pos;
   }
+  /* The nearest each has shown to its target so far, and where it was stored then. */
+  std::vector<float2> best(targets.size());
+  std::vector<float> best_off(targets.size(), std::numeric_limits<float>::infinity());
+  std::vector<bool> settled(targets.size(), false);
   std::vector<StackPlace> places;
-  for (int pass = 0; pass < 6; pass++) {
+  constexpr int passes = 8;
+  for (int pass = 0; pass < passes; pass++) {
     places.clear();
-    for (const PointTarget &t : targets) {
+    for (size_t i = 0; i < targets.size(); i++) {
+      const PointTarget &t = targets[i];
       const float2 at = layer.drawing.points[size_t(t.point)].pos;
-      places.push_back({t.point, at});
-      places.push_back({t.point, at + float2(STRETCH_STEP, 0.0f)});
-      places.push_back({t.point, at + float2(0.0f, STRETCH_STEP)});
+      /* The first time, where it was before the move too. */
+      for (const float2 p : {at, pass == 0 && t.has_from ? t.from : at}) {
+        places.push_back({t.point, p});
+        places.push_back({t.point, p + float2(STRETCH_STEP, 0.0f)});
+        places.push_back({t.point, p + float2(0.0f, STRETCH_STEP)});
+      }
     }
     const std::vector<float2> shown = layer_places_shown(doc, layer, places);
     bool done = true;
     for (size_t i = 0; i < targets.size(); i++) {
       const PointTarget &t = targets[i];
-      const float2 off = t.at - shown[i * 3];
-      if (length(off) <= std::max(1e-6f, 1e-5f * length(t.at))) {
+      if (settled[i]) {
+        continue;
+      }
+      float2 &stored = layer.drawing.points[size_t(t.point)].pos;
+      size_t at = i * 6;
+      if (pass == 0 && t.has_from && length(t.at - shown[i * 6 + 3]) < length(t.at - shown[i * 6])) {
+        /* The move's own skin sent it somewhere showing farther off than where it began. */
+        stored = t.from;
+        from[i] = t.from;
+        at = i * 6 + 3;
+      }
+      const float2 off = t.at - shown[at];
+      if (length(off) >= best_off[i]) {
+        /* Farther off than before: halfway back to the nearest place yet (at the last pass, that place). */
+        stored = pass + 1 < passes ? best[i] + (stored - best[i]) * 0.5f : best[i];
+        done = false;
+        continue;
+      }
+      best[i] = stored;
+      best_off[i] = length(off);
+      if (length(off) <= std::max(1e-6f, 1e-5f * length(t.at)) || pass + 1 == passes) {
+        settled[i] = true;
         continue;
       }
       done = false;
-      Transform2D stretch;
-      const Transform2D back = stretch_from_steps(shown[i * 3], shown[i * 3 + 1], shown[i * 3 + 2], stretch) ? stretch.inverted()
-                                                                                                             : t.unskin;
-      float2 &stored = layer.drawing.points[size_t(t.point)].pos;
-      float2 next = stored + back.apply_vector(off);
+      /* The step back through the stretch here, damped (Levenberg's): where the deform squashes the place nearly flat
+       * the plain inverse would go far for little, and the stretch says nothing true that far away. */
+      const float2 x = (shown[at + 1] - shown[at]) / STRETCH_STEP, y = (shown[at + 2] - shown[at]) / STRETCH_STEP;
+      const float xx = dot(x, x), xy = dot(x, y), yy = dot(y, y);
+      const float big = 0.5f * (xx + yy) + std::sqrt(0.25f * (xx - yy) * (xx - yy) + xy * xy);
+      const float damp = big * 0.0025f;
+      const float m00 = xx + damp, m11 = yy + damp, det = m00 * m11 - xy * xy;
+      float2 step;
+      if (det > 1e-20f && big > 1e-12f) {
+        const float gx = dot(x, off), gy = dot(y, off);
+        step = float2((m11 * gx - xy * gy) / det, (m00 * gy - xy * gx) / det);
+      }
+      else {
+        step = t.unskin.apply_vector(off);
+      }
+      float2 next = stored + step;
       const float went = length(next - from[i]), most = t.moved * 12.0f;
       if (went > most && went > 0.0f) {
         next = from[i] + (next - from[i]) * (most / went);
@@ -1090,6 +1131,12 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
     }
     if (done) {
       break;
+    }
+  }
+  /* Left where it showed nearest (a step never measured is not taken). */
+  for (size_t i = 0; i < targets.size(); i++) {
+    if (std::isfinite(best_off[i])) {
+      layer.drawing.points[size_t(targets[i].point)].pos = best[i];
     }
   }
 }
