@@ -791,10 +791,6 @@ static bool path_hover_quiet_update(bool moving)
 {
   return path_hover_quiet_update(moving, float2(ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y));
 }
-/* A plain press on the dot of the frame shown, over the bone or point it is the path of: a drag moves the path there,
- * a click (let go without moving) picks the bone or point, at this place. */
-static std::optional<ImVec2> g_path_pick_on_release;
-
 /* The Edit brush's dot drag: a dot between keys slid along its path, from the document as it was pressed each time
  * the mouse moves (or the wheel sizes the proportional reach), one undo step; Esc or a right click cancels. */
 static struct {
@@ -839,7 +835,6 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
     doc = std::move(g.snapshot);
     g_right_click_spent = true;
     g_path_select_on_release.reset();
-    g_path_pick_on_release.reset();
     finish();
     return;
   }
@@ -849,14 +844,10 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
       push_undo(C, "Slide Path Dot");
     }
     finish();
-    if (clicked && g_path_pick_on_release) {
-      motion_path_pick_click(C, view, *g_path_pick_on_release, false);
-    }
-    else if (clicked && g_path_select_on_release) {
+    if (clicked && g_path_select_on_release) {
       operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
     }
     g_path_select_on_release.reset();
-    g_path_pick_on_release.reset();
     return;
   }
   if (ts.proportional && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown))) {
@@ -887,15 +878,16 @@ static void motion_path_slide_update(Context &C, const ViewMapping &view)
  * slides it along its path (with proportional editing), a selected key's handle bends the path (Alt breaks the
  * pair). Alt on the path adds a key there, a drag moving it (Ctrl: onto the line between the keys; Alt Shift: a
  * breakdown along the arc). Edits happen on the dot's own frame, the frame shown staying; Esc cancels. */
-PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_shown, bool thing_under, bool alt)
+PathPress motion_path_press_kind(bool on_handle, bool on_path, bool thing_under)
 {
-  /* The path first (the tool edits paths: a dot drawn over a bone doesn't lose its click), but the dot of the frame
-   * shown sits on the bone or point it traces, so there a click picks that and a drag moves the path. */
+  /* The path first (the tool edits paths: a dot drawn over a bone doesn't lose its click), the dot of the frame shown
+   * too, though it sits on the bone or point it traces: that is picked already, as its path shows (a click on it
+   * picking the bone instead made the key there hard to pick). Bones are picked off the paths. */
   if (on_handle) {
     return PathPress::Handle;
   }
   if (on_path) {
-    return !alt && on_frame_shown && thing_under ? PathPress::PathOrPick : PathPress::Path;
+    return PathPress::Path;
   }
   return thing_under ? PathPress::Pick : PathPress::Deselect;
 }
@@ -982,10 +974,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
     C.wm->path_handle_picks.clear();
     /* A bone or point under the press (of the active bone layer and its family, or the drawings being edited). */
     const bool thing_under = !io.KeyAlt && hovered && motion_path_pick_click(C, view, io.MousePos, false, false);
-    const PathPress kind = motion_path_press_kind(false, hover_path != nullptr,
-                                                  hover_path && hover_frame == doc.frame_current, thing_under,
-                                                  io.KeyAlt);
-    g_path_pick_on_release.reset();
+    const PathPress kind = motion_path_press_kind(false, hover_path != nullptr, thing_under);
     /* Off the paths the drawing is edited as with the Select tool: a point or handle clicked or dragged, a line
      * clicked, a box dragged from empty space. */
     if ((kind == PathPress::Pick || kind == PathPress::Deselect) && hovered && !io.KeyAlt &&
@@ -1006,7 +995,6 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
       }
       return;
     }
-    const bool pick_on_click = kind == PathPress::PathOrPick && !io.KeyShift;
     const MotionPathTarget target = hover_path->target;
     /* Frame 0's key, the setup pose: picked for its out handle, but never moved (nor a key added on it). */
     const bool on_setup = hover_frame == 0 && motion_path_is_key(doc, target, 0);
@@ -1036,23 +1024,13 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
         return;
       }
       if (on_setup) {
-        if (pick_on_click) {
-          /* The setup key never moves: on its bone or point, a click is a pick. */
-          motion_path_pick_click(C, view, io.MousePos, false);
-        }
-        else {
-          operator_call(C, "anim.motion_path_select", args);
-        }
+        operator_call(C, "anim.motion_path_select", args);
         return;
       }
       const bool selected = on_key ? motion_path_key_selected(doc, target, hover_frame)
                                    : path_dot_selected(*C.wm, target, hover_frame);
       g_path_select_on_release.reset();
-      if (pick_on_click) {
-        /* Nothing selected yet: let go without moving, it picks; dragged, it moves the path there. */
-        g_path_pick_on_release = io.MousePos;
-      }
-      else if (selected) {
+      if (selected) {
         g_path_select_on_release = args;
       }
       else {
@@ -1136,7 +1114,6 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
       doc = std::move(g.snapshot);
     }
     g_path_select_on_release.reset();
-    g_path_pick_on_release.reset();
     path_drag_finish();
     g_right_click_spent = true;
     return;
@@ -1163,14 +1140,10 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
       /* The key just made, selected. */
       operator_call(C, "anim.motion_path_select", args);
     }
-    else if (!dragged && g_path_pick_on_release) {
-      motion_path_pick_click(C, view, *g_path_pick_on_release, false);
-    }
     else if (!dragged && g_path_select_on_release) {
       operator_call(C, "anim.motion_path_select", *g_path_select_on_release);
     }
     g_path_select_on_release.reset();
-    g_path_pick_on_release.reset();
     return;
   }
   const float dx = io.MousePos.x - g.press.x, dy = io.MousePos.y - g.press.y;

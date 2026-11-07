@@ -1382,9 +1382,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     const Layer *layer = layer_find(*current_context().document, id);
     return layer ? overlay_drawing_identity_test(*layer) : 0;
   });
-  m.def("motion_path_press_kind", [](bool on_handle, bool on_path, bool on_frame_shown, bool thing_under, bool alt) {
-    static const char *const names[] = {"HANDLE", "PATH", "PATH_OR_PICK", "PICK", "DESELECT"};
-    return std::string(names[int(motion_path_press_kind(on_handle, on_path, on_frame_shown, thing_under, alt))]);
+  m.def("motion_path_press_kind", [](bool on_handle, bool on_path, bool thing_under) {
+    static const char *const names[] = {"HANDLE", "PATH", "PICK", "DESELECT"};
+    return std::string(names[int(motion_path_press_kind(on_handle, on_path, thing_under))]);
   });
   m.def("motion_path_vector_under", [](float x, float y, float zoom) {
     return motion_path_vector_under_test(current_context(), {x, y}, zoom);

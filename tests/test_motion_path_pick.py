@@ -1,6 +1,6 @@
 """The Motion Path tool's Edit brush: a plain click (no Alt) picks a bone or point, so its path shows. A path
-handle, key or dot wins; on the dot of the frame shown, over the bone or point it traces, a click picks and a drag
-moves the path; empty space clears only the path selection. Shift adds. Alt keeps its meanings.
+handle, key or dot wins, the dot of the frame shown too, over the bone or point it traces (that is picked already, as
+its path shows); empty space clears only the path selection. Shift adds. Alt keeps its meanings.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_pick.py
 """
@@ -16,10 +16,7 @@ kind = wm.motion_path_press_kind
 assert kind(on_handle=True, on_path=True, thing_under=True) == "HANDLE", "a handle wins"
 assert kind(on_path=True, thing_under=True) == "PATH", "a dot on another frame wins over a bone under it"
 assert kind(on_path=True) == "PATH"
-assert kind(on_path=True, on_frame_shown=True) == "PATH", "the frame shown, nothing under: the path"
-assert kind(on_path=True, on_frame_shown=True, thing_under=True) == "PATH_OR_PICK", \
-    "the dot of the frame shown on its bone: a click picks, a drag moves"
-assert kind(on_path=True, on_frame_shown=True, thing_under=True, alt=True) == "PATH", "Alt: the path's (a key)"
+assert kind(on_path=True, thing_under=True) == "PATH", "the dot of the frame shown on its own bone: the path's too"
 assert kind(thing_under=True) == "PICK", "off the paths, a bone or point is picked without Alt"
 assert kind() == "DESELECT", "empty space: the path selection clears"
 

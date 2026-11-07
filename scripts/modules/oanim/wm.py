@@ -470,12 +470,11 @@ def overlay_drawing_identity(layer):
     return _oanim.overlay_drawing_identity(int(getattr(layer, "id", layer)))
 
 
-def motion_path_press_kind(on_handle=False, on_path=False, on_frame_shown=False, thing_under=False, alt=False):
+def motion_path_press_kind(on_handle=False, on_path=False, thing_under=False):
     """Test hook: what a left press with the Motion Path tool's Edit brush does, from what is under it: "HANDLE",
-    "PATH", "PATH_OR_PICK" (the dot of the frame shown over its bone or point: a drag moves the path, a click picks),
-    "PICK" (a bone or point off the paths) or "DESELECT"."""
-    return _oanim.motion_path_press_kind(bool(on_handle), bool(on_path), bool(on_frame_shown), bool(thing_under),
-                                         bool(alt))
+    "PATH" (a key or dot, the frame shown's too, over a bone or not), "PICK" (a bone or point off the paths) or
+    "DESELECT"."""
+    return _oanim.motion_path_press_kind(bool(on_handle), bool(on_path), bool(thing_under))
 
 
 def motion_path_vector_under(x, y, zoom=100.0):

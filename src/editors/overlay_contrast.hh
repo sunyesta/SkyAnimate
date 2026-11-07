@@ -83,8 +83,8 @@ uint64_t overlay_drawing_identity_test(const Layer &layer);
 /* What a left press with the Motion Path tool's Edit brush does, from what is under it: a path handle; the path (a
  * key or dot); on the dot of the frame shown over the bone or point it traces, a drag moves the path and a click picks
  * that; off the paths, a bone or point is picked; else the path selection clears. */
-enum class PathPress { Handle, Path, PathOrPick, Pick, Deselect };
-PathPress motion_path_press_kind(bool on_handle, bool on_path, bool on_frame_shown, bool thing_under, bool alt);
+enum class PathPress { Handle, Path, Pick, Deselect };
+PathPress motion_path_press_kind(bool on_handle, bool on_path, bool thing_under);
 /* Test hook: the Motion Path tool's pick at document point `at` (zoom pixels a unit): whether a bone or point is
  * there, and with `apply` picks it (`extend` adds). */
 bool motion_path_pick_test(Context &C, float2 at, float zoom, bool extend, bool apply);
