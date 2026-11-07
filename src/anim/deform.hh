@@ -63,6 +63,12 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
+/* What the bones alone make of some of the layer's points (`points`, indices), by each one's own weights: for points
+ * just made, without working out the rest. */
+std::vector<Transform2D> layer_point_skins_bones_some(const Document &doc, const Layer &layer,
+                                                     const std::vector<int> &points);
+/* Whether a deform modifier, its own or a group's, bends the layer (away from the setup frame). */
+bool layer_is_deformed(const Document &doc, const Layer &layer);
 /* Whether a deform's Resample Self fits the layer's segments afresh: their handles as they show then come of fitting the
  * bent line, not of bending the handles, so a small change to one can turn up anywhere. Such a handle's end is shown and
  * edited as a place of its own, where the deforms put it (layer_places_shown), and the wire still takes the fit. */

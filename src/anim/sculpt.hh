@@ -141,6 +141,15 @@ struct SculptStroke {
     uint64_t id = 0;
     /* Each point's stored -> document map (its bones' move, then the layer's place). */
     std::vector<Transform2D> to_shown;
+    /* The layer's place (layer -> document), and whether its bones move any point (a point Dyntopo makes then takes
+     * its skin from its own weights). */
+    Transform2D to_document;
+    bool skinned = false;
+    /* A deform modifier bends the layer on this frame: a skin holds only right around where a point was, so each dab's
+     * points are settled on until they show where the brush put them (layer_points_settle), each from where it was
+     * stored when the stroke started (`stored_start`). */
+    bool settle = false;
+    std::vector<float2> stored_start;
     std::vector<Curve> curves;
     /* X mirror within the layer (it has no side partner): every dab is also made mirrored across the
      * layer's own axis, so both sides are sculpted as one. `mirror` reflects across that axis as it shows

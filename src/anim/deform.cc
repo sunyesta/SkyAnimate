@@ -1029,8 +1029,7 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
   return drawing;
 }
 
-/* Whether a deform modifier, its own or a group's, bends the layer. */
-static bool layer_is_deformed(const Document &doc, const Layer &layer)
+bool layer_is_deformed(const Document &doc, const Layer &layer)
 {
   return layer_has_group_deforms(doc, layer, false) ||
          std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
@@ -1251,6 +1250,32 @@ static std::vector<Transform2D> layer_point_skins_bones(const Document &doc, con
   if (on && deformer_init(doc, layer, d)) {
     for (size_t i = 0; i < drawing.points.size(); i++) {
       skins[i] = point_skin(d, drawing.points[i]);
+    }
+  }
+  return skins;
+}
+
+std::vector<Transform2D> layer_point_skins_bones_some(const Document &doc, const Layer &layer,
+                                                     const std::vector<int> &points)
+{
+  std::vector<Transform2D> skins(points.size());
+  if (matched_original(doc, layer)) {
+    const std::vector<Transform2D> all = layer_point_skins_bones(doc, layer);
+    for (size_t k = 0; k < points.size(); k++) {
+      skins[k] = size_t(points[k]) < all.size() ? all[size_t(points[k])] : Transform2D();
+    }
+    return skins;
+  }
+  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  const bool on = std::any_of(layer.modifiers.begin(), layer.modifiers.end(), [](const Modifier &m) {
+    return m.type == ModifierType::Armature && m.show_viewport;
+  });
+  Deformer d;
+  if (on && deformer_init(doc, layer, d)) {
+    for (size_t k = 0; k < points.size(); k++) {
+      if (points[k] >= 0 && size_t(points[k]) < drawing.points.size()) {
+        skins[k] = point_skin(d, drawing.points[size_t(points[k])]);
+      }
     }
   }
   return skins;

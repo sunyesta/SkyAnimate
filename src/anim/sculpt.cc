@@ -434,8 +434,16 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
     std::vector<Transform2D> skins = layer_point_skins(doc, *layer);
     skins.resize(drawing.points.size());
     s.to_shown.resize(skins.size());
+    s.to_document = to_document;
     for (size_t i = 0; i < skins.size(); i++) {
       s.to_shown[i] = to_document * skins[i];
+      s.skinned = s.skinned || !(skins[i] == Transform2D());
+    }
+    s.settle = doc.frame_current != 0 && layer_is_deformed(doc, *layer);
+    if (s.settle) {
+      for (const MeshPoint &p : drawing.points) {
+        s.stored_start.push_back(p.pos);
+      }
     }
     /* Its own axis as it shows: where its points are taken (as the head bone carries a face whole). */
     s.mirror_self = dab.mirror_x && !layer_mirror_partner(const_cast<Document &>(doc), id);
@@ -801,7 +809,7 @@ int segment_steps(const SculptStroke::Curve &c, int s)
  * the points. Each new point is weighted between its neighbours and shows by those weights (its bones' move worked out
  * from them), so it is stored where its own skin puts it on the line. The curve's segments are split in one pass, however
  * many points go in. Returns how many went in. */
-int dyntopo_resample(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStroke::Curve &c,
+int dyntopo_resample(const Document &doc, VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStroke::Curve &c,
                      const std::vector<bool> &moved, std::vector<bool> &point_changed)
 {
   OANIM_PROFILE("sculpt_resample");
@@ -884,6 +892,9 @@ int dyntopo_resample(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStro
   const std::vector<int> made = drawing_split_segments(drawing, c.curve, cuts);
   sl.to_shown.resize(drawing.points.size());
   point_changed.resize(drawing.points.size(), false);
+  if (sl.settle) {
+    sl.stored_start.resize(drawing.points.size());
+  }
   /* The stroke's curve gets them after each split segment's first point (no detail levels here: its points are the
    * curve's own, in order), and each new point its weights, selection and skin. */
   std::vector<int> anchor, new_of_old(static_cast<size_t>(n));
@@ -943,16 +954,31 @@ int dyntopo_resample(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStro
       add(drawing.points[size_t(pb)].weights, u);
       p.weights = std::move(weights);
       p.selected = drawing.points[size_t(pa)].selected && drawing.points[size_t(pb)].selected;
-      /* Its skin between its neighbours' (the same as theirs where only the layer's place moves them). */
+      /* Its skin between its neighbours' (the same as theirs where only the layer's place moves them; where bones do,
+       * worked out below from its own weights; where a deform bends it, settled on after the dab). */
       const Transform2D &ta = sl.to_shown[size_t(pa)], &tb = sl.to_shown[size_t(pb)];
       const auto mix = [&](float x, float y) { return x + (y - x) * u; };
       sl.to_shown[size_t(point)] = {mix(ta.a, tb.a), mix(ta.b, tb.b),   mix(ta.c, tb.c),
                                     mix(ta.d, tb.d), mix(ta.tx, tb.tx), mix(ta.ty, tb.ty)};
+      if (sl.settle) {
+        sl.stored_start[size_t(point)] = sl.stored_start[size_t(pa)] +
+                                         (sl.stored_start[size_t(pb)] - sl.stored_start[size_t(pa)]) * u;
+      }
     }
   }
   for (const auto &[b, h] : ends_in) {
     h_in[size_t(new_of_old[size_t(b)])] = h;
     write[size_t(new_of_old[size_t(b)])] = true;
+  }
+  /* Moved by bones: a new point shows by its own (blended) weights, not by either neighbour's skin, so it is stored where
+   * its own skin puts it on the line; stored by a neighbour's skin, the line would move once posed. */
+  if (sl.skinned && !sl.settle) {
+    if (const Layer *layer = layer_find(doc, sl.id)) {
+      const std::vector<Transform2D> skins = layer_point_skins_bones_some(doc, *layer, made);
+      for (size_t k = 0; k < made.size(); k++) {
+        sl.to_shown[size_t(made[k])] = sl.to_document * skins[k];
+      }
+    }
   }
   c.anchor = std::move(anchor);
   c.handle_in = std::move(h_in);
@@ -1627,7 +1653,7 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
                            dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
       if (sl.resample && shaping) {
-        dyntopo_resample(drawing, sl, c, moved, point_changed);
+        dyntopo_resample(doc, drawing, sl, c, moved, point_changed);
         dyntopo_follow(drawing, sl, c, moved_to, moved, dab, point_changed);
         continue;
       }
@@ -1763,6 +1789,33 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
           }
         }
       }
+    }
+    /* Bent by a deform: each point's skin, fixed when the stroke started, is right only around where it was then, so a
+     * point sent far by it alone lands off the brush. Settled on as a move's are, until each shows where the brush put
+     * it (layer_points_settle). */
+    if (sl.settle) {
+      const Transform2D to_layer = sl.to_document.inverted();
+      std::vector<PointTarget> targets;
+      std::vector<bool> taken(drawing.points.size(), false);
+      for (const SculptStroke::Curve &c : sl.curves) {
+        if (c.curve >= int(drawing.curves.size())) {
+          continue;
+        }
+        const Curve &real = drawing.curves[size_t(c.curve)];
+        for (int i = 0; i < int(c.points.size()) && c.points[size_t(i)] < int(real.points.size()); i++) {
+          const int point = real.points[size_t(c.points[size_t(i)])].point;
+          if (size_t(point) >= point_changed.size() || !point_changed[size_t(point)] || taken[size_t(point)] ||
+              size_t(point) >= sl.to_shown.size() || size_t(point) >= sl.stored_start.size())
+          {
+            continue;
+          }
+          taken[size_t(point)] = true;
+          const Transform2D skin = to_layer * sl.to_shown[size_t(point)];
+          targets.push_back({point, to_layer.apply(c.pos[size_t(c.anchor[size_t(i)])]), skin.inverted(),
+                             length(drawing.points[size_t(point)].pos - sl.stored_start[size_t(point)])});
+        }
+      }
+      layer_points_settle(doc, *layer, targets);
     }
     std::vector<int> changed;
     for (size_t i = 0; i < point_changed.size(); i++) {
