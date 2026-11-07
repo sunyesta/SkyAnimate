@@ -131,4 +131,39 @@ loose = layers.active
 assert loose.name == "Hand 1", loose.name
 assert [l.name for l in find(rig.name).children] == ["Hand", "Body"]
 assert loose.parent_bone == "", ("no bone layer here", loose.parent_bone)
+
+# A pasted layer's points aren't new points: one not keyed stays put, though its neighbours move (a point just drawn
+# would take their motion).
+oanim.ops.wm.read_homefile()
+doc = oanim.data.document
+doc.auto_key = True
+doc.frame_current = 0
+line = layers.active
+line.key_whole_drawing = False
+line.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+doc.frame_current = 10
+oanim.ops.mesh.select_none()
+line.select_points([0, 2])
+assert oanim.ops.mesh.translate(move_x="0", move_y="0.5") == {'FINISHED'}
+oanim.ops.mesh.select_none()
+assert oanim.ops.layer.copy() == {'FINISHED'}
+before = {l.id for l in layers.all()}
+assert oanim.ops.layer.paste() == {'FINISHED'}
+pasted_id = next(l.id for l in layers.all() if l.id not in before)
+for frame in (0, 5, 10):
+    doc.frame_current = frame
+    for l in layers.all():
+        if l.id in (line.id, pasted_id):
+            middle = l.shown()[0][1]
+            assert abs(middle[1]) < 1e-5, ("the middle point isn't keyed: it stays put", frame, l.name, middle)
+pasted = next(l for l in layers.all() if l.id == pasted_id)
+assert [k["frame"] for k in pasted.keyframes("points[1].pos")] == [], pasted.keyframes("points[1].pos")
+# Copied on one frame and pasted on another, the copy shows the frame it is pasted on.
+doc.frame_current = 10
+assert oanim.ops.layer.copy() == {'FINISHED'}
+doc.frame_current = 0
+before = {l.id for l in layers.all()}
+assert oanim.ops.layer.paste() == {'FINISHED'}
+again = next(l for l in layers.all() if l.id not in before)
+assert abs(again.shown()[0][0][1]) < 1e-5, ("frame 0's pose, not frame 10's", again.shown()[0][0])
 print("layer_clipboard: ok")

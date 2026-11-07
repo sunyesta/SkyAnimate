@@ -897,11 +897,16 @@ void layer_clipboard_operators_register()
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
+      animation_record(doc);
       const std::vector<uint64_t> pasted = layers_paste_text(doc, clipboard_get());
       if (pasted.empty()) {
         report(ReportType::Warning, "Nothing to paste: copy layers with Ctrl C over the Layers editor first");
         return OpStatus::Cancelled;
       }
+      /* The copies come from the clipboard's text, which keeps no channel's last value: evaluated here, as a frame
+       * change would, their points are where their keys put them on this frame and none counts as new (taking its
+       * animated neighbours' motion as a point just drawn does). */
+      animation_evaluate(doc, doc.frame_current);
       for (const Layer *l : document_layers_flat(doc)) {
         layer_find(doc, l->id)->selected = false;
       }
