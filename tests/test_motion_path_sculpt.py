@@ -180,6 +180,34 @@ assert now["path_out"] != was["path_out"], ("the handle on the path reshaped", w
 assert close(now["path_in"], was["path_in"], 1e-6) and now["interp"] == "SMOOTH", ("the stretch before as it was", now)
 doc.path_before, doc.path_after = 40, 40
 
+# --- Surface Smooth's ghost: the fit a stroke moves the path toward, as the Sculpt tool shows it ------------------------
+g = fresh_layer(wiggly, interp="SMOOTH")
+assert ops.anim.motion_path_brush_set(brush="SURFACE_SMOOTH", sensitivity="1") == {'FINISHED'}
+ghost = wm.motion_path_surface_ghost()
+assert ghost, "the wiggly path has a fit apart from it"
+# Each point's fit, by where it is now (the segments' ends).
+fit_of = {}
+for s in ghost:
+    fit_of[tuple(round(v, 5) for v in s["now"][0])] = s["fit"][0]
+    fit_of[tuple(round(v, 5) for v in s["now"][3])] = s["fit"][3]
+# The line runs from the setup (frame 0, shown) to the last key.
+ends = (key(g, 0)["value"], wiggly[30])
+for e in ends:
+    at = tuple(round(v, 5) for v in e)
+    assert at in fit_of and close(fit_of[at], e, 1e-5), ("the path's ends stay in the fit", e, fit_of.get(at))
+inner = [f for f in sorted(wiggly) if f < 30]
+moved = [f for f in inner if not close(fit_of.get(tuple(round(v, 5) for v in wiggly[f]), wiggly[f]), wiggly[f], 1e-4)]
+assert moved, ("the wiggles' keys have a fit elsewhere", fit_of)
+# A full stroke (Constant falloff over all of it, full strength, one whole step) takes every key to its fit.
+before = {f: key(g, f)["value"] for f in inner}
+assert ops.anim.motion_path_stroke(brush="SURFACE_SMOOTH", points="1,0", radius="100", strength="1",
+                                   brush_falloff="CONSTANT", sensitivity="1", amount="1") == {'FINISHED'}
+for f in inner:
+    target = fit_of.get(tuple(round(v, 5) for v in before[f]), before[f])
+    assert close(key(g, f)["value"], target, 1e-4), ("the stroke goes where the ghost showed", f, key(g, f)["value"],
+                                                    target)
+assert ops.anim.motion_path_brush_set(brush="GRAB") == {'FINISHED'}
+
 # --- A control point rides with the path it shapes ----------------------------------------------------------------
 c = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)})
 doc.frame_current = 15

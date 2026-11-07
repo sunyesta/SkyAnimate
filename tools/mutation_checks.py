@@ -655,6 +655,8 @@ PENDING = [
     ('src/anim/motion_path.cc', '          other = normalize(shaped) * -length(other);\n', '', "path sculpt: an end key's hidden handle turns with the other", 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '      if ((moved[i] || moved[i - 1]) && reshaped(i) && !tg.speeds[i].empty()) {', '      if ((moved[i] || moved[i - 1]) && !tg.speeds[i].empty()) {', 'path sculpt: a stretch off the path retimed only when reshaped', 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '  return (out ? show_out : show_in) && length(end - key) < 1e-7f && motion_path_handle_stub(p, frame, out, r_direction);', '  return (out ? show_out : show_in) && length(end - key) < 1e-7f && false && motion_path_handle_stub(p, frame, out, r_direction);', 'stubs for no-length handles', 'tests/test_motion_path_start.py'),
+    ('src/anim/motion_path.cc', '    if (!t.drawing && motion_path_sculptable(doc, t)) {\n      own.push_back(t);', '    if (false && !t.drawing && motion_path_sculptable(doc, t)) {\n      own.push_back(t);', 'path Surface Smooth ghost: the fit worked out', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '                                  motion_path_sculpt_dab_make(PathBrush::SurfaceSmooth, settings, {0.0f, 0.0f}, 1e6f));', '                                  motion_path_sculpt_dab_make(PathBrush::Smooth, settings, {0.0f, 0.0f}, 1e6f));', 'path Surface Smooth ghost: a Surface Smooth fit', 'tests/test_motion_path_sculpt.py'),
 ]
 
 def build():

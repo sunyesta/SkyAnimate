@@ -338,6 +338,14 @@ def motion_paths():
     return _oanim.motion_paths()
 
 
+def motion_path_surface_ghost():
+    """Surface Smooth's ghost on the paths, as the Motion Path tool shows it with that brush: the segments of the
+    paths' line whose fit differs from it, each a dict with "fit" and "now", four (x, y) Bezier points (document
+    space) each. Uses the tool's Surface Smooth settings (Lump Sensitivity)."""
+    return [{"fit": [tuple(p) for p in s["fit"]], "now": [tuple(p) for p in s["now"]]}
+            for s in _oanim.motion_path_surface_ghost()]
+
+
 def motion_path_range():
     """(first, last): the frames the paths cover, path_before keys back to path_after keys ahead (or all with
     path_all); what Alt Space plays. None with nothing to trace."""

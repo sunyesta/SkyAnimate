@@ -4260,6 +4260,26 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
   return out;
 }
 
+const SculptStroke *motion_path_sculpt_line(const PathSculptStroke &stroke)
+{
+  return stroke.empty() ? nullptr : &stroke.state->stroke;
+}
+
+PathSculptStroke motion_path_surface_fit(const Document &doc, const std::vector<MotionPathTarget> &targets, int first,
+                                         int last, const PathBrushSettings &settings)
+{
+  OANIM_PROFILE("motion_path_surface_fit");
+  std::vector<MotionPathTarget> own;
+  for (const MotionPathTarget &t : targets) {
+    if (!t.drawing && motion_path_sculptable(doc, t)) {
+      own.push_back(t);
+    }
+  }
+  /* The fit doesn't go by the brush's size (only how finely the line is sampled for a dab does): a few samples. */
+  return motion_path_sculpt_begin(doc, own, first, last,
+                                  motion_path_sculpt_dab_make(PathBrush::SurfaceSmooth, settings, {0.0f, 0.0f}, 1e6f));
+}
+
 int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const SculptDab &dab)
 {
   if (stroke.empty()) {

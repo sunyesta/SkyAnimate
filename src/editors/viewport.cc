@@ -1575,6 +1575,8 @@ static constexpr float PATH_STRENGTH_PX = 200.0f;
  * Speed, each with its own settings. Grab moves what was under it when pressed by how far the mouse has gone; the
  * others dab as the mouse moves, a quarter of the radius apart. With Edit, `pick` is the dot or key under the mouse:
  * a Shift click there (no drag) adds it to the selection. */
+static bool draw_surface_ghost(ImDrawList *dl, const ViewMapping &view, const SculptStroke &stroke);
+
 static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl, bool hovered,
                                     int first, int last, const std::optional<OpArgs> &pick = std::nullopt)
 {
@@ -1625,6 +1627,48 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
   /* Shift's brush while it is held (as the stroke began, once it has). */
   const PathBrush brush = g.active ? g.brush : io.KeyShift ? path_brush_shifted(ts.path_brush) : ts.path_brush;
   const PathBrushSettings &bs = ts.path_brush_settings(brush);
+  /* Surface Smooth shows the fit it moves the paths toward, as the Sculpt tool does: during a stroke the stroke's own,
+   * else the fit a stroke would start with now (fitted again only when something changes, as Lump Sensitivity is
+   * scrubbed in the header too). By the brush picked, not the one Shift lends; nothing with the overlays off. */
+  static struct {
+    const Document *doc = nullptr;
+    uint64_t changes = ~uint64_t(0), serial = 0;
+    int first = 0, last = 0, frame = -1;
+    float sensitivity = -1.0f;
+    std::vector<MotionPathTarget> targets;
+    PathSculptStroke fit;
+  } ghost;
+  const auto ghost_key = [&](const std::vector<MotionPathTarget> &targets) {
+    ghost.doc = &doc;
+    ghost.changes = C.undo ? C.undo->change_count() : 0;
+    ghost.serial = g_path_drag.serial;
+    ghost.first = first;
+    ghost.last = last;
+    ghost.frame = doc.frame_current;
+    ghost.sensitivity = ts.path_brush_settings(PathBrush::SurfaceSmooth).sensitivity;
+    ghost.targets = targets;
+  };
+  if (ts.path_brush == PathBrush::SurfaceSmooth && doc.overlays.show) {
+    if (g.active && g.brush == PathBrush::SurfaceSmooth) {
+      if (const SculptStroke *line = motion_path_sculpt_line(g.sculpt)) {
+        draw_surface_ghost(dl, view, *line);
+      }
+    }
+    else {
+      const std::vector<MotionPathTarget> targets = motion_path_targets(C);
+      if (ghost.doc != &doc || ghost.changes != (C.undo ? C.undo->change_count() : 0) ||
+          ghost.serial != g_path_drag.serial || ghost.first != first || ghost.last != last ||
+          ghost.frame != doc.frame_current ||
+          ghost.sensitivity != ts.path_brush_settings(PathBrush::SurfaceSmooth).sensitivity || ghost.targets != targets)
+      {
+        ghost_key(targets);
+        ghost.fit = motion_path_surface_fit(doc, targets, first, last, ts.path_brush_settings(PathBrush::SurfaceSmooth));
+      }
+      if (const SculptStroke *line = motion_path_sculpt_line(ghost.fit)) {
+        draw_surface_ghost(dl, view, *line);
+      }
+    }
+  }
   /* The circle: red while Ctrl paints the opposite; Shift's brush named under it. */
   const bool invert = io.KeyCtrl && path_brush_is_speed(brush);
   if (hovered || g.active) {
@@ -1735,7 +1779,15 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     if (g.changed) {
       push_undo(C, path_brush_name(brush));
     }
+    /* A Surface Smooth stroke moves the paths toward where they are going, not where that is (smoothing again lands
+     * elsewhere): the ghost keeps the stroke's fit, the line as the stroke left it with it, as the Sculpt tool's. */
+    const bool keep_fit = g.changed && brush == PathBrush::SurfaceSmooth && !g.sculpt.empty();
+    PathSculptStroke kept = keep_fit ? g.sculpt : PathSculptStroke();
     finish();
+    if (keep_fit) {
+      ghost_key(motion_path_targets(C));
+      ghost.fit = std::move(kept);
+    }
     return;
   }
   if (brush == PathBrush::Slide) {

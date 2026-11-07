@@ -463,5 +463,12 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
 int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const SculptDab &dab);
 /* A shape brush's dab (Grab, Smooth, Surface Smooth) from its settings, in document space. */
 SculptDab motion_path_sculpt_dab_make(PathBrush brush, const PathBrushSettings &settings, float2 center, float radius);
+/* The line a path stroke sculpts (document space, where the paths draw), with Surface Smooth's fit (its targets) for
+ * a Surface Smooth stroke; null when empty. */
+const SculptStroke *motion_path_sculpt_line(const PathSculptStroke &stroke);
+/* Surface Smooth's ghost, as the Sculpt tool shows one: the line a stroke with `settings` would start now on the paths
+ * of `targets` that it can shape, fitted (motion_path_sculpt_line gives it). */
+PathSculptStroke motion_path_surface_fit(const Document &doc, const std::vector<MotionPathTarget> &targets, int first,
+                                         int last, const PathBrushSettings &settings);
 
 }  // namespace oanim

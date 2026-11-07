@@ -1600,6 +1600,53 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return out;
   });
+  m.def("motion_path_surface_ghost", []() {
+    /* As the Motion Path tool's Surface Smooth shows it: each segment of the paths' line whose fit differs from it. */
+    Context &C = current_context();
+    py::list out;
+    int first = 0, last = 0;
+    const std::vector<MotionPathTarget> targets = motion_path_targets(C);
+    if (!motion_path_range(*C.document, targets, first, last)) {
+      return out;
+    }
+    const PathSculptStroke fit = motion_path_surface_fit(
+        *C.document, targets, first, last, C.wm->tool_settings.path_brush_settings(PathBrush::SurfaceSmooth));
+    const SculptStroke *line = motion_path_sculpt_line(fit);
+    for (const SculptStroke::Layer &sl : line ? line->layers : std::vector<SculptStroke::Layer>()) {
+      for (const SculptStroke::Curve &c : sl.curves) {
+        const int n = int(c.points.size());
+        if (c.target_pos.size() != size_t(n)) {
+          continue;
+        }
+        for (int s = 0; s + 1 < n; s++) {
+          const float2 pa = c.pos[size_t(c.anchor[size_t(s)])], pb = c.pos[size_t(c.anchor[size_t(s + 1)])];
+          const float2 now[4] = {pa, pa + c.handle_out[size_t(s)], pb + c.handle_in[size_t(s + 1)], pb};
+          const float2 to[4] = {c.target_pos[size_t(s)], c.target_pos[size_t(s)] + c.target_out[size_t(s)],
+                                c.target_pos[size_t(s + 1)] + c.target_in[size_t(s + 1)], c.target_pos[size_t(s + 1)]};
+          float apart = 0.0f;
+          for (int k = 0; k < 4; k++) {
+            apart = std::max(apart, length(now[k] - to[k]));
+          }
+          if (apart < 1e-6f) {
+            continue;
+          }
+          py::list seg;
+          for (const float2 p : to) {
+            seg.append(py::make_tuple(p.x, p.y));
+          }
+          py::list was;
+          for (const float2 p : now) {
+            was.append(py::make_tuple(p.x, p.y));
+          }
+          py::dict d;
+          d["fit"] = seg;
+          d["now"] = was;
+          out.append(d);
+        }
+      }
+    }
+    return out;
+  });
   m.def("motion_path_range", []() -> py::object {
     Context &C = current_context();
     int first = 0, last = 0;
