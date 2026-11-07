@@ -346,6 +346,21 @@ assert len(key(ball, 30)["path_controls"]) == 1 and not key(ball, 15)["path_cont
 assert close(control_point(ball, 15, 30), (2.0, 2.0)), ("a key added before it: still at (2, 2)",
                                                        control_point(ball, 15, 30))
 
+# A key added where the stretch has all but arrived (an Ease In, slowing into its key: no curve split there): the
+# control point before it goes to the stretch into the new key, still where it was.
+start()
+ball = mover({10: (0.0, 0.0), 30: (4.0, 0.0)})
+args = dict(layer=str(ball.id))
+assert ops.anim.motion_path_control_add(frame="20", **args) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="2", **args) == {'FINISHED'}
+ball.keyframe_set("position", 30, interp="EASE_IN", ease="QUINT")
+assert close(where(ball, 28), (4.0, 0.0)), ("all but there by 28", where(ball, 28))
+assert ops.anim.motion_path_key_add(frame="28", type="KEYFRAME", **args) == {'FINISHED'}
+assert frames(ball) == [0, 10, 28, 30], frames(ball)
+assert len(key(ball, 28)["path_controls"]) == 1 and not key(ball, 30)["path_controls"], (
+    "before the new key, on 10-28", key(ball, 28)["path_controls"], key(ball, 30)["path_controls"])
+assert close(control_point(ball, 10, 28), (2.0, 2.0)), control_point(ball, 10, 28)
+
 start()
 ball = mover({10: (0.0, 0.0), 20: (2.0, 0.0), 30: (4.0, 0.0)})
 args = dict(layer=str(ball.id))
@@ -356,6 +371,17 @@ assert ops.anim.motion_path_key_delete(frame="20", **args) == {'FINISHED'}
 assert frames(ball) == [0, 10, 30], frames(ball)
 assert close(control_point(ball, 10, 30), (3.0, 2.0)), ("the key starting its stretch deleted: still at (3, 2)",
                                                        control_point(ball, 10, 30))
+
+# The key ending a control point's stretch deleted: it goes on to the stretch that joins the keys either side.
+start()
+ball = mover({10: (0.0, 0.0), 20: (2.0, 0.0), 30: (4.0, 0.0)})
+args = dict(layer=str(ball.id))
+assert ops.anim.motion_path_control_add(frame="15", **args) == {'FINISHED'}
+assert ops.anim.motion_path_control_move(frame="20", index="0", x="1", y="2", **args) == {'FINISHED'}
+assert ops.anim.motion_path_key_delete(frame="20", **args) == {'FINISHED'}
+assert frames(ball) == [0, 10, 30], frames(ball)
+assert len(key(ball, 30)["path_controls"]) == 1, ("kept on the joined stretch", key(ball, 30)["path_controls"])
+assert close(control_point(ball, 10, 30), (1.0, 2.0)), control_point(ball, 10, 30)
 
 
 # --- X on a frame keyed for position and rotation: both keys go, and the diamond ------------------------------------
@@ -553,6 +579,7 @@ def heading(a, b):
 
 
 start()
+doc.path_own_motion = False  # (Own Motion holds the group as shown: Relative To is what's tried here)
 ops.layer.new()
 ball = layers.active
 ball.add_curve([(0.0, 0.0), (0.1, 0.0)])

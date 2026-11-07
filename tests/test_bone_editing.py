@@ -426,8 +426,12 @@ def deleted_on(frame):
         assert before == {n: [(k["frame"], k["value"]) for k in rig.keyframes('bones["%s"].angle' % n)]
                           for n in ("b", "c")}
         return None, None
+    was = {n: ends(n) for n in ("c", "knob")}
     assert oanim.ops.armature.bone_delete() == {'FINISHED'}
     assert "b" not in bones() and bones()["c"]["parent"] == "a"
+    for n in ("c", "knob"):
+        assert all(close(x, y) for x, y in zip(ends(n), was[n])), ("kept where it was under the new parent", n,
+                                                                    ends(n), was[n])
     seen = {}
     for f in (0, 5, 10, 15):
         doc.frame_current = f

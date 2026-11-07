@@ -88,4 +88,15 @@ assert h["mode"] == "PATH" and tuple(h["span"]) == (10, 20), ("a picked key, the
 ops.anim.motion_path_select(none="1")
 assert wm.timeline_key_header()["mode"] == "PATH", "nothing picked again: teal"
 
+# --- A dot picked and a key off the paths selected too: red, the header edits the selection ----------------------------
+doc.frame_current = 15
+assert ops.anim.keyframe_toggle(layer=str(ball.id), paths="opacity") == {'FINISHED'}
+assert ops.anim.motion_path_select(frame="25", layer=str(ball.id)) == {'FINISHED'}
+assert wm.timeline_key_header()["mode"] == "PATH"
+assert ops.anim.keys_select(frame_start="15", extend="1", layers=str(ball.id), path="opacity") == {'FINISHED'}
+assert [k["frame"] for k in ball.keyframes("opacity") if k["selected"]] == [15], ball.keyframes("opacity")
+h = wm.timeline_key_header()
+assert h["mode"] == "SELECTED", ("another key selected with the pick: the selection's header, red", h)
+ops.anim.motion_path_select(none="1")
+
 print("Key header path tests passed")

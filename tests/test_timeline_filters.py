@@ -79,8 +79,25 @@ wm.set_ui_open("Timeline/" + fold, True)
 # All: every channel, keys or not (the bone layer's unkeyed ones too).
 assert ops.anim.timeline_filter(search="", show="ALL") == {'FINISHED'}
 listed = names()
-assert "Visibility" in listed or "Draw Order" in listed or "Shear" in listed, listed
+assert "Visibility" in listed and "Draw Order" in listed, ("the rig's unkeyed channels too", listed)
 assert len(listed) > 12, listed
+# A layer with no keys at all (I keyed every channel of the rig): its channels listed under it all the same.
+active = layers.active
+ops.layer.new()
+still = layers.active
+still.name = "still"
+assert not still.keyframes("position")
+rows = wm.timeline_row_details()
+at = next((i for i, r in enumerate(rows) if r["layer"] == still.id), None)
+assert at is not None, ("an unkeyed layer listed with All", [r["name"] for r in rows])
+under = []
+for r in rows[at + 1:]:
+    if r["depth"] <= rows[at]["depth"]:
+        break
+    under.append(r["name"])
+assert "Position" in under, ("an unkeyed layer's channels listed with All", under)
+ops.layer.delete()
+layers.active = active
 
 # Clearing puts them all back (the red "N hidden" does this).
 assert ops.anim.timeline_filter(kinds="BONES", show="CHANGED", search="xyz") == {'FINISHED'}

@@ -223,4 +223,78 @@ ops.wm.tool_select()
 _, pieces = line(over)
 dashed = [k for k in pieces if k["dashed"]]
 assert dashed and len(dashed) < len(pieces), ("dashed past the key and back, solid elsewhere", len(dashed), len(pieces))
+
+# --- Where the path has no shape of its own (a turning bone's tip): a curve through the dots --------------------------
+layers.active = plain  # out of the flipped group
+ops.layer.new_bone()
+rig = layers.active
+
+
+def tip_mover(name, angles, positions, speeds=None):
+    """A bone whose tip's path is drawn through its dots (it turns, or has angle keys): keys Linear."""
+    doc.frame_current = 0
+    doc.auto_key = True
+    ops.armature.select_none()
+    ops.armature.bone_add(name=name, head_x="0", head_y="0", tail_x="2", tail_y="0")
+    rig.select_bone(name)
+    chans = ((f'bones["{name}"].angle', angles), (f'bones["{name}"].position', positions))
+    for f in sorted(set(angles) | set(positions)):
+        doc.frame_current = f
+        if f in angles:
+            rig.bone_set(name, angle=angles[f])
+        if f in positions:
+            rig.bone_set(name, position=positions[f])
+        doc.frame_current = f + 1
+        doc.frame_current = f
+        for ch, keyed in chans:
+            if f in keyed and not any(k["frame"] == f for k in rig.keyframes(ch)):
+                assert ops.anim.keyframe_toggle(layer=str(rig.id), paths=ch) == {'FINISHED'}
+    doc.frame_current = 0
+    doc.auto_key = False
+    for ch, _ in chans:
+        for k in rig.keyframes(ch):
+            if k["frame"] > 0:
+                rig.keyframe_set(ch, k["frame"], interp="LINEAR")
+    if speeds:
+        rig.keyframe_set(chans[1][0], max(positions), speeds=speeds)
+
+
+def tip_at(name, f):
+    doc.frame_current = f
+    return tuple(next(b for b in rig.bones if b["name"] == name)["tail"])
+
+
+def tip_line(name):
+    paths = wm.overlay_colors(rig, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0)["paths"]
+    path = next(p for p in paths if p["label"] == name + " tip")
+    return [tuple(path["pieces"][0]["a"])] + [tuple(k["b"]) for k in path["pieces"]]
+
+
+# A quarter turn (Linear) into key 14, then a straight move (Linear): the tip turns a corner there, and the line out of
+# the key is straight, its way taken from its own side only.
+ops.wm.tool_select()
+tip_mover("elbow", {10: 0.0, 14: math.pi / 2, 18: math.pi / 2}, {10: (0.0, 0.0), 14: (0.0, 0.0), 18: (0.0, 2.0)})
+pts = tip_line("elbow")
+for f in range(10, 19):
+    assert min(math.dist(tip_at("elbow", f), p) for p in pts) < 1e-4, ("through every dot", f)
+a, b = tip_at("elbow", 13), tip_at("elbow", 14)
+assert max(off_chord(p, a, b) for p in between(pts, a, b)) > 5e-3, "bent along the turn into the key"
+for f in (14, 15):
+    a, b = tip_at("elbow", f), tip_at("elbow", f + 1)
+    assert max(off_chord(p, a, b) for p in between(pts, a, b)) < 1e-4, ("a key's corner stays a corner", f)
+
+# A dash with a near stop in it (long, short, long steps in a line): centripetal, the short step stays between its
+# dots, where an even-knotted curve swings past both ends of it.
+rig.select_bone("")
+tip_mover("dash", {10: 0.0, 16: 0.0}, {10: (0.0, 0.0), 16: (30.0, 0.0)},
+          speeds=[0.02 if 10 <= j < 20 else 1.0 for j in range(60)])
+steps = [math.dist(tip_at("dash", f), tip_at("dash", f + 1)) for f in range(10, 16)]
+assert steps[1] < steps[0] / 20 and steps[1] < steps[2] / 20, ("long, short, long", steps)
+pts = tip_line("dash")
+for f in range(10, 16):
+    a, b = tip_at("dash", f), tip_at("dash", f + 1)
+    span = math.dist(a, b)
+    for p in between(pts, a, b):
+        assert math.dist(p, a) <= span * 1.001 + 1e-4 and math.dist(p, b) <= span * 1.001 + 1e-4, ("no overshoot", f, p)
+
 print("Motion path smooth line: ok")

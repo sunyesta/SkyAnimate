@@ -56,6 +56,11 @@ doc.frame_current = 30
 doc.frame_current = 0
 assert (rig.keyframes('bones["turn"].angle'), rig.keyframes('bones["joy"].position')) == keyed
 
+# A key put on the dial itself there (its keyframe button): the knob's too, in that same step (the knob, keyed there
+# already, is left as it was).
+assert ops.anim.keyframe_toggle(layer=str(rig.id), paths='bones["turn"].angle') == {'FINISHED'}
+assert not rig.keyframes('bones["turn"].angle'), ("the dial's own key is the knob's", rig.keyframes('bones["turn"].angle'))
+
 # On a posed frame the same: Insert Keyframe keys the knob where it is, never the dial from its own value (nothing,
 # the knob's turn being an action's amount), which moved onto the knob took it back to rest.
 doc.frame_current = 40

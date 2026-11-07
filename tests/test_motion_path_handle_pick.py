@@ -68,6 +68,10 @@ assert picks() == [], "a dot drops them"
 assert ops.anim.motion_path_handle_select(frame="20", out="1", **args) == {'FINISHED'}
 wm.motion_path_pick(4.0, 0.0, apply=True)
 assert picks() == [], "a bone or point picked (or a click on nothing) drops them"
+assert ops.anim.motion_path_handle_select(frame="20", out="1", **args) == {'FINISHED'}
+assert ops.anim.timeline_stretch_pick(frame="25", layers=str(box.id)) == {'FINISHED'}
+assert len(wm.motion_path_dots()) == 1 and picks() == [], ("Alt click in a timeline row drops them", picks())
+doc.frame_current = 20
 
 # --- G R S on a picked handle: it alone, about its key -----------------------------------------------------------------
 assert ops.anim.motion_path_handle_select(frame="20", out="1", **args) == {'FINISHED'}

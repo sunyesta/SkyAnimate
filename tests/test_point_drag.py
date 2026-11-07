@@ -18,6 +18,11 @@ ops.mesh.select_none()
 # --- What a press grabs ---------------------------------------------------------------------------------------------
 assert wm.select_press_grab(1.05, 0.02) == [(me, [1])], ("the point under it", wm.select_press_grab(1.05, 0.02))
 assert wm.select_press_grab(0.97, 3.0) == [(me, [4])], "the nearest one"
+# Two points both within reach (7 pixels apart): the nearer one, whichever comes first.
+art.add_curve([(5.0, -2.0), (5.07, -2.0)])
+ops.mesh.select_none()
+assert wm.select_press_grab(5.02, -2.0) == [(me, [5])], ("the nearer of two in reach", wm.select_press_grab(5.02, -2.0))
+assert wm.select_press_grab(5.05, -2.0) == [(me, [6])], ("the nearer of two in reach", wm.select_press_grab(5.05, -2.0))
 assert wm.select_press_grab(5.0, 5.0) == [], "empty space: a box"
 assert wm.select_press_grab(0.5, 0.0) == [], "a line in Points mode: a box, as a click picks nothing there"
 assert wm.select_press_grab(1.0, 0.0, shift=True) == [], "Shift: a box that adds"
