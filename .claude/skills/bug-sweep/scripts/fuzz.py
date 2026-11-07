@@ -346,8 +346,266 @@ def _(rng):
     return {"rig": rig.id, "pts": pts, "closed": rng.random() < 0.4}
 
 
+# --- Sculpt (sculpt.stroke, sculpt.simplify) and the point edits the bones-and-points ops missed ---------------------------
+SCULPT_BRUSHES = ["GRAB", "GRAB", "PUSH", "PUSH", "PINCH", "TWIST", "SMOOTH", "SURFACE_SMOOTH", "THICKNESS"]
+
+
+def dyntopo_ready(ds):
+    """The drawings Dyntopo works on (no keys, no references, no detail levels): mostly the fuzzer's new drawings."""
+    return [d for d in ds if _oanim_blocked(d.id) == ""]
+
+
+@op("sculpt", 7)
+def _(rng):
+    """A stroke centred near one of a drawing's shown points (worked out when applied, so a shrunk replay still hits
+    the drawing): Grab and Push drag, the others dab in place. Sometimes Dyntopo (resolution=, refine=), sometimes
+    the drawing's group active instead (several layers), keep_poses on frame 0, X mirror, Selected Only."""
+    ds = drawings()
+    if not ds:
+        return None
+    d = rng.choice(dyntopo_ready(ds) if rng.random() < 0.5 and dyntopo_ready(ds) else ds)
+    brush = rng.choice(SCULPT_BRUSHES)
+    steps = rng.randint(2, 7)
+    reach = rng.choice([0.01, 0.03, 0.06])
+    moves = [[rng.gauss(0, reach / steps), rng.gauss(0, reach / steps)] for _ in range(steps)] \
+        if brush in ("GRAB", "PUSH") else [[rng.gauss(0, 0.004), rng.gauss(0, 0.004)] for _ in range(steps)]
+    out = {"layer": d.id, "i": rng.randrange(d.point_count), "off": [rng.gauss(0, 0.01), rng.gauss(0, 0.01)],
+           "moves": moves, "brush": brush, "radius": rng.choice([0.01, 0.02, 0.04, 0.08, 0.15]),
+           "strength": rng.choice([0.2, 0.5, 1.0, 1.0, 2.0]), "falloff": rng.choice(["SMOOTH", "SPHERE", "CONSTANT"]),
+           "invert": rng.random() < 0.2, "mirror": rng.random() < 0.15, "amount": rng.choice([1.0, 1.0, 0.3]),
+           "group": rng.random() < 0.12, "keep_poses": rng.random() < 0.3,
+           "selected": sorted(rng.sample(range(d.point_count), min(d.point_count, rng.randint(1, 4))))
+           if rng.random() < 0.15 else None}
+    if brush == "SURFACE_SMOOTH":
+        out["sensitivity"] = rng.choice([0.05, 0.25, 1.0, 4.0])
+    if rng.random() < 0.4:
+        out["resolution"] = rng.choice([8.0, 25.0, 50.0, 120.0, 400.0])
+        out["refine"] = rng.choice(["SUBDIVIDE", "COLLAPSE", "SUBDIVIDE_COLLAPSE"])
+    if rng.random() < 0.12:   # exactly on the point, Grab at full strength: the point must land where the mouse took it
+        out.update(brush="GRAB", off=[0.0, 0.0], falloff="CONSTANT", strength=1.0, invert=False, mirror=False,
+                   group=False, selected=None, amount=1.0)
+        out.pop("resolution", None)
+        out.pop("refine", None)
+    return out
+
+
+@op("simplify", 1.5)
+def _(rng):
+    ds = drawings()
+    ds = dyntopo_ready(ds) if rng.random() < 0.7 and ds and dyntopo_ready(ds) else ds
+    return ds and {"layer": rng.choice(ds).id, "resolution": rng.choice([5.0, 20.0, 50.0, 150.0, 600.0]),
+                   "group": rng.random() < 0.15}
+
+
+for _name, _w in (("curvature", 2), ("radius_scale", 1), ("smooth_points", 1.5), ("slide", 1.5), ("merge", 1),
+                  ("merge_by_distance", 0.7), ("clear_handles", 1), ("mirror_points", 1), ("symmetrize_points", 0.7),
+                  ("unalign", 0.7)):
+    def _make(name):
+        def draw_it(rng):
+            p = a_points(rng, 4 if name != "merge" else 2)
+            if not p:
+                return None
+            extra = {"curvature": {"peak": rng.random() < 0.5},
+                     "radius_scale": {"f": rng.choice([0.0, 0.5, 1.7])},
+                     "smooth_points": {"f": rng.choice([0.25, 0.5, 1.0]), "n": rng.randint(1, 3),
+                                       "keep_shape": rng.random() < 0.4},
+                     "slide": {"f": rng.uniform(-0.9, 0.9)},
+                     "merge_by_distance": {"dist": rng.choice([0.005, 0.03, 0.2])},
+                     "mirror_points": {"axis": rng.choice(["X", "Y"]), "o": rng.choice(["GLOBAL", "LOCAL"])}}
+            return dict(p, **extra.get(name, {}))
+        return draw_it
+    op(_name, _w)(_make(_name))
+
+
+@op("handle_move", 2, "py")
+def _(rng):
+    ds = [d for d in drawings() if d.curve_count > 0]
+    if not ds:
+        return None
+    d = rng.choice(ds)
+    c = rng.randrange(d.curve_count)
+    n = len(d.curve_points(c))
+    return n and {"layer": d.id, "c": c, "k": rng.randrange(n), "side": rng.choice(["IN", "OUT"]),
+                  "d": [rng.gauss(0, 0.02), rng.gauss(0, 0.02)]}
+
+
+@op("layer_symmetrize", 0.4)
+def _(rng):
+    ds = [d for d in drawings() if d.name.endswith(("_L", "_R"))]
+    return ds and {"layer": rng.choice(ds).id, "dir": rng.choice(["POSITIVE_TO_NEGATIVE", "NEGATIVE_TO_POSITIVE"])}
+
+
+def sculpt_path(layer, op):
+    shown = layer.shown()[0]
+    if op["i"] >= len(shown):
+        return None, None
+    x, y = shown[op["i"]][0] + op["off"][0], shown[op["i"]][1] + op["off"][1]
+    pts = [(x, y)]
+    for dx, dy in op["moves"]:
+        x, y = (x + dx, y + dy) if op["brush"] in ("GRAB", "PUSH") else (pts[0][0] + dx, pts[0][1] + dy)
+        pts.append((x, y))
+    return ";".join("%r,%r" % p for p in pts), pts
+
+
+def outline_gap(a, b):
+    """How far apart two outlines are (both ways): the furthest any sample of one is from the other's polyline."""
+    def to_poly(p, poly):
+        best = 1e9
+        for u, v in zip(poly, poly[1:]):
+            ax, ay = v[0] - u[0], v[1] - u[1]
+            t = max(0.0, min(1.0, ((p[0] - u[0]) * ax + (p[1] - u[1]) * ay) / max(ax * ax + ay * ay, 1e-18)))
+            best = min(best, math.hypot(p[0] - u[0] - ax * t, p[1] - u[1] - ay * t))
+        return best
+    return max([to_poly(p, b) for p in a] + [to_poly(p, a) for p in b] + [0.0])
+
+
+def outlines(layer):
+    return [layer.shape_outline(k, 24) for k in range(layer.shape_count)]
+
+
+def apply_sculpt(op):
+    o = op["op"]
+    layer = find_layer(op["layer"])
+    if layer is None or not editable(layer) or layer.point_count == 0:
+        return "skip"
+    L.active = layer
+    ops.mesh.select_none()
+    if op.get("selected"):
+        idx = [i for i in op["selected"] if i < layer.point_count]
+        if idx:
+            layer.select_points(idx)
+    if op.get("group") and layer.parent is not None:
+        L.active = layer.parent
+    if o == "simplify":
+        plain = doc.frame_current == 0 and [m["type"] for m in layer.modifiers] in ([], ["ARMATURE"]) and \
+            not op.get("group")
+        before = outlines(layer) if plain else None
+        n0 = layer.point_count
+        r = ops.sculpt.simplify(resolution=str(op["resolution"]))
+        if plain and r == {'FINISHED'}:
+            after = outlines(layer)
+            if len(after) != len(before):
+                raise Failure(f"simplify-shape: {layer.name!r} had {len(before)} shapes, now {len(after)}")
+            tol = 0.1 / op["resolution"] * 1.5 + 2e-4
+            for k, ((pa, _), (pb, _)) in enumerate(zip(before, after)):
+                gap = outline_gap(pa, pb)
+                if gap > tol:
+                    raise Failure(f"simplify-shape: Simplify at resolution {op['resolution']} moved {layer.name!r}'s "
+                                  f"shape {k} by {gap:.5f} (allowed {tol:.5f}; points {n0} -> {layer.point_count})")
+        return r
+    path, pts = sculpt_path(layer, op)
+    if path is None:
+        return "skip"
+    kw = dict(brush=op["brush"], path=path, radius=str(op["radius"]), strength=str(op["strength"]),
+              falloff=op["falloff"], invert="1" if op["invert"] else "0", mirror="1" if op["mirror"] else "0",
+              amount=str(op["amount"]), selected_only="1" if op.get("selected") else "0")
+    if "sensitivity" in op:
+        kw["sensitivity"] = str(op["sensitivity"])
+    if op.get("keep_poses") and doc.frame_current == 0:
+        kw["keep_poses"] = "1"
+    if "resolution" in op:
+        kw["resolution"] = str(op["resolution"])
+        kw["refine"] = op["refine"]
+    dyn_free = "resolution" in op and not op["mirror"] and _oanim_blocked(layer.id) == ""
+    exact = op["brush"] == "GRAB" and op["off"] == [0.0, 0.0] and op["falloff"] == "CONSTANT" and \
+        op["strength"] == 1.0 and "resolution" not in op and not op["mirror"] and not op.get("group") and \
+        not op.get("selected") and (os.environ.get("OA_FUZZ_SKIP_FIXED") != "1" or not known_deform(layer))
+    # (a Cage Deform's layer is known: Sculpt doesn't settle the points under the mouse there, G does)
+    p0 = layer.shown()[0][op["i"]] if exact else None
+    # Collapse alone only takes out points the line keeps its shape without: on the setup frame, on a plain drawing,
+    # the stroke with it lands within a tenth of a step of the same stroke without it.
+    collapse_ref = None
+    if dyn_free and op["refine"] == "COLLAPSE" and doc.frame_current == 0 and not op.get("group") and             [m["type"] for m in layer.modifiers] in ([], ["ARMATURE"]) and layer.shape_count > 0:
+        plain_kw = {k: v for k, v in kw.items() if k not in ("resolution", "refine")}
+        if ops.sculpt.stroke(**plain_kw) == {'FINISHED'}:
+            collapse_ref = outlines(layer)
+            ops.ed.undo()
+    r = ops.sculpt.stroke(**kw)
+    if collapse_ref is not None and r == {'FINISHED'}:
+        tol = 0.1 / op["resolution"] * 1.5 + 2e-4
+        got = outlines(layer)
+        for k, ((pa, _), (pb, _)) in enumerate(zip(collapse_ref, got)):
+            gap = outline_gap(pa, pb)
+            if gap > tol:
+                raise Failure(f"collapse-shape: a {op['brush']} stroke with Dyntopo Collapse at resolution "
+                              f"{op['resolution']} left {layer.name!r}'s shape {k} {gap:.5f} off the same stroke "
+                              f"without it (allowed {tol:.5f})")
+    if dyn_free and r == {'FINISHED'}:
+        why = _oanim_blocked(layer.id)
+        if why:
+            raise Failure(f"dyntopo-keys: a Dyntopo stroke on {layer.name!r} (no keys before) on frame "
+                          f"{doc.frame_current} left it with: {why}")
+    if exact and r == {'FINISHED'} and op["i"] < layer.point_count:
+        p1 = layer.shown()[0][op["i"]]
+        want = (pts[-1][0], pts[-1][1])
+        gap = math.hypot(p1[0] - want[0], p1[1] - want[1])
+        if gap > 1e-4:
+            raise Failure(f"sculpt-follow: Grab (constant, strength 1) from point {op['i']} of {layer.name!r} on frame "
+                          f"{doc.frame_current} moved it from {p0} to {p1}, not to the mouse {want} ({gap:.5f} off)")
+    return r
+
+
+def known_deform(layer):
+    """Known: a Cage Deform's own layer (repro_sculpt_cage_grab.py) and drawings in a group with a Mesh Deform
+    (repro_move_flies_off_squashed.py) don't land under the mouse."""
+    if "CAGE_DEFORM" in [m["type"] for m in layer.modifiers]:
+        return True
+    up = layer.parent
+    while up is not None:
+        if any(m["type"] in ("MESH_DEFORM", "CAGE_DEFORM") for m in up.modifiers):
+            return True
+        up = up.parent
+    return False
+
+
+def _oanim_blocked(lid):
+    import _oanim
+    return _oanim.sculpt_dyntopo_blocked(lid)
+
+
+def apply_more(op):
+    """The point edits added with Sculpt; None when `op` isn't one of them."""
+    o = op["op"]
+    if o == "handle_move":
+        layer = find_layer(op["layer"])
+        if layer is None or op["c"] >= layer.curve_count or op["k"] >= len(layer.curve_points(op["c"])):
+            return "skip"
+        _, hin, hout = layer.curve_handles(op["c"])[op["k"]]
+        h = hin if op["side"] == "IN" else hout
+        layer.move_handle(op["c"], op["k"], op["side"], (h[0] + op["d"][0], h[1] + op["d"][1]))
+        return "py-done"
+    if o == "layer_symmetrize":
+        layer = find_layer(op["layer"])
+        if layer is None:
+            return "skip"
+        L.active = layer
+        return ops.layer.symmetrize(direction=op["dir"])
+    if o not in ("curvature", "radius_scale", "smooth_points", "slide", "merge", "merge_by_distance", "clear_handles",
+                 "mirror_points", "symmetrize_points", "unalign"):
+        return None
+    layer = pick_points(op)
+    if layer is None or grid_bug(layer, o):
+        return "skip"
+    return {
+        "curvature": lambda: ops.mesh.peak() if op["peak"] else ops.mesh.smooth(),
+        "radius_scale": lambda: ops.mesh.radius_scale(factor=str(op["f"])),
+        "smooth_points": lambda: ops.mesh.smooth_points(factor=str(op["f"]), repeat=str(op["n"]),
+                                                        keep_shape="1" if op["keep_shape"] else "0"),
+        "slide": lambda: ops.mesh.slide(factor=str(op["f"])),
+        "merge": lambda: ops.mesh.merge(),
+        "merge_by_distance": lambda: ops.mesh.merge_by_distance(distance=str(op["dist"])),
+        "clear_handles": lambda: ops.mesh.clear_handles(),
+        "mirror_points": lambda: ops.transform.mirror(axis=op["axis"], orientation=op["o"]),
+        "symmetrize_points": lambda: ops.mesh.symmetrize(),
+        "unalign": lambda: ops.mesh.handles_unalign(),
+    }[o]()
+
+
+ONLY = [n for n in os.environ.get("OA_FUZZ_ONLY", "").split(",") if n]   # e.g. sculpt,simplify,frame,undo,redo
+
+
 def draw(rng):
-    names = list(TABLE)
+    names = [n for n in TABLE if not ONLY or n in ONLY]
     weights = [TABLE[n][0] for n in names]
     for _ in range(50):
         name = rng.choices(names, weights)[0]
@@ -383,8 +641,26 @@ def pick_points(op):
     return layer
 
 
+def grid_bug(layer, o):
+    """Known (repro_grid_dissolve_roundtrip.py): taking points out of a grid drawing keeps a grid save/open drops."""
+    return os.environ.get("OA_FUZZ_SKIP_FIXED") == "1" and bool(layer.grids) and         o in ("point_delete", "point_dissolve", "merge", "merge_by_distance")
+
+
+def keep_bug(layer):
+    """Known (repro_weight_remove_action.py): Keep Animation from inside another bone layer's action leaves the wrong
+    action entered (drawings_shown_capture_all). Fixed; skipped only with OA_FUZZ_SKIP_FIXED=1."""
+    if os.environ.get("OA_FUZZ_SKIP_FIXED") != "1" or not doc.action:
+        return False
+    return True
+
+
 def apply(op):
     o = op["op"]
+    if o in ("sculpt", "simplify"):
+        return apply_sculpt(op)
+    more = apply_more(op)
+    if more is not None:
+        return None if more == "py-done" else more
     if o == "frame":
         doc.frame_current = op["f"]
         return None
@@ -504,6 +780,8 @@ def apply(op):
             layer.split_segment(op["c"], op["s"] % (len(layer.curve_points(op["c"])) - 1), op["t"])
             return None
         L.active = layer
+        if o == "parent_bone" and op["keep"] and keep_bug(layer):
+            return "skip"
         if o == "point_add":
             return ops.mesh.primitive_point_add(x=op["at"][0], y=op["at"][1])
         if op["bone"] and not any(bone(r, op["bone"]) for r in rigs()):
@@ -522,7 +800,7 @@ def apply(op):
         ops.armature.select_none()
         rig.select_bone(op["bone"])
     layer = pick_points(op)
-    if layer is None:
+    if layer is None or (o == "weight_remove" and op["keep"] and keep_bug(layer)) or grid_bug(layer, o):
         return "skip"
     call = {
         "mG": lambda: ops.mesh.translate(move_x=str(op["d"][0]), move_y=str(op["d"][1])),
@@ -589,6 +867,19 @@ def check_roundtrip():
         raise Failure("roundtrip: " + harness.FOUND[0][1])
 
 
+def skewed_above(rig, name):
+    """A bone below one scaled unevenly turns with a shear in the document, not rigidly (the follow check's
+    similarity doesn't hold there: seed 22's BotTeeth_X at scale 0.884 x 0.861)."""
+    b = bone(rig, bone(rig, name).get("parent") or "") if bone(rig, name) else None
+    seen = 0
+    while b and seen < 64:
+        s = b.get("scale", (1.0, 1.0))
+        if abs(s[0] - s[1]) > 1e-6 * max(1.0, abs(s[0])) or s[0] < 0 or s[1] < 0:
+            return True
+        b, seen = bone(rig, b.get("parent") or ""), seen + 1
+    return False
+
+
 def check_follow(rng):
     """A point weighted 1 to one plain bone (no constraints), in a drawing right inside the rig with only its Armature
     modifier: turning the bone with R moves the point rigidly with it. Undone after."""
@@ -605,7 +896,7 @@ def check_follow(rng):
                 if len(w) == 1:
                     (name, value), = w.items()
                     b = bone(rig, name)
-                    if value == 1.0 and b and b.get("type") == "REGULAR" and not rig.bone_constraints(name):
+                    if value == 1.0 and b and b.get("type") == "REGULAR" and not rig.bone_constraints(name) and                             not skewed_above(rig, name):
                         found.append((rig, l, i, name))
     if not found:
         return

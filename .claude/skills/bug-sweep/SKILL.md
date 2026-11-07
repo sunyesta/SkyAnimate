@@ -29,12 +29,15 @@ The fuzzer (`scripts/fuzz.py`) throws seeded random sequences at the file's bone
 frames, auto-key, undo and redo; bone moves, turns, scales and lengths (Python and G R S, Without Children, Only
 Bones), knobs inside and past their box, add/delete/duplicate/extrude/subdivide/parent/convert/clear bones; actions
 entered, left and made; points moved, deleted, dissolved, subdivided, split, added, extruded; weights assigned,
-removed, automatic, cleaned; Parent Bone with its deform modes; new drawings in the rig; insert/delete keys. It checks
+removed, automatic, cleaned; Parent Bone with its deform modes; new drawings in the rig; insert/delete keys; Sculpt strokes with every brush (Dyntopo 40% of the time, at Resolution
+8-400 and each Refine Method) and Simplify; curvature, width, smooth, slide, merge, mirror, symmetrize, clear handles,
+unalign and handle moves (`OA_FUZZ_ONLY` limits a run to a list of op names). It checks
 every op (no exception, finite numbers, a change only with an undo step, CANCELLED changes nothing, entering an action
 and leaving changes nothing) and every few ops (undo then redo exact, frames in different orders give the same pose,
 save/open exact, a point weighted wholly to one plain bone turns rigidly with it). A watchdog (`OA_FUZZ_HANG`, default
 150 s per op) dumps the stacks and exits; the log is written before each op, so a crash or hang still leaves one. A
-failure writes the op log; `scripts/shrink.py` cuts it down to the fewest ops that fail the same way. Run it yourself
+failure writes the op log; `scripts/shrink.py` cuts it down to the fewest ops that fail the same way (past about 100 ops that takes too long: save the state just before the failing op and write the
+repro from there). Run it yourself
 too while waiting: a handful of seeds costs little. When a probe adds an op to its own copy, fold it in here.
 
 ```
@@ -51,6 +54,12 @@ call); harness mistakes (drop them). Tell the user each batch as it's confirmed:
 in their words (what they'd see), with the numbers that show it.
 
 ## 4. Fix while the probes keep running
+
+Many bugs: fix them in groups (by area, so no two groups touch the same files), each in a worktree of its own made from
+the branch (`git worktree add -b claude/fix-<area> ../fix-<area> HEAD`, configured with
+`-DFETCHCONTENT_SOURCE_DIR_<DEP>=<this build>/_deps/<dep>-src` so nothing is fetched again), and cherry-pick each group's
+commits into the branch when it is done. Groups write their mutation entries and spec wording to notes files; the
+branch takes them in one go (two groups appending to PENDING or editing one spec line conflict).
 
 When the user wants fixes (they may say so up front), fix confirmed bugs one at a time, worst or simplest first,
 while probes keep reporting:
@@ -79,6 +88,14 @@ After each sweep, fold back what you learned: a new fuzzer op for a kind of edit
 may name one), a new invariant, a harness pitfall below, a better brief. The skill lives in the repo
 (`.claude/skills/bug-sweep/`), so commit its changes with the sweep's fixes.
 
+## Load
+
+Keep the machine's load moderate: about three heavy jobs at once (a build, a probe, a mutation lane each count). A
+sweep with five mutation lanes, four fix builds and probes running for hours ended with the computer switching off,
+and the power cut zeroed a source file a mutation check had open (the runner now syncs its backup first; after a
+crash, check every folder for files of zero bytes and broken .pdb/.obj files before building).
+`tests/test_motion_path_places.py` fails on a saturated CPU (its work never spreads over threads): rerun it quiet.
+
 ## Pitfalls (harness mistakes that look like bugs)
 
 - **Python data edits aren't undo steps.** `bone_set`, `set_point`, `layer.keyframe_insert` join the next operator's
@@ -94,5 +111,9 @@ may name one), a new invariant, a harness pitfall below, a better brief. The ski
 - **Frame-order bugs hide behind reads.** Setting `doc.frame_current` evaluates at once; a probe that reads between
   frames changes what the next frame starts from. Compare a frame reached from several others (`f-1`, `f+1`, 0, keys)
   without reads between, and diff every layer's points and bones to find which one depends on the order.
+- **A parent with uneven scale** turns and stretches its children by a skew, not a similarity: a check that a point
+  weighted to one bone turns rigidly with it must skip such bones (`skewed_above` in fuzz.py).
+- **Some operators push two undo steps** (a select-none and the edit), and `doc.time_together` set from Python isn't
+  one: undo back to each saved step index, not one undo per op.
 - **A rig loop** (a bone's IK target riding on the chain, a constraint fed by what it moves) can make a pose depend on
   history by design: report it as a question, don't fix it as a bug.
