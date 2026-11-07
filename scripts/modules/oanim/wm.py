@@ -377,6 +377,14 @@ def deform_counts_clear():
     _oanim.deform_counts_clear()
 
 
+def evaluated_together(layers, render=False):
+    """The layers' drawings bent side by side on the CPU's cores, as a render bends the drawings it shows:
+    ([(points [(x, y)], handles [(in_x, in_y, out_x, out_y)] of every curve point)] in the layers' order, how many
+    threads took part). Each the same as on its own (Layer.evaluated). For tests."""
+    made, threads = _oanim.layers_evaluated_together([layer.id for layer in layers], render)
+    return [([tuple(p) for p in points], [tuple(h) for h in handles]) for points, handles in made], threads
+
+
 def profile_frame_end():
     """Closes a frame of the profile by hand (a background run draws none)."""
     _oanim.profile_frame_end()

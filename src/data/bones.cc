@@ -1,9 +1,11 @@
 #include "data/bones.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <cmath>
 #include <map>
+#include <mutex>
 
 #include "anim/controller.hh"
 #include "data/document.hh"
@@ -912,7 +914,10 @@ static std::vector<BonePose> bones_full_pose(const std::vector<Bone> &bones, boo
   return poses;
 }
 
-static int g_pose_cache_depth = 0;
+/* Shared by the threads a render bends its drawings on (SceneRenderer::render): each pose is worked out outside the
+ * lock, since working one out can ask for another's (a constraint's target), and the first one kept wins. */
+static std::atomic<int> g_pose_cache_depth{0};
+static std::mutex g_pose_cache_mutex;
 static std::map<std::pair<const Layer *, bool>, std::vector<BonePose>> g_pose_cache;
 
 ArmaturePoseCacheScope::ArmaturePoseCacheScope()
@@ -923,6 +928,7 @@ ArmaturePoseCacheScope::ArmaturePoseCacheScope()
 ArmaturePoseCacheScope::~ArmaturePoseCacheScope()
 {
   if (--g_pose_cache_depth == 0) {
+    const std::lock_guard lock(g_pose_cache_mutex);
     g_pose_cache.clear();
   }
 }
@@ -931,13 +937,16 @@ std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame)
 {
   if (g_pose_cache_depth > 0) {
     const auto key = std::make_pair(&armature, setup_frame);
-    auto it = g_pose_cache.find(key);
-    if (it == g_pose_cache.end()) {
-      it = g_pose_cache
-               .emplace(key, bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now))
-               .first;
+    {
+      const std::lock_guard lock(g_pose_cache_mutex);
+      if (auto it = g_pose_cache.find(key); it != g_pose_cache.end()) {
+        return it->second;
+      }
     }
-    return it->second;
+    std::vector<BonePose> made = bones_full_pose(armature.bones, setup_frame, armature.pose_frame,
+                                                 &armature.dynamics_now);
+    const std::lock_guard lock(g_pose_cache_mutex);
+    return g_pose_cache.try_emplace(key, std::move(made)).first->second;
   }
   return bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now);
 }

@@ -804,6 +804,41 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return d;
   });
   m.def("deform_counts_clear", []() { vector_deform_counts_clear(); });
+  /* Layers' drawings bent side by side as a render bends them (layers_evaluated_drawings): for each its points and its
+   * curves' handles where they show (the bones' rigid move put back), and how many threads took part. */
+  m.def(
+      "layers_evaluated_together",
+      [](const std::vector<uint64_t> &ids, bool render) {
+        Document &doc = *current_context().document;
+        animation_sync(doc);
+        std::vector<const Layer *> layers;
+        for (const uint64_t id : ids) {
+          const Layer *layer = layer_find(doc, id);
+          if (!layer) {
+            throw py::key_error("no layer " + std::to_string(id));
+          }
+          layers.push_back(layer);
+        }
+        int threads = 0;
+        const std::vector<EvaluatedDrawing> made = layers_evaluated_drawings(doc, layers, render, &threads);
+        py::list out;
+        for (const EvaluatedDrawing &e : made) {
+          py::list points, handles;
+          for (const MeshPoint &p : e.drawing.points) {
+            const float2 at = e.rigid.apply(p.pos);
+            points.append(py::make_tuple(at.x, at.y));
+          }
+          for (const Curve &c : e.drawing.curves) {
+            for (const CurvePoint &cp : c.points) {
+              const float2 a = e.rigid.apply_vector(cp.handle_in), b = e.rigid.apply_vector(cp.handle_out);
+              handles.append(py::make_tuple(a.x, a.y, b.x, b.y));
+            }
+          }
+          out.append(py::make_tuple(points, handles));
+        }
+        return py::make_tuple(out, threads);
+      },
+      py::arg("ids"), py::arg("render") = false);
   /* The control points the Motion Path tool draws for the paths shown: where each is and where the path is on its
    * nearest frame, and its handles' tips (document space). */
   m.def("motion_path_controls", []() {

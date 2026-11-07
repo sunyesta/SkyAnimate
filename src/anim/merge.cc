@@ -254,7 +254,7 @@ uint64_t mix_double(uint64_t h, double v)
 }
 
 /* The last merges worked out, by what went in: drawing, picking and masks all ask for the same one
- * each frame. */
+ * each frame. One for each thread: a render bends its drawings on several at once. */
 const c2::PathsD &merge_paths_cached(const std::vector<Polygon> &polygons, MergeOperation operation, double smoothing,
                                      bool corners_only)
 {
@@ -266,7 +266,7 @@ const c2::PathsD &merge_paths_cached(const std::vector<Polygon> &polygons, Merge
       key = mix_double(mix_double(key, q.x), q.y);
     }
   }
-  static std::map<uint64_t, c2::PathsD> cache;
+  static thread_local std::map<uint64_t, c2::PathsD> cache;
   if (auto it = cache.find(key); it != cache.end()) {
     return it->second;
   }
@@ -427,7 +427,8 @@ bool drawing_merge(VectorDrawing &drawing, const std::vector<uint64_t> &own, con
       key = mix(key, id);
     }
   }
-  static std::map<uint64_t, MergeOutline> cache;
+  /* One for each thread, as merge_paths_cached's. */
+  static thread_local std::map<uint64_t, MergeOutline> cache;
   auto it = cache.find(key);
   if (it == cache.end()) {
     if (cache.size() > 64) {
@@ -521,8 +522,8 @@ static bool merge_on(const Modifier &m, bool render)
 }
 
 /* The layers whose Boolean modifiers are being worked out: one asking for its own merge again (two
- * layers merging each other) stops there. */
-static std::vector<uint64_t> g_merging;
+ * layers merging each other) stops there. On each thread its own. */
+static thread_local std::vector<uint64_t> g_merging;
 
 void merge_modifier_apply(const Document &doc, const Layer &layer, const Modifier &m, VectorDrawing &drawing,
                           bool render)

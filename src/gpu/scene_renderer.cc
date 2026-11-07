@@ -2040,6 +2040,7 @@ void SceneRenderer::prepare_drawings(const Document &doc)
   preparing_ = true;
   jobs_.clear();
   queued_.clear();
+  std::vector<const Layer *> drawn;
   for (const Layer *l : document_layers_flat(doc)) {
     if (l->is_group() || l->is_media() || !l->has_drawing() || !layer_shown_through_parents(doc, *l)) {
       continue;
@@ -2047,6 +2048,27 @@ void SceneRenderer::prepare_drawings(const Document &doc)
     if ((l->opacity <= 0.0f && !full_opacity(*l)) || skip_prepare_.count(l->id)) {
       continue;
     }
+    drawn.push_back(l);
+  }
+  /* Their bones and modifiers worked out first, side by side on the cores (a rig's drawings each bent by the deforms
+   * around them take most of a frame, one after another). */
+  std::vector<const Layer *> bent;
+  for (const Layer *l : drawn) {
+    if (!evaluated_.contains(l->id) && layer_has_modifier_effect(doc, *l, final_render_)) {
+      bent.push_back(l);
+    }
+  }
+  if (bent.size() > 1) {
+    std::vector<EvaluatedDrawing> made;
+    {
+      const StatTimer stat_evaluate(STAT_EVALUATE);
+      made = layers_evaluated_drawings(doc, bent, final_render_);
+    }
+    for (size_t i = 0; i < bent.size(); i++) {
+      evaluated_.emplace(bent[i]->id, Evaluated{std::move(made[i].drawing), made[i].rigid});
+    }
+  }
+  for (const Layer *l : drawn) {
     draw_drawing(doc, *l, layer_world_transform(doc, l->id), 1.0f);
   }
   /* The masks' shapes too (a render worked out with masks' layers moving, or bent, makes many). */

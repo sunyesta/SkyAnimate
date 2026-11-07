@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+#include <set>
+#include <thread>
 
 #include "anim/bevel.hh"
 #include "anim/draw_order.hh"
@@ -15,6 +18,7 @@
 #include "data/detail.hh"
 #include "data/layer.hh"
 #include "core/log.hh"
+#include "core/parallel.hh"
 #include "data/document.hh"
 
 namespace oanim {
@@ -770,6 +774,31 @@ Transform2D layer_group_deform_at(const Document &doc, const Layer &layer, float
 VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render, Transform2D *r_rigid)
 {
   return stack_evaluated(doc, layer, render, r_rigid, nullptr);
+}
+
+std::vector<EvaluatedDrawing> layers_evaluated_drawings(const Document &doc, const std::vector<const Layer *> &layers,
+                                                        bool render, int *r_threads)
+{
+  /* One pose of each bone layer and one index of the layers for them all, the index lent to each thread. (A drawing's
+   * own work, shared out over the threads when it is worked out alone, is done on its thread here.) */
+  const ArmaturePoseCacheScope poses;
+  const LayerIndexScope layer_index(doc);
+  const void *index = layer_index_current();
+  std::vector<EvaluatedDrawing> out(layers.size());
+  std::mutex mutex;
+  std::set<std::thread::id> threads;
+  parallel_for(layers.size(), 1, [&](size_t begin, size_t end) {
+    const LayerIndexBorrow borrowed(index);
+    for (size_t i = begin; i < end; i++) {
+      out[i].drawing = layer_evaluated_drawing(doc, *layers[i], render, &out[i].rigid);
+    }
+    const std::lock_guard lock(mutex);
+    threads.insert(std::this_thread::get_id());
+  });
+  if (r_threads) {
+    *r_threads = int(threads.size());
+  }
+  return out;
 }
 
 /* What the whole stack does right around each of the drawing's own points, in `skins`: its points alone moved a small

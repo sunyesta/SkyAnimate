@@ -1,6 +1,7 @@
 /* The layer tree inside a document: finding, adding, moving, copying and referencing layers. */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <map>
 #include <unordered_map>
@@ -103,7 +104,7 @@ static LayerIndex *index_for(const Document &doc)
   return g_layer_index && g_layer_index->doc == &doc ? g_layer_index : nullptr;
 }
 
-static uint64_t g_revision_next = 1;
+static std::atomic<uint64_t> g_revision_next{1};
 
 uint64_t revision_next()
 {
@@ -160,6 +161,26 @@ LayerIndexScope::~LayerIndexScope()
 {
   if (owner_) {
     g_layer_index->clear();
+    g_layer_index = nullptr;
+  }
+}
+
+const void *layer_index_current()
+{
+  return g_layer_index;
+}
+
+LayerIndexBorrow::LayerIndexBorrow(const void *index)
+{
+  if (!g_layer_index && index) {
+    g_layer_index = const_cast<LayerIndex *>(static_cast<const LayerIndex *>(index));
+    set_ = true;
+  }
+}
+
+LayerIndexBorrow::~LayerIndexBorrow()
+{
+  if (set_) {
     g_layer_index = nullptr;
   }
 }

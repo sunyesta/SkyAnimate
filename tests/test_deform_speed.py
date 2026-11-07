@@ -7,11 +7,13 @@ changing what any drawing shows.
 - A point well clear of a cell's side isn't searched for on it.
 - A mesh of one shape that isn't four-sided is its own cell: its points aren't measured against its outline.
 - A group's deform is built once for all the drawings in it, not once each.
+- A render's drawings are bent side by side on the CPU's cores (wm.evaluated_together), each as it is on its own.
 
 Run with:  OpenAnimate --background --python tests/test_deform_speed.py
 """
 
 import math
+import os
 
 import oanim
 
@@ -133,5 +135,25 @@ shown, c = counted([art])
 print("one shape:", c)
 assert any(math.dist(p[:2], q) > 1e-3 for p, q in zip(art.points, shown[0])), "it bends"
 assert c["points"] >= 16 and c["cell_measures"] == 0, ("one cell: nothing to pick between", c)
+
+# --- Side by side: many drawings in the group, bent on several threads at once ----------------------------------------
+doc.frame_current = 0
+many = [new_layer("Many%d" % k, line(-0.9 + 0.1 * (k % 8), 0.8 - 0.05 * (k % 8), 0.6 - 0.07 * k, 40)) for k in range(16)]
+# The same drawings again, bent one at a time (their own bends: none kept from the others').
+twins = [new_layer("Twin%d" % k, [p[:2] for p in l.points]) for k, l in enumerate(many)]
+for child in many + twins:
+    layers.active = child
+    assert ops.layer.move_to_group(group=str(group.id)) == {'FINISHED'}
+many = [next(l for l in layers.all() if l.name == "Many%d" % k) for k in range(16)]
+twins = [next(l for l in layers.all() if l.name == "Twin%d" % k) for k in range(16)]
+at(10)
+together, threads = wm.evaluated_together(many)
+alone = [wm.evaluated_together([t])[0][0] for t in twins]
+for k, (a, b) in enumerate(zip(together, alone)):
+    assert a == b, ("bent side by side, the same as alone", k)
+    assert any(math.dist(p[:2], q) > 1e-3 for p, q in zip(many[k].points, a[0])), "they bend"
+if (os.cpu_count() or 1) > 1:
+    assert threads > 1, ("bent on several threads", threads)
+print("side by side on", threads, "threads")
 
 print("deform speed: fine")

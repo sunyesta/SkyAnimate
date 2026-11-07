@@ -333,6 +333,22 @@ class LayerIndexScope {
  private:
   bool owner_ = false;
 };
+/* The index of the LayerIndexScope in effect on this thread (null outside one), to lend to threads working for it
+ * meanwhile (LayerIndexBorrow). */
+const void *layer_index_current();
+/* While it lasts, this thread looks layers up by `index` (from layer_index_current on the thread that owns it, whose
+ * scope outlasts this), unless it has an index of its own. The index is only read: the owner's thread mustn't change
+ * the layers meanwhile either. */
+class LayerIndexBorrow {
+ public:
+  explicit LayerIndexBorrow(const void *index);
+  ~LayerIndexBorrow();
+  LayerIndexBorrow(const LayerIndexBorrow &) = delete;
+  LayerIndexBorrow &operator=(const LayerIndexBorrow &) = delete;
+
+ private:
+  bool set_ = false;
+};
 /* Within a LayerIndexScope of `doc`: whether no layer has a Boolean modifier (false outside one). */
 bool layer_index_no_booleans(const Document &doc);
 /* Whether a LayerIndexScope of `doc` is in effect. */

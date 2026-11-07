@@ -47,6 +47,16 @@ void layer_pose_drawing(const Document &doc, const Layer &layer, VectorDrawing &
  * drawing kept that way while bones turn is drawn again from what was made of it before. */
 VectorDrawing layer_evaluated_drawing(const Document &doc, const Layer &layer, bool render,
                                       Transform2D *r_rigid = nullptr);
+/* A drawing as layer_evaluated_drawing makes it, and its `r_rigid`. */
+struct EvaluatedDrawing {
+  VectorDrawing drawing;
+  Transform2D rigid;
+};
+/* Each of `layers` as layer_evaluated_drawing makes it, in their order: worked out side by side on the pool's threads
+ * (a render's drawings, bent before any is drawn), each the same as on its own. Nothing in the document may change
+ * meanwhile. `r_threads`: how many threads took part. */
+std::vector<EvaluatedDrawing> layers_evaluated_drawings(const Document &doc, const std::vector<const Layer *> &layers,
+                                                        bool render, int *r_threads = nullptr);
 /* The layer's drawing as drawn on the setup frame, with its Mirror modifiers (bones don't bend
  * it there): what brushed lines lay their dabs out on, so they stick to the artwork. */
 VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool render);

@@ -623,6 +623,7 @@ PENDING = [
     ('src/anim/vector_deform.cc', '  if (p.x < lo.x - clear || p.x > hi.x + clear || p.y < lo.y - clear || p.y > hi.y + clear) {', '  if (false) {', "a point well clear of a cell's side isn't searched for on it", 'tests/test_deform_speed.py'),
     ('src/anim/vector_deform.cc', '    if (!c.quad && d.cells.size() == 1 && c.rest.size() >= 2 && c.size > 0.0f) {', '    if (false) {', "a one-shape mesh's points aren't measured against its outline", 'tests/test_deform_speed.py'),
     ('src/anim/vector_deform.cc', '    for (const auto &[other_key, other] : g_kept_builds) {', '    for (const auto &[other_key, other] : std::map<std::tuple<uint64_t, std::string, bool>, KeptBuild>()) {', "a group's deform is built once for all its drawings", 'tests/test_deform_speed.py'),
+    ('src/anim/deform.cc', '  parallel_for(layers.size(), 1, [&](size_t begin, size_t end) {\n    const LayerIndexBorrow', '  [](size_t n, size_t, const auto &fn) { fn(0, n); }(layers.size(), 1, [&](size_t begin, size_t end) {\n    const LayerIndexBorrow', "a render's drawings are bent side by side on several threads", 'tests/test_deform_speed.py'),
 ]
 
 def build():

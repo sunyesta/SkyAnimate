@@ -35,7 +35,7 @@ get the new build). Run the build output directly only for tests.
 
 To find what makes an edit slow, time it: `oanim.wm.profile_enable(True)`, do the edit (in a private copy, or call
 `oanim.wm.profile_frame_end()` per step in a background run), then `oanim.wm.profile(frames)` lists the
-`OANIM_PROFILE("name")` sections (`src/core/profile.hh`) slowest first. Off by default; add sections where needed. Deform work (cell solves, side searches, builds) is counted by `oanim.wm.deform_counts()`.
+`OANIM_PROFILE("name")` sections (`src/core/profile.hh`) slowest first. Off by default; add sections where needed. Deform work (cell solves, side searches, builds) is counted by `oanim.wm.deform_counts()`. A render bends its drawings side by side on the pool's threads (`layers_evaluated_drawings` in `src/anim/deform.cc`), so anything evaluation touches must be safe on several threads at once (shared caches locked or `thread_local`; workers borrow the layer index with `LayerIndexBorrow`); the profiler times only the main thread.
 
 Python is embedded from `C:/Python314` (`OANIM_PYTHON_ROOT`), isolated from PYTHONPATH and user
 site-packages. Scripts load from the source tree's `scripts/` while developing.
