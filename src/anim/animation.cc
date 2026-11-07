@@ -1307,6 +1307,49 @@ static bool posed_after_action_bones(const Document &doc)
   return false;
 }
 
+/* What the bones posed after action bone actions read from the frame, as one number: each Limit to Shape's and Look
+ * At's shape, each Follow Point's place, each outer parent's pose (to a millionth: rounding may never settle). */
+static uint64_t posed_after_reads(const Document &doc)
+{
+  uint64_t h = 0xcbf29ce484222325ull;
+  const auto mix = [&](float v) {
+    h = (h ^ uint64_t(std::isfinite(v) ? std::llround(double(v) * 1e6) : 0)) * 0x100000001b3ull;
+  };
+  const auto mix2 = [&](float2 v) {
+    mix(v.x);
+    mix(v.y);
+  };
+  const auto mix_t = [&](const Transform2D &t) {
+    for (const float v : {t.a, t.b, t.c, t.d, t.tx, t.ty}) {
+      mix(v);
+    }
+  };
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (!flat->is_bone_layer()) {
+      continue;
+    }
+    for (const Bone &b : flat->bones) {
+      if (b.outer_bone != 0) {
+        mix_t(b.outer_pose);
+      }
+      for (const BoneConstraint &c : b.constraints) {
+        for (const float2 p : c.shape_region) {
+          mix2(p);
+        }
+        for (const float2 p : c.shape_footprint) {
+          mix2(p);
+        }
+        mix2(c.look_reach);
+        mix2(c.follow_now);
+        mix(c.follow_turn);
+        mix(c.follow_stretch);
+        mix_t(c.follow_shape);
+      }
+    }
+  }
+  return h;
+}
+
 static void evaluate_frame(Document &doc, int frame, bool recorded)
 {
   std::unordered_set<const Layer *> action_bone_layers;
@@ -1350,12 +1393,21 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
   follow_points_update(doc);
   shape_limits_update(doc);
   /* Action bone actions played from bones those then move (a rig whose drawing moves the bone that poses it) are
-   * worked out once more from where the bones went: else the frame showed what they read on the frame shown before. */
+   * worked out again from where the bones went: else the frame showed what they read on the frame shown before. Until
+   * what they read stops changing, as a chain needs (a head turn moves the eye a pupil's knob looks inside, and the
+   * knob plays the pupil's actions): once more only, the frame would still show some of the frame before. A few
+   * rounds at most, for a rig whose drawing moves the very bone that poses it, which may never settle. */
   if (doc.action_bones_applied && posed_after_action_bones(doc)) {
-    animation_refresh_action_bones(doc);
-    bone_outer_parents_update(doc);
-    follow_points_update(doc);
-    shape_limits_update(doc);
+    for (int round = 0; round < 4; round++) {
+      const uint64_t read = posed_after_reads(doc);
+      animation_refresh_action_bones(doc);
+      bone_outer_parents_update(doc);
+      follow_points_update(doc);
+      shape_limits_update(doc);
+      if (posed_after_reads(doc) == read) {
+        break;
+      }
+    }
   }
   doc.frame_current = shown;
   doc.evaluated_frame = frame;

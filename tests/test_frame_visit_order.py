@@ -82,4 +82,82 @@ for frame in (15, 25):
         assert worst < 1e-5, (f"frame {frame} reached from {before} shows the pupil {worst:.5f} off", got, first)
         assert math.dist(got[1], first[1]) < 1e-5, (frame, before, got[1], first[1])
 
+# --- A chain, as an eye rig's: the head's knob looks inside a box that moves, and plays an action moving the eye's white;
+# the eye's knob looks inside the white. Each look is worked out after the actions played from it, so here the actions
+# are played again until the looks stop changing: once more only, the eye played from the white of the frame before.
+ops.wm.read_homefile()
+doc.auto_key = True
+doc.frame_current = 0
+ops.layer.new_bone()
+rig = layers.active
+for name, head, tail in (("head", (0, 1), (0.1, 1)), ("aim", (0, 1), (0, 1.1)), ("eye", (0, 0), (0.1, 0)),
+                         ("look", (0, 0), (0, 0.1))):
+    assert ops.armature.bone_add(name=name, head_x=str(head[0]), head_y=str(head[1]), tail_x=str(tail[0]),
+                                 tail_y=str(tail[1])) == {'FINISHED'}
+    ops.armature.select_none()
+
+
+def in_rig(points, closed):
+    ops.layer.new()
+    layer = layers.active
+    ops.layer.move_to_group(group=str(rig.id))
+    layer = next(l for l in layers.all() if l.id == layer.id)
+    layer.add_curve(points, closed=closed, fill=closed)
+    return layer
+
+
+def ring(c, rx, ry):
+    return [(c[0] + rx * math.cos(2 * math.pi * k / 16), c[1] + ry * math.sin(2 * math.pi * k / 16)) for k in range(16)]
+
+
+pupil = in_rig([(0.0, 0.0), (0.2, 0.0)], False)
+assert ops.layer.parent_bone_set(bone="eye") == {'FINISHED'}
+white = in_rig(ring((0, 0), 0.4, 0.25), True)
+box = in_rig(ring((0, 1), 0.5, 0.5), True)
+
+
+def action(name, layer, change):
+    layers.active = layer
+    assert ops.anim.action_new(name=name) == {'FINISHED'}
+    doc.frame_current = 40
+    for i, p in enumerate(layer.points):
+        layer.set_point(i, change(i, p[:2]))
+    go(40)
+    doc.action = ""
+    go(0)
+
+
+action("eye_r", pupil, lambda i, p: (0.3, 0.1) if i == 1 else p)
+action("eye_l", pupil, lambda i, p: (0.1, -0.1) if i == 1 else p)
+action("head_r", white, lambda i, p: (p[0] * 0.5 + 0.3, p[1]))
+action("head_l", white, lambda i, p: (p[0] * 0.5 - 0.3, p[1]))
+layers.active = rig
+for knob, actions, target, shape in (("head", ("head_r", "head_l"), "aim", box), ("eye", ("eye_r", "eye_l"), "look", white)):
+    ops.armature.select_none()
+    rig.select_bone(knob)
+    assert ops.armature.bone_convert(type="CONTROLLER_2D") == {'FINISHED'}
+    assert ops.armature.controller_side(side="RIGHT", action=actions[0]) == {'FINISHED'}
+    assert ops.armature.controller_side(side="LEFT", action=actions[1]) == {'FINISHED'}
+    assert ops.armature.constraint_add(type="LOOK_AT", bone=knob) == {'FINISHED'}
+    rig.bone_constraint_set(knob, 0, target=target, shape_layer=shape.name, fit="CENTER")
+for frame, aim, look, at in ((10, 1.5, 0.9, (0.2, 0.0)), (20, -1.5, -0.9, (-0.2, 0.0)), (30, 0.9, 0.7, (0.1, 0.0))):
+    doc.frame_current = frame
+    rig.bone_set("aim", position=(aim, 1.0))
+    rig.bone_set("look", position=(look, 0.0))
+    box.location_x, box.location_y = at
+    go(frame)
+doc.frame_current = 31
+for frame in (12, 18, 22, 28):
+    seen = {}
+    for before in (frame - 1, frame + 1, 0, 3, 10, 20, 30, 40, frame):
+        doc.frame_current = before
+        doc.frame_current = frame
+        seen[before] = pose()
+    first = seen[frame - 1]
+    for before, got in seen.items():
+        worst = max(math.dist(p, q) for p, q in zip(got[0], first[0]))
+        assert worst < 1e-5, (f"chain: frame {frame} reached from {before} shows the pupil {worst:.5f} off", got, first)
+        assert math.dist(got[1], first[1]) < 1e-5, ("chain", frame, before, got[1], first[1])
+    print("chain", frame, "pupil", [tuple(round(c, 4) for c in p) for p in first[0]], "knob", first[1], flush=True)
+
 print("test_frame_visit_order: all passed")
