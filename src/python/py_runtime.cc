@@ -1528,23 +1528,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return py::make_tuple(first, last);
   });
-  /* The ghost a hovered dot shows: the traced drawings' wires on `frame`. */
-  m.def("motion_path_ghost", [](int frame) {
-    Context &C = current_context();
-    const Document &doc = *C.document;
-    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, motion_path_targets(C));
-    py::list lines;
-    for (const OnionWires &w : onion_wires(doc, layers, {OnionGhost{frame, frame > doc.frame_current, 1}})) {
-      for (const std::vector<float2> &line : w.lines) {
-        py::list pts;
-        for (const float2 p : line) {
-          pts.append(py::make_tuple(p.x, p.y));
-        }
-        lines.append(pts);
-      }
-    }
-    return lines;
-  });
   m.def("motion_path_snapshot", []() {
     py::list out;
     for (const std::vector<float2> &line : current_context().wm->path_snapshot) {

@@ -615,8 +615,8 @@ PENDING = [
     ('src/data/vector.cc', '      return a + wrap_turn(value(co, f).x - a) * 0.5f;', '      return a;', "Align on a point turns both handles' keys halfway", 'tests/test_handles_align_keys.py'),
     ('src/data/vector.cc', '      new_in = -so / lo * li;', '      new_in = si;', 'Align on a later frame lines up the setup too', 'tests/test_handles_align_keys.py'),
     ('src/data/vector.cc', '          ch->actions[name] = *keys;', '          (void)keys;', "Align makes an action's keys agree", 'tests/test_handles_align_keys.py'),
+    ('scripts/modules/oanim/wm.py', 'def motion_path_snapshot():', 'def motion_path_ghost(frame):\n    return []\n\n\ndef motion_path_snapshot():', 'hovering a path dot shows no ghost of the drawing', 'tests/test_motion_paths.py'),
 ]
-
 
 def build():
     return subprocess.run([CMAKE, "--build", "--preset", "release"], capture_output=True, text=True).returncode == 0

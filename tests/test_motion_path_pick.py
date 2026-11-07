@@ -73,12 +73,12 @@ assert ops.mesh.select_mode_point() == {'FINISHED'}
 assert wm.motion_path_pick(*far), "a click on the handle"
 assert not [i for i, p in enumerate(art.points) if p[2]], "the handle alone picked, as the Select tool's click"
 
-# --- While something moves the dots' ghost waits, until the mouse moves on after ---------------------------------
+# --- While something moves the hovered dot's ring waits, until the mouse moves on after ---------------------------
 quiet = wm.path_hover_quiet_update
 assert not quiet(False, 0, 0)
-assert quiet(True, 50, 50), "moving: no ghost"
+assert quiet(True, 50, 50), "moving: no ring"
 assert quiet(False, 50, 50), "the move ended where the mouse is: still none"
 assert quiet(False, 51, 50), "a pixel's tremble: still none"
-assert not quiet(False, 60, 50), "the mouse moved on: the ghost is back"
+assert not quiet(False, 60, 50), "the mouse moved on: the ring is back"
 
 print("Motion path pick tests passed")

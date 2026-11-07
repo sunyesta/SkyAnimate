@@ -25,12 +25,17 @@ Launch probes as background `general-purpose` agents, all in one message, with t
 files) plus one running the random-operations fuzzer. Give each its own output folder. Add an area when the file
 invites one (switches, media, masks). Tell the user what's running in a few lines, and that nothing is fixed yet.
 
-The fuzzer (`scripts/fuzz.py`) throws seeded random sequences at the file's bones and points: frames, auto-key, bone
-moves, turns, scales, knobs past their box, add/delete/duplicate/parent/convert bones, point moves and deletes,
-weights, insert/delete keys, undo and redo. It checks every op (no exception, finite numbers, a change only with an
-undo step) and every few ops (undo then redo exact, frames in different orders give the same pose, save/open exact).
-A failure writes the op log; `scripts/shrink.py` cuts it down to the fewest ops that fail the same way. Run it
-yourself too while waiting: a handful of seeds costs little.
+The fuzzer (`scripts/fuzz.py`) throws seeded random sequences at the file's bones and points, about 45 kinds of op:
+frames, auto-key, undo and redo; bone moves, turns, scales and lengths (Python and G R S, Without Children, Only
+Bones), knobs inside and past their box, add/delete/duplicate/extrude/subdivide/parent/convert/clear bones; actions
+entered, left and made; points moved, deleted, dissolved, subdivided, split, added, extruded; weights assigned,
+removed, automatic, cleaned; Parent Bone with its deform modes; new drawings in the rig; insert/delete keys. It checks
+every op (no exception, finite numbers, a change only with an undo step, CANCELLED changes nothing, entering an action
+and leaving changes nothing) and every few ops (undo then redo exact, frames in different orders give the same pose,
+save/open exact, a point weighted wholly to one plain bone turns rigidly with it). A watchdog (`OA_FUZZ_HANG`, default
+150 s per op) dumps the stacks and exits; the log is written before each op, so a crash or hang still leaves one. A
+failure writes the op log; `scripts/shrink.py` cuts it down to the fewest ops that fail the same way. Run it yourself
+too while waiting: a handful of seeds costs little. When a probe adds an op to its own copy, fold it in here.
 
 ```
 set OA_SWEEP_FILE=<sweep>\file.oanim & set OA_SWEEP_TMP=<sweep>\t1 & set OA_FUZZ_SEED=1 & set OA_FUZZ_OPS=300

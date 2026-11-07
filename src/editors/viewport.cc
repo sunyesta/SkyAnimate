@@ -759,13 +759,13 @@ static ImVec2 path_dot_screen(const Document &doc, const ViewMapping &view, cons
 /* A press on something already selected changes the selection only if it is let go of without a drag (so a drag
  * doesn't lose the others): the select it makes then. */
 static std::optional<OpArgs> g_path_select_on_release;
-/* After a move (G R S, a drag, a brush stroke) the dots' ghost waits for the mouse to move on. */
+/* After a move (G R S, a drag, a brush stroke) the hovered dot's ring waits for the mouse to move on. */
 static struct {
   bool on = false;
   float2 at;
 } g_path_hover_quiet;
 
-/* `moving`: something is being moved now. Returns it; keeps the ghost quiet until the mouse leaves where the move
+/* `moving`: something is being moved now. Returns it; keeps the hover quiet until the mouse leaves where the move
  * ended. */
 bool path_hover_quiet_update(bool moving, float2 mouse)
 {
@@ -2009,7 +2009,7 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
 }
 
 /* Motion paths (anim/motion_path.hh): a dot per frame, red where fast and blue where still, keys as diamonds and a
- * ring on the frame shown; hovering a dot shows the drawing there as a ghost. Worked out again only when the
+ * ring on the frame shown; hovering a dot rings it with its frame number. Worked out again only when the
  * document, the range or what is traced changes. With the Motion Path tool they show whatever the popover says, and
  * take its clicks. */
 static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl, bool hovered)
@@ -2620,34 +2620,9 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       return;
     }
   }
-  /* The hovered dot's frame as a ghost of the drawing there, with its number (not until the mouse moves on after a
-   * move: what was just moved is what's looked at). */
+  /* The hovered dot's frame: a ring and its number (not until the mouse moves on after a move: what was just moved is
+   * what's looked at). No ghost of the drawing there: it got in the way of the paths and cost a redraw per hover. */
   if (hover_path && !ImGui::IsAnyMouseDown() && !g_path_hover_quiet.on) {
-    static struct {
-      const Document *doc = nullptr;
-      uint64_t changes = ~uint64_t(0);
-      int frame = 0;
-      std::vector<uint64_t> layers;
-      std::vector<OnionWires> wires;
-    } ghost;
-    const std::vector<uint64_t> layers = motion_path_ghost_layers(doc, {hover_path->target});
-    if (ghost.doc != &doc || ghost.changes != changes || ghost.frame != hover_frame || ghost.layers != layers) {
-      ghost.doc = &doc;
-      ghost.changes = changes;
-      ghost.frame = hover_frame;
-      ghost.layers = layers;
-      ghost.wires = onion_wires(doc, layers, {OnionGhost{hover_frame, hover_frame > doc.frame_current, 1}});
-    }
-    std::vector<ImVec2> screen;
-    for (const OnionWires &w : ghost.wires) {
-      for (const std::vector<float2> &line : w.lines) {
-        screen.clear();
-        for (const float2 q : line) {
-          screen.push_back(view.to_screen(q));
-        }
-        dl->AddPolyline(screen.data(), int(screen.size()), u32(hover_path->color, 0.7f), ImDrawFlags_None, 1.3f);
-      }
-    }
     const ImVec2 s = view.to_screen(hover_path->points[size_t(hover_frame - hover_path->first)]);
     dl->AddCircle(s, 5.0f, u32(hover_path->color, 1.0f), 0, 1.5f);
     const std::string label = std::to_string(hover_frame);

@@ -344,11 +344,6 @@ def motion_path_range():
     return _oanim.motion_path_range()
 
 
-def motion_path_ghost(frame):
-    """The wires (lists of (x, y)) of the ghost hovering a path's dot on `frame` shows."""
-    return _oanim.motion_path_ghost(frame)
-
-
 def motion_path_snapshot():
     """The kept paths (lists of (x, y)) drawn faintly to compare against (anim.motion_path_snapshot)."""
     return _oanim.motion_path_snapshot()

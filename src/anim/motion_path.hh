@@ -84,9 +84,6 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
                                           int first, int last);
 /* A path's colour: its own, or one of a few told apart by the order it comes in. */
 Color motion_path_color(const Document &doc, const MotionPathTarget &target, size_t index);
-/* The drawings to show as a ghost from a path's dot: the target's layer, or the drawings a bone layer or group
- * carries. */
-std::vector<uint64_t> motion_path_ghost_layers(const Document &doc, const std::vector<MotionPathTarget> &targets);
 /* A label for a target: "arm_L tip", "Face point 12", "Face". */
 std::string motion_path_label(const Document &doc, const MotionPathTarget &target);
 /* Red where fast, blue where still. */

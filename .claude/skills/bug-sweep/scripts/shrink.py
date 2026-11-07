@@ -4,7 +4,7 @@ the app: it replays subsets through the app headless.
     python shrink.py <OpenAnimate.exe> <fuzz_fail_N.json> [out.json]
 
 "The same way" is the failure's kind: the text before its first colon (exception, no-step change, undo-chain, order,
-roundtrip, non-finite). The result is written as a fuzz log; replay it with OA_FUZZ_REPLAY, or turn it into a test.
+roundtrip, non-finite, cancel-changed, action-peek, follow, crash-or-hang). The result is written as a fuzz log; replay it with OA_FUZZ_REPLAY, or turn it into a test.
 """
 import json
 import os

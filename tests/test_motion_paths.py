@@ -119,8 +119,8 @@ assert all(r["angle"] == 0.0 for r in rig.bones if r["name"] == "brow"), "rather
 rig.select_bone("arm")
 doc.frame_current = 15
 
-# The ghost a dot shows is the bone layer's drawings on that frame (none here) and leaves the document alone.
-assert oanim.wm.motion_path_ghost(12) == [] and doc.frame_current == 15
+# Hovering a dot shows no ghost of the drawing on its frame (just a ring and the frame number).
+assert not hasattr(oanim.wm, "motion_path_ghost")
 
 # --- Relative To: the parent's own motion taken out ----------------------------------------------------------
 layers.active = box

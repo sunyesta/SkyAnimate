@@ -692,31 +692,6 @@ Color motion_path_color(const Document &doc, const MotionPathTarget &target, siz
   return colors[index % std::size(colors)];
 }
 
-std::vector<uint64_t> motion_path_ghost_layers(const Document &doc, const std::vector<MotionPathTarget> &targets)
-{
-  std::vector<uint64_t> ids;
-  const auto add = [&](const Layer &l) {
-    if (l.has_drawing() && std::find(ids.begin(), ids.end(), l.id) == ids.end()) {
-      ids.push_back(l.id);
-    }
-  };
-  const std::function<void(const Layer &)> inside = [&](const Layer &group) {
-    for (const Layer &child : group.children) {
-      if (child.visible && child.render_visible) {
-        add(child);
-        inside(child);
-      }
-    }
-  };
-  for (const MotionPathTarget &t : targets) {
-    if (const Layer *layer = layer_find(doc, t.layer)) {
-      add(*layer);
-      inside(*layer);
-    }
-  }
-  return ids;
-}
-
 std::string motion_path_label(const Document &doc, const MotionPathTarget &target)
 {
   const Layer *layer = layer_find(doc, target.layer);
