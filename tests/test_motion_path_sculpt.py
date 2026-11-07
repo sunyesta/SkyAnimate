@@ -218,4 +218,18 @@ assert ops.anim.motion_path_stroke(brush="GRAB", points="0.5,0;0.5,0.3", radius=
     'FINISHED'}
 moved = key(c, 20)["path_controls"]
 assert len(moved) == 1 and moved[0][1] > stored[0][1] + 0.1, ("the control point went up", stored, moved)
+
+# --- A Noisy stretch keeps its noise ---------------------------------------------------------------------------------
+n = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0), 30: (2.0, 0.0)})
+for f in (10, 20, 30):
+    n.keyframe_set("position", f, interp="NOISY", noise_amplitude=0.2)
+before = [where(n, f) for f in range(10, 31)]
+assert max(abs(y) for _, y in before) > 0.02, "noisy"
+doc.frame_current = 20
+assert ops.anim.motion_path_stroke(brush="GRAB", points="1,0;1,0.1", radius="0.3", strength="0.01",
+                                   layer=str(n.id)) == {'FINISHED'}
+after = [where(n, f) for f in range(10, 31)]
+worst = max(math.dist(p, q) for p, q in zip(before, after))
+assert worst < 0.01, ("a tiny Grab took the noise away", worst, [k["interp"] for k in n.keyframes("position")])
+assert key(n, 20)["interp"] == "NOISY", key(n, 20)
 print("Motion path sculpt: ok")

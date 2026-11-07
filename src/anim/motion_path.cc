@@ -4351,7 +4351,11 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
     layer.drawing.curves.push_back(curve);
     tg.speeds.resize(n);
     for (size_t i = 1; i < n; i++) {
-      tg.speeds[i] = stretch_length_speeds(*ch, i);
+      /* Noisy already goes by length along whatever shape it has, its jitter on top: left Noisy, it keeps both (as
+       * Custom, measured with the jitter in, it would lose it). */
+      if (ch->keys[i].interp != Interp::Noisy) {
+        tg.speeds[i] = stretch_length_speeds(*ch, i);
+      }
     }
     ids.push_back(layer.id);
     st->targets.push_back(std::move(tg));
