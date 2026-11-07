@@ -46,13 +46,13 @@ for f, (x, y) in {10: (0.0, 0.0), 30: (4.0, 0.0)}.items():
     assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), **args) == {'FINISHED'}
 assert ops.anim.motion_path_control_add(frame="20", **args) == {'FINISHED'}
 assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="2", **args) == {'FINISHED'}
-wm.profile_clear()
+wm.motion_path_places_clear()
 controls = wm.motion_path_controls()
-wm.profile_frame_end()
 assert len(controls) == 1, controls
 c = controls[0]
-calls = sections()
-assert calls.get("path_position") == 4, ("frames worked out for one control point", calls.get("path_position"))
+# (Counted on every thread: they're worked out side by side.)
+used = wm.motion_path_places()["places"]
+assert used == 4, ("frames worked out for one control point", used)
 # Where it is, and the path through its nearest frame, as before.
 assert abs(c["at"][0] - 2.0) < 1e-3 and abs(c["at"][1] - 2.0) < 1e-3, c
 doc.frame_current = c["near_frame"]

@@ -914,41 +914,69 @@ static std::vector<BonePose> bones_full_pose(const std::vector<Bone> &bones, boo
   return poses;
 }
 
-/* Shared by the threads a render bends its drawings on (SceneRenderer::render): each pose is worked out outside the
- * lock, since working one out can ask for another's (a constraint's target), and the first one kept wins. */
-static std::atomic<int> g_pose_cache_depth{0};
-static std::mutex g_pose_cache_mutex;
-static std::map<std::pair<const Layer *, bool>, std::vector<BonePose>> g_pose_cache;
+/* Shared by the threads a render bends its drawings on (SceneRenderer::render, which lends it to them): each pose is
+ * worked out outside the lock, since working one out can ask for another's (a constraint's target), and the first one
+ * kept wins. */
+namespace {
+struct PoseCache {
+  std::mutex mutex;
+  std::map<std::pair<const Layer *, bool>, std::vector<BonePose>> poses;
+};
+}  // namespace
+static thread_local PoseCache *t_pose_cache = nullptr;
 
 ArmaturePoseCacheScope::ArmaturePoseCacheScope()
 {
-  g_pose_cache_depth++;
+  if (!t_pose_cache) {
+    t_pose_cache = new PoseCache();
+    owner_ = true;
+  }
 }
 
 ArmaturePoseCacheScope::~ArmaturePoseCacheScope()
 {
-  if (--g_pose_cache_depth == 0) {
-    const std::lock_guard lock(g_pose_cache_mutex);
-    g_pose_cache.clear();
+  if (owner_) {
+    delete t_pose_cache;
+    t_pose_cache = nullptr;
   }
+}
+
+const void *armature_pose_cache_current()
+{
+  return t_pose_cache;
+}
+
+ArmaturePoseCacheBorrow::ArmaturePoseCacheBorrow(const void *cache) : before_(t_pose_cache)
+{
+  t_pose_cache = static_cast<PoseCache *>(const_cast<void *>(cache));
+}
+
+ArmaturePoseCacheBorrow::~ArmaturePoseCacheBorrow()
+{
+  t_pose_cache = static_cast<PoseCache *>(const_cast<void *>(before_));
 }
 
 std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame)
 {
-  if (g_pose_cache_depth > 0) {
+  if (PoseCache *cache = t_pose_cache) {
     const auto key = std::make_pair(&armature, setup_frame);
     {
-      const std::lock_guard lock(g_pose_cache_mutex);
-      if (auto it = g_pose_cache.find(key); it != g_pose_cache.end()) {
+      const std::lock_guard lock(cache->mutex);
+      if (auto it = cache->poses.find(key); it != cache->poses.end()) {
         return it->second;
       }
     }
     std::vector<BonePose> made = bones_full_pose(armature.bones, setup_frame, armature.pose_frame,
                                                  &armature.dynamics_now);
-    const std::lock_guard lock(g_pose_cache_mutex);
-    return g_pose_cache.try_emplace(key, std::move(made)).first->second;
+    const std::lock_guard lock(cache->mutex);
+    return cache->poses.try_emplace(key, std::move(made)).first->second;
   }
   return bones_full_pose(armature.bones, setup_frame, armature.pose_frame, &armature.dynamics_now);
+}
+
+std::vector<BonePose> armature_pose_of(const Layer &armature, const std::vector<Bone> &bones, bool setup_frame)
+{
+  return bones_full_pose(bones, setup_frame, armature.pose_frame, &armature.dynamics_now);
 }
 
 std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame)

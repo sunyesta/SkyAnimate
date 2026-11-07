@@ -29,6 +29,9 @@ void dynamics_use_own_wind(const Document &doc, BoneConstraint &c, bool on);
 /* Puts where dynamics have every dynamic bone on the shown frame into its bone layer
  * (Layer::dynamics_now), simulating as far as needed. Runs as part of evaluating a frame. */
 void dynamics_update(Document &doc);
+/* Whether any bone of `doc` has dynamics: working its frames out keeps simulations for the whole app (by bone layer),
+ * so copies of it are worked out one at a time. */
+bool dynamics_in(const Document &doc);
 /* Forgets every simulated frame (they are worked out again when shown). */
 void dynamics_clear_cache();
 /* While something is being dragged (bones, a value), the frames before the shown one are kept as

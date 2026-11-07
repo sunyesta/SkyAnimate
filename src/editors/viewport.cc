@@ -2412,18 +2412,36 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       uint64_t changes = ~uint64_t(0), serial = 0;
       int frame = -1;
       std::vector<std::pair<MotionPathTarget, std::vector<MotionPathControl>>> all;
+      std::vector<MotionPathHandlePick> tipped;
     } controls;
+    /* Only a picked or dragged control point shows its handles: only theirs are worked out (each costs two more places
+     * on copies of the document, on every update of a drag). */
+    std::vector<MotionPathHandlePick> tipped;
+    for (const MotionPathHandlePick &pick : wm.path_handle_picks) {
+      if (pick.control >= 0) {
+        tipped.push_back({pick.target, pick.frame, false, pick.control, 0});
+      }
+    }
+    if (g_path_drag.active && g_path_drag.control >= 0) {
+      tipped.push_back({g_path_drag.target, g_path_drag.frame, false, g_path_drag.control, 0});
+    }
     if (controls.doc != &doc || controls.changes != changes || controls.serial != g_path_drag.serial ||
-        controls.frame != doc.frame_current)
+        controls.frame != doc.frame_current || controls.tipped != tipped)
     {
       controls.doc = &doc;
       controls.changes = changes;
       controls.serial = g_path_drag.serial;
       controls.frame = doc.frame_current;
+      controls.tipped = tipped;
       controls.all.clear();
       for (const MotionPath &p : cache.paths) {
         if (motion_path_has_handles(doc, p.target)) {
-          controls.all.push_back({p.target, motion_path_controls(doc, p.target)});
+          const MotionPathTarget target = p.target;
+          controls.all.push_back({p.target, motion_path_controls(doc, p.target, [&](const MotionPathControl &c) {
+                                    return std::find(tipped.begin(), tipped.end(),
+                                                     MotionPathHandlePick{target, c.end, false, c.index, 0}) !=
+                                           tipped.end();
+                                  })});
         }
       }
     }

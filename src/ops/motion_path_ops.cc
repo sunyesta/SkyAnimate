@@ -618,7 +618,10 @@ void motion_path_operators_register()
       }
       animation_sync(doc);
       const int end = op_arg_int(C, "frame", 0), index = op_arg_int(C, "index", 0);
-      for (const MotionPathControl &c : motion_path_controls(doc, targets.front())) {
+      /* (Its handles' tips aren't wanted: each costs two more frames worked out.) */
+      for (const MotionPathControl &c :
+           motion_path_controls(doc, targets.front(), [](const MotionPathControl &) { return false; }))
+      {
         if (c.end == end && c.index == index &&
             motion_path_control_set(doc, targets.front(), end, index, c.near_frame,
                                     float2{op_arg_float(C, "x", c.at.x), op_arg_float(C, "y", c.at.y)}))
@@ -650,7 +653,10 @@ void motion_path_operators_register()
       animation_sync(doc);
       const int end = op_arg_int(C, "frame", 0), index = op_arg_int(C, "index", 0);
       const bool out = op_arg_bool(C, "out");
-      for (const MotionPathControl &c : motion_path_controls(doc, targets.front())) {
+      for (const MotionPathControl &c : motion_path_controls(doc, targets.front(), [&](const MotionPathControl &c) {
+             return c.end == end && c.index == index;
+           }))
+      {
         const float2 tip = out ? c.out_tip : c.in_tip;
         if (c.end == end && c.index == index &&
             motion_path_control_handle_set(doc, targets.front(), end, index, out, c.near_frame,

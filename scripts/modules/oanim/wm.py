@@ -350,6 +350,17 @@ def motion_path_controls():
     return _oanim.motion_path_controls()
 
 
+def motion_path_places():
+    """{"places": how many places of a target its paths' handles and control points were worked out at since
+    motion_path_places_clear (each a whole frame of the document, on a copy), "threads": the most threads one batch of
+    them was shared over}. For tests of what editing a path costs."""
+    return _oanim.motion_path_places()
+
+
+def motion_path_places_clear():
+    _oanim.motion_path_places_clear()
+
+
 def profile_enable(on=True):
     """Starts (or stops) timing where the UI's frames go, for profile(). Off when the app starts."""
     _oanim.profile_enable(bool(on))

@@ -140,6 +140,49 @@ rig.select_bone("arm")
 assert ops.anim.motion_path_select(frame="10", layer=str(rig.id), bone="arm") == {'FINISHED'}
 arm = path("arm tip")
 assert arm["own_motion"] and arm["ghost"] == [], arm["ghost"][:2]
+assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
+
+# --- The bone's own constraints are where it really goes, not its own motion ------------------------------------
+# A pupil kept inside a box (Limit to Shape), keyed out past the box's side: its own path goes on past, the curve its
+# keys and control points shape; where the constraint stops it is the ghost.
+doc.frame_current = 0
+layers.active = group
+ops.layer.new()
+box = layers.active
+box.name = "Box"
+box.add_curve([(9.0, -1.0), (11.0, -1.0), (11.0, 1.0), (9.0, 1.0)], closed=True, fill=True)
+ops.layer.new_bone()
+eye = layers.active
+ops.armature.bone_add(name="pupil", head_x="10", head_y="0", tail_x="10.2", tail_y="0", parent="")
+assert ops.armature.constraint_add(type="LIMIT_SHAPE", bone="pupil") == {'FINISHED'}
+# (Not written into its keys: they hold where it is put, the constraint where it shows.)
+eye.bone_constraint_set("pupil", 0, shape_layer=box.name, fit="CENTER", affect_transform=False)
+doc.frame_current = 10
+eye.bone_set("pupil", position=(4.0, 0.0))  # out past the box's left side, to x = 4
+doc.frame_current = 5
+for l in layers.all():
+    l.selected = l.id == eye.id
+ops.armature.select_none()
+eye.select_bone("pupil")
+pupil = dict(layer=str(eye.id), bone="pupil", head="1")
+real = path("pupil head")
+assert not real["own_motion"] and min(q[0] for q in real["points"]) > 8.5, "the box stops it"
+assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}
+own = path("pupil head")
+assert own["own_motion"] and close(at(own, 10), (4.0, 0.0)), ("its own keys take it on past", at(own, 10))
+assert all(close(q[1], 0.0) for q in own["points"]), "straight out, as keyed"
+assert len(own["ghost"]) == len(real["points"]) and all(close(g, q) for g, q in zip(own["ghost"], real["points"])), \
+    "the box's stop, its ghost"
+# A control point on it sits on the path as drawn, not where the box holds the pupil.
+assert ops.anim.motion_path_control_add(frame="8", **pupil) == {'FINISHED'}
+assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}
+own = path("pupil head")
+assert own["own_motion"]
+# (The tip's path has it too, a bone's length on.)
+c = min((c for c in oanim.wm.motion_path_controls() if c["end"] == 10),
+        key=lambda c: abs(c["at"][0] - at(own, c["near_frame"])[0]))
+assert c["at"][0] < 7.0 and close(c["at"], at(own, c["near_frame"]), 0.05), (c["at"], at(own, c["near_frame"]))
+assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 
 # --- Saved with the file --------------------------------------------------------------------------------------
 doc.path_own_motion = False

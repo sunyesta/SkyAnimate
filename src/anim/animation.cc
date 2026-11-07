@@ -179,9 +179,9 @@ template<typename F> static void layers_for_each_channel(std::vector<Layer> &lay
 }
 
 /* While action bone actions are worked out again (animation_refresh_action_bones), the layers with any action bone
- * action
- * data, found once: the rest are passed over without a look. */
-static const std::unordered_set<const Layer *> *g_action_bone_layers = nullptr;
+ * action data, found once: the rest are passed over without a look. (Each thread's: copies of the document are worked
+ * out side by side, motion paths' places.) */
+static thread_local const std::unordered_set<const Layer *> *g_action_bone_layers = nullptr;
 
 /* As layers_for_each_channel, but only on the layers having a channel `wanted` says yes to. Looking costs
  * little; the walk itself turns every drawing's points into their changes from the setup pose and back,
@@ -247,7 +247,7 @@ struct StillDrawings {
 };
 static StillDrawings g_still;
 /* While a frame change of the main loop's is recorded and evaluated: the still drawings to leave as they are. */
-static const std::unordered_set<uint64_t> *g_still_skip = nullptr;
+static thread_local const std::unordered_set<uint64_t> *g_still_skip = nullptr;
 
 /* A still drawing hidden now (in renders and the viewport alike): left as it is. */
 static bool still_skipped(const Layer &layer)

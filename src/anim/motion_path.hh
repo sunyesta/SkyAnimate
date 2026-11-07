@@ -340,8 +340,20 @@ struct MotionPathControl {
   float2 in_tip, out_tip;
   bool set = false, aligned = true;
 };
-/* Every control point of `target`'s path (position keys only). */
-std::vector<MotionPathControl> motion_path_controls(const Document &doc, const MotionPathTarget &target);
+/* How many places of a target its paths' handles and control points were worked out at, each on a copy of the document
+ * (a whole frame of it), since motion_path_places_clear; and the most threads any batch of them was shared over. For
+ * tests of what editing a path costs. */
+struct MotionPathPlaces {
+  uint64_t places = 0;
+  int threads = 0;
+};
+MotionPathPlaces motion_path_places();
+void motion_path_places_clear();
+/* Every control point of `target`'s path (position keys only). With `tips`: only those it says yes to have their
+ * handles' tips worked out (each takes two more places on copies of the document); the others' tips are their point. */
+std::vector<MotionPathControl> motion_path_controls(
+    const Document &doc, const MotionPathTarget &target,
+    const std::function<bool(const MotionPathControl &)> &tips = {});
 /* A control point where `target`'s path is on `frame`, between two of its position keys (not on one); in order along
  * the stretch. Sets which it is. False with no stretch there. */
 bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int frame, int *r_end = nullptr,

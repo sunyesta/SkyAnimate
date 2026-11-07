@@ -53,13 +53,34 @@ std::vector<BonePose> armature_pose(const Layer &armature, bool setup_frame = tr
 float bone_parent_axes_angle(const Bone &bone, const BonePose *parent, bool setup_frame);
 /* While one is alive, armature_pose works each bone layer's pose out once and hands back the same
  * one after: for a render, where nothing changes and every layer a rig moves asks for its pose.
- * Scopes nest; the poses are forgotten when the outermost ends. */
+ * Scopes nest; the poses are forgotten when the outermost ends. Each thread has its own (copies worked out side by side
+ * mustn't see each other's), lent to threads working for it with ArmaturePoseCacheBorrow. */
 struct ArmaturePoseCacheScope {
   ArmaturePoseCacheScope();
   ~ArmaturePoseCacheScope();
   ArmaturePoseCacheScope(const ArmaturePoseCacheScope &) = delete;
   ArmaturePoseCacheScope &operator=(const ArmaturePoseCacheScope &) = delete;
+
+ private:
+  bool owner_ = false;
 };
+/* The poses kept by the ArmaturePoseCacheScope in effect on this thread (null outside one), to lend. */
+const void *armature_pose_cache_current();
+/* While it lasts, this thread keeps poses in `cache` (from armature_pose_cache_current on the thread whose scope
+ * outlasts this; null: none kept). */
+class ArmaturePoseCacheBorrow {
+ public:
+  explicit ArmaturePoseCacheBorrow(const void *cache);
+  ~ArmaturePoseCacheBorrow();
+  ArmaturePoseCacheBorrow(const ArmaturePoseCacheBorrow &) = delete;
+  ArmaturePoseCacheBorrow &operator=(const ArmaturePoseCacheBorrow &) = delete;
+
+ private:
+  const void *before_ = nullptr;
+};
+/* The pose `bones` would have in place of the armature's own (an edited copy of them), as armature_pose works it out;
+ * never kept. */
+std::vector<BonePose> armature_pose_of(const Layer &armature, const std::vector<Bone> &bones, bool setup_frame);
 /* The pose without bone dynamics: where the keys (constraints and IK included) put the bones.
  * Editing works from it, so a dynamic bone lands where it is put, the physics swinging after. */
 std::vector<BonePose> armature_keyed_pose(const Layer &armature, bool setup_frame);

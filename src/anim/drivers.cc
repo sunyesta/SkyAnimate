@@ -11,6 +11,7 @@
 #include <functional>
 #include <tuple>
 #include <map>
+#include <mutex>
 
 #include "anim/animation.hh"
 #include "anim/expression.hh"
@@ -741,6 +742,9 @@ static const Expression *compiled(const std::string &text, std::string *r_error)
     std::string error;
   };
   static std::map<std::string, Entry> cache;
+  /* (Copies of the document are worked out side by side: motion paths' places.) */
+  static std::mutex mutex;
+  const std::lock_guard lock(mutex);
   auto it = cache.find(text);
   if (it == cache.end()) {
     Entry e;

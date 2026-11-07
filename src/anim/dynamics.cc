@@ -1018,6 +1018,16 @@ void dynamics_clear_cache()
   g_live.clear();
 }
 
+bool dynamics_in(const Document &doc)
+{
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (flat->is_bone_layer() && has_dynamics(*flat)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void dynamics_update(Document &doc)
 {
   OANIM_PROFILE("dynamics_update");

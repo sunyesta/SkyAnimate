@@ -784,11 +784,13 @@ std::vector<EvaluatedDrawing> layers_evaluated_drawings(const Document &doc, con
   const ArmaturePoseCacheScope poses;
   const LayerIndexScope layer_index(doc);
   const void *index = layer_index_current();
+  const void *pose_cache = armature_pose_cache_current();
   std::vector<EvaluatedDrawing> out(layers.size());
   std::mutex mutex;
   std::set<std::thread::id> threads;
   parallel_for(layers.size(), 1, [&](size_t begin, size_t end) {
     const LayerIndexBorrow borrowed(index);
+    const ArmaturePoseCacheBorrow borrowed_poses(pose_cache);
     for (size_t i = begin; i < end; i++) {
       out[i].drawing = layer_evaluated_drawing(doc, *layers[i], render, &out[i].rigid);
     }

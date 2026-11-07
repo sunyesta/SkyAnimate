@@ -99,11 +99,13 @@ void shape_limits_update(Document &doc)
         }
         const Transform2D to = to_rig * layer_world_transform(doc, target->id);
         std::vector<float2> region;
+        OANIM_PROFILE("shape_limit_region");
         for (const float2 p : drawn_outline(layer_evaluated_drawing(doc, *target, false), c.shape_id)) {
           region.push_back(to.apply(p));
         }
         if (c.type == BoneConstraintType::LookAt) {
           /* The ball the pupil sits on: half the eye shape's width and height at frame 0, as drawn there. */
+          OANIM_PROFILE("shape_limit_reach");
           const Transform2D rest = layer_setup_world_transform(doc, rig.id).inverted() *
                                    layer_setup_world_transform(doc, target->id);
           float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
@@ -127,6 +129,7 @@ void shape_limits_update(Document &doc)
           continue;
         }
         std::vector<float2> carried;
+        OANIM_PROFILE("shape_limit_footprint");
         for (const Layer *l : document_layers_flat(doc)) {
           const bool picked = c.fit_layer != 0 ? l->id == c.fit_layer : l->parent_bone == b.id;
           if (!picked || !l->has_drawing() || !l->shown_in_render() || layer_armature(doc, l->id) != &rig) {
