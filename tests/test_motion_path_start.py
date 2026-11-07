@@ -125,5 +125,15 @@ assert abs(h["out_stub"][0] ** 2 + h["out_stub"][1] ** 2 - 1.0) < 1e-3, "a way, 
 # A key with a real slope has no stub.
 mid = next(h for h in path["handles"] if h["frame"] == 30) if any(h["frame"] == 30 for h in path["handles"]) else None
 assert mid is None or mid["out_stub"] is None
+# Broken (or Aligned) with handles of no length, as a key frozen sharp is: still shown short, or nothing of it would
+# show once picked.
+for mode in ("BROKEN", "ALIGNED"):
+    assert ops.anim.motion_path_handles_type(mode=mode) == {'FINISHED'}
+    k20 = next(k for k in ball.keyframes("position") if k["frame"] == 20)
+    assert k20["path_handles"] == mode and k20["path_in"] == (0.0, 0.0) and k20["path_out"] == (0.0, 0.0), k20
+    path = next(p for p in wm.motion_paths() if p["layer"] == ball.id and "point" not in p["label"])
+    h = next(h for h in path["handles"] if h["frame"] == 20)
+    assert h["in_stub"] is not None and h["out_stub"] is not None, (mode, "shown short too", h)
+assert ops.anim.motion_path_handles_type(mode="AUTO") == {'FINISHED'}
 
 print("Motion path start tests passed")

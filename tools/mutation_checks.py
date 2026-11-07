@@ -651,6 +651,10 @@ PENDING = [
     ('scripts/startup/oanim_keymap_default.py', '    ("Motion Path", "anim.motion_path_deselect_all", "A", {"alt": True}),\n', '', 'Alt A in the keymap: the path picks first', 'tests/test_motion_path_select_linked.py'),
     ('src/ops/motion_path_ops.cc', '      return path_edit_poll(C) && (!path_selected_keys(C).empty() || !C.wm->path_dots.empty() ||\n                                   path_handles_picked(C));', '      return path_edit_poll(C) && (!path_selected_keys(C).empty() || !C.wm->path_dots.empty());', 'Alt A with only handles picked', 'tests/test_motion_path_select_linked.py'),
     ('src/ops/motion_path_ops.cc', '      layers_deselect_keys(all);\n      C.wm->path_dots.clear();\n      C.wm->path_handle_picks.clear();\n      C.wm->path_timing_end = 0;', '      layers_deselect_keys(all);\n      C.wm->path_handle_picks.clear();\n      C.wm->path_timing_end = 0;', 'Alt A lets go of dots', 'tests/test_motion_path_select_linked.py'),
+    ('src/anim/motion_path.cc', '    tg.hi = std::max(tg.hi, std::min(tg.lo + 1, n - 1));\n', '    tg.hi = std::max(tg.hi, std::min(tg.lo + 1, n - 1));\n    tg.lo = 0;\n    tg.hi = n - 1;\n', 'path sculpt: the line only the path shown', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '          other = normalize(shaped) * -length(other);\n', '', "path sculpt: an end key's hidden handle turns with the other", 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '      if ((moved[i] || moved[i - 1]) && reshaped(i) && !tg.speeds[i].empty()) {', '      if ((moved[i] || moved[i - 1]) && !tg.speeds[i].empty()) {', 'path sculpt: a stretch off the path retimed only when reshaped', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '  return (out ? show_out : show_in) && length(end - key) < 1e-7f && motion_path_handle_stub(p, frame, out, r_direction);', '  return (out ? show_out : show_in) && length(end - key) < 1e-7f && false && motion_path_handle_stub(p, frame, out, r_direction);', 'stubs for no-length handles', 'tests/test_motion_path_start.py'),
 ]
 
 def build():

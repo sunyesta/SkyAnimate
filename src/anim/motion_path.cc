@@ -3133,6 +3133,13 @@ void motion_path_handle_sides(const MotionPath &p, int frame, bool &r_in, bool &
   r_out = frame < p.first + int(p.points.size()) - 1;
 }
 
+bool motion_path_handle_stub_shown(const MotionPath &p, int frame, bool out, float2 key, float2 end, float2 &r_direction)
+{
+  bool show_in = false, show_out = false;
+  motion_path_handle_sides(p, frame, show_in, show_out);
+  return (out ? show_out : show_in) && length(end - key) < 1e-7f && motion_path_handle_stub(p, frame, out, r_direction);
+}
+
 bool motion_path_handle_stub(const MotionPath &p, int frame, bool out, float2 &r_direction)
 {
   const int n = int(p.points.size()), at = frame - p.first;
@@ -4092,6 +4099,9 @@ struct PathSculptState {
     uint64_t layer = 0;
     /* The setup key's point (frame 0, shown), or -1: the brush reshapes its out handle but never moves it. */
     int pinned = -1;
+    /* The keys the line runs between (indices into `keys`): the path as shown, from the key it starts on to the one it
+     * ends on, so the line's ends are the path's (Smooth and Surface Smooth keep them, as a drawn curve's). */
+    size_t lo = 0, hi = 0;
   };
   std::vector<Target> targets;
 };
@@ -4190,9 +4200,25 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
     /* Frame 0's key (the setup) too while shown: only its out handle changes, its point pinned. */
     const auto shown = [&](int f) { return f >= first && f <= last; };
     const size_t n = tg.keys.size();
+    /* Only the path shown: from the last key on or before its first frame to the first on or after its last. The keys
+     * beyond (the setup's and those before, when the path shows a later stretch) aren't part of the line, or the
+     * path's first key would be a point in its middle, smoothed away from where the path starts. */
+    tg.lo = 0;
+    tg.hi = n - 1;
     for (size_t i = 0; i < n; i++) {
+      if (tg.keys[i].frame <= first) {
+        tg.lo = i;
+      }
+    }
+    for (size_t i = n; i-- > 0;) {
+      if (tg.keys[i].frame >= last) {
+        tg.hi = i;
+      }
+    }
+    tg.hi = std::max(tg.hi, std::min(tg.lo + 1, n - 1));
+    for (size_t i = tg.lo; i <= tg.hi; i++) {
       const Key<float2> &k = tg.keys[i];
-      if (i > 0) {
+      if (i > tg.lo) {
         const StretchPoints s = stretch_points(tg.keys, i);
         for (size_t c = 1; c + 1 < s.p.size(); c++) {
           const float along = tg.keys[i].path_controls[c - 1].x;
@@ -4202,10 +4228,10 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
         }
       }
       float2 in{0.0f, 0.0f}, out_h{0.0f, 0.0f};
-      if (i > 0) {
+      if (i > 0 && i > tg.lo) {
         in = map_vector(tg.maps[i], stretch_points(tg.keys, i).in.back());
       }
-      if (i + 1 < n) {
+      if (i + 1 < n && i < tg.hi) {
         out_h = map_vector(tg.maps[i], stretch_points(tg.keys, i + 1).out.front());
       }
       if (k.frame == 0 && shown(0)) {
@@ -4290,8 +4316,9 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
       keys[k].value = tg.keys[k].value + map_unvector(m, at - tg.pos[j]);
       in[k] = map_unvector(m, cp.handle_in);
       out[k] = map_unvector(m, cp.handle_out);
-      has_in[k] = k > 0;
-      has_out[k] = k + 1 < n;
+      /* The line's ends have one handle on it; the other shapes a stretch off the path, below. */
+      has_in[k] = k > tg.lo;
+      has_out[k] = k < tg.hi;
       moved[k] = true;
     }
     if (std::none_of(moved.begin(), moved.end(), [](bool b) { return b; })) {
@@ -4350,15 +4377,38 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
       key_in = has_in[k] ? in[k] * piece_share(k, false) : key_in;
       key_out = has_out[k] ? out[k] * piece_share(k + 1, true) : key_out;
       (void)unused;
+      /* A key the line ends on whose handles go in line: the one off the path turns with the one the brush shaped,
+       * keeping its length, as the other side of a smooth point. */
+      if (keys[k].path_handles != PathHandles::Broken && has_in[k] != has_out[k]) {
+        const float2 shaped = has_out[k] ? key_out : key_in;
+        float2 &other = has_out[k] ? key_in : key_out;
+        if (length(shaped) > 1e-9f && length(other) > 1e-9f) {
+          other = normalize(shaped) * -length(other);
+        }
+      }
       keys[k].path_in = key_in;
       keys[k].path_out = key_out;
       if (keys[k].path_handles == PathHandles::Auto) {
         keys[k].path_handles = PathHandles::Aligned;
       }
     }
-    /* Each stretch reshaped keeps its timing: the dots stay at the same share of the way along it. */
+    /* Each stretch reshaped keeps its timing: the dots stay at the same share of the way along it. One off the path
+     * only when its shape changed (its end key moved, or its handle turned with the other). */
+    const auto reshaped = [&](size_t i) {
+      if (i > tg.lo && i <= tg.hi) {
+        return true;
+      }
+      float2 was_in, was_out, now_in, now_out, unused;
+      key_path_handles(tg.keys, i - 1, unused, was_out);
+      key_path_handles(keys, i - 1, unused, now_out);
+      key_path_handles(tg.keys, i, was_in, unused);
+      key_path_handles(keys, i, now_in, unused);
+      return length(keys[i - 1].value - tg.keys[i - 1].value) > 1e-7f ||
+             length(keys[i].value - tg.keys[i].value) > 1e-7f || length(now_out - was_out) > 1e-7f ||
+             length(now_in - was_in) > 1e-7f;
+    };
     for (size_t i = 1; i < n; i++) {
-      if ((moved[i] || moved[i - 1]) && !tg.speeds[i].empty()) {
+      if ((moved[i] || moved[i - 1]) && reshaped(i) && !tg.speeds[i].empty()) {
         keys[i].interp = Interp::Custom;
         keys[i].speeds = tg.speeds[i];
       }

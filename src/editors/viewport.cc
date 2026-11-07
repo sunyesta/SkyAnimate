@@ -2329,11 +2329,8 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         if (p.target.same(target) && f >= p.first && f - p.first < int(p.points.size())) {
           h.drawn = motion_path_drawn(p, f, h.key);
           motion_path_handle_sides(p, f, show_in, show_out);
-          if (h.mode == PathHandles::Auto) {
-            h.stub_in = show_in && length(h.in - h.key) < 1e-7f && motion_path_handle_stub(p, f, false, h.stub_in_way);
-            h.stub_out = show_out && length(h.out - h.key) < 1e-7f &&
-                         motion_path_handle_stub(p, f, true, h.stub_out_way);
-          }
+          h.stub_in = motion_path_handle_stub_shown(p, f, false, h.key, h.in, h.stub_in_way);
+          h.stub_out = motion_path_handle_stub_shown(p, f, true, h.key, h.out, h.stub_out_way);
         }
       }
       h.first = !show_in || (length(h.in - h.key) < 1e-7f && !h.stub_in);

@@ -139,6 +139,47 @@ for brush in ("SMOOTH", "SURFACE_SMOOTH"):
     assert frames(w) == [0] + sorted(wiggly), (brush, frames(w))
     assert close(where(w, 10), wiggly[10]) and close(where(w, 30), wiggly[30]), (brush, "ends outside, as they were")
 
+# --- The path's ends are the line's: a path showing a later stretch (keys before and after it) keeps its ends --------
+# The brush works on the path as shown, as the Sculpt tool on a drawn curve: Smooth and Surface Smooth keep its first
+# and last keys where they are, though there are keys beyond them (the line ran on through those, and the path's first
+# key, a point in its middle then, was smoothed off where the path starts).
+long_wiggle = {10 + 2 * i: (0.1 * i, 0.06 if i % 2 else -0.06) for i in range(21)}
+for brush in ("SMOOTH", "SURFACE_SMOOTH"):
+    w = fresh_layer(long_wiggle, interp="SMOOTH")
+    doc.path_before, doc.path_after = 5, 5
+    doc.frame_current = 30
+    assert wm.motion_path_range() == (20, 40), wm.motion_path_range()
+    outside = {f: key(w, f)["value"] for f in long_wiggle if f < 20 or f > 40}
+    for end in (20, 40):
+        x, y = long_wiggle[end]
+        points = ";".join(f"{x},{y}" for _ in range(6))
+        assert ops.anim.motion_path_stroke(brush=brush, points=points, radius="0.35", strength="1",
+                                           sensitivity="1") == {'FINISHED'}, brush
+        assert close(key(w, end)["value"], (x, y), 1e-5), (brush, "the path's end stays", end, key(w, end)["value"])
+    assert key(w, 22)["value"] != (long_wiggle[22][0], long_wiggle[22][1]), (brush, "the rest smoothed")
+    assert all(close(key(w, f)["value"], v, 1e-6) for f, v in outside.items()), (brush, "keys off the path stay")
+    assert frames(w) == [0] + sorted(long_wiggle), (brush, frames(w))
+    # An end key's handles in line: the one off the path turns with the one the brush shaped.
+    k20 = key(w, 20)
+    hi, ho = k20["path_in"], k20["path_out"]
+    assert k20["path_handles"] == "ALIGNED", k20
+    assert abs(hi[0] * ho[1] - hi[1] * ho[0]) < 1e-6 * (1 + math.hypot(*hi) * math.hypot(*ho)), (brush, "in line", k20)
+    assert hi[0] * ho[0] + hi[1] * ho[1] < 0, (brush, "opposite", k20)
+# Broken, the end key's handle off the path stays, and so does its stretch (its timing untouched).
+w = fresh_layer(long_wiggle, interp="SMOOTH")
+doc.frame_current = 30
+doc.path_before, doc.path_after = 5, 5
+assert ops.anim.motion_path_select(frame="20", layer=str(w.id)) == {'FINISHED'}
+assert ops.anim.motion_path_handles_type(mode="BROKEN") == {'FINISHED'}
+was = key(w, 20)
+x, y = long_wiggle[20]
+assert ops.anim.motion_path_stroke(brush="SURFACE_SMOOTH", points=";".join(f"{x},{y}" for _ in range(6)), radius="0.35",
+                                   strength="1", sensitivity="1") == {'FINISHED'}
+now = key(w, 20)
+assert now["path_out"] != was["path_out"], ("the handle on the path reshaped", was, now)
+assert close(now["path_in"], was["path_in"], 1e-6) and now["interp"] == "SMOOTH", ("the stretch before as it was", now)
+doc.path_before, doc.path_after = 40, 40
+
 # --- A control point rides with the path it shapes ----------------------------------------------------------------
 c = fresh_layer({10: (0.0, 0.0), 20: (1.0, 0.0)})
 doc.frame_current = 15
