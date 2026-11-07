@@ -21,9 +21,14 @@
  * It works where the points show (posed by the bones; document space) and stores the result, so on any
  * frame but 0 it poses the drawing (auto-key keys it) and on frame 0 it edits the setup. With X mirror, a
  * layer without a side is sculpted on both sides of its own axis at once (each dab also made mirrored, as
- * Blender's symmetry), and a side's layer passes its change to its partner (Ear_L into Ear_R), widths too. It never
- * adds or removes points, works on the curves as the detail level being edited shows them (finer detail rides
- * along), and with Selected Only leaves unselected points and their handles where they are. */
+ * Blender's symmetry), and a side's layer passes its change to its partner (Ear_L into Ear_R), widths too. Without
+ * Dyntopo it never adds or removes points; it works on the curves as the detail level being edited shows them (finer detail rides
+ * along), and with Selected Only leaves unselected points and their handles where they are.
+ *
+ * Dyntopo (Blender's dynamic topology, for lines): on a layer whose drawing has no animation, the stroke adds a point
+ * wherever a segment can't follow the sculpted line to within the Detail Size (Subdivide), and once the stroke ends
+ * takes out every point on the line it touched that the line keeps its shape without (Collapse), so it ends with
+ * as few points as hold the shape. The stroke's change is the drawing's own (its setup pose) on any frame: no keys. */
 
 #include <cstdint>
 #include <map>
@@ -52,6 +57,12 @@ const char *sculpt_brush_name(SculptBrush brush);
 const char *sculpt_falloff_id(SculptFalloff falloff);
 bool sculpt_falloff_from_id(const std::string &id, SculptFalloff *r_falloff);
 
+/* Dyntopo's Refine Method, as Blender's: add points, take them out, or both. */
+enum class SculptRefine { Subdivide, Collapse, SubdivideCollapse };
+const char *sculpt_refine_id(SculptRefine refine);
+const char *sculpt_refine_name(SculptRefine refine);
+bool sculpt_refine_from_id(const std::string &id, SculptRefine *r_refine);
+
 /* How much of a brush's effect reaches `t` of the way out from its middle (0 to 1). */
 float sculpt_falloff(SculptFalloff falloff, float t);
 
@@ -79,6 +90,10 @@ struct SculptDab {
   /* Surface Smooth's Lump Sensitivity: 0-1 (no top; 0 takes out nothing), how long a lump it takes out, the same
    * on any canvas whatever its resolution, the brush's size or the zoom (see sculpt_surface_tolerance). */
   float surface_sensitivity = 0.25f;
+  /* Dyntopo: how far the line may stray from the shape sculpted (document units; the tool's Detail Size is in screen
+   * pixels), 0 for off; and its Refine Method. Only on layers sculpt_dyntopo_blocked lets through. */
+  float detail = 0.0f;
+  SculptRefine refine = SculptRefine::SubdivideCollapse;
 };
 
 /* The stroke's samples of the curves being sculpted (see above), made when it starts. */
@@ -114,6 +129,9 @@ struct SculptStroke {
     /* Surface Smooth: where each point and its handles go, the line fitted when the stroke started
      * (sculpt_surface_target; document space, handles as offsets). */
     std::vector<float2> target_pos, target_in, target_out;
+    /* Dyntopo: each point the stroke's fitting reached (one of its segments was fitted again), which Collapse may take
+     * out when the stroke ends. */
+    std::vector<bool> touched;
   };
   struct Layer {
     uint64_t id = 0;
@@ -125,6 +143,10 @@ struct SculptStroke {
      * (document space). */
     bool mirror_self = false;
     Transform2D mirror;
+    /* Dyntopo works on this layer, and how many points its drawing had when the stroke started (those after are the
+     * stroke's own). */
+    bool dyntopo = false;
+    size_t points_before = 0;
   };
   std::vector<Layer> layers;
   bool empty() const { return layers.empty(); }
@@ -156,5 +178,14 @@ inline float sculpt_surface_tolerance(const SculptDab &dab)
 /* Applies one dab to the stroke's samples and fits the curves to them. Returns how many points changed
  * (moved, or their handles or width did). */
 int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab);
+/* The stroke is over: with Dyntopo, Collapse takes out the points the line keeps its shape without (to within
+ * `dab.detail`), and the drawings it worked on take their new shape as their setup pose. Returns how many points went. */
+int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab);
+/* Why Dyntopo can't work on layer `id` (empty: it can): not a drawing of its own, a reference or referenced, detail
+ * levels, X Mirror on (`mirror_x`), or its points and handles keyed (in the main timeline or an action). */
+std::string sculpt_dyntopo_blocked(const Document &doc, uint64_t id, bool mirror_x);
+/* Simplify: on each of `layers` Dyntopo works on, every point the drawing keeps its shape without (to within `detail`,
+ * document units) goes, as Collapse does after a stroke. Returns how many went. */
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float detail);
 
 }  // namespace oanim

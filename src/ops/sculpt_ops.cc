@@ -76,6 +76,13 @@ static OpStatus stroke_exec(Context &C)
   dab.mirror_x = op_has_arg(C, "mirror") ? op_arg_bool(C, "mirror") : ts.mirror_x;
   dab.surface_sensitivity = op_has_arg(C, "sensitivity") ? op_arg_float(C, "sensitivity", 0.25f)
                                                          : ts.sculpt_surface_sensitivity;
+  /* Dyntopo: detail= how far the line may stray (document units; 0 or none: off), refine= its Refine Method. */
+  dab.detail = std::max(op_arg_float(C, "detail", 0.0f), 0.0f);
+  dab.refine = ts.sculpt_refine;
+  if (op_has_arg(C, "refine") && !sculpt_refine_from_id(op_arg(C, "refine"), &dab.refine)) {
+    report(ReportType::Error, "refine= is one of SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE");
+    return OpStatus::Cancelled;
+  }
   const std::vector<float2> path = parse_path(op_arg(C, "path"));
   if (path.empty()) {
     report(ReportType::Error, "path= gives the stroke's points: \"x,y;x,y;...\" (document space)");
@@ -98,6 +105,9 @@ static OpStatus stroke_exec(Context &C)
       continue;
     }
     changed += sculpt_stroke_dab(doc, stroke, dab);
+  }
+  if (changed > 0) {
+    changed += sculpt_stroke_end(doc, stroke, dab);
   }
   if (!kept.empty()) {
     animation_record(doc);
@@ -128,8 +138,41 @@ void sculpt_operators_register()
       "document units, strength=, falloff= SMOOTH, SPHERE or CONSTANT, invert=1 (Ctrl), selected_only=1, "
       "mirror=1 (X mirror), amount= how much of a full step each point of the path is for the brushes that work "
       "on while held (1), sensitivity= Surface Smooth's Lump Sensitivity, 0-1 (default: the tool's), "
-      "keep_poses=1 on frame 0",
+      "keep_poses=1 on frame 0, detail= Dyntopo's Detail Size in document units (points added and taken out where "
+      "the line needs them, on drawings without animation; none: off), refine= SUBDIVIDE, COLLAPSE or "
+      "SUBDIVIDE_COLLAPSE (default: the tool's)",
       OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing, stroke_exec);
+
+  add("sculpt.simplify", "Simplify",
+      "Take out every point the drawings being edited keep their shape without, to within detail= (document units), "
+      "as Dyntopo's Collapse does after a stroke: never an end, a corner, a point two curves share or one with "
+      "weights of its own. Only on drawings without animation", OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing,
+      [](Context &C) {
+        const float detail = op_arg_float(C, "detail", 0.0f);
+        if (!(detail > 0.0f)) {
+          report(ReportType::Error, "detail= is how far the line may stray, in document units (more than 0)");
+          return OpStatus::Cancelled;
+        }
+        std::vector<uint64_t> ids;
+        std::string blocked;
+        for (const Layer *l : editable_layers(C)) {
+          const std::string why = sculpt_dyntopo_blocked(*C.document, l->id, false);
+          if (why.empty()) {
+            ids.push_back(l->id);
+          }
+          else if (blocked.empty()) {
+            blocked = l->name + ": " + why;
+          }
+        }
+        const int gone = ids.empty() ? 0 : sculpt_simplify(*C.document, ids, detail);
+        if (gone == 0) {
+          report(ReportType::Warning, blocked.empty() ? std::string("Nothing to simplify")
+                                                      : "Nothing simplified (" + blocked + ")");
+          return OpStatus::Cancelled;
+        }
+        report(ReportType::Info, "Simplified: " + std::to_string(gone) + (gone == 1 ? " point" : " points") + " gone");
+        return OpStatus::Finished;
+      });
 
   add("sculpt.brush_set", "Set Sculpt Brush",
       "Pick brush= (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST, SURFACE_SMOOTH): its built-in preset", 0, nullptr, [](Context &C) {

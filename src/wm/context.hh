@@ -198,6 +198,11 @@ struct ToolSettings {
   bool sculpt_selected_only = false;
   /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
   float sculpt_surface_sensitivity = 0.25f;
+  /* Dyntopo (the header's, beside mirror): points added and taken out as a stroke needs them, on drawings without
+   * animation (SculptDab::detail). Detail Size: how far the line may stray from the shape sculpted, in screen pixels. */
+  bool sculpt_dyntopo = false;
+  float sculpt_detail_size = 2.0f;
+  SculptRefine sculpt_refine = SculptRefine::SubdivideCollapse;
   /* The Motion Path tool's brush (its shelf), and each brush's own radius in screen pixels and strength (Shift's
    * brush, path_brush_shifted, uses its own). */
   PathBrush path_brush = PathBrush::Edit;

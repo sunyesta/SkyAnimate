@@ -606,8 +606,15 @@ def sculpt_settings():
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),
     falloff (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength, selected_only and
     surface_sensitivity (Surface Smooth's Lump Sensitivity: 0-1 with no top, how big a lump it takes out; 1 is a
-    tenth of the canvas's height, whatever its resolution)."""
+    tenth of the canvas's height, whatever its resolution), and Dyntopo's: dyntopo (on or off), detail_size (how far
+    the line may stray from the shape sculpted, screen pixels) and refine (SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE)."""
     return _oanim.sculpt_settings()
+
+
+def sculpt_dyntopo_blocked(layer):
+    """Why Dyntopo can't work on the layer (its id): "" when it can, else the reason the header gives (a reference,
+    detail levels, X Mirror on, its points or handles keyed in the main timeline or an action...)."""
+    return _oanim.sculpt_dyntopo_blocked(int(layer))
 
 
 def set_sculpt(**values):

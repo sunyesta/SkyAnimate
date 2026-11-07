@@ -1898,7 +1898,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["pressure_strength"] = ts.sculpt_pressure_strength;
     d["selected_only"] = ts.sculpt_selected_only;
     d["surface_sensitivity"] = ts.sculpt_surface_sensitivity;
+    d["dyntopo"] = ts.sculpt_dyntopo;
+    d["detail_size"] = ts.sculpt_detail_size;
+    d["refine"] = sculpt_refine_id(ts.sculpt_refine);
     return d;
+  });
+  m.def("sculpt_dyntopo_blocked", [](uint64_t id) {
+    const Context &C = current_context();
+    return sculpt_dyntopo_blocked(*C.document, id, C.wm->tool_settings.mirror_x);
   });
   m.def("set_sculpt", [](const py::dict &values) {
     ToolSettings &ts = current_context().wm->tool_settings;
@@ -1931,6 +1938,17 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
       else if (key == "surface_sensitivity") {
         ts.sculpt_surface_sensitivity = std::max(value.cast<float>(), 0.0f);
+      }
+      else if (key == "dyntopo") {
+        ts.sculpt_dyntopo = value.cast<bool>();
+      }
+      else if (key == "detail_size") {
+        ts.sculpt_detail_size = std::clamp(value.cast<float>(), 0.1f, 50.0f);
+      }
+      else if (key == "refine") {
+        if (!sculpt_refine_from_id(py::str(value), &ts.sculpt_refine)) {
+          throw py::value_error("refine is one of SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE");
+        }
       }
       else {
         throw py::value_error("no sculpt setting '" + key + "'");

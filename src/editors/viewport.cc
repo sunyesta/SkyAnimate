@@ -5873,6 +5873,121 @@ static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float widt
   dl->ChannelsMerge();
 }
 
+/* The Sculpt tool's Dyntopo, beside mirror as Blender's: the toggle, and its popover (Detail Size, Refine Method,
+ * Simplify). Off where it can't work on the active layer, saying why. */
+static float dyntopo_width(float h, float arrow_w)
+{
+  return ImGui::CalcTextSize("Dyntopo").x + ImGui::GetStyle().FramePadding.x * 2.0f + h * 0.9f + 1.0f + arrow_w;
+}
+
+static void dyntopo_buttons(Area &area, Context &C, float h, float arrow_w)
+{
+  ToolSettings &ts = C.wm->tool_settings;
+  const Layer *active = document_active_layer(*C.document);
+  const std::string blocked = active ? sculpt_dyntopo_blocked(*C.document, active->id, ts.mirror_x) : "no layer";
+  const bool works = blocked.empty();
+  const ImU32 ink = IM_COL32(0xe6, 0xe6, 0xe6, works || !ts.sculpt_dyntopo ? 255 : 120);
+  /* A check box in the button, as Blender's. */
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  if (ts.sculpt_dyntopo) {
+    toggle_on_colors_push();
+  }
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x + h * 0.45f,
+                                                         ImGui::GetStyle().FramePadding.y));
+  if (ImGui::Button("Dyntopo##dyntopo")) {
+    ts.sculpt_dyntopo = !ts.sculpt_dyntopo;
+  }
+  ImGui::PopStyleVar();
+  if (ts.sculpt_dyntopo) {
+    ImGui::PopStyleColor(3);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    std::string tip = "Dynamic Topology\nA stroke adds points where the line can't follow the shape you sculpt, then "
+                      "takes out\nthe ones it keeps its shape without. Only on drawings without animation; the "
+                      "stroke makes no keys";
+    if (!works) {
+      tip += "\n\nNot on " + (active ? active->name : std::string("this layer")) + ": " + blocked;
+    }
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+  {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const float box = h * 0.42f;
+    const ImVec2 b0 = at + ImVec2(ImGui::GetStyle().FramePadding.x * 0.6f, (h - box) * 0.5f);
+    dl->AddRect(b0, b0 + ImVec2(box, box), ink, 2.0f, 0, 1.2f);
+    if (ts.sculpt_dyntopo) {
+      dl->AddLine(b0 + ImVec2(box * 0.2f, box * 0.55f), b0 + ImVec2(box * 0.42f, box * 0.78f), ink, 1.6f);
+      dl->AddLine(b0 + ImVec2(box * 0.42f, box * 0.78f), b0 + ImVec2(box * 0.82f, box * 0.22f), ink, 1.6f);
+    }
+  }
+  ImGui::SameLine(0.0f, 1.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+  const ImVec2 menu_at = ImGui::GetCursorScreenPos();
+  if (ImGui::Button("##dyntopo_menu", ImVec2(arrow_w, h))) {
+    ImGui::OpenPopup("##dyntopo_popover");
+  }
+  ImGui::PopStyleVar();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Dyntopo settings");
+  }
+  const ImVec2 tip = menu_at + ImVec2(arrow_w * 0.5f, h * 0.5f);
+  ImGui::GetWindowDrawList()->AddTriangleFilled(tip + ImVec2(-3.0f, -1.5f), tip + ImVec2(3.0f, -1.5f),
+                                                tip + ImVec2(0.0f, 2.0f), IM_COL32(0xe6, 0xe6, 0xe6, 255));
+  ImGui::SetNextWindowPos(ImVec2(menu_at.x, menu_at.y + h + 2.0f), ImGuiCond_Appearing);
+  if (!ImGui::BeginPopup("##dyntopo_popover")) {
+    return;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::CloseCurrentPopup();
+  }
+  const float label_w = ImGui::CalcTextSize("Refine Method").x + h;
+  const float field_w = h * 7.0f;
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("Detail Size");
+  ImGui::SameLine(label_w);
+  ImGui::SetNextItemWidth(field_w);
+  ImGui::DragFloat("##detail_size", &ts.sculpt_detail_size, 0.05f, 0.1f, 50.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("How far the line may stray from the shape you sculpt, in screen pixels: smaller keeps\nmore "
+                      "points, so zooming in gives finer detail (Blender's Relative Detail)");
+  }
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("Refine Method");
+  ImGui::SameLine(label_w);
+  ImGui::SetNextItemWidth(field_w);
+  if (ImGui::BeginCombo("##refine", sculpt_refine_name(ts.sculpt_refine))) {
+    static const char *const tips[3] = {"Only add points where the line needs them",
+                                        "Only take out the points the line keeps its shape without, when the stroke "
+                                        "ends",
+                                        "Both: add points while sculpting, take out what isn't needed after"};
+    for (int i = 0; i < 3; i++) {
+      if (ImGui::Selectable(sculpt_refine_name(SculptRefine(i)), ts.sculpt_refine == SculptRefine(i))) {
+        ts.sculpt_refine = SculptRefine(i);
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s", tips[i]);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::Separator();
+  if (ImGui::Button("Simplify", ImVec2(label_w + field_w - ImGui::GetStyle().ItemSpacing.x, 0.0f))) {
+    char detail[32];
+    std::snprintf(detail, sizeof(detail), "%g", double(ts.sculpt_detail_size / std::max(area.view_zoom, 1e-9f)));
+    operator_call(C, "sculpt.simplify", {{"detail", detail}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Take out every point the drawings being edited keep their shape without, to within the "
+                      "Detail Size\nat this zoom (never an end, a corner, or a point two curves share)");
+  }
+  if (!works) {
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + label_w + field_w);
+    ImGui::TextDisabled("Not on %s: %s", active ? active->name.c_str() : "this layer", blocked.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::EndPopup();
+}
+
 static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
 {
   Document &doc = *C.document;
@@ -6056,8 +6171,10 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   const float axis_w = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
   const float mirror_w = h + 2.0f + axis_w * 2.0f + 1.0f + h * 0.6f;
   const float proportional_w = h + 1.0f + h + arrow_w * 0.6f + h * 0.6f;
+  const bool sculpting = ts.tool == Tool::Sculpt;
+  const float dyntopo_w = sculpting ? dyntopo_width(h, arrow_w) + h * 0.6f : 0.0f;
   ImGui::SameLine();
-  const float middle = origin.x + (width - mirror_w - snap_w - proportional_w) * 0.5f;
+  const float middle = origin.x + (width - mirror_w - dyntopo_w - snap_w - proportional_w) * 0.5f;
   if (ImGui::GetCursorScreenPos().x < middle) {
     ImGui::SetCursorScreenPos(ImVec2(middle, ImGui::GetCursorScreenPos().y));
   }
@@ -6089,6 +6206,10 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   if (header_toggle("Y", ts.mirror_y, "Mirror Y\nEdits mirror across the layer's horizontal axis")) {
     ts.mirror_y = !ts.mirror_y;
     C.undo->mark_changed();
+  }
+  if (sculpting) {
+    ImGui::SameLine(0.0f, h * 0.6f);
+    dyntopo_buttons(area, C, h, arrow_w);
   }
   ImGui::SameLine(0.0f, h * 0.6f);
   if (header_toggle("Snap", ts.snap_grid || ts.snap_points, "Snapping options")) {
@@ -8689,6 +8810,8 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   dab.selected_only = ts.sculpt_selected_only;
   dab.mirror_x = ts.mirror_x;
   dab.surface_sensitivity = ts.sculpt_surface_sensitivity;
+  dab.detail = ts.sculpt_dyntopo ? std::max(ts.sculpt_detail_size, 0.1f) / std::max(view.zoom, 1e-9f) : 0.0f;
+  dab.refine = ts.sculpt_refine;
   const std::vector<uint64_t> ids = editable_layer_ids(C);
 
   if (hovered || g_sculpt.active) {
@@ -8765,6 +8888,10 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (g_sculpt.changed) {
+      /* Dyntopo: the points the line keeps its shape without go, with the brush the stroke began with. */
+      SculptDab ended = dab;
+      ended.brush = g_sculpt.smoothing ? SculptBrush::Smooth : ts.sculpt_brush;
+      sculpt_stroke_end(doc, g_sculpt.stroke, ended);
       if (!g_sculpt.kept.empty()) {
         animation_record(doc);
         keep_poses(doc, g_sculpt.kept);
