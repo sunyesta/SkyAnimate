@@ -140,4 +140,38 @@ for f in (10, 30):
     assert bend(layer, f) < 0.05, ("the action still turns the in by itself", f, bend(layer, f))
 doc.action = ""
 
+# Setup handles with no length that grow out in the keys (in line on frame 20): aligned, they stay in line on every frame,
+# frame 20 showing the handles it did. The point picked, or only the out handle (the in has nothing to follow).
+for pick in ("POINT", "OUT"):
+    ops.wm.read_homefile()
+    doc.auto_key = True
+    doc.frame_current = 0
+    layer = L.active
+    layer.add_curve([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)])
+    ops.mesh.select_none()
+    layer.select_points([1])
+    assert ops.mesh.handles_unalign() == {'FINISHED'}
+    q = layer.points[1][:2]
+    layer.move_handle(0, 1, "IN", q)
+    layer.move_handle(0, 1, "OUT", q)
+    doc.frame_current = 20
+    layer.move_handle(0, 1, "IN", (q[0] - 0.3, q[1] + 0.1))
+    layer.move_handle(0, 1, "OUT", (q[0] + 0.3, q[1] - 0.1))
+    doc.frame_current = 21
+    was = handles(layer, 20)
+    assert bend(layer, 20) < 0.05, ("set up: in line on frame 20", bend(layer, 20))
+    doc.frame_current = 0
+    ops.mesh.select_none()
+    if pick == "POINT":
+        layer.select_points([1])
+    else:
+        layer.select_handle(0, 1, "OUT")
+    assert ops.mesh.handles_align() == {'FINISHED'}
+    for f in (5, 10, 20, 30):
+        assert bend(layer, f) < 0.05, ("zero setups: aligned on every frame", pick, f, bend(layer, f))
+    now = handles(layer, 20)
+    assert max(math.dist(a, b) for a, b in zip(was, now)) < 1e-4, ("frame 20 kept its handles", pick, was, now)
+    i0, o0 = handles(layer, 0)
+    assert math.hypot(*i0) < 1e-4 and math.hypot(*o0) < 1e-4, ("frame 0 still shows no handles", i0, o0)
+
 print("test_handles_align_keys: all passed")

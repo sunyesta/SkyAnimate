@@ -398,6 +398,23 @@ bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
       new_out = -normalize(back) * lo;
     }
   }
+  else {
+    /* A setup handle with no length points nowhere: its keys' turns are measured from angle 0, the out's as well as the
+     * in's (handle_from_change), so the same turn would fold the two onto each other. It takes a length too small to
+     * see, in line with the other (or the in along angle 0, as its turns were measured), its keys measured again from
+     * it below so each frame shows the handle it did. */
+    const float tiny = 1e-5f;
+    if (li > 1e-9f) {
+      new_out = -si / li * tiny;
+    }
+    else if (lo > 1e-9f) {
+      new_in = -so / lo * tiny;
+    }
+    else {
+      new_in = float2(tiny, 0.0f);
+      new_out = float2(-tiny, 0.0f);
+    }
+  }
   std::set<std::string> names;
   for (const auto *ch : {&ci, &co}) {
     for (const auto &[name, keys] : ch->actions) {
@@ -407,6 +424,35 @@ bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
   const bool keyed = ci.animated() || co.animated() || !names.empty();
   if (!keyed) {
     return false;
+  }
+  if (li <= 1e-9f || lo <= 1e-9f) {
+    for (const bool in : {true, false}) {
+      const float2 was = in ? si : so, now = in ? new_in : new_out;
+      if (now == was) {
+        continue;
+      }
+      Channel<float2> &ch = in ? ci : co;
+      if (!ch.animated() && ch.actions.empty()) {
+        /* Never keyed: the handle is its setup. */
+        (in ? cp.handle_in : cp.handle_out) = now;
+        (in ? cp.change_in : cp.change_out) = {};
+        ch.last = {};
+        ch.has_last = true;
+        continue;
+      }
+      const auto remeasure = [&](std::vector<Key<float2>> &keys) {
+        float near_turn = 0.0f;
+        for (Key<float2> &k : keys) {
+          /* Frame 0 is the setup itself: no change from it. */
+          k.value = k.frame == 0 ? float2() : handle_change(now, handle_from_change(was, k.value), near_turn);
+          near_turn = k.value.x;
+        }
+      };
+      remeasure(ch.keys);
+      for (auto &[name, keys] : ch.actions) {
+        remeasure(keys);
+      }
+    }
   }
   /* Keys with no setup of their own yet: the handle as it is. */
   cp.setup_in = new_in;
