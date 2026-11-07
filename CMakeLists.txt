@@ -499,6 +499,8 @@ add_test(NAME path_timing_threes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_path_timing_threes.py)
 add_test(NAME handles_align_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles_align_keys.py)
+add_test(NAME clear_handles
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_clear_handles.py)
 add_test(NAME profile
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_profile.py)
 add_test(NAME deform_speed

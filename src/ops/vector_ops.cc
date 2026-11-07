@@ -425,6 +425,18 @@ void vector_operators_register()
                   const CurvePoint &old = was.curves[c].points[i];
                   cp.handle_in = blend(old.handle_in, cp.handle_in, false);
                   cp.handle_out = blend(old.handle_out, cp.handle_out, false);
+                  /* One handle of an aligned point cleared by itself: the other turns to stay in line, as a handle
+                   * dragged by itself turns it (curve_point_move_handle). */
+                  const bool point = d.points[size_t(cp.point)].selected;
+                  if (!positions && cp.aligned && !point && cp.select_in != cp.select_out &&
+                      d.points[size_t(cp.point)].detail.level == 0)
+                  {
+                    const float2 &moved = cp.select_in ? cp.handle_in : cp.handle_out;
+                    float2 &other = cp.select_in ? cp.handle_out : cp.handle_in;
+                    if (moved != (cp.select_in ? old.handle_in : old.handle_out) && length(moved) > 1e-9f) {
+                      other = -normalize(moved) * length(other);
+                    }
+                  }
                 }
               }
             }
