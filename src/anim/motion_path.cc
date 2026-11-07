@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -3553,6 +3554,60 @@ bool motion_path_pick_valid(const Document &doc, const MotionPathHandlePick &pic
   return motion_path_handles(doc, pick.target, pick.frame, key, in, out);
 }
 
+float2 motion_path_handles_pivot(const Document &doc, const std::vector<MotionPath> &paths,
+                                 const std::vector<MotionPathHandlePick> &picks)
+{
+  float2 middle{0.0f, 0.0f};
+  int points = 0;
+  std::optional<float2> first_point;
+  for (const MotionPathHandlePick &hp : picks) {
+    if (hp.control < 0) {
+      continue;
+    }
+    const MotionPath *path = nullptr;
+    for (const MotionPath &p : paths) {
+      if (p.target.same(hp.target)) {
+        path = &p;
+      }
+    }
+    /* (Where they are, not their tips.) */
+    for (const MotionPathControl &mc :
+         motion_path_controls(doc, hp.target, [](const MotionPathControl &) { return false; }))
+    {
+      if (mc.end != hp.frame || mc.index != hp.control) {
+        continue;
+      }
+      const float2 at = path ? motion_path_drawn(*path, mc.near_frame, mc.curve).apply(mc.at) : mc.at;
+      if (hp.control_handle == 0) {
+        middle = middle + at;
+        points++;
+      }
+      else if (!first_point) {
+        first_point = at;
+      }
+    }
+  }
+  if (points) {
+    return middle * (1.0f / float(points));
+  }
+  if (picks.empty()) {
+    return middle;
+  }
+  if (picks.front().control >= 0 && first_point) {
+    return *first_point;
+  }
+  /* A key handle's key: its dot as drawn, else where it is on its frame. */
+  const MotionPathHandlePick &first = picks.front();
+  for (const MotionPath &p : paths) {
+    if (p.target.same(first.target) && first.frame >= p.first && first.frame - p.first < int(p.points.size())) {
+      return p.points[size_t(first.frame - p.first)];
+    }
+  }
+  float2 at{0.0f, 0.0f};
+  motion_path_position_at(doc, first.target, first.frame, at);
+  return at;
+}
+
 int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHandlePick> &picks, char kind,
                                   float2 offset, float angle, float factor)
 {
@@ -3748,6 +3803,8 @@ bool motion_path_place(Document &doc, const MotionPathTarget &target, float2 at)
       return false;
     }
     own_values_set(held, target, v);
+    /* Its own constraints left out, as on its path: a pupil's Look At would stop it short of where it is drawn going. */
+    own_constraints_off(held, target);
     held.frame_current = doc.frame_current;
     const Document *outer = g_shown;
     g_shown = nullptr;

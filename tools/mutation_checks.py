@@ -625,6 +625,10 @@ PENDING = [
     ('src/anim/motion_path.cc', '  if (count < 2 || dynamics_in(doc)) {\n    Document scratch;', '  if (true) {\n    Document scratch;', 'path places are worked out side by side', 'tests/test_motion_path_places.py'),
     ('src/ops/file_ops.cc', '  C.wm->path_dots.clear();\n  C.wm->path_handle_picks.clear();\n', '  C.wm->path_handle_picks.clear();\n', "the old document's dots let go", 'tests/test_motion_path_own_motion.py'),
     ('src/ops/file_ops.cc', '  C.wm->path_dots.clear();\n  C.wm->path_handle_picks.clear();\n', '  C.wm->path_dots.clear();\n', "the old document's path handle picks let go", 'tests/test_motion_path_own_motion.py'),
+    ('src/anim/motion_path.cc', '    own_constraints_off(held, target);\n    held.frame_current = doc.frame_current;\n', '    held.frame_current = doc.frame_current;\n', 'a key dragged on an Own Motion path goes past its own constraints', 'tests/test_motion_path_own_motion.py'),
+    ('src/anim/motion_path.cc', '  if (points) {\n    return middle * (1.0f / float(points));', '  if (false) {\n    return middle * (1.0f / float(points));', 'R S about the control points picked, not their key', 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/motion_path.cc', '  if (picks.front().control >= 0 && first_point) {', '  if (false) {', "a control point handle's R S about its point", 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/motion_path.cc', '      const float2 at = path ? motion_path_drawn(*path, mc.near_frame, mc.curve).apply(mc.at) : mc.at;\n      if (hp.control_handle == 0) {\n        middle = middle + at;', '      const float2 at = path ? motion_path_drawn(*path, mc.near_frame, mc.curve).apply(mc.at) : mc.at;\n      if (hp.control_handle == 0) {\n        middle = middle + at + at;', 'two control points: about their middle', 'tests/test_motion_path_control_handles.py'),
 ]
 
 def build():

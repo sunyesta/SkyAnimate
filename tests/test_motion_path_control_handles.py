@@ -156,6 +156,9 @@ assert in_line(h5) and not close(h5["in"], before["in"], 1e-3) and not close(h5[
 # --- G R S on a picked handle: its tip, about its point ----------------------------------------------------------------
 assert ops.anim.motion_path_handle_select(frame="30", control="0", control_handle="2", **args) == {'FINISHED'}
 was = handles(ball)
+c0 = next(c for c in wm.motion_path_controls() if c["end"] == 30 and c["index"] == 0)
+assert close(wm.motion_path_handles_pivot(), c0["at"], 1e-3), ("about its control point, not the key",
+                                                              wm.motion_path_handles_pivot(), c0["at"])
 assert ops.anim.motion_path_keys_transform(kind="G", x="0.2", y="0.1") == {'FINISHED'}
 assert close(handles(ball)["out"], (was["out"][0] + 0.2, was["out"][1] + 0.1), 1e-3), (was, handles(ball))
 assert in_line(handles(ball)), "aligned: the other follows"
@@ -173,6 +176,9 @@ def turned(v, a):
 # --- R S on a control point, as on a vector point: its handles turn and scale with it (alone, about it) ---------------
 assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'FINISHED'}
 was, at_was = handles(ball), key(ball, 30)["path_controls"][0]
+c0 = next(c for c in wm.motion_path_controls() if c["end"] == 30 and c["index"] == 0)
+assert close(wm.motion_path_handles_pivot(), c0["at"], 1e-3), ("R and S about the control point, not its key",
+                                                              wm.motion_path_handles_pivot(), c0["at"])
 assert ops.anim.motion_path_keys_transform(kind="R", angle=str(math.pi / 2)) == {'FINISHED'}
 now = handles(ball)
 assert close(key(ball, 30)["path_controls"][0], at_was, 1e-4), "alone: the point stays"
@@ -199,6 +205,10 @@ assert not both_was[0]["set"] and not both_was[1]["set"], both_was
 tips_was = [(both_was[j]["in"], both_was[j]["out"]) for j in (0, 1)]
 assert ops.anim.motion_path_handle_select(frame="30", control="0", **a5) == {'FINISHED'}
 assert ops.anim.motion_path_handle_select(frame="30", control="1", extend="1", **a5) == {'FINISHED'}
+two = [c["at"] for c in wm.motion_path_controls() if c["end"] == 30 and c["layer"] == pair.id]
+assert len(two) == 2, two
+middle = ((two[0][0] + two[1][0]) / 2, (two[0][1] + two[1][1]) / 2)
+assert close(wm.motion_path_handles_pivot(), middle, 1e-3), ("two: about their middle", wm.motion_path_handles_pivot())
 assert ops.anim.motion_path_keys_transform(kind="R", angle=str(math.pi / 2)) == {'FINISHED'}
 cs = key(pair, 30)["path_controls"]
 assert not close(cs[0], (2.0, 1.0), 1e-2), ("two: they turn about their middle", cs)

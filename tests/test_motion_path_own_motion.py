@@ -184,7 +184,13 @@ assert not real["own_motion"] and min(q[0] for q in real["points"]) > 8.5, "the 
 own = path("pupil head")
 assert own["own_motion"] and close(at(own, 10), (4.0, 0.0)), ("its own keys take it on past", at(own, 10))
 assert all(close(q[1], 0.0) for q in own["points"]), "straight out, as keyed"
-assert "ghost" not in own and real_path("pupil head")["points"] == real["points"], "the box's stop: Own Motion off"
+# Dragged on further past the box, it goes where it is put: the box is no part of its own motion.
+assert ops.anim.motion_path_move(frame="10", x="3.0", y="0.5", **pupil) == {'FINISHED'}, "past the box"
+assert close(at(path("pupil head"), 10), (3.0, 0.5)), ("under the mouse", at(path("pupil head"), 10))
+assert ops.anim.motion_path_move(frame="10", x="4.0", y="0.0", **pupil) == {'FINISHED'}
+assert close(at(path("pupil head"), 10), (4.0, 0.0))
+assert "ghost" not in own and all(close(a, b) for a, b in zip(real_path("pupil head")["points"], real["points"])), \
+    "the box's stop: Own Motion off"
 # A control point on it sits on the path as drawn, not where the box holds the pupil.
 assert ops.anim.motion_path_control_add(frame="8", **pupil) == {'FINISHED'}
 assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}

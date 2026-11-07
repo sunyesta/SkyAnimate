@@ -855,6 +855,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     for (const MotionPathTarget &t : motion_path_targets(C)) {
       for (const MotionPathControl &c : motion_path_controls(*C.document, t)) {
         py::dict d;
+        d["layer"] = t.layer;
         d["end"] = c.end;
         d["index"] = c.index;
         d["near_frame"] = c.near_frame;
@@ -1751,6 +1752,23 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       out.append(d);
     }
     return out;
+  });
+  m.def("motion_path_handles_pivot", []() -> py::object {
+    Context &C = current_context();
+    const Document &doc = *C.document;
+    const std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
+    const std::vector<MotionPathTarget> targets = motion_path_targets(C);
+    int first = 0, last = 0;
+    if (picks.empty()) {
+      return py::none();
+    }
+    motion_path_tool_sync(C);
+    std::vector<MotionPath> paths;
+    if (doc.motion_paths && motion_path_range(doc, targets, first, last)) {
+      paths = motion_paths_make(doc, targets, first, last);
+    }
+    const float2 at = motion_path_handles_pivot(doc, paths, picks);
+    return py::make_tuple(at.x, at.y);
   });
   m.def("motion_path_dots", []() {
     py::list out;

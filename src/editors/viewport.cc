@@ -1320,7 +1320,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
       }
     }
     if (!handles.empty()) {
-      /* Handles picked: they alone; turned and scaled about the first one's key. */
+      /* Handles picked: they alone; turned and scaled about their own points (motion_path_handles_pivot). */
       keys.clear();
       for (const MotionPathHandlePick &hp : handles) {
         keys.push_back({hp.target, hp.frame});
@@ -1336,7 +1336,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
         c = c + path_dot_screen(doc, view, paths, t, f);
       }
       gk.pivot = gk.handles.empty() ? c * (1.0f / float(gk.keys.size()))
-                                    : path_dot_screen(doc, view, paths, gk.keys[0].first, gk.keys[0].second);
+                                    : view.to_screen(motion_path_handles_pivot(doc, paths, gk.handles));
       gk.press = io.MousePos;
       gk.num = NumInput();
       gk.precise.reset(float2{io.MousePos.x, io.MousePos.y});

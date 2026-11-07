@@ -345,8 +345,9 @@ def motion_path_range():
 
 
 def motion_path_controls():
-    """The control points the Motion Path tool draws on the paths shown: dicts with end (the key ending the stretch),
-    index, near_frame, at (where it is), curve (where the path is on near_frame), in_tip and out_tip."""
+    """The control points the Motion Path tool draws on the paths shown: dicts with layer (its path's), end (the key
+    ending the stretch), index, near_frame, at (where it is), curve (where the path is on near_frame), in_tip and
+    out_tip."""
     return _oanim.motion_path_controls()
 
 
@@ -553,6 +554,13 @@ def motion_path_handle_picks():
     bone, point (ids, 0 for none), head, frame and out (the handle toward the next key), or control (>= 0: that
     control point of the stretch ending on frame). Never with keys or dots."""
     return _oanim.motion_path_handle_picks()
+
+
+def motion_path_handles_pivot():
+    """Where R and S (anim.motion_path_keys_transform, or R / S in the viewport) turn and scale the path handles picked
+    about, as drawn: control points picked, their middle; else the first pick's own point (a control point handle's
+    control point, a key handle's key). None with nothing picked."""
+    return _oanim.motion_path_handles_pivot()
 
 
 def motion_path_dots():
