@@ -691,6 +691,13 @@ def main():
     for i, (path, old, new, name, test) in enumerate(PENDING):
         if only and str(i) not in only:
             continue
+        if not os.path.exists(test):
+            # Older entries name the test without its folder and prefix.
+            test = os.path.join("tests", f"test_{test}.py")
+        if not os.path.exists(test):
+            print(f"{i} {name}: no test {test}; fix the entry", flush=True)
+            missed += 1
+            continue
         with open(path, encoding="utf-8") as f:
             src = f.read()
         if src.count(old) != 1:
