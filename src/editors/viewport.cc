@@ -1250,6 +1250,8 @@ static struct {
   std::vector<std::pair<MotionPathTarget, int>> keys;
   /* Path handles picked: these instead, each turned or scaled about its key. */
   std::vector<MotionPathHandlePick> handles;
+  /* Control points picked with the keys: all of them, about their middle. */
+  bool together = false;
   ImVec2 pivot, press;
   NumInput num;
   PreciseMouse precise;
@@ -1319,7 +1321,9 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
         handles.push_back(hp);
       }
     }
-    if (!handles.empty()) {
+    /* Control points picked with keys (L, Shift click): all together, about the middle of them all. */
+    const bool together = !handles.empty() && !keys.empty() && motion_path_picks_with_keys(handles);
+    if (!handles.empty() && !together) {
       /* Handles picked: they alone; turned and scaled about their own points (motion_path_handles_pivot). */
       keys.clear();
       for (const MotionPathHandlePick &hp : handles) {
@@ -1329,6 +1333,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     if (idle && !sc.active && !keys.empty()) {
       gk.active = true;
       gk.kind = kind;
+      gk.together = together;
       gk.keys = std::move(keys);
       gk.handles = std::move(handles);
       ImVec2 c(0.0f, 0.0f);
@@ -1336,7 +1341,8 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
         c = c + path_dot_screen(doc, view, paths, t, f);
       }
       gk.pivot = gk.handles.empty() ? c * (1.0f / float(gk.keys.size()))
-                                    : view.to_screen(motion_path_handles_pivot(doc, paths, gk.handles));
+                 : gk.together ? view.to_screen(motion_path_handles_pivot(doc, paths, gk.handles, gk.keys))
+                               : view.to_screen(motion_path_handles_pivot(doc, paths, gk.handles));
       gk.press = io.MousePos;
       gk.num = NumInput();
       gk.precise.reset(float2{io.MousePos.x, io.MousePos.y});
@@ -1416,7 +1422,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
   if (gk.active) {
     const auto end = [&](bool keep) {
       if (keep) {
-        if (!gk.handles.empty()) {
+        if (!gk.handles.empty() && !gk.together) {
           push_undo(C, gk.kind == 'G'   ? "Move Path Handles"
                        : gk.kind == 'R' ? "Rotate Path Handles"
                                         : "Scale Path Handles");
@@ -1462,7 +1468,12 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
       factor = gk.num.value(0, factor);
     }
     doc = gk.snapshot;
-    if (!gk.handles.empty()) {
+    if (gk.together) {
+      /* About the pivot drawn, as it was when it began. */
+      const float2 about = view.to_document(gk.pivot);
+      motion_path_picks_transform(doc, gk.keys, gk.handles, gk.kind, offset, angle, factor, &about);
+    }
+    else if (!gk.handles.empty()) {
       motion_path_handles_transform(doc, gk.handles, gk.kind, offset, angle, factor);
     }
     else {
@@ -1479,7 +1490,8 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     else {
       text = "Scale " + gk.num.shown(0, factor, "%.3f");
     }
-    text += !gk.handles.empty()                        ? (gk.handles.size() == 1 ? "   (the handle)" : "   (the handles)")
+    text += gk.together ? "   (keys and control points)"
+            : !gk.handles.empty() ? (gk.handles.size() == 1 ? "   (the handle)" : "   (the handles)")
             : gk.keys.size() == 1 && gk.kind != 'G' ? "   (the key's handles)"
                                                     : "";
     dl->AddCircle(gk.pivot, 4.0f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
@@ -2053,6 +2065,10 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(C);
   motion_path_tool_sync(C);
+  if (hovered) {
+    /* Set again below if a path is under the mouse. */
+    wm.path_under = false;
+  }
   /* Own Motion: which paths show only their own motion. */
   std::vector<bool> own;
   for (const MotionPathTarget &t : targets) {
@@ -2581,6 +2597,13 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   if (hover_handle) {
     /* A handle over a dot: the handle, which is only there on a selected key. */
     hover_path = nullptr;
+  }
+  /* For L: the stretch under the mouse, by a dot or key, or a control point. */
+  if (hovered && tool && editing && (hover_path || g_path_control_hover)) {
+    wm.path_under = true;
+    wm.path_under_target = hover_path ? hover_path->target : g_path_control_hover->target;
+    wm.path_under_frame = hover_path ? hover_frame : g_path_control_hover->near_frame;
+    wm.path_under_end = hover_path ? 0 : g_path_control_hover->end;
   }
   if (tool && !editing) {
     motion_path_brush_input(C, area, view, dl, hovered, first, last);
@@ -17384,6 +17407,10 @@ static void viewport_draw_contents(Area &area, Context &C)
       }
       draw_mask_outline(dl, doc, *source, view, outside, true);
     }
+  }
+  if (!ov.show && hovered) {
+    /* No paths drawn: none under the mouse for L. */
+    C.wm->path_under = false;
   }
   if (ov.show) {
     draw_motion_paths(C, area, view, dl, hovered);

@@ -192,6 +192,8 @@ KEYMAP = (
     ("Motion Path", "anim.motion_path_keys_scale", "S", {}),
     ("Motion Path", "anim.motion_path_scale_spacing_modal", "S", {"alt": True}),
     ("Motion Path", "anim.motion_path_handles_menu", "V", {}),
+    ("Motion Path", "anim.motion_path_select_linked_pick", "L", {}),
+    ("Motion Path", "anim.motion_path_deselect_linked_pick", "L", {"shift": True}),
     ("Motion Path", "anim.motion_path_handles_reset", "X", {}),
     ("Motion Path", "anim.motion_path_handles_reset", "DEL", {}),
     ("Motion Path", "anim.motion_path_keys_delete", "X", {}),

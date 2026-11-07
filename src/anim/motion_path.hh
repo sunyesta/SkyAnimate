@@ -192,9 +192,10 @@ bool motion_path_key_is_breakdown(const Document &doc, const MotionPathTarget &t
 void motion_path_key_select(Document &doc, const MotionPathTarget &target, int frame, bool select);
 /* G R S on the selected keys: `kind` 'G' moves them by `offset` (document space), 'R' turns them by `angle` and 'S'
  * scales them by `factor` about their centre, their handles turning and scaling with them; one key on its own stays,
- * its handles turning or scaling about it. Each lands on its own frame. Returns how many keys changed. */
+ * its handles turning or scaling about it. Each lands on its own frame. With `pivot`: about that (picked with control
+ * points). Returns how many keys changed. */
 int motion_path_keys_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys, char kind,
-                               float2 offset, float angle, float factor);
+                               float2 offset, float angle, float factor, const float2 *pivot = nullptr);
 /* The selected keys' path handles made `mode`: Auto as before they were dragged, Aligned (the two in line, each
  * keeping its length) or Broken (free of each other, as they are). Returns how many keys changed. */
 int motion_path_handles_type(Document &doc, const std::vector<MotionPathTarget> &targets, PathHandles mode);
@@ -319,14 +320,25 @@ bool motion_path_handle_set(Document &doc, const MotionPathTarget &target, int f
                             bool broken);
 /* Where R and S on `picks` turn and scale about, as drawn on `paths` (those shown): control points picked, their
  * middle (each turned and scaled about it, its handles with it); else the first pick's own point, a control point
- * handle's control point or a key handle's key. */
+ * handle's control point or a key handle's key. With `keys` selected too (picked with control points): the middle of
+ * them all. */
 float2 motion_path_handles_pivot(const Document &doc, const std::vector<MotionPath> &paths,
-                                 const std::vector<MotionPathHandlePick> &picks);
+                                 const std::vector<MotionPathHandlePick> &picks,
+                                 const std::vector<std::pair<MotionPathTarget, int>> &keys = {});
 /* G R S on picked handles: 'G' moves each tip by `offset` (document space), 'R' turns it by `angle` and 'S' scales it
  * by `factor` about its own key; its partner follows as the handle type says (Auto becomes Aligned). Returns how many
- * changed. */
+ * changed. With `pivot`: control points turned and scaled about that. */
 int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHandlePick> &picks, char kind,
-                                  float2 offset, float angle, float factor);
+                                  float2 offset, float angle, float factor, const float2 *pivot = nullptr);
+/* Whether `picks` and selected keys go together: only control points picked (as L or Shift clicks pick them), no
+ * handles, which go on their own. */
+bool motion_path_picks_with_keys(const std::vector<MotionPathHandlePick> &picks);
+/* G R S on what is picked on the paths: the selected `keys` and the control points `picks`, together about `pivot` (by
+ * default their middle, motion_path_handles_pivot), each moved once; else either on its own as above (handles picked:
+ * they alone). Returns how many changed. */
+int motion_path_picks_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys,
+                                const std::vector<MotionPathHandlePick> &picks, char kind, float2 offset, float angle,
+                                float factor, const float2 *pivot = nullptr);
 /* The keys of `picks` made `mode` (as motion_path_handles_type). Returns how many keys changed. */
 int motion_path_handles_type_at(Document &doc, const std::vector<MotionPathHandlePick> &picks, PathHandles mode);
 /* --- Control points (Key::path_controls): shape a stretch's path, no frame or timing. */

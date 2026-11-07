@@ -1767,8 +1767,38 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (doc.motion_paths && motion_path_range(doc, targets, first, last)) {
       paths = motion_paths_make(doc, targets, first, last);
     }
-    const float2 at = motion_path_handles_pivot(doc, paths, picks);
+    /* Control points picked with keys: the middle of them all, as the viewport's G R S has it. */
+    std::vector<std::pair<MotionPathTarget, int>> keys;
+    if (motion_path_picks_with_keys(picks)) {
+      keys = motion_path_selected_keys(doc, targets);
+    }
+    const float2 at = motion_path_handles_pivot(doc, paths, picks, keys);
     return py::make_tuple(at.x, at.y);
+  });
+  /* What the viewport would have under the mouse for L, as drawing the paths sets it (a background run draws none). */
+  m.def("motion_path_under_set", [](uint64_t layer, uint64_t bone, uint64_t point, bool head, int frame, int end) {
+    WindowManager &wm = *current_context().wm;
+    wm.path_under = layer != 0;
+    wm.path_under_target = MotionPathTarget();
+    wm.path_under_target.layer = layer;
+    wm.path_under_target.bone = bone;
+    wm.path_under_target.point = point;
+    wm.path_under_target.head = head;
+    wm.path_under_frame = frame;
+    wm.path_under_end = end;
+  });
+  m.def("motion_path_under", []() -> py::object {
+    const WindowManager &wm = *current_context().wm;
+    if (!wm.path_under) {
+      return py::none();
+    }
+    py::dict d;
+    d["layer"] = wm.path_under_target.layer;
+    d["bone"] = wm.path_under_target.bone;
+    d["point"] = wm.path_under_target.point;
+    d["frame"] = wm.path_under_frame;
+    d["end"] = wm.path_under_end;
+    return d;
   });
   m.def("motion_path_dots", []() {
     py::list out;

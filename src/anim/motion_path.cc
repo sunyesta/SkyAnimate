@@ -2474,7 +2474,7 @@ void motion_path_key_select(Document &doc, const MotionPathTarget &target, int f
 }
 
 int motion_path_keys_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys, char kind,
-                               float2 offset, float angle, float factor)
+                               float2 offset, float angle, float factor, const float2 *pivot)
 {
   if (keys.empty()) {
     return 0;
@@ -2486,7 +2486,7 @@ int motion_path_keys_transform(Document &doc, const std::vector<std::pair<Motion
     motion_path_position_at(doc, keys[i].first, keys[i].second, at[i]);
     centre = centre + at[i];
   }
-  centre = centre / float(keys.size());
+  centre = pivot ? *pivot : centre / float(keys.size());
   const float c = std::cos(angle), s = std::sin(angle);
   const auto turn = [&](float2 v) {
     if (kind == 'R') {
@@ -3554,8 +3554,23 @@ bool motion_path_pick_valid(const Document &doc, const MotionPathHandlePick &pic
   return motion_path_handles(doc, pick.target, pick.frame, key, in, out);
 }
 
+/* A key's dot as drawn, else where it is on its frame. */
+static float2 key_dot(const Document &doc, const std::vector<MotionPath> &paths, const MotionPathTarget &target,
+                      int frame)
+{
+  for (const MotionPath &p : paths) {
+    if (p.target.same(target) && frame >= p.first && frame - p.first < int(p.points.size())) {
+      return p.points[size_t(frame - p.first)];
+    }
+  }
+  float2 at{0.0f, 0.0f};
+  motion_path_position_at(doc, target, frame, at);
+  return at;
+}
+
 float2 motion_path_handles_pivot(const Document &doc, const std::vector<MotionPath> &paths,
-                                 const std::vector<MotionPathHandlePick> &picks)
+                                 const std::vector<MotionPathHandlePick> &picks,
+                                 const std::vector<std::pair<MotionPathTarget, int>> &keys)
 {
   float2 middle{0.0f, 0.0f};
   int points = 0;
@@ -3587,6 +3602,11 @@ float2 motion_path_handles_pivot(const Document &doc, const std::vector<MotionPa
       }
     }
   }
+  /* Keys picked with them: the middle of every key and control point. */
+  for (const auto &[t, f] : keys) {
+    middle = middle + key_dot(doc, paths, t, f);
+    points++;
+  }
   if (points) {
     return middle * (1.0f / float(points));
   }
@@ -3596,20 +3616,12 @@ float2 motion_path_handles_pivot(const Document &doc, const std::vector<MotionPa
   if (picks.front().control >= 0 && first_point) {
     return *first_point;
   }
-  /* A key handle's key: its dot as drawn, else where it is on its frame. */
-  const MotionPathHandlePick &first = picks.front();
-  for (const MotionPath &p : paths) {
-    if (p.target.same(first.target) && first.frame >= p.first && first.frame - p.first < int(p.points.size())) {
-      return p.points[size_t(first.frame - p.first)];
-    }
-  }
-  float2 at{0.0f, 0.0f};
-  motion_path_position_at(doc, first.target, first.frame, at);
-  return at;
+  /* A key handle's key. */
+  return key_dot(doc, paths, picks.front().target, picks.front().frame);
 }
 
 int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHandlePick> &picks, char kind,
-                                  float2 offset, float angle, float factor)
+                                  float2 offset, float angle, float factor, const float2 *pivot)
 {
   /* Where every tip goes, from where they all are before any moves (a key's two handles picked turn together). */
   std::vector<float2> to(picks.size());
@@ -3653,6 +3665,9 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
                                                    [&](size_t i) { return picks[i].control_handle == 0; }));
   if (moved_points) {
     middle = middle * (1.0f / float(moved_points));
+  }
+  if (pivot) {
+    middle = *pivot;
   }
   for (size_t i = 0; i < picks.size(); i++) {
     float2 key, in, out;
@@ -3731,6 +3746,29 @@ int motion_path_handles_transform(Document &doc, const std::vector<MotionPathHan
   }
   animation_evaluate(doc, doc.frame_current);
   return changed;
+}
+
+bool motion_path_picks_with_keys(const std::vector<MotionPathHandlePick> &picks)
+{
+  return std::all_of(picks.begin(), picks.end(),
+                     [](const MotionPathHandlePick &p) { return p.control >= 0 && p.control_handle == 0; });
+}
+
+int motion_path_picks_transform(Document &doc, const std::vector<std::pair<MotionPathTarget, int>> &keys,
+                                const std::vector<MotionPathHandlePick> &picks, char kind, float2 offset, float angle,
+                                float factor, const float2 *pivot)
+{
+  if (picks.empty()) {
+    return motion_path_keys_transform(doc, keys, kind, offset, angle, factor);
+  }
+  if (keys.empty() || !motion_path_picks_with_keys(picks)) {
+    return motion_path_handles_transform(doc, picks, kind, offset, angle, factor);
+  }
+  /* About the middle of them all, worked out before anything moves. The control points first: stored where they are,
+   * the keys moving after leaves them where they went. */
+  const float2 about = pivot ? *pivot : motion_path_handles_pivot(doc, {}, picks, keys);
+  const int changed = motion_path_handles_transform(doc, picks, kind, offset, angle, factor, &about);
+  return changed + motion_path_keys_transform(doc, keys, kind, offset, angle, factor, &about);
 }
 
 int motion_path_handles_type_at(Document &doc, const std::vector<MotionPathHandlePick> &picks, PathHandles mode)

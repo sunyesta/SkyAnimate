@@ -1,6 +1,6 @@
 """Control points on motion paths (Alt click with the Motion Path tool's Edit, as Toon Boom's): they shape a stretch's
-path only, with no key and no frame: the dots go the same share of the way each frame as before. They ride with the
-keys, are picked on their own like path handles, X deletes them, and they are saved. A key added on a path takes the
+path only, with no key and no frame: the dots go the same share of the way each frame as before. They stay where they
+are as the keys move, are picked like path handles (or with keys: Shift click, L), X deletes them, and they are saved. A key added on a path takes the
 path's way and speed there, so adding it creases nothing.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_controls.py
@@ -143,7 +143,9 @@ assert close(key(ball, 30)["path_controls"][0], (2.0, 2.0), 1e-3), ("where it wa
 # --- Picked on its own; G moves it ------------------------------------------------------------------------------------
 assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'FINISHED'}
 assert ops.anim.motion_path_select(frame="30", extend="1", **args) == {'FINISHED'}
-assert wm.motion_path_handle_picks() == [], "a key picked lets go of it"
+assert len(wm.motion_path_handle_picks()) == 1, "a key Shift clicked keeps it (keys and control points go together)"
+assert ops.anim.motion_path_select(frame="30", **args) == {'FINISHED'}
+assert wm.motion_path_handle_picks() == [], "a key clicked lets go of it"
 assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'FINISHED'}
 assert not any(k["selected"] for k in ball.keyframes("position"))
 y20 = pos(ball, 20)[1]

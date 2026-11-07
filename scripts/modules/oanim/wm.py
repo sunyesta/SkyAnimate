@@ -552,15 +552,30 @@ def path_handle_colors(tip_picked, under=None):
 def motion_path_handle_picks():
     """The path handles picked with the Motion Path tool's Edit (anim.motion_path_handle_select): dicts with layer,
     bone, point (ids, 0 for none), head, frame and out (the handle toward the next key), or control (>= 0: that
-    control point of the stretch ending on frame). Never with keys or dots."""
+    control point of the stretch ending on frame). Handles never with keys or dots; control points with keys too (L,
+    Shift click)."""
     return _oanim.motion_path_handle_picks()
 
 
 def motion_path_handles_pivot():
     """Where R and S (anim.motion_path_keys_transform, or R / S in the viewport) turn and scale the path handles picked
-    about, as drawn: control points picked, their middle; else the first pick's own point (a control point handle's
-    control point, a key handle's key). None with nothing picked."""
+    about, as drawn: control points picked, their middle (with keys selected too, the middle of them all); else the
+    first pick's own point (a control point handle's control point, a key handle's key). None with nothing picked."""
     return _oanim.motion_path_handles_pivot()
+
+
+def motion_path_under_set(layer=None, bone=0, point=0, head=False, frame=0, end=0):
+    """Put the mouse over a path for L and Shift L (anim.motion_path_select_linked_pick), as the viewport does when it
+    draws the paths with the mouse over one (a background run draws none): what it traces (layer, bone, point ids) and
+    the frame of the dot or key under it, or `end`, the key ending the stretch of a control point under it. layer=None:
+    over no path."""
+    _oanim.motion_path_under_set(int(layer or 0), int(bone), int(point), bool(head), int(frame), int(end))
+
+
+def motion_path_under():
+    """The path under the mouse, as last drawn (see motion_path_under_set): a dict with layer, bone, point, frame and
+    end, or None."""
+    return _oanim.motion_path_under()
 
 
 def motion_path_dots():
