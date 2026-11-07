@@ -365,6 +365,18 @@ def profile_clear():
     _oanim.profile_clear()
 
 
+def deform_counts():
+    """How much of the deforms' dearest work was done since deform_counts_clear, on every thread: {"points" placed,
+    "cell_solves" (a point placed in a four-sided cell by Newton's method), "cell_measures" (a point measured against a
+    cell's outline to pick its cell), "side_tests" (the nearest place on a cell's side looked for), "builds" made,
+    "builds_shared" (built for another drawing already)}. For tests of what bending costs."""
+    return _oanim.deform_counts()
+
+
+def deform_counts_clear():
+    _oanim.deform_counts_clear()
+
+
 def profile_frame_end():
     """Closes a frame of the profile by hand (a background run draws none)."""
     _oanim.profile_frame_end()

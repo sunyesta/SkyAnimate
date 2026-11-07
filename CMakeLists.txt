@@ -495,6 +495,8 @@ add_test(NAME handles_align_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles_align_keys.py)
 add_test(NAME profile
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_profile.py)
+add_test(NAME deform_speed
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_deform_speed.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

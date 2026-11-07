@@ -180,4 +180,13 @@ void vector_deform_fill_group(const Document &doc, Layer &layer, Modifier &m);
  * A point painted for the first time starts from its automatic weight. Returns how many points changed. */
 int vector_deform_paint(const Document &doc, Layer &layer, const Modifier &m, const WeightPaintBrush &brush);
 
+/* How much of the deforms' dearest work was done since the last clear, on every thread: points placed, points placed
+ * in a four-sided cell by Newton's method, points measured against a cell's outline (picking a cell), nearest places
+ * looked for on a cell's side, and builds made and builds another drawing had made. For tests of what bending costs. */
+struct VectorDeformCounts {
+  long long points = 0, cell_solves = 0, cell_measures = 0, side_tests = 0, builds = 0, builds_shared = 0;
+};
+VectorDeformCounts vector_deform_counts();
+void vector_deform_counts_clear();
+
 }  // namespace oanim

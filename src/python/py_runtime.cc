@@ -791,6 +791,19 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return out;
   });
   m.def("profile_clear", []() { profile_clear(); });
+  /* What the deforms' dearest steps cost since the last clear (vector_deform_counts). */
+  m.def("deform_counts", []() {
+    const VectorDeformCounts c = vector_deform_counts();
+    py::dict d;
+    d["points"] = c.points;
+    d["cell_solves"] = c.cell_solves;
+    d["cell_measures"] = c.cell_measures;
+    d["side_tests"] = c.side_tests;
+    d["builds"] = c.builds;
+    d["builds_shared"] = c.builds_shared;
+    return d;
+  });
+  m.def("deform_counts_clear", []() { vector_deform_counts_clear(); });
   /* The control points the Motion Path tool draws for the paths shown: where each is and where the path is on its
    * nearest frame, and its handles' tips (document space). */
   m.def("motion_path_controls", []() {

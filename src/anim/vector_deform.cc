@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -86,6 +87,36 @@ VectorDeformProbeScope::VectorDeformProbeScope(int kind)
 VectorDeformProbeScope::~VectorDeformProbeScope()
 {
   g_probe = 0;
+}
+
+/* vector_deform_counts: counted relaxed (several threads bend at once; only the totals matter). */
+static std::atomic<long long> g_count_points{0}, g_count_cell_solves{0}, g_count_cell_measures{0},
+    g_count_side_tests{0}, g_count_builds{0}, g_count_builds_shared{0};
+
+static void count(std::atomic<long long> &c)
+{
+  c.fetch_add(1, std::memory_order_relaxed);
+}
+
+VectorDeformCounts vector_deform_counts()
+{
+  VectorDeformCounts r;
+  r.points = g_count_points;
+  r.cell_solves = g_count_cell_solves;
+  r.cell_measures = g_count_cell_measures;
+  r.side_tests = g_count_side_tests;
+  r.builds = g_count_builds;
+  r.builds_shared = g_count_builds_shared;
+  return r;
+}
+
+void vector_deform_counts_clear()
+{
+  for (std::atomic<long long> *c : {&g_count_points, &g_count_cell_solves, &g_count_cell_measures,
+                                    &g_count_side_tests, &g_count_builds, &g_count_builds_shared})
+  {
+    *c = 0;
+  }
 }
 
 /* Every curve point's handles as the curve draws them, stored, so they bend with the deform too. */
@@ -338,6 +369,7 @@ static float2 cell_eval(const std::array<std::array<float2, 4>, 4> &sides, float
 /* Where `p` is in a four-sided cell (Newton's method on its patch, as GridSurface::locate). */
 static bool cell_locate(const std::array<std::array<float2, 4>, 4> &sides, float size, float2 p, float2 &r_st)
 {
+  count(g_count_cell_solves);
   /* As GridSurface::locate: no nearer than these numbers can tell. */
   const float near_enough = std::max(size * 1e-6f, (std::fabs(p.x) + std::fabs(p.y) + size) * 4e-7f);
   float2 st(0.5f, 0.5f);
@@ -1152,8 +1184,28 @@ static std::shared_ptr<const DeformShape> deform_shape_kept(const Document &doc,
       r_serial = it->second.serial;
       return it->second.shape;
     }
+    /* Built for another drawing already: a group's deform reads its shape the same for every drawing in the group
+     * (drawings that don't move apart from it), and the build is the modifier's and the shape's alone. */
+    for (const auto &[other_key, other] : g_kept_builds) {
+      if (std::get<1>(other_key) == m.name && std::get<2>(other_key) == render &&
+          other.rest.points.size() == rest.points.size() && other.bent.points.size() == bent.points.size() &&
+          other.m == m && other.rest == rest && other.bent == bent)
+      {
+        const std::shared_ptr<const DeformShape> shape = other.shape;
+        r_serial = other.serial;
+        KeptBuild &kept = g_kept_builds[key];
+        kept.m = m;
+        kept.rest = std::move(rest);
+        kept.bent = std::move(bent);
+        kept.shape = shape;
+        kept.serial = r_serial;
+        count(g_count_builds_shared);
+        return shape;
+      }
+    }
   }
   auto shape = std::make_shared<DeformShape>();
+  count(g_count_builds);
   if (!deform_shape_make(m, true, rest, bent, *shape)) {
     return nullptr;
   }
@@ -1398,14 +1450,52 @@ static bool mean_value(const std::vector<float2> &v, float2 p, std::vector<float
 /* A four-sided cell's place for `p` (its patch's s and t) when `p` is in it or on its sides: judged by the side
  * curves themselves, not by the polygon of their samples, which a bulging side passes outside of (so a point
  * drawn on a side follows the patch, exactly onto the bent side, not the outline around the cells). */
-static bool quad_cell_at(const DeformShape::Cell &c, float2 p, float2 &r_st)
+/* What placing one point in a mesh's cells found, kept while it is placed (deform_map): its place in a four-sided cell
+ * is Newton's method, which three steps in turn asked for again. One for each cell; empty, nothing is kept. */
+struct CellLook {
+  /* Inside the cell's outline or near it (quad_cell_at's first test): -1 not asked yet. */
+  signed char near = -1;
+  /* cell_locate's answer: -1 not asked yet. */
+  signed char found = -1;
+  float2 st = float2(0.0f, 0.0f);
+};
+
+static bool cell_near(const DeformShape::Cell &c, float2 p, CellLook *look)
+{
+  if (look && look->near >= 0) {
+    return look->near != 0;
+  }
+  const bool near = inside(c.rest, p) || polyline_distance(c.rest, true, p) <= c.size * 0.05f;
+  if (look) {
+    look->near = near ? 1 : 0;
+  }
+  return near;
+}
+
+static bool cell_locate_kept(const DeformShape::Cell &c, float2 p, float2 &r_st, CellLook *look)
+{
+  if (look && look->found >= 0) {
+    r_st = look->st;
+    return look->found != 0;
+  }
+  float2 st(0.0f, 0.0f);
+  const bool found = cell_locate(c.rest_sides, c.size, p, st);
+  if (look) {
+    look->found = found ? 1 : 0;
+    look->st = st;
+  }
+  r_st = st;
+  return found;
+}
+
+static bool quad_cell_at(const DeformShape::Cell &c, float2 p, float2 &r_st, CellLook *look = nullptr)
 {
   constexpr float edge = 1e-3f;
-  if (!inside(c.rest, p) && polyline_distance(c.rest, true, p) > c.size * 0.05f) {
+  if (!cell_near(c, p, look)) {
     return false;
   }
   float2 st;
-  if (!cell_locate(c.rest_sides, c.size, p, st) || st.x < -edge || st.x > 1.0f + edge || st.y < -edge ||
+  if (!cell_locate_kept(c, p, st, look) || st.x < -edge || st.x > 1.0f + edge || st.y < -edge ||
       st.y > 1.0f + edge)
   {
     return false;
@@ -1460,7 +1550,21 @@ static float bezier_nearest(const std::array<float2, 4> &b, float2 p, float &r_t
 
 static bool cell_side_at(const DeformShape::Cell &c, int k, float2 p, float &r_t)
 {
-  return bezier_nearest(c.rest_sides[size_t(k)], p, r_t) <= c.size * 1e-5f;
+  const std::array<float2, 4> &b = c.rest_sides[size_t(k)];
+  const float within = c.size * 1e-5f;
+  /* The side lies inside the box of its four points: a point well clear of that can't be on it, so the nearest place
+   * (Newton's method from five starts, for every point bent) isn't looked for. Clear by far more than rounding. */
+  float2 lo = b[0], hi = b[0];
+  for (const float2 q : b) {
+    lo = {std::min(lo.x, q.x), std::min(lo.y, q.y)};
+    hi = {std::max(hi.x, q.x), std::max(hi.y, q.y)};
+  }
+  const float clear = within + c.size * 1e-3f + 1e-6f;
+  if (p.x < lo.x - clear || p.x > hi.x + clear || p.y < lo.y - clear || p.y > hi.y + clear) {
+    return false;
+  }
+  count(g_count_side_tests);
+  return bezier_nearest(b, p, r_t) <= within;
 }
 
 /* A point outside a grid or four-sided cells: carried by each side of the outline as that side is at the place on
@@ -1469,7 +1573,8 @@ static bool cell_side_at(const DeformShape::Cell &c, int k, float2 p, float &r_t
  * inverse eighth power of distance (as a line's branches are), so the nearest lead and a side far away doesn't
  * count (it carries a point far from it over a long lever, so even a little would swing it): moving one side moves
  * only what lies beyond it, and on the outline it is exact. */
-static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch, bool *r_outer = nullptr);
+static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch, bool *r_outer = nullptr,
+                              std::vector<CellLook> *looks = nullptr);
 
 static float2 sides_follow(const DeformShape &d, float2 p, std::vector<float> &scratch)
 {
@@ -1562,7 +1667,7 @@ static float2 cell_side_point(const std::array<std::array<float2, 4>, 4> &sides,
   return b[0] * (u * u * u) + b[1] * (3.0f * u * u * t) + b[2] * (3.0f * u * t * t) + b[3] * (t * t * t);
 }
 
-static bool outside_mesh(const DeformShape &d, float2 p)
+static bool outside_mesh(const DeformShape &d, float2 p, std::vector<CellLook> *looks = nullptr)
 {
   if (d.outline_rest.empty()) {
     return false;
@@ -1570,10 +1675,14 @@ static bool outside_mesh(const DeformShape &d, float2 p)
   if (d.cells.empty()) {
     return !inside(d.border, p);
   }
-  return std::none_of(d.cells.begin(), d.cells.end(), [&](const DeformShape::Cell &c) {
+  for (size_t i = 0; i < d.cells.size(); i++) {
+    const DeformShape::Cell &c = d.cells[i];
     float2 st;
-    return c.quad ? quad_cell_at(c, p, st) : inside(c.rest, p);
-  });
+    if (c.quad ? quad_cell_at(c, p, st, looks ? &(*looks)[i] : nullptr) : inside(c.rest, p)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* A point outside a grid or network follows its outline as a cage, from outside (mean value coordinates against
@@ -1807,7 +1916,8 @@ static float2 wires_follow(const DeformShape &d, float2 p, std::vector<float> &s
 /* Where a point in a grid or in cells goes (or, past them, on from the nearest cell): each cell's patch, or its
  * outline as a cage where a cell isn't four-sided or its patch is badly shaped. */
 /* `r_outer`: set when the cell it is in is on the mesh's outline. */
-static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch, bool *r_outer)
+static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float> &scratch, bool *r_outer,
+                              std::vector<CellLook> *looks)
 {
   if (d.cells.empty()) {
     const GridSurface &g = d.rest_grid;
@@ -1825,22 +1935,52 @@ static float2 mesh_inside_map(const DeformShape &d, float2 p, std::vector<float>
   int best = -1;
   float best_out = FLT_MAX;
   float2 best_st(0.0f, 0.0f);
-  for (int i = 0; i < int(d.cells.size()); i++) {
-    const DeformShape::Cell &c = d.cells[size_t(i)];
-    float out = FLT_MAX;
-    float2 st(0.0f, 0.0f);
-    if (c.quad) {
-      if (cell_locate(c.rest_sides, c.size, p, st)) {
-        out = std::max({0.0f, -st.x, st.x - 1.0f, -st.y, st.y - 1.0f});
-      }
-    }
-    else {
-      out = inside(c.rest, p) ? 0.0f : polyline_distance(c.rest, true, p) / c.size;
-    }
-    if (out < best_out) {
+  /* Picked as if every cell were measured in order: the first of the nearest. */
+  const auto consider = [&](int i, float out, float2 st) {
+    if (out < best_out || (out == best_out && out < FLT_MAX && i < best)) {
       best_out = out;
       best = i;
       best_st = st;
+    }
+  };
+  const auto quad_out = [](float2 st) { return std::max({0.0f, -st.x, st.x - 1.0f, -st.y, st.y - 1.0f}); };
+  /* Four-sided cells well away from it, looked in only if no other holds it: placing a point in a cell it is far
+   * outside of takes every step Newton's method has and mostly finds nothing (the patch runs on straight past its
+   * sides). In a mesh of two eyes that was every point of each eye, in the other eye's cell. */
+  thread_local std::vector<int> far;
+  far.clear();
+  for (int i = 0; i < int(d.cells.size()); i++) {
+    const DeformShape::Cell &c = d.cells[size_t(i)];
+    CellLook *look = looks ? &(*looks)[size_t(i)] : nullptr;
+    /* One cell that isn't four-sided (a shape drawn whole): its own, however far; how far only picks between cells,
+     * and measuring every point against its outline sample for sample was most of what bending by it cost. */
+    if (!c.quad && d.cells.size() == 1 && c.rest.size() >= 2 && c.size > 0.0f) {
+      best = i;
+      break;
+    }
+    float out = FLT_MAX;
+    float2 st(0.0f, 0.0f);
+    if (c.quad) {
+      if (d.cells.size() > 1 && !cell_near(c, p, look)) {
+        far.push_back(i);
+        continue;
+      }
+      if (cell_locate_kept(c, p, st, look)) {
+        out = quad_out(st);
+      }
+    }
+    else {
+      count(g_count_cell_measures);
+      out = inside(c.rest, p) ? 0.0f : polyline_distance(c.rest, true, p) / c.size;
+    }
+    consider(i, out, st);
+  }
+  if (best_out > 0.0f) {
+    for (const int i : far) {
+      float2 st(0.0f, 0.0f);
+      if (cell_locate_kept(d.cells[size_t(i)], p, st, looks ? &(*looks)[size_t(i)] : nullptr)) {
+        consider(i, quad_out(st), st);
+      }
     }
   }
   if (best < 0) {
@@ -4637,6 +4777,7 @@ static float2 envelope_weighted_map(const DeformShape &d, float2 p)
 
 static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scratch)
 {
+  count(g_count_points);
   switch (d.kind) {
     case DeformKind::Envelope:
       return d.env_solver ? envelope_weighted_map(d, p)
@@ -4648,13 +4789,16 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
       if (d.points) {
         return point_bones_map(d, p);
       }
-      if (!d.wires.empty() && (d.cells.empty() || outside_mesh(d, p))) {
+      /* Each cell looked into once for this point, however many steps below ask. */
+      std::vector<CellLook> looks(d.cells.size());
+      if (!d.wires.empty() && (d.cells.empty() || outside_mesh(d, p, &looks))) {
         return wires_follow(d, p, scratch);
       }
       /* On a four-sided cell's side: onto the bent side, at the same place along it. */
-      for (const DeformShape::Cell &c : d.cells) {
+      for (size_t i = 0; i < d.cells.size(); i++) {
+        const DeformShape::Cell &c = d.cells[i];
         float2 st;
-        if (c.quad && quad_cell_at(c, p, st)) {
+        if (c.quad && quad_cell_at(c, p, st, &looks[i])) {
           for (int k = 0; k < 4; k++) {
             float t;
             if (cell_side_at(c, k, p, t)) {
@@ -4663,11 +4807,11 @@ static float2 deform_map(const DeformShape &d, float2 p, std::vector<float> &scr
           }
         }
       }
-      if (outside_mesh(d, p)) {
+      if (outside_mesh(d, p, &looks)) {
         return d.edge_sides.empty() ? outline_follow(d, p, scratch) : sides_follow(d, p, scratch);
       }
       bool outer = false;
-      const float2 q = mesh_inside_map(d, p, scratch, &outer);
+      const float2 q = mesh_inside_map(d, p, scratch, &outer, &looks);
       return mesh_envelope(d, p, q, outer);
     }
     case DeformKind::Cage: {
@@ -4766,9 +4910,11 @@ static float polyline_distance(const std::vector<float2> &v, bool closed, float2
     const float2 a = v[i], d = v[(i + 1) % n] - a;
     const float dd = dot(d, d);
     const float t = dd > 1e-20f ? std::clamp(dot(p - a, d) / dd, 0.0f, 1.0f) : 0.0f;
-    best = std::min(best, length(a + d * t - p));
+    const float2 off = a + d * t - p;
+    best = std::min(best, dot(off, off));
   }
-  return best;
+  /* One square root, for the nearest: the same as the nearest of each one's, as it never changes which is nearer. */
+  return best == FLT_MAX ? FLT_MAX : std::sqrt(best);
 }
 
 static bool inside(const std::vector<float2> &v, float2 p)

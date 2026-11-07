@@ -35,7 +35,7 @@ get the new build). Run the build output directly only for tests.
 
 To find what makes an edit slow, time it: `oanim.wm.profile_enable(True)`, do the edit (in a private copy, or call
 `oanim.wm.profile_frame_end()` per step in a background run), then `oanim.wm.profile(frames)` lists the
-`OANIM_PROFILE("name")` sections (`src/core/profile.hh`) slowest first. Off by default; add sections where needed.
+`OANIM_PROFILE("name")` sections (`src/core/profile.hh`) slowest first. Off by default; add sections where needed. Deform work (cell solves, side searches, builds) is counted by `oanim.wm.deform_counts()`.
 
 Python is embedded from `C:/Python314` (`OANIM_PYTHON_ROOT`), isolated from PYTHONPATH and user
 site-packages. Scripts load from the source tree's `scripts/` while developing.

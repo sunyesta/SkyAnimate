@@ -618,6 +618,11 @@ PENDING = [
     ('scripts/modules/oanim/wm.py', 'def motion_path_snapshot():', 'def motion_path_ghost(frame):\n    return []\n\n\ndef motion_path_snapshot():', 'hovering a path dot shows no ghost of the drawing', 'tests/test_motion_paths.py'),
     ('src/anim/motion_path.cc', '  if (!r_cx || !r_cy) {\n    return ok;\n  }\n', '', "a control point's path place costs one frame worked out, not three", 'tests/test_profile.py'),
     ('src/core/profile.cc', '  if (!g_on) {\n    return;\n  }\n  const long long t = now_ns();', '  const long long t = now_ns();', 'the profile times nothing until enabled', 'tests/test_profile.py'),
+    ('src/anim/vector_deform.cc', '  if (look && look->found >= 0) {', '  if (false && look && look->found >= 0) {', 'a point is placed in each four-sided cell once', 'tests/test_deform_speed.py'),
+    ('src/anim/vector_deform.cc', '      if (d.cells.size() > 1 && !cell_near(c, p, look)) {', '      if (false) {', "a point isn't placed in a cell it is far outside of while another holds it", 'tests/test_deform_speed.py'),
+    ('src/anim/vector_deform.cc', '  if (p.x < lo.x - clear || p.x > hi.x + clear || p.y < lo.y - clear || p.y > hi.y + clear) {', '  if (false) {', "a point well clear of a cell's side isn't searched for on it", 'tests/test_deform_speed.py'),
+    ('src/anim/vector_deform.cc', '    if (!c.quad && d.cells.size() == 1 && c.rest.size() >= 2 && c.size > 0.0f) {', '    if (false) {', "a one-shape mesh's points aren't measured against its outline", 'tests/test_deform_speed.py'),
+    ('src/anim/vector_deform.cc', '    for (const auto &[other_key, other] : g_kept_builds) {', '    for (const auto &[other_key, other] : std::map<std::tuple<uint64_t, std::string, bool>, KeptBuild>()) {', "a group's deform is built once for all its drawings", 'tests/test_deform_speed.py'),
 ]
 
 def build():
