@@ -628,6 +628,13 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', '             return c.end == end && c.index == index;\n', '             return true || (c.end == end && c.index == index);\n', "moving a control point's handle works out only its tips", 'tests/test_motion_path_places.py'),
     ('src/anim/motion_path.cc', "           return (pick.control_handle || kind != 'G') && c.end == pick.frame && c.index == pick.control;\n", "           return true || ((pick.control_handle || kind != 'G') && c.end == pick.frame && c.index == pick.control);\n", 'G on control points works out no handle tips', 'tests/test_motion_path_places.py'),
     ('src/anim/motion_path.cc', '  if (count < 2 || dynamics_in(doc)) {\n    Document scratch;', '  if (true) {\n    Document scratch;', 'path places are worked out side by side', 'tests/test_motion_path_places.py'),
+    ('src/ops/motion_path_ops.cc', '    for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {\n      targets.push_back(p.target);\n',
+     '    for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {\n      (void)p;\n',
+     'a key handle or control point picked keeps Own Motion', 'tests/test_motion_path_own_motion.py'),
+    ('src/ops/motion_path_ops.cc', '      PathDotsSync picked{C};\n', '',
+     'picking a path handle tells Own Motion', 'tests/test_motion_path_own_motion.py'),
+    ('src/ops/file_ops.cc', '  C.wm->path_dots.clear();\n  C.wm->path_handle_picks.clear();\n', '  C.wm->path_handle_picks.clear();\n', "the old document's dots let go", 'tests/test_motion_path_own_motion.py'),
+    ('src/ops/file_ops.cc', '  C.wm->path_dots.clear();\n  C.wm->path_handle_picks.clear();\n', '  C.wm->path_dots.clear();\n', "the old document's path handle picks let go", 'tests/test_motion_path_robust.py'),
 ]
 
 def build():

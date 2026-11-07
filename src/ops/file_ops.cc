@@ -17,6 +17,7 @@
 #include "data/document.hh"
 #include "data/media_layer.hh"
 #include "io/oanim_file.hh"
+#include "ops/edit_ops.hh"
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "python/py_runtime.hh"
@@ -198,6 +199,11 @@ static void document_replace(Context &C, Document &&doc, const std::string &file
   C.wm->tool_settings.mirror_y = C.document->mirror_y;
   C.wm->filepath = filepath;
   C.wm->playing = false;
+  /* What was picked on the old document's paths goes with it: the new one's layers may have the same ids, and Own
+   * Motion would take a stale pick for one of theirs. */
+  C.wm->path_dots.clear();
+  C.wm->path_handle_picks.clear();
+  motion_path_picks_sync(C);
   C.undo->reset(*C.document);
   /* A recovered document isn't saved anywhere yet, so it starts out with unsaved changes. */
   C.wm->saved_change = saved ? C.undo->change_count() : std::numeric_limits<uint64_t>::max();

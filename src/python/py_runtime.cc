@@ -1523,12 +1523,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (!doc.motion_paths || !motion_path_range(doc, targets, first, last)) {
       return out;
     }
-    std::vector<MotionPathTarget> dotted;
-    for (const auto &[t, f] : C.wm->path_dots) {
-      dotted.push_back(t);
-    }
-    motion_path_dots_picked(dotted);
-    motion_path_tool_on(C.wm->tool_settings.tool == Tool::MotionPath);
+    motion_path_picks_sync(C);
     for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
       py::dict d;
       d["label"] = motion_path_label(doc, p.target);

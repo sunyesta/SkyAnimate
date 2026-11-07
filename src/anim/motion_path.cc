@@ -148,7 +148,7 @@ struct OwnValues {
 bool own_values(const Document &doc, const MotionPathTarget &t, OwnValues &r);
 void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v);
 
-/* The targets of the dots picked on paths, set by the window (see motion_path_dots_picked). */
+/* The targets with dots, key handles or control points picked, set by the window (see motion_path_dots_picked). */
 std::vector<MotionPathTarget> g_dots_picked;
 bool g_path_tool = true;
 /* While a MotionPathOnFrame has the document on another frame: the document as shown, what Own Motion holds. (Each

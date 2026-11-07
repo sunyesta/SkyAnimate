@@ -2052,13 +2052,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     return;
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(C);
-  {
-    std::vector<MotionPathTarget> dotted;
-    for (const auto &[t, f] : wm.path_dots) {
-      dotted.push_back(t);
-    }
-    motion_path_dots_picked(dotted);
-  }
+  motion_path_picks_sync(C);
   /* Own Motion: which paths show only their own motion (those being edited). */
   std::vector<bool> own;
   for (const MotionPathTarget &t : targets) {

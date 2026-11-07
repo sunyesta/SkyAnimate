@@ -71,12 +71,13 @@ struct MotionPath {
 /* From document space on `frame` to where path `p` draws it, `at` (a place on that frame, in document space: the
  * target's) landing on its dot: the key's handles and control points as drawn, and back with inverted(). */
 Transform2D motion_path_drawn(const MotionPath &p, int frame, float2 at);
-/* Whether `target`'s path shows only its own motion now: Own Motion is on and one of its own keys or dots is picked. */
+/* Whether `target`'s path shows only its own motion now: Own Motion is on and something on it is picked (one of its
+ * own keys, a dot, a key handle or a control point). */
 bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target);
 /* Whether the Motion Path tool is on (the window's): Own Motion is for editing with it; outside it paths are only
  * looked at, the real ones. */
 void motion_path_tool_on(bool on);
-/* The targets of the dots picked on paths (the window's), for Own Motion. */
+/* The targets with dots, key handles or control points picked on their paths (the window's), for Own Motion. */
 void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets);
 /* The paths of `targets` over frames first..last. */
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,

@@ -89,6 +89,12 @@ assert ops.anim.motion_path_handle(frame="10", side="IN", x="3.5", y="1.0", **on
 p = path(label)
 h = next(h for h in p["handles"] if h["frame"] == 10)
 assert close(h["in"], (3.5, 1.0)), ("the handle where it was dragged", h)
+# Picking the handle lets the keys go, but it is still the path being edited: its own motion, not the real one.
+assert ops.anim.motion_path_handle_select(frame="10", out="0", **on) == {'FINISHED'}
+assert oanim.wm.motion_path_handle_picks() and not any(k["selected"] for k in art.keyframes("points[0].pos"))
+p = path(label)
+assert p["own_motion"] and close(at(p, 10), (3.5, 2.0)), ("a key handle picked: still its own motion", at(p, 10))
+assert ops.anim.motion_path_select(frame="10", **on) == {'FINISHED'}
 
 # --- Outside the tool: only looked at, the real path, the key still picked -------------------------------------
 ops.wm.tool_select()
@@ -187,6 +193,12 @@ assert ops.anim.motion_path_control_add(frame="8", **pupil) == {'FINISHED'}
 assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}
 own = path("pupil head")
 assert own["own_motion"]
+# A control point picked (the keys let go): still its own motion, the box's stop not shown.
+assert ops.anim.motion_path_handle_select(frame="10", control="0", **pupil) == {'FINISHED'}
+# (Asked at once, before a path is drawn, as an edit straight after the pick would: the pick itself tells Own Motion.)
+assert min(c["at"][0] for c in oanim.wm.motion_path_controls() if c["end"] == 10) < 7.0, "on its own path"
+picked = path("pupil head")
+assert picked["own_motion"] and close(at(picked, 10), (4.0, 0.0)), ("a control point picked", at(picked, 10))
 # (The tip's path has it too, a bone's length on.)
 c = min((c for c in oanim.wm.motion_path_controls() if c["end"] == 10),
         key=lambda c: abs(c["at"][0] - at(own, c["near_frame"])[0]))
@@ -194,12 +206,16 @@ assert c["at"][0] < 7.0 and close(c["at"], at(own, c["near_frame"]), 0.05), (c["
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 
 # --- Saved with the file --------------------------------------------------------------------------------------
+# (A dot picked as a new document comes: let go with the old one, whose layer ids the new one's may share.)
+assert ops.anim.motion_path_select(frame="7", **pupil) == {'FINISHED'}
+assert oanim.wm.motion_path_dots()
 doc.path_own_motion = False
 folder = tempfile.mkdtemp()
 try:
     file = os.path.join(folder, "own.oanim")
     assert ops.wm.save_as_mainfile(filepath=file) == {'FINISHED'}
     ops.wm.read_homefile()
+    assert not oanim.wm.motion_path_dots(), "nothing picked on the old document's paths carries over"
     assert oanim.data.document.path_own_motion
     assert ops.wm.open_mainfile(filepath=file) == {'FINISHED'}
     assert not oanim.data.document.path_own_motion

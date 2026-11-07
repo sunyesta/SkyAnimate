@@ -116,6 +116,9 @@ std::vector<Layer *> editable_layers(Context &C);
 /* The motion paths traced now (anim/motion_path.hh), with the Motion Path tool's Edit Layer: what the tool, its
  * operators and the timeline work on. */
 std::vector<struct MotionPathTarget> motion_path_targets(Context &C);
+/* Tells Own Motion (motion_path_own_motion) which paths have something picked on them (dots, key handles, control
+ * points; keys it sees itself) and whether the Motion Path tool is on. */
+void motion_path_picks_sync(Context &C);
 std::vector<struct MotionPathTarget> motion_path_timing_targets(Context &C);
 /* What a selected key picks a stretch on: the timing targets, Edit Layer choosing between the layers' own and their
  * bones' and points' (as the key header's stretch at the playhead). */

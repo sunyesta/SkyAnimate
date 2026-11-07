@@ -17,19 +17,30 @@
 
 namespace oanim {
 
-/* Own Motion follows the dots picked (motion_path_own_motion): told whenever an operator here changes them. */
+void motion_path_picks_sync(Context &C)
+{
+  std::vector<MotionPathTarget> targets;
+  if (C.wm) {
+    for (const auto &[t, f] : C.wm->path_dots) {
+      targets.push_back(t);
+    }
+    /* A key handle or control point picked is its path being edited as much as a key or dot: picking one lets the
+     * keys go, and Own Motion would flip to the real path under it. */
+    for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {
+      targets.push_back(p.target);
+    }
+  }
+  motion_path_dots_picked(targets);
+  motion_path_tool_on(C.wm && C.wm->tool_settings.tool == Tool::MotionPath);
+}
+
+/* Own Motion follows the dots and path handles picked (motion_path_own_motion): told whenever an operator here changes
+ * them. */
 struct PathDotsSync {
   Context &C;
   ~PathDotsSync()
   {
-    std::vector<MotionPathTarget> targets;
-    if (C.wm) {
-      for (const auto &[t, f] : C.wm->path_dots) {
-        targets.push_back(t);
-      }
-    }
-    motion_path_dots_picked(targets);
-    motion_path_tool_on(C.wm && C.wm->tool_settings.tool == Tool::MotionPath);
+    motion_path_picks_sync(C);
   }
 };
 
@@ -494,6 +505,7 @@ void motion_path_operators_register()
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
+      PathDotsSync picked{C};
       std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
       if (op_arg_bool(C, "none")) {
         picks.clear();
