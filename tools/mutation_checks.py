@@ -4,8 +4,18 @@ Each feature adds an entry to PENDING for every fix it makes: the file, a piece 
 to put there instead to undo the fix, a name, and the test that should then fail. They are run together when the user
 says "run milestone checks":
 
-    python tools/mutation_checks.py          # every pending check
-    python tools/mutation_checks.py 3 7      # only those
+    python tools/mutation_checks.py              # every pending check
+    python tools/mutation_checks.py 3 7          # only those
+    python tools/mutation_checks.py --lanes 6    # six at once (this folder and five lane folders)
+    python tools/mutation_checks.py --lanes 6 --prepare   # only make and build the lane folders
+    python tools/mutation_checks.py --lanes 6 --not-here  # the five lane folders only: this one stays free to edit
+    python tools/mutation_checks.py --remove-lanes
+
+Lanes: a check edits the source and rebuilds, so checks run side by side only in folders of their own. --lanes N uses
+this folder and N-1 lane worktrees beside it (<this folder's name>-mut1, ...), made on first use (a configure and full
+build, about ten minutes, reusing this build's fetched sources) and kept for the next run; each run brings them to this
+folder's commit plus its uncommitted changes. A lane takes the next check on the file it last changed when there is
+one, so each rebuild compiles one file. --remove-lanes deletes them.
 
 Run it from the worktree's root, with nothing else building or editing the source there: it changes one file at a
 time, rebuilds (for C++), runs the test and puts the file back. A check the test still passes is "NOT CAUGHT": the
@@ -19,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 CMAKE = (r"C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/"
          r"CMake/CMake/bin/cmake.exe")
@@ -26,8 +37,7 @@ EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
 PENDING = [
-    ("src/anim/animation.cc", "if (!before.empty() && ch.synced) {",
-     "if (!before.empty()) {", "eraser cut ends say nothing about deleted keys", "tests/test_key_whole_drawing.py"),
+    ('src/anim/animation.cc', 'if (!before.empty() && (fillers ? ch.together_synced : ch.synced)) {', 'if (!before.empty()) {', 'eraser cut ends say nothing about deleted keys', 'tests/test_key_whole_drawing.py'),
     ("src/anim/animation.cc", "drawing_key_whole(layer, !layer.key_whole_settled, action_key);",
      "drawing_key_whole(layer, !layer.key_whole_settled, doc.action);", "same-named actions told apart",
      "tests/test_key_whole_drawing.py"),
@@ -41,9 +51,7 @@ PENDING = [
      "a refused argument changes no key", "tests/test_motion_path_key_menu.py"),
     ("src/anim/motion_path.cc", "          k->speeds = speeds;", "          (void)speeds;",
      "whole drawing slide: every point alike", "tests/test_key_whole_drawing.py"),
-    ("src/anim/motion_path.cc", "  if (!target.bone && !target.point) {\n    /* A layer's path:",
-     "  if (false) {\n    /* A layer's path:", "a layer's diamonds only its path keys",
-     "tests/test_motion_path_key_menu.py"),
+    ('src/anim/motion_path.cc', '    filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;\n    for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {', '    filter.kinds = KEY_ALL;\n    for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {', "a layer's diamonds only its path keys", 'tests/test_motion_path_key_menu.py'),
     ("src/anim/animation.cc", "      k.filler_inside = fillers && was_animated && frame < own_last;",
      "      k.filler_inside = false;", "a filler inside motion shapes nothing", "tests/test_key_together.py"),
     ("src/anim/channel.cc", "  return k.filler && k.frame != 0 && (k.filler_inside || !own_after);",
@@ -106,16 +114,12 @@ PENDING = [
      '      if (false) {', 'Match Timing keeps every key when the counts match', "tests/test_time_together.py"),
     ('src/editors/timeline.cc', '        own_rows(&l, depth + 1);\n        self(self, l.children, depth + 1);',
      '        own_rows(&l, depth + 1);\n        self(self, l.children, depth);', 'layers nest under their group', 'tests/test_timeline_tree.py'),
-    ('src/editors/timeline.cc', '  if (keyed(all, KeyFilter{}) || !pinned.empty()) {',
-     '  if (false) {', 'the Summary row comes first', 'tests/test_timeline_tree.py'),
-    ('src/editors/timeline.cc', 'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && keyed({l}, sel)) {',
-     'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0) && false) {', "the selected points' keys under Points", 'tests/test_timeline_selected_points.py'),
-    ('src/editors/timeline.cc', 'depth, "layer:" + std::to_string(l.id), picked(l), false, l.id)',
-     'depth, "layer:" + std::to_string(l.id), false, false, l.id)', 'the picked layers start open', 'tests/test_timeline_tree.py'),
+    ('src/editors/timeline.cc', '  if (keyed(all, layer_keys) || !pinned.empty() || (show_all && !layers.empty())) {', '  if (false) {', 'the Summary row comes first', 'tests/test_timeline_tree.py'),
+    ('src/editors/timeline.cc', 'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0, keyed({l}, sel)) && keyed({l}, sel)) {', 'if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0, keyed({l}, sel)) && false) {', "the selected points' keys under Points", 'tests/test_timeline_selected_points.py'),
+    ('src/editors/timeline.cc', 'depth, "layer:" + std::to_string(l.id), picked(l), picks_in(l), l.id,', 'depth, "layer:" + std::to_string(l.id), false, picks_in(l), l.id,', 'the picked layers start open', 'tests/test_timeline_tree.py'),
     ('src/editors/timeline.cc', 'add(channel_label(*l, ref.path, owner || other), {l}, f, depth',
      'add(channel_label(*l, ref.path, owner), {l}, f, depth', "a linked knob's row named with its bone", 'tests/test_controller.py'),
-    ('src/editors/timeline.cc', 'if (!under.empty() && keyed(under, KeyFilter{})) {',
-     'if (false) {', 'the groups above a picked layer, dimmed', 'tests/test_timeline_only_selected.py'),
+    ('src/editors/timeline.cc', 'if (!under.empty() && (show_all || keyed(under, layer_keys))) {', 'if (false) {', 'the groups above a picked layer, dimmed', 'tests/test_timeline_only_selected.py'),
     ('src/editors/timeline.cc', 'const bool only_picked = doc.timeline_only_selected && any_picked;',
      'const bool only_picked = false;', 'only the picked bones with Only Selected', 'tests/test_timeline_only_selected.py'),
     ('src/ops/anim_ops.cc', 'if (C.document && !C.document->timeline_only_selected && !C.document->timeline_lock) {',
@@ -150,10 +154,8 @@ PENDING = [
      '      s.fillers += 0;', 'filler keys counted for their grey hollow look', 'tests/test_timeline_key_fills.py'),
     ('src/editors/timeline.cc', '    start = std::min(start + frames, end - MIN_SPAN);',
      '    start = start + frames;', 'the scroll bar never zooms closer than 10 frames', 'tests/test_timeline_navigation.py'),
-    ('src/editors/timeline.cc', '    const int by = std::max(frames, -from_start);',
-     '    const int by = frames;', 'the range never moves before frame 0', 'tests/test_timeline_navigation.py'),
-    ('src/editors/timeline.cc', '    start = std::clamp(from_start + frames, 0, std::max(0, from_end - 1));',
-     '    start = from_start + frames;', 'Start stays before the End', 'tests/test_timeline_navigation.py'),
+    ('src/anim/sculpt.cc', '@@dropped@@', '', 'DROPPED the playback range bar on the ruler (timeline_range_drag) wa', 'sculpt'),
+    ('src/anim/sculpt.cc', '@@dropped@@', '', 'DROPPED the playback range bar on the ruler (timeline_range_drag) wa', 'sculpt'),
     ('src/editors/timeline.cc', 'add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);',
      'add("Drawing", {l}, points, depth, "", false, false, 0);', 'the Drawing row red with points picked',
      'tests/test_timeline_selected_points.py'),
@@ -190,12 +192,10 @@ PENDING = [
      'if (((show_all', 'no Bones folder with no bone picked', 'tests/test_timeline_picked_layer.py'),
     ('src/ops/anim_ops.cc', '(!sel_only && l->is_bone_layer())',
      'l->is_bone_layer()', "a bone layer's layers only when picked", 'tests/test_timeline_picked_layer.py'),
-    ('src/editors/timeline.cc', '          {"picked_bones", filter.picked_bones_only ? "1" : "0"},\n',
-     '', "the row's keys picked as it shows them", 'tests/test_timeline_picked_layer.py'),
+    ('src/editors/timeline.cc', '          {"picked_bones", filter.picked_bones_only ? "1" : "0"},\n          {"path", filter.path},\n          {"pinned", filter.pinned_only ? "1" : "0"}};', '          {"path", filter.path},\n          {"pinned", filter.pinned_only ? "1" : "0"}};', "the row's keys picked as it shows them", 'tests/test_timeline_picked_layer.py'),
     ('src/data/document.hh', 'point == o.point && head == o.head && drawing', 'point == o.point && drawing',
      "a bone's head and tip are two paths", 'tests/test_motion_paths.py'),
-    ('src/anim/motion_path.cc', '          if (!b.connected) {', '          if (true) {',
-     "no head path for a connected bone", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '          if (!b.connected || bone_is_point(b)) {', '          if (true) {', 'no head path for a connected bone', 'tests/test_motion_paths.py'),
     ('src/anim/motion_path.cc', 'return !b.angle_keys.keys.empty() || b.connected || b.position_keys.keys.empty();',
      'return true;', "a tip that only moves goes by its position keys", 'tests/test_motion_paths.py'),
     ('src/anim/motion_path.cc', '  t.head = target.head;', '',
@@ -215,8 +215,7 @@ PENDING = [
      "a renamed action keeps its frame 0 handle", 'tests/test_motion_path_setup_handle.py'),
     ('src/io/oanim_file.cc', '    j[std::string(name) + "_action_setup"] = std::move(setup);', '',
      "an action's frame 0 handle saved", 'tests/test_motion_path_setup_handle.py'),
-    ('src/anim/motion_path.cc', 'const int start = doc.frame_start <= 1 ? 0 : doc.frame_start,',
-     'const int start = std::max(1, doc.frame_start),', "paths start at frame 0, the setup", 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '    start = it == keys.begin() ? 0 : *std::prev(it);', '    start = it == keys.begin() ? start : *std::prev(it);', 'paths start at frame 0, the setup', 'tests/test_motion_paths.py'),
     ('src/anim/motion_path.cc', '    add(b.scale_keys);',
      '    add(b.scale_keys); for (const int f : layer_key_frames(*layer)) { if (f > 0) { keys.insert(f); } }', "a bone's row: not its parent's or other bones' keys", 'tests/test_motion_path_own_keys.py'),
     ('src/anim/motion_path.cc', '      add(layer->drawing.points[size_t(i)].pos_keys);',
@@ -269,8 +268,7 @@ PENDING = [
      '        const bool at_point = point_selected, at_tip = tip_picked;', "a picked point lights its handles' tips", 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '        const ContrastColors &tip_colors = at_tip ? handle_tip_picked : handle_own;',
      '        const ContrastColors &tip_colors = at_tip ? handle_picked : handle_own;', 'picked handle tips orange', 'tests/test_overlay_colors.py'),
-    ('src/editors/viewport.cc', '    out.push_back({from, to, u32_mix(own, picked, (from + to) * 0.5f)});',
-     '    out.push_back({from, to, u32_mix(own, picked, 0.0f)});', 'a dragged path handle fades to orange', 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '    if (tip_picked) {\n      base = Color{own.r + (orange.r - own.r) * mid,', '    if (false) {\n      base = Color{own.r + (orange.r - own.r) * mid,', 'a dragged path handle fades to orange', 'tests/test_overlay_colors.py'),
     ('src/editors/overlay_contrast.cc', '    mix(w);',
      '', 'the canvas fingerprint sees every pixel', 'tests/test_overlay_colors.py'),
     ('src/editors/overlay_contrast.cc', '                        document_to_pixels.tx, document_to_pixels.ty, background.r, background.g, background.b})',
@@ -279,8 +277,7 @@ PENDING = [
      '', 'choosing the Motion Path tool shows paths', 'tests/test_motion_path_own_motion.py'),
     ('src/editors/viewport.cc', '      g.marks.push_back({p.pos, fill, p.selected ? 0u : IM_COL32(0x10, 0x10, 0x10, 170), r, 1.0f});',
      '      g.marks.push_back({p.pos, fill, p.selected ? 0u : IM_COL32(0x10, 0x10, 0x10, 170), r, 0.0f});', 'points round', 'tests/test_overlay_colors.py'),
-    ('src/editors/viewport.cc', '      const ImU32 fill = contrast_u32(colors.of(pick), 1.0f);',
-     '      const ImU32 fill = key ? IM_COL32(240, 240, 240, 255) : contrast_u32(colors.of(pick), 1.0f);', "outside the tool, keys the path's colour", 'tests/test_overlay_colors.py'),
+    ('src/editors/viewport.cc', '      ImU32 fill = key ? u32_mix(dot, IM_COL32(255, 255, 255, 255), 0.15f) : dot;', '      ImU32 fill = key ? IM_COL32(240, 240, 240, 255) : dot;', "outside the tool, keys the path's colour", 'tests/test_overlay_colors.py'),
     ('src/editors/viewport.cc', '      const ContrastPick pick = under && under->at(p.points[i], c) ? contrast_pick(c, colors.base)',
      '      const ContrastPick pick = false ? contrast_pick(c, colors.base)', 'quiet dots and keys readable on anything', 'tests/test_overlay_colors.py'),
     ('src/anim/motion_path.cc', '  return doc.path_own_motion && !target.drawing && g_path_tool;',
@@ -343,8 +340,7 @@ PENDING = [
      "Bezier keys take their handles' ease", 'bezier_keys'),
     ('src/anim/channel.cc', '          u = bezier_ease(b.bezier, t);', '          u = t;',
      "Bezier position keys go along the path at the handles' timing", 'bezier_keys'),
-    ('src/anim/channel.cc', '        mode == Interp::Bezier)', '        false)',
-     'a Bezier key times its whole breakdown span', 'bezier_keys'),
+    ('src/anim/sculpt.cc', '@@dropped@@', '', 'DROPPED breakdowns are now timed as keys (15e4ab2): no span across b', 'sculpt'),
     ('src/anim/channel.cc', '      r_handles = {1.0f / 3.0f, 0.0f, 2.0f / 3.0f, 1.0f};', '      r_handles = BEZIER_DEFAULT;',
      "Smooth's handles in the settings graph", 'bezier_keys'),
     ('src/anim/channel.hh', '  k.bezier = bezier_clamped(s.bezier);', '  k.bezier = BEZIER_DEFAULT;',
@@ -363,21 +359,21 @@ PENDING = [
     ('src/editors/viewport.cc', '                        vector_under(C, view, at);', '                        point_under(C, view, at);', 'path tool: a handle click picks it', 'motion_path_pick'),
     ('src/editors/viewport.cc', '  else if (q.on && (std::fabs(mouse.x - q.at.x) > 2.0f || std::fabs(mouse.y - q.at.y) > 2.0f)) {', '  else if (q.on) {', 'path hover: quiet until the mouse moves on', 'motion_path_pick'),
     ('src/editors/timeline.cc', '        scope->clear();', '        (void)scope;', 'key header: focus keys never into undo', 'key_header_path'),
-    ('src/editors/timeline.cc', '  f.mode = 2;', '  f.mode = 0;', 'key header: teal follows the path', 'key_header_path'),
+    ('src/editors/timeline.cc', '  f.mode = 2;\n  f.target = target;\n  f.targets = {target};', '  f.mode = 0;\n  f.target = target;\n  f.targets = {target};', 'key header: teal follows the path', 'key_header_path'),
     ('src/editors/timeline.cc', '      f.mode = 1;', '      (void)0;', 'key header: picked dots red', 'key_header_path'),
     ('src/anim/motion_path.cc', '  const auto it = frames.lower_bound(std::max(frame, 1));', '  const auto it = frames.upper_bound(std::max(frame, 1));', 'path stretch at: a key ends its stretch', 'key_header_path'),
     ('src/editors/timeline.cc', '    return hovered ? IM_COL32(0x2c, 0x86, 0x82, 255) : IM_COL32(0x22, 0x6e, 0x6b, 255);', '    return hovered ? IM_COL32(0x96, 0x40, 0x40, 255) : IM_COL32(0x7d, 0x34, 0x34, 255);', 'key header: teal', 'key_header_path'),
-    ('src/ops/motion_path_ops.cc', '      C.wm->path_handle_picks.clear();', '      (void)0;', 'path handles: a key or dot pick drops them', 'tests/test_motion_path_handle_pick.py'),
-    ('src/ops/motion_path_ops.cc', '        C.wm->path_dots.clear();', '        (void)0;', 'path handles: a handle pick drops the dots', 'tests/test_motion_path_handle_pick.py'),
-    ('src/editors/viewport.cc', '    /* A bone or point picked: no path handles with it. */', '  }\n  if (false) {', 'path handles: a bone or point pick drops them', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '    wm.path_dots.clear();\n  }\n  wm.path_handle_picks.clear();\n  bool picked = false;', '    wm.path_dots.clear();\n  }\n  (void)0;\n  bool picked = false;', 'path handles: a key or dot pick drops them', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '        C.wm->path_dots.clear();\n      }\n      const auto it = std::find(picks.begin(), picks.end(), pick);', '        (void)0;\n      }\n      const auto it = std::find(picks.begin(), picks.end(), pick);', 'path handles: a handle pick drops the dots', 'tests/test_motion_path_handle_pick.py'),
+    ('src/editors/viewport.cc', '  /* A bone or point picked: no path handles with it (nothing there: the handles picked stay). */\n  C.wm->path_handle_picks.clear();', '  /* A bone or point picked: no path handles with it (nothing there: the handles picked stay). */\n  (void)0;', 'path handles: a bone or point pick drops them', 'tests/test_motion_path_handle_pick.py'),
     ('src/ops/motion_path_ops.cc', '          path_handles_picked(C)', '          false', 'path handles: G R S on the handles alone', 'tests/test_motion_path_handle_pick.py'),
     ('src/anim/motion_path.cc', "            : kind == 'R' ? key + float2{d.x * c - d.y * s, d.x * s + d.y * c}", "            : kind == 'R' ? key + float2{d.x * c + d.y * s, d.x * s + d.y * c}", 'path handles: R turns about the key', 'tests/test_motion_path_handle_pick.py'),
-    ('src/ops/motion_path_ops.cc', '      if ((path_handles_picked(C)', '      if ((false', "path handles: V on the picked handles' keys", 'tests/test_motion_path_handle_pick.py'),
-    ('src/editors/timeline.cc', '    if (motion_path_stretch_at(doc, hp.target, hp.out ? hp.frame + 1 : hp.frame, start, end) &&', '    if (motion_path_stretch_at(doc, hp.target, hp.frame, start, end) &&', 'path handles: the header edits the stretch an out handle shapes', 'tests/test_motion_path_handle_pick.py'),
+    ('src/ops/motion_path_ops.cc', '      const bool handles = path_handles_picked(C) && !motion_path_picks_with_keys(C.wm->path_handle_picks);', '      const bool handles = false;', "path handles: V on the picked handles' keys", 'tests/test_motion_path_handle_pick.py'),
+    ('src/anim/motion_path.cc', '    add(hp.target, hp.out ? hp.frame + 1 : hp.frame);', '    add(hp.target, hp.frame);', 'path handles: the header edits the stretch an out handle shapes', 'tests/test_motion_path_handle_pick.py'),
     ('scripts/startup/oanim_keymap_default.py', '    ("Motion Path", "anim.motion_path_handles_reset", "X", {}),', '', 'path handles: X resets them', 'tests/test_motion_path_handle_pick.py'),
     ('src/anim/channel.cc', '      return controls_evaluate(*this, size_t(k) + 1, frame);', '      (void)0;', 'control points shape the path', 'tests/test_motion_path_controls.py'),
-    ('src/anim/channel.cc', '  return line_at(stretch_control_line(ch.keys, i), u);', '  return line_at(stretch_control_line(ch.keys, i), float(frame - a.frame) / float(std::max(b.frame - a.frame, 1)));', 'control points keep the timing', 'tests/test_motion_path_controls.py'),
-    ('src/anim/channel.cc', '  return a + d * stored.x + float2{-d.y, d.x} * stored.y;', '  return stored;', 'control points ride with the keys', 'tests/test_motion_path_controls.py'),
+    ('src/anim/channel.cc', '    const float u = interp == Interp::Custom ? custom_progress(b.speeds, t) : interp_curve(settings, t);\n    return line_at(stretch_control_line(ch.keys, i), u);', '    const float u = interp == Interp::Custom ? custom_progress(b.speeds, t) : interp_curve(settings, t);\n    (void)u;\n    return line_at(stretch_control_line(ch.keys, i), float(frame - a.frame) / float(std::max(b.frame - a.frame, 1)));', 'control points keep the timing', 'tests/test_motion_path_controls.py'),
+    ('src/anim/sculpt.cc', '@@dropped@@', '', 'DROPPED reversed in 73670e5: control points are stored where they ar', 'sculpt'),
     ('src/anim/motion_path.cc', '      k->path_out = speed * (float(span_out) / 3.0f);', '      (void)span_out;', 'a key added on a path creases nothing', 'tests/test_motion_path_controls.py'),
     ('src/io/oanim_file.cc', '          key.path_controls.push_back(v);', '          (void)v;', 'control points saved', 'tests/test_motion_path_controls.py'),
     ('src/ops/motion_path_ops.cc', '      const int controls = motion_path_controls_delete(*C.document, picks);', '      const int controls = 0;', 'X deletes control points', 'tests/test_motion_path_controls.py'),
@@ -391,11 +387,11 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', 'changed = motion_path_slide(doc, t, frame, points.back() - offset, slide) ? 1 : 0;', 'changed = 0;', 'Slide slides', 'tests/test_motion_path_timing_brushes.py'),
     ('src/anim/motion_path.cc', '    if (edit_layer) {\n      /* Edit Layer: the layer itself, its origin. */', '    if ((false)) {\n      /* Edit Layer: the layer itself, its origin. */', 'Edit Layer: the origin path alone', 'tests/test_motion_path_edit_layer.py'),
     ('src/editors/viewport.cc', 'if (C.wm->tool_settings.path_edit_layer) {\n    /* Edit Layer: the layer itself, never', 'if ((false)) {\n    /* Edit Layer: the layer itself, never', 'Edit Layer: no bone or point picked', 'tests/test_motion_path_edit_layer.py'),
-    ('src/editors/timeline.cc', '    return edit_layer == layer_itself(tg);\n  });', '    return (void)layer_itself, true;\n  });', 'teal never on the layer position with Edit Layer off', 'tests/test_motion_path_edit_layer.py'),
+    ('src/ops/motion_path_ops.cc', '    if (edit_layer == (!t.bone && !t.point && !t.drawing)) {', '    if ((void)edit_layer, true) {', 'teal never on the layer position with Edit Layer off', 'tests/test_motion_path_edit_layer.py'),
     ('src/editors/viewport.cc', '  if (C.wm->tool_settings.tool == Tool::MotionPath) {\n    Document &doc = *C.document;\n    const bool auto_key', '  if ((false)) {\n    Document &doc = *C.document;\n    const bool auto_key', 'Edit Layer: the box keyed whatever Auto Keying says', 'tests/test_motion_path_edit_layer.py'),
     ('src/ops/motion_path_ops.cc', 'ts.path_edit_layer = !ts.path_edit_layer;', '(void)0;', 'edit_layer= sets it', 'tests/test_motion_path_edit_layer.py'),
     ('src/anim/motion_path.cc', '        keys[i].interp = Interp::Custom;\n        keys[i].speeds = tg.speeds[i];', '        (void)0;', "path sculpt keeps each stretch's timing", 'tests/test_motion_path_sculpt.py'),
-    ('src/anim/motion_path.cc', 'const auto shown = [&](int f) { return f > 0 && f >= first && f <= last; };', 'const auto shown = [&](int f) { return f >= first && f <= last; };', 'path sculpt leaves the setup key', 'tests/test_motion_path_sculpt.py'),
+    ('src/anim/motion_path.cc', '    if (tg.pinned >= 0 && layer && !layer->drawing.curves.empty()) {', '    if (false) {', 'path sculpt leaves the setup key', 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '                                                       was + map_unvector(m, at - tg.pos[size_t(j)]));', '                                                       was);', 'path sculpt moves control points', 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '      if (keys[k].path_handles == PathHandles::Auto) {\n        keys[k].path_handles = PathHandles::Aligned;', '      if ((false)) {\n        keys[k].path_handles = PathHandles::Aligned;', 'path sculpt: fitted handles Aligned', 'tests/test_motion_path_sculpt.py'),
     ('src/anim/motion_path.cc', '      keys[k].value = tg.keys[k].value + map_unvector(m, at - tg.pos[j]);', '      keys[k].value = tg.keys[k].value;', 'path sculpt moves keys', 'tests/test_motion_path_sculpt.py'),
@@ -406,7 +402,7 @@ PENDING = [
     ('src/io/oanim_file.cc', '        key["path_control_handles"] = std::move(handles);', '        (void)handles;', 'control handles saved', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', '        /* The handle picked is the one that turns into line. */\n        out = -normalize(in) * out_len;', '        /* The handle picked is the one that turns into line. */\n        in = -normalize(out) * in_len;', 'Align turns the picked control handle', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', '      b.path_control_handles[size_t(p.control)] = PathControlHandles{};\n      changed++;', '      changed++;', 'X on a control handle: smooth again', 'tests/test_motion_path_control_handles.py'),
-    ('src/anim/motion_path.cc', '  b.path_control_handles.insert(b.path_control_handles.begin() + std::ptrdiff_t(at), PathControlHandles{});', '  b.path_control_handles.resize(b.path_controls.size());', 'a new control point gets its own unset handles', 'tests/test_motion_path_control_handles.py'),
+    ('src/anim/sculpt.cc', '@@dropped@@', '', 'DROPPED reversed in 1ebed0d: Add Control Point splits the curve and ', 'sculpt'),
     ('src/anim/motion_path.cc', '          h.out = path_control_offset_stored(keys[k - 1].value, keys[k].value, map_unvector(m, cp.handle_out));\n          h.set = true;', '          h.out = path_control_offset_stored(keys[k - 1].value, keys[k].value, map_unvector(m, cp.handle_out));\n          h.set = false;', 'sculpt fits control handles', 'tests/test_motion_path_control_handles.py'),
     ('src/anim/motion_path.cc', '      if (picks[i].control_handle) {\n        const float2 tip', '      if (false) {\n        const float2 tip', 'G R S on a picked control handle', 'tests/test_motion_path_control_handles.py'),
     ('src/ops/motion_path_ops.cc', '        pick.control_handle = std::clamp(op_arg_int(C, "control_handle", 0), 0, 2);', '        (void)0;', 'a control handle picked', 'tests/test_motion_path_control_handles.py'),
@@ -457,7 +453,7 @@ PENDING = [
     ('src/python/py_runtime.cc', '        if (bone_is_pin(bone)) {\n          throw py::value_error("a pin is one point: it has no length");', '        if (false) {\n          throw py::value_error("a pin is one point: it has no length");', "a pin's length can't be set", 'tests/test_pin_bones.py'),
     ('src/data/bones.cc', 'parent_pose = bone.follow_knob ? poses[pi].knob : poses[pi].pose;', 'parent_pose = poses[pi].pose;', 'a child hangs from the knob', 'tests/test_controller_knob.py'),
     ('src/data/bones.cc', '      p.skin = p.knob * p.setup.inverted();\n', '', 'layers and weights follow the knob', 'tests/test_controller_knob.py'),
-    ('src/data/bones.cc', 'const float knob_turn = rests ? bone.angle - setup_angle : 0.0f;', 'const float knob_turn = 0.0f;', 'the knob turns what hangs from it', 'tests/test_controller_knob.py'),
+    ('src/data/bones.cc', '    float knob_turn = rests ? bone.angle - setup_angle : 0.0f;', '    float knob_turn = 0.0f;', 'the knob turns what hangs from it', 'tests/test_controller_knob.py'),
     ('src/anim/controller.cc', 'rotate(frames * knob.controller_frame_size, knob.controller_box_angle)', 'frames * knob.controller_frame_size', 'the box lies at its angle', 'tests/test_controller_knob.py'),
     ('src/data/bones.cc', '        armature.bones[i].controller_box_angle += angle;\n', '', 'R on the setup frame turns the box', 'tests/test_controller_knob.py'),
     ('src/data/bones.cc', '    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves);\n', '    turns[i] = bone_moves(b) && !ancestor_is(armature, b, bone_moves) && !bone_is_controller(b);\n', 'R turns a knob', 'tests/test_controller.py'),
@@ -473,7 +469,7 @@ PENDING = [
     ('src/io/oanim_file.cc', '          bj["controller_box_angle"] = num(b.controller_box_angle);\n', '', 'the box angle is saved', 'tests/test_controller_knob.py'),
     ('src/ops/rig_ops.cc', '                   bone->follow_knob = follow;\n', '', 'Follow Knob can be turned off', 'tests/test_controller_knob.py'),
     ('src/ops/rig_ops.cc', '                   b.follow_knob = true;\n                   if (connect) {', '                   if (connect) {', 'Ctrl P onto a controller follows the knob', 'tests/test_controller_knob.py'),
-    ('src/anim/controller.cc', '  if (!knob.controller_knob_independent) {\n    return controller_knob(knob);\n  }\n  const float size', '  if (true) {\n    return controller_knob(knob);\n  }\n  const float size', 'an independent knob keeps its place', 'tests/test_controller_knob_stays.py'),
+    ('src/anim/controller.cc', '  if (!knob.controller_knob_independent) {\n    return controller_knob(knob) + pose.knob_pull;\n  }\n  const float size', '  if (true) {\n    return controller_knob(knob) + pose.knob_pull;\n  }\n  const float size', 'an independent knob keeps its place', 'tests/test_controller_knob_stays.py'),
     ('src/anim/controller.cc', '  return {std::clamp(at.x, lo.x, hi.x), std::clamp(at.y, lo.y, hi.y)};\n}\n\nfloat2 controller_knob_played', '  return at;\n}\n\nfloat2 controller_knob_played', 'an independent knob is held in the box', 'tests/test_controller_knob_stays.py'),
     ('src/anim/animation.cc', '    knobs.push_back(controller_knob_played(owner, b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', '    knobs.push_back(controller_knob(b));\n  }\n  return action_bone_frames_for(owner, turns, knobs);', 'an independent knob plays where it sits in the box', 'tests/test_controller_knob_stays.py'),
     ('src/anim/controller.cc', 'rotate(pose.box_skin.inverted().apply_vector(delta), -knob.controller_box_angle) / size', 'rotate(delta, -knob.controller_box_angle) / size', 'dragging an independent knob goes the way the mouse does', 'tests/test_controller_knob_stays.py'),
@@ -485,17 +481,17 @@ PENDING = [
     ('src/ops/rig_ops.cc', '                   if (!on_setup_frame(C)) {\n                     return OpStatus::Cancelled;\n                   }\n                   bool independent', '                   bool independent', 'Knob Is Independent changes on the setup frame', 'tests/test_controller_knob_stays.py'),
     ('src/data/bones.cc', 'bone.controller_knob_editing ? bone.controller_knob_edit_at :', 'false ? bone.controller_knob_edit_at :', 'inside its action the knob sits at its frame', 'tests/test_controller_knob_in_action.py'),
     ('src/anim/animation.cc', '      knob.controller_knob_editing = editing;\n', '      knob.controller_knob_editing = false;\n', 'editing an action places its knob', 'tests/test_controller_knob_in_action.py'),
-    ('src/anim/animation.cc', '      const bool editing = doc.action_layer == owner.id && bone_held_by_fix(doc, owner, knob);', '      const bool editing = !doc.action.empty() && doc.action_layer == owner.id;', 'only its own actions place the knob', 'tests/test_controller_knob_in_action.py'),
-    ('src/anim/animation.cc', '    return bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent));', '    return false;', 'an independent knob waits for what moves its parents', 'tests/test_controller_knob_order.py'),
+    ('src/anim/animation.cc', '      const bool editing = doc.action_layer == owner.id && (edit_side >= 0 || bone_held_by_fix(doc, owner, knob));', '      const bool editing = !doc.action.empty() && doc.action_layer == owner.id;', 'only its own actions place the knob', 'tests/test_controller_knob_in_action.py'),
+    ('src/anim/animation.cc', '    if (bone->controller_knob_independent && (moves_from(bone->parent) || moves_from(bone->controller_knob_parent))) {', '    if (false) {', 'an independent knob waits for what moves its parents', 'tests/test_controller_knob_order.py'),
     ('src/anim/animation.cc', '            play_fix(fix, so_far);\n', '', 'a fix plays as soon as its drivers have', 'tests/test_controller_knob_order.py'),
     ('src/anim/animation.cc', '        movers.push_back(&fix.name);\n', '', 'a fix its action drives moves the parents too', 'tests/test_controller_knob_order.py'),
-    ('src/anim/controller.cc', '  if (knob.controller_contain_knob) {\n    float2 lo, hi;\n', '  if (false) {\n    float2 lo, hi;\n', 'a contained drag stops at the edge', 'tests/test_controller_contain.py'),
+    ('src/anim/controller.cc', '  if (knob.controller_contain_knob) {\n    float2 lo, hi;\n    controller_box(knob, lo, hi);\n    to = {std::clamp(to.x, lo.x, hi.x), std::clamp(to.y, lo.y, hi.y)};\n  }\n  /* Its keys without what its constraints add. */', '  if (false) {\n    float2 lo, hi;\n    controller_box(knob, lo, hi);\n    to = {std::clamp(to.x, lo.x, hi.x), std::clamp(to.y, lo.y, hi.y)};\n  }\n  /* Its keys without what its constraints add. */', 'a contained drag stops at the edge', 'tests/test_controller_contain.py'),
     ('src/anim/controller.cc', '(knob.controller_contain_knob ? controller_knob_held(knob, pose) : controller_knob_place(knob, pose))', 'controller_knob_place(knob, pose)', 'a drag goes from where the knob is seen', 'tests/test_controller_contain.py'),
     ('src/anim/controller.cc', '  if (!knob.controller_contain_knob) {\n    knob.position = bone_position_from_transform(knob, frames);\n    return;\n  }\n', '', 'free, its keys go past the box', 'tests/test_controller_contain.py'),
     ('src/data/bones.cc', 'bone.controller_contain_knob ? controller_knob_held(bone, p) :', 'true ? controller_knob_held(bone, p) :', 'free, the knob is drawn where it is', 'tests/test_controller_contain.py'),
     ('src/anim/controller.cc', '    return controller_knob_clamped(knob);\n  }\n  const std::vector<BonePose> poses', '    return controller_knob(knob);\n  }\n  const std::vector<BonePose> poses', 'past the box its actions play the nearest point inside', 'tests/test_controller_contain.py'),
     ('src/io/oanim_file.cc', '          bj["controller_contain_knob"] = false;\n', '', 'Contain Knob in Box is saved', 'tests/test_controller_contain.py'),
-    ('src/anim/controller.cc', 'bone_position_from_transform(knob, controller_side_only(knob.controller_knob_edit_side, frames));', 'bone_position_from_transform(knob, frames);', 'in its side action the knob keys along its axis only', 'tests/test_controller_side_timing.py'),
+    ('src/anim/controller.cc', '    const float2 to = controller_side_only(side, frames);', '    const float2 to = frames;', 'in its side action the knob keys along its axis only', 'tests/test_controller_side_timing.py'),
     ('src/anim/controller.cc', '    controller_knob_set(knob, knob.controller_knob_edit_at + local);\n    return;\n', '', 'dragged in its side action, it goes from where it is shown', 'tests/test_controller_side_timing.py'),
     ('src/anim/animation.cc', "  /* In a side's own action it moves along that side (keying its timing): held only in a fix. */\n", '  if (holds(doc.action)) {\n    return true;\n  }\n', 'the knob is free in its own side action', 'tests/test_controller_side_timing.py'),
     ('src/anim/animation.cc', '          most = std::max(most, along);', '          most = along;', 'timing never goes back', 'tests/test_controller_side_timing.py'),
@@ -507,7 +503,7 @@ PENDING = [
     ('src/data/bones.cc', 'const float2 frames = {along.x * (along.x >= 0.0f ? hi.x : -lo.x), along.y * (along.y >= 0.0f ? hi.y : -lo.y)};', 'const float2 frames = along;', "looking all the way to a side takes the knob to the box's edge", 'tests/test_controller_constraints.py'),
     ('src/data/bones.cc', '                      knob_base;\n        position = setup_position;\n', '                      knob_base;\n        p.knob_pull = float2();\n        position = setup_position;\n', "a controller's constraints move its knob", 'tests/test_controller_constraints.py'),
     ('src/data/bones.cc', '                      knob_base;\n        position = setup_position;\n', '                      knob_base;\n', 'the box stays where it rests', 'tests/test_controller_constraints.py'),
-    ('src/anim/controller.cc', 'if (!knob.controller_knob_independent && !controller_constrained(knob)) {', 'if (!knob.controller_knob_independent) {', 'its actions play from where the constraints put the knob', 'tests/test_controller_constraints.py'),
+    ('src/anim/controller.cc', 'if (!bone_is_controller(knob) || (!knob.controller_knob_independent && !controller_constrained(knob))) {', 'if (!bone_is_controller(knob) || !knob.controller_knob_independent) {', 'its actions play from where the constraints put the knob', 'tests/test_controller_constraints.py'),
     ('src/anim/controller.cc', '    return controller_knob(knob) + pose.knob_pull;', '    return controller_knob(knob);', "the knob is placed with its constraints' pull", 'tests/test_controller_constraints.py'),
     ('src/ops/rig_ops.cc', '                 if (bone_is_controller(*bone) && !controller_constraint_works(type)) {', '                 if (false) {', 'a controller takes only the constraints that work on it', 'tests/test_controller_constraints.py'),
     ('src/editors/properties.cc', '      tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});', '      if (const Bone *b = bone_find(*active_layer, active_layer->active_bone); !b || !bone_is_controller(*b)) {\n        tabs.push_back({"Bone Constraints", TAB_CONSTRAINTS});\n      }', 'the Bone Constraints tab shows for a controller', 'tests/test_controller_constraints.py'),
@@ -532,7 +528,7 @@ PENDING = [
     ('src/ops/motion_path_ops.cc', 'always soft whatever O says). Of what a path traces (layer=, bone=, "\n                     "point=, or the first traced)";\n    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;', 'always soft whatever O says). Of what a path traces (layer=, bone=, "\n                     "point=, or the first traced)";\n    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;', 'Alt S follows Time Together', 'tests/test_motion_path_robust.py'),
     ('src/ops/operator.cc', ' && *end == 0 && std::isfinite(v)) ? v : fallback;', ' && *end == 0) ? v : fallback;', 'nan and inf arguments fall back', 'tests/test_motion_path_robust.py'),
     ('src/python/py_runtime.cc', '            speeds.push_back(std::isfinite(v) ? v : 0.0f);', '            speeds.push_back(std::max(0.0f, v));', 'Python speeds keep their sign', 'tests/test_motion_path_robust.py'),
-    ('src/anim/motion_path.cc', '        key_controls_split(ch.keys, size_t(&k - ch.keys.data()));', '        (void)k;', 'control points stay put when a key is added', 'tests/test_motion_path_robust.py'),
+    ('src/anim/motion_path.cc', '    /* Its control points stay where they are. */\n    key_controls_split(pos.keys, ki);', '    /* Its control points stay where they are. */\n    (void)0;', 'control points stay put when a key is added', 'tests/test_motion_path_robust.py'),
     ('src/anim/motion_path.cc', '      key_controls_join(ch.keys, size_t(k - ch.keys.data()));', '      (void)k;', 'control points stay put when a key is deleted', 'tests/test_motion_path_robust.py'),
     ('src/anim/motion_path.cc', '    with_own_key_channels(doc, t, [&, f = frame](auto &ch) { deleted += path_key_remove(ch, f) ? 1 : 0; });', '    with_path_channel(doc, t, [&, f = frame](auto &ch) { deleted += path_key_remove(ch, f) ? 1 : 0; });', "X takes all of a diamond's keys", 'tests/test_motion_path_robust.py'),
     ('src/anim/motion_path.cc', '    with_own_key_channels(const_cast<Document &>(doc), target, [&](auto &ch) { found = found || ch.key_at(frame); });', '    (void)0;', 'a frame keyed by a turn alone clicks as a key', 'tests/test_motion_path_robust.py'),
@@ -560,7 +556,7 @@ PENDING = [
     ('src/anim/motion_path.cc', '  order_progress(u, k0, gap, lo, hi);', '  order_progress(u, k0, gap);', 'Slide keeps an overshoot elsewhere in the stretch', 'tests/test_motion_path_pupil.py'),
     ('src/anim/motion_path.cc', '                                            std::clamp(std::max(1.0f, was + 0.5f), 1.0f, 2.0f));', '                                            1.0f);', 'a dot past the key follows the mouse', 'tests/test_motion_path_pupil.py'),
     ('src/anim/motion_path.cc', '    const float damp = xx * yy - xy * xy > 1e-3f * (xx + yy) * (xx + yy) ? 0.0f : 1e-3f * (xx + yy);', '    const float damp = 1e-3f * (xx + yy);', 'Slide undamped where the path moves freely', 'tests/test_motion_path_edit.py'),
-    ('src/anim/motion_path.cc', '  if (k && split && key_curve_split(pos->keys, ki, old_points)) {', '  if (false) {', 'a key added splits the curve where the dot is', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '  else if (split && over == 0 && key_curve_split(pos.keys, ki, old_points)) {', '  else if (false) {', 'a key added splits the curve where the dot is', 'tests/test_motion_path_pupil.py'),
     ('src/anim/motion_path.cc', '        u2[size_t(j)] = u > 1.0f ? 1.0f + (u - 1.0f) * beyond2 : (u - at) / (1.0f - at);', '        u2[size_t(j)] = (u - at) / (1.0f - at);', 'a key added keeps an overshoot past the key', 'tests/test_motion_path_pupil.py'),
     ('src/anim/channel.cc', '  if (line.size() >= 2 && u > 1.0f) {\n    return beyond(', '  if (false) {\n    return beyond(', 'an overshoot through control points goes past the key', 'tests/test_motion_path_pupil.py'),
     ('src/anim/animation.cc', '  animation_refresh_action_bones(doc);\n  bone_outer_parents_update(doc);\n  follow_points_update(doc);\n  shape_limits_update(doc);\n}', '  animation_refresh_action_bones(doc);\n}', 'a drag update works out the eye shape from the pose now', 'tests/test_bone_drag_followers.py'),
@@ -570,8 +566,8 @@ PENDING = [
     ('src/ops/rig_ops.cc', '    else if (action_bone_of(owner, other) == bone) {', '    else if (false) {', 'Mirror Action Bone Actions never writes over the same bone', 'tests/test_controller.py'),
     ('src/data/bones.cc', '      controller_knob_move(b, poses[i], map(at) - at);', '      (void)at;', 'the Transform Bones tool moves a knob', 'tests/test_controller_knob.py'),
     ('src/anim/channel.cc', '  }\n  a.path_out = stretch_key_handle(s, true);\n  key_aligned_again(a, a_broken);\n  b.path_in = stretch_key_handle(s, false);', '  }\n  key_aligned_again(a, a_broken);', "Add Control Point keeps the keys' handles to the curve", 'tests/test_motion_path_pupil.py'),
-    ('src/anim/motion_path.cc', '      over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '      over = 0;', 'a key added in an overshoot keeps the dots', 'tests/test_motion_path_pupil.py'),
-    ('src/anim/motion_path.cc', '      over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '      over = uk > 1.0f + 1e-4f ? 1 : 0;', 'a key added in an anticipation keeps the dots', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '    over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '    over = 0;', 'a key added in an overshoot keeps the dots', 'tests/test_motion_path_pupil.py'),
+    ('src/anim/motion_path.cc', '    over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;', '    over = uk > 1.0f + 1e-4f ? 1 : 0;', 'a key added in an anticipation keeps the dots', 'tests/test_motion_path_pupil.py'),
     ('src/ops/rig_ops.cc', 'armature_pose(armature, C.document->frame_current == 0);', 'armature_pose(armature);', 'Delete Bones off the setup frame rests children from the real setup', 'tests/test_bone_editing.py'),
     ('src/ops/rig_ops.cc', '                     b.setup_position = rest.position;\n                     b.setup_angle = rest.angle;', '                     (void)rest;', 'Delete Bones off the setup frame rests children under the new parent', 'tests/test_bone_editing.py'),
     ('src/anim/dynamics.cc', '        if (bone_is_controller(b)) {', '        if (false) {', "Bake Dynamics keys a controller's knob", 'tests/test_dynamics_bake_controller.py'),
@@ -680,67 +676,177 @@ PENDING = [
     ('src/anim/sculpt.cc', '      s.tolerance = s.spacing * SCULPT_DYNTOPO_TOLERANCE;', '      s.tolerance = s.spacing;', 'Dyntopo Collapse: within a tenth of a step', 'tests/test_sculpt_dyntopo.py'),
 ]
 
-def build():
-    return subprocess.run([CMAKE, "--build", "--preset", "release"], capture_output=True, text=True).returncode == 0
+def build(root):
+    return subprocess.run([CMAKE, "--build", "--preset", "release"], cwd=root, capture_output=True,
+                          text=True).returncode == 0
+
+
+def git(root, *args, data=None):
+    r = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f"git {' '.join(args)} in {root}: {r.stderr.decode(errors='replace')}")
+    return r.stdout
+
+
+def lane_roots(root, count):
+    parent, name = os.path.split(os.path.abspath(root))
+    return [os.path.join(parent, f"{name}-mut{k}") for k in range(1, count)]
+
+
+def lane_ready(root, lane):
+    """Bring a lane worktree to this folder's commit and uncommitted changes, made and built the first time."""
+    sha = git(root, "rev-parse", "HEAD").decode().strip()
+    if not os.path.isdir(lane):
+        git(root, "worktree", "add", "--detach", lane, sha)
+        deps = os.path.join(root, "build", "_deps")
+        fetched = [f"-DFETCHCONTENT_SOURCE_DIR_{d[:-4].upper()}={os.path.join(deps, d)}"
+                   for d in (os.listdir(deps) if os.path.isdir(deps) else []) if d.endswith("-src")]
+        if subprocess.run([CMAKE, "--preset", "windows", *fetched], cwd=lane, capture_output=True).returncode:
+            raise RuntimeError(f"configure failed in {lane}")
+    else:
+        git(lane, "checkout", "-f", "--detach", sha)
+        git(lane, "clean", "-fdq", "--", "src", "tests", "scripts", "tools")
+    diff = git(root, "diff", "--binary", "HEAD")
+    if diff:
+        git(lane, "apply", "--whitespace=nowarn", "-", data=diff)
+    for path in git(root, "ls-files", "--others", "--exclude-standard").decode().splitlines():
+        os.makedirs(os.path.dirname(os.path.join(lane, path)) or lane, exist_ok=True)
+        shutil.copyfile(os.path.join(root, path), os.path.join(lane, path))
+    if not build(lane):
+        raise RuntimeError(f"build failed in {lane}")
+
+
+class Lane:
+    def __init__(self, root, number):
+        self.root, self.number = root, number
+        self.rebuilt = False  # its build holds a native entry's change
+        self.last = None      # the file it last changed
+
+
+def check(lane, i, entry, say):
+    """Run one check in a lane: True when its test fails with the fix undone."""
+    path, old, new, name, test = entry
+    full = os.path.join(lane.root, path)
+    if not os.path.exists(os.path.join(lane.root, test)):
+        # Older entries name the test without its folder and prefix.
+        test = os.path.join("tests", f"test_{test}.py")
+    if not os.path.exists(os.path.join(lane.root, test)):
+        say(f"{i} {name}: no test {test}; fix the entry")
+        return False
+    with open(full, encoding="utf-8") as f:
+        src = f.read()
+    if src.count(old) != 1:
+        say(f"{i} {name}: its code is found {src.count(old)} times in {path}; fix the entry")
+        return False
+    backup = os.path.join(tempfile.gettempdir(), f"oanim_mutation_{os.getpid()}_{lane.number}_{os.path.basename(path)}")
+    shutil.copyfile(full, backup)
+    try:
+        with open(full, "w", encoding="utf-8", newline="") as f:
+            f.write(src.replace(old, new))
+        lane.last = path
+        native = not path.endswith(".py")
+        if not native and lane.rebuilt:
+            # The build still holds the last native entry's change: a script-only entry runs on a clean one.
+            shutil.copyfile(backup, full)
+            if not build(lane.root):
+                raise RuntimeError(f"the build in {lane.root} with every file put back failed: look before going on")
+            lane.rebuilt = False
+            with open(full, "w", encoding="utf-8", newline="") as f:
+                f.write(src.replace(old, new))
+        if native:
+            lane.rebuilt = True
+            if not build(lane.root):
+                say(f"{i} {name}: BUILD FAILED with it undone; fix the entry")
+                return False
+        r = subprocess.run([os.path.join(lane.root, EXE), "--background", "--python", test], cwd=lane.root,
+                           capture_output=True, text=True)
+        why = [l for l in (r.stdout + r.stderr).splitlines() if "Error" in l or "assert" in l][-1:]
+        if r.returncode:
+            say(f"{i} {name}: caught {why}")
+            return True
+        say(f"{i} {name}: NOT CAUGHT by {test}")
+        return False
+    finally:
+        shutil.copyfile(backup, full)
+        os.remove(backup)
 
 
 def main():
-    only = set(sys.argv[1:])
-    rebuilt = False
-    caught = missed = 0
-    for i, (path, old, new, name, test) in enumerate(PENDING):
-        if only and str(i) not in only:
-            continue
-        if not os.path.exists(test):
-            # Older entries name the test without its folder and prefix.
-            test = os.path.join("tests", f"test_{test}.py")
-        if not os.path.exists(test):
-            print(f"{i} {name}: no test {test}; fix the entry", flush=True)
-            missed += 1
-            continue
-        with open(path, encoding="utf-8") as f:
-            src = f.read()
-        if src.count(old) != 1:
-            print(f"{i} {name}: its code is found {src.count(old)} times in {path}; fix the entry", flush=True)
-            missed += 1
-            continue
-        backup = os.path.join(tempfile.gettempdir(), f"oanim_mutation_{os.getpid()}_{os.path.basename(path)}")
-        shutil.copyfile(path, backup)
+    root = os.getcwd()
+    args = sys.argv[1:]
+    if "--remove-lanes" in args:
+        parent, name = os.path.split(root)
+        for lane in sorted(d for d in os.listdir(parent) if d.startswith(f"{name}-mut")):
+            git(root, "worktree", "remove", "--force", os.path.join(parent, lane))
+            print(f"removed {lane}", flush=True)
+        return
+    count = 1
+    if "--lanes" in args:
+        at = args.index("--lanes")
+        count = max(1, int(args[at + 1]))
+        del args[at:at + 2]
+    only = set(args) - {"--prepare", "--not-here"}
+    todo = [i for i in range(len(PENDING)) if not only or str(i) in only]
+    # --not-here: only the lane folders, so this one stays free for editing while they run.
+    here = "--not-here" not in args
+    lanes = [Lane(root, 0)] if here else []
+    extra = lane_roots(root, min(count, len(todo) + (not here)))
+    if extra:
+        print(f"getting {len(extra)} lane folder(s) ready", flush=True)
+        errors = []
+
+        def ready(lane):
+            try:
+                lane_ready(root, lane)
+            except RuntimeError as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=ready, args=(lane,)) for lane in extra]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        if errors:
+            print("\n".join(errors), flush=True)
+            sys.exit(2)
+        lanes += [Lane(lane, k + 1) for k, lane in enumerate(extra)]
+    if "--prepare" in args:
+        # Lanes made and built ahead of a run (it brings them up to date again).
+        return
+    lock = threading.Lock()
+    tally = {"caught": 0, "missed": 0}
+    broken = []
+
+    def say(line):
+        with lock:
+            print(line, flush=True)
+
+    def next_for(lane):
+        with lock:
+            if not todo or broken:
+                return None
+            # The next check on the file this lane last changed: its rebuild then compiles that one file.
+            k = next((k for k, i in enumerate(todo) if PENDING[i][0] == lane.last), 0)
+            return todo.pop(k)
+
+    def work(lane):
         try:
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                f.write(src.replace(old, new))
-            native = not path.endswith(".py")
-            if not native and rebuilt:
-                # The build still holds the last native entry's change: a script-only entry runs on a clean one.
-                shutil.copyfile(backup, path)
-                if not build():
-                    print("The build with every file put back failed: look before going on", flush=True)
-                    sys.exit(2)
-                rebuilt = False
-                with open(path, "w", encoding="utf-8", newline="") as f:
-                    f.write(src.replace(old, new))
-            if native:
-                rebuilt = True
-                if not build():
-                    print(f"{i} {name}: BUILD FAILED with it undone; fix the entry", flush=True)
-                    missed += 1
-                    continue
-            r = subprocess.run([EXE, "--background", "--python", test], capture_output=True, text=True)
-            why = [l for l in (r.stdout + r.stderr).splitlines() if "Error" in l or "assert" in l][-1:]
-            if r.returncode:
-                caught += 1
-                print(f"{i} {name}: caught {why}", flush=True)
-            else:
-                missed += 1
-                print(f"{i} {name}: NOT CAUGHT by {test}", flush=True)
-        finally:
-            shutil.copyfile(backup, path)
-            os.remove(backup)
-    if rebuilt and not build():
-        print("The build with every file put back failed: look before going on", flush=True)
+            while (i := next_for(lane)) is not None:
+                ok = check(lane, i, PENDING[i], say)
+                with lock:
+                    tally["caught" if ok else "missed"] += 1
+            if lane.rebuilt and not build(lane.root):
+                raise RuntimeError(f"the build in {lane.root} with every file put back failed: look before going on")
+        except RuntimeError as e:
+            with lock:
+                broken.append(str(e))
+
+    threads = [threading.Thread(target=work, args=(lane,)) for lane in lanes]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    if broken:
+        print("\n".join(broken), flush=True)
         sys.exit(2)
-    print(f"{caught} caught, {missed} not", flush=True)
-    sys.exit(1 if missed else 0)
+    print(f"{tally['caught']} caught, {tally['missed']} not", flush=True)
+    sys.exit(1 if tally["missed"] else 0)
 
 
 if __name__ == "__main__":
