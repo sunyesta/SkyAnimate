@@ -443,6 +443,8 @@ add_test(NAME sculpt
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt.py)
 add_test(NAME sculpt_dyntopo
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_dyntopo.py)
+add_test(NAME sculpt_collapse
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_collapse.py)
 add_test(NAME onion_skins
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_onion_skins.py)
 add_test(NAME motion_paths

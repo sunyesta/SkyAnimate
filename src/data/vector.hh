@@ -565,6 +565,16 @@ int drawing_pick_shape(const VectorDrawing &drawing, float2 pos, float radius);
 /* Inserts a point into a segment at parameter t, keeping the curve's shape as closely as the
  * curvature model allows. Shapes using that segment are updated. Returns the new point. */
 int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t);
+/* Where to split one segment: its parameters, increasing, each between 0 and 1. */
+struct SegmentSplits {
+  int segment = 0;
+  std::vector<float> t;
+};
+/* Splits segments of curve `curve` at once, as drawing_split_segment does one point at a time (each piece exact, so the
+ * line doesn't move; widths, point groups and shapes as there), in one pass over the curve and its shapes however many
+ * points go in: `splits` in increasing segment order, each segment once. Returns the new points in order along the
+ * curve. */
+std::vector<int> drawing_split_segments(VectorDrawing &drawing, int curve, const std::vector<SegmentSplits> &splits);
 /* Removes a point from every curve through it, joining its neighbours, so shapes keep their
  * other edges. Then removes the point itself. */
 void drawing_dissolve_point(VectorDrawing &drawing, int point);

@@ -12,6 +12,7 @@
 #include <numeric>
 #include <queue>
 #include <set>
+#include <unordered_map>
 
 namespace oanim {
 
@@ -166,7 +167,10 @@ static void setup_handles(const VectorDrawing &setup, const Curve &curve, int i,
 /* Makes sure a point's handles are stored (so they can be moved by hand): what it shows now.
  * A channel without keys remembers the setup-pose handles as its value before this edit, so a
  * first key away from frame 0 keys frame 0 with the setup shape (anim/animation.hh). */
-static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
+/* `setup_drawing` and `setup_c`: setup_points of the drawing and setup_curve of the curve, made once for many points (each is
+ * a copy of every point). */
+static void own_handles_with(VectorDrawing &drawing, Curve &curve, int i, const VectorDrawing &setup_drawing,
+                             const Curve &setup_c)
 {
   CurvePoint &cp = curve.points[i];
   if (cp.handles_set) {
@@ -175,8 +179,9 @@ static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
   const float2 here = drawing.points[cp.point].pos;
   const float2 in = computed_handle(drawing, curve, i, true, 0) - here;
   const float2 out = computed_handle(drawing, curve, i, false, 0) - here;
-  float2 setup_in, setup_out;
-  setup_handles(setup_points(drawing), curve, i, &setup_in, &setup_out);
+  const float2 rest = setup_drawing.points[setup_c.points[i].point].pos;
+  const float2 setup_in = computed_handle(setup_drawing, setup_c, i, true, 0) - rest;
+  const float2 setup_out = computed_handle(setup_drawing, setup_c, i, false, 0) - rest;
   cp.handle_in = in;
   cp.handle_out = out;
   cp.handles_set = true;
@@ -191,6 +196,33 @@ static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
       ch.last = {};
       ch.has_last = true;
     }
+  }
+}
+
+static void own_handles(VectorDrawing &drawing, Curve &curve, int i)
+{
+  if (curve.points[i].handles_set) {
+    return;
+  }
+  own_handles_with(drawing, curve, i, setup_points(drawing), setup_curve(curve));
+}
+
+/* own_handles for several points of one curve, the setup made once. */
+static void own_handles_many(VectorDrawing &drawing, Curve &curve, const std::vector<int> &which)
+{
+  VectorDrawing setup;
+  Curve setup_c;
+  bool built = false;
+  for (const int i : which) {
+    if (curve.points[size_t(i)].handles_set) {
+      continue;
+    }
+    if (!built) {
+      setup = setup_points(drawing);
+      setup_c = setup_curve(curve);
+      built = true;
+    }
+    own_handles_with(drawing, curve, i, setup, setup_c);
   }
 }
 
@@ -943,33 +975,37 @@ static std::vector<int> curve_segment_remap(const std::vector<bool> &removed, bo
   }
   const int segments = closed_before ? n : n - 1;
   std::vector<int> map(std::max(segments, 0), -1);
+  if (m < 2) {
+    return map;
+  }
+  /* In one pass each way (a long run of removed points is walked once, not once per segment): the last kept point at
+   * or before each point (round a loop from its end), and whether one comes after it. */
+  std::vector<int> kept_before(size_t(n), -1);
+  int run = -1;
+  if (closed_before) {
+    for (int i = n - 1; i >= 0 && run < 0; i--) {
+      run = removed[i] ? -1 : new_index[i];
+    }
+  }
+  for (int i = 0; i < n; i++) {
+    if (!removed[i]) {
+      run = new_index[i];
+    }
+    kept_before[size_t(i)] = run;
+  }
+  std::vector<bool> kept_after(size_t(n), closed_before);
+  if (!closed_before) {
+    bool any = false;
+    for (int i = n - 1; i >= 0; i--) {
+      kept_after[size_t(i)] = any;
+      any = any || !removed[i];
+    }
+  }
   for (int s = 0; s < segments; s++) {
-    /* The segment now starting here: from the last kept point at or before s... */
-    int start = -1;
-    for (int k = 0; k < n; k++) {
-      const int i = s - k;
-      if (i < 0 && !closed_before) {
-        break;
-      }
-      const int wrapped = (i + n) % n;
-      if (!removed[wrapped]) {
-        start = new_index[wrapped];
-        break;
-      }
-    }
-    /* ...to the first kept point after it, which must be there. */
-    bool end = false;
-    for (int k = 1; k <= n; k++) {
-      const int i = s + k;
-      if (i >= n && !closed_before) {
-        break;
-      }
-      if (!removed[i % n]) {
-        end = true;
-        break;
-      }
-    }
-    if (start < 0 || !end || m < 2) {
+    /* The segment now starting here: from the last kept point at or before s to the first kept point after it, which
+     * must be there. */
+    const int start = kept_before[size_t(s)];
+    if (start < 0 || !kept_after[size_t(s)]) {
       continue;
     }
     const int new_segments = closed_after ? m : m - 1;
@@ -1559,6 +1595,152 @@ int drawing_split_segment(VectorDrawing &drawing, ShapeEdge edge, float t)
   return point;
 }
 
+std::vector<int> drawing_split_segments(VectorDrawing &drawing, int curve_index,
+                                        const std::vector<SegmentSplits> &splits)
+{
+  std::vector<int> made;
+  if (splits.empty()) {
+    return made;
+  }
+  Curve &curve = drawing.curves[size_t(curve_index)];
+  const int n = int(curve.points.size());
+  /* The ends of every split segment keep their handles as they show now, before any point goes in beside them (a
+   * handle worked out from the neighbours would change). */
+  std::vector<int> ends;
+  for (const SegmentSplits &sp : splits) {
+    ends.push_back(sp.segment);
+    ends.push_back((sp.segment + 1) % n);
+  }
+  own_handles_many(drawing, curve, ends);
+  if (!drawing.groups.empty()) {
+    /* The ends' ids, which the new points' group weights go by. */
+    drawing_ensure_ids(drawing);
+  }
+  std::vector<const SegmentSplits *> at(size_t(n), nullptr);
+  /* Each split segment's Bezier and what its new points take from its ends, while the curve is as it was (its points
+   * are moved, not copied, into the new curve below: they carry their animation). */
+  struct Ends {
+    float2 ctrl[4];
+    float curvature = 0.0f;
+    bool edge_hidden = false;
+  };
+  std::vector<Ends> ends_of(static_cast<size_t>(n));
+  for (const SegmentSplits &sp : splits) {
+    at[size_t(sp.segment)] = &sp;
+    Ends &e = ends_of[size_t(sp.segment)];
+    curve_segment_bezier(drawing, curve, sp.segment, e.ctrl);
+    e.curvature = 0.5f * (curve.points[size_t(sp.segment)].curvature +
+                          curve.points[size_t((sp.segment + 1) % n)].curvature);
+    e.edge_hidden = curve.points[size_t(sp.segment)].edge_hidden;
+  }
+  /* Each split segment's pieces, exactly (the piece from t0 to t1 of a Bezier has handles a third of (t1 - t0) along
+   * its derivative at either end); the new points go in after the segment's first. */
+  std::vector<CurvePoint> points;
+  points.reserve(size_t(n) + splits.size() * 4);
+  /* Where each old segment's first piece now starts. */
+  std::vector<int> first(size_t(n), 0);
+  std::vector<std::pair<int, float2>> handles_in;
+  struct Grouped {
+    int point;
+    float t;
+    uint64_t a, b;
+  };
+  std::vector<Grouped> grouped;
+  for (int k = 0; k < n; k++) {
+    first[size_t(k)] = int(points.size());
+    points.push_back(std::move(curve.points[size_t(k)]));
+    const SegmentSplits *sp = at[size_t(k)];
+    if (!sp || sp->t.empty()) {
+      continue;
+    }
+    const float2 *ctrl = ends_of[size_t(k)].ctrl;
+    const auto derivative = [&](float t) {
+      const float u = 1.0f - t;
+      return ((ctrl[1] - ctrl[0]) * (u * u) + (ctrl[2] - ctrl[1]) * (2.0f * u * t) + (ctrl[3] - ctrl[2]) * (t * t)) *
+             3.0f;
+    };
+    int from = 0, to = 0;
+    curve_segment_points(curve, k, &from, &to);
+    /* The width runs by distance along the segment, not by the parameter. */
+    float lengths[33];
+    lengths[0] = 0.0f;
+    float2 last = ctrl[0];
+    for (int i = 1; i <= 32; i++) {
+      const float2 q = bezier_eval(ctrl, float(i) / 32.0f);
+      lengths[i] = lengths[i - 1] + distance(last, q);
+      last = q;
+    }
+    const float total = lengths[32];
+    const float r0 = drawing.points[size_t(from)].radius, r1 = drawing.points[size_t(to)].radius;
+    const uint64_t id_a = drawing.points[size_t(from)].id, id_b = drawing.points[size_t(to)].id;
+    std::vector<float> ts;
+    ts.push_back(0.0f);
+    ts.insert(ts.end(), sp->t.begin(), sp->t.end());
+    ts.push_back(1.0f);
+    points.back().handle_out = derivative(0.0f) * (ts[1] / 3.0f);
+    for (size_t j = 1; j + 1 < ts.size(); j++) {
+      const float t = ts[j];
+      const int point = drawing_add_point(drawing, bezier_eval(ctrl, t));
+      const float f = std::clamp(t, 0.0f, 1.0f) * 32.0f;
+      const int step = std::min(int(f), 31);
+      const float upto = lengths[step] + (lengths[step + 1] - lengths[step]) * (f - float(step));
+      drawing.points[size_t(point)].radius = r0 + (r1 - r0) * (total > 1e-12f ? upto / total : t);
+      if (!drawing.groups.empty()) {
+        grouped.push_back({point, t, id_a, id_b});
+      }
+      CurvePoint cp;
+      cp.point = point;
+      cp.aligned = true;
+      cp.handles_set = true;
+      const float2 d = derivative(t);
+      cp.handle_in = d * (-(t - ts[j - 1]) / 3.0f);
+      cp.handle_out = d * ((ts[j + 1] - t) / 3.0f);
+      cp.curvature = ends_of[size_t(k)].curvature;
+      if (cp.curvature > 0.0f) {
+        cp.curvature = std::max(cp.curvature, CURVATURE_SMOOTH);
+      }
+      cp.edge_hidden = ends_of[size_t(k)].edge_hidden;
+      points.push_back(cp);
+      made.push_back(point);
+    }
+    handles_in.push_back({(k + 1) % n, derivative(1.0f) * (-(1.0f - ts[ts.size() - 2]) / 3.0f)});
+  }
+  curve.points = std::move(points);
+  for (const auto &[k, h] : handles_in) {
+    curve.points[size_t(first[size_t(k)])].handle_in = h;
+  }
+  /* A point between two of a group's is in it, weighted between theirs (as Blender's Subdivide does). */
+  if (!grouped.empty()) {
+    drawing_ensure_ids(drawing);
+    for (PointGroup &g : drawing.groups) {
+      for (const Grouped &q : grouped) {
+        const auto wa = g.weights.find(q.a), wb = g.weights.find(q.b);
+        if (wa != g.weights.end() && wb != g.weights.end()) {
+          g.weights[drawing.points[size_t(q.point)].id] = wa->second + (wb->second - wa->second) * q.t;
+        }
+      }
+    }
+  }
+  /* Shapes along a split segment run through its pieces; the others are renumbered. */
+  for (Shape &shape : drawing.shapes) {
+    std::vector<ShapeEdge> edges;
+    edges.reserve(shape.edges.size());
+    for (const ShapeEdge &e : shape.edges) {
+      if (e.curve != curve_index || e.segment < 0 || e.segment >= n) {
+        edges.push_back(e);
+        continue;
+      }
+      const SegmentSplits *sp = at[size_t(e.segment)];
+      const int pieces = sp ? int(sp->t.size()) + 1 : 1;
+      for (int j = 0; j < pieces; j++) {
+        edges.push_back({e.curve, first[size_t(e.segment)] + j});
+      }
+    }
+    shape.edges = std::move(edges);
+  }
+  return made;
+}
+
 void drawing_remove_unused_points(VectorDrawing &drawing)
 {
   std::vector<int> remap(drawing.points.size(), -1);
@@ -1654,6 +1836,69 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point)
   drawing_groups_prune(drawing);
 }
 
+/* drawing_dissolve_point for every point marked `gone` (by index) at once: one pass over the curves and shapes however
+ * many go, the same result as dissolving them one at a time. */
+static void dissolve_marked(VectorDrawing &drawing, const std::vector<bool> &gone)
+{
+  DetailScope detail_scope(drawing);
+  std::vector<std::vector<int>> segment_remap(drawing.curves.size());
+  std::vector<bool> remove_curve(drawing.curves.size(), false);
+  bool any = false;
+  for (size_t c = 0; c < drawing.curves.size(); c++) {
+    Curve &curve = drawing.curves[c];
+    std::vector<bool> removed(curve.points.size(), false);
+    bool here = false;
+    for (size_t k = 0; k < curve.points.size(); k++) {
+      const int p = curve.points[k].point;
+      removed[k] = p >= 0 && size_t(p) < gone.size() && gone[size_t(p)];
+      here = here || removed[k];
+    }
+    if (!here) {
+      continue;
+    }
+    any = true;
+    const bool closed_before = curve.closed;
+    size_t w = 0;
+    for (size_t k = 0; k < curve.points.size(); k++) {
+      if (!removed[k]) {
+        curve.points[w++] = curve.points[k];
+      }
+    }
+    curve.points.resize(w);
+    if (curve.closed && curve.points.size() < 3) {
+      /* Too few points to stay closed: the one segment left is an open line. */
+      curve.closed = false;
+    }
+    segment_remap[c] = curve_segment_remap(removed, closed_before, curve.closed);
+    remove_curve[c] = curve.points.size() < 2;
+  }
+  if (!any) {
+    return;
+  }
+  /* Each shape's edges along the joined segments; one that loses them all goes. */
+  for (Shape &shape : drawing.shapes) {
+    std::vector<ShapeEdge> edges;
+    std::set<std::pair<int, int>> seen;
+    for (ShapeEdge e : shape.edges) {
+      const std::vector<int> &map = segment_remap[size_t(e.curve)];
+      if (!map.empty()) {
+        e.segment = e.segment >= 0 && e.segment < int(map.size()) ? map[size_t(e.segment)] : -1;
+        if (e.segment < 0) {
+          continue;
+        }
+      }
+      if (seen.insert({e.curve, e.segment}).second) {
+        edges.push_back(e);
+      }
+    }
+    shape.edges = std::move(edges);
+  }
+  std::erase_if(drawing.shapes, [](const Shape &shape) { return shape.edges.empty(); });
+  drawing_remove_curves(drawing, remove_curve);
+  drawing_remove_unused_points(drawing);
+  drawing_groups_prune(drawing);
+}
+
 /* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of
  * p3, back along the curve), to the samples `d`: the two handle lengths, by least squares, with the
  * samples' places along the curve refined by Newton steps. */
@@ -1733,6 +1978,7 @@ void bezier_fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const
   }
   float a1 = chord / 3.0f, a2 = chord / 3.0f;
   for (int round = 0; round < 24; round++) {
+    const float was1 = a1, was2 = a2;
     double c00 = 0, c01 = 0, c11 = 0, x0 = 0, x1 = 0;
     for (size_t i = 0; i < n; i++) {
       const float t = u[i], s = 1.0f - t;
@@ -1759,6 +2005,11 @@ void bezier_fit_handle_lengths(float2 p0, float2 p3, float2 t1, float2 t2, const
     }
     else if (a1 < chord * 1e-3f || a2 < chord * 1e-3f) {
       a1 = a2 = chord / 3.0f;
+      break;
+    }
+    /* Settled (the lengths no longer change to a millionth of the chord): further rounds would give the same. Collapse
+     * fits every span it tries, so the rounds it saves count. */
+    if (round > 0 && std::fabs(a1 - was1) <= chord * 1e-6f && std::fabs(a2 - was2) <= chord * 1e-6f) {
       break;
     }
     /* Newton steps: each sample's place moves to the nearest point of the curve as now fitted. */
@@ -1836,10 +2087,12 @@ void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &poi
     }
     /* The ends of a span keep their handles as they show now (worked out from their neighbours, they
      * would change with a neighbour gone). */
+    std::vector<int> ends;
     for (const Span &s : spans) {
-      own_handles(drawing, curve, s.a);
-      own_handles(drawing, curve, s.b);
+      ends.push_back(s.a);
+      ends.push_back(s.b);
     }
+    own_handles_many(drawing, curve, ends);
     for (const Span &s : spans) {
       const int a = s.a, b = s.b, steps = s.steps;
       std::vector<float2> samples;
@@ -1868,43 +2121,52 @@ void drawing_dissolve_points(VectorDrawing &drawing, const std::vector<int> &poi
     }
   }
   /* Then the points go: detail riding on the level below as Delete Higher removes it (that level's
-   * handles kept, so the curve is exactly what it was before the knife), the rest one at a time,
-   * highest index first as each dissolve renumbers the ones after it... */
-  std::vector<uint64_t> other_ids;
+   * handles kept, so the curve is exactly what it was before the knife), the rest all at once... */
+  const std::set<uint64_t> detail_set(detail_ids.begin(), detail_ids.end());
+  std::set<uint64_t> other_ids;
   for (int i = 0; i < int(gone.size()); i++) {
-    if (gone[i] && std::find(detail_ids.begin(), detail_ids.end(), drawing.points[i].id) == detail_ids.end()) {
-      other_ids.push_back(drawing.points[i].id);
+    if (gone[i] && !detail_set.contains(drawing.points[i].id)) {
+      other_ids.insert(drawing.points[i].id);
     }
   }
   if (!detail_ids.empty()) {
     drawing_detail_remove_points(drawing, detail_ids);
   }
-  std::vector<int> order;
-  for (const uint64_t id : other_ids) {
-    if (const int p = drawing_point_index(drawing, id); p >= 0) {
-      order.push_back(p);
+  std::vector<bool> marked(drawing.points.size(), false);
+  for (size_t i = 0; i < drawing.points.size(); i++) {
+    marked[i] = other_ids.contains(drawing.points[i].id);
+  }
+  dissolve_marked(drawing, marked);
+  /* ...and the joined segments take the fitted handles (the other handle of each point stays). */
+  if (fits.empty()) {
+    return;
+  }
+  std::unordered_map<uint64_t, int> index_of;
+  for (int i = 0; i < int(drawing.points.size()); i++) {
+    index_of[drawing.points[size_t(i)].id] = i;
+  }
+  /* Each point's places on the curves (curve, index), to find each span's segment without a search. */
+  std::unordered_map<int, std::vector<std::pair<int, int>>> on_curves;
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    for (int i = 0; i < int(drawing.curves[size_t(c)].points.size()); i++) {
+      on_curves[drawing.curves[size_t(c)].points[size_t(i)].point].push_back({c, i});
     }
   }
-  std::sort(order.begin(), order.end());
-  for (auto it = order.rbegin(); it != order.rend(); ++it) {
-    drawing_dissolve_point(drawing, *it);
-  }
-  /* ...and the joined segments take the fitted handles (the other handle of each point stays). */
   for (const Fit &f : fits) {
-    const int from = drawing_point_index(drawing, f.from), to = drawing_point_index(drawing, f.to);
-    if (from < 0 || to < 0) {
+    const auto fi = index_of.find(f.from), ti = index_of.find(f.to);
+    if (fi == index_of.end() || ti == index_of.end()) {
       continue;
     }
-    for (Curve &curve : drawing.curves) {
+    const int from = fi->second, to = ti->second;
+    for (const auto &[c, i] : on_curves[from]) {
+      Curve &curve = drawing.curves[size_t(c)];
       const int n = int(curve.points.size());
-      for (int i = 0; i < n; i++) {
-        const int j = (i + 1) % n;
-        if (curve.points[i].point != from || curve.points[j].point != to || (!curve.closed && j == 0)) {
-          continue;
-        }
-        curve_point_move_handle(drawing, curve, i, false, drawing.points[from].pos + f.out, true);
-        curve_point_move_handle(drawing, curve, j, true, drawing.points[to].pos + f.in, true);
+      const int j = (i + 1) % n;
+      if (curve.points[size_t(j)].point != to || (!curve.closed && j == 0)) {
+        continue;
       }
+      curve_point_move_handle(drawing, curve, i, false, drawing.points[size_t(from)].pos + f.out, true);
+      curve_point_move_handle(drawing, curve, j, true, drawing.points[size_t(to)].pos + f.in, true);
     }
   }
 }
