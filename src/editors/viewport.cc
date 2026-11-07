@@ -2139,17 +2139,6 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     for (const float2 q : p.points) {
       screen.push_back(view.to_screen(q));
     }
-    if (p.ghost.size() > 1) {
-      /* Own Motion: where it really goes, faint behind the path being edited. */
-      std::vector<ImVec2> ghost;
-      for (const float2 q : p.ghost) {
-        ghost.push_back(view.to_screen(q));
-      }
-      dl->AddPolyline(ghost.data(), int(ghost.size()), u32(p.color, 0.45f), ImDrawFlags_None, 1.0f);
-      for (size_t i = 0; i < ghost.size(); i += size_t(step)) {
-        dl->AddCircleFilled(ghost[i], 2.0f, u32(p.color, 0.5f));
-      }
-    }
     if (doc.path_lines && screen.size() > 1) {
       /* Where the dot goes past its key and back (overshoot) or backs up before its start: dashed, as it goes over
        * the path's continuation; the rest solid. Dashes by length along the line (4 px on, 4 off), as it comes in short
@@ -5500,7 +5489,7 @@ static void motion_path_header(Context &C)
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("A path being edited (a key or dot picked) shows only its own motion: whatever else moves it "
-                        "(a bone, a parent, a group) held as on this frame, the real path a faint ghost behind");
+                        "(a bone, a parent, a group, its own constraints) held as on this frame. Off: the real path");
     }
     ImGui::SameLine();
     bool edit_layer = C.wm->tool_settings.path_edit_layer;

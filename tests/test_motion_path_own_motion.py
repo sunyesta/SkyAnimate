@@ -1,6 +1,7 @@
 """Own Motion: a path being edited (one of its own keys or dots picked) shows only its own motion, whatever else moves it
-(a group above, a parent bone) held as on the frame shown; where it really goes is its ghost. Edits made on the path
-land where they are drawn. Off in the header, or with nothing picked, the path is the real one."""
+(a group above, a parent bone, its own constraints) held as on the frame shown, and nothing else drawn (no ghost of
+where it really goes). Edits made on the path land where they are drawn. Off in the header, or with nothing picked, the
+path is the real one."""
 
 import os
 import tempfile
@@ -18,6 +19,15 @@ def close(a, b, eps=1e-3):
 
 def path(label):
     return next(p for p in oanim.wm.motion_paths() if p["label"] == label)
+
+
+def real_path(label):
+    """The path as it really goes: Own Motion off for a moment."""
+    doc.path_own_motion = False
+    try:
+        return path(label)
+    finally:
+        doc.path_own_motion = True
 
 
 ops.wm.read_homefile()
@@ -53,8 +63,8 @@ on = dict(layer=str(art.id), point=pid)
 
 # --- Nothing picked: the real path ----------------------------------------------------------------------------
 p = path(label)
-assert not p["own_motion"] and p["ghost"] == []
-at = lambda q, f: q["points"][f - q["first"]]
+assert not p["own_motion"] and "ghost" not in p
+at =lambda q, f: q["points"][f - q["first"]]
 assert close(at(p, 10), (5.0, 2.0)) and close(at(p, 0), (0.0, 0.0)), "the group carries it"
 
 # --- A key picked: only its own motion, the group held where it is now ----------------------------------------
@@ -63,8 +73,8 @@ p = path(label)
 assert p["own_motion"], "being edited"
 assert close(at(p, 10), (2.5, 2.0)) and close(at(p, 0), (2.5, 0.0)), ("the group held as on frame 5", at(p, 10))
 assert close(at(p, 5), (2.5, 1.0)), "the frame shown is where it is"
-g = p["ghost"]
-assert len(g) == len(p["points"]) and close(g[10 - p["first"]], (5.0, 2.0)), "the real path, its ghost"
+assert "ghost" not in p, "only its own motion drawn: no ghost of where it really goes"
+assert close(at(real_path(label), 10), (5.0, 2.0)), "Own Motion off: the real path"
 assert all(close(q[0], 2.5) for q in p["points"]), "straight up: its own move alone"
 
 # Edits land where they are drawn: the key's dot dragged to x=3.5 on the held path.
@@ -83,7 +93,7 @@ assert close(h["in"], (3.5, 1.0)), ("the handle where it was dragged", h)
 # --- Outside the tool: only looked at, the real path, the key still picked -------------------------------------
 ops.wm.tool_select()
 p = path(label)
-assert not p["own_motion"] and p["ghost"] == [], "nothing is edited outside the tool"
+assert not p["own_motion"], "nothing is edited outside the tool"
 assert close(at(p, 10), (6.0, 2.0)), ("the real path", at(p, 10))
 ops.wm.tool_motion_path()
 assert path(label)["own_motion"], "back in the tool: as it was"
@@ -91,7 +101,7 @@ assert path(label)["own_motion"], "back in the tool: as it was"
 # --- Off in the header: the real path --------------------------------------------------------------------------
 doc.path_own_motion = False
 p = path(label)
-assert not p["own_motion"] and p["ghost"] == [] and close(at(p, 10), (6.0, 2.0))
+assert not p["own_motion"] and close(at(p, 10), (6.0, 2.0))
 doc.path_own_motion = True
 
 # --- Nothing picked again: the real path; a dot picked: its own motion ----------------------------------------
@@ -126,7 +136,7 @@ real = path("hand head")
 assert not real["own_motion"]
 assert ops.anim.motion_path_select(frame="10", **head) == {'FINISHED'}
 own = path("hand head")
-assert own["own_motion"] and own["ghost"], own
+assert own["own_motion"], own
 f5 = 5 - own["first"]
 assert close(own["points"][f5], real["points"][f5]), "where it is now, either way"
 d0 = (own["points"][0][0] - own["points"][f5][0], own["points"][0][1] - own["points"][f5][1])
@@ -134,17 +144,17 @@ d10 = (own["points"][10 - own["first"]][0] - own["points"][f5][0],
        own["points"][10 - own["first"]][1] - own["points"][f5][1])
 assert close(d0, (-d10[0], -d10[1])), ("a straight move either side of now, not the arm's swing", d0, d10)
 
-# Nothing else moves the arm: no ghost to tell apart.
+# Nothing else moves the arm: its own motion is where it really goes.
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 rig.select_bone("arm")
 assert ops.anim.motion_path_select(frame="10", layer=str(rig.id), bone="arm") == {'FINISHED'}
 arm = path("arm tip")
-assert arm["own_motion"] and arm["ghost"] == [], arm["ghost"][:2]
+assert arm["own_motion"] and all(close(a, b) for a, b in zip(arm["points"], real_path("arm tip")["points"]))
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 
 # --- The bone's own constraints are where it really goes, not its own motion ------------------------------------
 # A pupil kept inside a box (Limit to Shape), keyed out past the box's side: its own path goes on past, the curve its
-# keys and control points shape; where the constraint stops it is the ghost.
+# keys and control points shape (Own Motion off shows where the constraint stops it).
 doc.frame_current = 0
 layers.active = group
 ops.layer.new()
@@ -171,8 +181,7 @@ assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}
 own = path("pupil head")
 assert own["own_motion"] and close(at(own, 10), (4.0, 0.0)), ("its own keys take it on past", at(own, 10))
 assert all(close(q[1], 0.0) for q in own["points"]), "straight out, as keyed"
-assert len(own["ghost"]) == len(real["points"]) and all(close(g, q) for g, q in zip(own["ghost"], real["points"])), \
-    "the box's stop, its ghost"
+assert "ghost" not in own and real_path("pupil head")["points"] == real["points"], "the box's stop: Own Motion off"
 # A control point on it sits on the path as drawn, not where the box holds the pupil.
 assert ops.anim.motion_path_control_add(frame="8", **pupil) == {'FINISHED'}
 assert ops.anim.motion_path_select(frame="10", **pupil) == {'FINISHED'}

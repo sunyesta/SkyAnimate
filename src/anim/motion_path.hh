@@ -55,10 +55,9 @@ struct MotionPath {
   /* How fast it moves into each frame, 0 (still) to 1 (its fastest). */
   std::vector<float> speed;
   std::vector<int> keys;
-  /* Own Motion (Document::path_own_motion): `points` hold only the target's own motion, `ghost` where it really goes
-   * (empty when that is the same). */
+  /* Own Motion (Document::path_own_motion): `points` hold only the target's own motion. (Where it really goes isn't
+   * shown alongside: a second path confused more than it told; Own Motion off, or nothing picked, shows it.) */
   bool own_motion = false;
-  std::vector<float2> ghost;
   /* The path's own shape between the dots (document space, as `points`): shape[i] the points strictly between dot
    * i - 1 and dot i, where shape_known[i]. Known where the path comes from a position channel and its dots sit on its
    * stretch's curve; so the line drawn through it stays put while the dots slide along it (a timing change), and its

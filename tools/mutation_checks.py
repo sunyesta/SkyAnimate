@@ -243,8 +243,6 @@ PENDING = [
      '', 'Own Motion saved', 'tests/test_motion_path_own_motion.py'),
     ('src/anim/motion_path.cc', '    g_shown = held.get();',
      '', "on another frame, the frame shown is what's held", 'tests/test_motion_path_own_motion.py'),
-    ('src/anim/motion_path.cc', '      p.ghost.clear();',
-     '', 'no ghost when nothing else moves it', 'tests/test_motion_path_own_motion.py'),
     ('src/editors/overlay_contrast.cc', '  if (c >= (previous == ContrastPick::Base ? ENTER : LEAVE)) {',
      '  if (c >= ENTER) {', 'an alternative held until clearly readable', 'tests/test_overlay_colors.py'),
     ('src/editors/overlay_contrast.cc', '  return under_luma <= base_luma ? ContrastPick::Lighter : ContrastPick::Darker;',

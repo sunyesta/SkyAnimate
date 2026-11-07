@@ -1538,11 +1538,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["color"] = py::make_tuple(p.color.r, p.color.g, p.color.b);
       d["first"] = p.first;
       d["own_motion"] = p.own_motion;
-      py::list ghost;
-      for (const float2 q : p.ghost) {
-        ghost.append(py::make_tuple(q.x, q.y));
-      }
-      d["ghost"] = ghost;
       py::list pts, speed;
       for (size_t i = 0; i < p.points.size(); i++) {
         pts.append(py::make_tuple(p.points[i].x, p.points[i].y));

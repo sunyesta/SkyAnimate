@@ -580,7 +580,7 @@ static void path_shape_fill(const Document &doc, MotionPath &p);
 
 /* With Own Motion, a bone's own constraints (a pupil's Look At keeping it in the eye) are part of where it really goes,
  * not of its own motion: turned off on the copy its path is worked out on, so the dots, the line, the handles and the
- * control points all lie on the curve its keys shape, and the constraints' pull shows as the ghost. */
+ * control points all lie on the curve its keys shape. */
 static void own_constraints_off(Document &copy, const MotionPathTarget &t)
 {
   Layer *rig = t.bone ? layer_find(copy, t.layer) : nullptr;
@@ -669,7 +669,7 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
   const bool relative = doc.path_relative != PathRelative::World;
   const Transform2D back = relative ? relative_space(doc).inverted() : Transform2D();
   /* Own Motion: a path being edited is worked out on a copy held as the frame shown, only the target's own values
-   * taken from each frame; where it really goes is its ghost. */
+   * taken from each frame. */
   std::vector<std::unique_ptr<Document>> held(paths.size());
   for (size_t i = 0; i < paths.size(); i++) {
     if (motion_path_own_motion(doc, paths[i].target)) {
@@ -715,12 +715,14 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
       }
     }
   });
+  /* (Where an Own Motion path really goes: what a frame it isn't found on falls back to.) */
+  std::vector<std::vector<float2>> really(paths.size());
   for (size_t k = 0; k < frames; k++) {
     const Transform2D &into = intos[k];
     for (size_t i = 0; i < paths.size(); i++) {
       MotionPath &p = paths[i];
       const Place &q = found[k][i];
-      std::vector<float2> &real = p.own_motion ? p.ghost : p.points;
+      std::vector<float2> &real = p.own_motion ? really[i] : p.points;
       const float2 at = !q.found && !real.empty() ? real.back() : q.at;
       real.push_back(relative ? back.apply(into.apply(at)) : at);
       if (relative && !p.own_motion) {
@@ -733,14 +735,6 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
     }
   }
   for (MotionPath &p : paths) {
-    /* Nothing else moves it: no ghost to tell apart. */
-    bool apart = false;
-    for (size_t k = 0; k < p.ghost.size() && k < p.points.size() && !apart; k++) {
-      apart = length(p.ghost[k] - p.points[k]) > 1e-5f;
-    }
-    if (!apart) {
-      p.ghost.clear();
-    }
     path_shape_fill(doc, p);
   }
   for (MotionPath &p : paths) {
