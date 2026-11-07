@@ -1566,6 +1566,9 @@ static struct {
   std::optional<OpArgs> pick;
   ImVec2 press_px;
   Document snapshot;
+  /* A timing brush's stroke with Time Together on: the linked channels take its timing as it ends, as
+   * anim.motion_path_stroke's do. */
+  TimeTogetherEdit together;
 } g_path_brush;
 /* Shift F: this many pixels from the anchor is full strength. */
 static constexpr float PATH_STRENGTH_PX = 200.0f;
@@ -1707,6 +1710,7 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     g.sculpt = PathSculptStroke();
     g.unsculpted.clear();
     g.snapshot = Document();
+    g.together = TimeTogetherEdit();
   };
   if (!g.active) {
     if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -1722,6 +1726,9 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
     /* Edit's Shift: a click on a dot or key adds it to the selection; only a drag paints. */
     g.pending = ts.path_brush == PathBrush::Edit;
     g.pick = pick;
+    if (path_brush_is_timing(brush)) {
+      g.together.start(doc);
+    }
     /* The paths keep the range they had while the stroke goes on. */
     g_path_drag.active = true;
     g_path_drag.first = first;
@@ -1777,6 +1784,7 @@ static void motion_path_brush_input(Context &C, Area &area, const ViewMapping &v
   }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     if (g.changed) {
+      keys_moved_report(g.together.finish(doc));
       push_undo(C, path_brush_name(brush));
     }
     /* A Surface Smooth stroke moves the paths toward where they are going, not where that is (smoothing again lands

@@ -282,14 +282,14 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     /* Time Together: the timing edits reach the linked channels (an outer run's does it once). */
     const auto together_arg = args.find("together");
     const bool together = (ot.flag & OPTYPE_TIMING) && !outer_args && C.document && C.document->time_together &&
-                          (together_arg == args.end() || together_arg->second != "0");
-    TimingSnapshot timing_before;
+                          (together_arg == args.end() || together_arg->second != "0") && (!ot.timing || ot.timing(C));
+    TimeTogetherEdit timing_edit;
     if (together) {
-      timing_before = time_together_timing_snapshot(*C.document);
+      timing_edit.start(*C.document);
     }
     status = ot.exec(C);
     if (together && status == OpStatus::Finished) {
-      keys_moved_report(time_together_timing_follow(*C.document, timing_before));
+      keys_moved_report(timing_edit.finish(*C.document));
     }
     if (mirror) {
       mirror_selection_end(C, mirrored);

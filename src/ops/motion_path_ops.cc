@@ -221,6 +221,19 @@ bool parse_color(const std::string &text, Color &r_color)
 
 
 /* The Motion Path tool with Edit, its shortcuts' poll. */
+/* anim.motion_path_stroke's brush: brush=, else the tool's; shift=1 the one Shift swaps in. False for an unknown one. */
+static bool stroke_brush(Context &C, PathBrush &r_brush)
+{
+  r_brush = C.wm ? C.wm->tool_settings.path_brush : PathBrush::Edit;
+  if (op_has_arg(C, "brush") && !path_brush_from_id(op_arg(C, "brush"), &r_brush)) {
+    return false;
+  }
+  if (op_arg_bool(C, "shift")) {
+    r_brush = path_brush_shifted(r_brush);
+  }
+  return true;
+}
+
 static bool path_edit_poll(Context &C)
 {
   return C.document && C.wm && C.wm->tool_settings.tool == Tool::MotionPath &&
@@ -906,6 +919,8 @@ void motion_path_operators_register()
   {
     OperatorType ot;
     ot.idname = "anim.motion_path_stretch_reset";
+    /* Its shape alone keeps the timing: nothing for the linked channels. */
+    ot.timing = [](Context &C) { return !op_has_arg(C, "what") || op_arg(C, "what") != "SHAPE"; };
     ot.name = "Reset Stretch";
     ot.description = "Right-click a path dot or control point: its stretch (frame=N in it, after its first key and up to "
                      "its last: a control point's by its key's frame) "
@@ -1121,16 +1136,19 @@ void motion_path_operators_register()
                      "moves what was under the first point by the move to the last; the others dab at every point";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    /* Only the timing brushes retime: a shape brush keeps the timing (its Custom speeds are the old timing kept), so
+     * the linked channels stay as they are. */
+    ot.timing = [](Context &C) {
+      PathBrush brush;
+      return stroke_brush(C, brush) && path_brush_is_timing(brush);
+    };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
       const ToolSettings &ts = C.wm->tool_settings;
-      PathBrush brush = ts.path_brush;
-      if (op_has_arg(C, "brush") && !path_brush_from_id(op_arg(C, "brush"), &brush)) {
+      PathBrush brush;
+      if (!stroke_brush(C, brush)) {
         report(ReportType::Error, "Unknown path brush '" + op_arg(C, "brush") + "'");
         return OpStatus::Cancelled;
-      }
-      if (op_arg_bool(C, "shift")) {
-        brush = path_brush_shifted(brush);
       }
       if (!path_brush_has_radius(brush)) {
         report(ReportType::Warning, std::string(path_brush_name(brush)) + " isn't a brush: drag the path's dots");

@@ -506,6 +506,15 @@ TimingSnapshot time_together_timing_snapshot(Document &doc);
  * on the frames of the keys either side and nowhere between (the same stretches): interpolation, hold, type and
  * Custom speeds alike. Returns how many channels took it. */
 int time_together_timing_follow(Document &doc, const TimingSnapshot &before);
+/* Time Together around one timing edit (an operator flagged OPTYPE_TIMING, a timing brush's stroke in the viewport):
+ * started before it (doing anything only with Time Together on), finished after it, the linked channels taking the
+ * new timing (time_together_timing_follow). `finish` returns how many went along. */
+struct TimeTogetherEdit {
+  bool on = false;
+  TimingSnapshot before;
+  void start(Document &doc);
+  int finish(Document &doc);
+};
 /* Deletes the selected keys, except frame 0's. Returns how many went. */
 int layers_delete_selected_keys(const std::vector<Layer *> &layers);
 /* Copies the selected keys `offset` frames later (never below 1); the copies become the

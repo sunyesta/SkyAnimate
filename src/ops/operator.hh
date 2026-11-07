@@ -60,6 +60,9 @@ struct OperatorType {
   /* Optional: returns false when the operator can't run in this context. */
   std::function<bool(Context &C)> poll;
   std::function<OpStatus(Context &C)> exec;
+  /* With OPTYPE_TIMING: whether this run, with its arguments, changes timing at all (null: always), so Time Together
+   * leaves the linked channels alone for a run that only reshapes (a shape brush's stroke). */
+  std::function<bool(Context &C)> timing;
   /* Options for the ViewportActionPanel; with some, an undoable run can be redone with others. */
   std::vector<OpProperty> props;
 };

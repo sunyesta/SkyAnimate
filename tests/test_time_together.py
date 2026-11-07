@@ -8,6 +8,7 @@ just the one. Saved with the file.
 Run with:  OpenAnimate --background --python tests/test_time_together.py
 """
 
+import math
 import os
 import shutil
 import tempfile
@@ -267,6 +268,61 @@ assert ops.ed.undo() == {'FINISHED'}
 assert frames(same_count) == [0, 5, 30], ("one undo step", frames(same_count))
 only_selected(lead)
 assert ops.anim.match_timing() == {'CANCELLED'}, "nothing else selected"
+doc.time_together = True
+
+# --- Path brushes: a shape brush keeps the timing, so the linked layer stays; a speed brush retimes it too ----------
+def path_mover(keys):
+    ops.layer.new()
+    l = layers.active
+    l.add_curve([(0.0, 0.0), (0.1, 0.0)])
+    l.key_whole_drawing = False
+    doc.frame_current = 0
+    l.location_x, l.location_y = -1.0, -1.0
+    for o in layers:
+        o.selected = o.id == l.id
+    layers.active = l
+    for f, (x, y) in sorted(keys.items()):
+        assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), layer=str(l.id)) == {'FINISHED'}
+    return l
+
+
+def poses(l, a=0, b=35):
+    out = []
+    for f in range(a, b + 1):
+        doc.frame_current = f
+        out.append((l.location_x, l.location_y))
+    return out
+
+
+assert ops.wm.read_homefile() == {'FINISHED'}
+doc.auto_key = False
+doc.motion_paths = True
+doc.path_before = doc.path_after = 60
+assert ops.wm.tool_motion_path() == {'FINISHED'}
+pa = path_mover({10: (0.0, 0.0), 20: (1.0, 0.5), 30: (5.0, 0.0)})
+pb = path_mover({10: (0.0, 2.0), 20: (2.0, 2.5), 30: (3.0, 2.0)})
+doc.time_together = True
+for o in layers.all():
+    o.selected = o.id in (pa.id, pb.id)
+layers.active = pa
+ops.anim.keys_deselect_all()
+a0, b0 = poses(pa), poses(pb)
+doc.frame_current = 25
+assert ops.anim.motion_path_stroke(brush="GRAB", points="3,0.25;3,0.8", radius="0.5", strength="1",
+                                   layer=str(pa.id)) == {'FINISHED'}
+assert max(math.dist(p, q) for p, q in zip(a0, poses(pa))) > 0.01, "A grabbed"
+moved = max(math.dist(p, q) for p, q in zip(b0, poses(pb)))
+assert moved < 1e-4, ("a Grab on A's path retimed B", moved, [k["interp"] for k in pb.keyframes("position")])
+assert ops.ed.undo() == {'FINISHED'}
+doc.frame_current = 25
+assert ops.anim.motion_path_stretch_reset(frame="25", what="SHAPE", layer=str(pa.id)) == {'FINISHED'}
+assert max(math.dist(p, q) for p, q in zip(b0, poses(pb))) < 1e-4, "Reset Shape on A retimed B"
+assert ops.ed.undo() == {'FINISHED'}
+doc.frame_current = 25
+assert ops.anim.motion_path_stroke(brush="BLEND_SPEED", points="3,0.25", radius="1", strength="1",
+                                   layer=str(pa.id)) == {'FINISHED'}
+assert [k["interp"] for k in pb.keyframes("position") if k["frame"] == 30] == ["CUSTOM"], (
+    "a speed brush's timing goes to the linked layer", pb.keyframes("position"))
 doc.time_together = True
 
 # --- Saved with the file ---------------------------------------------------------------------------------------------

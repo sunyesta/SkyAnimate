@@ -5878,6 +5878,22 @@ TimingSnapshot time_together_timing_snapshot(Document &doc)
   return snap;
 }
 
+void TimeTogetherEdit::start(Document &doc)
+{
+  on = doc.time_together;
+  if (on) {
+    before = time_together_timing_snapshot(doc);
+  }
+}
+
+int TimeTogetherEdit::finish(Document &doc)
+{
+  const int followed = on ? time_together_timing_follow(doc, before) : 0;
+  on = false;
+  before = TimingSnapshot();
+  return followed;
+}
+
 /* A channel's key whose timing changed since `before`, with the frames of the keys either side (-1: none). */
 struct TimingEdit {
   int frame, prev, next;
